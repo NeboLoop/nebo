@@ -286,6 +286,7 @@ gobot [command]
 Commands:
   chat          Chat with the AI assistant
     -i, --interactive    Interactive mode
+    --dangerously        100% autonomous (no approval prompts)
     -s, --session        Session key (default: "default")
     -p, --provider       Provider to use
     -v, --verbose        Show tool calls
@@ -294,6 +295,7 @@ Commands:
     --org               Organization ID
     --server            Server URL
     --token             JWT token
+    --dangerously       100% autonomous (no approval prompts)
 
   mcp           Start MCP server
     --host              Listen host (default: localhost)

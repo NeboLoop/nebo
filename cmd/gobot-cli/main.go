@@ -63,6 +63,7 @@ func main() {
 // chatCmd creates the chat command
 func chatCmd() *cobra.Command {
 	var interactive bool
+	var dangerously bool
 
 	cmd := &cobra.Command{
 		Use:   "chat [prompt]",
@@ -73,14 +74,16 @@ The assistant has access to tools for file operations, shell commands, and more.
 Examples:
   gobot chat "Hello, what can you do?"
   gobot chat "List all Go files in this directory"
-  gobot chat --interactive`,
+  gobot chat --interactive
+  gobot chat --dangerously "deploy to production"`,
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := loadConfig()
-			runChat(cfg, args, interactive)
+			runChat(cfg, args, interactive, dangerously)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "start interactive chat session")
+	cmd.Flags().BoolVar(&dangerously, "dangerously", false, "100% autonomous mode - bypass ALL tool approval prompts (use with caution!)")
 
 	return cmd
 }
@@ -165,7 +168,7 @@ func loadConfig() *config.Config {
 }
 
 // runChat runs the chat command
-func runChat(cfg *config.Config, args []string, interactive bool) {
+func runChat(cfg *config.Config, args []string, interactive bool, dangerously bool) {
 	// Create session manager
 	sessions, err := session.New(cfg.DBPath())
 	if err != nil {
@@ -181,12 +184,19 @@ func runChat(cfg *config.Config, args []string, interactive bool) {
 		os.Exit(1)
 	}
 
-	// Create tool registry
-	policy := tools.NewPolicyFromConfig(
-		cfg.Policy.Level,
-		cfg.Policy.AskMode,
-		cfg.Policy.Allowlist,
-	)
+	// Create tool registry with policy
+	var policy *tools.Policy
+	if dangerously {
+		// 100% autonomous mode - no approval prompts
+		fmt.Println("\033[33m⚠ DANGEROUS MODE: All tool approvals bypassed!\033[0m")
+		policy = tools.NewPolicyFromConfig("full", "off", nil)
+	} else {
+		policy = tools.NewPolicyFromConfig(
+			cfg.Policy.Level,
+			cfg.Policy.AskMode,
+			cfg.Policy.Allowlist,
+		)
+	}
 	registry := tools.NewRegistry(policy)
 	registry.RegisterDefaults()
 
@@ -508,6 +518,7 @@ func agentCmd() *cobra.Command {
 	var agentID string
 	var serverURL string
 	var token string
+	var dangerously bool
 
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -519,10 +530,11 @@ users or channel integrations.
 
 Examples:
   gobot agent --org acme --token <jwt-token>
-  gobot agent --org acme --server https://gobot.example.com`,
+  gobot agent --org acme --server https://gobot.example.com
+  gobot agent --org acme --dangerously --token <token>`,
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := loadConfig()
-			runAgent(cfg, orgID, agentID, serverURL, token)
+			runAgent(cfg, orgID, agentID, serverURL, token, dangerously)
 		},
 	}
 
@@ -530,13 +542,14 @@ Examples:
 	cmd.Flags().StringVar(&agentID, "agent-id", "", "agent ID (default: auto-generated)")
 	cmd.Flags().StringVar(&serverURL, "server", "", "SaaS server URL (default: from config)")
 	cmd.Flags().StringVar(&token, "token", "", "authentication token")
+	cmd.Flags().BoolVar(&dangerously, "dangerously", false, "100% autonomous mode - bypass ALL tool approval prompts")
 	cmd.MarkFlagRequired("org")
 
 	return cmd
 }
 
 // runAgent connects to SaaS and runs as an agent
-func runAgent(cfg *config.Config, orgID, agentID, serverURL, token string) {
+func runAgent(cfg *config.Config, orgID, agentID, serverURL, token string, dangerously bool) {
 	if serverURL == "" {
 		serverURL = cfg.ServerURL
 	}
@@ -575,6 +588,9 @@ func runAgent(cfg *config.Config, orgID, agentID, serverURL, token string) {
 	defer conn.Close()
 
 	fmt.Println("\033[32m✓ Connected to SaaS\033[0m")
+	if dangerously {
+		fmt.Println("\033[33m⚠ DANGEROUS MODE: All tool approvals bypassed!\033[0m")
+	}
 	fmt.Println("Waiting for tasks... (Ctrl+C to exit)")
 
 	// Create session manager
@@ -591,12 +607,18 @@ func runAgent(cfg *config.Config, orgID, agentID, serverURL, token string) {
 		fmt.Fprintln(os.Stderr, "Warning: No AI providers configured. Tasks requiring AI will fail.")
 	}
 
-	// Create tool registry
-	policy := tools.NewPolicyFromConfig(
-		cfg.Policy.Level,
-		cfg.Policy.AskMode,
-		cfg.Policy.Allowlist,
-	)
+	// Create tool registry with policy
+	var policy *tools.Policy
+	if dangerously {
+		// 100% autonomous mode - no approval prompts
+		policy = tools.NewPolicyFromConfig("full", "off", nil)
+	} else {
+		policy = tools.NewPolicyFromConfig(
+			cfg.Policy.Level,
+			cfg.Policy.AskMode,
+			cfg.Policy.Allowlist,
+		)
+	}
 	registry := tools.NewRegistry(policy)
 	registry.RegisterDefaults()
 

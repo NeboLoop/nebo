@@ -107,6 +107,7 @@ make cli              # Build and install globally
 gobot chat "hello"                    # One-shot query
 gobot chat --interactive              # Interactive REPL
 gobot chat -s myproject "list files"  # Use named session
+gobot chat --dangerously "deploy it"  # 100% autonomous (no approval prompts!)
 gobot config                          # Show configuration
 gobot session list                    # List saved sessions
 ```
