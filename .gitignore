@@ -63,3 +63,4 @@ coverage/
 *.tmp
 PLAN.md
 plan/
+gobot-cli

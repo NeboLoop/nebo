@@ -29,12 +29,13 @@ type Config struct {
 
 // ProviderConfig holds configuration for a single provider
 type ProviderConfig struct {
-	Name    string   `yaml:"name"`              // Identifier for this provider
-	Type    string   `yaml:"type"`              // "api" or "cli"
-	APIKey  string   `yaml:"api_key,omitempty"` // For API providers
-	Model   string   `yaml:"model,omitempty"`   // Model to use
-	Command string   `yaml:"command,omitempty"` // For CLI providers (binary path)
-	Args    []string `yaml:"args,omitempty"`    // Default CLI arguments
+	Name    string   `yaml:"name"`               // Identifier for this provider
+	Type    string   `yaml:"type"`               // "api", "cli", or "ollama"
+	APIKey  string   `yaml:"api_key,omitempty"`  // For API providers
+	Model   string   `yaml:"model,omitempty"`    // Model to use
+	Command string   `yaml:"command,omitempty"`  // For CLI providers (binary path)
+	Args    []string `yaml:"args,omitempty"`     // Default CLI arguments
+	BaseURL string   `yaml:"base_url,omitempty"` // For Ollama (default: http://localhost:11434)
 }
 
 // PolicyConfig holds approval policy settings

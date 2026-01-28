@@ -122,11 +122,18 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 
 // RegisterDefaults registers the default set of tools
 func (r *Registry) RegisterDefaults() {
+	// Core file tools
 	r.Register(NewBashTool(r.policy))
 	r.Register(NewReadTool())
 	r.Register(NewWriteTool())
 	r.Register(NewEditTool())
 	r.Register(NewGlobTool())
 	r.Register(NewGrepTool())
+
+	// Web tools
 	r.Register(NewWebTool())
+	r.Register(NewSearchTool())
+
+	// Process management
+	r.Register(NewProcessTool())
 }

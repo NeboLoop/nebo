@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/gorilla/websocket"
@@ -53,6 +54,7 @@ func main() {
 	rootCmd.AddCommand(mcpCmd())
 	rootCmd.AddCommand(skillsCmd())
 	rootCmd.AddCommand(pluginsCmd())
+	rootCmd.AddCommand(daemonCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -392,7 +394,22 @@ func createProviders(cfg *config.Config) []ai.Provider {
 				providers = append(providers, ai.NewAnthropicProvider(pcfg.APIKey, pcfg.Model))
 			case strings.Contains(pcfg.Name, "openai") || pcfg.Name == "gpt":
 				providers = append(providers, ai.NewOpenAIProvider(pcfg.APIKey, pcfg.Model))
+			case strings.Contains(pcfg.Name, "gemini") || strings.Contains(pcfg.Name, "google"):
+				providers = append(providers, ai.NewGeminiProvider(pcfg.APIKey, pcfg.Model))
 			}
+
+		case "ollama":
+			// Ollama local model provider
+			baseURL := pcfg.BaseURL
+			if baseURL == "" {
+				baseURL = "http://localhost:11434"
+			}
+			if ai.CheckOllamaAvailable(baseURL) {
+				providers = append(providers, ai.NewOllamaProvider(baseURL, pcfg.Model))
+			} else if verbose {
+				fmt.Fprintf(os.Stderr, "Ollama provider %s: not available at %s\n", pcfg.Name, baseURL)
+			}
+
 		case "cli":
 			// CLI providers wrap official CLI tools
 			if pcfg.Command == "" {
@@ -405,12 +422,15 @@ func createProviders(cfg *config.Config) []ai.Provider {
 				continue
 			}
 			providers = append(providers, ai.NewCLIProvider(pcfg.Name, pcfg.Command, pcfg.Args))
+
 		default:
 			// Default to API type for backwards compatibility
 			if pcfg.APIKey != "" {
 				// Try to infer provider from name
 				if strings.Contains(pcfg.Name, "openai") || strings.Contains(pcfg.Name, "gpt") {
 					providers = append(providers, ai.NewOpenAIProvider(pcfg.APIKey, pcfg.Model))
+				} else if strings.Contains(pcfg.Name, "gemini") || strings.Contains(pcfg.Name, "google") {
+					providers = append(providers, ai.NewGeminiProvider(pcfg.APIKey, pcfg.Model))
 				} else {
 					providers = append(providers, ai.NewAnthropicProvider(pcfg.APIKey, pcfg.Model))
 				}
@@ -1080,6 +1100,269 @@ func testSkill(cfg *config.Config, name, input string) {
 	} else {
 		fmt.Printf("\033[31m✗ Skill '%s' does not match input\033[0m\n", name)
 		fmt.Printf("\nTriggers: %s\n", strings.Join(skill.Triggers, ", "))
+	}
+}
+
+// daemonCmd creates the daemon command for background service mode
+func daemonCmd() *cobra.Command {
+	var pidFile string
+	var enableMCP bool
+	var mcpPort int
+	var enableAgent bool
+	var orgID string
+	var token string
+	var dangerously bool
+
+	cmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Run GoBot as a background daemon service",
+		Long: `Run GoBot as a background daemon service that provides:
+- MCP server for tool access via Model Context Protocol
+- Agent connection to SaaS for remote task execution
+
+The daemon can be configured to run one or both services.
+
+Examples:
+  gobot daemon                           # Start with MCP server only
+  gobot daemon --mcp-port 9000           # MCP server on custom port
+  gobot daemon --agent --org acme        # Start with agent connection
+  gobot daemon --mcp --agent --org acme  # Start both services
+  gobot daemon --pid /var/run/gobot.pid  # Use custom PID file`,
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg := loadConfig()
+			runDaemon(cfg, pidFile, enableMCP, mcpPort, enableAgent, orgID, token, dangerously)
+		},
+	}
+
+	cmd.Flags().StringVar(&pidFile, "pid", "", "PID file path (default: ~/.gobot/gobot.pid)")
+	cmd.Flags().BoolVar(&enableMCP, "mcp", true, "enable MCP server")
+	cmd.Flags().IntVar(&mcpPort, "mcp-port", 8080, "MCP server port")
+	cmd.Flags().BoolVar(&enableAgent, "agent", false, "enable agent connection to SaaS")
+	cmd.Flags().StringVar(&orgID, "org", "", "organization ID for agent mode")
+	cmd.Flags().StringVar(&token, "token", "", "authentication token for agent mode")
+	cmd.Flags().BoolVar(&dangerously, "dangerously", false, "100% autonomous mode - bypass ALL tool approval prompts")
+
+	return cmd
+}
+
+// runDaemon runs GoBot as a background daemon
+func runDaemon(cfg *config.Config, pidFile string, enableMCP bool, mcpPort int, enableAgent bool, orgID, token string, dangerously bool) {
+	// Handle dangerous mode confirmation
+	if dangerously {
+		if !confirmDangerousMode() {
+			fmt.Println("Aborted.")
+			os.Exit(0)
+		}
+	}
+
+	// Validate agent configuration if enabled
+	if enableAgent {
+		if orgID == "" {
+			fmt.Fprintln(os.Stderr, "Error: --org is required when --agent is enabled")
+			os.Exit(1)
+		}
+		if token == "" {
+			token = cfg.Token
+		}
+		if token == "" {
+			fmt.Fprintln(os.Stderr, "Error: token required for agent mode. Use --token or set token in config.")
+			os.Exit(1)
+		}
+	}
+
+	// Set default PID file
+	if pidFile == "" {
+		pidFile = filepath.Join(cfg.DataDir, "gobot.pid")
+	}
+
+	// Write PID file
+	pid := os.Getpid()
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating PID directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing PID file: %v\n", err)
+		os.Exit(1)
+	}
+	defer os.Remove(pidFile)
+
+	fmt.Println("GoBot Daemon Starting")
+	fmt.Println("=====================")
+	fmt.Printf("PID: %d (file: %s)\n", pid, pidFile)
+	fmt.Println()
+
+	// Create session manager
+	sessions, err := session.New(cfg.DBPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer sessions.Close()
+
+	// Create providers
+	providers := createProviders(cfg)
+
+	// Create tool registry with policy
+	var policy *tools.Policy
+	if dangerously {
+		policy = tools.NewPolicyFromConfig("full", "off", nil)
+	} else {
+		policy = tools.NewPolicyFromConfig(
+			cfg.Policy.Level,
+			cfg.Policy.AskMode,
+			cfg.Policy.Allowlist,
+		)
+	}
+	registry := tools.NewRegistry(policy)
+	registry.RegisterDefaults()
+
+	// Register task tools with orchestrator for sub-agent support
+	taskTool := tools.NewTaskTool()
+	taskTool.CreateOrchestrator(cfg, sessions, providers, registry)
+	registry.Register(taskTool)
+
+	agentStatusTool := tools.NewAgentStatusTool()
+	agentStatusTool.SetOrchestrator(taskTool.GetOrchestrator())
+	registry.Register(agentStatusTool)
+
+	// Handle signals
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Track running services
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+
+	// Start MCP server if enabled
+	if enableMCP {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fmt.Printf("Starting MCP server on port %d...\n", mcpPort)
+			if err := runMCPServerDaemon(ctx, registry, mcpPort); err != nil {
+				errCh <- fmt.Errorf("MCP server error: %w", err)
+			}
+		}()
+	}
+
+	// Start agent if enabled
+	if enableAgent {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fmt.Printf("Connecting agent to org %s...\n", orgID)
+			if err := runAgentDaemon(ctx, cfg, sessions, providers, registry, orgID, token); err != nil {
+				errCh <- fmt.Errorf("agent error: %w", err)
+			}
+		}()
+	}
+
+	if !enableMCP && !enableAgent {
+		fmt.Println("Warning: No services enabled. Use --mcp or --agent to start services.")
+	}
+
+	fmt.Println()
+	fmt.Println("Daemon running. Press Ctrl+C to stop.")
+	fmt.Println()
+
+	// Wait for shutdown signal or error
+	select {
+	case sig := <-sigCh:
+		fmt.Printf("\nReceived signal %v, shutting down...\n", sig)
+		cancel()
+	case err := <-errCh:
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		cancel()
+	}
+
+	// Wait for services to stop
+	wg.Wait()
+	fmt.Println("Daemon stopped.")
+}
+
+// runMCPServerDaemon runs the MCP server in daemon mode
+func runMCPServerDaemon(ctx context.Context, registry *tools.Registry, port int) error {
+	mcpServer := agentmcp.NewServer(registry)
+
+	addr := fmt.Sprintf("localhost:%d", port)
+	fmt.Printf("MCP server listening at http://%s/mcp\n", addr)
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcpServer.Handler())
+	mux.Handle("/mcp/", mcpServer.Handler())
+
+	// Health check endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	go func() {
+		<-ctx.Done()
+		server.Shutdown(context.Background())
+	}()
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// runAgentDaemon runs the agent in daemon mode
+func runAgentDaemon(ctx context.Context, cfg *config.Config, sessions *session.Manager, providers []ai.Provider, registry *tools.Registry, orgID, token string) error {
+	serverURL := cfg.ServerURL
+	if serverURL == "" {
+		return fmt.Errorf("server URL not configured")
+	}
+
+	hostname, _ := os.Hostname()
+	agentID := fmt.Sprintf("daemon-%s-%d", hostname, os.Getpid())
+
+	// Create WebSocket connection URL
+	wsURL := strings.Replace(serverURL, "http://", "ws://", 1)
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL = fmt.Sprintf("%s/api/v1/agent/ws?org_id=%s&agent_id=%s&token=%s", wsURL, orgID, agentID, token)
+
+	fmt.Printf("Agent connecting to: %s\n", serverURL)
+	fmt.Printf("Organization: %s\n", orgID)
+	fmt.Printf("Agent ID: %s\n", agentID)
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to connect: %w", err)
+	}
+	defer conn.Close()
+
+	fmt.Println("\033[32m✓ Agent connected to SaaS\033[0m")
+
+	// Create runner
+	r := runner.New(cfg, sessions, providers, registry)
+
+	// Read messages from WebSocket
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				return fmt.Errorf("connection closed: %w", err)
+			}
+
+			handleAgentMessage(ctx, conn, r, message)
+		}
 	}
 }
 
