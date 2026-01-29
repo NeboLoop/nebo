@@ -491,7 +491,7 @@ Claude Desktop and other MCP clients can then use GoBot's tools.
 
 ## Author
 
-**Al Matuck**
+**Alma Tuck**
 - Website: [almatuck.com](https://almatuck.com)
 - X: [@almatuck](https://x.com/almatuck)
 
