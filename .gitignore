@@ -64,3 +64,9 @@ coverage/
 PLAN.md
 plan/
 gobot-cli
+
+# Plugin binaries (source is in extensions/tools/)
+extensions/plugins/tools/*
+extensions/plugins/channels/*
+!extensions/plugins/tools/.gitkeep
+!extensions/plugins/channels/.gitkeep
