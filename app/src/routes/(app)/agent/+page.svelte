@@ -104,6 +104,11 @@
 
 	onDestroy(() => {
 		unsubscribers.forEach((unsub) => unsub());
+		// Clean up speech recognition to release microphone
+		if (recognition) {
+			recognition.abort();
+			recognition = null;
+		}
 	});
 
 	// Save draft to localStorage when input changes
@@ -396,65 +401,119 @@
 		}
 	}
 
-	// Voice recording
-	function toggleRecording() {
-		if (isRecording) {
-			stopRecording();
-		} else {
-			startRecording();
+	// Voice recording state
+	let isTogglingRecording = $state(false);
+	let recordingTranscript = $state('');
+	let recordingError = $state<string | null>(null);
+
+	async function toggleRecording() {
+		// Debounce rapid clicks
+		if (isTogglingRecording) return;
+		isTogglingRecording = true;
+
+		try {
+			if (isRecording) {
+				stopRecording();
+			} else {
+				await startRecording();
+			}
+		} finally {
+			// Reset debounce after a frame
+			requestAnimationFrame(() => {
+				isTogglingRecording = false;
+			});
 		}
 	}
 
-	function startRecording() {
+	async function startRecording() {
+		recordingError = null;
+		recordingTranscript = '';
+
+		// Check for API support
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const SpeechRecognition =
 			(window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 		if (!SpeechRecognition) {
-			alert('Speech recognition not supported in this browser. Try Chrome or Edge.');
+			recordingError = 'Speech recognition not supported. Try Chrome or Edge.';
 			return;
 		}
 
-		recognition = new SpeechRecognition();
-		recognition.continuous = true;
-		recognition.interimResults = true;
-		recognition.lang = 'en-US';
+		// Check microphone permission first
+		try {
+			const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+			if (permissionStatus.state === 'denied') {
+				recordingError = 'Microphone permission denied. Please allow access in browser settings.';
+				return;
+			}
+		} catch {
+			// Permission API not supported, continue anyway
+		}
 
-		let finalTranscript = '';
+		try {
+			recognition = new SpeechRecognition();
+			recognition.continuous = true;
+			recognition.interimResults = true;
+			recognition.lang = navigator.language || 'en-US';
 
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		recognition.onresult = (event: any) => {
-			let interimTranscript = '';
-			for (let i = event.resultIndex; i < event.results.length; i++) {
-				const transcript = event.results[i][0].transcript;
-				if (event.results[i].isFinal) {
-					finalTranscript += transcript + ' ';
-				} else {
-					interimTranscript += transcript;
+			recognition.onstart = () => {
+				isRecording = true;
+				recordingError = null;
+			};
+
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			recognition.onresult = (event: any) => {
+				let interim = '';
+				for (let i = event.resultIndex; i < event.results.length; i++) {
+					const transcript = event.results[i][0].transcript;
+					if (event.results[i].isFinal) {
+						recordingTranscript += transcript + ' ';
+					} else {
+						interim += transcript;
+					}
 				}
-			}
-			inputValue = finalTranscript + interimTranscript;
-		};
+				inputValue = recordingTranscript + interim;
+			};
 
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		recognition.onerror = (event: any) => {
-			console.error('Speech recognition error:', event.error);
-			isRecording = false;
-		};
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			recognition.onerror = (event: any) => {
+				console.error('Speech recognition error:', event.error);
+				isRecording = false;
 
-		recognition.onend = () => {
-			isRecording = false;
-			if (inputValue.trim()) {
-				sendMessage();
-			}
-		};
+				switch (event.error) {
+					case 'no-speech':
+						recordingError = 'No speech detected. Try again.';
+						break;
+					case 'not-allowed':
+					case 'service-not-allowed':
+						recordingError = 'Microphone access denied. Please allow in browser settings.';
+						break;
+					case 'network':
+						recordingError = 'Network error. Check your connection.';
+						break;
+					case 'aborted':
+						// User cancelled, no error to show
+						break;
+					default:
+						recordingError = `Recording error: ${event.error}`;
+				}
+			};
 
-		recognition.start();
-		isRecording = true;
+			recognition.onend = () => {
+				isRecording = false;
+				// Don't auto-send - let user review and confirm
+			};
+
+			recognition.start();
+		} catch (err) {
+			console.error('Failed to start speech recognition:', err);
+			recordingError = 'Failed to start recording. Please try again.';
+			recognition = null;
+		}
 	}
 
 	function stopRecording() {
 		if (recognition) {
-			recognition.stop();
+			recognition.abort(); // Use abort() for immediate termination
 			recognition = null;
 		}
 		isRecording = false;
@@ -688,8 +747,10 @@
 			</div>
 			<div class="flex items-center justify-between mt-2">
 				<p class="text-xs text-base-content/40">
-					{#if isRecording}
-						<span class="text-error">Recording... Click mic to stop</span>
+					{#if recordingError}
+						<span class="text-error">{recordingError}</span>
+					{:else if isRecording}
+						<span class="text-error">Recording... Click mic to stop and review</span>
 					{:else if messageQueue.length > 0}
 						<span class="text-info">{messageQueue.length} message{messageQueue.length > 1 ? 's' : ''} queued</span>
 					{:else if isLoading}
