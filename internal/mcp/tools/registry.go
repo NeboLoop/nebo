@@ -77,9 +77,7 @@ func NewRegistryWithTools(toolCtx *mcpctx.ToolContext) *ToolRegistry {
 	registry := NewToolRegistry()
 
 	// Register all tool handlers (unified resource/action pattern)
-	registerOrgToolToRegistry(registry, toolCtx)
 	registerUserToolToRegistry(registry, toolCtx)
-	registerSubscriptionToolToRegistry(registry, toolCtx)
 	registerNotificationToolToRegistry(registry, toolCtx)
 
 	return registry

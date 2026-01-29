@@ -1,11 +1,15 @@
 package svc
 
 import (
+	"os"
+	"path/filepath"
+
 	"gobot/internal/agenthub"
 	"gobot/internal/config"
 	"gobot/internal/db"
 	"gobot/internal/local"
 	"gobot/internal/middleware"
+	"gobot/internal/provider"
 
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -14,21 +18,43 @@ type ServiceContext struct {
 	Config             config.Config
 	SecurityMiddleware *middleware.SecurityMiddleware
 
-	DB    *db.Store
-	Auth  *local.AuthService
-	Email *local.EmailService
+	DB             *db.Store
+	Auth           *local.AuthService
+	Email          *local.EmailService
+	AgentSettings  *local.AgentSettingsStore
+	SkillSettings  *local.SkillSettingsStore
 
 	AgentHub *agenthub.Hub
 }
 
+// NewServiceContext creates a new service context, initializing database if not provided
 func NewServiceContext(c config.Config) *ServiceContext {
+	return NewServiceContextWithDB(c, nil)
+}
+
+// NewServiceContextWithDB creates a new service context with an optional pre-initialized database
+func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContext {
 	securityMw := middleware.NewSecurityMiddleware(c)
 	logx.Info("Security middleware initialized")
+
+	// Get data directory from SQLite path
+	dataDir := filepath.Dir(c.Database.SQLitePath)
+	if dataDir == "" {
+		dataDir = "."
+	}
+
+	// Initialize models store (loads ~/.gobot/models.yaml singleton)
+	home, _ := os.UserHomeDir()
+	gobotDir := filepath.Join(home, ".gobot")
+	provider.InitModelsStore(gobotDir)
+	logx.Info("Models store initialized")
 
 	svc := &ServiceContext{
 		Config:             c,
 		SecurityMiddleware: securityMw,
 		AgentHub:           agenthub.NewHub(),
+		AgentSettings:      local.NewAgentSettingsStore(dataDir),
+		SkillSettings:      local.NewSkillSettingsStore(dataDir),
 	}
 
 	emailService := local.NewEmailService(c)
@@ -39,14 +65,23 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		logx.Info("Email not configured - transactional emails disabled")
 	}
 
-	database, err := db.NewSQLite(c.Database.SQLitePath)
-	if err != nil {
-		logx.Errorf("Failed to initialize SQLite database: %v", err)
-	} else {
+	// Use provided database or create new one
+	if database != nil {
 		svc.DB = database
-		logx.Infof("SQLite database initialized at %s", c.Database.SQLitePath)
+		logx.Info("Using shared database connection")
+	} else {
+		var err error
+		database, err = db.NewSQLite(c.Database.SQLitePath)
+		if err != nil {
+			logx.Errorf("Failed to initialize SQLite database: %v", err)
+		} else {
+			svc.DB = database
+			logx.Infof("SQLite database initialized at %s", c.Database.SQLitePath)
+		}
+	}
 
-		svc.Auth = local.NewAuthService(database, c)
+	if svc.DB != nil {
+		svc.Auth = local.NewAuthService(svc.DB, c)
 		logx.Info("Auth service initialized")
 	}
 

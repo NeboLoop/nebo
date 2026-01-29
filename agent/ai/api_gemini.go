@@ -79,10 +79,8 @@ type GeminiStreamResponse struct {
 }
 
 // NewGeminiProvider creates a new Gemini provider
+// Model should be provided from models.yaml config - do NOT hardcode model IDs
 func NewGeminiProvider(apiKey, model string) *GeminiProvider {
-	if model == "" {
-		model = "gemini-1.5-flash" // Default model
-	}
 	return &GeminiProvider{
 		apiKey: apiKey,
 		model:  model,
@@ -212,10 +210,16 @@ func (p *GeminiProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 			return
 		}
 
+		// Use request model override if provided, otherwise use provider default
+		model := p.model
+		if req.Model != "" {
+			model = req.Model
+		}
+
 		// Build URL with streaming
 		url := fmt.Sprintf(
 			"https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s",
-			p.model, p.apiKey,
+			model, p.apiKey,
 		)
 
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))

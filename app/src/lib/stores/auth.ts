@@ -196,27 +196,13 @@ function createAuthStore() {
 
 		/**
 		 * Register a new user
-		 * Returns { success, checkoutUrl } - checkoutUrl is present for paid plans
 		 */
-		async register(userData: RegisterRequest): Promise<{ success: boolean; checkoutUrl?: string }> {
+		async register(userData: RegisterRequest): Promise<{ success: boolean }> {
 			update((state) => ({ ...state, isLoading: true, error: null }));
 
 			try {
 				const response: LoginResponse = await api.register(userData);
 
-				// For paid plans, we get a checkoutUrl and should redirect to Stripe
-				// Don't store tokens yet - user needs to complete payment first
-				if (response.checkoutUrl) {
-					update((state) => ({
-						...state,
-						isLoading: false,
-						error: null
-					}));
-					logger.info('User registered, redirecting to checkout');
-					return { success: true, checkoutUrl: response.checkoutUrl };
-				}
-
-				// Free plan - store tokens and log in immediately
 				storeTokens(response.token, response.refreshToken, response.expiresAt);
 
 				update((state) => ({

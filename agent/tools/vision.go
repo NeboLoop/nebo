@@ -28,14 +28,13 @@ type visionInput struct {
 // VisionConfig configures the vision tool
 type VisionConfig struct {
 	APIKey   string
-	Model    string // Default: claude-sonnet-4-20250514
+	Model    string // Should be set from models.yaml config
 	Endpoint string // Default: https://api.anthropic.com/v1/messages
 }
 
+// NewVisionTool creates a vision tool
+// Model should be provided from models.yaml config - do NOT hardcode model IDs
 func NewVisionTool(cfg VisionConfig) *VisionTool {
-	if cfg.Model == "" {
-		cfg.Model = "claude-sonnet-4-20250514"
-	}
 	if cfg.Endpoint == "" {
 		cfg.Endpoint = "https://api.anthropic.com/v1/messages"
 	}

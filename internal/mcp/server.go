@@ -17,14 +17,13 @@ import (
 // NewServer creates a new user-scoped MCP server with all tools registered.
 // This is a convenience wrapper around NewServerWithContext that discards the toolCtx.
 func NewServer(svc *svc.ServiceContext, r *http.Request) *mcp.Server {
-	server, _ := NewServerWithContext(svc, r, nil)
+	server, _ := NewServerWithContext(svc, r)
 	return server
 }
 
 // NewServerWithContext creates a new MCP server and returns both the server and the ToolContext.
 // The ToolContext is returned so the caller can cache it for session persistence.
-// The onOrgSelect callback is called when org.select is used, for persisting the selection.
-func NewServerWithContext(svc *svc.ServiceContext, r *http.Request, onOrgSelect mcpctx.OrgSelectionCallback) (*mcp.Server, *mcpctx.ToolContext) {
+func NewServerWithContext(svc *svc.ServiceContext, r *http.Request) (*mcp.Server, *mcpctx.ToolContext) {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "gobot",
 		Version: "1.0.0",
@@ -61,18 +60,11 @@ func NewServerWithContext(svc *svc.ServiceContext, r *http.Request, onOrgSelect 
 	// Create user-scoped tool context
 	toolCtx := mcpctx.NewToolContext(svc, *user, requestID, userAgent, sessionID)
 
-	// Set callback for persisting org selection
-	if onOrgSelect != nil {
-		toolCtx.SetOrgSelectionCallback(onOrgSelect)
-	}
-
 	// Store additional user info in context for tools that need it
 	_ = userInfo // Available via toolCtx.User() methods
 
 	// Register all tools (unified resource/action pattern)
-	tools.RegisterOrgTool(server, toolCtx)
 	tools.RegisterUserTool(server, toolCtx)
-	tools.RegisterSubscriptionTool(server, toolCtx)
 	tools.RegisterNotificationTool(server, toolCtx)
 
 	return server, toolCtx

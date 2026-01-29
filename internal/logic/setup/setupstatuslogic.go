@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 
+	"gobot/internal/defaults"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 
@@ -32,8 +33,17 @@ func (l *SetupStatusLogic) SetupStatus() (resp *types.SetupStatusResponse, err e
 		return nil, err
 	}
 
+	// Check if setup has been marked as complete
+	setupComplete, err := defaults.IsSetupComplete()
+	if err != nil {
+		l.Errorf("Failed to check setup complete status: %v", err)
+		// Non-fatal error, assume setup is not complete
+		setupComplete = false
+	}
+
 	return &types.SetupStatusResponse{
 		SetupRequired: hasAdmin == 0,
 		HasAdmin:      hasAdmin == 1,
+		SetupComplete: setupComplete,
 	}, nil
 }

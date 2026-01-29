@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 
 	"gobot/agent/ai"
@@ -120,6 +121,13 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 	return result
 }
 
+// SetPolicy updates the registry's policy
+func (r *Registry) SetPolicy(policy *Policy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.policy = policy
+}
+
 // RegisterDefaults registers the default set of tools
 func (r *Registry) RegisterDefaults() {
 	// Core file tools
@@ -134,6 +142,25 @@ func (r *Registry) RegisterDefaults() {
 	r.Register(NewWebTool())
 	r.Register(NewSearchTool())
 
+	// Browser automation (headless by default)
+	r.Register(NewBrowserTool(BrowserConfig{Headless: true}))
+
+	// Screenshot (desktop capture)
+	r.Register(NewScreenshotTool())
+
+	// Vision (image analysis) - requires ANTHROPIC_API_KEY
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		r.Register(NewVisionTool(VisionConfig{APIKey: apiKey}))
+	}
+
+	// Memory (persistent facts) - initialize with defaults
+	if memTool, err := NewMemoryTool(MemoryConfig{}); err == nil {
+		r.Register(memTool)
+	}
+
 	// Process management
 	r.Register(NewProcessTool())
+
+	// Task/sub-agent spawning
+	r.Register(NewTaskTool())
 }

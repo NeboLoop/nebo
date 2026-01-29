@@ -8,7 +8,7 @@ endif
 # Gobot Makefile
 EXECUTABLE=gobot
 
-.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli
+.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install
 
 # Default target
 help:
@@ -16,16 +16,22 @@ help:
 	@echo ""
 	@echo "Quick Start:"
 	@echo "  make dev       - Start everything (backend + frontend)"
+	@echo "  make build     - Build unified binary (server + agent)"
 	@echo ""
 	@echo "Development:"
 	@echo "  make air       - Backend only with hot reload"
-	@echo "  make build     - Build production binary"
 	@echo "  make test      - Run tests"
 	@echo "  make gen       - Regenerate API code from .api file"
 	@echo ""
-	@echo "CLI Agent:"
-	@echo "  make build-cli - Build the CLI agent"
-	@echo "  make cli       - Build and install CLI globally"
+	@echo "GoBot Commands (after build):"
+	@echo "  gobot          - Start server + agent together (default)"
+	@echo "  gobot serve    - Start server only"
+	@echo "  gobot agent    - Start agent only"
+	@echo "  gobot chat     - CLI chat mode"
+	@echo "  gobot config   - Show configuration"
+	@echo ""
+	@echo "Installation:"
+	@echo "  make cli       - Build and install gobot globally"
 	@echo ""
 	@echo "Database:"
 	@echo "  make migrate-up     - Run pending migrations"
@@ -54,20 +60,18 @@ dev:
 		cd app && pnpm dev; \
 	fi
 
-# Build the application
+# Build the unified CLI (server + agent in one binary)
 build:
 	@echo "Building $(EXECUTABLE)..."
 	go build -o bin/$(EXECUTABLE) .
 
-# Build the CLI agent
-build-cli:
-	@echo "Building gobot CLI agent..."
-	go build -o bin/gobot-cli ./cmd/gobot-cli
+# Build CLI only (for backward compatibility, same as build)
+build-cli: build
 
-# Install CLI globally
-cli: build-cli
-	@echo "Installing gobot-cli..."
-	cp bin/gobot-cli $(GOPATH)/bin/gobot 2>/dev/null || cp bin/gobot-cli /usr/local/bin/gobot 2>/dev/null || echo "Copy bin/gobot-cli to your PATH manually"
+# Install gobot globally
+cli: build
+	@echo "Installing gobot..."
+	cp bin/gobot $(GOPATH)/bin/gobot 2>/dev/null || cp bin/gobot /usr/local/bin/gobot 2>/dev/null || echo "Copy bin/gobot to your PATH manually"
 	@echo "Done! Run 'gobot --help' to get started"
 
 # Run the application
@@ -154,3 +158,42 @@ dev-setup: deps
 	@echo "Run 'make gen' to generate API code"
 	@echo "Run 'make run' to start the backend"
 	@echo "Run 'cd app && pnpm dev' to start the frontend"
+
+# =============================================================================
+# RELEASE TARGETS
+# =============================================================================
+
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS = -ldflags "-s -w -X main.Version=$(VERSION)"
+
+# Build release binaries for all platforms
+release: clean release-darwin release-linux
+	@echo ""
+	@echo "Release binaries built in dist/"
+	@ls -la dist/
+
+# macOS builds
+release-darwin:
+	@echo "Building for macOS..."
+	@mkdir -p dist
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/gobot-darwin-amd64 .
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/gobot-darwin-arm64 .
+
+# Linux builds
+release-linux:
+	@echo "Building for Linux..."
+	@mkdir -p dist
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/gobot-linux-amd64 .
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/gobot-linux-arm64 .
+
+# Install locally (for development)
+install: build
+	@echo "Installing gobot to /usr/local/bin..."
+	@sudo cp bin/gobot /usr/local/bin/gobot
+	@echo "Installed! Run 'gobot' to start."
+
+# Create GitHub release (requires gh CLI)
+github-release: release
+	@if [ -z "$(TAG)" ]; then echo "Usage: make github-release TAG=v1.0.0"; exit 1; fi
+	@echo "Creating GitHub release $(TAG)..."
+	gh release create $(TAG) dist/* --title "GoBot $(TAG)" --generate-notes

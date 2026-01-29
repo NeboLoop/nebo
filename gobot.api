@@ -13,6 +13,11 @@ info (
 type SetupStatusResponse {
 	SetupRequired bool `json:"setupRequired"`
 	HasAdmin      bool `json:"hasAdmin"`
+	SetupComplete bool `json:"setupComplete"`
+}
+
+type CompleteSetupResponse {
+	Success bool `json:"success"`
 }
 
 type CreateAdminRequest {
@@ -26,6 +31,18 @@ type CreateAdminResponse {
 	RefreshToken string `json:"refreshToken"`
 	ExpiresAt    int64  `json:"expiresAt"`
 	User         User   `json:"user"`
+}
+
+type GetPersonalityResponse {
+	Content string `json:"content"`
+}
+
+type UpdatePersonalityRequest {
+	Content string `json:"content"`
+}
+
+type UpdatePersonalityResponse {
+	Success bool `json:"success"`
 }
 
 // =====================================================
@@ -170,6 +187,18 @@ service gobot {
 	@doc "Create the first admin user (only works when no admin exists)"
 	@handler CreateAdmin
 	post /setup/admin (CreateAdminRequest) returns (CreateAdminResponse)
+
+	@doc "Mark initial setup as complete"
+	@handler CompleteSetup
+	post /setup/complete returns (CompleteSetupResponse)
+
+	@doc "Get AI personality configuration"
+	@handler GetPersonality
+	get /setup/personality returns (GetPersonalityResponse)
+
+	@doc "Update AI personality configuration"
+	@handler UpdatePersonality
+	put /setup/personality (UpdatePersonalityRequest) returns (UpdatePersonalityResponse)
 }
 
 @server (
@@ -239,143 +268,6 @@ service gobot {
 	@doc "Update user preferences"
 	@handler UpdatePreferences
 	put /user/me/preferences (UpdatePreferencesRequest) returns (GetPreferencesResponse)
-}
-
-// =====================================================
-// ORGANIZATION TYPES
-// =====================================================
-type Organization {
-	Id        string `json:"id"`
-	Name      string `json:"name"`
-	Slug      string `json:"slug"`
-	LogoUrl   string `json:"logoUrl,omitempty"`
-	OwnerId   string `json:"ownerId"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
-}
-
-type OrganizationMember {
-	Id        string `json:"id"`
-	UserId    string `json:"userId"`
-	Email     string `json:"email"`
-	Name      string `json:"name"`
-	AvatarUrl string `json:"avatarUrl,omitempty"`
-	Role      string `json:"role"`
-	JoinedAt  string `json:"joinedAt"`
-}
-
-type OrganizationInvite {
-	Id               string `json:"id"`
-	Email            string `json:"email"`
-	Role             string `json:"role"`
-	InviterName      string `json:"inviterName"`
-	InviterEmail     string `json:"inviterEmail"`
-	OrganizationName string `json:"organizationName,omitempty"`
-	ExpiresAt        string `json:"expiresAt"`
-	CreatedAt        string `json:"createdAt"`
-}
-
-type CreateOrganizationRequest {
-	Name    string `json:"name"`
-	Slug    string `json:"slug,optional"`
-	LogoUrl string `json:"logoUrl,optional"`
-}
-
-type CreateOrganizationResponse {
-	Organization Organization `json:"organization"`
-}
-
-type GetOrganizationResponse {
-	Organization Organization `json:"organization"`
-	Role         string       `json:"role"`
-}
-
-type ListOrganizationsResponse {
-	Organizations []Organization `json:"organizations"`
-}
-
-type UpdateOrganizationRequest {
-	Id      string `path:"id"`
-	Name    string `json:"name,optional"`
-	Slug    string `json:"slug,optional"`
-	LogoUrl string `json:"logoUrl,optional"`
-}
-
-type ListMembersResponse {
-	Members []OrganizationMember `json:"members"`
-}
-
-type InviteMemberRequest {
-	Id    string `path:"id"`
-	Email string `json:"email"`
-	Role  string `json:"role,optional"`
-}
-
-type InviteMemberResponse {
-	Invite OrganizationInvite `json:"invite"`
-}
-
-type ListInvitesResponse {
-	Invites []OrganizationInvite `json:"invites"`
-}
-
-type UpdateMemberRoleRequest {
-	OrgId  string `path:"orgId"`
-	UserId string `path:"userId"`
-	Role   string `json:"role"`
-}
-
-type AcceptInviteRequest {
-	Token string `json:"token"`
-}
-
-type AcceptInviteResponse {
-	Organization Organization `json:"organization"`
-	Message      string       `json:"message"`
-}
-
-type GetInviteByTokenRequest {
-	Token string `path:"token"`
-}
-
-type GetInviteByTokenResponse {
-	Invite           OrganizationInvite `json:"invite"`
-	OrganizationName string             `json:"organizationName"`
-	OrganizationSlug string             `json:"organizationSlug"`
-}
-
-type SwitchOrganizationRequest {
-	OrganizationId string `json:"organizationId"`
-}
-
-type GetOrganizationRequest {
-	Id string `path:"id"`
-}
-
-type DeleteOrganizationRequest {
-	Id string `path:"id"`
-}
-
-type ListMembersRequest {
-	Id string `path:"id"`
-}
-
-type ListInvitesRequest {
-	Id string `path:"id"`
-}
-
-type LeaveOrganizationRequest {
-	Id string `path:"id"`
-}
-
-type RevokeInviteRequest {
-	OrgId    string `path:"orgId"`
-	InviteId string `path:"inviteId"`
-}
-
-type RemoveMemberRequest {
-	OrgId  string `path:"orgId"`
-	UserId string `path:"userId"`
 }
 
 // =====================================================
@@ -457,83 +349,6 @@ type DisconnectOAuthRequest {
 }
 
 // =====================================================
-// ORGANIZATION SERVICES
-// =====================================================
-@server (
-	prefix: /api/v1
-	group:  organization
-	jwt:    Auth
-)
-service gobot {
-	@doc "Create a new organization"
-	@handler CreateOrganization
-	post /organizations (CreateOrganizationRequest) returns (CreateOrganizationResponse)
-
-	@doc "List user's organizations"
-	@handler ListOrganizations
-	get /organizations returns (ListOrganizationsResponse)
-
-	@doc "Get organization by ID"
-	@handler GetOrganization
-	get /organizations/:id (GetOrganizationRequest) returns (GetOrganizationResponse)
-
-	@doc "Update organization"
-	@handler UpdateOrganization
-	put /organizations/:id (UpdateOrganizationRequest) returns (GetOrganizationResponse)
-
-	@doc "Delete organization"
-	@handler DeleteOrganization
-	delete /organizations/:id (DeleteOrganizationRequest) returns (MessageResponse)
-
-	@doc "List organization members"
-	@handler ListMembers
-	get /organizations/:id/members (ListMembersRequest) returns (ListMembersResponse)
-
-	@doc "Invite member to organization"
-	@handler InviteMember
-	post /organizations/:id/invites (InviteMemberRequest) returns (InviteMemberResponse)
-
-	@doc "List pending invites"
-	@handler ListInvites
-	get /organizations/:id/invites (ListInvitesRequest) returns (ListInvitesResponse)
-
-	@doc "Revoke invite"
-	@handler RevokeInvite
-	delete /organizations/:orgId/invites/:inviteId (RevokeInviteRequest) returns (MessageResponse)
-
-	@doc "Update member role"
-	@handler UpdateMemberRole
-	put /organizations/:orgId/members/:userId (UpdateMemberRoleRequest) returns (MessageResponse)
-
-	@doc "Remove member from organization"
-	@handler RemoveMember
-	delete /organizations/:orgId/members/:userId (RemoveMemberRequest) returns (MessageResponse)
-
-	@doc "Leave organization"
-	@handler LeaveOrganization
-	post /organizations/:id/leave (LeaveOrganizationRequest) returns (MessageResponse)
-
-	@doc "Switch current organization"
-	@handler SwitchOrganization
-	post /organizations/switch (SwitchOrganizationRequest) returns (MessageResponse)
-
-	@doc "Accept organization invite"
-	@handler AcceptInvite
-	post /organizations/invites/accept (AcceptInviteRequest) returns (AcceptInviteResponse)
-}
-
-// Public invite endpoint (no auth required to view invite details)
-@server (
-	prefix: /api/v1
-	group:  organization
-)
-service gobot {
-	@doc "Get invite details by token"
-	@handler GetInviteByToken
-	get /organizations/invites/:token (GetInviteByTokenRequest) returns (GetInviteByTokenResponse)
-}
-
-// =====================================================
 // NOTIFICATION SERVICES
 // =====================================================
 @server (
@@ -605,7 +420,6 @@ type AgentConnectRequest {
 type AgentConnectResponse {
 	Connected bool   `json:"connected"`
 	AgentId   string `json:"agentId"`
-	OrgId     string `json:"orgId"`
 }
 
 type AgentStatusRequest {
@@ -614,19 +428,14 @@ type AgentStatusRequest {
 
 type AgentStatusResponse {
 	AgentId   string `json:"agentId"`
-	OrgId     string `json:"orgId"`
 	Connected bool   `json:"connected"`
 	Uptime    int64  `json:"uptime"`
 }
 
-type ListAgentsRequest {
-	OrgId string `path:"orgId,optional"`
-}
+type ListAgentsRequest {}
 
 type AgentInfo {
 	AgentId   string `json:"agentId"`
-	OrgId     string `json:"orgId"`
-	UserId    string `json:"userId"`
 	Connected bool   `json:"connected"`
 	CreatedAt string `json:"createdAt"`
 }
@@ -636,21 +445,493 @@ type ListAgentsResponse {
 	Total  int         `json:"total"`
 }
 
+type AgentSettings {
+	AutonomousMode   bool `json:"autonomousMode"`
+	AutoApproveRead  bool `json:"autoApproveRead"`
+	AutoApproveWrite bool `json:"autoApproveWrite"`
+	AutoApproveBash  bool `json:"autoApproveBash"`
+}
+
+type GetAgentSettingsResponse {
+	Settings AgentSettings `json:"settings"`
+}
+
+type UpdateAgentSettingsRequest {
+	AutonomousMode   bool `json:"autonomousMode"`
+	AutoApproveRead  bool `json:"autoApproveRead"`
+	AutoApproveWrite bool `json:"autoApproveWrite"`
+	AutoApproveBash  bool `json:"autoApproveBash"`
+}
+
+// Simple agent status (single agent model)
+type SimpleAgentStatusResponse {
+	Connected bool   `json:"connected"`
+	AgentId   string `json:"agentId,omitempty"`
+	Uptime    int64  `json:"uptime,omitempty"`
+}
+
+// Agent sessions (conversation history)
+type AgentSession {
+	Id           string `json:"id"`
+	Name         string `json:"name,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	MessageCount int    `json:"messageCount"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
+}
+
+type ListAgentSessionsResponse {
+	Sessions []AgentSession `json:"sessions"`
+	Total    int            `json:"total"`
+}
+
+type GetAgentSessionRequest {
+	Id string `path:"id"`
+}
+
+type SessionMessage {
+	Id        int    `json:"id"`
+	Role      string `json:"role"`
+	Content   string `json:"content,omitempty"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type GetAgentSessionMessagesResponse {
+	Messages []SessionMessage `json:"messages"`
+	Total    int              `json:"total"`
+}
+
+type DeleteAgentSessionRequest {
+	Id string `path:"id"`
+}
+
 // =====================================================
 // AGENT HUB SERVICES
 // =====================================================
 @server (
 	prefix: /api/v1
 	group:  agent
-	jwt:    Auth
 )
 service gobot {
-	@doc "List connected agents for organization"
+	@doc "List connected agents"
 	@handler ListAgents
 	get /agents (ListAgentsRequest) returns (ListAgentsResponse)
 
 	@doc "Get agent status"
 	@handler GetAgentStatus
 	get /agents/:agentId/status (AgentStatusRequest) returns (AgentStatusResponse)
+
+	@doc "Get agent settings"
+	@handler GetAgentSettings
+	get /agent/settings returns (GetAgentSettingsResponse)
+
+	@doc "Update agent settings"
+	@handler UpdateAgentSettings
+	put /agent/settings (UpdateAgentSettingsRequest) returns (GetAgentSettingsResponse)
+
+	@doc "Get simple agent status (single agent model)"
+	@handler GetSimpleAgentStatus
+	get /agent/status returns (SimpleAgentStatusResponse)
+
+	@doc "List agent sessions"
+	@handler ListAgentSessions
+	get /agent/sessions returns (ListAgentSessionsResponse)
+
+	@doc "Get session messages"
+	@handler GetAgentSessionMessages
+	get /agent/sessions/:id/messages (GetAgentSessionRequest) returns (GetAgentSessionMessagesResponse)
+
+	@doc "Delete agent session"
+	@handler DeleteAgentSession
+	delete /agent/sessions/:id (DeleteAgentSessionRequest) returns (MessageResponse)
+}
+
+// =====================================================
+// PROVIDER / AUTH PROFILE TYPES (AI Provider API Keys)
+// =====================================================
+type AuthProfile {
+	Id        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"` // anthropic, openai, google, ollama
+	Model     string `json:"model,omitempty"`
+	BaseUrl   string `json:"baseUrl,omitempty"`
+	Priority  int    `json:"priority"`
+	IsActive  bool   `json:"isActive"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+type ListAuthProfilesResponse {
+	Profiles []AuthProfile `json:"profiles"`
+}
+
+type CreateAuthProfileRequest {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	ApiKey   string `json:"apiKey"`
+	Model    string `json:"model,optional"`
+	BaseUrl  string `json:"baseUrl,optional"`
+	Priority int    `json:"priority,optional"`
+}
+
+type CreateAuthProfileResponse {
+	Profile AuthProfile `json:"profile"`
+}
+
+type GetAuthProfileRequest {
+	Id string `path:"id"`
+}
+
+type GetAuthProfileResponse {
+	Profile AuthProfile `json:"profile"`
+}
+
+type UpdateAuthProfileRequest {
+	Id       string `path:"id"`
+	Name     string `json:"name,optional"`
+	ApiKey   string `json:"apiKey,optional"`
+	Model    string `json:"model,optional"`
+	BaseUrl  string `json:"baseUrl,optional"`
+	Priority int    `json:"priority,optional"`
+	IsActive bool   `json:"isActive,optional"`
+}
+
+type DeleteAuthProfileRequest {
+	Id string `path:"id"`
+}
+
+type TestAuthProfileRequest {
+	Id string `path:"id"`
+}
+
+type TestAuthProfileResponse {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Model   string `json:"model,omitempty"`
+}
+
+// =====================================================
+// MODELS TYPES
+// =====================================================
+type ListModelsResponse {
+	Models        map[string][]ModelInfo `json:"models"`
+	TaskRouting   *TaskRouting           `json:"taskRouting,omitempty"`
+	AvailableCLIs *CLIAvailability       `json:"availableCLIs,omitempty"`
+}
+
+type CLIAvailability {
+	Claude bool `json:"claude"`
+	Codex  bool `json:"codex"`
+	Gemini bool `json:"gemini"`
+}
+
+type TaskRouting {
+	Vision    string              `json:"vision,omitempty"`
+	Reasoning string              `json:"reasoning,omitempty"`
+	Code      string              `json:"code,omitempty"`
+	General   string              `json:"general,omitempty"`
+	Fallbacks map[string][]string `json:"fallbacks,omitempty"`
+}
+
+type ModelPricing {
+	Input       float64 `json:"input,omitempty"`
+	Output      float64 `json:"output,omitempty"`
+	CachedInput float64 `json:"cachedInput,omitempty"`
+}
+
+type ModelInfo {
+	Id            string        `json:"id"`
+	DisplayName   string        `json:"displayName"`
+	ContextWindow int           `json:"contextWindow,omitempty"`
+	Pricing       *ModelPricing `json:"pricing,omitempty"`
+	Capabilities  []string      `json:"capabilities,omitempty"`
+	IsActive      bool          `json:"isActive"`
+}
+
+type ToggleModelRequest {
+	Provider string `path:"provider"`
+	ModelId  string `path:"modelId"`
+	Active   bool   `json:"active"`
+}
+
+type UpdateTaskRoutingRequest {
+	Vision    string              `json:"vision,omitempty"`
+	Reasoning string              `json:"reasoning,omitempty"`
+	Code      string              `json:"code,omitempty"`
+	General   string              `json:"general,omitempty"`
+	Fallbacks map[string][]string `json:"fallbacks,omitempty"`
+}
+
+// =====================================================
+// PROVIDER / AUTH PROFILE SERVICES
+// =====================================================
+@server (
+	prefix: /api/v1
+	group:  provider
+)
+service gobot {
+	@doc "List all auth profiles (API keys)"
+	@handler ListAuthProfiles
+	get /providers returns (ListAuthProfilesResponse)
+
+	@doc "Create a new auth profile"
+	@handler CreateAuthProfile
+	post /providers (CreateAuthProfileRequest) returns (CreateAuthProfileResponse)
+
+	@doc "List all available models from YAML cache"
+	@handler ListModels
+	get /models returns (ListModelsResponse)
+
+	@doc "Toggle model active status"
+	@handler ToggleModel
+	put /models/:provider/:modelId (ToggleModelRequest) returns (MessageResponse)
+
+	@doc "Update task routing configuration"
+	@handler UpdateTaskRouting
+	put /models/task-routing (UpdateTaskRoutingRequest) returns (MessageResponse)
+
+	@doc "Get auth profile by ID"
+	@handler GetAuthProfile
+	get /providers/:id (GetAuthProfileRequest) returns (GetAuthProfileResponse)
+
+	@doc "Update auth profile"
+	@handler UpdateAuthProfile
+	put /providers/:id (UpdateAuthProfileRequest) returns (GetAuthProfileResponse)
+
+	@doc "Delete auth profile"
+	@handler DeleteAuthProfile
+	delete /providers/:id (DeleteAuthProfileRequest) returns (MessageResponse)
+
+	@doc "Test auth profile (verify API key works)"
+	@handler TestAuthProfile
+	post /providers/:id/test (TestAuthProfileRequest) returns (TestAuthProfileResponse)
+}
+
+// =====================================================
+// EXTENSIONS TYPES (Tools, Skills, Plugins)
+// =====================================================
+type ExtensionTool {
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	Schema           string `json:"schema,omitempty"`
+	RequiresApproval bool   `json:"requiresApproval"`
+	IsPlugin         bool   `json:"isPlugin"`
+	Path             string `json:"path,omitempty"`
+}
+
+type ExtensionSkill {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Version     string   `json:"version"`
+	Triggers    []string `json:"triggers"`
+	Tools       []string `json:"tools"`
+	Priority    int      `json:"priority"`
+	Enabled     bool     `json:"enabled"`
+	FilePath    string   `json:"filePath"`
+}
+
+type ExtensionChannel {
+	Id   string `json:"id"`
+	Path string `json:"path"`
+}
+
+type ListExtensionsResponse {
+	Tools    []ExtensionTool    `json:"tools"`
+	Skills   []ExtensionSkill   `json:"skills"`
+	Channels []ExtensionChannel `json:"channels"`
+}
+
+// =====================================================
+// SKILL MANAGEMENT TYPES
+// =====================================================
+type ToggleSkillRequest {
+	Name string `path:"name"`
+}
+
+type ToggleSkillResponse {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+type GetSkillRequest {
+	Name string `path:"name"`
+}
+
+type GetSkillResponse {
+	Skill ExtensionSkill `json:"skill"`
+}
+
+// =====================================================
+// EXTENSIONS SERVICES
+// =====================================================
+@server (
+	prefix: /api/v1
+	group:  extensions
+)
+service gobot {
+	@doc "List all extensions (tools, skills, plugins)"
+	@handler ListExtensions
+	get /extensions returns (ListExtensionsResponse)
+
+	@doc "Toggle skill enabled/disabled"
+	@handler ToggleSkill
+	post /skills/:name/toggle (ToggleSkillRequest) returns (ToggleSkillResponse)
+
+	@doc "Get single skill details"
+	@handler GetSkill
+	get /skills/:name (GetSkillRequest) returns (GetSkillResponse)
+}
+
+// =====================================================
+// CHAT TYPES
+// =====================================================
+type Chat {
+	Id        string `json:"id"`
+	Title     string `json:"title"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+type ChatMessage {
+	Id        string `json:"id"`
+	ChatId    string `json:"chatId"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Metadata  string `json:"metadata,omitempty"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type ListChatsRequest {
+	Page     int `form:"page,optional"`
+	PageSize int `form:"pageSize,optional"`
+}
+
+type ListChatsResponse {
+	Chats []Chat `json:"chats"`
+	Total int    `json:"total"`
+}
+
+type GetChatRequest {
+	Id string `path:"id"`
+}
+
+type GetChatResponse {
+	Chat          Chat          `json:"chat"`
+	Messages      []ChatMessage `json:"messages"`
+	TotalMessages int           `json:"totalMessages"` // Total messages in chat (may be more than returned)
+}
+
+type CreateChatRequest {
+	Title string `json:"title,optional"`
+}
+
+type CreateChatResponse {
+	Chat Chat `json:"chat"`
+}
+
+type UpdateChatRequest {
+	Id    string `path:"id"`
+	Title string `json:"title"`
+}
+
+type DeleteChatRequest {
+	Id string `path:"id"`
+}
+
+type SendMessageRequest {
+	ChatId  string `json:"chatId"`
+	Content string `json:"content"`
+	Role    string `json:"role,optional"`
+}
+
+type SendMessageResponse {
+	Message ChatMessage `json:"message"`
+	ChatId  string      `json:"chatId"`
+}
+
+// =====================================================
+// CHAT SERVICES
+// =====================================================
+@server (
+	prefix: /api/v1
+	group:  chat
+)
+service gobot {
+	@doc "List user chats"
+	@handler ListChats
+	get /chats (ListChatsRequest) returns (ListChatsResponse)
+
+	@doc "Get chat with messages"
+	@handler GetChat
+	get /chats/:id (GetChatRequest) returns (GetChatResponse)
+
+	@doc "Create new chat"
+	@handler CreateChat
+	post /chats (CreateChatRequest) returns (CreateChatResponse)
+
+	@doc "Update chat title"
+	@handler UpdateChat
+	put /chats/:id (UpdateChatRequest) returns (Chat)
+
+	@doc "Delete chat"
+	@handler DeleteChat
+	delete /chats/:id (DeleteChatRequest) returns (MessageResponse)
+
+	@doc "Send message (creates chat if needed)"
+	@handler SendMessage
+	post /chats/message (SendMessageRequest) returns (SendMessageResponse)
+
+	@doc "Get companion chat (auto-creates if needed)"
+	@handler GetCompanionChat
+	get /chats/companion returns (GetChatResponse)
+
+	@doc "List days with messages for history browsing"
+	@handler ListChatDays
+	get /chats/days (ListChatDaysRequest) returns (ListChatDaysResponse)
+
+	@doc "Get messages for a specific day"
+	@handler GetHistoryByDay
+	get /chats/history/:day (GetHistoryByDayRequest) returns (GetHistoryByDayResponse)
+
+	@doc "Search chat messages"
+	@handler SearchChatMessages
+	get /chats/search (SearchChatMessagesRequest) returns (SearchChatMessagesResponse)
+}
+
+// =====================================================
+// COMPANION MODE TYPES
+// =====================================================
+type ListChatDaysRequest {
+	Page     int `form:"page,optional"`
+	PageSize int `form:"pageSize,optional"`
+}
+
+type DayInfo {
+	Day          string `json:"day"`
+	MessageCount int    `json:"messageCount"`
+}
+
+type ListChatDaysResponse {
+	Days []DayInfo `json:"days"`
+}
+
+type GetHistoryByDayRequest {
+	Day string `path:"day"`
+}
+
+type GetHistoryByDayResponse {
+	Day      string        `json:"day"`
+	Messages []ChatMessage `json:"messages"`
+}
+
+type SearchChatMessagesRequest {
+	Query    string `form:"query"`
+	Page     int    `form:"page,optional"`
+	PageSize int    `form:"pageSize,optional"`
+}
+
+type SearchChatMessagesResponse {
+	Messages []ChatMessage `json:"messages"`
+	Total    int           `json:"total"`
 }
 

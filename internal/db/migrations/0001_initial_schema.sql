@@ -52,28 +52,6 @@ CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires ON refresh_tokens(expires_at);
 
 -- =============================================================================
--- SUBSCRIPTIONS
--- =============================================================================
-
-CREATE TABLE IF NOT EXISTS subscriptions (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-    stripe_customer_id TEXT UNIQUE,
-    stripe_subscription_id TEXT UNIQUE,
-    plan_id TEXT NOT NULL DEFAULT 'free',
-    status TEXT NOT NULL DEFAULT 'active',
-    current_period_start INTEGER,
-    current_period_end INTEGER,
-    cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
-    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_customer ON subscriptions(stripe_customer_id);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_stripe_sub ON subscriptions(stripe_subscription_id);
-
--- =============================================================================
 -- LEADS (Email capture from landing page)
 -- =============================================================================
 
@@ -94,11 +72,6 @@ CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
 DROP INDEX IF EXISTS idx_leads_status;
 DROP INDEX IF EXISTS idx_leads_email;
 DROP TABLE IF EXISTS leads;
-
-DROP INDEX IF EXISTS idx_subscriptions_stripe_sub;
-DROP INDEX IF EXISTS idx_subscriptions_stripe_customer;
-DROP INDEX IF EXISTS idx_subscriptions_user_id;
-DROP TABLE IF EXISTS subscriptions;
 
 DROP INDEX IF EXISTS idx_refresh_tokens_expires;
 DROP INDEX IF EXISTS idx_refresh_tokens_user_id;

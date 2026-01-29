@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"gobot/internal/channels"
 
 	"github.com/google/uuid"
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // Router routes messages between channels and agents
@@ -53,10 +53,10 @@ func (r *Router) Route(ctx context.Context, msg channels.InboundMessage) error {
 		return fmt.Errorf("no agent bound to channel %s:%s", msg.ChannelType, msg.ChannelID)
 	}
 
-	// Check if agent is connected
-	agents := r.agents.GetAgentsForOrg(binding.OrgID)
+	// Check if any agent is connected
+	agents := r.agents.GetAllAgents()
 	if len(agents) == 0 {
-		return fmt.Errorf("no agents connected for org %s", binding.OrgID)
+		return fmt.Errorf("no agents connected")
 	}
 
 	// Create request frame
@@ -86,16 +86,16 @@ func (r *Router) Route(ctx context.Context, msg channels.InboundMessage) error {
 	targetAgent := agents[0]
 	if binding.AgentID != "" {
 		// Specific agent requested
-		if agent := r.agents.GetAgent(binding.OrgID, binding.AgentID); agent != nil {
+		if agent := r.agents.GetAgent(binding.AgentID); agent != nil {
 			targetAgent = agent
 		}
 	}
 
-	if err := r.agents.SendToAgent(binding.OrgID, targetAgent.ID, frame); err != nil {
+	if err := r.agents.SendToAgent(targetAgent.ID, frame); err != nil {
 		return fmt.Errorf("failed to send to agent: %w", err)
 	}
 
-	log.Printf("[router] Routed message to agent %s: %s", targetAgent.ID, truncate(msg.Text, 50))
+	logx.Debugf("[router] Routed message to agent %s: %s", targetAgent.ID, truncate(msg.Text, 50))
 
 	// Wait for response with timeout
 	select {
@@ -123,7 +123,7 @@ func (r *Router) HandleAgentResponse(requestID string, frame *agenthub.Frame) {
 // handleAgentResponse sends the agent's response back to the channel
 func (r *Router) handleAgentResponse(ctx context.Context, original channels.InboundMessage, resp *agenthub.Frame) error {
 	if !resp.OK {
-		log.Printf("[router] Agent error: %s", resp.Error)
+		logx.Errorf("[router] Agent error: %s", resp.Error)
 		// Optionally send error message to channel
 	}
 
@@ -174,7 +174,7 @@ func (r *Router) SetupChannelHandlers(ctx context.Context) {
 		channel, _ := r.channels.Get(channelID)
 		channel.SetHandler(func(msg channels.InboundMessage) {
 			if err := r.Route(ctx, msg); err != nil {
-				log.Printf("[router] Route error: %v", err)
+				logx.Errorf("[router] Route error: %v", err)
 			}
 		})
 	}

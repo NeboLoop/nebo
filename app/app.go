@@ -26,6 +26,9 @@ var ServerHost string
 // DevMode controls whether to use local filesystem instead of embedded FS
 var DevMode bool
 
+// QuietMode suppresses verbose output during startup
+var QuietMode bool
+
 // SetServerHost sets the server host for server.json
 func SetServerHost(host string, port int, useHTTPS bool) {
 	protocol := "http"

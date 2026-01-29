@@ -77,17 +77,6 @@ func (l *CreateAdminLogic) CreateAdmin(req *types.CreateAdminRequest) (resp *typ
 		return nil, fmt.Errorf("failed to create preferences: %w", err)
 	}
 
-	// Create free subscription
-	_, err = l.svcCtx.DB.CreateSubscription(l.ctx, db.CreateSubscriptionParams{
-		ID:     generateID(),
-		UserID: userID,
-		PlanID: "free",
-		Status: "active",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create subscription: %w", err)
-	}
-
 	// Generate tokens
 	now := time.Now()
 	accessExpiry := now.Add(time.Duration(l.svcCtx.Config.Auth.AccessExpire) * time.Second)

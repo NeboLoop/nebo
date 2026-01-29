@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"gobot/agent/session"
 )
@@ -31,11 +32,19 @@ func NewCLIProvider(name, command string, args []string) *CLIProvider {
 // NewClaudeCodeProvider creates a provider that wraps the Claude Code CLI
 // Claude Code: brew install claude-code or npm i -g @anthropic-ai/claude-code
 // Uses ~/.claude/ for auth, supports extended thinking, MCP, agentic tools
+// Runs in dangerously mode for fully autonomous operation (no permission prompts)
+// Model is passed via ChatRequest.Model at runtime (defaults to "sonnet" if not specified)
 func NewClaudeCodeProvider() *CLIProvider {
 	return &CLIProvider{
 		name:    "claude-code",
 		command: "claude",
-		args:    []string{"--print"}, // Output-only mode
+		args: []string{
+			"--print",                        // Non-interactive output
+			"--verbose",                      // Required for stream-json with --print
+			"--dangerously-skip-permissions", // Autonomous mode
+			"--output-format", "stream-json", // Faster streaming
+			"--no-session-persistence",       // Skip disk writes (we manage sessions)
+		},
 	}
 }
 
@@ -78,7 +87,23 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 
 		// Build command args
 		args := append([]string{}, p.args...)
+
+		// Add model flag if specified in request (for CLI providers that support it)
+		if req.Model != "" && (p.name == "claude-code" || p.name == "codex-cli") {
+			args = append(args, "--model", req.Model)
+		}
+
 		args = append(args, prompt)
+
+		// Log the full command for debugging (can be run manually)
+		fmt.Printf("[CLIProvider] Running: %s %v\n", p.command, args)
+		fmt.Printf("[CLIProvider] Prompt length: %d chars\n", len(prompt))
+		// Print a runnable command for manual testing (escape prompt)
+		escapedPrompt := strings.ReplaceAll(prompt, "\n", "\\n")
+		if len(escapedPrompt) > 200 {
+			escapedPrompt = escapedPrompt[:200] + "..."
+		}
+		fmt.Printf("[CLIProvider] Manual test: %s %s \"%s\"\n", p.command, strings.Join(p.args, " "), escapedPrompt)
 
 		// Create command
 		cmd := exec.CommandContext(ctx, p.command, args...)
@@ -104,25 +129,25 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 
 		// Start the command
 		if err := cmd.Start(); err != nil {
+			fmt.Printf("[CLIProvider] Failed to start: %v\n", err)
 			resultCh <- StreamEvent{
 				Type:  EventTypeError,
 				Error: fmt.Errorf("failed to start %s: %w", p.command, err),
 			}
 			return
 		}
+		fmt.Printf("[CLIProvider] Command started, PID=%d\n", cmd.Process.Pid)
 
-		// Read stderr in background for error messages
+		// Read stderr in background - wait for it before finishing
+		var stderrWg sync.WaitGroup
+		var stderrOutput string
+		stderrWg.Add(1)
 		go func() {
+			defer stderrWg.Done()
 			errBytes, _ := io.ReadAll(stderr)
-			if len(errBytes) > 0 {
-				errMsg := strings.TrimSpace(string(errBytes))
-				if errMsg != "" && !strings.Contains(errMsg, "ANTHROPIC_API_KEY") {
-					// Don't emit API key warnings as errors
-					resultCh <- StreamEvent{
-						Type:  EventTypeError,
-						Error: fmt.Errorf("%s stderr: %s", p.command, errMsg),
-					}
-				}
+			stderrOutput = strings.TrimSpace(string(errBytes))
+			if stderrOutput != "" {
+				fmt.Printf("[CLIProvider] STDERR: %s\n", stderrOutput)
 			}
 		}()
 
@@ -130,19 +155,28 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer
 
+		lineCount := 0
 		for scanner.Scan() {
+			lineCount++
 			select {
 			case <-ctx.Done():
 				cmd.Process.Kill()
 				return
 			default:
 				line := scanner.Text()
+				preview := line
+				if len(preview) > 100 {
+					preview = preview[:100] + "..."
+				}
+				fmt.Printf("[CLIProvider] Line %d (len=%d): %s\n", lineCount, len(line), preview)
 
 				// Try to parse as JSON (Claude Code may output structured data)
 				event := p.parseLine(line)
+				fmt.Printf("[CLIProvider] Parsed event: type=%s text_len=%d\n", event.Type, len(event.Text))
 				resultCh <- event
 			}
 		}
+		fmt.Printf("[CLIProvider] Scanning complete, total lines=%d\n", lineCount)
 
 		if err := scanner.Err(); err != nil {
 			resultCh <- StreamEvent{
@@ -151,14 +185,32 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 			}
 		}
 
+		// Wait for stderr to be fully read
+		stderrWg.Wait()
+
 		// Wait for command to finish
-		if err := cmd.Wait(); err != nil {
+		waitErr := cmd.Wait()
+		fmt.Printf("[CLIProvider] Command finished, waitErr=%v\n", waitErr)
+
+		// Report stderr as error if command failed
+		if waitErr != nil {
 			// Don't emit error if context was cancelled
 			if ctx.Err() == nil {
+				errMsg := fmt.Sprintf("%s exited with error: %v", p.command, waitErr)
+				if stderrOutput != "" {
+					errMsg = fmt.Sprintf("%s: %s", errMsg, stderrOutput)
+				}
+				fmt.Printf("[CLIProvider] ERROR: %s\n", errMsg)
 				resultCh <- StreamEvent{
 					Type:  EventTypeError,
-					Error: fmt.Errorf("%s exited with error: %w", p.command, err),
+					Error: fmt.Errorf("%s", errMsg),
 				}
+			}
+		} else if stderrOutput != "" && !strings.Contains(stderrOutput, "ANTHROPIC_API_KEY") {
+			// Emit non-fatal stderr as error event
+			resultCh <- StreamEvent{
+				Type:  EventTypeError,
+				Error: fmt.Errorf("%s stderr: %s", p.command, stderrOutput),
 			}
 		}
 
@@ -168,63 +220,92 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 	return resultCh, nil
 }
 
-// parseLine parses a line of output from the CLI
+// parseLine parses a line of output from Claude Code's stream-json format
 func (p *CLIProvider) parseLine(line string) StreamEvent {
-	// Try to parse as JSON first (some CLIs output structured data)
-	var jsonData map[string]interface{}
-	if err := json.Unmarshal([]byte(line), &jsonData); err == nil {
-		// Check for known event types
-		if eventType, ok := jsonData["type"].(string); ok {
-			switch eventType {
-			case "tool_use", "tool_call":
-				if name, ok := jsonData["name"].(string); ok {
-					input, _ := json.Marshal(jsonData["input"])
-					return StreamEvent{
-						Type: EventTypeToolCall,
-						ToolCall: &ToolCall{
-							ID:    fmt.Sprintf("%v", jsonData["id"]),
-							Name:  name,
-							Input: input,
-						},
-					}
+	if line == "" {
+		return StreamEvent{Type: EventTypeText, Text: ""}
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal([]byte(line), &data); err != nil {
+		// Plain text fallback
+		return StreamEvent{Type: EventTypeText, Text: line + "\n"}
+	}
+
+	eventType, _ := data["type"].(string)
+
+	switch eventType {
+	// Text streaming delta
+	case "content_block_delta":
+		if delta, ok := data["delta"].(map[string]any); ok {
+			deltaType, _ := delta["type"].(string)
+			switch deltaType {
+			case "text_delta":
+				if text, ok := delta["text"].(string); ok {
+					return StreamEvent{Type: EventTypeText, Text: text}
 				}
-			case "thinking":
-				if text, ok := jsonData["text"].(string); ok {
-					return StreamEvent{
-						Type: EventTypeThinking,
-						Text: text,
-					}
+			case "thinking_delta":
+				if text, ok := delta["thinking"].(string); ok {
+					return StreamEvent{Type: EventTypeThinking, Text: text}
 				}
-			case "text":
-				if text, ok := jsonData["text"].(string); ok {
-					return StreamEvent{
-						Type: EventTypeText,
-						Text: text,
-					}
-				}
-			case "error":
-				msg := fmt.Sprintf("%v", jsonData["message"])
+			case "input_json_delta":
+				// Tool input being streamed - skip, we get full input at end
+				return StreamEvent{Type: EventTypeText, Text: ""}
+			}
+		}
+
+	// Tool use start
+	case "content_block_start":
+		if block, ok := data["content_block"].(map[string]any); ok {
+			blockType, _ := block["type"].(string)
+			if blockType == "tool_use" {
+				name, _ := block["name"].(string)
+				id, _ := block["id"].(string)
+				input, _ := json.Marshal(block["input"])
 				return StreamEvent{
-					Type:  EventTypeError,
-					Error: &ProviderError{Message: msg},
+					Type: EventTypeToolCall,
+					ToolCall: &ToolCall{
+						ID:    id,
+						Name:  name,
+						Input: input,
+					},
 				}
 			}
 		}
 
-		// Check for content field (common in Claude output)
-		if content, ok := jsonData["content"].(string); ok {
-			return StreamEvent{
-				Type: EventTypeText,
-				Text: content,
-			}
+	// Result message with full content
+	case "result":
+		if result, ok := data["result"].(string); ok {
+			return StreamEvent{Type: EventTypeText, Text: result}
 		}
+		// Check for subtype in result
+		if subtype, ok := data["subtype"].(string); ok && subtype == "error_max_turns" {
+			return StreamEvent{Type: EventTypeError, Error: &ProviderError{Message: "max turns reached"}}
+		}
+
+	// System messages
+	case "system":
+		if msg, ok := data["message"].(string); ok {
+			return StreamEvent{Type: EventTypeText, Text: "[system] " + msg + "\n"}
+		}
+
+	// Assistant message container
+	case "assistant":
+		// Contains full message, but we stream deltas instead
+		return StreamEvent{Type: EventTypeText, Text: ""}
+
+	// Message stop
+	case "message_stop", "content_block_stop":
+		return StreamEvent{Type: EventTypeText, Text: ""}
+
+	// Error
+	case "error":
+		msg := fmt.Sprintf("%v", data["error"])
+		return StreamEvent{Type: EventTypeError, Error: &ProviderError{Message: msg}}
 	}
 
-	// Plain text output
-	return StreamEvent{
-		Type: EventTypeText,
-		Text: line + "\n",
-	}
+	// Unknown event type - return empty
+	return StreamEvent{Type: EventTypeText, Text: ""}
 }
 
 // buildPromptFromMessages converts session messages to a single prompt string

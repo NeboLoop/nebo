@@ -27,11 +27,16 @@ const (
 	AskModeAlways AskMode = "always"  // Always ask
 )
 
+// ApprovalCallback is called to request approval from a remote source (e.g., web UI)
+// It receives the tool name and input, and returns true if approved
+type ApprovalCallback func(ctx context.Context, toolName string, input json.RawMessage) (bool, error)
+
 // Policy manages approval for dangerous operations
 type Policy struct {
-	Level     PolicyLevel
-	AskMode   AskMode
-	Allowlist map[string]bool
+	Level            PolicyLevel
+	AskMode          AskMode
+	Allowlist        map[string]bool
+	ApprovalCallback ApprovalCallback // If set, used instead of stdin prompts
 }
 
 // SafeBins are commands that never require approval
@@ -150,7 +155,12 @@ func (p *Policy) RequestApproval(ctx context.Context, toolName string, input jso
 		return true, nil
 	}
 
-	// Prompt user
+	// Use callback if set (for remote/web UI approval)
+	if p.ApprovalCallback != nil {
+		return p.ApprovalCallback(ctx, toolName, input)
+	}
+
+	// Fall back to stdin prompts for CLI mode
 	fmt.Printf("\n\033[33m⚠ Tool '%s' requires approval:\033[0m\n", toolName)
 	fmt.Printf("\033[90m%s\033[0m\n", inputStr)
 	fmt.Print("\033[33mApprove? [y/N/a(lways)]: \033[0m")

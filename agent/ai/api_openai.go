@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	openaiAPIURL      = "https://api.openai.com/v1/chat/completions"
-	openaiDefaultModel = "gpt-4o"
+	openaiAPIURL = "https://api.openai.com/v1/chat/completions"
 )
 
 // OpenAIProvider implements the OpenAI API
@@ -26,10 +25,8 @@ type OpenAIProvider struct {
 }
 
 // NewOpenAIProvider creates a new OpenAI provider
+// Model should be provided from models.yaml config - do NOT hardcode model IDs
 func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
-	if model == "" {
-		model = openaiDefaultModel
-	}
 	return &OpenAIProvider{
 		apiKey: apiKey,
 		model:  model,
@@ -96,14 +93,20 @@ func (p *OpenAIProvider) buildRequest(req *ChatRequest) map[string]any {
 		}
 	}
 
+	// Use request model override if provided, otherwise use provider default
+	model := p.model
+	if req.Model != "" {
+		model = req.Model
+	}
+
 	result := map[string]any{
-		"model":    p.model,
+		"model":    model,
 		"messages": messages,
 		"stream":   true,
 	}
 
 	if req.MaxTokens > 0 {
-		result["max_tokens"] = req.MaxTokens
+		result["max_completion_tokens"] = req.MaxTokens
 	}
 
 	if len(req.Tools) > 0 {

@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"gobot/internal/lifecycle"
 )
 
-// Frame represents a message frame between SaaS and Agent
+// Frame represents a message frame between server and agent
 type Frame struct {
 	Type    string `json:"type"`              // req, res, event
 	ID      string `json:"id,omitempty"`      // Request/response correlation ID
@@ -25,8 +27,6 @@ type Frame struct {
 // AgentConnection represents a connected agent
 type AgentConnection struct {
 	ID        string
-	OrgID     string
-	UserID    string
 	Conn      *websocket.Conn
 	Send      chan []byte
 	CreatedAt time.Time
@@ -34,16 +34,30 @@ type AgentConnection struct {
 	mu sync.Mutex
 }
 
+// ResponseHandler is called when an agent sends a response
+type ResponseHandler func(agentID string, frame *Frame)
+
+// ApprovalRequestHandler is called when an agent requests approval
+type ApprovalRequestHandler func(agentID string, requestID string, toolName string, input json.RawMessage)
+
 // Hub manages agent connections
 type Hub struct {
-	// Registered agents by org ID
-	agents sync.Map // map[orgID]map[agentID]*AgentConnection
+	// Registered agents by ID
+	agents sync.Map // map[agentID]*AgentConnection
 
 	// Register channel
 	register chan *AgentConnection
 
 	// Unregister channel
 	unregister chan *AgentConnection
+
+	// Response handler for routing agent responses
+	responseHandler   ResponseHandler
+	responseHandlerMu sync.RWMutex
+
+	// Approval request handler
+	approvalHandler   ApprovalRequestHandler
+	approvalHandlerMu sync.RWMutex
 
 	upgrader websocket.Upgrader
 }
@@ -79,56 +93,51 @@ func (h *Hub) Run(ctx context.Context) {
 
 // addAgent adds an agent to the hub
 func (h *Hub) addAgent(agent *AgentConnection) {
-	// Get or create org map
-	orgAgentsI, _ := h.agents.LoadOrStore(agent.OrgID, &sync.Map{})
-	orgAgents := orgAgentsI.(*sync.Map)
-	orgAgents.Store(agent.ID, agent)
-
-	fmt.Printf("[AgentHub] Agent connected: %s (org: %s)\n", agent.ID, agent.OrgID)
+	h.agents.Store(agent.ID, agent)
+	lifecycle.Emit(lifecycle.EventAgentConnected, agent.ID)
 }
 
 // removeAgent removes an agent from the hub
 func (h *Hub) removeAgent(agent *AgentConnection) {
-	if orgAgentsI, ok := h.agents.Load(agent.OrgID); ok {
-		orgAgents := orgAgentsI.(*sync.Map)
-		orgAgents.Delete(agent.ID)
-	}
-
+	h.agents.Delete(agent.ID)
 	close(agent.Send)
 	if agent.Conn != nil {
 		agent.Conn.Close()
 	}
-
-	fmt.Printf("[AgentHub] Agent disconnected: %s (org: %s)\n", agent.ID, agent.OrgID)
+	lifecycle.Emit(lifecycle.EventAgentDisconnected, agent.ID)
 }
 
-// GetAgent returns an agent by org and agent ID
-func (h *Hub) GetAgent(orgID, agentID string) *AgentConnection {
-	if orgAgentsI, ok := h.agents.Load(orgID); ok {
-		orgAgents := orgAgentsI.(*sync.Map)
-		if agentI, ok := orgAgents.Load(agentID); ok {
-			return agentI.(*AgentConnection)
-		}
+// GetAgent returns an agent by ID
+func (h *Hub) GetAgent(agentID string) *AgentConnection {
+	if agentI, ok := h.agents.Load(agentID); ok {
+		return agentI.(*AgentConnection)
 	}
 	return nil
 }
 
-// GetAgentsForOrg returns all agents for an organization
-func (h *Hub) GetAgentsForOrg(orgID string) []*AgentConnection {
+// GetAnyAgent returns the first available connected agent
+func (h *Hub) GetAnyAgent() *AgentConnection {
+	var found *AgentConnection
+	h.agents.Range(func(_, agentI any) bool {
+		found = agentI.(*AgentConnection)
+		return false // Stop after first
+	})
+	return found
+}
+
+// GetAllAgents returns all connected agents
+func (h *Hub) GetAllAgents() []*AgentConnection {
 	var agents []*AgentConnection
-	if orgAgentsI, ok := h.agents.Load(orgID); ok {
-		orgAgents := orgAgentsI.(*sync.Map)
-		orgAgents.Range(func(_, value any) bool {
-			agents = append(agents, value.(*AgentConnection))
-			return true
-		})
-	}
+	h.agents.Range(func(_, agentI any) bool {
+		agents = append(agents, agentI.(*AgentConnection))
+		return true
+	})
 	return agents
 }
 
 // SendToAgent sends a frame to a specific agent
-func (h *Hub) SendToAgent(orgID, agentID string, frame *Frame) error {
-	agent := h.GetAgent(orgID, agentID)
+func (h *Hub) SendToAgent(agentID string, frame *Frame) error {
+	agent := h.GetAgent(agentID)
 	if agent == nil {
 		return fmt.Errorf("agent not found: %s", agentID)
 	}
@@ -146,14 +155,39 @@ func (h *Hub) SendToAgent(orgID, agentID string, frame *Frame) error {
 	}
 }
 
-// BroadcastToOrg sends a frame to all agents in an organization
-func (h *Hub) BroadcastToOrg(orgID string, frame *Frame) {
+// SetResponseHandler sets the handler for agent responses
+func (h *Hub) SetResponseHandler(handler ResponseHandler) {
+	h.responseHandlerMu.Lock()
+	defer h.responseHandlerMu.Unlock()
+	h.responseHandler = handler
+	fmt.Printf("[AgentHub] Response handler registered (handler=%v)\n", handler != nil)
+}
+
+// SetApprovalHandler sets the handler for approval requests
+func (h *Hub) SetApprovalHandler(handler ApprovalRequestHandler) {
+	h.approvalHandlerMu.Lock()
+	defer h.approvalHandlerMu.Unlock()
+	h.approvalHandler = handler
+}
+
+// SendApprovalResponse sends an approval response back to an agent
+func (h *Hub) SendApprovalResponse(agentID, requestID string, approved bool) error {
+	frame := &Frame{
+		Type:    "approval_response",
+		ID:      requestID,
+		Payload: map[string]any{"approved": approved},
+	}
+	return h.SendToAgent(agentID, frame)
+}
+
+// Broadcast sends a frame to all connected agents
+func (h *Hub) Broadcast(frame *Frame) {
 	data, err := json.Marshal(frame)
 	if err != nil {
 		return
 	}
 
-	agents := h.GetAgentsForOrg(orgID)
+	agents := h.GetAllAgents()
 	for _, agent := range agents {
 		select {
 		case agent.Send <- data:
@@ -164,7 +198,7 @@ func (h *Hub) BroadcastToOrg(orgID string, frame *Frame) {
 }
 
 // HandleWebSocket handles a WebSocket connection from an agent
-func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, orgID, agentID, userID string) {
+func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, agentID string) {
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Printf("[AgentHub] Upgrade error: %v\n", err)
@@ -173,8 +207,6 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, orgID, age
 
 	agent := &AgentConnection{
 		ID:        agentID,
-		OrgID:     orgID,
-		UserID:    userID,
 		Conn:      conn,
 		Send:      make(chan []byte, 256),
 		CreatedAt: time.Now(),
@@ -190,21 +222,23 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, orgID, age
 // readPump reads messages from the agent
 func (h *Hub) readPump(agent *AgentConnection) {
 	defer func() {
+		fmt.Printf("[AgentHub] readPump exiting for agent %s\n", agent.ID)
 		h.unregister <- agent
 	}()
 
 	agent.Conn.SetReadLimit(512 * 1024) // 512KB max message size
-	agent.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 	agent.Conn.SetPongHandler(func(string) error {
-		agent.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 		return nil
 	})
 
 	for {
 		_, message, err := agent.Conn.ReadMessage()
 		if err != nil {
+			fmt.Printf("[AgentHub] ReadMessage error for %s: %v\n", agent.ID, err)
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				fmt.Printf("[AgentHub] Read error: %v\n", err)
+				fmt.Printf("[AgentHub] Unexpected close error: %v\n", err)
 			}
 			break
 		}
@@ -259,11 +293,50 @@ func (h *Hub) writePump(agent *AgentConnection) {
 
 // handleFrame processes an incoming frame from an agent
 func (h *Hub) handleFrame(agent *AgentConnection, frame *Frame) {
-	fmt.Printf("[AgentHub] Frame from %s: type=%s method=%s\n", agent.ID, frame.Type, frame.Method)
+	// Log ALL frames for debugging
+	fmt.Printf("[AgentHub] Frame from %s: type=%s method=%s id=%s\n", agent.ID, frame.Type, frame.Method, frame.ID)
 
 	switch frame.Type {
 	case "res":
-		// Response to a request we sent - could be handled via callbacks
+		// Response to a request we sent - route to handler
+		h.responseHandlerMu.RLock()
+		handler := h.responseHandler
+		h.responseHandlerMu.RUnlock()
+
+		if handler != nil {
+			fmt.Printf("[AgentHub] Routing response frame %s to handler\n", frame.ID)
+			handler(agent.ID, frame)
+		} else {
+			fmt.Printf("[AgentHub] WARNING: No response handler for response frame %s\n", frame.ID)
+		}
+	case "stream":
+		// Streaming chunk from agent - route to same handler as responses
+		h.responseHandlerMu.RLock()
+		handler := h.responseHandler
+		h.responseHandlerMu.RUnlock()
+
+		if handler != nil {
+			fmt.Printf("[AgentHub] Routing stream frame %s to handler\n", frame.ID)
+			handler(agent.ID, frame)
+		} else {
+			fmt.Printf("[AgentHub] WARNING: No response handler for stream frame %s\n", frame.ID)
+		}
+	case "approval_request":
+		// Approval request from agent - forward to UI
+		h.approvalHandlerMu.RLock()
+		handler := h.approvalHandler
+		h.approvalHandlerMu.RUnlock()
+
+		if handler != nil {
+			if payload, ok := frame.Payload.(map[string]any); ok {
+				toolName, _ := payload["tool"].(string)
+				var inputRaw json.RawMessage
+				if input, ok := payload["input"]; ok {
+					inputRaw, _ = json.Marshal(input)
+				}
+				handler(agent.ID, frame.ID, toolName, inputRaw)
+			}
+		}
 	case "event":
 		// Event from agent - could be broadcast to other systems
 	case "req":
@@ -287,7 +360,6 @@ func (h *Hub) handleRequest(agent *AgentConnection, frame *Frame) {
 		response.OK = true
 		response.Payload = map[string]any{
 			"agent_id":   agent.ID,
-			"org_id":     agent.OrgID,
 			"connected":  true,
 			"uptime_sec": int(time.Since(agent.CreatedAt).Seconds()),
 		}

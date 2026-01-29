@@ -15,7 +15,6 @@ func TestBindingStore(t *testing.T) {
 		ID:          "binding-1",
 		ChannelType: "telegram",
 		ChannelID:   "12345",
-		OrgID:       "org-1",
 		AgentID:     "agent-1",
 		Name:        "Test Binding",
 		Enabled:     true,
@@ -57,7 +56,6 @@ func TestBindingStoreDuplicateChannel(t *testing.T) {
 		ID:          "binding-1",
 		ChannelType: "telegram",
 		ChannelID:   "12345",
-		OrgID:       "org-1",
 		Enabled:     true,
 	}
 	store.Add(binding1)
@@ -67,7 +65,6 @@ func TestBindingStoreDuplicateChannel(t *testing.T) {
 		ID:          "binding-2",
 		ChannelType: "telegram",
 		ChannelID:   "12345", // Same channel
-		OrgID:       "org-2",
 		Enabled:     true,
 	}
 
@@ -84,7 +81,6 @@ func TestBindingStoreRemove(t *testing.T) {
 		ID:          "binding-1",
 		ChannelType: "telegram",
 		ChannelID:   "12345",
-		OrgID:       "org-1",
 		Enabled:     true,
 	}
 	store.Add(binding)
@@ -113,7 +109,6 @@ func TestBindingStoreUpdate(t *testing.T) {
 		ID:          "binding-1",
 		ChannelType: "telegram",
 		ChannelID:   "12345",
-		OrgID:       "org-1",
 		Name:        "Original",
 		Enabled:     true,
 	}
@@ -124,7 +119,6 @@ func TestBindingStoreUpdate(t *testing.T) {
 		ID:          "binding-1",
 		ChannelType: "telegram",
 		ChannelID:   "12345",
-		OrgID:       "org-1",
 		Name:        "Updated",
 		Enabled:     true,
 	}
@@ -139,21 +133,16 @@ func TestBindingStoreUpdate(t *testing.T) {
 	}
 }
 
-func TestBindingStoreListByOrg(t *testing.T) {
+func TestBindingStoreListAll(t *testing.T) {
 	store := NewBindingStore()
 
-	store.Add(&Binding{ID: "1", ChannelType: "telegram", ChannelID: "a", OrgID: "org-1", Enabled: true})
-	store.Add(&Binding{ID: "2", ChannelType: "telegram", ChannelID: "b", OrgID: "org-1", Enabled: true})
-	store.Add(&Binding{ID: "3", ChannelType: "telegram", ChannelID: "c", OrgID: "org-2", Enabled: true})
+	store.Add(&Binding{ID: "1", ChannelType: "telegram", ChannelID: "a", Enabled: true})
+	store.Add(&Binding{ID: "2", ChannelType: "telegram", ChannelID: "b", Enabled: true})
+	store.Add(&Binding{ID: "3", ChannelType: "telegram", ChannelID: "c", Enabled: true})
 
-	org1Bindings := store.ListByOrg("org-1")
-	if len(org1Bindings) != 2 {
-		t.Errorf("ListByOrg('org-1') = %d bindings, want 2", len(org1Bindings))
-	}
-
-	org2Bindings := store.ListByOrg("org-2")
-	if len(org2Bindings) != 1 {
-		t.Errorf("ListByOrg('org-2') = %d bindings, want 1", len(org2Bindings))
+	allBindings := store.ListAll()
+	if len(allBindings) != 3 {
+		t.Errorf("ListAll() = %d bindings, want 3", len(allBindings))
 	}
 }
 
@@ -164,7 +153,6 @@ func TestBindingStoreDisabled(t *testing.T) {
 		ID:          "binding-1",
 		ChannelType: "telegram",
 		ChannelID:   "12345",
-		OrgID:       "org-1",
 		Enabled:     false, // Disabled
 	}
 	store.Add(binding)
@@ -188,7 +176,6 @@ func TestBindingStorePersistence(t *testing.T) {
 		ID:          "binding-1",
 		ChannelType: "telegram",
 		ChannelID:   "12345",
-		OrgID:       "org-1",
 		Name:        "Test",
 		Enabled:     true,
 	})

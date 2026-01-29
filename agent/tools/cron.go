@@ -5,39 +5,54 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	cronlib "github.com/robfig/cron/v3"
-	_ "modernc.org/sqlite"
 )
+
+// AgentTaskCallback is called when an agent task cron job fires
+type AgentTaskCallback func(ctx context.Context, name, message string, deliver *DeliverConfig) error
+
+// DeliverConfig specifies where to send task results
+type DeliverConfig struct {
+	Channel string `json:"channel"`
+	To      string `json:"to"`
+}
 
 // CronTool manages scheduled recurring tasks
 type CronTool struct {
-	db        *sql.DB
-	dbPath    string
-	scheduler *cronlib.Cron
-	jobs      map[string]cronlib.EntryID
-	mu        sync.RWMutex
+	db            *sql.DB
+	scheduler     *cronlib.Cron
+	jobs          map[string]cronlib.EntryID
+	mu            sync.RWMutex
+	agentCallback AgentTaskCallback
 }
 
 type cronInput struct {
-	Action   string `json:"action"`   // create, list, delete, pause, resume, run
-	Name     string `json:"name"`     // Job name/identifier
-	Schedule string `json:"schedule"` // Cron expression (e.g., "*/5 * * * *")
-	Command  string `json:"command"`  // Shell command to execute
-	Enabled  *bool  `json:"enabled"`  // Enable/disable job
+	Action   string `json:"action"`    // create, list, delete, pause, resume, run
+	Name     string `json:"name"`      // Job name/identifier
+	Schedule string `json:"schedule"`  // Cron expression (e.g., "*/5 * * * *")
+	Command  string `json:"command"`   // Shell command to execute (for bash tasks)
+	TaskType string `json:"task_type"` // "bash" (default) or "agent"
+	Message  string `json:"message"`   // Agent prompt (for agent tasks)
+	Deliver  *struct {
+		Channel string `json:"channel"` // telegram, discord, slack
+		To      string `json:"to"`      // chat/channel ID
+	} `json:"deliver,omitempty"` // Optional: where to send result
+	Enabled *bool `json:"enabled"` // Enable/disable job
 }
 
 type cronJob struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
 	Schedule  string    `json:"schedule"`
-	Command   string    `json:"command"`
+	Command   string    `json:"command"`            // For bash tasks
+	TaskType  string    `json:"task_type"`          // "bash" or "agent"
+	Message   string    `json:"message,omitempty"`  // For agent tasks
+	Deliver   string    `json:"deliver,omitempty"`  // JSON: {"channel":"telegram","to":"123"}
 	Enabled   bool      `json:"enabled"`
 	LastRun   time.Time `json:"last_run,omitempty"`
 	NextRun   time.Time `json:"next_run,omitempty"`
@@ -48,41 +63,24 @@ type cronJob struct {
 
 // CronConfig configures the cron tool
 type CronConfig struct {
-	DBPath string // Path to cron database (default: ~/.gobot/cron.db)
+	DB *sql.DB // Shared database connection (required)
 }
 
+// NewCronTool creates a new cron tool using the shared database connection.
+// The database must already have the cron_jobs and cron_history tables (via migrations).
 func NewCronTool(cfg CronConfig) (*CronTool, error) {
-	if cfg.DBPath == "" {
-		homeDir, _ := os.UserHomeDir()
-		cfg.DBPath = filepath.Join(homeDir, ".gobot", "cron.db")
-	}
-
-	// Ensure directory exists
-	dir := filepath.Dir(cfg.DBPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create cron directory: %w", err)
-	}
-
-	db, err := sql.Open("sqlite", cfg.DBPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open cron database: %w", err)
+	if cfg.DB == nil {
+		return nil, fmt.Errorf("database connection required")
 	}
 
 	tool := &CronTool{
-		db:        db,
-		dbPath:    cfg.DBPath,
+		db:        cfg.DB,
 		scheduler: cronlib.New(cronlib.WithSeconds()),
 		jobs:      make(map[string]cronlib.EntryID),
 	}
 
-	if err := tool.initSchema(); err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	// Load existing jobs
+	// Load existing jobs from shared database
 	if err := tool.loadJobs(); err != nil {
-		db.Close()
 		return nil, err
 	}
 
@@ -92,39 +90,8 @@ func NewCronTool(cfg CronConfig) (*CronTool, error) {
 	return tool, nil
 }
 
-func (t *CronTool) initSchema() error {
-	schema := `
-		CREATE TABLE IF NOT EXISTS cron_jobs (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT UNIQUE NOT NULL,
-			schedule TEXT NOT NULL,
-			command TEXT NOT NULL,
-			enabled INTEGER DEFAULT 1,
-			last_run DATETIME,
-			run_count INTEGER DEFAULT 0,
-			last_error TEXT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS cron_history (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			job_id INTEGER NOT NULL,
-			started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			finished_at DATETIME,
-			success INTEGER,
-			output TEXT,
-			error TEXT,
-			FOREIGN KEY (job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_cron_history_job ON cron_history(job_id);
-	`
-	_, err := t.db.Exec(schema)
-	return err
-}
-
 func (t *CronTool) loadJobs() error {
-	rows, err := t.db.Query(`SELECT id, name, schedule, command, enabled FROM cron_jobs WHERE enabled = 1`)
+	rows, err := t.db.Query(`SELECT id, name, schedule, command, task_type, message, deliver, enabled FROM cron_jobs WHERE enabled = 1`)
 	if err != nil {
 		return err
 	}
@@ -132,20 +99,20 @@ func (t *CronTool) loadJobs() error {
 
 	for rows.Next() {
 		var id int64
-		var name, schedule, command string
+		var name, schedule, command, taskType, message, deliver string
 		var enabled bool
-		if err := rows.Scan(&id, &name, &schedule, &command, &enabled); err != nil {
+		if err := rows.Scan(&id, &name, &schedule, &command, &taskType, &message, &deliver, &enabled); err != nil {
 			continue
 		}
 
 		if enabled {
-			t.scheduleJob(name, schedule, command)
+			t.scheduleJobFull(name, schedule, command, taskType, message, deliver)
 		}
 	}
 	return nil
 }
 
-func (t *CronTool) scheduleJob(name, schedule, command string) error {
+func (t *CronTool) scheduleJobFull(name, schedule, command, taskType, message, deliver string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -157,7 +124,7 @@ func (t *CronTool) scheduleJob(name, schedule, command string) error {
 
 	// Schedule new job
 	entryID, err := t.scheduler.AddFunc(schedule, func() {
-		t.executeJob(name, command)
+		t.executeJobFull(name, command, taskType, message, deliver)
 	})
 	if err != nil {
 		return err
@@ -167,15 +134,38 @@ func (t *CronTool) scheduleJob(name, schedule, command string) error {
 	return nil
 }
 
-func (t *CronTool) executeJob(name, command string) {
+func (t *CronTool) executeJobFull(name, command, taskType, message, deliverJSON string) {
 	started := time.Now()
+	var output []byte
+	var err error
 
-	// Execute command
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
-	output, err := cmd.CombinedOutput()
+	if taskType == "agent" {
+		// Execute agent task via callback
+		t.mu.RLock()
+		cb := t.agentCallback
+		t.mu.RUnlock()
+
+		if cb != nil {
+			var deliver *DeliverConfig
+			if deliverJSON != "" {
+				deliver = &DeliverConfig{}
+				json.Unmarshal([]byte(deliverJSON), deliver)
+			}
+			err = cb(ctx, name, message, deliver)
+			if err == nil {
+				output = []byte("Agent task completed successfully")
+			}
+		} else {
+			err = fmt.Errorf("no agent callback configured")
+		}
+	} else {
+		// Execute bash command
+		cmd := exec.CommandContext(ctx, "bash", "-c", command)
+		output, err = cmd.CombinedOutput()
+	}
 
 	finished := time.Now()
 	success := err == nil
@@ -202,6 +192,13 @@ func (t *CronTool) executeJob(name, command string) {
 			WHERE name = ?
 		`, started, name)
 	}
+}
+
+// SetAgentCallback sets the callback for agent task execution
+func (t *CronTool) SetAgentCallback(cb AgentTaskCallback) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.agentCallback = cb
 }
 
 func (t *CronTool) Close() error {
@@ -239,9 +236,26 @@ func (t *CronTool) Schema() json.RawMessage {
 				"type": "string",
 				"description": "Cron expression with seconds: 'second minute hour day-of-month month day-of-week'. Examples: '0 */5 * * * *' (every 5 min), '0 0 9 * * 1-5' (9am weekdays)"
 			},
+			"task_type": {
+				"type": "string",
+				"enum": ["bash", "agent"],
+				"description": "Task type: 'bash' runs shell command, 'agent' runs AI agent task. Default: bash"
+			},
 			"command": {
 				"type": "string",
-				"description": "Shell command to execute (required for create)"
+				"description": "Shell command to execute (required for bash tasks)"
+			},
+			"message": {
+				"type": "string",
+				"description": "Prompt for the agent to execute (required for agent tasks)"
+			},
+			"deliver": {
+				"type": "object",
+				"description": "Optional: where to send the result",
+				"properties": {
+					"channel": { "type": "string", "description": "Channel: telegram, discord, slack" },
+					"to": { "type": "string", "description": "Destination chat/channel ID" }
+				}
 			}
 		},
 		"required": ["action"]
@@ -306,8 +320,19 @@ func (t *CronTool) create(params cronInput) (string, error) {
 	if params.Schedule == "" {
 		return "", fmt.Errorf("schedule is required for create action")
 	}
-	if params.Command == "" {
-		return "", fmt.Errorf("command is required for create action")
+
+	// Determine task type
+	taskType := params.TaskType
+	if taskType == "" {
+		taskType = "bash"
+	}
+
+	// Validate required fields based on task type
+	if taskType == "bash" && params.Command == "" {
+		return "", fmt.Errorf("command is required for bash tasks")
+	}
+	if taskType == "agent" && params.Message == "" {
+		return "", fmt.Errorf("message is required for agent tasks")
 	}
 
 	// Validate cron expression
@@ -317,32 +342,46 @@ func (t *CronTool) create(params cronInput) (string, error) {
 		return "", fmt.Errorf("invalid cron schedule: %w", err)
 	}
 
+	// Serialize deliver config
+	var deliverJSON string
+	if params.Deliver != nil {
+		data, _ := json.Marshal(params.Deliver)
+		deliverJSON = string(data)
+	}
+
 	// Insert or update
 	_, err = t.db.Exec(`
-		INSERT INTO cron_jobs (name, schedule, command, enabled)
-		VALUES (?, ?, ?, 1)
+		INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, enabled)
+		VALUES (?, ?, ?, ?, ?, ?, 1)
 		ON CONFLICT(name) DO UPDATE SET
 			schedule = excluded.schedule,
 			command = excluded.command,
+			task_type = excluded.task_type,
+			message = excluded.message,
+			deliver = excluded.deliver,
 			enabled = 1
-	`, params.Name, params.Schedule, params.Command)
+	`, params.Name, params.Schedule, params.Command, taskType, params.Message, deliverJSON)
 	if err != nil {
 		return "", err
 	}
 
 	// Schedule the job
-	if err := t.scheduleJob(params.Name, params.Schedule, params.Command); err != nil {
+	if err := t.scheduleJobFull(params.Name, params.Schedule, params.Command, taskType, params.Message, deliverJSON); err != nil {
 		return "", err
 	}
 
 	nextRun := schedule.Next(time.Now())
+	if taskType == "agent" {
+		return fmt.Sprintf("Created agent cron job '%s'\nSchedule: %s\nPrompt: %s\nNext run: %s",
+			params.Name, params.Schedule, params.Message, nextRun.Format(time.RFC3339)), nil
+	}
 	return fmt.Sprintf("Created cron job '%s'\nSchedule: %s\nCommand: %s\nNext run: %s",
 		params.Name, params.Schedule, params.Command, nextRun.Format(time.RFC3339)), nil
 }
 
 func (t *CronTool) list() (string, error) {
 	rows, err := t.db.Query(`
-		SELECT name, schedule, command, enabled, last_run, run_count, last_error, created_at
+		SELECT name, schedule, command, task_type, message, enabled, last_run, run_count, last_error, created_at
 		FROM cron_jobs
 		ORDER BY name
 	`)
@@ -353,14 +392,14 @@ func (t *CronTool) list() (string, error) {
 
 	var jobs []string
 	for rows.Next() {
-		var name, schedule, command string
+		var name, schedule, command, taskType, message string
 		var enabled bool
 		var lastRun sql.NullTime
 		var runCount int
 		var lastError sql.NullString
 		var createdAt time.Time
 
-		if err := rows.Scan(&name, &schedule, &command, &enabled, &lastRun, &runCount, &lastError, &createdAt); err != nil {
+		if err := rows.Scan(&name, &schedule, &command, &taskType, &message, &enabled, &lastRun, &runCount, &lastError, &createdAt); err != nil {
 			continue
 		}
 
@@ -380,8 +419,15 @@ func (t *CronTool) list() (string, error) {
 			t.mu.RUnlock()
 		}
 
-		jobInfo := fmt.Sprintf("- %s [%s]\n  Schedule: %s\n  Command: %s\n  Runs: %d",
-			name, status, schedule, command, runCount)
+		// Build job info based on task type
+		var jobInfo string
+		if taskType == "agent" {
+			jobInfo = fmt.Sprintf("- %s [%s] (agent task)\n  Schedule: %s\n  Prompt: %s\n  Runs: %d",
+				name, status, schedule, message, runCount)
+		} else {
+			jobInfo = fmt.Sprintf("- %s [%s] (bash)\n  Schedule: %s\n  Command: %s\n  Runs: %d",
+				name, status, schedule, command, runCount)
+		}
 		if lastRun.Valid {
 			jobInfo += fmt.Sprintf("\n  Last run: %s", lastRun.Time.Format("2006-01-02 15:04:05"))
 		}
@@ -461,9 +507,10 @@ func (t *CronTool) resume(name string) (string, error) {
 		return "", fmt.Errorf("name is required for resume action")
 	}
 
-	// Get job details
-	var schedule, command string
-	err := t.db.QueryRow(`SELECT schedule, command FROM cron_jobs WHERE name = ?`, name).Scan(&schedule, &command)
+	// Get full job details
+	var schedule, command, taskType, message, deliver string
+	err := t.db.QueryRow(`SELECT schedule, command, task_type, message, deliver FROM cron_jobs WHERE name = ?`, name).
+		Scan(&schedule, &command, &taskType, &message, &deliver)
 	if err == sql.ErrNoRows {
 		return fmt.Sprintf("No cron job found with name '%s'", name), nil
 	}
@@ -477,8 +524,8 @@ func (t *CronTool) resume(name string) (string, error) {
 		return "", err
 	}
 
-	// Schedule the job
-	if err := t.scheduleJob(name, schedule, command); err != nil {
+	// Schedule the job with full data
+	if err := t.scheduleJobFull(name, schedule, command, taskType, message, deliver); err != nil {
 		return "", err
 	}
 
@@ -490,9 +537,10 @@ func (t *CronTool) runNow(name string) (string, error) {
 		return "", fmt.Errorf("name is required for run action")
 	}
 
-	// Get command
-	var command string
-	err := t.db.QueryRow(`SELECT command FROM cron_jobs WHERE name = ?`, name).Scan(&command)
+	// Get full job details
+	var command, taskType, message, deliver string
+	err := t.db.QueryRow(`SELECT command, task_type, message, deliver FROM cron_jobs WHERE name = ?`, name).
+		Scan(&command, &taskType, &message, &deliver)
 	if err == sql.ErrNoRows {
 		return fmt.Sprintf("No cron job found with name '%s'", name), nil
 	}
@@ -504,8 +552,33 @@ func (t *CronTool) runNow(name string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
-	output, err := cmd.CombinedOutput()
+	var output []byte
+
+	if taskType == "agent" {
+		// Execute agent task via callback
+		t.mu.RLock()
+		cb := t.agentCallback
+		t.mu.RUnlock()
+
+		if cb == nil {
+			return "", fmt.Errorf("no agent callback configured - agent tasks require the agent to be running")
+		}
+
+		var deliverCfg *DeliverConfig
+		if deliver != "" {
+			deliverCfg = &DeliverConfig{}
+			json.Unmarshal([]byte(deliver), deliverCfg)
+		}
+
+		err = cb(ctx, name, message, deliverCfg)
+		if err == nil {
+			output = []byte("Agent task completed successfully")
+		}
+	} else {
+		// Execute bash command
+		cmd := exec.CommandContext(ctx, "bash", "-c", command)
+		output, err = cmd.CombinedOutput()
+	}
 
 	// Update stats
 	if err != nil {

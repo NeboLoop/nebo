@@ -79,17 +79,6 @@ func (s *AuthService) Register(ctx context.Context, email, password, name string
 		return nil, fmt.Errorf("failed to create preferences: %w", err)
 	}
 
-	// Create free subscription
-	_, err = s.store.CreateSubscription(ctx, db.CreateSubscriptionParams{
-		ID:     generateID(),
-		UserID: user.ID,
-		PlanID: "free",
-		Status: "active",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create subscription: %w", err)
-	}
-
 	// Generate tokens
 	return s.generateTokens(ctx, user.ID, user.Email)
 }

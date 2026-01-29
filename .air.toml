@@ -1,5 +1,7 @@
 # Configuration for Air (Go hot reload tool)
 # Run: air
+# Note: This builds gobot.go (server only) for development hot reload.
+# Use 'make build' to build the full CLI from cmd/gobot/
 root = "."
 testdata_dir = "testdata"
 tmp_dir = "tmp"

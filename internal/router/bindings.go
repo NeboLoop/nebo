@@ -19,8 +19,7 @@ type Binding struct {
 	ChannelID   string `json:"channel_id"`   // Chat/channel/workspace ID
 
 	// Agent info
-	OrgID   string `json:"org_id"`
-	AgentID string `json:"agent_id,omitempty"` // Empty = any agent in org
+	AgentID string `json:"agent_id,omitempty"` // Empty = any agent
 
 	// Metadata
 	Name      string    `json:"name,omitempty"` // Human-readable name
@@ -161,20 +160,6 @@ func (s *BindingStore) GetByChannel(channelType, channelID string) (*Binding, bo
 		return nil, false
 	}
 	return b, true
-}
-
-// ListByOrg returns all bindings for an organization
-func (s *BindingStore) ListByOrg(orgID string) []*Binding {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*Binding
-	for _, b := range s.bindings {
-		if b.OrgID == orgID {
-			result = append(result, b)
-		}
-	}
-	return result
 }
 
 // ListAll returns all bindings

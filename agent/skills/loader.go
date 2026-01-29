@@ -3,7 +3,6 @@ package skills
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/zeromicro/go-zero/core/logx"
 	"gopkg.in/yaml.v3"
 )
 
@@ -67,7 +67,7 @@ func (l *Loader) LoadAll() error {
 		return fmt.Errorf("failed to load skills: %w", err)
 	}
 
-	log.Printf("[skills] Loaded %d skills from %s", len(l.skills), l.dir)
+	logx.Infof("[skills] Loaded %d skills from %s", len(l.skills), l.dir)
 	return nil
 }
 
@@ -96,7 +96,7 @@ func (l *Loader) loadFile(path string) error {
 	}
 
 	l.skills[skill.Name] = &skill
-	log.Printf("[skills] Loaded skill: %s (triggers: %v)", skill.Name, skill.Triggers)
+	logx.Debugf("[skills] Loaded skill: %s (triggers: %v)", skill.Name, skill.Triggers)
 	return nil
 }
 
@@ -119,7 +119,7 @@ func (l *Loader) Watch(ctx context.Context) error {
 	// Add directory to watch
 	if err := watcher.Add(l.dir); err != nil {
 		// Directory might not exist yet, that's okay
-		log.Printf("[skills] Warning: could not watch %s: %v", l.dir, err)
+		logx.Errorf("[skills] Could not watch %s: %v", l.dir, err)
 	}
 
 	return nil
@@ -140,7 +140,7 @@ func (l *Loader) watchLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			log.Printf("[skills] Watch error: %v", err)
+			logx.Errorf("[skills] Watch error: %v", err)
 		}
 	}
 }
@@ -152,7 +152,7 @@ func (l *Loader) handleEvent(event fsnotify.Event) {
 		return
 	}
 
-	log.Printf("[skills] File event: %s %s", event.Op, event.Name)
+	logx.Debugf("[skills] File event: %s %s", event.Op, event.Name)
 
 	switch {
 	case event.Op&fsnotify.Write == fsnotify.Write,
@@ -160,7 +160,7 @@ func (l *Loader) handleEvent(event fsnotify.Event) {
 		// Reload the specific file
 		l.mu.Lock()
 		if err := l.loadFile(event.Name); err != nil {
-			log.Printf("[skills] Error reloading %s: %v", event.Name, err)
+			logx.Errorf("[skills] Error reloading %s: %v", event.Name, err)
 		}
 		l.mu.Unlock()
 
@@ -171,7 +171,7 @@ func (l *Loader) handleEvent(event fsnotify.Event) {
 		for name, skill := range l.skills {
 			if skill.FilePath == event.Name {
 				delete(l.skills, name)
-				log.Printf("[skills] Unloaded skill: %s", name)
+				logx.Infof("[skills] Unloaded skill: %s", name)
 				break
 			}
 		}
@@ -263,4 +263,37 @@ func (l *Loader) Count() int {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return len(l.skills)
+}
+
+// Add adds a skill to the loader (used for merging from other loaders)
+func (l *Loader) Add(skill *Skill) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.skills[skill.Name] = skill
+}
+
+// SetEnabled sets the enabled state of a skill by name
+func (l *Loader) SetEnabled(name string, enabled bool) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if skill, ok := l.skills[name]; ok {
+		skill.Enabled = enabled
+		return true
+	}
+	return false
+}
+
+// SetDisabledSkills updates the enabled state based on a list of disabled skill names
+func (l *Loader) SetDisabledSkills(disabled []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	disabledMap := make(map[string]bool)
+	for _, name := range disabled {
+		disabledMap[name] = true
+	}
+
+	for name, skill := range l.skills {
+		skill.Enabled = !disabledMap[name]
+	}
 }

@@ -1,5 +1,5 @@
 /**
- * WebSocket Client for Gobot
+ * WebSocket Client for GoBot
  *
  * Handles real-time communication with the backend.
  */

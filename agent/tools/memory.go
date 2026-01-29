@@ -5,18 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // MemoryTool provides persistent fact storage across sessions
 type MemoryTool struct {
-	db     *sql.DB
-	dbPath string
+	db *sql.DB
 }
 
 type memoryInput struct {
@@ -26,95 +21,34 @@ type memoryInput struct {
 	Tags      []string          `json:"tags"`      // Tags for categorization
 	Query     string            `json:"query"`     // Search query (for search action)
 	Namespace string            `json:"namespace"` // Namespace for organization (default: "default")
+	Layer     string            `json:"layer"`     // Memory layer: tacit, daily, entity (optional, prepended to namespace)
 	Metadata  map[string]string `json:"metadata"`  // Additional metadata
 }
 
+// Memory layers for three-tier memory system
+const (
+	LayerTacit  = "tacit"  // Long-term preferences, learned behaviors
+	LayerDaily  = "daily"  // Day-specific facts (keyed by date)
+	LayerEntity = "entity" // People, places, things
+)
+
 // MemoryConfig configures the memory tool
 type MemoryConfig struct {
-	DBPath string // Path to memory database (default: ~/.gobot/memory.db)
+	DB *sql.DB // Shared database connection (required)
 }
 
+// NewMemoryTool creates a new memory tool using the shared database connection.
+// The database must already have the memories table and FTS index (via migrations).
 func NewMemoryTool(cfg MemoryConfig) (*MemoryTool, error) {
-	if cfg.DBPath == "" {
-		homeDir, _ := os.UserHomeDir()
-		cfg.DBPath = filepath.Join(homeDir, ".gobot", "memory.db")
+	if cfg.DB == nil {
+		return nil, fmt.Errorf("database connection required")
 	}
 
-	// Ensure directory exists
-	dir := filepath.Dir(cfg.DBPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create memory directory: %w", err)
-	}
-
-	db, err := sql.Open("sqlite", cfg.DBPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open memory database: %w", err)
-	}
-
-	tool := &MemoryTool{
-		db:     db,
-		dbPath: cfg.DBPath,
-	}
-
-	if err := tool.initSchema(); err != nil {
-		db.Close()
-		return nil, err
-	}
-
-	return tool, nil
+	return &MemoryTool{db: cfg.DB}, nil
 }
 
-func (t *MemoryTool) initSchema() error {
-	schema := `
-		CREATE TABLE IF NOT EXISTS memories (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			namespace TEXT NOT NULL DEFAULT 'default',
-			key TEXT NOT NULL,
-			value TEXT NOT NULL,
-			tags TEXT,
-			metadata TEXT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			access_count INTEGER DEFAULT 0,
-			UNIQUE(namespace, key)
-		);
-
-		CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace);
-		CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
-		CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags);
-
-		CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-			key, value, tags,
-			content='memories',
-			content_rowid='id'
-		);
-
-		CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-			INSERT INTO memories_fts(rowid, key, value, tags)
-			VALUES (new.id, new.key, new.value, new.tags);
-		END;
-
-		CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-			INSERT INTO memories_fts(memories_fts, rowid, key, value, tags)
-			VALUES ('delete', old.id, old.key, old.value, old.tags);
-		END;
-
-		CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-			INSERT INTO memories_fts(memories_fts, rowid, key, value, tags)
-			VALUES ('delete', old.id, old.key, old.value, old.tags);
-			INSERT INTO memories_fts(rowid, key, value, tags)
-			VALUES (new.id, new.key, new.value, new.tags);
-		END;
-	`
-	_, err := t.db.Exec(schema)
-	return err
-}
-
+// Close is a no-op since the database is shared and managed elsewhere
 func (t *MemoryTool) Close() error {
-	if t.db != nil {
-		return t.db.Close()
-	}
 	return nil
 }
 
@@ -123,7 +57,11 @@ func (t *MemoryTool) Name() string {
 }
 
 func (t *MemoryTool) Description() string {
-	return "Store and recall facts persistently across sessions. Use for remembering user preferences, project context, learned information, and important notes."
+	return `Store and recall facts persistently across sessions using a three-layer memory system:
+- tacit: Long-term preferences and learned behaviors (e.g., code style, favorite tools)
+- daily: Day-specific facts (e.g., today's standup notes, meeting decisions)
+- entity: Information about people, places, and things (e.g., person/sarah, project/gobot)
+Use for remembering user preferences, project context, learned information, and important notes.`
 }
 
 func (t *MemoryTool) Schema() json.RawMessage {
@@ -137,7 +75,7 @@ func (t *MemoryTool) Schema() json.RawMessage {
 			},
 			"key": {
 				"type": "string",
-				"description": "Unique identifier for the fact (required for store, recall, delete)"
+				"description": "Unique identifier for the fact (required for store, recall, delete). Use path-like keys for organization (e.g., 'preferences/code_style', 'person/sarah')"
 			},
 			"value": {
 				"type": "string",
@@ -151,6 +89,11 @@ func (t *MemoryTool) Schema() json.RawMessage {
 			"query": {
 				"type": "string",
 				"description": "Search query for full-text search (required for search action)"
+			},
+			"layer": {
+				"type": "string",
+				"enum": ["tacit", "daily", "entity"],
+				"description": "Memory layer for three-tier organization. tacit=long-term preferences, daily=day-specific facts, entity=people/places/things. Gets prepended to namespace."
 			},
 			"namespace": {
 				"type": "string",
@@ -182,6 +125,11 @@ func (t *MemoryTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 
 	if params.Namespace == "" {
 		params.Namespace = "default"
+	}
+
+	// Apply layer prefix to namespace if specified
+	if params.Layer != "" {
+		params.Namespace = params.Layer + "/" + params.Namespace
 	}
 
 	var result string
@@ -404,4 +352,33 @@ func (t *MemoryTool) clear(params memoryInput) (string, error) {
 
 	rows, _ := result.RowsAffected()
 	return fmt.Sprintf("Cleared %d memories from namespace '%s'", rows, params.Namespace), nil
+}
+
+// StoreEntry stores a memory entry directly (for programmatic use, e.g., auto-extraction)
+func (t *MemoryTool) StoreEntry(layer, namespace, key, value string, tags []string) error {
+	if key == "" || value == "" {
+		return fmt.Errorf("key and value are required")
+	}
+
+	// Apply layer prefix to namespace
+	fullNamespace := namespace
+	if layer != "" {
+		fullNamespace = layer + "/" + namespace
+	}
+	if fullNamespace == "" {
+		fullNamespace = "default"
+	}
+
+	tagsJSON, _ := json.Marshal(tags)
+
+	query := `
+		INSERT INTO memories (namespace, key, value, tags, updated_at)
+		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(namespace, key) DO UPDATE SET
+			value = excluded.value,
+			tags = excluded.tags,
+			updated_at = CURRENT_TIMESTAMP
+	`
+	_, err := t.db.Exec(query, fullNamespace, key, value, string(tagsJSON))
+	return err
 }

@@ -15,7 +15,7 @@ type ListAgentsLogic struct {
 	svcCtx *svc.ServiceContext
 }
 
-// List connected agents for organization
+// List connected agents
 func NewListAgentsLogic(ctx context.Context, svcCtx *svc.ServiceContext) *ListAgentsLogic {
 	return &ListAgentsLogic{
 		Logger: logx.WithContext(ctx),
@@ -34,24 +34,12 @@ func (l *ListAgentsLogic) ListAgents(req *types.ListAgentsRequest) (resp *types.
 		}, nil
 	}
 
-	// Get org ID from request or context
-	orgID := req.OrgId
-	if orgID == "" {
-		// TODO: Get from JWT context
-		return &types.ListAgentsResponse{
-			Agents: []types.AgentInfo{},
-			Total:  0,
-		}, nil
-	}
-
-	agents := hub.GetAgentsForOrg(orgID)
+	agents := hub.GetAllAgents()
 	agentInfos := make([]types.AgentInfo, 0, len(agents))
 
 	for _, agent := range agents {
 		agentInfos = append(agentInfos, types.AgentInfo{
 			AgentId:   agent.ID,
-			OrgId:     agent.OrgID,
-			UserId:    agent.UserID,
 			Connected: true,
 			CreatedAt: agent.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		})

@@ -8,6 +8,68 @@ import (
 	"database/sql"
 )
 
+type AuthProfile struct {
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	Provider      string         `json:"provider"`
+	ApiKey        string         `json:"api_key"`
+	Model         sql.NullString `json:"model"`
+	BaseUrl       sql.NullString `json:"base_url"`
+	Priority      sql.NullInt64  `json:"priority"`
+	IsActive      sql.NullInt64  `json:"is_active"`
+	CooldownUntil sql.NullInt64  `json:"cooldown_until"`
+	LastUsedAt    sql.NullInt64  `json:"last_used_at"`
+	UsageCount    sql.NullInt64  `json:"usage_count"`
+	ErrorCount    sql.NullInt64  `json:"error_count"`
+	Metadata      sql.NullString `json:"metadata"`
+	CreatedAt     int64          `json:"created_at"`
+	UpdatedAt     int64          `json:"updated_at"`
+	AuthType      sql.NullString `json:"auth_type"`
+}
+
+type Chat struct {
+	ID        string         `json:"id"`
+	Title     string         `json:"title"`
+	CreatedAt int64          `json:"created_at"`
+	UpdatedAt int64          `json:"updated_at"`
+	UserID    sql.NullString `json:"user_id"`
+}
+
+type ChatMessage struct {
+	ID        string         `json:"id"`
+	ChatID    string         `json:"chat_id"`
+	Role      string         `json:"role"`
+	Content   string         `json:"content"`
+	Metadata  sql.NullString `json:"metadata"`
+	CreatedAt int64          `json:"created_at"`
+	DayMarker sql.NullString `json:"day_marker"`
+}
+
+type CronHistory struct {
+	ID         int64          `json:"id"`
+	JobID      int64          `json:"job_id"`
+	StartedAt  sql.NullTime   `json:"started_at"`
+	FinishedAt sql.NullTime   `json:"finished_at"`
+	Success    sql.NullInt64  `json:"success"`
+	Output     sql.NullString `json:"output"`
+	Error      sql.NullString `json:"error"`
+}
+
+type CronJob struct {
+	ID        int64          `json:"id"`
+	Name      string         `json:"name"`
+	Schedule  string         `json:"schedule"`
+	Command   string         `json:"command"`
+	TaskType  string         `json:"task_type"`
+	Message   sql.NullString `json:"message"`
+	Deliver   sql.NullString `json:"deliver"`
+	Enabled   sql.NullInt64  `json:"enabled"`
+	LastRun   sql.NullTime   `json:"last_run"`
+	RunCount  sql.NullInt64  `json:"run_count"`
+	LastError sql.NullString `json:"last_error"`
+	CreatedAt sql.NullTime   `json:"created_at"`
+}
+
 type Lead struct {
 	ID        string         `json:"id"`
 	Email     string         `json:"email"`
@@ -59,11 +121,29 @@ type McpOauthToken struct {
 }
 
 type McpSession struct {
-	SessionID string         `json:"session_id"`
-	UserID    string         `json:"user_id"`
-	OrgID     sql.NullString `json:"org_id"`
-	CreatedAt int64          `json:"created_at"`
-	UpdatedAt int64          `json:"updated_at"`
+	SessionID string `json:"session_id"`
+	UserID    string `json:"user_id"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+type MemoriesFt struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Tags  string `json:"tags"`
+}
+
+type Memory struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
 }
 
 type Notification struct {
@@ -93,33 +173,19 @@ type OauthConnection struct {
 	UpdatedAt      int64          `json:"updated_at"`
 }
 
-type Organization struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Slug      string         `json:"slug"`
-	LogoUrl   sql.NullString `json:"logo_url"`
-	OwnerID   string         `json:"owner_id"`
-	CreatedAt int64          `json:"created_at"`
-	UpdatedAt int64          `json:"updated_at"`
-}
-
-type OrganizationInvite struct {
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	Email          string `json:"email"`
-	Role           string `json:"role"`
-	Token          string `json:"token"`
-	InvitedBy      string `json:"invited_by"`
-	ExpiresAt      int64  `json:"expires_at"`
-	CreatedAt      int64  `json:"created_at"`
-}
-
-type OrganizationMember struct {
-	ID             string `json:"id"`
-	OrganizationID string `json:"organization_id"`
-	UserID         string `json:"user_id"`
-	Role           string `json:"role"`
-	JoinedAt       int64  `json:"joined_at"`
+type ProviderModel struct {
+	ID            string          `json:"id"`
+	ProfileID     string          `json:"profile_id"`
+	ModelID       string          `json:"model_id"`
+	DisplayName   string          `json:"display_name"`
+	IsActive      sql.NullInt64   `json:"is_active"`
+	IsDefault     sql.NullInt64   `json:"is_default"`
+	ContextWindow sql.NullInt64   `json:"context_window"`
+	InputPrice    sql.NullFloat64 `json:"input_price"`
+	OutputPrice   sql.NullFloat64 `json:"output_price"`
+	Capabilities  sql.NullString  `json:"capabilities"`
+	CreatedAt     int64           `json:"created_at"`
+	UpdatedAt     int64           `json:"updated_at"`
 }
 
 type RefreshToken struct {
@@ -130,18 +196,30 @@ type RefreshToken struct {
 	CreatedAt int64  `json:"created_at"`
 }
 
-type Subscription struct {
-	ID                   string         `json:"id"`
-	UserID               string         `json:"user_id"`
-	StripeCustomerID     sql.NullString `json:"stripe_customer_id"`
-	StripeSubscriptionID sql.NullString `json:"stripe_subscription_id"`
-	PlanID               string         `json:"plan_id"`
-	Status               string         `json:"status"`
-	CurrentPeriodStart   sql.NullInt64  `json:"current_period_start"`
-	CurrentPeriodEnd     sql.NullInt64  `json:"current_period_end"`
-	CancelAtPeriodEnd    int64          `json:"cancel_at_period_end"`
-	CreatedAt            int64          `json:"created_at"`
-	UpdatedAt            int64          `json:"updated_at"`
+type Session struct {
+	ID              string         `json:"id"`
+	Name            sql.NullString `json:"name"`
+	Scope           sql.NullString `json:"scope"`
+	ScopeID         sql.NullString `json:"scope_id"`
+	Summary         sql.NullString `json:"summary"`
+	TokenCount      sql.NullInt64  `json:"token_count"`
+	MessageCount    sql.NullInt64  `json:"message_count"`
+	LastCompactedAt sql.NullInt64  `json:"last_compacted_at"`
+	Metadata        sql.NullString `json:"metadata"`
+	CreatedAt       int64          `json:"created_at"`
+	UpdatedAt       int64          `json:"updated_at"`
+}
+
+type SessionMessage struct {
+	ID            int64          `json:"id"`
+	SessionID     string         `json:"session_id"`
+	Role          string         `json:"role"`
+	Content       sql.NullString `json:"content"`
+	ToolCalls     sql.NullString `json:"tool_calls"`
+	ToolResults   sql.NullString `json:"tool_results"`
+	TokenEstimate sql.NullInt64  `json:"token_estimate"`
+	IsCompacted   sql.NullInt64  `json:"is_compacted"`
+	CreatedAt     int64          `json:"created_at"`
 }
 
 type User struct {
@@ -161,13 +239,12 @@ type User struct {
 }
 
 type UserPreference struct {
-	UserID                string         `json:"user_id"`
-	EmailNotifications    int64          `json:"email_notifications"`
-	MarketingEmails       int64          `json:"marketing_emails"`
-	Timezone              string         `json:"timezone"`
-	Language              string         `json:"language"`
-	Theme                 string         `json:"theme"`
-	UpdatedAt             int64          `json:"updated_at"`
-	CurrentOrganizationID sql.NullString `json:"current_organization_id"`
-	InappNotifications    int64          `json:"inapp_notifications"`
+	UserID             string `json:"user_id"`
+	EmailNotifications int64  `json:"email_notifications"`
+	MarketingEmails    int64  `json:"marketing_emails"`
+	Timezone           string `json:"timezone"`
+	Language           string `json:"language"`
+	Theme              string `json:"theme"`
+	UpdatedAt          int64  `json:"updated_at"`
+	InappNotifications int64  `json:"inapp_notifications"`
 }

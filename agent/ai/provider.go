@@ -43,11 +43,13 @@ type ToolDefinition struct {
 
 // ChatRequest represents a request to the AI provider
 type ChatRequest struct {
-	Messages    []session.Message `json:"messages"`
-	Tools       []ToolDefinition  `json:"tools,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
-	Temperature float64           `json:"temperature,omitempty"`
-	System      string            `json:"system,omitempty"`
+	Messages       []session.Message `json:"messages"`
+	Tools          []ToolDefinition  `json:"tools,omitempty"`
+	MaxTokens      int               `json:"max_tokens,omitempty"`
+	Temperature    float64           `json:"temperature,omitempty"`
+	System         string            `json:"system,omitempty"`
+	Model          string            `json:"model,omitempty"`           // Model override (e.g., "haiku", "sonnet", "opus")
+	EnableThinking bool              `json:"enable_thinking,omitempty"` // Enable extended thinking mode for reasoning
 }
 
 // Provider interface for AI providers

@@ -7,7 +7,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 )
 
 const cleanupOldMCPSessions = `-- name: CleanupOldMCPSessions :exec
@@ -32,18 +31,17 @@ func (q *Queries) DeleteMCPSession(ctx context.Context, sessionID string) error 
 
 const getMCPSession = `-- name: GetMCPSession :one
 
-SELECT session_id, user_id, org_id, created_at, updated_at FROM mcp_sessions
+SELECT session_id, user_id, created_at, updated_at FROM mcp_sessions
 WHERE session_id = ?
 `
 
-// MCP Session queries for organization selection persistence
+// MCP Session queries for session persistence
 func (q *Queries) GetMCPSession(ctx context.Context, sessionID string) (McpSession, error) {
 	row := q.db.QueryRowContext(ctx, getMCPSession, sessionID)
 	var i McpSession
 	err := row.Scan(
 		&i.SessionID,
 		&i.UserID,
-		&i.OrgID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -51,20 +49,19 @@ func (q *Queries) GetMCPSession(ctx context.Context, sessionID string) (McpSessi
 }
 
 const getMCPSessionByUser = `-- name: GetMCPSessionByUser :one
-SELECT session_id, user_id, org_id, created_at, updated_at FROM mcp_sessions
-WHERE user_id = ? AND org_id IS NOT NULL
+SELECT session_id, user_id, created_at, updated_at FROM mcp_sessions
+WHERE user_id = ?
 ORDER BY updated_at DESC
 LIMIT 1
 `
 
-// Fallback: get most recent org selection for a user (when session ID changes)
+// Get most recent session for a user
 func (q *Queries) GetMCPSessionByUser(ctx context.Context, userID string) (McpSession, error) {
 	row := q.db.QueryRowContext(ctx, getMCPSessionByUser, userID)
 	var i McpSession
 	err := row.Scan(
 		&i.SessionID,
 		&i.UserID,
-		&i.OrgID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -72,21 +69,19 @@ func (q *Queries) GetMCPSessionByUser(ctx context.Context, userID string) (McpSe
 }
 
 const upsertMCPSession = `-- name: UpsertMCPSession :exec
-INSERT INTO mcp_sessions (session_id, user_id, org_id, updated_at)
-VALUES (?, ?, ?, unixepoch())
+INSERT INTO mcp_sessions (session_id, user_id, updated_at)
+VALUES (?, ?, unixepoch())
 ON CONFLICT (session_id) DO UPDATE SET
-    org_id = excluded.org_id,
     updated_at = unixepoch()
 `
 
 type UpsertMCPSessionParams struct {
-	SessionID string         `json:"session_id"`
-	UserID    string         `json:"user_id"`
-	OrgID     sql.NullString `json:"org_id"`
+	SessionID string `json:"session_id"`
+	UserID    string `json:"user_id"`
 }
 
-// Persist org selection (upsert to handle both new and existing sessions)
+// Persist session (upsert to handle both new and existing sessions)
 func (q *Queries) UpsertMCPSession(ctx context.Context, arg UpsertMCPSessionParams) error {
-	_, err := q.db.ExecContext(ctx, upsertMCPSession, arg.SessionID, arg.UserID, arg.OrgID)
+	_, err := q.db.ExecContext(ctx, upsertMCPSession, arg.SessionID, arg.UserID)
 	return err
 }

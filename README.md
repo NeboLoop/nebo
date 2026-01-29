@@ -8,27 +8,27 @@ An open-source AI agent platform with computer control capabilities. Features a 
 - **Computer Control** - Browser automation, screenshots, file operations, shell commands
 - **Extensible** - Hot-loadable skills (YAML) and plugins (compiled binaries)
 - **Multi-Channel** - Telegram, Discord, Slack integrations
-- **Multi-Provider** - Anthropic, OpenAI, Gemini (CLI or API)
+- **Multi-Provider** - Anthropic, OpenAI, Google Gemini, DeepSeek, Ollama
 - **Persistent Sessions** - SQLite-backed conversation history with compaction
 - **MCP Server** - Expose tools to other AI assistants
 
 ## Quick Start
 
 ```bash
-# Build the CLI agent
-make build-cli
+# Build gobot
+make build
 
-# Configure (creates ~/.gobot/config.yaml)
-./bin/gobot-cli config init
+# Configure (creates ~/.gobot/)
+./bin/gobot config init
 
 # Set your API key
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Start chatting
-./bin/gobot-cli chat "Hello, what can you do?"
+./bin/gobot chat "Hello, what can you do?"
 
 # Interactive mode
-./bin/gobot-cli chat --interactive
+./bin/gobot chat --interactive
 ```
 
 ## Architecture
@@ -39,10 +39,10 @@ export ANTHROPIC_API_KEY=sk-ant-...
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │  AI Providers          │  Tool Registry                 │   │
-│  │  - Anthropic API       │  - bash, read, write, edit     │   │
-│  │  - OpenAI API          │  - glob, grep, web             │   │
-│  │  - Claude CLI          │  - browser, screenshot         │   │
-│  │  - Gemini CLI (free!)  │  - vision, memory, cron        │   │
+│  │  - Anthropic           │  - bash, read, write, edit     │   │
+│  │  - OpenAI              │  - glob, grep, web             │   │
+│  │  - Google Gemini       │  - browser, screenshot         │   │
+│  │  - DeepSeek, Ollama    │  - vision, memory, cron        │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
@@ -55,47 +55,99 @@ export ANTHROPIC_API_KEY=sk-ant-...
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │  SQLite Sessions       │  Config (~/.gobot/)            │   │
-│  │  - Conversation history│  - Provider settings           │   │
-│  │  - Auto-compaction     │  - Tool policies               │   │
+│  │  - Conversation history│  - models.yaml (credentials)   │   │
+│  │  - Auto-compaction     │  - config.yaml (policies)      │   │
 │  └─────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Configuration
 
-Configuration lives at `~/.gobot/config.yaml`:
+Configuration is split into two files in `~/.gobot/`:
+
+### `models.yaml` - Provider Credentials & Available Models
 
 ```yaml
-# AI Providers (supports multiple for failover)
-providers:
-  # API Providers
-  - name: anthropic-api
-    type: api
+version: "1.0"
+updatedAt: "2026-01-28T00:00:00Z"
+
+# Provider credentials (env vars supported)
+credentials:
+  anthropic:
     api_key: ${ANTHROPIC_API_KEY}
-    model: claude-sonnet-4-20250514
-
-  - name: openai-api
-    type: api
+  openai:
     api_key: ${OPENAI_API_KEY}
-    model: gpt-4o
+  google:
+    api_key: ${GOOGLE_API_KEY}
+  deepseek:
+    api_key: ${DEEPSEEK_API_KEY}
+  ollama:
+    base_url: http://localhost:11434
+  claude-code:                    # CLI provider (wraps claude CLI)
+    command: claude
+    args: "--print"
 
-  # CLI Providers (wrap official CLI tools)
-  - name: gemini-cli          # FREE: 1000 requests/day!
-    type: cli
-    command: gemini
+# Available models - set active: false to disable
+# GoBot autonomously chooses which model to use based on task
+providers:
+  anthropic:
+    - id: claude-sonnet-4-5
+      displayName: Claude Sonnet 4.5
+      contextWindow: 200000
+      active: true
+      pricing:
+        input: 3.00      # $ per 1M tokens
+        output: 15.00
+  openai:
+    - id: gpt-5.2
+      displayName: GPT-5.2
+      contextWindow: 400000
+      active: true
+      pricing:
+        input: 1.75
+        output: 14.00
+        cachedInput: 0.18
+  google:
+    - id: gemini-2.5-flash
+      displayName: Gemini 2.5 Flash
+      contextWindow: 1000000
+      active: true
+      pricing:
+        input: 0.30
+        output: 2.50
+  deepseek:
+    - id: deepseek-chat
+      displayName: DeepSeek Chat
+      contextWindow: 128000
+      active: true
+      pricing:
+        input: 0.28
+        output: 0.42
+  ollama:
+    - id: llama3.3
+      displayName: Llama 3.3
+      contextWindow: 128000
+      active: true
+```
 
-# Session settings
+### `config.yaml` - Agent Settings & Tool Policies
+
+```yaml
 max_context: 50               # Messages before auto-compaction
-max_iterations: 100           # Safety limit per run
+max_iterations: 100           # Safety limit per agentic run
 
 # Tool approval policy
 policy:
   level: allowlist            # deny, allowlist, or full
   ask_mode: on-miss           # off, on-miss, or always
   allowlist:
-    - "ls *"
-    - "cat *"
-    - "git *"
+    - ls
+    - pwd
+    - cat
+    - grep
+    - git status
+    - git log
+    - git diff
 ```
 
 ## Built-in Tools
@@ -362,8 +414,8 @@ Global Flags:
 
 ```bash
 # Build
-make build              # Build SaaS server
-make build-cli          # Build CLI agent
+make build              # Build unified binary (server + agent)
+make cli                # Build and install globally
 
 # Test
 go test ./...           # Run all tests
@@ -386,7 +438,7 @@ gobot/
 │   ├── skills/               # Skill loader
 │   ├── plugins/              # Plugin loader
 │   └── mcp/                  # MCP server
-├── cmd/gobot-cli/            # CLI entry point
+├── cmd/gobot/                # Unified CLI entry point
 ├── internal/                 # SaaS backend
 │   ├── agenthub/             # Agent WebSocket hub
 │   ├── channels/             # Telegram/Discord/Slack

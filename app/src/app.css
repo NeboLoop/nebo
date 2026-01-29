@@ -112,6 +112,23 @@
 	}
 }
 
+@keyframes bounce-once {
+	0% {
+		transform: scale(0);
+		opacity: 0;
+	}
+	50% {
+		transform: scale(1.2);
+	}
+	70% {
+		transform: scale(0.9);
+	}
+	100% {
+		transform: scale(1);
+		opacity: 1;
+	}
+}
+
 /* ===== Utilities ===== */
 @layer utilities {
 	.font-display {
@@ -128,6 +145,10 @@
 
 	.animate-slide-up {
 		animation: slide-up 0.6s ease forwards;
+	}
+
+	.animate-bounce-once {
+		animation: bounce-once 0.6s ease forwards;
 	}
 
 	/* Staggered animation delays */
@@ -231,7 +252,12 @@
 	}
 
 	.layout-app-header {
-		@apply sticky top-0 z-50 px-6 py-3 border-b;
+		@apply sticky top-0 z-50 px-6 border-b;
+		height: 56px;
+		min-height: 56px;
+		max-height: 56px;
+		display: flex;
+		align-items: center;
 		border-color: var(--color-base-700);
 		background: color-mix(in srgb, var(--color-base-900) 95%, transparent);
 		backdrop-filter: blur(12px);

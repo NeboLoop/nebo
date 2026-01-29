@@ -14,33 +14,6 @@ export {
 	type SessionExpiryState
 } from './auth';
 
-// Subscription store and related exports
-export {
-	subscription,
-	isPremium,
-	currentPlan,
-	usageStats,
-	subscriptionStatus,
-	isTrialing,
-	isCancelled,
-	subscriptionLoading,
-	subscriptionError,
-	type SubscriptionState
-} from './subscription';
-
-// Organization store and related exports
-export {
-	organization,
-	currentOrganization,
-	organizations,
-	organizationMembers,
-	organizationInvites,
-	organizationLoading,
-	organizationError,
-	hasOrganization,
-	type OrganizationState
-} from './organization';
-
 // Notification store and related exports
 export {
 	notification,
@@ -50,3 +23,9 @@ export {
 	notificationLoading,
 	type NotificationState
 } from './notification';
+
+// WebSocket: Use getWebSocketClient() from '$lib/websocket/client' instead
+// The existing WebSocket client is connected at layout level
+
+// Setup wizard store (Svelte 5 runes)
+export { setup, setupState, type SetupState } from './setup.svelte';

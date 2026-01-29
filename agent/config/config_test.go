@@ -13,9 +13,10 @@ func TestDefaultConfig(t *testing.T) {
 		t.Fatal("DefaultConfig returned nil")
 	}
 
-	// Check providers exist
-	if len(cfg.Providers) != 2 {
-		t.Errorf("expected 2 providers, got %d", len(cfg.Providers))
+	// Providers are now loaded from models.yaml, not hardcoded in DefaultConfig
+	// DefaultConfig returns empty providers slice
+	if cfg.Providers == nil {
+		t.Error("expected Providers to be non-nil (even if empty)")
 	}
 
 	// Check defaults
@@ -92,15 +93,21 @@ func TestEnsureDataDir(t *testing.T) {
 }
 
 func TestGetProvider(t *testing.T) {
-	cfg := DefaultConfig()
+	// Create config with test providers (providers are now loaded from models.yaml, not DefaultConfig)
+	cfg := &Config{
+		Providers: []ProviderConfig{
+			{Name: "anthropic", Type: "api", APIKey: "test-key", Model: "claude-sonnet-4-5"},
+			{Name: "openai", Type: "api", APIKey: "test-key", Model: "gpt-5.2"},
+		},
+	}
 
 	// Test existing provider
-	p := cfg.GetProvider("anthropic-api")
+	p := cfg.GetProvider("anthropic")
 	if p == nil {
 		t.Error("GetProvider returned nil for existing provider")
 	}
-	if p.Name != "anthropic-api" {
-		t.Errorf("expected provider name 'anthropic-api', got %s", p.Name)
+	if p.Name != "anthropic" {
+		t.Errorf("expected provider name 'anthropic', got %s", p.Name)
 	}
 
 	// Test non-existing provider
@@ -157,9 +164,8 @@ func TestFirstValidProvider(t *testing.T) {
 func TestLoadAndSave(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := &Config{
-		Providers: []ProviderConfig{
-			{Name: "test", Type: "api", APIKey: "test-key", Model: "test-model"},
-		},
+		// Note: Providers are NOT saved to config.yaml (yaml:"-" tag)
+		// They are loaded from models.yaml instead
 		DataDir:       tmpDir,
 		MaxContext:    100,
 		MaxIterations: 50,
@@ -188,11 +194,7 @@ func TestLoadAndSave(t *testing.T) {
 		t.Fatalf("LoadFrom failed: %v", err)
 	}
 
-	// Verify loaded values
-	if len(loaded.Providers) != 1 {
-		t.Errorf("expected 1 provider, got %d", len(loaded.Providers))
-	}
-
+	// Verify loaded values (providers come from models.yaml, not config.yaml)
 	if loaded.MaxContext != 100 {
 		t.Errorf("expected MaxContext 100, got %d", loaded.MaxContext)
 	}
@@ -200,15 +202,15 @@ func TestLoadAndSave(t *testing.T) {
 	if loaded.Policy.Level != "full" {
 		t.Errorf("expected policy level 'full', got %s", loaded.Policy.Level)
 	}
+
+	if len(loaded.Policy.Allowlist) != 2 {
+		t.Errorf("expected 2 allowlist entries, got %d", len(loaded.Policy.Allowlist))
+	}
 }
 
 func TestLoadNonExistent(t *testing.T) {
 	// Load should return defaults when config doesn't exist
-	origDataDir := DefaultDataDir()
-
-	// Temporarily change HOME to a non-existent location
-	tmpDir := t.TempDir()
-	cfg := &Config{DataDir: tmpDir}
+	// Note: providers are now loaded from models.yaml, not hardcoded in defaults
 
 	// Load should succeed with defaults
 	loaded, err := Load()
@@ -216,28 +218,30 @@ func TestLoadNonExistent(t *testing.T) {
 		t.Fatalf("Load failed for non-existent config: %v", err)
 	}
 
-	// Should have default values
-	if len(loaded.Providers) == 0 {
-		t.Error("expected default providers")
+	// Should have default config values (providers may or may not exist depending on models.yaml)
+	if loaded.MaxContext != 50 {
+		t.Errorf("expected MaxContext 50, got %d", loaded.MaxContext)
 	}
 
-	// Restore
-	_ = origDataDir
-	_ = cfg
+	if loaded.MaxIterations != 100 {
+		t.Errorf("expected MaxIterations 100, got %d", loaded.MaxIterations)
+	}
 }
 
 func TestEnvironmentVariableExpansion(t *testing.T) {
-	// Set a test env var
-	os.Setenv("TEST_API_KEY", "expanded-key")
-	defer os.Unsetenv("TEST_API_KEY")
+	// Set test env vars
+	os.Setenv("TEST_SERVER_URL", "http://test-server:8080")
+	os.Setenv("TEST_TOKEN", "expanded-token")
+	defer os.Unsetenv("TEST_SERVER_URL")
+	defer os.Unsetenv("TEST_TOKEN")
 
 	tmpDir := t.TempDir()
+	// Note: providers are loaded from models.yaml (yaml:"-" tag), not config.yaml
+	// Test env expansion on fields that ARE loaded from config.yaml
 	configContent := `
-providers:
-  - name: test
-    type: api
-    api_key: ${TEST_API_KEY}
-    model: test-model
+server_url: ${TEST_SERVER_URL}
+token: ${TEST_TOKEN}
+max_context: 75
 `
 	configPath := filepath.Join(tmpDir, "config.yaml")
 	err := os.WriteFile(configPath, []byte(configContent), 0600)
@@ -250,11 +254,15 @@ providers:
 		t.Fatalf("LoadFrom failed: %v", err)
 	}
 
-	if len(loaded.Providers) == 0 {
-		t.Fatal("no providers loaded")
+	if loaded.ServerURL != "http://test-server:8080" {
+		t.Errorf("expected expanded ServerURL 'http://test-server:8080', got %s", loaded.ServerURL)
 	}
 
-	if loaded.Providers[0].APIKey != "expanded-key" {
-		t.Errorf("expected expanded API key 'expanded-key', got %s", loaded.Providers[0].APIKey)
+	if loaded.Token != "expanded-token" {
+		t.Errorf("expected expanded Token 'expanded-token', got %s", loaded.Token)
+	}
+
+	if loaded.MaxContext != 75 {
+		t.Errorf("expected MaxContext 75, got %d", loaded.MaxContext)
 	}
 }

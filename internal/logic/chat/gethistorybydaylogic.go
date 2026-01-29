@@ -1,0 +1,75 @@
+package chat
+
+import (
+	"context"
+	"database/sql"
+	"time"
+
+	"gobot/internal/db"
+	"gobot/internal/svc"
+	"gobot/internal/types"
+
+	"github.com/zeromicro/go-zero/core/logx"
+)
+
+type GetHistoryByDayLogic struct {
+	logx.Logger
+	ctx    context.Context
+	svcCtx *svc.ServiceContext
+}
+
+// Get messages for a specific day
+func NewGetHistoryByDayLogic(ctx context.Context, svcCtx *svc.ServiceContext) *GetHistoryByDayLogic {
+	return &GetHistoryByDayLogic{
+		Logger: logx.WithContext(ctx),
+		ctx:    ctx,
+		svcCtx: svcCtx,
+	}
+}
+
+func (l *GetHistoryByDayLogic) GetHistoryByDay(req *types.GetHistoryByDayRequest) (resp *types.GetHistoryByDayResponse, err error) {
+	// Get companion chat first
+	chat, err := l.svcCtx.DB.GetCompanionChatByUser(l.ctx, sql.NullString{String: companionUserID, Valid: true})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No companion chat yet, return empty
+			return &types.GetHistoryByDayResponse{
+				Day:      req.Day,
+				Messages: []types.ChatMessage{},
+			}, nil
+		}
+		l.Errorf("Failed to get companion chat: %v", err)
+		return nil, err
+	}
+
+	// Get messages for the specified day
+	messages, err := l.svcCtx.DB.GetMessagesByDay(l.ctx, db.GetMessagesByDayParams{
+		ChatID:    chat.ID,
+		DayMarker: sql.NullString{String: req.Day, Valid: true},
+	})
+	if err != nil {
+		l.Errorf("Failed to get messages by day: %v", err)
+		return nil, err
+	}
+
+	msgList := make([]types.ChatMessage, len(messages))
+	for i, m := range messages {
+		metadata := ""
+		if m.Metadata.Valid {
+			metadata = m.Metadata.String
+		}
+		msgList[i] = types.ChatMessage{
+			Id:        m.ID,
+			ChatId:    m.ChatID,
+			Role:      m.Role,
+			Content:   m.Content,
+			Metadata:  metadata,
+			CreatedAt: time.Unix(m.CreatedAt, 0).Format(time.RFC3339),
+		}
+	}
+
+	return &types.GetHistoryByDayResponse{
+		Day:      req.Day,
+		Messages: msgList,
+	}, nil
+}

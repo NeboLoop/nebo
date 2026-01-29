@@ -3,15 +3,6 @@
 
 package types
 
-type AcceptInviteRequest struct {
-	Token string `json:"token"`
-}
-
-type AcceptInviteResponse struct {
-	Organization Organization `json:"organization"`
-	Message      string       `json:"message"`
-}
-
 type AgentConnectRequest struct {
 	AgentId string `json:"agentId"`
 }
@@ -19,15 +10,28 @@ type AgentConnectRequest struct {
 type AgentConnectResponse struct {
 	Connected bool   `json:"connected"`
 	AgentId   string `json:"agentId"`
-	OrgId     string `json:"orgId"`
 }
 
 type AgentInfo struct {
 	AgentId   string `json:"agentId"`
-	OrgId     string `json:"orgId"`
-	UserId    string `json:"userId"`
 	Connected bool   `json:"connected"`
 	CreatedAt string `json:"createdAt"`
+}
+
+type AgentSession struct {
+	Id           string `json:"id"`
+	Name         string `json:"name,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	MessageCount int    `json:"messageCount"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
+}
+
+type AgentSettings struct {
+	AutonomousMode   bool `json:"autonomousMode"`
+	AutoApproveRead  bool `json:"autoApproveRead"`
+	AutoApproveWrite bool `json:"autoApproveWrite"`
+	AutoApproveBash  bool `json:"autoApproveBash"`
 }
 
 type AgentStatusRequest struct {
@@ -36,7 +40,6 @@ type AgentStatusRequest struct {
 
 type AgentStatusResponse struct {
 	AgentId   string `json:"agentId"`
-	OrgId     string `json:"orgId"`
 	Connected bool   `json:"connected"`
 	Uptime    int64  `json:"uptime"`
 }
@@ -46,9 +49,47 @@ type AuthConfigResponse struct {
 	GitHubEnabled bool `json:"githubEnabled"`
 }
 
+type AuthProfile struct {
+	Id        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"` // anthropic, openai, google, ollama
+	Model     string `json:"model,omitempty"`
+	BaseUrl   string `json:"baseUrl,omitempty"`
+	Priority  int    `json:"priority"`
+	IsActive  bool   `json:"isActive"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+type CLIAvailability struct {
+	Claude bool `json:"claude"`
+	Codex  bool `json:"codex"`
+	Gemini bool `json:"gemini"`
+}
+
 type ChangePasswordRequest struct {
 	CurrentPassword string `json:"currentPassword"`
 	NewPassword     string `json:"newPassword"`
+}
+
+type Chat struct {
+	Id        string `json:"id"`
+	Title     string `json:"title"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+type ChatMessage struct {
+	Id        string `json:"id"`
+	ChatId    string `json:"chatId"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Metadata  string `json:"metadata,omitempty"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type CompleteSetupResponse struct {
+	Success bool `json:"success"`
 }
 
 type CreateAdminRequest struct {
@@ -64,25 +105,49 @@ type CreateAdminResponse struct {
 	User         User   `json:"user"`
 }
 
-type CreateOrganizationRequest struct {
-	Name    string `json:"name"`
-	Slug    string `json:"slug,optional"`
-	LogoUrl string `json:"logoUrl,optional"`
+type CreateAuthProfileRequest struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	ApiKey   string `json:"apiKey"`
+	Model    string `json:"model,optional"`
+	BaseUrl  string `json:"baseUrl,optional"`
+	Priority int    `json:"priority,optional"`
 }
 
-type CreateOrganizationResponse struct {
-	Organization Organization `json:"organization"`
+type CreateAuthProfileResponse struct {
+	Profile AuthProfile `json:"profile"`
+}
+
+type CreateChatRequest struct {
+	Title string `json:"title,optional"`
+}
+
+type CreateChatResponse struct {
+	Chat Chat `json:"chat"`
+}
+
+type DayInfo struct {
+	Day          string `json:"day"`
+	MessageCount int    `json:"messageCount"`
 }
 
 type DeleteAccountRequest struct {
 	Password string `json:"password"`
 }
 
-type DeleteNotificationRequest struct {
+type DeleteAgentSessionRequest struct {
 	Id string `path:"id"`
 }
 
-type DeleteOrganizationRequest struct {
+type DeleteAuthProfileRequest struct {
+	Id string `path:"id"`
+}
+
+type DeleteChatRequest struct {
+	Id string `path:"id"`
+}
+
+type DeleteNotificationRequest struct {
 	Id string `path:"id"`
 }
 
@@ -97,18 +162,73 @@ type EmailVerificationRequest struct {
 type Empty struct {
 }
 
+type ExtensionChannel struct {
+	Id   string `json:"id"`
+	Path string `json:"path"`
+}
+
+type ExtensionSkill struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Version     string   `json:"version"`
+	Triggers    []string `json:"triggers"`
+	Tools       []string `json:"tools"`
+	Priority    int      `json:"priority"`
+	Enabled     bool     `json:"enabled"`
+	FilePath    string   `json:"filePath"`
+}
+
+type ExtensionTool struct {
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	Schema           string `json:"schema,omitempty"`
+	RequiresApproval bool   `json:"requiresApproval"`
+	IsPlugin         bool   `json:"isPlugin"`
+	Path             string `json:"path,omitempty"`
+}
+
 type ForgotPasswordRequest struct {
 	Email string `json:"email"`
 }
 
-type GetInviteByTokenRequest struct {
-	Token string `path:"token"`
+type GetAgentSessionMessagesResponse struct {
+	Messages []SessionMessage `json:"messages"`
+	Total    int              `json:"total"`
 }
 
-type GetInviteByTokenResponse struct {
-	Invite           OrganizationInvite `json:"invite"`
-	OrganizationName string             `json:"organizationName"`
-	OrganizationSlug string             `json:"organizationSlug"`
+type GetAgentSessionRequest struct {
+	Id string `path:"id"`
+}
+
+type GetAgentSettingsResponse struct {
+	Settings AgentSettings `json:"settings"`
+}
+
+type GetAuthProfileRequest struct {
+	Id string `path:"id"`
+}
+
+type GetAuthProfileResponse struct {
+	Profile AuthProfile `json:"profile"`
+}
+
+type GetChatRequest struct {
+	Id string `path:"id"`
+}
+
+type GetChatResponse struct {
+	Chat          Chat          `json:"chat"`
+	Messages      []ChatMessage `json:"messages"`
+	TotalMessages int           `json:"totalMessages"` // Total messages in chat (may be more than returned)
+}
+
+type GetHistoryByDayRequest struct {
+	Day string `path:"day"`
+}
+
+type GetHistoryByDayResponse struct {
+	Day      string        `json:"day"`
+	Messages []ChatMessage `json:"messages"`
 }
 
 type GetOAuthUrlRequest struct {
@@ -121,17 +241,20 @@ type GetOAuthUrlResponse struct {
 	State string `json:"state"`
 }
 
-type GetOrganizationRequest struct {
-	Id string `path:"id"`
-}
-
-type GetOrganizationResponse struct {
-	Organization Organization `json:"organization"`
-	Role         string       `json:"role"`
+type GetPersonalityResponse struct {
+	Content string `json:"content"`
 }
 
 type GetPreferencesResponse struct {
 	Preferences UserPreferences `json:"preferences"`
+}
+
+type GetSkillRequest struct {
+	Name string `path:"name"`
+}
+
+type GetSkillResponse struct {
+	Skill ExtensionSkill `json:"skill"`
 }
 
 type GetUnreadCountResponse struct {
@@ -148,22 +271,12 @@ type HealthResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
-type InviteMemberRequest struct {
-	Id    string `path:"id"`
-	Email string `json:"email"`
-	Role  string `json:"role,optional"`
-}
-
-type InviteMemberResponse struct {
-	Invite OrganizationInvite `json:"invite"`
-}
-
-type LeaveOrganizationRequest struct {
-	Id string `path:"id"`
+type ListAgentSessionsResponse struct {
+	Sessions []AgentSession `json:"sessions"`
+	Total    int            `json:"total"`
 }
 
 type ListAgentsRequest struct {
-	OrgId string `path:"orgId,optional"`
 }
 
 type ListAgentsResponse struct {
@@ -171,20 +284,39 @@ type ListAgentsResponse struct {
 	Total  int         `json:"total"`
 }
 
-type ListInvitesRequest struct {
-	Id string `path:"id"`
+type ListAuthProfilesResponse struct {
+	Profiles []AuthProfile `json:"profiles"`
 }
 
-type ListInvitesResponse struct {
-	Invites []OrganizationInvite `json:"invites"`
+type ListChatDaysRequest struct {
+	Page     int `form:"page,optional"`
+	PageSize int `form:"pageSize,optional"`
 }
 
-type ListMembersRequest struct {
-	Id string `path:"id"`
+type ListChatDaysResponse struct {
+	Days []DayInfo `json:"days"`
 }
 
-type ListMembersResponse struct {
-	Members []OrganizationMember `json:"members"`
+type ListChatsRequest struct {
+	Page     int `form:"page,optional"`
+	PageSize int `form:"pageSize,optional"`
+}
+
+type ListChatsResponse struct {
+	Chats []Chat `json:"chats"`
+	Total int    `json:"total"`
+}
+
+type ListExtensionsResponse struct {
+	Tools    []ExtensionTool    `json:"tools"`
+	Skills   []ExtensionSkill   `json:"skills"`
+	Channels []ExtensionChannel `json:"channels"`
+}
+
+type ListModelsResponse struct {
+	Models        map[string][]ModelInfo `json:"models"`
+	TaskRouting   *TaskRouting           `json:"taskRouting,omitempty"`
+	AvailableCLIs *CLIAvailability       `json:"availableCLIs,omitempty"`
 }
 
 type ListNotificationsRequest struct {
@@ -201,10 +333,6 @@ type ListNotificationsResponse struct {
 
 type ListOAuthProvidersResponse struct {
 	Providers []OAuthProvider `json:"providers"`
-}
-
-type ListOrganizationsResponse struct {
-	Organizations []Organization `json:"organizations"`
 }
 
 type LoginRequest struct {
@@ -224,6 +352,21 @@ type MarkNotificationReadRequest struct {
 
 type MessageResponse struct {
 	Message string `json:"message"`
+}
+
+type ModelInfo struct {
+	Id            string        `json:"id"`
+	DisplayName   string        `json:"displayName"`
+	ContextWindow int           `json:"contextWindow,omitempty"`
+	Pricing       *ModelPricing `json:"pricing,omitempty"`
+	Capabilities  []string      `json:"capabilities,omitempty"`
+	IsActive      bool          `json:"isActive"`
+}
+
+type ModelPricing struct {
+	Input       float64 `json:"input,omitempty"`
+	Output      float64 `json:"output,omitempty"`
+	CachedInput float64 `json:"cachedInput,omitempty"`
 }
 
 type Notification struct {
@@ -256,37 +399,6 @@ type OAuthProvider struct {
 	Email     string `json:"email,omitempty"`
 }
 
-type Organization struct {
-	Id        string `json:"id"`
-	Name      string `json:"name"`
-	Slug      string `json:"slug"`
-	LogoUrl   string `json:"logoUrl,omitempty"`
-	OwnerId   string `json:"ownerId"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
-}
-
-type OrganizationInvite struct {
-	Id               string `json:"id"`
-	Email            string `json:"email"`
-	Role             string `json:"role"`
-	InviterName      string `json:"inviterName"`
-	InviterEmail     string `json:"inviterEmail"`
-	OrganizationName string `json:"organizationName,omitempty"`
-	ExpiresAt        string `json:"expiresAt"`
-	CreatedAt        string `json:"createdAt"`
-}
-
-type OrganizationMember struct {
-	Id        string `json:"id"`
-	UserId    string `json:"userId"`
-	Email     string `json:"email"`
-	Name      string `json:"name"`
-	AvatarUrl string `json:"avatarUrl,omitempty"`
-	Role      string `json:"role"`
-	JoinedAt  string `json:"joinedAt"`
-}
-
 type RefreshTokenRequest struct {
 	RefreshToken string `json:"refreshToken"`
 }
@@ -303,11 +415,6 @@ type RegisterRequest struct {
 	Name     string `json:"name"`
 }
 
-type RemoveMemberRequest struct {
-	OrgId  string `path:"orgId"`
-	UserId string `path:"userId"`
-}
-
 type ResendVerificationRequest struct {
 	Email string `json:"email"`
 }
@@ -317,31 +424,108 @@ type ResetPasswordRequest struct {
 	NewPassword string `json:"newPassword"`
 }
 
-type RevokeInviteRequest struct {
-	OrgId    string `path:"orgId"`
-	InviteId string `path:"inviteId"`
+type SearchChatMessagesRequest struct {
+	Query    string `form:"query"`
+	Page     int    `form:"page,optional"`
+	PageSize int    `form:"pageSize,optional"`
+}
+
+type SearchChatMessagesResponse struct {
+	Messages []ChatMessage `json:"messages"`
+	Total    int           `json:"total"`
+}
+
+type SendMessageRequest struct {
+	ChatId  string `json:"chatId"`
+	Content string `json:"content"`
+	Role    string `json:"role,optional"`
+}
+
+type SendMessageResponse struct {
+	Message ChatMessage `json:"message"`
+	ChatId  string      `json:"chatId"`
+}
+
+type SessionMessage struct {
+	Id        int    `json:"id"`
+	Role      string `json:"role"`
+	Content   string `json:"content,omitempty"`
+	CreatedAt string `json:"createdAt"`
 }
 
 type SetupStatusResponse struct {
 	SetupRequired bool `json:"setupRequired"`
 	HasAdmin      bool `json:"hasAdmin"`
+	SetupComplete bool `json:"setupComplete"`
 }
 
-type SwitchOrganizationRequest struct {
-	OrganizationId string `json:"organizationId"`
+type SimpleAgentStatusResponse struct {
+	Connected bool   `json:"connected"`
+	AgentId   string `json:"agentId,omitempty"`
+	Uptime    int64  `json:"uptime,omitempty"`
 }
 
-type UpdateMemberRoleRequest struct {
-	OrgId  string `path:"orgId"`
-	UserId string `path:"userId"`
-	Role   string `json:"role"`
+type TaskRouting struct {
+	Vision    string              `json:"vision,omitempty"`
+	Reasoning string              `json:"reasoning,omitempty"`
+	Code      string              `json:"code,omitempty"`
+	General   string              `json:"general,omitempty"`
+	Fallbacks map[string][]string `json:"fallbacks,omitempty"`
 }
 
-type UpdateOrganizationRequest struct {
-	Id      string `path:"id"`
-	Name    string `json:"name,optional"`
-	Slug    string `json:"slug,optional"`
-	LogoUrl string `json:"logoUrl,optional"`
+type TestAuthProfileRequest struct {
+	Id string `path:"id"`
+}
+
+type TestAuthProfileResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Model   string `json:"model,omitempty"`
+}
+
+type ToggleModelRequest struct {
+	Provider string `path:"provider"`
+	ModelId  string `path:"modelId"`
+	Active   bool   `json:"active"`
+}
+
+type ToggleSkillRequest struct {
+	Name string `path:"name"`
+}
+
+type ToggleSkillResponse struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+type UpdateAgentSettingsRequest struct {
+	AutonomousMode   bool `json:"autonomousMode"`
+	AutoApproveRead  bool `json:"autoApproveRead"`
+	AutoApproveWrite bool `json:"autoApproveWrite"`
+	AutoApproveBash  bool `json:"autoApproveBash"`
+}
+
+type UpdateAuthProfileRequest struct {
+	Id       string `path:"id"`
+	Name     string `json:"name,optional"`
+	ApiKey   string `json:"apiKey,optional"`
+	Model    string `json:"model,optional"`
+	BaseUrl  string `json:"baseUrl,optional"`
+	Priority int    `json:"priority,optional"`
+	IsActive bool   `json:"isActive,optional"`
+}
+
+type UpdateChatRequest struct {
+	Id    string `path:"id"`
+	Title string `json:"title"`
+}
+
+type UpdatePersonalityRequest struct {
+	Content string `json:"content"`
+}
+
+type UpdatePersonalityResponse struct {
+	Success bool `json:"success"`
 }
 
 type UpdatePreferencesRequest struct {
@@ -350,6 +534,14 @@ type UpdatePreferencesRequest struct {
 	Timezone           string `json:"timezone,optional"`
 	Language           string `json:"language,optional"`
 	Theme              string `json:"theme,optional"`
+}
+
+type UpdateTaskRoutingRequest struct {
+	Vision    string              `json:"vision,omitempty"`
+	Reasoning string              `json:"reasoning,omitempty"`
+	Code      string              `json:"code,omitempty"`
+	General   string              `json:"general,omitempty"`
+	Fallbacks map[string][]string `json:"fallbacks,omitempty"`
 }
 
 type UpdateUserRequest struct {

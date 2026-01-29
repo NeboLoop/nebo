@@ -122,9 +122,15 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 			}
 		}
 
+		// Use request model override if provided, otherwise use provider default
+		model := p.model
+		if req.Model != "" {
+			model = req.Model
+		}
+
 		// Build request
 		ollamaReq := OllamaRequest{
-			Model:    p.model,
+			Model:    model,
 			Messages: messages,
 			Stream:   true,
 		}

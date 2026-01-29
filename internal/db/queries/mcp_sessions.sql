@@ -1,22 +1,21 @@
--- MCP Session queries for organization selection persistence
+-- MCP Session queries for session persistence
 
 -- name: GetMCPSession :one
 SELECT * FROM mcp_sessions
 WHERE session_id = ?;
 
 -- name: GetMCPSessionByUser :one
--- Fallback: get most recent org selection for a user (when session ID changes)
+-- Get most recent session for a user
 SELECT * FROM mcp_sessions
-WHERE user_id = ? AND org_id IS NOT NULL
+WHERE user_id = ?
 ORDER BY updated_at DESC
 LIMIT 1;
 
 -- name: UpsertMCPSession :exec
--- Persist org selection (upsert to handle both new and existing sessions)
-INSERT INTO mcp_sessions (session_id, user_id, org_id, updated_at)
-VALUES (?, ?, ?, unixepoch())
+-- Persist session (upsert to handle both new and existing sessions)
+INSERT INTO mcp_sessions (session_id, user_id, updated_at)
+VALUES (?, ?, unixepoch())
 ON CONFLICT (session_id) DO UPDATE SET
-    org_id = excluded.org_id,
     updated_at = unixepoch();
 
 -- name: DeleteMCPSession :exec

@@ -9,7 +9,7 @@ import (
 	"gobot/internal/types"
 )
 
-// List connected agents for organization
+// List connected agents
 func ListAgentsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.ListAgentsRequest

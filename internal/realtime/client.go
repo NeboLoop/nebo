@@ -116,20 +116,8 @@ func (c *Client) writePump() {
 				return
 			}
 
-			w, err := c.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			w.Write(message)
-
-			// Add queued messages to the current websocket message
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.send)
-			}
-
-			if err := w.Close(); err != nil {
+				// Send each message as its own WebSocket frame for proper streaming
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 				return
 			}
 
@@ -162,20 +150,71 @@ type MessageHandler func(c *Client, msg *Message)
 // rewriteHandler is set by the rewrite package to handle rewrite messages
 var rewriteHandler MessageHandler
 
+// chatHandler is set to handle chat messages
+var chatHandler MessageHandler
+
+// approvalResponseHandler is set to handle approval responses
+var approvalResponseHandler MessageHandler
+
 // SetRewriteHandler sets the handler for rewrite messages
 func SetRewriteHandler(handler MessageHandler) {
 	rewriteHandler = handler
 }
 
+// SetChatHandler sets the handler for chat messages
+func SetChatHandler(handler MessageHandler) {
+	chatHandler = handler
+}
+
+// SetApprovalResponseHandler sets the handler for approval responses
+func SetApprovalResponseHandler(handler MessageHandler) {
+	approvalResponseHandler = handler
+}
+
 // handleMessage processes incoming messages from the client
 func (c *Client) handleMessage(msg *Message) {
+	logx.Infof("[Client] Received message type=%s from client %s", msg.Type, c.ID)
 	switch msg.Type {
 	case "ping":
 		c.handlePing(msg)
 	case "rewrite":
 		c.handleRewrite(msg)
+	case "chat":
+		c.handleChat(msg)
+	case "approval_response":
+		c.handleApprovalResponse(msg)
 	default:
 		logx.Infof("Unknown message type: %s", msg.Type)
+	}
+}
+
+// handleApprovalResponse processes approval responses from the client
+func (c *Client) handleApprovalResponse(msg *Message) {
+	if approvalResponseHandler != nil {
+		approvalResponseHandler(c, msg)
+	} else {
+		logx.Error("Approval response handler not registered")
+	}
+}
+
+// handleChat processes chat messages
+func (c *Client) handleChat(msg *Message) {
+	logx.Infof("[Client] handleChat called: session=%v", msg.Data["session_id"])
+	if chatHandler != nil {
+		chatHandler(c, msg)
+	} else {
+		logx.Error("Chat handler not registered")
+		// Send error back to client
+		errMsg := &Message{
+			Type:      "error",
+			Data:      map[string]interface{}{"error": "Chat handler not available", "session_id": msg.Data["session_id"]},
+			Timestamp: time.Now(),
+		}
+		data, _ := json.Marshal(errMsg)
+		select {
+		case c.send <- data:
+		default:
+		}
 	}
 }
 

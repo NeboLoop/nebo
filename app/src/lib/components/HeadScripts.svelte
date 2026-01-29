@@ -46,8 +46,8 @@
 	<meta name="googlebot" content="index, follow" />
 
 	<!-- Author and Copyright -->
-	<meta name="author" content="Gobot" />
-	<meta name="copyright" content="Gobot" />
+	<meta name="author" content="GoBot" />
+	<meta name="copyright" content="GoBot" />
 
 	<!-- Language -->
 	<meta property="og:locale" content="en_US" />

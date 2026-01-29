@@ -10,11 +10,55 @@ export function healthCheck() {
 }
 
 /**
- * @description "List connected agents for organization"
+ * @description "List agent sessions"
+ */
+export function listAgentSessions() {
+	return webapi.get<components.ListAgentSessionsResponse>(`/api/v1/agent/sessions`)
+}
+
+/**
+ * @description "Delete agent session"
  * @param params
  */
-export function listAgents(params: components.ListAgentsRequestParams, orgId: string) {
-	return webapi.get<components.ListAgentsResponse>(`/api/v1/agents`, params)
+export function deleteAgentSession(params: components.DeleteAgentSessionRequestParams, id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/agent/sessions/${id}`, params)
+}
+
+/**
+ * @description "Get session messages"
+ * @param params
+ */
+export function getAgentSessionMessages(params: components.GetAgentSessionRequestParams, id: string) {
+	return webapi.get<components.GetAgentSessionMessagesResponse>(`/api/v1/agent/sessions/${id}/messages`, params)
+}
+
+/**
+ * @description "Get agent settings"
+ */
+export function getAgentSettings() {
+	return webapi.get<components.GetAgentSettingsResponse>(`/api/v1/agent/settings`)
+}
+
+/**
+ * @description "Update agent settings"
+ * @param req
+ */
+export function updateAgentSettings(req: components.UpdateAgentSettingsRequest) {
+	return webapi.put<components.GetAgentSettingsResponse>(`/api/v1/agent/settings`, req)
+}
+
+/**
+ * @description "Get simple agent status (single agent model)"
+ */
+export function getSimpleAgentStatus() {
+	return webapi.get<components.SimpleAgentStatusResponse>(`/api/v1/agent/status`)
+}
+
+/**
+ * @description "List connected agents"
+ */
+export function listAgents() {
+	return webapi.get<components.ListAgentsResponse>(`/api/v1/agents`)
 }
 
 /**
@@ -89,6 +133,109 @@ export function verifyEmail(req: components.EmailVerificationRequest) {
 }
 
 /**
+ * @description "List user chats"
+ * @param params
+ */
+export function listChats(params: components.ListChatsRequestParams) {
+	return webapi.get<components.ListChatsResponse>(`/api/v1/chats`, params)
+}
+
+/**
+ * @description "Create new chat"
+ * @param req
+ */
+export function createChat(req: components.CreateChatRequest) {
+	return webapi.post<components.CreateChatResponse>(`/api/v1/chats`, req)
+}
+
+/**
+ * @description "Get chat with messages"
+ * @param params
+ */
+export function getChat(params: components.GetChatRequestParams, id: string) {
+	return webapi.get<components.GetChatResponse>(`/api/v1/chats/${id}`, params)
+}
+
+/**
+ * @description "Update chat title"
+ * @param params
+ * @param req
+ */
+export function updateChat(params: components.UpdateChatRequestParams, req: components.UpdateChatRequest, id: string) {
+	return webapi.put<components.Chat>(`/api/v1/chats/${id}`, params, req)
+}
+
+/**
+ * @description "Delete chat"
+ * @param params
+ */
+export function deleteChat(params: components.DeleteChatRequestParams, id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/chats/${id}`, params)
+}
+
+/**
+ * @description "Get companion chat (auto-creates if needed)"
+ */
+export function getCompanionChat() {
+	return webapi.get<components.GetChatResponse>(`/api/v1/chats/companion`)
+}
+
+/**
+ * @description "List days with messages for history browsing"
+ * @param params
+ */
+export function listChatDays(params: components.ListChatDaysRequestParams) {
+	return webapi.get<components.ListChatDaysResponse>(`/api/v1/chats/days`, params)
+}
+
+/**
+ * @description "Get messages for a specific day"
+ * @param params
+ */
+export function getHistoryByDay(params: components.GetHistoryByDayRequestParams, day: string) {
+	return webapi.get<components.GetHistoryByDayResponse>(`/api/v1/chats/history/${day}`, params)
+}
+
+/**
+ * @description "Send message (creates chat if needed)"
+ * @param req
+ */
+export function sendMessage(req: components.SendMessageRequest) {
+	return webapi.post<components.SendMessageResponse>(`/api/v1/chats/message`, req)
+}
+
+/**
+ * @description "Search chat messages"
+ * @param params
+ */
+export function searchChatMessages(params: components.SearchChatMessagesRequestParams) {
+	return webapi.get<components.SearchChatMessagesResponse>(`/api/v1/chats/search`, params)
+}
+
+/**
+ * @description "List all extensions (tools, skills, plugins)"
+ */
+export function listExtensions() {
+	return webapi.get<components.ListExtensionsResponse>(`/api/v1/extensions`)
+}
+
+/**
+ * @description "Get single skill details"
+ * @param params
+ */
+export function getSkill(params: components.GetSkillRequestParams, name: string) {
+	return webapi.get<components.GetSkillResponse>(`/api/v1/skills/${name}`, params)
+}
+
+/**
+ * @description "Toggle skill enabled/disabled"
+ * @param params
+ */
+export function toggleSkill(params: components.ToggleSkillRequestParams, name: string) {
+	return webapi.post<components.ToggleSkillResponse>(`/api/v1/skills/${name}/toggle`, params)
+}
+
+/**
  * @description "List user notifications"
  * @param params
  */
@@ -159,125 +306,75 @@ export function listOAuthProviders() {
 }
 
 /**
- * @description "Create a new organization"
- * @param req
+ * @description "List all available models from YAML cache"
  */
-export function createOrganization(req: components.CreateOrganizationRequest) {
-	return webapi.post<components.CreateOrganizationResponse>(`/api/v1/organizations`, req)
+export function listModels() {
+	return webapi.get<components.ListModelsResponse>(`/api/v1/models`)
 }
 
 /**
- * @description "List user's organizations"
- */
-export function listOrganizations() {
-	return webapi.get<components.ListOrganizationsResponse>(`/api/v1/organizations`)
-}
-
-/**
- * @description "Get organization by ID"
- * @param params
- */
-export function getOrganization(params: components.GetOrganizationRequestParams, id: string) {
-	return webapi.get<components.GetOrganizationResponse>(`/api/v1/organizations/${id}`, params)
-}
-
-/**
- * @description "Update organization"
+ * @description "Toggle model active status"
  * @param params
  * @param req
  */
-export function updateOrganization(params: components.UpdateOrganizationRequestParams, req: components.UpdateOrganizationRequest, id: string) {
-	return webapi.put<components.GetOrganizationResponse>(`/api/v1/organizations/${id}`, params, req)
+export function toggleModel(params: components.ToggleModelRequestParams, req: components.ToggleModelRequest, provider: string, modelId: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/models/${provider}/${modelId}`, params, req)
 }
 
 /**
- * @description "Delete organization"
+ * @description "Update task routing configuration"
+ * @param req
+ */
+export function updateTaskRouting(req: components.UpdateTaskRoutingRequest) {
+	return webapi.put<components.MessageResponse>(`/api/v1/models/task-routing`, req)
+}
+
+/**
+ * @description "List all auth profiles (API keys)"
+ */
+export function listAuthProfiles() {
+	return webapi.get<components.ListAuthProfilesResponse>(`/api/v1/providers`)
+}
+
+/**
+ * @description "Create a new auth profile"
+ * @param req
+ */
+export function createAuthProfile(req: components.CreateAuthProfileRequest) {
+	return webapi.post<components.CreateAuthProfileResponse>(`/api/v1/providers`, req)
+}
+
+/**
+ * @description "Get auth profile by ID"
  * @param params
  */
-export function deleteOrganization(params: components.DeleteOrganizationRequestParams, id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/organizations/${id}`, params)
+export function getAuthProfile(params: components.GetAuthProfileRequestParams, id: string) {
+	return webapi.get<components.GetAuthProfileResponse>(`/api/v1/providers/${id}`, params)
 }
 
 /**
- * @description "Invite member to organization"
+ * @description "Update auth profile"
  * @param params
  * @param req
  */
-export function inviteMember(params: components.InviteMemberRequestParams, req: components.InviteMemberRequest, id: string) {
-	return webapi.post<components.InviteMemberResponse>(`/api/v1/organizations/${id}/invites`, params, req)
+export function updateAuthProfile(params: components.UpdateAuthProfileRequestParams, req: components.UpdateAuthProfileRequest, id: string) {
+	return webapi.put<components.GetAuthProfileResponse>(`/api/v1/providers/${id}`, params, req)
 }
 
 /**
- * @description "List pending invites"
+ * @description "Delete auth profile"
  * @param params
  */
-export function listInvites(params: components.ListInvitesRequestParams, id: string) {
-	return webapi.get<components.ListInvitesResponse>(`/api/v1/organizations/${id}/invites`, params)
+export function deleteAuthProfile(params: components.DeleteAuthProfileRequestParams, id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/providers/${id}`, params)
 }
 
 /**
- * @description "Leave organization"
+ * @description "Test auth profile (verify API key works)"
  * @param params
  */
-export function leaveOrganization(params: components.LeaveOrganizationRequestParams, id: string) {
-	return webapi.post<components.MessageResponse>(`/api/v1/organizations/${id}/leave`, params)
-}
-
-/**
- * @description "List organization members"
- * @param params
- */
-export function listMembers(params: components.ListMembersRequestParams, id: string) {
-	return webapi.get<components.ListMembersResponse>(`/api/v1/organizations/${id}/members`, params)
-}
-
-/**
- * @description "Revoke invite"
- * @param params
- */
-export function revokeInvite(params: components.RevokeInviteRequestParams, orgId: string, inviteId: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/organizations/${orgId}/invites/${inviteId}`, params)
-}
-
-/**
- * @description "Update member role"
- * @param params
- * @param req
- */
-export function updateMemberRole(params: components.UpdateMemberRoleRequestParams, req: components.UpdateMemberRoleRequest, orgId: string, userId: string) {
-	return webapi.put<components.MessageResponse>(`/api/v1/organizations/${orgId}/members/${userId}`, params, req)
-}
-
-/**
- * @description "Remove member from organization"
- * @param params
- */
-export function removeMember(params: components.RemoveMemberRequestParams, orgId: string, userId: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/organizations/${orgId}/members/${userId}`, params)
-}
-
-/**
- * @description "Accept organization invite"
- * @param req
- */
-export function acceptInvite(req: components.AcceptInviteRequest) {
-	return webapi.post<components.AcceptInviteResponse>(`/api/v1/organizations/invites/accept`, req)
-}
-
-/**
- * @description "Switch current organization"
- * @param req
- */
-export function switchOrganization(req: components.SwitchOrganizationRequest) {
-	return webapi.post<components.MessageResponse>(`/api/v1/organizations/switch`, req)
-}
-
-/**
- * @description "Get invite details by token"
- * @param params
- */
-export function getInviteByToken(params: components.GetInviteByTokenRequestParams, token: string) {
-	return webapi.get<components.GetInviteByTokenResponse>(`/api/v1/organizations/invites/${token}`, params)
+export function testAuthProfile(params: components.TestAuthProfileRequestParams, id: string) {
+	return webapi.post<components.TestAuthProfileResponse>(`/api/v1/providers/${id}/test`, params)
 }
 
 /**
@@ -286,6 +383,28 @@ export function getInviteByToken(params: components.GetInviteByTokenRequestParam
  */
 export function createAdmin(req: components.CreateAdminRequest) {
 	return webapi.post<components.CreateAdminResponse>(`/api/v1/setup/admin`, req)
+}
+
+/**
+ * @description "Mark initial setup as complete"
+ */
+export function completeSetup() {
+	return webapi.post<components.CompleteSetupResponse>(`/api/v1/setup/complete`)
+}
+
+/**
+ * @description "Get AI personality configuration"
+ */
+export function getPersonality() {
+	return webapi.get<components.GetPersonalityResponse>(`/api/v1/setup/personality`)
+}
+
+/**
+ * @description "Update AI personality configuration"
+ * @param req
+ */
+export function updatePersonality(req: components.UpdatePersonalityRequest) {
+	return webapi.put<components.UpdatePersonalityResponse>(`/api/v1/setup/personality`, req)
 }
 
 /**

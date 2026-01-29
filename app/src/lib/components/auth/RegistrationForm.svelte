@@ -6,12 +6,11 @@
 	import { tick } from 'svelte';
 
 	interface Props {
-		plan?: string;
-		onSuccess?: (checkoutUrl?: string) => void;
+		onSuccess?: () => void;
 		onLoginClick?: () => void;
 	}
 
-	let { plan = 'free', onSuccess, onLoginClick }: Props = $props();
+	let { onSuccess, onLoginClick }: Props = $props();
 
 	let name = $state('');
 	let email = $state('');
@@ -179,12 +178,11 @@
 		const result = await auth.register({
 			name: name.trim(),
 			email: email.trim(),
-			password,
-			plan
+			password
 		});
 
 		if (result.success) {
-			onSuccess?.(result.checkoutUrl);
+			onSuccess?.();
 		}
 	}
 </script>

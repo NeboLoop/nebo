@@ -209,36 +209,59 @@ func TestParseLine(t *testing.T) {
 		name     string
 		line     string
 		expected StreamEventType
+		text     string
 	}{
 		{
 			name:     "plain text",
 			line:     "Hello world",
 			expected: EventTypeText,
+			text:     "Hello world\n",
 		},
 		{
-			name:     "json text event",
-			line:     `{"type": "text", "text": "Hello"}`,
+			name:     "empty line",
+			line:     "",
 			expected: EventTypeText,
+			text:     "",
 		},
 		{
-			name:     "json tool call",
-			line:     `{"type": "tool_use", "id": "123", "name": "bash", "input": {"cmd": "ls"}}`,
+			name:     "content_block_delta text",
+			line:     `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
+			expected: EventTypeText,
+			text:     "Hello",
+		},
+		{
+			name:     "content_block_delta thinking",
+			line:     `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think..."}}`,
+			expected: EventTypeThinking,
+			text:     "Let me think...",
+		},
+		{
+			name:     "content_block_start tool_use",
+			line:     `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_123","name":"Bash","input":{}}}`,
 			expected: EventTypeToolCall,
 		},
 		{
-			name:     "json thinking",
-			line:     `{"type": "thinking", "text": "Let me think..."}`,
-			expected: EventTypeThinking,
+			name:     "result",
+			line:     `{"type":"result","result":"Final output here"}`,
+			expected: EventTypeText,
+			text:     "Final output here",
 		},
 		{
-			name:     "json error",
-			line:     `{"type": "error", "message": "Something went wrong"}`,
+			name:     "error",
+			line:     `{"type":"error","error":"Something went wrong"}`,
 			expected: EventTypeError,
 		},
 		{
-			name:     "json with content field",
-			line:     `{"content": "Some content here"}`,
+			name:     "message_stop",
+			line:     `{"type":"message_stop"}`,
 			expected: EventTypeText,
+			text:     "",
+		},
+		{
+			name:     "system message",
+			line:     `{"type":"system","message":"Initializing..."}`,
+			expected: EventTypeText,
+			text:     "[system] Initializing...\n",
 		},
 	}
 
@@ -247,6 +270,9 @@ func TestParseLine(t *testing.T) {
 			event := p.parseLine(tt.line)
 			if event.Type != tt.expected {
 				t.Errorf("expected type %s, got %s", tt.expected, event.Type)
+			}
+			if tt.text != "" && event.Text != tt.text {
+				t.Errorf("expected text %q, got %q", tt.text, event.Text)
 			}
 		})
 	}

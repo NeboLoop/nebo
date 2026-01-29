@@ -16,8 +16,7 @@ import (
 const (
 	anthropicAPIURL     = "https://api.anthropic.com/v1/messages"
 	anthropicAPIVersion = "2023-06-01"
-	defaultModel        = "claude-sonnet-4-20250514"
-	defaultMaxTokens    = 4096
+	defaultMaxTokens    = 8192
 )
 
 // AnthropicProvider implements the Anthropic Claude API
@@ -28,10 +27,8 @@ type AnthropicProvider struct {
 }
 
 // NewAnthropicProvider creates a new Anthropic provider
+// Model should be provided from models.yaml config - do NOT hardcode model IDs
 func NewAnthropicProvider(apiKey, model string) *AnthropicProvider {
-	if model == "" {
-		model = defaultModel
-	}
 	return &AnthropicProvider{
 		apiKey: apiKey,
 		model:  model,
@@ -91,8 +88,14 @@ func (p *AnthropicProvider) buildRequest(req *ChatRequest) map[string]interface{
 		}
 	}
 
+	// Use request model override if provided, otherwise use provider default
+	model := p.model
+	if req.Model != "" {
+		model = req.Model
+	}
+
 	result := map[string]interface{}{
-		"model":      p.model,
+		"model":      model,
 		"messages":   messages,
 		"max_tokens": defaultMaxTokens,
 		"stream":     true,
@@ -116,6 +119,18 @@ func (p *AnthropicProvider) buildRequest(req *ChatRequest) map[string]interface{
 			})
 		}
 		result["tools"] = tools
+	}
+
+	// Enable extended thinking mode for reasoning tasks
+	if req.EnableThinking {
+		result["thinking"] = map[string]interface{}{
+			"type":         "enabled",
+			"budget_tokens": 10000, // Allow up to 10K tokens for thinking
+		}
+		// Increase max tokens to accommodate thinking output
+		if req.MaxTokens <= 0 {
+			result["max_tokens"] = 16384
+		}
 	}
 
 	return result

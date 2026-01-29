@@ -15,9 +15,9 @@ export const site = {
 	// REQUIRED: Update these for your site
 	// ============================================
 
-	name: 'Gobot',
-	tagline: 'Ship your SaaS in days, not months',
-	description: 'The fastest way to launch your SaaS. Authentication, billing, and user management out of the box.',
+	name: 'GoBot',
+	tagline: 'Your AI Agent Platform',
+	description: 'Build and deploy AI agents with tool use, multi-provider support, and channel integrations.',
 
 	// Your production URL (no trailing slash)
 	url: 'https://example.com',

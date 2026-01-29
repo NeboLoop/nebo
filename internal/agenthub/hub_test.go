@@ -41,8 +41,6 @@ func TestHubAddRemoveAgent(t *testing.T) {
 	// Create mock agent connection (Conn is nil for unit tests)
 	agent := &AgentConnection{
 		ID:        "agent-1",
-		OrgID:     "org-1",
-		UserID:    "user-1",
 		Send:      make(chan []byte, 256),
 		CreatedAt: time.Now(),
 		// Conn is nil - hub.removeAgent handles this safely
@@ -53,7 +51,7 @@ func TestHubAddRemoveAgent(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Verify agent was added
-	retrieved := hub.GetAgent("org-1", "agent-1")
+	retrieved := hub.GetAgent("agent-1")
 	if retrieved == nil {
 		t.Error("agent not found after registration")
 	}
@@ -66,13 +64,13 @@ func TestHubAddRemoveAgent(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Verify agent was removed
-	retrieved = hub.GetAgent("org-1", "agent-1")
+	retrieved = hub.GetAgent("agent-1")
 	if retrieved != nil {
 		t.Error("agent should be removed after unregistration")
 	}
 }
 
-func TestGetAgentsForOrg(t *testing.T) {
+func TestGetAllAgents(t *testing.T) {
 	hub := NewHub()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -80,15 +78,15 @@ func TestGetAgentsForOrg(t *testing.T) {
 	go hub.Run(ctx)
 	time.Sleep(10 * time.Millisecond)
 
-	// Add multiple agents to same org
+	// Add multiple agents
 	agent1 := &AgentConnection{
-		ID: "agent-1", OrgID: "org-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 	agent2 := &AgentConnection{
-		ID: "agent-2", OrgID: "org-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-2", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 	agent3 := &AgentConnection{
-		ID: "agent-3", OrgID: "org-2", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-3", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 
 	hub.register <- agent1
@@ -96,22 +94,10 @@ func TestGetAgentsForOrg(t *testing.T) {
 	hub.register <- agent3
 	time.Sleep(20 * time.Millisecond)
 
-	// Get agents for org-1
-	agents := hub.GetAgentsForOrg("org-1")
-	if len(agents) != 2 {
-		t.Errorf("expected 2 agents for org-1, got %d", len(agents))
-	}
-
-	// Get agents for org-2
-	agents = hub.GetAgentsForOrg("org-2")
-	if len(agents) != 1 {
-		t.Errorf("expected 1 agent for org-2, got %d", len(agents))
-	}
-
-	// Get agents for non-existent org
-	agents = hub.GetAgentsForOrg("org-nonexistent")
-	if len(agents) != 0 {
-		t.Errorf("expected 0 agents for non-existent org, got %d", len(agents))
+	// Get all agents
+	agents := hub.GetAllAgents()
+	if len(agents) != 3 {
+		t.Errorf("expected 3 agents, got %d", len(agents))
 	}
 }
 
@@ -124,7 +110,7 @@ func TestSendToAgent(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	agent := &AgentConnection{
-		ID: "agent-1", OrgID: "org-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 	hub.register <- agent
 	time.Sleep(10 * time.Millisecond)
@@ -134,7 +120,7 @@ func TestSendToAgent(t *testing.T) {
 		Type:   "event",
 		Method: "test",
 	}
-	err := hub.SendToAgent("org-1", "agent-1", frame)
+	err := hub.SendToAgent("agent-1", frame)
 	if err != nil {
 		t.Errorf("SendToAgent failed: %v", err)
 	}
@@ -154,13 +140,13 @@ func TestSendToAgent(t *testing.T) {
 	}
 
 	// Send to non-existent agent
-	err = hub.SendToAgent("org-1", "nonexistent", frame)
+	err = hub.SendToAgent("nonexistent", frame)
 	if err == nil {
 		t.Error("expected error for non-existent agent")
 	}
 }
 
-func TestBroadcastToOrg(t *testing.T) {
+func TestBroadcast(t *testing.T) {
 	hub := NewHub()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -169,29 +155,25 @@ func TestBroadcastToOrg(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	agent1 := &AgentConnection{
-		ID: "agent-1", OrgID: "org-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 	agent2 := &AgentConnection{
-		ID: "agent-2", OrgID: "org-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
-	}
-	agent3 := &AgentConnection{
-		ID: "agent-3", OrgID: "org-2", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-2", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 
 	hub.register <- agent1
 	hub.register <- agent2
-	hub.register <- agent3
 	time.Sleep(20 * time.Millisecond)
 
-	// Broadcast to org-1
+	// Broadcast to all agents
 	frame := &Frame{
 		Type:    "event",
 		Method:  "broadcast",
 		Payload: "hello",
 	}
-	hub.BroadcastToOrg("org-1", frame)
+	hub.Broadcast(frame)
 
-	// Verify both org-1 agents received
+	// Verify all agents received
 	for _, agent := range []*AgentConnection{agent1, agent2} {
 		select {
 		case msg := <-agent.Send:
@@ -203,14 +185,6 @@ func TestBroadcastToOrg(t *testing.T) {
 		case <-time.After(100 * time.Millisecond):
 			t.Errorf("agent %s did not receive broadcast", agent.ID)
 		}
-	}
-
-	// Verify org-2 agent did not receive
-	select {
-	case <-agent3.Send:
-		t.Error("org-2 agent should not receive org-1 broadcast")
-	case <-time.After(50 * time.Millisecond):
-		// Expected
 	}
 }
 
@@ -265,7 +239,7 @@ func TestWebSocketHandler(t *testing.T) {
 
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hub.HandleWebSocket(w, r, "test-org", "test-agent", "test-user")
+		hub.HandleWebSocket(w, r, "test-agent")
 	}))
 	defer server.Close()
 
@@ -281,7 +255,7 @@ func TestWebSocketHandler(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Verify agent is registered
-	agent := hub.GetAgent("test-org", "test-agent")
+	agent := hub.GetAgent("test-agent")
 	if agent == nil {
 		t.Fatal("agent not registered")
 	}
@@ -325,8 +299,6 @@ func TestHandleRequestStatus(t *testing.T) {
 
 	agent := &AgentConnection{
 		ID:        "test-agent",
-		OrgID:     "test-org",
-		UserID:    "test-user",
 		Send:      make(chan []byte, 256),
 		CreatedAt: time.Now().Add(-10 * time.Second), // 10 seconds ago
 	}

@@ -1,50 +1,21 @@
 Name: gobot
 Host: 0.0.0.0
-Port: 27895
+Port: 29875
+Timeout: 60000  # 60 seconds for API testing
 
-App:
-  BaseURL: ${APP_BASE_URL}
-  Domain: ${APP_DOMAIN}
-  ProductionMode: "${PRODUCTION_MODE}"
+# Logging - configurable via Level: debug, info, error, severe
+Log:
+  Mode: console
+  Encoding: plain
+  Level: info       # info = important events, debug = verbose, error = errors only
+  Stat: false       # Disable stat logs
 
+# Auth settings are overridden by local settings (~/.gobot/settings.json)
+# These are just placeholders to satisfy the config parser
 Auth:
-  AccessSecret: ${ACCESS_SECRET}
+  AccessSecret: placeholder-replaced-at-runtime
   AccessExpire: 2592000
   RefreshTokenExpire: 2592000
 
 Database:
-  SQLitePath: ${SQLITE_PATH}
-
-Security:
-  EnableSecurityHeaders: "true"
-  ForceHTTPS: "false"
-  RateLimitEnabled: "true"
-  RateLimitRequests: 100
-  RateLimitInterval: 60
-  RateLimitBurst: 20
-  AuthRateLimitRequests: 5
-  AuthRateLimitInterval: 60
-  AllowedOrigins: ${ALLOWED_ORIGINS}
-
-Email:
-  SMTPHost: ${SMTP_HOST}
-  SMTPPort: ${SMTP_PORT}
-  SMTPUser: ${SMTP_USER}
-  SMTPPass: ${SMTP_PASS}
-  FromAddress: ${EMAIL_FROM_ADDRESS}
-  FromName: ${EMAIL_FROM_NAME}
-  ReplyTo: ${EMAIL_REPLY_TO}
-
-OAuth:
-  GoogleEnabled: "${GOOGLE_OAUTH_ENABLED}"
-  GoogleClientID: ${GOOGLE_CLIENT_ID}
-  GoogleClientSecret: ${GOOGLE_CLIENT_SECRET}
-  GitHubEnabled: "${GITHUB_OAUTH_ENABLED}"
-  GitHubClientID: ${GITHUB_CLIENT_ID}
-  GitHubClientSecret: ${GITHUB_CLIENT_SECRET}
-  CallbackBaseURL: ${APP_BASE_URL}
-
-Features:
-  OrganizationsEnabled: "${ORGANIZATIONS_ENABLED}"
-  NotificationsEnabled: "${NOTIFICATIONS_ENABLED}"
-  OAuthEnabled: "${OAUTH_ENABLED}"
+  SQLitePath: ./data/gobot.db

@@ -12,11 +12,18 @@
 	interface NavItem {
 		label: string;
 		href: string;
-		icon?: 'dashboard' | 'history' | 'settings' | 'analytics';
+		icon?: 'dashboard' | 'history' | 'settings' | 'analytics' | 'agent' | 'tools' | 'channels' | 'mcp' | 'status';
 	}
 
 	let {
-		items = [{ label: 'Dashboard', href: '/app', icon: 'dashboard' }] as NavItem[]
+		items = [
+			{ label: 'Agent', href: '/agent', icon: 'agent' },
+			{ label: 'Sessions', href: '/sessions', icon: 'history' },
+			{ label: 'Extensions', href: '/tools', icon: 'tools' },
+			{ label: 'Channels', href: '/channels', icon: 'channels' },
+			{ label: 'MCP', href: '/mcp', icon: 'mcp' },
+			{ label: 'Status', href: '/status', icon: 'status' }
+		] as NavItem[]
 	}: {
 		items?: NavItem[];
 	} = $props();
@@ -50,12 +57,12 @@
 	}
 
 	const userMenuItems = [
-		{ label: 'Settings', onClick: () => goto('/app/settings') },
+		{ label: 'Settings', onClick: () => goto('/settings') },
 		{ separator: true, label: '' },
 		{ label: 'Sign Out', onClick: handleLogout }
 	];
 
-	const icons = {
+	const icons: Record<string, { viewBox: string; path: string }> = {
 		dashboard: {
 			viewBox: '0 0 24 24',
 			path: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'
@@ -71,23 +78,43 @@
 		analytics: {
 			viewBox: '0 0 24 24',
 			path: '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>'
+		},
+		agent: {
+			viewBox: '0 0 24 24',
+			path: '<path d="M12 8V4H8"/><rect x="8" y="8" width="8" height="8" rx="1"/><path d="M12 16v4h4"/><path d="M8 12H4"/><path d="M20 12h-4"/>'
+		},
+		tools: {
+			viewBox: '0 0 24 24',
+			path: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'
+		},
+		channels: {
+			viewBox: '0 0 24 24',
+			path: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>'
+		},
+		mcp: {
+			viewBox: '0 0 24 24',
+			path: '<rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>'
+		},
+		status: {
+			viewBox: '0 0 24 24',
+			path: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>'
 		}
 	};
 
 	function isActive(href: string): boolean {
-		if (href === '/app') {
-			return currentPath === '/app';
+		if (href === '/') {
+			return currentPath === '/';
 		}
 		return currentPath.startsWith(href);
 	}
 </script>
 
 <header class="layout-app-header">
-	<div class="max-w-[1400px] mx-auto flex items-center justify-between gap-4">
+	<div class="w-full max-w-[1400px] mx-auto flex items-center justify-between gap-4">
 		<div class="flex items-center gap-8">
 			<!-- Logo -->
-			<a href="/app" class="flex items-center no-underline">
-				<span class="font-display text-xl font-bold text-base-content tracking-tight"> Gobot </span>
+			<a href="/" class="flex items-center no-underline">
+				<span class="font-display text-xl font-bold text-base-content tracking-tight">GoBot</span>
 			</a>
 
 			<!-- Desktop Navigation -->
@@ -188,9 +215,9 @@
 			</nav>
 			<div class="border-t border-base-300 pt-4 space-y-1">
 				<a
-					href="/app/settings"
+					href="/settings"
 					class="nav-link"
-					class:active={currentPath.startsWith('/app/settings')}
+					class:active={currentPath.startsWith('/settings')}
 					onclick={closeMobileMenu}
 				>
 					<Avatar initials={userInitials} size="xs" />

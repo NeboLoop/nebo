@@ -213,7 +213,7 @@
 			{#if $notifications.length > 0}
 				<div class="px-4 py-2 border-t border-base-300">
 					<a
-						href="/app/notifications"
+						href="/notifications"
 						class="btn btn-ghost btn-sm btn-block gap-1"
 						onclick={closeDropdown}
 					>

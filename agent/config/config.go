@@ -3,14 +3,17 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
+
+	"gobot/internal/provider"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config holds the agent configuration
 type Config struct {
-	// Provider configuration (supports multiple for failover)
-	Providers []ProviderConfig `yaml:"providers"`
+	// Provider configuration loaded from models.yaml credentials
+	Providers []ProviderConfig `yaml:"-"` // Not in config.yaml, loaded from models.yaml
 
 	// Session settings
 	DataDir    string `yaml:"data_dir"`    // ~/.gobot
@@ -48,20 +51,7 @@ type PolicyConfig struct {
 // DefaultConfig returns a config with sensible defaults
 func DefaultConfig() *Config {
 	return &Config{
-		Providers: []ProviderConfig{
-			{
-				Name:   "anthropic-api",
-				Type:   "api",
-				APIKey: os.Getenv("ANTHROPIC_API_KEY"),
-				Model:  "claude-sonnet-4-20250514",
-			},
-			{
-				Name:   "openai-api",
-				Type:   "api",
-				APIKey: os.Getenv("OPENAI_API_KEY"),
-				Model:  "gpt-4o",
-			},
-		},
+		Providers:     []ProviderConfig{}, // Loaded from models.yaml
 		DataDir:       DefaultDataDir(),
 		MaxContext:    50,
 		MaxIterations: 100,
@@ -74,7 +64,7 @@ func DefaultConfig() *Config {
 				"git status", "git log", "git diff", "git branch",
 			},
 		},
-		ServerURL: "http://localhost:27895",
+		ServerURL: "http://localhost:27895", // Default local dev server
 	}
 }
 
@@ -105,12 +95,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	// Expand environment variables
-	for i := range cfg.Providers {
-		cfg.Providers[i].APIKey = os.ExpandEnv(cfg.Providers[i].APIKey)
-	}
 	cfg.ServerURL = os.ExpandEnv(cfg.ServerURL)
 	cfg.Token = os.ExpandEnv(cfg.Token)
+
+	// Load providers from models.yaml
+	cfg.loadProvidersFromModels()
 
 	return cfg, nil
 }
@@ -128,12 +117,11 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, err
 	}
 
-	// Expand environment variables
-	for i := range cfg.Providers {
-		cfg.Providers[i].APIKey = os.ExpandEnv(cfg.Providers[i].APIKey)
-	}
 	cfg.ServerURL = os.ExpandEnv(cfg.ServerURL)
 	cfg.Token = os.ExpandEnv(cfg.Token)
+
+	// Load providers from models.yaml
+	cfg.loadProvidersFromModels()
 
 	return cfg, nil
 }
@@ -186,4 +174,52 @@ func (c *Config) FirstValidProvider() *ProviderConfig {
 		}
 	}
 	return nil
+}
+
+// loadProvidersFromModels loads provider credentials from models.yaml
+func (c *Config) loadProvidersFromModels() {
+	// Initialize the models store with the data directory
+	provider.InitModelsStore(c.DataDir)
+
+	// Get all credentials from models.yaml
+	creds := provider.GetAllCredentials()
+	if len(creds) == 0 {
+		return
+	}
+
+	// Convert credentials to ProviderConfig entries
+	for name, cred := range creds {
+		providerType := "api"
+		if cred.Command != "" {
+			providerType = "cli"
+		} else if name == "ollama" {
+			providerType = "ollama"
+		}
+
+		// Get the first active model for this provider
+		models := provider.GetProviderModels(name)
+		var model string
+		for _, m := range models {
+			if m.IsActive() {
+				model = m.ID
+				break
+			}
+		}
+
+		// Parse args string into slice
+		var args []string
+		if cred.Args != "" {
+			args = strings.Fields(cred.Args)
+		}
+
+		c.Providers = append(c.Providers, ProviderConfig{
+			Name:    name,
+			Type:    providerType,
+			APIKey:  os.ExpandEnv(cred.APIKey), // Expand env vars
+			Model:   model,
+			Command: cred.Command,
+			Args:    args,
+			BaseURL: os.ExpandEnv(cred.BaseURL), // Expand env vars
+		})
+	}
 }

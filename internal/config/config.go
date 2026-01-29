@@ -1,10 +1,22 @@
 package config
 
 import (
+	"os"
 	"strings"
 
+	"github.com/zeromicro/go-zero/core/conf"
 	"github.com/zeromicro/go-zero/rest"
 )
+
+// LoadFromBytes loads configuration from YAML bytes with environment variable expansion
+func LoadFromBytes(data []byte) (Config, error) {
+	var c Config
+	expanded := os.ExpandEnv(string(data))
+	if err := conf.LoadFromYamlBytes([]byte(expanded), &c); err != nil {
+		return c, err
+	}
+	return c, nil
+}
 
 // parseBool parses a string as boolean with a default value.
 // Accepts: "true", "1", "yes" as true; empty or other values return default.
@@ -30,16 +42,7 @@ type Config struct {
 		RefreshTokenExpire int64 `json:",default=604800"`
 	}
 	Database struct {
-		SQLitePath      string `json:",default=./data/gobot.db"`
-		Host            string `json:",default=localhost"`
-		Port            int    `json:",default=5432"`
-		User            string `json:",default=postgres"`
-		Password        string `json:",optional"`
-		DBName          string `json:",default=gobot"`
-		SSLMode         string `json:",default=disable"`
-		MaxOpenConns    int    `json:",default=25"`
-		MaxIdleConns    int    `json:",default=5"`
-		ConnMaxLifetime int    `json:",default=300"`
+		SQLitePath string `json:",default=./data/gobot.db"`
 	}
 	Security struct {
 		CSRFEnabled           string `json:",default=true"`
@@ -69,22 +72,6 @@ type Config struct {
 		ReplyTo     string `json:",optional"`
 		BaseURL     string `json:",default=http://localhost:27458"`
 	}
-	Analytics struct {
-		Enabled       string `json:",default=true"`
-		Provider      string `json:",default=console"`
-		APIKey        string `json:",optional"`
-		Endpoint      string `json:",optional"`
-		BatchSize     int    `json:",default=50"`
-		FlushInterval int    `json:",default=30"`
-		Debug         string `json:",default=false"`
-	}
-	AI struct {
-		Enabled     string `json:",default=true"`
-		APIKey      string `json:",optional"`
-		Model       string `json:",default=claude-sonnet-4-5-20250929"`
-		MaxTokens   int    `json:",default=4096"`
-		TimeoutSecs int    `json:",default=60"`
-	}
 	OAuth struct {
 		GoogleEnabled      string `json:",default=false"`
 		GoogleClientID     string `json:",optional"`
@@ -95,7 +82,6 @@ type Config struct {
 		CallbackBaseURL    string `json:",optional"`
 	}
 	Features struct {
-		OrganizationsEnabled string `json:",default=true"`
 		NotificationsEnabled string `json:",default=true"`
 		OAuthEnabled         string `json:",default=false"`
 	}
@@ -125,28 +111,12 @@ func (c Config) IsForceHTTPS() bool {
 	return parseBool(c.Security.ForceHTTPS, false)
 }
 
-func (c Config) IsAnalyticsEnabled() bool {
-	return parseBool(c.Analytics.Enabled, true)
-}
-
-func (c Config) IsAnalyticsDebug() bool {
-	return parseBool(c.Analytics.Debug, false)
-}
-
-func (c Config) IsAIEnabled() bool {
-	return parseBool(c.AI.Enabled, true)
-}
-
 func (c Config) IsGoogleOAuthEnabled() bool {
 	return parseBool(c.OAuth.GoogleEnabled, false)
 }
 
 func (c Config) IsGitHubOAuthEnabled() bool {
 	return parseBool(c.OAuth.GitHubEnabled, false)
-}
-
-func (c Config) IsOrganizationsEnabled() bool {
-	return parseBool(c.Features.OrganizationsEnabled, true)
 }
 
 func (c Config) IsNotificationsEnabled() bool {

@@ -8,9 +8,11 @@ import (
 
 	agent "gobot/internal/handler/agent"
 	auth "gobot/internal/handler/auth"
+	chat "gobot/internal/handler/chat"
+	extensions "gobot/internal/handler/extensions"
 	notification "gobot/internal/handler/notification"
 	oauth "gobot/internal/handler/oauth"
-	organization "gobot/internal/handler/organization"
+	provider "gobot/internal/handler/provider"
 	setup "gobot/internal/handler/setup"
 	user "gobot/internal/handler/user"
 	"gobot/internal/svc"
@@ -33,7 +35,43 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 	server.AddRoutes(
 		[]rest.Route{
 			{
-				// List connected agents for organization
+				// List agent sessions
+				Method:  http.MethodGet,
+				Path:    "/agent/sessions",
+				Handler: agent.ListAgentSessionsHandler(serverCtx),
+			},
+			{
+				// Delete agent session
+				Method:  http.MethodDelete,
+				Path:    "/agent/sessions/:id",
+				Handler: agent.DeleteAgentSessionHandler(serverCtx),
+			},
+			{
+				// Get session messages
+				Method:  http.MethodGet,
+				Path:    "/agent/sessions/:id/messages",
+				Handler: agent.GetAgentSessionMessagesHandler(serverCtx),
+			},
+			{
+				// Get agent settings
+				Method:  http.MethodGet,
+				Path:    "/agent/settings",
+				Handler: agent.GetAgentSettingsHandler(serverCtx),
+			},
+			{
+				// Update agent settings
+				Method:  http.MethodPut,
+				Path:    "/agent/settings",
+				Handler: agent.UpdateAgentSettingsHandler(serverCtx),
+			},
+			{
+				// Get simple agent status (single agent model)
+				Method:  http.MethodGet,
+				Path:    "/agent/status",
+				Handler: agent.GetSimpleAgentStatusHandler(serverCtx),
+			},
+			{
+				// List connected agents
 				Method:  http.MethodGet,
 				Path:    "/agents",
 				Handler: agent.ListAgentsHandler(serverCtx),
@@ -45,7 +83,6 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: agent.GetAgentStatusHandler(serverCtx),
 			},
 		},
-		rest.WithJwt(serverCtx.Config.Auth.AccessSecret),
 		rest.WithPrefix("/api/v1"),
 	)
 
@@ -98,6 +135,96 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Method:  http.MethodPost,
 				Path:    "/auth/verify-email",
 				Handler: auth.VerifyEmailHandler(serverCtx),
+			},
+		},
+		rest.WithPrefix("/api/v1"),
+	)
+
+	server.AddRoutes(
+		[]rest.Route{
+			{
+				// List user chats
+				Method:  http.MethodGet,
+				Path:    "/chats",
+				Handler: chat.ListChatsHandler(serverCtx),
+			},
+			{
+				// Create new chat
+				Method:  http.MethodPost,
+				Path:    "/chats",
+				Handler: chat.CreateChatHandler(serverCtx),
+			},
+			{
+				// Get chat with messages
+				Method:  http.MethodGet,
+				Path:    "/chats/:id",
+				Handler: chat.GetChatHandler(serverCtx),
+			},
+			{
+				// Update chat title
+				Method:  http.MethodPut,
+				Path:    "/chats/:id",
+				Handler: chat.UpdateChatHandler(serverCtx),
+			},
+			{
+				// Delete chat
+				Method:  http.MethodDelete,
+				Path:    "/chats/:id",
+				Handler: chat.DeleteChatHandler(serverCtx),
+			},
+			{
+				// Get companion chat (auto-creates if needed)
+				Method:  http.MethodGet,
+				Path:    "/chats/companion",
+				Handler: chat.GetCompanionChatHandler(serverCtx),
+			},
+			{
+				// List days with messages for history browsing
+				Method:  http.MethodGet,
+				Path:    "/chats/days",
+				Handler: chat.ListChatDaysHandler(serverCtx),
+			},
+			{
+				// Get messages for a specific day
+				Method:  http.MethodGet,
+				Path:    "/chats/history/:day",
+				Handler: chat.GetHistoryByDayHandler(serverCtx),
+			},
+			{
+				// Send message (creates chat if needed)
+				Method:  http.MethodPost,
+				Path:    "/chats/message",
+				Handler: chat.SendMessageHandler(serverCtx),
+			},
+			{
+				// Search chat messages
+				Method:  http.MethodGet,
+				Path:    "/chats/search",
+				Handler: chat.SearchChatMessagesHandler(serverCtx),
+			},
+		},
+		rest.WithPrefix("/api/v1"),
+	)
+
+	server.AddRoutes(
+		[]rest.Route{
+			{
+				// List all extensions (tools, skills, plugins)
+				Method:  http.MethodGet,
+				Path:    "/extensions",
+				Handler: extensions.ListExtensionsHandler(serverCtx),
+			},
+			{
+				// Get single skill details
+				Method:  http.MethodGet,
+				Path:    "/skills/:name",
+				Handler: extensions.GetSkillHandler(serverCtx),
+			},
+			{
+				// Toggle skill enabled/disabled
+				Method:  http.MethodPost,
+				Path:    "/skills/:name/toggle",
+				Handler: extensions.ToggleSkillHandler(serverCtx),
 			},
 		},
 		rest.WithPrefix("/api/v1"),
@@ -180,101 +307,58 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 	server.AddRoutes(
 		[]rest.Route{
 			{
-				// Create a new organization
-				Method:  http.MethodPost,
-				Path:    "/organizations",
-				Handler: organization.CreateOrganizationHandler(serverCtx),
-			},
-			{
-				// List user's organizations
+				// List all available models from YAML cache
 				Method:  http.MethodGet,
-				Path:    "/organizations",
-				Handler: organization.ListOrganizationsHandler(serverCtx),
+				Path:    "/models",
+				Handler: provider.ListModelsHandler(serverCtx),
 			},
 			{
-				// Get organization by ID
-				Method:  http.MethodGet,
-				Path:    "/organizations/:id",
-				Handler: organization.GetOrganizationHandler(serverCtx),
-			},
-			{
-				// Update organization
+				// Toggle model active status
 				Method:  http.MethodPut,
-				Path:    "/organizations/:id",
-				Handler: organization.UpdateOrganizationHandler(serverCtx),
+				Path:    "/models/:provider/:modelId",
+				Handler: provider.ToggleModelHandler(serverCtx),
 			},
 			{
-				// Delete organization
-				Method:  http.MethodDelete,
-				Path:    "/organizations/:id",
-				Handler: organization.DeleteOrganizationHandler(serverCtx),
-			},
-			{
-				// Invite member to organization
-				Method:  http.MethodPost,
-				Path:    "/organizations/:id/invites",
-				Handler: organization.InviteMemberHandler(serverCtx),
-			},
-			{
-				// List pending invites
-				Method:  http.MethodGet,
-				Path:    "/organizations/:id/invites",
-				Handler: organization.ListInvitesHandler(serverCtx),
-			},
-			{
-				// Leave organization
-				Method:  http.MethodPost,
-				Path:    "/organizations/:id/leave",
-				Handler: organization.LeaveOrganizationHandler(serverCtx),
-			},
-			{
-				// List organization members
-				Method:  http.MethodGet,
-				Path:    "/organizations/:id/members",
-				Handler: organization.ListMembersHandler(serverCtx),
-			},
-			{
-				// Revoke invite
-				Method:  http.MethodDelete,
-				Path:    "/organizations/:orgId/invites/:inviteId",
-				Handler: organization.RevokeInviteHandler(serverCtx),
-			},
-			{
-				// Update member role
+				// Update task routing configuration
 				Method:  http.MethodPut,
-				Path:    "/organizations/:orgId/members/:userId",
-				Handler: organization.UpdateMemberRoleHandler(serverCtx),
+				Path:    "/models/task-routing",
+				Handler: provider.UpdateTaskRoutingHandler(serverCtx),
 			},
 			{
-				// Remove member from organization
-				Method:  http.MethodDelete,
-				Path:    "/organizations/:orgId/members/:userId",
-				Handler: organization.RemoveMemberHandler(serverCtx),
-			},
-			{
-				// Accept organization invite
-				Method:  http.MethodPost,
-				Path:    "/organizations/invites/accept",
-				Handler: organization.AcceptInviteHandler(serverCtx),
-			},
-			{
-				// Switch current organization
-				Method:  http.MethodPost,
-				Path:    "/organizations/switch",
-				Handler: organization.SwitchOrganizationHandler(serverCtx),
-			},
-		},
-		rest.WithJwt(serverCtx.Config.Auth.AccessSecret),
-		rest.WithPrefix("/api/v1"),
-	)
-
-	server.AddRoutes(
-		[]rest.Route{
-			{
-				// Get invite details by token
+				// List all auth profiles (API keys)
 				Method:  http.MethodGet,
-				Path:    "/organizations/invites/:token",
-				Handler: organization.GetInviteByTokenHandler(serverCtx),
+				Path:    "/providers",
+				Handler: provider.ListAuthProfilesHandler(serverCtx),
+			},
+			{
+				// Create a new auth profile
+				Method:  http.MethodPost,
+				Path:    "/providers",
+				Handler: provider.CreateAuthProfileHandler(serverCtx),
+			},
+			{
+				// Get auth profile by ID
+				Method:  http.MethodGet,
+				Path:    "/providers/:id",
+				Handler: provider.GetAuthProfileHandler(serverCtx),
+			},
+			{
+				// Update auth profile
+				Method:  http.MethodPut,
+				Path:    "/providers/:id",
+				Handler: provider.UpdateAuthProfileHandler(serverCtx),
+			},
+			{
+				// Delete auth profile
+				Method:  http.MethodDelete,
+				Path:    "/providers/:id",
+				Handler: provider.DeleteAuthProfileHandler(serverCtx),
+			},
+			{
+				// Test auth profile (verify API key works)
+				Method:  http.MethodPost,
+				Path:    "/providers/:id/test",
+				Handler: provider.TestAuthProfileHandler(serverCtx),
 			},
 		},
 		rest.WithPrefix("/api/v1"),
@@ -287,6 +371,24 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Method:  http.MethodPost,
 				Path:    "/setup/admin",
 				Handler: setup.CreateAdminHandler(serverCtx),
+			},
+			{
+				// Mark initial setup as complete
+				Method:  http.MethodPost,
+				Path:    "/setup/complete",
+				Handler: setup.CompleteSetupHandler(serverCtx),
+			},
+			{
+				// Get AI personality configuration
+				Method:  http.MethodGet,
+				Path:    "/setup/personality",
+				Handler: setup.GetPersonalityHandler(serverCtx),
+			},
+			{
+				// Update AI personality configuration
+				Method:  http.MethodPut,
+				Path:    "/setup/personality",
+				Handler: setup.UpdatePersonalityHandler(serverCtx),
 			},
 			{
 				// Check if setup is required (no admin exists)

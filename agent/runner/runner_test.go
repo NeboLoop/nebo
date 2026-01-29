@@ -406,7 +406,7 @@ func TestGenerateSummary(t *testing.T) {
 		{Role: "user", Content: "How are you?"},
 	}
 
-	summary := r.generateSummary(context.Background(), nil, messages)
+	summary := r.generateSummary(context.Background(), messages)
 
 	if summary == "" {
 		t.Error("summary should not be empty")
