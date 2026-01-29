@@ -47,6 +47,7 @@ RUN pnpm install
 # Copy frontend source
 COPY app/src ./src
 COPY app/static ./static
+COPY app/scripts ./scripts
 COPY app/svelte.config.js app/vite.config.ts app/tsconfig.json ./
 
 # Copy gobot.yaml for pricing (read at build time by +page.server.ts)
