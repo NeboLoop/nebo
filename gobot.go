@@ -12,7 +12,6 @@ import (
 	"gobot/internal/local"
 
 	"github.com/joho/godotenv"
-	"github.com/zeromicro/go-zero/core/conf"
 )
 
 //go:embed etc/gobot.yaml
@@ -23,8 +22,8 @@ func main() {
 	_ = godotenv.Load()
 
 	// Load embedded config (defaults)
-	var c config.Config
-	if err := conf.LoadFromYamlBytes([]byte(os.ExpandEnv(string(embeddedConfig))), &c); err != nil {
+	c, err := config.LoadFromBytes(embeddedConfig)
+	if err != nil {
 		fmt.Printf("Failed to load embedded config: %v\n", err)
 		os.Exit(1)
 	}

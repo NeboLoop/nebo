@@ -3,7 +3,7 @@ package auth
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/auth"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func DevLoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := auth.NewDevLoginLogic(r.Context(), svcCtx)
 		resp, err := l.DevLogin()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

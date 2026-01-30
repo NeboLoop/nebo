@@ -3,7 +3,7 @@ package notification
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/notification"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func MarkAllNotificationsReadHandler(svcCtx *svc.ServiceContext) http.HandlerFun
 		l := notification.NewMarkAllNotificationsReadLogic(r.Context(), svcCtx)
 		resp, err := l.MarkAllNotificationsRead()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

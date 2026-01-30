@@ -3,14 +3,14 @@ package server
 import (
 	"context"
 	"fmt"
-	"io"
 	"io/fs"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"gobot/app"
 	"gobot/internal/agenthub"
@@ -18,17 +18,24 @@ import (
 	"gobot/internal/config"
 	"gobot/internal/db"
 	"gobot/internal/handler"
+	"gobot/internal/handler/agent"
+	"gobot/internal/handler/auth"
+	"gobot/internal/handler/chat"
+	"gobot/internal/handler/extensions"
+	"gobot/internal/handler/notification"
+	"gobot/internal/handler/oauth"
+	"gobot/internal/handler/provider"
+	"gobot/internal/handler/setup"
+	"gobot/internal/handler/user"
 	"gobot/internal/mcp"
 	mcpoauth "gobot/internal/mcp/oauth"
 	"gobot/internal/middleware"
-	"gobot/internal/oauth"
+	extOAuth "gobot/internal/oauth"
 	"gobot/internal/realtime"
 	"gobot/internal/router"
 	"gobot/internal/svc"
 	"gobot/internal/voice"
 	"gobot/internal/websocket"
-
-	"github.com/zeromicro/go-zero/rest"
 )
 
 // ServerOptions holds optional dependencies for the server
@@ -47,16 +54,12 @@ func Run(ctx context.Context, c config.Config) error {
 
 // RunWithOptions starts the server with optional shared dependencies
 func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) error {
-	serverPort := c.Port           // User-facing port
-	backendPort := c.Port + 1      // Internal go-zero port
+	serverPort := c.Port
 
-	// Check if user-facing port is available
+	// Check if port is available
 	if err := checkPortAvailable(serverPort); err != nil {
 		return fmt.Errorf("port %d is already in use - only one GoBot instance allowed per computer", serverPort)
 	}
-
-	// Set go-zero to use internal backend port
-	c.RestConf.Port = backendPort
 
 	if !opts.Quiet {
 		fmt.Printf("Starting server on http://localhost:%d\n", serverPort)
@@ -64,31 +67,14 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 
 	app.SetServerHost("localhost", serverPort, false)
 
-	spaFS, err := app.FileSystem()
-	if err != nil {
-		fmt.Printf("Warning: Could not load embedded SPA files: %v\n", err)
+	// Load embedded SPA files
+	spaFS, spaErr := app.FileSystem()
+	if spaErr != nil {
+		fmt.Printf("Warning: Could not load embedded SPA files: %v\n", spaErr)
 		fmt.Println("Run 'cd app && pnpm build' to build the frontend")
 	}
 
-	var serverOpts []rest.RunOption
-	if err == nil {
-		serverOpts = append(serverOpts,
-			rest.WithNotFoundHandler(app.NotFoundHandler(spaFS)),
-		)
-	}
-
-	// Disable access logging in quiet mode for clean CLI output
-	if opts.Quiet {
-		serverOpts = append(serverOpts, rest.WithCustomCors(nil, nil, "*"))
-		c.RestConf.Log.Mode = "console"
-		c.RestConf.Log.Level = "severe"
-		c.RestConf.Log.Stat = false
-	}
-
-	server := rest.MustNewServer(c.RestConf, serverOpts...)
-	defer server.Stop()
-
-	// Use pre-initialized database if provided, otherwise create new
+	// Initialize service context
 	var svcCtx *svc.ServiceContext
 	if opts.Database != nil {
 		svcCtx = svc.NewServiceContextWithDB(c, opts.Database)
@@ -102,77 +88,53 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 		svcCtx.AgentHub = opts.AgentHub
 	}
 
-	server.Use(func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if c.IsSecurityHeadersEnabled() {
-				headers := middleware.APISecurityHeaders()
-				w.Header().Set("Content-Security-Policy", headers.ContentSecurityPolicy)
-				w.Header().Set("X-Content-Type-Options", headers.XContentTypeOptions)
-				w.Header().Set("X-Frame-Options", headers.XFrameOptions)
-				w.Header().Set("X-XSS-Protection", headers.XXSSProtection)
-				w.Header().Set("Referrer-Policy", headers.ReferrerPolicy)
-				w.Header().Set("Permissions-Policy", headers.PermissionsPolicy)
-				w.Header().Set("Cache-Control", headers.CacheControl)
-				w.Header().Set("Pragma", headers.Pragma)
-			}
-			next(w, r)
-		}
-	})
+	// Create chi router
+	r := chi.NewRouter()
 
-	server.AddRoute(rest.Route{
-		Method:  http.MethodGet,
-		Path:    "/api/v1/csrf-token",
-		Handler: svcCtx.SecurityMiddleware.GetCSRFTokenHandler(),
-	})
+	// Global middleware
+	if !opts.Quiet {
+		r.Use(chimw.Logger)
+	}
+	r.Use(chimw.Recoverer)
+	r.Use(chimw.RealIP)
 
-	// Voice transcription endpoint (uses OpenAI Whisper)
-	server.AddRoute(rest.Route{
-		Method:  http.MethodPost,
-		Path:    "/api/v1/voice/transcribe",
-		Handler: voice.TranscribeHandler,
-	})
-
-	// Text-to-speech endpoint (uses ElevenLabs)
-	server.AddRoute(rest.Route{
-		Method:  http.MethodPost,
-		Path:    "/api/v1/voice/tts",
-		Handler: voice.TTSHandler,
-	})
-
-	// Available TTS voices
-	server.AddRoute(rest.Route{
-		Method:  http.MethodGet,
-		Path:    "/api/v1/voice/voices",
-		Handler: voice.VoicesHandler,
-	})
-
-	handler.RegisterHandlers(server, svcCtx)
-
-	if svcCtx.UseLocal() && c.IsOAuthEnabled() {
-		oauthHandler := oauth.NewHandler(svcCtx)
-		oauthHandler.RegisterRoutes(http.DefaultServeMux)
-		if !opts.Quiet {
-			fmt.Println("OAuth callbacks registered at /oauth/{provider}/callback")
-		}
+	// Security headers middleware
+	if c.IsSecurityHeadersEnabled() {
+		r.Use(securityHeadersMiddleware())
 	}
 
-	if svcCtx.UseLocal() {
-		baseURL := fmt.Sprintf("http://localhost:%d", serverPort)
+	// CORS middleware
+	r.Use(corsMiddleware())
 
-		mcpHandler := mcp.NewHandler(svcCtx, baseURL)
-		http.DefaultServeMux.Handle("/mcp", mcpHandler)
-		http.DefaultServeMux.Handle("/mcp/", mcpHandler)
+	// Health check at root
+	r.Get("/health", handler.HealthCheckHandler(svcCtx))
 
-		mcpOAuthHandler := mcpoauth.NewHandler(svcCtx, baseURL)
-		mcpOAuthHandler.RegisterRoutes(http.DefaultServeMux)
-	}
+	// API v1 routes
+	r.Route("/api/v1", func(r chi.Router) {
+		// CSRF token endpoint
+		r.Get("/csrf-token", svcCtx.SecurityMiddleware.GetCSRFTokenHandler())
 
+		// Voice endpoints
+		r.Post("/voice/transcribe", voice.TranscribeHandler)
+		r.Post("/voice/tts", voice.TTSHandler)
+		r.Get("/voice/voices", voice.VoicesHandler)
+
+		// Public routes (no auth required)
+		registerPublicRoutes(r, svcCtx)
+
+		// Protected routes (JWT required)
+		r.Group(func(r chi.Router) {
+			r.Use(middleware.JWTMiddleware(svcCtx.Config.Auth.AccessSecret))
+			registerProtectedRoutes(r, svcCtx)
+		})
+	})
+
+	// WebSocket routes
 	hub := realtime.NewHub()
 	go hub.Run(ctx)
-
 	go svcCtx.AgentHub.Run(ctx)
 
-	// Initialize chat context and register chat handler
+	// Initialize chat context
 	chatCtx, err := realtime.NewChatContext(svcCtx, hub)
 	if err != nil {
 		return fmt.Errorf("failed to create chat context: %w", err)
@@ -191,117 +153,67 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 	rewriteHandler := realtime.NewRewriteHandler(svcCtx)
 	rewriteHandler.Register()
 
-	server.AddRoute(rest.Route{
-		Method:  http.MethodGet,
-		Path:    "/ws",
-		Handler: websocket.Handler(hub),
-	})
+	r.Get("/ws", websocket.Handler(hub))
+	r.Get("/api/v1/agent/ws", agentWebSocketHandler(svcCtx))
 
-	server.AddRoute(rest.Route{
-		Method:  http.MethodGet,
-		Path:    "/api/v1/agent/ws",
-		Handler: agentWebSocketHandler(svcCtx),
-	})
-
-	// Run server with proxy
-	return runServer(ctx, c, spaFS, err, serverPort, backendPort, server, opts.Quiet)
-}
-
-func runServer(ctx context.Context, c config.Config, spaFS fs.FS, spaErr error, serverPort int, backendPort int, server *rest.Server, quiet bool) error {
-	// Start go-zero backend on internal port
-	go func() {
-		server.Start()
-	}()
-
-	// Create reverse proxy to backend
-	backendURL, _ := url.Parse(fmt.Sprintf("http://%s:%d", c.Host, backendPort))
-	proxy := httputil.NewSingleHostReverseProxy(backendURL)
-
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		if req.Header.Get("Upgrade") != "" {
-			req.Header.Set("Connection", "Upgrade")
+	// OAuth routes (external provider callbacks) - use http.DefaultServeMux for compatibility
+	if svcCtx.UseLocal() && c.IsOAuthEnabled() {
+		oauthHandler := extOAuth.NewHandler(svcCtx)
+		oauthHandler.RegisterRoutes(http.DefaultServeMux)
+		if !opts.Quiet {
+			fmt.Println("OAuth callbacks registered at /oauth/{provider}/callback")
 		}
 	}
 
-	proxy.Transport = &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true,
-		WriteBufferSize:     32 << 10,
-		ReadBufferSize:      32 << 10,
+	// MCP routes - use http.DefaultServeMux for compatibility
+	if svcCtx.UseLocal() {
+		baseURL := fmt.Sprintf("http://localhost:%d", serverPort)
+		mcpHandler := mcp.NewHandler(svcCtx, baseURL)
+		http.DefaultServeMux.Handle("/mcp", mcpHandler)
+		http.DefaultServeMux.Handle("/mcp/", mcpHandler)
+
+		mcpOAuthHandler := mcpoauth.NewHandler(svcCtx, baseURL)
+		mcpOAuthHandler.RegisterRoutes(http.DefaultServeMux)
 	}
 
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		fmt.Printf("Proxy error: %v\n", err)
-		http.Error(w, "Backend temporarily unavailable", http.StatusBadGateway)
+	// Proxy DefaultServeMux routes through chi for OAuth and MCP
+	r.Handle("/oauth/*", http.DefaultServeMux)
+	r.Handle("/mcp", http.DefaultServeMux)
+	r.Handle("/mcp/*", http.DefaultServeMux)
+	r.Handle("/.well-known/*", http.DefaultServeMux)
+
+	// SPA fallback - serve frontend for all other routes
+	if spaErr == nil {
+		r.NotFound(spaHandler(spaFS))
 	}
 
-	// Main handler that serves SPA and proxies API
-	mainHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Proxy API routes
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			proxy.ServeHTTP(w, r)
-			return
-		}
+	// Apply compression and cache control
+	finalHandler := middleware.Gzip(middleware.CacheControl(r))
 
-		// Proxy webhooks
-		if strings.HasPrefix(r.URL.Path, "/webhooks/") {
-			proxy.ServeHTTP(w, r)
-			return
-		}
-
-		// OAuth routes
-		if strings.HasPrefix(r.URL.Path, "/oauth/") {
-			http.DefaultServeMux.ServeHTTP(w, r)
-			return
-		}
-
-		// MCP routes
-		if strings.HasPrefix(r.URL.Path, "/mcp") || strings.HasPrefix(r.URL.Path, "/.well-known/oauth-") {
-			http.DefaultServeMux.ServeHTTP(w, r)
-			return
-		}
-
-		// WebSocket routes
-		if strings.HasPrefix(r.URL.Path, "/ws") || strings.HasPrefix(r.URL.Path, "/api/v1/agent/ws") {
-			proxyWebSocket(w, r, c.Host, backendPort)
-			return
-		}
-
-		// Serve SPA for everything else
-		if spaErr == nil {
-			app.SPAHandler(spaFS).ServeHTTP(w, r)
-		} else {
-			http.Error(w, "SPA not available - run 'cd app && pnpm build' first", http.StatusServiceUnavailable)
-		}
-	})
-
-	handler := middleware.Gzip(middleware.CacheControl(mainHandler))
-
+	// Create and start HTTP server
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", serverPort),
-		Handler:      handler,
+		Handler:      finalHandler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	if !quiet {
+	if !opts.Quiet {
 		fmt.Printf("Server ready at http://localhost:%d\n", serverPort)
 	}
 
+	// Start server in goroutine
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("HTTP server error: %v\n", err)
 		}
 	}()
 
+	// Wait for context cancellation
 	<-ctx.Done()
 
-	if !quiet {
+	if !opts.Quiet {
 		fmt.Println("\nShutting down server gracefully...")
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -311,55 +223,164 @@ func runServer(ctx context.Context, c config.Config, spaFS fs.FS, spaErr error, 
 	return nil
 }
 
+// registerPublicRoutes registers routes that don't require authentication
+func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
+	// Auth routes
+	r.Get("/auth/config", auth.GetAuthConfigHandler(svcCtx))
+	r.Get("/auth/dev-login", auth.DevLoginHandler(svcCtx))
+	r.Post("/auth/forgot-password", auth.ForgotPasswordHandler(svcCtx))
+	r.Post("/auth/login", auth.LoginHandler(svcCtx))
+	r.Post("/auth/refresh", auth.RefreshTokenHandler(svcCtx))
+	r.Post("/auth/register", auth.RegisterHandler(svcCtx))
+	r.Post("/auth/resend-verification", auth.ResendVerificationHandler(svcCtx))
+	r.Post("/auth/reset-password", auth.ResetPasswordHandler(svcCtx))
+	r.Post("/auth/verify-email", auth.VerifyEmailHandler(svcCtx))
+
+	// Setup routes
+	r.Post("/setup/admin", setup.CreateAdminHandler(svcCtx))
+	r.Post("/setup/complete", setup.CompleteSetupHandler(svcCtx))
+	r.Get("/setup/personality", setup.GetPersonalityHandler(svcCtx))
+	r.Put("/setup/personality", setup.UpdatePersonalityHandler(svcCtx))
+	r.Get("/setup/status", setup.SetupStatusHandler(svcCtx))
+
+	// OAuth routes (public for initial auth flow)
+	r.Post("/oauth/{provider}/callback", oauth.OAuthCallbackHandler(svcCtx))
+	r.Get("/oauth/{provider}/url", oauth.GetOAuthUrlHandler(svcCtx))
+
+	// Agent routes
+	r.Get("/agent/sessions", agent.ListAgentSessionsHandler(svcCtx))
+	r.Delete("/agent/sessions/{id}", agent.DeleteAgentSessionHandler(svcCtx))
+	r.Get("/agent/sessions/{id}/messages", agent.GetAgentSessionMessagesHandler(svcCtx))
+	r.Get("/agent/settings", agent.GetAgentSettingsHandler(svcCtx))
+	r.Put("/agent/settings", agent.UpdateAgentSettingsHandler(svcCtx))
+	r.Get("/agent/status", agent.GetSimpleAgentStatusHandler(svcCtx))
+	r.Get("/agents", agent.ListAgentsHandler(svcCtx))
+	r.Get("/agents/{agentId}/status", agent.GetAgentStatusHandler(svcCtx))
+
+	// Chat routes
+	r.Get("/chats", chat.ListChatsHandler(svcCtx))
+	r.Post("/chats", chat.CreateChatHandler(svcCtx))
+	r.Get("/chats/companion", chat.GetCompanionChatHandler(svcCtx))
+	r.Get("/chats/days", chat.ListChatDaysHandler(svcCtx))
+	r.Get("/chats/history/{day}", chat.GetHistoryByDayHandler(svcCtx))
+	r.Post("/chats/message", chat.SendMessageHandler(svcCtx))
+	r.Get("/chats/search", chat.SearchChatMessagesHandler(svcCtx))
+	r.Get("/chats/{id}", chat.GetChatHandler(svcCtx))
+	r.Put("/chats/{id}", chat.UpdateChatHandler(svcCtx))
+	r.Delete("/chats/{id}", chat.DeleteChatHandler(svcCtx))
+
+	// Extensions routes
+	r.Get("/extensions", extensions.ListExtensionsHandler(svcCtx))
+	r.Get("/skills/{name}", extensions.GetSkillHandler(svcCtx))
+	r.Post("/skills/{name}/toggle", extensions.ToggleSkillHandler(svcCtx))
+
+	// Provider/Models routes
+	r.Get("/models", provider.ListModelsHandler(svcCtx))
+	r.Put("/models/{provider}/{modelId}", provider.UpdateModelHandler(svcCtx))
+	r.Put("/models/task-routing", provider.UpdateTaskRoutingHandler(svcCtx))
+	r.Get("/providers", provider.ListAuthProfilesHandler(svcCtx))
+	r.Post("/providers", provider.CreateAuthProfileHandler(svcCtx))
+	r.Get("/providers/{id}", provider.GetAuthProfileHandler(svcCtx))
+	r.Put("/providers/{id}", provider.UpdateAuthProfileHandler(svcCtx))
+	r.Delete("/providers/{id}", provider.DeleteAuthProfileHandler(svcCtx))
+	r.Post("/providers/{id}/test", provider.TestAuthProfileHandler(svcCtx))
+}
+
+// registerProtectedRoutes registers routes that require JWT authentication
+func registerProtectedRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
+	// User profile routes
+	r.Get("/user/me", user.GetCurrentUserHandler(svcCtx))
+	r.Put("/user/me", user.UpdateCurrentUserHandler(svcCtx))
+	r.Delete("/user/me", user.DeleteAccountHandler(svcCtx))
+	r.Post("/user/me/change-password", user.ChangePasswordHandler(svcCtx))
+	r.Get("/user/me/preferences", user.GetPreferencesHandler(svcCtx))
+	r.Put("/user/me/preferences", user.UpdatePreferencesHandler(svcCtx))
+
+	// Notifications
+	r.Get("/notifications", notification.ListNotificationsHandler(svcCtx))
+	r.Delete("/notifications/{id}", notification.DeleteNotificationHandler(svcCtx))
+	r.Put("/notifications/{id}/read", notification.MarkNotificationReadHandler(svcCtx))
+	r.Put("/notifications/read-all", notification.MarkAllNotificationsReadHandler(svcCtx))
+	r.Get("/notifications/unread-count", notification.GetUnreadCountHandler(svcCtx))
+
+	// OAuth management (requires auth)
+	r.Delete("/oauth/{provider}", oauth.DisconnectOAuthHandler(svcCtx))
+	r.Get("/oauth/providers", oauth.ListOAuthProvidersHandler(svcCtx))
+}
+
+// securityHeadersMiddleware adds security headers to responses
+func securityHeadersMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			headers := middleware.APISecurityHeaders()
+			w.Header().Set("Content-Security-Policy", headers.ContentSecurityPolicy)
+			w.Header().Set("X-Content-Type-Options", headers.XContentTypeOptions)
+			w.Header().Set("X-Frame-Options", headers.XFrameOptions)
+			w.Header().Set("X-XSS-Protection", headers.XXSSProtection)
+			w.Header().Set("Referrer-Policy", headers.ReferrerPolicy)
+			w.Header().Set("Permissions-Policy", headers.PermissionsPolicy)
+			w.Header().Set("Cache-Control", headers.CacheControl)
+			w.Header().Set("Pragma", headers.Pragma)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// corsMiddleware handles CORS
+func corsMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
+			w.Header().Set("Access-Control-Expose-Headers", "X-CSRF-Token")
+
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// spaHandler serves the SPA for non-API routes
+func spaHandler(spaFS fs.FS) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Try to serve the file directly
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+
+		// Check if file exists
+		if _, err := fs.Stat(spaFS, path); err == nil {
+			http.FileServer(http.FS(spaFS)).ServeHTTP(w, r)
+			return
+		}
+
+		// Fallback to index.html for SPA routing
+		indexFile, err := spaFS.Open("index.html")
+		if err != nil {
+			http.Error(w, "SPA not available", http.StatusNotFound)
+			return
+		}
+		defer indexFile.Close()
+
+		stat, _ := indexFile.Stat()
+		http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile.(interface {
+			Read([]byte) (int, error)
+			Seek(int64, int) (int64, error)
+		}))
+	}
+}
+
 func agentWebSocketHandler(ctx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		agentID := "gobot-agent"
 		ctx.AgentHub.HandleWebSocket(w, r, agentID)
 	}
-}
-
-func proxyWebSocket(w http.ResponseWriter, r *http.Request, backendHost string, backendPort int) {
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "WebSocket not supported", http.StatusInternalServerError)
-		return
-	}
-
-	backendAddr := fmt.Sprintf("%s:%d", backendHost, backendPort)
-	backendConn, err := net.Dial("tcp", backendAddr)
-	if err != nil {
-		http.Error(w, "Backend unavailable", http.StatusBadGateway)
-		return
-	}
-	defer backendConn.Close()
-
-	clientConn, clientBuf, err := hijacker.Hijack()
-	if err != nil {
-		http.Error(w, "Hijack failed", http.StatusInternalServerError)
-		return
-	}
-	defer clientConn.Close()
-
-	if err := r.Write(backendConn); err != nil {
-		return
-	}
-
-	if clientBuf.Reader.Buffered() > 0 {
-		buffered := make([]byte, clientBuf.Reader.Buffered())
-		clientBuf.Read(buffered)
-		backendConn.Write(buffered)
-	}
-
-	done := make(chan struct{}, 2)
-	go func() {
-		io.Copy(backendConn, clientConn)
-		done <- struct{}{}
-	}()
-	go func() {
-		io.Copy(clientConn, backendConn)
-		done <- struct{}{}
-	}()
-	<-done
 }
 
 // checkPortAvailable checks if a port is available for binding

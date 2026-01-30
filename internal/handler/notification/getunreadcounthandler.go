@@ -3,7 +3,7 @@ package notification
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/notification"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func GetUnreadCountHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := notification.NewGetUnreadCountLogic(r.Context(), svcCtx)
 		resp, err := l.GetUnreadCount()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

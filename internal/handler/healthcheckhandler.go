@@ -3,7 +3,7 @@ package handler
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func HealthCheckHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := logic.NewHealthCheckLogic(r.Context(), svcCtx)
 		resp, err := l.HealthCheck()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

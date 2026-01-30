@@ -3,7 +3,7 @@ package user
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/user"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func GetCurrentUserHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := user.NewGetCurrentUserLogic(r.Context(), svcCtx)
 		resp, err := l.GetCurrentUser()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

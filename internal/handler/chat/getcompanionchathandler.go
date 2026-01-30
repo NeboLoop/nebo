@@ -3,7 +3,7 @@ package chat
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/chat"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func GetCompanionChatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := chat.NewGetCompanionChatLogic(r.Context(), svcCtx)
 		resp, err := l.GetCompanionChat()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

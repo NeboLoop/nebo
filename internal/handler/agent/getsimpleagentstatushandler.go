@@ -3,7 +3,7 @@ package agent
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/agent"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func GetSimpleAgentStatusHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := agent.NewGetSimpleAgentStatusLogic(r.Context(), svcCtx)
 		resp, err := l.GetSimpleAgentStatus()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

@@ -3,7 +3,7 @@ package oauth
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/oauth"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func ListOAuthProvidersHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := oauth.NewListOAuthProvidersLogic(r.Context(), svcCtx)
 		resp, err := l.ListOAuthProviders()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

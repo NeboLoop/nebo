@@ -3,7 +3,7 @@ package setup
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/setup"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func SetupStatusHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := setup.NewSetupStatusLogic(r.Context(), svcCtx)
 		resp, err := l.SetupStatus()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }

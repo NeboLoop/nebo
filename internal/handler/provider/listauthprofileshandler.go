@@ -3,7 +3,7 @@ package provider
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
+	"gobot/internal/httputil"
 	"gobot/internal/logic/provider"
 	"gobot/internal/svc"
 )
@@ -14,9 +14,9 @@ func ListAuthProfilesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		l := provider.NewListAuthProfilesLogic(r.Context(), svcCtx)
 		resp, err := l.ListAuthProfiles()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+			httputil.Error(w, err)
 		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.OkJSON(w, resp)
 		}
 	}
 }
