@@ -4,7 +4,7 @@ package lifecycle
 import (
 	"sync"
 
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 // Event types for lifecycle hooks
@@ -55,7 +55,7 @@ func (m *Manager) Emit(event Event, data any) {
 	handlers := m.handlers[event]
 	m.mu.RUnlock()
 
-	logx.Infof("[lifecycle] Emitting event: %s", event)
+	logging.Infof("[lifecycle] Emitting event: %s", event)
 	for _, h := range handlers {
 		// Run handlers synchronously (they can spawn goroutines if needed)
 		h(event, data)

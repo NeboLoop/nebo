@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/agent"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
@@ -12,18 +11,21 @@ import (
 // Delete agent session
 func DeleteAgentSessionHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
 		var req types.DeleteAgentSessionRequest
 		if err := httputil.Parse(r, &req); err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		l := agent.NewDeleteAgentSessionLogic(r.Context(), svcCtx)
-		resp, err := l.DeleteAgentSession(&req)
-		if err != nil {
+		if err := svcCtx.DB.DeleteSession(ctx, req.Id); err != nil {
 			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+			return
 		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "Session deleted successfully",
+		})
 	}
 }

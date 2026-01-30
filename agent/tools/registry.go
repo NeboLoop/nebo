@@ -82,11 +82,14 @@ func (r *Registry) List() []ai.ToolDefinition {
 
 // Execute runs a tool and returns the result
 func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResult {
+	fmt.Printf("[Registry] Executing tool: %s\n", toolCall.Name)
+
 	r.mu.RLock()
 	tool, ok := r.tools[toolCall.Name]
 	r.mu.RUnlock()
 
 	if !ok {
+		fmt.Printf("[Registry] Unknown tool: %s\n", toolCall.Name)
 		return &ToolResult{
 			Content: fmt.Sprintf("Unknown tool: %s", toolCall.Name),
 			IsError: true,
@@ -95,7 +98,9 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 
 	// Check if approval is required
 	if tool.RequiresApproval() && r.policy != nil {
+		fmt.Printf("[Registry] Tool requires approval, policy level=%s\n", r.policy.Level)
 		approved, err := r.policy.RequestApproval(ctx, tool.Name(), toolCall.Input)
+		fmt.Printf("[Registry] Approval result: approved=%v err=%v\n", approved, err)
 		if err != nil {
 			return &ToolResult{
 				Content: fmt.Sprintf("Approval error: %v", err),
@@ -108,9 +113,14 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 				IsError: true,
 			}
 		}
+	} else {
+		fmt.Printf("[Registry] No approval needed (requiresApproval=%v, hasPolicy=%v)\n",
+			tool.RequiresApproval(), r.policy != nil)
 	}
 
+	fmt.Printf("[Registry] Calling tool.Execute...\n")
 	result, err := tool.Execute(ctx, toolCall.Input)
+	fmt.Printf("[Registry] tool.Execute returned: err=%v\n", err)
 	if err != nil {
 		return &ToolResult{
 			Content: fmt.Sprintf("Tool error: %v", err),
@@ -118,6 +128,7 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 		}
 	}
 
+	fmt.Printf("[Registry] Tool completed, content_len=%d, isError=%v\n", len(result.Content), result.IsError)
 	return result
 }
 

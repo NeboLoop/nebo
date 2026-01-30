@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/extensions"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
@@ -18,12 +17,16 @@ func ToggleSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		l := extensions.NewToggleSkillLogic(r.Context(), svcCtx)
-		resp, err := l.ToggleSkill(&req)
+		// Toggle the skill's enabled state in persistent storage
+		enabled, err := svcCtx.SkillSettings.Toggle(req.Name)
 		if err != nil {
 			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+			return
 		}
+
+		httputil.OkJSON(w, &types.ToggleSkillResponse{
+			Name:    req.Name,
+			Enabled: enabled,
+		})
 	}
 }

@@ -9,7 +9,7 @@ import (
 
 	"gobot/internal/config"
 
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 type EmailService struct {
@@ -42,7 +42,7 @@ func (s *EmailService) IsConfigured() bool {
 
 func (s *EmailService) SendEmail(ctx context.Context, req SendEmailRequest) (*SendEmailResponse, error) {
 	if !s.IsConfigured() {
-		logx.Info("Email service not configured - skipping email send")
+		logging.Info("Email service not configured - skipping email send")
 		return &SendEmailResponse{
 			Success: true,
 			Status:  "skipped",
@@ -103,11 +103,11 @@ func (s *EmailService) sendViaSMTP(_ context.Context, req SendEmailRequest) (*Se
 	}
 
 	if err != nil {
-		logx.Errorf("SMTP send failed: %v", err)
+		logging.Errorf("SMTP send failed: %v", err)
 		return nil, fmt.Errorf("failed to send email: %w", err)
 	}
 
-	logx.Infof("Email sent via SMTP to %s", req.To)
+	logging.Infof("Email sent via SMTP to %s", req.To)
 	return &SendEmailResponse{
 		Success: true,
 		Status:  "sent",

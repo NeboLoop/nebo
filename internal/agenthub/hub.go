@@ -208,10 +208,15 @@ func (h *Hub) SetApprovalHandler(handler ApprovalRequestHandler) {
 
 // SendApprovalResponse sends an approval response back to THE agent
 func (h *Hub) SendApprovalResponse(agentID, requestID string, approved bool) error {
+	return h.SendApprovalResponseWithAlways(agentID, requestID, approved, false)
+}
+
+// SendApprovalResponseWithAlways sends an approval response with the "always" flag
+func (h *Hub) SendApprovalResponseWithAlways(agentID, requestID string, approved, always bool) error {
 	frame := &Frame{
 		Type:    "approval_response",
 		ID:      requestID,
-		Payload: map[string]any{"approved": approved},
+		Payload: map[string]any{"approved": approved, "always": always},
 	}
 	return h.Send(frame)
 }

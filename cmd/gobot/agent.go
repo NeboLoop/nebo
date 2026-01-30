@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
+	_ "modernc.org/sqlite"
 
 	"gobot/agent/ai"
 	agentcfg "gobot/agent/config"
@@ -21,16 +23,31 @@ import (
 	"gobot/agent/session"
 	"gobot/agent/tools"
 	"gobot/internal/channels"
+	"gobot/internal/local"
 	"gobot/internal/provider"
 )
+
+// approvalResponse holds the result of an approval request
+type approvalResponse struct {
+	Approved bool
+	Always   bool
+}
+
+// pendingApprovalInfo holds info about a pending approval request
+type pendingApprovalInfo struct {
+	RespCh   chan approvalResponse
+	ToolName string
+	Input    json.RawMessage
+}
 
 // agentState holds the state for a connected agent
 type agentState struct {
 	conn            *websocket.Conn
 	connMu          sync.Mutex
-	pendingApproval map[string]chan bool
+	pendingApproval map[string]*pendingApprovalInfo
 	approvalMu      sync.RWMutex
 	quiet           bool // Suppress console output for clean CLI
+	policy          *tools.Policy
 }
 
 // sendFrame sends a JSON frame to the server
@@ -43,9 +60,13 @@ func (s *agentState) sendFrame(frame map[string]any) error {
 
 // requestApproval sends an approval request and waits for response
 func (s *agentState) requestApproval(ctx context.Context, requestID, toolName string, input json.RawMessage) (bool, error) {
-	respCh := make(chan bool, 1)
+	respCh := make(chan approvalResponse, 1)
 	s.approvalMu.Lock()
-	s.pendingApproval[requestID] = respCh
+	s.pendingApproval[requestID] = &pendingApprovalInfo{
+		RespCh:   respCh,
+		ToolName: toolName,
+		Input:    input,
+	}
 	s.approvalMu.Unlock()
 
 	defer func() {
@@ -67,21 +88,39 @@ func (s *agentState) requestApproval(ctx context.Context, requestID, toolName st
 	}
 
 	select {
-	case approved := <-respCh:
-		return approved, nil
+	case resp := <-respCh:
+		// If "always" was selected, add the command to the allowlist
+		if resp.Approved && resp.Always && s.policy != nil {
+			var inputStr string
+			if toolName == "bash" {
+				var bashInput struct {
+					Command string `json:"command"`
+				}
+				if err := json.Unmarshal(input, &bashInput); err == nil {
+					inputStr = bashInput.Command
+				}
+			}
+			if inputStr != "" {
+				s.policy.AddToAllowlist(inputStr)
+				if !s.quiet {
+					fmt.Printf("\033[32m[Policy] Added to allowlist: %s\033[0m\n", inputStr)
+				}
+			}
+		}
+		return resp.Approved, nil
 	case <-ctx.Done():
 		return false, ctx.Err()
 	}
 }
 
 // handleApprovalResponse processes an approval response from the server
-func (s *agentState) handleApprovalResponse(requestID string, approved bool) {
+func (s *agentState) handleApprovalResponse(requestID string, approved, always bool) {
 	s.approvalMu.RLock()
-	ch, ok := s.pendingApproval[requestID]
+	info, ok := s.pendingApproval[requestID]
 	s.approvalMu.RUnlock()
-	if ok {
+	if ok && info != nil {
 		select {
-		case ch <- approved:
+		case info.RespCh <- approvalResponse{Approved: approved, Always: always}:
 		default:
 		}
 	}
@@ -117,10 +156,11 @@ Examples:
 
 // AgentOptions holds optional dependencies for the agent loop
 type AgentOptions struct {
-	ChannelManager *channels.Manager
-	Database       *sql.DB
-	Quiet          bool // Suppress console output for clean CLI
-	Dangerously    bool // Bypass all tool approval prompts
+	ChannelManager   *channels.Manager
+	Database         *sql.DB
+	Quiet            bool   // Suppress console output for clean CLI
+	Dangerously      bool   // Bypass all tool approval prompts (CLI flag)
+	SettingsFilePath string // Path to agent-settings.json for UI-based settings
 }
 
 // runAgentLoop connects to the server as an agent (used by runAll)
@@ -147,7 +187,7 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 
 	state := &agentState{
 		conn:            conn,
-		pendingApproval: make(map[string]chan bool),
+		pendingApproval: make(map[string]*pendingApprovalInfo),
 		quiet:           opts.Quiet,
 	}
 
@@ -162,9 +202,22 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		fmt.Fprintln(os.Stderr, "Warning: No AI providers configured. Tasks requiring AI will fail.")
 	}
 
-	// In dangerously mode, use "full" policy level to bypass all approvals
+	// Load initial settings from UI settings file
+	// This allows the Autonomous Mode toggle in settings to take effect
+	var initialAutonomous bool
+	if opts.SettingsFilePath != "" {
+		dataDir := filepath.Dir(opts.SettingsFilePath)
+		settingsStore := local.NewAgentSettingsStore(dataDir)
+		settings := settingsStore.Get()
+		initialAutonomous = settings.AutonomousMode
+		if initialAutonomous && !opts.Quiet {
+			fmt.Println("[Agent] Autonomous mode enabled from settings")
+		}
+	}
+
+	// In dangerously mode (CLI flag or UI setting), use "full" policy level to bypass all approvals
 	policyLevel := cfg.Policy.Level
-	if opts.Dangerously {
+	if opts.Dangerously || initialAutonomous {
 		policyLevel = "full"
 	}
 
@@ -174,9 +227,12 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		cfg.Policy.Allowlist,
 	)
 
+	// Store policy reference in state for "always" approval handling
+	state.policy = policy
+
 	var approvalCounter int64
-	if opts.Dangerously {
-		// Auto-approve everything in dangerous mode
+	if opts.Dangerously || initialAutonomous {
+		// Auto-approve everything in dangerous/autonomous mode
 		policy.ApprovalCallback = func(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
 			return true, nil
 		}
@@ -229,17 +285,32 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 
 	r := runner.New(cfg, sessions, providers, registry)
 
-	// Set up task-based model selector for intelligent model routing
+	// Set up model selector for intelligent model routing and cheapest model selection
 	modelsConfig := provider.GetModelsConfig()
 	if modelsConfig != nil {
-		if modelsConfig.TaskRouting != nil {
-			selector := ai.NewModelSelector(modelsConfig)
-			r.SetModelSelector(selector)
-		}
+		// Always create selector - needed for GetCheapestModel() even without task routing
+		selector := ai.NewModelSelector(modelsConfig)
+		r.SetModelSelector(selector)
 		// Set up fuzzy matcher for user model switch requests
 		fuzzyMatcher := ai.NewFuzzyMatcher(modelsConfig)
 		r.SetFuzzyMatcher(fuzzyMatcher)
 	}
+
+	// Start config file watcher for hot-reload of models.yaml
+	if err := provider.StartConfigWatcher(cfg.DataDir); err != nil {
+		fmt.Printf("[agent] Warning: could not start config watcher: %v\n", err)
+	}
+
+	// Register callback to update selector/matcher when config changes
+	provider.OnConfigReload(func(newConfig *provider.ModelsConfig) {
+		if newConfig != nil {
+			newSelector := ai.NewModelSelector(newConfig)
+			r.SetModelSelector(newSelector)
+			newFuzzyMatcher := ai.NewFuzzyMatcher(newConfig)
+			r.SetFuzzyMatcher(newFuzzyMatcher)
+			fmt.Printf("[agent] Model selector and fuzzy matcher updated\n")
+		}
+	})
 
 	// Enable automatic memory extraction after conversations
 	if memoryTool != nil {
@@ -362,12 +433,33 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 	registry := tools.NewRegistry(policy)
 	registry.RegisterDefaults()
 
+	// Open shared database for memory and cron tools (same as sessions)
+	dbPath := cfg.DBPath() // ~/.gobot/data/gobot.db
+	db, dbErr := sql.Open("sqlite", dbPath)
+	if dbErr != nil {
+		fmt.Printf("[agent] Warning: failed to open database for tools: %v\n", dbErr)
+	}
+
 	// Create memory tool for auto-extraction
-	memoryTool, memErr := tools.NewMemoryTool(tools.MemoryConfig{})
-	if memErr != nil {
-		fmt.Printf("[agent] Warning: failed to initialize memory tool: %v\n", memErr)
-	} else {
-		registry.Register(memoryTool)
+	var memoryTool *tools.MemoryTool
+	if db != nil {
+		var memErr error
+		memoryTool, memErr = tools.NewMemoryTool(tools.MemoryConfig{DB: db})
+		if memErr != nil {
+			fmt.Printf("[agent] Warning: failed to initialize memory tool: %v\n", memErr)
+		} else {
+			registry.Register(memoryTool)
+		}
+	}
+
+	// Create cron tool for scheduled tasks
+	if db != nil {
+		cronTool, cronErr := tools.NewCronTool(tools.CronConfig{DB: db})
+		if cronErr != nil {
+			fmt.Printf("[agent] Warning: failed to initialize cron tool: %v\n", cronErr)
+		} else {
+			registry.Register(cronTool)
+		}
 	}
 
 	taskTool := tools.NewTaskTool()
@@ -380,17 +472,32 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 
 	r := runner.New(cfg, sessions, providers, registry)
 
-	// Set up task-based model selector for intelligent model routing
+	// Set up model selector for intelligent model routing and cheapest model selection
 	modelsConfig := provider.GetModelsConfig()
 	if modelsConfig != nil {
-		if modelsConfig.TaskRouting != nil {
-			selector := ai.NewModelSelector(modelsConfig)
-			r.SetModelSelector(selector)
-		}
+		// Always create selector - needed for GetCheapestModel() even without task routing
+		selector := ai.NewModelSelector(modelsConfig)
+		r.SetModelSelector(selector)
 		// Set up fuzzy matcher for user model switch requests
 		fuzzyMatcher := ai.NewFuzzyMatcher(modelsConfig)
 		r.SetFuzzyMatcher(fuzzyMatcher)
 	}
+
+	// Start config file watcher for hot-reload of models.yaml
+	if err := provider.StartConfigWatcher(cfg.DataDir); err != nil {
+		fmt.Printf("[agent] Warning: could not start config watcher: %v\n", err)
+	}
+
+	// Register callback to update selector/matcher when config changes
+	provider.OnConfigReload(func(newConfig *provider.ModelsConfig) {
+		if newConfig != nil {
+			newSelector := ai.NewModelSelector(newConfig)
+			r.SetModelSelector(newSelector)
+			newFuzzyMatcher := ai.NewFuzzyMatcher(newConfig)
+			r.SetFuzzyMatcher(newFuzzyMatcher)
+			fmt.Printf("[agent] Model selector and fuzzy matcher updated\n")
+		}
+	})
 
 	// Enable automatic memory extraction after conversations
 	if memoryTool != nil {
@@ -600,6 +707,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 		Method  string `json:"method"`
 		Payload struct {
 			Approved bool `json:"approved"`
+			Always   bool `json:"always"`
 		} `json:"payload"`
 		Params struct {
 			Prompt     string `json:"prompt"`
@@ -614,7 +722,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 
 	switch frame.Type {
 	case "approval_response":
-		state.handleApprovalResponse(frame.ID, frame.Payload.Approved)
+		state.handleApprovalResponse(frame.ID, frame.Payload.Approved, frame.Payload.Always)
 
 	case "req":
 		switch frame.Method {

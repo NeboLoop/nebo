@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/agent"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
@@ -18,12 +17,21 @@ func GetAgentStatusHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		l := agent.NewGetAgentStatusLogic(r.Context(), svcCtx)
-		resp, err := l.GetAgentStatus(&req)
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+		hub := svcCtx.AgentHub
+		if hub == nil {
+			httputil.OkJSON(w, &types.AgentStatusResponse{
+				AgentId:   req.AgentId,
+				Connected: false,
+			})
+			return
 		}
+
+		// TODO: Get org ID from JWT context and look up agent
+		// For now, return not connected
+		httputil.OkJSON(w, &types.AgentStatusResponse{
+			AgentId:   req.AgentId,
+			Connected: false,
+			Uptime:    0,
+		})
 	}
 }

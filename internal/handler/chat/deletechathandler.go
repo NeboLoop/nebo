@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/chat"
+	"gobot/internal/logging"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
@@ -12,18 +12,24 @@ import (
 // Delete chat
 func DeleteChatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
 		var req types.DeleteChatRequest
 		if err := httputil.Parse(r, &req); err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		l := chat.NewDeleteChatLogic(r.Context(), svcCtx)
-		resp, err := l.DeleteChat(&req)
+		// Delete (cascade will remove messages)
+		err := svcCtx.DB.DeleteChat(ctx, req.Id)
 		if err != nil {
+			logging.Errorf("Failed to delete chat: %v", err)
 			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+			return
 		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "Chat deleted",
+		})
 	}
 }

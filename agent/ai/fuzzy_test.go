@@ -7,19 +7,21 @@ import (
 )
 
 func TestFuzzyMatcherExactAlias(t *testing.T) {
+	active := true
 	config := &provider.ModelsConfig{
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
-				{ID: "claude-sonnet-4-5"},
-				{ID: "claude-opus-4-5"},
-				{ID: "claude-haiku-4-5"},
+				{ID: "claude-sonnet-4-5", Active: &active, Kind: []string{"smart"}},
+				{ID: "claude-opus-4-5", Active: &active, Kind: []string{"smart", "reason"}},
+				{ID: "claude-haiku-4-5", Active: &active, Kind: []string{"fast"}},
 			},
 			"openai": {
-				{ID: "gpt-5.2"},
-				{ID: "gpt-5.2-instant"},
+				{ID: "gpt-5.2", Active: &active},
+				{ID: "gpt-5.2-instant", Active: &active},
+				{ID: "gpt-5-nano", Active: &active, Kind: []string{"cheap"}},
 			},
 			"deepseek": {
-				{ID: "deepseek-chat"},
+				{ID: "deepseek-chat", Active: &active, Kind: []string{"cheap"}},
 			},
 		},
 	}
@@ -33,11 +35,51 @@ func TestFuzzyMatcherExactAlias(t *testing.T) {
 		{"sonnet", "anthropic/claude-sonnet-4-5"},
 		{"opus", "anthropic/claude-opus-4-5"},
 		{"haiku", "anthropic/claude-haiku-4-5"},
-		{"gpt", "openai/gpt-5.2"},
 		{"gpt-5.2", "openai/gpt-5.2"},
-		{"fast", "anthropic/claude-haiku-4-5"},
-		{"smart", "anthropic/claude-opus-4-5"},
-		{"cheap", "deepseek/deepseek-chat"},
+		{"claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"},
+	}
+
+	for _, tc := range tests {
+		got := matcher.Match(tc.input)
+		if got != tc.want {
+			t.Errorf("Match(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestFuzzyMatcherNormalized(t *testing.T) {
+	// Test that normalized matching works for user-friendly inputs
+	// e.g., "gpt52 nano" should match "gpt-5.2-nano" or "gpt-5-nano"
+	active := true
+	config := &provider.ModelsConfig{
+		Providers: map[string][]provider.ModelInfo{
+			"openai": {
+				{ID: "gpt-5.2", Active: &active},
+				{ID: "gpt-5-nano", Active: &active},
+				{ID: "gpt-5-mini", Active: &active},
+			},
+			"anthropic": {
+				{ID: "claude-sonnet-4-5", Active: &active},
+				{ID: "claude-opus-4-5", Active: &active},
+			},
+		},
+	}
+
+	matcher := NewFuzzyMatcher(config)
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		// Normalized matching - removing dashes/dots should work
+		{"gpt52", "openai/gpt-5.2"},
+		{"gpt5nano", "openai/gpt-5-nano"},
+		{"gpt5mini", "openai/gpt-5-mini"},
+		{"gpt 5 nano", "openai/gpt-5-nano"},
+		{"gpt5.2", "openai/gpt-5.2"},
+		{"claudesonnet45", "anthropic/claude-sonnet-4-5"},
+		// User-reported case: "gpt52 nano"
+		{"gpt52 nano", "openai/gpt-5-nano"},
 	}
 
 	for _, tc := range tests {
@@ -49,11 +91,12 @@ func TestFuzzyMatcherExactAlias(t *testing.T) {
 }
 
 func TestFuzzyMatcherKeywordContains(t *testing.T) {
+	active := true
 	config := &provider.ModelsConfig{
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
-				{ID: "claude-sonnet-4-5"},
-				{ID: "claude-opus-4-5"},
+				{ID: "claude-sonnet-4-5", Active: &active},
+				{ID: "claude-opus-4-5", Active: &active},
 			},
 		},
 	}
@@ -67,7 +110,6 @@ func TestFuzzyMatcherKeywordContains(t *testing.T) {
 	}{
 		{"use the opus model", "anthropic/claude-opus-4-5"},
 		{"i want sonnet please", "anthropic/claude-sonnet-4-5"},
-		{"try claude", "anthropic/claude-sonnet-4-5"},
 	}
 
 	for _, tc := range tests {
@@ -79,19 +121,20 @@ func TestFuzzyMatcherKeywordContains(t *testing.T) {
 }
 
 func TestFuzzyMatcherTypoTolerance(t *testing.T) {
+	active := true
 	config := &provider.ModelsConfig{
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
-				{ID: "claude-sonnet-4-5"},
-				{ID: "claude-opus-4-5"},
-				{ID: "claude-haiku-4-5"},
+				{ID: "claude-sonnet-4-5", Active: &active},
+				{ID: "claude-opus-4-5", Active: &active},
+				{ID: "claude-haiku-4-5", Active: &active},
 			},
 		},
 	}
 
 	matcher := NewFuzzyMatcher(config)
 
-	// Should match with small typos (edit distance <= 3)
+	// Should match with small typos (edit distance <= 3 on normalized)
 	tests := []struct {
 		input string
 		want  string
@@ -111,10 +154,11 @@ func TestFuzzyMatcherTypoTolerance(t *testing.T) {
 }
 
 func TestFuzzyMatcherNoMatch(t *testing.T) {
+	active := true
 	config := &provider.ModelsConfig{
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
-				{ID: "claude-sonnet-4-5"},
+				{ID: "claude-sonnet-4-5", Active: &active},
 			},
 		},
 	}

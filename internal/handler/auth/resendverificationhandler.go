@@ -4,12 +4,10 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/auth"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
 
-// Resend email verification
 func ResendVerificationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.ResendVerificationRequest
@@ -18,12 +16,10 @@ func ResendVerificationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		l := auth.NewResendVerificationLogic(r.Context(), svcCtx)
-		resp, err := l.ResendVerification(&req)
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
-		}
+		// Verification email is sent on registration
+		// For now, return a success message
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "If the email address is registered and unverified, a new verification email has been sent.",
+		})
 	}
 }

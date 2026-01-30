@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AlertTriangle, Terminal, Check, X } from 'lucide-svelte';
+	import { AlertTriangle, Terminal, Check, X, CheckCheck } from 'lucide-svelte';
 
 	interface ApprovalRequest {
 		requestId: string;
@@ -10,10 +10,12 @@
 	let {
 		request,
 		onApprove,
+		onApproveAlways,
 		onDeny
 	}: {
 		request: ApprovalRequest | null;
 		onApprove: (requestId: string) => void;
+		onApproveAlways: (requestId: string) => void;
 		onDeny: (requestId: string) => void;
 	} = $props();
 
@@ -55,7 +57,7 @@
 					<button
 						type="button"
 						onclick={() => onDeny(request.requestId)}
-						class="btn btn-outline flex-1 gap-2"
+						class="btn btn-outline gap-2"
 					>
 						<X class="w-4 h-4" />
 						Deny
@@ -66,7 +68,15 @@
 						class="btn btn-primary flex-1 gap-2"
 					>
 						<Check class="w-4 h-4" />
-						Approve
+						Once
+					</button>
+					<button
+						type="button"
+						onclick={() => onApproveAlways(request.requestId)}
+						class="btn btn-success flex-1 gap-2"
+					>
+						<CheckCheck class="w-4 h-4" />
+						Always
 					</button>
 				</div>
 			</div>

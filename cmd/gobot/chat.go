@@ -111,17 +111,32 @@ func runChat(cfg *agentcfg.Config, args []string, interactive bool, dangerously 
 
 	r := runner.New(cfg, sessions, providers, registry)
 
-	// Set up task-based model selector for intelligent model routing
+	// Set up model selector for intelligent model routing and cheapest model selection
 	modelsConfig := provider.GetModelsConfig()
 	if modelsConfig != nil {
-		if modelsConfig.TaskRouting != nil {
-			selector := ai.NewModelSelector(modelsConfig)
-			r.SetModelSelector(selector)
-		}
+		// Always create selector - needed for GetCheapestModel() even without task routing
+		selector := ai.NewModelSelector(modelsConfig)
+		r.SetModelSelector(selector)
 		// Set up fuzzy matcher for user model switch requests
 		fuzzyMatcher := ai.NewFuzzyMatcher(modelsConfig)
 		r.SetFuzzyMatcher(fuzzyMatcher)
 	}
+
+	// Start config file watcher for hot-reload of models.yaml
+	if err := provider.StartConfigWatcher(cfg.DataDir); err != nil {
+		fmt.Printf("[chat] Warning: could not start config watcher: %v\n", err)
+	}
+
+	// Register callback to update selector/matcher when config changes
+	provider.OnConfigReload(func(newConfig *provider.ModelsConfig) {
+		if newConfig != nil {
+			newSelector := ai.NewModelSelector(newConfig)
+			r.SetModelSelector(newSelector)
+			newFuzzyMatcher := ai.NewFuzzyMatcher(newConfig)
+			r.SetFuzzyMatcher(newFuzzyMatcher)
+			fmt.Printf("[chat] Model selector and fuzzy matcher updated\n")
+		}
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

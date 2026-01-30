@@ -2,21 +2,28 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 // GrepTool searches for patterns in files
-type GrepTool struct{}
+type GrepTool struct {
+	hasRipgrep bool
+}
 
 // NewGrepTool creates a new grep tool
 func NewGrepTool() *GrepTool {
-	return &GrepTool{}
+	// Check if ripgrep is available
+	_, err := exec.LookPath("rg")
+	return &GrepTool{hasRipgrep: err == nil}
 }
 
 // Name returns the tool name
@@ -110,6 +117,102 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (*ToolRes
 		in.Path = filepath.Join(home, in.Path[2:])
 	}
 
+	// Block dangerous root paths that would search the entire filesystem
+	absPath, _ := filepath.Abs(in.Path)
+	dangerousPaths := []string{"/", "/usr", "/var", "/etc", "/System", "/Library", "/Applications", "/bin", "/sbin", "/opt"}
+	for _, dangerous := range dangerousPaths {
+		if absPath == dangerous {
+			return &ToolResult{
+				Content: fmt.Sprintf("Error: Cannot search '%s' - path is too broad. Please specify a more specific directory.", in.Path),
+				IsError: true,
+			}, nil
+		}
+	}
+
+	// Use ripgrep if available
+	if t.hasRipgrep {
+		return t.executeWithRipgrep(ctx, &in)
+	}
+
+	return t.executeWithGo(ctx, &in)
+}
+
+// executeWithRipgrep uses the rg command for fast searching
+func (t *GrepTool) executeWithRipgrep(ctx context.Context, in *GrepInput) (*ToolResult, error) {
+	args := []string{
+		"--line-number",
+		"--no-heading",
+		"--color=never",
+		fmt.Sprintf("--max-count=%d", in.Limit),
+	}
+
+	if in.CaseInsensitive {
+		args = append(args, "-i")
+	}
+
+	if in.Context > 0 {
+		args = append(args, fmt.Sprintf("-C%d", in.Context))
+	}
+
+	if in.Glob != "" {
+		args = append(args, "--glob", in.Glob)
+	}
+
+	args = append(args, in.Pattern, in.Path)
+
+	cmd := exec.CommandContext(ctx, "rg", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		// rg returns exit code 1 when no matches found - that's not an error
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return &ToolResult{
+				Content: fmt.Sprintf("No matches found for pattern: %s", in.Pattern),
+			}, nil
+		}
+		if ctx.Err() != nil {
+			return &ToolResult{
+				Content: "Error: search timed out or was cancelled",
+				IsError: true,
+			}, nil
+		}
+		// Return stderr if there's an error message
+		if stderr.Len() > 0 {
+			return &ToolResult{
+				Content: fmt.Sprintf("Error: %s", strings.TrimSpace(stderr.String())),
+				IsError: true,
+			}, nil
+		}
+		return &ToolResult{
+			Content: fmt.Sprintf("Error running search: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		return &ToolResult{
+			Content: fmt.Sprintf("No matches found for pattern: %s", in.Pattern),
+		}, nil
+	}
+
+	// Truncate if too long
+	lines := strings.Split(output, "\n")
+	if len(lines) > in.Limit {
+		output = strings.Join(lines[:in.Limit], "\n")
+		output += fmt.Sprintf("\n... (showing first %d matches)", in.Limit)
+	}
+
+	return &ToolResult{
+		Content: output,
+	}, nil
+}
+
+// executeWithGo uses pure Go implementation as fallback
+func (t *GrepTool) executeWithGo(ctx context.Context, in *GrepInput) (*ToolResult, error) {
 	// Compile regex
 	flags := ""
 	if in.CaseInsensitive {
@@ -134,8 +237,14 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (*ToolRes
 	}
 
 	if info.IsDir() {
-		files, err = t.findFiles(in.Path, in.Glob)
+		files, err = t.findFiles(ctx, in.Path, in.Glob)
 		if err != nil {
+			if ctx.Err() != nil {
+				return &ToolResult{
+					Content: "Error: search timed out or was cancelled",
+					IsError: true,
+				}, nil
+			}
 			return &ToolResult{
 				Content: fmt.Sprintf("Error finding files: %v", err),
 				IsError: true,
@@ -154,7 +263,7 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (*ToolRes
 			break
 		}
 
-		fileMatches, err := t.searchFile(file, re, in.Context, in.Limit-matchCount)
+		fileMatches, err := t.searchFile(file, re, in.Limit-matchCount)
 		if err != nil {
 			continue // Skip files we can't read
 		}
@@ -185,10 +294,17 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (*ToolRes
 }
 
 // findFiles finds all files matching the glob in the directory
-func (t *GrepTool) findFiles(dir, glob string) ([]string, error) {
+func (t *GrepTool) findFiles(ctx context.Context, dir, glob string) ([]string, error) {
 	var files []string
 
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if err != nil {
 			return nil
 		}
@@ -237,7 +353,7 @@ func (t *GrepTool) findFiles(dir, glob string) ([]string, error) {
 }
 
 // searchFile searches a single file for the pattern
-func (t *GrepTool) searchFile(path string, re *regexp.Regexp, contextLines, maxMatches int) ([]GrepMatch, error) {
+func (t *GrepTool) searchFile(path string, re *regexp.Regexp, maxMatches int) ([]GrepMatch, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -245,23 +361,16 @@ func (t *GrepTool) searchFile(path string, re *regexp.Regexp, contextLines, maxM
 	defer file.Close()
 
 	var matches []GrepMatch
-	var lines []string
 	scanner := bufio.NewScanner(file)
+	lineNum := 0
 
-	// Read all lines if we need context
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	for lineNum, line := range lines {
+		lineNum++
 		if len(matches) >= maxMatches {
 			break
 		}
 
+		line := scanner.Text()
 		if re.MatchString(line) {
 			// Truncate long lines
 			content := line
@@ -271,16 +380,19 @@ func (t *GrepTool) searchFile(path string, re *regexp.Regexp, contextLines, maxM
 
 			matches = append(matches, GrepMatch{
 				File:    path,
-				Line:    lineNum + 1,
+				Line:    lineNum,
 				Content: content,
 			})
 		}
 	}
 
-	return matches, nil
+	return matches, scanner.Err()
 }
 
 // RequiresApproval returns false - searching is safe
 func (t *GrepTool) RequiresApproval() bool {
 	return false
 }
+
+// Ensure strconv is used (for potential future use)
+var _ = strconv.Itoa

@@ -13,7 +13,7 @@ import (
 	"gobot/internal/channels"
 
 	"github.com/google/uuid"
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 // Router routes messages between channels and agents
@@ -95,7 +95,7 @@ func (r *Router) Route(ctx context.Context, msg channels.InboundMessage) error {
 		return fmt.Errorf("failed to send to agent: %w", err)
 	}
 
-	logx.Debugf("[router] Routed message to agent %s: %s", targetAgent.ID, truncate(msg.Text, 50))
+	logging.Debugf("[router] Routed message to agent %s: %s", targetAgent.ID, truncate(msg.Text, 50))
 
 	// Wait for response with timeout
 	select {
@@ -123,7 +123,7 @@ func (r *Router) HandleAgentResponse(requestID string, frame *agenthub.Frame) {
 // handleAgentResponse sends the agent's response back to the channel
 func (r *Router) handleAgentResponse(ctx context.Context, original channels.InboundMessage, resp *agenthub.Frame) error {
 	if !resp.OK {
-		logx.Errorf("[router] Agent error: %s", resp.Error)
+		logging.Errorf("[router] Agent error: %s", resp.Error)
 		// Optionally send error message to channel
 	}
 
@@ -174,7 +174,7 @@ func (r *Router) SetupChannelHandlers(ctx context.Context) {
 		channel, _ := r.channels.Get(channelID)
 		channel.SetHandler(func(msg channels.InboundMessage) {
 			if err := r.Route(ctx, msg); err != nil {
-				logx.Errorf("[router] Route error: %v", err)
+				logging.Errorf("[router] Route error: %v", err)
 			}
 		})
 	}

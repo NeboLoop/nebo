@@ -2,21 +2,21 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic"
 	"gobot/internal/svc"
+	"gobot/internal/types"
 )
 
-// Health check endpoint
+const version = "1.0.0"
+
 func HealthCheckHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := logic.NewHealthCheckLogic(r.Context(), svcCtx)
-		resp, err := l.HealthCheck()
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
-		}
+		httputil.OkJSON(w, &types.HealthResponse{
+			Status:    "healthy",
+			Version:   version,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
 	}
 }

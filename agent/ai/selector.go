@@ -467,7 +467,7 @@ func (s *ModelSelector) getDefaultModelFiltered(isUsable func(string) bool) stri
 	return ""
 }
 
-// isModelAvailable checks if a model is configured and active
+// isModelAvailable checks if a model is configured, active, AND has credentials
 func (s *ModelSelector) isModelAvailable(modelID string) bool {
 	parts := strings.SplitN(modelID, "/", 2)
 	if len(parts) != 2 {
@@ -476,6 +476,18 @@ func (s *ModelSelector) isModelAvailable(modelID string) bool {
 
 	providerID := parts[0]
 	modelName := parts[1]
+
+	// Check if provider has credentials configured
+	if s.config.Credentials != nil {
+		creds, ok := s.config.Credentials[providerID]
+		if !ok {
+			return false
+		}
+		// Provider needs API key, base URL (Ollama), or command (CLI)
+		if creds.APIKey == "" && creds.BaseURL == "" && creds.Command == "" {
+			return false
+		}
+	}
 
 	models, ok := s.config.Providers[providerID]
 	if !ok {
@@ -536,6 +548,112 @@ func (s *ModelSelector) SupportsThinking(modelID string) bool {
 // ClassifyTask exposes task classification for external use
 func (s *ModelSelector) ClassifyTask(messages []session.Message) TaskType {
 	return s.classifyTask(messages)
+}
+
+// GetCheapestModel returns the cheapest active model based on pricing
+// Only considers API-based providers (excludes CLI providers like claude-cli)
+// Falls back to models with "cheap" kind tag if no pricing is available
+func (s *ModelSelector) GetCheapestModel() string {
+	var cheapest string
+	var cheapestCost float64 = -1
+
+	// Helper to check if provider has API credentials (not CLI)
+	// CLI providers are excluded because they're not suitable for background tasks
+	isAPIProvider := func(providerID string) bool {
+		if s.config.Credentials == nil {
+			// No credentials section - check if it's a known CLI provider
+			return !provider.IsCLIProvider(providerID)
+		}
+		creds, ok := s.config.Credentials[providerID]
+		if !ok {
+			return false
+		}
+		// Only API providers (have API key or base URL, NOT command-based CLI)
+		return creds.APIKey != "" || creds.BaseURL != ""
+	}
+
+	// First pass: find cheapest by pricing (only from API providers)
+	for providerID, models := range s.config.Providers {
+		if !isAPIProvider(providerID) {
+			continue
+		}
+
+		for _, m := range models {
+			if !m.IsActive() {
+				continue
+			}
+
+			modelID := providerID + "/" + m.ID
+
+			// Check if model has pricing
+			if m.Pricing != nil && (m.Pricing.Input > 0 || m.Pricing.Output > 0) {
+				// Use combined cost (weighted toward output since extraction generates more output)
+				cost := m.Pricing.Input + m.Pricing.Output*2
+				if cheapestCost < 0 || cost < cheapestCost {
+					cheapestCost = cost
+					cheapest = modelID
+				}
+			}
+		}
+	}
+
+	// If we found a model with pricing, return it
+	if cheapest != "" {
+		return cheapest
+	}
+
+	// Second pass: find model with "cheap" kind tag
+	for providerID, models := range s.config.Providers {
+		if !isAPIProvider(providerID) {
+			continue
+		}
+
+		for _, m := range models {
+			if !m.IsActive() {
+				continue
+			}
+
+			for _, kind := range m.Kind {
+				if strings.ToLower(kind) == "cheap" {
+					return providerID + "/" + m.ID
+				}
+			}
+		}
+	}
+
+	// Third pass: find model with "fast" kind tag (usually cheaper)
+	for providerID, models := range s.config.Providers {
+		if !isAPIProvider(providerID) {
+			continue
+		}
+
+		for _, m := range models {
+			if !m.IsActive() {
+				continue
+			}
+
+			for _, kind := range m.Kind {
+				if strings.ToLower(kind) == "fast" {
+					return providerID + "/" + m.ID
+				}
+			}
+		}
+	}
+
+	// Last resort: return first active model from a provider with credentials
+	for providerID, models := range s.config.Providers {
+		if !isAPIProvider(providerID) {
+			continue
+		}
+
+		for _, m := range models {
+			if m.IsActive() {
+				return providerID + "/" + m.ID
+			}
+		}
+	}
+
+	return ""
 }
 
 // ParseModelID splits a model ID into provider and model parts

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 const (
@@ -89,7 +89,7 @@ func (c *Client) readPump() {
 		_, msg, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				logx.Errorf("WebSocket read error: %v", err)
+				logging.Errorf("WebSocket read error: %v", err)
 			}
 			break
 		}
@@ -137,7 +137,7 @@ func (c *Client) writePump() {
 func (c *Client) handleTextMessage(msg []byte) {
 	var message Message
 	if err := json.Unmarshal(msg, &message); err != nil {
-		logx.Errorf("Error unmarshaling message: %v", err)
+		logging.Errorf("Error unmarshaling message: %v", err)
 		return
 	}
 
@@ -173,7 +173,7 @@ func SetApprovalResponseHandler(handler MessageHandler) {
 
 // handleMessage processes incoming messages from the client
 func (c *Client) handleMessage(msg *Message) {
-	logx.Infof("[Client] Received message type=%s from client %s", msg.Type, c.ID)
+	logging.Infof("[Client] Received message type=%s from client %s", msg.Type, c.ID)
 	switch msg.Type {
 	case "ping":
 		c.handlePing(msg)
@@ -184,7 +184,7 @@ func (c *Client) handleMessage(msg *Message) {
 	case "approval_response":
 		c.handleApprovalResponse(msg)
 	default:
-		logx.Infof("Unknown message type: %s", msg.Type)
+		logging.Infof("Unknown message type: %s", msg.Type)
 	}
 }
 
@@ -193,17 +193,17 @@ func (c *Client) handleApprovalResponse(msg *Message) {
 	if approvalResponseHandler != nil {
 		approvalResponseHandler(c, msg)
 	} else {
-		logx.Error("Approval response handler not registered")
+		logging.Error("Approval response handler not registered")
 	}
 }
 
 // handleChat processes chat messages
 func (c *Client) handleChat(msg *Message) {
-	logx.Infof("[Client] handleChat called: session=%v", msg.Data["session_id"])
+	logging.Infof("[Client] handleChat called: session=%v", msg.Data["session_id"])
 	if chatHandler != nil {
 		chatHandler(c, msg)
 	} else {
-		logx.Error("Chat handler not registered")
+		logging.Error("Chat handler not registered")
 		// Send error back to client
 		errMsg := &Message{
 			Type:      "error",
@@ -223,7 +223,7 @@ func (c *Client) handleRewrite(msg *Message) {
 	if rewriteHandler != nil {
 		rewriteHandler(c, msg)
 	} else {
-		logx.Error("Rewrite handler not registered")
+		logging.Error("Rewrite handler not registered")
 	}
 }
 
@@ -236,7 +236,7 @@ func (c *Client) handlePing(msg *Message) {
 
 	data, err := json.Marshal(pong)
 	if err != nil {
-		logx.Errorf("Error marshaling pong message: %v", err)
+		logging.Errorf("Error marshaling pong message: %v", err)
 		return
 	}
 

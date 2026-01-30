@@ -1,36 +1,31 @@
 package ai
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"strings"
+
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/packages/ssestream"
+	"github.com/openai/openai-go/shared"
 
 	"gobot/agent/session"
 )
 
-const (
-	openaiAPIURL = "https://api.openai.com/v1/chat/completions"
-)
-
-// OpenAIProvider implements the OpenAI API
+// OpenAIProvider implements the OpenAI API using the official SDK
 type OpenAIProvider struct {
-	apiKey string
+	client openai.Client
 	model  string
-	client *http.Client
 }
 
 // NewOpenAIProvider creates a new OpenAI provider
 // Model should be provided from models.yaml config - do NOT hardcode model IDs
 func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
+	client := openai.NewClient(option.WithAPIKey(apiKey))
 	return &OpenAIProvider{
-		apiKey: apiKey,
+		client: client,
 		model:  model,
-		client: &http.Client{},
 	}
 }
 
@@ -41,56 +36,10 @@ func (p *OpenAIProvider) ID() string {
 
 // Stream sends a request and returns streaming events
 func (p *OpenAIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error) {
-	// Convert to OpenAI format
-	openaiReq := p.buildRequest(req)
-
-	body, err := json.Marshal(openaiReq)
+	// Build messages
+	messages, err := p.buildMessages(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", openaiAPIURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return nil, parseOpenAIError(resp.StatusCode, body)
-	}
-
-	events := make(chan StreamEvent, 100)
-	go p.streamResponse(ctx, resp, events)
-
-	return events, nil
-}
-
-// buildRequest converts ChatRequest to OpenAI API format
-func (p *OpenAIProvider) buildRequest(req *ChatRequest) map[string]any {
-	messages := make([]map[string]any, 0, len(req.Messages)+1)
-
-	// Add system message if provided
-	if req.System != "" {
-		messages = append(messages, map[string]any{
-			"role":    "system",
-			"content": req.System,
-		})
-	}
-
-	for _, msg := range req.Messages {
-		openaiMsg := p.convertMessage(msg)
-		if openaiMsg != nil {
-			messages = append(messages, openaiMsg)
-		}
+		return nil, fmt.Errorf("failed to build messages: %w", err)
 	}
 
 	// Use request model override if provided, otherwise use provider default
@@ -99,235 +48,180 @@ func (p *OpenAIProvider) buildRequest(req *ChatRequest) map[string]any {
 		model = req.Model
 	}
 
-	result := map[string]any{
-		"model":    model,
-		"messages": messages,
-		"stream":   true,
+	// Build params
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(model),
+		Messages: messages,
 	}
 
 	if req.MaxTokens > 0 {
-		result["max_completion_tokens"] = req.MaxTokens
+		params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
 	}
 
+	// Add tools if provided
 	if len(req.Tools) > 0 {
-		tools := make([]map[string]any, 0, len(req.Tools))
+		tools := make([]openai.ChatCompletionToolParam, 0, len(req.Tools))
 		for _, tool := range req.Tools {
-			tools = append(tools, map[string]any{
-				"type": "function",
-				"function": map[string]any{
-					"name":        tool.Name,
-					"description": tool.Description,
-					"parameters":  json.RawMessage(tool.InputSchema),
+			var schema map[string]interface{}
+			if err := json.Unmarshal([]byte(tool.InputSchema), &schema); err != nil {
+				fmt.Printf("[OpenAI] Failed to parse tool schema for %s: %v\n", tool.Name, err)
+				continue
+			}
+
+			tools = append(tools, openai.ChatCompletionToolParam{
+				Function: shared.FunctionDefinitionParam{
+					Name:        tool.Name,
+					Description: openai.String(tool.Description),
+					Parameters:  shared.FunctionParameters(schema),
 				},
 			})
 		}
-		result["tools"] = tools
+		params.Tools = tools
 	}
 
-	return result
+	fmt.Printf("[OpenAI] Sending request: model=%s messages=%d tools=%d\n",
+		model, len(messages), len(req.Tools))
+
+	// Create streaming request
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+
+	events := make(chan StreamEvent, 100)
+	go p.handleStream(stream, events)
+
+	return events, nil
 }
 
-// convertMessage converts a session message to OpenAI format
-func (p *OpenAIProvider) convertMessage(msg session.Message) map[string]any {
-	switch msg.Role {
-	case "user":
-		return map[string]any{
-			"role":    "user",
-			"content": msg.Content,
-		}
-	case "assistant":
-		result := map[string]any{
-			"role": "assistant",
-		}
-
-		if msg.Content != "" {
-			result["content"] = msg.Content
-		}
-
-		// Add tool calls if present
-		if len(msg.ToolCalls) > 0 {
-			var toolCalls []session.ToolCall
-			if err := json.Unmarshal(msg.ToolCalls, &toolCalls); err == nil {
-				openaiToolCalls := make([]map[string]any, 0, len(toolCalls))
-				for _, tc := range toolCalls {
-					openaiToolCalls = append(openaiToolCalls, map[string]any{
-						"id":   tc.ID,
-						"type": "function",
-						"function": map[string]any{
-							"name":      tc.Name,
-							"arguments": string(tc.Input),
-						},
-					})
-				}
-				result["tool_calls"] = openaiToolCalls
-			}
-		}
-
-		return result
-	case "tool":
-		// Tool results
-		if len(msg.ToolResults) > 0 {
+// buildMessages converts session messages to OpenAI format
+func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletionMessageParamUnion, error) {
+	// First pass: collect all tool_call_ids that have responses
+	respondedToolIDs := make(map[string]bool)
+	for _, msg := range req.Messages {
+		if msg.Role == "tool" && len(msg.ToolResults) > 0 {
 			var results []session.ToolResult
 			if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
-				// OpenAI expects separate messages for each tool result
-				if len(results) > 0 {
-					return map[string]any{
-						"role":         "tool",
-						"tool_call_id": results[0].ToolCallID,
-						"content":      results[0].Content,
-					}
+				for _, r := range results {
+					respondedToolIDs[r.ToolCallID] = true
 				}
 			}
-		}
-		return nil
-	case "system":
-		return map[string]any{
-			"role":    "system",
-			"content": msg.Content,
 		}
 	}
-	return nil
-}
 
-// streamResponse reads SSE events and sends them to the channel
-func (p *OpenAIProvider) streamResponse(ctx context.Context, resp *http.Response, events chan<- StreamEvent) {
-	defer close(events)
-	defer resp.Body.Close()
+	var result []openai.ChatCompletionMessageParamUnion
 
-	reader := bufio.NewReader(resp.Body)
-	var currentToolCall *ToolCall
-	var argsBuffer strings.Builder
+	// Add system message if provided
+	if req.System != "" {
+		result = append(result, openai.SystemMessage(req.System))
+	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			events <- StreamEvent{Type: EventTypeError, Error: ctx.Err()}
-			return
-		default:
-		}
+	for _, msg := range req.Messages {
+		switch msg.Role {
+		case "user":
+			result = append(result, openai.UserMessage(msg.Content))
 
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
+		case "assistant":
+			// Build assistant message with optional tool calls
+			var toolCalls []openai.ChatCompletionMessageToolCallParam
+
+			if len(msg.ToolCalls) > 0 {
+				var tcs []session.ToolCall
+				if err := json.Unmarshal(msg.ToolCalls, &tcs); err == nil {
+					for _, tc := range tcs {
+						// Only include tool calls that have responses
+						if !respondedToolIDs[tc.ID] {
+							fmt.Printf("[OpenAI] Skipping tool_call without response: %s\n", tc.ID)
+							continue
+						}
+						toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallParam{
+							ID:   tc.ID,
+							Type: "function",
+							Function: openai.ChatCompletionMessageToolCallFunctionParam{
+								Name:      tc.Name,
+								Arguments: string(tc.Input),
+							},
+						})
+					}
+				}
 			}
-			events <- StreamEvent{Type: EventTypeError, Error: err}
-			return
-		}
 
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk openaiStreamChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-
-		choice := chunk.Choices[0]
-		delta := choice.Delta
-
-		// Handle content
-		if delta.Content != "" {
-			events <- StreamEvent{
-				Type: EventTypeText,
-				Text: delta.Content,
+			// Only add message if it has content or tool calls
+			if msg.Content != "" || len(toolCalls) > 0 {
+				assistantMsg := openai.ChatCompletionAssistantMessageParam{
+					Role: "assistant",
+				}
+				if msg.Content != "" {
+					assistantMsg.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
+						OfString: openai.String(msg.Content),
+					}
+				}
+				if len(toolCalls) > 0 {
+					assistantMsg.ToolCalls = toolCalls
+				}
+				result = append(result, openai.ChatCompletionMessageParamUnion{
+					OfAssistant: &assistantMsg,
+				})
 			}
-		}
 
-		// Handle tool calls
-		if len(delta.ToolCalls) > 0 {
-			for _, tc := range delta.ToolCalls {
-				if tc.ID != "" {
-					// New tool call starting
-					if currentToolCall != nil {
-						// Finish previous tool call
-						currentToolCall.Input = json.RawMessage(argsBuffer.String())
-						events <- StreamEvent{
-							Type:     EventTypeToolCall,
-							ToolCall: currentToolCall,
+		case "tool":
+			// Tool results
+			if len(msg.ToolResults) > 0 {
+				var results []session.ToolResult
+				if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
+					for _, r := range results {
+						// Only include results for tool calls we kept
+						if respondedToolIDs[r.ToolCallID] {
+							result = append(result, openai.ToolMessage(r.Content, r.ToolCallID))
 						}
 					}
-					currentToolCall = &ToolCall{
-						ID:   tc.ID,
-						Name: tc.Function.Name,
-					}
-					argsBuffer.Reset()
 				}
-				if tc.Function.Arguments != "" {
-					argsBuffer.WriteString(tc.Function.Arguments)
-				}
+			}
+
+		case "system":
+			result = append(result, openai.SystemMessage(msg.Content))
+		}
+	}
+
+	return result, nil
+}
+
+// handleStream processes the streaming response
+func (p *OpenAIProvider) handleStream(stream *ssestream.Stream[openai.ChatCompletionChunk], events chan<- StreamEvent) {
+	defer close(events)
+
+	acc := openai.ChatCompletionAccumulator{}
+
+	for stream.Next() {
+		chunk := stream.Current()
+		acc.AddChunk(chunk)
+
+		// Check for finished tool calls
+		if tool, ok := acc.JustFinishedToolCall(); ok {
+			events <- StreamEvent{
+				Type: EventTypeToolCall,
+				ToolCall: &ToolCall{
+					ID:    tool.ID,
+					Name:  tool.Name,
+					Input: json.RawMessage(tool.Arguments),
+				},
 			}
 		}
 
-		// Handle finish reason
-		if choice.FinishReason == "tool_calls" && currentToolCall != nil {
-			currentToolCall.Input = json.RawMessage(argsBuffer.String())
+		// Stream text content
+		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
 			events <- StreamEvent{
-				Type:     EventTypeToolCall,
-				ToolCall: currentToolCall,
+				Type: EventTypeText,
+				Text: chunk.Choices[0].Delta.Content,
 			}
-			currentToolCall = nil
 		}
+	}
+
+	if err := stream.Err(); err != nil {
+		fmt.Printf("[OpenAI] Stream error: %v\n", err)
+		events <- StreamEvent{
+			Type:  EventTypeError,
+			Error: err,
+		}
+		return
 	}
 
 	events <- StreamEvent{Type: EventTypeDone}
-}
-
-// openaiStreamChunk represents a streaming chunk from OpenAI
-type openaiStreamChunk struct {
-	Choices []struct {
-		Delta struct {
-			Content   string `json:"content,omitempty"`
-			ToolCalls []struct {
-				ID       string `json:"id,omitempty"`
-				Function struct {
-					Name      string `json:"name,omitempty"`
-					Arguments string `json:"arguments,omitempty"`
-				} `json:"function,omitempty"`
-			} `json:"tool_calls,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason,omitempty"`
-	} `json:"choices"`
-}
-
-// parseOpenAIError parses an error response from the OpenAI API
-func parseOpenAIError(statusCode int, body []byte) error {
-	var errResp struct {
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-			Code    string `json:"code"`
-		} `json:"error"`
-	}
-
-	if err := json.Unmarshal(body, &errResp); err != nil {
-		return &ProviderError{
-			Code:    fmt.Sprintf("%d", statusCode),
-			Message: string(body),
-		}
-	}
-
-	code := errResp.Error.Code
-	if statusCode == 429 {
-		code = "rate_limit_exceeded"
-	} else if statusCode == 401 {
-		code = "authentication_error"
-	}
-
-	return &ProviderError{
-		Code:    code,
-		Type:    errResp.Error.Type,
-		Message: errResp.Error.Message,
-	}
 }

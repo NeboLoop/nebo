@@ -7,13 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 
 	"gobot/app"
 	agentcfg "gobot/agent/config"
@@ -31,8 +32,8 @@ import (
 
 // RunAll starts both server and agent together (default mode)
 func RunAll() {
-	// Suppress go-zero verbose logging
-	logx.Disable()
+	// Suppress verbose logging
+	logging.Disable()
 
 	// Enable quiet mode for clean CLI output
 	migrations.QuietMode = true
@@ -139,11 +140,14 @@ func RunAll() {
 			fmt.Println("[AgentLoop] Goroutine exiting")
 			wg.Done()
 		}()
+		// Settings file is in the same directory as the SQLite database
+		settingsDir := filepath.Dir(c.Database.SQLitePath)
 		agentOpts := AgentOptions{
-			ChannelManager: channelMgr,
-			Database:       database.GetDB(),
-			Quiet:          true,
-			Dangerously:    dangerouslyAll,
+			ChannelManager:   channelMgr,
+			Database:         database.GetDB(),
+			Quiet:            true,
+			Dangerously:      dangerouslyAll,
+			SettingsFilePath: filepath.Join(settingsDir, "agent-settings.json"),
 		}
 		if err := runAgentLoopWithOptions(ctx, agentCfg, serverURL, agentOpts); err != nil {
 			fmt.Printf("[AgentLoop] Error: %v\n", err)

@@ -14,7 +14,7 @@ import (
 	"gobot/internal/svc"
 
 	"github.com/google/uuid"
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 // ChatContext holds the context needed for chat handling
@@ -75,7 +75,7 @@ func RegisterChatHandler(chatCtx *ChatContext) {
 
 // handleApprovalRequest forwards an approval request from agent to all connected clients
 func (c *ChatContext) handleApprovalRequest(agentID string, requestID string, toolName string, input json.RawMessage) {
-	logx.Infof("[Chat] Approval request from agent %s: tool=%s id=%s", agentID, toolName, requestID)
+	logging.Infof("[Chat] Approval request from agent %s: tool=%s id=%s", agentID, toolName, requestID)
 
 	// Track the pending approval
 	c.pendingApprovalsMu.Lock()
@@ -101,8 +101,9 @@ func (c *ChatContext) handleApprovalRequest(agentID string, requestID string, to
 func (c *ChatContext) handleApprovalResponse(msg *Message) {
 	requestID, _ := msg.Data["request_id"].(string)
 	approved, _ := msg.Data["approved"].(bool)
+	always, _ := msg.Data["always"].(bool)
 
-	logx.Infof("[Chat] Approval response: id=%s approved=%v", requestID, approved)
+	logging.Infof("[Chat] Approval response: id=%s approved=%v always=%v", requestID, approved, always)
 
 	// Find the agent that requested this approval
 	c.pendingApprovalsMu.Lock()
@@ -113,21 +114,21 @@ func (c *ChatContext) handleApprovalResponse(msg *Message) {
 	c.pendingApprovalsMu.Unlock()
 
 	if !ok {
-		logx.Infof("[Chat] No pending approval for id=%s", requestID)
+		logging.Infof("[Chat] No pending approval for id=%s", requestID)
 		return
 	}
 
 	// Send response back to agent via hub
 	if c.hub != nil {
-		if err := c.hub.SendApprovalResponse(agentID, requestID, approved); err != nil {
-			logx.Errorf("[Chat] Failed to send approval response: %v", err)
+		if err := c.hub.SendApprovalResponseWithAlways(agentID, requestID, approved, always); err != nil {
+			logging.Errorf("[Chat] Failed to send approval response: %v", err)
 		}
 	}
 }
 
 // handleAgentResponse processes responses and stream chunks from agents
 func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame) {
-	logx.Infof("[Chat] handleAgentResponse: type=%s id=%s payload=%+v", frame.Type, frame.ID, frame.Payload)
+	logging.Infof("[Chat] handleAgentResponse: type=%s id=%s payload=%+v", frame.Type, frame.ID, frame.Payload)
 
 	// Handle streaming chunks (sent during processing)
 	if frame.Type == "stream" {
@@ -135,16 +136,16 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 		req, ok := c.pending[frame.ID]
 		if !ok {
 			c.pendingMu.Unlock()
-			logx.Infof("[Chat] No pending request for stream frame ID: %s (pending count: %d)", frame.ID, len(c.pending))
+			logging.Infof("[Chat] No pending request for stream frame ID: %s (pending count: %d)", frame.ID, len(c.pending))
 			return // No pending request for this stream
 		}
 
 		// Extract and forward chunk immediately
-		logx.Infof("[Chat] Stream payload type: %T, value: %+v", frame.Payload, frame.Payload)
+		logging.Infof("[Chat] Stream payload type: %T, value: %+v", frame.Payload, frame.Payload)
 		payload, ok := frame.Payload.(map[string]any)
 		if !ok {
 			c.pendingMu.Unlock()
-			logx.Infof("[Chat] Unexpected payload type: %T", frame.Payload)
+			logging.Infof("[Chat] Unexpected payload type: %T", frame.Payload)
 			return
 		}
 
@@ -152,11 +153,11 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 			// Accumulate for persistence
 			req.streamedContent += chunk
 			c.pendingMu.Unlock()
-			logx.Infof("[Chat] Streaming %d bytes to client for session %s", len(chunk), req.sessionID)
+			logging.Infof("[Chat] Streaming %d bytes to client for session %s", len(chunk), req.sessionID)
 			sendChatStream(req.client, req.sessionID, chunk)
 		} else {
 			c.pendingMu.Unlock()
-			logx.Infof("[Chat] No chunk in payload: %+v", payload)
+			logging.Infof("[Chat] No chunk in payload: %+v", payload)
 		}
 		if tool, ok := payload["tool"].(string); ok {
 			input, _ := payload["input"].(string)
@@ -181,11 +182,11 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 	c.pendingMu.Unlock()
 
 	if !ok {
-		logx.Infof("[Chat] No pending request for response %s", frame.ID)
+		logging.Infof("[Chat] No pending request for response %s", frame.ID)
 		return
 	}
 
-	logx.Infof("[Chat] Received final response for request %s from agent %s", frame.ID, agentID)
+	logging.Infof("[Chat] Received final response for request %s from agent %s", frame.ID, agentID)
 
 	if !frame.OK {
 		if req.client != nil {
@@ -210,9 +211,9 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 				Title: title,
 			})
 			if err != nil {
-				logx.Errorf("[Chat] Failed to update chat title: %v", err)
+				logging.Errorf("[Chat] Failed to update chat title: %v", err)
 			} else {
-				logx.Infof("[Chat] Updated chat title to: %s", title)
+				logging.Infof("[Chat] Updated chat title to: %s", title)
 			}
 		}
 		return
@@ -230,9 +231,9 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 			Metadata: sql.NullString{},
 		})
 		if err != nil {
-			logx.Errorf("[Chat] Failed to save assistant message: %v", err)
+			logging.Errorf("[Chat] Failed to save assistant message: %v", err)
 		} else {
-			logx.Infof("[Chat] Saved assistant message %s to chat %s (len=%d)", msgID, req.sessionID, len(req.streamedContent))
+			logging.Infof("[Chat] Saved assistant message %s to chat %s (len=%d)", msgID, req.sessionID, len(req.streamedContent))
 			// Update chat timestamp
 			_ = c.svcCtx.DB.UpdateChatTimestamp(ctx, req.sessionID)
 		}
@@ -258,7 +259,7 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 	prompt, _ := msg.Data["prompt"].(string)
 	useCompanion, _ := msg.Data["companion"].(bool)
 
-	logx.Infof("[Chat] Processing message for session %s: %s", sessionID, prompt)
+	logging.Infof("[Chat] Processing message for session %s: %s", sessionID, prompt)
 
 	if chatCtx.hub == nil {
 		sendChatError(c, sessionID, "Agent hub not initialized")
@@ -285,7 +286,7 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 					UserID: sql.NullString{String: companionUserID, Valid: true},
 				})
 				if err != nil {
-					logx.Errorf("[Chat] Failed to get/create companion chat: %v", err)
+					logging.Errorf("[Chat] Failed to get/create companion chat: %v", err)
 					sendChatError(c, sessionID, "Failed to get companion chat: "+err.Error())
 					return
 				}
@@ -313,7 +314,7 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 					Title: title,
 				})
 				if err != nil {
-					logx.Errorf("[Chat] Failed to create chat: %v", err)
+					logging.Errorf("[Chat] Failed to create chat: %v", err)
 					sendChatError(c, sessionID, "Failed to create chat: "+err.Error())
 					return
 				}
@@ -335,12 +336,12 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 			Metadata: sql.NullString{},
 		})
 		if err != nil {
-			logx.Errorf("[Chat] Failed to save user message: %v", err)
+			logging.Errorf("[Chat] Failed to save user message: %v", err)
 		} else {
-			logx.Infof("[Chat] Saved user message %s to chat %s", msgID, sessionID)
+			logging.Infof("[Chat] Saved user message %s to chat %s", msgID, sessionID)
 		}
 	} else {
-		logx.Errorf("[Chat] Cannot save message - svcCtx=%v DB=%v", chatCtx.svcCtx != nil, chatCtx.svcCtx != nil && chatCtx.svcCtx.DB != nil)
+		logging.Errorf("[Chat] Cannot save message - svcCtx=%v DB=%v", chatCtx.svcCtx != nil, chatCtx.svcCtx != nil && chatCtx.svcCtx.DB != nil)
 	}
 
 	// Create request and track it
@@ -356,7 +357,7 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 		streamedContent: "",
 		isNewChat:       isNewChat,
 	}
-	logx.Infof("[Chat] Registered pending request: %s for session %s", requestID, sessionID)
+	logging.Infof("[Chat] Registered pending request: %s for session %s", requestID, sessionID)
 	chatCtx.pendingMu.Unlock()
 
 	// Send "run" request to the agent (agent handles "run" not "chat")
@@ -376,12 +377,12 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 		delete(chatCtx.pending, requestID)
 		chatCtx.pendingMu.Unlock()
 
-		logx.Errorf("[Chat] Failed to send to agent: %v", err)
+		logging.Errorf("[Chat] Failed to send to agent: %v", err)
 		sendChatError(c, sessionID, "Failed to communicate with agent: "+err.Error())
 		return
 	}
 
-	logx.Infof("[Chat] Routed message to agent %s (request: %s)", agent.ID, requestID)
+	logging.Infof("[Chat] Routed message to agent %s (request: %s)", agent.ID, requestID)
 }
 
 // requestTitleGeneration asks the agent to generate a title for the chat
@@ -423,7 +424,7 @@ Assistant: %s`, userPrompt, assistantResponse)
 		c.pendingMu.Lock()
 		delete(c.pending, requestID)
 		c.pendingMu.Unlock()
-		logx.Errorf("[Chat] Failed to request title generation: %v", err)
+		logging.Errorf("[Chat] Failed to request title generation: %v", err)
 	}
 }
 
@@ -438,11 +439,11 @@ func sendChatCreated(c *Client, sessionID string) {
 
 func sendChatStream(c *Client, sessionID, content string) {
 	if c == nil {
-		logx.Infof("[Chat] sendChatStream: client is nil!")
+		logging.Infof("[Chat] sendChatStream: client is nil!")
 		return
 	}
 	if c.IsClosed() {
-		logx.Infof("[Chat] sendChatStream: client is closed!")
+		logging.Infof("[Chat] sendChatStream: client is closed!")
 		return
 	}
 	msg := &Message{
@@ -494,16 +495,16 @@ func sendToClient(c *Client, msg *Message) {
 		return // No client to send to (e.g., title generation)
 	}
 
-	logx.Infof("[Chat] sendToClient: type=%s, data_len=%d", msg.Type, len(msg.Data))
+	logging.Infof("[Chat] sendToClient: type=%s, data_len=%d", msg.Type, len(msg.Data))
 
 	// Use the safe SendMessage method that handles closed channels
 	if err := c.SendMessage(msg); err != nil {
 		if err == ErrClientClosed {
-			logx.Infof("[Chat] Client connection closed, dropping message")
+			logging.Infof("[Chat] Client connection closed, dropping message")
 		} else if err == ErrClientSendBufferFull {
-			logx.Infof("[Chat] Client send buffer full, dropping message")
+			logging.Infof("[Chat] Client send buffer full, dropping message")
 		} else {
-			logx.Errorf("[Chat] Failed to send message: %v", err)
+			logging.Errorf("[Chat] Failed to send message: %v", err)
 		}
 	}
 }

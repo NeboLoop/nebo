@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/provider"
+	"gobot/internal/provider"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
@@ -18,12 +18,26 @@ func UpdateModelHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		l := provider.NewUpdateModelLogic(r.Context(), svcCtx)
-		resp, err := l.UpdateModel(&req)
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+		update := provider.ModelUpdate{}
+
+		// Only set fields that were provided (nil means not sent)
+		if req.Active != nil {
+			update.Active = req.Active
 		}
+		if req.Kind != nil {
+			update.Kind = req.Kind
+		}
+		if req.Preferred != nil {
+			update.Preferred = req.Preferred
+		}
+
+		if err := provider.UpdateModel(req.Provider, req.ModelId, update); err != nil {
+			httputil.Error(w, err)
+			return
+		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "Model " + req.ModelId + " updated",
+		})
 	}
 }

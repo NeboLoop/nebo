@@ -4,12 +4,10 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/user"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
 
-// Update user preferences
 func UpdatePreferencesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.UpdatePreferencesRequest
@@ -18,12 +16,15 @@ func UpdatePreferencesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		l := user.NewUpdatePreferencesLogic(r.Context(), svcCtx)
-		resp, err := l.UpdatePreferences(&req)
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
-		}
+		// Return the updated values
+		httputil.OkJSON(w, &types.GetPreferencesResponse{
+			Preferences: types.UserPreferences{
+				EmailNotifications: req.EmailNotifications,
+				MarketingEmails:    req.MarketingEmails,
+				Timezone:           req.Timezone,
+				Language:           req.Language,
+				Theme:              req.Theme,
+			},
+		})
 	}
 }

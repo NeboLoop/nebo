@@ -64,10 +64,10 @@ func GenerateTokens(userID, email, name, accessSecret string, accessExpireSecs, 
 	}, nil
 }
 
-// GetUserIDFromContext extracts the user ID from JWT claims set in context by go-zero middleware
-// The go-zero framework adds JWT claims to context with the claim name as key
+// GetUserIDFromContext extracts the user ID from JWT claims set in context by JWT middleware
+// The JWT middleware adds JWT claims to context with the claim name as key
 func GetUserIDFromContext(ctx interface{ Value(any) any }) (uuid.UUID, error) {
-	// go-zero sets individual claims in context by their key name
+	// JWT middleware sets individual claims in context by their key name
 	userIDValue := ctx.Value("userId")
 	if userIDValue == nil {
 		// Try "sub" as fallback (standard JWT claim)
@@ -91,9 +91,9 @@ func GetUserIDFromContext(ctx interface{ Value(any) any }) (uuid.UUID, error) {
 	return userID, nil
 }
 
-// GetEmailFromContext extracts the email from JWT claims set in context by go-zero middleware
+// GetEmailFromContext extracts the email from JWT claims set in context by JWT middleware
 func GetEmailFromContext(ctx interface{ Value(any) any }) (string, error) {
-	// go-zero sets individual claims in context by their key name
+	// JWT middleware sets individual claims in context by their key name
 	emailValue := ctx.Value("email")
 	if emailValue == nil {
 		return "", errors.New("missing email in token")

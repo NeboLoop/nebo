@@ -17,6 +17,7 @@
 	let autoApproveRead = $state(true);
 	let autoApproveWrite = $state(false);
 	let autoApproveBash = $state(false);
+	let heartbeatIntervalMinutes = $state(30);
 
 	// Load settings on mount
 	onMount(async () => {
@@ -27,6 +28,7 @@
 			autoApproveRead = settings.autoApproveRead ?? true;
 			autoApproveWrite = settings.autoApproveWrite ?? false;
 			autoApproveBash = settings.autoApproveBash ?? false;
+			heartbeatIntervalMinutes = settings.heartbeatIntervalMinutes ?? 30;
 		} catch (err) {
 			console.error('Failed to load agent settings:', err);
 			// Use defaults if no settings exist yet
@@ -53,7 +55,8 @@
 				autonomousMode,
 				autoApproveRead,
 				autoApproveWrite,
-				autoApproveBash
+				autoApproveBash,
+				heartbeatIntervalMinutes
 			});
 			goto('/setup/personality');
 		} catch (err: unknown) {

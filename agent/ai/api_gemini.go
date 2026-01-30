@@ -1,81 +1,22 @@
 package ai
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"time"
+
+	"github.com/google/generative-ai-go/genai"
+	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 
 	"gobot/agent/session"
 )
 
-// GeminiProvider implements the Provider interface for Google Gemini
+// GeminiProvider implements the Provider interface for Google Gemini using the official SDK
 type GeminiProvider struct {
 	apiKey string
 	model  string
-	client *http.Client
-}
-
-// GeminiContent represents content in Gemini format
-type GeminiContent struct {
-	Role  string       `json:"role"`
-	Parts []GeminiPart `json:"parts"`
-}
-
-// GeminiPart represents a part of content
-type GeminiPart struct {
-	Text string `json:"text,omitempty"`
-}
-
-// GeminiRequest represents a request to Gemini
-type GeminiRequest struct {
-	Contents         []GeminiContent    `json:"contents"`
-	SystemInstruction *GeminiContent    `json:"systemInstruction,omitempty"`
-	GenerationConfig *GeminiGenConfig   `json:"generationConfig,omitempty"`
-	Tools            []GeminiTool       `json:"tools,omitempty"`
-}
-
-// GeminiGenConfig represents generation configuration
-type GeminiGenConfig struct {
-	Temperature     float64 `json:"temperature,omitempty"`
-	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
-}
-
-// GeminiTool represents a tool definition for Gemini
-type GeminiTool struct {
-	FunctionDeclarations []GeminiFunctionDecl `json:"functionDeclarations"`
-}
-
-// GeminiFunctionDecl represents a function declaration
-type GeminiFunctionDecl struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
-}
-
-// GeminiStreamResponse represents a streaming response
-type GeminiStreamResponse struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text         string `json:"text,omitempty"`
-				FunctionCall *struct {
-					Name string          `json:"name"`
-					Args json.RawMessage `json:"args"`
-				} `json:"functionCall,omitempty"`
-			} `json:"parts"`
-		} `json:"content"`
-		FinishReason string `json:"finishReason"`
-	} `json:"candidates"`
-	Error *struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
 }
 
 // NewGeminiProvider creates a new Gemini provider
@@ -84,286 +25,381 @@ func NewGeminiProvider(apiKey, model string) *GeminiProvider {
 	return &GeminiProvider{
 		apiKey: apiKey,
 		model:  model,
-		client: &http.Client{
-			Timeout: 5 * time.Minute,
-		},
 	}
 }
 
 // ID returns the provider identifier
+// Must match the key used in models.yaml ("google")
 func (p *GeminiProvider) ID() string {
-	return fmt.Sprintf("gemini-%s", p.model)
+	return "google"
 }
 
 // Stream sends a request to Gemini and streams the response
 func (p *GeminiProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error) {
-	resultCh := make(chan StreamEvent, 100)
+	// Create client
+	client, err := genai.NewClient(ctx, option.WithAPIKey(p.apiKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
+	}
 
-	go func() {
-		defer close(resultCh)
+	// Use request model override if provided, otherwise use provider default
+	modelName := p.model
+	if req.Model != "" {
+		modelName = req.Model
+	}
 
-		// Convert messages to Gemini format
-		contents := make([]GeminiContent, 0, len(req.Messages))
+	// Create model
+	model := client.GenerativeModel(modelName)
 
-		for _, msg := range req.Messages {
-			var role string
-			switch msg.Role {
-			case "user":
-				role = "user"
-			case "assistant":
-				role = "model"
-			case "system":
-				// System messages handled separately in Gemini
-				continue
-			case "tool":
-				// Include tool results as user messages
-				if len(msg.ToolResults) > 0 {
-					var results []session.ToolResult
-					json.Unmarshal(msg.ToolResults, &results)
-					for _, r := range results {
-						contents = append(contents, GeminiContent{
-							Role: "user",
-							Parts: []GeminiPart{{
-								Text: fmt.Sprintf("[Tool Result: %s]\n%s", r.ToolCallID, r.Content),
-							}},
+	// Set system instruction if present
+	if req.System != "" {
+		model.SystemInstruction = &genai.Content{
+			Parts: []genai.Part{genai.Text(req.System)},
+		}
+	}
+
+	// Set generation config
+	if req.Temperature > 0 {
+		temp := float32(req.Temperature)
+		model.Temperature = &temp
+	}
+	if req.MaxTokens > 0 {
+		maxTokens := int32(req.MaxTokens)
+		model.MaxOutputTokens = &maxTokens
+	}
+
+	// Add tools if present
+	if len(req.Tools) > 0 {
+		funcs := make([]*genai.FunctionDeclaration, 0, len(req.Tools))
+		for _, tool := range req.Tools {
+			schema := p.convertJSONSchemaToGenAI(tool.InputSchema)
+			funcs = append(funcs, &genai.FunctionDeclaration{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Parameters:  schema,
+			})
+		}
+		model.Tools = []*genai.Tool{{FunctionDeclarations: funcs}}
+	}
+
+	// Build history and get current message
+	history, currentParts := p.buildHistory(req.Messages)
+
+	// Start chat session
+	cs := model.StartChat()
+	cs.History = history
+
+	fmt.Printf("[Gemini] Sending request: model=%s history=%d tools=%d\n",
+		modelName, len(history), len(req.Tools))
+
+	// Create streaming request
+	iter := cs.SendMessageStream(ctx, currentParts...)
+
+	events := make(chan StreamEvent, 100)
+	go p.handleStream(client, iter, events)
+
+	return events, nil
+}
+
+// buildHistory converts session messages to Gemini format
+// Returns history (all messages except last user message) and current parts
+func (p *GeminiProvider) buildHistory(msgs []session.Message) ([]*genai.Content, []genai.Part) {
+	// First pass: collect all tool_call IDs that have responses
+	respondedToolIDs := make(map[string]bool)
+	for _, msg := range msgs {
+		if msg.Role == "tool" && len(msg.ToolResults) > 0 {
+			var results []session.ToolResult
+			if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
+				for _, r := range results {
+					respondedToolIDs[r.ToolCallID] = true
+				}
+			}
+		}
+	}
+
+	var contents []*genai.Content
+
+	for _, msg := range msgs {
+		switch msg.Role {
+		case "user":
+			contents = append(contents, &genai.Content{
+				Role:  "user",
+				Parts: []genai.Part{genai.Text(msg.Content)},
+			})
+
+		case "assistant":
+			var parts []genai.Part
+
+			// Add text content if present
+			if msg.Content != "" {
+				parts = append(parts, genai.Text(msg.Content))
+			}
+
+			// Add function calls if present (only those with responses)
+			if len(msg.ToolCalls) > 0 {
+				var toolCalls []session.ToolCall
+				if err := json.Unmarshal(msg.ToolCalls, &toolCalls); err == nil {
+					for _, tc := range toolCalls {
+						// Only include tool calls that have responses
+						if !respondedToolIDs[tc.ID] {
+							fmt.Printf("[Gemini] Skipping tool_call without response: %s\n", tc.ID)
+							continue
+						}
+
+						var args map[string]any
+						if err := json.Unmarshal(tc.Input, &args); err != nil {
+							args = map[string]any{}
+						}
+						parts = append(parts, genai.FunctionCall{
+							Name: tc.Name,
+							Args: args,
 						})
 					}
 				}
-				continue
-			default:
-				continue
 			}
 
-			content := msg.Content
-			if content == "" && len(msg.ToolCalls) > 0 {
-				// Include tool calls in assistant message
-				var calls []session.ToolCall
-				json.Unmarshal(msg.ToolCalls, &calls)
-				var parts []string
-				for _, c := range calls {
-					parts = append(parts, fmt.Sprintf("[Using tool: %s]", c.Name))
-				}
-				content = strings.Join(parts, "\n")
-			}
-
-			if content != "" {
-				contents = append(contents, GeminiContent{
-					Role:  role,
-					Parts: []GeminiPart{{Text: content}},
+			if len(parts) > 0 {
+				contents = append(contents, &genai.Content{
+					Role:  "model",
+					Parts: parts,
 				})
 			}
-		}
 
-		// Gemini requires alternating user/model turns
-		contents = p.normalizeContents(contents)
-
-		if len(contents) == 0 {
-			resultCh <- StreamEvent{
-				Type:  EventTypeError,
-				Error: fmt.Errorf("no valid messages to send"),
-			}
-			return
-		}
-
-		// Build request
-		geminiReq := GeminiRequest{
-			Contents: contents,
-		}
-
-		// Add system instruction if present
-		if req.System != "" {
-			geminiReq.SystemInstruction = &GeminiContent{
-				Parts: []GeminiPart{{Text: req.System}},
-			}
-		}
-
-		// Add generation config
-		if req.Temperature > 0 || req.MaxTokens > 0 {
-			geminiReq.GenerationConfig = &GeminiGenConfig{}
-			if req.Temperature > 0 {
-				geminiReq.GenerationConfig.Temperature = req.Temperature
-			}
-			if req.MaxTokens > 0 {
-				geminiReq.GenerationConfig.MaxOutputTokens = req.MaxTokens
-			}
-		}
-
-		// Add tools if present
-		if len(req.Tools) > 0 {
-			funcs := make([]GeminiFunctionDecl, 0, len(req.Tools))
-			for _, tool := range req.Tools {
-				funcs = append(funcs, GeminiFunctionDecl{
-					Name:        tool.Name,
-					Description: tool.Description,
-					Parameters:  tool.InputSchema,
-				})
-			}
-			geminiReq.Tools = []GeminiTool{{FunctionDeclarations: funcs}}
-		}
-
-		body, err := json.Marshal(geminiReq)
-		if err != nil {
-			resultCh <- StreamEvent{
-				Type:  EventTypeError,
-				Error: fmt.Errorf("failed to marshal request: %w", err),
-			}
-			return
-		}
-
-		// Use request model override if provided, otherwise use provider default
-		model := p.model
-		if req.Model != "" {
-			model = req.Model
-		}
-
-		// Build URL with streaming
-		url := fmt.Sprintf(
-			"https://generativelanguage.googleapis.com/v1beta/models/%s:streamGenerateContent?alt=sse&key=%s",
-			model, p.apiKey,
-		)
-
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-		if err != nil {
-			resultCh <- StreamEvent{
-				Type:  EventTypeError,
-				Error: fmt.Errorf("failed to create request: %w", err),
-			}
-			return
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-
-		resp, err := p.client.Do(httpReq)
-		if err != nil {
-			resultCh <- StreamEvent{
-				Type:  EventTypeError,
-				Error: fmt.Errorf("request failed: %w", err),
-			}
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resultCh <- StreamEvent{
-				Type:  EventTypeError,
-				Error: fmt.Errorf("Gemini error (%d): %s", resp.StatusCode, string(body)),
-			}
-			return
-		}
-
-		// Parse SSE stream
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
-		toolCallCounter := 0
-
-		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			line := scanner.Text()
-
-			// SSE format: "data: {...}"
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "" {
-				continue
-			}
-
-			var chunk GeminiStreamResponse
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				continue
-			}
-
-			if chunk.Error != nil {
-				resultCh <- StreamEvent{
-					Type:  EventTypeError,
-					Error: fmt.Errorf("Gemini API error: %s", chunk.Error.Message),
-				}
-				return
-			}
-
-			for _, candidate := range chunk.Candidates {
-				for _, part := range candidate.Content.Parts {
-					if part.Text != "" {
-						resultCh <- StreamEvent{
-							Type: EventTypeText,
-							Text: part.Text,
-						}
-					}
-
-					if part.FunctionCall != nil {
-						toolCallCounter++
-						resultCh <- StreamEvent{
-							Type: EventTypeToolCall,
-							ToolCall: &ToolCall{
-								ID:    fmt.Sprintf("gemini-call-%d", toolCallCounter),
-								Name:  part.FunctionCall.Name,
-								Input: part.FunctionCall.Args,
+		case "tool":
+			// Tool results as function responses
+			if len(msg.ToolResults) > 0 {
+				var results []session.ToolResult
+				if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
+					var parts []genai.Part
+					for _, r := range results {
+						// Extract the tool name from the ID if we stored it
+						// Tool IDs are like "gemini-call-1", but we need the function name
+						// We'll use the content as the response
+						parts = append(parts, genai.FunctionResponse{
+							Name: p.extractToolName(r.ToolCallID, msgs),
+							Response: map[string]any{
+								"result": r.Content,
 							},
-						}
+						})
+					}
+					if len(parts) > 0 {
+						contents = append(contents, &genai.Content{
+							Role:  "user",
+							Parts: parts,
+						})
 					}
 				}
+			}
 
-				if candidate.FinishReason == "STOP" || candidate.FinishReason == "MAX_TOKENS" {
-					resultCh <- StreamEvent{Type: EventTypeDone}
-					return
+		case "system":
+			// System messages handled via model.SystemInstruction
+			continue
+		}
+	}
+
+	// Normalize: ensure alternating turns
+	contents = p.normalizeContents(contents)
+
+	// Split into history and current message
+	if len(contents) == 0 {
+		return nil, []genai.Part{genai.Text("Hello")}
+	}
+
+	// Last message should be for sending (if it's user)
+	if len(contents) > 0 {
+		last := contents[len(contents)-1]
+		if last.Role == "user" {
+			return contents[:len(contents)-1], last.Parts
+		}
+	}
+
+	// If last message is model, send empty to continue
+	return contents, []genai.Part{genai.Text("Continue.")}
+}
+
+// extractToolName finds the tool name from a tool call ID by searching messages
+func (p *GeminiProvider) extractToolName(toolCallID string, msgs []session.Message) string {
+	for _, msg := range msgs {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			var calls []session.ToolCall
+			if err := json.Unmarshal(msg.ToolCalls, &calls); err == nil {
+				for _, c := range calls {
+					if c.ID == toolCallID {
+						return c.Name
+					}
 				}
 			}
 		}
-
-		if err := scanner.Err(); err != nil {
-			resultCh <- StreamEvent{
-				Type:  EventTypeError,
-				Error: fmt.Errorf("stream read error: %w", err),
-			}
-		}
-	}()
-
-	return resultCh, nil
+	}
+	return "unknown"
 }
 
 // normalizeContents ensures proper alternating turns for Gemini
-func (p *GeminiProvider) normalizeContents(contents []GeminiContent) []GeminiContent {
+func (p *GeminiProvider) normalizeContents(contents []*genai.Content) []*genai.Content {
 	if len(contents) == 0 {
 		return contents
 	}
 
-	normalized := make([]GeminiContent, 0, len(contents))
+	normalized := make([]*genai.Content, 0, len(contents))
 	var lastRole string
 
 	for _, c := range contents {
 		// Gemini requires starting with user
 		if len(normalized) == 0 && c.Role != "user" {
 			// Prepend a minimal user message
-			normalized = append(normalized, GeminiContent{
+			normalized = append(normalized, &genai.Content{
 				Role:  "user",
-				Parts: []GeminiPart{{Text: "Continue."}},
+				Parts: []genai.Part{genai.Text("Continue.")},
 			})
 		}
 
 		// Merge consecutive same-role messages
 		if c.Role == lastRole && len(normalized) > 0 {
-			last := &normalized[len(normalized)-1]
-			for _, part := range c.Parts {
-				last.Parts = append(last.Parts, part)
-			}
+			last := normalized[len(normalized)-1]
+			last.Parts = append(last.Parts, c.Parts...)
 		} else {
 			normalized = append(normalized, c)
 			lastRole = c.Role
 		}
 	}
 
-	// Gemini requires ending with user
-	if len(normalized) > 0 && normalized[len(normalized)-1].Role != "user" {
-		// This is fine for generation, model will respond
+	return normalized
+}
+
+// handleStream processes the streaming response
+func (p *GeminiProvider) handleStream(client *genai.Client, iter *genai.GenerateContentResponseIterator, events chan<- StreamEvent) {
+	defer close(events)
+	defer client.Close()
+
+	toolCallCounter := 0
+
+	for {
+		resp, err := iter.Next()
+		if err == iterator.Done {
+			events <- StreamEvent{Type: EventTypeDone}
+			return
+		}
+		if err != nil {
+			fmt.Printf("[Gemini] Stream error: %v\n", err)
+			events <- StreamEvent{
+				Type:  EventTypeError,
+				Error: err,
+			}
+			return
+		}
+
+		for _, candidate := range resp.Candidates {
+			if candidate.Content == nil {
+				continue
+			}
+
+			for _, part := range candidate.Content.Parts {
+				switch v := part.(type) {
+				case genai.Text:
+					if string(v) != "" {
+						events <- StreamEvent{
+							Type: EventTypeText,
+							Text: string(v),
+						}
+					}
+
+				case genai.FunctionCall:
+					toolCallCounter++
+					argsJSON, _ := json.Marshal(v.Args)
+					events <- StreamEvent{
+						Type: EventTypeToolCall,
+						ToolCall: &ToolCall{
+							ID:    fmt.Sprintf("gemini-call-%d", toolCallCounter),
+							Name:  v.Name,
+							Input: argsJSON,
+						},
+					}
+				}
+			}
+
+			// Check finish reason
+			if candidate.FinishReason == genai.FinishReasonStop ||
+				candidate.FinishReason == genai.FinishReasonMaxTokens {
+				events <- StreamEvent{Type: EventTypeDone}
+				return
+			}
+		}
+	}
+}
+
+// convertJSONSchemaToGenAI converts JSON Schema to genai.Schema
+func (p *GeminiProvider) convertJSONSchemaToGenAI(schemaJSON json.RawMessage) *genai.Schema {
+	var raw map[string]any
+	if err := json.Unmarshal(schemaJSON, &raw); err != nil {
+		return &genai.Schema{Type: genai.TypeObject}
 	}
 
-	return normalized
+	return p.convertSchemaObject(raw)
+}
+
+// convertSchemaObject recursively converts a JSON schema object to genai.Schema
+func (p *GeminiProvider) convertSchemaObject(obj map[string]any) *genai.Schema {
+	schema := &genai.Schema{}
+
+	// Get type
+	if typeStr, ok := obj["type"].(string); ok {
+		switch strings.ToLower(typeStr) {
+		case "string":
+			schema.Type = genai.TypeString
+		case "number":
+			schema.Type = genai.TypeNumber
+		case "integer":
+			schema.Type = genai.TypeInteger
+		case "boolean":
+			schema.Type = genai.TypeBoolean
+		case "array":
+			schema.Type = genai.TypeArray
+		case "object":
+			schema.Type = genai.TypeObject
+		default:
+			schema.Type = genai.TypeString
+		}
+	} else {
+		schema.Type = genai.TypeObject
+	}
+
+	// Get description
+	if desc, ok := obj["description"].(string); ok {
+		schema.Description = desc
+	}
+
+	// Get enum
+	if enum, ok := obj["enum"].([]any); ok {
+		for _, v := range enum {
+			if s, ok := v.(string); ok {
+				schema.Enum = append(schema.Enum, s)
+			}
+		}
+	}
+
+	// Get properties (for objects)
+	if props, ok := obj["properties"].(map[string]any); ok {
+		schema.Properties = make(map[string]*genai.Schema)
+		for name, propRaw := range props {
+			if propObj, ok := propRaw.(map[string]any); ok {
+				schema.Properties[name] = p.convertSchemaObject(propObj)
+			}
+		}
+	}
+
+	// Get required
+	if required, ok := obj["required"].([]any); ok {
+		for _, v := range required {
+			if s, ok := v.(string); ok {
+				schema.Required = append(schema.Required, s)
+			}
+		}
+	}
+
+	// Get items (for arrays)
+	if items, ok := obj["items"].(map[string]any); ok {
+		schema.Items = p.convertSchemaObject(items)
+	}
+
+	return schema
 }

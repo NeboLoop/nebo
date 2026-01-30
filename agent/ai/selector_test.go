@@ -533,3 +533,86 @@ func TestSelectSkipsCooldownModels(t *testing.T) {
 		t.Errorf("expected fallback model when primary in cooldown, got %s", model)
 	}
 }
+
+func TestGetCheapestModel(t *testing.T) {
+	active := true
+	config := &provider.ModelsConfig{
+		Credentials: map[string]provider.ProviderCredentials{
+			"anthropic": {APIKey: "test-key"},
+			"openai":    {APIKey: "test-key"},
+			// Note: deepseek has NO credentials - should be skipped
+		},
+		Providers: map[string][]provider.ModelInfo{
+			"anthropic": {
+				{
+					ID:      "claude-opus-4-5",
+					Active:  &active,
+					Pricing: &provider.ModelPricing{Input: 5, Output: 25},
+				},
+				{
+					ID:      "claude-haiku-4-5",
+					Active:  &active,
+					Pricing: &provider.ModelPricing{Input: 1, Output: 5},
+				},
+			},
+			"openai": {
+				{
+					ID:      "gpt-5.2",
+					Active:  &active,
+					Pricing: &provider.ModelPricing{Input: 1.75, Output: 14},
+				},
+				{
+					ID:      "gpt-5-nano",
+					Active:  &active,
+					Pricing: &provider.ModelPricing{Input: 0.5, Output: 2},
+					Kind:    []string{"cheap", "fast"},
+				},
+			},
+			"deepseek": {
+				{
+					ID:      "deepseek-chat",
+					Active:  &active,
+					Pricing: &provider.ModelPricing{Input: 0.28, Output: 0.42},
+					Kind:    []string{"cheap"},
+				},
+			},
+		},
+	}
+
+	selector := NewModelSelector(config)
+	cheapest := selector.GetCheapestModel()
+
+	// DeepSeek has lowest pricing BUT no credentials configured
+	// GPT-5-nano is cheapest with credentials (0.5 + 2*2 = 4.5)
+	// Compare to Haiku (1 + 5*2 = 11)
+	if cheapest != "openai/gpt-5-nano" {
+		t.Errorf("expected openai/gpt-5-nano (cheapest with credentials), got %s", cheapest)
+	}
+}
+
+func TestGetCheapestModel_FallbackToKind(t *testing.T) {
+	active := true
+	config := &provider.ModelsConfig{
+		Credentials: map[string]provider.ProviderCredentials{
+			"anthropic": {APIKey: "test-key"},
+			"openai":    {APIKey: "test-key"},
+		},
+		Providers: map[string][]provider.ModelInfo{
+			"anthropic": {
+				{ID: "claude-opus-4-5", Active: &active},
+				{ID: "claude-haiku-4-5", Active: &active, Kind: []string{"fast"}},
+			},
+			"openai": {
+				{ID: "gpt-5-nano", Active: &active, Kind: []string{"cheap"}},
+			},
+		},
+	}
+
+	selector := NewModelSelector(config)
+	cheapest := selector.GetCheapestModel()
+
+	// No pricing available, should fall back to "cheap" kind tag
+	if cheapest != "openai/gpt-5-nano" {
+		t.Errorf("expected openai/gpt-5-nano (has 'cheap' kind), got %s", cheapest)
+	}
+}

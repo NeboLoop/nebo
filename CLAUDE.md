@@ -42,9 +42,6 @@ GoBot is **ONE agent that is always running**. Not multiple agents. ONE.
 make air              # Backend with hot reload
 cd app && pnpm dev    # Frontend dev server
 
-# Code generation (CRITICAL: NEVER run goctl directly)
-make gen              # Regenerate handlers/types from .api file
-
 # Database
 make sqlc             # Regenerate sqlc code after changing .sql files
 make migrate-up       # Run pending migrations
@@ -71,14 +68,16 @@ make build && cd app && pnpm build
 
 ## Architecture
 
-### Go Backend (go-zero framework)
+### Go Backend (chi router)
 
 ```
-gobot.api                    → API definition (routes, types) - EDIT THIS to add endpoints
-├── internal/handler/        → AUTO-GENERATED from .api (DO NOT EDIT)
-├── internal/types/          → AUTO-GENERATED from .api (DO NOT EDIT)
+├── internal/server/         → Main server setup (chi router, routes)
+├── internal/handler/        → HTTP handlers
+├── internal/types/          → Request/Response types
 ├── internal/logic/          → Business logic - IMPLEMENT HERE
 ├── internal/svc/            → ServiceContext (DB, Auth, Email, AgentHub)
+├── internal/httputil/       → HTTP utilities (Parse, OkJSON, Error)
+├── internal/middleware/     → JWT, security, compression middleware
 ├── internal/db/             → SQLite + sqlc generated code
 │   ├── migrations/          → SQL migration files (numbered: 0001, 0002, etc.)
 │   └── queries/             → SQL query files (one per entity)
@@ -120,29 +119,39 @@ app/src/
 
 ## Adding API Endpoints
 
-1. Define in `gobot.api`:
+1. Add route in `internal/server/server.go`:
 ```go
-@server(prefix: /api/v1, jwt: Auth)
-service gobot {
-    @handler GetWidget
-    get /widgets/:id (GetWidgetRequest) returns (GetWidgetResponse)
-}
-
-type GetWidgetRequest { Id string `path:"id"` }
-type GetWidgetResponse { Name string `json:"name"` }
+// In registerPublicRoutes or registerProtectedRoutes:
+r.Get("/widgets/{id}", widget.GetWidgetHandler(svcCtx))
 ```
 
-2. Run `make gen`
-
-3. Implement in `internal/logic/getwidgetlogic.go`:
+2. Create handler in `internal/handler/widget/`:
 ```go
-func (l *GetWidgetLogic) GetWidget(req *types.GetWidgetRequest) (*types.GetWidgetResponse, error) {
-    // l.svcCtx.DB, l.svcCtx.Auth, l.svcCtx.Email, l.svcCtx.AgentHub
-    return &types.GetWidgetResponse{Name: "widget"}, nil
+func GetWidgetHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        var req types.GetWidgetRequest
+        if err := httputil.Parse(r, &req); err != nil {
+            httputil.Error(w, err)
+            return
+        }
+        // Call logic
+        resp, err := logic.NewGetWidgetLogic(r.Context(), svcCtx).GetWidget(&req)
+        if err != nil {
+            httputil.Error(w, err)
+            return
+        }
+        httputil.OkJSON(w, resp)
+    }
 }
 ```
 
-4. Frontend types auto-available: `import { getWidget } from '$lib/api'`
+3. Define types in `internal/types/`:
+```go
+type GetWidgetRequest struct { Id string `path:"id"` }
+type GetWidgetResponse struct { Name string `json:"name"` }
+```
+
+4. Implement logic in `internal/logic/widget/getwidgetlogic.go`
 
 ---
 
@@ -157,7 +166,6 @@ func (l *GetWidgetLogic) GetWidget(req *types.GetWidgetRequest) (*types.GetWidge
 
 ## Critical Rules
 
-- **NEVER run goctl directly** - Always use `make gen`
 - **pnpm only** - Never npm or yarn
 - **Styles in app.css only** - No inline styles or `<style>` blocks in Svelte files
 - **Svelte 5 runes** - Use `$state`, `$derived`, `$props`, `$effect` (NOT Svelte 4 `export let`, `$:`, `<slot>`)

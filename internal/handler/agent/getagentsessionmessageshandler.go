@@ -2,9 +2,9 @@ package agent
 
 import (
 	"net/http"
+	"time"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/agent"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
@@ -12,18 +12,33 @@ import (
 // Get session messages
 func GetAgentSessionMessagesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
 		var req types.GetAgentSessionRequest
 		if err := httputil.Parse(r, &req); err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		l := agent.NewGetAgentSessionMessagesLogic(r.Context(), svcCtx)
-		resp, err := l.GetAgentSessionMessages(&req)
+		messages, err := svcCtx.DB.GetSessionMessages(ctx, req.Id)
 		if err != nil {
 			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+			return
 		}
+
+		result := make([]types.SessionMessage, 0, len(messages))
+		for _, m := range messages {
+			result = append(result, types.SessionMessage{
+				Id:        int(m.ID),
+				Role:      m.Role,
+				Content:   m.Content.String,
+				CreatedAt: time.Unix(m.CreatedAt, 0).Format(time.RFC3339),
+			})
+		}
+
+		httputil.OkJSON(w, &types.GetAgentSessionMessagesResponse{
+			Messages: result,
+			Total:    len(result),
+		})
 	}
 }

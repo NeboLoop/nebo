@@ -1,15 +1,15 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/auth"
+	"gobot/internal/logging"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
 
-// Register new user
 func RegisterHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.RegisterRequest
@@ -18,12 +18,24 @@ func RegisterHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		l := auth.NewRegisterLogic(r.Context(), svcCtx)
-		resp, err := l.Register(&req)
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+		if svcCtx.Auth == nil {
+			httputil.Error(w, fmt.Errorf("auth service not configured"))
+			return
 		}
+
+		authResp, err := svcCtx.Auth.Register(r.Context(), req.Email, req.Password, req.Name)
+		if err != nil {
+			logging.Errorf("Registration failed for %s: %v", req.Email, err)
+			httputil.Error(w, err)
+			return
+		}
+
+		logging.Infof("User registered: %s", req.Email)
+
+		httputil.OkJSON(w, &types.LoginResponse{
+			Token:        authResp.Token,
+			RefreshToken: authResp.RefreshToken,
+			ExpiresAt:    authResp.ExpiresAt.UnixMilli(),
+		})
 	}
 }

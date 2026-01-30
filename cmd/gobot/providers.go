@@ -17,13 +17,7 @@ var _ = agentcfg.Config{} // silence unused import if needed
 func createProviders(cfg *agentcfg.Config) []ai.Provider {
 	var providers []ai.Provider
 
-	// First priority: Claude Code CLI if available
-	if ai.CheckCLIAvailable("claude") {
-		providers = append(providers, ai.NewClaudeCodeProvider())
-		fmt.Println("[Providers] Using Claude Code CLI as primary provider")
-	}
-
-	// Then try to load from database auth profiles (UI-configured keys)
+	// First priority: API providers from database (UI-configured keys) - these support true streaming
 	dbProviders := loadProvidersFromDB(cfg.DBPath())
 	providers = append(providers, dbProviders...)
 
@@ -91,6 +85,13 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 				}
 			}
 		}
+	}
+
+	// Fallback: Claude Code CLI if no API providers were configured
+	// CLI providers don't support true streaming but work as a last resort
+	if len(providers) == 0 && ai.CheckCLIAvailable("claude") {
+		providers = append(providers, ai.NewClaudeCodeProvider())
+		fmt.Println("[Providers] Using Claude Code CLI as fallback (no API keys configured)")
 	}
 
 	return providers

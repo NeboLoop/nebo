@@ -2,9 +2,9 @@ package provider
 
 import (
 	"net/http"
+	"time"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/provider"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
@@ -12,18 +12,32 @@ import (
 // Get auth profile by ID
 func GetAuthProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
 		var req types.GetAuthProfileRequest
 		if err := httputil.Parse(r, &req); err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		l := provider.NewGetAuthProfileLogic(r.Context(), svcCtx)
-		resp, err := l.GetAuthProfile(&req)
+		profile, err := svcCtx.DB.GetAuthProfile(ctx, req.Id)
 		if err != nil {
 			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+			return
 		}
+
+		httputil.OkJSON(w, &types.GetAuthProfileResponse{
+			Profile: types.AuthProfile{
+				Id:        profile.ID,
+				Name:      profile.Name,
+				Provider:  profile.Provider,
+				Model:     profile.Model.String,
+				BaseUrl:   profile.BaseUrl.String,
+				Priority:  int(profile.Priority.Int64),
+				IsActive:  profile.IsActive.Int64 == 1,
+				CreatedAt: time.Unix(profile.CreatedAt, 0).Format(time.RFC3339),
+				UpdatedAt: time.Unix(profile.UpdatedAt, 0).Format(time.RFC3339),
+			},
+		})
 	}
 }

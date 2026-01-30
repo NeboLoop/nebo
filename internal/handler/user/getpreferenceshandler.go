@@ -4,19 +4,21 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/user"
 	"gobot/internal/svc"
+	"gobot/internal/types"
 )
 
-// Get user preferences
 func GetPreferencesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := user.NewGetPreferencesLogic(r.Context(), svcCtx)
-		resp, err := l.GetPreferences()
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
-		}
+		// Preferences are stored locally - return defaults
+		httputil.OkJSON(w, &types.GetPreferencesResponse{
+			Preferences: types.UserPreferences{
+				EmailNotifications: true,
+				MarketingEmails:    true,
+				Timezone:           "UTC",
+				Language:           "en",
+				Theme:              "system",
+			},
+		})
 	}
 }

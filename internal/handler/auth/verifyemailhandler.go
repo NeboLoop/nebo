@@ -1,15 +1,15 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/auth"
+	"gobot/internal/logging"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
 
-// Verify email address with token
 func VerifyEmailHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.EmailVerificationRequest
@@ -18,12 +18,20 @@ func VerifyEmailHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		l := auth.NewVerifyEmailLogic(r.Context(), svcCtx)
-		resp, err := l.VerifyEmail(&req)
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+		if svcCtx.Auth == nil {
+			httputil.Error(w, fmt.Errorf("auth service not configured"))
+			return
 		}
+
+		err := svcCtx.Auth.VerifyEmail(r.Context(), req.Token)
+		if err != nil {
+			logging.Errorf("Email verification failed: %v", err)
+			httputil.Error(w, err)
+			return
+		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "Email verified successfully.",
+		})
 	}
 }

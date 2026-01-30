@@ -11,7 +11,7 @@ import (
 	"gobot/internal/middleware"
 	"gobot/internal/provider"
 
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 type ServiceContext struct {
@@ -35,7 +35,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 // NewServiceContextWithDB creates a new service context with an optional pre-initialized database
 func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContext {
 	securityMw := middleware.NewSecurityMiddleware(c)
-	logx.Info("Security middleware initialized")
+	logging.Info("Security middleware initialized")
 
 	// Get data directory from SQLite path
 	dataDir := filepath.Dir(c.Database.SQLitePath)
@@ -47,7 +47,7 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 	home, _ := os.UserHomeDir()
 	gobotDir := filepath.Join(home, ".gobot")
 	provider.InitModelsStore(gobotDir)
-	logx.Info("Models store initialized")
+	logging.Info("Models store initialized")
 
 	svc := &ServiceContext{
 		Config:             c,
@@ -60,29 +60,29 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 	emailService := local.NewEmailService(c)
 	if emailService.IsConfigured() {
 		svc.Email = emailService
-		logx.Info("Email service initialized")
+		logging.Info("Email service initialized")
 	} else {
-		logx.Info("Email not configured - transactional emails disabled")
+		logging.Info("Email not configured - transactional emails disabled")
 	}
 
 	// Use provided database or create new one
 	if database != nil {
 		svc.DB = database
-		logx.Info("Using shared database connection")
+		logging.Info("Using shared database connection")
 	} else {
 		var err error
 		database, err = db.NewSQLite(c.Database.SQLitePath)
 		if err != nil {
-			logx.Errorf("Failed to initialize SQLite database: %v", err)
+			logging.Errorf("Failed to initialize SQLite database: %v", err)
 		} else {
 			svc.DB = database
-			logx.Infof("SQLite database initialized at %s", c.Database.SQLitePath)
+			logging.Infof("SQLite database initialized at %s", c.Database.SQLitePath)
 		}
 	}
 
 	if svc.DB != nil {
 		svc.Auth = local.NewAuthService(svc.DB, c)
-		logx.Info("Auth service initialized")
+		logging.Info("Auth service initialized")
 	}
 
 	return svc
@@ -91,9 +91,9 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 func (svc *ServiceContext) Close() {
 	if svc.DB != nil {
 		svc.DB.Close()
-		logx.Info("SQLite database connection closed")
+		logging.Info("SQLite database connection closed")
 	}
-	logx.Info("Service context closed")
+	logging.Info("Service context closed")
 }
 
 func (svc *ServiceContext) UseLocal() bool {

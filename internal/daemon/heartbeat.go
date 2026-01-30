@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 // HeartbeatConfig configures the heartbeat daemon
@@ -97,7 +97,7 @@ func (h *Heartbeat) run(ctx context.Context) {
 
 // tick runs one heartbeat cycle
 func (h *Heartbeat) tick(ctx context.Context) {
-	logx.Debug("[heartbeat] Running heartbeat check...")
+	logging.Debug("[heartbeat] Running heartbeat check...")
 
 	// 1. Load HEARTBEAT.md
 	tasks := h.loadHeartbeatFile()
@@ -105,11 +105,11 @@ func (h *Heartbeat) tick(ctx context.Context) {
 	// 2. If there are tasks and a handler, call it
 	if tasks != "" && h.cfg.OnHeartbeat != nil {
 		if err := h.cfg.OnHeartbeat(ctx, tasks); err != nil {
-			logx.Errorf("[heartbeat] Error processing heartbeat: %v", err)
+			logging.Errorf("[heartbeat] Error processing heartbeat: %v", err)
 		}
 	}
 
-	logx.Debug("[heartbeat] Heartbeat complete")
+	logging.Debug("[heartbeat] Heartbeat complete")
 }
 
 // loadHeartbeatFile reads HEARTBEAT.md from workspace or home directory

@@ -18,7 +18,7 @@ export function listAgentSessions() {
 
 /**
  * @description "Delete agent session"
- * @param params
+ * @param req
  */
 export function deleteAgentSession(params: components.DeleteAgentSessionRequestParams, id: string) {
 	return webapi.delete<components.MessageResponse>(`/api/v1/agent/sessions/${id}`, params)
@@ -26,7 +26,7 @@ export function deleteAgentSession(params: components.DeleteAgentSessionRequestP
 
 /**
  * @description "Get session messages"
- * @param params
+ * @param req
  */
 export function getAgentSessionMessages(params: components.GetAgentSessionRequestParams, id: string) {
 	return webapi.get<components.GetAgentSessionMessagesResponse>(`/api/v1/agent/sessions/${id}/messages`, params)
@@ -48,6 +48,21 @@ export function updateAgentSettings(req: components.UpdateAgentSettingsRequest) 
 }
 
 /**
+ * @description "Get heartbeat content (HEARTBEAT.md)"
+ */
+export function getHeartbeat() {
+	return webapi.get<components.GetHeartbeatResponse>(`/api/v1/agent/heartbeat`)
+}
+
+/**
+ * @description "Update heartbeat content (HEARTBEAT.md)"
+ * @param req
+ */
+export function updateHeartbeat(req: components.UpdateHeartbeatRequest) {
+	return webapi.put<components.UpdateHeartbeatResponse>(`/api/v1/agent/heartbeat`, req)
+}
+
+/**
  * @description "Get simple agent status (single agent model)"
  */
 export function getSimpleAgentStatus() {
@@ -63,7 +78,7 @@ export function listAgents() {
 
 /**
  * @description "Get agent status"
- * @param params
+ * @param req
  */
 export function getAgentStatus(params: components.AgentStatusRequestParams, agentId: string) {
 	return webapi.get<components.AgentStatusResponse>(`/api/v1/agents/${agentId}/status`, params)
@@ -141,7 +156,7 @@ export function verifyEmail(req: components.EmailVerificationRequest) {
 
 /**
  * @description "List user chats"
- * @param params
+ * @param req
  */
 export function listChats(params: components.ListChatsRequestParams) {
 	return webapi.get<components.ListChatsResponse>(`/api/v1/chats`, params)
@@ -156,31 +171,6 @@ export function createChat(req: components.CreateChatRequest) {
 }
 
 /**
- * @description "Get chat with messages"
- * @param params
- */
-export function getChat(params: components.GetChatRequestParams, id: string) {
-	return webapi.get<components.GetChatResponse>(`/api/v1/chats/${id}`, params)
-}
-
-/**
- * @description "Update chat title"
- * @param params
- * @param req
- */
-export function updateChat(params: components.UpdateChatRequestParams, req: components.UpdateChatRequest, id: string) {
-	return webapi.put<components.Chat>(`/api/v1/chats/${id}`, params, req)
-}
-
-/**
- * @description "Delete chat"
- * @param params
- */
-export function deleteChat(params: components.DeleteChatRequestParams, id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/chats/${id}`, params)
-}
-
-/**
  * @description "Get companion chat (auto-creates if needed)"
  */
 export function getCompanionChat() {
@@ -189,7 +179,7 @@ export function getCompanionChat() {
 
 /**
  * @description "List days with messages for history browsing"
- * @param params
+ * @param req
  */
 export function listChatDays(params: components.ListChatDaysRequestParams) {
 	return webapi.get<components.ListChatDaysResponse>(`/api/v1/chats/days`, params)
@@ -197,7 +187,7 @@ export function listChatDays(params: components.ListChatDaysRequestParams) {
 
 /**
  * @description "Get messages for a specific day"
- * @param params
+ * @param req
  */
 export function getHistoryByDay(params: components.GetHistoryByDayRequestParams, day: string) {
 	return webapi.get<components.GetHistoryByDayResponse>(`/api/v1/chats/history/${day}`, params)
@@ -213,10 +203,34 @@ export function sendMessage(req: components.SendMessageRequest) {
 
 /**
  * @description "Search chat messages"
- * @param params
+ * @param req
  */
 export function searchChatMessages(params: components.SearchChatMessagesRequestParams) {
 	return webapi.get<components.SearchChatMessagesResponse>(`/api/v1/chats/search`, params)
+}
+
+/**
+ * @description "Get chat with messages"
+ * @param req
+ */
+export function getChat(params: components.GetChatRequestParams, id: string) {
+	return webapi.get<components.GetChatResponse>(`/api/v1/chats/${id}`, params)
+}
+
+/**
+ * @description "Update chat title"
+ * @param req
+ */
+export function updateChat(params: components.UpdateChatRequestParams, req: components.UpdateChatRequest, id: string) {
+	return webapi.put<components.Chat>(`/api/v1/chats/${id}`, params, req)
+}
+
+/**
+ * @description "Delete chat"
+ * @param req
+ */
+export function deleteChat(params: components.DeleteChatRequestParams, id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/chats/${id}`, params)
 }
 
 /**
@@ -228,7 +242,7 @@ export function listExtensions() {
 
 /**
  * @description "Get single skill details"
- * @param params
+ * @param req
  */
 export function getSkill(params: components.GetSkillRequestParams, name: string) {
 	return webapi.get<components.GetSkillResponse>(`/api/v1/skills/${name}`, params)
@@ -236,7 +250,7 @@ export function getSkill(params: components.GetSkillRequestParams, name: string)
 
 /**
  * @description "Toggle skill enabled/disabled"
- * @param params
+ * @param req
  */
 export function toggleSkill(params: components.ToggleSkillRequestParams, name: string) {
 	return webapi.post<components.ToggleSkillResponse>(`/api/v1/skills/${name}/toggle`, params)
@@ -244,7 +258,7 @@ export function toggleSkill(params: components.ToggleSkillRequestParams, name: s
 
 /**
  * @description "List user notifications"
- * @param params
+ * @param req
  */
 export function listNotifications(params: components.ListNotificationsRequestParams) {
 	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`, params)
@@ -252,7 +266,7 @@ export function listNotifications(params: components.ListNotificationsRequestPar
 
 /**
  * @description "Delete notification"
- * @param params
+ * @param req
  */
 export function deleteNotification(params: components.DeleteNotificationRequestParams, id: string) {
 	return webapi.delete<components.MessageResponse>(`/api/v1/notifications/${id}`, params)
@@ -260,7 +274,7 @@ export function deleteNotification(params: components.DeleteNotificationRequestP
 
 /**
  * @description "Mark notification as read"
- * @param params
+ * @param req
  */
 export function markNotificationRead(params: components.MarkNotificationReadRequestParams, id: string) {
 	return webapi.put<components.MessageResponse>(`/api/v1/notifications/${id}/read`, params)
@@ -282,7 +296,6 @@ export function getUnreadCount() {
 
 /**
  * @description "OAuth callback - exchange code for tokens"
- * @param params
  * @param req
  */
 export function oAuthCallback(params: components.OAuthLoginRequestParams, req: components.OAuthLoginRequest, provider: string) {
@@ -291,7 +304,7 @@ export function oAuthCallback(params: components.OAuthLoginRequestParams, req: c
 
 /**
  * @description "Get OAuth authorization URL"
- * @param params
+ * @param req
  */
 export function getOAuthUrl(params: components.GetOAuthUrlRequestParams, provider: string) {
 	return webapi.get<components.GetOAuthUrlResponse>(`/api/v1/oauth/${provider}/url`, params)
@@ -299,7 +312,7 @@ export function getOAuthUrl(params: components.GetOAuthUrlRequestParams, provide
 
 /**
  * @description "Disconnect OAuth provider"
- * @param params
+ * @param req
  */
 export function disconnectOAuth(params: components.DisconnectOAuthRequestParams, provider: string) {
 	return webapi.delete<components.MessageResponse>(`/api/v1/oauth/${provider}`, params)
@@ -321,7 +334,6 @@ export function listModels() {
 
 /**
  * @description "Update model settings (active, kind, preferred)"
- * @param params
  * @param req
  */
 export function updateModel(params: components.UpdateModelRequestParams, req: components.UpdateModelRequest, provider: string, modelId: string) {
@@ -353,7 +365,7 @@ export function createAuthProfile(req: components.CreateAuthProfileRequest) {
 
 /**
  * @description "Get auth profile by ID"
- * @param params
+ * @param req
  */
 export function getAuthProfile(params: components.GetAuthProfileRequestParams, id: string) {
 	return webapi.get<components.GetAuthProfileResponse>(`/api/v1/providers/${id}`, params)
@@ -361,7 +373,6 @@ export function getAuthProfile(params: components.GetAuthProfileRequestParams, i
 
 /**
  * @description "Update auth profile"
- * @param params
  * @param req
  */
 export function updateAuthProfile(params: components.UpdateAuthProfileRequestParams, req: components.UpdateAuthProfileRequest, id: string) {
@@ -370,7 +381,7 @@ export function updateAuthProfile(params: components.UpdateAuthProfileRequestPar
 
 /**
  * @description "Delete auth profile"
- * @param params
+ * @param req
  */
 export function deleteAuthProfile(params: components.DeleteAuthProfileRequestParams, id: string) {
 	return webapi.delete<components.MessageResponse>(`/api/v1/providers/${id}`, params)
@@ -378,7 +389,7 @@ export function deleteAuthProfile(params: components.DeleteAuthProfileRequestPar
 
 /**
  * @description "Test auth profile (verify API key works)"
- * @param params
+ * @param req
  */
 export function testAuthProfile(params: components.TestAuthProfileRequestParams, id: string) {
 	return webapi.post<components.TestAuthProfileResponse>(`/api/v1/providers/${id}/test`, params)
@@ -441,7 +452,7 @@ export function updateCurrentUser(req: components.UpdateUserRequest) {
  * @param req
  */
 export function deleteAccount(req: components.DeleteAccountRequest) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/user/me`, req)
+	return webapi.delete<components.MessageResponse>(`/api/v1/user/me`)
 }
 
 /**
@@ -466,3 +477,4 @@ export function getPreferences() {
 export function updatePreferences(req: components.UpdatePreferencesRequest) {
 	return webapi.put<components.GetPreferencesResponse>(`/api/v1/user/me/preferences`, req)
 }
+

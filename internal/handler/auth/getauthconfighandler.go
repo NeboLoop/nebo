@@ -4,19 +4,25 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/auth"
 	"gobot/internal/svc"
+	"gobot/internal/types"
 )
 
-// Get auth configuration (OAuth providers enabled)
 func GetAuthConfigHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := auth.NewGetAuthConfigLogic(r.Context(), svcCtx)
-		resp, err := l.GetAuthConfig()
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+		// Return OAuth provider configuration
+		// Only return enabled status if OAuth feature is enabled and in local mode
+		googleEnabled := false
+		githubEnabled := false
+
+		if svcCtx.UseLocal() && svcCtx.Config.IsOAuthEnabled() {
+			googleEnabled = svcCtx.Config.IsGoogleOAuthEnabled()
+			githubEnabled = svcCtx.Config.IsGitHubOAuthEnabled()
 		}
+
+		httputil.OkJSON(w, &types.AuthConfigResponse{
+			GoogleEnabled: googleEnabled,
+			GitHubEnabled: githubEnabled,
+		})
 	}
 }

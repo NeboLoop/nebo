@@ -307,6 +307,16 @@
 		pendingApproval = null;
 	}
 
+	function handleApproveAlways(requestId: string) {
+		const client = getWebSocketClient();
+		client.send('approval_response', {
+			request_id: requestId,
+			approved: true,
+			always: true
+		});
+		pendingApproval = null;
+	}
+
 	function handleDeny(requestId: string) {
 		const client = getWebSocketClient();
 		client.send('approval_response', {
@@ -1017,5 +1027,6 @@
 <ApprovalModal
 	request={pendingApproval}
 	onApprove={handleApprove}
+	onApproveAlways={handleApproveAlways}
 	onDeny={handleDeny}
 />

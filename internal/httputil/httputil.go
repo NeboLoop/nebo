@@ -15,7 +15,7 @@ import (
 // - JSON body (for POST/PUT/PATCH)
 // - Path parameters via `path:"name"` struct tag (using chi.URLParam)
 // - Query parameters via `form:"name"` struct tag
-// This mimics go-zero's httpx.Parse behavior.
+// Supports JSON body, path parameters, and query parameters.
 func Parse(r *http.Request, v any) error {
 	val := reflect.ValueOf(v)
 	if val.Kind() != reflect.Ptr || val.IsNil() {

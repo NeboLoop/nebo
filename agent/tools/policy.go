@@ -136,6 +136,12 @@ func (p *Policy) isAllowed(cmd string) bool {
 
 // RequestApproval asks the user for approval
 func (p *Policy) RequestApproval(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
+	// Fast path: full policy level means auto-approve everything
+	if p.Level == PolicyFull {
+		fmt.Printf("[Policy] Auto-approving (full policy level)\n")
+		return true, nil
+	}
+
 	// Format the request nicely
 	var inputStr string
 	if toolName == "bash" {
@@ -152,11 +158,13 @@ func (p *Policy) RequestApproval(ctx context.Context, toolName string, input jso
 
 	// Check if we need to ask at all
 	if toolName == "bash" && !p.RequiresApproval(inputStr) {
+		fmt.Printf("[Policy] Command is in allowlist, auto-approving\n")
 		return true, nil
 	}
 
 	// Use callback if set (for remote/web UI approval)
 	if p.ApprovalCallback != nil {
+		fmt.Printf("[Policy] Requesting approval via callback for tool=%s\n", toolName)
 		return p.ApprovalCallback(ctx, toolName, input)
 	}
 

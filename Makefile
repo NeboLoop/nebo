@@ -101,14 +101,10 @@ deps:
 	go mod download
 	go mod tidy
 
-# Code generation from .api file
+# Code generation - TypeScript API types and client
 gen:
-	@echo "Cleaning auto-generated handlers..."
-	@rm -rf internal/handler
-	@echo "Generating Go API code..."
-	goctl api go -api $(EXECUTABLE).api -dir . --style gozero
 	@echo "Generating TypeScript API code..."
-	goctl api ts -api $(EXECUTABLE).api -dir ./app/src/lib/api/
+	go run ./cmd/genapi
 	@echo "Code generation complete!"
 
 # Setup script - rename project

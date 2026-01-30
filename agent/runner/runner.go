@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -55,6 +56,18 @@ type RunRequest struct {
 	Prompt        string // User prompt
 	System        string // Override system prompt
 	ModelOverride string // User-specified model override (e.g., "anthropic/claude-opus-4-5")
+}
+
+// modelOverrideProvider wraps a Provider to use a specific model
+type modelOverrideProvider struct {
+	ai.Provider
+	model string
+}
+
+// Stream overrides the model in the request before streaming
+func (p *modelOverrideProvider) Stream(ctx context.Context, req *ai.ChatRequest) (<-chan ai.StreamEvent, error) {
+	req.Model = p.model
+	return p.Provider.Stream(ctx, req)
 }
 
 // New creates a new runner
@@ -230,12 +243,41 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 	// MAIN LOOP: Model selection + agentic execution
 	for iteration < maxIterations {
 		iteration++
+		fmt.Printf("[Runner] === Iteration %d ===\n", iteration)
 
 		// Get session messages
 		messages, err := r.sessions.GetMessages(sessionID, r.config.MaxContext)
 		if err != nil {
 			resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
 			return
+		}
+
+		fmt.Printf("[Runner] Loaded %d messages from session:\n", len(messages))
+		for i, msg := range messages {
+			fmt.Printf("[Runner]   [%d] role=%s content_len=%d tool_calls_len=%d tool_results_len=%d\n",
+				i, msg.Role, len(msg.Content), len(msg.ToolCalls), len(msg.ToolResults))
+		}
+
+		// Proactive token check - compact BEFORE hitting API limits
+		estimatedTokens := estimateTokens(messages)
+		fmt.Printf("[Runner] Estimated tokens: %d (limit: %d)\n", estimatedTokens, DefaultContextTokenLimit)
+
+		if estimatedTokens > DefaultContextTokenLimit && !compactionAttempted {
+			fmt.Printf("[Runner] Token limit exceeded, compacting proactively...\n")
+			compactionAttempted = true
+			summary := r.generateSummary(ctx, messages)
+			if compactErr := r.sessions.Compact(sessionID, summary); compactErr == nil {
+				// Reload messages after compaction
+				messages, err = r.sessions.GetMessages(sessionID, r.config.MaxContext)
+				if err != nil {
+					resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
+					return
+				}
+				newTokens := estimateTokens(messages)
+				fmt.Printf("[Runner] After compaction: %d messages, ~%d tokens\n", len(messages), newTokens)
+			} else {
+				fmt.Printf("[Runner] Compaction failed: %v\n", compactErr)
+			}
 		}
 
 		// Check for user model switch request (e.g., "use claude", "switch to opus")
@@ -279,11 +321,22 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 			return
 		}
 
+		// Inject model and system context into system prompt
+		enrichedPrompt := injectSystemContext(systemPrompt, provider.ID(), modelName)
+
+		// If session has a compaction summary, inject it for continuity
+		if summary, _ := r.sessions.GetSummary(sessionID); summary != "" {
+			enrichedPrompt = enrichedPrompt + "\n\n---\n[Previous Conversation Summary]\n" + summary + "\n---"
+		}
+
+		// Truncate older tool results to reduce token usage
+		truncatedMessages := truncateOlderToolResults(messages)
+
 		// Build chat request
 		chatReq := &ai.ChatRequest{
-			Messages: messages,
+			Messages: truncatedMessages,
 			Tools:    r.tools.List(),
-			System:   systemPrompt,
+			System:   enrichedPrompt,
 			Model:    modelName,
 		}
 
@@ -359,14 +412,18 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 			var toolCallsJSON json.RawMessage
 			if len(toolCalls) > 0 {
 				toolCallsJSON, _ = json.Marshal(toolCalls)
+				fmt.Printf("[Runner] Saving assistant message with %d tool_calls, JSON: %s\n", len(toolCalls), string(toolCallsJSON))
 			}
 
-			r.sessions.AppendMessage(sessionID, session.Message{
+			err := r.sessions.AppendMessage(sessionID, session.Message{
 				SessionID: sessionID,
 				Role:      "assistant",
 				Content:   assistantContent.String(),
 				ToolCalls: toolCallsJSON,
 			})
+			if err != nil {
+				fmt.Printf("[Runner] ERROR saving assistant message: %v\n", err)
+			}
 		}
 
 		// Execute tool calls
@@ -374,11 +431,13 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 			var toolResults []session.ToolResult
 
 			for _, tc := range toolCalls {
+				fmt.Printf("[Runner] Executing tool: %s (id=%s)\n", tc.Name, tc.ID)
 				result := r.tools.Execute(ctx, &ai.ToolCall{
 					ID:    tc.ID,
 					Name:  tc.Name,
 					Input: tc.Input,
 				})
+				fmt.Printf("[Runner] Tool result: error=%v content_len=%d\n", result.IsError, len(result.Content))
 
 				// Send tool result event
 				resultCh <- ai.StreamEvent{
@@ -395,12 +454,17 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 
 			// Save tool results
 			toolResultsJSON, _ := json.Marshal(toolResults)
-			r.sessions.AppendMessage(sessionID, session.Message{
+			fmt.Printf("[Runner] Saving tool results: %s\n", string(toolResultsJSON))
+			err := r.sessions.AppendMessage(sessionID, session.Message{
 				SessionID:   sessionID,
 				Role:        "tool",
 				ToolResults: toolResultsJSON,
 			})
+			if err != nil {
+				fmt.Printf("[Runner] ERROR saving tool results: %v\n", err)
+			}
 
+			fmt.Printf("[Runner] Continuing to next iteration...\n")
 			// Continue to next iteration for more tool calls
 			continue
 		}
@@ -486,8 +550,37 @@ func (r *Runner) extractAndStoreMemories(sessionID string) {
 		return // Not enough conversation to extract from
 	}
 
+	// Use the cheapest available model for memory extraction
+	var extractionProvider ai.Provider
+	var extractionModel string
+	if r.selector != nil {
+		cheapestModelID := r.selector.GetCheapestModel()
+		fmt.Printf("[runner] GetCheapestModel returned: %q\n", cheapestModelID)
+		if cheapestModelID != "" {
+			providerID, modelName := ai.ParseModelID(cheapestModelID)
+			if p, ok := r.providerMap[providerID]; ok {
+				// Create a provider wrapper that uses the specific model
+				extractionProvider = &modelOverrideProvider{
+					Provider: p,
+					model:    modelName,
+				}
+				extractionModel = cheapestModelID
+			} else {
+				fmt.Printf("[runner] Provider %q not in providerMap (available: %v)\n", providerID, r.getProviderIDs())
+			}
+		}
+	} else {
+		fmt.Printf("[runner] selector is nil\n")
+	}
+	// Fall back to first provider if we couldn't get the cheapest
+	if extractionProvider == nil {
+		extractionProvider = r.providers[0]
+		extractionModel = "fallback/" + r.providers[0].ID()
+	}
+	fmt.Printf("[runner] Memory extraction using model: %s\n", extractionModel)
+
 	// Create extractor and extract facts
-	extractor := memory.NewExtractor(r.providers[0])
+	extractor := memory.NewExtractor(extractionProvider)
 	facts, err := extractor.Extract(ctx, messages)
 	if err != nil {
 		fmt.Printf("[runner] Memory extraction failed: %v\n", err)
@@ -542,4 +635,120 @@ func (r *Runner) detectUserModelSwitch(messages []session.Message) string {
 
 	// Use fuzzy matcher to resolve the model name
 	return r.fuzzyMatcher.Match(modelRequest)
+}
+
+// getProviderIDs returns all provider IDs in the providerMap (for debugging)
+func (r *Runner) getProviderIDs() []string {
+	ids := make([]string, 0, len(r.providerMap))
+	for id := range r.providerMap {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// estimateTokens estimates the token count for a slice of messages.
+// Uses a simple heuristic: ~4 characters per token (works for most models).
+func estimateTokens(messages []session.Message) int {
+	totalChars := 0
+	for _, msg := range messages {
+		totalChars += len(msg.Content)
+		totalChars += len(msg.ToolCalls)
+		totalChars += len(msg.ToolResults)
+	}
+	// Rough estimate: 4 chars per token
+	return totalChars / 4
+}
+
+// DefaultContextTokenLimit is the default max tokens before proactive compaction.
+// Set conservatively to work with smaller context windows (gpt-5-nano, haiku, etc.)
+const DefaultContextTokenLimit = 6000
+
+// injectSystemContext enriches the system prompt with runtime context
+// so the AI knows what model it's running as, current time, etc.
+func injectSystemContext(systemPrompt, providerID, modelName string) string {
+	now := time.Now()
+
+	// Get hostname
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+
+	// Format OS name nicely
+	osName := runtime.GOOS
+	switch osName {
+	case "darwin":
+		osName = "macOS"
+	case "linux":
+		osName = "Linux"
+	case "windows":
+		osName = "Windows"
+	}
+
+	// Build context block
+	contextBlock := fmt.Sprintf(`
+
+---
+[System Context]
+Model: %s/%s
+Date: %s
+Time: %s
+Timezone: %s
+Computer: %s
+OS: %s (%s)
+---`,
+		providerID, modelName,
+		now.Format("Monday, January 2, 2006"),
+		now.Format("3:04 PM"),
+		now.Format("MST"),
+		hostname,
+		osName, runtime.GOARCH,
+	)
+
+	return systemPrompt + contextBlock
+}
+
+// ToolResultTruncateLimit is the max chars for tool results in older messages
+const ToolResultTruncateLimit = 500
+
+// RecentMessagesToPreserve is how many recent messages keep full tool results
+const RecentMessagesToPreserve = 4
+
+// truncateOlderToolResults truncates tool results from older messages to reduce tokens.
+// The most recent N messages keep their full tool results for context accuracy.
+// Older messages get truncated tool results with a "[truncated]" marker.
+func truncateOlderToolResults(messages []session.Message) []session.Message {
+	if len(messages) <= RecentMessagesToPreserve {
+		return messages
+	}
+
+	result := make([]session.Message, len(messages))
+	cutoff := len(messages) - RecentMessagesToPreserve
+	truncatedCount := 0
+
+	for i, msg := range messages {
+		if i < cutoff && len(msg.ToolResults) > ToolResultTruncateLimit {
+			// Parse, truncate content, re-marshal
+			var results []session.ToolResult
+			if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
+				for j := range results {
+					if len(results[j].Content) > ToolResultTruncateLimit {
+						results[j].Content = results[j].Content[:ToolResultTruncateLimit] + "\n[... truncated ...]"
+						truncatedCount++
+					}
+				}
+				if newData, err := json.Marshal(results); err == nil {
+					msg.ToolResults = newData
+				}
+			}
+		}
+		result[i] = msg
+	}
+
+	if truncatedCount > 0 {
+		fmt.Printf("[Runner] Truncated %d older tool results (preserving last %d messages)\n",
+			truncatedCount, RecentMessagesToPreserve)
+	}
+
+	return result
 }

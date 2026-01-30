@@ -465,7 +465,7 @@ gobot/
 | Component | Technology |
 |-----------|------------|
 | Agent | Go 1.25+, Cobra CLI |
-| Backend | go-zero framework |
+| Backend | chi router |
 | Frontend | SvelteKit 2, Svelte 5 |
 | Database | SQLite (modernc.org/sqlite) |
 | Browser | chromedp (CDP) |

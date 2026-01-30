@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -31,7 +32,9 @@ func applyDefaults(c *Config) {
 		c.Auth.RefreshTokenExpire = 604800
 	}
 	if c.Database.SQLitePath == "" {
-		c.Database.SQLitePath = "./data/gobot.db"
+		// Use ~/.gobot/data/gobot.db as the canonical database location
+		home, _ := os.UserHomeDir()
+		c.Database.SQLitePath = filepath.Join(home, ".gobot", "data", "gobot.db")
 	}
 	if c.Security.CSRFEnabled == "" {
 		c.Security.CSRFEnabled = "true"
@@ -94,7 +97,7 @@ func parseBool(s string, defaultVal bool) bool {
 }
 
 type Config struct {
-	// Server configuration (formerly from rest.RestConf)
+	// Server configuration
 	Name string `yaml:"Name"`
 	Host string `yaml:"Host"`
 	Port int    `yaml:"Port"`

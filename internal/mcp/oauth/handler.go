@@ -17,6 +17,7 @@ import (
 	"gobot/internal/mcp/mcpauth"
 	"gobot/internal/svc"
 
+	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -34,19 +35,19 @@ func NewHandler(svc *svc.ServiceContext, baseURL string) *Handler {
 	}
 }
 
-// RegisterRoutes registers all OAuth routes on the given mux
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+// RegisterRoutes registers all OAuth routes on the chi router
+func (h *Handler) RegisterRoutes(r chi.Router) {
 	// Well-known metadata endpoints
-	mux.HandleFunc("GET /.well-known/oauth-protected-resource", h.HandleProtectedResourceMetadata)
-	mux.HandleFunc("GET /.well-known/oauth-authorization-server", h.HandleAuthServerMetadata)
+	r.Get("/.well-known/oauth-protected-resource", h.HandleProtectedResourceMetadata)
+	r.Get("/.well-known/oauth-authorization-server", h.HandleAuthServerMetadata)
 
 	// Dynamic Client Registration
-	mux.HandleFunc("POST /mcp/oauth/register", h.HandleClientRegistration)
+	r.Post("/mcp/oauth/register", h.HandleClientRegistration)
 
 	// OAuth endpoints
-	mux.HandleFunc("GET /mcp/oauth/authorize", h.HandleAuthorize)
-	mux.HandleFunc("POST /mcp/oauth/authorize", h.HandleAuthorizeSubmit)
-	mux.HandleFunc("POST /mcp/oauth/token", h.HandleToken)
+	r.Get("/mcp/oauth/authorize", h.HandleAuthorize)
+	r.Post("/mcp/oauth/authorize", h.HandleAuthorizeSubmit)
+	r.Post("/mcp/oauth/token", h.HandleToken)
 }
 
 // setCORSHeaders sets CORS headers for OAuth endpoints (browser-based clients like ChatGPT)

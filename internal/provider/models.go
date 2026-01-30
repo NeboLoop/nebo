@@ -1,12 +1,14 @@
 package provider
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v3"
 )
 
@@ -85,6 +87,11 @@ var (
 	modelsOnce     sync.Once
 	modelsMu       sync.RWMutex
 	modelsFilePath string
+
+	// File watcher
+	configWatcher    *fsnotify.Watcher
+	reloadCallbacks  []func(*ModelsConfig)
+	callbacksMu      sync.RWMutex
 )
 
 // InitModelsStore sets up the models YAML file path and loads the singleton
@@ -117,8 +124,90 @@ func GetModelsConfig() *ModelsConfig {
 // ReloadModels reloads the config from YAML (call when file changes)
 func ReloadModels() {
 	modelsMu.Lock()
-	defer modelsMu.Unlock()
 	modelsInstance = loadFromYAML()
+	modelsMu.Unlock()
+
+	// Notify all registered callbacks
+	callbacksMu.RLock()
+	callbacks := make([]func(*ModelsConfig), len(reloadCallbacks))
+	copy(callbacks, reloadCallbacks)
+	callbacksMu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb(modelsInstance)
+	}
+}
+
+// OnConfigReload registers a callback to be called when the config is reloaded
+func OnConfigReload(callback func(*ModelsConfig)) {
+	callbacksMu.Lock()
+	defer callbacksMu.Unlock()
+	reloadCallbacks = append(reloadCallbacks, callback)
+}
+
+// StartConfigWatcher starts watching the ~/.gobot directory for config changes
+func StartConfigWatcher(dataDir string) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to create watcher: %w", err)
+	}
+	configWatcher = watcher
+
+	// Watch the data directory
+	if err := watcher.Add(dataDir); err != nil {
+		return fmt.Errorf("failed to watch directory %s: %w", dataDir, err)
+	}
+
+	// Also watch models.yaml specifically if it exists
+	modelsPath := filepath.Join(dataDir, "models.yaml")
+	if _, err := os.Stat(modelsPath); err == nil {
+		if err := watcher.Add(modelsPath); err != nil {
+			fmt.Printf("[config] Warning: could not watch models.yaml directly: %v\n", err)
+		}
+	}
+
+	go func() {
+		var debounceTimer *time.Timer
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+				// Only care about models.yaml changes
+				if filepath.Base(event.Name) != "models.yaml" {
+					continue
+				}
+				if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
+					// Debounce: wait 100ms before reloading (editors may write multiple times)
+					if debounceTimer != nil {
+						debounceTimer.Stop()
+					}
+					debounceTimer = time.AfterFunc(100*time.Millisecond, func() {
+						fmt.Printf("[config] models.yaml changed, reloading...\n")
+						ReloadModels()
+						fmt.Printf("[config] models.yaml reloaded successfully\n")
+					})
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				fmt.Printf("[config] Watcher error: %v\n", err)
+			}
+		}
+	}()
+
+	fmt.Printf("[config] Watching %s for changes\n", dataDir)
+	return nil
+}
+
+// StopConfigWatcher stops the file watcher
+func StopConfigWatcher() {
+	if configWatcher != nil {
+		configWatcher.Close()
+		configWatcher = nil
+	}
 }
 
 // loadFromYAML reads the YAML file

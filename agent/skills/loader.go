@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 	"gopkg.in/yaml.v3"
 )
 
@@ -67,7 +67,7 @@ func (l *Loader) LoadAll() error {
 		return fmt.Errorf("failed to load skills: %w", err)
 	}
 
-	logx.Infof("[skills] Loaded %d skills from %s", len(l.skills), l.dir)
+	logging.Infof("[skills] Loaded %d skills from %s", len(l.skills), l.dir)
 	return nil
 }
 
@@ -96,7 +96,7 @@ func (l *Loader) loadFile(path string) error {
 	}
 
 	l.skills[skill.Name] = &skill
-	logx.Debugf("[skills] Loaded skill: %s (triggers: %v)", skill.Name, skill.Triggers)
+	logging.Debugf("[skills] Loaded skill: %s (triggers: %v)", skill.Name, skill.Triggers)
 	return nil
 }
 
@@ -119,7 +119,7 @@ func (l *Loader) Watch(ctx context.Context) error {
 	// Add directory to watch
 	if err := watcher.Add(l.dir); err != nil {
 		// Directory might not exist yet, that's okay
-		logx.Errorf("[skills] Could not watch %s: %v", l.dir, err)
+		logging.Errorf("[skills] Could not watch %s: %v", l.dir, err)
 	}
 
 	return nil
@@ -140,7 +140,7 @@ func (l *Loader) watchLoop(ctx context.Context) {
 			if !ok {
 				return
 			}
-			logx.Errorf("[skills] Watch error: %v", err)
+			logging.Errorf("[skills] Watch error: %v", err)
 		}
 	}
 }
@@ -152,7 +152,7 @@ func (l *Loader) handleEvent(event fsnotify.Event) {
 		return
 	}
 
-	logx.Debugf("[skills] File event: %s %s", event.Op, event.Name)
+	logging.Debugf("[skills] File event: %s %s", event.Op, event.Name)
 
 	switch {
 	case event.Op&fsnotify.Write == fsnotify.Write,
@@ -160,7 +160,7 @@ func (l *Loader) handleEvent(event fsnotify.Event) {
 		// Reload the specific file
 		l.mu.Lock()
 		if err := l.loadFile(event.Name); err != nil {
-			logx.Errorf("[skills] Error reloading %s: %v", event.Name, err)
+			logging.Errorf("[skills] Error reloading %s: %v", event.Name, err)
 		}
 		l.mu.Unlock()
 
@@ -171,7 +171,7 @@ func (l *Loader) handleEvent(event fsnotify.Event) {
 		for name, skill := range l.skills {
 			if skill.FilePath == event.Name {
 				delete(l.skills, name)
-				logx.Infof("[skills] Unloaded skill: %s", name)
+				logging.Infof("[skills] Unloaded skill: %s", name)
 				break
 			}
 		}

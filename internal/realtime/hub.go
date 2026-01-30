@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 // Hub maintains the set of active clients and broadcasts messages to the clients.
@@ -56,7 +56,7 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.Lock()
 			h.clients[client] = true
 			h.mu.Unlock()
-			logx.Infof("Client %s connected. Total clients: %d", client.ID, len(h.clients))
+			logging.Infof("Client %s connected. Total clients: %d", client.ID, len(h.clients))
 
 		case client := <-h.unregister:
 			h.mu.Lock()
@@ -65,7 +65,7 @@ func (h *Hub) Run(ctx context.Context) {
 				close(client.send)
 			}
 			h.mu.Unlock()
-			logx.Infof("Client %s disconnected. Total clients: %d", client.ID, len(h.clients))
+			logging.Infof("Client %s disconnected. Total clients: %d", client.ID, len(h.clients))
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
@@ -88,7 +88,7 @@ func (h *Hub) Broadcast(message *Message) error {
 	if err != nil {
 		return err
 	}
-	logx.Infof("[Hub] Broadcasting message type=%s channel=%s to %d clients", message.Type, message.Channel, h.GetClientCount())
+	logging.Infof("[Hub] Broadcasting message type=%s channel=%s to %d clients", message.Type, message.Channel, h.GetClientCount())
 	h.broadcast <- data
 	return nil
 }

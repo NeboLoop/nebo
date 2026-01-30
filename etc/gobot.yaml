@@ -17,5 +17,5 @@ Auth:
   AccessExpire: 2592000
   RefreshTokenExpire: 2592000
 
-Database:
-  SQLitePath: ./data/gobot.db
+# Database uses ~/.gobot/data/gobot.db by default (shared with agent)
+Database: {}

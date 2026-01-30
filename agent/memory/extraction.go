@@ -26,6 +26,37 @@ type Fact struct {
 	Tags     []string `json:"tags"`     // Additional tags
 }
 
+// UnmarshalJSON handles both string and non-string values for flexible LLM parsing
+func (f *Fact) UnmarshalJSON(data []byte) error {
+	// Use an alias to avoid infinite recursion
+	type FactAlias struct {
+		Key      string          `json:"key"`
+		Value    json.RawMessage `json:"value"`
+		Category string          `json:"category"`
+		Tags     []string        `json:"tags"`
+	}
+
+	var alias FactAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+
+	f.Key = alias.Key
+	f.Category = alias.Category
+	f.Tags = alias.Tags
+
+	// Try to unmarshal Value as string first
+	var strVal string
+	if err := json.Unmarshal(alias.Value, &strVal); err == nil {
+		f.Value = strVal
+		return nil
+	}
+
+	// If not a string, convert the raw JSON to string representation
+	f.Value = strings.Trim(string(alias.Value), "\"")
+	return nil
+}
+
 // ExtractFactsPrompt is the prompt used to extract facts from messages
 const ExtractFactsPrompt = `Analyze the following conversation and extract durable facts that should be remembered long-term.
 
@@ -115,12 +146,20 @@ func (e *Extractor) Extract(ctx context.Context, messages []session.Message) (*E
 		responseText = strings.TrimSpace(responseText)
 	}
 
+	// Strip any remaining backticks (inline code formatting)
+	responseText = strings.Trim(responseText, "`")
+	responseText = strings.TrimSpace(responseText)
+
 	// Try to extract JSON from the response (in case there's extra text)
 	jsonStart := strings.Index(responseText, "{")
 	jsonEnd := strings.LastIndex(responseText, "}")
 	if jsonStart >= 0 && jsonEnd > jsonStart {
 		responseText = responseText[jsonStart : jsonEnd+1]
 	}
+
+	// Final cleanup - remove any trailing backticks that might be inside
+	responseText = strings.TrimSuffix(responseText, "`")
+	responseText = strings.TrimPrefix(responseText, "`")
 
 	var facts ExtractedFacts
 	if err := json.Unmarshal([]byte(responseText), &facts); err != nil {

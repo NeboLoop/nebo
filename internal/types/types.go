@@ -28,10 +28,11 @@ type AgentSession struct {
 }
 
 type AgentSettings struct {
-	AutonomousMode   bool `json:"autonomousMode"`
-	AutoApproveRead  bool `json:"autoApproveRead"`
-	AutoApproveWrite bool `json:"autoApproveWrite"`
-	AutoApproveBash  bool `json:"autoApproveBash"`
+	AutonomousMode           bool `json:"autonomousMode"`
+	AutoApproveRead          bool `json:"autoApproveRead"`
+	AutoApproveWrite         bool `json:"autoApproveWrite"`
+	AutoApproveBash          bool `json:"autoApproveBash"`
+	HeartbeatIntervalMinutes int  `json:"heartbeatIntervalMinutes"`
 }
 
 type AgentStatusRequest struct {
@@ -42,6 +43,18 @@ type AgentStatusResponse struct {
 	AgentId   string `json:"agentId"`
 	Connected bool   `json:"connected"`
 	Uptime    int64  `json:"uptime"`
+}
+
+type GetHeartbeatResponse struct {
+	Content string `json:"content"`
+}
+
+type UpdateHeartbeatRequest struct {
+	Content string `json:"content"`
+}
+
+type UpdateHeartbeatResponse struct {
+	Success bool `json:"success"`
 }
 
 type AuthConfigResponse struct {
@@ -502,10 +515,11 @@ type ToggleSkillResponse struct {
 }
 
 type UpdateAgentSettingsRequest struct {
-	AutonomousMode   bool `json:"autonomousMode"`
-	AutoApproveRead  bool `json:"autoApproveRead"`
-	AutoApproveWrite bool `json:"autoApproveWrite"`
-	AutoApproveBash  bool `json:"autoApproveBash"`
+	AutonomousMode           bool `json:"autonomousMode"`
+	AutoApproveRead          bool `json:"autoApproveRead"`
+	AutoApproveWrite         bool `json:"autoApproveWrite"`
+	AutoApproveBash          bool `json:"autoApproveBash"`
+	HeartbeatIntervalMinutes int  `json:"heartbeatIntervalMinutes"`
 }
 
 type UpdateAuthProfileRequest struct {

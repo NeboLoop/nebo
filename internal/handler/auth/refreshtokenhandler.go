@@ -1,15 +1,15 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/auth"
+	"gobot/internal/logging"
 	"gobot/internal/svc"
 	"gobot/internal/types"
 )
 
-// Refresh authentication token
 func RefreshTokenHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.RefreshTokenRequest
@@ -18,12 +18,22 @@ func RefreshTokenHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		l := auth.NewRefreshTokenLogic(r.Context(), svcCtx)
-		resp, err := l.RefreshToken(&req)
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+		if svcCtx.Auth == nil {
+			httputil.Error(w, fmt.Errorf("auth service not configured"))
+			return
 		}
+
+		authResp, err := svcCtx.Auth.RefreshToken(r.Context(), req.RefreshToken)
+		if err != nil {
+			logging.Errorf("Token refresh failed: %v", err)
+			httputil.Error(w, err)
+			return
+		}
+
+		httputil.OkJSON(w, &types.RefreshTokenResponse{
+			Token:        authResp.Token,
+			RefreshToken: authResp.RefreshToken,
+			ExpiresAt:    authResp.ExpiresAt.UnixMilli(),
+		})
 	}
 }

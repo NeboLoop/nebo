@@ -18,13 +18,15 @@
 	let autoApproveRead = $state(true);
 	let autoApproveWrite = $state(false);
 	let autoApproveBash = $state(false);
+	let heartbeatIntervalMinutes = $state(30);
 
 	// Original values for change detection
 	let originalSettings = $state({
 		autonomousMode: false,
 		autoApproveRead: true,
 		autoApproveWrite: false,
-		autoApproveBash: false
+		autoApproveBash: false,
+		heartbeatIntervalMinutes: 30
 	});
 
 	// Load settings on mount
@@ -36,12 +38,14 @@
 			autoApproveRead = settings.autoApproveRead ?? true;
 			autoApproveWrite = settings.autoApproveWrite ?? false;
 			autoApproveBash = settings.autoApproveBash ?? false;
+			heartbeatIntervalMinutes = settings.heartbeatIntervalMinutes ?? 30;
 
 			originalSettings = {
 				autonomousMode,
 				autoApproveRead,
 				autoApproveWrite,
-				autoApproveBash
+				autoApproveBash,
+				heartbeatIntervalMinutes
 			};
 		} catch (err) {
 			console.error('Failed to load agent settings:', err);
@@ -61,14 +65,16 @@
 				autonomousMode,
 				autoApproveRead,
 				autoApproveWrite,
-				autoApproveBash
+				autoApproveBash,
+				heartbeatIntervalMinutes
 			});
 			saveSuccess = true;
 			originalSettings = {
 				autonomousMode,
 				autoApproveRead,
 				autoApproveWrite,
-				autoApproveBash
+				autoApproveBash,
+				heartbeatIntervalMinutes
 			};
 		} catch (err: any) {
 			saveError = err?.message || 'Failed to save settings';

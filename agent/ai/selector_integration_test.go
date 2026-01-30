@@ -107,19 +107,20 @@ func TestIntegration_ModelSelectionWithProviderSwitching(t *testing.T) {
 
 // TestIntegration_FuzzyModelMatching verifies fuzzy matching works end-to-end
 func TestIntegration_FuzzyModelMatching(t *testing.T) {
+	active := true
 	config := &provider.ModelsConfig{
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
-				{ID: "claude-sonnet-4-5"},
-				{ID: "claude-opus-4-5"},
-				{ID: "claude-haiku-4-5"},
+				{ID: "claude-sonnet-4-5", Active: &active, Kind: []string{"smart"}},
+				{ID: "claude-opus-4-5", Active: &active, Kind: []string{"smart", "reason"}},
+				{ID: "claude-haiku-4-5", Active: &active, Kind: []string{"fast"}},
 			},
 			"openai": {
-				{ID: "gpt-5.2"},
-				{ID: "gpt-5.2-thinking"},
+				{ID: "gpt-5.2", Active: &active},
+				{ID: "gpt-5.2-thinking", Active: &active},
 			},
 			"google": {
-				{ID: "gemini-3-flash"},
+				{ID: "gemini-3-flash", Active: &active},
 			},
 		},
 	}

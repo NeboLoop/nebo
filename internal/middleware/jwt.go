@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/zeromicro/go-zero/core/logx"
+	"gobot/internal/logging"
 )
 
 // JWTClaims represents the claims from a Levee JWT token
@@ -22,9 +22,9 @@ type JWTClaims struct {
 	Iat   int64  `json:"iat"`   // Issued at
 }
 
-// GoZeroClaims represents claims expected by go-zero's JWT middleware
+// GoZeroClaims represents claims expected by our JWT middleware
 type GoZeroClaims struct {
-	UserId string `json:"userId"` // go-zero expects userId claim
+	UserId string `json:"userId"` // userId claim for internal use
 	Email  string `json:"email"`
 	Name   string `json:"name"`
 	Iss    string `json:"iss"`
@@ -46,32 +46,32 @@ const (
 
 // LeveeTokenTranslator creates middleware that translates Levee JWT tokens to Gobot tokens
 // It intercepts Levee-issued tokens, validates them, extracts claims, and re-signs with Gobot's secret
-// This allows go-zero's built-in JWT middleware to validate the translated token
+// This allows our JWT middleware to validate the translated token
 func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.HandlerFunc {
-	logx.Infof("[LeveeTokenTranslator] Middleware initialized")
+	logging.Infof("[LeveeTokenTranslator] Middleware initialized")
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			// Skip non-authenticated routes
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				// No auth header, let the request through (go-zero will handle it)
+				// No auth header, let the request through
 				next(w, r)
 				return
 			}
 
-			logx.Infof("[LeveeTokenTranslator] Processing request to %s with auth header", r.URL.Path)
+			logging.Infof("[LeveeTokenTranslator] Processing request to %s with auth header", r.URL.Path)
 
 			// Extract token
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-				logx.Infof("[LeveeTokenTranslator] Invalid auth header format")
+				logging.Infof("[LeveeTokenTranslator] Invalid auth header format")
 				next(w, r)
 				return
 			}
 
 			token := parts[1]
 			if token == "" {
-				logx.Infof("[LeveeTokenTranslator] Empty token")
+				logging.Infof("[LeveeTokenTranslator] Empty token")
 				next(w, r)
 				return
 			}
@@ -79,28 +79,28 @@ func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.
 			// Parse the JWT token
 			claims, err := parseJWTClaims(token)
 			if err != nil {
-				logx.Infof("[LeveeTokenTranslator] Token parse failed: %v", err)
+				logging.Infof("[LeveeTokenTranslator] Token parse failed: %v", err)
 				next(w, r)
 				return
 			}
 
-			logx.Infof("[LeveeTokenTranslator] Parsed token - iss: %s, sub: %s, email: %s", claims.Iss, claims.Sub, claims.Email)
+			logging.Infof("[LeveeTokenTranslator] Parsed token - iss: %s, sub: %s, email: %s", claims.Iss, claims.Sub, claims.Email)
 
 			// Check if this is a Levee token
 			if claims.Iss != "levee.sh/sdk" {
-				logx.Infof("[LeveeTokenTranslator] Not a Levee token (iss=%s), passing through", claims.Iss)
+				logging.Infof("[LeveeTokenTranslator] Not a Levee token (iss=%s), passing through", claims.Iss)
 				next(w, r)
 				return
 			}
 
 			// Validate expiration
 			if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
-				logx.Infof("[LeveeTokenTranslator] Token expired for user: %s", claims.Sub)
+				logging.Infof("[LeveeTokenTranslator] Token expired for user: %s", claims.Sub)
 				next(w, r)
 				return
 			}
 
-			// Create new claims for go-zero (it expects "userId" not "sub")
+			// Create new claims (using "userId" not "sub")
 			newClaims := GoZeroClaims{
 				UserId: claims.Sub,
 				Email:  claims.Email,
@@ -113,7 +113,7 @@ func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.
 			// Create new JWT signed with Gobot's secret
 			newToken, err := createJWT(newClaims, accessSecret)
 			if err != nil {
-				logx.Errorf("[LeveeTokenTranslator] Failed to create translated token: %v", err)
+				logging.Errorf("[LeveeTokenTranslator] Failed to create translated token: %v", err)
 				next(w, r)
 				return
 			}
@@ -121,7 +121,7 @@ func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.
 			// Replace the Authorization header with the translated token
 			r.Header.Set("Authorization", "Bearer "+newToken)
 
-			logx.Infof("[LeveeTokenTranslator] Successfully translated token for user: %s (%s)", claims.Sub, claims.Email)
+			logging.Infof("[LeveeTokenTranslator] Successfully translated token for user: %s (%s)", claims.Sub, claims.Email)
 
 			next(w, r)
 		}
@@ -129,9 +129,9 @@ func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.
 }
 
 // createJWT creates a new JWT token with the given claims signed with the secret
-// Uses golang-jwt/jwt library for compatibility with go-zero's JWT middleware
+// Uses golang-jwt/jwt library for JWT signing
 func createJWT(claims GoZeroClaims, secret string) (string, error) {
-	// Create JWT claims compatible with go-zero
+	// Create JWT claims
 	jwtClaims := jwt.MapClaims{
 		"userId": claims.UserId,
 		"email":  claims.Email,
@@ -178,21 +178,20 @@ func LeveeJWTMiddleware() func(http.Handler) http.Handler {
 			// Parse the JWT token (Levee uses standard JWT format)
 			claims, err := parseJWTClaims(token)
 			if err != nil {
-				logx.Errorf("Failed to parse JWT: %v", err)
+				logging.Errorf("Failed to parse JWT: %v", err)
 				unauthorized(w, "invalid token")
 				return
 			}
 
 			// Validate issuer
 			if claims.Iss != "levee.sh/sdk" {
-				logx.Errorf("Invalid token issuer: %s", claims.Iss)
+				logging.Errorf("Invalid token issuer: %s", claims.Iss)
 				unauthorized(w, "invalid token issuer")
 				return
 			}
 
 			// Check if token is expired
-			// Note: We skip expiration check here since go-zero's context
-			// handles this, and Levee tokens have their own expiration logic
+			// Note: Levee tokens have their own expiration logic
 
 			// Set claims in context
 			ctx := r.Context()
@@ -200,10 +199,10 @@ func LeveeJWTMiddleware() func(http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, UserEmailKey, claims.Email)
 			ctx = context.WithValue(ctx, UserNameKey, claims.Name)
 
-			// Also set "userId" for go-zero compatibility
+			// Also set "userId" key for backwards compatibility
 			ctx = context.WithValue(ctx, "userId", claims.Sub)
 
-			logx.Infof("JWT auth: user=%s email=%s", claims.Sub, claims.Email)
+			logging.Infof("JWT auth: user=%s email=%s", claims.Sub, claims.Email)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -258,7 +257,7 @@ func GetUserID(ctx context.Context) string {
 	if id, ok := ctx.Value(UserIDKey).(string); ok {
 		return id
 	}
-	// Fallback to go-zero's key
+	// Fallback to "userId" key
 	if id, ok := ctx.Value("userId").(string); ok {
 		return id
 	}

@@ -4,19 +4,29 @@ import (
 	"net/http"
 
 	"gobot/internal/httputil"
-	"gobot/internal/logic/agent"
 	"gobot/internal/svc"
+	"gobot/internal/types"
 )
 
 // Get agent settings
 func GetAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := agent.NewGetAgentSettingsLogic(r.Context(), svcCtx)
-		resp, err := l.GetAgentSettings()
-		if err != nil {
-			httputil.Error(w, err)
-		} else {
-			httputil.OkJSON(w, resp)
+		settings := svcCtx.AgentSettings.Get()
+
+		// Ensure heartbeat interval has a default
+		interval := settings.HeartbeatIntervalMinutes
+		if interval < 1 {
+			interval = 30
 		}
+
+		httputil.OkJSON(w, &types.GetAgentSettingsResponse{
+			Settings: types.AgentSettings{
+				AutonomousMode:           settings.AutonomousMode,
+				AutoApproveRead:          settings.AutoApproveRead,
+				AutoApproveWrite:         settings.AutoApproveWrite,
+				AutoApproveBash:          settings.AutoApproveBash,
+				HeartbeatIntervalMinutes: interval,
+			},
+		})
 	}
 }

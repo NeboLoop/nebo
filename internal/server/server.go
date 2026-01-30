@@ -98,19 +98,17 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.RealIP)
 
-	// Security headers middleware
-	if c.IsSecurityHeadersEnabled() {
-		r.Use(securityHeadersMiddleware())
-	}
-
 	// CORS middleware
 	r.Use(corsMiddleware())
 
 	// Health check at root
 	r.Get("/health", handler.HealthCheckHandler(svcCtx))
 
-	// API v1 routes
+	// API v1 routes - apply strict security headers only to API
 	r.Route("/api/v1", func(r chi.Router) {
+		if c.IsSecurityHeadersEnabled() {
+			r.Use(securityHeadersMiddleware())
+		}
 		// CSRF token endpoint
 		r.Get("/csrf-token", svcCtx.SecurityMiddleware.GetCSRFTokenHandler())
 
@@ -156,31 +154,25 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 	r.Get("/ws", websocket.Handler(hub))
 	r.Get("/api/v1/agent/ws", agentWebSocketHandler(svcCtx))
 
-	// OAuth routes (external provider callbacks) - use http.DefaultServeMux for compatibility
+	// OAuth routes (external provider callbacks)
 	if svcCtx.UseLocal() && c.IsOAuthEnabled() {
 		oauthHandler := extOAuth.NewHandler(svcCtx)
-		oauthHandler.RegisterRoutes(http.DefaultServeMux)
+		oauthHandler.RegisterRoutes(r)
 		if !opts.Quiet {
 			fmt.Println("OAuth callbacks registered at /oauth/{provider}/callback")
 		}
 	}
 
-	// MCP routes - use http.DefaultServeMux for compatibility
+	// MCP routes
 	if svcCtx.UseLocal() {
 		baseURL := fmt.Sprintf("http://localhost:%d", serverPort)
 		mcpHandler := mcp.NewHandler(svcCtx, baseURL)
-		http.DefaultServeMux.Handle("/mcp", mcpHandler)
-		http.DefaultServeMux.Handle("/mcp/", mcpHandler)
+		r.Handle("/mcp", mcpHandler)
+		r.Handle("/mcp/*", mcpHandler)
 
 		mcpOAuthHandler := mcpoauth.NewHandler(svcCtx, baseURL)
-		mcpOAuthHandler.RegisterRoutes(http.DefaultServeMux)
+		mcpOAuthHandler.RegisterRoutes(r)
 	}
-
-	// Proxy DefaultServeMux routes through chi for OAuth and MCP
-	r.Handle("/oauth/*", http.DefaultServeMux)
-	r.Handle("/mcp", http.DefaultServeMux)
-	r.Handle("/mcp/*", http.DefaultServeMux)
-	r.Handle("/.well-known/*", http.DefaultServeMux)
 
 	// SPA fallback - serve frontend for all other routes
 	if spaErr == nil {
@@ -253,6 +245,8 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/agent/sessions/{id}/messages", agent.GetAgentSessionMessagesHandler(svcCtx))
 	r.Get("/agent/settings", agent.GetAgentSettingsHandler(svcCtx))
 	r.Put("/agent/settings", agent.UpdateAgentSettingsHandler(svcCtx))
+	r.Get("/agent/heartbeat", agent.GetHeartbeatHandler(svcCtx))
+	r.Put("/agent/heartbeat", agent.UpdateHeartbeatHandler(svcCtx))
 	r.Get("/agent/status", agent.GetSimpleAgentStatusHandler(svcCtx))
 	r.Get("/agents", agent.ListAgentsHandler(svcCtx))
 	r.Get("/agents/{agentId}/status", agent.GetAgentStatusHandler(svcCtx))
@@ -354,22 +348,28 @@ func spaHandler(spaFS fs.FS) http.HandlerFunc {
 			path = "index.html"
 		}
 
-		// Check if file exists
+		// Check if file exists (static assets, prerendered pages)
 		if _, err := fs.Stat(spaFS, path); err == nil {
 			http.FileServer(http.FS(spaFS)).ServeHTTP(w, r)
 			return
 		}
 
-		// Fallback to index.html for SPA routing
-		indexFile, err := spaFS.Open("index.html")
+		// Fallback to 200.html for SPA client-side routing
+		// SvelteKit adapter-static generates 200.html as the SPA fallback
+		// (index.html is prerendered and would show the wrong page)
+		fallbackFile, err := spaFS.Open("200.html")
 		if err != nil {
-			http.Error(w, "SPA not available", http.StatusNotFound)
-			return
+			// If 200.html doesn't exist, try index.html as last resort
+			fallbackFile, err = spaFS.Open("index.html")
+			if err != nil {
+				http.Error(w, "SPA not available", http.StatusNotFound)
+				return
+			}
 		}
-		defer indexFile.Close()
+		defer fallbackFile.Close()
 
-		stat, _ := indexFile.Stat()
-		http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile.(interface {
+		stat, _ := fallbackFile.Stat()
+		http.ServeContent(w, r, "200.html", stat.ModTime(), fallbackFile.(interface {
 			Read([]byte) (int, error)
 			Seek(int64, int) (int64, error)
 		}))

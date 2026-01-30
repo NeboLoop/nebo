@@ -140,25 +140,41 @@ func (m *Manager) getByKey(sessionKey string) (*Session, error) {
 	return &s, nil
 }
 
+// GetSummary retrieves the compaction summary for a session (if any)
+func (m *Manager) GetSummary(sessionID string) (string, error) {
+	var summary sql.NullString
+	err := m.db.QueryRow("SELECT summary FROM sessions WHERE id = ?", sessionID).Scan(&summary)
+	if err != nil {
+		return "", err
+	}
+	if summary.Valid {
+		return summary.String, nil
+	}
+	return "", nil
+}
+
 // GetMessages retrieves messages for a session with an optional limit
 // Uses server's session_messages table
+// Orders by id (auto-increment) to preserve insertion order, not created_at
+// (created_at has second precision and can't distinguish messages saved in the same second)
 func (m *Manager) GetMessages(sessionID string, limit int) ([]Message, error) {
+	// Filter out compacted messages (is_compacted = 1)
 	query := `
 		SELECT id, session_id, role, content, tool_calls, tool_results, created_at
 		FROM session_messages
-		WHERE session_id = ?
-		ORDER BY created_at ASC
+		WHERE session_id = ? AND (is_compacted IS NULL OR is_compacted = 0)
+		ORDER BY id ASC
 	`
 	if limit > 0 {
-		// Get the last N messages
+		// Get the last N non-compacted messages
 		query = `
 			SELECT id, session_id, role, content, tool_calls, tool_results, created_at
 			FROM (
 				SELECT * FROM session_messages
-				WHERE session_id = ?
-				ORDER BY created_at DESC
+				WHERE session_id = ? AND (is_compacted IS NULL OR is_compacted = 0)
+				ORDER BY id DESC
 				LIMIT ?
-			) ORDER BY created_at ASC
+			) ORDER BY id ASC
 		`
 	}
 
@@ -251,13 +267,14 @@ func (m *Manager) Compact(sessionID string, summaryContent string) error {
 	}
 
 	// Mark old messages as compacted (instead of deleting, per server schema)
+	// Use ORDER BY id to preserve insertion order (created_at has second precision)
 	_, err = tx.Exec(`
 		UPDATE session_messages
 		SET is_compacted = 1
 		WHERE session_id = ? AND id NOT IN (
 			SELECT id FROM session_messages
 			WHERE session_id = ?
-			ORDER BY created_at DESC
+			ORDER BY id DESC
 			LIMIT ?
 		)
 	`, sessionID, sessionID, keepCount)
