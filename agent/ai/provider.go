@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"gobot/agent/session"
+	"nebo/agent/session"
 )
 
 // StreamEventType defines the type of streaming event

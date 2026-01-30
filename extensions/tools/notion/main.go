@@ -1,5 +1,5 @@
 // Notion Plugin - Interact with Notion API
-// Build: go build -o ~/.gobot/plugins/tools/notion
+// Build: go build -o ~/.nebo/plugins/tools/notion
 package main
 
 import (

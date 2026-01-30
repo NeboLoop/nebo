@@ -54,7 +54,7 @@ func main() {
 
 	// Generate TypeScript components
 	componentsTS := generateComponents(types)
-	outputPath := "app/src/lib/api/gobotComponents.ts"
+	outputPath := "app/src/lib/api/neboComponents.ts"
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
 		os.Exit(1)
@@ -68,7 +68,7 @@ func main() {
 	// Generate API client
 	routes := getRoutes()
 	apiTS := generateAPIClient(routes, types)
-	apiPath := "app/src/lib/api/gobot.ts"
+	apiPath := "app/src/lib/api/nebo.ts"
 	if err := os.WriteFile(apiPath, []byte(apiTS), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing API client: %v\n", err)
 		os.Exit(1)
@@ -346,8 +346,8 @@ func generateAPIClient(routes []Route, types []TypeDef) string {
 	var sb strings.Builder
 
 	sb.WriteString(`import webapi from "./gocliRequest"
-import * as components from "./gobotComponents"
-export * from "./gobotComponents"
+import * as components from "./neboComponents"
+export * from "./neboComponents"
 
 `)
 

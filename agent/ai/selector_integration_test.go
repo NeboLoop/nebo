@@ -3,8 +3,8 @@ package ai
 import (
 	"testing"
 
-	"gobot/agent/session"
-	"gobot/internal/provider"
+	"nebo/agent/session"
+	"nebo/internal/provider"
 )
 
 // TestIntegration_ModelSelectionWithProviderSwitching verifies the full model selection flow

@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"gobot/agent/ai"
-	"gobot/agent/config"
-	"gobot/agent/session"
-	"gobot/agent/tools"
+	"nebo/agent/ai"
+	"nebo/agent/config"
+	"nebo/agent/session"
+	"nebo/agent/tools"
 )
 
 // mockProvider implements ai.Provider for testing

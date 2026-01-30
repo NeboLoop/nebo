@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"gobot/agent/ai"
-	"gobot/agent/config"
-	"gobot/agent/session"
+	"nebo/agent/ai"
+	"nebo/agent/config"
+	"nebo/agent/session"
 )
 
 // ToolExecutor is an interface for executing tools (avoids circular import)

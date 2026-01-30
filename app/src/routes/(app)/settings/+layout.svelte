@@ -23,7 +23,7 @@
 </script>
 
 <svelte:head>
-	<title>Settings - GoBot</title>
+	<title>Settings - Nebo</title>
 	<meta name="description" content="Manage your account settings, preferences, and billing." />
 </svelte:head>
 

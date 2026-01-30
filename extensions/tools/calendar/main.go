@@ -1,5 +1,5 @@
 // Calendar Plugin - macOS Calendar integration via AppleScript
-// Build: go build -o ~/.gobot/plugins/tools/calendar
+// Build: go build -o ~/.nebo/plugins/tools/calendar
 package main
 
 import (

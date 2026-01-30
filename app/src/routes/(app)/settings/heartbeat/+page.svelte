@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Heart, Save, RotateCcw, Clock, Info } from 'lucide-svelte';
-	import * as api from '$lib/api/gobot';
+	import * as api from '$lib/api/nebo';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -30,7 +30,7 @@
 
 	const defaultTemplate = `# Proactive Tasks
 
-This file defines tasks that GoBot checks periodically.
+This file defines tasks that Nebo checks periodically.
 Write tasks in plain language - the agent will interpret and act on them.
 
 ## Every Check-In
@@ -167,7 +167,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 
 		<div class="shrink-0 flex items-center gap-2 text-xs text-base-content/50 mt-2">
 			<Info class="w-3.5 h-3.5" />
-			<span>Saved to: ~/.gobot/HEARTBEAT.md</span>
+			<span>Saved to: ~/.nebo/HEARTBEAT.md</span>
 		</div>
 	{/if}
 

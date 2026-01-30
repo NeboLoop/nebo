@@ -3,7 +3,7 @@ package ai
 import (
 	"testing"
 
-	"gobot/internal/provider"
+	"nebo/internal/provider"
 )
 
 func TestFuzzyMatcherExactAlias(t *testing.T) {

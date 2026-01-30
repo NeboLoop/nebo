@@ -152,7 +152,7 @@
 </script>
 
 <svelte:head>
-	<title>Dashboard - GoBot</title>
+	<title>Dashboard - Nebo</title>
 </svelte:head>
 
 <div class="space-y-6">
@@ -268,7 +268,7 @@
 							Run commands directly from your terminal
 						</p>
 						<code class="text-xs bg-base-300 px-2 py-1 rounded"
-							>gobot chat "list files in current directory"</code
+							>nebo chat "list files in current directory"</code
 						>
 					</div>
 					<Button type="primary" onclick={() => goto('/agent')}>

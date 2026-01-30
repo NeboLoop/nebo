@@ -3,9 +3,9 @@ package auth
 import (
 	"net/http"
 
-	"gobot/internal/httputil"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/httputil"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 func ResendVerificationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {

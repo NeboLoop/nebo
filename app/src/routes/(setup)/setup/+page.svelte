@@ -37,8 +37,8 @@
 </script>
 
 <svelte:head>
-	<title>Welcome - GoBot Setup</title>
-	<meta name="description" content="Set up your GoBot instance and configure your personal AI agent." />
+	<title>Welcome - Nebo Setup</title>
+	<meta name="description" content="Set up your Nebo instance and configure your personal AI agent." />
 </svelte:head>
 
 {#if checkingStatus}
@@ -47,15 +47,15 @@
 	</div>
 {:else}
 	<StepCard
-		title="Welcome to GoBot"
+		title="Welcome to Nebo"
 		description="Your personal AI agent that runs locally on your machine."
 	>
 		{#snippet children()}
 			<div class="space-y-6">
-				<!-- GoBot Capabilities -->
+				<!-- Nebo Capabilities -->
 				<div class="prose prose-sm max-w-none">
 					<p>
-						GoBot is a powerful AI assistant that can help you with a wide range of tasks:
+						Nebo is a powerful AI assistant that can help you with a wide range of tasks:
 					</p>
 					<ul class="list-disc list-inside space-y-1 mt-2 text-base-content/80">
 						<li>Execute shell commands and scripts</li>
@@ -79,7 +79,7 @@
 							class="checkbox checkbox-primary"
 						/>
 						<span class="label-text">
-							I understand GoBot's capabilities and will configure appropriate permissions
+							I understand Nebo's capabilities and will configure appropriate permissions
 						</span>
 					</label>
 				</div>

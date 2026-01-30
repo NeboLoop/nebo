@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"gobot/agent/ai"
-	"gobot/agent/config"
-	"gobot/agent/orchestrator"
-	"gobot/agent/session"
+	"nebo/agent/ai"
+	"nebo/agent/config"
+	"nebo/agent/orchestrator"
+	"nebo/agent/session"
 )
 
 // registryAdapter wraps Registry to implement orchestrator.ToolExecutor

@@ -126,12 +126,12 @@
 </script>
 
 <svelte:head>
-	<title>Configure Provider - GoBot Setup</title>
+	<title>Configure Provider - Nebo Setup</title>
 </svelte:head>
 
 <StepCard
 	title="Configure AI Provider"
-	description="Add an AI provider to power your GoBot. You can add more providers later in settings."
+	description="Add an AI provider to power your Nebo. You can add more providers later in settings."
 >
 	{#if error}
 		<div class="alert alert-error mb-4">

@@ -10,7 +10,7 @@ import (
 	"github.com/openai/openai-go/packages/ssestream"
 	"github.com/openai/openai-go/shared"
 
-	"gobot/agent/session"
+	"nebo/agent/session"
 )
 
 // OpenAIProvider implements the OpenAI API using the official SDK

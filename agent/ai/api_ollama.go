@@ -10,7 +10,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 
-	"gobot/agent/session"
+	"nebo/agent/session"
 )
 
 // OllamaProvider implements the Provider interface for Ollama (local models) using the official SDK

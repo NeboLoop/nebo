@@ -1,9 +1,9 @@
 package realtime
 
 import (
-	"gobot/internal/svc"
+	"nebo/internal/svc"
 
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 // RewriteHandler handles WebSocket messages

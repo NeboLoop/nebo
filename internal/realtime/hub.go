@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 // Hub maintains the set of active clients and broadcasts messages to the clients.

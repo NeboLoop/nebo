@@ -1,5 +1,5 @@
 // Contacts Plugin - macOS Contacts integration via AppleScript
-// Build: go build -o ~/.gobot/plugins/tools/contacts
+// Build: go build -o ~/.nebo/plugins/tools/contacts
 package main
 
 import (

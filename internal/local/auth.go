@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"gobot/internal/config"
-	"gobot/internal/db"
+	"nebo/internal/config"
+	"nebo/internal/db"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"

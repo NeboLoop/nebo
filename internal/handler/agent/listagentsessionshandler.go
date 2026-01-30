@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"time"
 
-	"gobot/internal/db"
-	"gobot/internal/httputil"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/db"
+	"nebo/internal/httputil"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // List agent sessions

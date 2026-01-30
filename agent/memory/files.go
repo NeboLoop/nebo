@@ -15,7 +15,7 @@ type LoadedFiles struct {
 }
 
 // LoadMemoryFiles loads personality and memory files from workspace or home directory
-// It tries workspace first, then falls back to ~/.gobot/
+// It tries workspace first, then falls back to ~/.nebo/
 func LoadMemoryFiles(workspaceDir string) LoadedFiles {
 	result := LoadedFiles{}
 
@@ -36,7 +36,7 @@ func LoadMemoryFiles(workspaceDir string) LoadedFiles {
 		basePaths = append(basePaths, workspaceDir)
 	}
 	if homeDir, err := os.UserHomeDir(); err == nil {
-		basePaths = append(basePaths, filepath.Join(homeDir, ".gobot"))
+		basePaths = append(basePaths, filepath.Join(homeDir, ".nebo"))
 	}
 
 	// Load each file

@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "GoBot"
+rootProject.name = "Nebo"
 include(":app")

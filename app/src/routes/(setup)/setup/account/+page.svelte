@@ -64,12 +64,12 @@
 </script>
 
 <svelte:head>
-	<title>Create Admin Account - GoBot Setup</title>
+	<title>Create Admin Account - Nebo Setup</title>
 </svelte:head>
 
 <StepCard
 	title="Create Admin Account"
-	description="Set up the first admin account to manage your GoBot instance."
+	description="Set up the first admin account to manage your Nebo instance."
 >
 	{#if error}
 		<div class="alert alert-error mb-4">

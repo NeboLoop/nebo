@@ -73,7 +73,7 @@
 </script>
 
 <svelte:head>
-	<title>Sessions - GoBot</title>
+	<title>Sessions - Nebo</title>
 </svelte:head>
 
 <div class="mb-6 flex items-center justify-between">

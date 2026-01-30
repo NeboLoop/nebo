@@ -1,5 +1,5 @@
 // Package defaults provides embedded default configuration files.
-// These are copied to ~/.gobot on first run or when reset is requested.
+// These are copied to ~/.nebo on first run or when reset is requested.
 package defaults
 
 import (
@@ -16,8 +16,8 @@ import (
 var defaultFiles embed.FS
 
 // DataDir returns the platform-appropriate data directory.
-// Unix: ~/.gobot
-// Windows: %APPDATA%\gobot or %USERPROFILE%\.gobot
+// Unix: ~/.nebo
+// Windows: %APPDATA%\gobot or %USERPROFILE%\.nebo
 func DataDir() (string, error) {
 	if runtime.GOOS == "windows" {
 		// Try APPDATA first, fall back to USERPROFILE
@@ -25,7 +25,7 @@ func DataDir() (string, error) {
 			return filepath.Join(appData, "gobot"), nil
 		}
 		if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
-			return filepath.Join(userProfile, ".gobot"), nil
+			return filepath.Join(userProfile, ".nebo"), nil
 		}
 		return "", fmt.Errorf("cannot determine data directory on Windows")
 	}
@@ -35,7 +35,7 @@ func DataDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".gobot"), nil
+	return filepath.Join(home, ".nebo"), nil
 }
 
 // EnsureDataDir creates the data directory if it doesn't exist

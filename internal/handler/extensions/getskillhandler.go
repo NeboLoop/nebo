@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"path/filepath"
 
-	"gobot/agent/skills"
-	"gobot/internal/httputil"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/agent/skills"
+	"nebo/internal/httputil"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // Get single skill details

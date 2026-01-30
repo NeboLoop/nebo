@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { listModels, updateModel } from '$lib/api';
-	import type { ModelInfo } from '$lib/api/gobotComponents';
+	import type { ModelInfo } from '$lib/api/neboComponents';
 	import { setup } from '$lib/stores/setup.svelte';
 	import { StepCard, StepNavigation } from '$lib/components/setup';
 	import Toggle from '$lib/components/ui/Toggle.svelte';
@@ -79,12 +79,12 @@
 </script>
 
 <svelte:head>
-	<title>Configure Models - GoBot Setup</title>
+	<title>Configure Models - Nebo Setup</title>
 </svelte:head>
 
 <StepCard
 	title="Configure Models"
-	description="Choose which AI models GoBot can use. Toggle models on or off based on your preferences."
+	description="Choose which AI models Nebo can use. Toggle models on or off based on your preferences."
 >
 	{#if error}
 		<div class="alert alert-error mb-4">
@@ -147,9 +147,9 @@
 		<div class="bg-base-200 rounded-lg p-4 mt-6">
 			<h4 class="font-medium text-base-content mb-2">How it works</h4>
 			<ul class="text-sm text-base-content/70 space-y-1 list-disc list-inside">
-				<li>Toggle models on/off to control what GoBot can use</li>
-				<li>GoBot automatically picks the best model for each task</li>
-				<li>If one model fails, GoBot falls back to the next available</li>
+				<li>Toggle models on/off to control what Nebo can use</li>
+				<li>Nebo automatically picks the best model for each task</li>
+				<li>If one model fails, Nebo falls back to the next available</li>
 			</ul>
 		</div>
 	{/if}

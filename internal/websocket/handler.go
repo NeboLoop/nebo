@@ -3,10 +3,10 @@ package websocket
 import (
 	"net/http"
 
-	"gobot/internal/realtime"
+	"nebo/internal/realtime"
 
 	"github.com/gorilla/websocket"
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 var upgrader = websocket.Upgrader{

@@ -104,9 +104,9 @@ func InitModelsStore(dataDir string) {
 // GetModelsFilePath returns the current models file path
 func GetModelsFilePath() string {
 	if modelsFilePath == "" {
-		// Default to ~/.gobot/models.yaml
+		// Default to ~/.nebo/models.yaml
 		home, _ := os.UserHomeDir()
-		modelsFilePath = filepath.Join(home, ".gobot", "models.yaml")
+		modelsFilePath = filepath.Join(home, ".nebo", "models.yaml")
 	}
 	return modelsFilePath
 }
@@ -145,7 +145,7 @@ func OnConfigReload(callback func(*ModelsConfig)) {
 	reloadCallbacks = append(reloadCallbacks, callback)
 }
 
-// StartConfigWatcher starts watching the ~/.gobot directory for config changes
+// StartConfigWatcher starts watching the ~/.nebo directory for config changes
 func StartConfigWatcher(dataDir string) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {

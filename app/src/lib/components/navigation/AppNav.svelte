@@ -114,7 +114,7 @@
 		<div class="flex items-center gap-8">
 			<!-- Logo -->
 			<a href="/" class="flex items-center no-underline">
-				<span class="font-display text-xl font-bold text-base-content tracking-tight">GoBot</span>
+				<span class="font-display text-xl font-bold text-base-content tracking-tight">Nebo</span>
 			</a>
 
 			<!-- Desktop Navigation -->

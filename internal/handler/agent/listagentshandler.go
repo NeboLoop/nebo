@@ -3,9 +3,9 @@ package agent
 import (
 	"net/http"
 
-	"gobot/internal/httputil"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/httputil"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // List connected agents

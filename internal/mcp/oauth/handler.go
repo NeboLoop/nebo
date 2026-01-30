@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"gobot/internal/db"
-	"gobot/internal/mcp/mcpauth"
-	"gobot/internal/svc"
+	"nebo/internal/db"
+	"nebo/internal/mcp/mcpauth"
+	"nebo/internal/svc"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/crypto/bcrypt"

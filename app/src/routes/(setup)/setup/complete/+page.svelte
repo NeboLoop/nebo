@@ -41,12 +41,12 @@
 </script>
 
 <svelte:head>
-	<title>Setup Complete - GoBot Setup</title>
+	<title>Setup Complete - Nebo Setup</title>
 </svelte:head>
 
 <StepCard
 	title="Setup Complete!"
-	description="Your GoBot is ready to use."
+	description="Your Nebo is ready to use."
 >
 	{#if loading}
 		<div class="flex flex-col items-center justify-center py-8">

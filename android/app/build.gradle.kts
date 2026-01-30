@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.gobot.app"
+    namespace = "com.nebo.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.gobot.app"
+        applicationId = "com.nebo.app"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

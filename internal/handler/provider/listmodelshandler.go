@@ -3,11 +3,11 @@ package provider
 import (
 	"net/http"
 
-	"gobot/agent/ai"
-	"gobot/internal/httputil"
-	"gobot/internal/provider"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/agent/ai"
+	"nebo/internal/httputil"
+	"nebo/internal/provider"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // List all available models from YAML cache

@@ -1,5 +1,5 @@
 // Music Plugin - macOS Music.app (Apple Music) integration via AppleScript
-// Build: go build -o ~/.gobot/plugins/tools/music
+// Build: go build -o ~/.nebo/plugins/tools/music
 package main
 
 import (

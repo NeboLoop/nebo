@@ -1,5 +1,5 @@
 // Keychain Plugin - macOS Keychain access (secure password lookup)
-// Build: go build -o ~/.gobot/plugins/tools/keychain
+// Build: go build -o ~/.nebo/plugins/tools/keychain
 package main
 
 import (

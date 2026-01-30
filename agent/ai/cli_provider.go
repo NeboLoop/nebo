@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"gobot/agent/session"
+	"nebo/agent/session"
 )
 
 // CLIProvider wraps an official CLI tool (claude, gemini, codex) as a provider

@@ -10,7 +10,7 @@ import (
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 
-	"gobot/agent/session"
+	"nebo/agent/session"
 )
 
 // GeminiProvider implements the Provider interface for Google Gemini using the official SDK

@@ -15,7 +15,7 @@ export const site = {
 	// REQUIRED: Update these for your site
 	// ============================================
 
-	name: 'GoBot',
+	name: 'Nebo',
 	tagline: 'Your AI Agent Platform',
 	description: 'Build and deploy AI agents with tool use, multi-provider support, and channel integrations.',
 

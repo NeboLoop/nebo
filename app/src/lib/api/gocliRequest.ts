@@ -70,7 +70,7 @@ function getBaseUrl(): string {
 function getAuthToken(): string | null {
 	if (typeof window === 'undefined') return null;
 	try {
-		return localStorage.getItem('gobot_token');
+		return localStorage.getItem('nebo_token');
 	} catch {
 		return null;
 	}

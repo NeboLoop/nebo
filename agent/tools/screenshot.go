@@ -173,7 +173,7 @@ func (t *ScreenshotTool) saveToFile(img *image.RGBA, outputPath string) (string,
 	if outputPath == "" {
 		// Generate default path
 		homeDir, _ := os.UserHomeDir()
-		screenshotsDir := filepath.Join(homeDir, ".gobot", "screenshots")
+		screenshotsDir := filepath.Join(homeDir, ".nebo", "screenshots")
 		os.MkdirAll(screenshotsDir, 0755)
 		outputPath = filepath.Join(screenshotsDir, fmt.Sprintf("screenshot_%s.png", time.Now().Format("20060102_150405")))
 	}

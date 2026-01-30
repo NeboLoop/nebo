@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"net/smtp"
 
-	"gobot/internal/config"
+	"nebo/internal/config"
 
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 type EmailService struct {

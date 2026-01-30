@@ -32,9 +32,9 @@ func applyDefaults(c *Config) {
 		c.Auth.RefreshTokenExpire = 604800
 	}
 	if c.Database.SQLitePath == "" {
-		// Use ~/.gobot/data/gobot.db as the canonical database location
+		// Use ~/.nebo/data/gobot.db as the canonical database location
 		home, _ := os.UserHomeDir()
-		c.Database.SQLitePath = filepath.Join(home, ".gobot", "data", "gobot.db")
+		c.Database.SQLitePath = filepath.Join(home, ".nebo", "data", "gobot.db")
 	}
 	if c.Security.CSRFEnabled == "" {
 		c.Security.CSRFEnabled = "true"

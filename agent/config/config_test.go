@@ -49,9 +49,9 @@ func TestDefaultDataDir(t *testing.T) {
 		t.Error("DefaultDataDir returned empty string")
 	}
 
-	// Should end with .gobot
-	if filepath.Base(dir) != ".gobot" {
-		t.Errorf("expected data dir to end with .gobot, got %s", dir)
+	// Should end with .nebo
+	if filepath.Base(dir) != ".nebo" {
+		t.Errorf("expected data dir to end with .nebo, got %s", dir)
 	}
 }
 

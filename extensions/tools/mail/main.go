@@ -1,5 +1,5 @@
 // Mail Plugin - macOS Mail.app integration via AppleScript
-// Build: go build -o ~/.gobot/plugins/tools/mail
+// Build: go build -o ~/.nebo/plugins/tools/mail
 package main
 
 import (

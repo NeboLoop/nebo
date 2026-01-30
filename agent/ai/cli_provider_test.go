@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"gobot/agent/session"
+	"nebo/agent/session"
 )
 
 func TestNewCLIProvider(t *testing.T) {

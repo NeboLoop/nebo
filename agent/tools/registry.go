@@ -7,7 +7,7 @@ import (
 	"os"
 	"sync"
 
-	"gobot/agent/ai"
+	"nebo/agent/ai"
 )
 
 // ToolResult represents the result of a tool execution

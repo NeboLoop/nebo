@@ -106,7 +106,7 @@
 </script>
 
 <svelte:head>
-	<title>MCP Connections - GoBot</title>
+	<title>MCP Connections - Nebo</title>
 </svelte:head>
 
 <div class="mb-6 flex items-center justify-between">

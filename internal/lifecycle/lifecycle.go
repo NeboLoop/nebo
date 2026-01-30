@@ -4,7 +4,7 @@ package lifecycle
 import (
 	"sync"
 
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 // Event types for lifecycle hooks

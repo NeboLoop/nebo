@@ -48,7 +48,7 @@ func TestDataDir(t *testing.T) {
 	}
 
 	home, _ := os.UserHomeDir()
-	expected := filepath.Join(home, ".gobot")
+	expected := filepath.Join(home, ".nebo")
 	if dir != expected {
 		t.Errorf("Expected %s, got %s", expected, dir)
 	}

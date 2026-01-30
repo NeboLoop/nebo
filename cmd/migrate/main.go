@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"gobot/internal/db/migrations"
+	"nebo/internal/db/migrations"
 
 	_ "modernc.org/sqlite"
 )

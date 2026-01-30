@@ -76,7 +76,7 @@
 </script>
 
 <svelte:head>
-	<title>Permissions - GoBot Setup</title>
+	<title>Permissions - Nebo Setup</title>
 </svelte:head>
 
 <StepCard

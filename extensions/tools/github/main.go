@@ -1,5 +1,5 @@
 // GitHub Plugin - Interact with GitHub API
-// Build: go build -o ~/.gobot/plugins/tools/github
+// Build: go build -o ~/.nebo/plugins/tools/github
 package main
 
 import (

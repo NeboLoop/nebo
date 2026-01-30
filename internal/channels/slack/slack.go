@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"gobot/internal/channels"
+	"nebo/internal/channels"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"

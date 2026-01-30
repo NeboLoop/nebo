@@ -15,7 +15,7 @@
 <div class="layout-auth">
 	<div class="relative z-10 w-full max-w-2xl">
 		<a href="/" class="block text-center mb-6">
-			<span class="font-display text-3xl font-black text-gradient"> GoBot </span>
+			<span class="font-display text-3xl font-black text-gradient"> Nebo </span>
 		</a>
 		<WizardProgress
 			currentStep={setup.state.currentStep}

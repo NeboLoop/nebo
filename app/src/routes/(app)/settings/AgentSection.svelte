@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Bot, Shield, AlertTriangle, Zap } from 'lucide-svelte';
-	import * as api from '$lib/api/gobot';
+	import * as api from '$lib/api/nebo';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Toggle from '$lib/components/ui/Toggle.svelte';
@@ -212,7 +212,7 @@
 			<div class="bg-base-200 rounded-lg p-4">
 				<p class="text-sm text-base-content/70 mb-2">Run this command in your terminal:</p>
 				<code class="block bg-base-300 rounded px-3 py-2 text-sm font-mono text-base-content">
-					gobot agent
+					nebo agent
 				</code>
 				<p class="text-xs text-base-content/50 mt-2">
 					The agent will automatically use the settings configured above.

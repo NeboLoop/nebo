@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"time"
 
-	"gobot/internal/httputil"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/httputil"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // List all auth profiles (API keys)

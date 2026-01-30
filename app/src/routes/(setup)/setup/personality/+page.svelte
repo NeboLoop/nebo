@@ -69,12 +69,12 @@
 </script>
 
 <svelte:head>
-	<title>Personality - GoBot Setup</title>
+	<title>Personality - Nebo Setup</title>
 </svelte:head>
 
 <StepCard
 	title="Customize Personality"
-	description="Define how your GoBot behaves and communicates. This is the SOUL.md content that shapes your agent's personality."
+	description="Define how your Nebo behaves and communicates. This is the SOUL.md content that shapes your agent's personality."
 >
 	{#if error}
 		<div class="alert alert-error mb-4">

@@ -3,12 +3,12 @@ package agent
 import (
 	"net/http"
 
-	"gobot/internal/agenthub"
-	"gobot/internal/httputil"
-	"gobot/internal/local"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/agenthub"
+	"nebo/internal/httputil"
+	"nebo/internal/local"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // Update agent settings

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"gobot/internal/svc"
+	"nebo/internal/svc"
 
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/modelcontextprotocol/go-sdk/auth"

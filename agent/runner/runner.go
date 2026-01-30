@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"gobot/agent/ai"
-	"gobot/agent/config"
-	"gobot/agent/memory"
-	"gobot/agent/session"
-	"gobot/agent/skills"
-	"gobot/agent/tools"
+	"nebo/agent/ai"
+	"nebo/agent/config"
+	"nebo/agent/memory"
+	"nebo/agent/session"
+	"nebo/agent/skills"
+	"nebo/agent/tools"
 )
 
 // DefaultSystemPrompt is the default system prompt for the agent
@@ -73,14 +73,14 @@ func (p *modelOverrideProvider) Stream(ctx context.Context, req *ai.ChatRequest)
 // New creates a new runner
 func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider, toolRegistry *tools.Registry) *Runner {
 	// Load skills from extensions/skills directory (in working directory)
-	// Also load from ~/.gobot/skills/ for user-installed skills
+	// Also load from ~/.nebo/skills/ for user-installed skills
 	skillLoader := skills.NewLoader(filepath.Join("extensions", "skills"))
 	if err := skillLoader.LoadAll(); err != nil {
 		// Log error but continue - skills are optional
 		fmt.Printf("[runner] Warning: failed to load skills: %v\n", err)
 	}
 
-	// Also load user skills from ~/.gobot/skills/
+	// Also load user skills from ~/.nebo/skills/
 	userSkillsDir := filepath.Join(cfg.DataDir, "skills")
 	userSkillLoader := skills.NewLoader(userSkillsDir)
 	if err := userSkillLoader.LoadAll(); err == nil {

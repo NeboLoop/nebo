@@ -1,4 +1,4 @@
-module gobot
+module nebo
 
 go 1.25.6
 

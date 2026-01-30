@@ -4,14 +4,14 @@ import (
 	"os"
 	"path/filepath"
 
-	"gobot/internal/agenthub"
-	"gobot/internal/config"
-	"gobot/internal/db"
-	"gobot/internal/local"
-	"gobot/internal/middleware"
-	"gobot/internal/provider"
+	"nebo/internal/agenthub"
+	"nebo/internal/config"
+	"nebo/internal/db"
+	"nebo/internal/local"
+	"nebo/internal/middleware"
+	"nebo/internal/provider"
 
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 type ServiceContext struct {
@@ -43,9 +43,9 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 		dataDir = "."
 	}
 
-	// Initialize models store (loads ~/.gobot/models.yaml singleton)
+	// Initialize models store (loads ~/.nebo/models.yaml singleton)
 	home, _ := os.UserHomeDir()
-	gobotDir := filepath.Join(home, ".gobot")
+	gobotDir := filepath.Join(home, ".nebo")
 	provider.InitModelsStore(gobotDir)
 	logging.Info("Models store initialized")
 

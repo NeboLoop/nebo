@@ -1,5 +1,5 @@
 // TTS Plugin - Text-to-Speech using ElevenLabs API
-// Build: go build -o ~/.gobot/plugins/tools/tts
+// Build: go build -o ~/.nebo/plugins/tools/tts
 package main
 
 import (
@@ -78,7 +78,7 @@ func (t *TTSTool) Schema() json.RawMessage {
 			},
 			"output": {
 				"type": "string",
-				"description": "Output file path for the audio. Default: ~/.gobot/audio/tts_{timestamp}.mp3"
+				"description": "Output file path for the audio. Default: ~/.nebo/audio/tts_{timestamp}.mp3"
 			},
 			"play": {
 				"type": "boolean",
@@ -141,7 +141,7 @@ func (t *TTSTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 	outputPath := params.Output
 	if outputPath == "" {
 		homeDir, _ := os.UserHomeDir()
-		audioDir := filepath.Join(homeDir, ".gobot", "audio")
+		audioDir := filepath.Join(homeDir, ".nebo", "audio")
 		os.MkdirAll(audioDir, 0755)
 		outputPath = filepath.Join(audioDir, fmt.Sprintf("tts_%s.mp3", time.Now().Format("20060102_150405")))
 	}

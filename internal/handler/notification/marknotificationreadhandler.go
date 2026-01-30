@@ -3,12 +3,12 @@ package notification
 import (
 	"net/http"
 
-	"gobot/internal/auth"
-	"gobot/internal/db"
-	"gobot/internal/httputil"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/auth"
+	"nebo/internal/db"
+	"nebo/internal/httputil"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // Mark notification as read

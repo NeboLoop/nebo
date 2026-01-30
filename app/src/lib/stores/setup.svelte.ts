@@ -5,7 +5,7 @@
  * Persists to localStorage so users can resume setup.
  */
 
-const STORAGE_KEY = 'gobot-setup';
+const STORAGE_KEY = 'nebo-setup';
 
 /**
  * Setup state interface

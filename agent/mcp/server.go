@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"gobot/agent/ai"
-	"gobot/agent/tools"
+	"nebo/agent/ai"
+	"nebo/agent/tools"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

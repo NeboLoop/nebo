@@ -1,11 +1,11 @@
 // Re-export all generated API functions
-export * from './gobot';
+export * from './nebo';
 
 // Import all functions and components
-import * as api from './gobot';
+import * as api from './nebo';
 
 // Export api object containing all API methods
-export const gobot = api;
+export const nebo = api;
 
 // API Configuration - base URL is loaded from browser origin
 export const API_CONFIG = {
@@ -19,4 +19,4 @@ export const API_CONFIG = {
 };
 
 // Re-export types
-export type * from './gobotComponents';
+export type * from './neboComponents';

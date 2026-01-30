@@ -1,5 +1,5 @@
 // Browser Plugin - macOS browser control (Safari/Chrome)
-// Build: go build -o ~/.gobot/plugins/tools/browser
+// Build: go build -o ~/.nebo/plugins/tools/browser
 package main
 
 import (

@@ -101,7 +101,7 @@
 </script>
 
 <svelte:head>
-	<title>History - GoBot</title>
+	<title>History - Nebo</title>
 </svelte:head>
 
 <div class="flex flex-col h-full bg-base-100">

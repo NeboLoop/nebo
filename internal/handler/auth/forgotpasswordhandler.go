@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"gobot/internal/httputil"
-	"gobot/internal/local"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/httputil"
+	"nebo/internal/local"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 func ForgotPasswordHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {

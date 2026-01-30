@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"gobot/agent/ai"
-	"gobot/agent/session"
+	"nebo/agent/ai"
+	"nebo/agent/session"
 )
 
 // ExtractedFacts contains facts extracted from a conversation

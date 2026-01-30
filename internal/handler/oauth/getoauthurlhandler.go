@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"net/url"
 
-	"gobot/internal/httputil"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/httputil"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // Get OAuth authorization URL

@@ -8,20 +8,20 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
-        android:name=".GoBotApplication"
+        android:name=".NeboApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.GoBot"
+        android:theme="@style/Theme.Nebo"
         android:usesCleartextTraffic="true"
         tools:targetApi="34">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.GoBot">
+            android:theme="@style/Theme.Nebo">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

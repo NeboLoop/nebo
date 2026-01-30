@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 const (

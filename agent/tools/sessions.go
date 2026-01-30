@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"gobot/agent/session"
+	"nebo/agent/session"
 )
 
 // SessionsTool allows AI to query and manage sessions

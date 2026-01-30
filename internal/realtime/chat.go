@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"gobot/internal/agenthub"
-	"gobot/internal/db"
-	"gobot/internal/svc"
+	"nebo/internal/agenthub"
+	"nebo/internal/db"
+	"nebo/internal/svc"
 
 	"github.com/google/uuid"
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 // ChatContext holds the context needed for chat handling

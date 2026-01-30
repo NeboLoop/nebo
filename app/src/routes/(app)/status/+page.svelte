@@ -159,7 +159,7 @@
 </script>
 
 <svelte:head>
-	<title>Agent Status - GoBot</title>
+	<title>Agent Status - Nebo</title>
 </svelte:head>
 
 <div class="mb-6 flex items-center justify-between">
@@ -287,7 +287,7 @@
 			<Activity class="w-12 h-12 mx-auto mb-4 text-base-content/30" />
 			<h3 class="font-display font-bold text-base-content mb-2">No agents connected</h3>
 			<p class="text-base-content/60">
-				Run <code class="bg-base-300 px-2 py-1 rounded text-sm">gobot agent --org your-org</code> to
+				Run <code class="bg-base-300 px-2 py-1 rounded text-sm">nebo agent --org your-org</code> to
 				connect an agent
 			</p>
 		</div>

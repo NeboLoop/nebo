@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 	"gopkg.in/yaml.v3"
 )
 

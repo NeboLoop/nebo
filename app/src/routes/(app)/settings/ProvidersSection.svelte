@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Cpu, Eye, Code, Brain, Sparkles, Terminal, Tag, Volume2, Star } from 'lucide-svelte';
-	import * as api from '$lib/api/gobot';
-	import type * as components from '$lib/api/gobotComponents';
+	import * as api from '$lib/api/nebo';
+	import type * as components from '$lib/api/neboComponents';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Toggle from '$lib/components/ui/Toggle.svelte';
@@ -408,7 +408,7 @@
 					<Key class="w-12 h-12 text-base-content/30 mx-auto mb-4" />
 					<h3 class="text-lg font-medium text-base-content mb-2">No providers configured</h3>
 					<p class="text-sm text-base-content/60 mb-4">
-						Add an AI provider to start using GoBot.
+						Add an AI provider to start using Nebo.
 					</p>
 					<Button type="primary" onclick={() => (showAddForm = true)}>
 						<Plus class="w-4 h-4" />
@@ -968,11 +968,11 @@
 			<div class="bg-base-200 rounded-lg p-4">
 				<h4 class="font-medium text-base-content mb-2">How it works</h4>
 				<ul class="text-sm text-base-content/70 space-y-1 list-disc list-inside">
-					<li>Toggle models on/off to control what GoBot can use</li>
+					<li>Toggle models on/off to control what Nebo can use</li>
 					<li>Use checkboxes to set <span class="badge badge-xs badge-primary badge-outline">kind</span> tags like fast, smart, code, cheap</li>
 					<li>Click <Star class="w-3 h-3 text-warning fill-warning inline" /> to mark your preferred model for each kind</li>
 					<li>Say "use fast" to switch to your preferred model with that kind</li>
-					<li>If one provider fails, GoBot falls back to other models with the same kind</li>
+					<li>If one provider fails, Nebo falls back to other models with the same kind</li>
 				</ul>
 			</div>
 		</Card>

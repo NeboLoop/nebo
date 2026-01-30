@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"gobot/internal/agenthub"
-	"gobot/internal/channels"
+	"nebo/internal/agenthub"
+	"nebo/internal/channels"
 
 	"github.com/google/uuid"
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 // Router routes messages between channels and agents

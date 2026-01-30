@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"gobot/agent/session"
-	"gobot/internal/provider"
+	"nebo/agent/session"
+	"nebo/internal/provider"
 )
 
 // TaskType represents the type of task being performed

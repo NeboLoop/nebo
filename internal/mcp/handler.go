@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"gobot/internal/mcp/mcpauth"
-	"gobot/internal/mcp/mcpctx"
-	"gobot/internal/svc"
+	"nebo/internal/mcp/mcpauth"
+	"nebo/internal/mcp/mcpctx"
+	"nebo/internal/svc"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"

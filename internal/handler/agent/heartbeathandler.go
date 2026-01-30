@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"gobot/internal/httputil"
-	"gobot/internal/svc"
+	"nebo/internal/httputil"
+	"nebo/internal/svc"
 )
 
 // GetHeartbeatHandler returns the contents of HEARTBEAT.md
@@ -19,7 +19,7 @@ func GetHeartbeatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		path := filepath.Join(home, ".gobot", "HEARTBEAT.md")
+		path := filepath.Join(home, ".nebo", "HEARTBEAT.md")
 		content, _ := os.ReadFile(path) // Ignore error - file may not exist yet
 
 		httputil.OkJSON(w, map[string]string{"content": string(content)})
@@ -44,7 +44,7 @@ func UpdateHeartbeatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		dir := filepath.Join(home, ".gobot")
+		dir := filepath.Join(home, ".nebo")
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			httputil.Error(w, err)
 			return

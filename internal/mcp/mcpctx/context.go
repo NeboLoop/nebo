@@ -3,8 +3,8 @@ package mcpctx
 import (
 	"context"
 
-	"gobot/internal/db"
-	"gobot/internal/svc"
+	"nebo/internal/db"
+	"nebo/internal/svc"
 )
 
 // AuthMode indicates how the MCP session was authenticated.

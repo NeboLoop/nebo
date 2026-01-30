@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
-## CRITICAL: THE GOBOT PARADIGM
+## CRITICAL: THE NEBO PARADIGM
 
-GoBot is **ONE agent that is always running**. Not multiple agents. ONE.
+Nebo is **ONE agent that is always running**. Not multiple agents. ONE.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -20,7 +20,7 @@ GoBot is **ONE agent that is always running**. Not multiple agents. ONE.
 │                                                                 │
 │  Channels (how users reach THE agent):                          │
 │    - Web UI (/app/agent) - the primary control plane            │
-│    - CLI (gobot chat)                                           │
+│    - CLI (nebo chat)                                           │
 │    - Telegram / Discord / Slack                                 │
 │    - Voice                                                      │
 └─────────────────────────────────────────────────────────────────┘
@@ -56,7 +56,7 @@ cd app && pnpm check                                   # TypeScript check
 cd app && pnpm test:unit                               # Frontend tests
 
 # Build & Release
-make build            # Build binary to bin/gobot
+make build            # Build binary to bin/nebo
 make cli              # Build and install globally
 make release          # Build for all platforms (darwin/linux, amd64/arm64)
 
@@ -100,7 +100,7 @@ agent/
 ├── orchestrator/ # Sub-agent spawning (up to 5 concurrent)
 ├── session/      # SQLite conversation persistence
 ├── memory/       # Persistent fact/preference storage
-└── config/       # ~/.gobot/ config loading
+└── config/       # ~/.nebo/ config loading
 ```
 
 ### Frontend (SvelteKit 2 + Svelte 5)
@@ -172,7 +172,7 @@ type GetWidgetResponse struct { Name string `json:"name"` }
 - **DaisyUI components** - Use DaisyUI classes for UI (btn, card, modal, input, etc.)
 - **Idiomatic Go** - One function with parameters, not multiple variations (e.g., `Register(token string)` not `RegisterWithToken()` + `Register()`)
 - **Minimal changes** - Never remove code that appears unused without asking first
-- **NEVER hardcode model IDs** - All model IDs come from `~/.gobot/models.yaml`
+- **NEVER hardcode model IDs** - All model IDs come from `~/.nebo/models.yaml`
 
 ---
 
@@ -180,26 +180,26 @@ type GetWidgetResponse struct { Name string `json:"name"` }
 
 | File | Purpose |
 |------|---------|
-| `~/.gobot/models.yaml` | Provider credentials & available models (loaded by agent) |
-| `~/.gobot/config.yaml` | Agent settings & tool policies |
-| `~/.gobot/skills/` | User-defined YAML skills |
-| `~/.gobot/plugins/` | User-installed plugins (tools/, channels/) |
-| `etc/gobot.yaml` | Server config (ports, database path) |
+| `~/.nebo/models.yaml` | Provider credentials & available models (loaded by agent) |
+| `~/.nebo/config.yaml` | Agent settings & tool policies |
+| `~/.nebo/skills/` | User-defined YAML skills |
+| `~/.nebo/plugins/` | User-installed plugins (tools/, channels/) |
+| `etc/nebo.yaml` | Server config (ports, database path) |
 | `app/src/lib/config/site.ts` | Branding, SEO, social links |
 | `.env` | Secrets only (JWT_SECRET) |
 
 ---
 
-## Running GoBot
+## Running Nebo
 
 ```bash
-gobot              # Start server + agent (default)
-gobot serve        # Server only
-gobot agent        # Agent only
-gobot chat         # CLI chat mode
-gobot chat -i      # Interactive CLI mode
-gobot skills list  # List available skills
-gobot plugins list # List installed plugins
+nebo              # Start server + agent (default)
+nebo serve        # Server only
+nebo agent        # Agent only
+nebo chat         # CLI chat mode
+nebo chat -i      # Interactive CLI mode
+nebo skills list  # List available skills
+nebo plugins list # List installed plugins
 ```
 
 Web UI at `http://localhost:29875`
@@ -216,7 +216,7 @@ Web UI at `http://localhost:29875`
 - Scheduled tasks (`agent/tools/cron.go`)
 - Sessions with compaction (`agent/session/`)
 
-**Skills:** YAML files in `~/.gobot/skills/` or `extensions/skills/`. Hot-reload, trigger-based matching, tool restrictions.
+**Skills:** YAML files in `~/.nebo/skills/` or `extensions/skills/`. Hot-reload, trigger-based matching, tool restrictions.
 
 **Model Selection:** Task classification (Vision/Audio/Reasoning/Code/General) routes to appropriate model with exponential backoff on failures.
 

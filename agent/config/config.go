@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gobot/internal/provider"
+	"nebo/internal/provider"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,7 +16,7 @@ type Config struct {
 	Providers []ProviderConfig `yaml:"-"` // Not in config.yaml, loaded from models.yaml
 
 	// Session settings
-	DataDir    string `yaml:"data_dir"`    // ~/.gobot
+	DataDir    string `yaml:"data_dir"`    // ~/.nebo
 	MaxContext int    `yaml:"max_context"` // Max messages before compaction
 
 	// Execution settings
@@ -68,16 +68,16 @@ func DefaultConfig() *Config {
 	}
 }
 
-// DefaultDataDir returns the default data directory (~/.gobot)
+// DefaultDataDir returns the default data directory (~/.nebo)
 func DefaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".gobot"
+		return ".nebo"
 	}
-	return filepath.Join(home, ".gobot")
+	return filepath.Join(home, ".nebo")
 }
 
-// Load loads config from ~/.gobot/config.yaml
+// Load loads config from ~/.nebo/config.yaml
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
 
@@ -126,7 +126,7 @@ func LoadFrom(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// Save saves the config to ~/.gobot/config.yaml
+// Save saves the config to ~/.nebo/config.yaml
 func (c *Config) Save() error {
 	// Ensure data dir exists
 	if err := os.MkdirAll(c.DataDir, 0700); err != nil {
@@ -143,7 +143,7 @@ func (c *Config) Save() error {
 }
 
 // DBPath returns the path to the SQLite database
-// Uses ~/.gobot/data/gobot.db to match the server's database location
+// Uses ~/.nebo/data/gobot.db to match the server's database location
 func (c *Config) DBPath() string {
 	return filepath.Join(c.DataDir, "data", "gobot.db")
 }

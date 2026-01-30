@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"gobot/agent/session"
-	"gobot/internal/provider"
+	"nebo/agent/session"
+	"nebo/internal/provider"
 )
 
 func TestNewModelSelector(t *testing.T) {

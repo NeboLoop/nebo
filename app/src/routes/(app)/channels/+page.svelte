@@ -104,7 +104,7 @@
 </script>
 
 <svelte:head>
-	<title>Channels - GoBot</title>
+	<title>Channels - Nebo</title>
 </svelte:head>
 
 <div class="mb-6 flex items-center justify-between">

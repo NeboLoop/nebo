@@ -16,9 +16,9 @@
 			const data = await response.json();
 
 			// Store tokens in localStorage (same keys as auth store)
-			localStorage.setItem('gobot_token', data.token);
-			localStorage.setItem('gobot_refresh_token', data.refreshToken);
-			localStorage.setItem('gobot_expires_at', data.expiresAt.toString());
+			localStorage.setItem('nebo_token', data.token);
+			localStorage.setItem('nebo_refresh_token', data.refreshToken);
+			localStorage.setItem('nebo_expires_at', data.expiresAt.toString());
 
 			status = 'Logged in! Redirecting...';
 

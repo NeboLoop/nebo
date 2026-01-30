@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"gobot/internal/httputil"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/httputil"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // OAuth callback - exchange code for tokens

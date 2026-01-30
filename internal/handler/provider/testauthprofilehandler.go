@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"time"
 
-	"gobot/internal/httputil"
-	models "gobot/internal/provider"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/httputil"
+	models "nebo/internal/provider"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // HTTP client with timeout for API testing

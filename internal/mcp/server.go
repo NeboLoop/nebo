@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"gobot/internal/db"
-	"gobot/internal/mcp/mcpauth"
-	"gobot/internal/mcp/mcpctx"
-	"gobot/internal/mcp/tools"
-	"gobot/internal/svc"
+	"nebo/internal/db"
+	"nebo/internal/mcp/mcpauth"
+	"nebo/internal/mcp/mcpctx"
+	"nebo/internal/mcp/tools"
+	"nebo/internal/svc"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"

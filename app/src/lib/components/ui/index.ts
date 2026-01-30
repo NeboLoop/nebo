@@ -1,5 +1,5 @@
 /**
- * GoBot UI Components
+ * Nebo UI Components
  *
  * Reusable components for 100% consistency across all pages.
  * Import from here for easy access.

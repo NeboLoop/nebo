@@ -1,5 +1,5 @@
 // System Plugin - macOS system controls (volume, brightness, sleep, etc.)
-// Build: go build -o ~/.gobot/plugins/tools/system
+// Build: go build -o ~/.nebo/plugins/tools/system
 package main
 
 import (

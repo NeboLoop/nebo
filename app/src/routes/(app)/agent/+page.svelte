@@ -14,7 +14,7 @@
 		input: Record<string, unknown>;
 	}
 
-	const DRAFT_STORAGE_KEY = 'gobot_companion_draft';
+	const DRAFT_STORAGE_KEY = 'nebo_companion_draft';
 
 	interface Message {
 		id: string;
@@ -738,7 +738,7 @@
 </script>
 
 <svelte:head>
-	<title>GoBot - Your AI Companion</title>
+	<title>Nebo - Your AI Companion</title>
 </svelte:head>
 
 <svelte:window onkeydown={handleGlobalKeydown} />

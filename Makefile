@@ -5,14 +5,14 @@ ifneq ("$(wildcard $(ENVFILE))","")
 	export $(shell sed 's/=.*//' $(ENVFILE))
 endif
 
-# Gobot Makefile
-EXECUTABLE=gobot
+# Nebo Makefile
+EXECUTABLE=nebo
 
 .PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install
 
 # Default target
 help:
-	@echo "Gobot - Full-stack SaaS Boilerplate"
+	@echo "Nebo - AI Agent Platform"
 	@echo ""
 	@echo "Quick Start:"
 	@echo "  make dev       - Start everything (backend + frontend)"
@@ -21,17 +21,17 @@ help:
 	@echo "Development:"
 	@echo "  make air       - Backend only with hot reload"
 	@echo "  make test      - Run tests"
-	@echo "  make gen       - Regenerate API code from .api file"
+	@echo "  make gen       - Regenerate API code"
 	@echo ""
-	@echo "GoBot Commands (after build):"
-	@echo "  gobot          - Start server + agent together (default)"
-	@echo "  gobot serve    - Start server only"
-	@echo "  gobot agent    - Start agent only"
-	@echo "  gobot chat     - CLI chat mode"
-	@echo "  gobot config   - Show configuration"
+	@echo "Nebo Commands (after build):"
+	@echo "  nebo          - Start server + agent together (default)"
+	@echo "  nebo serve    - Start server only"
+	@echo "  nebo agent    - Start agent only"
+	@echo "  nebo chat     - CLI chat mode"
+	@echo "  nebo config   - Show configuration"
 	@echo ""
 	@echo "Installation:"
-	@echo "  make cli       - Build and install gobot globally"
+	@echo "  make cli       - Build and install nebo globally"
 	@echo ""
 	@echo "Database:"
 	@echo "  make migrate-up     - Run pending migrations"
@@ -41,11 +41,10 @@ help:
 	@echo "Other:"
 	@echo "  make deps      - Download dependencies"
 	@echo "  make clean     - Clean build artifacts"
-	@echo "  make setup NAME=myapp - Rename project"
 
 # Start everything - the easiest way to develop
 dev:
-	@echo "Starting Gobot development environment..."
+	@echo "Starting Nebo development environment..."
 	@echo "Backend: http://localhost:27895"
 	@echo "Frontend: http://localhost:27458"
 	@echo ""
@@ -68,11 +67,11 @@ build:
 # Build CLI only (for backward compatibility, same as build)
 build-cli: build
 
-# Install gobot globally
+# Install nebo globally
 cli: build
-	@echo "Installing gobot..."
-	cp bin/gobot $(GOPATH)/bin/gobot 2>/dev/null || cp bin/gobot /usr/local/bin/gobot 2>/dev/null || echo "Copy bin/gobot to your PATH manually"
-	@echo "Done! Run 'gobot --help' to get started"
+	@echo "Installing nebo..."
+	cp bin/nebo $(GOPATH)/bin/nebo 2>/dev/null || cp bin/nebo /usr/local/bin/nebo 2>/dev/null || echo "Copy bin/nebo to your PATH manually"
+	@echo "Done! Run 'nebo --help' to get started"
 
 # Run the application
 run: build
@@ -106,17 +105,6 @@ gen:
 	@echo "Generating TypeScript API code..."
 	go run ./cmd/genapi
 	@echo "Code generation complete!"
-
-# Setup script - rename project
-setup:
-	@if [ -z "$(NAME)" ]; then \
-		echo "Usage: make setup NAME=myapp"; \
-		exit 1; \
-	fi
-	@echo "Renaming project from gobot to $(NAME)..."
-	@./install.sh $(NAME)
-	@echo "Project renamed to $(NAME)!"
-	@echo "Run 'make deps && make gen' to complete setup"
 
 # Database migrations and code generation
 sqlc:
@@ -172,24 +160,24 @@ release: clean release-darwin release-linux
 release-darwin:
 	@echo "Building for macOS..."
 	@mkdir -p dist
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/gobot-darwin-amd64 .
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/gobot-darwin-arm64 .
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-darwin-amd64 .
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-darwin-arm64 .
 
 # Linux builds
 release-linux:
 	@echo "Building for Linux..."
 	@mkdir -p dist
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/gobot-linux-amd64 .
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/gobot-linux-arm64 .
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-linux-amd64 .
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-linux-arm64 .
 
 # Install locally (for development)
 install: build
-	@echo "Installing gobot to /usr/local/bin..."
-	@sudo cp bin/gobot /usr/local/bin/gobot
-	@echo "Installed! Run 'gobot' to start."
+	@echo "Installing nebo to /usr/local/bin..."
+	@sudo cp bin/nebo /usr/local/bin/nebo
+	@echo "Installed! Run 'nebo' to start."
 
 # Create GitHub release (requires gh CLI)
 github-release: release
 	@if [ -z "$(TAG)" ]; then echo "Usage: make github-release TAG=v1.0.0"; exit 1; fi
 	@echo "Creating GitHub release $(TAG)..."
-	gh release create $(TAG) dist/* --title "GoBot $(TAG)" --generate-notes
+	gh release create $(TAG) dist/* --title "Nebo $(TAG)" --generate-notes

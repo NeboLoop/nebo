@@ -66,7 +66,7 @@ class Logger {
 			minLevel: 'debug',
 			enableConsole: true,
 			enableJsonOutput: false,
-			appName: 'gobot',
+			appName: 'nebo',
 			environment: 'development',
 			...config
 		};

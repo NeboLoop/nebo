@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 // JWTClaims represents the claims from a Levee JWT token

@@ -3,7 +3,7 @@
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { Wrench, Shield, ShieldAlert, RefreshCw, Terminal, FileText, Globe, Search, Cpu, Zap, Plug, MessageSquare, Power } from 'lucide-svelte';
-	import type { ListExtensionsResponse, ExtensionTool, ExtensionSkill, ExtensionChannel } from '$lib/api/gobotComponents';
+	import type { ListExtensionsResponse, ExtensionTool, ExtensionSkill, ExtensionChannel } from '$lib/api/neboComponents';
 
 	let extensions = $state<ListExtensionsResponse | null>(null);
 	let isLoading = $state(true);
@@ -75,7 +75,7 @@
 </script>
 
 <svelte:head>
-	<title>Extensions - GoBot</title>
+	<title>Extensions - Nebo</title>
 </svelte:head>
 
 <div class="mb-6 flex items-center justify-between">

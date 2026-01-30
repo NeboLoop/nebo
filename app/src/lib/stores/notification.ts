@@ -1,6 +1,6 @@
 import { writable, derived, get } from 'svelte/store';
-import * as api from '$lib/api/gobot';
-import type { Notification } from '$lib/api/gobotComponents';
+import * as api from '$lib/api/nebo';
+import type { Notification } from '$lib/api/neboComponents';
 import { logger } from '$lib/monitoring';
 
 /**

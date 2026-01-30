@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { validateEmail } from '$lib/utils/validation';
 	import { auth, authError, authLoading } from '$lib/stores';
-	import * as api from '$lib/api/gobot';
+	import * as api from '$lib/api/nebo';
 	import { tick } from 'svelte';
 
 	interface Props {

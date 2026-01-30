@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"gobot/internal/auth"
-	"gobot/internal/httputil"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/auth"
+	"nebo/internal/httputil"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // List connected OAuth providers

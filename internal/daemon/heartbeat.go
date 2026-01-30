@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 // HeartbeatConfig configures the heartbeat daemon
@@ -123,7 +123,7 @@ func (h *Heartbeat) loadHeartbeatFile() string {
 
 	// Home directory fallback
 	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".gobot", "HEARTBEAT.md"))
+		paths = append(paths, filepath.Join(home, ".nebo", "HEARTBEAT.md"))
 	}
 
 	for _, path := range paths {

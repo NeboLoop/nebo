@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"gobot/internal/channels"
+	"nebo/internal/channels"
 )
 
 // MessageTool allows the agent to send messages to connected channels

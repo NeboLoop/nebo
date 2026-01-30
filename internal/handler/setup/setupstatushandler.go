@@ -3,11 +3,11 @@ package setup
 import (
 	"net/http"
 
-	"gobot/internal/defaults"
-	"gobot/internal/httputil"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/defaults"
+	"nebo/internal/httputil"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 func SetupStatusHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {

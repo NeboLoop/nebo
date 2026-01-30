@@ -1,5 +1,5 @@
 // Reminders Plugin - macOS Reminders integration via AppleScript
-// Build: go build -o ~/.gobot/plugins/tools/reminders
+// Build: go build -o ~/.nebo/plugins/tools/reminders
 package main
 
 import (

@@ -1,5 +1,5 @@
 // Shortcuts Plugin - macOS Shortcuts app integration
-// Build: go build -o ~/.gobot/plugins/tools/shortcuts
+// Build: go build -o ~/.nebo/plugins/tools/shortcuts
 package main
 
 import (

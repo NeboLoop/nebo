@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"gobot/internal/mcp/mcpctx"
+	"nebo/internal/mcp/mcpctx"
 )
 
 // ToolFunc is a function that executes a tool with JSON args.

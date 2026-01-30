@@ -1,5 +1,5 @@
 // Spotlight Plugin - macOS Spotlight search integration
-// Build: go build -o ~/.gobot/plugins/tools/spotlight
+// Build: go build -o ~/.nebo/plugins/tools/spotlight
 package main
 
 import (

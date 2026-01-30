@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unicode"
 
-	"gobot/internal/provider"
+	"nebo/internal/provider"
 )
 
 // Variant tokens - common model suffixes that affect scoring

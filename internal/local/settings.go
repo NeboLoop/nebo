@@ -30,7 +30,7 @@ func settingsPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(homeDir, ".gobot", "settings.json"), nil
+	return filepath.Join(homeDir, ".nebo", "settings.json"), nil
 }
 
 // LoadSettings loads local settings, creating defaults if needed

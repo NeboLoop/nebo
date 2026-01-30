@@ -10,7 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"gobot/internal/lifecycle"
+	"nebo/internal/lifecycle"
 )
 
 // Frame represents a message frame between server and agent

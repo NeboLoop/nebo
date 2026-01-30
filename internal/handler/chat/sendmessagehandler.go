@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"gobot/internal/db"
-	"gobot/internal/httputil"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/db"
+	"nebo/internal/httputil"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 
 	"github.com/google/uuid"
 )

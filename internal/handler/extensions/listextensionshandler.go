@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gobot/agent/skills"
-	"gobot/internal/httputil"
-	"gobot/internal/logging"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/agent/skills"
+	"nebo/internal/httputil"
+	"nebo/internal/logging"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // List all extensions (tools, skills, plugins)

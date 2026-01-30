@@ -3,10 +3,10 @@ package provider
 import (
 	"net/http"
 
-	"gobot/internal/httputil"
-	"gobot/internal/provider"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"nebo/internal/httputil"
+	"nebo/internal/provider"
+	"nebo/internal/svc"
+	"nebo/internal/types"
 )
 
 // Update task routing configuration

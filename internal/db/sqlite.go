@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"gobot/internal/db/migrations"
+	"nebo/internal/db/migrations"
 
 	_ "modernc.org/sqlite" // Pure Go SQLite driver (no CGO)
 
-	"gobot/internal/logging"
+	"nebo/internal/logging"
 )
 
 // NewSQLite creates a new SQLite database connection, runs migrations, and returns a Store
