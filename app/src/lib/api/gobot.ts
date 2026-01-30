@@ -77,6 +77,13 @@ export function getAuthConfig() {
 }
 
 /**
+ * @description "Dev auto-login (local development only)"
+ */
+export function devLogin() {
+	return webapi.get<components.LoginResponse>(`/api/v1/auth/dev-login`)
+}
+
+/**
  * @description "Request password reset"
  * @param req
  */
@@ -313,11 +320,11 @@ export function listModels() {
 }
 
 /**
- * @description "Toggle model active status"
+ * @description "Update model settings (active, kind, preferred)"
  * @param params
  * @param req
  */
-export function toggleModel(params: components.ToggleModelRequestParams, req: components.ToggleModelRequest, provider: string, modelId: string) {
+export function updateModel(params: components.UpdateModelRequestParams, req: components.UpdateModelRequest, provider: string, modelId: string) {
 	return webapi.put<components.MessageResponse>(`/api/v1/models/${provider}/${modelId}`, params, req)
 }
 

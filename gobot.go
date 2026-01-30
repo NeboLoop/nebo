@@ -4,11 +4,14 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	cli "gobot/cmd/gobot"
 	"gobot/internal/config"
+	"gobot/internal/defaults"
 	"gobot/internal/local"
 
+	"github.com/joho/godotenv"
 	"github.com/zeromicro/go-zero/core/conf"
 )
 
@@ -16,11 +19,23 @@ import (
 var embeddedConfig []byte
 
 func main() {
+	// Load .env file if present (ignore error if not found)
+	_ = godotenv.Load()
+
 	// Load embedded config (defaults)
 	var c config.Config
 	if err := conf.LoadFromYamlBytes([]byte(os.ExpandEnv(string(embeddedConfig))), &c); err != nil {
 		fmt.Printf("Failed to load embedded config: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Override database path to use ~/.gobot/data/gobot.db
+	dataDir, err := defaults.DataDir()
+	if err == nil {
+		dbDir := filepath.Join(dataDir, "data")
+		os.MkdirAll(dbDir, 0755)
+		c.Database.SQLitePath = filepath.Join(dbDir, "gobot.db")
+		fmt.Printf("Using database: %s\n", c.Database.SQLitePath)
 	}
 
 	// Load local settings (auto-generates secret on first run)

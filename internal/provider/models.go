@@ -24,7 +24,9 @@ type ModelInfo struct {
 	ContextWindow int           `json:"contextWindow" yaml:"contextWindow"`
 	Pricing       *ModelPricing `json:"pricing,omitempty" yaml:"pricing,omitempty"`
 	Capabilities  []string      `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	Active        *bool         `json:"active,omitempty" yaml:"active,omitempty"` // nil = true (default active)
+	Kind          []string      `json:"kind,omitempty" yaml:"kind,omitempty"`               // Semantic tags: fast, smart, code, cheap, etc.
+	Preferred     bool          `json:"preferred,omitempty" yaml:"preferred,omitempty"`     // User's preferred model for this kind
+	Active        *bool         `json:"active,omitempty" yaml:"active,omitempty"`           // nil = true (default active)
 }
 
 // IsActive returns whether the model is active (defaults to true)
@@ -59,6 +61,12 @@ type Defaults struct {
 	Fallbacks []string `yaml:"fallbacks,omitempty" json:"fallbacks,omitempty"`
 }
 
+// ModelAlias maps a user-friendly alias to a model ID
+type ModelAlias struct {
+	Alias   string `yaml:"alias" json:"alias"`
+	ModelId string `yaml:"modelId" json:"modelId"`
+}
+
 // ModelsConfig is the YAML structure for storing provider models
 // The agent populates this file itself using its tools (web search, memory, etc.)
 type ModelsConfig struct {
@@ -67,6 +75,7 @@ type ModelsConfig struct {
 	Credentials map[string]ProviderCredentials `yaml:"credentials,omitempty"`
 	Defaults    *Defaults                      `yaml:"defaults,omitempty"`
 	TaskRouting *TaskRouting                   `yaml:"task_routing,omitempty"`
+	Aliases     []ModelAlias                   `yaml:"aliases,omitempty"`
 	Providers   map[string][]ModelInfo         `yaml:"providers"`
 }
 
@@ -227,6 +236,46 @@ func SetModelActive(providerType, modelID string, active bool) error {
 	for i := range models {
 		if models[i].ID == modelID {
 			models[i].Active = &active
+			modelsInstance.Providers[providerType] = models
+			return SaveModels(modelsInstance)
+		}
+	}
+
+	return nil // Model not found, nothing to do
+}
+
+// ModelUpdate contains fields to update on a model
+type ModelUpdate struct {
+	Active    *bool
+	Kind      []string
+	Preferred *bool
+}
+
+// UpdateModel updates a model's settings (active, kind, preferred)
+func UpdateModel(providerType, modelID string, update ModelUpdate) error {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+
+	if modelsInstance == nil {
+		modelsInstance = loadFromYAML()
+	}
+
+	models, ok := modelsInstance.Providers[providerType]
+	if !ok {
+		return nil // Provider not found, nothing to do
+	}
+
+	for i := range models {
+		if models[i].ID == modelID {
+			if update.Active != nil {
+				models[i].Active = update.Active
+			}
+			if update.Kind != nil {
+				models[i].Kind = update.Kind
+			}
+			if update.Preferred != nil {
+				models[i].Preferred = *update.Preferred
+			}
 			modelsInstance.Providers[providerType] = models
 			return SaveModels(modelsInstance)
 		}

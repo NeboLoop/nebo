@@ -70,3 +70,24 @@ extensions/plugins/tools/*
 extensions/plugins/channels/*
 !extensions/plugins/tools/.gitkeep
 !extensions/plugins/channels/.gitkeep
+
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Dependency directories
+# Environment variables
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+
+# Task files
+# tasks.json
+# tasks/ 

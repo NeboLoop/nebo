@@ -101,6 +101,20 @@ func (e *Extractor) Extract(ctx context.Context, messages []session.Message) (*E
 
 	// Parse the response
 	responseText := strings.TrimSpace(result.String())
+
+	// Strip markdown code fences if present (```json ... ``` or ``` ... ```)
+	if strings.HasPrefix(responseText, "```") {
+		// Find the end of the opening fence line
+		if idx := strings.Index(responseText, "\n"); idx != -1 {
+			responseText = responseText[idx+1:]
+		}
+		// Remove closing fence
+		if idx := strings.LastIndex(responseText, "```"); idx != -1 {
+			responseText = responseText[:idx]
+		}
+		responseText = strings.TrimSpace(responseText)
+	}
+
 	// Try to extract JSON from the response (in case there's extra text)
 	jsonStart := strings.Index(responseText, "{")
 	jsonEnd := strings.LastIndex(responseText, "}")

@@ -23,79 +23,113 @@ func NewFuzzyMatcher(config *provider.ModelsConfig) *FuzzyMatcher {
 	return f
 }
 
-// buildAliases creates common aliases for models
+// buildAliases creates aliases for models from config and kind tags
 func (f *FuzzyMatcher) buildAliases() {
-	// Common keyword mappings (2026 models)
-	keywords := map[string]string{
-		// Anthropic Claude 4.5 aliases
-		"claude":       "anthropic/claude-sonnet-4-5",
-		"sonnet":       "anthropic/claude-sonnet-4-5",
-		"opus":         "anthropic/claude-opus-4-5",
-		"haiku":        "anthropic/claude-haiku-4-5",
-		"claude-opus":  "anthropic/claude-opus-4-5",
-		"claude-haiku": "anthropic/claude-haiku-4-5",
-		"anthropic":    "anthropic/claude-sonnet-4-5",
-
-		// OpenAI GPT-5.2 aliases (2026 - NO GPT-4!)
-		"gpt":         "openai/gpt-5.2",
-		"gpt5":        "openai/gpt-5.2",
-		"gpt-5":       "openai/gpt-5.2",
-		"gpt5.2":      "openai/gpt-5.2",
-		"gpt-5.2":     "openai/gpt-5.2",
-		"chatgpt":     "openai/gpt-5.2",
-		"openai":      "openai/gpt-5.2",
-		"gpt-instant": "openai/gpt-5.2-instant",
-		"instant":     "openai/gpt-5.2-instant",
-		"gpt-pro":     "openai/gpt-5.2-pro",
-		"codex":       "openai/gpt-5.2-codex",
-		"gpt-codex":   "openai/gpt-5.2-codex",
-		"gpt-think":   "openai/gpt-5.2-thinking",
-
-		// Google Gemini 3 aliases (2026)
-		"gemini":        "google/gemini-3-flash",
-		"gemini-flash":  "google/gemini-3-flash",
-		"gemini-pro":    "google/gemini-3-pro",
-		"gemini3":       "google/gemini-3-flash",
-		"gemini-3":      "google/gemini-3-flash",
-		"google":        "google/gemini-3-flash",
-		"gemini-2.5":    "google/gemini-2.5-flash",
-		"gemini-lite":   "google/gemini-2.5-flash-lite",
-
-		// DeepSeek aliases
-		"deepseek":      "deepseek/deepseek-chat",
-		"deepseek-chat": "deepseek/deepseek-chat",
-		"reasoner":      "deepseek/deepseek-reasoner",
-
-		// Ollama aliases
-		"llama":    "ollama/llama3.3",
-		"llama3":   "ollama/llama3.3",
-		"qwen":     "ollama/qwen2.5",
-		"mistral":  "ollama/mistral",
-		"local":    "ollama/llama3.3",
-
-		// Semantic aliases
-		"fast":    "anthropic/claude-haiku-4-5",
-		"quick":   "anthropic/claude-haiku-4-5",
-		"cheap":   "deepseek/deepseek-chat",
-		"smart":   "anthropic/claude-opus-4-5",
-		"best":    "anthropic/claude-opus-4-5",
-		"reason":  "anthropic/claude-opus-4-5",
-		"think":   "anthropic/claude-opus-4-5",
-		"code":    "anthropic/claude-sonnet-4-5",
-		"default": "anthropic/claude-sonnet-4-5",
+	if f.config == nil {
+		return
 	}
 
-	for alias, modelID := range keywords {
-		f.aliases[alias] = modelID
+	// 1. First, load user-configured aliases from models.yaml (highest priority)
+	for _, alias := range f.config.Aliases {
+		f.aliases[strings.ToLower(alias.Alias)] = alias.ModelId
 	}
 
-	// Also add all actual model IDs as aliases
-	if f.config != nil {
-		for providerName, models := range f.config.Providers {
-			for _, m := range models {
-				fullID := providerName + "/" + m.ID
-				f.aliases[strings.ToLower(m.ID)] = fullID
-				f.aliases[strings.ToLower(fullID)] = fullID
+	// 2. Build aliases from model kind tags (preferred models first)
+	// This replaces hardcoded semantic aliases - now driven by models.yaml
+	kindToModels := make(map[string][]string) // kind -> list of model IDs
+	kindPreferred := make(map[string]string)  // kind -> preferred model ID
+
+	var firstAPIProvider string
+	var firstCLIProvider string
+
+	for providerName, models := range f.config.Providers {
+		if len(models) == 0 {
+			continue
+		}
+
+		// Get first active model for this provider
+		var firstModel string
+		for _, m := range models {
+			if m.IsActive() {
+				firstModel = m.ID
+				break
+			}
+		}
+		if firstModel == "" {
+			continue
+		}
+
+		fullID := providerName + "/" + firstModel
+
+		// Add provider name as alias (e.g., "anthropic" -> "anthropic/claude-sonnet-4-5")
+		f.aliases[strings.ToLower(providerName)] = fullID
+
+		// Check if this is a CLI provider (has command in credentials)
+		if f.config.Credentials != nil {
+			if cred, ok := f.config.Credentials[providerName]; ok && cred.Command != "" {
+				// CLI provider - add CLI-related aliases
+				if firstCLIProvider == "" {
+					firstCLIProvider = fullID
+				}
+				// Add command name as alias (e.g., "claude" for claude-code)
+				f.aliases[strings.ToLower(cred.Command)] = fullID
+			} else if cred.APIKey != "" || cred.BaseURL != "" {
+				// API provider
+				if firstAPIProvider == "" {
+					firstAPIProvider = fullID
+				}
+			}
+		}
+
+		// Add all model IDs, display names, and kind tags as aliases
+		for _, m := range models {
+			if !m.IsActive() {
+				continue
+			}
+			mFullID := providerName + "/" + m.ID
+			f.aliases[strings.ToLower(m.ID)] = mFullID
+			f.aliases[strings.ToLower(mFullID)] = mFullID
+			if m.DisplayName != "" {
+				f.aliases[strings.ToLower(m.DisplayName)] = mFullID
+			}
+
+			// Build kind mappings
+			for _, kind := range m.Kind {
+				kindLower := strings.ToLower(kind)
+				kindToModels[kindLower] = append(kindToModels[kindLower], mFullID)
+				// Track preferred model for each kind
+				if m.Preferred {
+					kindPreferred[kindLower] = mFullID
+				}
+			}
+		}
+	}
+
+	// 3. Add kind tags as aliases (preferred model, or first available)
+	for kind, models := range kindToModels {
+		if _, exists := f.aliases[kind]; exists {
+			continue // User-configured alias takes precedence
+		}
+		// Use preferred model if set, otherwise first in list
+		if preferred, ok := kindPreferred[kind]; ok {
+			f.aliases[kind] = preferred
+		} else if len(models) > 0 {
+			f.aliases[kind] = models[0]
+		}
+	}
+
+	// 4. Add "api" alias pointing to first API provider
+	if firstAPIProvider != "" {
+		if _, exists := f.aliases["api"]; !exists {
+			f.aliases["api"] = firstAPIProvider
+		}
+	}
+
+	// 5. Add "cli"/"terminal"/"agentic" aliases pointing to first CLI provider
+	if firstCLIProvider != "" {
+		for _, alias := range []string{"cli", "terminal", "agentic"} {
+			if _, exists := f.aliases[alias]; !exists {
+				f.aliases[alias] = firstCLIProvider
 			}
 		}
 	}

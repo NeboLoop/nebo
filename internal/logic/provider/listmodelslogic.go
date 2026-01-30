@@ -38,6 +38,8 @@ func (l *ListModelsLogic) ListModels() (resp *types.ListModelsResponse, err erro
 				DisplayName:   m.DisplayName,
 				ContextWindow: m.ContextWindow,
 				Capabilities:  m.Capabilities,
+				Kind:          m.Kind,
+				Preferred:     m.Preferred,
 				IsActive:      m.IsActive(),
 			}
 			if m.Pricing != nil {
@@ -57,11 +59,21 @@ func (l *ListModelsLogic) ListModels() (resp *types.ListModelsResponse, err erro
 	if config.TaskRouting != nil {
 		taskRouting = &types.TaskRouting{
 			Vision:    config.TaskRouting.Vision,
+			Audio:     config.TaskRouting.Audio,
 			Reasoning: config.TaskRouting.Reasoning,
 			Code:      config.TaskRouting.Code,
 			General:   config.TaskRouting.General,
 			Fallbacks: config.TaskRouting.Fallbacks,
 		}
+	}
+
+	// Include aliases if configured
+	var aliases []types.ModelAlias
+	for _, a := range config.Aliases {
+		aliases = append(aliases, types.ModelAlias{
+			Alias:   a.Alias,
+			ModelId: a.ModelId,
+		})
 	}
 
 	// Detect available CLI tools
@@ -74,6 +86,7 @@ func (l *ListModelsLogic) ListModels() (resp *types.ListModelsResponse, err erro
 	return &types.ListModelsResponse{
 		Models:        result,
 		TaskRouting:   taskRouting,
+		Aliases:       aliases,
 		AvailableCLIs: cliAvailability,
 	}, nil
 }

@@ -25,6 +25,7 @@ import (
 	"gobot/internal/realtime"
 	"gobot/internal/router"
 	"gobot/internal/svc"
+	"gobot/internal/voice"
 	"gobot/internal/websocket"
 
 	"github.com/zeromicro/go-zero/rest"
@@ -122,6 +123,27 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 		Method:  http.MethodGet,
 		Path:    "/api/v1/csrf-token",
 		Handler: svcCtx.SecurityMiddleware.GetCSRFTokenHandler(),
+	})
+
+	// Voice transcription endpoint (uses OpenAI Whisper)
+	server.AddRoute(rest.Route{
+		Method:  http.MethodPost,
+		Path:    "/api/v1/voice/transcribe",
+		Handler: voice.TranscribeHandler,
+	})
+
+	// Text-to-speech endpoint (uses ElevenLabs)
+	server.AddRoute(rest.Route{
+		Method:  http.MethodPost,
+		Path:    "/api/v1/voice/tts",
+		Handler: voice.TTSHandler,
+	})
+
+	// Available TTS voices
+	server.AddRoute(rest.Route{
+		Method:  http.MethodGet,
+		Path:    "/api/v1/voice/voices",
+		Handler: voice.VoicesHandler,
 	})
 
 	handler.RegisterHandlers(server, svcCtx)

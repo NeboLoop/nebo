@@ -9,17 +9,17 @@ import (
 	"gobot/internal/types"
 )
 
-// Toggle model active status
-func ToggleModelHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+// Update model settings (active, kind, preferred)
+func UpdateModelHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req types.ToggleModelRequest
+		var req types.UpdateModelRequest
 		if err := httpx.Parse(r, &req); err != nil {
 			httpx.ErrorCtx(r.Context(), w, err)
 			return
 		}
 
-		l := provider.NewToggleModelLogic(r.Context(), svcCtx)
-		resp, err := l.ToggleModel(&req)
+		l := provider.NewUpdateModelLogic(r.Context(), svcCtx)
+		resp, err := l.UpdateModel(&req)
 		if err != nil {
 			httpx.ErrorCtx(r.Context(), w, err)
 		} else {

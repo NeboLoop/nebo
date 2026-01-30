@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
-	import { Send, Bot, Loader2, Mic, MicOff, Wifi, WifiOff, ArrowDown, Copy, Check, History } from 'lucide-svelte';
+	import { Send, Bot, Loader2, Mic, MicOff, Wifi, WifiOff, ArrowDown, Copy, Check, History, Volume2, VolumeOff } from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat } from '$lib/api';
 	import type { ChatMessage as ApiChatMessage } from '$lib/api';
@@ -15,9 +15,6 @@
 	}
 
 	const DRAFT_STORAGE_KEY = 'gobot_companion_draft';
-
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	type SpeechRecognitionType = any;
 
 	interface Message {
 		id: string;
@@ -51,7 +48,15 @@
 
 	// Voice recording state
 	let isRecording = $state(false);
-	let recognition: SpeechRecognitionType | null = null;
+
+	// Voice output (TTS) state
+	let voiceOutputEnabled = $state(false);
+	let isSpeaking = $state(false);
+	let currentAudio: HTMLAudioElement | null = null;
+	let ttsVoice = $state('rachel'); // Default ElevenLabs voice
+
+	// Available ElevenLabs voices
+	const ttsVoices = ['rachel', 'domi', 'bella', 'antoni', 'elli', 'josh', 'arnold', 'adam', 'sam'];
 
 	// Message queue
 	let messageQueue = $state<string[]>([]);
@@ -104,10 +109,19 @@
 
 	onDestroy(() => {
 		unsubscribers.forEach((unsub) => unsub());
-		// Clean up speech recognition to release microphone
+		// Clean up voice mode
+		voiceMode = false;
+		if (silenceTimer) {
+			clearTimeout(silenceTimer);
+		}
 		if (recognition) {
 			recognition.abort();
 			recognition = null;
+		}
+		// Clean up audio playback
+		if (currentAudio) {
+			currentAudio.pause();
+			currentAudio = null;
 		}
 	});
 
@@ -196,12 +210,19 @@
 	function handleChatComplete(data: Record<string, unknown>) {
 		if (chatId && data?.session_id !== chatId) return;
 
+		let completedContent = '';
 		if (currentStreamingMessage) {
+			completedContent = currentStreamingMessage.content;
 			currentStreamingMessage.streaming = false;
 			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
 			currentStreamingMessage = null;
 		}
 		isLoading = false;
+
+		// Speak the response if voice output is enabled
+		if (voiceOutputEnabled && completedContent) {
+			speakText(completedContent);
+		}
 
 		// Process queued messages
 		if (messageQueue.length > 0) {
@@ -401,10 +422,15 @@
 		}
 	}
 
-	// Voice recording state
+	// Voice mode state - continuous listening
+	let voiceMode = $state(false);
 	let isTogglingRecording = $state(false);
-	let recordingTranscript = $state('');
 	let recordingError = $state<string | null>(null);
+	let recordingTranscript = $state('');
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	let recognition: any = null;
+	let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+	const SILENCE_TIMEOUT = 2000;
 
 	async function toggleRecording() {
 		// Debounce rapid clicks
@@ -412,13 +438,16 @@
 		isTogglingRecording = true;
 
 		try {
-			if (isRecording) {
+			if (voiceMode) {
+				// Exit voice mode
+				voiceMode = false;
 				stopRecording();
 			} else {
+				// Enter voice mode
+				voiceMode = true;
 				await startRecording();
 			}
 		} finally {
-			// Reset debounce after a frame
 			requestAnimationFrame(() => {
 				isTogglingRecording = false;
 			});
@@ -429,29 +458,27 @@
 		recordingError = null;
 		recordingTranscript = '';
 
-		// Check for API support
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const SpeechRecognition =
-			(window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+		const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 		if (!SpeechRecognition) {
-			recordingError = 'Speech recognition not supported. Try Chrome or Edge.';
+			recordingError = 'Speech recognition not supported. Try Chrome.';
 			return;
 		}
 
-		// Check microphone permission first
+		// Check microphone permission
 		try {
 			const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
 			if (permissionStatus.state === 'denied') {
-				recordingError = 'Microphone permission denied. Please allow access in browser settings.';
+				recordingError = 'Microphone permission denied. Allow in browser settings.';
 				return;
 			}
 		} catch {
-			// Permission API not supported, continue anyway
+			// Permission API not supported, continue
 		}
 
 		try {
 			recognition = new SpeechRecognition();
-			recognition.continuous = true;
+			recognition.continuous = false; // Stop after pause - triggers auto-send
 			recognition.interimResults = true;
 			recognition.lang = navigator.language || 'en-US';
 
@@ -462,16 +489,38 @@
 
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			recognition.onresult = (event: any) => {
+				console.log('[Voice] onresult fired');
+
+				// Reset silence timer on any speech
+				if (silenceTimer) {
+					clearTimeout(silenceTimer);
+					silenceTimer = null;
+				}
+
 				let interim = '';
 				for (let i = event.resultIndex; i < event.results.length; i++) {
 					const transcript = event.results[i][0].transcript;
 					if (event.results[i].isFinal) {
 						recordingTranscript += transcript + ' ';
+						console.log('[Voice] Final transcript:', recordingTranscript);
 					} else {
 						interim += transcript;
 					}
 				}
 				inputValue = recordingTranscript + interim;
+
+				// Start silence timer - if no more speech for 2s, auto-submit
+				if (inputValue.trim()) {
+					console.log('[Voice] Starting 2s silence timer');
+					silenceTimer = setTimeout(() => {
+						console.log('[Voice] Silence timer fired, isRecording:', isRecording);
+						if (isRecording && inputValue.trim()) {
+							console.log('[Voice] Auto-sending!');
+							stopRecording();
+							sendMessage();
+						}
+					}, SILENCE_TIMEOUT);
+				}
 			};
 
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -485,42 +534,187 @@
 						break;
 					case 'not-allowed':
 					case 'service-not-allowed':
-						recordingError = 'Microphone access denied. Please allow in browser settings.';
+						recordingError = 'Microphone access denied.';
 						break;
 					case 'network':
-						recordingError = 'Network error. Check your connection.';
+						recordingError = 'Network error. Try Chrome (not Brave).';
+						break;
+					case 'audio-capture':
+						recordingError = 'No microphone found.';
 						break;
 					case 'aborted':
-						// User cancelled, no error to show
 						break;
 					default:
-						recordingError = `Recording error: ${event.error}`;
+						recordingError = `Error: ${event.error}`;
 				}
 			};
 
+			// When speech ends (user stops talking), start shorter timer
+			recognition.onspeechend = () => {
+				console.log('[Voice] onspeechend fired');
+				if (silenceTimer) {
+					clearTimeout(silenceTimer);
+				}
+				// Shorter delay after speech officially ends
+				silenceTimer = setTimeout(() => {
+					console.log('[Voice] onspeechend timer fired');
+					if (isRecording && inputValue.trim()) {
+						console.log('[Voice] Auto-sending from onspeechend!');
+						stopRecording();
+						sendMessage();
+					}
+				}, 1000); // 1 second after speech ends
+			};
+
 			recognition.onend = () => {
+				console.log('[Voice] onend fired, inputValue:', inputValue.trim().substring(0, 50));
+				const hadContent = inputValue.trim();
 				isRecording = false;
-				// Don't auto-send - let user review and confirm
+				recognition = null;
+				// Clear any pending timer
+				if (silenceTimer) {
+					clearTimeout(silenceTimer);
+					silenceTimer = null;
+				}
+				// If we have content when recognition ends, send it
+				if (hadContent && !isLoading) {
+					console.log('[Voice] Auto-sending from onend!');
+					sendMessage();
+				}
+				// If still in voice mode, restart listening after bot responds (and TTS finishes)
+				if (voiceMode) {
+					const waitForResponse = () => {
+						// Wait until bot is done responding AND TTS is done speaking
+						if (isLoading || isSpeaking) {
+							setTimeout(waitForResponse, 500);
+							return;
+						}
+						if (voiceMode && !isRecording) {
+							console.log('[Voice] Restarting listening (voice mode)');
+							recordingTranscript = '';
+							startRecording();
+						}
+					};
+					// Start checking after a brief delay
+					setTimeout(waitForResponse, 1000);
+				}
 			};
 
 			recognition.start();
 		} catch (err) {
 			console.error('Failed to start speech recognition:', err);
-			recordingError = 'Failed to start recording. Please try again.';
+			recordingError = 'Failed to start recording.';
 			recognition = null;
 		}
 	}
 
 	function stopRecording() {
+		if (silenceTimer) {
+			clearTimeout(silenceTimer);
+			silenceTimer = null;
+		}
 		if (recognition) {
-			recognition.abort(); // Use abort() for immediate termination
+			recognition.abort();
 			recognition = null;
 		}
 		isRecording = false;
 	}
 
+	function exitVoiceMode() {
+		voiceMode = false;
+		stopRecording();
+	}
+
+	// TTS playback function
+	async function speakText(text: string) {
+		if (!voiceOutputEnabled || !text.trim()) return;
+
+		// Stop any current playback
+		if (currentAudio) {
+			currentAudio.pause();
+			currentAudio = null;
+		}
+
+		// Clean text for TTS (remove markdown formatting)
+		const cleanText = text
+			.replace(/```[\s\S]*?```/g, '') // Remove code blocks
+			.replace(/`[^`]+`/g, '') // Remove inline code
+			.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Convert links to text
+			.replace(/[*_~]+/g, '') // Remove bold/italic/strikethrough
+			.replace(/^#+\s*/gm, '') // Remove headers
+			.replace(/^[-*]\s*/gm, '') // Remove list markers
+			.trim();
+
+		if (!cleanText) return;
+
+		isSpeaking = true;
+
+		try {
+			const response = await fetch('/api/v1/voice/tts', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					text: cleanText,
+					voice: ttsVoice,
+					speed: 1.0
+				})
+			});
+
+			if (!response.ok) {
+				console.error('TTS error:', await response.text());
+				isSpeaking = false;
+				return;
+			}
+
+			const audioBlob = await response.blob();
+			const audioUrl = URL.createObjectURL(audioBlob);
+
+			currentAudio = new Audio(audioUrl);
+			currentAudio.onended = () => {
+				isSpeaking = false;
+				URL.revokeObjectURL(audioUrl);
+				currentAudio = null;
+			};
+			currentAudio.onerror = () => {
+				console.error('Audio playback error');
+				isSpeaking = false;
+				URL.revokeObjectURL(audioUrl);
+				currentAudio = null;
+			};
+			currentAudio.play();
+		} catch (err) {
+			console.error('TTS failed:', err);
+			isSpeaking = false;
+		}
+	}
+
+	function stopSpeaking() {
+		if (currentAudio) {
+			currentAudio.pause();
+			currentAudio = null;
+		}
+		isSpeaking = false;
+	}
+
+	function toggleVoiceOutput() {
+		if (voiceOutputEnabled) {
+			voiceOutputEnabled = false;
+			stopSpeaking();
+		} else {
+			voiceOutputEnabled = true;
+		}
+	}
+
 	// Auto-focus textarea when user starts typing anywhere
 	function handleGlobalKeydown(e: KeyboardEvent) {
+		// Escape exits voice mode
+		if (e.key === 'Escape' && voiceMode) {
+			e.preventDefault();
+			voiceMode = false;
+			stopRecording();
+			return;
+		}
+
 		if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') {
 			return;
 		}
@@ -728,14 +922,64 @@
 					type="button"
 					onclick={toggleRecording}
 					disabled={isLoading}
-					class="btn btn-sm btn-square btn-ghost self-end mb-1 {isRecording ? 'text-error animate-pulse' : ''}"
+					class="btn btn-sm btn-square self-end mb-1 {voiceMode ? 'btn-error animate-pulse' : 'btn-ghost'}"
+					title={voiceMode ? 'Exit voice mode (Esc)' : 'Enter voice mode'}
 				>
-					{#if isRecording}
+					{#if voiceMode}
 						<MicOff class="w-4 h-4" />
 					{:else}
 						<Mic class="w-4 h-4" />
 					{/if}
 				</button>
+				<div class="dropdown dropdown-top dropdown-end self-end mb-1">
+				<button
+					type="button"
+					tabindex="0"
+					class="btn btn-sm btn-square {voiceOutputEnabled ? 'btn-success' : 'btn-ghost'} {isSpeaking ? 'animate-pulse' : ''}"
+					title="Voice output settings"
+				>
+					{#if voiceOutputEnabled}
+						<Volume2 class="w-4 h-4" />
+					{:else}
+						<VolumeOff class="w-4 h-4" />
+					{/if}
+				</button>
+				<div tabindex="0" class="dropdown-content z-50 menu p-3 shadow-lg bg-base-200 rounded-box w-52 mb-2">
+					<div class="flex items-center justify-between mb-3">
+						<span class="text-sm font-medium">Voice Output</span>
+						<input
+							type="checkbox"
+							class="toggle toggle-success toggle-sm"
+							checked={voiceOutputEnabled}
+							onchange={toggleVoiceOutput}
+						/>
+					</div>
+					{#if voiceOutputEnabled}
+						<div class="form-control">
+							<label class="label py-1">
+								<span class="label-text text-xs">Voice</span>
+							</label>
+							<select
+								class="select select-bordered select-sm w-full"
+								bind:value={ttsVoice}
+							>
+								{#each ttsVoices as voice}
+									<option value={voice}>{voice.charAt(0).toUpperCase() + voice.slice(1)}</option>
+								{/each}
+							</select>
+						</div>
+						{#if isSpeaking}
+							<button
+								type="button"
+								class="btn btn-sm btn-error mt-3"
+								onclick={stopSpeaking}
+							>
+								Stop Speaking
+							</button>
+						{/if}
+					{/if}
+				</div>
+			</div>
 				<button
 					type="button"
 					onclick={sendMessage}
@@ -749,12 +993,18 @@
 				<p class="text-xs text-base-content/40">
 					{#if recordingError}
 						<span class="text-error">{recordingError}</span>
-					{:else if isRecording}
-						<span class="text-error">Recording... Click mic to stop and review</span>
+					{:else if voiceMode && isRecording}
+						<span class="text-error">Voice mode: Listening... (pause to send, Esc to exit)</span>
+					{:else if voiceMode}
+						<span class="text-warning">Voice mode: Starting...</span>
+					{:else if isSpeaking}
+						<span class="text-success">Speaking response...</span>
 					{:else if messageQueue.length > 0}
 						<span class="text-info">{messageQueue.length} message{messageQueue.length > 1 ? 's' : ''} queued</span>
 					{:else if isLoading}
 						<span>Type to queue your next message</span>
+					{:else if voiceOutputEnabled}
+						<span class="text-success">Voice output enabled (ElevenLabs)</span>
 					{:else}
 						Press Enter to send, Shift+Enter for new line
 					{/if}

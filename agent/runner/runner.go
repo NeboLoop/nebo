@@ -324,8 +324,13 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 		hasToolCalls := false
 		var assistantContent strings.Builder
 		var toolCalls []session.ToolCall
+		eventCount := 0
 
+		fmt.Printf("[Runner] Starting to consume events from stream...\n")
 		for event := range events {
+			eventCount++
+			fmt.Printf("[Runner] Event #%d: type=%s text_len=%d\n", eventCount, event.Type, len(event.Text))
+
 			// Forward event to caller
 			resultCh <- event
 
@@ -342,9 +347,12 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 				})
 
 			case ai.EventTypeError:
+				fmt.Printf("[Runner] Error event received: %v\n", event.Error)
 				return
 			}
 		}
+		fmt.Printf("[Runner] Finished consuming %d events, content_len=%d, tool_calls=%d\n",
+			eventCount, assistantContent.Len(), len(toolCalls))
 
 		// Save assistant message
 		if assistantContent.Len() > 0 || len(toolCalls) > 0 {

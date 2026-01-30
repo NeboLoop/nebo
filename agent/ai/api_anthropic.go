@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"gobot/agent/session"
@@ -18,6 +19,15 @@ const (
 	anthropicAPIVersion = "2023-06-01"
 	defaultMaxTokens    = 8192
 )
+
+// debugAI enables verbose AI request/response logging
+var debugAI = os.Getenv("GOBOT_DEBUG_AI") != ""
+
+func logDebug(format string, args ...interface{}) {
+	if debugAI {
+		fmt.Printf("[AI DEBUG] "+format+"\n", args...)
+	}
+}
 
 // AnthropicProvider implements the Anthropic Claude API
 type AnthropicProvider struct {
@@ -51,6 +61,11 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// Always log key request info for debugging
+	fmt.Printf("[Anthropic] Sending request to %s\n", anthropicAPIURL)
+	fmt.Printf("[Anthropic] Model: %v, Messages: %d, HasTools: %v\n",
+		anthropicReq["model"], len(req.Messages), len(req.Tools) > 0)
+
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", anthropicAPIURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -62,12 +77,15 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
+		fmt.Printf("[Anthropic] Request error: %v\n", err)
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
+	fmt.Printf("[Anthropic] Response: %d %s\n", resp.StatusCode, resp.Status)
 
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("[Anthropic] Error body: %s\n", string(body))
 		return nil, parseAnthropicError(resp.StatusCode, body)
 	}
 
@@ -211,13 +229,16 @@ func (p *AnthropicProvider) streamResponse(ctx context.Context, resp *http.Respo
 	defer close(events)
 	defer resp.Body.Close()
 
+	logDebug("Anthropic starting stream response parsing...")
 	reader := bufio.NewReader(resp.Body)
 	var currentToolCall *ToolCall
 	var inputBuffer strings.Builder
+	eventCount := 0
 
 	for {
 		select {
 		case <-ctx.Done():
+			logDebug("Anthropic stream: context cancelled")
 			events <- StreamEvent{Type: EventTypeError, Error: ctx.Err()}
 			return
 		default:
@@ -226,8 +247,10 @@ func (p *AnthropicProvider) streamResponse(ctx context.Context, resp *http.Respo
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
+				logDebug("Anthropic stream: EOF after %d events", eventCount)
 				break
 			}
+			logDebug("Anthropic stream read error: %v", err)
 			events <- StreamEvent{Type: EventTypeError, Error: err}
 			return
 		}
@@ -239,13 +262,18 @@ func (p *AnthropicProvider) streamResponse(ctx context.Context, resp *http.Respo
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			logDebug("Anthropic stream: received [DONE]")
 			break
 		}
 
 		var event anthropicStreamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			logDebug("Anthropic stream: failed to parse event: %v", err)
 			continue
 		}
+
+		eventCount++
+		logDebug("Anthropic stream event #%d: type=%s", eventCount, event.Type)
 
 		switch event.Type {
 		case "content_block_start":

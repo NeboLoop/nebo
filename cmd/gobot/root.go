@@ -143,6 +143,7 @@ func RunAll() {
 			ChannelManager: channelMgr,
 			Database:       database.GetDB(),
 			Quiet:          true,
+			Dangerously:    dangerouslyAll,
 		}
 		if err := runAgentLoopWithOptions(ctx, agentCfg, serverURL, agentOpts); err != nil {
 			fmt.Printf("[AgentLoop] Error: %v\n", err)
@@ -176,13 +177,15 @@ func RunAll() {
 					}
 
 					prompt := daemon.FormatHeartbeatPrompt(tasks)
+					// Use unique session key each time to avoid accumulating history
+					sessionKey := fmt.Sprintf("heartbeat-%d", time.Now().UnixNano())
 					frame := &agenthub.Frame{
 						Type:   "req",
-						ID:     fmt.Sprintf("heartbeat-%d", time.Now().UnixNano()),
+						ID:     sessionKey,
 						Method: "run",
 						Params: map[string]any{
 							"prompt":      prompt,
-							"session_key": "heartbeat",
+							"session_key": sessionKey,
 						},
 					}
 					return agentHub.SendToAgent(agent.ID, frame)

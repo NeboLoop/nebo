@@ -316,6 +316,7 @@ type ListExtensionsResponse struct {
 type ListModelsResponse struct {
 	Models        map[string][]ModelInfo `json:"models"`
 	TaskRouting   *TaskRouting           `json:"taskRouting,omitempty"`
+	Aliases       []ModelAlias           `json:"aliases,omitempty"`
 	AvailableCLIs *CLIAvailability       `json:"availableCLIs,omitempty"`
 }
 
@@ -354,12 +355,19 @@ type MessageResponse struct {
 	Message string `json:"message"`
 }
 
+type ModelAlias struct {
+	Alias   string `json:"alias"`
+	ModelId string `json:"modelId"`
+}
+
 type ModelInfo struct {
 	Id            string        `json:"id"`
 	DisplayName   string        `json:"displayName"`
 	ContextWindow int           `json:"contextWindow,omitempty"`
 	Pricing       *ModelPricing `json:"pricing,omitempty"`
 	Capabilities  []string      `json:"capabilities,omitempty"`
+	Kind          []string      `json:"kind,omitempty"`
+	Preferred     bool          `json:"preferred,omitempty"`
 	IsActive      bool          `json:"isActive"`
 }
 
@@ -467,6 +475,7 @@ type SimpleAgentStatusResponse struct {
 
 type TaskRouting struct {
 	Vision    string              `json:"vision,omitempty"`
+	Audio     string              `json:"audio,omitempty"`
 	Reasoning string              `json:"reasoning,omitempty"`
 	Code      string              `json:"code,omitempty"`
 	General   string              `json:"general,omitempty"`
@@ -481,12 +490,6 @@ type TestAuthProfileResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Model   string `json:"model,omitempty"`
-}
-
-type ToggleModelRequest struct {
-	Provider string `path:"provider"`
-	ModelId  string `path:"modelId"`
-	Active   bool   `json:"active"`
 }
 
 type ToggleSkillRequest struct {
@@ -520,6 +523,14 @@ type UpdateChatRequest struct {
 	Title string `json:"title"`
 }
 
+type UpdateModelRequest struct {
+	Provider  string   `path:"provider"`
+	ModelId   string   `path:"modelId"`
+	Active    *bool    `json:"active,optional"`
+	Kind      []string `json:"kind,optional"`
+	Preferred *bool    `json:"preferred,optional"`
+}
+
 type UpdatePersonalityRequest struct {
 	Content string `json:"content"`
 }
@@ -538,10 +549,12 @@ type UpdatePreferencesRequest struct {
 
 type UpdateTaskRoutingRequest struct {
 	Vision    string              `json:"vision,omitempty"`
+	Audio     string              `json:"audio,omitempty"`
 	Reasoning string              `json:"reasoning,omitempty"`
 	Code      string              `json:"code,omitempty"`
 	General   string              `json:"general,omitempty"`
 	Fallbacks map[string][]string `json:"fallbacks,omitempty"`
+	Aliases   []ModelAlias        `json:"aliases,omitempty"`
 }
 
 type UpdateUserRequest struct {

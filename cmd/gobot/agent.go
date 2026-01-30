@@ -120,6 +120,7 @@ type AgentOptions struct {
 	ChannelManager *channels.Manager
 	Database       *sql.DB
 	Quiet          bool // Suppress console output for clean CLI
+	Dangerously    bool // Bypass all tool approval prompts
 }
 
 // runAgentLoop connects to the server as an agent (used by runAll)
@@ -161,17 +162,30 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		fmt.Fprintln(os.Stderr, "Warning: No AI providers configured. Tasks requiring AI will fail.")
 	}
 
+	// In dangerously mode, use "full" policy level to bypass all approvals
+	policyLevel := cfg.Policy.Level
+	if opts.Dangerously {
+		policyLevel = "full"
+	}
+
 	policy := tools.NewPolicyFromConfig(
-		cfg.Policy.Level,
+		policyLevel,
 		cfg.Policy.AskMode,
 		cfg.Policy.Allowlist,
 	)
 
 	var approvalCounter int64
-	policy.ApprovalCallback = func(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
-		approvalCounter++
-		requestID := fmt.Sprintf("approval-%d-%d", time.Now().UnixNano(), approvalCounter)
-		return state.requestApproval(ctx, requestID, toolName, input)
+	if opts.Dangerously {
+		// Auto-approve everything in dangerous mode
+		policy.ApprovalCallback = func(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
+			return true, nil
+		}
+	} else {
+		policy.ApprovalCallback = func(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
+			approvalCounter++
+			requestID := fmt.Sprintf("approval-%d-%d", time.Now().UnixNano(), approvalCounter)
+			return state.requestApproval(ctx, requestID, toolName, input)
+		}
 	}
 
 	registry := tools.NewRegistry(policy)

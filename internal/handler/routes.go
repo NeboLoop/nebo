@@ -95,6 +95,12 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: auth.GetAuthConfigHandler(serverCtx),
 			},
 			{
+				// Dev auto-login (local development only)
+				Method:  http.MethodGet,
+				Path:    "/auth/dev-login",
+				Handler: auth.DevLoginHandler(serverCtx),
+			},
+			{
 				// Request password reset
 				Method:  http.MethodPost,
 				Path:    "/auth/forgot-password",
@@ -313,10 +319,10 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: provider.ListModelsHandler(serverCtx),
 			},
 			{
-				// Toggle model active status
+				// Update model settings (active, kind, preferred)
 				Method:  http.MethodPut,
 				Path:    "/models/:provider/:modelId",
-				Handler: provider.ToggleModelHandler(serverCtx),
+				Handler: provider.UpdateModelHandler(serverCtx),
 			},
 			{
 				// Update task routing configuration

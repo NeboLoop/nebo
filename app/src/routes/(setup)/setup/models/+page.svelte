@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { listModels, toggleModel } from '$lib/api';
+	import { listModels, updateModel } from '$lib/api';
 	import type { ModelInfo } from '$lib/api/gobotComponents';
 	import { setup } from '$lib/stores/setup.svelte';
 	import { StepCard, StepNavigation } from '$lib/components/setup';
@@ -41,7 +41,7 @@
 		const modelKey = `${providerType}-${model.id}`;
 		togglingModel = modelKey;
 		try {
-			await toggleModel({}, { active: !model.isActive }, providerType, model.id);
+			await updateModel({}, { active: !model.isActive }, providerType, model.id);
 			await loadModels();
 		} catch (e: unknown) {
 			error = e instanceof Error ? e.message : 'Failed to update model';

@@ -237,6 +237,10 @@ service gobot {
 	@doc "Get auth configuration (OAuth providers enabled)"
 	@handler GetAuthConfig
 	get /auth/config returns (AuthConfigResponse)
+
+	@doc "Dev auto-login (local development only)"
+	@handler DevLogin
+	get /auth/dev-login returns (LoginResponse)
 }
 
 @server (
@@ -613,9 +617,15 @@ type TestAuthProfileResponse {
 // =====================================================
 // MODELS TYPES
 // =====================================================
+type ModelAlias {
+	Alias   string `json:"alias"`
+	ModelId string `json:"modelId"`
+}
+
 type ListModelsResponse {
 	Models        map[string][]ModelInfo `json:"models"`
 	TaskRouting   *TaskRouting           `json:"taskRouting,omitempty"`
+	Aliases       []ModelAlias           `json:"aliases,omitempty"`
 	AvailableCLIs *CLIAvailability       `json:"availableCLIs,omitempty"`
 }
 
@@ -627,6 +637,7 @@ type CLIAvailability {
 
 type TaskRouting {
 	Vision    string              `json:"vision,omitempty"`
+	Audio     string              `json:"audio,omitempty"`
 	Reasoning string              `json:"reasoning,omitempty"`
 	Code      string              `json:"code,omitempty"`
 	General   string              `json:"general,omitempty"`
@@ -645,21 +656,27 @@ type ModelInfo {
 	ContextWindow int           `json:"contextWindow,omitempty"`
 	Pricing       *ModelPricing `json:"pricing,omitempty"`
 	Capabilities  []string      `json:"capabilities,omitempty"`
+	Kind          []string      `json:"kind,omitempty"`
+	Preferred     bool          `json:"preferred,omitempty"`
 	IsActive      bool          `json:"isActive"`
 }
 
-type ToggleModelRequest {
-	Provider string `path:"provider"`
-	ModelId  string `path:"modelId"`
-	Active   bool   `json:"active"`
+type UpdateModelRequest {
+	Provider  string   `path:"provider"`
+	ModelId   string   `path:"modelId"`
+	Active    *bool    `json:"active,optional"`
+	Kind      []string `json:"kind,optional"`
+	Preferred *bool    `json:"preferred,optional"`
 }
 
 type UpdateTaskRoutingRequest {
 	Vision    string              `json:"vision,omitempty"`
+	Audio     string              `json:"audio,omitempty"`
 	Reasoning string              `json:"reasoning,omitempty"`
 	Code      string              `json:"code,omitempty"`
 	General   string              `json:"general,omitempty"`
 	Fallbacks map[string][]string `json:"fallbacks,omitempty"`
+	Aliases   []ModelAlias        `json:"aliases,omitempty"`
 }
 
 // =====================================================
@@ -682,9 +699,9 @@ service gobot {
 	@handler ListModels
 	get /models returns (ListModelsResponse)
 
-	@doc "Toggle model active status"
-	@handler ToggleModel
-	put /models/:provider/:modelId (ToggleModelRequest) returns (MessageResponse)
+	@doc "Update model settings (active, kind, preferred)"
+	@handler UpdateModel
+	put /models/:provider/:modelId (UpdateModelRequest) returns (MessageResponse)
 
 	@doc "Update task routing configuration"
 	@handler UpdateTaskRouting

@@ -37,6 +37,9 @@ func (l *UpdateTaskRoutingLogic) UpdateTaskRouting(req *types.UpdateTaskRoutingR
 	if req.Vision != "" {
 		config.TaskRouting.Vision = req.Vision
 	}
+	if req.Audio != "" {
+		config.TaskRouting.Audio = req.Audio
+	}
 	if req.Reasoning != "" {
 		config.TaskRouting.Reasoning = req.Reasoning
 	}
@@ -48,6 +51,17 @@ func (l *UpdateTaskRoutingLogic) UpdateTaskRouting(req *types.UpdateTaskRoutingR
 	}
 	if req.Fallbacks != nil {
 		config.TaskRouting.Fallbacks = req.Fallbacks
+	}
+
+	// Update aliases if provided
+	if req.Aliases != nil {
+		config.Aliases = make([]provider.ModelAlias, len(req.Aliases))
+		for i, a := range req.Aliases {
+			config.Aliases[i] = provider.ModelAlias{
+				Alias:   a.Alias,
+				ModelId: a.ModelId,
+			}
+		}
 	}
 
 	// Save to YAML

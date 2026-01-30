@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Cpu, Eye, Code, Brain, Sparkles, Terminal } from 'lucide-svelte';
+	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Cpu, Eye, Code, Brain, Sparkles, Terminal, Tag, Volume2, Star } from 'lucide-svelte';
 	import * as api from '$lib/api/gobot';
 	import type * as components from '$lib/api/gobotComponents';
 	import Card from '$lib/components/ui/Card.svelte';
@@ -13,6 +13,7 @@
 	let providers = $state<components.AuthProfile[]>([]);
 	let models = $state<{ [key: string]: components.ModelInfo[] }>({});
 	let taskRouting = $state<components.TaskRouting | null>(null);
+	let aliases = $state<components.ModelAlias[]>([]);
 	let availableCLIs = $state<components.CLIAvailability | null>(null);
 	let error = $state('');
 	let testingId = $state<string | null>(null);
@@ -33,11 +34,41 @@
 	let showRoutingConfig = $state(false);
 	let routingForm = $state({
 		vision: '',
+		audio: '',
 		reasoning: '',
 		code: '',
 		general: ''
 	});
 	let isSavingRouting = $state(false);
+
+	// Aliases editing
+	let showAliasesConfig = $state(false);
+	let aliasesForm = $state<{ alias: string; modelId: string }[]>([]);
+	let isSavingAliases = $state(false);
+
+	// CLI Provider modal
+	let showCLIModal = $state(false);
+	let selectedCLI = $state<{ id: string; name: string; command: string; installHint: string } | null>(null);
+
+	const cliProviderInfo: { [key: string]: { id: string; name: string; command: string; installHint: string } } = {
+		claude: { id: 'claude-cli', name: 'Claude Code', command: 'claude', installHint: 'brew install claude-code' },
+		codex: { id: 'codex-cli', name: 'Codex CLI', command: 'codex', installHint: 'npm i -g @openai/codex' },
+		gemini: { id: 'gemini-cli', name: 'Gemini CLI', command: 'gemini', installHint: 'npm i -g @google/gemini-cli' }
+	};
+
+	function openCLIModal(cliKey: string) {
+		selectedCLI = cliProviderInfo[cliKey];
+		showCLIModal = true;
+	}
+
+	function closeCLIModal() {
+		showCLIModal = false;
+		selectedCLI = null;
+	}
+
+	function getCLIModels(cliId: string): components.ModelInfo[] {
+		return models[cliId] || [];
+	}
 
 	const providerOptions = [
 		{ value: 'anthropic', label: 'Anthropic (Claude)' },
@@ -68,16 +99,20 @@
 			const response = await api.listModels();
 			models = response.models || {};
 			taskRouting = response.taskRouting || null;
+			aliases = response.aliases || [];
 			availableCLIs = response.availableCLIs || null;
 			// Initialize routing form with current values
 			if (taskRouting) {
 				routingForm = {
 					vision: taskRouting.vision || '',
+					audio: taskRouting.audio || '',
 					reasoning: taskRouting.reasoning || '',
 					code: taskRouting.code || '',
 					general: taskRouting.general || ''
 				};
 			}
+			// Initialize aliases form
+			aliasesForm = aliases.map((a) => ({ alias: a.alias, modelId: a.modelId }));
 		} catch (err: any) {
 			console.error('Failed to load models:', err);
 		}
@@ -88,6 +123,7 @@
 		try {
 			await api.updateTaskRouting({
 				vision: routingForm.vision || undefined,
+				audio: routingForm.audio || undefined,
 				reasoning: routingForm.reasoning || undefined,
 				code: routingForm.code || undefined,
 				general: routingForm.general || undefined
@@ -99,6 +135,31 @@
 		} finally {
 			isSavingRouting = false;
 		}
+	}
+
+	async function saveAliases() {
+		isSavingAliases = true;
+		try {
+			// Filter out empty aliases
+			const validAliases = aliasesForm.filter((a) => a.alias.trim() && a.modelId);
+			await api.updateTaskRouting({
+				aliases: validAliases
+			});
+			await loadModels();
+			showAliasesConfig = false;
+		} catch (err: any) {
+			error = err?.message || 'Failed to save aliases';
+		} finally {
+			isSavingAliases = false;
+		}
+	}
+
+	function addAlias() {
+		aliasesForm = [...aliasesForm, { alias: '', modelId: '' }];
+	}
+
+	function removeAlias(index: number) {
+		aliasesForm = aliasesForm.filter((_, i) => i !== index);
 	}
 
 	// Get all available model options for dropdowns
@@ -153,7 +214,32 @@
 
 	async function toggleModel(providerType: string, model: components.ModelInfo) {
 		try {
-			await api.toggleModel({}, { active: !model.isActive }, providerType, model.id);
+			await api.updateModel({}, { active: !model.isActive }, providerType, model.id);
+			await loadModels();
+		} catch (err: any) {
+			error = err?.message || 'Failed to update model';
+		}
+	}
+
+	async function togglePreferred(providerType: string, model: components.ModelInfo) {
+		try {
+			await api.updateModel({}, { preferred: !model.preferred }, providerType, model.id);
+			await loadModels();
+		} catch (err: any) {
+			error = err?.message || 'Failed to update model';
+		}
+	}
+
+	// Available kind options
+	const kindOptions = ['fast', 'smart', 'code', 'cheap', 'reason', 'local', 'default'];
+
+	async function toggleKind(providerType: string, model: components.ModelInfo, kind: string) {
+		const currentKinds = model.kind || [];
+		const newKinds = currentKinds.includes(kind)
+			? currentKinds.filter((k) => k !== kind)
+			: [...currentKinds, kind];
+		try {
+			await api.updateModel({}, { kind: newKinds }, providerType, model.id);
 			await loadModels();
 		} catch (err: any) {
 			error = err?.message || 'Failed to update model';
@@ -400,15 +486,29 @@
 									{#each providerModels as model (model.id)}
 										<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
 											<div class="flex-1">
-												<div class="flex items-center gap-2 flex-wrap">
+												<div class="flex items-center gap-2">
+													<button
+														type="button"
+														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
+														onclick={() => togglePreferred(provider.provider, model)}
+														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
+													>
+														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
+													</button>
 													<p class="font-medium text-sm text-base-content">{model.displayName}</p>
-													{#if model.capabilities && model.capabilities.length > 0}
-														<div class="flex gap-1 flex-wrap">
-															{#each model.capabilities as cap}
-																<span class="badge badge-xs {getCapabilityColor(cap)}">{cap}</span>
-															{/each}
-														</div>
-													{/if}
+												</div>
+												<div class="flex gap-2 flex-wrap mt-1">
+													{#each kindOptions as kind}
+														<label class="flex items-center gap-1 cursor-pointer">
+															<input
+																type="checkbox"
+																class="checkbox checkbox-xs checkbox-primary"
+																checked={(model.kind || []).includes(kind)}
+																onchange={() => toggleKind(provider.provider, model, kind)}
+															/>
+															<span class="text-xs text-base-content/70">{kind}</span>
+														</label>
+													{/each}
 												</div>
 												<p class="text-xs text-base-content/50">
 													{model.contextWindow?.toLocaleString() || '?'} tokens
@@ -443,54 +543,189 @@
 
 				<div class="space-y-3">
 					{#if availableCLIs.claude}
-						<div class="flex items-center justify-between py-3 px-4 rounded-lg bg-base-200/30">
-							<div class="flex items-center gap-3">
-								<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
-									<CheckCircle class="w-4 h-4 text-success" />
+						{@const cliModels = getCLIModels('claude-cli')}
+						<div class="border border-base-300 rounded-lg overflow-hidden">
+							<button
+								type="button"
+								class="w-full flex items-center justify-between py-3 px-4 bg-base-200/30 hover:bg-base-200/50 transition-colors cursor-pointer"
+								onclick={() => openCLIModal('claude')}
+							>
+								<div class="flex items-center gap-3">
+									<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
+										<CheckCircle class="w-4 h-4 text-success" />
+									</div>
+									<div class="text-left">
+										<p class="font-medium text-base-content">Claude Code</p>
+										<p class="text-xs text-base-content/60">Anthropic's agentic coding assistant</p>
+									</div>
 								</div>
-								<div>
-									<p class="font-medium text-base-content">Claude Code</p>
-									<p class="text-xs text-base-content/60">Anthropic's agentic coding assistant</p>
+								<span class="badge badge-success badge-sm">Available</span>
+							</button>
+							{#if cliModels.length > 0}
+								<div class="divide-y divide-base-200">
+									{#each cliModels as model (model.id)}
+										<div class="flex items-center justify-between px-4 py-2 bg-base-100">
+											<div class="flex-1">
+												<div class="flex items-center gap-2">
+													<button
+														type="button"
+														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
+														onclick={() => togglePreferred('claude-cli', model)}
+														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
+													>
+														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
+													</button>
+													<p class="font-medium text-sm text-base-content">{model.displayName}</p>
+												</div>
+												<div class="flex gap-2 flex-wrap mt-1">
+													{#each kindOptions as kind}
+														<label class="flex items-center gap-1 cursor-pointer">
+															<input
+																type="checkbox"
+																class="checkbox checkbox-xs checkbox-primary"
+																checked={(model.kind || []).includes(kind)}
+																onchange={() => toggleKind('claude-cli', model, kind)}
+															/>
+															<span class="text-xs text-base-content/70">{kind}</span>
+														</label>
+													{/each}
+												</div>
+											</div>
+											<Toggle
+												checked={model.isActive}
+												onchange={() => toggleModel('claude-cli', model)}
+											/>
+										</div>
+									{/each}
 								</div>
-							</div>
-							<span class="badge badge-success badge-sm">Available</span>
+							{/if}
 						</div>
 					{/if}
 
 					{#if availableCLIs.codex}
-						<div class="flex items-center justify-between py-3 px-4 rounded-lg bg-base-200/30">
-							<div class="flex items-center gap-3">
-								<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
-									<CheckCircle class="w-4 h-4 text-success" />
+						{@const cliModels = getCLIModels('codex-cli')}
+						<div class="border border-base-300 rounded-lg overflow-hidden">
+							<button
+								type="button"
+								class="w-full flex items-center justify-between py-3 px-4 bg-base-200/30 hover:bg-base-200/50 transition-colors cursor-pointer"
+								onclick={() => openCLIModal('codex')}
+							>
+								<div class="flex items-center gap-3">
+									<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
+										<CheckCircle class="w-4 h-4 text-success" />
+									</div>
+									<div class="text-left">
+										<p class="font-medium text-base-content">Codex CLI</p>
+										<p class="text-xs text-base-content/60">OpenAI's coding assistant</p>
+									</div>
 								</div>
-								<div>
-									<p class="font-medium text-base-content">Codex CLI</p>
-									<p class="text-xs text-base-content/60">OpenAI's coding assistant</p>
+								<span class="badge badge-success badge-sm">Available</span>
+							</button>
+							{#if cliModels.length > 0}
+								<div class="divide-y divide-base-200">
+									{#each cliModels as model (model.id)}
+										<div class="flex items-center justify-between px-4 py-2 bg-base-100">
+											<div class="flex-1">
+												<div class="flex items-center gap-2">
+													<button
+														type="button"
+														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
+														onclick={() => togglePreferred('codex-cli', model)}
+														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
+													>
+														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
+													</button>
+													<p class="font-medium text-sm text-base-content">{model.displayName}</p>
+												</div>
+												<div class="flex gap-2 flex-wrap mt-1">
+													{#each kindOptions as kind}
+														<label class="flex items-center gap-1 cursor-pointer">
+															<input
+																type="checkbox"
+																class="checkbox checkbox-xs checkbox-primary"
+																checked={(model.kind || []).includes(kind)}
+																onchange={() => toggleKind('codex-cli', model, kind)}
+															/>
+															<span class="text-xs text-base-content/70">{kind}</span>
+														</label>
+													{/each}
+												</div>
+											</div>
+											<Toggle
+												checked={model.isActive}
+												onchange={() => toggleModel('codex-cli', model)}
+											/>
+										</div>
+									{/each}
 								</div>
-							</div>
-							<span class="badge badge-success badge-sm">Available</span>
+							{/if}
 						</div>
 					{/if}
 
 					{#if availableCLIs.gemini}
-						<div class="flex items-center justify-between py-3 px-4 rounded-lg bg-base-200/30">
-							<div class="flex items-center gap-3">
-								<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
-									<CheckCircle class="w-4 h-4 text-success" />
+						{@const cliModels = getCLIModels('gemini-cli')}
+						<div class="border border-base-300 rounded-lg overflow-hidden">
+							<button
+								type="button"
+								class="w-full flex items-center justify-between py-3 px-4 bg-base-200/30 hover:bg-base-200/50 transition-colors cursor-pointer"
+								onclick={() => openCLIModal('gemini')}
+							>
+								<div class="flex items-center gap-3">
+									<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
+										<CheckCircle class="w-4 h-4 text-success" />
+									</div>
+									<div class="text-left">
+										<p class="font-medium text-base-content">Gemini CLI</p>
+										<p class="text-xs text-base-content/60">Google's coding assistant</p>
+									</div>
 								</div>
-								<div>
-									<p class="font-medium text-base-content">Gemini CLI</p>
-									<p class="text-xs text-base-content/60">Google's coding assistant</p>
+								<span class="badge badge-success badge-sm">Available</span>
+							</button>
+							{#if cliModels.length > 0}
+								<div class="divide-y divide-base-200">
+									{#each cliModels as model (model.id)}
+										<div class="flex items-center justify-between px-4 py-2 bg-base-100">
+											<div class="flex-1">
+												<div class="flex items-center gap-2">
+													<button
+														type="button"
+														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
+														onclick={() => togglePreferred('gemini-cli', model)}
+														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
+													>
+														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
+													</button>
+													<p class="font-medium text-sm text-base-content">{model.displayName}</p>
+												</div>
+												<div class="flex gap-2 flex-wrap mt-1">
+													{#each kindOptions as kind}
+														<label class="flex items-center gap-1 cursor-pointer">
+															<input
+																type="checkbox"
+																class="checkbox checkbox-xs checkbox-primary"
+																checked={(model.kind || []).includes(kind)}
+																onchange={() => toggleKind('gemini-cli', model, kind)}
+															/>
+															<span class="text-xs text-base-content/70">{kind}</span>
+														</label>
+													{/each}
+												</div>
+											</div>
+											<Toggle
+												checked={model.isActive}
+												onchange={() => toggleModel('gemini-cli', model)}
+											/>
+										</div>
+									{/each}
 								</div>
-							</div>
-							<span class="badge badge-success badge-sm">Available</span>
+							{/if}
 						</div>
 					{/if}
 				</div>
 
 				<div class="mt-4 p-3 bg-base-200/50 rounded-lg">
 					<p class="text-xs text-base-content/70">
-						CLI providers are configured in <code class="text-accent">~/.gobot/models.yaml</code> under the <code class="text-accent">credentials</code> section.
+						CLI providers are automatically detected. Click on a provider to configure it.
 					</p>
 				</div>
 			</Card>
@@ -514,13 +749,20 @@
 			</div>
 
 			{#if !showRoutingConfig && taskRouting}
-				<div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+				<div class="grid grid-cols-2 md:grid-cols-5 gap-3">
 					<div class="bg-base-200/50 rounded-lg p-3">
 						<div class="flex items-center gap-2 mb-1">
 							<Eye class="w-4 h-4 text-info" />
 							<span class="text-xs font-medium text-base-content/70">Vision</span>
 						</div>
 						<p class="text-sm text-base-content truncate">{taskRouting.vision || 'Auto'}</p>
+					</div>
+					<div class="bg-base-200/50 rounded-lg p-3">
+						<div class="flex items-center gap-2 mb-1">
+							<Volume2 class="w-4 h-4 text-warning" />
+							<span class="text-xs font-medium text-base-content/70">Audio</span>
+						</div>
+						<p class="text-sm text-base-content truncate">{taskRouting.audio || 'Auto'}</p>
 					</div>
 					<div class="bg-base-200/50 rounded-lg p-3">
 						<div class="flex items-center gap-2 mb-1">
@@ -562,6 +804,20 @@
 								{/each}
 							</select>
 							<p class="text-xs text-base-content/50 mt-1">Images, screenshots, visual analysis</p>
+						</div>
+
+						<div>
+							<label for="routing-audio" class="flex items-center gap-2 text-sm font-medium text-base-content mb-1">
+								<Volume2 class="w-4 h-4 text-warning" />
+								Audio Tasks
+							</label>
+							<select id="routing-audio" bind:value={routingForm.audio} class="select select-bordered select-sm w-full">
+								<option value="">Auto (best available)</option>
+								{#each modelOptions as opt}
+									<option value={opt.value}>{opt.label}</option>
+								{/each}
+							</select>
+							<p class="text-xs text-base-content/50 mt-1">Voice, transcription, audio analysis</p>
 						</div>
 
 						<div>
@@ -622,17 +878,176 @@
 			{/if}
 		</Card>
 
+		<!-- Model Aliases Configuration -->
+		<Card>
+			<div class="flex items-center justify-between mb-4">
+				<div class="flex items-center gap-3">
+					<div class="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
+						<Tag class="w-5 h-5 text-accent" />
+					</div>
+					<div>
+						<h3 class="text-lg font-semibold text-base-content">Model Aliases</h3>
+						<p class="text-sm text-base-content/60">Create shortcuts like "fast" → haiku, "smart" → opus</p>
+					</div>
+				</div>
+				<Button type="ghost" size="sm" onclick={() => (showAliasesConfig = !showAliasesConfig)}>
+					{showAliasesConfig ? 'Hide' : 'Configure'}
+				</Button>
+			</div>
+
+			{#if !showAliasesConfig && aliases.length > 0}
+				<div class="flex flex-wrap gap-2">
+					{#each aliases as alias}
+						<div class="badge badge-outline gap-1">
+							<span class="font-medium">{alias.alias}</span>
+							<span class="text-base-content/50">→</span>
+							<span class="text-xs">{alias.modelId.split('/').pop()}</span>
+						</div>
+					{/each}
+				</div>
+			{:else if !showAliasesConfig}
+				<p class="text-sm text-base-content/50">No custom aliases configured. Using defaults.</p>
+			{/if}
+
+			{#if showAliasesConfig}
+				{@const modelOptions = getAllModelOptions()}
+				<div class="space-y-4">
+					<p class="text-sm text-base-content/70">
+						Define shortcuts you can use when switching models. Say "use fast" to switch to your fast model.
+					</p>
+
+					<div class="space-y-2">
+						{#each aliasesForm as aliasEntry, index}
+							<div class="flex items-center gap-2">
+								<input
+									type="text"
+									placeholder="Alias (e.g., fast)"
+									bind:value={aliasEntry.alias}
+									class="input input-bordered input-sm w-32"
+								/>
+								<span class="text-base-content/50">→</span>
+								<select bind:value={aliasEntry.modelId} class="select select-bordered select-sm flex-1">
+									<option value="">Select model...</option>
+									{#each modelOptions as opt}
+										<option value={opt.value}>{opt.label}</option>
+									{/each}
+								</select>
+								<button
+									type="button"
+									class="btn btn-ghost btn-sm btn-square"
+									onclick={() => removeAlias(index)}
+								>
+									<Trash2 class="w-4 h-4" />
+								</button>
+							</div>
+						{/each}
+					</div>
+
+					<Button type="ghost" size="sm" onclick={addAlias}>
+						<Plus class="w-4 h-4" />
+						Add Alias
+					</Button>
+
+					<div class="flex gap-2 justify-end pt-2">
+						<Button type="ghost" size="sm" onclick={() => (showAliasesConfig = false)}>Cancel</Button>
+						<Button type="primary" size="sm" onclick={saveAliases} disabled={isSavingAliases}>
+							{#if isSavingAliases}
+								<Spinner size={16} />
+								Saving...
+							{:else}
+								Save Aliases
+							{/if}
+						</Button>
+					</div>
+				</div>
+			{/if}
+		</Card>
+
 		<!-- Info Card -->
 		<Card>
 			<div class="bg-base-200 rounded-lg p-4">
 				<h4 class="font-medium text-base-content mb-2">How it works</h4>
 				<ul class="text-sm text-base-content/70 space-y-1 list-disc list-inside">
 					<li>Toggle models on/off to control what GoBot can use</li>
-					<li>GoBot automatically picks the best model for each task type</li>
-					<li>Configure task routing to use specific models for vision, code, or reasoning</li>
-					<li>If one provider fails, GoBot falls back to the next</li>
+					<li>Use checkboxes to set <span class="badge badge-xs badge-primary badge-outline">kind</span> tags like fast, smart, code, cheap</li>
+					<li>Click <Star class="w-3 h-3 text-warning fill-warning inline" /> to mark your preferred model for each kind</li>
+					<li>Say "use fast" to switch to your preferred model with that kind</li>
+					<li>If one provider fails, GoBot falls back to other models with the same kind</li>
 				</ul>
 			</div>
 		</Card>
 	{/if}
 </div>
+
+<!-- CLI Provider Configuration Modal -->
+{#if showCLIModal && selectedCLI}
+	{@const cli = selectedCLI}
+	{@const cliModels = getCLIModels(cli.id)}
+	<div class="modal modal-open">
+		<div class="modal-box">
+			<h3 class="font-bold text-lg mb-4">{cli.name} Configuration</h3>
+
+			<div class="space-y-4">
+				<div class="flex items-center gap-3 p-3 bg-base-200 rounded-lg">
+					<Terminal class="w-5 h-5 text-accent" />
+					<div>
+						<p class="font-medium text-sm">Command: <code class="text-accent">{cli.command}</code></p>
+						<p class="text-xs text-base-content/60">Install: {cli.installHint}</p>
+					</div>
+				</div>
+
+				{#if cliModels.length > 0}
+					<div>
+						<h4 class="font-medium text-sm mb-2">Available Models</h4>
+						<div class="space-y-2">
+							{#each cliModels as model (model.id)}
+								<div class="flex items-center justify-between p-3 bg-base-200/50 rounded-lg">
+									<div class="flex-1">
+										<div class="flex items-center gap-2">
+											<button
+												type="button"
+												class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
+												onclick={() => togglePreferred(cli.id, model)}
+												title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
+											>
+												<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
+											</button>
+											<span class="font-medium text-sm">{model.displayName}</span>
+										</div>
+										<div class="flex gap-2 flex-wrap mt-1">
+											{#each kindOptions as kind}
+												<label class="flex items-center gap-1 cursor-pointer">
+													<input
+														type="checkbox"
+														class="checkbox checkbox-xs checkbox-primary"
+														checked={(model.kind || []).includes(kind)}
+														onchange={() => toggleKind(cli.id, model, kind)}
+													/>
+													<span class="text-xs text-base-content/70">{kind}</span>
+												</label>
+											{/each}
+										</div>
+									</div>
+									<Toggle
+										checked={model.isActive}
+										onchange={() => toggleModel(cli.id, model)}
+									/>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{:else}
+					<div class="text-center py-4">
+						<p class="text-sm text-base-content/60">No models configured for this CLI provider.</p>
+						<p class="text-xs text-base-content/50 mt-1">Models are defined in models.yaml</p>
+					</div>
+				{/if}
+			</div>
+
+			<div class="modal-action">
+				<Button type="ghost" onclick={closeCLIModal}>Close</Button>
+			</div>
+		</div>
+		<div class="modal-backdrop" onclick={closeCLIModal}></div>
+	</div>
+{/if}

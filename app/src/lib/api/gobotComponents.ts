@@ -330,6 +330,7 @@ export interface ListExtensionsResponse {
 export interface ListModelsResponse {
 	models: { [key: string]: Array<ModelInfo> }
 	taskRouting?: TaskRouting
+	aliases?: Array<ModelAlias>
 	availableCLIs?: CLIAvailability
 }
 
@@ -371,12 +372,19 @@ export interface MessageResponse {
 	message: string
 }
 
+export interface ModelAlias {
+	alias: string
+	modelId: string
+}
+
 export interface ModelInfo {
 	id: string
 	displayName: string
 	contextWindow?: number
 	pricing?: ModelPricing
 	capabilities?: Array<string>
+	kind?: Array<string>
+	preferred?: boolean
 	isActive: boolean
 }
 
@@ -487,6 +495,7 @@ export interface SimpleAgentStatusResponse {
 
 export interface TaskRouting {
 	vision?: string
+	audio?: string
 	reasoning?: string
 	code?: string
 	general?: string
@@ -502,12 +511,6 @@ export interface TestAuthProfileResponse {
 	success: boolean
 	message: string
 	model?: string
-}
-
-export interface ToggleModelRequest {
-	active: boolean
-}
-export interface ToggleModelRequestParams {
 }
 
 export interface ToggleSkillRequest {
@@ -544,6 +547,14 @@ export interface UpdateChatRequest {
 export interface UpdateChatRequestParams {
 }
 
+export interface UpdateModelRequest {
+	active?: boolean
+	kind?: Array<string>
+	preferred?: boolean
+}
+export interface UpdateModelRequestParams {
+}
+
 export interface UpdatePersonalityRequest {
 	content: string
 }
@@ -562,10 +573,12 @@ export interface UpdatePreferencesRequest {
 
 export interface UpdateTaskRoutingRequest {
 	vision?: string
+	audio?: string
 	reasoning?: string
 	code?: string
 	general?: string
 	fallbacks?: { [key: string]: Array<string> }
+	aliases?: Array<ModelAlias>
 }
 
 export interface UpdateUserRequest {

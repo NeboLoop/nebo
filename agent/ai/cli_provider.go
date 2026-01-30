@@ -289,9 +289,26 @@ func (p *CLIProvider) parseLine(line string) StreamEvent {
 			return StreamEvent{Type: EventTypeText, Text: "[system] " + msg + "\n"}
 		}
 
-	// Assistant message container
+	// Assistant message container - extract text from message.content
 	case "assistant":
-		// Contains full message, but we stream deltas instead
+		if message, ok := data["message"].(map[string]any); ok {
+			if content, ok := message["content"].([]any); ok {
+				var textParts []string
+				for _, block := range content {
+					if blockMap, ok := block.(map[string]any); ok {
+						blockType, _ := blockMap["type"].(string)
+						if blockType == "text" {
+							if text, ok := blockMap["text"].(string); ok {
+								textParts = append(textParts, text)
+							}
+						}
+					}
+				}
+				if len(textParts) > 0 {
+					return StreamEvent{Type: EventTypeText, Text: strings.Join(textParts, "\n")}
+				}
+			}
+		}
 		return StreamEvent{Type: EventTypeText, Text: ""}
 
 	// Message stop

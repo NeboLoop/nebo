@@ -8,10 +8,11 @@ import (
 
 // Shared CLI flags (used across multiple command files)
 var (
-	cfgFile     string
-	sessionKey  string
-	providerArg string
-	verbose     bool
+	cfgFile        string
+	sessionKey     string
+	providerArg    string
+	verbose        bool
+	dangerouslyAll = true // Default to dangerous mode for now (bypass approvals)
 )
 
 // ServerConfig holds the loaded server configuration (set by main)
@@ -37,6 +38,9 @@ Just type 'gobot' to start both the server and agent together.`,
 	rootCmd.PersistentFlags().StringVarP(&sessionKey, "session", "s", "default", "session key for conversation history")
 	rootCmd.PersistentFlags().StringVarP(&providerArg, "provider", "p", "", "provider to use (default: first available)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+
+	// Root-only flags
+	rootCmd.Flags().BoolVar(&dangerouslyAll, "dangerously", false, "100% autonomous mode - bypass ALL tool approval prompts")
 
 	// Add commands
 	rootCmd.AddCommand(ServeCmd())

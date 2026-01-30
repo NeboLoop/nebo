@@ -143,8 +143,9 @@ func (c *Config) Save() error {
 }
 
 // DBPath returns the path to the SQLite database
+// Uses ~/.gobot/data/gobot.db to match the server's database location
 func (c *Config) DBPath() string {
-	return filepath.Join(c.DataDir, "gobot.db")
+	return filepath.Join(c.DataDir, "data", "gobot.db")
 }
 
 // EnsureDataDir creates the data directory if it doesn't exist

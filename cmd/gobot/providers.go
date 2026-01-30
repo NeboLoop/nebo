@@ -17,7 +17,13 @@ var _ = agentcfg.Config{} // silence unused import if needed
 func createProviders(cfg *agentcfg.Config) []ai.Provider {
 	var providers []ai.Provider
 
-	// First, try to load from database auth profiles (UI-configured keys)
+	// First priority: Claude Code CLI if available
+	if ai.CheckCLIAvailable("claude") {
+		providers = append(providers, ai.NewClaudeCodeProvider())
+		fmt.Println("[Providers] Using Claude Code CLI as primary provider")
+	}
+
+	// Then try to load from database auth profiles (UI-configured keys)
 	dbProviders := loadProvidersFromDB(cfg.DBPath())
 	providers = append(providers, dbProviders...)
 
