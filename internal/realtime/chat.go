@@ -253,8 +253,8 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 	}
 }
 
-// companionUserID is the fixed user ID for standalone/companion mode
-const companionUserID = "companion-default"
+// companionUserIDFallback is used when no user is authenticated (standalone mode)
+const companionUserIDFallback = "companion-default"
 
 // handleRequestIntroduction handles a request for the agent to introduce itself to a new user
 func handleRequestIntroduction(c *Client, msg *Message, chatCtx *ChatContext) {
@@ -343,11 +343,15 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 	// Check if this is companion mode or a new chat (session_id is empty or doesn't exist)
 	if sessionID == "" {
 		if useCompanion {
-			// Companion mode: get or create the single companion chat
+			// Companion mode: get or create the single companion chat for this user
+			userID := c.UserID
+			if userID == "" {
+				userID = companionUserIDFallback
+			}
 			if chatCtx.svcCtx != nil && chatCtx.svcCtx.DB != nil {
 				chat, err := chatCtx.svcCtx.DB.GetOrCreateCompanionChat(ctx, db.GetOrCreateCompanionChatParams{
 					ID:     uuid.New().String(),
-					UserID: sql.NullString{String: companionUserID, Valid: true},
+					UserID: sql.NullString{String: userID, Valid: true},
 				})
 				if err != nil {
 					logging.Errorf("[Chat] Failed to get/create companion chat: %v", err)
