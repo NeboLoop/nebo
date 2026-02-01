@@ -63,9 +63,9 @@ func TestDBPath(t *testing.T) {
 		t.Error("DBPath returned empty string")
 	}
 
-	// Should end with gobot.db
-	if filepath.Base(dbPath) != "gobot.db" {
-		t.Errorf("expected db path to end with gobot.db, got %s", dbPath)
+	// Should end with nebo.db
+	if filepath.Base(dbPath) != "nebo.db" {
+		t.Errorf("expected db path to end with nebo.db, got %s", dbPath)
 	}
 }
 

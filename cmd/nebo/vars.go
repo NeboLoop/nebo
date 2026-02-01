@@ -23,11 +23,11 @@ func SetupRootCmd(c *config.Config) *cobra.Command {
 	ServerConfig = c
 
 	rootCmd := &cobra.Command{
-		Use:   "gobot",
-		Short: "GoBot - AI Assistant",
-		Long: `GoBot is an AI assistant with tool use capabilities for software development and automation.
+		Use:   "nebo",
+		Short: "Nebo - AI Assistant",
+		Long: `Nebo is an AI assistant with tool use capabilities for software development and automation.
 
-Just type 'gobot' to start both the server and agent together.`,
+Just type 'nebo' to start both the server and agent together.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			RunAll()
 		},
@@ -50,6 +50,7 @@ Just type 'gobot' to start both the server and agent together.`,
 	rootCmd.AddCommand(SessionCmd())
 	rootCmd.AddCommand(SkillsCmd())
 	rootCmd.AddCommand(PluginsCmd())
+	rootCmd.AddCommand(CapabilitiesCmd())
 	rootCmd.AddCommand(MessageCmd())
 	rootCmd.AddCommand(DoctorCmd())
 	rootCmd.AddCommand(OnboardCmd())

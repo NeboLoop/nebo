@@ -71,6 +71,9 @@ func RegisterChatHandler(chatCtx *ChatContext) {
 	SetApprovalResponseHandler(func(c *Client, msg *Message) {
 		go chatCtx.handleApprovalResponse(msg)
 	})
+	SetRequestIntroductionHandler(func(c *Client, msg *Message) {
+		go handleRequestIntroduction(c, msg, chatCtx)
+	})
 }
 
 // handleApprovalRequest forwards an approval request from agent to all connected clients
@@ -253,6 +256,67 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 // companionUserID is the fixed user ID for standalone/companion mode
 const companionUserID = "companion-default"
 
+// handleRequestIntroduction handles a request for the agent to introduce itself to a new user
+func handleRequestIntroduction(c *Client, msg *Message, chatCtx *ChatContext) {
+	sessionID, _ := msg.Data["session_id"].(string)
+
+	logging.Infof("[Chat] *** INTRODUCTION REQUESTED *** session=%s user=%s", sessionID, c.UserID)
+	fmt.Printf("[Chat] *** INTRODUCTION REQUESTED *** session=%s user=%s\n", sessionID, c.UserID)
+
+	if chatCtx.hub == nil {
+		sendChatError(c, sessionID, "Agent hub not initialized")
+		return
+	}
+
+	// Find any connected agent
+	agent := chatCtx.hub.GetAnyAgent()
+	if agent == nil {
+		sendChatError(c, sessionID, "No agent connected. Make sure nebo is running.")
+		return
+	}
+
+	// Create request and track it
+	requestID := fmt.Sprintf("intro-%d", time.Now().UnixNano())
+
+	chatCtx.pendingMu.Lock()
+	chatCtx.pending[requestID] = &pendingRequest{
+		client:          c,
+		sessionID:       sessionID,
+		userID:          c.UserID,
+		prompt:          "__introduction__", // Marker to distinguish from title generation
+		createdAt:       time.Now(),
+		streamedContent: "",
+		isNewChat:       false,
+	}
+	logging.Infof("[Chat] Registered pending introduction request: %s for session %s", requestID, sessionID)
+	chatCtx.pendingMu.Unlock()
+
+	// Send introduction request to the agent
+	// The agent will check if this user needs introduction and respond appropriately
+	frame := &agenthub.Frame{
+		Type:   "req",
+		ID:     requestID,
+		Method: "introduce",
+		Params: map[string]any{
+			"session_key": sessionID,
+			"user_id":     c.UserID,
+		},
+	}
+
+	if err := chatCtx.hub.SendToAgent(agent.ID, frame); err != nil {
+		// Remove from pending on error
+		chatCtx.pendingMu.Lock()
+		delete(chatCtx.pending, requestID)
+		chatCtx.pendingMu.Unlock()
+
+		logging.Errorf("[Chat] Failed to send introduction request to agent: %v", err)
+		sendChatError(c, sessionID, "Failed to communicate with agent: "+err.Error())
+		return
+	}
+
+	logging.Infof("[Chat] Sent introduction request to agent %s (request: %s)", agent.ID, requestID)
+}
+
 // handleChatMessage processes a chat message by routing to connected agent
 func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 	sessionID, _ := msg.Data["session_id"].(string)
@@ -269,7 +333,7 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 	// Find any connected agent
 	agent := chatCtx.hub.GetAnyAgent()
 	if agent == nil {
-		sendChatError(c, sessionID, "No agent connected. Make sure gobot is running.")
+		sendChatError(c, sessionID, "No agent connected. Make sure nebo is running.")
 		return
 	}
 
@@ -368,6 +432,7 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 		Params: map[string]any{
 			"session_key": sessionID,
 			"prompt":      prompt,
+			"user_id":     c.UserID, // Thread user_id to agent for user-scoped operations
 		},
 	}
 

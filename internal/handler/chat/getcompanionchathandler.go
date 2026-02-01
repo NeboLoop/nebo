@@ -9,13 +9,14 @@ import (
 	"nebo/internal/db"
 	"nebo/internal/httputil"
 	"nebo/internal/logging"
+	"nebo/internal/middleware"
 	"nebo/internal/svc"
 	"nebo/internal/types"
 
 	"github.com/google/uuid"
 )
 
-const companionUserID = "companion-default"
+const companionUserIDFallback = "companion-default"
 const defaultContextMessageLimit = 50 // Number of recent messages to load for context
 
 // Get companion chat (auto-creates if needed)
@@ -23,9 +24,11 @@ func GetCompanionChatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		// For now, use a fixed user ID for standalone mode
-		// In the future, this can be extracted from JWT context
-		userID := companionUserID
+		// Get user ID from JWT context, fall back to default for standalone mode
+		userID := middleware.GetUserID(ctx)
+		if userID == "" {
+			userID = companionUserIDFallback
+		}
 
 		// Get or create the companion chat
 		chat, err := svcCtx.DB.GetOrCreateCompanionChat(ctx, db.GetOrCreateCompanionChatParams{

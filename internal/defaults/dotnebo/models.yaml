@@ -1,0 +1,192 @@
+# Nebo Model Configuration
+# This file defines available AI models and their settings.
+# API keys are stored securely in the database, not here.
+#
+# To add API keys: Settings > Providers in the web UI
+#
+# Provider Types:
+#   - API providers: Require API keys, direct API calls
+#   - CLI providers: Use installed CLI tools (claude, codex, gemini)
+#     No API keys needed - uses your existing account auth
+#
+# CLI providers are auto-detected based on installed tools.
+# To install: brew install claude-code, npm i -g @openai/codex, npm i -g @google/gemini-cli
+#
+# Updated: January 2026 - Latest model IDs
+
+version: "1.0"
+
+# Provider credentials (use environment variables or UI)
+credentials:
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+  openai:
+    api_key: ${OPENAI_API_KEY}
+  google:
+    api_key: ${GOOGLE_API_KEY}
+  deepseek:
+    api_key: ${DEEPSEEK_API_KEY}
+
+# Model selection defaults
+defaults:
+  # Primary provider/model (used first)
+  # Format: "provider/model" or just "provider" (uses provider's default)
+  primary: anthropic/claude-sonnet-4-5-20250929
+
+  # Fallback chain (tried in order if primary fails)
+  fallbacks:
+    - anthropic/claude-haiku-4-5-20251001
+    - claude-code/sonnet # Falls back to CLI if API fails
+    - gemini-cli # Free fallback with 1M context
+
+# Task-based model routing
+# Automatically selects the best model based on the task type
+task_routing:
+  vision: anthropic/claude-sonnet-4-5-20250929
+  audio: openai/gpt-5.2
+  reasoning: anthropic/claude-opus-4-5-20250929
+  code: anthropic/claude-sonnet-4-5-20250929
+  general: anthropic/claude-sonnet-4-5-20250929
+  fallbacks:
+    vision:
+      - anthropic/claude-opus-4-5-20250929
+      - openai/gpt-5.2
+    reasoning:
+      - openai/gpt-5.2-pro
+      - openai/gpt-5.2
+      - anthropic/claude-sonnet-4-5-20250929
+    code:
+      - anthropic/claude-opus-4-5-20250929
+      - openai/codex-mini-latest
+    general:
+      - anthropic/claude-haiku-4-5-20251001
+      - openai/gpt-5-nano
+
+# Available models by provider
+providers:
+  anthropic:
+    - id: claude-sonnet-4-5-20250929
+      displayName: Claude Sonnet 4.5
+      contextWindow: 1000000
+      capabilities: [vision, tools, streaming, code, thinking]
+      pricing:
+        input: 3.0
+        output: 15.0
+        cachedInput: 0.30
+      active: true
+    - id: claude-opus-4-5-20250929
+      displayName: Claude Opus 4.5
+      contextWindow: 1000000
+      capabilities: [vision, tools, streaming, code, reasoning, thinking]
+      pricing:
+        input: 15.0
+        output: 75.0
+        cachedInput: 1.50
+      active: true
+    - id: claude-haiku-4-5-20251001
+      displayName: Claude Haiku 4.5
+      contextWindow: 1000000
+      capabilities: [vision, tools, streaming, code]
+      pricing:
+        input: 0.80
+        output: 4.0
+        cachedInput: 0.08
+      active: true
+
+  openai:
+    - id: gpt-5.2
+      displayName: GPT-5.2
+      contextWindow: 400000
+      maxOutput: 128000
+      capabilities: [vision, tools, streaming, code, reasoning]
+      active: true
+    - id: gpt-5.2-pro
+      displayName: GPT-5.2 Pro
+      contextWindow: 400000
+      maxOutput: 128000
+      capabilities: [vision, tools, streaming, code, reasoning]
+      active: true
+    - id: gpt-5
+      displayName: GPT-5
+      contextWindow: 196000
+      capabilities: [vision, tools, streaming, code, thinking]
+      active: true
+    - id: gpt-5-nano
+      displayName: GPT-5 Nano
+      contextWindow: 128000
+      capabilities: [vision, tools, streaming, code]
+      active: true
+    - id: codex-mini-latest
+      displayName: Codex
+      contextWindow: 256000
+      capabilities: [tools, streaming, code, reasoning]
+      active: true
+
+  google:
+    - id: gemini-3-flash
+      displayName: Gemini 3 Flash
+      contextWindow: 1000000
+      capabilities: [vision, tools, streaming, code]
+      pricing:
+        input: 0.10
+        output: 0.40
+      active: true
+    - id: gemini-3-pro
+      displayName: Gemini 3 Pro
+      contextWindow: 1000000
+      capabilities: [vision, tools, streaming, code, reasoning]
+      pricing:
+        input: 1.25
+        output: 5.00
+      active: true
+    - id: gemini-3-deep-think
+      displayName: Gemini 3 Deep Think
+      contextWindow: 1000000
+      capabilities: [vision, tools, streaming, code, reasoning, thinking]
+      pricing:
+        input: 2.50
+        output: 10.00
+      active: true
+
+  deepseek:
+    - id: deepseek-chat
+      displayName: DeepSeek Chat
+      contextWindow: 128000
+      capabilities: [tools, streaming, code]
+      active: true
+    - id: deepseek-reasoner
+      displayName: DeepSeek Reasoner
+      contextWindow: 128000
+      capabilities: [reasoning, code]
+      active: true
+
+  ollama:
+    - id: llama3.3
+      displayName: Llama 3.3 70B
+      contextWindow: 128000
+      capabilities: [streaming, tools, code]
+      active: true
+    - id: qwen3
+      displayName: Qwen 3
+      contextWindow: 128000
+      capabilities: [streaming, tools, code, reasoning]
+      active: true
+    - id: mistral-small
+      displayName: Mistral Small 3
+      contextWindow: 128000
+      capabilities: [streaming, tools, code]
+      active: true
+    - id: deepseek-r1
+      displayName: DeepSeek R1
+      contextWindow: 128000
+      capabilities: [streaming, reasoning, code]
+      active: true
+
+# ============================================
+# CLI PROVIDERS (no API key required)
+# ============================================
+# These use locally installed CLI tools.
+# Auto-detected: if the command exists in PATH, it's available.
+# Auth: Uses your existing account (Claude subscription, ChatGPT, Google)
+# NOTE: CLI providers are defined in internal/provider/models.go (KnownCLIProviders)
+# They are auto-detected, not configured here.

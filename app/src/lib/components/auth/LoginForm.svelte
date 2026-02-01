@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { validateEmail } from '$lib/utils/validation';
 	import { auth, authError, authLoading } from '$lib/stores';
 	import * as api from '$lib/api/nebo';
@@ -45,11 +46,12 @@
 	const hasOAuth = $derived(googleEnabled || githubEnabled);
 
 	onMount(async () => {
-		// Check if setup is required (no admin exists)
+		// Check if setup is required (no admin exists) - redirect to agent for conversational onboarding
 		try {
 			const status = await api.setupStatus();
 			if (status.setupRequired) {
-				window.location.href = '/setup';
+				// Onboarding now happens conversationally in the agent
+				goto('/agent');
 				return;
 			}
 		} catch {

@@ -51,7 +51,7 @@
 	let selectedCLI = $state<{ id: string; name: string; command: string; installHint: string } | null>(null);
 
 	const cliProviderInfo: { [key: string]: { id: string; name: string; command: string; installHint: string } } = {
-		claude: { id: 'claude-cli', name: 'Claude Code', command: 'claude', installHint: 'brew install claude-code' },
+		claude: { id: 'claude-code', name: 'Claude Code', command: 'claude', installHint: 'brew install claude-code' },
 		codex: { id: 'codex-cli', name: 'Codex CLI', command: 'codex', installHint: 'npm i -g @openai/codex' },
 		gemini: { id: 'gemini-cli', name: 'Gemini CLI', command: 'gemini', installHint: 'npm i -g @google/gemini-cli' }
 	};
@@ -74,8 +74,52 @@
 		{ value: 'anthropic', label: 'Anthropic (Claude)' },
 		{ value: 'openai', label: 'OpenAI (GPT)' },
 		{ value: 'google', label: 'Google (Gemini)' },
+		{ value: 'deepseek', label: 'DeepSeek' },
 		{ value: 'ollama', label: 'Ollama (Local)' }
 	];
+
+	// Merge models.yaml catalog with auth_profiles to show all providers
+	// Shows which are configured (have API key) vs available
+	let allProviders = $derived(() => {
+		const result: {
+			type: string;
+			label: string;
+			configured: boolean;
+			profile: components.AuthProfile | null;
+			models: components.ModelInfo[];
+		}[] = [];
+
+		// Get all provider types from models.yaml
+		const modelProviderTypes = Object.keys(models);
+
+		// Also include providers from providerOptions that may not have models yet
+		const allTypes = new Set([...modelProviderTypes, ...providerOptions.map(p => p.value)]);
+
+		// Skip CLI providers (they're shown separately)
+		const cliProviders = ['claude-code', 'codex-cli', 'gemini-cli'];
+
+		for (const providerType of allTypes) {
+			if (cliProviders.includes(providerType)) continue;
+
+			const label = providerOptions.find(p => p.value === providerType)?.label || providerType;
+			const profile = providers.find(p => p.provider === providerType) || null;
+			const providerModels = models[providerType] || [];
+
+			result.push({
+				type: providerType,
+				label,
+				configured: !!profile,
+				profile,
+				models: providerModels
+			});
+		}
+
+		// Sort: configured first, then alphabetically
+		return result.sort((a, b) => {
+			if (a.configured !== b.configured) return a.configured ? -1 : 1;
+			return a.label.localeCompare(b.label);
+		});
+	});
 
 	onMount(async () => {
 		await Promise.all([loadProviders(), loadModels()]);
@@ -194,7 +238,7 @@
 		testingId = id;
 		testResult = null;
 		try {
-			const response = await api.testAuthProfile({}, id);
+			const response = await api.testAuthProfile(id);
 			testResult = { id, success: response.success, message: response.message };
 		} catch (err: any) {
 			testResult = { id, success: false, message: err?.message || 'Test failed' };
@@ -205,7 +249,7 @@
 
 	async function toggleProvider(provider: components.AuthProfile) {
 		try {
-			await api.updateAuthProfile({}, { isActive: !provider.isActive }, provider.id);
+			await api.updateAuthProfile({ isActive: !provider.isActive }, provider.id);
 			await loadProviders();
 		} catch (err: any) {
 			error = err?.message || 'Failed to update provider';
@@ -214,7 +258,7 @@
 
 	async function toggleModel(providerType: string, model: components.ModelInfo) {
 		try {
-			await api.updateModel({}, { active: !model.isActive }, providerType, model.id);
+			await api.updateModel({ active: !model.isActive }, providerType, model.id);
 			await loadModels();
 		} catch (err: any) {
 			error = err?.message || 'Failed to update model';
@@ -223,7 +267,7 @@
 
 	async function togglePreferred(providerType: string, model: components.ModelInfo) {
 		try {
-			await api.updateModel({}, { preferred: !model.preferred }, providerType, model.id);
+			await api.updateModel({ preferred: !model.preferred }, providerType, model.id);
 			await loadModels();
 		} catch (err: any) {
 			error = err?.message || 'Failed to update model';
@@ -239,7 +283,7 @@
 			? currentKinds.filter((k) => k !== kind)
 			: [...currentKinds, kind];
 		try {
-			await api.updateModel({}, { kind: newKinds }, providerType, model.id);
+			await api.updateModel({ kind: newKinds }, providerType, model.id);
 			await loadModels();
 		} catch (err: any) {
 			error = err?.message || 'Failed to update model';
@@ -249,7 +293,7 @@
 	async function deleteProvider(id: string) {
 		if (!confirm('Are you sure you want to delete this provider?')) return;
 		try {
-			await api.deleteAuthProfile({}, id);
+			await api.deleteAuthProfile(id);
 			await loadProviders();
 		} catch (err: any) {
 			error = err?.message || 'Failed to delete provider';
@@ -401,50 +445,44 @@
 			</Card>
 		{/if}
 
-		<!-- Provider List with Inline Models -->
-		{#if providers.length === 0}
-			<Card>
-				<div class="text-center py-8">
-					<Key class="w-12 h-12 text-base-content/30 mx-auto mb-4" />
-					<h3 class="text-lg font-medium text-base-content mb-2">No providers configured</h3>
-					<p class="text-sm text-base-content/60 mb-4">
-						Add an AI provider to start using Nebo.
-					</p>
-					<Button type="primary" onclick={() => (showAddForm = true)}>
-						<Plus class="w-4 h-4" />
-						Add Your First Provider
-					</Button>
-				</div>
-			</Card>
-		{:else}
-			<div class="space-y-4">
-				{#each providers as provider (provider.id)}
-					{@const providerModels = getProviderModels(provider.provider)}
-					<Card>
-						<!-- Provider Header -->
-						<div class="flex items-center justify-between">
-							<div class="flex items-center gap-4">
-								<div
-									class="w-10 h-10 rounded-lg flex items-center justify-center {provider.isActive
-										? 'bg-success/10'
+		<!-- Provider List - Shows ALL providers from models.yaml -->
+		<div class="space-y-4">
+			{#each allProviders() as prov (prov.type)}
+				<Card>
+					<!-- Provider Header -->
+					<div class="flex items-center justify-between">
+						<div class="flex items-center gap-4">
+							<div
+								class="w-10 h-10 rounded-lg flex items-center justify-center {prov.configured && prov.profile?.isActive
+									? 'bg-success/10'
+									: prov.configured
+										? 'bg-warning/10'
 										: 'bg-base-200'}"
-								>
-									{#if provider.isActive}
-										<CheckCircle class="w-5 h-5 text-success" />
-									{:else}
-										<XCircle class="w-5 h-5 text-base-content/40" />
-									{/if}
-								</div>
-								<div>
-									<h4 class="font-medium text-base-content">{provider.name}</h4>
-									<p class="text-sm text-base-content/60">
-										{getProviderLabel(provider.provider)}
-									</p>
-								</div>
+							>
+								{#if prov.configured && prov.profile?.isActive}
+									<CheckCircle class="w-5 h-5 text-success" />
+								{:else if prov.configured}
+									<XCircle class="w-5 h-5 text-warning" />
+								{:else}
+									<Key class="w-5 h-5 text-base-content/40" />
+								{/if}
 							</div>
+							<div>
+								<h4 class="font-medium text-base-content">
+									{prov.profile?.name || prov.label}
+								</h4>
+								<p class="text-sm text-base-content/60">
+									{prov.label}
+									{#if !prov.configured}
+										<span class="ml-2 text-xs text-base-content/40">• Not configured</span>
+									{/if}
+								</p>
+							</div>
+						</div>
 
-							<div class="flex items-center gap-3">
-								{#if testResult?.id === provider.id}
+						<div class="flex items-center gap-3">
+							{#if prov.configured && prov.profile}
+								{#if testResult?.id === prov.profile.id}
 									<span class="text-sm {testResult.success ? 'text-success' : 'text-error'}">
 										{testResult.message}
 									</span>
@@ -453,10 +491,10 @@
 								<Button
 									type="ghost"
 									size="sm"
-									onclick={() => testProvider(provider.id)}
-									disabled={testingId === provider.id}
+									onclick={() => testProvider(prov.profile!.id)}
+									disabled={testingId === prov.profile.id}
 								>
-									{#if testingId === provider.id}
+									{#if testingId === prov.profile.id}
 										<Spinner size={16} />
 									{:else}
 										<RefreshCw class="w-4 h-4" />
@@ -465,68 +503,81 @@
 								</Button>
 
 								<Toggle
-									checked={provider.isActive}
-									onchange={() => toggleProvider(provider)}
+									checked={prov.profile.isActive}
+									onchange={() => toggleProvider(prov.profile!)}
 								/>
 
 								<Button
 									type="ghost"
 									size="sm"
-									onclick={() => deleteProvider(provider.id)}
+									onclick={() => deleteProvider(prov.profile!.id)}
 								>
 									<Trash2 class="w-4 h-4 text-error" />
 								</Button>
+							{:else}
+								<Button
+									type="primary"
+									size="sm"
+									onclick={() => {
+										newProvider.provider = prov.type;
+										newProvider.name = `My ${prov.label}`;
+										showAddForm = true;
+									}}
+								>
+									<Plus class="w-4 h-4" />
+									Add API Key
+								</Button>
+							{/if}
+						</div>
+					</div>
+
+					<!-- Models for this provider - always visible -->
+					{#if prov.models.length > 0}
+						<div class="mt-4 pt-4 border-t border-base-200">
+							<div class="grid gap-2">
+								{#each prov.models as model (model.id)}
+									<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
+										<div class="flex-1">
+											<div class="flex items-center gap-2">
+												<button
+													type="button"
+													class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
+													onclick={() => togglePreferred(prov.type, model)}
+													title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
+												>
+													<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
+												</button>
+												<p class="font-medium text-sm text-base-content">{model.displayName}</p>
+											</div>
+											<div class="flex gap-2 flex-wrap mt-1">
+												{#each kindOptions as kind}
+													<label class="flex items-center gap-1 cursor-pointer">
+														<input
+															type="checkbox"
+															class="checkbox checkbox-xs checkbox-primary"
+															checked={(model.kind || []).includes(kind)}
+															onchange={() => toggleKind(prov.type, model, kind)}
+														/>
+														<span class="text-xs text-base-content/70">{kind}</span>
+													</label>
+												{/each}
+											</div>
+											<p class="text-xs text-base-content/50">
+												{model.contextWindow?.toLocaleString() || '?'} tokens
+											</p>
+										</div>
+										<Toggle
+											checked={model.isActive}
+											onchange={() => toggleModel(prov.type, model)}
+										/>
+									</div>
+								{/each}
 							</div>
 						</div>
-
-						<!-- Models for this provider - always visible -->
-						{#if providerModels.length > 0}
-							<div class="mt-4 pt-4 border-t border-base-200">
-								<div class="grid gap-2">
-									{#each providerModels as model (model.id)}
-										<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
-											<div class="flex-1">
-												<div class="flex items-center gap-2">
-													<button
-														type="button"
-														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
-														onclick={() => togglePreferred(provider.provider, model)}
-														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
-													>
-														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
-													</button>
-													<p class="font-medium text-sm text-base-content">{model.displayName}</p>
-												</div>
-												<div class="flex gap-2 flex-wrap mt-1">
-													{#each kindOptions as kind}
-														<label class="flex items-center gap-1 cursor-pointer">
-															<input
-																type="checkbox"
-																class="checkbox checkbox-xs checkbox-primary"
-																checked={(model.kind || []).includes(kind)}
-																onchange={() => toggleKind(provider.provider, model, kind)}
-															/>
-															<span class="text-xs text-base-content/70">{kind}</span>
-														</label>
-													{/each}
-												</div>
-												<p class="text-xs text-base-content/50">
-													{model.contextWindow?.toLocaleString() || '?'} tokens
-												</p>
-											</div>
-											<Toggle
-												checked={model.isActive}
-												onchange={() => toggleModel(provider.provider, model)}
-											/>
-										</div>
-									{/each}
-								</div>
-							</div>
-						{/if}
-					</Card>
-				{/each}
-			</div>
-		{/if}
+					{/if}
+				</Card>
+			{/each}
+		</div>
 
 		<!-- CLI Providers Section -->
 		{#if availableCLIs && (availableCLIs.claude || availableCLIs.codex || availableCLIs.gemini)}
@@ -543,7 +594,7 @@
 
 				<div class="space-y-3">
 					{#if availableCLIs.claude}
-						{@const cliModels = getCLIModels('claude-cli')}
+						{@const cliModels = getCLIModels('claude-code')}
 						<div class="border border-base-300 rounded-lg overflow-hidden">
 							<button
 								type="button"
@@ -570,7 +621,7 @@
 													<button
 														type="button"
 														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
-														onclick={() => togglePreferred('claude-cli', model)}
+														onclick={() => togglePreferred('claude-code', model)}
 														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
 													>
 														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
@@ -584,7 +635,7 @@
 																type="checkbox"
 																class="checkbox checkbox-xs checkbox-primary"
 																checked={(model.kind || []).includes(kind)}
-																onchange={() => toggleKind('claude-cli', model, kind)}
+																onchange={() => toggleKind('claude-code', model, kind)}
 															/>
 															<span class="text-xs text-base-content/70">{kind}</span>
 														</label>
@@ -593,7 +644,7 @@
 											</div>
 											<Toggle
 												checked={model.isActive}
-												onchange={() => toggleModel('claude-cli', model)}
+												onchange={() => toggleModel('claude-code', model)}
 											/>
 										</div>
 									{/each}

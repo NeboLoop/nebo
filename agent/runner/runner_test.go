@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"testing"
 	"time"
@@ -10,7 +11,58 @@ import (
 	"nebo/agent/config"
 	"nebo/agent/session"
 	"nebo/agent/tools"
+
+	_ "modernc.org/sqlite"
 )
+
+// setupTestDB creates a test database with the required schema
+func setupTestDB(t *testing.T, dbPath string) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create sessions table (from 0010_auth_profiles.sql)
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS sessions (
+			id TEXT PRIMARY KEY,
+			name TEXT,
+			scope TEXT DEFAULT 'global',
+			scope_id TEXT,
+			summary TEXT,
+			token_count INTEGER DEFAULT 0,
+			message_count INTEGER DEFAULT 0,
+			last_compacted_at INTEGER,
+			metadata TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("failed to create sessions table: %v", err)
+	}
+
+	// Create session_messages table
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS session_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			content TEXT,
+			tool_calls TEXT,
+			tool_results TEXT,
+			token_estimate INTEGER DEFAULT 0,
+			is_compacted INTEGER DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("failed to create session_messages table: %v", err)
+	}
+}
 
 // mockProvider implements ai.Provider for testing
 type mockProvider struct {
@@ -50,7 +102,9 @@ func TestNew(t *testing.T) {
 
 	// Create temp db
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
@@ -78,7 +132,9 @@ func TestRunNoProviders(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
@@ -100,7 +156,9 @@ func TestRunSimpleResponse(t *testing.T) {
 	cfg.MaxIterations = 10
 
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
@@ -154,7 +212,9 @@ func TestRunWithToolCall(t *testing.T) {
 	cfg.MaxIterations = 10
 
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
@@ -253,7 +313,9 @@ func TestRunDefaultSessionKey(t *testing.T) {
 	cfg.MaxIterations = 5
 
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
@@ -296,7 +358,9 @@ func TestChat(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
@@ -325,7 +389,9 @@ func TestChatNoProviders(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
@@ -343,7 +409,9 @@ func TestChatWithError(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
@@ -392,7 +460,9 @@ func TestGenerateSummary(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	tmpDir := t.TempDir()
-	sessions, err := session.New(tmpDir + "/test.db")
+	dbPath := tmpDir + "/test.db"
+	setupTestDB(t, dbPath)
+	sessions, err := session.New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create session manager: %v", err)
 	}

@@ -47,7 +47,8 @@ type Session struct {
 // Manager handles session persistence
 // Uses the server's existing database schema (sessions + session_messages tables)
 type Manager struct {
-	db *sql.DB
+	db     *sql.DB
+	ownsDB bool // true if we opened the connection and should close it
 }
 
 // New creates a new session manager
@@ -59,11 +60,24 @@ func New(dbPath string) (*Manager, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	m := &Manager{db: db}
+	m := &Manager{db: db, ownsDB: true}
 
 	// Verify tables exist (don't create them - server migrations handle that)
 	if err := m.verifySchema(); err != nil {
 		db.Close()
+		return nil, fmt.Errorf("database schema verification failed: %w", err)
+	}
+
+	return m, nil
+}
+
+// NewWithDB creates a session manager using an existing database connection
+// The caller is responsible for closing the database connection
+func NewWithDB(db *sql.DB) (*Manager, error) {
+	m := &Manager{db: db, ownsDB: false}
+
+	// Verify tables exist (don't create them - server migrations handle that)
+	if err := m.verifySchema(); err != nil {
 		return nil, fmt.Errorf("database schema verification failed: %w", err)
 	}
 
@@ -88,29 +102,74 @@ func (m *Manager) verifySchema() error {
 	return nil
 }
 
-// Close closes the database connection
+// Close closes the database connection if we own it
 func (m *Manager) Close() error {
-	return m.db.Close()
+	if m.ownsDB {
+		return m.db.Close()
+	}
+	return nil
+}
+
+// GetDB returns the underlying database connection for sharing with other components
+func (m *Manager) GetDB() *sql.DB {
+	return m.db
 }
 
 // GetOrCreate returns an existing session or creates a new one
-// Uses server's sessions table schema: name column for session key, scope defaults to 'agent'
+// Uses server's sessions table schema: name column for session key
+// DEPRECATED: Use GetOrCreateForUser for user-scoped sessions
 func (m *Manager) GetOrCreate(sessionKey string) (*Session, error) {
-	// Try to get existing session by name
-	session, err := m.getByKey(sessionKey)
+	// For backwards compatibility, use agent scope if no user specified
+	return m.getOrCreateScoped(sessionKey, "agent", "")
+}
+
+// GetOrCreateForUser returns an existing session or creates a new one scoped to a specific user
+// This ensures each user has their own isolated session with the given key
+func (m *Manager) GetOrCreateForUser(sessionKey, userID string) (*Session, error) {
+	if userID == "" {
+		// Fall back to agent scope if no user specified (backwards compatibility)
+		return m.getOrCreateScoped(sessionKey, "agent", "")
+	}
+	return m.getOrCreateScoped(sessionKey, "user", userID)
+}
+
+// getOrCreateScoped handles scoped session creation with proper uniqueness
+func (m *Manager) getOrCreateScoped(sessionKey, scope, scopeID string) (*Session, error) {
+	// Try to get existing session by name and scope
+	var s Session
+	var createdAt, updatedAt int64
+
+	// Build query based on scope
+	var err error
+	if scopeID == "" {
+		err = m.db.QueryRow(
+			`SELECT id, name, created_at, updated_at FROM sessions
+			 WHERE name = ? AND scope = ? AND (scope_id IS NULL OR scope_id = '')`,
+			sessionKey, scope,
+		).Scan(&s.ID, &s.SessionKey, &createdAt, &updatedAt)
+	} else {
+		err = m.db.QueryRow(
+			`SELECT id, name, created_at, updated_at FROM sessions
+			 WHERE name = ? AND scope = ? AND scope_id = ?`,
+			sessionKey, scope, scopeID,
+		).Scan(&s.ID, &s.SessionKey, &createdAt, &updatedAt)
+	}
+
 	if err == nil {
-		return session, nil
+		s.CreatedAt = time.Unix(createdAt, 0)
+		s.UpdatedAt = time.Unix(updatedAt, 0)
+		return &s, nil
 	}
 	if err != sql.ErrNoRows {
 		return nil, err
 	}
 
-	// Create new session using server's schema
+	// Create new session with proper scope
 	id := uuid.New().String()
 	now := time.Now().Unix()
 	_, err = m.db.Exec(
-		`INSERT INTO sessions (id, name, scope, created_at, updated_at) VALUES (?, ?, 'agent', ?, ?)`,
-		id, sessionKey, now, now,
+		`INSERT INTO sessions (id, name, scope, scope_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, sessionKey, scope, scopeID, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session: %w", err)
@@ -211,8 +270,14 @@ func (m *Manager) GetMessages(sessionID string, limit int) ([]Message, error) {
 		}
 		messages = append(messages, msg)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	return messages, rows.Err()
+	// Sanitize messages: strip orphaned tool_results that have no matching tool_calls
+	// This can happen after compaction when the assistant message with tool_calls
+	// was compacted but the user message with tool_results was kept
+	return sanitizeMessages(messages), nil
 }
 
 // AppendMessage adds a message to a session
@@ -354,4 +419,68 @@ func (m *Manager) DeleteSession(sessionID string) error {
 	// session_messages has ON DELETE CASCADE, so just delete the session
 	_, err := m.db.Exec("DELETE FROM sessions WHERE id = ?", sessionID)
 	return err
+}
+
+// sanitizeMessages removes orphaned tool_results that have no matching tool_calls.
+// This can happen after session compaction when the assistant message with tool_calls
+// was compacted but the user message with tool_results was kept.
+// The Anthropic API requires every tool_result to have a corresponding tool_use in the
+// previous message, so we must strip orphaned results.
+func sanitizeMessages(messages []Message) []Message {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	// Track which tool call IDs we've seen from assistant messages
+	seenToolCallIDs := make(map[string]bool)
+
+	result := make([]Message, 0, len(messages))
+	for i, msg := range messages {
+		// Track tool_calls from assistant messages
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			var calls []ToolCall
+			if err := json.Unmarshal(msg.ToolCalls, &calls); err == nil {
+				for _, call := range calls {
+					seenToolCallIDs[call.ID] = true
+				}
+			}
+			result = append(result, msg)
+			continue
+		}
+
+		// Filter tool_results to only include those with matching tool_calls
+		// Handle both "user" role (standard) and "tool" role (some schemas)
+		if (msg.Role == "user" || msg.Role == "tool") && len(msg.ToolResults) > 0 {
+			var results []ToolResult
+			if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
+				// Filter to only keep results with matching calls
+				validResults := make([]ToolResult, 0)
+				for _, r := range results {
+					if seenToolCallIDs[r.ToolCallID] {
+						validResults = append(validResults, r)
+					}
+				}
+
+				// If we have no valid results left, check if message has other content
+				if len(validResults) == 0 {
+					// Strip tool_results entirely if all are orphaned
+					msg.ToolResults = nil
+					// Only skip the message if it has no other content
+					if msg.Content == "" && i == 0 {
+						// Skip first message if it's only orphaned tool_results
+						continue
+					}
+				} else if len(validResults) < len(results) {
+					// Some results were filtered out - update the message
+					if newResults, err := json.Marshal(validResults); err == nil {
+						msg.ToolResults = newResults
+					}
+				}
+			}
+		}
+
+		result = append(result, msg)
+	}
+
+	return result
 }

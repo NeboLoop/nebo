@@ -8,6 +8,7 @@ import (
 	"nebo/internal/db"
 	"nebo/internal/httputil"
 	"nebo/internal/logging"
+	"nebo/internal/middleware"
 	"nebo/internal/svc"
 	"nebo/internal/types"
 )
@@ -23,8 +24,14 @@ func GetHistoryByDayHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
+		// Get user ID from JWT context
+		userID := middleware.GetUserID(ctx)
+		if userID == "" {
+			userID = companionUserIDFallback
+		}
+
 		// Get companion chat first
-		chat, err := svcCtx.DB.GetCompanionChatByUser(ctx, sql.NullString{String: companionUserID, Valid: true})
+		chat, err := svcCtx.DB.GetCompanionChatByUser(ctx, sql.NullString{String: userID, Valid: true})
 		if err != nil {
 			if err == sql.ErrNoRows {
 				// No companion chat yet, return empty

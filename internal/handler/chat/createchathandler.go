@@ -8,6 +8,7 @@ import (
 	"nebo/internal/db"
 	"nebo/internal/httputil"
 	"nebo/internal/logging"
+	"nebo/internal/middleware"
 	"nebo/internal/svc"
 	"nebo/internal/types"
 
@@ -27,7 +28,10 @@ func CreateChatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		// Single Bot Paradigm: Always return the companion chat
 		// We don't create new chats - there is only ONE conversation with THE agent
-		userID := companionUserID
+		userID := middleware.GetUserID(ctx)
+		if userID == "" {
+			userID = companionUserIDFallback
+		}
 
 		chat, err := svcCtx.DB.GetOrCreateCompanionChat(ctx, db.GetOrCreateCompanionChatParams{
 			ID:     uuid.New().String(),

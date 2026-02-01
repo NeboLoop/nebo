@@ -28,7 +28,7 @@ func NewServer(registry *tools.Registry) *Server {
 	}
 
 	s.server = mcp.NewServer(&mcp.Implementation{
-		Name:    "gobot-agent",
+		Name:    "nebo-agent",
 		Version: "1.0.0",
 	}, nil)
 

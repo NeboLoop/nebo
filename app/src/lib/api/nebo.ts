@@ -3,10 +3,40 @@ import * as components from "./neboComponents"
 export * from "./neboComponents"
 
 /**
- * @description "Health check endpoint"
+ * @description "Get heartbeat"
  */
-export function healthCheck() {
-	return webapi.get<components.HealthResponse>(`/health`)
+export function getHeartbeat() {
+	return webapi.get<components.GetHeartbeatResponse>(`/api/v1/agent/heartbeat`)
+}
+
+/**
+ * @description "Update heartbeat"
+ * @param req
+ */
+export function updateHeartbeat(req: components.UpdateHeartbeatRequest) {
+	return webapi.put<components.UpdateHeartbeatResponse>(`/api/v1/agent/heartbeat`, req)
+}
+
+/**
+ * @description "List personality presets"
+ */
+export function listPersonalityPresets() {
+	return webapi.get<components.ListPersonalityPresetsResponse>(`/api/v1/agent/personality-presets`)
+}
+
+/**
+ * @description "Get agent profile"
+ */
+export function getAgentProfile() {
+	return webapi.get<components.MessageResponse>(`/api/v1/agent/profile`)
+}
+
+/**
+ * @description "Update agent profile"
+ * @param req
+ */
+export function updateAgentProfile(req: components.UpdateAgentProfileRequest) {
+	return webapi.put<components.MessageResponse>(`/api/v1/agent/profile`, req)
 }
 
 /**
@@ -20,16 +50,15 @@ export function listAgentSessions() {
  * @description "Delete agent session"
  * @param req
  */
-export function deleteAgentSession(params: components.DeleteAgentSessionRequestParams, id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/agent/sessions/${id}`, params)
+export function deleteAgentSession(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/agent/sessions/${id}`)
 }
 
 /**
- * @description "Get session messages"
- * @param req
+ * @description "Get agent session messages"
  */
-export function getAgentSessionMessages(params: components.GetAgentSessionRequestParams, id: string) {
-	return webapi.get<components.GetAgentSessionMessagesResponse>(`/api/v1/agent/sessions/${id}/messages`, params)
+export function getAgentSessionMessages(id: string) {
+	return webapi.get<components.GetAgentSessionMessagesResponse>(`/api/v1/agent/sessions/${id}/messages`)
 }
 
 /**
@@ -44,33 +73,19 @@ export function getAgentSettings() {
  * @param req
  */
 export function updateAgentSettings(req: components.UpdateAgentSettingsRequest) {
-	return webapi.put<components.GetAgentSettingsResponse>(`/api/v1/agent/settings`, req)
+	return webapi.put<components.MessageResponse>(`/api/v1/agent/settings`, req)
 }
 
 /**
- * @description "Get heartbeat content (HEARTBEAT.md)"
- */
-export function getHeartbeat() {
-	return webapi.get<components.GetHeartbeatResponse>(`/api/v1/agent/heartbeat`)
-}
-
-/**
- * @description "Update heartbeat content (HEARTBEAT.md)"
- * @param req
- */
-export function updateHeartbeat(req: components.UpdateHeartbeatRequest) {
-	return webapi.put<components.UpdateHeartbeatResponse>(`/api/v1/agent/heartbeat`, req)
-}
-
-/**
- * @description "Get simple agent status (single agent model)"
+ * @description "Get simple agent status"
  */
 export function getSimpleAgentStatus() {
-	return webapi.get<components.SimpleAgentStatusResponse>(`/api/v1/agent/status`)
+	return webapi.get<components.MessageResponse>(`/api/v1/agent/status`)
 }
 
 /**
- * @description "List connected agents"
+ * @description "List agents"
+ * @param req
  */
 export function listAgents() {
 	return webapi.get<components.ListAgentsResponse>(`/api/v1/agents`)
@@ -78,28 +93,27 @@ export function listAgents() {
 
 /**
  * @description "Get agent status"
- * @param req
  */
-export function getAgentStatus(params: components.AgentStatusRequestParams, agentId: string) {
-	return webapi.get<components.AgentStatusResponse>(`/api/v1/agents/${agentId}/status`, params)
+export function getAgentStatus(agentId: string) {
+	return webapi.get<components.MessageResponse>(`/api/v1/agents/${agentId}/status`)
 }
 
 /**
- * @description "Get auth configuration (OAuth providers enabled)"
+ * @description "Get auth config"
  */
 export function getAuthConfig() {
-	return webapi.get<components.AuthConfigResponse>(`/api/v1/auth/config`)
+	return webapi.get<components.MessageResponse>(`/api/v1/auth/config`)
 }
 
 /**
- * @description "Dev auto-login (local development only)"
+ * @description "Dev login"
  */
 export function devLogin() {
-	return webapi.get<components.LoginResponse>(`/api/v1/auth/dev-login`)
+	return webapi.get<components.MessageResponse>(`/api/v1/auth/dev-login`)
 }
 
 /**
- * @description "Request password reset"
+ * @description "Forgot password"
  * @param req
  */
 export function forgotPassword(req: components.ForgotPasswordRequest) {
@@ -107,7 +121,7 @@ export function forgotPassword(req: components.ForgotPasswordRequest) {
 }
 
 /**
- * @description "User login"
+ * @description "Login"
  * @param req
  */
 export function login(req: components.LoginRequest) {
@@ -115,7 +129,7 @@ export function login(req: components.LoginRequest) {
 }
 
 /**
- * @description "Refresh authentication token"
+ * @description "Refresh token"
  * @param req
  */
 export function refreshToken(req: components.RefreshTokenRequest) {
@@ -123,15 +137,15 @@ export function refreshToken(req: components.RefreshTokenRequest) {
 }
 
 /**
- * @description "Register new user"
+ * @description "Register"
  * @param req
  */
 export function register(req: components.RegisterRequest) {
-	return webapi.post<components.LoginResponse>(`/api/v1/auth/register`, req)
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/register`, req)
 }
 
 /**
- * @description "Resend email verification"
+ * @description "Resend verification"
  * @param req
  */
 export function resendVerification(req: components.ResendVerificationRequest) {
@@ -139,7 +153,7 @@ export function resendVerification(req: components.ResendVerificationRequest) {
 }
 
 /**
- * @description "Reset password with token"
+ * @description "Reset password"
  * @param req
  */
 export function resetPassword(req: components.ResetPasswordRequest) {
@@ -147,15 +161,68 @@ export function resetPassword(req: components.ResetPasswordRequest) {
 }
 
 /**
- * @description "Verify email address with token"
- * @param req
+ * @description "Verify email"
  */
-export function verifyEmail(req: components.EmailVerificationRequest) {
-	return webapi.post<components.MessageResponse>(`/api/v1/auth/verify-email`, req)
+export function verifyEmail() {
+	return webapi.post<components.MessageResponse>(`/api/v1/auth/verify-email`)
 }
 
 /**
- * @description "List user chats"
+ * @description "List channels"
+ */
+export function listChannels() {
+	return webapi.get<components.ListChannelsResponse>(`/api/v1/channels`)
+}
+
+/**
+ * @description "Create channel"
+ * @param req
+ */
+export function createChannel(req: components.CreateChannelRequest) {
+	return webapi.post<components.CreateChannelResponse>(`/api/v1/channels`, req)
+}
+
+/**
+ * @description "List channel registry"
+ */
+export function listChannelRegistry() {
+	return webapi.get<components.ListChannelRegistryResponse>(`/api/v1/channels/registry`)
+}
+
+/**
+ * @description "Delete channel"
+ * @param req
+ */
+export function deleteChannel(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/channels/${id}`)
+}
+
+/**
+ * @description "Get channel"
+ * @param req
+ */
+export function getChannel(id: string) {
+	return webapi.get<components.GetChannelResponse>(`/api/v1/channels/${id}`)
+}
+
+/**
+ * @description "Update channel"
+ * @param req
+ */
+export function updateChannel(req: components.UpdateChannelRequest, id: string) {
+	return webapi.put<components.UpdateChannelResponse>(`/api/v1/channels/${id}`, req)
+}
+
+/**
+ * @description "Test channel"
+ * @param req
+ */
+export function testChannel(id: string) {
+	return webapi.post<components.TestChannelResponse>(`/api/v1/channels/${id}/test`)
+}
+
+/**
+ * @description "List chats"
  * @param req
  */
 export function listChats(params: components.ListChatsRequestParams) {
@@ -163,7 +230,7 @@ export function listChats(params: components.ListChatsRequestParams) {
 }
 
 /**
- * @description "Create new chat"
+ * @description "Create chat"
  * @param req
  */
 export function createChat(req: components.CreateChatRequest) {
@@ -171,14 +238,14 @@ export function createChat(req: components.CreateChatRequest) {
 }
 
 /**
- * @description "Get companion chat (auto-creates if needed)"
+ * @description "Get companion chat"
  */
 export function getCompanionChat() {
-	return webapi.get<components.GetChatResponse>(`/api/v1/chats/companion`)
+	return webapi.get<components.MessageResponse>(`/api/v1/chats/companion`)
 }
 
 /**
- * @description "List days with messages for history browsing"
+ * @description "List chat days"
  * @param req
  */
 export function listChatDays(params: components.ListChatDaysRequestParams) {
@@ -186,15 +253,15 @@ export function listChatDays(params: components.ListChatDaysRequestParams) {
 }
 
 /**
- * @description "Get messages for a specific day"
+ * @description "Get history by day"
  * @param req
  */
-export function getHistoryByDay(params: components.GetHistoryByDayRequestParams, day: string) {
-	return webapi.get<components.GetHistoryByDayResponse>(`/api/v1/chats/history/${day}`, params)
+export function getHistoryByDay(day: string) {
+	return webapi.get<components.GetHistoryByDayResponse>(`/api/v1/chats/history/${day}`)
 }
 
 /**
- * @description "Send message (creates chat if needed)"
+ * @description "Send message"
  * @param req
  */
 export function sendMessage(req: components.SendMessageRequest) {
@@ -210,138 +277,154 @@ export function searchChatMessages(params: components.SearchChatMessagesRequestP
 }
 
 /**
- * @description "Get chat with messages"
- * @param req
- */
-export function getChat(params: components.GetChatRequestParams, id: string) {
-	return webapi.get<components.GetChatResponse>(`/api/v1/chats/${id}`, params)
-}
-
-/**
- * @description "Update chat title"
- * @param req
- */
-export function updateChat(params: components.UpdateChatRequestParams, req: components.UpdateChatRequest, id: string) {
-	return webapi.put<components.Chat>(`/api/v1/chats/${id}`, params, req)
-}
-
-/**
  * @description "Delete chat"
  * @param req
  */
-export function deleteChat(params: components.DeleteChatRequestParams, id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/chats/${id}`, params)
+export function deleteChat(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/chats/${id}`)
 }
 
 /**
- * @description "List all extensions (tools, skills, plugins)"
+ * @description "Get chat"
+ * @param req
+ */
+export function getChat(id: string) {
+	return webapi.get<components.GetChatResponse>(`/api/v1/chats/${id}`)
+}
+
+/**
+ * @description "Update chat"
+ * @param req
+ */
+export function updateChat(req: components.UpdateChatRequest, id: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/chats/${id}`, req)
+}
+
+/**
+ * @description "List extensions"
  */
 export function listExtensions() {
 	return webapi.get<components.ListExtensionsResponse>(`/api/v1/extensions`)
 }
 
 /**
- * @description "Get single skill details"
+ * @description "List m c p integrations"
+ */
+export function listMCPIntegrations() {
+	return webapi.get<components.ListMCPIntegrationsResponse>(`/api/v1/integrations`)
+}
+
+/**
+ * @description "Create m c p integration"
  * @param req
  */
-export function getSkill(params: components.GetSkillRequestParams, name: string) {
-	return webapi.get<components.GetSkillResponse>(`/api/v1/skills/${name}`, params)
+export function createMCPIntegration(req: components.CreateMCPIntegrationRequest) {
+	return webapi.post<components.CreateMCPIntegrationResponse>(`/api/v1/integrations`, req)
 }
 
 /**
- * @description "Toggle skill enabled/disabled"
+ * @description "List m c p server registry"
+ */
+export function listMCPServerRegistry() {
+	return webapi.get<components.ListMCPServerRegistryResponse>(`/api/v1/integrations/registry`)
+}
+
+/**
+ * @description "Delete m c p integration"
  * @param req
  */
-export function toggleSkill(params: components.ToggleSkillRequestParams, name: string) {
-	return webapi.post<components.ToggleSkillResponse>(`/api/v1/skills/${name}/toggle`, params)
+export function deleteMCPIntegration(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/integrations/${id}`)
 }
 
 /**
- * @description "List user notifications"
+ * @description "Get m c p integration"
  * @param req
  */
-export function listNotifications(params: components.ListNotificationsRequestParams) {
-	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`, params)
+export function getMCPIntegration(id: string) {
+	return webapi.get<components.GetMCPIntegrationResponse>(`/api/v1/integrations/${id}`)
 }
 
 /**
- * @description "Delete notification"
+ * @description "Update m c p integration"
  * @param req
  */
-export function deleteNotification(params: components.DeleteNotificationRequestParams, id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/notifications/${id}`, params)
+export function updateMCPIntegration(req: components.UpdateMCPIntegrationRequest, id: string) {
+	return webapi.put<components.UpdateMCPIntegrationResponse>(`/api/v1/integrations/${id}`, req)
 }
 
 /**
- * @description "Mark notification as read"
+ * @description "Test m c p integration"
  * @param req
  */
-export function markNotificationRead(params: components.MarkNotificationReadRequestParams, id: string) {
-	return webapi.put<components.MessageResponse>(`/api/v1/notifications/${id}/read`, params)
+export function testMCPIntegration(id: string) {
+	return webapi.post<components.TestMCPIntegrationResponse>(`/api/v1/integrations/${id}/test`)
 }
 
 /**
- * @description "Mark all notifications as read"
- */
-export function markAllNotificationsRead() {
-	return webapi.put<components.MessageResponse>(`/api/v1/notifications/read-all`)
-}
-
-/**
- * @description "Get unread notification count"
- */
-export function getUnreadCount() {
-	return webapi.get<components.GetUnreadCountResponse>(`/api/v1/notifications/unread-count`)
-}
-
-/**
- * @description "OAuth callback - exchange code for tokens"
+ * @description "List memories"
  * @param req
  */
-export function oAuthCallback(params: components.OAuthLoginRequestParams, req: components.OAuthLoginRequest, provider: string) {
-	return webapi.post<components.OAuthLoginResponse>(`/api/v1/oauth/${provider}/callback`, params, req)
+export function listMemories(params: components.ListMemoriesRequestParams) {
+	return webapi.get<components.ListMemoriesResponse>(`/api/v1/memories`, params)
 }
 
 /**
- * @description "Get OAuth authorization URL"
+ * @description "Search memories"
  * @param req
  */
-export function getOAuthUrl(params: components.GetOAuthUrlRequestParams, provider: string) {
-	return webapi.get<components.GetOAuthUrlResponse>(`/api/v1/oauth/${provider}/url`, params)
+export function searchMemories(params: components.SearchMemoriesRequestParams) {
+	return webapi.get<components.SearchMemoriesResponse>(`/api/v1/memories/search`, params)
 }
 
 /**
- * @description "Disconnect OAuth provider"
+ * @description "Get memory stats"
+ */
+export function getMemoryStats() {
+	return webapi.get<components.MessageResponse>(`/api/v1/memories/stats`)
+}
+
+/**
+ * @description "Delete memory"
  * @param req
  */
-export function disconnectOAuth(params: components.DisconnectOAuthRequestParams, provider: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/oauth/${provider}`, params)
+export function deleteMemory(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/memories/${id}`)
 }
 
 /**
- * @description "List connected OAuth providers"
+ * @description "Get memory"
+ * @param req
  */
-export function listOAuthProviders() {
-	return webapi.get<components.ListOAuthProvidersResponse>(`/api/v1/oauth/providers`)
+export function getMemory(id: string) {
+	return webapi.get<components.GetMemoryResponse>(`/api/v1/memories/${id}`)
 }
 
 /**
- * @description "List all available models from YAML cache"
+ * @description "Update memory"
+ * @param req
+ */
+export function updateMemory(req: components.UpdateMemoryRequest, id: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/memories/${id}`, req)
+}
+
+/**
+ * @description "List models"
  */
 export function listModels() {
 	return webapi.get<components.ListModelsResponse>(`/api/v1/models`)
 }
 
 /**
- * @description "Update model settings (active, kind, preferred)"
+ * @description "Update model config"
  * @param req
  */
-export function updateModel(params: components.UpdateModelRequestParams, req: components.UpdateModelRequest, provider: string, modelId: string) {
-	return webapi.put<components.MessageResponse>(`/api/v1/models/${provider}/${modelId}`, params, req)
+export function updateModelConfig(req: components.UpdateModelConfigRequest) {
+	return webapi.put<components.UpdateModelConfigResponse>(`/api/v1/models/config`, req)
 }
 
 /**
- * @description "Update task routing configuration"
+ * @description "Update task routing"
  * @param req
  */
 export function updateTaskRouting(req: components.UpdateTaskRoutingRequest) {
@@ -349,14 +432,90 @@ export function updateTaskRouting(req: components.UpdateTaskRoutingRequest) {
 }
 
 /**
- * @description "List all auth profiles (API keys)"
+ * @description "Update model"
+ * @param req
+ */
+export function updateModel(req: components.UpdateModelRequest, provider: string, modelId: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/models/${provider}/${modelId}`, req)
+}
+
+/**
+ * @description "List notifications"
+ * @param req
+ */
+export function listNotifications(params: components.ListNotificationsRequestParams) {
+	return webapi.get<components.ListNotificationsResponse>(`/api/v1/notifications`, params)
+}
+
+/**
+ * @description "Mark all notifications read"
+ */
+export function markAllNotificationsRead() {
+	return webapi.put<components.MessageResponse>(`/api/v1/notifications/read-all`)
+}
+
+/**
+ * @description "Get unread count"
+ */
+export function getUnreadCount() {
+	return webapi.get<components.GetUnreadCountResponse>(`/api/v1/notifications/unread-count`)
+}
+
+/**
+ * @description "Delete notification"
+ * @param req
+ */
+export function deleteNotification(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/notifications/${id}`)
+}
+
+/**
+ * @description "Mark notification read"
+ * @param req
+ */
+export function markNotificationRead(id: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/notifications/${id}/read`)
+}
+
+/**
+ * @description "List o auth providers"
+ */
+export function listOAuthProviders() {
+	return webapi.get<components.ListOAuthProvidersResponse>(`/api/v1/oauth/providers`)
+}
+
+/**
+ * @description "Disconnect o auth"
+ * @param req
+ */
+export function disconnectOAuth(provider: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/oauth/${provider}`)
+}
+
+/**
+ * @description "O auth callback"
+ */
+export function oAuthCallback(provider: string) {
+	return webapi.post<components.MessageResponse>(`/api/v1/oauth/${provider}/callback`)
+}
+
+/**
+ * @description "Get o auth url"
+ * @param req
+ */
+export function getOAuthUrl(params: components.GetOAuthUrlRequestParams, provider: string) {
+	return webapi.get<components.GetOAuthUrlResponse>(`/api/v1/oauth/${provider}/url`, params)
+}
+
+/**
+ * @description "List auth profiles"
  */
 export function listAuthProfiles() {
 	return webapi.get<components.ListAuthProfilesResponse>(`/api/v1/providers`)
 }
 
 /**
- * @description "Create a new auth profile"
+ * @description "Create auth profile"
  * @param req
  */
 export function createAuthProfile(req: components.CreateAuthProfileRequest) {
@@ -364,39 +523,39 @@ export function createAuthProfile(req: components.CreateAuthProfileRequest) {
 }
 
 /**
- * @description "Get auth profile by ID"
+ * @description "Delete auth profile"
  * @param req
  */
-export function getAuthProfile(params: components.GetAuthProfileRequestParams, id: string) {
-	return webapi.get<components.GetAuthProfileResponse>(`/api/v1/providers/${id}`, params)
+export function deleteAuthProfile(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/providers/${id}`)
+}
+
+/**
+ * @description "Get auth profile"
+ * @param req
+ */
+export function getAuthProfile(id: string) {
+	return webapi.get<components.GetAuthProfileResponse>(`/api/v1/providers/${id}`)
 }
 
 /**
  * @description "Update auth profile"
  * @param req
  */
-export function updateAuthProfile(params: components.UpdateAuthProfileRequestParams, req: components.UpdateAuthProfileRequest, id: string) {
-	return webapi.put<components.GetAuthProfileResponse>(`/api/v1/providers/${id}`, params, req)
+export function updateAuthProfile(req: components.UpdateAuthProfileRequest, id: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/providers/${id}`, req)
 }
 
 /**
- * @description "Delete auth profile"
+ * @description "Test auth profile"
  * @param req
  */
-export function deleteAuthProfile(params: components.DeleteAuthProfileRequestParams, id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/providers/${id}`, params)
+export function testAuthProfile(id: string) {
+	return webapi.post<components.TestAuthProfileResponse>(`/api/v1/providers/${id}/test`)
 }
 
 /**
- * @description "Test auth profile (verify API key works)"
- * @param req
- */
-export function testAuthProfile(params: components.TestAuthProfileRequestParams, id: string) {
-	return webapi.post<components.TestAuthProfileResponse>(`/api/v1/providers/${id}/test`, params)
-}
-
-/**
- * @description "Create the first admin user (only works when no admin exists)"
+ * @description "Create admin"
  * @param req
  */
 export function createAdmin(req: components.CreateAdminRequest) {
@@ -404,21 +563,21 @@ export function createAdmin(req: components.CreateAdminRequest) {
 }
 
 /**
- * @description "Mark initial setup as complete"
+ * @description "Complete setup"
  */
 export function completeSetup() {
 	return webapi.post<components.CompleteSetupResponse>(`/api/v1/setup/complete`)
 }
 
 /**
- * @description "Get AI personality configuration"
+ * @description "Get personality"
  */
 export function getPersonality() {
 	return webapi.get<components.GetPersonalityResponse>(`/api/v1/setup/personality`)
 }
 
 /**
- * @description "Update AI personality configuration"
+ * @description "Update personality"
  * @param req
  */
 export function updatePersonality(req: components.UpdatePersonalityRequest) {
@@ -426,29 +585,94 @@ export function updatePersonality(req: components.UpdatePersonalityRequest) {
 }
 
 /**
- * @description "Check if setup is required (no admin exists)"
+ * @description "Setup status"
  */
 export function setupStatus() {
 	return webapi.get<components.SetupStatusResponse>(`/api/v1/setup/status`)
 }
 
 /**
- * @description "Get current user profile"
- */
-export function getCurrentUser() {
-	return webapi.get<components.GetUserResponse>(`/api/v1/user/me`)
-}
-
-/**
- * @description "Update current user profile"
+ * @description "Get skill"
  * @param req
  */
-export function updateCurrentUser(req: components.UpdateUserRequest) {
-	return webapi.put<components.GetUserResponse>(`/api/v1/user/me`, req)
+export function getSkill(name: string) {
+	return webapi.get<components.GetSkillResponse>(`/api/v1/skills/${name}`)
 }
 
 /**
- * @description "Delete current user account"
+ * @description "Toggle skill"
+ * @param req
+ */
+export function toggleSkill(name: string) {
+	return webapi.post<components.ToggleSkillResponse>(`/api/v1/skills/${name}/toggle`)
+}
+
+/**
+ * @description "List tasks"
+ * @param req
+ */
+export function listTasks(params: components.ListTasksRequestParams) {
+	return webapi.get<components.ListTasksResponse>(`/api/v1/tasks`, params)
+}
+
+/**
+ * @description "Create task"
+ * @param req
+ */
+export function createTask(req: components.CreateTaskRequest) {
+	return webapi.post<components.CreateTaskResponse>(`/api/v1/tasks`, req)
+}
+
+/**
+ * @description "Delete task"
+ * @param req
+ */
+export function deleteTask(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/tasks/${id}`)
+}
+
+/**
+ * @description "Get task"
+ * @param req
+ */
+export function getTask(id: string) {
+	return webapi.get<components.GetTaskResponse>(`/api/v1/tasks/${id}`)
+}
+
+/**
+ * @description "Update task"
+ * @param req
+ */
+export function updateTask(req: components.UpdateTaskRequest, id: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/tasks/${id}`, req)
+}
+
+/**
+ * @description "List task history"
+ * @param req
+ */
+export function listTaskHistory(params: components.ListTaskHistoryRequestParams, id: string) {
+	return webapi.get<components.ListTaskHistoryResponse>(`/api/v1/tasks/${id}/history`, params)
+}
+
+/**
+ * @description "Run task"
+ * @param req
+ */
+export function runTask(id: string) {
+	return webapi.post<components.RunTaskResponse>(`/api/v1/tasks/${id}/run`)
+}
+
+/**
+ * @description "Toggle task"
+ * @param req
+ */
+export function toggleTask(id: string) {
+	return webapi.post<components.ToggleTaskResponse>(`/api/v1/tasks/${id}/toggle`)
+}
+
+/**
+ * @description "Delete account"
  * @param req
  */
 export function deleteAccount(req: components.DeleteAccountRequest) {
@@ -456,7 +680,21 @@ export function deleteAccount(req: components.DeleteAccountRequest) {
 }
 
 /**
- * @description "Change password for authenticated user"
+ * @description "Get current user"
+ */
+export function getCurrentUser() {
+	return webapi.get<components.MessageResponse>(`/api/v1/user/me`)
+}
+
+/**
+ * @description "Update current user"
+ */
+export function updateCurrentUser() {
+	return webapi.put<components.MessageResponse>(`/api/v1/user/me`)
+}
+
+/**
+ * @description "Change password"
  * @param req
  */
 export function changePassword(req: components.ChangePasswordRequest) {
@@ -464,17 +702,39 @@ export function changePassword(req: components.ChangePasswordRequest) {
 }
 
 /**
- * @description "Get user preferences"
+ * @description "Get preferences"
  */
 export function getPreferences() {
 	return webapi.get<components.GetPreferencesResponse>(`/api/v1/user/me/preferences`)
 }
 
 /**
- * @description "Update user preferences"
+ * @description "Update preferences"
  * @param req
  */
 export function updatePreferences(req: components.UpdatePreferencesRequest) {
-	return webapi.put<components.GetPreferencesResponse>(`/api/v1/user/me/preferences`, req)
+	return webapi.put<components.MessageResponse>(`/api/v1/user/me/preferences`, req)
+}
+
+/**
+ * @description "Get user profile"
+ */
+export function getUserProfile() {
+	return webapi.get<components.GetUserProfileResponse>(`/api/v1/user/me/profile`)
+}
+
+/**
+ * @description "Update user profile"
+ * @param req
+ */
+export function updateUserProfile(req: components.UpdateUserProfileRequest) {
+	return webapi.put<components.UpdateUserProfileResponse>(`/api/v1/user/me/profile`, req)
+}
+
+/**
+ * @description "Health check"
+ */
+export function healthCheck() {
+	return webapi.get<components.MessageResponse>(`/health`)
 }
 

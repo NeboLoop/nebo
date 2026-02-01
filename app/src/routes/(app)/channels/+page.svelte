@@ -2,54 +2,50 @@
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { MessageCircle, Plus, Settings, Trash2, CheckCircle, XCircle, RefreshCw } from 'lucide-svelte';
+	import { MessageCircle, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Play } from 'lucide-svelte';
+	import * as api from '$lib/api/nebo';
+	import type { ChannelItem, ChannelRegistryItem } from '$lib/api/nebo';
 
-	interface Channel {
-		id: string;
-		type: 'telegram' | 'discord' | 'slack';
-		name: string;
-		status: 'connected' | 'disconnected' | 'error';
-		config: Record<string, string>;
-	}
-
-	let channels = $state<Channel[]>([]);
+	let channels = $state<ChannelItem[]>([]);
+	let registry = $state<ChannelRegistryItem[]>([]);
 	let isLoading = $state(true);
 	let showAddModal = $state(false);
-	let newChannel = $state({ type: 'telegram', name: '', token: '' });
+	let selectedType = $state('telegram');
+	let newChannel = $state({ name: '', credentials: {} as Record<string, string> });
 
-	const channelInfo = {
+	const channelInfo: Record<string, { icon: string; color: string }> = {
 		telegram: {
-			name: 'Telegram',
 			icon: '📱',
-			color: 'bg-blue-500/10 text-blue-500',
-			fields: ['Bot Token']
+			color: 'bg-blue-500/10 text-blue-500'
 		},
 		discord: {
-			name: 'Discord',
 			icon: '🎮',
-			color: 'bg-indigo-500/10 text-indigo-500',
-			fields: ['Bot Token', 'Guild ID']
+			color: 'bg-indigo-500/10 text-indigo-500'
 		},
 		slack: {
-			name: 'Slack',
 			icon: '💼',
-			color: 'bg-purple-500/10 text-purple-500',
-			fields: ['Bot Token', 'Signing Secret']
+			color: 'bg-purple-500/10 text-purple-500'
 		}
 	};
 
 	onMount(async () => {
-		await loadChannels();
+		await Promise.all([loadChannels(), loadRegistry()]);
 	});
+
+	async function loadRegistry() {
+		try {
+			const data = await api.listChannelRegistry();
+			registry = data.channels || [];
+		} catch (error) {
+			console.error('Failed to load channel registry:', error);
+		}
+	}
 
 	async function loadChannels() {
 		isLoading = true;
 		try {
-			const response = await fetch('/api/v1/agent/channels');
-			if (response.ok) {
-				const data = await response.json();
-				channels = data.channels || [];
-			}
+			const data = await api.listChannels();
+			channels = data.channels || [];
 		} catch (error) {
 			console.error('Failed to load channels:', error);
 		} finally {
@@ -59,47 +55,53 @@
 
 	async function addChannel() {
 		try {
-			const response = await fetch('/api/v1/agent/channels', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(newChannel)
+			await api.createChannel({
+				name: newChannel.name,
+				channelType: selectedType,
+				credentials: newChannel.credentials
 			});
-			if (response.ok) {
-				await loadChannels();
-				showAddModal = false;
-				newChannel = { type: 'telegram', name: '', token: '' };
-			}
+			await loadChannels();
+			showAddModal = false;
+			newChannel = { name: '', credentials: {} };
 		} catch (error) {
 			console.error('Failed to add channel:', error);
 		}
 	}
 
-	async function deleteChannel(channel: Channel) {
+	async function deleteChannel(channel: ChannelItem) {
 		if (!confirm(`Delete ${channel.name}?`)) return;
 		try {
-			const response = await fetch(`/api/v1/agent/channels/${channel.id}`, {
-				method: 'DELETE'
-			});
-			if (response.ok) {
-				channels = channels.filter(c => c.id !== channel.id);
-			}
+			await api.deleteChannel(channel.id);
+			channels = channels.filter((c) => c.id !== channel.id);
 		} catch (error) {
 			console.error('Failed to delete channel:', error);
 		}
 	}
 
-	async function toggleChannel(channel: Channel) {
-		const action = channel.status === 'connected' ? 'disconnect' : 'connect';
+	async function testChannel(channel: ChannelItem) {
 		try {
-			const response = await fetch(`/api/v1/agent/channels/${channel.id}/${action}`, {
-				method: 'POST'
-			});
-			if (response.ok) {
+			const result = await api.testChannel(channel.id);
+			if (result.success) {
 				await loadChannels();
+			} else {
+				alert(result.message || 'Connection test failed');
 			}
 		} catch (error) {
-			console.error(`Failed to ${action} channel:`, error);
+			console.error('Failed to test channel:', error);
 		}
+	}
+
+	async function toggleChannel(channel: ChannelItem) {
+		try {
+			await api.updateChannel({ isEnabled: !channel.isEnabled }, channel.id);
+			await loadChannels();
+		} catch (error) {
+			console.error('Failed to toggle channel:', error);
+		}
+	}
+
+	function getRegistryItem(type: string): ChannelRegistryItem | undefined {
+		return registry.find((r) => r.id === type);
 	}
 </script>
 
@@ -117,7 +119,7 @@
 			<RefreshCw class="w-4 h-4 mr-2" />
 			Refresh
 		</Button>
-		<Button type="primary" onclick={() => showAddModal = true}>
+		<Button type="primary" onclick={() => (showAddModal = true)}>
 			<Plus class="w-4 h-4 mr-2" />
 			Add Channel
 		</Button>
@@ -126,11 +128,12 @@
 
 <!-- Channel Types Overview -->
 <div class="grid sm:grid-cols-3 gap-4 mb-8">
-	{#each Object.entries(channelInfo) as [type, info]}
-		{@const connected = channels.filter(c => c.type === type && c.status === 'connected').length}
+	{#each registry as item}
+		{@const connected = channels.filter((c) => c.channelType === item.id && c.isEnabled).length}
+		{@const info = channelInfo[item.id] || { icon: '🔌', color: 'bg-base-300' }}
 		<Card class="text-center">
-			<div class="text-4xl mb-2">{info.icon}</div>
-			<h3 class="font-display font-bold text-base-content">{info.name}</h3>
+			<div class="text-4xl mb-2">{item.icon || info.icon}</div>
+			<h3 class="font-display font-bold text-base-content">{item.name}</h3>
 			<p class="text-sm text-base-content/60">
 				{connected} connected
 			</p>
@@ -152,7 +155,7 @@
 			<MessageCircle class="w-12 h-12 mx-auto mb-4 text-base-content/30" />
 			<h3 class="font-display font-bold text-base-content mb-2">No channels configured</h3>
 			<p class="text-base-content/60 mb-4">Add a channel to start receiving messages</p>
-			<Button type="primary" onclick={() => showAddModal = true}>
+			<Button type="primary" onclick={() => (showAddModal = true)}>
 				<Plus class="w-4 h-4 mr-2" />
 				Add Your First Channel
 			</Button>
@@ -160,34 +163,48 @@
 	{:else}
 		<div class="space-y-3">
 			{#each channels as channel}
-				{@const info = channelInfo[channel.type]}
+				{@const regItem = getRegistryItem(channel.channelType)}
+				{@const info = channelInfo[channel.channelType] || { icon: '🔌', color: 'bg-base-300' }}
 				<div class="flex items-center justify-between p-4 rounded-lg bg-base-200">
 					<div class="flex items-center gap-3">
-						<div class="w-10 h-10 rounded-lg {info.color} flex items-center justify-center text-xl">
-							{info.icon}
+						<div
+							class="w-10 h-10 rounded-lg {info.color} flex items-center justify-center text-xl"
+						>
+							{regItem?.icon || info.icon}
 						</div>
 						<div>
 							<div class="flex items-center gap-2">
 								<span class="font-medium">{channel.name}</span>
-								<span class="text-xs px-2 py-0.5 rounded bg-base-300">{info.name}</span>
+								<span class="text-xs px-2 py-0.5 rounded bg-base-300"
+									>{regItem?.name || channel.channelType}</span
+								>
 							</div>
 							<div class="flex items-center gap-1 text-xs">
-								{#if channel.status === 'connected'}
+								{#if channel.connectionStatus === 'connected'}
 									<CheckCircle class="w-3 h-3 text-success" />
 									<span class="text-success">Connected</span>
-								{:else if channel.status === 'error'}
+								{:else if channel.connectionStatus === 'error'}
 									<XCircle class="w-3 h-3 text-error" />
 									<span class="text-error">Error</span>
 								{:else}
 									<XCircle class="w-3 h-3 text-base-content/40" />
 									<span class="text-base-content/40">Disconnected</span>
 								{/if}
+								{#if channel.messageCount > 0}
+									<span class="text-base-content/40 ml-2"
+										>· {channel.messageCount} messages</span
+									>
+								{/if}
 							</div>
 						</div>
 					</div>
 					<div class="flex items-center gap-2">
+						<Button type="ghost" size="sm" onclick={() => testChannel(channel)}>
+							<Play class="w-3 h-3 mr-1" />
+							Test
+						</Button>
 						<Button type="ghost" size="sm" onclick={() => toggleChannel(channel)}>
-							{channel.status === 'connected' ? 'Disconnect' : 'Connect'}
+							{channel.isEnabled ? 'Disable' : 'Enable'}
 						</Button>
 						<button
 							onclick={() => deleteChannel(channel)}
@@ -204,6 +221,7 @@
 
 <!-- Add Channel Modal -->
 {#if showAddModal}
+	{@const selectedRegistry = getRegistryItem(selectedType)}
 	<div
 		class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
 		role="dialog"
@@ -213,7 +231,7 @@
 		<button
 			type="button"
 			class="absolute inset-0 cursor-default"
-			onclick={() => showAddModal = false}
+			onclick={() => (showAddModal = false)}
 			aria-label="Close modal"
 		></button>
 		<div class="bg-base-100 rounded-xl p-6 w-full max-w-md relative z-10">
@@ -224,14 +242,20 @@
 					<label for="channel-platform" class="block text-sm font-medium mb-1">Platform</label>
 					<select
 						id="channel-platform"
-						bind:value={newChannel.type}
+						bind:value={selectedType}
 						class="w-full px-3 py-2 rounded-lg bg-base-200 border border-base-300 focus:outline-none focus:ring-2 focus:ring-primary/50"
 					>
-						<option value="telegram">Telegram</option>
-						<option value="discord">Discord</option>
-						<option value="slack">Slack</option>
+						{#each registry as item}
+							<option value={item.id}>{item.name}</option>
+						{/each}
 					</select>
 				</div>
+
+				{#if selectedRegistry?.setupInstructions}
+					<div class="p-3 rounded-lg bg-info/10 text-sm">
+						<p class="whitespace-pre-line">{selectedRegistry.setupInstructions}</p>
+					</div>
+				{/if}
 
 				<div>
 					<label for="channel-name" class="block text-sm font-medium mb-1">Name</label>
@@ -244,25 +268,25 @@
 					/>
 				</div>
 
-				<div>
-					<label for="channel-token" class="block text-sm font-medium mb-1">Bot Token</label>
-					<input
-						id="channel-token"
-						type="password"
-						bind:value={newChannel.token}
-						placeholder="Enter bot token"
-						class="w-full px-3 py-2 rounded-lg bg-base-200 border border-base-300 focus:outline-none focus:ring-2 focus:ring-primary/50"
-					/>
-				</div>
+				{#each selectedRegistry?.requiredCredentials || [] as credKey}
+					<div>
+						<label for="cred-{credKey}" class="block text-sm font-medium mb-1 capitalize"
+							>{credKey.replace('_', ' ')}</label
+						>
+						<input
+							id="cred-{credKey}"
+							type="password"
+							bind:value={newChannel.credentials[credKey]}
+							placeholder="Enter {credKey.replace('_', ' ')}"
+							class="w-full px-3 py-2 rounded-lg bg-base-200 border border-base-300 focus:outline-none focus:ring-2 focus:ring-primary/50"
+						/>
+					</div>
+				{/each}
 			</div>
 
 			<div class="flex gap-2 mt-6">
-				<Button type="ghost" class="flex-1" onclick={() => showAddModal = false}>
-					Cancel
-				</Button>
-				<Button type="primary" class="flex-1" onclick={addChannel}>
-					Add Channel
-				</Button>
+				<Button type="ghost" class="flex-1" onclick={() => (showAddModal = false)}> Cancel </Button>
+				<Button type="primary" class="flex-1" onclick={addChannel}> Add Channel </Button>
 			</div>
 		</div>
 	</div>

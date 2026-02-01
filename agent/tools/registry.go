@@ -174,4 +174,9 @@ func (r *Registry) RegisterDefaults() {
 
 	// Task/sub-agent spawning
 	r.Register(NewTaskTool())
+
+	// Platform-specific capabilities (clipboard, notification, system, tts, etc.)
+	// These are auto-registered via init() in platform-specific files
+	// and filtered by the current platform
+	RegisterPlatformCapabilities(r)
 }

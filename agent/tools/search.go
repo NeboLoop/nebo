@@ -173,7 +173,7 @@ func (t *SearchTool) searchDuckDuckGo(ctx context.Context, query string, limit i
 		return nil, err
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; GoBot/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Nebo/1.0)")
 
 	resp, err := t.client.Do(req)
 	if err != nil {

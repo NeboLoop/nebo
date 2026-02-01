@@ -50,7 +50,7 @@ func RunAll() {
 	lockFile, err := acquireLock(dataDir)
 	if err != nil {
 		fmt.Printf("\033[31mError: %v\033[0m\n", err)
-		fmt.Println("\033[33mGoBot is already running. Only one instance allowed per computer.\033[0m")
+		fmt.Println("\033[33mNebo is already running. Only one instance allowed per computer.\033[0m")
 		os.Exit(1)
 	}
 	defer releaseLock(lockFile)
@@ -104,8 +104,14 @@ func RunAll() {
 	}()
 
 	// Wait for server to be ready
-	serverURL := fmt.Sprintf("http://localhost:%d", c.Port)
-	if !waitForServer(serverURL, 10*time.Second) {
+	// Use BaseURL from config, or construct from domain and port
+	serverURL := c.App.BaseURL
+	if serverURL == "" {
+		serverURL = fmt.Sprintf("http://%s:%d", c.App.Domain, c.Port)
+	}
+	// For health check, use localhost since DNS resolution may not be ready
+	healthURL := fmt.Sprintf("http://localhost:%d", c.Port)
+	if !waitForServer(healthURL, 10*time.Second) {
 		fmt.Println("\033[31mError: Server failed to start\033[0m")
 		cancel()
 		wg.Wait()
@@ -117,7 +123,7 @@ func RunAll() {
 
 	// Start MCP server in goroutine
 	mcpPort := 27896
-	mcpURL := fmt.Sprintf("http://localhost:%d/mcp", mcpPort)
+	mcpURL := fmt.Sprintf("http://%s:%d/mcp", c.App.Domain, mcpPort)
 	wg.Add(1)
 	go func() {
 		defer func() {
@@ -234,14 +240,14 @@ func RunAll() {
 
 	fmt.Println("[Shutdown] Waiting for goroutines to finish...")
 	wg.Wait()
-	fmt.Println("\n\033[32mGoBot stopped.\033[0m")
+	fmt.Println("\n\033[32mNebo stopped.\033[0m")
 }
 
 // printStartupBanner prints a clean, clickable startup message
 func printStartupBanner(serverURL, mcpURL, dataDir string) {
 	fmt.Println()
 	fmt.Println("\033[1;32m  ╭─────────────────────────────────────────╮\033[0m")
-	fmt.Println("\033[1;32m  │           \033[1;37m🤖 GoBot is running\033[1;32m           │\033[0m")
+	fmt.Println("\033[1;32m  │           \033[1;37m🤖 Nebo is running\033[1;32m            │\033[0m")
 	fmt.Println("\033[1;32m  ╰─────────────────────────────────────────╯\033[0m")
 	fmt.Println()
 	fmt.Printf("  \033[1;36m→\033[0m Web UI:     \033[4;34m%s\033[0m\n", serverURL)
@@ -256,6 +262,11 @@ func printStartupBanner(serverURL, mcpURL, dataDir string) {
 // openBrowser opens the default browser to the specified URL
 // Skips opening if browser was recently opened (within last 8 hours)
 func openBrowser(url string, dataDir string) {
+	// Skip if running in development mode (air hot reload)
+	if os.Getenv("NEBO_NO_BROWSER") == "1" || os.Getenv("AIR_TMP_DIR") != "" {
+		return
+	}
+
 	// Check if browser was recently opened
 	browserFile := dataDir + "/browser_opened"
 	if info, err := os.Stat(browserFile); err == nil {
@@ -306,7 +317,7 @@ func ServeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",
 		Short: "Start the web server only",
-		Long:  `Start the GoBot web server without the AI agent.`,
+		Long:  `Start the Nebo web server without the AI agent.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			runServe()
 		},
@@ -378,9 +389,9 @@ func runMCPServerDaemon(ctx context.Context, registry *tools.Registry, port int,
 	return nil
 }
 
-// acquireLock creates a lock file to ensure only one gobot instance runs
+// acquireLock creates a lock file to ensure only one nebo instance runs
 func acquireLock(dataDir string) (*os.File, error) {
-	lockPath := dataDir + "/gobot.lock"
+	lockPath := dataDir + "/nebo.lock"
 
 	// Try to create/open the lock file
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)

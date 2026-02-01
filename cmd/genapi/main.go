@@ -1,5 +1,5 @@
 // cmd/genapi/main.go - Custom TypeScript API generator
-// Replaces goctl with a custom solution for generating TypeScript interfaces and API clients
+// Parses routes from server.go and generates TypeScript API client
 
 package main
 
@@ -17,24 +17,24 @@ import (
 
 // Route defines an API route for code generation
 type Route struct {
-	Method      string // GET, POST, PUT, DELETE
-	Path        string // /api/v1/users/{id}
-	Handler     string // functionName in TypeScript
-	Description string // JSDoc description
-	Request     string // Request type (if any)
-	Response    string // Response type
+	Method      string   // GET, POST, PUT, DELETE
+	Path        string   // /api/v1/users/{id}
+	Handler     string   // functionName in TypeScript
+	Description string   // JSDoc description
+	Request     string   // Request type (if any)
+	Response    string   // Response type
 	PathParams  []string // Parameters in the path like {id}
 }
 
 // Field represents a struct field
 type Field struct {
-	Name       string
-	Type       string
-	JSONName   string
-	PathName   string
-	FormName   string
-	Optional   bool
-	Comment    string
+	Name     string
+	Type     string
+	JSONName string
+	PathName string
+	FormName string
+	Optional bool
+	Comment  string
 }
 
 // TypeDef represents a Go type definition
@@ -65,8 +65,14 @@ func main() {
 	}
 	fmt.Printf("Generated %s\n", outputPath)
 
+	// Parse routes from server.go
+	routes, err := parseRoutes("internal/server/server.go", types)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing routes: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Generate API client
-	routes := getRoutes()
 	apiTS := generateAPIClient(routes, types)
 	apiPath := "app/src/lib/api/nebo.ts"
 	if err := os.WriteFile(apiPath, []byte(apiTS), 0644); err != nil {
@@ -76,6 +82,138 @@ func main() {
 	fmt.Printf("Generated %s\n", apiPath)
 
 	fmt.Println("TypeScript API generation complete!")
+}
+
+// parseRoutes extracts route definitions from server.go
+func parseRoutes(filename string, types []TypeDef) ([]Route, error) {
+	content, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build a set of known type names for validation
+	typeSet := make(map[string]bool)
+	for _, t := range types {
+		typeSet[t.Name] = true
+	}
+
+	var routes []Route
+
+	// Match patterns like: r.Get("/path", handler.SomeHandler(svcCtx))
+	// Also handles: r.Post, r.Put, r.Delete, r.Patch
+	routePattern := regexp.MustCompile(`r\.(Get|Post|Put|Delete|Patch)\("([^"]+)",\s*(\w+)\.(\w+)\(svcCtx\)\)`)
+
+	matches := routePattern.FindAllStringSubmatch(string(content), -1)
+
+	for _, match := range matches {
+		method := strings.ToUpper(match[1])
+		path := match[2]
+		handlerName := match[4]
+
+		// Skip non-API routes
+		if !strings.HasPrefix(path, "/") {
+			continue
+		}
+
+		// Build the full path (routes in registerPublicRoutes and registerProtectedRoutes are under /api/v1)
+		fullPath := path
+		if !strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/health") && !strings.HasPrefix(path, "/ws") {
+			fullPath = "/api/v1" + path
+		}
+
+		// Skip WebSocket and non-API routes
+		if strings.Contains(fullPath, "/ws") || strings.Contains(fullPath, "/csrf-token") {
+			continue
+		}
+
+		// Extract path parameters like {id}
+		pathParamPattern := regexp.MustCompile(`\{(\w+)\}`)
+		pathParamMatches := pathParamPattern.FindAllStringSubmatch(fullPath, -1)
+		var pathParams []string
+		for _, pm := range pathParamMatches {
+			pathParams = append(pathParams, pm[1])
+		}
+
+		// Derive TypeScript function name from handler name
+		// e.g., "ListChatsHandler" -> "listChats"
+		tsHandler := strings.TrimSuffix(handlerName, "Handler")
+		tsHandler = toLowerCamel(tsHandler)
+
+		// Derive request/response types from handler name
+		baseName := strings.TrimSuffix(handlerName, "Handler")
+		requestType := baseName + "Request"
+		responseType := baseName + "Response"
+
+		// Check if types exist
+		if !typeSet[requestType] {
+			requestType = ""
+		}
+		if !typeSet[responseType] {
+			// Try common alternatives
+			if typeSet["MessageResponse"] && (method == "DELETE" || strings.HasPrefix(baseName, "Mark") || strings.HasPrefix(baseName, "Toggle")) {
+				responseType = "MessageResponse"
+			} else if typeSet[baseName] {
+				// Sometimes the response is just the entity type (e.g., Chat)
+				responseType = baseName
+			} else {
+				// Default to MessageResponse for mutations without specific response
+				responseType = "MessageResponse"
+			}
+		}
+
+		// Generate description from handler name
+		description := generateDescription(baseName)
+
+		routes = append(routes, Route{
+			Method:      method,
+			Path:        fullPath,
+			Handler:     tsHandler,
+			Description: description,
+			Request:     requestType,
+			Response:    responseType,
+			PathParams:  pathParams,
+		})
+	}
+
+	// Deduplicate routes by handler name
+	seen := make(map[string]bool)
+	var deduped []Route
+	for _, r := range routes {
+		if !seen[r.Handler] {
+			seen[r.Handler] = true
+			deduped = append(deduped, r)
+		}
+	}
+
+	return deduped, nil
+}
+
+// generateDescription creates a human-readable description from handler name
+func generateDescription(baseName string) string {
+	// Split by capital letters
+	words := splitCamelCase(baseName)
+	if len(words) == 0 {
+		return baseName
+	}
+	words[0] = strings.Title(words[0])
+	return strings.Join(words, " ")
+}
+
+// splitCamelCase splits a CamelCase string into words
+func splitCamelCase(s string) []string {
+	var words []string
+	var current strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			words = append(words, strings.ToLower(current.String()))
+			current.Reset()
+		}
+		current.WriteRune(r)
+	}
+	if current.Len() > 0 {
+		words = append(words, strings.ToLower(current.String()))
+	}
+	return words
 }
 
 func parseTypes(filename string) ([]TypeDef, error) {
@@ -216,7 +354,6 @@ func parseStructTag(tag string) TagInfo {
 	return info
 }
 
-
 func toLowerCamel(s string) string {
 	if s == "" {
 		return s
@@ -278,7 +415,6 @@ func generateComponents(types []TypeDef) string {
 	for _, t := range sortedTypes {
 		var jsonFields []Field // Body fields (json tag)
 		var formFields []Field // Query params (form tag only, NOT path)
-		hasPathOrFormParams := false
 
 		for _, f := range t.Fields {
 			// Skip fields marked to ignore
@@ -289,10 +425,8 @@ func generateComponents(types []TypeDef) string {
 			// Categorize fields based on their tags
 			if f.PathName != "" {
 				// Path params - don't add to any interface, they become function args
-				hasPathOrFormParams = true
 			} else if f.FormName != "" {
 				// Form/query params - add to Params interface
-				hasPathOrFormParams = true
 				formField := f
 				formField.JSONName = f.FormName
 				formFields = append(formFields, formField)
@@ -305,9 +439,9 @@ func generateComponents(types []TypeDef) string {
 		// Write the main interface (JSON body fields only)
 		writeInterface(&sb, t.Name, jsonFields, t.Comment)
 
-		// For request types with path/form params, write a separate Params interface
+		// For request types with form params, write a separate Params interface
 		// (only contains form params, path params become function args)
-		if hasPathOrFormParams {
+		if len(formFields) > 0 {
 			writeInterface(&sb, t.Name+"Params", formFields, "")
 		}
 	}
@@ -341,7 +475,6 @@ func writeInterface(sb *strings.Builder, name string, fields []Field, comment st
 	sb.WriteString("}\n\n")
 }
 
-
 func generateAPIClient(routes []Route, types []TypeDef) string {
 	var sb strings.Builder
 
@@ -356,6 +489,14 @@ export * from "./neboComponents"
 	for _, t := range types {
 		typeMap[t.Name] = t
 	}
+
+	// Sort routes for consistent output
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Path != routes[j].Path {
+			return routes[i].Path < routes[j].Path
+		}
+		return routes[i].Method < routes[j].Method
+	})
 
 	for _, r := range routes {
 		// Generate JSDoc
@@ -385,15 +526,15 @@ export * from "./neboComponents"
 func buildFunctionParams(r Route, typeMap map[string]TypeDef) string {
 	var params []string
 
-	// Check if the request type has form params or path params (needs *Params interface)
-	hasPathOrFormParams := false
+	// Check if the request type has form params, path params, or body params
+	hasFormParams := false
 	hasBodyParams := false
 
 	if r.Request != "" {
 		if t, ok := typeMap[r.Request]; ok {
 			for _, f := range t.Fields {
-				if f.PathName != "" || f.FormName != "" {
-					hasPathOrFormParams = true
+				if f.FormName != "" {
+					hasFormParams = true
 				}
 				if f.JSONName != "" && f.PathName == "" && f.FormName == "" {
 					hasBodyParams = true
@@ -402,8 +543,8 @@ func buildFunctionParams(r Route, typeMap map[string]TypeDef) string {
 		}
 	}
 
-	// Add params object for form params (empty object for path-only requests to match goctl behavior)
-	if hasPathOrFormParams {
+	// Add params object only if there are actual form/query params (not just path params)
+	if hasFormParams {
 		params = append(params, "params: components."+r.Request+"Params")
 	}
 
@@ -420,20 +561,19 @@ func buildFunctionParams(r Route, typeMap map[string]TypeDef) string {
 	return strings.Join(params, ", ")
 }
 
-
 func buildFunctionBody(r Route, typeMap map[string]TypeDef) string {
 	method := strings.ToLower(r.Method)
 	path := convertPathParams(r.Path)
 
 	// Check what parameters the request type has
-	hasPathOrFormParams := false
+	hasFormParams := false
 	hasBodyParams := false
 
 	if r.Request != "" {
 		if t, ok := typeMap[r.Request]; ok {
 			for _, f := range t.Fields {
-				if f.PathName != "" || f.FormName != "" {
-					hasPathOrFormParams = true
+				if f.FormName != "" {
+					hasFormParams = true
 				}
 				if f.JSONName != "" && f.PathName == "" && f.FormName == "" {
 					hasBodyParams = true
@@ -444,30 +584,30 @@ func buildFunctionBody(r Route, typeMap map[string]TypeDef) string {
 
 	switch method {
 	case "get":
-		if hasPathOrFormParams {
+		if hasFormParams {
 			return fmt.Sprintf("webapi.get<components.%s>(`%s`, params)", r.Response, path)
 		}
 		return fmt.Sprintf("webapi.get<components.%s>(`%s`)", r.Response, path)
 	case "post":
-		if hasPathOrFormParams && hasBodyParams {
+		if hasFormParams && hasBodyParams {
 			return fmt.Sprintf("webapi.post<components.%s>(`%s`, params, req)", r.Response, path)
 		} else if hasBodyParams {
 			return fmt.Sprintf("webapi.post<components.%s>(`%s`, req)", r.Response, path)
-		} else if hasPathOrFormParams {
+		} else if hasFormParams {
 			return fmt.Sprintf("webapi.post<components.%s>(`%s`, params)", r.Response, path)
 		}
 		return fmt.Sprintf("webapi.post<components.%s>(`%s`)", r.Response, path)
 	case "put":
-		if hasPathOrFormParams && hasBodyParams {
+		if hasFormParams && hasBodyParams {
 			return fmt.Sprintf("webapi.put<components.%s>(`%s`, params, req)", r.Response, path)
 		} else if hasBodyParams {
 			return fmt.Sprintf("webapi.put<components.%s>(`%s`, req)", r.Response, path)
-		} else if hasPathOrFormParams {
+		} else if hasFormParams {
 			return fmt.Sprintf("webapi.put<components.%s>(`%s`, params)", r.Response, path)
 		}
 		return fmt.Sprintf("webapi.put<components.%s>(`%s`)", r.Response, path)
 	case "delete":
-		if hasPathOrFormParams {
+		if hasFormParams {
 			return fmt.Sprintf("webapi.delete<components.%s>(`%s`, params)", r.Response, path)
 		}
 		return fmt.Sprintf("webapi.delete<components.%s>(`%s`)", r.Response, path)
@@ -480,91 +620,4 @@ func convertPathParams(path string) string {
 	// Convert /api/v1/users/{id} to /api/v1/users/${id}
 	re := regexp.MustCompile(`\{(\w+)\}`)
 	return re.ReplaceAllString(path, "${$1}")
-}
-
-// getRoutes returns all API routes for code generation
-func getRoutes() []Route {
-	return []Route{
-		// Health
-		{Method: "GET", Path: "/health", Handler: "healthCheck", Description: "Health check endpoint", Response: "HealthResponse"},
-
-		// Agent routes
-		{Method: "GET", Path: "/api/v1/agent/sessions", Handler: "listAgentSessions", Description: "List agent sessions", Response: "ListAgentSessionsResponse"},
-		{Method: "DELETE", Path: "/api/v1/agent/sessions/{id}", Handler: "deleteAgentSession", Description: "Delete agent session", Request: "DeleteAgentSessionRequest", Response: "MessageResponse", PathParams: []string{"id"}},
-		{Method: "GET", Path: "/api/v1/agent/sessions/{id}/messages", Handler: "getAgentSessionMessages", Description: "Get session messages", Request: "GetAgentSessionRequest", Response: "GetAgentSessionMessagesResponse", PathParams: []string{"id"}},
-		{Method: "GET", Path: "/api/v1/agent/settings", Handler: "getAgentSettings", Description: "Get agent settings", Response: "GetAgentSettingsResponse"},
-		{Method: "PUT", Path: "/api/v1/agent/settings", Handler: "updateAgentSettings", Description: "Update agent settings", Request: "UpdateAgentSettingsRequest", Response: "GetAgentSettingsResponse"},
-		{Method: "GET", Path: "/api/v1/agent/heartbeat", Handler: "getHeartbeat", Description: "Get heartbeat content (HEARTBEAT.md)", Response: "GetHeartbeatResponse"},
-		{Method: "PUT", Path: "/api/v1/agent/heartbeat", Handler: "updateHeartbeat", Description: "Update heartbeat content (HEARTBEAT.md)", Request: "UpdateHeartbeatRequest", Response: "UpdateHeartbeatResponse"},
-		{Method: "GET", Path: "/api/v1/agent/status", Handler: "getSimpleAgentStatus", Description: "Get simple agent status (single agent model)", Response: "SimpleAgentStatusResponse"},
-		{Method: "GET", Path: "/api/v1/agents", Handler: "listAgents", Description: "List connected agents", Response: "ListAgentsResponse"},
-		{Method: "GET", Path: "/api/v1/agents/{agentId}/status", Handler: "getAgentStatus", Description: "Get agent status", Request: "AgentStatusRequest", Response: "AgentStatusResponse", PathParams: []string{"agentId"}},
-
-		// Auth routes
-		{Method: "GET", Path: "/api/v1/auth/config", Handler: "getAuthConfig", Description: "Get auth configuration (OAuth providers enabled)", Response: "AuthConfigResponse"},
-		{Method: "GET", Path: "/api/v1/auth/dev-login", Handler: "devLogin", Description: "Dev auto-login (local development only)", Response: "LoginResponse"},
-		{Method: "POST", Path: "/api/v1/auth/forgot-password", Handler: "forgotPassword", Description: "Request password reset", Request: "ForgotPasswordRequest", Response: "MessageResponse"},
-		{Method: "POST", Path: "/api/v1/auth/login", Handler: "login", Description: "User login", Request: "LoginRequest", Response: "LoginResponse"},
-		{Method: "POST", Path: "/api/v1/auth/refresh", Handler: "refreshToken", Description: "Refresh authentication token", Request: "RefreshTokenRequest", Response: "RefreshTokenResponse"},
-		{Method: "POST", Path: "/api/v1/auth/register", Handler: "register", Description: "Register new user", Request: "RegisterRequest", Response: "LoginResponse"},
-		{Method: "POST", Path: "/api/v1/auth/resend-verification", Handler: "resendVerification", Description: "Resend email verification", Request: "ResendVerificationRequest", Response: "MessageResponse"},
-		{Method: "POST", Path: "/api/v1/auth/reset-password", Handler: "resetPassword", Description: "Reset password with token", Request: "ResetPasswordRequest", Response: "MessageResponse"},
-		{Method: "POST", Path: "/api/v1/auth/verify-email", Handler: "verifyEmail", Description: "Verify email address with token", Request: "EmailVerificationRequest", Response: "MessageResponse"},
-
-		// Chat routes
-		{Method: "GET", Path: "/api/v1/chats", Handler: "listChats", Description: "List user chats", Request: "ListChatsRequest", Response: "ListChatsResponse"},
-		{Method: "POST", Path: "/api/v1/chats", Handler: "createChat", Description: "Create new chat", Request: "CreateChatRequest", Response: "CreateChatResponse"},
-		{Method: "GET", Path: "/api/v1/chats/companion", Handler: "getCompanionChat", Description: "Get companion chat (auto-creates if needed)", Response: "GetChatResponse"},
-		{Method: "GET", Path: "/api/v1/chats/days", Handler: "listChatDays", Description: "List days with messages for history browsing", Request: "ListChatDaysRequest", Response: "ListChatDaysResponse"},
-		{Method: "GET", Path: "/api/v1/chats/history/{day}", Handler: "getHistoryByDay", Description: "Get messages for a specific day", Request: "GetHistoryByDayRequest", Response: "GetHistoryByDayResponse", PathParams: []string{"day"}},
-		{Method: "POST", Path: "/api/v1/chats/message", Handler: "sendMessage", Description: "Send message (creates chat if needed)", Request: "SendMessageRequest", Response: "SendMessageResponse"},
-		{Method: "GET", Path: "/api/v1/chats/search", Handler: "searchChatMessages", Description: "Search chat messages", Request: "SearchChatMessagesRequest", Response: "SearchChatMessagesResponse"},
-		{Method: "GET", Path: "/api/v1/chats/{id}", Handler: "getChat", Description: "Get chat with messages", Request: "GetChatRequest", Response: "GetChatResponse", PathParams: []string{"id"}},
-		{Method: "PUT", Path: "/api/v1/chats/{id}", Handler: "updateChat", Description: "Update chat title", Request: "UpdateChatRequest", Response: "Chat", PathParams: []string{"id"}},
-		{Method: "DELETE", Path: "/api/v1/chats/{id}", Handler: "deleteChat", Description: "Delete chat", Request: "DeleteChatRequest", Response: "MessageResponse", PathParams: []string{"id"}},
-
-		// Extensions routes
-		{Method: "GET", Path: "/api/v1/extensions", Handler: "listExtensions", Description: "List all extensions (tools, skills, plugins)", Response: "ListExtensionsResponse"},
-		{Method: "GET", Path: "/api/v1/skills/{name}", Handler: "getSkill", Description: "Get single skill details", Request: "GetSkillRequest", Response: "GetSkillResponse", PathParams: []string{"name"}},
-		{Method: "POST", Path: "/api/v1/skills/{name}/toggle", Handler: "toggleSkill", Description: "Toggle skill enabled/disabled", Request: "ToggleSkillRequest", Response: "ToggleSkillResponse", PathParams: []string{"name"}},
-
-		// Notification routes
-		{Method: "GET", Path: "/api/v1/notifications", Handler: "listNotifications", Description: "List user notifications", Request: "ListNotificationsRequest", Response: "ListNotificationsResponse"},
-		{Method: "DELETE", Path: "/api/v1/notifications/{id}", Handler: "deleteNotification", Description: "Delete notification", Request: "DeleteNotificationRequest", Response: "MessageResponse", PathParams: []string{"id"}},
-		{Method: "PUT", Path: "/api/v1/notifications/{id}/read", Handler: "markNotificationRead", Description: "Mark notification as read", Request: "MarkNotificationReadRequest", Response: "MessageResponse", PathParams: []string{"id"}},
-		{Method: "PUT", Path: "/api/v1/notifications/read-all", Handler: "markAllNotificationsRead", Description: "Mark all notifications as read", Response: "MessageResponse"},
-		{Method: "GET", Path: "/api/v1/notifications/unread-count", Handler: "getUnreadCount", Description: "Get unread notification count", Response: "GetUnreadCountResponse"},
-
-		// OAuth routes
-		{Method: "POST", Path: "/api/v1/oauth/{provider}/callback", Handler: "oAuthCallback", Description: "OAuth callback - exchange code for tokens", Request: "OAuthLoginRequest", Response: "OAuthLoginResponse", PathParams: []string{"provider"}},
-		{Method: "GET", Path: "/api/v1/oauth/{provider}/url", Handler: "getOAuthUrl", Description: "Get OAuth authorization URL", Request: "GetOAuthUrlRequest", Response: "GetOAuthUrlResponse", PathParams: []string{"provider"}},
-		{Method: "DELETE", Path: "/api/v1/oauth/{provider}", Handler: "disconnectOAuth", Description: "Disconnect OAuth provider", Request: "DisconnectOAuthRequest", Response: "MessageResponse", PathParams: []string{"provider"}},
-		{Method: "GET", Path: "/api/v1/oauth/providers", Handler: "listOAuthProviders", Description: "List connected OAuth providers", Response: "ListOAuthProvidersResponse"},
-
-		// Models/Provider routes
-		{Method: "GET", Path: "/api/v1/models", Handler: "listModels", Description: "List all available models from YAML cache", Response: "ListModelsResponse"},
-		{Method: "PUT", Path: "/api/v1/models/{provider}/{modelId}", Handler: "updateModel", Description: "Update model settings (active, kind, preferred)", Request: "UpdateModelRequest", Response: "MessageResponse", PathParams: []string{"provider", "modelId"}},
-		{Method: "PUT", Path: "/api/v1/models/task-routing", Handler: "updateTaskRouting", Description: "Update task routing configuration", Request: "UpdateTaskRoutingRequest", Response: "MessageResponse"},
-		{Method: "GET", Path: "/api/v1/providers", Handler: "listAuthProfiles", Description: "List all auth profiles (API keys)", Response: "ListAuthProfilesResponse"},
-		{Method: "POST", Path: "/api/v1/providers", Handler: "createAuthProfile", Description: "Create a new auth profile", Request: "CreateAuthProfileRequest", Response: "CreateAuthProfileResponse"},
-		{Method: "GET", Path: "/api/v1/providers/{id}", Handler: "getAuthProfile", Description: "Get auth profile by ID", Request: "GetAuthProfileRequest", Response: "GetAuthProfileResponse", PathParams: []string{"id"}},
-		{Method: "PUT", Path: "/api/v1/providers/{id}", Handler: "updateAuthProfile", Description: "Update auth profile", Request: "UpdateAuthProfileRequest", Response: "GetAuthProfileResponse", PathParams: []string{"id"}},
-		{Method: "DELETE", Path: "/api/v1/providers/{id}", Handler: "deleteAuthProfile", Description: "Delete auth profile", Request: "DeleteAuthProfileRequest", Response: "MessageResponse", PathParams: []string{"id"}},
-		{Method: "POST", Path: "/api/v1/providers/{id}/test", Handler: "testAuthProfile", Description: "Test auth profile (verify API key works)", Request: "TestAuthProfileRequest", Response: "TestAuthProfileResponse", PathParams: []string{"id"}},
-
-		// Setup routes
-		{Method: "POST", Path: "/api/v1/setup/admin", Handler: "createAdmin", Description: "Create the first admin user (only works when no admin exists)", Request: "CreateAdminRequest", Response: "CreateAdminResponse"},
-		{Method: "POST", Path: "/api/v1/setup/complete", Handler: "completeSetup", Description: "Mark initial setup as complete", Response: "CompleteSetupResponse"},
-		{Method: "GET", Path: "/api/v1/setup/personality", Handler: "getPersonality", Description: "Get AI personality configuration", Response: "GetPersonalityResponse"},
-		{Method: "PUT", Path: "/api/v1/setup/personality", Handler: "updatePersonality", Description: "Update AI personality configuration", Request: "UpdatePersonalityRequest", Response: "UpdatePersonalityResponse"},
-		{Method: "GET", Path: "/api/v1/setup/status", Handler: "setupStatus", Description: "Check if setup is required (no admin exists)", Response: "SetupStatusResponse"},
-
-		// User routes
-		{Method: "GET", Path: "/api/v1/user/me", Handler: "getCurrentUser", Description: "Get current user profile", Response: "GetUserResponse"},
-		{Method: "PUT", Path: "/api/v1/user/me", Handler: "updateCurrentUser", Description: "Update current user profile", Request: "UpdateUserRequest", Response: "GetUserResponse"},
-		{Method: "DELETE", Path: "/api/v1/user/me", Handler: "deleteAccount", Description: "Delete current user account", Request: "DeleteAccountRequest", Response: "MessageResponse"},
-		{Method: "POST", Path: "/api/v1/user/me/change-password", Handler: "changePassword", Description: "Change password for authenticated user", Request: "ChangePasswordRequest", Response: "MessageResponse"},
-		{Method: "GET", Path: "/api/v1/user/me/preferences", Handler: "getPreferences", Description: "Get user preferences", Response: "GetPreferencesResponse"},
-		{Method: "PUT", Path: "/api/v1/user/me/preferences", Handler: "updatePreferences", Description: "Update user preferences", Request: "UpdatePreferencesRequest", Response: "GetPreferencesResponse"},
-	}
 }

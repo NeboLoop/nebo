@@ -20,12 +20,16 @@ import (
 	"nebo/internal/handler"
 	"nebo/internal/handler/agent"
 	"nebo/internal/handler/auth"
+	"nebo/internal/handler/channel"
 	"nebo/internal/handler/chat"
 	"nebo/internal/handler/extensions"
+	"nebo/internal/handler/integration"
+	"nebo/internal/handler/memory"
 	"nebo/internal/handler/notification"
 	"nebo/internal/handler/oauth"
 	"nebo/internal/handler/provider"
 	"nebo/internal/handler/setup"
+	"nebo/internal/handler/tasks"
 	"nebo/internal/handler/user"
 	"nebo/internal/mcp"
 	mcpoauth "nebo/internal/mcp/oauth"
@@ -46,7 +50,7 @@ type ServerOptions struct {
 	Quiet          bool          // Suppress startup messages for clean CLI output
 }
 
-// Run starts the GoBot server with the given configuration.
+// Run starts the Nebo server with the given configuration.
 // It blocks until the context is cancelled or an error occurs.
 func Run(ctx context.Context, c config.Config) error {
 	return RunWithOptions(ctx, c, ServerOptions{})
@@ -58,7 +62,7 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 
 	// Check if port is available
 	if err := checkPortAvailable(serverPort); err != nil {
-		return fmt.Errorf("port %d is already in use - only one GoBot instance allowed per computer", serverPort)
+		return fmt.Errorf("port %d is already in use - only one Nebo instance allowed per computer", serverPort)
 	}
 
 	if !opts.Quiet {
@@ -248,6 +252,9 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/agent/heartbeat", agent.GetHeartbeatHandler(svcCtx))
 	r.Put("/agent/heartbeat", agent.UpdateHeartbeatHandler(svcCtx))
 	r.Get("/agent/status", agent.GetSimpleAgentStatusHandler(svcCtx))
+	r.Get("/agent/profile", agent.GetAgentProfileHandler(svcCtx))
+	r.Put("/agent/profile", agent.UpdateAgentProfileHandler(svcCtx))
+	r.Get("/agent/personality-presets", agent.ListPersonalityPresetsHandler(svcCtx))
 	r.Get("/agents", agent.ListAgentsHandler(svcCtx))
 	r.Get("/agents/{agentId}/status", agent.GetAgentStatusHandler(svcCtx))
 
@@ -268,8 +275,45 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/skills/{name}", extensions.GetSkillHandler(svcCtx))
 	r.Post("/skills/{name}/toggle", extensions.ToggleSkillHandler(svcCtx))
 
+	// Memory routes
+	r.Get("/memories", memory.ListMemoriesHandler(svcCtx))
+	r.Get("/memories/search", memory.SearchMemoriesHandler(svcCtx))
+	r.Get("/memories/stats", memory.GetMemoryStatsHandler(svcCtx))
+	r.Get("/memories/{id}", memory.GetMemoryHandler(svcCtx))
+	r.Put("/memories/{id}", memory.UpdateMemoryHandler(svcCtx))
+	r.Delete("/memories/{id}", memory.DeleteMemoryHandler(svcCtx))
+
+	// Task routes
+	r.Get("/tasks", tasks.ListTasksHandler(svcCtx))
+	r.Post("/tasks", tasks.CreateTaskHandler(svcCtx))
+	r.Get("/tasks/{id}", tasks.GetTaskHandler(svcCtx))
+	r.Put("/tasks/{id}", tasks.UpdateTaskHandler(svcCtx))
+	r.Delete("/tasks/{id}", tasks.DeleteTaskHandler(svcCtx))
+	r.Post("/tasks/{id}/toggle", tasks.ToggleTaskHandler(svcCtx))
+	r.Post("/tasks/{id}/run", tasks.RunTaskHandler(svcCtx))
+	r.Get("/tasks/{id}/history", tasks.ListTaskHistoryHandler(svcCtx))
+
+	// MCP Integration routes
+	r.Get("/integrations", integration.ListMCPIntegrationsHandler(svcCtx))
+	r.Get("/integrations/registry", integration.ListMCPServerRegistryHandler(svcCtx))
+	r.Post("/integrations", integration.CreateMCPIntegrationHandler(svcCtx))
+	r.Get("/integrations/{id}", integration.GetMCPIntegrationHandler(svcCtx))
+	r.Put("/integrations/{id}", integration.UpdateMCPIntegrationHandler(svcCtx))
+	r.Delete("/integrations/{id}", integration.DeleteMCPIntegrationHandler(svcCtx))
+	r.Post("/integrations/{id}/test", integration.TestMCPIntegrationHandler(svcCtx))
+
+	// Channel routes
+	r.Get("/channels", channel.ListChannelsHandler(svcCtx))
+	r.Get("/channels/registry", channel.ListChannelRegistryHandler(svcCtx))
+	r.Post("/channels", channel.CreateChannelHandler(svcCtx))
+	r.Get("/channels/{id}", channel.GetChannelHandler(svcCtx))
+	r.Put("/channels/{id}", channel.UpdateChannelHandler(svcCtx))
+	r.Delete("/channels/{id}", channel.DeleteChannelHandler(svcCtx))
+	r.Post("/channels/{id}/test", channel.TestChannelHandler(svcCtx))
+
 	// Provider/Models routes
 	r.Get("/models", provider.ListModelsHandler(svcCtx))
+	r.Put("/models/config", provider.UpdateModelConfigHandler(svcCtx))
 	r.Put("/models/{provider}/{modelId}", provider.UpdateModelHandler(svcCtx))
 	r.Put("/models/task-routing", provider.UpdateTaskRoutingHandler(svcCtx))
 	r.Get("/providers", provider.ListAuthProfilesHandler(svcCtx))
@@ -278,11 +322,15 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Put("/providers/{id}", provider.UpdateAuthProfileHandler(svcCtx))
 	r.Delete("/providers/{id}", provider.DeleteAuthProfileHandler(svcCtx))
 	r.Post("/providers/{id}/test", provider.TestAuthProfileHandler(svcCtx))
+
+	// User profile routes (public for single-user personal assistant mode)
+	r.Get("/user/me/profile", user.GetUserProfileHandler(svcCtx))
+	r.Put("/user/me/profile", user.UpdateUserProfileHandler(svcCtx))
 }
 
 // registerProtectedRoutes registers routes that require JWT authentication
 func registerProtectedRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
-	// User profile routes
+	// User account routes (requires auth for multi-user scenarios)
 	r.Get("/user/me", user.GetCurrentUserHandler(svcCtx))
 	r.Put("/user/me", user.UpdateCurrentUserHandler(svcCtx))
 	r.Delete("/user/me", user.DeleteAccountHandler(svcCtx))
@@ -378,7 +426,7 @@ func spaHandler(spaFS fs.FS) http.HandlerFunc {
 
 func agentWebSocketHandler(ctx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		agentID := "gobot-agent"
+		agentID := "nebo-agent"
 		ctx.AgentHub.HandleWebSocket(w, r, agentID)
 	}
 }

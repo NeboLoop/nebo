@@ -11,8 +11,10 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"nebo/internal/logging"
-	"gopkg.in/yaml.v3"
 )
+
+// SkillFileName is the expected filename for skill definitions
+const SkillFileName = "SKILL.md"
 
 // Loader manages loading and hot-reloading of skill definitions
 type Loader struct {
@@ -32,7 +34,16 @@ func NewLoader(dir string) *Loader {
 	}
 }
 
-// LoadAll loads all skill files from the configured directory
+// LoadAll loads all skill files from the configured directory.
+// Skills are expected to be in subdirectories with a SKILL.md file:
+//
+//	skills/
+//	├── weather/
+//	│   └── SKILL.md
+//	├── code-review/
+//	│   └── SKILL.md
+//	└── github/
+//	    └── SKILL.md
 func (l *Loader) LoadAll() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -46,7 +57,7 @@ func (l *Loader) LoadAll() error {
 		return nil
 	}
 
-	// Walk directory for .yaml and .yml files
+	// Walk directory looking for SKILL.md files
 	err := filepath.Walk(l.dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -55,8 +66,8 @@ func (l *Loader) LoadAll() error {
 			return nil
 		}
 
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".yaml" && ext != ".yml" {
+		// Only load SKILL.md files (case-insensitive check)
+		if !strings.EqualFold(filepath.Base(path), SkillFileName) {
 			return nil
 		}
 
@@ -71,15 +82,15 @@ func (l *Loader) LoadAll() error {
 	return nil
 }
 
-// loadFile loads a single skill file (must hold lock)
+// loadFile loads a single SKILL.md file (must hold lock)
 func (l *Loader) loadFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %w", path, err)
 	}
 
-	var skill Skill
-	if err := yaml.Unmarshal(data, &skill); err != nil {
+	skill, err := ParseSkillMD(data)
+	if err != nil {
 		return fmt.Errorf("failed to parse %s: %w", path, err)
 	}
 
@@ -95,7 +106,7 @@ func (l *Loader) loadFile(path string) error {
 		return fmt.Errorf("invalid skill %s: %w", path, err)
 	}
 
-	l.skills[skill.Name] = &skill
+	l.skills[skill.Name] = skill
 	logging.Debugf("[skills] Loaded skill: %s (triggers: %v)", skill.Name, skill.Triggers)
 	return nil
 }
@@ -116,13 +127,28 @@ func (l *Loader) Watch(ctx context.Context) error {
 	// Start watching goroutine
 	go l.watchLoop(ctx)
 
-	// Add directory to watch
-	if err := watcher.Add(l.dir); err != nil {
+	// Add directory to watch (recursive watch for subdirs)
+	if err := l.watchRecursive(l.dir); err != nil {
 		// Directory might not exist yet, that's okay
 		logging.Errorf("[skills] Could not watch %s: %v", l.dir, err)
 	}
 
 	return nil
+}
+
+// watchRecursive adds a directory and all subdirectories to the watcher
+func (l *Loader) watchRecursive(dir string) error {
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip errors
+		}
+		if info.IsDir() {
+			if err := l.watcher.Add(path); err != nil {
+				logging.Debugf("[skills] Could not watch %s: %v", path, err)
+			}
+		}
+		return nil
+	})
 }
 
 // watchLoop handles file system events
@@ -147,8 +173,8 @@ func (l *Loader) watchLoop(ctx context.Context) {
 
 // handleEvent processes a file system event
 func (l *Loader) handleEvent(event fsnotify.Event) {
-	ext := strings.ToLower(filepath.Ext(event.Name))
-	if ext != ".yaml" && ext != ".yml" {
+	// Only care about SKILL.md files (case-insensitive check)
+	if !strings.EqualFold(filepath.Base(event.Name), SkillFileName) {
 		return
 	}
 

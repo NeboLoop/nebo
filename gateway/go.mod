@@ -1,4 +1,4 @@
-module github.com/alminisl/gobot/gateway
+module github.com/alminisl/nebo/gateway
 
 go 1.22
 

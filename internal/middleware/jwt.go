@@ -105,7 +105,7 @@ func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.
 				UserId: claims.Sub,
 				Email:  claims.Email,
 				Name:   claims.Name,
-				Iss:    "gobot",
+				Iss:    "nebo",
 				Exp:    claims.Exp,
 				Iat:    claims.Iat,
 			}
@@ -230,6 +230,12 @@ func parseJWTClaims(tokenString string) (*JWTClaims, error) {
 	}
 
 	return &claims, nil
+}
+
+// ParseJWTClaimsFromToken is an exported version of parseJWTClaims for use by other packages
+// (e.g., websocket handler for extracting user_id from JWT cookies)
+func ParseJWTClaimsFromToken(tokenString string) (*JWTClaims, error) {
+	return parseJWTClaims(tokenString)
 }
 
 // unauthorized sends a 401 response

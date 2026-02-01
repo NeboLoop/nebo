@@ -17,10 +17,11 @@ func SkillsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
 		Short: "Manage skill definitions",
-		Long: `Skills are YAML definitions that modify agent behavior without code changes.
-They can add context to prompts, require specific tools, and provide examples.
+		Long: `Skills are SKILL.md files that modify agent behavior without code changes.
+They use YAML frontmatter for metadata and markdown body for instructions.
 
-Skills are loaded from ~/.nebo/skills/ or the extensions/skills/ directory.`,
+Skills are loaded from ~/.nebo/skills/ or the extensions/skills/ directory.
+Each skill should be in its own subdirectory with a SKILL.md file.`,
 	}
 
 	cmd.AddCommand(&cobra.Command{
@@ -67,7 +68,7 @@ func listSkills(cfg *agentcfg.Config) {
 	if len(skillList) == 0 {
 		fmt.Println("No skills loaded.")
 		fmt.Printf("\nSkills directory: %s\n", skillsDir(cfg))
-		fmt.Println("Create YAML files in this directory to define skills.")
+		fmt.Println("Create subdirectories with SKILL.md files to define skills.")
 		return
 	}
 
@@ -124,17 +125,8 @@ func showSkill(cfg *agentcfg.Config, name string) {
 	}
 
 	if skill.Template != "" {
-		fmt.Println("Template:")
+		fmt.Println("Template (markdown body):")
 		fmt.Println(skill.Template)
-	}
-
-	if len(skill.Examples) > 0 {
-		fmt.Println("\nExamples:")
-		for i, ex := range skill.Examples {
-			fmt.Printf("  Example %d:\n", i+1)
-			fmt.Printf("    User: %s\n", truncateString(ex.User, 60))
-			fmt.Printf("    Assistant: %s\n", truncateString(ex.Assistant, 60))
-		}
 	}
 }
 

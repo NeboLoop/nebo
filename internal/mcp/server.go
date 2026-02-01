@@ -25,7 +25,7 @@ func NewServer(svc *svc.ServiceContext, r *http.Request) *mcp.Server {
 // The ToolContext is returned so the caller can cache it for session persistence.
 func NewServerWithContext(svc *svc.ServiceContext, r *http.Request) (*mcp.Server, *mcpctx.ToolContext) {
 	server := mcp.NewServer(&mcp.Implementation{
-		Name:    "gobot",
+		Name:    "nebo",
 		Version: "1.0.0",
 	}, nil)
 

@@ -41,6 +41,7 @@ type SubAgent struct {
 	ID          string
 	Task        string
 	Description string
+	Lane        string // Lane this agent runs in (default: LaneSubagent)
 	Status      AgentStatus
 	Result      string
 	Error       error
@@ -49,6 +50,14 @@ type SubAgent struct {
 	Events      []ai.StreamEvent
 	cancel      context.CancelFunc
 }
+
+// Lane constants for task queue
+const (
+	LaneMain     = "main"
+	LaneCron     = "cron"
+	LaneSubagent = "subagent"
+	LaneNested   = "nested"
+)
 
 // Orchestrator manages multiple concurrent sub-agents
 type Orchestrator struct {
@@ -67,6 +76,34 @@ type Orchestrator struct {
 	results chan AgentResult
 }
 
+// GetMaxConcurrent returns the max concurrent sub-agents limit
+func (o *Orchestrator) GetMaxConcurrent() int {
+	return o.maxConcurrent
+}
+
+// SetMaxConcurrent updates the max concurrent sub-agents limit
+func (o *Orchestrator) SetMaxConcurrent(max int) {
+	if max < 1 {
+		max = 1
+	}
+	o.mu.Lock()
+	o.maxConcurrent = max
+	o.mu.Unlock()
+}
+
+// RunningCount returns the number of currently running sub-agents
+func (o *Orchestrator) RunningCount() int {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	count := 0
+	for _, agent := range o.agents {
+		if agent.Status == StatusRunning {
+			count++
+		}
+	}
+	return count
+}
+
 // AgentResult is sent when a sub-agent completes
 type AgentResult struct {
 	AgentID string
@@ -83,8 +120,8 @@ func NewOrchestrator(cfg *config.Config, sessions *session.Manager, providers []
 		providers:     providers,
 		tools:         toolExecutor,
 		config:        cfg,
-		maxConcurrent: 5,  // Max 5 concurrent sub-agents
-		maxPerParent:  10, // Max 10 sub-agents per parent session
+		maxConcurrent: 0,  // 0 = unlimited sub-agents
+		maxPerParent:  0,  // 0 = unlimited per parent session
 		results:       make(chan AgentResult, 100),
 	}
 }
@@ -94,6 +131,7 @@ type SpawnRequest struct {
 	ParentSessionKey string // Parent session for context inheritance
 	Task             string // Task description for the sub-agent
 	Description      string // Short description for tracking
+	Lane             string // Lane to run in (default: LaneSubagent)
 	Wait             bool   // Wait for completion before returning
 	Timeout          time.Duration
 	SystemPrompt     string // Optional custom system prompt
@@ -103,16 +141,18 @@ type SpawnRequest struct {
 func (o *Orchestrator) Spawn(ctx context.Context, req *SpawnRequest) (*SubAgent, error) {
 	o.mu.Lock()
 
-	// Check limits
-	runningCount := 0
-	for _, agent := range o.agents {
-		if agent.Status == StatusRunning {
-			runningCount++
+	// Check limits (0 = unlimited)
+	if o.maxConcurrent > 0 {
+		runningCount := 0
+		for _, agent := range o.agents {
+			if agent.Status == StatusRunning {
+				runningCount++
+			}
 		}
-	}
-	if runningCount >= o.maxConcurrent {
-		o.mu.Unlock()
-		return nil, fmt.Errorf("maximum concurrent agents reached (%d)", o.maxConcurrent)
+		if runningCount >= o.maxConcurrent {
+			o.mu.Unlock()
+			return nil, fmt.Errorf("maximum concurrent agents reached (%d)", o.maxConcurrent)
+		}
 	}
 
 	// Generate unique ID
@@ -124,10 +164,16 @@ func (o *Orchestrator) Spawn(ctx context.Context, req *SpawnRequest) (*SubAgent,
 		agentCtx, cancel = context.WithTimeout(ctx, req.Timeout)
 	}
 
+	lane := req.Lane
+	if lane == "" {
+		lane = LaneSubagent
+	}
+
 	agent := &SubAgent{
 		ID:          agentID,
 		Task:        req.Task,
 		Description: req.Description,
+		Lane:        lane,
 		Status:      StatusPending,
 		StartedAt:   time.Now(),
 		cancel:      cancel,

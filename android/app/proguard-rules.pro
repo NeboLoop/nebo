@@ -1,9 +1,9 @@
-# GoBot ProGuard Rules
+# Nebo ProGuard Rules
 
 # Keep Gson serialization
 -keepattributes Signature
 -keepattributes *Annotation*
--keep class com.gobot.app.** { *; }
+-keep class com.nebo.app.** { *; }
 
 # OkHttp
 -dontwarn okhttp3.**

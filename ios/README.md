@@ -1,11 +1,11 @@
-# GoBot iOS App
+# Nebo iOS App
 
-A native SwiftUI companion app for chatting with GoBot from your iPhone.
+A native SwiftUI companion app for chatting with Nebo from your iPhone.
 
 ## Architecture
 
 ```
-GoBot/
+Nebo/
 ├── GoBotApp.swift           # App entry point
 ├── Models/
 │   ├── Message.swift        # Chat message model
@@ -24,15 +24,15 @@ GoBot/
 ## Prerequisites
 
 - Xcode 15+ (for iOS 17+ SDK)
-- GoBot backend running locally or deployed
-- A GoBot user account
+- Nebo backend running locally or deployed
+- A Nebo user account
 
 ## Local Development Setup
 
-### 1. Start the GoBot backend
+### 1. Start the Nebo backend
 
 ```bash
-cd /path/to/gobot
+cd /path/to/nebo
 make air  # Backend with hot reload
 ```
 
@@ -41,7 +41,7 @@ Backend runs at `http://localhost:29875`
 ### 2. Open in Xcode
 
 ```bash
-open ios/GoBot/GoBot.xcodeproj
+open ios/Nebo/Nebo.xcodeproj
 ```
 
 ### 3. Run on Simulator
@@ -94,7 +94,7 @@ To test on a real iPhone while connecting to your local Mac:
 
 1. ChatView establishes WebSocket connection to `/ws/agent`
 2. User types message → sent via WebSocket as JSON: `{"type":"message","content":"..."}`
-3. GoBot responds with:
+3. Nebo responds with:
    - `{"type":"chunk","content":"..."}` - streaming text chunks
    - `{"type":"message","content":"..."}` - complete message
    - `{"type":"error","error":"..."}` - error message
@@ -121,7 +121,7 @@ To test on a real iPhone while connecting to your local Mac:
 
 For production use:
 
-1. Update `baseURL` in both services to point to your deployed GoBot instance
+1. Update `baseURL` in both services to point to your deployed Nebo instance
 2. Ensure HTTPS is configured (required for App Store)
 3. Update the bundle identifier and signing
 4. Submit to TestFlight or App Store
@@ -129,13 +129,13 @@ For production use:
 ## Troubleshooting
 
 ### "Connection Failed"
-- Verify GoBot backend is running
+- Verify Nebo backend is running
 - Check the baseURL matches your backend address
 - Ensure firewall allows connections on port 29875
 
 ### "Unauthorized"
 - Token may have expired - try logging out and back in
-- Verify the user account exists in GoBot
+- Verify the user account exists in Nebo
 
 ### WebSocket Disconnects
 - The app auto-reconnects after 3 seconds

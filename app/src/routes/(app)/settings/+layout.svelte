@@ -1,13 +1,15 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { User, Settings, Bot, Key, Heart } from 'lucide-svelte';
+	import { User, Settings, Bot, Key, Heart, Sparkles, UserCircle } from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 
 	let { children }: { children: Snippet } = $props();
 
 	const tabs = [
 		{ id: 'profile', path: '/settings/profile', label: 'Profile', icon: User },
+		{ id: 'about-me', path: '/settings/about-me', label: 'About Me', icon: UserCircle },
 		{ id: 'preferences', path: '/settings/preferences', label: 'Preferences', icon: Settings },
+		{ id: 'personality', path: '/settings/personality', label: 'Personality', icon: Sparkles },
 		{ id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key },
 		{ id: 'agent', path: '/settings/agent', label: 'Agent', icon: Bot },
 		{ id: 'heartbeat', path: '/settings/heartbeat', label: 'Heartbeat', icon: Heart }

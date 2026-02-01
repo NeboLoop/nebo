@@ -5,6 +5,7 @@
 
 <script lang="ts">
 	import { Bell, Check, CheckCheck, Trash2, ExternalLink } from 'lucide-svelte';
+	import { goto } from '$app/navigation';
 	import { notification, notifications, unreadNotificationCount, hasUnreadNotifications } from '$lib/stores/notification';
 	import { onMount, onDestroy } from 'svelte';
 
@@ -59,7 +60,12 @@
 			notification.markAsRead(n.id);
 		}
 		if (n.actionUrl) {
-			window.location.href = n.actionUrl;
+			// Use goto for internal URLs, window.location for external
+			if (n.actionUrl.startsWith('/')) {
+				goto(n.actionUrl);
+			} else {
+				window.location.href = n.actionUrl;
+			}
 		}
 		closeDropdown();
 	}

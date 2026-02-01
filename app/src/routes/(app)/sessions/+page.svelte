@@ -3,19 +3,13 @@
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { History, Trash2, MessageSquare, Clock, RefreshCw } from 'lucide-svelte';
+	import * as api from '$lib/api/nebo';
+	import type { AgentSession, SessionMessage } from '$lib/api/nebo';
 
-	interface Session {
-		id: string;
-		session_key: string;
-		message_count: number;
-		created_at: string;
-		updated_at: string;
-	}
-
-	let sessions = $state<Session[]>([]);
+	let sessions = $state<AgentSession[]>([]);
 	let isLoading = $state(true);
-	let selectedSession = $state<Session | null>(null);
-	let sessionMessages = $state<any[]>([]);
+	let selectedSession = $state<AgentSession | null>(null);
+	let sessionMessages = $state<SessionMessage[]>([]);
 
 	onMount(async () => {
 		await loadSessions();
@@ -24,11 +18,8 @@
 	async function loadSessions() {
 		isLoading = true;
 		try {
-			const response = await fetch('/api/v1/agent/sessions');
-			if (response.ok) {
-				const data = await response.json();
-				sessions = data.sessions || [];
-			}
+			const data = await api.listAgentSessions();
+			sessions = data.sessions || [];
 		} catch (error) {
 			console.error('Failed to load sessions:', error);
 		} finally {
@@ -36,31 +27,24 @@
 		}
 	}
 
-	async function viewSession(session: Session) {
+	async function viewSession(session: AgentSession) {
 		selectedSession = session;
 		try {
-			const response = await fetch(`/api/v1/agent/sessions/${session.id}/messages`);
-			if (response.ok) {
-				const data = await response.json();
-				sessionMessages = data.messages || [];
-			}
+			const data = await api.getAgentSessionMessages(session.id);
+			sessionMessages = data.messages || [];
 		} catch (error) {
 			console.error('Failed to load messages:', error);
 		}
 	}
 
-	async function deleteSession(session: Session) {
-		if (!confirm(`Delete session "${session.session_key}"?`)) return;
+	async function deleteSession(session: AgentSession) {
+		if (!confirm(`Delete session "${session.name || session.id}"?`)) return;
 		try {
-			const response = await fetch(`/api/v1/agent/sessions/${session.id}`, {
-				method: 'DELETE'
-			});
-			if (response.ok) {
-				sessions = sessions.filter(s => s.id !== session.id);
-				if (selectedSession?.id === session.id) {
-					selectedSession = null;
-					sessionMessages = [];
-				}
+			await api.deleteAgentSession(session.id);
+			sessions = sessions.filter(s => s.id !== session.id);
+			if (selectedSession?.id === session.id) {
+				selectedSession = null;
+				sessionMessages = [];
 			}
 		} catch (error) {
 			console.error('Failed to delete session:', error);
@@ -113,7 +97,7 @@
 							tabindex="0"
 						>
 							<div class="flex items-center justify-between mb-1">
-								<span class="font-medium text-sm truncate">{session.session_key}</span>
+								<span class="font-medium text-sm truncate">{session.name || session.id}</span>
 								<button
 									onclick={(e) => { e.stopPropagation(); deleteSession(session); }}
 									class="p-1 hover:bg-error/20 rounded text-error/60 hover:text-error"
@@ -124,11 +108,11 @@
 							<div class="flex items-center gap-3 text-xs text-base-content/50">
 								<span class="flex items-center gap-1">
 									<MessageSquare class="w-3 h-3" />
-									{session.message_count} messages
+									{session.messageCount} messages
 								</span>
 								<span class="flex items-center gap-1">
 									<Clock class="w-3 h-3" />
-									{formatDate(session.updated_at)}
+									{formatDate(session.updatedAt)}
 								</span>
 							</div>
 						</div>
@@ -143,7 +127,7 @@
 		<Card class="h-[calc(100vh-220px)]">
 			{#if selectedSession}
 				<h2 class="font-display font-bold text-base-content mb-4">
-					{selectedSession.session_key}
+					{selectedSession.name || selectedSession.id}
 				</h2>
 				<div class="overflow-y-auto h-[calc(100%-3rem)] space-y-3">
 					{#if sessionMessages.length === 0}
@@ -156,7 +140,7 @@
 										{msg.role}
 									</span>
 									<span class="text-xs text-base-content/40">
-										{formatDate(msg.created_at)}
+										{formatDate(msg.createdAt)}
 									</span>
 								</div>
 								<p class="text-sm whitespace-pre-wrap">{msg.content}</p>

@@ -1,10 +1,10 @@
-# GoBot Android App
+# Nebo Android App
 
-Native Android companion app for GoBot - your AI assistant.
+Native Android companion app for Nebo - your AI assistant.
 
 ## Features
 
-- Real-time chat with GoBot via WebSocket
+- Real-time chat with Nebo via WebSocket
 - Streaming message support
 - Secure token storage (EncryptedSharedPreferences)
 - Gateway support for remote access
@@ -47,7 +47,7 @@ The app defaults to `http://10.0.2.2:29875` (Android emulator's localhost alias)
 
 ```
 android/
-├── app/src/main/java/com/gobot/app/
+├── app/src/main/java/com/nebo/app/
 │   ├── GoBotApplication.kt     # App entry, dependency holder
 │   ├── MainActivity.kt         # Navigation host
 │   ├── ApiClient.kt            # HTTP API calls
@@ -65,7 +65,7 @@ android/
 
 For secure remote access (outside local network):
 
-1. Set up the GoBot Gateway on a public server
+1. Set up the Nebo Gateway on a public server
 2. In Settings, enable "Use Gateway"
 3. Enter your Gateway URL and access token
 4. The app will route all traffic through the gateway
@@ -105,7 +105,7 @@ signingConfigs {
     create("release") {
         storeFile = file("keystore.jks")
         storePassword = "..."
-        keyAlias = "gobot"
+        keyAlias = "nebo"
         keyPassword = "..."
     }
 }

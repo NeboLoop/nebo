@@ -29,19 +29,19 @@ type AuthProfile struct {
 
 // AuthProfileManager manages API key profiles from SQLite
 type AuthProfileManager struct {
-	db *sql.DB
+	db     *sql.DB
+	ownsDB bool // true if we opened the connection and should close it
 }
 
-// NewAuthProfileManager creates a new auth profile manager
-func NewAuthProfileManager(dbPath string) (*AuthProfileManager, error) {
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+// NewAuthProfileManager creates a new auth profile manager using a shared connection
+// Does NOT close the connection - caller is responsible
+func NewAuthProfileManager(db *sql.DB) (*AuthProfileManager, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database connection is nil")
 	}
 
-	m := &AuthProfileManager{db: db}
+	m := &AuthProfileManager{db: db, ownsDB: false}
 	if err := m.ensureSchema(); err != nil {
-		db.Close()
 		return nil, fmt.Errorf("failed to ensure schema: %w", err)
 	}
 
@@ -75,9 +75,10 @@ func (m *AuthProfileManager) ensureSchema() error {
 	return err
 }
 
-// Close closes the database connection
+// Close is a no-op since we use a shared connection
 func (m *AuthProfileManager) Close() error {
-	return m.db.Close()
+	// We don't own the connection, so don't close it
+	return nil
 }
 
 // GetBestProfile returns the best available profile for a provider using round-robin
@@ -276,12 +277,17 @@ func (p *AuthProfile) ToProviderConfig() ProviderConfig {
 }
 
 // LoadProvidersFromDB loads all active auth profiles as provider configs
-func LoadProvidersFromDB(dbPath string) ([]ProviderConfig, error) {
-	m, err := NewAuthProfileManager(dbPath)
+// Accepts a shared *sql.DB connection - does NOT close it
+func LoadProvidersFromDB(db *sql.DB) ([]ProviderConfig, error) {
+	if db == nil {
+		return nil, fmt.Errorf("database connection is nil")
+	}
+
+	m, err := NewAuthProfileManager(db)
 	if err != nil {
 		return nil, err
 	}
-	defer m.Close()
+	defer m.Close() // No-op since we use shared connection
 
 	ctx := context.Background()
 	providers := []string{"anthropic", "openai", "google", "ollama"}

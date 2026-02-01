@@ -202,7 +202,7 @@ nebo skills list  # List available skills
 nebo plugins list # List installed plugins
 ```
 
-Web UI at `http://localhost:29875`
+Web UI at `http://local.nebo.bot:27895`
 
 ---
 

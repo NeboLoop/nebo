@@ -62,11 +62,31 @@ func ListModelsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			})
 		}
 
-		// Detect available CLI tools
+		// Detect available CLI tools (legacy - just installed check)
 		cliAvailability := &types.CLIAvailability{
 			Claude: ai.CheckCLIAvailable("claude"),
 			Codex:  ai.CheckCLIAvailable("codex"),
 			Gemini: ai.CheckCLIAvailable("gemini"),
+		}
+
+		// Get detailed CLI status (installed + authenticated)
+		cliStatusMap := ai.GetAllCLIStatuses()
+		cliStatuses := &types.CLIStatusMap{
+			Claude: types.CLIStatus{
+				Installed:     cliStatusMap["claude"].Installed,
+				Authenticated: cliStatusMap["claude"].Authenticated,
+				Version:       cliStatusMap["claude"].Version,
+			},
+			Codex: types.CLIStatus{
+				Installed:     cliStatusMap["codex"].Installed,
+				Authenticated: cliStatusMap["codex"].Authenticated,
+				Version:       cliStatusMap["codex"].Version,
+			},
+			Gemini: types.CLIStatus{
+				Installed:     cliStatusMap["gemini"].Installed,
+				Authenticated: cliStatusMap["gemini"].Authenticated,
+				Version:       cliStatusMap["gemini"].Version,
+			},
 		}
 
 		httputil.OkJSON(w, &types.ListModelsResponse{
@@ -74,6 +94,7 @@ func ListModelsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			TaskRouting:   taskRouting,
 			Aliases:       aliases,
 			AvailableCLIs: cliAvailability,
+			CLIStatuses:   cliStatuses,
 		})
 	}
 }

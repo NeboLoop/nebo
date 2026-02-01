@@ -64,7 +64,7 @@ func DefaultConfig() *Config {
 				"git status", "git log", "git diff", "git branch",
 			},
 		},
-		ServerURL: "http://localhost:27895", // Default local dev server
+		ServerURL: "http://local.nebo.bot:27895", // Default local dev server
 	}
 }
 
@@ -95,6 +95,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// Expand ~ in DataDir (config file may have "~/.nebo")
+	if strings.HasPrefix(cfg.DataDir, "~/") {
+		home, _ := os.UserHomeDir()
+		cfg.DataDir = filepath.Join(home, cfg.DataDir[2:])
+	}
+
 	cfg.ServerURL = os.ExpandEnv(cfg.ServerURL)
 	cfg.Token = os.ExpandEnv(cfg.Token)
 
@@ -115,6 +121,12 @@ func LoadFrom(path string) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
+	}
+
+	// Expand ~ in DataDir (config file may have "~/.nebo")
+	if strings.HasPrefix(cfg.DataDir, "~/") {
+		home, _ := os.UserHomeDir()
+		cfg.DataDir = filepath.Join(home, cfg.DataDir[2:])
 	}
 
 	cfg.ServerURL = os.ExpandEnv(cfg.ServerURL)
@@ -143,9 +155,9 @@ func (c *Config) Save() error {
 }
 
 // DBPath returns the path to the SQLite database
-// Uses ~/.nebo/data/gobot.db to match the server's database location
+// Uses ~/.nebo/data/nebo.db to match the server's database location
 func (c *Config) DBPath() string {
-	return filepath.Join(c.DataDir, "data", "gobot.db")
+	return filepath.Join(c.DataDir, "data", "nebo.db")
 }
 
 // EnsureDataDir creates the data directory if it doesn't exist

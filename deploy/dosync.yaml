@@ -1,4 +1,4 @@
-# DOSync Configuration for gobot
+# DOSync Configuration for nebo
 # Manages zero-downtime deployments with automatic rollback
 
 registry:

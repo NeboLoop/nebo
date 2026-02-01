@@ -108,7 +108,7 @@ func (t *WebTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 	}
 
 	// Set default user agent
-	req.Header.Set("User-Agent", "GoBot/1.0")
+	req.Header.Set("User-Agent", "Nebo/1.0")
 
 	// Set custom headers
 	for k, v := range in.Headers {

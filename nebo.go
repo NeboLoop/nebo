@@ -28,7 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Override database path to use ~/.nebo/data/gobot.db
+	// Override database path to use ~/.nebo/data/nebo.db
 	dataDir, err := defaults.DataDir()
 	if err == nil {
 		dbDir := filepath.Join(dataDir, "data")

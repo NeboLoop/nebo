@@ -175,3 +175,11 @@ func InternalError(w http.ResponseWriter, message string) {
 	}
 	ErrorWithCode(w, http.StatusInternalServerError, message)
 }
+
+// BadRequest writes a 400 bad request response
+func BadRequest(w http.ResponseWriter, message string) {
+	if message == "" {
+		message = "bad request"
+	}
+	ErrorWithCode(w, http.StatusBadRequest, message)
+}

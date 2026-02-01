@@ -33,11 +33,11 @@ func ChatCmd() *cobra.Command {
 The assistant has access to tools for file operations, shell commands, and more.
 
 Examples:
-  gobot chat "Hello, what can you do?"
-  gobot chat "List all Go files in this directory"
-  gobot chat --interactive
-  gobot chat --voice              # Record voice input
-  gobot chat --dangerously "deploy to production"`,
+  nebo chat "Hello, what can you do?"
+  nebo chat "List all Go files in this directory"
+  nebo chat --interactive
+  nebo chat --voice              # Record voice input
+  nebo chat --dangerously "deploy to production"`,
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := loadAgentConfig()
 			runChat(cfg, args, interactive, dangerously, voiceMode)
@@ -82,6 +82,9 @@ func runChat(cfg *agentcfg.Config, args []string, interactive bool, dangerously 
 	}
 	defer sessions.Close()
 
+	// Use the shared DB from session manager for all components
+	SetSharedDB(sessions.GetDB())
+
 	providers := createProviders(cfg)
 	if len(providers) == 0 {
 		fmt.Fprintln(os.Stderr, "No providers configured. Set ANTHROPIC_API_KEY or configure providers in ~/.nebo/config.yaml")
@@ -111,6 +114,11 @@ func runChat(cfg *agentcfg.Config, args []string, interactive bool, dangerously 
 
 	r := runner.New(cfg, sessions, providers, registry)
 
+	// Set provider loader for dynamic reload (after onboarding adds API key)
+	r.SetProviderLoader(func() []ai.Provider {
+		return createProviders(cfg)
+	})
+
 	// Set up model selector for intelligent model routing and cheapest model selection
 	modelsConfig := provider.GetModelsConfig()
 	if modelsConfig != nil {
@@ -127,14 +135,16 @@ func runChat(cfg *agentcfg.Config, args []string, interactive bool, dangerously 
 		fmt.Printf("[chat] Warning: could not start config watcher: %v\n", err)
 	}
 
-	// Register callback to update selector/matcher when config changes
+	// Register callback to update selector/matcher/providers when models.yaml changes
 	provider.OnConfigReload(func(newConfig *provider.ModelsConfig) {
 		if newConfig != nil {
 			newSelector := ai.NewModelSelector(newConfig)
 			r.SetModelSelector(newSelector)
 			newFuzzyMatcher := ai.NewFuzzyMatcher(newConfig)
 			r.SetFuzzyMatcher(newFuzzyMatcher)
-			fmt.Printf("[chat] Model selector and fuzzy matcher updated\n")
+			// Reload providers in case credentials changed
+			r.ReloadProviders()
+			fmt.Printf("[chat] Config reloaded: model selector, fuzzy matcher, and providers updated\n")
 		}
 	})
 
@@ -176,7 +186,7 @@ func runOnce(ctx context.Context, r *runner.Runner, prompt string) {
 
 // runInteractive runs an interactive chat session
 func runInteractive(ctx context.Context, r *runner.Runner, sessions *session.Manager) {
-	fmt.Println("\033[1mGoBot Interactive Mode\033[0m")
+	fmt.Println("\033[1mNebo Interactive Mode\033[0m")
 	fmt.Println("Type your message and press Enter. Use /help for commands, Ctrl+C to exit.")
 	fmt.Println()
 

@@ -78,15 +78,15 @@ func TestGetAllAgents(t *testing.T) {
 	go hub.Run(ctx)
 	time.Sleep(10 * time.Millisecond)
 
-	// Add multiple agents
+	// Add multiple agents with different names (multi-agent paradigm)
 	agent1 := &AgentConnection{
-		ID: "agent-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-1", Name: "main", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 	agent2 := &AgentConnection{
-		ID: "agent-2", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-2", Name: "coder", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 	agent3 := &AgentConnection{
-		ID: "agent-3", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-3", Name: "researcher", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 
 	hub.register <- agent1
@@ -99,6 +99,17 @@ func TestGetAllAgents(t *testing.T) {
 	if len(agents) != 3 {
 		t.Errorf("expected 3 agents, got %d", len(agents))
 	}
+
+	// Verify we can get each by name
+	if hub.GetAgentByName("main") == nil {
+		t.Error("expected main agent")
+	}
+	if hub.GetAgentByName("coder") == nil {
+		t.Error("expected coder agent")
+	}
+	if hub.GetAgentByName("researcher") == nil {
+		t.Error("expected researcher agent")
+	}
 }
 
 func TestSendToAgent(t *testing.T) {
@@ -110,12 +121,12 @@ func TestSendToAgent(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	agent := &AgentConnection{
-		ID: "agent-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-1", Name: "main", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 	hub.register <- agent
 	time.Sleep(10 * time.Millisecond)
 
-	// Send to existing agent
+	// Send to existing agent by ID
 	frame := &Frame{
 		Type:   "event",
 		Method: "test",
@@ -139,10 +150,28 @@ func TestSendToAgent(t *testing.T) {
 		t.Error("no message received")
 	}
 
-	// Send to non-existent agent
+	// SendToAgent falls back to main agent for unknown IDs
 	err = hub.SendToAgent("nonexistent", frame)
+	if err != nil {
+		t.Errorf("SendToAgent should fall back to main agent: %v", err)
+	}
+
+	// Verify fallback message was sent to main agent
+	select {
+	case msg := <-agent.Send:
+		var received Frame
+		json.Unmarshal(msg, &received)
+		if received.Type != "event" {
+			t.Errorf("expected type 'event', got %s", received.Type)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Error("fallback message not received by main agent")
+	}
+
+	// SendToAgentByName should error for non-existent agent
+	err = hub.SendToAgentByName("nonexistent", frame)
 	if err == nil {
-		t.Error("expected error for non-existent agent")
+		t.Error("expected error for non-existent agent name")
 	}
 }
 
@@ -154,16 +183,27 @@ func TestBroadcast(t *testing.T) {
 	go hub.Run(ctx)
 	time.Sleep(10 * time.Millisecond)
 
+	// Multi-agent: each agent needs a unique name
 	agent1 := &AgentConnection{
-		ID: "agent-1", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-1", Name: "main", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 	agent2 := &AgentConnection{
-		ID: "agent-2", Send: make(chan []byte, 256), CreatedAt: time.Now(),
+		ID: "agent-2", Name: "coder", Send: make(chan []byte, 256), CreatedAt: time.Now(),
 	}
 
 	hub.register <- agent1
 	hub.register <- agent2
 	time.Sleep(20 * time.Millisecond)
+
+	// Drain the ready events sent on agent connect
+	for _, agent := range []*AgentConnection{agent1, agent2} {
+		select {
+		case <-agent.Send:
+			// Discard ready event
+		case <-time.After(100 * time.Millisecond):
+			// No ready event, continue
+		}
+	}
 
 	// Broadcast to all agents
 	frame := &Frame{
@@ -258,6 +298,13 @@ func TestWebSocketHandler(t *testing.T) {
 	agent := hub.GetAgent("test-agent")
 	if agent == nil {
 		t.Fatal("agent not registered")
+	}
+
+	// Drain the ready event sent on connect
+	ws.SetReadDeadline(time.Now().Add(1 * time.Second))
+	_, _, err = ws.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read ready event: %v", err)
 	}
 
 	// Send a ping request

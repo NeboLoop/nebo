@@ -1,8 +1,8 @@
-// GoBot Gateway - Secure reverse proxy for remote access
+// Nebo Gateway - Secure reverse proxy for remote access
 //
 // Architecture:
 // ┌─────────────────┐          ┌─────────────────┐          ┌─────────────────┐
-// │  Mobile/Remote  │──HTTPS──▶│     Gateway     │──Tunnel──▶│  GoBot Server   │
+// │  Mobile/Remote  │──HTTPS──▶│     Gateway     │──Tunnel──▶│  Nebo Server   │
 // │     Client      │          │  (Public Host)  │          │  (Your Mac)     │
 // └─────────────────┘          └─────────────────┘          └─────────────────┘
 //
@@ -13,7 +13,7 @@
 // - IP allowlisting (optional)
 // - Secure WebSocket tunneling
 //
-// The gateway acts as a rendezvous point - GoBot servers connect OUT to it,
+// The gateway acts as a rendezvous point - Nebo servers connect OUT to it,
 // and clients connect IN. No port forwarding required on home network.
 
 package main
@@ -58,7 +58,7 @@ type Config struct {
 	Devices    map[string]Device `json:"devices"` // token -> device
 }
 
-// Device represents a registered GoBot instance
+// Device represents a registered Nebo instance
 type Device struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
@@ -69,7 +69,7 @@ type Device struct {
 	RateLimit   int       `json:"rate_limit"` // requests per minute
 }
 
-// Tunnel represents an active connection from a GoBot server
+// Tunnel represents an active connection from a Nebo server
 type Tunnel struct {
 	DeviceID   string
 	Conn       *websocket.Conn
@@ -121,7 +121,7 @@ func (g *Gateway) validateToken(token string) (*Device, bool) {
 	return nil, false
 }
 
-// handleTunnelConnect handles GoBot server connecting to establish tunnel
+// handleTunnelConnect handles Nebo server connecting to establish tunnel
 func (g *Gateway) handleTunnelConnect(w http.ResponseWriter, r *http.Request) {
 	token := r.Header.Get("X-Gateway-Token")
 	if token == "" {
@@ -192,7 +192,7 @@ func (g *Gateway) maintainTunnel(tunnel *Tunnel, device *Device) {
 		}
 	}()
 
-	// Read messages from GoBot server and route to clients
+	// Read messages from Nebo server and route to clients
 	for {
 		messageType, message, err := tunnel.Conn.ReadMessage()
 		if err != nil {
@@ -279,7 +279,7 @@ func (g *Gateway) handleClientConnect(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Client disconnected: %s", clientID)
 	}()
 
-	// Forward messages from client to GoBot server
+	// Forward messages from client to Nebo server
 	for {
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {

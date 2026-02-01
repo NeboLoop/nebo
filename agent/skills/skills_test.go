@@ -49,11 +49,8 @@ func TestSkillApplyToPrompt(t *testing.T) {
 	skill := &Skill{
 		Name:        "test-skill",
 		Description: "Test",
-		Template:    "When reviewing code, look for bugs.",
-		Examples: []Example{
-			{User: "Review this", Assistant: "I'll check for issues."},
-		},
-		Enabled: true,
+		Template:    "When reviewing code, look for bugs.\n\n## Example\n\nUser: Review this\nAssistant: I'll check for issues.",
+		Enabled:     true,
 	}
 
 	result := skill.ApplyToPrompt("Base prompt")
@@ -73,9 +70,9 @@ func TestSkillValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{Skill{Name: "test", Description: "Test"}, false},
-		{Skill{Name: "", Description: "Test"}, true},      // Missing name
-		{Skill{Name: "test", Description: ""}, true},      // Missing description
-		{Skill{}, true},                                    // Empty
+		{Skill{Name: "", Description: "Test"}, true},  // Missing name
+		{Skill{Name: "test", Description: ""}, true},  // Missing description
+		{Skill{}, true},                               // Empty
 	}
 
 	for _, tt := range tests {
@@ -86,20 +83,87 @@ func TestSkillValidate(t *testing.T) {
 	}
 }
 
+func TestParseSkillMD(t *testing.T) {
+	content := `---
+name: test-skill
+description: A test skill
+version: "1.0.0"
+triggers:
+  - test
+  - testing
+tools:
+  - bash
+---
+
+# Test Skill
+
+This is the template content.
+
+## Usage
+
+Just test it!
+`
+
+	skill, err := ParseSkillMD([]byte(content))
+	if err != nil {
+		t.Fatalf("ParseSkillMD() error = %v", err)
+	}
+
+	if skill.Name != "test-skill" {
+		t.Errorf("Name = %q, want %q", skill.Name, "test-skill")
+	}
+
+	if skill.Description != "A test skill" {
+		t.Errorf("Description = %q, want %q", skill.Description, "A test skill")
+	}
+
+	if len(skill.Triggers) != 2 {
+		t.Errorf("len(Triggers) = %d, want 2", len(skill.Triggers))
+	}
+
+	if skill.Template == "" {
+		t.Error("Template should not be empty")
+	}
+
+	if skill.Template[:12] != "# Test Skill" {
+		t.Errorf("Template should start with '# Test Skill', got %q", skill.Template[:20])
+	}
+}
+
+func TestParseSkillMDNoFrontmatter(t *testing.T) {
+	content := `# Just Markdown
+
+No frontmatter here.
+`
+	_, err := ParseSkillMD([]byte(content))
+	if err == nil {
+		t.Error("ParseSkillMD() should error without frontmatter")
+	}
+}
+
 func TestLoaderLoadAll(t *testing.T) {
-	// Create temp directory with test skills
+	// Create temp directory with test skill in subdirectory
 	dir := t.TempDir()
 
-	skillYAML := `name: test-skill
+	skillDir := filepath.Join(dir, "test-skill")
+	if err := os.Mkdir(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	skillMD := `---
+name: test-skill
 description: A test skill for testing
 version: "1.0.0"
 triggers:
   - test
   - testing
-template: |
-  This is a test template.
+---
+
+# Test Skill
+
+This is a test template.
 `
-	err := os.WriteFile(filepath.Join(dir, "test.yaml"), []byte(skillYAML), 0644)
+	err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillMD), 0644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,28 +190,47 @@ template: |
 func TestLoaderFindMatching(t *testing.T) {
 	dir := t.TempDir()
 
-	skill1YAML := `name: skill-1
+	// Create skill directories
+	for _, name := range []string{"skill-1", "skill-2", "skill-3"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	skill1MD := `---
+name: skill-1
 description: First skill
 triggers:
   - hello
 priority: 10
+---
+
+First skill content.
 `
-	skill2YAML := `name: skill-2
+	skill2MD := `---
+name: skill-2
 description: Second skill
 triggers:
   - world
 priority: 5
+---
+
+Second skill content.
 `
-	skill3YAML := `name: skill-3
+	skill3MD := `---
+name: skill-3
 description: Third skill
 triggers:
   - hello
 priority: 20
+---
+
+Third skill content.
 `
 
-	os.WriteFile(filepath.Join(dir, "skill1.yaml"), []byte(skill1YAML), 0644)
-	os.WriteFile(filepath.Join(dir, "skill2.yaml"), []byte(skill2YAML), 0644)
-	os.WriteFile(filepath.Join(dir, "skill3.yaml"), []byte(skill3YAML), 0644)
+	os.WriteFile(filepath.Join(dir, "skill-1", "SKILL.md"), []byte(skill1MD), 0644)
+	os.WriteFile(filepath.Join(dir, "skill-2", "SKILL.md"), []byte(skill2MD), 0644)
+	os.WriteFile(filepath.Join(dir, "skill-3", "SKILL.md"), []byte(skill3MD), 0644)
 
 	loader := NewLoader(dir)
 	loader.LoadAll()

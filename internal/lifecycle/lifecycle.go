@@ -1,4 +1,4 @@
-// Package lifecycle provides event hooks for GoBot startup and shutdown.
+// Package lifecycle provides event hooks for Nebo startup and shutdown.
 package lifecycle
 
 import (

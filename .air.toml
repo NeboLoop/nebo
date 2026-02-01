@@ -1,15 +1,15 @@
 # Configuration for Air (Go hot reload tool)
 # Run: air
-# Note: This builds gobot.go (server only) for development hot reload.
-# Use 'make build' to build the full CLI from cmd/gobot/
+# Note: This builds nebo.go (server only) for development hot reload.
+# Use 'make build' to build the full CLI from cmd/nebo/
 root = "."
 testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
   args_bin = []
-  bin = "./tmp/gobot"
-  cmd = "go build -o ./tmp/gobot ."
+  bin = "./tmp/nebo"
+  cmd = "go build -o ./tmp/nebo ."
   delay = 1000
   exclude_dir = ["extensions", "tmp", "vendor", "testdata", ".git", ".vscode", ".idea", "app", "bin", "build"]
   exclude_file = []

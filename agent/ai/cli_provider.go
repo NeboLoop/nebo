@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"nebo/agent/session"
 )
@@ -36,7 +37,7 @@ func NewCLIProvider(name, command string, args []string) *CLIProvider {
 // Model is passed via ChatRequest.Model at runtime (defaults to "sonnet" if not specified)
 func NewClaudeCodeProvider() *CLIProvider {
 	return &CLIProvider{
-		name:    "claude-code",
+		name:    "claude-code", // Must match models.yaml format: "claude-code/opus"
 		command: "claude",
 		args: []string{
 			"--print",                        // Non-interactive output
@@ -89,7 +90,7 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 		args := append([]string{}, p.args...)
 
 		// Add model flag if specified in request (for CLI providers that support it)
-		if req.Model != "" && (p.name == "claude-code" || p.name == "codex-cli") {
+		if req.Model != "" && (p.name == "claude-cli" || p.name == "codex-cli") {
 			args = append(args, "--model", req.Model)
 		}
 
@@ -273,14 +274,20 @@ func (p *CLIProvider) parseLine(line string) StreamEvent {
 			}
 		}
 
-	// Result message with full content
+	// Result message - only emit text for non-success cases
+	// (success results already have text in the "assistant" message)
 	case "result":
+		subtype, _ := data["subtype"].(string)
+		if subtype == "success" {
+			// Text already emitted via "assistant" message
+			return StreamEvent{Type: EventTypeText, Text: ""}
+		}
+		if subtype == "error_max_turns" {
+			return StreamEvent{Type: EventTypeError, Error: &ProviderError{Message: "max turns reached"}}
+		}
+		// For other cases (errors, etc.), emit the result text
 		if result, ok := data["result"].(string); ok {
 			return StreamEvent{Type: EventTypeText, Text: result}
-		}
-		// Check for subtype in result
-		if subtype, ok := data["subtype"].(string); ok && subtype == "error_max_turns" {
-			return StreamEvent{Type: EventTypeError, Error: &ProviderError{Message: "max turns reached"}}
 		}
 
 	// System messages
@@ -370,4 +377,70 @@ func GetAvailableCLIProviders() []string {
 	}
 
 	return available
+}
+
+// CLIStatus represents the installation and authentication status of a CLI
+type CLIStatus struct {
+	Installed     bool   `json:"installed"`
+	Authenticated bool   `json:"authenticated"`
+	Version       string `json:"version,omitempty"`
+}
+
+// CheckCLIStatus checks if a CLI is installed and authenticated
+func CheckCLIStatus(command string) CLIStatus {
+	status := CLIStatus{}
+
+	// Check if installed
+	if !CheckCLIAvailable(command) {
+		return status
+	}
+	status.Installed = true
+
+	// Check authentication based on CLI type
+	switch command {
+	case "claude":
+		// Claude CLI: run `claude --version` - returns version if authenticated
+		// If not authenticated, it will prompt for login (which we catch via timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "claude", "--version")
+		output, err := cmd.Output()
+		if err == nil {
+			status.Authenticated = true
+			status.Version = strings.TrimSpace(string(output))
+		}
+
+	case "gemini":
+		// Gemini CLI: check for auth by running --version or checking config
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "gemini", "--version")
+		output, err := cmd.Output()
+		if err == nil {
+			status.Authenticated = true
+			status.Version = strings.TrimSpace(string(output))
+		}
+
+	case "codex":
+		// Codex CLI: check for auth by running --version
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "codex", "--version")
+		output, err := cmd.Output()
+		if err == nil {
+			status.Authenticated = true
+			status.Version = strings.TrimSpace(string(output))
+		}
+	}
+
+	return status
+}
+
+// GetAllCLIStatuses returns the status of all known CLIs
+func GetAllCLIStatuses() map[string]CLIStatus {
+	return map[string]CLIStatus{
+		"claude": CheckCLIStatus("claude"),
+		"codex":  CheckCLIStatus("codex"),
+		"gemini": CheckCLIStatus("gemini"),
+	}
 }

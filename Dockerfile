@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for Gobot
 # Single all-in-one binary with embedded SvelteKit frontend
-# Usage: docker build -t gobot .
+# Usage: docker build -t nebo .
 
 # Development stage with Air for hot reloading
 FROM golang:1.25-alpine AS development
@@ -50,8 +50,8 @@ COPY app/static ./static
 COPY app/scripts ./scripts
 COPY app/svelte.config.js app/vite.config.ts app/tsconfig.json ./
 
-# Copy gobot.yaml for pricing (read at build time by +page.server.ts)
-COPY etc/gobot.yaml ../etc/gobot.yaml
+# Copy nebo.yaml for pricing (read at build time by +page.server.ts)
+COPY etc/nebo.yaml ../etc/nebo.yaml
 
 # Generate SvelteKit files and build frontend for production
 RUN pnpm exec svelte-kit sync && pnpm run build
@@ -82,7 +82,7 @@ COPY --from=frontend-builder /app/build ./app/build
 # Build the all-in-one binary
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
     -ldflags="-w -s" \
-    -o /app/bin/gobot .
+    -o /app/bin/nebo .
 
 # Final production stage
 FROM alpine:latest AS production
@@ -92,7 +92,7 @@ RUN apk --no-cache add ca-certificates curl wget tzdata
 WORKDIR /app
 
 # Copy the all-in-one binary
-COPY --from=builder /app/bin/gobot ./gobot
+COPY --from=builder /app/bin/nebo ./nebo
 
 # Copy configuration files
 COPY etc/ ./etc/
@@ -111,4 +111,4 @@ HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=40s \
   CMD wget -q -O /dev/null http://localhost:8888/health || exit 1
 
 # Run the server
-CMD ["./gobot"]
+CMD ["./nebo"]

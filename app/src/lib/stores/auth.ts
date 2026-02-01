@@ -1,4 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
+import { goto } from '$app/navigation';
 import * as api from '$lib/api/nebo';
 import type { User, LoginRequest, RegisterRequest, LoginResponse } from '$lib/api/neboComponents';
 import { logger } from '$lib/monitoring';
@@ -530,7 +531,7 @@ function createSessionExpiryStore() {
 					auth.logout();
 					// Redirect to login
 					if (typeof window !== 'undefined') {
-						window.location.href = '/auth/login?expired=true';
+						goto('/auth/login?expired=true');
 					}
 					return { showWarning: false, secondsRemaining: 0 };
 				}
@@ -574,7 +575,7 @@ function createSessionExpiryStore() {
 				if (secondsUntilExpiry <= 0) {
 					auth.logout();
 					if (typeof window !== 'undefined') {
-						window.location.href = '/auth/login?expired=true';
+						goto('/auth/login?expired=true');
 					}
 					return;
 				}
@@ -623,7 +624,7 @@ function createSessionExpiryStore() {
 				logger.warn('Failed to continue session, logging out');
 				auth.logout();
 				if (typeof window !== 'undefined') {
-					window.location.href = '/auth/login?expired=true';
+					goto('/auth/login?expired=true');
 				}
 			}
 			return success;

@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-# GoBot installer
-# Usage: curl -fsSL https://gobot.ai/install.sh | sh
+# Nebo installer
+# Usage: curl -fsSL https://nebo.ai/install.sh | sh
 #
 # Environment variables:
 #   GOBOT_VERSION      - Version to install (default: latest)
 #   GOBOT_INSTALL_DIR  - Binary install location (default: /usr/local/bin)
-#   GOBOT_DATA_DIR     - Data directory (default: ~/.gobot)
+#   GOBOT_DATA_DIR     - Data directory (default: ~/.nebo)
 
 VERSION="${GOBOT_VERSION:-latest}"
 INSTALL_DIR="${GOBOT_INSTALL_DIR:-/usr/local/bin}"
-DATA_DIR="${GOBOT_DATA_DIR:-$HOME/.gobot}"
-GITHUB_REPO="localrivet/gobot"  # TODO: Update when published
+DATA_DIR="${GOBOT_DATA_DIR:-$HOME/.nebo}"
+GITHUB_REPO="localrivet/nebo"  # TODO: Update when published
 
 # Colors for output
 RED='\033[0;31m'
@@ -41,7 +41,7 @@ case "$OS" in
     *)      error "Unsupported OS: $OS" ;;
 esac
 
-info "Installing GoBot for $OS/$ARCH..."
+info "Installing Nebo for $OS/$ARCH..."
 
 # Create temp directory
 TMP_DIR=$(mktemp -d)
@@ -49,29 +49,29 @@ trap "rm -rf $TMP_DIR" EXIT
 
 # Download binary
 if [ "$VERSION" = "latest" ]; then
-    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/gobot-$OS-$ARCH"
+    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/nebo-$OS-$ARCH"
 else
-    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$VERSION/gobot-$OS-$ARCH"
+    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$VERSION/nebo-$OS-$ARCH"
 fi
 
 info "Downloading from $DOWNLOAD_URL..."
-if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/gobot"; then
-    error "Failed to download GoBot. Check your internet connection and try again."
+if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/nebo"; then
+    error "Failed to download Nebo. Check your internet connection and try again."
 fi
-chmod +x "$TMP_DIR/gobot"
+chmod +x "$TMP_DIR/nebo"
 
 # Install binary
 if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMP_DIR/gobot" "$INSTALL_DIR/gobot"
+    mv "$TMP_DIR/nebo" "$INSTALL_DIR/nebo"
 else
     info "Installing to $INSTALL_DIR (requires sudo)..."
-    sudo mv "$TMP_DIR/gobot" "$INSTALL_DIR/gobot"
+    sudo mv "$TMP_DIR/nebo" "$INSTALL_DIR/nebo"
 fi
 
 # Verify installation
-if ! command -v gobot &> /dev/null; then
+if ! command -v nebo &> /dev/null; then
     # Check if it's in the install dir but not in PATH
-    if [ -f "$INSTALL_DIR/gobot" ]; then
+    if [ -f "$INSTALL_DIR/nebo" ]; then
         warn "$INSTALL_DIR is not in your PATH. Add it with:"
         echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
     else
@@ -82,10 +82,10 @@ fi
 # The binary handles data directory creation and default file copying
 # via internal/defaults package on first run
 
-info "GoBot installed successfully!"
+info "Nebo installed successfully!"
 echo ""
 echo "Get started:"
-echo "  gobot              # Start GoBot (server + agent + UI)"
+echo "  nebo              # Start Nebo (server + agent + UI)"
 echo "  open http://localhost:29875"
 echo ""
 echo "First time setup:"

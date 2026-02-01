@@ -1,21 +1,26 @@
-Name: gobot
+Name: nebo
 Host: 0.0.0.0
-Port: 29875
-Timeout: 60000  # 60 seconds for API testing
+Port: 27895
+Timeout: 60000 # 60 seconds for API testing
+
+# App settings (from .env)
+App:
+  BaseURL: ${APP_BASE_URL:-http://local.nebo.bot:27895}
+  Domain: ${APP_DOMAIN:-local.nebo.bot}
 
 # Logging - configurable via Level: debug, info, error, severe
 Log:
   Mode: console
   Encoding: plain
-  Level: info       # info = important events, debug = verbose, error = errors only
-  Stat: false       # Disable stat logs
+  Level: info # info = important events, debug = verbose, error = errors only
+  Stat: false # Disable stat logs
 
-# Auth settings are overridden by local settings (~/.gobot/settings.json)
+# Auth settings are overridden by local settings (~/.nebo/settings.json)
 # These are just placeholders to satisfy the config parser
 Auth:
   AccessSecret: placeholder-replaced-at-runtime
   AccessExpire: 2592000
   RefreshTokenExpire: 2592000
 
-# Database uses ~/.gobot/data/gobot.db by default (shared with agent)
+# Database uses ~/.nebo/data/nebo.db by default (shared with agent)
 Database: {}

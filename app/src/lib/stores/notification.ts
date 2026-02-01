@@ -78,7 +78,7 @@ function createNotificationStore() {
 		 */
 		async markAsRead(id: string): Promise<boolean> {
 			try {
-				await api.markNotificationRead({}, id);
+				await api.markNotificationRead(id);
 				update((state) => ({
 					...state,
 					notifications: state.notifications.map((n) =>
@@ -119,7 +119,7 @@ function createNotificationStore() {
 		 */
 		async deleteNotification(id: string): Promise<boolean> {
 			try {
-				await api.deleteNotification({}, id);
+				await api.deleteNotification(id);
 				update((state) => {
 					const notification = state.notifications.find((n) => n.id === id);
 					const wasUnread = notification && !notification.readAt;

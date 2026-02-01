@@ -15,8 +15,8 @@ import (
 func OnboardCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "onboard",
-		Short: "Set up GoBot for first use",
-		Long: `Interactive setup wizard for GoBot.
+		Short: "Set up Nebo for first use",
+		Long: `Interactive setup wizard for Nebo.
 
 This will guide you through:
   1. Creating the ~/.nebo directory
@@ -24,7 +24,7 @@ This will guide you through:
   3. Setting up your first channel (optional)
 
 Examples:
-  gobot onboard`,
+  nebo onboard`,
 		Run: func(cmd *cobra.Command, args []string) {
 			runOnboard()
 		},
@@ -35,7 +35,7 @@ func runOnboard() {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println()
-	fmt.Println("\033[1m🤖 Welcome to GoBot Setup\033[0m")
+	fmt.Println("\033[1m🤖 Welcome to Nebo Setup\033[0m")
 	fmt.Println("=========================")
 	fmt.Println()
 
@@ -156,16 +156,16 @@ func runOnboard() {
 	fmt.Println("==================")
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println("  1. Start the gateway:  gobot gateway")
-	fmt.Println("  2. Start chatting:     gobot chat --interactive")
-	fmt.Println("  3. Check health:       gobot doctor")
+	fmt.Println("  1. Start the gateway:  nebo gateway")
+	fmt.Println("  2. Start chatting:     nebo chat --interactive")
+	fmt.Println("  3. Check health:       nebo doctor")
 	fmt.Println()
-	fmt.Println("For more information: https://github.com/yourusername/gobot")
+	fmt.Println("For more information: https://github.com/anthropics/nebo")
 }
 
 func generateConfig(provider, apiKey, model string) string {
 	if provider == "ollama" {
-		return fmt.Sprintf(`# GoBot Configuration
+		return fmt.Sprintf(`# Nebo Configuration
 providers:
   - name: %s
     type: api
@@ -189,7 +189,7 @@ policy:
 		keyLine = fmt.Sprintf("    api_key: ${%s}", envVar)
 	}
 
-	return fmt.Sprintf(`# GoBot Configuration
+	return fmt.Sprintf(`# Nebo Configuration
 providers:
   - name: %s
     type: api

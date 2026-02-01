@@ -18,8 +18,8 @@ import (
 	"nebo/agent/tools"
 )
 
-// DefaultSystemPrompt is the default system prompt for the agent
-const DefaultSystemPrompt = `You are a helpful AI assistant with access to tools for file operations, shell commands, and more.
+// DefaultSystemPrompt is the base system prompt (agent identity is prepended from DB)
+const DefaultSystemPrompt = `You have access to tools for file operations, shell commands, web browsing, and more.
 
 When working on tasks:
 1. Break down complex tasks into smaller steps
@@ -27,19 +27,28 @@ When working on tasks:
 3. If you encounter errors, analyze them and try to fix them
 4. When the task is complete, provide a summary of what was done
 
-Important:
-- Use the 'read' tool to read files instead of 'cat'
-- Use the 'write' tool to create/modify files
-- Use the 'glob' tool to find files by pattern
-- Use the 'grep' tool to search for content in files
-- Use the 'bash' tool for shell commands
+Available tools:
+- 'read' - read files
+- 'write' - create/modify files
+- 'edit' - make precise edits to files
+- 'glob' - find files by pattern
+- 'grep' - search for content in files
+- 'bash' - run shell commands
+- 'web' - fetch web pages
+- 'search' - search the web
+- 'browser' - interact with web pages
+- 'memory' - store and recall facts about the user
 
 Always verify your changes work before considering a task complete.`
+
+// ProviderLoaderFunc is a function that loads providers (for dynamic reload)
+type ProviderLoaderFunc func() []ai.Provider
 
 // Runner executes the agentic loop
 type Runner struct {
 	sessions        *session.Manager
 	providers       []ai.Provider
+	providerLoader  ProviderLoaderFunc // Called to reload providers if empty
 	providerMap     map[string]ai.Provider // providerID -> Provider for model-based switching
 	tools           *tools.Registry
 	config          *config.Config
@@ -56,6 +65,7 @@ type RunRequest struct {
 	Prompt        string // User prompt
 	System        string // Override system prompt
 	ModelOverride string // User-specified model override (e.g., "anthropic/claude-opus-4-5")
+	UserID        string // User ID for user-scoped operations (sessions, memories)
 }
 
 // modelOverrideProvider wraps a Provider to use a specific model
@@ -161,6 +171,18 @@ func (r *Runner) SetAutoExtract(enabled bool) {
 	r.autoExtract = enabled && r.memoryTool != nil
 }
 
+// SetProviderLoader sets the function to reload providers (for dynamic reload after onboarding)
+func (r *Runner) SetProviderLoader(loader ProviderLoaderFunc) {
+	r.providerLoader = loader
+}
+
+// ReloadProviders attempts to reload providers from the loader function
+func (r *Runner) ReloadProviders() {
+	if r.providerLoader != nil {
+		r.providers = r.providerLoader()
+	}
+}
+
 // SkillLoader returns the skill loader for managing skills
 func (r *Runner) SkillLoader() *skills.Loader {
 	return r.skillLoader
@@ -168,19 +190,35 @@ func (r *Runner) SkillLoader() *skills.Loader {
 
 // Run executes the agentic loop
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEvent, error) {
+	fmt.Printf("[Runner] Run called: session=%s prompt=%q\n", req.SessionKey, req.Prompt)
+
+	// If no providers, try to reload (user may have added API key via onboarding)
+	if len(r.providers) == 0 && r.providerLoader != nil {
+		fmt.Printf("[Runner] No providers, trying to reload...\n")
+		r.providers = r.providerLoader()
+	}
+	fmt.Printf("[Runner] Provider count: %d\n", len(r.providers))
 	if len(r.providers) == 0 {
-		return nil, fmt.Errorf("no providers configured")
+		return nil, fmt.Errorf("no providers configured - please add an API key in Settings > Providers")
 	}
 
 	if req.SessionKey == "" {
 		req.SessionKey = "default"
 	}
 
-	// Get or create session
-	sess, err := r.sessions.GetOrCreate(req.SessionKey)
+	// Get or create session (user-scoped if UserID provided)
+	fmt.Printf("[Runner] Getting/creating session: %s (user: %s)\n", req.SessionKey, req.UserID)
+	var sess *session.Session
+	var err error
+	if req.UserID != "" {
+		sess, err = r.sessions.GetOrCreateForUser(req.SessionKey, req.UserID)
+	} else {
+		sess, err = r.sessions.GetOrCreate(req.SessionKey)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
+	fmt.Printf("[Runner] Session ready: id=%s\n", sess.ID)
 
 	// Add user message to session
 	if req.Prompt != "" {
@@ -195,25 +233,87 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 	}
 
 	resultCh := make(chan ai.StreamEvent, 100)
-	go r.runLoop(ctx, sess.ID, req.System, req.ModelOverride, resultCh)
+	go r.runLoop(ctx, sess.ID, req.System, req.ModelOverride, req.UserID, resultCh)
 
 	return resultCh, nil
 }
 
 // runLoop is the main agentic execution loop
-func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOverride string, resultCh chan<- ai.StreamEvent) {
+func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOverride, userID string, resultCh chan<- ai.StreamEvent) {
 	defer close(resultCh)
 
+	// Set user ID on memory tool for user-scoped operations
+	if r.memoryTool != nil && userID != "" {
+		r.memoryTool.SetCurrentUser(userID)
+	}
+
+	// Build the complete system prompt with identity + capabilities + context
+	var contextSection string
+
+	// Load context from database first (preferred for commercial product)
+	// Use the shared database connection from the session manager, user-scoped
+	dbContext, err := memory.LoadContextForUser(r.sessions.GetDB(), userID)
+	needsOnboarding := false
+	if err == nil {
+		// Use database context (includes identity)
+		contextSection = dbContext.FormatForSystemPrompt()
+		needsOnboarding = dbContext.NeedsOnboarding()
+	} else {
+		// Fall back to file-based context (AGENTS.md, MEMORY.md, SOUL.md)
+		workspaceDir, _ := os.Getwd()
+		memoryFiles := memory.LoadMemoryFiles(workspaceDir)
+		if !memoryFiles.IsEmpty() {
+			contextSection = memoryFiles.FormatForSystemPrompt()
+		}
+		// No DB context means we need onboarding
+		needsOnboarding = true
+	}
+
+	// If no context loaded at all, provide default identity
+	if contextSection == "" {
+		contextSection = "# Identity\n\nYou are Nebo, a personal AI assistant."
+	}
+
+	// If user needs onboarding, add proactive onboarding instructions
+	if needsOnboarding {
+		contextSection += `
+
+## IMPORTANT: First-Time User Onboarding
+
+This is a NEW USER who hasn't been onboarded yet. You MUST start by introducing yourself and getting to know them.
+
+Start your FIRST response with a friendly greeting and ask their name:
+"Hey! I'm Nebo, your personal AI assistant. I'm here to help with whatever you need. Before we dive in, what should I call you?"
+
+After they respond, continue the conversation naturally to learn:
+1. Their name (what to call them)
+2. Their location/timezone
+3. What they do (occupation)
+4. What they'd like help with most
+5. Their preferred communication style (casual or professional)
+
+Use the memory tool to store each piece of information as you learn it. Use layer="tacit" and namespace="user":
+- Store name: {"action": "store", "layer": "tacit", "namespace": "user", "key": "name", "value": "Their Name"}
+- Store location: {"action": "store", "layer": "tacit", "namespace": "user", "key": "location", "value": "Their Location"}
+- Store occupation: {"action": "store", "layer": "tacit", "namespace": "user", "key": "occupation", "value": "Their Role"}
+- Store goals: {"action": "store", "layer": "tacit", "namespace": "user", "key": "goals", "value": "What they want help with"}
+- Store style: {"action": "store", "layer": "tacit", "namespace": "user", "key": "communication_style", "value": "casual|professional|adaptive"}
+
+Be warm and conversational - ask ONE question at a time, acknowledge their answers, then naturally transition to the next topic. This is a friendly chat, not an interview!`
+	}
+
+	// Build final prompt: Identity/Context first, then capabilities
 	if systemPrompt == "" {
 		systemPrompt = DefaultSystemPrompt
 	}
+	systemPrompt = contextSection + "\n\n---\n\n" + systemPrompt
 
-	// Load AGENTS.md and MEMORY.md and inject into system prompt
-	workspaceDir, _ := os.Getwd()
-	memoryFiles := memory.LoadMemoryFiles(workspaceDir)
-	if !memoryFiles.IsEmpty() {
-		formatted := memoryFiles.FormatForSystemPrompt()
-		systemPrompt = systemPrompt + "\n\n---\n\n" + formatted
+	// Add model aliases section so agent knows what models are available
+	if r.fuzzyMatcher != nil {
+		aliases := r.fuzzyMatcher.GetAliases()
+		if len(aliases) > 0 {
+			systemPrompt += "\n\n## Model Switching\n\nUsers can ask to switch models. Available models:\n" + strings.Join(aliases, "\n") + "\n\nWhen a user asks to switch models, acknowledge the request and confirm the switch."
+		}
 	}
 
 	// Apply matching skills based on the user's last message
@@ -307,6 +407,17 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 				// Look up provider from map
 				if p, ok := r.providerMap[providerID]; ok {
 					provider = p
+				} else {
+					// Provider not available - re-select excluding this model
+					fmt.Printf("[Runner] Provider %s not available, excluding %s and re-selecting\n", providerID, selectedModel)
+					selectedModel = r.selector.SelectWithExclusions(messages, []string{selectedModel})
+					if selectedModel != "" {
+						providerID, mn = ai.ParseModelID(selectedModel)
+						modelName = mn
+						if p, ok := r.providerMap[providerID]; ok {
+							provider = p
+						}
+					}
 				}
 			}
 		}
@@ -314,10 +425,18 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOver
 		// Fall back to first provider if selector didn't find one
 		if provider == nil && len(r.providers) > 0 {
 			provider = r.providers[0]
+			modelName = "" // Use provider's default model
 		}
 
 		if provider == nil {
-			resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: fmt.Errorf("no provider available")}
+			// No API provider configured - send a friendly message to help the user
+			helpMessage := "I'm not fully set up yet! To start chatting, please configure an API key:\n\n" +
+				"1. Go to **Settings > Providers** in the web UI\n" +
+				"2. Add your API key (Anthropic, OpenAI, or Google)\n" +
+				"3. Come back here and say hello!\n\n" +
+				"Need an API key? Visit https://console.anthropic.com to create one."
+			resultCh <- ai.StreamEvent{Type: ai.EventTypeText, Text: helpMessage}
+			resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 			return
 		}
 

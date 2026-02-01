@@ -26,15 +26,21 @@ func applyDefaults(c *Config) {
 		c.Host = "0.0.0.0"
 	}
 	if c.Port == 0 {
-		c.Port = 29875
+		c.Port = 27895
+	}
+	if c.App.Domain == "" {
+		c.App.Domain = "local.nebo.bot"
+	}
+	if c.App.BaseURL == "" {
+		c.App.BaseURL = "http://local.nebo.bot:27895"
 	}
 	if c.Auth.RefreshTokenExpire == 0 {
 		c.Auth.RefreshTokenExpire = 604800
 	}
 	if c.Database.SQLitePath == "" {
-		// Use ~/.nebo/data/gobot.db as the canonical database location
+		// Use ~/.nebo/data/nebo.db as the canonical database location
 		home, _ := os.UserHomeDir()
-		c.Database.SQLitePath = filepath.Join(home, ".nebo", "data", "gobot.db")
+		c.Database.SQLitePath = filepath.Join(home, ".nebo", "data", "nebo.db")
 	}
 	if c.Security.CSRFEnabled == "" {
 		c.Security.CSRFEnabled = "true"
@@ -76,7 +82,7 @@ func applyDefaults(c *Config) {
 		c.Email.SMTPPort = 587
 	}
 	if c.Email.FromName == "" {
-		c.Email.FromName = "gobot"
+		c.Email.FromName = "nebo"
 	}
 	if c.Email.BaseURL == "" {
 		c.Email.BaseURL = "http://localhost:27458"

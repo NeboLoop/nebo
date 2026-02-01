@@ -62,7 +62,7 @@ const ExtractFactsPrompt = `Analyze the following conversation and extract durab
 
 Return a JSON object with three arrays:
 1. "preferences" - User preferences and learned behaviors (e.g., code style, favorite tools, communication preferences)
-2. "entities" - Information about people, places, projects mentioned (format key as "type/name", e.g., "person/sarah", "project/gobot")
+2. "entities" - Information about people, places, projects mentioned (format key as "type/name", e.g., "person/sarah", "project/nebo")
 3. "decisions" - Important decisions made during this conversation
 
 Each fact should have:
@@ -150,16 +150,34 @@ func (e *Extractor) Extract(ctx context.Context, messages []session.Message) (*E
 	responseText = strings.Trim(responseText, "`")
 	responseText = strings.TrimSpace(responseText)
 
-	// Try to extract JSON from the response (in case there's extra text)
+	// Try to extract FIRST JSON object from the response
+	// (CLI provider may emit duplicates from both assistant and result messages)
 	jsonStart := strings.Index(responseText, "{")
-	jsonEnd := strings.LastIndex(responseText, "}")
-	if jsonStart >= 0 && jsonEnd > jsonStart {
-		responseText = responseText[jsonStart : jsonEnd+1]
+	if jsonStart >= 0 {
+		// Find matching closing brace for the first object
+		braceCount := 0
+		jsonEnd := -1
+		for i := jsonStart; i < len(responseText); i++ {
+			if responseText[i] == '{' {
+				braceCount++
+			} else if responseText[i] == '}' {
+				braceCount--
+				if braceCount == 0 {
+					jsonEnd = i
+					break
+				}
+			}
+		}
+		if jsonEnd > jsonStart {
+			responseText = responseText[jsonStart : jsonEnd+1]
+		}
 	}
 
-	// Final cleanup - remove any trailing backticks that might be inside
-	responseText = strings.TrimSuffix(responseText, "`")
-	responseText = strings.TrimPrefix(responseText, "`")
+	// Final cleanup - remove any backticks that might be embedded
+	responseText = strings.ReplaceAll(responseText, "```json", "")
+	responseText = strings.ReplaceAll(responseText, "```", "")
+	responseText = strings.ReplaceAll(responseText, "`", "")
+	responseText = strings.TrimSpace(responseText)
 
 	var facts ExtractedFacts
 	if err := json.Unmarshal([]byte(responseText), &facts); err != nil {

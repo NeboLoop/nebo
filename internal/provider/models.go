@@ -379,7 +379,7 @@ func UpdateModel(providerType, modelID string, update ModelUpdate) error {
 
 // CLIProviderInfo describes an available CLI provider
 type CLIProviderInfo struct {
-	ID          string   `json:"id"`          // e.g., "claude-cli"
+	ID          string   `json:"id"`          // e.g., "claude-code"
 	DisplayName string   `json:"displayName"` // e.g., "Claude Code CLI"
 	Command     string   `json:"command"`     // e.g., "claude"
 	Installed   bool     `json:"installed"`   // true if command found in PATH
@@ -391,7 +391,7 @@ type CLIProviderInfo struct {
 // KnownCLIProviders defines the CLI providers we support
 var KnownCLIProviders = []CLIProviderInfo{
 	{
-		ID:          "claude-cli",
+		ID:          "claude-code",
 		DisplayName: "Claude Code CLI",
 		Command:     "claude",
 		InstallHint: "brew install claude-code",

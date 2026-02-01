@@ -3,10 +3,11 @@
 	import { browser } from '$app/environment';
 	import { Send, Bot, Loader2, Mic, MicOff, Wifi, WifiOff, ArrowDown, Copy, Check, History, Volume2, VolumeOff } from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
-	import { getCompanionChat } from '$lib/api';
+	import { getCompanionChat, speakTTS } from '$lib/api';
 	import type { ChatMessage as ApiChatMessage } from '$lib/api';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ApprovalModal from '$lib/components/ui/ApprovalModal.svelte';
+	import { generateUUID } from '$lib/utils';
 
 	interface ApprovalRequest {
 		requestId: string;
@@ -146,6 +147,7 @@
 		try {
 			const res = await getCompanionChat();
 			chatId = res.chat.id;
+			console.log('[Agent] Loaded companion chat:', chatId);
 			messages = (res.messages || []).map((m: ApiChatMessage) => ({
 				id: m.id,
 				role: m.role as 'user' | 'assistant' | 'system',
@@ -154,10 +156,44 @@
 			}));
 			totalMessages = res.totalMessages || messages.length;
 			chatLoaded = true;
+			console.log('[Agent] Messages loaded:', messages.length, 'total:', totalMessages);
+
+			// If chat is empty, request introduction from the agent
+			if (messages.length === 0 && chatId) {
+				console.log('[Agent] Chat is empty, requesting introduction...');
+				requestIntroduction();
+			}
 		} catch (err) {
 			console.error('Failed to load companion chat:', err);
 			chatLoaded = true; // Still mark as loaded, will show empty state
 		}
+	}
+
+	function requestIntroduction() {
+		const client = getWebSocketClient();
+		console.log('[Agent] requestIntroduction called, connected:', client.isConnected());
+		if (!client.isConnected()) {
+			// Wait for connection and try again
+			console.log('[Agent] WebSocket not connected, waiting...');
+			const unsub = client.onStatus((status: ConnectionStatus) => {
+				console.log('[Agent] WebSocket status changed:', status);
+				if (status === 'connected') {
+					unsub();
+					doRequestIntroduction();
+				}
+			});
+			return;
+		}
+		doRequestIntroduction();
+	}
+
+	function doRequestIntroduction() {
+		console.log('[Agent] Sending request_introduction for session:', chatId);
+		const client = getWebSocketClient();
+		isLoading = true;
+		client.send('request_introduction', {
+			session_id: chatId || ''
+		});
 	}
 
 	// Calculate if there's more history to view
@@ -197,7 +233,7 @@
 			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
 		} else {
 			currentStreamingMessage = {
-				id: crypto.randomUUID(),
+				id: generateUUID(),
 				role: 'assistant',
 				content: chunk,
 				timestamp: new Date(),
@@ -236,7 +272,7 @@
 		if (chatId && data?.session_id !== chatId) return;
 
 		const assistantMessage: Message = {
-			id: crypto.randomUUID(),
+			id: generateUUID(),
 			role: 'assistant',
 			content: (data?.content as string) || '',
 			timestamp: new Date(),
@@ -251,7 +287,7 @@
 
 		const toolName = data?.tool as string;
 		const toolMessage: Message = {
-			id: crypto.randomUUID(),
+			id: generateUUID(),
 			role: 'system',
 			content: `Running tool: ${toolName}`,
 			timestamp: new Date(),
@@ -278,7 +314,7 @@
 		if (chatId && data?.session_id !== chatId) return;
 
 		const errorMessage: Message = {
-			id: crypto.randomUUID(),
+			id: generateUUID(),
 			role: 'assistant',
 			content: `Error: ${data?.error || 'Unknown error'}`,
 			timestamp: new Date()
@@ -341,7 +377,7 @@
 		if (isLoading) {
 			messageQueue = [...messageQueue, prompt];
 			const userMessage: Message = {
-				id: crypto.randomUUID(),
+				id: generateUUID(),
 				role: 'user',
 				content: prompt,
 				timestamp: new Date()
@@ -352,7 +388,7 @@
 
 		// Show user message immediately
 		const userMessage: Message = {
-			id: crypto.randomUUID(),
+			id: generateUUID(),
 			role: 'user',
 			content: prompt,
 			timestamp: new Date()
@@ -660,23 +696,11 @@
 		isSpeaking = true;
 
 		try {
-			const response = await fetch('/api/v1/voice/tts', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					text: cleanText,
-					voice: ttsVoice,
-					speed: 1.0
-				})
+			const audioBlob = await speakTTS({
+				text: cleanText,
+				voice: ttsVoice,
+				speed: 1.0
 			});
-
-			if (!response.ok) {
-				console.error('TTS error:', await response.text());
-				isSpeaking = false;
-				return;
-			}
-
-			const audioBlob = await response.blob();
 			const audioUrl = URL.createObjectURL(audioBlob);
 
 			currentAudio = new Audio(audioUrl);

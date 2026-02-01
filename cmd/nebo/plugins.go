@@ -9,6 +9,7 @@ import (
 
 	agentcfg "nebo/agent/config"
 	"nebo/agent/plugins"
+	"nebo/agent/tools"
 )
 
 // pluginsCmd creates the plugins management command
@@ -76,4 +77,51 @@ func pluginsDir(cfg *agentcfg.Config) string {
 
 func createPluginLoader(cfg *agentcfg.Config) *plugins.Loader {
 	return plugins.NewLoader(pluginsDir(cfg))
+}
+
+// CapabilitiesCmd lists platform-specific built-in capabilities
+func CapabilitiesCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "capabilities",
+		Short: "List built-in capabilities for this platform",
+		Run: func(cmd *cobra.Command, args []string) {
+			listCapabilities()
+		},
+	}
+}
+
+func listCapabilities() {
+	platform := tools.CurrentPlatform()
+	caps := tools.ListCapabilities()
+
+	fmt.Printf("Platform: %s\n", platform)
+	fmt.Printf("Available capabilities: %d\n\n", len(caps))
+
+	if len(caps) == 0 {
+		fmt.Println("No platform-specific capabilities registered.")
+		fmt.Println("Core tools (bash, read, write, etc.) are always available.")
+		return
+	}
+
+	// Group by category
+	byCategory := make(map[string][]*tools.Capability)
+	for _, cap := range caps {
+		cat := cap.Category
+		if cat == "" {
+			cat = "other"
+		}
+		byCategory[cat] = append(byCategory[cat], cap)
+	}
+
+	for category, caps := range byCategory {
+		fmt.Printf("[%s]\n", category)
+		for _, cap := range caps {
+			setup := ""
+			if cap.RequiresSetup {
+				setup = " (requires setup)"
+			}
+			fmt.Printf("  • %s: %s%s\n", cap.Tool.Name(), cap.Tool.Description(), setup)
+		}
+		fmt.Println()
+	}
 }

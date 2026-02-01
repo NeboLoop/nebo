@@ -67,6 +67,10 @@ func testAnthropic(apiKey, model string) (*types.TestAuthProfileResponse, error)
 	if model == "" {
 		model = models.GetDefaultModel("anthropic")
 	}
+	// Fallback to a known model if still empty (e.g., during initial setup)
+	if model == "" {
+		model = "claude-sonnet-4-20250514"
+	}
 
 	payload := map[string]interface{}{
 		"model":      model,
@@ -102,6 +106,10 @@ func testOpenAI(apiKey, model string) (*types.TestAuthProfileResponse, error) {
 	if model == "" {
 		model = models.GetDefaultModel("openai")
 	}
+	// Fallback to a known model if still empty (e.g., during initial setup)
+	if model == "" {
+		model = "gpt-4o"
+	}
 
 	payload := map[string]interface{}{
 		"model":                 model,
@@ -135,6 +143,10 @@ func testOpenAI(apiKey, model string) (*types.TestAuthProfileResponse, error) {
 func testGoogle(apiKey, model string) (*types.TestAuthProfileResponse, error) {
 	if model == "" {
 		model = models.GetDefaultModel("google")
+	}
+	// Fallback to a known model if still empty (e.g., during initial setup)
+	if model == "" {
+		model = "gemini-2.0-flash"
 	}
 
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, apiKey)
@@ -172,6 +184,10 @@ func testOllama(baseUrl, model string) (*types.TestAuthProfileResponse, error) {
 	}
 	if model == "" {
 		model = models.GetDefaultModel("ollama")
+	}
+	// Fallback to a known model if still empty (e.g., during initial setup)
+	if model == "" {
+		model = "llama3.2"
 	}
 
 	// Use fresh context with longer timeout for API calls

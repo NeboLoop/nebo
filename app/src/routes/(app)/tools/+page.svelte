@@ -3,7 +3,8 @@
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import { Wrench, Shield, ShieldAlert, RefreshCw, Terminal, FileText, Globe, Search, Cpu, Zap, Plug, MessageSquare, Power } from 'lucide-svelte';
-	import type { ListExtensionsResponse, ExtensionTool, ExtensionSkill, ExtensionChannel } from '$lib/api/neboComponents';
+	import * as api from '$lib/api/nebo';
+	import type { ListExtensionsResponse } from '$lib/api/nebo';
 
 	let extensions = $state<ListExtensionsResponse | null>(null);
 	let isLoading = $state(true);
@@ -27,10 +28,7 @@
 	async function loadExtensions() {
 		isLoading = true;
 		try {
-			const response = await fetch('/api/v1/extensions');
-			if (response.ok) {
-				extensions = await response.json();
-			}
+			extensions = await api.listExtensions();
 		} catch (error) {
 			console.error('Failed to load extensions:', error);
 		} finally {
@@ -57,15 +55,9 @@
 	async function toggleSkill(name: string) {
 		togglingSkill = name;
 		try {
-			const response = await fetch(`/api/v1/skills/${encodeURIComponent(name)}/toggle`, {
-				method: 'POST'
-			});
-			if (response.ok) {
-				// Refresh the extensions list to get updated state
-				await loadExtensions();
-			} else {
-				console.error('Failed to toggle skill:', await response.text());
-			}
+			await api.toggleSkill(name);
+			// Refresh the extensions list to get updated state
+			await loadExtensions();
 		} catch (error) {
 			console.error('Failed to toggle skill:', error);
 		} finally {

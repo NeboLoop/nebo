@@ -70,7 +70,7 @@ PRODUCTION_MODE=true
 APP_DOMAIN=your-domain.com
 ADMIN_EMAIL=admin@your-domain.com
 ACCESS_SECRET=your-32-char-secret-here-change-me
-SQLITE_PATH=/app/data/gobot.db
+SQLITE_PATH=/app/data/nebo.db
 
 # Admin
 ADMIN_USERNAME=admin@your-domain.com

@@ -22,7 +22,7 @@ func DoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check system health and diagnose issues",
-		Long: `Run diagnostics on your GoBot installation.
+		Long: `Run diagnostics on your Nebo installation.
 
 Checks:
   - Configuration files
@@ -33,8 +33,8 @@ Checks:
   - System resources
 
 Examples:
-  gobot doctor           # Run all diagnostics
-  gobot doctor --fix     # Attempt to fix issues`,
+  nebo doctor           # Run all diagnostics
+  nebo doctor --fix     # Attempt to fix issues`,
 		Run: func(cmd *cobra.Command, args []string) {
 			runDoctor(fix)
 		},
@@ -52,7 +52,7 @@ type checkResult struct {
 }
 
 func runDoctor(fix bool) {
-	fmt.Println("\033[1m🔍 GoBot Doctor\033[0m")
+	fmt.Println("\033[1m🔍 Nebo Doctor\033[0m")
 	fmt.Println("================")
 	fmt.Println()
 
@@ -130,7 +130,7 @@ func checkConfig() []checkResult {
 		results = append(results, checkResult{
 			name:    "Config Directory",
 			status:  "error",
-			message: fmt.Sprintf("~/.nebo directory not found. Run 'gobot onboard' to create it."),
+			message: fmt.Sprintf("~/.nebo directory not found. Run 'nebo onboard' to create it."),
 		})
 	} else {
 		results = append(results, checkResult{
@@ -161,13 +161,13 @@ func checkConfig() []checkResult {
 		results = append(results, checkResult{
 			name:    "Server Config",
 			status:  "warn",
-			message: "etc/gobot.yaml: not loaded",
+			message: "etc/nebo.yaml: not loaded",
 		})
 	} else {
 		results = append(results, checkResult{
 			name:    "Server Config",
 			status:  "ok",
-			message: "etc/gobot.yaml (embedded)",
+			message: "etc/nebo.yaml (embedded)",
 		})
 	}
 
@@ -235,7 +235,7 @@ func checkGateway() []checkResult {
 		results = append(results, checkResult{
 			name:    "Gateway",
 			status:  "warn",
-			message: fmt.Sprintf("Not running at %s (start with 'gobot gateway')", gatewayURL),
+			message: fmt.Sprintf("Not running at %s (start with 'nebo gateway')", gatewayURL),
 		})
 		return results
 	}
@@ -262,7 +262,7 @@ func checkDatabase() []checkResult {
 	var results []checkResult
 
 	homeDir, _ := os.UserHomeDir()
-	dbPath := filepath.Join(homeDir, ".nebo", "gobot.db")
+	dbPath := filepath.Join(homeDir, ".nebo", "data", "nebo.db")
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		results = append(results, checkResult{
@@ -359,7 +359,7 @@ func checkChannels() []checkResult {
 		results = append(results, checkResult{
 			name:    "Channels",
 			status:  "warn",
-			message: "No channels configured (run 'gobot onboard')",
+			message: "No channels configured (run 'nebo onboard')",
 		})
 		return results
 	}
@@ -403,9 +403,9 @@ func runFixes(results []checkResult) {
 				fmt.Printf("  \033[32m✓\033[0m Created %s\n", gobotDir)
 			}
 		case strings.Contains(r.name, "Config File"):
-			fmt.Println("  Run 'gobot onboard' to set up configuration")
+			fmt.Println("  Run 'nebo onboard' to set up configuration")
 		case strings.Contains(r.name, "API Keys"):
-			fmt.Println("  Run 'gobot onboard' to configure API keys")
+			fmt.Println("  Run 'nebo onboard' to configure API keys")
 		}
 	}
 }

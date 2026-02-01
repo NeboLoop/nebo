@@ -16,6 +16,8 @@
 	} from 'lucide-svelte';
 	import { auth } from '$lib/stores/auth';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
+	import { generateUUID } from '$lib/utils';
+	import * as api from '$lib/api/nebo';
 
 	let currentUser = $derived($auth.user);
 
@@ -85,7 +87,7 @@
 	function handleActivity(data: Record<string, unknown>) {
 		if (data) {
 			const activity = {
-				id: crypto.randomUUID(),
+				id: generateUUID(),
 				type: (data.type as 'chat' | 'tool' | 'agent') || 'chat',
 				message: (data.message as string) || '',
 				time: 'just now'
@@ -98,19 +100,17 @@
 		isLoading = true;
 		try {
 			// Load stats from API
-			const [statusRes, sessionsRes] = await Promise.all([
-				fetch('/api/v1/agent/status').catch(() => null),
-				fetch('/api/v1/agent/sessions').catch(() => null)
+			const [statusData, sessionsData] = await Promise.all([
+				api.getSimpleAgentStatus().catch(() => null),
+				api.listAgentSessions().catch(() => null)
 			]);
 
-			if (statusRes?.ok) {
-				const data = await statusRes.json();
-				stats.agents_online = data.agents_online || 0;
+			if (statusData) {
+				stats.agents_online = (statusData as { agents_online?: number }).agents_online || 0;
 			}
 
-			if (sessionsRes?.ok) {
-				const data = await sessionsRes.json();
-				stats.total_sessions = data.sessions?.length || 0;
+			if (sessionsData) {
+				stats.total_sessions = sessionsData.sessions?.length || 0;
 			}
 
 			// Mock recent activity for now

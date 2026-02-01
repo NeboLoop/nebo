@@ -93,7 +93,7 @@ func generateSecret() string {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
 		// Fallback to less secure but still random
-		return fmt.Sprintf("gobot-%d", os.Getpid())
+		return fmt.Sprintf("nebo-%d", os.Getpid())
 	}
 	return hex.EncodeToString(bytes)
 }

@@ -1,6 +1,8 @@
 package ai
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -473,6 +475,43 @@ func levenshteinDistance(s1, s2 string) int {
 	}
 
 	return prev[len2]
+}
+
+// GetAliases returns all aliases for system prompt injection
+// Returns lines like "- sonnet: anthropic/claude-sonnet-4"
+func (f *FuzzyMatcher) GetAliases() []string {
+	if f == nil || len(f.aliases) == 0 {
+		return nil
+	}
+
+	// Dedupe by model ID (keep shortest alias per model)
+	modelToAlias := make(map[string]string)
+	for alias, modelID := range f.aliases {
+		// Skip very short aliases and full model IDs
+		if len(alias) < 3 || strings.Contains(alias, "/") {
+			continue
+		}
+		// Skip numeric-only aliases
+		if isNumeric(alias) {
+			continue
+		}
+		existing, ok := modelToAlias[modelID]
+		if !ok || len(alias) < len(existing) {
+			modelToAlias[modelID] = alias
+		}
+	}
+
+	// Build sorted lines
+	var lines []string
+	for modelID, alias := range modelToAlias {
+		if f.isModelAvailable(modelID) {
+			lines = append(lines, fmt.Sprintf("- %s: %s", alias, modelID))
+		}
+	}
+
+	// Sort for consistent output
+	sort.Strings(lines)
+	return lines
 }
 
 // isModelAvailable checks if a model is available in the config AND has credentials

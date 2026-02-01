@@ -1,13 +1,68 @@
 package session
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
+
+// setupTestDB creates a test database with the required schema
+func setupTestDB(t *testing.T, dbPath string) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create sessions table (from 0010_auth_profiles.sql)
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS sessions (
+			id TEXT PRIMARY KEY,
+			name TEXT,
+			scope TEXT DEFAULT 'global',
+			scope_id TEXT,
+			summary TEXT,
+			token_count INTEGER DEFAULT 0,
+			message_count INTEGER DEFAULT 0,
+			last_compacted_at INTEGER,
+			metadata TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("failed to create sessions table: %v", err)
+	}
+
+	// Create session_messages table
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS session_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			content TEXT,
+			tool_calls TEXT,
+			tool_results TEXT,
+			token_estimate INTEGER DEFAULT 0,
+			is_compacted INTEGER DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)
+	`)
+	if err != nil {
+		t.Fatalf("failed to create session_messages table: %v", err)
+	}
+}
 
 func TestSessionManager(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Set up test database with required schema
+	setupTestDB(t, dbPath)
 
 	// Create manager
 	manager, err := New(dbPath)
@@ -76,6 +131,9 @@ func TestSessionManagerWithLimit(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
+	// Set up test database with required schema
+	setupTestDB(t, dbPath)
+
 	manager, err := New(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create manager: %v", err)
@@ -103,6 +161,9 @@ func TestSessionManagerWithLimit(t *testing.T) {
 func TestListSessions(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Set up test database with required schema
+	setupTestDB(t, dbPath)
 
 	manager, err := New(dbPath)
 	if err != nil {

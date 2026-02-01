@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"nebo/agent/embeddings"
 )
 
 // MemoryTool provides persistent fact storage across sessions
 type MemoryTool struct {
-	db *sql.DB
+	db            *sql.DB
+	searcher      *embeddings.HybridSearcher
+	currentUserID string // Set per-request for user-scoped operations
 }
 
 type memoryInput struct {
@@ -34,7 +38,8 @@ const (
 
 // MemoryConfig configures the memory tool
 type MemoryConfig struct {
-	DB *sql.DB // Shared database connection (required)
+	DB       *sql.DB              // Shared database connection (required)
+	Embedder *embeddings.Service  // Optional embedding service for hybrid search
 }
 
 // NewMemoryTool creates a new memory tool using the shared database connection.
@@ -44,12 +49,45 @@ func NewMemoryTool(cfg MemoryConfig) (*MemoryTool, error) {
 		return nil, fmt.Errorf("database connection required")
 	}
 
-	return &MemoryTool{db: cfg.DB}, nil
+	tool := &MemoryTool{db: cfg.DB}
+
+	// Set up hybrid search if embeddings are available
+	if cfg.Embedder != nil {
+		tool.searcher = embeddings.NewHybridSearcher(embeddings.HybridSearchConfig{
+			DB:       cfg.DB,
+			Embedder: cfg.Embedder,
+		})
+	}
+
+	return tool, nil
+}
+
+// SetEmbedder configures the embedding service for hybrid search
+func (t *MemoryTool) SetEmbedder(embedder *embeddings.Service) {
+	if embedder != nil {
+		t.searcher = embeddings.NewHybridSearcher(embeddings.HybridSearchConfig{
+			DB:       t.db,
+			Embedder: embedder,
+		})
+	} else {
+		t.searcher = nil
+	}
 }
 
 // Close is a no-op since the database is shared and managed elsewhere
 func (t *MemoryTool) Close() error {
 	return nil
+}
+
+// SetCurrentUser sets the user ID for user-scoped memory operations
+// This should be called before each request to ensure proper isolation
+func (t *MemoryTool) SetCurrentUser(userID string) {
+	t.currentUserID = userID
+}
+
+// GetCurrentUser returns the current user ID
+func (t *MemoryTool) GetCurrentUser() string {
+	return t.currentUserID
 }
 
 func (t *MemoryTool) Name() string {
@@ -60,7 +98,7 @@ func (t *MemoryTool) Description() string {
 	return `Store and recall facts persistently across sessions using a three-layer memory system:
 - tacit: Long-term preferences and learned behaviors (e.g., code style, favorite tools)
 - daily: Day-specific facts (e.g., today's standup notes, meeting decisions)
-- entity: Information about people, places, and things (e.g., person/sarah, project/gobot)
+- entity: Information about people, places, and things (e.g., person/sarah, project/nebo)
 Use for remembering user preferences, project context, learned information, and important notes.`
 }
 
@@ -141,7 +179,7 @@ func (t *MemoryTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 	case "recall":
 		result, err = t.recall(params)
 	case "search":
-		result, err = t.search(params)
+		result, err = t.searchWithContext(ctx, params)
 	case "list":
 		result, err = t.list(params)
 	case "delete":
@@ -179,22 +217,82 @@ func (t *MemoryTool) store(params memoryInput) (string, error) {
 	tagsJSON, _ := json.Marshal(params.Tags)
 	metadataJSON, _ := json.Marshal(params.Metadata)
 
-	// Upsert
+	// Use current user ID for user-scoped memories
+	userID := t.currentUserID
+
+	// Upsert into memories table (user-scoped)
 	query := `
-		INSERT INTO memories (namespace, key, value, tags, metadata, updated_at)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(namespace, key) DO UPDATE SET
+		INSERT INTO memories (namespace, key, value, tags, metadata, user_id, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(namespace, key, user_id) DO UPDATE SET
 			value = excluded.value,
 			tags = excluded.tags,
 			metadata = excluded.metadata,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := t.db.Exec(query, params.Namespace, params.Key, params.Value, string(tagsJSON), string(metadataJSON))
+	_, err := t.db.Exec(query, params.Namespace, params.Key, params.Value, string(tagsJSON), string(metadataJSON), userID)
 	if err != nil {
 		return "", err
 	}
 
-	return fmt.Sprintf("Stored memory: %s (namespace: %s)", params.Key, params.Namespace), nil
+	// Sync tacit.user memories to user_profiles table for onboarding
+	if params.Namespace == "tacit/user" || params.Namespace == "tacit.user" {
+		t.syncToUserProfile(params.Key, params.Value, userID)
+	}
+
+	return fmt.Sprintf("Stored memory: %s (namespace: %s, user: %s)", params.Key, params.Namespace, userID), nil
+}
+
+// syncToUserProfile updates the user_profiles table when tacit.user.* memories are stored.
+// This bridges the memory system with structured user profiles for onboarding.
+func (t *MemoryTool) syncToUserProfile(key, value, userID string) {
+	// Map memory keys to user_profile columns
+	columnMap := map[string]string{
+		"name":                "display_name",
+		"display_name":        "display_name",
+		"location":            "location",
+		"timezone":            "timezone",
+		"occupation":          "occupation",
+		"goals":               "goals",
+		"context":             "context",
+		"communication_style": "communication_style",
+		"interests":           "interests",
+	}
+
+	column, ok := columnMap[key]
+	if !ok {
+		return // Unknown key, skip
+	}
+
+	// If no userID provided, try to get the first user (backwards compatibility)
+	if userID == "" {
+		err := t.db.QueryRow(`SELECT id FROM users LIMIT 1`).Scan(&userID)
+		if err != nil {
+			return // No user found
+		}
+	}
+
+	now := time.Now().Unix()
+
+	// Upsert user_profiles
+	query := fmt.Sprintf(`
+		INSERT INTO user_profiles (user_id, %s, created_at, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			%s = excluded.%s,
+			updated_at = excluded.updated_at
+	`, column, column, column)
+
+	t.db.Exec(query, userID, value, now, now)
+
+	// Check if we should mark onboarding complete (name is required minimum)
+	if key == "name" || key == "display_name" {
+		t.db.Exec(`
+			UPDATE user_profiles
+			SET onboarding_completed = 1, updated_at = ?
+			WHERE user_id = ? AND display_name IS NOT NULL AND display_name != ''
+		`, now, userID)
+	}
 }
 
 func (t *MemoryTool) recall(params memoryInput) (string, error) {
@@ -206,12 +304,15 @@ func (t *MemoryTool) recall(params memoryInput) (string, error) {
 	var createdAt, updatedAt, accessedAt time.Time
 	var accessCount int
 
+	// Use current user ID for user-scoped queries
+	userID := t.currentUserID
+
 	query := `
 		SELECT value, tags, metadata, created_at, updated_at, accessed_at, access_count
 		FROM memories
-		WHERE namespace = ? AND key = ?
+		WHERE namespace = ? AND key = ? AND user_id = ?
 	`
-	err := t.db.QueryRow(query, params.Namespace, params.Key).Scan(
+	err := t.db.QueryRow(query, params.Namespace, params.Key, userID).Scan(
 		&value, &tags, &metadata, &createdAt, &updatedAt, &accessedAt, &accessCount,
 	)
 	if err == sql.ErrNoRows {
@@ -224,8 +325,8 @@ func (t *MemoryTool) recall(params memoryInput) (string, error) {
 	// Update access stats
 	t.db.Exec(`
 		UPDATE memories SET accessed_at = CURRENT_TIMESTAMP, access_count = access_count + 1
-		WHERE namespace = ? AND key = ?
-	`, params.Namespace, params.Key)
+		WHERE namespace = ? AND key = ? AND user_id = ?
+	`, params.Namespace, params.Key, userID)
 
 	var result strings.Builder
 	result.WriteString(fmt.Sprintf("Key: %s\n", params.Key))
@@ -243,29 +344,58 @@ func (t *MemoryTool) recall(params memoryInput) (string, error) {
 }
 
 func (t *MemoryTool) search(params memoryInput) (string, error) {
+	return t.searchWithContext(context.Background(), params)
+}
+
+func (t *MemoryTool) searchWithContext(ctx context.Context, params memoryInput) (string, error) {
 	if params.Query == "" {
 		return "", fmt.Errorf("query is required for search action")
 	}
 
+	// Use current user ID for user-scoped queries
+	userID := t.currentUserID
+
+	// Use hybrid search if available
+	if t.searcher != nil {
+		results, err := t.searcher.Search(ctx, params.Query, embeddings.SearchOptions{
+			Namespace: params.Namespace,
+			Limit:     10,
+			UserID:    userID,
+		})
+		if err == nil && len(results) > 0 {
+			var formatted []string
+			for _, r := range results {
+				value := r.Value
+				if len(value) > 200 {
+					value = value[:200] + "..."
+				}
+				formatted = append(formatted, fmt.Sprintf("- %s: %s (score: %.2f)", r.Key, value, r.Score))
+			}
+			return fmt.Sprintf("Found %d memories (hybrid search):\n%s", len(formatted), strings.Join(formatted, "\n")), nil
+		}
+		// Fall through to FTS search if hybrid fails
+	}
+
+	// FTS search (user-scoped)
 	query := `
 		SELECT m.key, m.value, m.tags
 		FROM memories m
 		JOIN memories_fts f ON m.id = f.rowid
-		WHERE memories_fts MATCH ? AND m.namespace = ?
+		WHERE memories_fts MATCH ? AND m.namespace = ? AND m.user_id = ?
 		ORDER BY rank
 		LIMIT 10
 	`
-	rows, err := t.db.Query(query, params.Query, params.Namespace)
+	rows, err := t.db.Query(query, params.Query, params.Namespace, userID)
 	if err != nil {
-		// Try simple LIKE search as fallback
+		// Try simple LIKE search as fallback (user-scoped)
 		query = `
 			SELECT key, value, tags
 			FROM memories
-			WHERE namespace = ? AND (key LIKE ? OR value LIKE ?)
+			WHERE namespace = ? AND user_id = ? AND (key LIKE ? OR value LIKE ?)
 			LIMIT 10
 		`
 		likePattern := "%" + params.Query + "%"
-		rows, err = t.db.Query(query, params.Namespace, likePattern, likePattern)
+		rows, err = t.db.Query(query, params.Namespace, userID, likePattern, likePattern)
 		if err != nil {
 			return "", err
 		}
@@ -293,14 +423,17 @@ func (t *MemoryTool) search(params memoryInput) (string, error) {
 }
 
 func (t *MemoryTool) list(params memoryInput) (string, error) {
+	// Use current user ID for user-scoped queries
+	userID := t.currentUserID
+
 	query := `
 		SELECT key, substr(value, 1, 100) as preview, tags, access_count
 		FROM memories
-		WHERE namespace = ?
+		WHERE namespace = ? AND user_id = ?
 		ORDER BY access_count DESC, updated_at DESC
 		LIMIT 50
 	`
-	rows, err := t.db.Query(query, params.Namespace)
+	rows, err := t.db.Query(query, params.Namespace, userID)
 	if err != nil {
 		return "", err
 	}
@@ -331,7 +464,10 @@ func (t *MemoryTool) delete(params memoryInput) (string, error) {
 		return "", fmt.Errorf("key is required for delete action")
 	}
 
-	result, err := t.db.Exec(`DELETE FROM memories WHERE namespace = ? AND key = ?`, params.Namespace, params.Key)
+	// Use current user ID for user-scoped operations
+	userID := t.currentUserID
+
+	result, err := t.db.Exec(`DELETE FROM memories WHERE namespace = ? AND key = ? AND user_id = ?`, params.Namespace, params.Key, userID)
 	if err != nil {
 		return "", err
 	}
@@ -345,7 +481,10 @@ func (t *MemoryTool) delete(params memoryInput) (string, error) {
 }
 
 func (t *MemoryTool) clear(params memoryInput) (string, error) {
-	result, err := t.db.Exec(`DELETE FROM memories WHERE namespace = ?`, params.Namespace)
+	// Use current user ID for user-scoped operations
+	userID := t.currentUserID
+
+	result, err := t.db.Exec(`DELETE FROM memories WHERE namespace = ? AND user_id = ?`, params.Namespace, userID)
 	if err != nil {
 		return "", err
 	}
@@ -355,6 +494,7 @@ func (t *MemoryTool) clear(params memoryInput) (string, error) {
 }
 
 // StoreEntry stores a memory entry directly (for programmatic use, e.g., auto-extraction)
+// Uses the current user ID for user-scoped storage
 func (t *MemoryTool) StoreEntry(layer, namespace, key, value string, tags []string) error {
 	if key == "" || value == "" {
 		return fmt.Errorf("key and value are required")
@@ -369,16 +509,19 @@ func (t *MemoryTool) StoreEntry(layer, namespace, key, value string, tags []stri
 		fullNamespace = "default"
 	}
 
+	// Use current user ID for user-scoped storage
+	userID := t.currentUserID
+
 	tagsJSON, _ := json.Marshal(tags)
 
 	query := `
-		INSERT INTO memories (namespace, key, value, tags, updated_at)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(namespace, key) DO UPDATE SET
+		INSERT INTO memories (namespace, key, value, tags, user_id, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(namespace, key, user_id) DO UPDATE SET
 			value = excluded.value,
 			tags = excluded.tags,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := t.db.Exec(query, fullNamespace, key, value, string(tagsJSON))
+	_, err := t.db.Exec(query, fullNamespace, key, value, string(tagsJSON), userID)
 	return err
 }

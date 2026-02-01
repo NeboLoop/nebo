@@ -15,6 +15,19 @@ export interface AgentInfo {
 	createdAt: string
 }
 
+export interface AgentProfileResponse {
+	name: string
+	personalityPreset: string
+	customPersonality?: string
+	voiceStyle: string
+	responseLength: string
+	emojiUsage: string
+	formality: string
+	proactivity: string
+	createdAt: string
+	updatedAt: string
+}
+
 export interface AgentSession {
 	id: string
 	name?: string
@@ -33,9 +46,6 @@ export interface AgentSettings {
 }
 
 export interface AgentStatusRequest {
-}
-
-export interface AgentStatusRequestParams {
 }
 
 export interface AgentStatusResponse {
@@ -67,9 +77,46 @@ export interface CLIAvailability {
 	gemini: boolean
 }
 
+export interface CLIStatus {
+	installed: boolean
+	authenticated: boolean
+	version?: string
+}
+
+export interface CLIStatusMap {
+	claude: CLIStatus
+	codex: CLIStatus
+	gemini: CLIStatus
+}
+
 export interface ChangePasswordRequest {
 	currentPassword: string
 	newPassword: string
+}
+
+export interface ChannelItem {
+	id: string
+	name: string
+	channelType: string
+	isEnabled: boolean
+	connectionStatus: string
+	lastConnectedAt?: string
+	lastError?: string
+	messageCount: number
+	config?: { [key: string]: string }
+	createdAt: string
+	updatedAt: string
+}
+
+export interface ChannelRegistryItem {
+	id: string
+	name: string
+	description?: string
+	icon?: string
+	setupInstructions?: string
+	requiredCredentials: Array<string>
+	optionalCredentials?: Array<string>
+	displayOrder: number
 }
 
 export interface Chat {
@@ -118,12 +165,49 @@ export interface CreateAuthProfileResponse {
 	profile: AuthProfile
 }
 
+export interface CreateChannelRequest {
+	name: string
+	channelType: string
+	credentials: { [key: string]: string }
+	config?: { [key: string]: string }
+}
+
+export interface CreateChannelResponse {
+	channel: ChannelItem
+}
+
 export interface CreateChatRequest {
 	title?: string
 }
 
 export interface CreateChatResponse {
 	chat: Chat
+}
+
+export interface CreateMCPIntegrationRequest {
+	name: string
+	serverType: string
+	serverUrl?: string
+	authType: string
+	apiKey?: string
+}
+
+export interface CreateMCPIntegrationResponse {
+	integration: MCPIntegration
+}
+
+export interface CreateTaskRequest {
+	name: string
+	schedule: string
+	command?: string
+	taskType: string
+	message?: string
+	deliver?: string
+	enabled: boolean
+}
+
+export interface CreateTaskResponse {
+	task: TaskItem
 }
 
 export interface DayInfo {
@@ -138,31 +222,28 @@ export interface DeleteAccountRequest {
 export interface DeleteAgentSessionRequest {
 }
 
-export interface DeleteAgentSessionRequestParams {
-}
-
 export interface DeleteAuthProfileRequest {
 }
 
-export interface DeleteAuthProfileRequestParams {
+export interface DeleteChannelRequest {
 }
 
 export interface DeleteChatRequest {
 }
 
-export interface DeleteChatRequestParams {
+export interface DeleteMCPIntegrationRequest {
+}
+
+export interface DeleteMemoryRequest {
 }
 
 export interface DeleteNotificationRequest {
 }
 
-export interface DeleteNotificationRequestParams {
+export interface DeleteTaskRequest {
 }
 
 export interface DisconnectOAuthRequest {
-}
-
-export interface DisconnectOAuthRequestParams {
 }
 
 export interface EmailVerificationRequest {
@@ -209,9 +290,6 @@ export interface GetAgentSessionMessagesResponse {
 export interface GetAgentSessionRequest {
 }
 
-export interface GetAgentSessionRequestParams {
-}
-
 export interface GetAgentSettingsResponse {
 	settings: AgentSettings
 }
@@ -219,17 +297,18 @@ export interface GetAgentSettingsResponse {
 export interface GetAuthProfileRequest {
 }
 
-export interface GetAuthProfileRequestParams {
-}
-
 export interface GetAuthProfileResponse {
 	profile: AuthProfile
 }
 
-export interface GetChatRequest {
+export interface GetChannelRequest {
 }
 
-export interface GetChatRequestParams {
+export interface GetChannelResponse {
+	channel: ChannelItem
+}
+
+export interface GetChatRequest {
 }
 
 export interface GetChatResponse {
@@ -245,12 +324,23 @@ export interface GetHeartbeatResponse {
 export interface GetHistoryByDayRequest {
 }
 
-export interface GetHistoryByDayRequestParams {
-}
-
 export interface GetHistoryByDayResponse {
 	day: string
 	messages: Array<ChatMessage>
+}
+
+export interface GetMCPIntegrationRequest {
+}
+
+export interface GetMCPIntegrationResponse {
+	integration: MCPIntegration
+}
+
+export interface GetMemoryRequest {
+}
+
+export interface GetMemoryResponse {
+	memory: MemoryItem
 }
 
 export interface GetOAuthUrlRequest {
@@ -276,15 +366,23 @@ export interface GetPreferencesResponse {
 export interface GetSkillRequest {
 }
 
-export interface GetSkillRequestParams {
-}
-
 export interface GetSkillResponse {
 	skill: ExtensionSkill
 }
 
+export interface GetTaskRequest {
+}
+
+export interface GetTaskResponse {
+	task: TaskItem
+}
+
 export interface GetUnreadCountResponse {
 	count: number
+}
+
+export interface GetUserProfileResponse {
+	profile: UserProfile
 }
 
 export interface GetUserResponse {
@@ -312,6 +410,14 @@ export interface ListAgentsResponse {
 
 export interface ListAuthProfilesResponse {
 	profiles: Array<AuthProfile>
+}
+
+export interface ListChannelRegistryResponse {
+	channels: Array<ChannelRegistryItem>
+}
+
+export interface ListChannelsResponse {
+	channels: Array<ChannelItem>
 }
 
 export interface ListChatDaysRequest {
@@ -345,11 +451,34 @@ export interface ListExtensionsResponse {
 	channels: Array<ExtensionChannel>
 }
 
+export interface ListMCPIntegrationsResponse {
+	integrations: Array<MCPIntegration>
+}
+
+export interface ListMCPServerRegistryResponse {
+	servers: Array<MCPServerInfo>
+}
+
+export interface ListMemoriesRequest {
+}
+
+export interface ListMemoriesRequestParams {
+	namespace: string
+	page: number
+	pageSize: number
+}
+
+export interface ListMemoriesResponse {
+	memories: Array<MemoryItem>
+	total: number
+}
+
 export interface ListModelsResponse {
 	models: { [key: string]: Array<ModelInfo> }
 	taskRouting?: TaskRouting
 	aliases?: Array<ModelAlias>
 	availableCLIs?: CLIAvailability
+	cliStatuses?: CLIStatusMap
 }
 
 export interface ListNotificationsRequest {
@@ -371,6 +500,36 @@ export interface ListOAuthProvidersResponse {
 	providers: Array<OAuthProvider>
 }
 
+export interface ListPersonalityPresetsResponse {
+	presets: Array<PersonalityPreset>
+}
+
+export interface ListTaskHistoryRequest {
+}
+
+export interface ListTaskHistoryRequestParams {
+	page: number
+	pageSize: number
+}
+
+export interface ListTaskHistoryResponse {
+	history: Array<TaskHistoryItem>
+	total: number
+}
+
+export interface ListTasksRequest {
+}
+
+export interface ListTasksRequestParams {
+	page: number
+	pageSize: number
+}
+
+export interface ListTasksResponse {
+	tasks: Array<TaskItem>
+	total: number
+}
+
 export interface LoginRequest {
 	email: string
 	password: string
@@ -382,10 +541,51 @@ export interface LoginResponse {
 	expiresAt: number
 }
 
+export interface MCPIntegration {
+	id: string
+	name: string
+	serverType: string
+	serverUrl?: string
+	authType: string
+	isEnabled: boolean
+	connectionStatus: string
+	lastConnectedAt?: string
+	lastError?: string
+	createdAt: string
+	updatedAt: string
+}
+
+export interface MCPServerInfo {
+	id: string
+	name: string
+	description?: string
+	icon?: string
+	authType: string
+	apiKeyUrl?: string
+	apiKeyPlaceholder?: string
+	isBuiltin: boolean
+	displayOrder: number
+}
+
 export interface MarkNotificationReadRequest {
 }
 
-export interface MarkNotificationReadRequestParams {
+export interface MemoryItem {
+	id: number
+	namespace: string
+	key: string
+	value: string
+	tags?: Array<string>
+	accessCount: number
+	createdAt: string
+	updatedAt: string
+	accessedAt?: string
+}
+
+export interface MemoryStatsResponse {
+	totalCount: number
+	layerCounts: { [key: string]: number }
+	namespaces: Array<string>
 }
 
 export interface MessageResponse {
@@ -430,9 +630,6 @@ export interface OAuthLoginRequest {
 	state?: string
 }
 
-export interface OAuthLoginRequestParams {
-}
-
 export interface OAuthLoginResponse {
 	token: string
 	refreshToken: string
@@ -444,6 +641,15 @@ export interface OAuthProvider {
 	name: string
 	connected: boolean
 	email?: string
+}
+
+export interface PersonalityPreset {
+	id: string
+	name: string
+	description?: string
+	systemPrompt: string
+	icon?: string
+	displayOrder: number
 }
 
 export interface RefreshTokenRequest {
@@ -471,6 +677,15 @@ export interface ResetPasswordRequest {
 	newPassword: string
 }
 
+export interface RunTaskRequest {
+}
+
+export interface RunTaskResponse {
+	success: boolean
+	output?: string
+	error?: string
+}
+
 export interface SearchChatMessagesRequest {
 }
 
@@ -482,6 +697,20 @@ export interface SearchChatMessagesRequestParams {
 
 export interface SearchChatMessagesResponse {
 	messages: Array<ChatMessage>
+	total: number
+}
+
+export interface SearchMemoriesRequest {
+}
+
+export interface SearchMemoriesRequestParams {
+	query: string
+	page: number
+	pageSize: number
+}
+
+export interface SearchMemoriesResponse {
+	memories: Array<MemoryItem>
 	total: number
 }
 
@@ -515,6 +744,31 @@ export interface SimpleAgentStatusResponse {
 	uptime?: number
 }
 
+export interface TaskHistoryItem {
+	id: number
+	jobId: number
+	startedAt: string
+	finishedAt?: string
+	success: boolean
+	output?: string
+	error?: string
+}
+
+export interface TaskItem {
+	id: number
+	name: string
+	schedule: string
+	command?: string
+	taskType: string
+	message?: string
+	deliver?: string
+	enabled: boolean
+	lastRun?: string
+	runCount: number
+	lastError?: string
+	createdAt: string
+}
+
 export interface TaskRouting {
 	vision?: string
 	audio?: string
@@ -527,24 +781,52 @@ export interface TaskRouting {
 export interface TestAuthProfileRequest {
 }
 
-export interface TestAuthProfileRequestParams {
-}
-
 export interface TestAuthProfileResponse {
 	success: boolean
 	message: string
 	model?: string
 }
 
-export interface ToggleSkillRequest {
+export interface TestChannelRequest {
 }
 
-export interface ToggleSkillRequestParams {
+export interface TestChannelResponse {
+	success: boolean
+	message: string
+}
+
+export interface TestMCPIntegrationRequest {
+}
+
+export interface TestMCPIntegrationResponse {
+	success: boolean
+	message: string
+}
+
+export interface ToggleSkillRequest {
 }
 
 export interface ToggleSkillResponse {
 	name: string
 	enabled: boolean
+}
+
+export interface ToggleTaskRequest {
+}
+
+export interface ToggleTaskResponse {
+	enabled: boolean
+}
+
+export interface UpdateAgentProfileRequest {
+	name?: string
+	personalityPreset?: string
+	customPersonality?: string
+	voiceStyle?: string
+	responseLength?: string
+	emojiUsage?: string
+	formality?: string
+	proactivity?: string
 }
 
 export interface UpdateAgentSettingsRequest {
@@ -564,14 +846,19 @@ export interface UpdateAuthProfileRequest {
 	isActive?: boolean
 }
 
-export interface UpdateAuthProfileRequestParams {
+export interface UpdateChannelRequest {
+	name?: string
+	isEnabled?: boolean
+	credentials?: { [key: string]: string }
+	config?: { [key: string]: string }
+}
+
+export interface UpdateChannelResponse {
+	channel: ChannelItem
 }
 
 export interface UpdateChatRequest {
 	title: string
-}
-
-export interface UpdateChatRequestParams {
 }
 
 export interface UpdateHeartbeatRequest {
@@ -582,13 +869,36 @@ export interface UpdateHeartbeatResponse {
 	success: boolean
 }
 
+export interface UpdateMCPIntegrationRequest {
+	name?: string
+	serverUrl?: string
+	isEnabled?: boolean
+	apiKey?: string
+}
+
+export interface UpdateMCPIntegrationResponse {
+	integration: MCPIntegration
+}
+
+export interface UpdateMemoryRequest {
+	value?: string
+	tags?: Array<string>
+}
+
+export interface UpdateModelConfigRequest {
+	primary?: string
+	fallbacks?: Array<string>
+}
+
+export interface UpdateModelConfigResponse {
+	success: boolean
+	primary: string
+}
+
 export interface UpdateModelRequest {
 	active?: boolean
 	kind?: Array<string>
 	preferred?: boolean
-}
-
-export interface UpdateModelRequestParams {
 }
 
 export interface UpdatePersonalityRequest {
@@ -607,6 +917,15 @@ export interface UpdatePreferencesRequest {
 	theme?: string
 }
 
+export interface UpdateTaskRequest {
+	name?: string
+	schedule?: string
+	command?: string
+	taskType?: string
+	message?: string
+	deliver?: string
+}
+
 export interface UpdateTaskRoutingRequest {
 	vision?: string
 	audio?: string
@@ -615,6 +934,23 @@ export interface UpdateTaskRoutingRequest {
 	general?: string
 	fallbacks?: { [key: string]: Array<string> }
 	aliases?: Array<ModelAlias>
+}
+
+export interface UpdateUserProfileRequest {
+	displayName?: string
+	bio?: string
+	location?: string
+	timezone?: string
+	occupation?: string
+	interests?: Array<string>
+	communicationStyle?: string
+	goals?: string
+	context?: string
+	onboardingCompleted?: boolean
+}
+
+export interface UpdateUserProfileResponse {
+	profile: UserProfile
 }
 
 export interface UpdateUserRequest {
@@ -638,5 +974,22 @@ export interface UserPreferences {
 	timezone: string
 	language: string
 	theme: string
+}
+
+export interface UserProfile {
+	userId: string
+	displayName?: string
+	bio?: string
+	location?: string
+	timezone?: string
+	occupation?: string
+	interests?: Array<string>
+	communicationStyle?: string
+	goals?: string
+	context?: string
+	onboardingCompleted: boolean
+	onboardingStep?: string
+	createdAt: string
+	updatedAt: string
 }
 

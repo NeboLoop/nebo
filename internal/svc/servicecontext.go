@@ -7,6 +7,7 @@ import (
 	"nebo/internal/agenthub"
 	"nebo/internal/config"
 	"nebo/internal/db"
+	"nebo/internal/defaults"
 	"nebo/internal/local"
 	"nebo/internal/middleware"
 	"nebo/internal/provider"
@@ -43,10 +44,16 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 		dataDir = "."
 	}
 
+	// Ensure data directory exists with default files (models.yaml, config.yaml, etc.)
+	neboDir, err := defaults.EnsureDataDir()
+	if err != nil {
+		logging.Errorf("Failed to ensure data directory: %v", err)
+		home, _ := os.UserHomeDir()
+		neboDir = filepath.Join(home, ".nebo")
+	}
+
 	// Initialize models store (loads ~/.nebo/models.yaml singleton)
-	home, _ := os.UserHomeDir()
-	gobotDir := filepath.Join(home, ".nebo")
-	provider.InitModelsStore(gobotDir)
+	provider.InitModelsStore(neboDir)
 	logging.Info("Models store initialized")
 
 	svc := &ServiceContext{

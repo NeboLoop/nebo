@@ -8,6 +8,20 @@ import (
 	"database/sql"
 )
 
+type AgentProfile struct {
+	ID                int64          `json:"id"`
+	Name              string         `json:"name"`
+	PersonalityPreset sql.NullString `json:"personality_preset"`
+	CustomPersonality sql.NullString `json:"custom_personality"`
+	VoiceStyle        sql.NullString `json:"voice_style"`
+	ResponseLength    sql.NullString `json:"response_length"`
+	EmojiUsage        sql.NullString `json:"emoji_usage"`
+	Formality         sql.NullString `json:"formality"`
+	Proactivity       sql.NullString `json:"proactivity"`
+	CreatedAt         int64          `json:"created_at"`
+	UpdatedAt         int64          `json:"updated_at"`
+}
+
 type AuthProfile struct {
 	ID            string         `json:"id"`
 	Name          string         `json:"name"`
@@ -25,6 +39,49 @@ type AuthProfile struct {
 	CreatedAt     int64          `json:"created_at"`
 	UpdatedAt     int64          `json:"updated_at"`
 	AuthType      sql.NullString `json:"auth_type"`
+}
+
+type Channel struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	ChannelType      string         `json:"channel_type"`
+	IsEnabled        sql.NullInt64  `json:"is_enabled"`
+	ConnectionStatus sql.NullString `json:"connection_status"`
+	LastConnectedAt  sql.NullInt64  `json:"last_connected_at"`
+	LastError        sql.NullString `json:"last_error"`
+	MessageCount     sql.NullInt64  `json:"message_count"`
+	CreatedAt        int64          `json:"created_at"`
+	UpdatedAt        int64          `json:"updated_at"`
+}
+
+type ChannelConfig struct {
+	ID          string `json:"id"`
+	ChannelID   string `json:"channel_id"`
+	ConfigKey   string `json:"config_key"`
+	ConfigValue string `json:"config_value"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+}
+
+type ChannelCredential struct {
+	ID              string `json:"id"`
+	ChannelID       string `json:"channel_id"`
+	CredentialKey   string `json:"credential_key"`
+	CredentialValue string `json:"credential_value"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+}
+
+type ChannelRegistry struct {
+	ID                  string         `json:"id"`
+	Name                string         `json:"name"`
+	Description         sql.NullString `json:"description"`
+	Icon                sql.NullString `json:"icon"`
+	SetupInstructions   sql.NullString `json:"setup_instructions"`
+	RequiredCredentials sql.NullString `json:"required_credentials"`
+	OptionalCredentials sql.NullString `json:"optional_credentials"`
+	DisplayOrder        sql.NullInt64  `json:"display_order"`
+	CreatedAt           int64          `json:"created_at"`
 }
 
 type Chat struct {
@@ -70,6 +127,14 @@ type CronJob struct {
 	CreatedAt sql.NullTime   `json:"created_at"`
 }
 
+type EmbeddingCache struct {
+	ContentHash string       `json:"content_hash"`
+	Embedding   []byte       `json:"embedding"`
+	Model       string       `json:"model"`
+	Dimensions  int64        `json:"dimensions"`
+	CreatedAt   sql.NullTime `json:"created_at"`
+}
+
 type Lead struct {
 	ID        string         `json:"id"`
 	Email     string         `json:"email"`
@@ -78,6 +143,33 @@ type Lead struct {
 	Status    string         `json:"status"`
 	Metadata  sql.NullString `json:"metadata"`
 	CreatedAt int64          `json:"created_at"`
+}
+
+type McpIntegration struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	ServerType       string         `json:"server_type"`
+	ServerUrl        sql.NullString `json:"server_url"`
+	AuthType         string         `json:"auth_type"`
+	IsEnabled        sql.NullInt64  `json:"is_enabled"`
+	ConnectionStatus sql.NullString `json:"connection_status"`
+	LastConnectedAt  sql.NullInt64  `json:"last_connected_at"`
+	LastError        sql.NullString `json:"last_error"`
+	Metadata         sql.NullString `json:"metadata"`
+	CreatedAt        int64          `json:"created_at"`
+	UpdatedAt        int64          `json:"updated_at"`
+}
+
+type McpIntegrationCredential struct {
+	ID              string         `json:"id"`
+	IntegrationID   string         `json:"integration_id"`
+	CredentialType  string         `json:"credential_type"`
+	CredentialValue string         `json:"credential_value"`
+	RefreshToken    sql.NullString `json:"refresh_token"`
+	ExpiresAt       sql.NullInt64  `json:"expires_at"`
+	Scopes          sql.NullString `json:"scopes"`
+	CreatedAt       int64          `json:"created_at"`
+	UpdatedAt       int64          `json:"updated_at"`
 }
 
 type McpOauthClient struct {
@@ -120,6 +212,23 @@ type McpOauthToken struct {
 	CreatedAt        int64          `json:"created_at"`
 }
 
+type McpServerRegistry struct {
+	ID                string         `json:"id"`
+	Name              string         `json:"name"`
+	Description       sql.NullString `json:"description"`
+	Icon              sql.NullString `json:"icon"`
+	AuthType          string         `json:"auth_type"`
+	OauthAuthorizeUrl sql.NullString `json:"oauth_authorize_url"`
+	OauthTokenUrl     sql.NullString `json:"oauth_token_url"`
+	OauthScopes       sql.NullString `json:"oauth_scopes"`
+	ApiKeyUrl         sql.NullString `json:"api_key_url"`
+	ApiKeyPlaceholder sql.NullString `json:"api_key_placeholder"`
+	DefaultServerUrl  sql.NullString `json:"default_server_url"`
+	IsBuiltin         sql.NullInt64  `json:"is_builtin"`
+	DisplayOrder      sql.NullInt64  `json:"display_order"`
+	CreatedAt         int64          `json:"created_at"`
+}
+
 type McpSession struct {
 	SessionID string `json:"session_id"`
 	UserID    string `json:"user_id"`
@@ -144,6 +253,34 @@ type Memory struct {
 	UpdatedAt   sql.NullTime   `json:"updated_at"`
 	AccessedAt  sql.NullTime   `json:"accessed_at"`
 	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+type MemoryChunk struct {
+	ID         int64          `json:"id"`
+	MemoryID   sql.NullInt64  `json:"memory_id"`
+	ChunkIndex int64          `json:"chunk_index"`
+	Text       string         `json:"text"`
+	Source     sql.NullString `json:"source"`
+	Path       sql.NullString `json:"path"`
+	StartLine  sql.NullInt64  `json:"start_line"`
+	EndLine    sql.NullInt64  `json:"end_line"`
+	Model      sql.NullString `json:"model"`
+	CreatedAt  sql.NullTime   `json:"created_at"`
+}
+
+type MemoryChunksFt struct {
+	Text   string `json:"text"`
+	Source string `json:"source"`
+	Path   string `json:"path"`
+}
+
+type MemoryEmbedding struct {
+	ID         int64         `json:"id"`
+	ChunkID    sql.NullInt64 `json:"chunk_id"`
+	Model      string        `json:"model"`
+	Dimensions int64         `json:"dimensions"`
+	Embedding  []byte        `json:"embedding"`
+	CreatedAt  sql.NullTime  `json:"created_at"`
 }
 
 type Notification struct {
@@ -171,6 +308,15 @@ type OauthConnection struct {
 	ExpiresAt      sql.NullInt64  `json:"expires_at"`
 	CreatedAt      int64          `json:"created_at"`
 	UpdatedAt      int64          `json:"updated_at"`
+}
+
+type PersonalityPreset struct {
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	Description  sql.NullString `json:"description"`
+	SystemPrompt string         `json:"system_prompt"`
+	Icon         sql.NullString `json:"icon"`
+	DisplayOrder sql.NullInt64  `json:"display_order"`
 }
 
 type ProviderModel struct {
@@ -247,4 +393,21 @@ type UserPreference struct {
 	Theme              string `json:"theme"`
 	UpdatedAt          int64  `json:"updated_at"`
 	InappNotifications int64  `json:"inapp_notifications"`
+}
+
+type UserProfile struct {
+	UserID              string         `json:"user_id"`
+	DisplayName         sql.NullString `json:"display_name"`
+	Bio                 sql.NullString `json:"bio"`
+	Location            sql.NullString `json:"location"`
+	Timezone            sql.NullString `json:"timezone"`
+	Occupation          sql.NullString `json:"occupation"`
+	Interests           sql.NullString `json:"interests"`
+	CommunicationStyle  sql.NullString `json:"communication_style"`
+	Goals               sql.NullString `json:"goals"`
+	Context             sql.NullString `json:"context"`
+	OnboardingCompleted sql.NullInt64  `json:"onboarding_completed"`
+	OnboardingStep      sql.NullString `json:"onboarding_step"`
+	CreatedAt           int64          `json:"created_at"`
+	UpdatedAt           int64          `json:"updated_at"`
 }

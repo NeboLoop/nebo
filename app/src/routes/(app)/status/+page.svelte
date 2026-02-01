@@ -16,6 +16,7 @@
 	} from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { auth } from '$lib/stores/auth';
+	import * as api from '$lib/api/nebo';
 
 	let wsConnected = $state(false);
 	let wsReconnecting = $state(false);
@@ -118,26 +119,25 @@
 
 	async function loadStatus() {
 		try {
-			const [agentsRes, statusRes] = await Promise.all([
-				fetch('/api/v1/agent/agents'),
-				fetch('/api/v1/agent/status')
+			const [agentsData, statusData] = await Promise.all([
+				api.listAgents().catch(() => null),
+				api.getSimpleAgentStatus().catch(() => null)
 			]);
 
-			if (agentsRes.ok) {
-				const data = await agentsRes.json();
-				agents = data.agents || [];
+			if (agentsData) {
+				agents = agentsData.agents || [];
 			}
 
-			if (statusRes.ok) {
-				const data = await statusRes.json();
+			if (statusData) {
+				const data = statusData as Record<string, unknown>;
 				systemStatus = {
-					mcp_server: data.mcp_server || 'online',
-					database: data.database || 'online',
+					mcp_server: (data.mcp_server as 'online' | 'offline') || 'online',
+					database: (data.database as 'online' | 'offline') || 'online',
 					websocket: wsConnected ? 'online' : 'offline',
-					uptime: data.uptime || '0s',
-					memory_usage: data.memory_usage || '0MB',
-					active_sessions: data.active_sessions || 0,
-					connected_clients: data.connected_clients || 0
+					uptime: (data.uptime as string) || '0s',
+					memory_usage: (data.memory_usage as string) || '0MB',
+					active_sessions: (data.active_sessions as number) || 0,
+					connected_clients: (data.connected_clients as number) || 0
 				};
 			}
 		} catch (error) {

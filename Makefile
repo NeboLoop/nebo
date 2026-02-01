@@ -81,7 +81,7 @@ run: build
 # Run with air (hot reload)
 air:
 	@echo "Starting with hot reload..."
-	air
+	NEBO_NO_BROWSER=1 air
 
 # Clean build artifacts
 clean:

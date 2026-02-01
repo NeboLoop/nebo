@@ -477,7 +477,20 @@ func (s *ModelSelector) isModelAvailable(modelID string) bool {
 	providerID := parts[0]
 	modelName := parts[1]
 
-	// Check if provider has credentials configured
+	// Handle CLI providers specially - they don't need credentials config
+	// They just need the CLI command to be available in PATH
+	switch providerID {
+	case "claude-code":
+		// Claude CLI is available if 'claude' command exists
+		// Model name (opus, sonnet, haiku) is passed at runtime
+		return CheckCLIAvailable("claude") && (modelName == "opus" || modelName == "sonnet" || modelName == "haiku")
+	case "codex-cli":
+		return CheckCLIAvailable("codex")
+	case "gemini-cli":
+		return CheckCLIAvailable("gemini")
+	}
+
+	// For API providers, check credentials
 	if s.config.Credentials != nil {
 		creds, ok := s.config.Credentials[providerID]
 		if !ok {
@@ -551,7 +564,7 @@ func (s *ModelSelector) ClassifyTask(messages []session.Message) TaskType {
 }
 
 // GetCheapestModel returns the cheapest active model based on pricing
-// Only considers API-based providers (excludes CLI providers like claude-cli)
+// Only considers API-based providers (excludes CLI providers like claude-code)
 // Falls back to models with "cheap" kind tag if no pricing is available
 func (s *ModelSelector) GetCheapestModel() string {
 	var cheapest string

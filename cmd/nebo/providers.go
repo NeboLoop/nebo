@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -13,15 +14,35 @@ import (
 
 var _ = agentcfg.Config{} // silence unused import if needed
 
+// Shared database connection for provider loading
+var sharedDB *sql.DB
+
+// SetSharedDB sets the shared database connection for provider loading
+func SetSharedDB(db *sql.DB) {
+	sharedDB = db
+}
+
 // createProviders creates AI providers from config and database
 func createProviders(cfg *agentcfg.Config) []ai.Provider {
 	var providers []ai.Provider
 
-	// First priority: API providers from database (UI-configured keys) - these support true streaming
-	dbProviders := loadProvidersFromDB(cfg.DBPath())
+	// NOTE: We do NOT call provider.InitModelsStore here because:
+	// 1. It's already initialized during server startup in servicecontext.go
+	// 2. Calling it here would trigger ReloadModels() → OnConfigReload callbacks
+	//    → r.ReloadProviders() → createProviders() → INFINITE RECURSION!
+	// The models config is already loaded and available via GetModelsConfig()
+
+	// Primary source: API providers from database (UI-configured keys)
+	// This is the ONLY supported method for non-technical users
+	// Use the shared DB connection
+	dbProviders := loadProvidersFromDB(sharedDB)
 	providers = append(providers, dbProviders...)
 
-	// Then add providers from config (env vars, models.yaml)
+	if len(dbProviders) > 0 {
+		fmt.Printf("[Providers] Loaded %d provider(s) from database\n", len(dbProviders))
+	}
+
+	// Secondary source: Providers from config file (for advanced users/developers)
 	for _, pcfg := range cfg.Providers {
 		if providerArg != "" && pcfg.Name != providerArg {
 			continue
@@ -87,11 +108,35 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 		}
 	}
 
-	// Fallback: Claude Code CLI if no API providers were configured
-	// CLI providers don't support true streaming but work as a last resort
-	if len(providers) == 0 && ai.CheckCLIAvailable("claude") {
-		providers = append(providers, ai.NewClaudeCodeProvider())
-		fmt.Println("[Providers] Using Claude Code CLI as fallback (no API keys configured)")
+	// Add CLI providers when configured as primary in models.yaml
+	modelsConfig := provider.GetModelsConfig()
+	if modelsConfig != nil && modelsConfig.Defaults != nil {
+		primary := modelsConfig.Defaults.Primary
+		// Check if primary is a CLI provider (e.g., "claude-code/opus", "codex-cli/gpt-5")
+		if strings.HasPrefix(primary, "claude-code") {
+			if ai.CheckCLIAvailable("claude") {
+				providers = append(providers, ai.NewClaudeCodeProvider())
+				fmt.Printf("[Providers] Added Claude CLI provider (primary: %s)\n", primary)
+			} else {
+				fmt.Printf("[Providers] Warning: Claude CLI not found in PATH (primary: %s)\n", primary)
+			}
+		} else if strings.HasPrefix(primary, "codex-cli") {
+			if ai.CheckCLIAvailable("codex") {
+				providers = append(providers, ai.NewCodexCLIProvider())
+				fmt.Printf("[Providers] Added Codex CLI provider (primary: %s)\n", primary)
+			}
+		} else if strings.HasPrefix(primary, "gemini-cli") {
+			if ai.CheckCLIAvailable("gemini") {
+				providers = append(providers, ai.NewGeminiCLIProvider())
+				fmt.Printf("[Providers] Added Gemini CLI provider (primary: %s)\n", primary)
+			}
+		}
+	}
+
+	if len(providers) == 0 {
+		fmt.Println("[Providers] No API providers configured!")
+		fmt.Println("[Providers] Please configure an API key in the web UI: Settings > Providers")
+		fmt.Println("[Providers] Visit http://local.nebo.bot:27895/settings/providers to add your API key")
 	}
 
 	return providers
@@ -99,22 +144,29 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 
 // loadProvidersFromDB loads API providers from database auth profiles
 // These are configured via the UI in Settings > Providers
-func loadProvidersFromDB(dbPath string) []ai.Provider {
+// Accepts a shared *sql.DB connection - does NOT close it
+func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 	var providers []ai.Provider
 
-	mgr, err := agentcfg.NewAuthProfileManager(dbPath)
-	if err != nil {
-		if verbose {
-			fmt.Fprintf(os.Stderr, "Warning: Could not load auth profiles from DB: %v\n", err)
-		}
+	if db == nil {
+		fmt.Printf("[Providers] Warning: No database connection for loading auth profiles\n")
 		return providers
 	}
-	defer mgr.Close()
+
+	fmt.Printf("[Providers] Creating auth profile manager with shared DB\n")
+	mgr, err := agentcfg.NewAuthProfileManager(db)
+	if err != nil {
+		fmt.Printf("[Providers] Warning: Could not load auth profiles from DB: %v\n", err)
+		return providers
+	}
+	defer mgr.Close() // No-op since we use shared connection
+	fmt.Printf("[Providers] Auth profile manager created successfully\n")
 
 	ctx := context.Background()
 
 	// Load anthropic profiles
 	if profiles, err := mgr.ListActiveProfiles(ctx, "anthropic"); err == nil {
+		fmt.Printf("[Providers] Found %d anthropic profiles\n", len(profiles))
 		for _, p := range profiles {
 			if p.APIKey != "" {
 				model := p.Model
@@ -122,15 +174,16 @@ func loadProvidersFromDB(dbPath string) []ai.Provider {
 					model = provider.GetDefaultModel("anthropic")
 				}
 				providers = append(providers, ai.NewAnthropicProvider(p.APIKey, model))
-				if verbose {
-					fmt.Printf("Loaded Anthropic provider from DB: %s (model: %s)\n", p.Name, model)
-				}
+				fmt.Printf("[Providers] Loaded Anthropic provider: %s (model: %s)\n", p.Name, model)
 			}
 		}
+	} else {
+		fmt.Printf("[Providers] Error loading anthropic profiles: %v\n", err)
 	}
 
 	// Load openai profiles
 	if profiles, err := mgr.ListActiveProfiles(ctx, "openai"); err == nil {
+		fmt.Printf("[Providers] Found %d openai profiles\n", len(profiles))
 		for _, p := range profiles {
 			if p.APIKey != "" {
 				model := p.Model
@@ -138,15 +191,16 @@ func loadProvidersFromDB(dbPath string) []ai.Provider {
 					model = provider.GetDefaultModel("openai")
 				}
 				providers = append(providers, ai.NewOpenAIProvider(p.APIKey, model))
-				if verbose {
-					fmt.Printf("Loaded OpenAI provider from DB: %s (model: %s)\n", p.Name, model)
-				}
+				fmt.Printf("[Providers] Loaded OpenAI provider: %s (model: %s)\n", p.Name, model)
 			}
 		}
+	} else {
+		fmt.Printf("[Providers] Error loading openai profiles: %v\n", err)
 	}
 
 	// Load google/gemini profiles
 	if profiles, err := mgr.ListActiveProfiles(ctx, "google"); err == nil {
+		fmt.Printf("[Providers] Found %d google profiles\n", len(profiles))
 		for _, p := range profiles {
 			if p.APIKey != "" {
 				model := p.Model
@@ -154,15 +208,16 @@ func loadProvidersFromDB(dbPath string) []ai.Provider {
 					model = provider.GetDefaultModel("google")
 				}
 				providers = append(providers, ai.NewGeminiProvider(p.APIKey, model))
-				if verbose {
-					fmt.Printf("Loaded Gemini provider from DB: %s (model: %s)\n", p.Name, model)
-				}
+				fmt.Printf("[Providers] Loaded Gemini provider: %s (model: %s)\n", p.Name, model)
 			}
 		}
+	} else {
+		fmt.Printf("[Providers] Error loading google profiles: %v\n", err)
 	}
 
 	// Load ollama profiles
 	if profiles, err := mgr.ListActiveProfiles(ctx, "ollama"); err == nil {
+		fmt.Printf("[Providers] Found %d ollama profiles\n", len(profiles))
 		for _, p := range profiles {
 			baseURL := p.BaseURL
 			if baseURL == "" {
@@ -174,13 +229,14 @@ func loadProvidersFromDB(dbPath string) []ai.Provider {
 					model = provider.GetDefaultModel("ollama")
 				}
 				providers = append(providers, ai.NewOllamaProvider(baseURL, model))
-				if verbose {
-					fmt.Printf("Loaded Ollama provider from DB: %s (model: %s)\n", p.Name, model)
-				}
+				fmt.Printf("[Providers] Loaded Ollama provider: %s (model: %s)\n", p.Name, model)
 			}
 		}
+	} else {
+		fmt.Printf("[Providers] Error loading ollama profiles: %v\n", err)
 	}
 
+	fmt.Printf("[Providers] Total providers from DB: %d\n", len(providers))
 	return providers
 }
 

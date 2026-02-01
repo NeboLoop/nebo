@@ -156,6 +156,9 @@ var chatHandler MessageHandler
 // approvalResponseHandler is set to handle approval responses
 var approvalResponseHandler MessageHandler
 
+// requestIntroductionHandler is set to handle introduction requests
+var requestIntroductionHandler MessageHandler
+
 // SetRewriteHandler sets the handler for rewrite messages
 func SetRewriteHandler(handler MessageHandler) {
 	rewriteHandler = handler
@@ -171,6 +174,11 @@ func SetApprovalResponseHandler(handler MessageHandler) {
 	approvalResponseHandler = handler
 }
 
+// SetRequestIntroductionHandler sets the handler for introduction requests
+func SetRequestIntroductionHandler(handler MessageHandler) {
+	requestIntroductionHandler = handler
+}
+
 // handleMessage processes incoming messages from the client
 func (c *Client) handleMessage(msg *Message) {
 	logging.Infof("[Client] Received message type=%s from client %s", msg.Type, c.ID)
@@ -183,8 +191,19 @@ func (c *Client) handleMessage(msg *Message) {
 		c.handleChat(msg)
 	case "approval_response":
 		c.handleApprovalResponse(msg)
+	case "request_introduction":
+		c.handleRequestIntroduction(msg)
 	default:
 		logging.Infof("Unknown message type: %s", msg.Type)
+	}
+}
+
+// handleRequestIntroduction processes introduction requests from new users
+func (c *Client) handleRequestIntroduction(msg *Message) {
+	if requestIntroductionHandler != nil {
+		requestIntroductionHandler(c, msg)
+	} else {
+		logging.Error("Request introduction handler not registered")
 	}
 }
 

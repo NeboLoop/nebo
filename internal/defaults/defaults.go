@@ -12,17 +12,17 @@ import (
 	"time"
 )
 
-//go:embed dotgobot/*
+//go:embed dotnebo/*
 var defaultFiles embed.FS
 
 // DataDir returns the platform-appropriate data directory.
 // Unix: ~/.nebo
-// Windows: %APPDATA%\gobot or %USERPROFILE%\.nebo
+// Windows: %APPDATA%\nebo or %USERPROFILE%\.nebo
 func DataDir() (string, error) {
 	if runtime.GOOS == "windows" {
 		// Try APPDATA first, fall back to USERPROFILE
 		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "gobot"), nil
+			return filepath.Join(appData, "nebo"), nil
 		}
 		if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
 			return filepath.Join(userProfile, ".nebo"), nil
@@ -68,18 +68,18 @@ func Reset(dir string) error {
 // copyDefaults copies embedded default files to the data directory.
 // If overwrite is true, existing files are replaced.
 func copyDefaults(dir string, overwrite bool) error {
-	return fs.WalkDir(defaultFiles, "dotgobot", func(path string, d fs.DirEntry, err error) error {
+	return fs.WalkDir(defaultFiles, "dotnebo", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 
 		// Skip the root directory
-		if path == "dotgobot" {
+		if path == "dotnebo" {
 			return nil
 		}
 
-		// Get relative path (strip "dotgobot/" prefix)
-		relPath, _ := filepath.Rel("dotgobot", path)
+		// Get relative path (strip "dotnebo/" prefix)
+		relPath, _ := filepath.Rel("dotnebo", path)
 		destPath := filepath.Join(dir, relPath)
 
 		if d.IsDir() {
@@ -111,18 +111,18 @@ func copyDefaults(dir string, overwrite bool) error {
 // GetDefault returns the content of a default file by name.
 // Example: GetDefault("config.yaml")
 func GetDefault(name string) ([]byte, error) {
-	return defaultFiles.ReadFile(filepath.Join("dotgobot", name))
+	return defaultFiles.ReadFile(filepath.Join("dotnebo", name))
 }
 
 // ListDefaults returns the names of all default files.
 func ListDefaults() ([]string, error) {
 	var files []string
-	err := fs.WalkDir(defaultFiles, "dotgobot", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(defaultFiles, "dotnebo", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && path != "dotgobot" {
-			relPath, _ := filepath.Rel("dotgobot", path)
+		if !d.IsDir() && path != "dotnebo" {
+			relPath, _ := filepath.Rel("dotnebo", path)
 			files = append(files, relPath)
 		}
 		return nil

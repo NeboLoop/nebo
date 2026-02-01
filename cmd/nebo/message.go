@@ -36,9 +36,9 @@ func messageSendCmd() *cobra.Command {
 		Long: `Send a message to a specific channel or user.
 
 Examples:
-  gobot message send "Hello world" --to telegram:123456789
-  gobot message send "Hello" --channel slack:general
-  gobot message send "Hi there" --to discord:user123`,
+  nebo message send "Hello world" --to telegram:123456789
+  nebo message send "Hello" --channel slack:general
+  nebo message send "Hi there" --to discord:user123`,
 		Args: cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			message := strings.Join(args, " ")
@@ -105,7 +105,7 @@ func runMessageSend(message, to, channel string) {
 	resp, err := http.Post(gatewayURL+"/api/v1/messages/send", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		fmt.Printf("Error sending message: %v\n", err)
-		fmt.Println("Make sure the Gateway is running (gobot gateway)")
+		fmt.Println("Make sure the Gateway is running (nebo gateway)")
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
@@ -128,7 +128,7 @@ func runListChannels() {
 	resp, err := http.Get(gatewayURL + "/api/v1/channels")
 	if err != nil {
 		fmt.Printf("Error fetching channels: %v\n", err)
-		fmt.Println("Make sure the Gateway is running (gobot gateway)")
+		fmt.Println("Make sure the Gateway is running (nebo gateway)")
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
@@ -155,7 +155,7 @@ func runListChannels() {
 
 	if len(result.Channels) == 0 {
 		fmt.Println("No channels connected.")
-		fmt.Println("\nRun 'gobot onboard' to set up your first channel.")
+		fmt.Println("\nRun 'nebo onboard' to set up your first channel.")
 		return
 	}
 

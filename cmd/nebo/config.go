@@ -58,7 +58,7 @@ func loadAgentConfig() *agentcfg.Config {
 
 // showConfig displays the current configuration
 func showConfig(cfg *agentcfg.Config) {
-	fmt.Println("GoBot Configuration")
+	fmt.Println("Nebo Configuration")
 	fmt.Println("===================")
 	fmt.Printf("Data Directory: %s\n", cfg.DataDir)
 	fmt.Printf("Database: %s\n", cfg.DBPath())
