@@ -12,14 +12,14 @@
 	interface NavItem {
 		label: string;
 		href: string;
-		icon?: 'dashboard' | 'history' | 'settings' | 'analytics' | 'agent' | 'tools' | 'channels' | 'mcp' | 'status' | 'memories' | 'tasks';
+		icon?: 'dashboard' | 'history' | 'settings' | 'analytics' | 'agent' | 'tools' | 'channels' | 'mcp' | 'status' | 'memories' | 'schedule';
 	}
 
 	let {
 		items = [
 			{ label: 'Agent', href: '/agent', icon: 'agent' },
 			{ label: 'Memories', href: '/memories', icon: 'memories' },
-			{ label: 'Tasks', href: '/tasks', icon: 'tasks' },
+			{ label: 'Schedule', href: '/schedule', icon: 'schedule' },
 			{ label: 'Sessions', href: '/sessions', icon: 'history' },
 			{ label: 'Extensions', href: '/tools', icon: 'tools' },
 			{ label: 'Channels', href: '/channels', icon: 'channels' },
@@ -105,7 +105,7 @@
 			viewBox: '0 0 24 24',
 			path: '<path d="M12 2a9 9 0 0 0-9 9c0 4.17 3.08 7.68 7 8.55V21a1 1 0 0 0 2 0v-1.45c3.92-.87 7-4.38 7-8.55a9 9 0 0 0-9-9z"/><path d="M9 10a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/><path d="M17 10a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/>'
 		},
-		tasks: {
+		schedule: {
 			viewBox: '0 0 24 24',
 			path: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'
 		}
