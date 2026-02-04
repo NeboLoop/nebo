@@ -26,7 +26,7 @@ const (
 
 // relayDebug controls verbose CDP message tracing through the relay.
 // Set to true to log all CDP messages between Playwright ↔ Relay ↔ Extension.
-var relayDebug = true
+var relayDebug = false
 
 func relayLog(format string, args ...any) {
 	if relayDebug {
@@ -89,7 +89,7 @@ type TargetInfo struct {
 	Title            string `json:"title"`
 	URL              string `json:"url"`
 	Attached         bool   `json:"attached"`
-	BrowserContextID string `json:"browserContextId,omitempty"`
+	BrowserContextID string `json:"browserContextId"`
 }
 
 type pendingRequest struct {
@@ -600,6 +600,7 @@ func (r *ExtensionRelay) HandleExtensionWS(w http.ResponseWriter, req *http.Requ
 	r.mu.Lock()
 	if r.extensionWS != nil {
 		r.mu.Unlock()
+		relayLog("Extension connection rejected: already connected")
 		http.Error(w, "Extension already connected", http.StatusConflict)
 		return
 	}
@@ -607,9 +608,11 @@ func (r *ExtensionRelay) HandleExtensionWS(w http.ResponseWriter, req *http.Requ
 
 	ws, err := r.upgrader.Upgrade(w, req, nil)
 	if err != nil {
+		relayLog("Extension WS upgrade failed: %v", err)
 		return
 	}
 
+	relayLog("Extension connected from %s", req.RemoteAddr)
 	r.mu.Lock()
 	r.extensionWS = ws
 	r.mu.Unlock()
@@ -636,12 +639,15 @@ func (r *ExtensionRelay) HandleExtensionWS(w http.ResponseWriter, req *http.Requ
 	for {
 		_, message, err := ws.ReadMessage()
 		if err != nil {
+			relayLog("Extension read error (disconnecting): %v", err)
 			break
 		}
 		r.handleExtensionMessage(message)
 	}
 
 	// Cleanup on disconnect
+	relayLog("Extension disconnected, cleaning up %d targets and %d CDP clients",
+		len(r.connectedTargets), len(r.cdpClients))
 	r.mu.Lock()
 	r.extensionWS = nil
 	r.connectedTargets = make(map[string]*ConnectedTarget)
@@ -682,7 +688,8 @@ func (r *ExtensionRelay) HandleCdpWS(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if !r.ExtensionConnected() {
-		http.Error(w, "Extension not connected", http.StatusServiceUnavailable)
+		relayLog("CDP client rejected: extension not connected")
+		http.Error(w, "Chrome extension not connected. Click the Nebo extension icon in Chrome to attach a tab.", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -788,10 +795,12 @@ func (r *ExtensionRelay) handleExtensionMessage(data []byte) {
 
 	if method == "Target.detachedFromTarget" {
 		r.handleTargetDetached(params)
+		return
 	}
 
 	if method == "Target.targetInfoChanged" {
 		r.handleTargetInfoChanged(params)
+		// Fall through to broadcast the event to CDP clients
 	}
 
 	// Broadcast to all CDP clients
@@ -823,6 +832,13 @@ func (r *ExtensionRelay) handleTargetAttached(params any) {
 	title, _ := targetInfoRaw["title"].(string)
 	url, _ := targetInfoRaw["url"].(string)
 	browserContextID, _ := targetInfoRaw["browserContextId"].(string)
+	if browserContextID == "" {
+		browserContextID = "default"
+	}
+	// Default type to "page" if not specified
+	if targetType == "" {
+		targetType = "page"
+	}
 
 	target := &ConnectedTarget{
 		SessionID: sessionID,
@@ -837,11 +853,14 @@ func (r *ExtensionRelay) handleTargetAttached(params any) {
 		},
 	}
 
+	relayLog("Target attached: sessionId=%s targetId=%s type=%s url=%s browserContextId=%s",
+		sessionID, targetID, targetType, truncateRelay(url, 80), browserContextID)
+
 	r.mu.Lock()
 	r.connectedTargets[sessionID] = target
 	r.mu.Unlock()
 
-	// Broadcast attachment event
+	// Broadcast attachment event (no top-level SessionID — this is a browser-level event)
 	r.broadcastToCdpClients(&cdpEvent{
 		Method: "Target.attachedToTarget",
 		Params: map[string]any{
@@ -849,7 +868,6 @@ func (r *ExtensionRelay) handleTargetAttached(params any) {
 			"targetInfo":         target.TargetInfo,
 			"waitingForDebugger": false,
 		},
-		SessionID: sessionID,
 	})
 }
 
@@ -868,10 +886,10 @@ func (r *ExtensionRelay) handleTargetDetached(params any) {
 	delete(r.connectedTargets, sessionID)
 	r.mu.Unlock()
 
+	// No top-level SessionID — this is a browser-level event
 	r.broadcastToCdpClients(&cdpEvent{
-		Method:    "Target.detachedFromTarget",
-		Params:    params,
-		SessionID: sessionID,
+		Method: "Target.detachedFromTarget",
+		Params: params,
 	})
 }
 
@@ -910,6 +928,8 @@ func (r *ExtensionRelay) handleCdpCommand(clientID string, cmd *cdpCommand) {
 
 	var result any
 	var err error
+	// postEvents are sent AFTER the response (Playwright expects response before events)
+	var postEvents []any
 
 	// Handle commands locally or forward to extension
 	switch cmd.Method {
@@ -925,16 +945,15 @@ func (r *ExtensionRelay) handleCdpCommand(clientID string, cmd *cdpCommand) {
 		result = map[string]any{}
 	case "Target.setAutoAttach":
 		result = map[string]any{}
-		// Only send existing targets for browser-level setAutoAttach (no sessionId)
+		// Queue existing targets as post-response events (browser-level only)
 		if cmd.SessionID == "" {
-			r.sendExistingTargets(clientID, cmd.Method)
+			postEvents = r.buildExistingTargetEvents(clientID, cmd.Method)
 		}
 	case "Target.setDiscoverTargets":
 		result = map[string]any{}
-		// Check if discover is true
 		if params, ok := cmd.Params.(map[string]any); ok {
 			if discover, _ := params["discover"].(bool); discover {
-				r.sendExistingTargets(clientID, cmd.Method)
+				postEvents = r.buildExistingTargetEvents(clientID, cmd.Method)
 			}
 		}
 	case "Target.getTargets":
@@ -959,14 +978,14 @@ func (r *ExtensionRelay) handleCdpCommand(clientID string, cmd *cdpCommand) {
 		result = r.getTargetInfo(cmd)
 	case "Target.attachToTarget":
 		result, err = r.attachToTarget(cmd)
-		// Send attachedToTarget event after successful attach
+		// Queue attachedToTarget event as post-response event
 		if err == nil {
 			if params, ok := cmd.Params.(map[string]any); ok {
 				if targetID, _ := params["targetId"].(string); targetID != "" {
 					r.mu.RLock()
 					for _, t := range r.connectedTargets {
 						if t.TargetID == targetID {
-							events.Emit[any](r.cdpEvents, topic, &cdpEvent{
+							postEvents = append(postEvents, &cdpEvent{
 								Method: "Target.attachedToTarget",
 								Params: map[string]any{
 									"sessionId":          t.SessionID,
@@ -986,7 +1005,7 @@ func (r *ExtensionRelay) handleCdpCommand(clientID string, cmd *cdpCommand) {
 		result, err = r.forwardToExtension(cmd)
 	}
 
-	// Send response
+	// Send response FIRST
 	resp := &cdpResponse{
 		ID:        cmd.ID,
 		SessionID: cmd.SessionID,
@@ -998,6 +1017,11 @@ func (r *ExtensionRelay) handleCdpCommand(clientID string, cmd *cdpCommand) {
 	}
 
 	events.Emit[any](r.cdpEvents, topic, resp)
+
+	// Then send post-response events (e.g., Target.attachedToTarget after setAutoAttach)
+	for _, evt := range postEvents {
+		events.Emit[any](r.cdpEvents, topic, evt)
+	}
 }
 
 func (r *ExtensionRelay) forwardToExtension(cmd *cdpCommand) (any, error) {
@@ -1078,9 +1102,7 @@ func (r *ExtensionRelay) broadcastToCdpClients(evt *cdpEvent) {
 	}
 }
 
-func (r *ExtensionRelay) sendExistingTargets(clientID string, method string) {
-	topic := events.CDPClientTopic(clientID)
-
+func (r *ExtensionRelay) buildExistingTargetEvents(_ string, method string) []any {
 	r.mu.RLock()
 	targets := make([]*ConnectedTarget, 0, len(r.connectedTargets))
 	for _, t := range r.connectedTargets {
@@ -1088,9 +1110,10 @@ func (r *ExtensionRelay) sendExistingTargets(clientID string, method string) {
 	}
 	r.mu.RUnlock()
 
+	evts := make([]any, 0, len(targets))
 	for _, target := range targets {
 		if method == "Target.setAutoAttach" {
-			events.Emit[any](r.cdpEvents, topic, &cdpEvent{
+			evts = append(evts, &cdpEvent{
 				Method: "Target.attachedToTarget",
 				Params: map[string]any{
 					"sessionId":          target.SessionID,
@@ -1099,7 +1122,7 @@ func (r *ExtensionRelay) sendExistingTargets(clientID string, method string) {
 				},
 			})
 		} else {
-			events.Emit[any](r.cdpEvents, topic, &cdpEvent{
+			evts = append(evts, &cdpEvent{
 				Method: "Target.targetCreated",
 				Params: map[string]any{
 					"targetInfo": target.TargetInfo,
@@ -1107,6 +1130,7 @@ func (r *ExtensionRelay) sendExistingTargets(clientID string, method string) {
 			})
 		}
 	}
+	return evts
 }
 
 func (r *ExtensionRelay) getTargetInfo(cmd *cdpCommand) map[string]any {
