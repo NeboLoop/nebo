@@ -21,7 +21,7 @@ A Channel Adapter takes you message and processes it (normalize, extract attachm
 2. Gateway Server
 The Gateway Server which is the task/session coordinator takes your message and passes it to the right session. this is the heart of the Clawd. It handles multiple overlapping requests. 
 
-to serialize operations, Clawd uses a lane-based command queue. A session has its own dedicated lane, and low-risk parallizable tasks can run in parallel lanes (crone jobs).
+to serialize operations, Clawd uses a lane-based command queue. A session has its own dedicated lane, and low-risk parallizable tasks can run in parallel lanes (events lane).
 
 This is in contrast to using async/await spaghetti. over parallilization hurts reliability and brings out a huge swarm of debugging nightmares. 
 Default to Serial, go for Parallel explicitly

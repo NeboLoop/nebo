@@ -1,6 +1,6 @@
 # Nebo
 
-Your personal AI assistant that runs locally. One agent, always running, with persistent memory.
+Your personal AI assistant that runs locally. One primary agent with a lane-based concurrency system and persistent memory.
 
 ## The Nebo Paradigm
 
@@ -8,10 +8,11 @@ Your personal AI assistant that runs locally. One agent, always running, with pe
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           THE NEBO AGENT                                    │
 │                                                                             │
-│   • Always running (Go process with SQLite persistence)                     │
-│   • Has MEMORY that survives restarts                                       │
-│   • Spawns SUB-AGENTS for parallel work (up to 5 concurrent)                │
-│   • Proactive via scheduled tasks (cron)                                    │
+│   • One primary WebSocket connection (enforced by hub)                      │
+│   • Lane-based concurrency for different work types                         │
+│   • Spawns SUB-AGENTS as goroutines for parallel work                       │
+│   • SQLite persistence survives restarts (crash recovery)                   │
+│   • Proactive via heartbeat lane + scheduled events                         │
 │                                                                             │
 │   Channels (how you reach THE agent):                                       │
 │     ┌─────────┐  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌───────┐        │
@@ -20,27 +21,41 @@ Your personal AI assistant that runs locally. One agent, always running, with pe
 │          │            │            │             │           │             │
 │          └────────────┴────────────┴─────────────┴───────────┘             │
 │                                    │                                        │
-│                             ┌──────┴──────┐                                │
-│                             │  MAIN AGENT │                                │
-│                             │  (agentic   │                                │
-│                             │    loop)    │                                │
-│                             └──────┬──────┘                                │
+│                        ┌───────────┴───────────┐                           │
+│                        │      LANE SYSTEM      │                           │
+│                        │  (supervisor pattern) │                           │
+│                        └───────────┬───────────┘                           │
 │                                    │                                        │
-│          ┌─────────────────────────┼─────────────────────────┐             │
-│          │                         │                         │             │
-│    ┌─────┴─────┐            ┌─────┴─────┐            ┌─────┴─────┐        │
-│    │ Sub-Agent │            │ Sub-Agent │            │ Sub-Agent │        │
-│    │ (explore) │            │ (research)│            │  (code)   │        │
-│    └───────────┘            └───────────┘            └───────────┘        │
+│      ┌─────────────┬───────────────┼───────────────┬─────────────┐        │
+│      │             │               │               │             │         │
+│  ┌───┴───┐   ┌─────┴─────┐   ┌─────┴─────┐   ┌─────┴─────┐      │         │
+│  │ main  │   │   cron    │   │ subagent  │   │  nested   │      │         │
+│  │ (1)   │   │           │   │           │   │           │      │         │
+│  └───┬───┘   └─────┬─────┘   └─────┬─────┘   └─────┬─────┘      │         │
+│      │             │               │               │             │         │
+│      │             │         ┌─────┼─────┐         │             │         │
+│      │             │         │     │     │         │             │         │
+│      ▼             ▼         ▼     ▼     ▼         ▼             │         │
+│   User chat    Scheduled   Sub-Agent goroutines  Tool           │         │
+│   (serialized) tasks                             recursion       │         │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**This is NOT a multi-agent chat system.** Nebo is ONE intelligent agent that:
-- Maintains persistent memory across sessions
-- Can work on complex tasks by spawning temporary sub-agents
-- Connects to you through whatever channel is convenient
-- Runs scheduled tasks proactively (even when you're not there)
+**Key Architectural Concepts:**
+
+| Concept | What It Means |
+|---------|---------------|
+| **One Agent** | Single WebSocket connection to hub. If reconnected, old connection is dropped. |
+| **Lane System** | Work queues for different types of work. Main lane serializes user chat (1 at a time). |
+| **Sub-Agents** | Goroutines (not separate processes) spawned for parallel work. Each gets its own session. |
+| **Crash Recovery** | Pending sub-agent tasks persist to SQLite, recovered on restart. |
+
+**This is NOT a multi-agent chat system.** Users interact with ONE agent that:
+- Serializes your conversations (one at a time via main lane)
+- Spawns temporary sub-agents for parallel work
+- Connects through any channel you prefer
+- Runs scheduled tasks concurrently (events lane)
 
 ## Features
 
@@ -75,33 +90,43 @@ nebo chat "Hello, what can you do?"
 nebo chat --interactive    # REPL mode
 ```
 
-## How Sub-Agents Work
+## How Lanes and Sub-Agents Work
 
-When THE agent encounters a complex task, it can spawn sub-agents to work in parallel:
+**Lanes** are work queues that organize different types of work:
+
+| Lane | Purpose |
+|------|---------|
+| `main` | User conversations (serialized, one at a time) |
+| `cron` | Scheduled tasks |
+| `subagent` | Sub-agent goroutines |
+| `nested` | Tool recursion/callbacks |
+
+**Sub-agents** are spawned for parallel work:
 
 ```
 User: "Analyze this codebase and create a security report"
 
-THE AGENT:
-├─► spawn("Explore authentication code", type=explore)
-│       └─► Sub-Agent 1: searching, reading files...
+THE AGENT (main lane, serialized):
+├─► spawn("Explore authentication code")
+│       └─► Sub-Agent goroutine (subagent lane)
+│           └─► Gets own session, runs own agentic loop
 │
-├─► spawn("Find all API endpoints", type=explore)
-│       └─► Sub-Agent 2: grepping, analyzing routes...
+├─► spawn("Find all API endpoints")
+│       └─► Sub-Agent goroutine (subagent lane)
 │
-├─► spawn("Check for hardcoded secrets", type=explore)
-│       └─► Sub-Agent 3: scanning for patterns...
+├─► spawn("Check for hardcoded secrets")
+│       └─► Sub-Agent goroutine (subagent lane)
 │
-└─► (waits for all sub-agents, then synthesizes report)
+└─► (waits for all sub-agents, synthesizes report)
 ```
 
-Sub-agents are:
-- **Temporary** - They complete their task and are cleaned up
-- **Focused** - Each has a single objective
-- **Parallel** - Unlimited concurrent goroutines within THE agent
-- **Internal** - Users don't interact with them directly
+**Sub-agent characteristics:**
+- **Goroutines** - NOT separate processes or WebSocket connections
+- **Own Session** - Each gets a session key like `subagent-{uuid}`
+- **Persisted** - Tasks saved to SQLite for crash recovery
+- **Temporary** - Cleaned up after completion
 
-> **Note:** Only ONE Nebo instance runs per computer (enforced by lock file). Sub-agents are NOT separate processes—they're parallel workers inside THE agent.
+> **Note:** Only ONE Nebo instance runs per computer (lock file enforced). Sub-agents are parallel workers inside THE agent's process.
 
 ## Configuration
 
@@ -203,20 +228,53 @@ make build            # Build binary
 
 ```
 nebo/
-├── agent/                    # The Agent
-│   ├── ai/                   # AI providers (Anthropic, OpenAI, etc.)
-│   ├── runner/               # Agentic loop
-│   ├── orchestrator/         # Sub-agent management
-│   ├── tools/                # Built-in tools
-│   ├── memory/               # Persistent storage
-│   ├── session/              # Conversation history
-│   └── skills/               # YAML skill loader
-├── internal/                 # Server
-│   ├── agenthub/             # Agent WebSocket hub
-│   ├── channels/             # Telegram/Discord/Slack
-│   └── server/               # HTTP server (chi)
-├── app/                      # Web UI (SvelteKit)
+├── internal/
+│   ├── agent/                # The Agent Core
+│   │   ├── ai/               # AI providers (Anthropic, OpenAI, Gemini, Ollama)
+│   │   ├── runner/           # Agentic loop (model selection, tool execution)
+│   │   ├── orchestrator/     # Sub-agent spawning + crash recovery
+│   │   ├── tools/            # STRAP domain tools (file, shell, web, agent)
+│   │   ├── session/          # Conversation persistence + compaction
+│   │   ├── embeddings/       # Vector + FTS hybrid search for memories
+│   │   ├── skills/           # YAML skill loader (hot-reload)
+│   │   ├── plugins/          # hashicorp/go-plugin for extensions
+│   │   └── recovery/         # Pending task persistence for crash recovery
+│   ├── agenthub/             # WebSocket hub + lane system
+│   │   ├── hub.go            # Connection management, message routing
+│   │   └── lane.go           # Concurrency queues (main/events/subagent/nested/heartbeat)
+│   ├── channels/             # Telegram, Discord, Slack integrations
+│   └── server/               # HTTP server (chi router)
+├── cmd/nebo/                 # CLI commands (agent, chat, serve, etc.)
+├── app/                      # Web UI (SvelteKit 2 + Svelte 5)
 └── extensions/               # Bundled skills & plugins
+```
+
+### Component Responsibilities
+
+| Component | Role |
+|-----------|------|
+| **Hub** (`agenthub/hub.go`) | WebSocket connections, agent registry, message routing |
+| **Lanes** (`agenthub/lane.go`) | Work queues with concurrency limits per lane type |
+| **Runner** (`agent/runner/`) | Agentic loop: model selection, tool execution, streaming |
+| **Orchestrator** (`agent/orchestrator/`) | Sub-agent spawning, task persistence, crash recovery |
+| **Session** (`agent/session/`) | Conversation history, context compaction |
+
+### Data Flow
+
+```
+Channel (Web/CLI/Telegram/Discord/Slack)
+    ↓
+Hub receives WebSocket message
+    ↓
+Routes to Agent via channel
+    ↓
+Agent command enqueues to Lane
+    ↓
+Lane worker (respecting concurrency) calls Runner.Run()
+    ↓
+Runner executes agentic loop (stream events back)
+    ↓
+Hub broadcasts to connected clients
 ```
 
 ## Author

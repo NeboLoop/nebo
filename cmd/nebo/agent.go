@@ -15,15 +15,20 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
-	_ "modernc.org/sqlite"
 
-	"nebo/agent/ai"
-	agentcfg "nebo/agent/config"
-	"nebo/agent/memory"
-	"nebo/agent/runner"
-	"nebo/agent/session"
-	"nebo/agent/tools"
+	"nebo/internal/agent/advisors"
+	"nebo/internal/agent/ai"
+	agentcfg "nebo/internal/agent/config"
+	"nebo/internal/agent/embeddings"
+	"nebo/internal/agent/memory"
+	"nebo/internal/agent/recovery"
+	"nebo/internal/agent/runner"
+	"nebo/internal/agent/session"
+	"nebo/internal/agent/tools"
+	"nebo/internal/agenthub"
+	"nebo/internal/browser"
 	"nebo/internal/channels"
+	"nebo/internal/db"
 	"nebo/internal/local"
 	"nebo/internal/provider"
 )
@@ -49,6 +54,12 @@ type agentState struct {
 	approvalMu      sync.RWMutex
 	quiet           bool // Suppress console output for clean CLI
 	policy          *tools.Policy
+
+	// Lane-based work queue - implements supervisor pattern
+	lanes *agenthub.LaneManager
+
+	// Task recovery manager for persistence across restarts
+	recovery *recovery.Manager
 }
 
 // sendFrame sends a JSON frame to the server
@@ -56,7 +67,22 @@ func (s *agentState) sendFrame(frame map[string]any) error {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 	data, _ := json.Marshal(frame)
-	return s.conn.WriteMessage(websocket.TextMessage, data)
+	// Log frame type and payload keys for debugging
+	frameType, _ := frame["type"].(string)
+	if payload, ok := frame["payload"].(map[string]any); ok {
+		keys := make([]string, 0, len(payload))
+		for k := range payload {
+			keys = append(keys, k)
+		}
+		fmt.Printf("[Agent-WS] Sending frame type=%s payload_keys=%v\n", frameType, keys)
+	} else {
+		fmt.Printf("[Agent-WS] Sending frame type=%s\n", frameType)
+	}
+	err := s.conn.WriteMessage(websocket.TextMessage, data)
+	if err != nil {
+		fmt.Printf("[Agent-WS] ERROR sending frame: %v\n", err)
+	}
+	return err
 }
 
 // requestApproval sends an approval request and waits for response
@@ -190,23 +216,33 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		conn:            conn,
 		pendingApproval: make(map[string]*pendingApprovalInfo),
 		quiet:           opts.Quiet,
+		lanes:           agenthub.NewLaneManager(),
 	}
 
 	// Use shared database if provided, otherwise open our own
 	var sessions *session.Manager
+	var sqlDB *sql.DB
+	var store *db.Store
 	if opts.Database != nil {
-		sessions, err = session.NewWithDB(opts.Database)
-		// Set the shared DB for provider loading
-		SetSharedDB(opts.Database)
+		sqlDB = opts.Database
+		SetSharedDB(sqlDB)
 	} else {
-		sessions, err = session.New(cfg.DBPath())
-		// Set the shared DB from session manager
-		SetSharedDB(sessions.GetDB())
+		store, err = db.NewSQLite(cfg.DBPath())
+		if err != nil {
+			return fmt.Errorf("failed to open database: %w", err)
+		}
+		defer store.Close()
+		sqlDB = store.GetDB()
+		SetSharedDB(sqlDB)
 	}
+
+	sessions, err = session.New(sqlDB)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+		return fmt.Errorf("failed to initialize sessions: %w", err)
 	}
-	defer sessions.Close()
+
+	// Initialize recovery manager for task persistence across restarts
+	state.recovery = recovery.NewManager(sqlDB)
 
 	providers := createProviders(cfg)
 	if len(providers) == 0 && !opts.Quiet {
@@ -258,14 +294,53 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 	registry := tools.NewRegistry(policy)
 	registry.RegisterDefaults()
 
+	// Start browser manager for web automation
+	browserMgr := browser.GetManager()
+	if err := browserMgr.Start(browser.Config{
+		Enabled:  true,
+		Headless: true, // Default to headless for managed browser
+	}); err != nil {
+		fmt.Printf("[agent] Warning: failed to start browser manager: %v\n", err)
+	} else {
+		fmt.Println("[agent] Browser manager started")
+		defer browserMgr.Stop()
+	}
+
+	// Create embedding service for hybrid memory search
+	// Prefer OpenAI, fall back to Ollama if available
+	var embeddingService *embeddings.Service
+	if opts.Database != nil {
+		embeddingService = createEmbeddingService(opts.Database)
+	}
+
 	// Create memory tool for auto-extraction (requires shared database)
 	var memoryTool *tools.MemoryTool
 	if opts.Database != nil {
-		memoryTool, err = tools.NewMemoryTool(tools.MemoryConfig{DB: opts.Database})
+		memoryTool, err = tools.NewMemoryTool(tools.MemoryConfig{
+			DB:       opts.Database,
+			Embedder: embeddingService,
+		})
 		if err == nil {
 			registry.Register(memoryTool)
 		}
 	}
+
+	// Load advisors from ~/.nebo/advisors/ (internal deliberation system)
+	// Advisors are enabled/disabled via config and invoked by the agent when needed
+	advisorLoader := advisors.NewLoader(cfg.AdvisorsDir())
+	if err := advisorLoader.LoadAll(); err != nil {
+		fmt.Printf("[agent] Warning: failed to load advisors: %v\n", err)
+	} else if advisorLoader.Count() > 0 {
+		fmt.Printf("[agent] Loaded %d advisors from %s\n", advisorLoader.Count(), cfg.AdvisorsDir())
+	}
+
+	// Create advisors tool (the agent decides when to consult advisors)
+	advisorsTool := tools.NewAdvisorsTool(advisorLoader)
+	if len(providers) > 0 {
+		advisorsTool.SetProvider(providers[0])
+	}
+	advisorsTool.SetSessionManager(sessions)
+	registry.RegisterAdvisorsTool(advisorsTool)
 
 	// Register message tool with shared channel manager
 	messageTool := tools.NewMessageTool()
@@ -333,6 +408,26 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 	// Enable automatic memory extraction after conversations
 	if memoryTool != nil {
 		r.SetMemoryTool(memoryTool)
+	}
+
+	// Set up profile tracking for usage/error recording (moltbot pattern)
+	// Uses AuthProfileManager to track cooldowns and usage stats per auth profile
+	if sqlDB != nil {
+		if profileMgr, err := agentcfg.NewAuthProfileManager(sqlDB); err == nil {
+			r.SetProfileTracker(profileMgr)
+			fmt.Println("[agent] Profile tracking enabled")
+		}
+	}
+
+	// Set up subagent persistence (moltbot pattern: survive restarts)
+	if state.recovery != nil {
+		r.SetupSubagentPersistence(state.recovery)
+		// Recover any pending subagent tasks from previous run
+		if recovered, err := r.RecoverSubagents(ctx); err != nil {
+			fmt.Printf("[agent] Warning: failed to recover subagents: %v\n", err)
+		} else if recovered > 0 {
+			fmt.Printf("[agent] Recovered %d subagent task(s)\n", recovered)
+		}
 	}
 
 	// Wire up cron agent task callback now that runner exists
@@ -404,7 +499,7 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 func maybeIntroduceSelf(ctx context.Context, state *agentState, r *runner.Runner, sessions *session.Manager) {
 	// Legacy: Check global companion session for backwards compatibility
 	// New multi-user onboarding is handled per-user in maybeIntroduceToUser
-	companionSession, err := sessions.GetOrCreate("companion")
+	companionSession, err := sessions.GetOrCreate("companion", "")
 	if err != nil {
 		fmt.Printf("[Agent] Could not check companion session: %v\n", err)
 		return
@@ -477,13 +572,7 @@ func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner
 	fmt.Printf("[Agent] Handling introduction request: id=%s session=%s user=%s\n", requestID, sessionKey, userID)
 
 	// Get or create the user's companion session
-	var sess *session.Session
-	var err error
-	if userID != "" {
-		sess, err = sessions.GetOrCreateForUser(sessionKey, userID)
-	} else {
-		sess, err = sessions.GetOrCreate(sessionKey)
-	}
+	sess, err := sessions.GetOrCreate(sessionKey, userID)
 	if err != nil {
 		fmt.Printf("[Agent] Could not get/create session for introduction: %v\n", err)
 		state.sendFrame(map[string]any{
@@ -514,7 +603,7 @@ func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner
 
 	// Load user context to personalize the greeting
 	var introPrompt, introSystem string
-	dbContext, err := memory.LoadContextForUser(sessions.GetDB(), userID)
+	dbContext, err := memory.LoadContext(sessions.GetDB(), userID)
 	if err == nil && dbContext.UserDisplayName != "" {
 		// User has a name stored - greet them personally
 		fmt.Printf("[Agent] Known user, name=%s - greeting by name\n", dbContext.UserDisplayName)
@@ -595,7 +684,7 @@ func maybeIntroduceToUser(ctx context.Context, state *agentState, r *runner.Runn
 	}
 
 	// Check if this specific user has a companion session with messages
-	companionSession, err := sessions.GetOrCreateForUser("companion", userID)
+	companionSession, err := sessions.GetOrCreate("companion", userID)
 	if err != nil {
 		fmt.Printf("[Agent] Could not check user companion session: %v\n", err)
 		return
@@ -694,16 +783,25 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 	fmt.Println("\033[32m✓ Connected\033[0m")
 	fmt.Println("Waiting for tasks... (Ctrl+C to exit)")
 
-	sessions, err := session.New(cfg.DBPath())
+	// Open database using shared connection pattern
+	store, err := db.NewSQLite(cfg.DBPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
-	defer sessions.Close()
+	defer store.Close()
 
-	// Use the shared DB from session manager for all components
-	db := sessions.GetDB()
-	SetSharedDB(db)
+	sqlDB := store.GetDB()
+	SetSharedDB(sqlDB)
+
+	sessions, err := session.New(sqlDB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing sessions: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize recovery manager for task persistence across restarts
+	recoveryMgr := recovery.NewManager(sqlDB)
 
 	providers := createProviders(cfg)
 	if len(providers) == 0 {
@@ -723,17 +821,51 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 	registry := tools.NewRegistry(policy)
 	registry.RegisterDefaults()
 
+	// Start browser manager for web automation
+	browserMgr := browser.GetManager()
+	if err := browserMgr.Start(browser.Config{
+		Enabled:  true,
+		Headless: true, // Default to headless for managed browser
+	}); err != nil {
+		fmt.Printf("[agent] Warning: failed to start browser manager: %v\n", err)
+	} else {
+		fmt.Println("[agent] Browser manager started")
+		defer browserMgr.Stop()
+	}
+
+	// Create embedding service for hybrid memory search
+	embeddingService := createEmbeddingService(sqlDB)
+
 	// Create memory tool for auto-extraction (using shared DB)
 	var memoryTool *tools.MemoryTool
-	memoryTool, err = tools.NewMemoryTool(tools.MemoryConfig{DB: db})
+	memoryTool, err = tools.NewMemoryTool(tools.MemoryConfig{
+		DB:       sqlDB,
+		Embedder: embeddingService,
+	})
 	if err != nil {
 		fmt.Printf("[agent] Warning: failed to initialize memory tool: %v\n", err)
 	} else {
 		registry.Register(memoryTool)
 	}
 
+	// Load advisors from ~/.nebo/advisors/ (internal deliberation system)
+	advisorLoader := advisors.NewLoader(cfg.AdvisorsDir())
+	if err := advisorLoader.LoadAll(); err != nil {
+		fmt.Printf("[agent] Warning: failed to load advisors: %v\n", err)
+	} else if advisorLoader.Count() > 0 {
+		fmt.Printf("[agent] Loaded %d advisors from %s\n", advisorLoader.Count(), cfg.AdvisorsDir())
+	}
+
+	// Create advisors tool (the agent decides when to consult advisors)
+	advisorsTool := tools.NewAdvisorsTool(advisorLoader)
+	if len(providers) > 0 {
+		advisorsTool.SetProvider(providers[0])
+	}
+	advisorsTool.SetSessionManager(sessions)
+	registry.RegisterAdvisorsTool(advisorsTool)
+
 	// Create cron tool for scheduled tasks (using shared DB)
-	cronTool, err := tools.NewCronTool(tools.CronConfig{DB: db})
+	cronTool, err := tools.NewCronTool(tools.CronConfig{DB: sqlDB})
 	if err != nil {
 		fmt.Printf("[agent] Warning: failed to initialize cron tool: %v\n", err)
 	} else {
@@ -789,6 +921,24 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 		r.SetMemoryTool(memoryTool)
 	}
 
+	// Set up profile tracking for usage/error recording (moltbot pattern)
+	if profileMgr, err := agentcfg.NewAuthProfileManager(sqlDB); err == nil {
+		r.SetProfileTracker(profileMgr)
+		fmt.Println("[agent] Profile tracking enabled")
+	}
+
+	// Set up subagent persistence (moltbot pattern: survive restarts)
+	if recoveryMgr != nil {
+		r.SetupSubagentPersistence(recoveryMgr)
+		// Recover any pending subagent tasks from previous run
+		startupCtx := context.Background()
+		if recovered, err := r.RecoverSubagents(startupCtx); err != nil {
+			fmt.Printf("[agent] Warning: failed to recover subagents: %v\n", err)
+		} else if recovered > 0 {
+			fmt.Printf("[agent] Recovered %d subagent task(s)\n", recovered)
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -819,6 +969,9 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 		}
 	}
 }
+
+// standaloneLanes is the lane manager for standalone agent mode
+var standaloneLanes = agenthub.NewLaneManager()
 
 // handleAgentMessage processes a message from the server
 func handleAgentMessage(ctx context.Context, conn *websocket.Conn, r *runner.Runner, message []byte) {
@@ -870,92 +1023,108 @@ func handleAgentMessage(ctx context.Context, conn *websocket.Conn, r *runner.Run
 				sessionKey = "agent-" + frame.ID
 			}
 			userID := frame.Params.UserID
+			requestID := frame.ID
+			method := frame.Method
+			prompt := frame.Params.Prompt
 
-			fmt.Printf("\n[Agent] Received %s request: id=%s session=%s user=%s prompt=%q\n", frame.Method, frame.ID, sessionKey, userID, frame.Params.Prompt)
-
-			if frame.Method == "generate_title" {
-				fmt.Printf("\n\033[90m[Title Gen %s]\033[0m\n", frame.ID)
-			} else {
-				fmt.Printf("\n\033[36m[Task %s]\033[0m %s\n", frame.ID, frame.Params.Prompt)
+			// Determine which lane this request belongs to
+			isHeartbeat := strings.HasPrefix(sessionKey, "heartbeat-")
+			isCronJob := strings.HasPrefix(sessionKey, "cron-")
+			lane := agenthub.LaneMain
+			if isHeartbeat {
+				lane = agenthub.LaneHeartbeat // Heartbeats run independently
+			} else if isCronJob {
+				lane = agenthub.LaneEvents // Scheduled/triggered tasks
 			}
 
-			events, err := r.Run(ctx, &runner.RunRequest{
-				SessionKey: sessionKey,
-				Prompt:     frame.Params.Prompt,
-				UserID:     userID,
-			})
-			fmt.Printf("[Agent] Run started, events channel created, err=%v\n", err)
+			fmt.Printf("\n[Agent] Enqueueing %s request: id=%s session=%s lane=%s prompt=%q\n",
+				method, requestID, sessionKey, lane, prompt)
 
-			if err != nil {
+			// SUPERVISOR PATTERN: Enqueue work to lane, don't block
+			standaloneLanes.EnqueueAsync(ctx, lane, func(taskCtx context.Context) error {
+				if method == "generate_title" {
+					fmt.Printf("\n\033[90m[Title Gen %s]\033[0m\n", requestID)
+				} else {
+					fmt.Printf("\n\033[36m[Task %s]\033[0m %s\n", requestID, prompt)
+				}
+
+				events, err := r.Run(taskCtx, &runner.RunRequest{
+					SessionKey:        sessionKey,
+					Prompt:            prompt,
+					UserID:            userID,
+					SkipMemoryExtract: isHeartbeat,
+				})
+
+				if err != nil {
+					response := map[string]any{
+						"type":  "res",
+						"id":    requestID,
+						"ok":    false,
+						"error": err.Error(),
+					}
+					data, _ := json.Marshal(response)
+					conn.WriteMessage(websocket.TextMessage, data)
+					return err
+				}
+
+				var result strings.Builder
+				for event := range events {
+					switch event.Type {
+					case ai.EventTypeText:
+						if event.Text == "" {
+							continue // Skip empty text events
+						}
+						result.WriteString(event.Text)
+						fmt.Print(event.Text)
+						chunk := map[string]any{
+							"type": "stream",
+							"id":   requestID,
+							"payload": map[string]any{
+								"chunk": event.Text,
+							},
+						}
+						chunkData, _ := json.Marshal(chunk)
+						conn.WriteMessage(websocket.TextMessage, chunkData)
+
+					case ai.EventTypeToolCall:
+						toolEvent := map[string]any{
+							"type": "stream",
+							"id":   requestID,
+							"payload": map[string]any{
+								"tool":  event.ToolCall.Name,
+								"input": event.ToolCall.Input,
+							},
+						}
+						toolData, _ := json.Marshal(toolEvent)
+						conn.WriteMessage(websocket.TextMessage, toolData)
+
+					case ai.EventTypeToolResult:
+						resultEvent := map[string]any{
+							"type": "stream",
+							"id":   requestID,
+							"payload": map[string]any{
+								"tool_result": event.Text,
+							},
+						}
+						resultData, _ := json.Marshal(resultEvent)
+						conn.WriteMessage(websocket.TextMessage, resultData)
+					}
+				}
+				fmt.Println()
+
 				response := map[string]any{
-					"type":  "res",
-					"id":    frame.ID,
-					"ok":    false,
-					"error": err.Error(),
+					"type": "res",
+					"id":   requestID,
+					"ok":   true,
+					"payload": map[string]any{
+						"result": result.String(),
+					},
 				}
 				data, _ := json.Marshal(response)
+				fmt.Printf("[Agent] Completed request %s\n", requestID)
 				conn.WriteMessage(websocket.TextMessage, data)
-				return
-			}
-
-			var result strings.Builder
-			eventCount := 0
-			for event := range events {
-				eventCount++
-				fmt.Printf("[Agent] Event %d: type=%s text_len=%d\n", eventCount, event.Type, len(event.Text))
-				switch event.Type {
-				case ai.EventTypeText:
-					result.WriteString(event.Text)
-					fmt.Print(event.Text)
-					chunk := map[string]any{
-						"type": "stream",
-						"id":   frame.ID,
-						"payload": map[string]any{
-							"chunk": event.Text,
-						},
-					}
-					chunkData, _ := json.Marshal(chunk)
-					fmt.Printf("[Agent] Sending stream frame: %s\n", string(chunkData))
-					conn.WriteMessage(websocket.TextMessage, chunkData)
-
-				case ai.EventTypeToolCall:
-					toolEvent := map[string]any{
-						"type": "stream",
-						"id":   frame.ID,
-						"payload": map[string]any{
-							"tool":  event.ToolCall.Name,
-							"input": event.ToolCall.Input,
-						},
-					}
-					toolData, _ := json.Marshal(toolEvent)
-					conn.WriteMessage(websocket.TextMessage, toolData)
-
-				case ai.EventTypeToolResult:
-					resultEvent := map[string]any{
-						"type": "stream",
-						"id":   frame.ID,
-						"payload": map[string]any{
-							"tool_result": event.Text,
-						},
-					}
-					resultData, _ := json.Marshal(resultEvent)
-					conn.WriteMessage(websocket.TextMessage, resultData)
-				}
-			}
-			fmt.Println()
-
-			fmt.Printf("[Agent] Events complete, total events=%d, result_len=%d\n", eventCount, result.Len())
-			response := map[string]any{
-				"type": "res",
-				"id":   frame.ID,
-				"ok":   true,
-				"payload": map[string]any{
-					"result": result.String(),
-				},
-			}
-			data, _ := json.Marshal(response)
-			fmt.Printf("[Agent] Sending final response for %s\n", frame.ID)
-			conn.WriteMessage(websocket.TextMessage, data)
+				return nil
+			})
 
 		default:
 			response := map[string]any{
@@ -1047,11 +1216,15 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				sessionKey = "companion"
 			}
 			userID := frame.Params.UserID
+			requestID := frame.ID
 
-			fmt.Printf("[Agent-WS] Processing introduce request: session=%s user=%s\n", sessionKey, userID)
+			fmt.Printf("[Agent-WS] Enqueueing introduce request: session=%s user=%s\n", sessionKey, userID)
 
-			// Handle introduction synchronously (not in goroutine) so we can respond
-			handleIntroduction(ctx, state, r, sessions, frame.ID, sessionKey, userID)
+			// SUPERVISOR PATTERN: Enqueue to main lane, don't block
+			state.lanes.EnqueueAsync(ctx, agenthub.LaneMain, func(taskCtx context.Context) error {
+				handleIntroduction(taskCtx, state, r, sessions, requestID, sessionKey, userID)
+				return nil
+			})
 
 		case "run", "generate_title":
 			sessionKey := frame.Params.SessionKey
@@ -1059,76 +1232,115 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				sessionKey = "agent-" + frame.ID
 			}
 			userID := frame.Params.UserID
+			requestID := frame.ID
+			method := frame.Method
+			prompt := frame.Params.Prompt
 
-			fmt.Printf("[Agent-WS] Processing %s request: session=%s user=%s prompt=%q\n", frame.Method, sessionKey, userID, frame.Params.Prompt)
+			// Determine which lane this request belongs to
+			isHeartbeat := strings.HasPrefix(sessionKey, "heartbeat-")
+			isCronJob := strings.HasPrefix(sessionKey, "cron-")
+			lane := agenthub.LaneMain
+			if isHeartbeat {
+				lane = agenthub.LaneHeartbeat // Heartbeats run independently
+			} else if isCronJob {
+				lane = agenthub.LaneEvents // Scheduled/triggered tasks
+			}
 
-			events, err := r.Run(ctx, &runner.RunRequest{
-				SessionKey: sessionKey,
-				Prompt:     frame.Params.Prompt,
-				UserID:     userID,
-			})
-			fmt.Printf("[Agent-WS] r.Run returned: err=%v events_nil=%v\n", err, events == nil)
+			fmt.Printf("[Agent-WS] Enqueueing %s request: session=%s user=%s lane=%s prompt=%q\n",
+				method, sessionKey, userID, lane, prompt)
 
-			if err != nil {
-				state.sendFrame(map[string]any{
-					"type":  "res",
-					"id":    frame.ID,
-					"ok":    false,
-					"error": err.Error(),
+			// SUPERVISOR PATTERN: Enqueue work to lane, don't block
+			state.lanes.EnqueueAsync(ctx, lane, func(taskCtx context.Context) error {
+				// This runs in a worker goroutine managed by the lane
+				events, err := r.Run(taskCtx, &runner.RunRequest{
+					SessionKey:        sessionKey,
+					Prompt:            prompt,
+					UserID:            userID,
+					SkipMemoryExtract: isHeartbeat,
 				})
-				return
-			}
 
-			var result strings.Builder
-			eventCount := 0
-			for event := range events {
-				eventCount++
-				fmt.Printf("[Agent-WS] Event %d: type=%s\n", eventCount, event.Type)
-				switch event.Type {
-				case ai.EventTypeText:
-					result.WriteString(event.Text)
+				if err != nil {
 					state.sendFrame(map[string]any{
-						"type": "stream",
-						"id":   frame.ID,
-						"payload": map[string]any{
-							"chunk": event.Text,
-						},
+						"type":  "res",
+						"id":    requestID,
+						"ok":    false,
+						"error": err.Error(),
 					})
-
-				case ai.EventTypeToolCall:
-					state.sendFrame(map[string]any{
-						"type": "stream",
-						"id":   frame.ID,
-						"payload": map[string]any{
-							"tool":  event.ToolCall.Name,
-							"input": event.ToolCall.Input,
-						},
-					})
-
-				case ai.EventTypeToolResult:
-					state.sendFrame(map[string]any{
-						"type": "stream",
-						"id":   frame.ID,
-						"payload": map[string]any{
-							"tool_result": event.Text,
-						},
-					})
-
-				case ai.EventTypeError:
-					fmt.Printf("[Agent-WS] Error event: %v\n", event.Error)
+					return err
 				}
-			}
 
-			fmt.Printf("[Agent-WS] Events loop complete: %d events, result_len=%d\n", eventCount, result.Len())
-			state.sendFrame(map[string]any{
-				"type": "res",
-				"id":   frame.ID,
-				"ok":   true,
-				"payload": map[string]any{
-					"result": result.String(),
-				},
+				var result strings.Builder
+				for event := range events {
+					switch event.Type {
+					case ai.EventTypeText:
+						if event.Text == "" {
+							continue // Skip empty text events
+						}
+						result.WriteString(event.Text)
+						state.sendFrame(map[string]any{
+							"type": "stream",
+							"id":   requestID,
+							"payload": map[string]any{
+								"chunk": event.Text,
+							},
+						})
+
+					case ai.EventTypeToolCall:
+						fmt.Printf("[Agent-WS] Tool call: %s (id=%s)\n", event.ToolCall.Name, event.ToolCall.ID)
+						state.sendFrame(map[string]any{
+							"type": "stream",
+							"id":   requestID,
+							"payload": map[string]any{
+								"tool":    event.ToolCall.Name,
+								"tool_id": event.ToolCall.ID,
+								"input":   event.ToolCall.Input,
+							},
+						})
+
+					case ai.EventTypeToolResult:
+						toolName := ""
+						toolID := ""
+						if event.ToolCall != nil {
+							toolName = event.ToolCall.Name
+							toolID = event.ToolCall.ID
+						}
+						fmt.Printf("[Agent-WS] >>> Received EventTypeToolResult for tool %s (id=%s), content_len=%d, forwarding to server <<<\n", toolName, toolID, len(event.Text))
+						state.sendFrame(map[string]any{
+							"type": "stream",
+							"id":   requestID,
+							"payload": map[string]any{
+								"tool_result": event.Text,
+								"tool_name":   toolName,
+								"tool_id":     toolID,
+							},
+						})
+
+					case ai.EventTypeThinking:
+						// Send thinking/reasoning content to frontend
+						state.sendFrame(map[string]any{
+							"type": "stream",
+							"id":   requestID,
+							"payload": map[string]any{
+								"thinking": event.Text,
+							},
+						})
+
+					case ai.EventTypeError:
+						fmt.Printf("[Agent-WS] Error event: %v\n", event.Error)
+					}
+				}
+
+				state.sendFrame(map[string]any{
+					"type": "res",
+					"id":   requestID,
+					"ok":   true,
+					"payload": map[string]any{
+						"result": result.String(),
+					},
+				})
+				fmt.Printf("[Agent-WS] Completed request %s\n", requestID)
+				return nil
 			})
-			fmt.Printf("[Agent-WS] Sent final response for %s\n", frame.ID)
 
 		default:
 			state.sendFrame(map[string]any{
@@ -1156,6 +1368,9 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				// Introduction is now handled by frontend via request_introduction message
 				fmt.Println("[Agent] Received ready event from server")
 
+				// Recover any incomplete tasks from previous session
+				go recoverPendingTasks(ctx, state, r, sessions)
+
 			case "settings_updated":
 				p := eventFrame.Payload
 				if p.AutonomousMode {
@@ -1170,4 +1385,210 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			}
 		}
 	}
+}
+
+// recoverPendingTasks checks for incomplete tasks from previous sessions and re-runs them
+func recoverPendingTasks(ctx context.Context, state *agentState, r *runner.Runner, sessions *session.Manager) {
+	if state.recovery == nil {
+		return
+	}
+
+	tasks, err := state.recovery.RecoverTasks(ctx)
+	if err != nil {
+		fmt.Printf("[Recovery] Failed to recover tasks: %v\n", err)
+		return
+	}
+
+	if len(tasks) == 0 {
+		fmt.Println("[Recovery] No incomplete tasks to recover")
+		return
+	}
+
+	fmt.Printf("[Recovery] Found %d incomplete task(s) to recover\n", len(tasks))
+
+	for _, task := range tasks {
+		// Skip if too many attempts
+		if task.Attempts >= task.MaxAttempts {
+			fmt.Printf("[Recovery] Task %s exceeded max attempts (%d), marking failed\n", task.ID, task.MaxAttempts)
+			state.recovery.MarkFailed(ctx, task.ID, "exceeded max attempts")
+			continue
+		}
+
+		// Determine which lane to use based on task type
+		lane := agenthub.LaneMain
+		switch task.TaskType {
+		case recovery.TaskTypeEventAgent:
+			lane = agenthub.LaneEvents
+		case recovery.TaskTypeSubagent:
+			lane = agenthub.LaneSubagent
+		}
+
+		fmt.Printf("[Recovery] Re-enqueueing task %s: type=%s lane=%s prompt=%q\n",
+			task.ID, task.TaskType, lane, truncatePrompt(task.Prompt, 50))
+
+		// Capture task for closure
+		t := task
+
+		// Enqueue the recovered task
+		state.lanes.EnqueueAsync(ctx, lane, func(taskCtx context.Context) error {
+			// Mark task as running
+			if err := state.recovery.MarkRunning(taskCtx, t.ID); err != nil {
+				fmt.Printf("[Recovery] Failed to mark task %s as running: %v\n", t.ID, err)
+			}
+
+			// Run the task
+			events, err := r.Run(taskCtx, &runner.RunRequest{
+				SessionKey: t.SessionKey,
+				Prompt:     t.Prompt,
+				System:     t.SystemPrompt,
+				UserID:     t.UserID,
+			})
+
+			if err != nil {
+				fmt.Printf("[Recovery] Task %s failed: %v\n", t.ID, err)
+				state.recovery.MarkFailed(taskCtx, t.ID, err.Error())
+				return err
+			}
+
+			// Consume the event stream
+			var result strings.Builder
+			for event := range events {
+				if event.Type == ai.EventTypeText {
+					result.WriteString(event.Text)
+				}
+			}
+
+			// Mark task as completed
+			if err := state.recovery.MarkCompleted(taskCtx, t.ID); err != nil {
+				fmt.Printf("[Recovery] Failed to mark task %s as completed: %v\n", t.ID, err)
+			} else {
+				fmt.Printf("[Recovery] Task %s completed successfully\n", t.ID)
+			}
+
+			return nil
+		})
+	}
+
+	// Schedule periodic cleanup of old tasks
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if deleted, err := state.recovery.CleanupOldTasks(ctx); err != nil {
+					fmt.Printf("[Recovery] Cleanup error: %v\n", err)
+				} else if deleted > 0 {
+					fmt.Printf("[Recovery] Cleaned up %d old tasks\n", deleted)
+				}
+			}
+		}
+	}()
+}
+
+// truncatePrompt truncates a prompt string for logging
+func truncatePrompt(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// persistAndRunTask creates a persistent task record and runs it
+// This enables recovery if the agent restarts mid-task
+func persistAndRunTask(
+	ctx context.Context,
+	state *agentState,
+	r *runner.Runner,
+	req *runner.RunRequest,
+	taskType recovery.TaskType,
+	description string,
+) (taskID string, events <-chan ai.StreamEvent, err error) {
+	// Create a persistent task record
+	if state.recovery != nil {
+		task := &recovery.PendingTask{
+			TaskType:     taskType,
+			SessionKey:   req.SessionKey,
+			UserID:       req.UserID,
+			Prompt:       req.Prompt,
+			SystemPrompt: req.System,
+			Description:  description,
+			Lane:         string(agenthub.LaneMain),
+		}
+		if err := state.recovery.CreateTask(ctx, task); err != nil {
+			fmt.Printf("[Recovery] Warning: failed to persist task: %v\n", err)
+		} else {
+			taskID = task.ID
+			// Mark as running
+			state.recovery.MarkRunning(ctx, taskID)
+		}
+	}
+
+	// Run the task
+	events, err = r.Run(ctx, req)
+	return taskID, events, err
+}
+
+// completeTask marks a persistent task as completed
+func completeTask(ctx context.Context, state *agentState, taskID string) {
+	if taskID != "" && state.recovery != nil {
+		state.recovery.MarkCompleted(ctx, taskID)
+	}
+}
+
+// failTask marks a persistent task as failed
+func failTask(ctx context.Context, state *agentState, taskID string, errMsg string) {
+	if taskID != "" && state.recovery != nil {
+		state.recovery.MarkFailed(ctx, taskID, errMsg)
+	}
+}
+
+// createEmbeddingService creates an embedding service for hybrid memory search
+// Prefers OpenAI (if API key available), falls back to Ollama (if configured)
+func createEmbeddingService(db *sql.DB) *embeddings.Service {
+	if db == nil {
+		return nil
+	}
+
+	var embeddingProvider embeddings.Provider
+
+	// Try OpenAI first (most common, high quality embeddings)
+	openaiCreds := provider.GetCredentials("openai")
+	if openaiCreds != nil && openaiCreds.APIKey != "" {
+		embeddingProvider = embeddings.NewOpenAIProvider(embeddings.OpenAIConfig{
+			APIKey: openaiCreds.APIKey,
+		})
+		fmt.Println("[agent] Embeddings: using OpenAI text-embedding-3-small")
+	}
+
+	// Fall back to Ollama if configured
+	if embeddingProvider == nil {
+		ollamaCreds := provider.GetCredentials("ollama")
+		if ollamaCreds != nil && ollamaCreds.BaseURL != "" {
+			embeddingProvider = embeddings.NewOllamaProvider(embeddings.OllamaConfig{
+				BaseURL: ollamaCreds.BaseURL,
+			})
+			fmt.Println("[agent] Embeddings: using Ollama nomic-embed-text")
+		}
+	}
+
+	// No embedding provider available
+	if embeddingProvider == nil {
+		fmt.Println("[agent] Embeddings: disabled (no OpenAI or Ollama configured)")
+		return nil
+	}
+
+	// Create service with caching
+	service, err := embeddings.NewService(embeddings.Config{
+		DB:       db,
+		Provider: embeddingProvider,
+	})
+	if err != nil {
+		fmt.Printf("[agent] Warning: failed to create embedding service: %v\n", err)
+		return nil
+	}
+
+	return service
 }

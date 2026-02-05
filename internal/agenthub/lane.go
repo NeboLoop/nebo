@@ -9,19 +9,27 @@ import (
 
 // Lane types for command queue
 const (
-	LaneMain     = "main"     // Primary user interactions
-	LaneCron     = "cron"     // Scheduled tasks
-	LaneSubagent = "subagent" // Sub-agent operations
-	LaneNested   = "nested"   // Nested tool calls
+	LaneMain      = "main"      // Primary user interactions
+	LaneEvents    = "events"    // Scheduled/triggered tasks (renamed from cron)
+	LaneSubagent  = "subagent"  // Sub-agent operations
+	LaneNested    = "nested"    // Nested tool calls
+	LaneHeartbeat = "heartbeat" // Proactive heartbeat ticks
 )
 
 // DefaultLaneConcurrency defines default max concurrent tasks per lane
 // 0 = unlimited
 var DefaultLaneConcurrency = map[string]int{
-	LaneMain:     1,
-	LaneCron:     2,
-	LaneSubagent: 0, // Unlimited sub-agents
-	LaneNested:   3,
+	LaneMain:      1,
+	LaneEvents:    2,  // Scheduled/triggered tasks
+	LaneSubagent:  0,  // Unlimited sub-agents
+	LaneNested:    3,
+	LaneHeartbeat: 1,  // Sequential heartbeat processing
+}
+
+// MaxLaneConcurrency defines hard limits that cannot be exceeded
+// Used to prevent runaway tool calls or resource exhaustion
+var MaxLaneConcurrency = map[string]int{
+	LaneNested: 3, // Hard cap on concurrent tool calls
 }
 
 // LaneTask represents a task to be executed in a lane
@@ -91,11 +99,19 @@ func (m *LaneManager) getLaneState(lane string) *LaneState {
 }
 
 // SetConcurrency sets the max concurrency for a lane
+// 0 = unlimited, any positive number = max concurrent tasks
+// Hard limits in MaxLaneConcurrency cannot be exceeded
 func (m *LaneManager) SetConcurrency(lane string, maxConcurrent int) {
 	state := m.getLaneState(lane)
 	state.mu.Lock()
-	if maxConcurrent < 1 {
-		maxConcurrent = 1
+	if maxConcurrent < 0 {
+		maxConcurrent = 0 // Treat negative as unlimited
+	}
+	// Enforce hard caps for lanes that have them
+	if hardCap, ok := MaxLaneConcurrency[lane]; ok {
+		if maxConcurrent == 0 || maxConcurrent > hardCap {
+			maxConcurrent = hardCap
+		}
 	}
 	state.MaxConcurrent = maxConcurrent
 	state.mu.Unlock()

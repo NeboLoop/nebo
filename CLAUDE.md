@@ -6,32 +6,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## CRITICAL: THE NEBO PARADIGM
 
-Nebo is **ONE agent that is always running**. Not multiple agents. ONE.
+Nebo is **ONE primary agent** with a **lane-based concurrency system**. Not multiple independent agents.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        THE AGENT                                │
 │                                                                 │
-│  - Always running (Go process runs continuously)                │
-│  - If it restarts, it has MEMORY (state persisted in SQLite)    │
-│  - Can spawn SUB-AGENTS for parallel work                       │
+│  - ONE WebSocket connection (hub enforces: reconnect = drop old)│
+│  - SQLite persistence survives restarts                         │
+│  - Spawns SUB-AGENTS as goroutines for parallel work            │
 │  - Users only interact with THIS agent                          │
-│  - Proactive via crons, timers, scheduled tasks                 │
+│  - Proactive via heartbeat lane (independent of main lane)      │
+│                                                                 │
+│  Lane System (supervisor pattern for concurrency):              │
+│    ┌────────────────────────────────────────────────────────┐   │
+│    │  main      - User conversations (serialized)           │   │
+│    │  events    - Scheduled/triggered tasks                  │   │
+│    │  subagent  - Sub-agent goroutines                      │   │
+│    │  nested    - Tool recursion/callbacks                  │   │
+│    │  heartbeat - Proactive heartbeat ticks                 │   │
+│    └────────────────────────────────────────────────────────┘   │
 │                                                                 │
 │  Channels (how users reach THE agent):                          │
 │    - Web UI (/app/agent) - the primary control plane            │
 │    - CLI (nebo chat)                                           │
 │    - Telegram / Discord / Slack                                 │
-│    - Voice                                                      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 | Concept | RIGHT | WRONG |
 |---------|-------|-------|
-| Agent count | ONE agent, always | Multiple "agents" list |
-| Lifecycle | Always running, persists state | Starts/stops, stateless |
-| UI status page | Shows THE agent's health | Shows "connected agents" table |
-| Parallelism | Sub-agents spawned by THE agent | Multiple independent agents |
+| Agent count | ONE primary agent + sub-agent goroutines | Multiple independent agents |
+| Concurrency | Lane-based (serialized main, parallel subagent) | Free-for-all parallelism |
+| Lifecycle | Always running, crash recovery via SQLite | Stateless, no recovery |
+| UI status page | Shows THE agent's health + lane status | Shows "connected agents" table |
+| Parallelism | Sub-agents in subagent lane (goroutines) | Multiple WebSocket connections |
 
 ---
 
@@ -88,19 +97,25 @@ make build && cd app && pnpm build
 ### Agent (CLI + Core)
 
 ```
-agent/
+internal/agent/
 ├── ai/           # Provider implementations (Anthropic, OpenAI, Gemini, Ollama)
 │   ├── api_anthropic.go, api_openai.go, api_gemini.go, api_ollama.go
 │   ├── cli_provider.go     # Wraps claude/gemini/codex CLI tools
-│   └── selector.go         # Task-based model routing with fallbacks
-├── runner/       # Agentic loop with provider fallback + context compaction
-├── tools/        # Tool registry: bash, read, write, edit, glob, grep, web, browser, memory, cron, task
-├── skills/       # YAML skills, hot-reload, trigger matching
-├── plugins/      # hashicorp/go-plugin loader for tool/channel plugins
+│   ├── selector.go         # Task-based model routing with fallbacks
+│   └── dedupe.go           # Deduplicates repeated messages
+├── advisors/     # Internal deliberation system (markdown-based personas)
+├── config/       # ~/.nebo/ config loading (models.yaml, config.yaml)
+├── embeddings/   # Hybrid search (vector + FTS) for memories
+├── memory/       # Memory extraction and context building
+├── mcp/          # MCP (Model Context Protocol) server integration
 ├── orchestrator/ # Sub-agent spawning (up to 5 concurrent)
+├── plugins/      # hashicorp/go-plugin loader for tool/channel plugins
+├── recovery/     # Sub-agent task persistence for crash recovery
+├── runner/       # Agentic loop with provider fallback + context compaction
 ├── session/      # SQLite conversation persistence
-├── memory/       # Persistent fact/preference storage
-└── config/       # ~/.nebo/ config loading
+├── skills/       # YAML skills, hot-reload, trigger matching
+├── tools/        # STRAP domain tools (see below) + registry
+└── voice/        # Voice recording for voice input
 ```
 
 ### Frontend (SvelteKit 2 + Svelte 5)
@@ -164,6 +179,47 @@ type GetWidgetResponse struct { Name string `json:"name"` }
 
 ---
 
+## Adding Agent Tools (STRAP Pattern)
+
+**To add a new action to an existing domain tool:**
+
+1. Add the action to the resource config in the domain tool file
+2. Add input fields to the `*Input` struct if needed
+3. Add a case in the `Execute()` switch statement
+4. Implement the handler method
+
+**To add a new resource to an existing domain:**
+
+1. Add resource to the `*Resources` map with its actions
+2. Add a routing case in `Execute()`
+3. Implement handler methods for each action
+
+**To create a new domain tool:**
+
+1. Create `internal/agent/tools/newdomain_tool.go`
+2. Define the input struct with all fields:
+```go
+type NewDomainInput struct {
+    Resource string `json:"resource"`
+    Action   string `json:"action"`
+    // ... domain-specific fields
+}
+```
+3. Implement `DomainTool` interface:
+```go
+func (t *NewDomainTool) Name() string { return "newdomain" }
+func (t *NewDomainTool) Domain() string { return "newdomain" }
+func (t *NewDomainTool) Resources() []string { return []string{"res1", "res2"} }
+func (t *NewDomainTool) ActionsFor(resource string) []string { ... }
+func (t *NewDomainTool) Schema() json.RawMessage { return BuildDomainSchema(...) }
+func (t *NewDomainTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) { ... }
+```
+4. Register in `registry.go` `RegisterDefaults()`
+
+**Platform-specific tools:** Use build tags and register via `RegisterCapability()` in `init()`
+
+---
+
 ## Critical Rules
 
 - **pnpm only** - Never npm or yarn
@@ -181,7 +237,7 @@ type GetWidgetResponse struct { Name string `json:"name"` }
 | File | Purpose |
 |------|---------|
 | `~/.nebo/models.yaml` | Provider credentials & available models (loaded by agent) |
-| `~/.nebo/config.yaml` | Agent settings & tool policies |
+| `~/.nebo/config.yaml` | Agent settings, tool policies, lane concurrency, advisors |
 | `~/.nebo/skills/` | User-defined YAML skills |
 | `~/.nebo/plugins/` | User-installed plugins (tools/, channels/) |
 | `etc/nebo.yaml` | Server config (ports, database path) |
@@ -208,23 +264,95 @@ Web UI at `http://local.nebo.bot:27895`
 
 ## Agent Internals
 
-**Sub-Agents:** THE agent spawns sub-agents for parallel work (up to 5 concurrent). Sub-agents are temporary, report back, and users don't interact with them directly.
+### Lane System (`internal/agenthub/lane.go`)
 
-**Memory Persistence:** Survives restarts via SQLite:
-- Conversation history (`internal/db/chats.sql.go`)
-- Facts/preferences (`agent/tools/memory.go`) - 3-tier: tacit, daily, entity
-- Scheduled tasks (`agent/tools/cron.go`)
-- Sessions with compaction (`agent/session/`)
+Lanes are work queues that organize different types of work. See `docs/specs/LANE_SPEC.md` for full specification.
+
+| Lane | Purpose |
+|------|---------|
+| `main` | User conversations (serialized, one at a time) |
+| `events` | Scheduled/triggered tasks |
+| `subagent` | Sub-agent goroutines |
+| `nested` | Tool recursion/callbacks |
+| `heartbeat` | Proactive heartbeat ticks (runs independently of main) |
+
+Key functions:
+- `Enqueue()` - Block until task completes
+- `EnqueueAsync()` - Non-blocking queue add
+- `pump()` - Processes queue respecting max concurrency
+
+**Lane configuration in `~/.nebo/config.yaml`:**
+```yaml
+lanes:
+  main: 1       # User conversations (serialized)
+  events: 2     # Scheduled/triggered tasks
+  subagent: 0   # Sub-agent operations (0 = unlimited)
+  nested: 3     # Nested tool calls (hard cap)
+  heartbeat: 1  # Proactive heartbeat ticks (sequential)
+```
+
+### Sub-Agents (`internal/agent/orchestrator/orchestrator.go`)
+
+Sub-agents are goroutines (NOT separate processes/connections):
+- Each gets own session: `subagent-{uuid}`
+- Persisted to `pending_tasks` table before spawning (crash recovery)
+- Runs own agentic loop via `Runner.Run()`
+- Managed via `agent(resource: task, action: spawn, ...)`
+
+### Hub vs Runner vs Agent Command
+
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| **Hub** | `internal/agenthub/hub.go` | WebSocket connections, agent registry, message routing |
+| **Lanes** | `internal/agenthub/lane.go` | Work queues with concurrency limits |
+| **Runner** | `internal/agent/runner/runner.go` | Agentic loop, model selection, tool execution |
+| **Agent Cmd** | `cmd/nebo/agent.go` | Glue code connecting hub to runner via lanes |
+
+### Memory Persistence
+
+Survives restarts via SQLite:
+- Conversation history (`agent_messages` table)
+- Facts/preferences (`embeddings` table) - 3-tier: tacit, daily, entity
+- Scheduled tasks (`cron_jobs` table)
+- Pending sub-agent tasks (`pending_tasks` table)
+- Sessions with compaction (`internal/agent/session/`)
 
 **Skills:** YAML files in `~/.nebo/skills/` or `extensions/skills/`. Hot-reload, trigger-based matching, tool restrictions.
 
 **Model Selection:** Task classification (Vision/Audio/Reasoning/Code/General) routes to appropriate model with exponential backoff on failures.
 
+**Tool Registration:** Domain tools are registered in `RegisterDefaults()`. The `AgentDomainTool` requires separate registration via `RegisterAgentDomainTool()` since it needs DB and session manager dependencies.
+
+### Advisors System (`internal/agent/advisors/`)
+
+Advisors are internal "voices" that deliberate on tasks before the main agent decides. They do NOT speak to users, commit memory, or persist independently.
+
+**Definition format:** Markdown files with YAML frontmatter (`ADVISOR.md`):
+```yaml
+---
+name: skeptic
+role: critic
+description: Challenges assumptions and identifies weaknesses
+priority: 10
+enabled: true
+---
+
+You are the Skeptic. Your role is to challenge ideas and find flaws...
+```
+
+**Configuration in `~/.nebo/config.yaml`:**
+```yaml
+advisors:
+  enabled: true
+  max_advisors: 5
+  timeout_seconds: 30
+```
+
 ---
 
 ## Key Integrations
 
-### AI Providers (`agent/ai/`)
+### AI Providers (`internal/agent/ai/`)
 
 | Provider | Features |
 |----------|----------|
@@ -234,12 +362,39 @@ Web UI at `http://local.nebo.bot:27895`
 | Ollama | Local models, streaming |
 | CLI Providers | Wraps `claude`, `gemini`, `codex` commands |
 
-### Agent Tools (`agent/tools/`)
+### Agent Tools - STRAP Pattern (`internal/agent/tools/`)
 
-Core: `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web`
-Browser: `browser` (chromedp), `screenshot`, `vision`
-Memory: `memory` (3-tier storage), `sessions`
-Orchestration: `task` (sub-agents), `cron`, `message`
+Tools use the **STRAP (Single Tool Resource Action Pattern)** - consolidating 35+ individual tools into 4 domain tools for reduced LLM context overhead (~80% reduction).
+
+| Domain | Tool Name | Resources | Actions |
+|--------|-----------|-----------|---------|
+| File | `file` | - | read, write, edit, glob, grep |
+| Shell | `shell` | bash, process, session | exec, bg, kill, list, status, send |
+| Web | `web` | - | fetch, search, navigate, click, type, screenshot |
+| Agent | `agent` | task, cron, memory, message, session | spawn, create, store, recall, send, list, etc. |
+
+**Usage pattern:**
+```
+file(action: read, path: "/tmp/test.txt")
+shell(resource: bash, action: exec, command: "ls -la")
+web(action: search, query: "golang")
+agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit")
+```
+
+**Key files:**
+- `domain.go` - DomainTool interface, validators, schema builder
+- `file_tool.go` - File operations (replaces read.go, write.go, edit.go, glob.go, grep.go)
+- `shell_tool.go` - Shell operations (replaces bash.go, process.go, bash_sessions.go)
+- `web_tool.go` - Web operations (replaces web.go, search.go, browser.go)
+- `agent_tool.go` - Agent operations (replaces task.go, cron.go, memory.go, message.go, sessions.go)
+- `registry.go` - Tool registration and execution
+
+**Standalone tools:** `screenshot`, `vision` (requires API key), platform capabilities (*_darwin.go)
+
+**Memory 3-tier system:**
+- `tacit` - Long-term preferences, learned behaviors
+- `daily` - Day-specific facts (keyed by date)
+- `entity` - Information about people, places, things
 
 ### Channel Integrations (`internal/channels/`)
 
