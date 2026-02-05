@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	agentcfg "nebo/agent/config"
-	"nebo/agent/skills"
+	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
+	"github.com/nebolabs/nebo/internal/agent/skills"
 )
 
 // skillsCmd creates the skills management command
@@ -20,7 +20,7 @@ func SkillsCmd() *cobra.Command {
 		Long: `Skills are SKILL.md files that modify agent behavior without code changes.
 They use YAML frontmatter for metadata and markdown body for instructions.
 
-Skills are loaded from ~/.nebo/skills/ or the extensions/skills/ directory.
+Skills are loaded from the Nebo data directory's skills/ folder or the extensions/skills/ directory.
 Each skill should be in its own subdirectory with a SKILL.md file.`,
 	}
 

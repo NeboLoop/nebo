@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/nebolabs/nebo/internal/defaults"
 )
 
 // Settings holds local configuration that can't be in the embedded yaml
@@ -26,11 +28,11 @@ func DefaultSettings() Settings {
 
 // settingsPath returns the path to the local settings file
 func settingsPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	dataDir, err := defaults.DataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(homeDir, ".nebo", "settings.json"), nil
+	return filepath.Join(dataDir, "settings.json"), nil
 }
 
 // LoadSettings loads local settings, creating defaults if needed

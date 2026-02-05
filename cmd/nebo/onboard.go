@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/provider"
 	"github.com/spf13/cobra"
-	"nebo/internal/provider"
 )
 
 // onboardCmd creates the onboard command for initial setup
@@ -19,7 +20,7 @@ func OnboardCmd() *cobra.Command {
 		Long: `Interactive setup wizard for Nebo.
 
 This will guide you through:
-  1. Creating the ~/.nebo directory
+  1. Creating the Nebo data directory
   2. Configuring your AI provider (Anthropic, OpenAI, etc.)
   3. Setting up your first channel (optional)
 
@@ -40,8 +41,7 @@ func runOnboard() {
 	fmt.Println()
 
 	// Step 1: Create config directory
-	homeDir, _ := os.UserHomeDir()
-	gobotDir := filepath.Join(homeDir, ".nebo")
+	gobotDir, _ := defaults.DataDir()
 
 	if _, err := os.Stat(gobotDir); os.IsNotExist(err) {
 		fmt.Printf("Creating config directory: %s\n", gobotDir)

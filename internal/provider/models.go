@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/nebolabs/nebo/internal/defaults"
 	"gopkg.in/yaml.v3"
 )
 
@@ -104,9 +105,12 @@ func InitModelsStore(dataDir string) {
 // GetModelsFilePath returns the current models file path
 func GetModelsFilePath() string {
 	if modelsFilePath == "" {
-		// Default to ~/.nebo/models.yaml
-		home, _ := os.UserHomeDir()
-		modelsFilePath = filepath.Join(home, ".nebo", "models.yaml")
+		dataDir, err := defaults.DataDir()
+		if err != nil {
+			home, _ := os.UserHomeDir()
+			dataDir = filepath.Join(home, ".config", "nebo")
+		}
+		modelsFilePath = filepath.Join(dataDir, "models.yaml")
 	}
 	return modelsFilePath
 }
@@ -145,7 +149,7 @@ func OnConfigReload(callback func(*ModelsConfig)) {
 	reloadCallbacks = append(reloadCallbacks, callback)
 }
 
-// StartConfigWatcher starts watching the ~/.nebo directory for config changes
+// StartConfigWatcher starts watching the Nebo data directory for config changes
 func StartConfigWatcher(dataDir string) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {

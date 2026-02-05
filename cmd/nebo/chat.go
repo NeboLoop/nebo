@@ -11,13 +11,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"nebo/agent/ai"
-	agentcfg "nebo/agent/config"
-	"nebo/agent/runner"
-	"nebo/agent/session"
-	"nebo/agent/tools"
-	"nebo/agent/voice"
-	"nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/agent/ai"
+	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
+	"github.com/nebolabs/nebo/internal/agent/runner"
+	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/nebolabs/nebo/internal/agent/tools"
+	"github.com/nebolabs/nebo/internal/agent/voice"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/provider"
 )
 
 // chatCmd creates the chat command
@@ -75,19 +76,26 @@ func runChat(cfg *agentcfg.Config, args []string, interactive bool, dangerously 
 		args = []string{text}
 	}
 
-	sessions, err := session.New(cfg.DBPath())
+	// Open database using shared connection pattern
+	store, err := db.NewSQLite(cfg.DBPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
-	defer sessions.Close()
+	defer store.Close()
 
-	// Use the shared DB from session manager for all components
-	SetSharedDB(sessions.GetDB())
+	// Use the shared DB for all components
+	SetSharedDB(store.GetDB())
+
+	sessions, err := session.New(store.GetDB())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing sessions: %v\n", err)
+		os.Exit(1)
+	}
 
 	providers := createProviders(cfg)
 	if len(providers) == 0 {
-		fmt.Fprintln(os.Stderr, "No providers configured. Set ANTHROPIC_API_KEY or configure providers in ~/.nebo/config.yaml")
+		fmt.Fprintln(os.Stderr, "No providers configured. Set ANTHROPIC_API_KEY or configure providers in config.yaml (run 'nebo doctor' to find config location)")
 		os.Exit(1)
 	}
 
@@ -240,7 +248,7 @@ func handleCommand(cmd string, sessions *session.Manager) bool {
 		return true
 
 	case cmd == "/clear":
-		sess, err := sessions.GetOrCreate(sessionKey)
+		sess, err := sessions.GetOrCreate(sessionKey, "")
 		if err == nil {
 			sessions.Reset(sess.ID)
 			fmt.Println("Session cleared.")
@@ -248,7 +256,7 @@ func handleCommand(cmd string, sessions *session.Manager) bool {
 		return true
 
 	case cmd == "/sessions":
-		list, _ := sessions.ListSessions()
+		list, _ := sessions.ListSessions("")
 		fmt.Println("Sessions:")
 		for _, s := range list {
 			marker := " "

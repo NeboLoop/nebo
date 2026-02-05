@@ -25,6 +25,7 @@ Nebo is **ONE primary agent** with a **lane-based concurrency system**. Not mult
 │    │  subagent  - Sub-agent goroutines                      │   │
 │    │  nested    - Tool recursion/callbacks                  │   │
 │    │  heartbeat - Proactive heartbeat ticks                 │   │
+│    │  comm      - Inter-agent communication messages        │   │
 │    └────────────────────────────────────────────────────────┘   │
 │                                                                 │
 │  Channels (how users reach THE agent):                          │
@@ -48,7 +49,7 @@ Nebo is **ONE primary agent** with a **lane-based concurrency system**. Not mult
 
 ```bash
 # Development (hot reload via air - NO restart needed)
-make air              # Backend with hot reload
+make air              # Backend with hot reload (runs in headless mode)
 cd app && pnpm dev    # Frontend dev server
 
 # Database
@@ -66,6 +67,8 @@ cd app && pnpm test:unit                               # Frontend tests
 
 # Build & Release
 make build            # Build binary to bin/nebo
+make desktop          # Build desktop app (frontend + Go binary)
+make package          # Package installer (.dmg/.msi/.deb)
 make cli              # Build and install globally
 make release          # Build for all platforms (darwin/linux, amd64/arm64)
 
@@ -104,7 +107,8 @@ internal/agent/
 │   ├── selector.go         # Task-based model routing with fallbacks
 │   └── dedupe.go           # Deduplicates repeated messages
 ├── advisors/     # Internal deliberation system (markdown-based personas)
-├── config/       # ~/.nebo/ config loading (models.yaml, config.yaml)
+├── comm/         # Inter-agent communication (CommPlugin, CommHandler, CommPluginManager)
+├── config/       # Config loading (models.yaml, config.yaml)
 ├── embeddings/   # Hybrid search (vector + FTS) for memories
 ├── memory/       # Memory extraction and context building
 ├── mcp/          # MCP (Model Context Protocol) server integration
@@ -228,18 +232,24 @@ func (t *NewDomainTool) Execute(ctx context.Context, input json.RawMessage) (*To
 - **DaisyUI components** - Use DaisyUI classes for UI (btn, card, modal, input, etc.)
 - **Idiomatic Go** - One function with parameters, not multiple variations (e.g., `Register(token string)` not `RegisterWithToken()` + `Register()`)
 - **Minimal changes** - Never remove code that appears unused without asking first
-- **NEVER hardcode model IDs** - All model IDs come from `~/.nebo/models.yaml`
+- **NEVER hardcode model IDs** - All model IDs come from `models.yaml` in the Nebo data directory
 
 ---
 
 ## Configuration Files
 
+Data directory location (platform-standard):
+- **macOS:** `~/Library/Application Support/Nebo/`
+- **Windows:** `%AppData%\Nebo\`
+- **Linux:** `~/.config/nebo/`
+- **Override:** `NEBO_DATA_DIR` environment variable
+
 | File | Purpose |
 |------|---------|
-| `~/.nebo/models.yaml` | Provider credentials & available models (loaded by agent) |
-| `~/.nebo/config.yaml` | Agent settings, tool policies, lane concurrency, advisors |
-| `~/.nebo/skills/` | User-defined YAML skills |
-| `~/.nebo/plugins/` | User-installed plugins (tools/, channels/) |
+| `<data_dir>/models.yaml` | Provider credentials & available models (loaded by agent) |
+| `<data_dir>/config.yaml` | Agent settings, tool policies, lane concurrency, advisors |
+| `<data_dir>/skills/` | User-defined YAML skills |
+| `<data_dir>/plugins/` | User-installed plugins (tools/, channels/) |
 | `etc/nebo.yaml` | Server config (ports, database path) |
 | `app/src/lib/config/site.ts` | Branding, SEO, social links |
 | `.env` | Secrets only (JWT_SECRET) |
@@ -249,7 +259,8 @@ func (t *NewDomainTool) Execute(ctx context.Context, input json.RawMessage) (*To
 ## Running Nebo
 
 ```bash
-nebo              # Start server + agent (default)
+nebo              # Desktop mode (native window + system tray + agent)
+nebo --headless   # Headless mode (HTTP server + agent, opens browser)
 nebo serve        # Server only
 nebo agent        # Agent only
 nebo chat         # CLI chat mode
@@ -259,6 +270,9 @@ nebo plugins list # List installed plugins
 ```
 
 Web UI at `http://local.nebo.bot:27895`
+
+**Desktop mode** (default): Wails v3 native window + system tray. Close window minimizes to tray.
+**Headless mode** (`--headless`): No native window, opens browser. Current behavior.
 
 ---
 
@@ -275,13 +289,14 @@ Lanes are work queues that organize different types of work. See `docs/specs/LAN
 | `subagent` | Sub-agent goroutines |
 | `nested` | Tool recursion/callbacks |
 | `heartbeat` | Proactive heartbeat ticks (runs independently of main) |
+| `comm` | Inter-agent communication messages (concurrent) |
 
 Key functions:
 - `Enqueue()` - Block until task completes
 - `EnqueueAsync()` - Non-blocking queue add
 - `pump()` - Processes queue respecting max concurrency
 
-**Lane configuration in `~/.nebo/config.yaml`:**
+**Lane configuration in `config.yaml`:**
 ```yaml
 lanes:
   main: 1       # User conversations (serialized)
@@ -289,6 +304,7 @@ lanes:
   subagent: 0   # Sub-agent operations (0 = unlimited)
   nested: 3     # Nested tool calls (hard cap)
   heartbeat: 1  # Proactive heartbeat ticks (sequential)
+  comm: 5       # Inter-agent communication (concurrent)
 ```
 
 ### Sub-Agents (`internal/agent/orchestrator/orchestrator.go`)
@@ -317,7 +333,7 @@ Survives restarts via SQLite:
 - Pending sub-agent tasks (`pending_tasks` table)
 - Sessions with compaction (`internal/agent/session/`)
 
-**Skills:** YAML files in `~/.nebo/skills/` or `extensions/skills/`. Hot-reload, trigger-based matching, tool restrictions.
+**Skills:** YAML files in `<data_dir>/skills/` or `extensions/skills/`. Hot-reload, trigger-based matching, tool restrictions.
 
 **Model Selection:** Task classification (Vision/Audio/Reasoning/Code/General) routes to appropriate model with exponential backoff on failures.
 
@@ -340,7 +356,7 @@ enabled: true
 You are the Skeptic. Your role is to challenge ideas and find flaws...
 ```
 
-**Configuration in `~/.nebo/config.yaml`:**
+**Configuration in `config.yaml`:**
 ```yaml
 advisors:
   enabled: true
@@ -371,7 +387,7 @@ Tools use the **STRAP (Single Tool Resource Action Pattern)** - consolidating 35
 | File | `file` | - | read, write, edit, glob, grep |
 | Shell | `shell` | bash, process, session | exec, bg, kill, list, status, send |
 | Web | `web` | - | fetch, search, navigate, click, type, screenshot |
-| Agent | `agent` | task, cron, memory, message, session | spawn, create, store, recall, send, list, etc. |
+| Agent | `agent` | task, cron, memory, message, session, comm | spawn, create, store, recall, send, list, subscribe, etc. |
 
 **Usage pattern:**
 ```
@@ -379,6 +395,7 @@ file(action: read, path: "/tmp/test.txt")
 shell(resource: bash, action: exec, command: "ls -la")
 web(action: search, query: "golang")
 agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit")
+agent(resource: comm, action: send, to: "agent-2", topic: "tasks", text: "Can you handle this?")
 ```
 
 **Key files:**

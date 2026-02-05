@@ -5,41 +5,40 @@ Your personal AI assistant that runs locally. One primary agent with a lane-base
 ## The Nebo Paradigm
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           THE NEBO AGENT                                    │
-│                                                                             │
-│   • One primary WebSocket connection (enforced by hub)                      │
-│   • Lane-based concurrency for different work types                         │
-│   • Spawns SUB-AGENTS as goroutines for parallel work                       │
-│   • SQLite persistence survives restarts (crash recovery)                   │
-│   • Proactive via heartbeat lane + scheduled events                         │
-│                                                                             │
-│   Channels (how you reach THE agent):                                       │
-│     ┌─────────┐  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌───────┐        │
-│     │ Web UI  │  │   CLI   │  │ Telegram │  │ Discord │  │ Slack │        │
-│     └────┬────┘  └────┬────┘  └────┬─────┘  └────┬────┘  └───┬───┘        │
-│          │            │            │             │           │             │
-│          └────────────┴────────────┴─────────────┴───────────┘             │
-│                                    │                                        │
-│                        ┌───────────┴───────────┐                           │
-│                        │      LANE SYSTEM      │                           │
-│                        │  (supervisor pattern) │                           │
-│                        └───────────┬───────────┘                           │
-│                                    │                                        │
-│      ┌─────────────┬───────────────┼───────────────┬─────────────┐        │
-│      │             │               │               │             │         │
-│  ┌───┴───┐   ┌─────┴─────┐   ┌─────┴─────┐   ┌─────┴─────┐      │         │
-│  │ main  │   │   cron    │   │ subagent  │   │  nested   │      │         │
-│  │ (1)   │   │           │   │           │   │           │      │         │
-│  └───┬───┘   └─────┬─────┘   └─────┬─────┘   └─────┬─────┘      │         │
-│      │             │               │               │             │         │
-│      │             │         ┌─────┼─────┐         │             │         │
-│      │             │         │     │     │         │             │         │
-│      ▼             ▼         ▼     ▼     ▼         ▼             │         │
-│   User chat    Scheduled   Sub-Agent goroutines  Tool           │         │
-│   (serialized) tasks                             recursion       │         │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            THE NEBO AGENT                                    │
+│                                                                              │
+│   • One primary WebSocket connection (enforced by hub)                       │
+│   • Lane-based concurrency for different work types                          │
+│   • Spawns SUB-AGENTS as goroutines for parallel work                        │
+│   • SQLite persistence survives restarts (crash recovery)                    │
+│   • Proactive via heartbeat lane + scheduled events                          │
+│   • Inter-agent communication via comm lane + plugins                        │
+│                                                                              │
+│   Channels (how you reach THE agent):                                        │
+│     ┌─────────┐  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌───────┐         │
+│     │ Web UI  │  │   CLI   │  │ Telegram │  │ Discord │  │ Slack │         │
+│     └────┬────┘  └────┬────┘  └────┬─────┘  └────┬────┘  └───┬───┘         │
+│          │            │            │             │           │              │
+│          └────────────┴────────────┴─────────────┴───────────┘              │
+│                                    │                                         │
+│                        ┌───────────┴───────────┐                            │
+│                        │      LANE SYSTEM      │                            │
+│                        │  (supervisor pattern) │                            │
+│                        └───────────┬───────────┘                            │
+│                                    │                                         │
+│    ┌────────┬────────┬─────────────┼──────────┬───────────┬──────────┐      │
+│    │        │        │             │          │           │          │      │
+│  ┌─┴──┐ ┌──┴───┐ ┌──┴────┐ ┌─────┴────┐ ┌───┴──┐ ┌─────┴────┐    │      │
+│  │main│ │events│ │subagnt│ │  nested  │ │ hb   │ │   comm   │    │      │
+│  │ (1)│ │  (2) │ │       │ │   (3)   │ │ (1)  │ │   (5)   │    │      │
+│  └─┬──┘ └──┬───┘ └──┬────┘ └─────┬────┘ └───┬──┘ └─────┬────┘    │      │
+│    │        │        │            │          │           │          │      │
+│    ▼        ▼        ▼            ▼          ▼           ▼          │      │
+│  User    Scheduled  Sub-Agent   Tool      Proactive  Inter-agent   │      │
+│  chat    tasks      goroutines  recursion heartbeat  messages      │      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Architectural Concepts:**
@@ -64,20 +63,32 @@ Your personal AI assistant that runs locally. One primary agent with a lane-base
 - **Multi-Provider** - Anthropic, OpenAI, Google Gemini, DeepSeek, Ollama
 - **Computer Control** - Browser automation, screenshots, file operations, shell commands
 - **Multi-Channel** - Web UI, CLI, Telegram, Discord, Slack
+- **Inter-Agent Comm** - Plugin-based communication between agents (loopback, MQTT, NATS)
 - **Extensible** - YAML skills and compiled plugins
-- **Proactive** - Scheduled tasks via cron tool
+- **Proactive** - Scheduled tasks and heartbeat-driven actions
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/localrivet/nebo/main/install.sh | sh
+# macOS (desktop app with native window + system tray)
+brew install --cask nebolabs/tap/nebo
+
+# macOS/Linux (CLI binary)
+brew install nebolabs/tap/nebo
+
+# Or build from source
+git clone https://github.com/nebolabs/nebo.git
+cd nebo && make build
 ```
 
 ## Quick Start
 
 ```bash
-# Start Nebo (server + agent + web UI)
+# Desktop mode — native window + system tray (default)
 nebo
+
+# Headless mode — browser-only, no native window (current behavior)
+nebo --headless
 
 # Open the web UI to add your API key
 open http://local.nebo.bot:27895/settings/providers
@@ -94,12 +105,14 @@ nebo chat --interactive    # REPL mode
 
 **Lanes** are work queues that organize different types of work:
 
-| Lane | Purpose |
-|------|---------|
-| `main` | User conversations (serialized, one at a time) |
-| `cron` | Scheduled tasks |
-| `subagent` | Sub-agent goroutines |
-| `nested` | Tool recursion/callbacks |
+| Lane | Concurrency | Purpose |
+|------|-------------|---------|
+| `main` | 1 | User conversations (serialized, one at a time) |
+| `events` | 2 | Scheduled/triggered tasks |
+| `subagent` | unlimited | Sub-agent goroutines |
+| `nested` | 3 | Tool recursion/callbacks |
+| `heartbeat` | 1 | Proactive heartbeat ticks |
+| `comm` | 5 | Inter-agent communication messages |
 
 **Sub-agents** are spawned for parallel work:
 
@@ -132,7 +145,7 @@ THE AGENT (main lane, serialized):
 
 Add your API key in the Web UI: **Settings > Providers**
 
-Or configure via `~/.nebo/models.yaml`:
+Or configure via `models.yaml` in your Nebo data directory:
 
 ```yaml
 version: "1.0"
@@ -155,31 +168,25 @@ providers:
       active: true
 ```
 
-## Built-in Tools
+## Built-in Tools (STRAP Pattern)
 
-| Tool | Description |
-|------|-------------|
-| `bash` | Execute shell commands |
-| `read` | Read file contents |
-| `write` | Create/overwrite files |
-| `edit` | Find-and-replace edits |
-| `glob` | Find files by pattern |
-| `grep` | Search file contents |
-| `web` | Fetch URLs |
-| `browser` | CDP browser automation |
-| `screenshot` | Capture screen/window |
-| `vision` | Analyze images with AI |
-| `memory` | Persistent fact storage |
-| `cron` | Schedule recurring tasks |
-| `task` | Spawn sub-agents |
-| `agent_status` | Monitor sub-agents |
+Tools use the **STRAP (Single Tool Resource Action Pattern)** — consolidating many tools into domain tools for reduced LLM context overhead.
+
+| Domain | Tool | Resources / Actions |
+|--------|------|---------------------|
+| File | `file` | read, write, edit, glob, grep |
+| Shell | `shell` | bash exec/bg/kill, process list/kill, session management |
+| Web | `web` | fetch, search, browser automation (navigate, click, type, screenshot) |
+| Agent | `agent` | task (spawn/status/cancel), cron (create/list/delete), memory (store/recall), message (send/list), session (list/history/clear), comm (send/subscribe/status) |
+
+**Standalone tools:** `screenshot`, `vision` (image analysis), platform-specific capabilities (macOS: accessibility, calendar, contacts, etc.)
 
 ## Skills System
 
 Skills are YAML files that enhance agent behavior for specific tasks.
 
 ```yaml
-# ~/.nebo/skills/security-audit.yaml
+# skills/security-audit.yaml (in Nebo data directory)
 name: security-audit
 triggers: [security, audit, vulnerability]
 template: |
@@ -191,6 +198,119 @@ template: |
 ```
 
 Bundled skills: `code-review`, `git-workflow`, `security-audit`, `api-design`, `database-expert`, `debugging`
+
+## Advisors System
+
+Advisors are internal "voices" that deliberate on tasks before the agent decides. They do NOT speak to users, commit memory, or persist independently — they only inform the agent's decisions.
+
+```
+User: "Should we rewrite the auth system?"
+                    │
+            ┌───────┴───────┐
+            │  THE AGENT    │
+            │  (main lane)  │
+            └───────┬───────┘
+                    │ advisors(task: "Evaluate auth rewrite")
+                    │
+        ┌───────────┼───────────┬───────────┐
+        ▼           ▼           ▼           ▼
+   ┌─────────┐ ┌──────────┐ ┌─────────┐ ┌─────────┐
+   │ Skeptic │ │Pragmatist│ │Historian│ │Creative │
+   │(critic) │ │(builder) │ │(context)│ │(explorer│
+   └────┬────┘ └────┬─────┘ └────┬────┘ └────┬────┘
+        │           │            │            │
+        └───────────┴────────────┴────────────┘
+                    │
+            Agent synthesizes and decides
+```
+
+**Key properties:**
+- Run concurrently (up to 5, with 30s timeout)
+- Each advisor sees the same context but not other advisors' responses
+- The agent is the decision-maker — advisors only provide counsel
+- Hot-reload: edit files and changes take effect immediately
+
+### Defining Advisors
+
+Advisors are Markdown files with YAML frontmatter, stored in the `advisors/` directory:
+
+```
+advisors/
+├── skeptic/
+│   └── ADVISOR.md
+├── pragmatist/
+│   └── ADVISOR.md
+├── historian/
+│   └── ADVISOR.md
+└── creative/
+    └── ADVISOR.md
+```
+
+Each `ADVISOR.md`:
+
+```markdown
+---
+name: skeptic
+role: critic
+description: Challenges assumptions and identifies weaknesses
+priority: 10
+enabled: true
+---
+
+# The Skeptic
+
+You are the Skeptic. Your role is to challenge ideas and find flaws.
+
+## Your Approach
+- Question every assumption
+- Look for edge cases and failure modes
+- Challenge optimistic estimates
+```
+
+| Field | Required | Purpose |
+|-------|----------|---------|
+| `name` | Yes | Unique identifier |
+| `role` | No | Category (critic, builder, historian, etc.) |
+| `description` | Yes | What this advisor does |
+| `priority` | No | Execution order (higher = first, default: 0) |
+| `enabled` | No | Disable without deleting (default: true) |
+| `memory_access` | No | Enable persistent memory recall for this advisor (default: false) |
+
+The markdown body after the frontmatter is the advisor's persona — the system prompt that shapes their voice.
+
+### Using Advisors
+
+The agent decides when to consult advisors via the `advisors` tool:
+
+```
+advisors(task: "Should we migrate from REST to GraphQL?")
+advisors(task: "Evaluate caching strategy", advisors: ["skeptic", "pragmatist"])
+```
+
+**Use advisors for:** Significant decisions, multiple valid approaches, when uncertain.
+**Skip advisors for:** Simple, routine, or time-sensitive tasks.
+
+### Configuration
+
+```yaml
+# config.yaml (in Nebo data directory)
+advisors:
+  enabled: true           # Disable all advisors globally
+  max_advisors: 5         # Max concurrent advisors per deliberation
+  timeout_seconds: 30     # Per-deliberation timeout
+```
+
+### Built-in Advisors
+
+| Advisor | Role | Memory | Purpose |
+|---------|------|--------|---------|
+| **Skeptic** | critic | No | Challenges assumptions, identifies weaknesses |
+| **Pragmatist** | builder | No | Finds simplest viable action, cuts complexity |
+| **Historian** | context | Yes | Brings context from past decisions and patterns |
+| **Creative** | explorer | No | Explores novel or unconventional approaches |
+| **Optimist** | advocate | No | Focuses on possibilities and upside potential |
+
+The Historian has `memory_access: true`, so it receives relevant memories from Nebo's persistent memory (hybrid vector + FTS search) before deliberating. Any advisor can opt into memory access by adding this flag to their frontmatter.
 
 ## Channel Integrations
 
@@ -207,7 +327,8 @@ Messages from these channels are routed to THE agent, and responses are sent bac
 ## CLI Reference
 
 ```
-nebo                  Start server + agent + web UI
+nebo                  Desktop mode (native window + system tray + agent)
+nebo --headless       Headless mode (HTTP server + agent, opens browser)
 nebo serve            Server only (for remote agents)
 nebo agent            Agent only (connects to server)
 nebo chat "prompt"    One-shot chat
@@ -218,10 +339,12 @@ nebo chat --dangerously   No approval prompts (caution!)
 ## Development
 
 ```bash
-make air              # Backend with hot reload
+make air              # Backend with hot reload (headless mode)
 cd app && pnpm dev    # Frontend dev server
 go test ./...         # Run tests
-make build            # Build binary
+make build            # Build binary (headless + desktop)
+make desktop          # Build desktop app (includes frontend build)
+make package          # Package as installer (.dmg/.msi/.deb)
 ```
 
 ## Architecture
@@ -231,6 +354,7 @@ nebo/
 ├── internal/
 │   ├── agent/                # The Agent Core
 │   │   ├── ai/               # AI providers (Anthropic, OpenAI, Gemini, Ollama)
+│   │   ├── comm/             # Inter-agent communication (CommPlugin, handler, manager)
 │   │   ├── runner/           # Agentic loop (model selection, tool execution)
 │   │   ├── orchestrator/     # Sub-agent spawning + crash recovery
 │   │   ├── tools/            # STRAP domain tools (file, shell, web, agent)
@@ -241,11 +365,15 @@ nebo/
 │   │   └── recovery/         # Pending task persistence for crash recovery
 │   ├── agenthub/             # WebSocket hub + lane system
 │   │   ├── hub.go            # Connection management, message routing
-│   │   └── lane.go           # Concurrency queues (main/events/subagent/nested/heartbeat)
+│   │   └── lane.go           # Concurrency queues (main/events/subagent/nested/heartbeat/comm)
 │   ├── channels/             # Telegram, Discord, Slack integrations
 │   └── server/               # HTTP server (chi router)
-├── cmd/nebo/                 # CLI commands (agent, chat, serve, etc.)
+├── cmd/nebo/                 # CLI commands (agent, chat, serve, desktop, etc.)
+│   ├── desktop.go            # Wails v3 native window + system tray
+│   ├── root.go               # Headless mode (RunAll)
+│   └── vars.go               # --headless flag routing
 ├── app/                      # Web UI (SvelteKit 2 + Svelte 5)
+├── assets/icons/             # App icons for all platforms
 └── extensions/               # Bundled skills & plugins
 ```
 

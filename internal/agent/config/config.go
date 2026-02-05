@@ -5,7 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/provider"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,7 +17,7 @@ type Config struct {
 	Providers []ProviderConfig `yaml:"-"` // Not in config.yaml, loaded from models.yaml
 
 	// Session settings
-	DataDir    string `yaml:"data_dir"`    // ~/.nebo
+	DataDir    string `yaml:"data_dir"`    // Platform data directory
 	MaxContext int    `yaml:"max_context"` // Max messages before compaction
 
 	// Execution settings
@@ -35,9 +36,21 @@ type Config struct {
 	// Context pruning settings (two-stage: soft trim + hard clear)
 	ContextPruning ContextPruningConfig `yaml:"context_pruning"`
 
+	// Comm plugin settings (inter-agent communication)
+	Comm CommConfig `yaml:"comm"`
+
 	// SaaS connection settings
 	ServerURL string `yaml:"server_url"` // SaaS server URL
 	Token     string `yaml:"token"`      // Authentication token
+}
+
+// CommConfig holds configuration for the comm lane plugin system
+type CommConfig struct {
+	Enabled     bool              `yaml:"enabled"`      // Enable comm lane
+	Plugin      string            `yaml:"plugin"`       // Active plugin: "loopback", "mqtt", "nats"
+	AutoConnect bool              `yaml:"auto_connect"` // Connect on agent startup
+	AgentID     string            `yaml:"agent_id"`     // Agent identity (empty = hostname)
+	Config      map[string]string `yaml:"config"`       // Plugin-specific config passed to Connect()
 }
 
 // LaneConfig holds concurrency limits for each lane
@@ -48,6 +61,7 @@ type LaneConfig struct {
 	Subagent  int `yaml:"subagent"`  // Sub-agent operations (default: 0, unlimited)
 	Nested    int `yaml:"nested"`    // Nested tool calls (default: 3)
 	Heartbeat int `yaml:"heartbeat"` // Proactive heartbeat ticks (default: 1)
+	Comm      int `yaml:"comm"`      // Inter-agent communication (default: 5)
 }
 
 // AdvisorsConfig holds settings for the internal deliberation system
@@ -127,16 +141,16 @@ func DefaultConfig() *Config {
 	}
 }
 
-// DefaultDataDir returns the default data directory (~/.nebo)
+// DefaultDataDir returns the platform-appropriate data directory.
 func DefaultDataDir() string {
-	home, err := os.UserHomeDir()
+	dir, err := defaults.DataDir()
 	if err != nil {
 		return ".nebo"
 	}
-	return filepath.Join(home, ".nebo")
+	return dir
 }
 
-// Load loads config from ~/.nebo/config.yaml
+// Load loads config from the Nebo data directory's config.yaml
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
 
@@ -154,7 +168,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	// Expand ~ in DataDir (config file may have "~/.nebo")
+	// Expand ~ in DataDir (config file may have a tilde path)
 	if strings.HasPrefix(cfg.DataDir, "~/") {
 		home, _ := os.UserHomeDir()
 		cfg.DataDir = filepath.Join(home, cfg.DataDir[2:])
@@ -182,7 +196,7 @@ func LoadFrom(path string) (*Config, error) {
 		return nil, err
 	}
 
-	// Expand ~ in DataDir (config file may have "~/.nebo")
+	// Expand ~ in DataDir (config file may have a tilde path)
 	if strings.HasPrefix(cfg.DataDir, "~/") {
 		home, _ := os.UserHomeDir()
 		cfg.DataDir = filepath.Join(home, cfg.DataDir[2:])
@@ -197,7 +211,7 @@ func LoadFrom(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// Save saves the config to ~/.nebo/config.yaml
+// Save saves the config to the Nebo data directory's config.yaml
 func (c *Config) Save() error {
 	// Ensure data dir exists
 	if err := os.MkdirAll(c.DataDir, 0700); err != nil {
@@ -214,7 +228,7 @@ func (c *Config) Save() error {
 }
 
 // DBPath returns the path to the SQLite database
-// Uses ~/.nebo/data/nebo.db to match the server's database location
+// Uses <data_dir>/data/nebo.db to match the server's database location
 func (c *Config) DBPath() string {
 	return filepath.Join(c.DataDir, "data", "nebo.db")
 }
@@ -224,7 +238,7 @@ func (c *Config) EnsureDataDir() error {
 	return os.MkdirAll(c.DataDir, 0700)
 }
 
-// AdvisorsDir returns the path to the advisors directory (~/.nebo/advisors)
+// AdvisorsDir returns the path to the advisors directory
 func (c *Config) AdvisorsDir() string {
 	return filepath.Join(c.DataDir, "advisors")
 }

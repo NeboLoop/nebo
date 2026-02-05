@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nebolabs/nebo/internal/defaults"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,9 +39,12 @@ func applyDefaults(c *Config) {
 		c.Auth.RefreshTokenExpire = 604800
 	}
 	if c.Database.SQLitePath == "" {
-		// Use ~/.nebo/data/nebo.db as the canonical database location
-		home, _ := os.UserHomeDir()
-		c.Database.SQLitePath = filepath.Join(home, ".nebo", "data", "nebo.db")
+		dataDir, err := defaults.DataDir()
+		if err != nil {
+			home, _ := os.UserHomeDir()
+			dataDir = filepath.Join(home, ".config", "nebo")
+		}
+		c.Database.SQLitePath = filepath.Join(dataDir, "data", "nebo.db")
 	}
 	if c.Security.CSRFEnabled == "" {
 		c.Security.CSRFEnabled = "true"

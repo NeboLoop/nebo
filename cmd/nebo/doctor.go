@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nebolabs/nebo/internal/defaults"
 	"github.com/spf13/cobra"
 )
 
@@ -122,15 +123,14 @@ func runDoctor(fix bool) {
 func checkConfig() []checkResult {
 	var results []checkResult
 
-	// Check ~/.nebo directory
-	homeDir, _ := os.UserHomeDir()
-	gobotDir := filepath.Join(homeDir, ".nebo")
+	// Check data directory
+	gobotDir, _ := defaults.DataDir()
 
 	if _, err := os.Stat(gobotDir); os.IsNotExist(err) {
 		results = append(results, checkResult{
 			name:    "Config Directory",
 			status:  "error",
-			message: fmt.Sprintf("~/.nebo directory not found. Run 'nebo onboard' to create it."),
+			message: fmt.Sprintf("Data directory not found at %s. Run 'nebo onboard' to create it.", gobotDir),
 		})
 	} else {
 		results = append(results, checkResult{
@@ -261,8 +261,8 @@ func checkGateway() []checkResult {
 func checkDatabase() []checkResult {
 	var results []checkResult
 
-	homeDir, _ := os.UserHomeDir()
-	dbPath := filepath.Join(homeDir, ".nebo", "data", "nebo.db")
+	dataDir, _ := defaults.DataDir()
+	dbPath := filepath.Join(dataDir, "data", "nebo.db")
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		results = append(results, checkResult{
@@ -395,12 +395,11 @@ func runFixes(results []checkResult) {
 
 		switch {
 		case strings.Contains(r.name, "Config Directory"):
-			homeDir, _ := os.UserHomeDir()
-			gobotDir := filepath.Join(homeDir, ".nebo")
-			if err := os.MkdirAll(gobotDir, 0755); err != nil {
-				fmt.Printf("  \033[31m✗\033[0m Could not create %s: %v\n", gobotDir, err)
+			fixDir, _ := defaults.DataDir()
+			if err := os.MkdirAll(fixDir, 0755); err != nil {
+				fmt.Printf("  \033[31m✗\033[0m Could not create %s: %v\n", fixDir, err)
 			} else {
-				fmt.Printf("  \033[32m✓\033[0m Created %s\n", gobotDir)
+				fmt.Printf("  \033[32m✓\033[0m Created %s\n", fixDir)
 			}
 		case strings.Contains(r.name, "Config File"):
 			fmt.Println("  Run 'nebo onboard' to set up configuration")

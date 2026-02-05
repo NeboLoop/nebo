@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	cli "nebo/cmd/nebo"
-	"nebo/internal/config"
-	"nebo/internal/defaults"
-	"nebo/internal/local"
+	cli "github.com/nebolabs/nebo/cmd/nebo"
+	"github.com/nebolabs/nebo/internal/config"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/local"
 
 	"github.com/joho/godotenv"
 )
@@ -28,7 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Override database path to use ~/.nebo/data/nebo.db
+	// Override database path to use <data_dir>/data/nebo.db
 	dataDir, err := defaults.DataDir()
 	if err == nil {
 		dbDir := filepath.Join(dataDir, "data")

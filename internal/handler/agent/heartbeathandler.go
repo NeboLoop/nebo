@@ -6,20 +6,21 @@ import (
 	"os"
 	"path/filepath"
 
-	"nebo/internal/httputil"
-	"nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
 )
 
 // GetHeartbeatHandler returns the contents of HEARTBEAT.md
 func GetHeartbeatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		home, err := os.UserHomeDir()
+		dataDir, err := defaults.DataDir()
 		if err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		path := filepath.Join(home, ".nebo", "HEARTBEAT.md")
+		path := filepath.Join(dataDir, "HEARTBEAT.md")
 		content, _ := os.ReadFile(path) // Ignore error - file may not exist yet
 
 		httputil.OkJSON(w, map[string]string{"content": string(content)})
@@ -38,19 +39,18 @@ func UpdateHeartbeatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		home, err := os.UserHomeDir()
+		dataDir, err := defaults.DataDir()
 		if err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		dir := filepath.Join(home, ".nebo")
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dataDir, 0755); err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		path := filepath.Join(dir, "HEARTBEAT.md")
+		path := filepath.Join(dataDir, "HEARTBEAT.md")
 		if err := os.WriteFile(path, []byte(req.Content), 0644); err != nil {
 			httputil.Error(w, err)
 			return

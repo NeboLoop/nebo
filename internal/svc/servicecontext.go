@@ -1,18 +1,19 @@
 package svc
 
 import (
-	"os"
+	"fmt"
 	"path/filepath"
 
-	"nebo/internal/agenthub"
-	"nebo/internal/config"
-	"nebo/internal/db"
-	"nebo/internal/defaults"
-	"nebo/internal/local"
-	"nebo/internal/middleware"
-	"nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/agenthub"
+	"github.com/nebolabs/nebo/internal/config"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/local"
+	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
+	"github.com/nebolabs/nebo/internal/middleware"
+	"github.com/nebolabs/nebo/internal/provider"
 
-	"nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/logging"
 )
 
 type ServiceContext struct {
@@ -25,7 +26,8 @@ type ServiceContext struct {
 	AgentSettings  *local.AgentSettingsStore
 	SkillSettings  *local.SkillSettingsStore
 
-	AgentHub *agenthub.Hub
+	AgentHub  *agenthub.Hub
+	MCPClient *mcpclient.Client
 }
 
 // NewServiceContext creates a new service context, initializing database if not provided
@@ -48,11 +50,10 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 	neboDir, err := defaults.EnsureDataDir()
 	if err != nil {
 		logging.Errorf("Failed to ensure data directory: %v", err)
-		home, _ := os.UserHomeDir()
-		neboDir = filepath.Join(home, ".nebo")
+		neboDir, _ = defaults.DataDir()
 	}
 
-	// Initialize models store (loads ~/.nebo/models.yaml singleton)
+	// Initialize models store (loads models.yaml singleton)
 	provider.InitModelsStore(neboDir)
 	logging.Info("Models store initialized")
 
@@ -90,6 +91,15 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 	if svc.DB != nil {
 		svc.Auth = local.NewAuthService(svc.DB, c)
 		logging.Info("Auth service initialized")
+
+		// Initialize MCP OAuth client
+		encKey, err := mcpclient.GetEncryptionKey()
+		if err != nil {
+			logging.Warnf("MCP encryption key not configured: %v", err)
+		}
+		baseURL := fmt.Sprintf("http://localhost:%d", c.Port)
+		svc.MCPClient = mcpclient.NewClient(svc.DB, encKey, baseURL)
+		logging.Info("MCP OAuth client initialized")
 	}
 
 	return svc

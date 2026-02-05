@@ -3,7 +3,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"nebo/internal/config"
+	"github.com/nebolabs/nebo/internal/config"
 )
 
 // Shared CLI flags (used across multiple command files)
@@ -12,6 +12,7 @@ var (
 	sessionKey     string
 	providerArg    string
 	verbose        bool
+	headless       bool
 	dangerouslyAll = true // Default to dangerous mode for now (bypass approvals)
 )
 
@@ -27,19 +28,25 @@ func SetupRootCmd(c *config.Config) *cobra.Command {
 		Short: "Nebo - AI Assistant",
 		Long: `Nebo is an AI assistant with tool use capabilities for software development and automation.
 
-Just type 'nebo' to start both the server and agent together.`,
+Just type 'nebo' to start both the server and agent together.
+Use --headless to run without a native window (browser-only mode).`,
 		Run: func(cmd *cobra.Command, args []string) {
-			RunAll()
+			if headless {
+				RunAll()
+			} else {
+				RunDesktop()
+			}
 		},
 	}
 
 	// Global flags
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.nebo/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: platform data directory)")
 	rootCmd.PersistentFlags().StringVarP(&sessionKey, "session", "s", "default", "session key for conversation history")
 	rootCmd.PersistentFlags().StringVarP(&providerArg, "provider", "p", "", "provider to use (default: first available)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 
 	// Root-only flags
+	rootCmd.Flags().BoolVar(&headless, "headless", false, "run without native window (HTTP server + agent only)")
 	rootCmd.Flags().BoolVar(&dangerouslyAll, "dangerously", false, "100% autonomous mode - bypass ALL tool approval prompts")
 
 	// Add commands

@@ -16,21 +16,23 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 
-	"nebo/internal/agent/advisors"
-	"nebo/internal/agent/ai"
-	agentcfg "nebo/internal/agent/config"
-	"nebo/internal/agent/embeddings"
-	"nebo/internal/agent/memory"
-	"nebo/internal/agent/recovery"
-	"nebo/internal/agent/runner"
-	"nebo/internal/agent/session"
-	"nebo/internal/agent/tools"
-	"nebo/internal/agenthub"
-	"nebo/internal/browser"
-	"nebo/internal/channels"
-	"nebo/internal/db"
-	"nebo/internal/local"
-	"nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/agent/advisors"
+	"github.com/nebolabs/nebo/internal/agent/ai"
+	"github.com/nebolabs/nebo/internal/agent/comm"
+	"github.com/nebolabs/nebo/internal/agent/comm/neboloop"
+	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
+	"github.com/nebolabs/nebo/internal/agent/embeddings"
+	"github.com/nebolabs/nebo/internal/agent/memory"
+	"github.com/nebolabs/nebo/internal/agent/recovery"
+	"github.com/nebolabs/nebo/internal/agent/runner"
+	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/nebolabs/nebo/internal/agent/tools"
+	"github.com/nebolabs/nebo/internal/agenthub"
+	"github.com/nebolabs/nebo/internal/browser"
+	"github.com/nebolabs/nebo/internal/channels"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/local"
+	"github.com/nebolabs/nebo/internal/provider"
 )
 
 // approvalResponse holds the result of an approval request
@@ -325,7 +327,7 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		}
 	}
 
-	// Load advisors from ~/.nebo/advisors/ (internal deliberation system)
+	// Load advisors (internal deliberation system)
 	// Advisors are enabled/disabled via config and invoked by the agent when needed
 	advisorLoader := advisors.NewLoader(cfg.AdvisorsDir())
 	if err := advisorLoader.LoadAll(); err != nil {
@@ -340,6 +342,12 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		advisorsTool.SetProvider(providers[0])
 	}
 	advisorsTool.SetSessionManager(sessions)
+	if opts.Database != nil {
+		advisorsTool.SetSearcher(embeddings.NewHybridSearcher(embeddings.HybridSearchConfig{
+			DB:       opts.Database,
+			Embedder: embeddingService,
+		}))
+	}
 	registry.RegisterAdvisorsTool(advisorsTool)
 
 	// Register message tool with shared channel manager
@@ -465,6 +473,72 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 
 			return nil
 		})
+	}
+
+	// Initialize comm system for inter-agent communication
+	commManager := comm.NewCommPluginManager()
+	agentID := cfg.Comm.AgentID
+	if agentID == "" {
+		agentID, _ = os.Hostname()
+	}
+	commHandler := comm.NewCommHandler(commManager, agentID)
+	commManager.Register(comm.NewLoopbackPlugin())
+	commManager.Register(neboloop.New())
+
+	// Load external comm plugins
+	pluginLoader := createPluginLoader(cfg)
+	pluginLoader.SetCommCallbacks(
+		func(cp comm.CommPlugin) {
+			commManager.Register(cp)
+			fmt.Printf("[agent] Registered external comm plugin: %s\n", cp.Name())
+		},
+		func(name string) {
+			commManager.Unregister(name)
+			fmt.Printf("[agent] Unregistered external comm plugin: %s\n", name)
+		},
+	)
+	if err := pluginLoader.LoadAll(); err != nil {
+		fmt.Printf("[agent] Warning: failed to load plugins: %v\n", err)
+	}
+	go func() {
+		if err := pluginLoader.Watch(ctx); err != nil {
+			fmt.Printf("[agent] Warning: plugin watcher failed: %v\n", err)
+		}
+	}()
+	defer pluginLoader.Stop()
+
+	commManager.SetMessageHandler(commHandler.Handle)
+	commHandler.SetRunner(r)
+	commHandler.SetLanes(state.lanes)
+	defer commManager.Shutdown(context.Background())
+
+	// Create agent domain tool with comm support
+	agentTool, agentToolErr := tools.NewAgentDomainTool(tools.AgentDomainConfig{
+		Sessions:   sessions,
+		ChannelMgr: opts.ChannelManager,
+		Embedder:   embeddingService,
+	})
+	if agentToolErr == nil {
+		agentTool.SetCommService(commHandler)
+		registry.RegisterAgentDomainTool(agentTool)
+	}
+
+	// Connect comm plugin if enabled in config
+	if cfg.Comm.Enabled {
+		pluginName := cfg.Comm.Plugin
+		if pluginName == "" {
+			pluginName = "loopback"
+		}
+		if err := commManager.SetActive(pluginName); err != nil {
+			fmt.Printf("[agent] Warning: failed to set active comm plugin: %v\n", err)
+		} else if active := commManager.GetActive(); active != nil {
+			if err := active.Connect(ctx, cfg.Comm.Config); err != nil {
+				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", pluginName, err)
+			} else {
+				active.Register(ctx, agentID, nil)
+				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", pluginName, agentID)
+			}
+		}
 	}
 
 	// Close connection when context is cancelled to unblock ReadMessage
@@ -848,7 +922,7 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 		registry.Register(memoryTool)
 	}
 
-	// Load advisors from ~/.nebo/advisors/ (internal deliberation system)
+	// Load advisors (internal deliberation system)
 	advisorLoader := advisors.NewLoader(cfg.AdvisorsDir())
 	if err := advisorLoader.LoadAll(); err != nil {
 		fmt.Printf("[agent] Warning: failed to load advisors: %v\n", err)
@@ -862,6 +936,10 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 		advisorsTool.SetProvider(providers[0])
 	}
 	advisorsTool.SetSessionManager(sessions)
+	advisorsTool.SetSearcher(embeddings.NewHybridSearcher(embeddings.HybridSearchConfig{
+		DB:       sqlDB,
+		Embedder: embeddingService,
+	}))
 	registry.RegisterAdvisorsTool(advisorsTool)
 
 	// Create cron tool for scheduled tasks (using shared DB)
@@ -939,8 +1017,74 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 		}
 	}
 
+	// Initialize comm system for inter-agent communication
+	standaloneCommManager := comm.NewCommPluginManager()
+	standaloneAgentID := cfg.Comm.AgentID
+	if standaloneAgentID == "" {
+		standaloneAgentID, _ = os.Hostname()
+	}
+	standaloneCommHandler := comm.NewCommHandler(standaloneCommManager, standaloneAgentID)
+	standaloneCommManager.Register(comm.NewLoopbackPlugin())
+
+	// Load external comm plugins
+	standalonePluginLoader := createPluginLoader(cfg)
+	standalonePluginLoader.SetCommCallbacks(
+		func(cp comm.CommPlugin) {
+			standaloneCommManager.Register(cp)
+			fmt.Printf("[agent] Registered external comm plugin: %s\n", cp.Name())
+		},
+		func(name string) {
+			standaloneCommManager.Unregister(name)
+			fmt.Printf("[agent] Unregistered external comm plugin: %s\n", name)
+		},
+	)
+	if err := standalonePluginLoader.LoadAll(); err != nil {
+		fmt.Printf("[agent] Warning: failed to load plugins: %v\n", err)
+	}
+
+	standaloneCommManager.SetMessageHandler(standaloneCommHandler.Handle)
+	standaloneCommHandler.SetRunner(r)
+	standaloneCommHandler.SetLanes(standaloneLanes)
+
+	// Create agent domain tool with comm support
+	standaloneAgentTool, standaloneAgentToolErr := tools.NewAgentDomainTool(tools.AgentDomainConfig{
+		Sessions: sessions,
+	})
+	if standaloneAgentToolErr == nil {
+		standaloneAgentTool.SetCommService(standaloneCommHandler)
+		registry.RegisterAgentDomainTool(standaloneAgentTool)
+	}
+
+	// Connect comm plugin if enabled in config
+	if cfg.Comm.Enabled {
+		pluginName := cfg.Comm.Plugin
+		if pluginName == "" {
+			pluginName = "loopback"
+		}
+		if err := standaloneCommManager.SetActive(pluginName); err != nil {
+			fmt.Printf("[agent] Warning: failed to set active comm plugin: %v\n", err)
+		} else if active := standaloneCommManager.GetActive(); active != nil {
+			connectCtx := context.Background()
+			if err := active.Connect(connectCtx, cfg.Comm.Config); err != nil {
+				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", pluginName, err)
+			} else {
+				active.Register(connectCtx, standaloneAgentID, nil)
+				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", pluginName, standaloneAgentID)
+			}
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	defer standaloneCommManager.Shutdown(context.Background())
+
+	// Start plugin watcher for hot-reload (needs ctx)
+	go func() {
+		if err := standalonePluginLoader.Watch(ctx); err != nil {
+			fmt.Printf("[agent] Warning: plugin watcher failed: %v\n", err)
+		}
+	}()
+	defer standalonePluginLoader.Stop()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -1030,11 +1174,14 @@ func handleAgentMessage(ctx context.Context, conn *websocket.Conn, r *runner.Run
 			// Determine which lane this request belongs to
 			isHeartbeat := strings.HasPrefix(sessionKey, "heartbeat-")
 			isCronJob := strings.HasPrefix(sessionKey, "cron-")
+			isCommMsg := strings.HasPrefix(sessionKey, "comm-")
 			lane := agenthub.LaneMain
 			if isHeartbeat {
 				lane = agenthub.LaneHeartbeat // Heartbeats run independently
 			} else if isCronJob {
 				lane = agenthub.LaneEvents // Scheduled/triggered tasks
+			} else if isCommMsg {
+				lane = agenthub.LaneComm // Inter-agent communication
 			}
 
 			fmt.Printf("\n[Agent] Enqueueing %s request: id=%s session=%s lane=%s prompt=%q\n",
@@ -1239,11 +1386,14 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			// Determine which lane this request belongs to
 			isHeartbeat := strings.HasPrefix(sessionKey, "heartbeat-")
 			isCronJob := strings.HasPrefix(sessionKey, "cron-")
+			isCommMsg := strings.HasPrefix(sessionKey, "comm-")
 			lane := agenthub.LaneMain
 			if isHeartbeat {
 				lane = agenthub.LaneHeartbeat // Heartbeats run independently
 			} else if isCronJob {
 				lane = agenthub.LaneEvents // Scheduled/triggered tasks
+			} else if isCommMsg {
+				lane = agenthub.LaneComm // Inter-agent communication
 			}
 
 			fmt.Printf("[Agent-WS] Enqueueing %s request: session=%s user=%s lane=%s prompt=%q\n",

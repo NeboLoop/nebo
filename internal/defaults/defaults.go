@@ -1,5 +1,13 @@
 // Package defaults provides embedded default configuration files.
-// These are copied to ~/.nebo on first run or when reset is requested.
+// These are copied to the platform data directory on first run or when reset is requested.
+//
+// Platform paths:
+//
+//	macOS:   ~/Library/Application Support/Nebo/
+//	Windows: %AppData%\Nebo\
+//	Linux:   ~/.config/nebo/
+//
+// Override with NEBO_DATA_DIR environment variable.
 package defaults
 
 import (
@@ -16,26 +24,28 @@ import (
 var defaultFiles embed.FS
 
 // DataDir returns the platform-appropriate data directory.
-// Unix: ~/.nebo
-// Windows: %APPDATA%\nebo or %USERPROFILE%\.nebo
+//
+//	macOS:   ~/Library/Application Support/Nebo/
+//	Windows: %AppData%\Nebo\
+//	Linux:   ~/.config/nebo/
+//
+// Set NEBO_DATA_DIR to override.
 func DataDir() (string, error) {
-	if runtime.GOOS == "windows" {
-		// Try APPDATA first, fall back to USERPROFILE
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			return filepath.Join(appData, "nebo"), nil
-		}
-		if userProfile := os.Getenv("USERPROFILE"); userProfile != "" {
-			return filepath.Join(userProfile, ".nebo"), nil
-		}
-		return "", fmt.Errorf("cannot determine data directory on Windows")
+	if dir := os.Getenv("NEBO_DATA_DIR"); dir != "" {
+		return dir, nil
 	}
 
-	// Unix-like systems
-	home, err := os.UserHomeDir()
+	configDir, err := os.UserConfigDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot determine config directory: %w", err)
 	}
-	return filepath.Join(home, ".nebo"), nil
+
+	// Linux: lowercase per XDG convention
+	// macOS/Windows: title case per platform convention
+	if runtime.GOOS == "linux" {
+		return filepath.Join(configDir, "nebo"), nil
+	}
+	return filepath.Join(configDir, "Nebo"), nil
 }
 
 // EnsureDataDir creates the data directory if it doesn't exist

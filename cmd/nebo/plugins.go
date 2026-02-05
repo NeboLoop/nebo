@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	agentcfg "nebo/agent/config"
-	"nebo/agent/plugins"
-	"nebo/agent/tools"
+	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
+	"github.com/nebolabs/nebo/internal/agent/plugins"
+	"github.com/nebolabs/nebo/internal/agent/tools"
 )
 
 // pluginsCmd creates the plugins management command
@@ -18,7 +18,7 @@ func PluginsCmd() *cobra.Command {
 		Use:   "plugins",
 		Short: "Manage external plugins",
 		Long: `Plugins are external binaries that extend the agent with new tools and channels.
-Plugins are loaded from ~/.nebo/plugins/ or the extensions/plugins/ directory.`,
+Plugins are loaded from the Nebo data directory's plugins/ folder or the extensions/plugins/ directory.`,
 	}
 
 	cmd.AddCommand(&cobra.Command{
@@ -41,19 +41,20 @@ func listPlugins(cfg *agentcfg.Config) {
 	}
 	defer loader.Stop()
 
-	tools := loader.ListTools()
+	toolPlugins := loader.ListTools()
 	channels := loader.ListChannels()
+	comms := loader.ListComms()
 
-	if len(tools) == 0 && len(channels) == 0 {
+	if len(toolPlugins) == 0 && len(channels) == 0 && len(comms) == 0 {
 		fmt.Println("No plugins loaded.")
 		fmt.Printf("\nPlugins directory: %s\n", pluginsDir(cfg))
-		fmt.Println("Place compiled plugin binaries in tools/ or channels/ subdirectories.")
+		fmt.Println("Place compiled plugin binaries in tools/, channels/, or comm/ subdirectories.")
 		return
 	}
 
-	if len(tools) > 0 {
+	if len(toolPlugins) > 0 {
 		fmt.Println("Tool plugins:")
-		for _, name := range tools {
+		for _, name := range toolPlugins {
 			tool, _ := loader.GetTool(name)
 			fmt.Printf("  - %s: %s\n", tool.Name(), tool.Description())
 		}
@@ -63,6 +64,14 @@ func listPlugins(cfg *agentcfg.Config) {
 		fmt.Println("Channel plugins:")
 		for _, id := range channels {
 			fmt.Printf("  - %s\n", id)
+		}
+	}
+
+	if len(comms) > 0 {
+		fmt.Println("Comm plugins:")
+		for _, name := range comms {
+			cp, _ := loader.GetComm(name)
+			fmt.Printf("  - %s (v%s)\n", cp.Name(), cp.Version())
 		}
 	}
 }
