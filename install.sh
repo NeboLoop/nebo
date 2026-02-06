@@ -2,17 +2,15 @@
 set -e
 
 # Nebo installer
-# Usage: curl -fsSL https://nebo.ai/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/nebolabs/nebo/main/install.sh | sh
 #
 # Environment variables:
-#   GOBOT_VERSION      - Version to install (default: latest)
-#   GOBOT_INSTALL_DIR  - Binary install location (default: /usr/local/bin)
-#   GOBOT_DATA_DIR     - Data directory (default: ~/.nebo)
+#   NEBO_VERSION      - Version to install (default: latest)
+#   NEBO_INSTALL_DIR  - Binary install location (default: /usr/local/bin)
 
-VERSION="${GOBOT_VERSION:-latest}"
-INSTALL_DIR="${GOBOT_INSTALL_DIR:-/usr/local/bin}"
-DATA_DIR="${GOBOT_DATA_DIR:-$HOME/.nebo}"
-GITHUB_REPO="localrivet/nebo"  # TODO: Update when published
+VERSION="${NEBO_VERSION:-latest}"
+INSTALL_DIR="${NEBO_INSTALL_DIR:-/usr/local/bin}"
+GITHUB_REPO="nebolabs/nebo"
 
 # Colors for output
 RED='\033[0;31m'
@@ -86,12 +84,10 @@ info "Nebo installed successfully!"
 echo ""
 echo "Get started:"
 echo "  nebo              # Start Nebo (server + agent + UI)"
-echo "  open http://localhost:29875"
+echo "  open http://localhost:27895"
 echo ""
 echo "First time setup:"
-echo "  1. Open http://localhost:29875/setup"
+echo "  1. Open http://localhost:27895/setup"
 echo "  2. Create admin account"
 echo "  3. Add API keys in Settings > Providers"
-echo ""
-echo "Data directory: $DATA_DIR (created on first run)"
 echo ""
