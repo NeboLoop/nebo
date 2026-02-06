@@ -1,0 +1,35 @@
+name: nebo
+arch: __ARCH__
+platform: linux
+version: __VERSION__
+maintainer: Nebo Labs <support@nebolabs.dev>
+description: AI agent with web UI - your personal AI companion
+homepage: https://github.com/nebolabs/nebo
+license: MIT
+section: utils
+priority: optional
+
+contents:
+  - src: nebo-linux-__GOARCH__
+    dst: /usr/local/bin/nebo
+    file_info:
+      mode: 0755
+
+  - src: assets/nebo.desktop
+    dst: /usr/share/applications/nebo.desktop
+    type: config
+
+  - src: assets/icons/appicon-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/nebo.png
+
+scripts:
+  postinstall: |
+    #!/bin/sh
+    echo ""
+    echo "Nebo installed successfully!"
+    echo ""
+    echo "  Start:     nebo"
+    echo "  Headless:  nebo --headless"
+    echo ""
+    echo "  Data dir:  ~/.config/nebo/"
+    echo ""

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Nebo
+Comment=AI agent with web UI
+Exec=nebo
+Icon=nebo
+Terminal=false
+Type=Application
+Categories=Utility;Development;
+StartupWMClass=nebo

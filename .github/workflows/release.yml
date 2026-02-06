@@ -1,4 +1,4 @@
-name: Release Binaries
+name: Release
 
 on:
   push:
@@ -7,34 +7,20 @@ on:
 permissions:
   contents: write
 
+env:
+  GO_VERSION: "1.24"
+  NODE_VERSION: "20"
+
 jobs:
-  build:
+  # ─── Build frontend (shared by all platform builds) ───────────────────
+  frontend:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: darwin
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-node@v4
         with:
-          go-version: "1.24"
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install pnpm
         run: npm install -g pnpm
@@ -42,43 +28,336 @@ jobs:
       - name: Build frontend
         run: |
           cd app
-          pnpm install
+          pnpm install --frozen-lockfile
           pnpm exec svelte-kit sync
           pnpm run build
 
-      - name: Build binary (headless - no desktop/Wails)
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-        run: |
-          go build -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
-            -o nebo-${{ matrix.goos }}-${{ matrix.goarch }} .
-
-      - name: Upload artifact
+      - name: Upload frontend build
         uses: actions/upload-artifact@v4
         with:
-          name: nebo-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: nebo-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: frontend-build
+          path: app/build/
+          retention-days: 1
 
-  release:
-    needs: build
+  # ─── macOS desktop builds (CGO required for Wails v3) ─────────────────
+  build-macos:
+    needs: frontend
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest    # Apple Silicon
+            goarch: arm64
+          - runner: macos-13        # Intel
+            goarch: amd64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: app/build/
+
+      - name: Build desktop binary
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+          CGO_CFLAGS: "-mmacosx-version-min=13.0"
+          CGO_LDFLAGS: "-mmacosx-version-min=13.0"
+        run: |
+          go build -tags desktop \
+            -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
+            -o nebo-darwin-${{ matrix.goarch }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-darwin-${{ matrix.goarch }}
+          path: nebo-darwin-${{ matrix.goarch }}
+
+  # ─── Linux desktop builds (CGO required for Wails v3 / WebKitGTK) ────
+  build-linux:
+    needs: frontend
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Wails v3 Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config \
+            build-essential
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: app/build/
+
+      - name: Build desktop binary
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+        run: |
+          go build -tags desktop \
+            -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
+            -o nebo-linux-${{ matrix.goarch }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-linux-${{ matrix.goarch }}
+          path: nebo-linux-${{ matrix.goarch }}
+
+  # ─── Windows desktop build (CGO required for Wails v3 / WebView2) ────
+  build-windows:
+    needs: frontend
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: app/build/
+
+      - name: Build desktop binary
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "1"
+        run: |
+          go build -tags desktop `
+            -ldflags="-w -s -X main.Version=${{ github.ref_name }}" `
+            -o nebo-windows-amd64.exe .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-windows-amd64
+          path: nebo-windows-amd64.exe
+
+  # ─── Build .deb packages ──────────────────────────────────────────────
+  package-deb:
+    needs: build-linux
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            nfpm_arch: amd64
+          - goarch: arm64
+            nfpm_arch: arm64
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Download linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: nebo-linux-${{ matrix.goarch }}
+          path: .
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Make binary executable
+        run: chmod +x nebo-linux-${{ matrix.goarch }}
+
+      - name: Install nfpm
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Build .deb package
+        env:
+          VERSION: ${{ github.ref_name }}
+          ARCH: ${{ matrix.nfpm_arch }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          # Strip v prefix for package version
+          PKG_VERSION="${VERSION#v}"
+          # Create nfpm config from template
+          sed -e "s/__VERSION__/${PKG_VERSION}/g" \
+              -e "s/__ARCH__/${ARCH}/g" \
+              -e "s/__GOARCH__/${GOARCH}/g" \
+              nfpm.yaml.tmpl > nfpm.yaml
+          nfpm pkg --packager deb --target nebo_${PKG_VERSION}_${ARCH}.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-deb-${{ matrix.goarch }}
+          path: "*.deb"
+
+  # ─── Create GitHub release with all artifacts ─────────────────────────
+  release:
+    needs: [build-macos, build-linux, build-windows, package-deb]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: binaries
+          path: artifacts
           merge-multiple: true
 
+      - name: List artifacts
+        run: ls -la artifacts/
+
       - name: Make binaries executable
-        run: chmod +x binaries/*
+        run: chmod +x artifacts/nebo-* 2>/dev/null || true
 
       - name: Create release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          files: binaries/*
+          files: artifacts/*
           generate_release_notes: true
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── Update Homebrew formula (cross-repo) ─────────────────────────────
+  update-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS and Linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        id: checksums
+        run: |
+          echo "darwin_arm64=$(sha256sum artifacts/nebo-darwin-arm64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "darwin_amd64=$(sha256sum artifacts/nebo-darwin-amd64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "linux_amd64=$(sha256sum artifacts/nebo-linux-amd64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(sha256sum artifacts/nebo-linux-arm64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: nebolabs/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+
+      - name: Checkout source (for formula template)
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Update formula
+        env:
+          VERSION: ${{ github.ref_name }}
+          SHA_DARWIN_ARM64: ${{ steps.checksums.outputs.darwin_arm64 }}
+          SHA_DARWIN_AMD64: ${{ steps.checksums.outputs.darwin_amd64 }}
+          SHA_LINUX_AMD64: ${{ steps.checksums.outputs.linux_amd64 }}
+          SHA_LINUX_ARM64: ${{ steps.checksums.outputs.linux_arm64 }}
+        run: |
+          export PKG_VERSION="${VERSION#v}"
+          envsubst < source/scripts/nebo.rb.tmpl > homebrew-tap/Formula/nebo.rb
+
+      - name: Push formula update
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/nebo.rb
+          git commit -m "Update nebo to ${{ github.ref_name }}"
+          git push
+
+  # ─── Update APT repository (cross-repo) ──────────────────────────────
+  update-apt:
+    needs: package-deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download .deb packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nebo-deb-*
+          path: debs
+          merge-multiple: true
+
+      - name: Checkout apt repo
+        uses: actions/checkout@v4
+        with:
+          repository: nebolabs/apt
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: apt-repo
+
+      - name: Install APT repo tools
+        run: sudo apt-get install -y dpkg-dev
+
+      - name: Update APT repository
+        run: |
+          mkdir -p apt-repo/pool/main
+          cp debs/*.deb apt-repo/pool/main/
+
+          cd apt-repo
+
+          # Generate Packages index
+          mkdir -p dists/stable/main/binary-amd64
+          mkdir -p dists/stable/main/binary-arm64
+
+          dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-amd64/Packages
+          dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-arm64/Packages
+          gzip -k dists/stable/main/binary-amd64/Packages
+          gzip -k dists/stable/main/binary-arm64/Packages
+
+          # Generate Release file
+          cat > dists/stable/Release << 'EOF'
+          Origin: Nebo
+          Label: Nebo
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 arm64
+          Components: main
+          Description: Nebo AI Agent
+          EOF
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' dists/stable/Release
+
+          apt-ftparchive release dists/stable >> dists/stable/Release
+
+      - name: Sign APT repository
+        if: ${{ secrets.APT_GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_KEY" | gpg --import
+          gpg --armor --export > apt-repo/key.gpg
+          gpg --default-key nebo -abs -o apt-repo/dists/stable/Release.gpg apt-repo/dists/stable/Release
+          gpg --default-key nebo --clearsign -o apt-repo/dists/stable/InRelease apt-repo/dists/stable/Release
+
+      - name: Push APT repo update
+        working-directory: apt-repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update nebo to ${{ github.ref_name }}" || echo "No changes"
+          git push
