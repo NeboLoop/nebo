@@ -23,7 +23,7 @@ class Nebo < Formula
 
     on_intel do
       url "https://github.com/nebolabs/nebo/releases/download/v#{version}/nebo-darwin-amd64"
-      sha256 "604460c2dcc82db1beb5db55e7da248f19b355434622d42caf3db8b491490eed"
+      sha256 "47a00af9190cc3b855ec6476542bad595d1f3072477b7c0a29a22181db049178"
 
       def install
         bin.install "nebo-darwin-amd64" => "nebo"

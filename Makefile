@@ -176,9 +176,8 @@ release-darwin:
 	@echo "Building for macOS (desktop)..."
 	@mkdir -p dist
 	@cd app && pnpm build
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -tags desktop $(LDFLAGS) -o dist/nebo-darwin-amd64 .
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -tags desktop $(LDFLAGS) -o dist/nebo-darwin-arm64 .
-	@echo "Built: dist/nebo-darwin-arm64 (desktop mode)"
-	@echo "Note: darwin-amd64 must be built on an Intel Mac or via CI (requires CGO)"
 
 # Linux builds (headless — no Wails/CGO needed)
 release-linux:
