@@ -137,7 +137,7 @@ func DefaultConfig() *Config {
 			SoftTrimTail:         1500,
 			HardClearPlaceholder: "[Old tool result cleared]",
 		},
-		ServerURL: "http://local.nebo.bot:27895", // Default local dev server
+		ServerURL: "http://localhost:27895", // Default local server
 	}
 }
 

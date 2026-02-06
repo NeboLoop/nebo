@@ -421,8 +421,8 @@ func NewRelayHandler(baseURL string) (*ExtensionRelay, error) {
 				if origin == "" {
 					return true
 				}
-				// Allow local.nebo.bot
-				if strings.Contains(origin, "local.nebo.bot") || strings.Contains(origin, "127.0.0.1") || strings.Contains(origin, "localhost") {
+				// Allow localhost origins
+				if strings.Contains(origin, "127.0.0.1") || strings.Contains(origin, "localhost") {
 					return true
 				}
 				return false

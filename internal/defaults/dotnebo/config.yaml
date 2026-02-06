@@ -42,4 +42,4 @@ policy:
     - git branch
 
 # Server URL (for agent connecting to server)
-# server_url: http://local.nebo.bot:27895
+# server_url: http://localhost:27895

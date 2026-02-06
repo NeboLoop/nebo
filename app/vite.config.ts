@@ -12,27 +12,27 @@ export default defineConfig({
 	},
 
 	server: {
-		host: 'local.nebo.bot',
+		host: 'localhost',
 		port: 5173,
 		proxy: {
 			// Proxy API requests to Go backend during development
 			'/api': {
-				target: 'http://local.nebo.bot:27895',
+				target: 'http://localhost:27895',
 				changeOrigin: true
 			},
 			// Proxy health check
 			'/health': {
-				target: 'http://local.nebo.bot:27895',
+				target: 'http://localhost:27895',
 				changeOrigin: true
 			},
 			// Proxy subscription plans (public endpoint)
 			'/subscription/plans': {
-				target: 'http://local.nebo.bot:27895',
+				target: 'http://localhost:27895',
 				changeOrigin: true
 			},
 			// Proxy WebSocket connections
 			'/ws': {
-				target: 'ws://local.nebo.bot:27895',
+				target: 'ws://localhost:27895',
 				ws: true,
 				changeOrigin: true
 			}

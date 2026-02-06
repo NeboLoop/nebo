@@ -10,7 +10,7 @@ const STORAGE_KEY = 'neboConfig'
 const LEGACY_PORTS = [9224, 9223, 9222]
 
 // Old hosts that should be migrated to 127.0.0.1 for security
-const LEGACY_HOSTS = ['local.nebo.bot', 'localhost']
+const LEGACY_HOSTS = ['local.nebo.bot']
 
 export async function loadConfig(): Promise<NeboConfig> {
   const stored = await chrome.storage.local.get([STORAGE_KEY])

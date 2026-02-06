@@ -142,7 +142,7 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 	if len(providers) == 0 {
 		fmt.Println("[Providers] No API providers configured!")
 		fmt.Println("[Providers] Please configure an API key in the web UI: Settings > Providers")
-		fmt.Println("[Providers] Visit http://local.nebo.bot:27895/settings/providers to add your API key")
+		fmt.Println("[Providers] Visit http://localhost:27895/settings/providers to add your API key")
 	}
 
 	return providers

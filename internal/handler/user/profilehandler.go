@@ -18,7 +18,7 @@ import (
 
 // Default user ID for single-user personal assistant mode
 const defaultUserID = "default-user"
-const defaultUserEmail = "user@local.nebo.bot"
+const defaultUserEmail = "user@localhost"
 const defaultUserName = "User"
 
 // ensureDefaultUserExists creates the default user if it doesn't exist (for single-user mode)

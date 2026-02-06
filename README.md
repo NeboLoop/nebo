@@ -102,7 +102,7 @@ nebo
 nebo --headless
 
 # Open the web UI to add your API key
-open http://local.nebo.bot:27895/settings/providers
+open http://localhost:27895/settings/providers
 ```
 
 Or use the CLI:

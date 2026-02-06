@@ -8,6 +8,7 @@ endif
 # Nebo Makefile
 EXECUTABLE=nebo
 export MACOSX_DEPLOYMENT_TARGET ?= 15.0
+export CGO_CFLAGS += -mmacosx-version-min=15.0
 export CGO_LDFLAGS += -mmacosx-version-min=15.0
 
 .PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install desktop package
@@ -168,12 +169,16 @@ release: clean release-darwin release-linux
 	@echo "Release binaries built in dist/"
 	@ls -la dist/
 
-# macOS builds (headless — no Wails/CGO needed)
+# macOS builds (desktop — native window + system tray via Wails v3)
+# Requires CGO for Wails; must be built natively on each architecture.
+# For CI: use GitHub Actions matrix with macos-latest (arm64) and macos-13 (amd64).
 release-darwin:
-	@echo "Building for macOS..."
+	@echo "Building for macOS (desktop)..."
 	@mkdir -p dist
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-darwin-amd64 .
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-darwin-arm64 .
+	@cd app && pnpm build
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -tags desktop $(LDFLAGS) -o dist/nebo-darwin-arm64 .
+	@echo "Built: dist/nebo-darwin-arm64 (desktop mode)"
+	@echo "Note: darwin-amd64 must be built on an Intel Mac or via CI (requires CGO)"
 
 # Linux builds (headless — no Wails/CGO needed)
 release-linux:

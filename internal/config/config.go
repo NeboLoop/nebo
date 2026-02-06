@@ -30,10 +30,10 @@ func applyDefaults(c *Config) {
 		c.Port = 27895
 	}
 	if c.App.Domain == "" {
-		c.App.Domain = "local.nebo.bot"
+		c.App.Domain = "localhost"
 	}
 	if c.App.BaseURL == "" {
-		c.App.BaseURL = "http://local.nebo.bot:27895"
+		c.App.BaseURL = "http://localhost:27895"
 	}
 	if c.Auth.RefreshTokenExpire == 0 {
 		c.Auth.RefreshTokenExpire = 604800

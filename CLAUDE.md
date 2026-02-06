@@ -269,7 +269,7 @@ nebo skills list  # List available skills
 nebo plugins list # List installed plugins
 ```
 
-Web UI at `http://local.nebo.bot:27895`
+Web UI at `http://localhost:27895`
 
 **Desktop mode** (default): Wails v3 native window + system tray. Close window minimizes to tray.
 **Headless mode** (`--headless`): No native window, opens browser. Current behavior.
