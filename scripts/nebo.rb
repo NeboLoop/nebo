@@ -21,8 +21,14 @@ class Nebo < Formula
       end
     end
 
-    # Intel Mac: desktop build requires native compilation via CI
-    # For now, not available via brew on Intel. Build from source: make desktop
+    on_intel do
+      url "https://github.com/nebolabs/nebo/releases/download/v#{version}/nebo-darwin-amd64"
+      sha256 "604460c2dcc82db1beb5db55e7da248f19b355434622d42caf3db8b491490eed"
+
+      def install
+        bin.install "nebo-darwin-amd64" => "nebo"
+      end
+    end
   end
 
   on_linux do
