@@ -1,0 +1,26 @@
+Name: nebo
+Host: 0.0.0.0
+Port: 27895
+Timeout: 60000 # 60 seconds for API testing
+
+# App settings (from .env)
+App:
+  BaseURL: ${APP_BASE_URL:-http://local.nebo.bot:27895}
+  Domain: ${APP_DOMAIN:-local.nebo.bot}
+
+# Logging - configurable via Level: debug, info, error, severe
+Log:
+  Mode: console
+  Encoding: plain
+  Level: info # info = important events, debug = verbose, error = errors only
+  Stat: false # Disable stat logs
+
+# Auth settings are overridden by local settings (~/.nebo/settings.json)
+# These are just placeholders to satisfy the config parser
+Auth:
+  AccessSecret: placeholder-replaced-at-runtime
+  AccessExpire: 2592000
+  RefreshTokenExpire: 2592000
+
+# Database uses ~/.nebo/data/nebo.db by default (shared with agent)
+Database: {}

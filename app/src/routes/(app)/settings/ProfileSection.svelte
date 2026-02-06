@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { validateName, validatePassword, validatePasswordConfirmation } from '$lib/utils/validation';
 	import { auth, currentUser, authLoading, authError } from '$lib/stores';
-	import * as api from '$lib/api/gobot';
+	import * as api from '$lib/api/nebo';
 	import { tick } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';

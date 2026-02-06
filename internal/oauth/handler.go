@@ -9,13 +9,14 @@ import (
 	"net/url"
 	"strings"
 
-	"gobot/internal/db"
-	"gobot/internal/svc"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/svc"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
-// Handler handles OAuth callbacks directly (not through go-zero)
+// Handler handles OAuth callbacks directly
 type Handler struct {
 	svcCtx *svc.ServiceContext
 }
@@ -25,10 +26,10 @@ func NewHandler(svcCtx *svc.ServiceContext) *Handler {
 	return &Handler{svcCtx: svcCtx}
 }
 
-// RegisterRoutes registers OAuth callback routes on the provided mux
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/oauth/google/callback", h.googleCallback)
-	mux.HandleFunc("/oauth/github/callback", h.githubCallback)
+// RegisterRoutes registers OAuth callback routes on the chi router
+func (h *Handler) RegisterRoutes(r chi.Router) {
+	r.Get("/oauth/google/callback", h.googleCallback)
+	r.Get("/oauth/github/callback", h.githubCallback)
 }
 
 // googleCallback handles Google OAuth callback

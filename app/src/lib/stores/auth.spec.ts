@@ -3,7 +3,7 @@ import { get } from 'svelte/store';
 import { auth, isAuthenticated, currentUser, authError, authLoading, passwordReset } from './auth';
 
 // Mock the API module
-vi.mock('$lib/api/gobot', () => ({
+vi.mock('$lib/api/nebo', () => ({
 	login: vi.fn(),
 	register: vi.fn(),
 	refreshToken: vi.fn(),
@@ -78,7 +78,7 @@ describe('Auth Store', () => {
 	describe('logout', () => {
 		it('should reset state to initial values', async () => {
 			// First set some state
-			const mockApi = await import('$lib/api/gobot');
+			const mockApi = await import('$lib/api/nebo');
 			vi.mocked(mockApi.login).mockResolvedValue({
 				token: 'test-token',
 				refreshToken: 'test-refresh',
@@ -98,22 +98,22 @@ describe('Auth Store', () => {
 		});
 
 		it('should clear localStorage on logout', () => {
-			localStorageMock.setItem('gobot_token', 'test');
-			localStorageMock.setItem('gobot_refresh_token', 'test');
-			localStorageMock.setItem('gobot_expires_at', '123456');
+			localStorageMock.setItem('nebo_token', 'test');
+			localStorageMock.setItem('nebo_refresh_token', 'test');
+			localStorageMock.setItem('nebo_expires_at', '123456');
 
 			auth.logout();
 
-			expect(localStorageMock.removeItem).toHaveBeenCalledWith('gobot_token');
-			expect(localStorageMock.removeItem).toHaveBeenCalledWith('gobot_refresh_token');
-			expect(localStorageMock.removeItem).toHaveBeenCalledWith('gobot_expires_at');
+			expect(localStorageMock.removeItem).toHaveBeenCalledWith('nebo_token');
+			expect(localStorageMock.removeItem).toHaveBeenCalledWith('nebo_refresh_token');
+			expect(localStorageMock.removeItem).toHaveBeenCalledWith('nebo_expires_at');
 		});
 	});
 
 	describe('clearError', () => {
 		it('should clear error state', async () => {
 			// First create an error by attempting a failed login
-			const mockApi = await import('$lib/api/gobot');
+			const mockApi = await import('$lib/api/nebo');
 			vi.mocked(mockApi.login).mockRejectedValue(new Error('Login failed'));
 
 			await auth.login({ email: 'test@example.com', password: 'password' });

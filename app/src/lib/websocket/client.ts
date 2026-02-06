@@ -1,5 +1,5 @@
 /**
- * WebSocket Client for GoBot
+ * WebSocket Client for Nebo
  *
  * Handles real-time communication with the backend.
  */

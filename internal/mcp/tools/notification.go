@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"gobot/internal/db"
-	"gobot/internal/mcp/mcpctx"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/mcp/mcpctx"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

@@ -1,29 +1,62 @@
 package user
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/user"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/auth"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
-// Delete current user account
 func DeleteAccountHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
 		var req types.DeleteAccountRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := user.NewDeleteAccountLogic(r.Context(), svcCtx)
-		resp, err := l.DeleteAccount(&req)
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		if svcCtx.Auth == nil {
+			httputil.Error(w, fmt.Errorf("auth service not configured"))
+			return
 		}
+
+		email, err := auth.GetEmailFromContext(ctx)
+		if err != nil {
+			logging.Errorf("Failed to get email from context: %v", err)
+			httputil.Error(w, err)
+			return
+		}
+
+		_, err = svcCtx.Auth.Login(ctx, email, req.Password)
+		if err != nil {
+			logging.Errorf("Password verification failed for delete account: %v", err)
+			httputil.Error(w, errors.New("invalid password"))
+			return
+		}
+
+		user, err := svcCtx.Auth.GetUserByEmail(ctx, email)
+		if err != nil {
+			logging.Errorf("Failed to get user %s: %v", email, err)
+			httputil.Error(w, err)
+			return
+		}
+
+		err = svcCtx.Auth.DeleteUser(ctx, user.ID)
+		if err != nil {
+			logging.Errorf("Failed to delete user %s: %v", email, err)
+			httputil.Error(w, err)
+			return
+		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "Account deleted successfully.",
+		})
 	}
 }

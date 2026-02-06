@@ -17,7 +17,7 @@ services:
       - APP_DOMAIN=${APP_DOMAIN}
       - ADMIN_EMAIL=${ADMIN_EMAIL}
       - ACCESS_SECRET=${ACCESS_SECRET}
-      - SQLITE_PATH=/app/data/gobot.db
+      - SQLITE_PATH=/app/data/nebo.db
     volumes:
       - app_data:/app/data
       - ./certs:/app/certs
@@ -38,7 +38,7 @@ services:
     environment:
       # Database
       - DATASAVER_DB_TYPE=sqlite
-      - DATASAVER_DB_PATH=/data/gobot.db
+      - DATASAVER_DB_PATH=/data/nebo.db
       # Schedule (daily at 2 AM UTC)
       - DATASAVER_SCHEDULE=0 2 * * *
       # Storage
@@ -55,7 +55,8 @@ services:
       - app_data:/data:ro
       - db_backups:/backups
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8080/health"]
+      test:
+        ["CMD", "wget", "--spider", "--quiet", "http://localhost:8080/health"]
       interval: 60s
       timeout: 5s
       retries: 3

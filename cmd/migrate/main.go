@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"gobot/internal/db/migrations"
+	"github.com/nebolabs/nebo/internal/db/migrations"
 
 	_ "modernc.org/sqlite"
 )
@@ -23,7 +23,7 @@ func main() {
 
 	dbPath := os.Getenv("SQLITE_PATH")
 	if dbPath == "" {
-		dbPath = "data/gobot.db"
+		dbPath = "data/nebo.db"
 	}
 
 	db, err := sql.Open("sqlite", dbPath)

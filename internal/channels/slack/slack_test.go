@@ -3,7 +3,7 @@ package slack
 import (
 	"testing"
 
-	"gobot/internal/channels"
+	"github.com/nebolabs/nebo/internal/channels"
 )
 
 func TestNew(t *testing.T) {

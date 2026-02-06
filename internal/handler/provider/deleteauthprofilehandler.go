@@ -3,27 +3,30 @@ package provider
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/provider"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Delete auth profile
 func DeleteAuthProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
 		var req types.DeleteAuthProfileRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := provider.NewDeleteAuthProfileLogic(r.Context(), svcCtx)
-		resp, err := l.DeleteAuthProfile(&req)
+		err := svcCtx.DB.DeleteAuthProfile(ctx, req.Id)
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.Error(w, err)
+			return
 		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "Provider deleted successfully",
+		})
 	}
 }

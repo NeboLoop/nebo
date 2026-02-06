@@ -3,27 +3,33 @@ package chat
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/chat"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Delete chat
 func DeleteChatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
 		var req types.DeleteChatRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := chat.NewDeleteChatLogic(r.Context(), svcCtx)
-		resp, err := l.DeleteChat(&req)
+		// Delete (cascade will remove messages)
+		err := svcCtx.DB.DeleteChat(ctx, req.Id)
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			logging.Errorf("Failed to delete chat: %v", err)
+			httputil.Error(w, err)
+			return
 		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "Chat deleted",
+		})
 	}
 }

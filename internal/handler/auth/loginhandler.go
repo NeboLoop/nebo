@@ -1,29 +1,41 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/auth"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
-// User login
 func LoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.LoginRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := auth.NewLoginLogic(r.Context(), svcCtx)
-		resp, err := l.Login(&req)
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		if svcCtx.Auth == nil {
+			httputil.Error(w, fmt.Errorf("auth service not configured"))
+			return
 		}
+
+		authResp, err := svcCtx.Auth.Login(r.Context(), req.Email, req.Password)
+		if err != nil {
+			logging.Errorf("Login failed for %s: %v", req.Email, err)
+			httputil.Error(w, err)
+			return
+		}
+
+		logging.Infof("User logged in: %s", req.Email)
+
+		httputil.OkJSON(w, &types.LoginResponse{
+			Token:        authResp.Token,
+			RefreshToken: authResp.RefreshToken,
+			ExpiresAt:    authResp.ExpiresAt.UnixMilli(),
+		})
 	}
 }

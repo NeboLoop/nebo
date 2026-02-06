@@ -1,29 +1,41 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/auth"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
-// Register new user
 func RegisterHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.RegisterRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := auth.NewRegisterLogic(r.Context(), svcCtx)
-		resp, err := l.Register(&req)
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		if svcCtx.Auth == nil {
+			httputil.Error(w, fmt.Errorf("auth service not configured"))
+			return
 		}
+
+		authResp, err := svcCtx.Auth.Register(r.Context(), req.Email, req.Password, req.Name)
+		if err != nil {
+			logging.Errorf("Registration failed for %s: %v", req.Email, err)
+			httputil.Error(w, err)
+			return
+		}
+
+		logging.Infof("User registered: %s", req.Email)
+
+		httputil.OkJSON(w, &types.LoginResponse{
+			Token:        authResp.Token,
+			RefreshToken: authResp.RefreshToken,
+			ExpiresAt:    authResp.ExpiresAt.UnixMilli(),
+		})
 	}
 }

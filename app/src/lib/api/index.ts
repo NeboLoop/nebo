@@ -1,11 +1,12 @@
 // Re-export all generated API functions
-export * from './gobot';
+export * from './nebo';
 
 // Import all functions and components
-import * as api from './gobot';
+import * as api from './nebo';
+import webapi from './gocliRequest';
 
 // Export api object containing all API methods
-export const gobot = api;
+export const nebo = api;
 
 // API Configuration - base URL is loaded from browser origin
 export const API_CONFIG = {
@@ -19,4 +20,15 @@ export const API_CONFIG = {
 };
 
 // Re-export types
-export type * from './gobotComponents';
+export type * from './neboComponents';
+
+// Custom API functions that return binary data (not auto-generated)
+export interface TTSRequest {
+	text: string;
+	voice?: string;
+	speed?: number;
+}
+
+export function speakTTS(req: TTSRequest): Promise<Blob> {
+	return webapi.postBlob('/api/v1/voice/tts', req);
+}

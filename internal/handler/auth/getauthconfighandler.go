@@ -3,20 +3,26 @@ package auth
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/auth"
-	"gobot/internal/svc"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
-// Get auth configuration (OAuth providers enabled)
 func GetAuthConfigHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := auth.NewGetAuthConfigLogic(r.Context(), svcCtx)
-		resp, err := l.GetAuthConfig()
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		// Return OAuth provider configuration
+		// Only return enabled status if OAuth feature is enabled and in local mode
+		googleEnabled := false
+		githubEnabled := false
+
+		if svcCtx.UseLocal() && svcCtx.Config.IsOAuthEnabled() {
+			googleEnabled = svcCtx.Config.IsGoogleOAuthEnabled()
+			githubEnabled = svcCtx.Config.IsGitHubOAuthEnabled()
 		}
+
+		httputil.OkJSON(w, &types.AuthConfigResponse{
+			GoogleEnabled: googleEnabled,
+			GitHubEnabled: githubEnabled,
+		})
 	}
 }

@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Nebo Browser Relay",
+  "version": "0.1.0",
+  "description": "Control Chrome tabs from your Nebo agent with full authenticated session access.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["debugger", "tabs", "activeTab", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "http://local.nebo.bot/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Nebo Browser Relay (click to attach/detach)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

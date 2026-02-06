@@ -3,27 +3,38 @@ package agent
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/agent"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // List connected agents
 func ListAgentsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req types.ListAgentsRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		// Get agents from the hub
+		hub := svcCtx.AgentHub
+		if hub == nil {
+			httputil.OkJSON(w, &types.ListAgentsResponse{
+				Agents: []types.AgentInfo{},
+				Total:  0,
+			})
 			return
 		}
 
-		l := agent.NewListAgentsLogic(r.Context(), svcCtx)
-		resp, err := l.ListAgents(&req)
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		agents := hub.GetAllAgents()
+		agentInfos := make([]types.AgentInfo, 0, len(agents))
+
+		for _, agent := range agents {
+			agentInfos = append(agentInfos, types.AgentInfo{
+				AgentId:   agent.ID,
+				Connected: true,
+				CreatedAt: agent.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			})
 		}
+
+		httputil.OkJSON(w, &types.ListAgentsResponse{
+			Agents: agentInfos,
+			Total:  len(agentInfos),
+		})
 	}
 }

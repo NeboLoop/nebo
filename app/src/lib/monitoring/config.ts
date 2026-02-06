@@ -42,7 +42,7 @@ export function getMonitoringConfig(): MonitoringConfig {
 			minLevel: isDevelopment ? 'debug' : 'info',
 			enableConsole: true,
 			enableJsonOutput: isProduction,
-			appName: 'gobot'
+			appName: 'nebo'
 		},
 
 		// Alert configuration

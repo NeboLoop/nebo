@@ -37,7 +37,7 @@
 			href="/"
 			class="font-display text-2xl font-black text-base-content tracking-tight hover:opacity-90 transition-opacity"
 		>
-			GoBot
+			Nebo
 		</a>
 
 		<!-- Desktop Navigation -->

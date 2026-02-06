@@ -3,20 +3,25 @@ package setup
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/setup"
-	"gobot/internal/svc"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Mark initial setup as complete
 func CompleteSetupHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := setup.NewCompleteSetupLogic(r.Context(), svcCtx)
-		resp, err := l.CompleteSetup()
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		// Mark setup as complete by creating the .setup-complete file
+		if err := defaults.MarkSetupComplete(); err != nil {
+			logging.Errorf("Failed to mark setup as complete: %v", err)
+			httputil.Error(w, err)
+			return
 		}
+
+		httputil.OkJSON(w, &types.CompleteSetupResponse{
+			Success: true,
+		})
 	}
 }

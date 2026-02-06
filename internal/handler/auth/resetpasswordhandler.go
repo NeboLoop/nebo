@@ -1,29 +1,37 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/auth"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
-// Reset password with token
 func ResetPasswordHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.ResetPasswordRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := auth.NewResetPasswordLogic(r.Context(), svcCtx)
-		resp, err := l.ResetPassword(&req)
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		if svcCtx.Auth == nil {
+			httputil.Error(w, fmt.Errorf("auth service not configured"))
+			return
 		}
+
+		err := svcCtx.Auth.ResetPassword(r.Context(), req.Token, req.NewPassword)
+		if err != nil {
+			logging.Errorf("Reset password failed: %v", err)
+			httputil.Error(w, err)
+			return
+		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "Password has been reset successfully.",
+		})
 	}
 }

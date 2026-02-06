@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Bot, Shield, AlertTriangle, Zap } from 'lucide-svelte';
-	import * as api from '$lib/api/gobot';
+	import * as api from '$lib/api/nebo';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Toggle from '$lib/components/ui/Toggle.svelte';
@@ -18,13 +18,15 @@
 	let autoApproveRead = $state(true);
 	let autoApproveWrite = $state(false);
 	let autoApproveBash = $state(false);
+	let heartbeatIntervalMinutes = $state(30);
 
 	// Original values for change detection
 	let originalSettings = $state({
 		autonomousMode: false,
 		autoApproveRead: true,
 		autoApproveWrite: false,
-		autoApproveBash: false
+		autoApproveBash: false,
+		heartbeatIntervalMinutes: 30
 	});
 
 	// Load settings on mount
@@ -36,12 +38,14 @@
 			autoApproveRead = settings.autoApproveRead ?? true;
 			autoApproveWrite = settings.autoApproveWrite ?? false;
 			autoApproveBash = settings.autoApproveBash ?? false;
+			heartbeatIntervalMinutes = settings.heartbeatIntervalMinutes ?? 30;
 
 			originalSettings = {
 				autonomousMode,
 				autoApproveRead,
 				autoApproveWrite,
-				autoApproveBash
+				autoApproveBash,
+				heartbeatIntervalMinutes
 			};
 		} catch (err) {
 			console.error('Failed to load agent settings:', err);
@@ -61,14 +65,16 @@
 				autonomousMode,
 				autoApproveRead,
 				autoApproveWrite,
-				autoApproveBash
+				autoApproveBash,
+				heartbeatIntervalMinutes
 			});
 			saveSuccess = true;
 			originalSettings = {
 				autonomousMode,
 				autoApproveRead,
 				autoApproveWrite,
-				autoApproveBash
+				autoApproveBash,
+				heartbeatIntervalMinutes
 			};
 		} catch (err: any) {
 			saveError = err?.message || 'Failed to save settings';
@@ -206,7 +212,7 @@
 			<div class="bg-base-200 rounded-lg p-4">
 				<p class="text-sm text-base-content/70 mb-2">Run this command in your terminal:</p>
 				<code class="block bg-base-300 rounded px-3 py-2 text-sm font-mono text-base-content">
-					gobot agent
+					nebo agent
 				</code>
 				<p class="text-xs text-base-content/50 mt-2">
 					The agent will automatically use the settings configured above.

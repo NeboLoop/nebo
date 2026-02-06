@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"gobot/internal/mcp/mcpctx"
+	"github.com/nebolabs/nebo/internal/mcp/mcpctx"
 )
 
 // ToolFunc is a function that executes a tool with JSON args.
@@ -79,6 +79,7 @@ func NewRegistryWithTools(toolCtx *mcpctx.ToolContext) *ToolRegistry {
 	// Register all tool handlers (unified resource/action pattern)
 	registerUserToolToRegistry(registry, toolCtx)
 	registerNotificationToolToRegistry(registry, toolCtx)
+	registerMemoryToolToRegistry(registry, toolCtx)
 
 	return registry
 }

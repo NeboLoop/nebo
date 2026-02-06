@@ -3,20 +3,45 @@ package notification
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/notification"
-	"gobot/internal/svc"
+	"github.com/nebolabs/nebo/internal/auth"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Get unread notification count
 func GetUnreadCountHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := notification.NewGetUnreadCountLogic(r.Context(), svcCtx)
-		resp, err := l.GetUnreadCount()
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		ctx := r.Context()
+
+		// Check if notifications are enabled
+		if !svcCtx.Config.IsNotificationsEnabled() {
+			httputil.OkJSON(w, &types.GetUnreadCountResponse{Count: 0})
+			return
 		}
+
+		if !svcCtx.UseLocal() {
+			httputil.OkJSON(w, &types.GetUnreadCountResponse{Count: 0})
+			return
+		}
+
+		// Get user ID from context
+		userID, err := auth.GetUserIDFromContext(ctx)
+		if err != nil {
+			logging.Errorf("Failed to get user ID: %v", err)
+			httputil.Error(w, err)
+			return
+		}
+
+		// Get unread count
+		count, err := svcCtx.DB.Queries.CountUnreadNotifications(ctx, userID.String())
+		if err != nil {
+			logging.Errorf("Failed to count unread notifications: %v", err)
+			httputil.Error(w, err)
+			return
+		}
+
+		httputil.OkJSON(w, &types.GetUnreadCountResponse{Count: int(count)})
 	}
 }

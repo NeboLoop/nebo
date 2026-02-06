@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zeromicro/go-zero/core/logx"
+	"github.com/nebolabs/nebo/internal/defaults"
 )
 
 // HeartbeatConfig configures the heartbeat daemon
@@ -61,7 +61,7 @@ func (h *Heartbeat) Stop() {
 	h.running = false
 }
 
-// run is the main heartbeat loop
+// run is the main heartbeat loop, aligned to clock boundaries
 func (h *Heartbeat) run(ctx context.Context) {
 	defer close(h.doneCh)
 
@@ -77,39 +77,47 @@ func (h *Heartbeat) run(ctx context.Context) {
 		}
 	}
 
-	// Run first heartbeat
-	h.tick(ctx)
-
-	ticker := time.NewTicker(h.cfg.Interval)
-	defer ticker.Stop()
-
+	// Clock-aligned loop: fire at :00, :05, :10, etc. for a 5m interval
 	for {
+		next := nextAlignedTime(time.Now(), h.cfg.Interval)
+		fmt.Printf("[heartbeat] Next tick at %s (in %s)\n", next.Format("15:04:05"), time.Until(next).Round(time.Second))
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-h.stopCh:
 			return
-		case <-ticker.C:
+		case <-time.After(time.Until(next)):
 			h.tick(ctx)
 		}
 	}
 }
 
+// nextAlignedTime returns the next clock-aligned time for the given interval.
+// For a 5m interval at 00:03, returns 00:05. For 30m at 14:12, returns 14:30.
+func nextAlignedTime(now time.Time, interval time.Duration) time.Time {
+	return now.Truncate(interval).Add(interval)
+}
+
 // tick runs one heartbeat cycle
 func (h *Heartbeat) tick(ctx context.Context) {
-	logx.Debug("[heartbeat] Running heartbeat check...")
+	fmt.Printf("[heartbeat] Tick at %s\n", time.Now().Format("15:04:05"))
 
 	// 1. Load HEARTBEAT.md
 	tasks := h.loadHeartbeatFile()
-
-	// 2. If there are tasks and a handler, call it
-	if tasks != "" && h.cfg.OnHeartbeat != nil {
-		if err := h.cfg.OnHeartbeat(ctx, tasks); err != nil {
-			logx.Errorf("[heartbeat] Error processing heartbeat: %v", err)
-		}
+	if tasks == "" {
+		fmt.Println("[heartbeat] No HEARTBEAT.md found, skipping")
+		return
 	}
 
-	logx.Debug("[heartbeat] Heartbeat complete")
+	// 2. If there are tasks and a handler, call it
+	if h.cfg.OnHeartbeat != nil {
+		if err := h.cfg.OnHeartbeat(ctx, tasks); err != nil {
+			fmt.Printf("[heartbeat] Error: %v\n", err)
+		} else {
+			fmt.Println("[heartbeat] Dispatched to agent")
+		}
+	}
 }
 
 // loadHeartbeatFile reads HEARTBEAT.md from workspace or home directory
@@ -121,9 +129,9 @@ func (h *Heartbeat) loadHeartbeatFile() string {
 		paths = append(paths, filepath.Join(h.cfg.WorkspaceDir, "HEARTBEAT.md"))
 	}
 
-	// Home directory fallback
-	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".gobot", "HEARTBEAT.md"))
+	// Data directory fallback
+	if dataDir, err := defaults.DataDir(); err == nil {
+		paths = append(paths, filepath.Join(dataDir, "HEARTBEAT.md"))
 	}
 
 	for _, path := range paths {

@@ -36,7 +36,7 @@
 	<link rel="dns-prefetch" href="https://www.google-analytics.com" />
 
 	<!-- Canonical URL fallback (pages should override) -->
-	<link rel="canonical" href="https://gobot.dev" />
+	<link rel="canonical" href="https://nebo.dev" />
 
 	<!-- Robots -->
 	<meta
@@ -46,8 +46,8 @@
 	<meta name="googlebot" content="index, follow" />
 
 	<!-- Author and Copyright -->
-	<meta name="author" content="GoBot" />
-	<meta name="copyright" content="GoBot" />
+	<meta name="author" content="Nebo" />
+	<meta name="copyright" content="Nebo" />
 
 	<!-- Language -->
 	<meta property="og:locale" content="en_US" />

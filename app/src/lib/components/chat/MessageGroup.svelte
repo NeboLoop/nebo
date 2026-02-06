@@ -1,0 +1,219 @@
+<script lang="ts">
+	import { Copy, Check } from 'lucide-svelte';
+	import Markdown from '$lib/components/ui/Markdown.svelte';
+	import ToolCard from './ToolCard.svelte';
+	import ThinkingBlock from './ThinkingBlock.svelte';
+	import ReadingIndicator from './ReadingIndicator.svelte';
+
+	interface ToolCall {
+		name: string;
+		input: string;
+		output?: string;
+		status?: 'running' | 'complete' | 'error';
+	}
+
+	interface ContentBlock {
+		type: 'text' | 'tool';
+		text?: string;
+		toolCallIndex?: number;
+	}
+
+	interface Message {
+		id: string;
+		role: 'user' | 'assistant' | 'system';
+		content: string;
+		timestamp: Date;
+		toolCalls?: ToolCall[];
+		streaming?: boolean;
+		thinking?: string;
+		contentBlocks?: ContentBlock[];
+	}
+
+	interface Props {
+		messages: Message[];
+		role: 'user' | 'assistant';
+		onCopy?: (id: string, content: string) => void;
+		copiedId?: string | null;
+		onViewToolOutput?: (tool: ToolCall) => void;
+		isStreaming?: boolean;
+	}
+
+	let {
+		messages,
+		role,
+		onCopy,
+		copiedId = null,
+		onViewToolOutput,
+		isStreaming = false
+	}: Props = $props();
+
+	const groupTimestamp = $derived(messages[messages.length - 1]?.timestamp || messages[0]?.timestamp);
+
+	function formatTime(date: Date): string {
+		return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+	}
+
+	function handleCopy(id: string, content: string) {
+		onCopy?.(id, content);
+	}
+
+	function handleViewToolOutput(tool: ToolCall) {
+		onViewToolOutput?.(tool);
+	}
+
+	function extractThinking(content: string): { thinking: string | null; cleanContent: string } {
+		const thinkingMatch = content.match(/<thinking>([\s\S]*?)<\/thinking>/);
+		if (thinkingMatch) {
+			return {
+				thinking: thinkingMatch[1].trim(),
+				cleanContent: content.replace(/<thinking>[\s\S]*?<\/thinking>/g, '').trim()
+			};
+		}
+		return { thinking: null, cleanContent: content };
+	}
+</script>
+
+<!-- Chat group - user on right, assistant on left -->
+<div class="flex gap-3 mb-4 {role === 'user' ? 'flex-row-reverse' : ''}">
+	<!-- Avatar - 40x40, rounded corners, aligned to bottom -->
+	<div class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm {role === 'user' ? 'bg-primary/20 text-primary' : 'bg-base-300 text-base-content/60'}">
+		{role === 'user' ? 'U' : 'A'}
+	</div>
+
+	<!-- Messages container -->
+	<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] {role === 'user' ? 'items-end' : 'items-start'}">
+		<!-- Messages -->
+		{#each messages as message (message.id)}
+			{@const { thinking, cleanContent } = extractThinking(message.content)}
+
+			<div class="group w-full">
+				<!-- Thinking block (always renders first, above content blocks) -->
+				{#if (thinking || message.thinking) && role === 'assistant'}
+					<div class="mb-2">
+						<ThinkingBlock
+							content={thinking || message.thinking || ''}
+							initiallyCollapsed={true}
+							isStreaming={message.streaming && !cleanContent}
+						/>
+					</div>
+				{/if}
+
+				<!-- Content blocks: interleaved text and tool calls -->
+				{#if message.contentBlocks?.length}
+					{#each message.contentBlocks as block, blockIdx}
+						{#if block.type === 'tool' && block.toolCallIndex != null && message.toolCalls?.[block.toolCallIndex]}
+							{@const tool = message.toolCalls[block.toolCallIndex]}
+							<div class="max-w-md mb-2">
+								<ToolCard
+									name={tool.name}
+									input={tool.input}
+									output={tool.output}
+									status={tool.status}
+									onclick={() => handleViewToolOutput(tool)}
+								/>
+							</div>
+						{:else if block.type === 'text' && block.text}
+							{@const isLastBlock = blockIdx === (message.contentBlocks?.length ?? 0) - 1}
+							<div
+								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {message.streaming && isLastBlock ? 'animate-pulse-border' : ''}"
+							>
+								<div class="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
+									<Markdown content={block.text} />
+								</div>
+								{#if message.streaming && isLastBlock}
+									<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
+								{/if}
+
+								<!-- Copy button on last text block -->
+								{#if !message.streaming && isLastBlock && role === 'assistant'}
+									<button
+										type="button"
+										onclick={() => handleCopy(message.id, cleanContent)}
+										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/50 hover:text-base-content"
+										title="Copy"
+									>
+										{#if copiedId === message.id}
+											<Check class="w-3.5 h-3.5 text-success" />
+										{:else}
+											<Copy class="w-3.5 h-3.5" />
+										{/if}
+									</button>
+								{/if}
+							</div>
+						{/if}
+					{/each}
+
+					<!-- Reading indicator when streaming with no content blocks yet -->
+					{#if message.streaming && message.contentBlocks.length === 0}
+						<div class="rounded-xl bg-base-200 px-3.5 py-2.5 animate-pulse-border">
+							<ReadingIndicator />
+						</div>
+					{/if}
+				{:else}
+					<!-- Legacy fallback: messages without contentBlocks -->
+					{#if message.toolCalls?.length && role === 'assistant'}
+						{#each message.toolCalls as tool}
+							<div class="max-w-md mb-2">
+								<ToolCard
+									name={tool.name}
+									input={tool.input}
+									output={tool.output}
+									status={tool.status}
+									onclick={() => handleViewToolOutput(tool)}
+								/>
+							</div>
+						{/each}
+					{/if}
+
+					{#if cleanContent || message.streaming}
+						<div
+							class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {message.streaming ? 'animate-pulse-border' : ''}"
+						>
+							{#if message.streaming && !cleanContent}
+								<ReadingIndicator />
+							{:else}
+								<div class="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
+									<Markdown content={cleanContent} />
+								</div>
+								{#if message.streaming}
+									<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
+								{/if}
+							{/if}
+
+							<!-- Copy button -->
+							{#if !message.streaming && cleanContent && role === 'assistant'}
+								<button
+									type="button"
+									onclick={() => handleCopy(message.id, cleanContent)}
+									class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/50 hover:text-base-content"
+									title="Copy"
+								>
+									{#if copiedId === message.id}
+										<Check class="w-3.5 h-3.5 text-success" />
+									{:else}
+										<Copy class="w-3.5 h-3.5" />
+									{/if}
+								</button>
+							{/if}
+						</div>
+					{/if}
+				{/if}
+			</div>
+		{/each}
+
+		<!-- Loading indicator when streaming but no messages -->
+		{#if isStreaming && messages.length === 0}
+			<div class="rounded-xl bg-base-200 px-3.5 py-2.5 animate-pulse-border">
+				<ReadingIndicator />
+			</div>
+		{/if}
+
+		<!-- Footer: sender name + timestamp -->
+		<div class="flex gap-2 items-baseline mt-1.5 {role === 'user' ? 'flex-row-reverse' : ''}">
+			<span class="text-xs font-medium text-base-content/50">{role === 'user' ? 'You' : 'Assistant'}</span>
+			{#if groupTimestamp}
+				<span class="text-xs text-base-content/40">{formatTime(groupTimestamp)}</span>
+			{/if}
+		</div>
+	</div>
+</div>

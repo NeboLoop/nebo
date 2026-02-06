@@ -43,7 +43,7 @@
 		searchMode = false;
 		isLoading = true;
 		try {
-			const res = await getHistoryByDay({}, day);
+			const res = await getHistoryByDay(day);
 			messages = (res.messages || []).map((m: ApiChatMessage) => ({
 				id: m.id,
 				role: m.role as 'user' | 'assistant' | 'system',
@@ -101,7 +101,7 @@
 </script>
 
 <svelte:head>
-	<title>History - GoBot</title>
+	<title>History - Nebo</title>
 </svelte:head>
 
 <div class="flex flex-col h-full bg-base-100">

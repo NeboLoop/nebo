@@ -70,7 +70,7 @@ function getBaseUrl(): string {
 function getAuthToken(): string | null {
 	if (typeof window === 'undefined') return null;
 	try {
-		return localStorage.getItem('gobot_token');
+		return localStorage.getItem('nebo_token');
 	} catch {
 		return null;
 	}
@@ -158,6 +158,47 @@ function api<T>(method: Method = 'get', url: string, req: any, config?: unknown)
 	}
 }
 
+/**
+ * Request that returns a blob (for binary responses like audio)
+ */
+export async function requestBlob({
+	method,
+	url,
+	data
+}: {
+	method: Method;
+	url: string;
+	data?: unknown;
+}): Promise<Blob> {
+	const apiUrl = `${getBaseUrl()}${url}`;
+
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json'
+	};
+
+	const token = getAuthToken();
+	if (token) {
+		headers['Authorization'] = `Bearer ${token}`;
+	}
+
+	const response = await fetch(apiUrl, {
+		method: method.toLocaleUpperCase(),
+		credentials: 'include',
+		headers,
+		body: data ? JSON.stringify(data) : undefined
+	});
+
+	if (!response.ok) {
+		const text = await response.text();
+		const error = new Error(text || `HTTP ${response.status}`);
+		// @ts-ignore
+		error.response = { status: response.status };
+		throw error;
+	}
+
+	return response.blob();
+}
+
 export const webapi = {
 	get<T>(url: string, params?: any, req?: any): Promise<T> {
 		// For GET requests, append params as query string to URL
@@ -218,6 +259,9 @@ export const webapi = {
 			},
 			req
 		) as Promise<T>;
+	},
+	postBlob(url: string, data?: any): Promise<Blob> {
+		return requestBlob({ method: 'post', url, data });
 	}
 };
 

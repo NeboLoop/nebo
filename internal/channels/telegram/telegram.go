@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"sync"
 
-	"gobot/internal/channels"
+	"github.com/nebolabs/nebo/internal/channels"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"

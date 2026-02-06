@@ -3,27 +3,28 @@ package user
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/user"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
-// Update user preferences
 func UpdatePreferencesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.UpdatePreferencesRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := user.NewUpdatePreferencesLogic(r.Context(), svcCtx)
-		resp, err := l.UpdatePreferences(&req)
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
-		}
+		// Return the updated values
+		httputil.OkJSON(w, &types.GetPreferencesResponse{
+			Preferences: types.UserPreferences{
+				EmailNotifications: req.EmailNotifications,
+				MarketingEmails:    req.MarketingEmails,
+				Timezone:           req.Timezone,
+				Language:           req.Language,
+				Theme:              req.Theme,
+			},
+		})
 	}
 }

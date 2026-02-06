@@ -10,7 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"gobot/internal/lifecycle"
+	"github.com/nebolabs/nebo/internal/lifecycle"
 )
 
 // Frame represents a message frame between server and agent
@@ -27,9 +27,11 @@ type Frame struct {
 // AgentConnection represents a connected agent
 type AgentConnection struct {
 	ID        string
+	Name      string          // Agent name: "main", "coder", "researcher", etc.
 	Conn      *websocket.Conn
 	Send      chan []byte
 	CreatedAt time.Time
+	Metadata  map[string]any  // Capabilities, status, config
 
 	mu sync.Mutex
 }
@@ -40,11 +42,11 @@ type ResponseHandler func(agentID string, frame *Frame)
 // ApprovalRequestHandler is called when an agent requests approval
 type ApprovalRequestHandler func(agentID string, requestID string, toolName string, input json.RawMessage)
 
-// Hub manages THE agent connection (single-bot paradigm)
+// Hub manages agent connections (multi-agent paradigm)
 type Hub struct {
-	// Single Bot Paradigm: ONE agent connection
+	// Multi-agent: map of agent name -> connection
 	agentMu sync.RWMutex
-	agent   *AgentConnection
+	agents  map[string]*AgentConnection
 
 	// Register channel
 	register chan *AgentConnection
@@ -66,6 +68,7 @@ type Hub struct {
 // NewHub creates a new agent hub
 func NewHub() *Hub {
 	return &Hub{
+		agents:     make(map[string]*AgentConnection),
 		register:   make(chan *AgentConnection, 1),
 		unregister: make(chan *AgentConnection, 1),
 		upgrader: websocket.Upgrader{
@@ -92,83 +95,161 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
-// addAgent sets THE agent (single-bot paradigm: disconnects any existing agent first)
+// addAgent adds an agent to the hub (multi-agent paradigm)
 func (h *Hub) addAgent(newAgent *AgentConnection) {
 	h.agentMu.Lock()
 	defer h.agentMu.Unlock()
 
-	// Single Bot Paradigm: If there's an existing agent, disconnect it first
-	if h.agent != nil {
-		fmt.Printf("[AgentHub] Single Bot: Disconnecting existing agent %s to accept new agent %s\n", h.agent.ID, newAgent.ID)
-		close(h.agent.Send)
-		if h.agent.Conn != nil {
-			h.agent.Conn.Close()
-		}
-		lifecycle.Emit(lifecycle.EventAgentDisconnected, h.agent.ID)
+	name := newAgent.Name
+	if name == "" {
+		name = "main"
+		newAgent.Name = name
 	}
 
-	h.agent = newAgent
-	fmt.Printf("[AgentHub] Single Bot: THE agent connected: %s\n", newAgent.ID)
+	// If there's an existing agent with the same name, disconnect it first
+	if existing, ok := h.agents[name]; ok {
+		fmt.Printf("[AgentHub] Disconnecting existing agent %s (name=%s) to accept new agent %s\n", existing.ID, name, newAgent.ID)
+		close(existing.Send)
+		if existing.Conn != nil {
+			existing.Conn.Close()
+		}
+		lifecycle.Emit(lifecycle.EventAgentDisconnected, existing.ID)
+	}
+
+	h.agents[name] = newAgent
+	fmt.Printf("[AgentHub] Agent connected: %s (name=%s)\n", newAgent.ID, name)
 	lifecycle.Emit(lifecycle.EventAgentConnected, newAgent.ID)
+
+	// Send "ready" event to agent so it can start any initialization work
+	// This is processed asynchronously after the agent is fully registered
+	go func() {
+		readyFrame := &Frame{
+			Type:   "event",
+			Method: "ready",
+			Payload: map[string]any{
+				"agent_id": newAgent.ID,
+				"name":     name,
+			},
+		}
+		if data, err := json.Marshal(readyFrame); err == nil {
+			select {
+			case newAgent.Send <- data:
+				fmt.Printf("[AgentHub] Sent ready event to agent %s\n", name)
+			default:
+				fmt.Printf("[AgentHub] Could not send ready event to agent %s (buffer full)\n", name)
+			}
+		}
+	}()
 }
 
-// removeAgent removes THE agent if it matches
+// removeAgent removes an agent from the hub
 func (h *Hub) removeAgent(agent *AgentConnection) {
 	h.agentMu.Lock()
 	defer h.agentMu.Unlock()
 
-	if h.agent != nil && h.agent.ID == agent.ID {
+	name := agent.Name
+	if name == "" {
+		name = "main"
+	}
+
+	// Only remove if this agent is still the registered one
+	// (prevents double-close if addAgent already replaced it)
+	if existing, ok := h.agents[name]; ok && existing.ID == agent.ID {
+		// Safe close - channel may already be closed by addAgent
+		defer func() {
+			if r := recover(); r != nil {
+				// Channel already closed, ignore
+			}
+		}()
 		close(agent.Send)
 		if agent.Conn != nil {
 			agent.Conn.Close()
 		}
-		h.agent = nil
+		delete(h.agents, name)
 		lifecycle.Emit(lifecycle.EventAgentDisconnected, agent.ID)
 	}
 }
 
-// GetTheAgent returns THE agent (single-bot paradigm)
+// GetTheAgent returns the main agent (for backwards compatibility)
 func (h *Hub) GetTheAgent() *AgentConnection {
-	h.agentMu.RLock()
-	defer h.agentMu.RUnlock()
-	return h.agent
+	return h.GetAgentByName("main")
 }
 
-// GetAgent returns an agent by ID (for backwards compatibility)
+// GetAgentByName returns an agent by name
+func (h *Hub) GetAgentByName(name string) *AgentConnection {
+	h.agentMu.RLock()
+	defer h.agentMu.RUnlock()
+	if name == "" {
+		name = "main"
+	}
+	return h.agents[name]
+}
+
+// GetAgent returns an agent by ID
 func (h *Hub) GetAgent(agentID string) *AgentConnection {
 	h.agentMu.RLock()
 	defer h.agentMu.RUnlock()
-	if h.agent != nil && h.agent.ID == agentID {
-		return h.agent
+	for _, agent := range h.agents {
+		if agent.ID == agentID {
+			return agent
+		}
 	}
 	return nil
 }
 
-// GetAnyAgent returns THE agent (for backwards compatibility)
+// GetAnyAgent returns any connected agent (for backwards compatibility)
 func (h *Hub) GetAnyAgent() *AgentConnection {
-	return h.GetTheAgent()
+	h.agentMu.RLock()
+	defer h.agentMu.RUnlock()
+	for _, agent := range h.agents {
+		return agent
+	}
+	return nil
 }
 
-// GetAllAgents returns THE agent as a slice (for backwards compatibility)
+// GetAllAgents returns all connected agents
 func (h *Hub) GetAllAgents() []*AgentConnection {
 	h.agentMu.RLock()
 	defer h.agentMu.RUnlock()
-	if h.agent != nil {
-		return []*AgentConnection{h.agent}
+	agents := make([]*AgentConnection, 0, len(h.agents))
+	for _, agent := range h.agents {
+		agents = append(agents, agent)
 	}
-	return nil
+	return agents
 }
 
-// IsConnected returns true if THE agent is connected
+// IsConnected returns true if at least one agent is connected
 func (h *Hub) IsConnected() bool {
 	h.agentMu.RLock()
 	defer h.agentMu.RUnlock()
-	return h.agent != nil
+	return len(h.agents) > 0
 }
 
-// SendToAgent sends a frame to THE agent (agentID is ignored in single-bot mode)
+// IsAgentConnected returns true if the specified agent is connected
+func (h *Hub) IsAgentConnected(name string) bool {
+	h.agentMu.RLock()
+	defer h.agentMu.RUnlock()
+	if name == "" {
+		name = "main"
+	}
+	_, ok := h.agents[name]
+	return ok
+}
+
+// AgentCount returns the number of connected agents
+func (h *Hub) AgentCount() int {
+	h.agentMu.RLock()
+	defer h.agentMu.RUnlock()
+	return len(h.agents)
+}
+
+// SendToAgent sends a frame to a specific agent by ID
 func (h *Hub) SendToAgent(agentID string, frame *Frame) error {
-	agent := h.GetTheAgent()
+	agent := h.GetAgent(agentID)
+	if agent == nil {
+		// Fallback to main agent for backwards compatibility
+		agent = h.GetTheAgent()
+	}
 	if agent == nil {
 		return fmt.Errorf("agent not connected")
 	}
@@ -186,9 +267,29 @@ func (h *Hub) SendToAgent(agentID string, frame *Frame) error {
 	}
 }
 
-// Send sends a frame to THE agent (simpler API for single-bot)
+// SendToAgentByName sends a frame to a specific agent by name
+func (h *Hub) SendToAgentByName(name string, frame *Frame) error {
+	agent := h.GetAgentByName(name)
+	if agent == nil {
+		return fmt.Errorf("agent %s not connected", name)
+	}
+
+	data, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+
+	select {
+	case agent.Send <- data:
+		return nil
+	default:
+		return fmt.Errorf("agent %s send buffer full", name)
+	}
+}
+
+// Send sends a frame to the main agent (simpler API for backwards compatibility)
 func (h *Hub) Send(frame *Frame) error {
-	return h.SendToAgent("", frame)
+	return h.SendToAgentByName("main", frame)
 }
 
 // SetResponseHandler sets the handler for agent responses
@@ -208,17 +309,40 @@ func (h *Hub) SetApprovalHandler(handler ApprovalRequestHandler) {
 
 // SendApprovalResponse sends an approval response back to THE agent
 func (h *Hub) SendApprovalResponse(agentID, requestID string, approved bool) error {
+	return h.SendApprovalResponseWithAlways(agentID, requestID, approved, false)
+}
+
+// SendApprovalResponseWithAlways sends an approval response with the "always" flag
+func (h *Hub) SendApprovalResponseWithAlways(agentID, requestID string, approved, always bool) error {
 	frame := &Frame{
 		Type:    "approval_response",
 		ID:      requestID,
-		Payload: map[string]any{"approved": approved},
+		Payload: map[string]any{"approved": approved, "always": always},
 	}
 	return h.Send(frame)
 }
 
-// Broadcast sends a frame to THE agent (same as Send in single-bot mode)
+// Broadcast sends a frame to all connected agents
 func (h *Hub) Broadcast(frame *Frame) {
-	_ = h.Send(frame)
+	h.agentMu.RLock()
+	agents := make([]*AgentConnection, 0, len(h.agents))
+	for _, agent := range h.agents {
+		agents = append(agents, agent)
+	}
+	h.agentMu.RUnlock()
+
+	data, err := json.Marshal(frame)
+	if err != nil {
+		return
+	}
+
+	for _, agent := range agents {
+		select {
+		case agent.Send <- data:
+		default:
+			// Skip agents with full buffers
+		}
+	}
 }
 
 // HandleWebSocket handles a WebSocket connection from an agent
@@ -229,11 +353,19 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, agentID st
 		return
 	}
 
+	// Parse agent name from URL query parameter (default: "main")
+	agentName := r.URL.Query().Get("name")
+	if agentName == "" {
+		agentName = "main"
+	}
+
 	agent := &AgentConnection{
 		ID:        agentID,
+		Name:      agentName,
 		Conn:      conn,
 		Send:      make(chan []byte, 256),
 		CreatedAt: time.Now(),
+		Metadata:  make(map[string]any),
 	}
 
 	h.register <- agent
@@ -250,7 +382,7 @@ func (h *Hub) readPump(agent *AgentConnection) {
 		h.unregister <- agent
 	}()
 
-	agent.Conn.SetReadLimit(512 * 1024) // 512KB max message size
+	agent.Conn.SetReadLimit(10 * 1024 * 1024) // 10MB max message size (tool results can be large)
 	agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 	agent.Conn.SetPongHandler(func(string) error {
 		agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))

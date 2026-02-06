@@ -2,21 +2,21 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic"
-	"gobot/internal/svc"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
-// Health check endpoint
+const version = "1.0.0"
+
 func HealthCheckHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := logic.NewHealthCheckLogic(r.Context(), svcCtx)
-		resp, err := l.HealthCheck()
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
-		}
+		httputil.OkJSON(w, &types.HealthResponse{
+			Status:    "healthy",
+			Version:   version,
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		})
 	}
 }

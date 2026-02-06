@@ -14,7 +14,7 @@
 
 	async function checkAuth() {
 		// Check localStorage directly for token
-		const token = localStorage.getItem('gobot_token');
+		const token = localStorage.getItem('nebo_token');
 
 		if (!token) {
 			// No token at all - redirect to login

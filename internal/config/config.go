@@ -2,20 +2,98 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
-	"github.com/zeromicro/go-zero/core/conf"
-	"github.com/zeromicro/go-zero/rest"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"gopkg.in/yaml.v3"
 )
 
 // LoadFromBytes loads configuration from YAML bytes with environment variable expansion
 func LoadFromBytes(data []byte) (Config, error) {
 	var c Config
 	expanded := os.ExpandEnv(string(data))
-	if err := conf.LoadFromYamlBytes([]byte(expanded), &c); err != nil {
+	if err := yaml.Unmarshal([]byte(expanded), &c); err != nil {
 		return c, err
 	}
+	// Apply defaults
+	applyDefaults(&c)
 	return c, nil
+}
+
+// applyDefaults sets default values for unset config fields
+func applyDefaults(c *Config) {
+	if c.Host == "" {
+		c.Host = "0.0.0.0"
+	}
+	if c.Port == 0 {
+		c.Port = 27895
+	}
+	if c.App.Domain == "" {
+		c.App.Domain = "local.nebo.bot"
+	}
+	if c.App.BaseURL == "" {
+		c.App.BaseURL = "http://local.nebo.bot:27895"
+	}
+	if c.Auth.RefreshTokenExpire == 0 {
+		c.Auth.RefreshTokenExpire = 604800
+	}
+	if c.Database.SQLitePath == "" {
+		dataDir, err := defaults.DataDir()
+		if err != nil {
+			home, _ := os.UserHomeDir()
+			dataDir = filepath.Join(home, ".config", "nebo")
+		}
+		c.Database.SQLitePath = filepath.Join(dataDir, "data", "nebo.db")
+	}
+	if c.Security.CSRFEnabled == "" {
+		c.Security.CSRFEnabled = "true"
+	}
+	if c.Security.CSRFTokenExpiry == 0 {
+		c.Security.CSRFTokenExpiry = 43200
+	}
+	if c.Security.CSRFSecureCookie == "" {
+		c.Security.CSRFSecureCookie = "true"
+	}
+	if c.Security.RateLimitEnabled == "" {
+		c.Security.RateLimitEnabled = "true"
+	}
+	if c.Security.RateLimitRequests == 0 {
+		c.Security.RateLimitRequests = 100
+	}
+	if c.Security.RateLimitInterval == 0 {
+		c.Security.RateLimitInterval = 60
+	}
+	if c.Security.RateLimitBurst == 0 {
+		c.Security.RateLimitBurst = 20
+	}
+	if c.Security.AuthRateLimitRequests == 0 {
+		c.Security.AuthRateLimitRequests = 5
+	}
+	if c.Security.AuthRateLimitInterval == 0 {
+		c.Security.AuthRateLimitInterval = 60
+	}
+	if c.Security.EnableSecurityHeaders == "" {
+		c.Security.EnableSecurityHeaders = "true"
+	}
+	if c.Security.MaxRequestBodySize == 0 {
+		c.Security.MaxRequestBodySize = 10485760
+	}
+	if c.Security.MaxURLLength == 0 {
+		c.Security.MaxURLLength = 2048
+	}
+	if c.Email.SMTPPort == 0 {
+		c.Email.SMTPPort = 587
+	}
+	if c.Email.FromName == "" {
+		c.Email.FromName = "nebo"
+	}
+	if c.Email.BaseURL == "" {
+		c.Email.BaseURL = "http://localhost:27458"
+	}
+	if c.Features.NotificationsEnabled == "" {
+		c.Features.NotificationsEnabled = "true"
+	}
 }
 
 // parseBool parses a string as boolean with a default value.
@@ -29,62 +107,65 @@ func parseBool(s string, defaultVal bool) bool {
 }
 
 type Config struct {
-	rest.RestConf
+	// Server configuration
+	Name string `yaml:"Name"`
+	Host string `yaml:"Host"`
+	Port int    `yaml:"Port"`
 	App struct {
-		BaseURL        string `json:",optional"`
-		Domain         string `json:",optional"`
-		ProductionMode string `json:",default=false"`
-		AdminEmail     string `json:",optional"`
-	}
+		BaseURL        string `yaml:"BaseURL"`
+		Domain         string `yaml:"Domain"`
+		ProductionMode string `yaml:"ProductionMode"`
+		AdminEmail     string `yaml:"AdminEmail"`
+	} `yaml:"App"`
 	Auth struct {
-		AccessSecret       string
-		AccessExpire       int64
-		RefreshTokenExpire int64 `json:",default=604800"`
-	}
+		AccessSecret       string `yaml:"AccessSecret"`
+		AccessExpire       int64  `yaml:"AccessExpire"`
+		RefreshTokenExpire int64  `yaml:"RefreshTokenExpire"`
+	} `yaml:"Auth"`
 	Database struct {
-		SQLitePath string `json:",default=./data/gobot.db"`
-	}
+		SQLitePath string `yaml:"SQLitePath"`
+	} `yaml:"Database"`
 	Security struct {
-		CSRFEnabled           string `json:",default=true"`
-		CSRFSecret            string `json:",optional"`
-		CSRFTokenExpiry       int64  `json:",default=43200"`
-		CSRFSecureCookie      string `json:",default=true"`
-		RateLimitEnabled      string `json:",default=true"`
-		RateLimitRequests     int    `json:",default=100"`
-		RateLimitInterval     int    `json:",default=60"`
-		RateLimitBurst        int    `json:",default=20"`
-		AuthRateLimitRequests int    `json:",default=5"`
-		AuthRateLimitInterval int    `json:",default=60"`
-		EnableSecurityHeaders string `json:",default=true"`
-		ContentSecurityPolicy string `json:",optional"`
-		AllowedOrigins        string `json:",optional"`
-		ForceHTTPS            string `json:",default=false"`
-		MaxRequestBodySize    int64  `json:",default=10485760"`
-		MaxURLLength          int    `json:",default=2048"`
-	}
+		CSRFEnabled           string `yaml:"CSRFEnabled"`
+		CSRFSecret            string `yaml:"CSRFSecret"`
+		CSRFTokenExpiry       int64  `yaml:"CSRFTokenExpiry"`
+		CSRFSecureCookie      string `yaml:"CSRFSecureCookie"`
+		RateLimitEnabled      string `yaml:"RateLimitEnabled"`
+		RateLimitRequests     int    `yaml:"RateLimitRequests"`
+		RateLimitInterval     int    `yaml:"RateLimitInterval"`
+		RateLimitBurst        int    `yaml:"RateLimitBurst"`
+		AuthRateLimitRequests int    `yaml:"AuthRateLimitRequests"`
+		AuthRateLimitInterval int    `yaml:"AuthRateLimitInterval"`
+		EnableSecurityHeaders string `yaml:"EnableSecurityHeaders"`
+		ContentSecurityPolicy string `yaml:"ContentSecurityPolicy"`
+		AllowedOrigins        string `yaml:"AllowedOrigins"`
+		ForceHTTPS            string `yaml:"ForceHTTPS"`
+		MaxRequestBodySize    int64  `yaml:"MaxRequestBodySize"`
+		MaxURLLength          int    `yaml:"MaxURLLength"`
+	} `yaml:"Security"`
 	Email struct {
-		SMTPHost    string `json:",optional"`
-		SMTPPort    int    `json:",optional,default=587"`
-		SMTPUser    string `json:",optional"`
-		SMTPPass    string `json:",optional"`
-		FromAddress string `json:",optional"`
-		FromName    string `json:",default=gobot"`
-		ReplyTo     string `json:",optional"`
-		BaseURL     string `json:",default=http://localhost:27458"`
-	}
+		SMTPHost    string `yaml:"SMTPHost"`
+		SMTPPort    int    `yaml:"SMTPPort"`
+		SMTPUser    string `yaml:"SMTPUser"`
+		SMTPPass    string `yaml:"SMTPPass"`
+		FromAddress string `yaml:"FromAddress"`
+		FromName    string `yaml:"FromName"`
+		ReplyTo     string `yaml:"ReplyTo"`
+		BaseURL     string `yaml:"BaseURL"`
+	} `yaml:"Email"`
 	OAuth struct {
-		GoogleEnabled      string `json:",default=false"`
-		GoogleClientID     string `json:",optional"`
-		GoogleClientSecret string `json:",optional"`
-		GitHubEnabled      string `json:",default=false"`
-		GitHubClientID     string `json:",optional"`
-		GitHubClientSecret string `json:",optional"`
-		CallbackBaseURL    string `json:",optional"`
-	}
+		GoogleEnabled      string `yaml:"GoogleEnabled"`
+		GoogleClientID     string `yaml:"GoogleClientID"`
+		GoogleClientSecret string `yaml:"GoogleClientSecret"`
+		GitHubEnabled      string `yaml:"GitHubEnabled"`
+		GitHubClientID     string `yaml:"GitHubClientID"`
+		GitHubClientSecret string `yaml:"GitHubClientSecret"`
+		CallbackBaseURL    string `yaml:"CallbackBaseURL"`
+	} `yaml:"OAuth"`
 	Features struct {
-		NotificationsEnabled string `json:",default=true"`
-		OAuthEnabled         string `json:",default=false"`
-	}
+		NotificationsEnabled string `yaml:"NotificationsEnabled"`
+		OAuthEnabled         string `yaml:"OAuthEnabled"`
+	} `yaml:"Features"`
 }
 
 func (c Config) IsProductionMode() bool {

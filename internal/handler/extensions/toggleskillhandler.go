@@ -3,27 +3,30 @@ package extensions
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/extensions"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Toggle skill enabled/disabled
 func ToggleSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.ToggleSkillRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := extensions.NewToggleSkillLogic(r.Context(), svcCtx)
-		resp, err := l.ToggleSkill(&req)
+		// Toggle the skill's enabled state in persistent storage
+		enabled, err := svcCtx.SkillSettings.Toggle(req.Name)
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			httputil.Error(w, err)
+			return
 		}
+
+		httputil.OkJSON(w, &types.ToggleSkillResponse{
+			Name:    req.Name,
+			Enabled: enabled,
+		})
 	}
 }

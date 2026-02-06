@@ -63,7 +63,7 @@ coverage/
 *.tmp
 PLAN.md
 plan/
-gobot-cli
+nebo-cli
 
 # Plugin binaries (source is in extensions/tools/)
 extensions/plugins/tools/*
@@ -90,4 +90,6 @@ dev-debug.log
 
 # Task files
 # tasks.json
-# tasks/ 
+# tasks/
+.taskmaster
+.cursor/

@@ -425,7 +425,7 @@ class AlertService {
 				timestamp: alert.timestamp,
 				context: alert.context
 			},
-			application: 'gobot'
+			application: 'nebo'
 		};
 
 		await fetch(this.config.webhookUrl, {

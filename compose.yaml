@@ -16,7 +16,7 @@ services:
     environment:
       - TZ=UTC
       - PRODUCTION_MODE=false
-      - SQLITE_PATH=/app/data/gobot.db
+      - SQLITE_PATH=/app/data/nebo.db
       - ACCESS_SECRET=${ACCESS_SECRET:-dev-secret-change-in-production}
       - APP_BASE_URL=http://localhost:27458
     volumes:

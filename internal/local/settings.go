@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/nebolabs/nebo/internal/defaults"
 )
 
 // Settings holds local configuration that can't be in the embedded yaml
@@ -26,11 +28,11 @@ func DefaultSettings() Settings {
 
 // settingsPath returns the path to the local settings file
 func settingsPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	dataDir, err := defaults.DataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(homeDir, ".gobot", "settings.json"), nil
+	return filepath.Join(dataDir, "settings.json"), nil
 }
 
 // LoadSettings loads local settings, creating defaults if needed
@@ -93,7 +95,7 @@ func generateSecret() string {
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
 		// Fallback to less secure but still random
-		return fmt.Sprintf("gobot-%d", os.Getpid())
+		return fmt.Sprintf("nebo-%d", os.Getpid())
 	}
 	return hex.EncodeToString(bytes)
 }

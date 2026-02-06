@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nebo Browser Relay</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --nebo: #ffbe18;
+        --panel: color-mix(in oklab, canvas 92%, canvasText 8%);
+        --border: color-mix(in oklab, canvasText 18%, transparent);
+        --muted: color-mix(in oklab, canvasText 70%, transparent);
+        --shadow: 0 10px 30px color-mix(in oklab, canvasText 18%, transparent);
+        font-family: ui-rounded, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Rounded", sans-serif;
+        line-height: 1.5;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(ellipse 1200px 600px at 10% 0%, color-mix(in oklab, var(--nebo) 25%, transparent), transparent 70%),
+          radial-gradient(ellipse 1000px 500px at 90% 0%, color-mix(in oklab, var(--nebo) 15%, transparent), transparent 75%),
+          canvas;
+        color: canvasText;
+      }
+
+      .container {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 40px 24px 60px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+
+      .logo {
+        width: 48px;
+        height: 48px;
+        border-radius: 12px;
+        background: linear-gradient(135deg, var(--nebo), color-mix(in oklab, var(--nebo) 80%, #ffd04d));
+        display: grid;
+        place-items: center;
+        font-size: 24px;
+        font-weight: 700;
+        color: white;
+        box-shadow: 0 4px 16px color-mix(in oklab, var(--nebo) 40%, transparent);
+      }
+
+      h1 {
+        font-size: 22px;
+        margin: 0;
+        font-weight: 600;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        font-size: 14px;
+        margin: 4px 0 0;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 16px;
+        box-shadow: var(--shadow);
+      }
+
+      .card h2 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0 0 12px;
+      }
+
+      .card p {
+        color: var(--muted);
+        font-size: 14px;
+        margin: 0 0 12px;
+      }
+
+      .card p:last-child { margin-bottom: 0; }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      label {
+        display: block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      input {
+        width: 140px;
+        padding: 10px 14px;
+        font-size: 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: canvas;
+        color: canvasText;
+        outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s;
+      }
+
+      input:focus {
+        border-color: var(--nebo);
+        box-shadow: 0 0 0 3px color-mix(in oklab, var(--nebo) 25%, transparent);
+      }
+
+      button {
+        padding: 10px 18px;
+        font-size: 14px;
+        font-weight: 600;
+        border-radius: 10px;
+        border: none;
+        background: linear-gradient(180deg, var(--nebo), color-mix(in oklab, var(--nebo) 85%, black));
+        color: white;
+        cursor: pointer;
+        transition: transform 0.1s;
+      }
+
+      button:active { transform: translateY(1px); }
+
+      .hint {
+        font-size: 13px;
+        color: var(--muted);
+        margin-top: 12px;
+      }
+
+      code {
+        font-family: ui-monospace, "SF Mono", Monaco, monospace;
+        font-size: 12px;
+        background: color-mix(in oklab, canvasText 8%, transparent);
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+
+      a {
+        color: var(--nebo);
+        text-decoration: none;
+      }
+
+      a:hover { text-decoration: underline; }
+
+      .status {
+        margin-top: 12px;
+        font-size: 13px;
+        min-height: 20px;
+        color: var(--muted);
+      }
+
+      .status[data-kind="ok"] { color: #22c55e; }
+      .status[data-kind="error"] { color: #ef4444; }
+
+      .steps {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        counter-reset: step;
+      }
+
+      .steps li {
+        position: relative;
+        padding-left: 32px;
+        margin-bottom: 10px;
+        counter-increment: step;
+      }
+
+      .steps li::before {
+        content: counter(step);
+        position: absolute;
+        left: 0;
+        top: 1px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: color-mix(in oklab, var(--nebo) 20%, transparent);
+        color: var(--nebo);
+        font-size: 12px;
+        font-weight: 600;
+        display: grid;
+        place-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="logo">N</div>
+        <div>
+          <h1>Nebo Browser Relay</h1>
+          <p class="subtitle">Click the toolbar icon on any tab to attach or detach.</p>
+        </div>
+      </header>
+
+      <div class="card">
+        <h2>Quick Start</h2>
+        <ol class="steps">
+          <li>Start Nebo: <code>nebo agent</code></li>
+          <li>Click the Nebo icon on a tab to attach it</li>
+          <li>The agent can now control that tab with your auth</li>
+        </ol>
+        <p>
+          If you see a red <code>!</code> badge, the relay server isn't running.
+          Make sure Nebo is started with browser support enabled.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>Relay Port</h2>
+        <label for="port">Port number</label>
+        <div class="row">
+          <input id="port" type="number" inputmode="numeric" min="1" max="65535" />
+          <button id="save">Save</button>
+        </div>
+        <p class="hint">
+          Default: <code>27895</code>. The extension connects to <code id="relay-url">http://127.0.0.1:27895/relay/</code>
+        </p>
+        <div class="status" id="status"></div>
+      </div>
+
+      <div class="card">
+        <h2>Security</h2>
+        <p>
+          The extension only connects to localhost. You control which tabs are attached.
+          Nebo can only interact with tabs you explicitly click to attach.
+        </p>
+      </div>
+    </div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

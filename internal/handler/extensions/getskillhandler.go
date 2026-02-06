@@ -1,29 +1,57 @@
 package extensions
 
 import (
+	"fmt"
 	"net/http"
+	"path/filepath"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/extensions"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/agent/skills"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Get single skill details
 func GetSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.GetSkillRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := extensions.NewGetSkillLogic(r.Context(), svcCtx)
-		resp, err := l.GetSkill(&req)
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+		// Load skills from extensions/skills directory
+		extensionsDir := "extensions"
+		skillsDir := filepath.Join(extensionsDir, "skills")
+		skillLoader := skills.NewLoader(skillsDir)
+		if err := skillLoader.LoadAll(); err != nil {
+			logging.Errorf("Failed to load skills: %v", err)
+			httputil.Error(w, fmt.Errorf("failed to load skills: %w", err))
+			return
 		}
+
+		// Find the requested skill
+		skill, found := skillLoader.Get(req.Name)
+		if !found {
+			httputil.Error(w, fmt.Errorf("skill not found: %s", req.Name))
+			return
+		}
+
+		// Check enabled state from persistent settings
+		enabled := svcCtx.SkillSettings.IsEnabled(skill.Name)
+
+		httputil.OkJSON(w, &types.GetSkillResponse{
+			Skill: types.ExtensionSkill{
+				Name:        skill.Name,
+				Description: skill.Description,
+				Version:     skill.Version,
+				Triggers:    skill.Triggers,
+				Tools:       skill.Tools,
+				Priority:    skill.Priority,
+				Enabled:     enabled,
+				FilePath:    skill.FilePath,
+			},
+		})
 	}
 }

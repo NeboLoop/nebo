@@ -563,6 +563,21 @@ func (q *Queries) SearchChatMessages(ctx context.Context, arg SearchChatMessages
 	return items, nil
 }
 
+const updateChatMessageContent = `-- name: UpdateChatMessageContent :exec
+UPDATE chat_messages SET content = ?, metadata = ? WHERE id = ?
+`
+
+type UpdateChatMessageContentParams struct {
+	Content  string         `json:"content"`
+	Metadata sql.NullString `json:"metadata"`
+	ID       string         `json:"id"`
+}
+
+func (q *Queries) UpdateChatMessageContent(ctx context.Context, arg UpdateChatMessageContentParams) error {
+	_, err := q.db.ExecContext(ctx, updateChatMessageContent, arg.Content, arg.Metadata, arg.ID)
+	return err
+}
+
 const updateChatTimestamp = `-- name: UpdateChatTimestamp :exec
 UPDATE chats SET updated_at = unixepoch()
 WHERE id = ?

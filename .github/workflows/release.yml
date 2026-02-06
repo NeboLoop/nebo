@@ -2,7 +2,7 @@ name: Release Binaries
 
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -29,12 +29,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: "1.24"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Install pnpm
         run: npm install -g pnpm
@@ -53,13 +53,13 @@ jobs:
           CGO_ENABLED: 0
         run: |
           go build -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
-            -o gobot-${{ matrix.goos }}-${{ matrix.goarch }} .
+            -o nebo-${{ matrix.goos }}-${{ matrix.goarch }} .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gobot-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: gobot-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: nebo-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: nebo-${{ matrix.goos }}-${{ matrix.goarch }}
 
   release:
     needs: build

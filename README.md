@@ -1,508 +1,423 @@
-# GoBot
+# Nebo
 
-An open-source AI agent platform with computer control capabilities. Features a powerful CLI agent, extensible plugin system, and multi-channel integrations.
+Your personal AI assistant that runs locally. One primary agent with a lane-based concurrency system and persistent memory.
+
+## The Nebo Paradigm
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            THE NEBO AGENT                                    │
+│                                                                              │
+│   • One primary WebSocket connection (enforced by hub)                       │
+│   • Lane-based concurrency for different work types                          │
+│   • Spawns SUB-AGENTS as goroutines for parallel work                        │
+│   • SQLite persistence survives restarts (crash recovery)                    │
+│   • Proactive via heartbeat lane + scheduled events                          │
+│   • Inter-agent communication via comm lane + plugins                        │
+│                                                                              │
+│   Channels (how you reach THE agent):                                        │
+│     ┌─────────┐  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌───────┐         │
+│     │ Web UI  │  │   CLI   │  │ Telegram │  │ Discord │  │ Slack │         │
+│     └────┬────┘  └────┬────┘  └────┬─────┘  └────┬────┘  └───┬───┘         │
+│          │            │            │             │           │              │
+│          └────────────┴────────────┴─────────────┴───────────┘              │
+│                                    │                                         │
+│                        ┌───────────┴───────────┐                            │
+│                        │      LANE SYSTEM      │                            │
+│                        │  (supervisor pattern) │                            │
+│                        └───────────┬───────────┘                            │
+│                                    │                                         │
+│    ┌────────┬────────┬─────────────┼──────────┬───────────┬──────────┐      │
+│    │        │        │             │          │           │          │      │
+│  ┌─┴──┐ ┌──┴───┐ ┌──┴────┐ ┌─────┴────┐ ┌───┴──┐ ┌─────┴────┐    │      │
+│  │main│ │events│ │subagnt│ │  nested  │ │ hb   │ │   comm   │    │      │
+│  │ (1)│ │  (2) │ │       │ │   (3)   │ │ (1)  │ │   (5)   │    │      │
+│  └─┬──┘ └──┬───┘ └──┬────┘ └─────┬────┘ └───┬──┘ └─────┬────┘    │      │
+│    │        │        │            │          │           │          │      │
+│    ▼        ▼        ▼            ▼          ▼           ▼          │      │
+│  User    Scheduled  Sub-Agent   Tool      Proactive  Inter-agent   │      │
+│  chat    tasks      goroutines  recursion heartbeat  messages      │      │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Architectural Concepts:**
+
+| Concept | What It Means |
+|---------|---------------|
+| **One Agent** | Single WebSocket connection to hub. If reconnected, old connection is dropped. |
+| **Lane System** | Work queues for different types of work. Main lane serializes user chat (1 at a time). |
+| **Sub-Agents** | Goroutines (not separate processes) spawned for parallel work. Each gets its own session. |
+| **Crash Recovery** | Pending sub-agent tasks persist to SQLite, recovered on restart. |
+
+**This is NOT a multi-agent chat system.** Users interact with ONE agent that:
+- Serializes your conversations (one at a time via main lane)
+- Spawns temporary sub-agents for parallel work
+- Connects through any channel you prefer
+- Runs scheduled tasks concurrently (events lane)
 
 ## Features
 
-- **Autonomous AI Agent** - Agentic loop with tool use, self-correction, and provider failover
-- **Computer Control** - Browser automation, screenshots, file operations, shell commands
-- **Extensible** - Hot-loadable skills (YAML) and plugins (compiled binaries)
-- **Multi-Channel** - Telegram, Discord, Slack integrations
+- **Persistent Memory** - SQLite-backed conversation history, facts, and preferences
+- **Sub-Agent System** - Spawn parallel workers for complex tasks
 - **Multi-Provider** - Anthropic, OpenAI, Google Gemini, DeepSeek, Ollama
-- **Persistent Sessions** - SQLite-backed conversation history with compaction
-- **MCP Server** - Expose tools to other AI assistants
+- **Computer Control** - Browser automation, screenshots, file operations, shell commands
+- **Multi-Channel** - Web UI, CLI, Telegram, Discord, Slack
+- **Inter-Agent Comm** - Plugin-based communication between agents (loopback, MQTT, NATS)
+- **Extensible** - YAML skills and compiled plugins
+- **Proactive** - Scheduled tasks and heartbeat-driven actions
+
+## System Requirements
+
+- macOS with Apple Silicon (M1 or later)
+- 16 GB RAM minimum
+- ~4 GB disk space (for Nebo + local models)
+
+Nebo uses local models via Ollama for embeddings (`qwen3-embedding`) and background tasks (`qwen3:4b`). These are auto-pulled on first run. See [ADR-001](docs/decisions/001-local-model-strategy.md) for details.
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/localrivet/gobot/main/install.sh | sh
+# macOS (desktop app with native window + system tray)
+brew install --cask nebolabs/tap/nebo
+
+# macOS/Linux (CLI binary)
+brew install nebolabs/tap/nebo
+
+# Or build from source
+git clone https://github.com/nebolabs/nebo.git
+cd nebo && make build
 ```
 
 ## Quick Start
 
 ```bash
-# Set your API key
-export ANTHROPIC_API_KEY=sk-ant-...
+# Desktop mode — native window + system tray (default)
+nebo
 
-# Start GoBot (server + agent + UI)
-gobot
+# Headless mode — browser-only, no native window (current behavior)
+nebo --headless
 
-# Open the web UI
-open http://localhost:29875
+# Open the web UI to add your API key
+open http://local.nebo.bot:27895/settings/providers
 ```
 
-Or use the CLI directly:
+Or use the CLI:
 
 ```bash
-# Chat mode
-gobot chat "Hello, what can you do?"
-
-# Interactive mode
-gobot chat --interactive
+nebo chat "Hello, what can you do?"
+nebo chat --interactive    # REPL mode
 ```
 
-## Architecture
+## How Lanes and Sub-Agents Work
+
+**Lanes** are work queues that organize different types of work:
+
+| Lane | Concurrency | Purpose |
+|------|-------------|---------|
+| `main` | 1 | User conversations (serialized, one at a time) |
+| `events` | 2 | Scheduled/triggered tasks |
+| `subagent` | unlimited | Sub-agent goroutines |
+| `nested` | 3 | Tool recursion/callbacks |
+| `heartbeat` | 1 | Proactive heartbeat ticks |
+| `comm` | 5 | Inter-agent communication messages |
+
+**Sub-agents** are spawned for parallel work:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│              GoBot CLI Agent                                    │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  AI Providers          │  Tool Registry                 │   │
-│  │  - Anthropic           │  - bash, read, write, edit     │   │
-│  │  - OpenAI              │  - glob, grep, web             │   │
-│  │  - Google Gemini       │  - browser, screenshot         │   │
-│  │  - DeepSeek, Ollama    │  - vision, memory, cron        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  Skills (YAML)         │  Plugins (Binaries)            │   │
-│  │  - code-review         │  - Custom tools                │   │
-│  │  - git-workflow        │  - Channel adapters            │   │
-│  │  - security-audit      │  - Hot-loadable                │   │
-│  │  - debugging           │                                │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │  SQLite Sessions       │  Config (~/.gobot/)            │   │
-│  │  - Conversation history│  - models.yaml (credentials)   │   │
-│  │  - Auto-compaction     │  - config.yaml (policies)      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+User: "Analyze this codebase and create a security report"
+
+THE AGENT (main lane, serialized):
+├─► spawn("Explore authentication code")
+│       └─► Sub-Agent goroutine (subagent lane)
+│           └─► Gets own session, runs own agentic loop
+│
+├─► spawn("Find all API endpoints")
+│       └─► Sub-Agent goroutine (subagent lane)
+│
+├─► spawn("Check for hardcoded secrets")
+│       └─► Sub-Agent goroutine (subagent lane)
+│
+└─► (waits for all sub-agents, synthesizes report)
 ```
+
+**Sub-agent characteristics:**
+- **Goroutines** - NOT separate processes or WebSocket connections
+- **Own Session** - Each gets a session key like `subagent-{uuid}`
+- **Persisted** - Tasks saved to SQLite for crash recovery
+- **Temporary** - Cleaned up after completion
+
+> **Note:** Only ONE Nebo instance runs per computer (lock file enforced). Sub-agents are parallel workers inside THE agent's process.
 
 ## Configuration
 
-Configuration is split into two files in `~/.gobot/`:
+Add your API key in the Web UI: **Settings > Providers**
 
-### `models.yaml` - Provider Credentials & Available Models
+Or configure via `models.yaml` in your Nebo data directory:
 
 ```yaml
 version: "1.0"
-updatedAt: "2026-01-28T00:00:00Z"
 
-# Provider credentials (env vars supported)
-credentials:
-  anthropic:
-    api_key: ${ANTHROPIC_API_KEY}
-  openai:
-    api_key: ${OPENAI_API_KEY}
-  google:
-    api_key: ${GOOGLE_API_KEY}
-  deepseek:
-    api_key: ${DEEPSEEK_API_KEY}
-  ollama:
-    base_url: http://localhost:11434
-  claude-code:                    # CLI provider (wraps claude CLI)
-    command: claude
-    args: "--print"
+defaults:
+  primary: anthropic/claude-sonnet-4-5-20250929
+  fallbacks:
+    - anthropic/claude-haiku-4-5-20250929
 
-# Available models - set active: false to disable
-# GoBot autonomously chooses which model to use based on task
 providers:
   anthropic:
-    - id: claude-sonnet-4-5
+    - id: claude-sonnet-4-5-20250929
       displayName: Claude Sonnet 4.5
-      contextWindow: 200000
+      contextWindow: 1000000
       active: true
-      pricing:
-        input: 3.00      # $ per 1M tokens
-        output: 15.00
   openai:
     - id: gpt-5.2
       displayName: GPT-5.2
       contextWindow: 400000
       active: true
-      pricing:
-        input: 1.75
-        output: 14.00
-        cachedInput: 0.18
-  google:
-    - id: gemini-2.5-flash
-      displayName: Gemini 2.5 Flash
-      contextWindow: 1000000
-      active: true
-      pricing:
-        input: 0.30
-        output: 2.50
-  deepseek:
-    - id: deepseek-chat
-      displayName: DeepSeek Chat
-      contextWindow: 128000
-      active: true
-      pricing:
-        input: 0.28
-        output: 0.42
-  ollama:
-    - id: llama3.3
-      displayName: Llama 3.3
-      contextWindow: 128000
-      active: true
 ```
 
-### `config.yaml` - Agent Settings & Tool Policies
+## Built-in Tools (STRAP Pattern)
+
+Tools use the **STRAP (Single Tool Resource Action Pattern)** — consolidating many tools into domain tools for reduced LLM context overhead.
+
+| Domain | Tool | Resources / Actions |
+|--------|------|---------------------|
+| File | `file` | read, write, edit, glob, grep |
+| Shell | `shell` | bash exec/bg/kill, process list/kill, session management |
+| Web | `web` | fetch, search, browser automation (navigate, click, type, screenshot) |
+| Agent | `agent` | task (spawn/status/cancel), cron (create/list/delete), memory (store/recall), message (send/list), session (list/history/clear), comm (send/subscribe/status) |
+
+**Standalone tools:** `screenshot`, `vision` (image analysis), platform-specific capabilities (macOS: accessibility, calendar, contacts, etc.)
+
+## Skills System
+
+Skills are YAML files that enhance agent behavior for specific tasks.
 
 ```yaml
-max_context: 50               # Messages before auto-compaction
-max_iterations: 100           # Safety limit per agentic run
-
-# Tool approval policy
-policy:
-  level: allowlist            # deny, allowlist, or full
-  ask_mode: on-miss           # off, on-miss, or always
-  allowlist:
-    - ls
-    - pwd
-    - cat
-    - grep
-    - git status
-    - git log
-    - git diff
-```
-
-## Built-in Tools
-
-| Tool | Description | Requires Approval |
-|------|-------------|-------------------|
-| `bash` | Execute shell commands | Yes (configurable) |
-| `read` | Read file contents | No |
-| `write` | Create/overwrite files | Yes |
-| `edit` | Find-and-replace edits | Yes |
-| `glob` | Find files by pattern | No |
-| `grep` | Search file contents | No |
-| `web` | Fetch URLs | No |
-| `browser` | CDP browser automation | Yes |
-| `screenshot` | Capture screen/window | No |
-| `vision` | Analyze images with AI | No |
-| `memory` | Persistent fact storage | No |
-| `cron` | Schedule recurring tasks | Yes |
-| `task` | Spawn sub-agents for parallel work | No |
-| `agent_status` | Check/list/cancel sub-agents | No |
-
-## Sub-Agent System
-
-The `task` tool enables spawning autonomous sub-agents for complex, multi-step tasks:
-
-```
-Parent Agent
-    │
-    ├─► spawn_agent("Research Go testing frameworks", wait=false)
-    │       └─► Sub-Agent 1 (exploring, reading docs)
-    │
-    ├─► spawn_agent("Find authentication bugs", wait=false)
-    │       └─► Sub-Agent 2 (searching codebase)
-    │
-    └─► spawn_agent("Write API documentation", wait=true)
-            └─► Sub-Agent 3 (blocking until complete)
-```
-
-**Features:**
-- **Concurrent execution** - Up to 5 sub-agents running in parallel
-- **Specialized agents** - `explore`, `plan`, or `general` agent types
-- **Background tasks** - Non-blocking with status checking
-- **Automatic cleanup** - Completed agents are cleaned up automatically
-
-**Example LLM usage:**
-```json
-{"name": "task", "input": {
-  "description": "Research testing",
-  "prompt": "Find and analyze all test files, report coverage gaps",
-  "agent_type": "explore",
-  "wait": false
-}}
-```
-
----
-
-# Skills System
-
-Skills are **declarative YAML definitions** that enhance agent behavior without code changes. Drop a file and it's immediately active.
-
-## How Skills Work
-
-```
-User: "Review my authentication code"
-         │
-         ▼
-┌─────────────────────────────────────┐
-│ Skill Matcher                       │
-│ Triggers: ["review", "code review"] │
-│ Result: MATCH → code-review skill   │
-└─────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────┐
-│ Enhanced System Prompt              │
-│ + Skill template                    │
-│ + Few-shot examples                 │
-│ = More focused, expert response     │
-└─────────────────────────────────────┘
-```
-
-## Creating Skills
-
-Place YAML files in `~/.gobot/skills/` or `extensions/skills/`:
-
-```yaml
-# extensions/skills/security-audit.yaml
+# skills/security-audit.yaml (in Nebo data directory)
 name: security-audit
-description: Security-focused code analysis
-version: "1.0.0"
-priority: 20
-
-triggers:
-  - security
-  - audit
-  - vulnerability
-  - owasp
-
-tools:
-  - read
-  - grep
-  - glob
-
+triggers: [security, audit, vulnerability]
 template: |
   When performing a security audit:
-
-  1. Check for OWASP Top 10 vulnerabilities:
-     - Injection (SQL, command, LDAP)
-     - Broken authentication
-     - Sensitive data exposure
-     - XXE, XSS, insecure deserialization
-     - Security misconfiguration
-     - Broken access control
-
-  2. Look for:
-     - Hardcoded secrets/credentials
-     - Unvalidated user input
-     - Missing authentication/authorization
-     - Insecure cryptography
-     - Logging sensitive data
-
-  3. Report format:
-     - CRITICAL: Exploitable now
-     - HIGH: Serious but needs conditions
-     - MEDIUM: Should fix
-     - LOW: Best practice improvement
-
-examples:
-  - user: "Check this code for security issues"
-    assistant: |
-      I'll perform a security audit focusing on OWASP Top 10.
-
-      **CRITICAL:**
-      - `auth.go:45` - SQL injection via string concatenation
-        Fix: Use parameterized queries
-
-      **HIGH:**
-      - `config.go:12` - API key hardcoded
-        Fix: Use environment variables
+  1. Check for OWASP Top 10 vulnerabilities
+  2. Look for hardcoded secrets
+  3. Review authentication flows
+  ...
 ```
 
-## Managing Skills
+Bundled skills: `code-review`, `git-workflow`, `security-audit`, `api-design`, `database-expert`, `debugging`
 
-```bash
-gobot skills list                           # List all skills
-gobot skills show security-audit            # Show skill details
-gobot skills test security-audit "audit this code"  # Test matching
+## Advisors System
+
+Advisors are internal "voices" that deliberate on tasks before the agent decides. They do NOT speak to users, commit memory, or persist independently — they only inform the agent's decisions.
+
+```
+User: "Should we rewrite the auth system?"
+                    │
+            ┌───────┴───────┐
+            │  THE AGENT    │
+            │  (main lane)  │
+            └───────┬───────┘
+                    │ advisors(task: "Evaluate auth rewrite")
+                    │
+        ┌───────────┼───────────┬───────────┐
+        ▼           ▼           ▼           ▼
+   ┌─────────┐ ┌──────────┐ ┌─────────┐ ┌─────────┐
+   │ Skeptic │ │Pragmatist│ │Historian│ │Creative │
+   │(critic) │ │(builder) │ │(context)│ │(explorer│
+   └────┬────┘ └────┬─────┘ └────┬────┘ └────┬────┘
+        │           │            │            │
+        └───────────┴────────────┴────────────┘
+                    │
+            Agent synthesizes and decides
 ```
 
-## Bundled Skills
+**Key properties:**
+- Run concurrently (up to 5, with 30s timeout)
+- Each advisor sees the same context but not other advisors' responses
+- The agent is the decision-maker — advisors only provide counsel
+- Hot-reload: edit files and changes take effect immediately
 
-| Skill | Triggers | Purpose |
+### Defining Advisors
+
+Advisors are Markdown files with YAML frontmatter, stored in the `advisors/` directory:
+
+```
+advisors/
+├── skeptic/
+│   └── ADVISOR.md
+├── pragmatist/
+│   └── ADVISOR.md
+├── historian/
+│   └── ADVISOR.md
+└── creative/
+    └── ADVISOR.md
+```
+
+Each `ADVISOR.md`:
+
+```markdown
+---
+name: skeptic
+role: critic
+description: Challenges assumptions and identifies weaknesses
+priority: 10
+enabled: true
+---
+
+# The Skeptic
+
+You are the Skeptic. Your role is to challenge ideas and find flaws.
+
+## Your Approach
+- Question every assumption
+- Look for edge cases and failure modes
+- Challenge optimistic estimates
+```
+
+| Field | Required | Purpose |
 |-------|----------|---------|
-| `code-review` | review, critique | Structured code reviews |
-| `git-workflow` | commit, git, pr | Git operations help |
-| `security-audit` | security, audit | OWASP-focused analysis |
-| `api-design` | api, endpoint | RESTful API best practices |
-| `database-expert` | sql, database | Query optimization |
-| `debugging` | debug, error, fix | Systematic debugging |
+| `name` | Yes | Unique identifier |
+| `role` | No | Category (critic, builder, historian, etc.) |
+| `description` | Yes | What this advisor does |
+| `priority` | No | Execution order (higher = first, default: 0) |
+| `enabled` | No | Disable without deleting (default: true) |
+| `memory_access` | No | Enable persistent memory recall for this advisor (default: false) |
 
----
+The markdown body after the frontmatter is the advisor's persona — the system prompt that shapes their voice.
 
-# Plugin System
+### Using Advisors
 
-Plugins are **compiled binaries** that extend GoBot with new tools. They run as separate processes via RPC.
-
-## Plugin Directory
+The agent decides when to consult advisors via the `advisors` tool:
 
 ```
-~/.gobot/plugins/
-├── tools/              # Tool plugins
-│   ├── weather         # Binary
-│   └── database        # Binary
-└── channels/           # Channel plugins
-    └── custom-chat     # Binary
+advisors(task: "Should we migrate from REST to GraphQL?")
+advisors(task: "Evaluate caching strategy", advisors: ["skeptic", "pragmatist"])
 ```
 
-## Creating a Tool Plugin
+**Use advisors for:** Significant decisions, multiple valid approaches, when uncertain.
+**Skip advisors for:** Simple, routine, or time-sensitive tasks.
 
-```go
-// main.go
-package main
+### Configuration
 
-import (
-    "context"
-    "encoding/json"
-    "github.com/hashicorp/go-plugin"
-)
-
-var Handshake = plugin.HandshakeConfig{
-    ProtocolVersion:  1,
-    MagicCookieKey:   "GOBOT_PLUGIN",
-    MagicCookieValue: "gobot-plugin-v1",
-}
-
-type MyTool struct{}
-
-func (t *MyTool) Name() string { return "my-tool" }
-func (t *MyTool) Description() string { return "Does something useful" }
-func (t *MyTool) Schema() json.RawMessage {
-    return json.RawMessage(`{"type":"object","properties":{}}`)
-}
-func (t *MyTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
-    return &ToolResult{Content: "Done!", IsError: false}, nil
-}
-func (t *MyTool) RequiresApproval() bool { return false }
-
-// ... RPC boilerplate (see extensions/tools/example/)
+```yaml
+# config.yaml (in Nebo data directory)
+advisors:
+  enabled: true           # Disable all advisors globally
+  max_advisors: 5         # Max concurrent advisors per deliberation
+  timeout_seconds: 30     # Per-deliberation timeout
 ```
 
-Build and install:
-```bash
-go build -o ~/.gobot/plugins/tools/my-tool
+### Built-in Advisors
+
+| Advisor | Role | Memory | Purpose |
+|---------|------|--------|---------|
+| **Skeptic** | critic | No | Challenges assumptions, identifies weaknesses |
+| **Pragmatist** | builder | No | Finds simplest viable action, cuts complexity |
+| **Historian** | context | Yes | Brings context from past decisions and patterns |
+| **Creative** | explorer | No | Explores novel or unconventional approaches |
+| **Optimist** | advocate | No | Focuses on possibilities and upside potential |
+
+The Historian has `memory_access: true`, so it receives relevant memories from Nebo's persistent memory (hybrid vector + FTS search) before deliberating. Any advisor can opt into memory access by adding this flag to their frontmatter.
+
+## Channel Integrations
+
+Connect Nebo to messaging platforms:
+
+| Channel | Setup |
+|---------|-------|
+| **Telegram** | Create bot via @BotFather, add token in Settings |
+| **Discord** | Create application, add bot token in Settings |
+| **Slack** | Create app with Socket Mode, add tokens in Settings |
+
+Messages from these channels are routed to THE agent, and responses are sent back.
+
+## CLI Reference
+
+```
+nebo                  Desktop mode (native window + system tray + agent)
+nebo --headless       Headless mode (HTTP server + agent, opens browser)
+nebo serve            Server only (for remote agents)
+nebo agent            Agent only (connects to server)
+nebo chat "prompt"    One-shot chat
+nebo chat -i          Interactive REPL
+nebo chat --dangerously   No approval prompts (caution!)
 ```
 
----
-
-# CLI Reference
-
-```
-gobot [command]
-
-Commands:
-  chat          Chat with the AI assistant
-    -i, --interactive    Interactive mode
-    --dangerously        100% autonomous (no approval prompts)
-    -s, --session        Session key (default: "default")
-    -p, --provider       Provider to use
-    -v, --verbose        Show tool calls
-
-  agent         Connect to SaaS as remote agent
-    --org               Organization ID
-    --server            Server URL
-    --token             JWT token
-    --dangerously       100% autonomous (no approval prompts)
-
-  mcp           Start MCP server
-    --host              Listen host (default: localhost)
-    --port              Listen port (default: 8080)
-
-  config        Configuration management
-    init                Create default config
-
-  session       Session management
-    list                List sessions
-    clear [key]         Clear history
-
-  skills        Skill management
-    list                List skills
-    show [name]         Show details
-    test [name] [input] Test matching
-
-  plugins       Plugin management
-    list                List plugins
-
-Global Flags:
-  --config      Config file path
-  -h, --help    Help
-```
-
----
-
-# Development
+## Development
 
 ```bash
-# Build
-make build              # Build unified binary (server + agent)
-make cli                # Build and install globally
-
-# Test
-go test ./...           # Run all tests
-
-# Development
-make air                # Backend with hot reload
-cd app && pnpm dev      # Frontend dev server
+make air              # Backend with hot reload (headless mode)
+cd app && pnpm dev    # Frontend dev server
+go test ./...         # Run tests
+make build            # Build binary (headless + desktop)
+make desktop          # Build desktop app (includes frontend build)
+make package          # Package as installer (.dmg/.msi/.deb)
 ```
 
-## Project Structure
+## Architecture
 
 ```
-gobot/
-├── agent/                    # CLI Agent
-│   ├── ai/                   # AI providers
-│   ├── config/               # Configuration
-│   ├── tools/                # Built-in tools
-│   ├── runner/               # Agentic loop
-│   ├── session/              # SQLite persistence
-│   ├── skills/               # Skill loader
-│   ├── plugins/              # Plugin loader
-│   └── mcp/                  # MCP server
-├── cmd/gobot/                # Unified CLI entry point
-├── internal/                 # SaaS backend
-│   ├── agenthub/             # Agent WebSocket hub
-│   ├── channels/             # Telegram/Discord/Slack
-│   ├── router/               # Message routing
-│   └── ...
-├── extensions/               # Bundled extensions
-│   ├── skills/               # YAML skills
-│   └── plugins/              # Example plugins
-└── app/                      # SvelteKit frontend
+nebo/
+├── internal/
+│   ├── agent/                # The Agent Core
+│   │   ├── ai/               # AI providers (Anthropic, OpenAI, Gemini, Ollama)
+│   │   ├── comm/             # Inter-agent communication (CommPlugin, handler, manager)
+│   │   ├── runner/           # Agentic loop (model selection, tool execution)
+│   │   ├── orchestrator/     # Sub-agent spawning + crash recovery
+│   │   ├── tools/            # STRAP domain tools (file, shell, web, agent)
+│   │   ├── session/          # Conversation persistence + compaction
+│   │   ├── embeddings/       # Vector + FTS hybrid search for memories
+│   │   ├── skills/           # YAML skill loader (hot-reload)
+│   │   ├── plugins/          # hashicorp/go-plugin for extensions
+│   │   └── recovery/         # Pending task persistence for crash recovery
+│   ├── agenthub/             # WebSocket hub + lane system
+│   │   ├── hub.go            # Connection management, message routing
+│   │   └── lane.go           # Concurrency queues (main/events/subagent/nested/heartbeat/comm)
+│   ├── channels/             # Telegram, Discord, Slack integrations
+│   └── server/               # HTTP server (chi router)
+├── cmd/nebo/                 # CLI commands (agent, chat, serve, desktop, etc.)
+│   ├── desktop.go            # Wails v3 native window + system tray
+│   ├── root.go               # Headless mode (RunAll)
+│   └── vars.go               # --headless flag routing
+├── app/                      # Web UI (SvelteKit 2 + Svelte 5)
+├── assets/icons/             # App icons for all platforms
+└── extensions/               # Bundled skills & plugins
 ```
 
-## Tech Stack
+### Component Responsibilities
 
-| Component | Technology |
-|-----------|------------|
-| Agent | Go 1.25+, Cobra CLI |
-| Backend | go-zero framework |
-| Frontend | SvelteKit 2, Svelte 5 |
-| Database | SQLite (modernc.org/sqlite) |
-| Browser | chromedp (CDP) |
-| Plugins | hashicorp/go-plugin |
+| Component | Role |
+|-----------|------|
+| **Hub** (`agenthub/hub.go`) | WebSocket connections, agent registry, message routing |
+| **Lanes** (`agenthub/lane.go`) | Work queues with concurrency limits per lane type |
+| **Runner** (`agent/runner/`) | Agentic loop: model selection, tool execution, streaming |
+| **Orchestrator** (`agent/orchestrator/`) | Sub-agent spawning, task persistence, crash recovery |
+| **Session** (`agent/session/`) | Conversation history, context compaction |
 
----
+### Data Flow
 
-# Agent Mode (SaaS)
-
-Connect the CLI agent to a GoBot server for remote task execution:
-
-```bash
-gobot agent --org acme --server https://gobot.example.com --token <jwt>
 ```
-
-This enables:
-- Remote tasks from web dashboard
-- Channel integrations (Telegram → Agent → Response)
-- Multi-agent coordination
-- Centralized history
-
----
-
-# MCP Server
-
-Expose GoBot's tools to other AI assistants:
-
-```bash
-gobot mcp --port 8080
+Channel (Web/CLI/Telegram/Discord/Slack)
+    ↓
+Hub receives WebSocket message
+    ↓
+Routes to Agent via channel
+    ↓
+Agent command enqueues to Lane
+    ↓
+Lane worker (respecting concurrency) calls Runner.Run()
+    ↓
+Runner executes agentic loop (stream events back)
+    ↓
+Hub broadcasts to connected clients
 ```
-
-Claude Desktop and other MCP clients can then use GoBot's tools.
 
 ## Author
 
 **Alma Tuck**
 - Website: [almatuck.com](https://almatuck.com)
+- LinkedIn: [linkedin.com/in/almatuck](https://linkedin.com/in/almatuck)
 - X: [@almatuck](https://x.com/almatuck)
 
 ## License

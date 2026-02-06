@@ -109,5 +109,8 @@ SELECT * FROM (
     LIMIT ?
 ) sub ORDER BY created_at ASC;
 
+-- name: UpdateChatMessageContent :exec
+UPDATE chat_messages SET content = ?, metadata = ? WHERE id = ?;
+
 -- name: CountChatMessages :one
 SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?;

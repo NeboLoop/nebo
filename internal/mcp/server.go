@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"gobot/internal/db"
-	"gobot/internal/mcp/mcpauth"
-	"gobot/internal/mcp/mcpctx"
-	"gobot/internal/mcp/tools"
-	"gobot/internal/svc"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/mcp/mcpauth"
+	"github.com/nebolabs/nebo/internal/mcp/mcpctx"
+	"github.com/nebolabs/nebo/internal/mcp/tools"
+	"github.com/nebolabs/nebo/internal/svc"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -25,7 +25,7 @@ func NewServer(svc *svc.ServiceContext, r *http.Request) *mcp.Server {
 // The ToolContext is returned so the caller can cache it for session persistence.
 func NewServerWithContext(svc *svc.ServiceContext, r *http.Request) (*mcp.Server, *mcpctx.ToolContext) {
 	server := mcp.NewServer(&mcp.Implementation{
-		Name:    "gobot",
+		Name:    "nebo",
 		Version: "1.0.0",
 	}, nil)
 
@@ -66,6 +66,7 @@ func NewServerWithContext(svc *svc.ServiceContext, r *http.Request) (*mcp.Server
 	// Register all tools (unified resource/action pattern)
 	tools.RegisterUserTool(server, toolCtx)
 	tools.RegisterNotificationTool(server, toolCtx)
+	tools.RegisterMemoryTool(server, toolCtx)
 
 	return server, toolCtx
 }

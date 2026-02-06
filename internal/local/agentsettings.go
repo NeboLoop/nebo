@@ -9,10 +9,11 @@ import (
 
 // AgentSettings holds the agent configuration
 type AgentSettings struct {
-	AutonomousMode   bool `json:"autonomousMode"`
-	AutoApproveRead  bool `json:"autoApproveRead"`
-	AutoApproveWrite bool `json:"autoApproveWrite"`
-	AutoApproveBash  bool `json:"autoApproveBash"`
+	AutonomousMode           bool `json:"autonomousMode"`
+	AutoApproveRead          bool `json:"autoApproveRead"`
+	AutoApproveWrite         bool `json:"autoApproveWrite"`
+	AutoApproveBash          bool `json:"autoApproveBash"`
+	HeartbeatIntervalMinutes int  `json:"heartbeatIntervalMinutes"`
 }
 
 // AgentSettingsStore manages agent settings persistence
@@ -27,10 +28,11 @@ func NewAgentSettingsStore(dataDir string) *AgentSettingsStore {
 	store := &AgentSettingsStore{
 		filePath: filepath.Join(dataDir, "agent-settings.json"),
 		settings: AgentSettings{
-			AutonomousMode:   false,
-			AutoApproveRead:  true, // Safe default
-			AutoApproveWrite: false,
-			AutoApproveBash:  false,
+			AutonomousMode:           false,
+			AutoApproveRead:          true, // Safe default
+			AutoApproveWrite:         false,
+			AutoApproveBash:          false,
+			HeartbeatIntervalMinutes: 30, // Default 30 minutes
 		},
 	}
 	store.load()

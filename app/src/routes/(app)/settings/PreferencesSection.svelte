@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Bell, Sun, Moon, Monitor } from 'lucide-svelte';
-	import * as api from '$lib/api/gobot';
+	import * as api from '$lib/api/nebo';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Toggle from '$lib/components/ui/Toggle.svelte';

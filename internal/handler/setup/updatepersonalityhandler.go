@@ -2,28 +2,51 @@ package setup
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/setup"
-	"gobot/internal/svc"
-	"gobot/internal/types"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Update AI personality configuration
 func UpdatePersonalityHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req types.UpdatePersonalityRequest
-		if err := httpx.Parse(r, &req); err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
 			return
 		}
 
-		l := setup.NewUpdatePersonalityLogic(r.Context(), svcCtx)
-		resp, err := l.UpdatePersonality(&req)
+		// Get data directory path
+		dataDir, err := defaults.DataDir()
 		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
+			logging.Errorf("Failed to get data directory: %v", err)
+			httputil.Error(w, err)
+			return
 		}
+
+		// Ensure directory exists
+		if err := os.MkdirAll(dataDir, 0755); err != nil {
+			logging.Errorf("Failed to create data directory: %v", err)
+			httputil.Error(w, err)
+			return
+		}
+
+		soulPath := filepath.Join(dataDir, "SOUL.md")
+
+		// Write content to file
+		if err := os.WriteFile(soulPath, []byte(req.Content), 0644); err != nil {
+			logging.Errorf("Failed to write SOUL.md: %v", err)
+			httputil.Error(w, err)
+			return
+		}
+
+		httputil.OkJSON(w, &types.UpdatePersonalityResponse{
+			Success: true,
+		})
 	}
 }

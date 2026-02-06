@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"gobot/internal/security"
+	"github.com/nebolabs/nebo/internal/security"
 )
 
 // ValidationConfig holds configuration for request validation

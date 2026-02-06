@@ -1,5 +1,5 @@
 /**
- * GoBot UI Components
+ * Nebo UI Components
  *
  * Reusable components for 100% consistency across all pages.
  * Import from here for easy access.
@@ -81,5 +81,6 @@ export { default as Collapsible } from './Collapsible.svelte';
 export { default as DropdownMenu } from './DropdownMenu.svelte';
 export { default as Textarea } from './Textarea.svelte';
 export { default as Markdown } from './Markdown.svelte';
+export { default as MarkdownEditor } from './MarkdownEditor.svelte';
 export { default as NotificationBell } from './NotificationBell.svelte';
 export { default as OAuthButtons } from './OAuthButtons.svelte';

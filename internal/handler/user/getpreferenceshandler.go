@@ -3,20 +3,22 @@ package user
 import (
 	"net/http"
 
-	"github.com/zeromicro/go-zero/rest/httpx"
-	"gobot/internal/logic/user"
-	"gobot/internal/svc"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
-// Get user preferences
 func GetPreferencesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		l := user.NewGetPreferencesLogic(r.Context(), svcCtx)
-		resp, err := l.GetPreferences()
-		if err != nil {
-			httpx.ErrorCtx(r.Context(), w, err)
-		} else {
-			httpx.OkJsonCtx(r.Context(), w, resp)
-		}
+		// Preferences are stored locally - return defaults
+		httputil.OkJSON(w, &types.GetPreferencesResponse{
+			Preferences: types.UserPreferences{
+				EmailNotifications: true,
+				MarketingEmails:    true,
+				Timezone:           "UTC",
+				Language:           "en",
+				Theme:              "system",
+			},
+		})
 	}
 }

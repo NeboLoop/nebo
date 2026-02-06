@@ -1,9 +1,9 @@
 package realtime
 
 import (
-	"gobot/internal/svc"
+	"github.com/nebolabs/nebo/internal/svc"
 
-	"github.com/zeromicro/go-zero/core/logx"
+	"github.com/nebolabs/nebo/internal/logging"
 )
 
 // RewriteHandler handles WebSocket messages
@@ -25,7 +25,7 @@ func (h *RewriteHandler) Register() {
 // handleMessage processes incoming WebSocket messages
 // Customize this for your application's needs
 func (h *RewriteHandler) handleMessage(c *Client, msg *Message) {
-	logx.Infof("[RewriteHandler] Received message from client %s: type=%s", c.ID, msg.Type)
+	logging.Infof("[RewriteHandler] Received message from client %s: type=%s", c.ID, msg.Type)
 
 	// Example: Echo the message back
 	response := &Message{
@@ -36,6 +36,6 @@ func (h *RewriteHandler) handleMessage(c *Client, msg *Message) {
 	}
 
 	if err := c.SendMessage(response); err != nil {
-		logx.Errorf("[RewriteHandler] Failed to send response: %v", err)
+		logging.Errorf("[RewriteHandler] Failed to send response: %v", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -47,19 +48,27 @@ func TestDataDir(t *testing.T) {
 		t.Fatalf("DataDir failed: %v", err)
 	}
 
-	home, _ := os.UserHomeDir()
-	expected := filepath.Join(home, ".gobot")
-	if dir != expected {
-		t.Errorf("Expected %s, got %s", expected, dir)
+	// Should use os.UserConfigDir() as base
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir failed: %v", err)
+	}
+
+	if !strings.HasPrefix(dir, configDir) {
+		t.Errorf("Expected DataDir to be under %s, got %s", configDir, dir)
+	}
+
+	base := filepath.Base(dir)
+	if base != "Nebo" && base != "nebo" {
+		t.Errorf("Expected DataDir to end with Nebo or nebo, got %s", base)
 	}
 }
 
 func TestEnsureDataDir(t *testing.T) {
-	// Use temp directory for testing
+	// Use temp directory for testing via NEBO_DATA_DIR override
 	tmpDir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
+	dataDir := filepath.Join(tmpDir, "Nebo")
+	t.Setenv("NEBO_DATA_DIR", dataDir)
 
 	dir, err := EnsureDataDir()
 	if err != nil {

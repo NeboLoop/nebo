@@ -1,24 +1,21 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import * as api from '$lib/api/nebo';
 
 	let status = $state('Logging in...');
 	let error = $state<string | null>(null);
 
 	onMount(async () => {
 		try {
-			const response = await fetch('/api/v1/auth/dev-login');
-			if (!response.ok) {
-				const text = await response.text();
-				throw new Error(`Login failed: ${text}`);
-			}
-
-			const data = await response.json();
+			const data = await api.devLogin();
 
 			// Store tokens in localStorage (same keys as auth store)
-			localStorage.setItem('gobot_token', data.token);
-			localStorage.setItem('gobot_refresh_token', data.refreshToken);
-			localStorage.setItem('gobot_expires_at', data.expiresAt.toString());
+			// Note: devLogin returns MessageResponse, so we need to handle the actual response format
+			const loginData = data as unknown as { token: string; refreshToken: string; expiresAt: number };
+			localStorage.setItem('nebo_token', loginData.token);
+			localStorage.setItem('nebo_refresh_token', loginData.refreshToken);
+			localStorage.setItem('nebo_expires_at', loginData.expiresAt.toString());
 
 			status = 'Logged in! Redirecting...';
 
