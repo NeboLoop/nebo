@@ -46,7 +46,7 @@ jobs:
           pnpm exec svelte-kit sync
           pnpm run build
 
-      - name: Build binary
+      - name: Build binary (headless - no desktop/Wails)
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}

@@ -168,29 +168,29 @@ release: clean release-darwin release-linux
 	@echo "Release binaries built in dist/"
 	@ls -la dist/
 
-# macOS builds
+# macOS builds (headless — no Wails/CGO needed)
 release-darwin:
 	@echo "Building for macOS..."
 	@mkdir -p dist
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-darwin-amd64 .
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-darwin-arm64 .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-darwin-amd64 .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-darwin-arm64 .
 
-# Linux builds
+# Linux builds (headless — no Wails/CGO needed)
 release-linux:
 	@echo "Building for Linux..."
 	@mkdir -p dist
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-linux-amd64 .
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-linux-arm64 .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-linux-amd64 .
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-linux-arm64 .
 
 # =============================================================================
 # DESKTOP TARGETS (Wails v3)
 # =============================================================================
 
-# Build desktop app for current platform
+# Build desktop app for current platform (requires CGO for Wails v3)
 desktop:
 	@echo "Building Nebo desktop app..."
 	@cd app && pnpm build
-	go build $(LDFLAGS) -o bin/$(EXECUTABLE) .
+	go build -tags desktop $(LDFLAGS) -o bin/$(EXECUTABLE) .
 	@echo "Desktop app built: bin/$(EXECUTABLE)"
 	@echo "Run with: ./bin/$(EXECUTABLE)"
 	@echo "Run headless: ./bin/$(EXECUTABLE) --headless"
