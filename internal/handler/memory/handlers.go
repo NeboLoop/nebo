@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"nebo/internal/db"
-	"nebo/internal/httputil"
-	"nebo/internal/logging"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // ListMemoriesHandler returns paginated list of memories
@@ -32,12 +32,11 @@ func ListMemoriesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		offset := (page - 1) * pageSize
 
-		var memories []db.Memory
 		var total int64
-		var err error
+		var response types.ListMemoriesResponse
 
 		if namespace != "" {
-			memories, err = svcCtx.DB.ListMemoriesByNamespace(ctx, db.ListMemoriesByNamespaceParams{
+			memories, err := svcCtx.DB.ListMemoriesByNamespace(ctx, db.ListMemoriesByNamespaceParams{
 				NamespacePrefix: sql.NullString{String: namespace, Valid: true},
 				Limit:           int64(pageSize),
 				Offset:          int64(offset),
@@ -45,29 +44,38 @@ func ListMemoriesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			if err == nil {
 				total, _ = svcCtx.DB.CountMemoriesByNamespace(ctx, sql.NullString{String: namespace, Valid: true})
 			}
+			if err != nil {
+				logging.Errorf("Failed to list memories: %v", err)
+				httputil.InternalError(w, "failed to list memories")
+				return
+			}
+			response = types.ListMemoriesResponse{
+				Memories: make([]types.MemoryItem, len(memories)),
+				Total:    total,
+			}
+			for i, m := range memories {
+				response.Memories[i] = listMemoryByNamespaceRowToType(m)
+			}
 		} else {
-			memories, err = svcCtx.DB.ListMemories(ctx, db.ListMemoriesParams{
+			memories, err := svcCtx.DB.ListMemories(ctx, db.ListMemoriesParams{
 				Limit:  int64(pageSize),
 				Offset: int64(offset),
 			})
 			if err == nil {
 				total, _ = svcCtx.DB.CountMemories(ctx)
 			}
-		}
-
-		if err != nil {
-			logging.Errorf("Failed to list memories: %v", err)
-			httputil.InternalError(w, "failed to list memories")
-			return
-		}
-
-		response := types.ListMemoriesResponse{
-			Memories: make([]types.MemoryItem, len(memories)),
-			Total:    total,
-		}
-
-		for i, m := range memories {
-			response.Memories[i] = dbMemoryToType(m)
+			if err != nil {
+				logging.Errorf("Failed to list memories: %v", err)
+				httputil.InternalError(w, "failed to list memories")
+				return
+			}
+			response = types.ListMemoriesResponse{
+				Memories: make([]types.MemoryItem, len(memories)),
+				Total:    total,
+			}
+			for i, m := range memories {
+				response.Memories[i] = listMemoryRowToType(m)
+			}
 		}
 
 		httputil.OkJSON(w, response)
@@ -106,7 +114,7 @@ func GetMemoryHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		_ = svcCtx.DB.IncrementMemoryAccess(ctx, id)
 
 		httputil.OkJSON(w, types.GetMemoryResponse{
-			Memory: dbMemoryToType(memory),
+			Memory: getMemoryRowToType(memory),
 		})
 	}
 }
@@ -154,7 +162,7 @@ func UpdateMemoryHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		// Return updated memory
 		memory, _ := svcCtx.DB.GetMemory(ctx, id)
 		httputil.OkJSON(w, types.GetMemoryResponse{
-			Memory: dbMemoryToType(memory),
+			Memory: getMemoryRowToType(memory),
 		})
 	}
 }
@@ -224,7 +232,7 @@ func SearchMemoriesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		for i, m := range memories {
-			response.Memories[i] = dbMemoryToType(m)
+			response.Memories[i] = searchMemoryRowToType(m)
 		}
 
 		httputil.OkJSON(w, response)
@@ -274,29 +282,47 @@ func toNullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: true}
 }
 
-func dbMemoryToType(m db.Memory) types.MemoryItem {
-	var tags []string
-	if m.Tags.Valid && m.Tags.String != "" {
-		json.Unmarshal([]byte(m.Tags.String), &tags)
+// Converter functions for sqlc row types
+
+func listMemoryRowToType(m db.ListMemoriesRow) types.MemoryItem {
+	return convertMemoryRow(m.ID, m.Namespace, m.Key, m.Value, m.Tags, m.CreatedAt, m.UpdatedAt, m.AccessedAt, m.AccessCount)
+}
+
+func listMemoryByNamespaceRowToType(m db.ListMemoriesByNamespaceRow) types.MemoryItem {
+	return convertMemoryRow(m.ID, m.Namespace, m.Key, m.Value, m.Tags, m.CreatedAt, m.UpdatedAt, m.AccessedAt, m.AccessCount)
+}
+
+func getMemoryRowToType(m db.GetMemoryRow) types.MemoryItem {
+	return convertMemoryRow(m.ID, m.Namespace, m.Key, m.Value, m.Tags, m.CreatedAt, m.UpdatedAt, m.AccessedAt, m.AccessCount)
+}
+
+func searchMemoryRowToType(m db.SearchMemoriesRow) types.MemoryItem {
+	return convertMemoryRow(m.ID, m.Namespace, m.Key, m.Value, m.Tags, m.CreatedAt, m.UpdatedAt, m.AccessedAt, m.AccessCount)
+}
+
+func convertMemoryRow(id int64, namespace, key, value string, tags sql.NullString, createdAt, updatedAt, accessedAt sql.NullTime, accessCount sql.NullInt64) types.MemoryItem {
+	var tagsList []string
+	if tags.Valid && tags.String != "" {
+		json.Unmarshal([]byte(tags.String), &tagsList)
 	}
 
 	item := types.MemoryItem{
-		Id:          m.ID,
-		Namespace:   m.Namespace,
-		Key:         m.Key,
-		Value:       m.Value,
-		Tags:        tags,
-		AccessCount: m.AccessCount.Int64,
+		Id:          id,
+		Namespace:   namespace,
+		Key:         key,
+		Value:       value,
+		Tags:        tagsList,
+		AccessCount: accessCount.Int64,
 	}
 
-	if m.CreatedAt.Valid {
-		item.CreatedAt = m.CreatedAt.Time.Format("2006-01-02T15:04:05Z")
+	if createdAt.Valid {
+		item.CreatedAt = createdAt.Time.Format("2006-01-02T15:04:05Z")
 	}
-	if m.UpdatedAt.Valid {
-		item.UpdatedAt = m.UpdatedAt.Time.Format("2006-01-02T15:04:05Z")
+	if updatedAt.Valid {
+		item.UpdatedAt = updatedAt.Time.Format("2006-01-02T15:04:05Z")
 	}
-	if m.AccessedAt.Valid {
-		item.AccessedAt = m.AccessedAt.Time.Format("2006-01-02T15:04:05Z")
+	if accessedAt.Valid {
+		item.AccessedAt = accessedAt.Time.Format("2006-01-02T15:04:05Z")
 	}
 
 	return item

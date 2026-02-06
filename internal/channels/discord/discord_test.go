@@ -3,7 +3,7 @@ package discord
 import (
 	"testing"
 
-	"nebo/internal/channels"
+	"github.com/nebolabs/nebo/internal/channels"
 )
 
 func TestNew(t *testing.T) {

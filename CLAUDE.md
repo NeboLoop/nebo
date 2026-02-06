@@ -280,7 +280,7 @@ Web UI at `http://local.nebo.bot:27895`
 
 ### Lane System (`internal/agenthub/lane.go`)
 
-Lanes are work queues that organize different types of work. See `docs/specs/LANE_SPEC.md` for full specification.
+Lanes are work queues that organize different types of work.
 
 | Lane | Purpose |
 |------|---------|

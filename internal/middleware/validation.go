@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"nebo/internal/security"
+	"github.com/nebolabs/nebo/internal/security"
 )
 
 // ValidationConfig holds configuration for request validation

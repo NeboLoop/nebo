@@ -72,3 +72,15 @@ DELETE FROM auth_profiles WHERE id = ?;
 UPDATE auth_profiles
 SET name = ?, api_key = ?, model = ?, base_url = ?, priority = ?, auth_type = ?, metadata = ?, updated_at = unixepoch()
 WHERE id = ?;
+
+-- name: GetAuthProfileErrorCount :one
+SELECT error_count FROM auth_profiles WHERE id = ?;
+
+-- name: ResetAuthProfileErrorCountIfStale :exec
+-- Reset error count if cooldown has expired and last update was > 24h ago
+UPDATE auth_profiles
+SET error_count = 0, updated_at = unixepoch()
+WHERE id = ?
+AND error_count > 0
+AND (cooldown_until IS NULL OR cooldown_until < unixepoch())
+AND updated_at < ?;

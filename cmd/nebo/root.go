@@ -14,20 +14,22 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/logging"
 
-	"nebo/app"
-	agentcfg "nebo/agent/config"
-	agentmcp "nebo/agent/mcp"
-	"nebo/agent/tools"
-	"nebo/internal/agenthub"
-	"nebo/internal/channels"
-	"nebo/internal/daemon"
-	"nebo/internal/db"
-	"nebo/internal/db/migrations"
-	"nebo/internal/defaults"
-	"nebo/internal/lifecycle"
-	"nebo/internal/server"
+	"github.com/nebolabs/nebo/app"
+	"github.com/nebolabs/nebo/internal/agent/advisors"
+	"github.com/nebolabs/nebo/internal/agent/ai"
+	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
+	agentmcp "github.com/nebolabs/nebo/internal/agent/mcp"
+	"github.com/nebolabs/nebo/internal/agent/tools"
+	"github.com/nebolabs/nebo/internal/agenthub"
+	"github.com/nebolabs/nebo/internal/channels"
+	"github.com/nebolabs/nebo/internal/daemon"
+	"github.com/nebolabs/nebo/internal/db/migrations"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/lifecycle"
+	"github.com/nebolabs/nebo/internal/server"
+	"github.com/nebolabs/nebo/internal/svc"
 )
 
 // RunAll starts both server and agent together (default mode)
@@ -69,22 +71,22 @@ func RunAll() {
 
 	c := ServerConfig
 
-	// Initialize shared database ONCE for all components
-	database, err := db.NewSQLite(c.Database.SQLitePath)
-	if err != nil {
-		fmt.Printf("\033[31mError: Failed to initialize database: %v\033[0m\n", err)
+	// Initialize shared ServiceContext ONCE — single owner of the database connection
+	svcCtx := svc.NewServiceContext(*c)
+	defer svcCtx.Close()
+
+	if svcCtx.DB == nil {
+		fmt.Printf("\033[31mError: Failed to initialize database\033[0m\n")
 		os.Exit(1)
 	}
-	defer database.Close()
 
 	// Create shared components (single binary = shared state)
 	channelMgr := channels.NewManager()
-	agentHub := agenthub.NewHub()
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
 
-	// Start server in goroutine (uses shared database)
+	// Start server in goroutine (uses shared ServiceContext)
 	wg.Add(1)
 	go func() {
 		defer func() {
@@ -93,8 +95,7 @@ func RunAll() {
 		}()
 		opts := server.ServerOptions{
 			ChannelManager: channelMgr,
-			AgentHub:       agentHub,
-			Database:       database,
+			SvcCtx:         svcCtx,
 			Quiet:          true, // Suppress server startup messages
 		}
 		if err := server.RunWithOptions(ctx, *c, opts); err != nil {
@@ -121,6 +122,21 @@ func RunAll() {
 	// Load agent config
 	agentCfg := loadAgentConfig()
 
+	// Load advisors and create provider for MCP server
+	advisorLoader := advisors.NewLoader(agentCfg.AdvisorsDir())
+	if err := advisorLoader.LoadAll(); err != nil {
+		fmt.Printf("[MCP] Warning: failed to load advisors: %v\n", err)
+	}
+
+	// Create a provider for the MCP advisors tool (uses same config as agent)
+	SetSharedDB(svcCtx.DB.GetDB())
+	mcpProviders := createProviders(agentCfg)
+	var advisorProvider ai.Provider
+	if len(mcpProviders) > 0 {
+		advisorProvider = mcpProviders[0]
+		fmt.Printf("[MCP] Advisors provider: %s\n", advisorProvider.ID())
+	}
+
 	// Start MCP server in goroutine
 	mcpPort := 27896
 	mcpURL := fmt.Sprintf("http://%s:%d/mcp", c.App.Domain, mcpPort)
@@ -131,7 +147,7 @@ func RunAll() {
 			wg.Done()
 		}()
 		registry := createMCPRegistry(agentCfg)
-		if err := runMCPServerDaemon(ctx, registry, mcpPort, true); err != nil {
+		if err := runMCPServerDaemon(ctx, registry, mcpPort, true, advisorLoader, advisorProvider); err != nil {
 			fmt.Printf("[MCP] Error: %v\n", err)
 			if ctx.Err() == nil {
 				errCh <- fmt.Errorf("MCP server error: %w", err)
@@ -139,7 +155,7 @@ func RunAll() {
 		}
 	}()
 
-	// Start agent in goroutine (uses shared database)
+	// Start agent in goroutine (uses shared database from ServiceContext)
 	wg.Add(1)
 	go func() {
 		defer func() {
@@ -150,7 +166,7 @@ func RunAll() {
 		settingsDir := filepath.Dir(c.Database.SQLitePath)
 		agentOpts := AgentOptions{
 			ChannelManager:   channelMgr,
-			Database:         database.GetDB(),
+			Database:         svcCtx.DB.GetDB(),
 			Quiet:            true,
 			Dangerously:      dangerouslyAll,
 			SettingsFilePath: filepath.Join(settingsDir, "agent-settings.json"),
@@ -181,8 +197,9 @@ func RunAll() {
 			heartbeat = daemon.NewHeartbeat(daemon.HeartbeatConfig{
 				Interval: 30 * time.Minute,
 				OnHeartbeat: func(hbCtx context.Context, tasks string) error {
-					agent := agentHub.GetAnyAgent()
+					agent := svcCtx.AgentHub.GetAnyAgent()
 					if agent == nil {
+						fmt.Println("[heartbeat] No agent connected, skipping")
 						return nil
 					}
 
@@ -198,7 +215,7 @@ func RunAll() {
 							"session_key": sessionKey,
 						},
 					}
-					return agentHub.SendToAgent(agent.ID, frame)
+					return svcCtx.AgentHub.SendToAgent(agent.ID, frame)
 				},
 			})
 			heartbeat.Start(ctx)
@@ -344,20 +361,40 @@ func runServe() {
 }
 
 // createMCPRegistry creates a tool registry for MCP server
+// Uses "full" policy since MCP runs as daemon (no stdin for approval prompts)
+// and Claude Code already uses --dangerously-skip-permissions
 func createMCPRegistry(cfg *agentcfg.Config) *tools.Registry {
-	policy := tools.NewPolicyFromConfig(
-		cfg.Policy.Level,
-		cfg.Policy.AskMode,
-		cfg.Policy.Allowlist,
-	)
+	policy := tools.NewPolicyFromConfig("full", "off", nil)
+	fmt.Printf("[MCP] Creating registry with policy level=full (auto-approve all tools)\n")
 	registry := tools.NewRegistry(policy)
 	registry.RegisterDefaults()
+
+	// Register agent domain tool (memory, cron, task, message, session)
+	// This requires the shared DB which is set before this function is called
+	if sharedDB != nil {
+		agentTool, err := tools.NewAgentDomainTool(tools.AgentDomainConfig{
+			DB: sharedDB,
+		})
+		if err != nil {
+			fmt.Printf("[MCP] Warning: failed to create agent domain tool: %v\n", err)
+		} else {
+			registry.RegisterAgentDomainTool(agentTool)
+			fmt.Printf("[MCP] Registered agent domain tool (memory, cron, task, message, session)\n")
+		}
+	} else {
+		fmt.Printf("[MCP] Warning: no shared DB available, agent domain tool not registered\n")
+	}
+
 	return registry
 }
 
 // runMCPServerDaemon runs the MCP server in daemon mode
-func runMCPServerDaemon(ctx context.Context, registry *tools.Registry, port int, quiet bool) error {
-	mcpServer := agentmcp.NewServer(registry)
+func runMCPServerDaemon(ctx context.Context, registry *tools.Registry, port int, quiet bool, advisorLoader *advisors.Loader, advisorProvider ai.Provider) error {
+	var opts []agentmcp.Option
+	if advisorLoader != nil && advisorProvider != nil {
+		opts = append(opts, agentmcp.WithAdvisors(advisorLoader, advisorProvider))
+	}
+	mcpServer := agentmcp.NewServer(registry, opts...)
 
 	addr := fmt.Sprintf("localhost:%d", port)
 	if !quiet {
@@ -389,36 +426,3 @@ func runMCPServerDaemon(ctx context.Context, registry *tools.Registry, port int,
 	return nil
 }
 
-// acquireLock creates a lock file to ensure only one nebo instance runs
-func acquireLock(dataDir string) (*os.File, error) {
-	lockPath := dataDir + "/nebo.lock"
-
-	// Try to create/open the lock file
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("cannot open lock file: %w", err)
-	}
-
-	// Try to get exclusive lock (non-blocking)
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-	if err != nil {
-		file.Close()
-		return nil, fmt.Errorf("cannot acquire lock")
-	}
-
-	// Write our PID to the lock file
-	file.Truncate(0)
-	file.Seek(0, 0)
-	fmt.Fprintf(file, "%d\n", os.Getpid())
-	file.Sync()
-
-	return file, nil
-}
-
-// releaseLock releases the lock file
-func releaseLock(file *os.File) {
-	if file != nil {
-		syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
-		file.Close()
-	}
-}

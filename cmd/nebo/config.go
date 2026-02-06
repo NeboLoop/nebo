@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"nebo/agent/ai"
-	agentcfg "nebo/agent/config"
+	"github.com/nebolabs/nebo/internal/agent/ai"
+	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
 )
 
 // configCmd creates the config command

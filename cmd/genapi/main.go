@@ -26,6 +26,26 @@ type Route struct {
 	PathParams  []string // Parameters in the path like {id}
 }
 
+// Explicit response type mappings for handlers that don't follow naming convention
+var responseOverrides = map[string]string{
+	"Register":             "LoginResponse",
+	"GetCurrentUser":       "GetUserResponse",
+	"UpdateCurrentUser":    "GetUserResponse",
+	"GetAuthConfig":        "AuthConfigResponse",
+	"GetCompanionChat":     "GetChatResponse",
+	"GetAgentProfile":      "AgentProfileResponse",
+	"GetMemoryStats":       "MemoryStatsResponse",
+	"UpdateMemory":         "GetMemoryResponse",
+	"GetAgents":            "ListAgentsResponse",
+	"GetSystemStatus":      "SimpleAgentStatusResponse",
+	"GetSimpleAgentStatus": "SimpleAgentStatusResponse",
+}
+
+// Explicit request type mappings for handlers that don't follow naming convention
+var requestOverrides = map[string]string{
+	"UpdateCurrentUser": "UpdateUserRequest",
+}
+
 // Field represents a struct field
 type Field struct {
 	Name     string
@@ -144,11 +164,17 @@ func parseRoutes(filename string, types []TypeDef) ([]Route, error) {
 		requestType := baseName + "Request"
 		responseType := baseName + "Response"
 
-		// Check if types exist
-		if !typeSet[requestType] {
+		// Check for explicit request type override first
+		if override, ok := requestOverrides[baseName]; ok {
+			requestType = override
+		} else if !typeSet[requestType] {
 			requestType = ""
 		}
-		if !typeSet[responseType] {
+
+		// Check for explicit response type override first
+		if override, ok := responseOverrides[baseName]; ok {
+			responseType = override
+		} else if !typeSet[responseType] {
 			// Try common alternatives
 			if typeSet["MessageResponse"] && (method == "DELETE" || strings.HasPrefix(baseName, "Mark") || strings.HasPrefix(baseName, "Toggle")) {
 				responseType = "MessageResponse"
@@ -345,7 +371,7 @@ func parseStructTag(tag string) TagInfo {
 		parts := strings.Split(formTag, ",")
 		info.FormName = parts[0]
 		for _, part := range parts[1:] {
-			if part == "optional" {
+			if part == "optional" || part == "omitempty" {
 				info.Optional = true
 			}
 		}

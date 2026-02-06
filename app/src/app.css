@@ -11,7 +11,9 @@
 @import 'tailwindcss';
 @plugin "@tailwindcss/typography";
 @plugin "daisyui" {
-	themes: dark --default;
+	themes:
+		light --default,
+		dark;
 }
 
 /* ===== Theme Tokens ===== */
@@ -54,6 +56,7 @@
 
 	html {
 		font-smooth: always;
+		font-size: 18px;
 	}
 
 	body {
@@ -102,6 +105,15 @@
 	}
 }
 
+@keyframes slide-in-right {
+	from {
+		transform: translateX(100%);
+	}
+	to {
+		transform: translateX(0);
+	}
+}
+
 @keyframes pulse {
 	0%,
 	100% {
@@ -109,6 +121,28 @@
 	}
 	50% {
 		opacity: 0.5;
+	}
+}
+
+@keyframes pulse-border {
+	0%,
+	100% {
+		border-color: oklch(var(--bc) / 0.2);
+	}
+	50% {
+		border-color: oklch(var(--p));
+	}
+}
+
+@keyframes stagger-pulse {
+	0%,
+	100% {
+		opacity: 0.4;
+		transform: scale(1);
+	}
+	50% {
+		opacity: 1;
+		transform: scale(1.1);
 	}
 }
 
@@ -151,6 +185,10 @@
 		animation: bounce-once 0.6s ease forwards;
 	}
 
+	.animate-slide-in-right {
+		animation: slide-in-right 0.2s ease-out;
+	}
+
 	/* Staggered animation delays */
 	.stagger-delay {
 		animation-delay: calc(var(--delay, 0) * 100ms);
@@ -162,6 +200,19 @@
 
 	.stagger-delay-80 {
 		animation-delay: calc(var(--delay, 0) * 80ms);
+	}
+
+	/* Reading indicator animation delays */
+	.reading-dot-1 {
+		animation-delay: 0ms;
+	}
+
+	.reading-dot-2 {
+		animation-delay: 200ms;
+	}
+
+	.reading-dot-3 {
+		animation-delay: 400ms;
 	}
 
 	/* Theme color utilities */
@@ -185,6 +236,17 @@
 	.collapsible-container {
 		overflow: hidden;
 		transition: height 300ms cubic-bezier(0.4, 0, 0.2, 1);
+	}
+
+	/* Streaming message border animation */
+	.streaming-border {
+		animation: pulse-border 1.5s ease-in-out infinite;
+		border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
+	}
+
+	.animate-pulse-border {
+		animation: pulse-border 1.5s ease-out infinite;
+		border: 1px solid oklch(var(--bc) / 0.2);
 	}
 }
 
@@ -247,19 +309,16 @@
 	}
 
 	.layout-app {
-		@apply min-h-dvh flex flex-col;
-		background: var(--color-base-900);
+		@apply min-h-dvh flex flex-col bg-base-100;
 	}
 
 	.layout-app-header {
-		@apply sticky top-0 z-50 px-6 border-b;
-		height: 56px;
-		min-height: 56px;
-		max-height: 56px;
+		@apply sticky top-0 z-50 px-6 border-b border-base-300 bg-base-100/95;
+		height: 64px;
+		min-height: 64px;
+		max-height: 64px;
 		display: flex;
 		align-items: center;
-		border-color: var(--color-base-700);
-		background: color-mix(in srgb, var(--color-base-900) 95%, transparent);
 		backdrop-filter: blur(12px);
 		-webkit-backdrop-filter: blur(12px);
 	}

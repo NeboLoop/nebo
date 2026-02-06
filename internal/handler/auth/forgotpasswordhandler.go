@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"nebo/internal/httputil"
-	"nebo/internal/local"
-	"nebo/internal/logging"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/local"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 func ForgotPasswordHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {

@@ -1,9 +1,9 @@
 package realtime
 
 import (
-	"nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/svc"
 
-	"nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/logging"
 )
 
 // RewriteHandler handles WebSocket messages

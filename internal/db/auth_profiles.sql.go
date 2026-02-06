@@ -131,6 +131,17 @@ func (q *Queries) GetAuthProfileByName(ctx context.Context, name string) (AuthPr
 	return i, err
 }
 
+const getAuthProfileErrorCount = `-- name: GetAuthProfileErrorCount :one
+SELECT error_count FROM auth_profiles WHERE id = ?
+`
+
+func (q *Queries) GetAuthProfileErrorCount(ctx context.Context, id string) (sql.NullInt64, error) {
+	row := q.db.QueryRowContext(ctx, getAuthProfileErrorCount, id)
+	var error_count sql.NullInt64
+	err := row.Scan(&error_count)
+	return error_count, err
+}
+
 const getBestAuthProfile = `-- name: GetBestAuthProfile :one
 SELECT id, name, provider, api_key, model, base_url, priority, is_active, cooldown_until, last_used_at, usage_count, error_count, metadata, created_at, updated_at, auth_type FROM auth_profiles
 WHERE provider = ? AND is_active = 1 AND (cooldown_until IS NULL OR cooldown_until < unixepoch())
@@ -270,6 +281,26 @@ func (q *Queries) ListAuthProfiles(ctx context.Context) ([]AuthProfile, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const resetAuthProfileErrorCountIfStale = `-- name: ResetAuthProfileErrorCountIfStale :exec
+UPDATE auth_profiles
+SET error_count = 0, updated_at = unixepoch()
+WHERE id = ?
+AND error_count > 0
+AND (cooldown_until IS NULL OR cooldown_until < unixepoch())
+AND updated_at < ?
+`
+
+type ResetAuthProfileErrorCountIfStaleParams struct {
+	ID        string `json:"id"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// Reset error count if cooldown has expired and last update was > 24h ago
+func (q *Queries) ResetAuthProfileErrorCountIfStale(ctx context.Context, arg ResetAuthProfileErrorCountIfStaleParams) error {
+	_, err := q.db.ExecContext(ctx, resetAuthProfileErrorCountIfStale, arg.ID, arg.UpdatedAt)
+	return err
 }
 
 const setAuthProfileCooldown = `-- name: SetAuthProfileCooldown :exec

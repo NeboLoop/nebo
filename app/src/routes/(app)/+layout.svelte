@@ -15,10 +15,9 @@
 	let isCheckingOnboarding = $state(true);
 	let showOnboarding = $state(false);
 
-	// Full-height pages that need flex layout
+	// Full-height pages that bypass the normal padded layout (chat only)
 	const isFullHeightRoute = $derived(
-		$page.url.pathname.startsWith('/agent') ||
-		$page.url.pathname.startsWith('/settings/heartbeat')
+		$page.url.pathname.startsWith('/agent')
 	);
 
 	onMount(async () => {
@@ -51,10 +50,8 @@
 {:else if isFullHeightRoute}
 	<div class="h-dvh flex flex-col overflow-hidden bg-base-100">
 		<AppNav />
-		<main id="main-content" class="flex-1 flex flex-col min-h-0 overflow-hidden p-6">
-			<div class="max-w-[1400px] mx-auto w-full flex-1 flex flex-col min-h-0">
-				{@render children()}
-			</div>
+		<main id="main-content" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+			{@render children()}
 		</main>
 	</div>
 {:else}

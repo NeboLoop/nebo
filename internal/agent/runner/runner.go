@@ -153,14 +153,39 @@ These tools are available when running on macOS:
 - app — Launch and manage applications
 - keychain — Securely store and retrieve credentials
 
+## Memory System — CRITICAL
+
+You have PERSISTENT MEMORY that survives across sessions. NEVER say "I don't have persistent memory" or "my memory doesn't carry over." Your memory tool WORKS — use it.
+
+**Proactive memory use:**
+- When the user mentions a fact about themselves (name, preferences, project details, etc.), STORE IT immediately using agent(resource: memory, action: store, ...)
+- When the user asks "do you remember...?" or references past conversations, SEARCH memory first: agent(resource: memory, action: search, query: "...")
+- When unsure about user preferences or context, RECALL from memory before asking
+- NEVER claim you can't remember something without first calling the memory tool to check
+
+**Memory layers:**
+- "tacit" — Long-term preferences, personal facts, learned behaviors (MOST COMMON)
+- "daily" — Today's facts, keyed by date (auto-expires)
+- "entity" — Information about people, places, projects, things
+
+**Key facts to always store (layer: tacit, namespace: user):**
+- User's name, location, timezone, occupation
+- Preferred communication style
+- Project names and details they frequently reference
+- Tools, languages, and tech stacks they use
+- Important dates or deadlines
+
+Your remembered facts (if any) appear in the "# Remembered Facts" section of your context. Those were loaded from your memory database — proof that your memory works.
+
 ## Behavioral Guidelines
 1. Break complex tasks into smaller steps and use tools to gather info before acting
 2. If you encounter errors, analyze them and try alternative approaches
 3. For scheduled/recurring work, use agent(resource: cron, action: create, ...)
 4. For parallel work, spawn sub-agents with agent(resource: task, action: spawn, ...)
-5. Store important facts in memory — use "tacit" layer for long-term, "daily" for today, "entity" for people/places/things
+5. ALWAYS store important user facts in memory — use agent(resource: memory, action: store, ...) immediately when you learn something new
 6. To notify the user on another channel, use agent(resource: message, action: send, ...)
-7. Always verify your changes work before considering a task complete`
+7. Always verify your changes work before considering a task complete
+8. When asked about past interactions or the user's preferences, ALWAYS search memory first — never guess or say "I don't remember"`
 
 // ProviderLoaderFunc is a function that loads providers (for dynamic reload)
 type ProviderLoaderFunc func() []ai.Provider
@@ -336,14 +361,12 @@ func (r *Runner) SkillLoader() *skills.Loader {
 
 // Run executes the agentic loop
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEvent, error) {
-	fmt.Printf("[Runner] Run called: session=%s prompt=%q\n", req.SessionKey, req.Prompt)
+	fmt.Printf("[Runner] Run: session=%s\n", req.SessionKey)
 
 	// If no providers, try to reload (user may have added API key via onboarding)
 	if len(r.providers) == 0 && r.providerLoader != nil {
-		fmt.Printf("[Runner] No providers, trying to reload...\n")
 		r.providers = r.providerLoader()
 	}
-	fmt.Printf("[Runner] Provider count: %d\n", len(r.providers))
 	if len(r.providers) == 0 {
 		return nil, fmt.Errorf("no providers configured - please add an API key in Settings > Providers")
 	}
@@ -353,12 +376,10 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 	}
 
 	// Get or create session (user-scoped if UserID provided)
-	fmt.Printf("[Runner] Getting/creating session: %s (user: %s)\n", req.SessionKey, req.UserID)
 	sess, err := r.sessions.GetOrCreate(req.SessionKey, req.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
-	fmt.Printf("[Runner] Session ready: id=%s\n", sess.ID)
 
 	// Trigger session event (async to not block)
 	lifecycle.EmitAsync(lifecycle.EventSessionNew, lifecycle.SessionEventData{
@@ -536,18 +557,13 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 			return
 		}
 
-		fmt.Printf("[Runner] Loaded %d messages from session:\n", len(messages))
-		for i, msg := range messages {
-			fmt.Printf("[Runner]   [%d] role=%s content_len=%d tool_calls_len=%d tool_results_len=%d\n",
-				i, msg.Role, len(msg.Content), len(msg.ToolCalls), len(msg.ToolResults))
-		}
+		fmt.Printf("[Runner] Loaded %d messages from session\n", len(messages))
 
 		// Proactive token check - compact BEFORE hitting API limits
 		estimatedTokens := estimateTokens(messages)
-		fmt.Printf("[Runner] Estimated tokens: %d (limit: %d)\n", estimatedTokens, DefaultContextTokenLimit)
 
 		if estimatedTokens > DefaultContextTokenLimit && !compactionAttempted {
-			fmt.Printf("[Runner] Token limit exceeded, compacting proactively...\n")
+			fmt.Printf("[Runner] Token limit exceeded (~%d tokens), compacting...\n", estimatedTokens)
 			compactionAttempted = true
 
 			// Run proactive memory flush before compaction (moltbot pattern)
@@ -657,9 +673,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 		}
 
 		// Stream to AI provider
-		fmt.Printf("[Runner] Calling provider.Stream: provider=%s model=%s\n", provider.ID(), chatReq.Model)
 		events, err := provider.Stream(ctx, chatReq)
-		fmt.Printf("[Runner] provider.Stream returned: events=%v err=%v\n", events != nil, err)
 
 		if err != nil {
 			if ai.IsContextOverflow(err) {
@@ -715,10 +729,8 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 		var toolCalls []session.ToolCall
 		eventCount := 0
 
-		fmt.Printf("[Runner] Starting to consume events from stream...\n")
 		for event := range events {
 			eventCount++
-			fmt.Printf("[Runner] Event #%d: type=%s text_len=%d\n", eventCount, event.Type, len(event.Text))
 
 			// Forward event to caller (except internal done signals)
 			if !(event.Type == ai.EventTypeDone && event.Text == "cli_complete") {
@@ -745,7 +757,6 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 				// Check for CLI provider completion signal
 				if event.Text == "cli_complete" {
 					cliProviderComplete = true
-					fmt.Printf("[Runner] CLI provider signaled completion\n")
 				}
 
 			case ai.EventTypeMessage:
@@ -753,8 +764,6 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 				// Only save if the message has actual content (not empty envelopes)
 				if event.Message != nil && (event.Message.Content != "" || len(event.Message.ToolCalls) > 0 || len(event.Message.ToolResults) > 0) {
 					event.Message.SessionID = sessionID
-					fmt.Printf("[Runner] Saving intermediate %s message from CLI provider (content_len=%d, tool_calls=%d)\n",
-						event.Message.Role, len(event.Message.Content), len(event.Message.ToolCalls))
 					if err := r.sessions.AppendMessage(sessionID, *event.Message); err != nil {
 						fmt.Printf("[Runner] ERROR saving intermediate message: %v\n", err)
 					}
@@ -764,8 +773,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 				}
 			}
 		}
-		fmt.Printf("[Runner] Finished consuming %d events, content_len=%d, tool_calls=%d, cli_complete=%v\n",
-			eventCount, assistantContent.Len(), len(toolCalls), cliProviderComplete)
+		fmt.Printf("[Runner] Stream complete: %d events, %d tool calls\n", eventCount, len(toolCalls))
 
 		// Save assistant message (always save unless empty)
 		// Skip if CLI provider completed — messages were already saved via EventTypeMessage
@@ -773,7 +781,6 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 			var toolCallsJSON json.RawMessage
 			if len(toolCalls) > 0 {
 				toolCallsJSON, _ = json.Marshal(toolCalls)
-				fmt.Printf("[Runner] Saving assistant message with %d tool_calls, JSON: %s\n", len(toolCalls), string(toolCallsJSON))
 			}
 
 			err := r.sessions.AppendMessage(sessionID, session.Message{
@@ -792,16 +799,14 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 			var toolResults []session.ToolResult
 
 			for _, tc := range toolCalls {
-				fmt.Printf("[Runner] Executing tool: %s (id=%s)\n", tc.Name, tc.ID)
+				fmt.Printf("[Runner] Executing tool: %s\n", tc.Name)
 				result := r.tools.Execute(ctx, &ai.ToolCall{
 					ID:    tc.ID,
 					Name:  tc.Name,
 					Input: tc.Input,
 				})
-				fmt.Printf("[Runner] Tool result: error=%v content_len=%d\n", result.IsError, len(result.Content))
 
 				// Send tool result event with tool info for correlation
-				fmt.Printf("[Runner] >>> Sending EventTypeToolResult for tool %s (id=%s) <<<\n", tc.Name, tc.ID)
 				resultCh <- ai.StreamEvent{
 					Type: ai.EventTypeToolResult,
 					Text: result.Content,
@@ -821,7 +826,6 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 
 			// Save tool results
 			toolResultsJSON, _ := json.Marshal(toolResults)
-			fmt.Printf("[Runner] Saving tool results: %s\n", string(toolResultsJSON))
 			err := r.sessions.AppendMessage(sessionID, session.Message{
 				SessionID:   sessionID,
 				Role:        "tool",

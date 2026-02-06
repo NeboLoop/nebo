@@ -91,3 +91,39 @@ LIMIT 10;
 
 -- name: CountCronHistory :one
 SELECT COUNT(*) as total FROM cron_history WHERE job_id = ?;
+
+-- Agent tool queries (operations by name for CLI/tool use)
+
+-- name: DeleteCronJobByName :execresult
+DELETE FROM cron_jobs WHERE name = ?;
+
+-- name: DisableCronJobByName :execresult
+UPDATE cron_jobs SET enabled = 0 WHERE name = ?;
+
+-- name: EnableCronJobByName :exec
+UPDATE cron_jobs SET enabled = 1 WHERE name = ?;
+
+-- name: GetRecentCronHistoryByJobName :many
+SELECT h.id, h.job_id, h.started_at, h.finished_at, h.success, h.output, h.error
+FROM cron_history h
+JOIN cron_jobs j ON j.id = h.job_id
+WHERE j.name = ?
+ORDER BY h.started_at DESC
+LIMIT 10;
+
+-- name: UpdateCronJobLastRunByName :exec
+UPDATE cron_jobs
+SET last_run = CURRENT_TIMESTAMP,
+    run_count = run_count + 1,
+    last_error = sqlc.narg(last_error)
+WHERE name = sqlc.arg(name);
+
+-- name: UpsertCronJob :exec
+INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, enabled)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(name) DO UPDATE SET
+    schedule = excluded.schedule,
+    command = excluded.command,
+    task_type = excluded.task_type,
+    message = excluded.message,
+    deliver = excluded.deliver;

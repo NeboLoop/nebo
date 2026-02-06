@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"nebo/internal/config"
+	"github.com/nebolabs/nebo/internal/config"
 )
 
 // SecurityMiddleware combines all security middleware into a single handler

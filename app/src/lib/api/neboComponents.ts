@@ -243,6 +243,14 @@ export interface DeleteNotificationRequest {
 export interface DeleteTaskRequest {
 }
 
+export interface DisconnectMCPIntegrationRequest {
+}
+
+export interface DisconnectMCPIntegrationResponse {
+	success: boolean
+	message: string
+}
+
 export interface DisconnectOAuthRequest {
 }
 
@@ -334,6 +342,13 @@ export interface GetMCPIntegrationRequest {
 
 export interface GetMCPIntegrationResponse {
 	integration: MCPIntegration
+}
+
+export interface GetMCPOAuthURLRequest {
+}
+
+export interface GetMCPOAuthURLResponse {
+	authUrl: string
 }
 
 export interface GetMemoryRequest {
@@ -459,13 +474,17 @@ export interface ListMCPServerRegistryResponse {
 	servers: Array<MCPServerInfo>
 }
 
+export interface ListMCPToolsResponse {
+	tools: Array<MCPToolInfo>
+}
+
 export interface ListMemoriesRequest {
 }
 
 export interface ListMemoriesRequestParams {
-	namespace: string
-	page: number
-	pageSize: number
+	namespace?: string
+	page?: number
+	pageSize?: number
 }
 
 export interface ListMemoriesResponse {
@@ -508,8 +527,8 @@ export interface ListTaskHistoryRequest {
 }
 
 export interface ListTaskHistoryRequestParams {
-	page: number
-	pageSize: number
+	page?: number
+	pageSize?: number
 }
 
 export interface ListTaskHistoryResponse {
@@ -521,8 +540,8 @@ export interface ListTasksRequest {
 }
 
 export interface ListTasksRequestParams {
-	page: number
-	pageSize: number
+	page?: number
+	pageSize?: number
 }
 
 export interface ListTasksResponse {
@@ -565,6 +584,12 @@ export interface MCPServerInfo {
 	apiKeyPlaceholder?: string
 	isBuiltin: boolean
 	displayOrder: number
+}
+
+export interface MCPToolInfo {
+	name: string
+	description?: string
+	serverType: string
 }
 
 export interface MarkNotificationReadRequest {
@@ -705,8 +730,8 @@ export interface SearchMemoriesRequest {
 
 export interface SearchMemoriesRequestParams {
 	query: string
-	page: number
-	pageSize: number
+	page?: number
+	pageSize?: number
 }
 
 export interface SearchMemoriesResponse {

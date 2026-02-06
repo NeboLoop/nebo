@@ -3,7 +3,13 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+)
+
+// Common errors
+var (
+	ErrDatabaseRequired = errors.New("database connection is required")
 )
 
 // Store provides all database operations with transaction support

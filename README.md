@@ -67,6 +67,14 @@ Your personal AI assistant that runs locally. One primary agent with a lane-base
 - **Extensible** - YAML skills and compiled plugins
 - **Proactive** - Scheduled tasks and heartbeat-driven actions
 
+## System Requirements
+
+- macOS with Apple Silicon (M1 or later)
+- 16 GB RAM minimum
+- ~4 GB disk space (for Nebo + local models)
+
+Nebo uses local models via Ollama for embeddings (`qwen3-embedding`) and background tasks (`qwen3:4b`). These are auto-pulled on first run. See [ADR-001](docs/decisions/001-local-model-strategy.md) for details.
+
 ## Install
 
 ```bash

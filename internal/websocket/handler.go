@@ -3,12 +3,12 @@ package websocket
 import (
 	"net/http"
 
-	"nebo/internal/middleware"
-	"nebo/internal/realtime"
+	"github.com/nebolabs/nebo/internal/middleware"
+	"github.com/nebolabs/nebo/internal/realtime"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/logging"
 )
 
 var upgrader = websocket.Upgrader{

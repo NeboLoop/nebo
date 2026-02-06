@@ -6,8 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	agentcfg "nebo/agent/config"
-	"nebo/agent/session"
+	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
+	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/nebolabs/nebo/internal/db"
 )
 
 // sessionCmd creates the session command
@@ -44,14 +45,20 @@ func SessionCmd() *cobra.Command {
 
 // listSessions lists all sessions
 func listSessions(cfg *agentcfg.Config) {
-	sessions, err := session.New(cfg.DBPath())
+	store, err := db.NewSQLite(cfg.DBPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	sessions, err := session.New(store.GetDB())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer sessions.Close()
 
-	list, err := sessions.ListSessions()
+	list, err := sessions.ListSessions("")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -70,14 +77,20 @@ func listSessions(cfg *agentcfg.Config) {
 
 // clearSession clears a session's history
 func clearSession(cfg *agentcfg.Config, key string) {
-	sessions, err := session.New(cfg.DBPath())
+	store, err := db.NewSQLite(cfg.DBPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	sessions, err := session.New(store.GetDB())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	defer sessions.Close()
 
-	sess, err := sessions.GetOrCreate(key)
+	sess, err := sessions.GetOrCreate(key, "")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

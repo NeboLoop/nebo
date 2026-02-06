@@ -4,12 +4,12 @@ import (
 	"database/sql"
 	"net/http"
 
-	"nebo/internal/db"
-	"nebo/internal/httputil"
-	"nebo/internal/logging"
-	"nebo/internal/middleware"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/middleware"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // List days with messages for history browsing

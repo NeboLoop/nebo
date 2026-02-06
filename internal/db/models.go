@@ -146,18 +146,25 @@ type Lead struct {
 }
 
 type McpIntegration struct {
-	ID               string         `json:"id"`
-	Name             string         `json:"name"`
-	ServerType       string         `json:"server_type"`
-	ServerUrl        sql.NullString `json:"server_url"`
-	AuthType         string         `json:"auth_type"`
-	IsEnabled        sql.NullInt64  `json:"is_enabled"`
-	ConnectionStatus sql.NullString `json:"connection_status"`
-	LastConnectedAt  sql.NullInt64  `json:"last_connected_at"`
-	LastError        sql.NullString `json:"last_error"`
-	Metadata         sql.NullString `json:"metadata"`
-	CreatedAt        int64          `json:"created_at"`
-	UpdatedAt        int64          `json:"updated_at"`
+	ID                         string         `json:"id"`
+	Name                       string         `json:"name"`
+	ServerType                 string         `json:"server_type"`
+	ServerUrl                  sql.NullString `json:"server_url"`
+	AuthType                   string         `json:"auth_type"`
+	IsEnabled                  sql.NullInt64  `json:"is_enabled"`
+	ConnectionStatus           sql.NullString `json:"connection_status"`
+	LastConnectedAt            sql.NullInt64  `json:"last_connected_at"`
+	LastError                  sql.NullString `json:"last_error"`
+	Metadata                   sql.NullString `json:"metadata"`
+	CreatedAt                  int64          `json:"created_at"`
+	UpdatedAt                  int64          `json:"updated_at"`
+	OauthState                 sql.NullString `json:"oauth_state"`
+	OauthPkceVerifier          sql.NullString `json:"oauth_pkce_verifier"`
+	OauthClientID              sql.NullString `json:"oauth_client_id"`
+	OauthClientSecret          sql.NullString `json:"oauth_client_secret"`
+	OauthAuthorizationEndpoint sql.NullString `json:"oauth_authorization_endpoint"`
+	OauthTokenEndpoint         sql.NullString `json:"oauth_token_endpoint"`
+	OauthRegistrationEndpoint  sql.NullString `json:"oauth_registration_endpoint"`
 }
 
 type McpIntegrationCredential struct {
@@ -253,6 +260,7 @@ type Memory struct {
 	UpdatedAt   sql.NullTime   `json:"updated_at"`
 	AccessedAt  sql.NullTime   `json:"accessed_at"`
 	AccessCount sql.NullInt64  `json:"access_count"`
+	UserID      string         `json:"user_id"`
 }
 
 type MemoryChunk struct {
@@ -266,6 +274,7 @@ type MemoryChunk struct {
 	EndLine    sql.NullInt64  `json:"end_line"`
 	Model      sql.NullString `json:"model"`
 	CreatedAt  sql.NullTime   `json:"created_at"`
+	UserID     string         `json:"user_id"`
 }
 
 type MemoryChunksFt struct {
@@ -310,6 +319,26 @@ type OauthConnection struct {
 	UpdatedAt      int64          `json:"updated_at"`
 }
 
+type PendingTask struct {
+	ID           string         `json:"id"`
+	TaskType     string         `json:"task_type"`
+	Status       string         `json:"status"`
+	SessionKey   string         `json:"session_key"`
+	UserID       sql.NullString `json:"user_id"`
+	Prompt       string         `json:"prompt"`
+	SystemPrompt sql.NullString `json:"system_prompt"`
+	Description  sql.NullString `json:"description"`
+	Lane         sql.NullString `json:"lane"`
+	Priority     sql.NullInt64  `json:"priority"`
+	Attempts     sql.NullInt64  `json:"attempts"`
+	MaxAttempts  sql.NullInt64  `json:"max_attempts"`
+	LastError    sql.NullString `json:"last_error"`
+	CreatedAt    int64          `json:"created_at"`
+	StartedAt    sql.NullInt64  `json:"started_at"`
+	CompletedAt  sql.NullInt64  `json:"completed_at"`
+	ParentTaskID sql.NullString `json:"parent_task_id"`
+}
+
 type PersonalityPreset struct {
 	ID           string         `json:"id"`
 	Name         string         `json:"name"`
@@ -343,17 +372,27 @@ type RefreshToken struct {
 }
 
 type Session struct {
-	ID              string         `json:"id"`
-	Name            sql.NullString `json:"name"`
-	Scope           sql.NullString `json:"scope"`
-	ScopeID         sql.NullString `json:"scope_id"`
-	Summary         sql.NullString `json:"summary"`
-	TokenCount      sql.NullInt64  `json:"token_count"`
-	MessageCount    sql.NullInt64  `json:"message_count"`
-	LastCompactedAt sql.NullInt64  `json:"last_compacted_at"`
-	Metadata        sql.NullString `json:"metadata"`
-	CreatedAt       int64          `json:"created_at"`
-	UpdatedAt       int64          `json:"updated_at"`
+	ID                         string         `json:"id"`
+	Name                       sql.NullString `json:"name"`
+	Scope                      sql.NullString `json:"scope"`
+	ScopeID                    sql.NullString `json:"scope_id"`
+	Summary                    sql.NullString `json:"summary"`
+	TokenCount                 sql.NullInt64  `json:"token_count"`
+	MessageCount               sql.NullInt64  `json:"message_count"`
+	LastCompactedAt            sql.NullInt64  `json:"last_compacted_at"`
+	Metadata                   sql.NullString `json:"metadata"`
+	CreatedAt                  int64          `json:"created_at"`
+	UpdatedAt                  int64          `json:"updated_at"`
+	CompactionCount            sql.NullInt64  `json:"compaction_count"`
+	MemoryFlushAt              sql.NullInt64  `json:"memory_flush_at"`
+	MemoryFlushCompactionCount sql.NullInt64  `json:"memory_flush_compaction_count"`
+	SendPolicy                 sql.NullString `json:"send_policy"`
+	ModelOverride              sql.NullString `json:"model_override"`
+	ProviderOverride           sql.NullString `json:"provider_override"`
+	AuthProfileOverride        sql.NullString `json:"auth_profile_override"`
+	AuthProfileOverrideSource  sql.NullString `json:"auth_profile_override_source"`
+	VerboseLevel               sql.NullString `json:"verbose_level"`
+	CustomLabel                sql.NullString `json:"custom_label"`
 }
 
 type SessionMessage struct {

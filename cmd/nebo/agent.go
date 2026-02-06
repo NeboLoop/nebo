@@ -26,6 +26,7 @@ import (
 	"github.com/nebolabs/nebo/internal/agent/recovery"
 	"github.com/nebolabs/nebo/internal/agent/runner"
 	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/nebolabs/nebo/internal/agent/skills"
 	"github.com/nebolabs/nebo/internal/agent/tools"
 	"github.com/nebolabs/nebo/internal/agenthub"
 	"github.com/nebolabs/nebo/internal/browser"
@@ -69,17 +70,6 @@ func (s *agentState) sendFrame(frame map[string]any) error {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 	data, _ := json.Marshal(frame)
-	// Log frame type and payload keys for debugging
-	frameType, _ := frame["type"].(string)
-	if payload, ok := frame["payload"].(map[string]any); ok {
-		keys := make([]string, 0, len(payload))
-		for k := range payload {
-			keys = append(keys, k)
-		}
-		fmt.Printf("[Agent-WS] Sending frame type=%s payload_keys=%v\n", frameType, keys)
-	} else {
-		fmt.Printf("[Agent-WS] Sending frame type=%s\n", frameType)
-	}
 	err := s.conn.WriteMessage(websocket.TextMessage, data)
 	if err != nil {
 		fmt.Printf("[Agent-WS] ERROR sending frame: %v\n", err)
@@ -324,6 +314,26 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		})
 		if err == nil {
 			registry.Register(memoryTool)
+
+			// Migrate stale embeddings then backfill (runs in background)
+			if embeddingService != nil && embeddingService.HasProvider() {
+				go func() {
+					bgCtx := context.Background()
+					// First: clear embeddings from old models (e.g., nomic-embed-text → qwen3-embedding)
+					if stale, deleted, err := memoryTool.MigrateEmbeddings(bgCtx); err != nil {
+						fmt.Printf("[agent] Embedding migration error: %v\n", err)
+					} else if stale > 0 {
+						fmt.Printf("[agent] Migrated embeddings: %d stale → %d deleted\n", stale, deleted)
+					}
+					// Then: backfill any memories without embeddings
+					n, err := memoryTool.BackfillEmbeddings(bgCtx)
+					if err != nil {
+						fmt.Printf("[agent] Embedding backfill error: %v\n", err)
+					} else if n > 0 {
+						fmt.Printf("[agent] Backfilled embeddings for %d memories\n", n)
+					}
+				}()
+			}
 		}
 	}
 
@@ -535,7 +545,8 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 			if err := active.Connect(ctx, cfg.Comm.Config); err != nil {
 				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", pluginName, err)
 			} else {
-				active.Register(ctx, agentID, nil)
+				card := buildAgentCard(registry, r.SkillLoader())
+				active.Register(ctx, agentID, card)
 				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", pluginName, agentID)
 			}
 		}
@@ -920,6 +931,26 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 		fmt.Printf("[agent] Warning: failed to initialize memory tool: %v\n", err)
 	} else {
 		registry.Register(memoryTool)
+
+		// Migrate stale embeddings then backfill (runs in background)
+		if embeddingService != nil && embeddingService.HasProvider() {
+			go func() {
+				bgCtx := context.Background()
+				// First: clear embeddings from old models (e.g., nomic-embed-text → qwen3-embedding)
+				if stale, deleted, err := memoryTool.MigrateEmbeddings(bgCtx); err != nil {
+					fmt.Printf("[agent] Embedding migration error: %v\n", err)
+				} else if stale > 0 {
+					fmt.Printf("[agent] Migrated embeddings: %d stale → %d deleted\n", stale, deleted)
+				}
+				// Then: backfill any memories without embeddings
+				n, err := memoryTool.BackfillEmbeddings(bgCtx)
+				if err != nil {
+					fmt.Printf("[agent] Embedding backfill error: %v\n", err)
+				} else if n > 0 {
+					fmt.Printf("[agent] Backfilled embeddings for %d memories\n", n)
+				}
+			}()
+		}
 	}
 
 	// Load advisors (internal deliberation system)
@@ -1068,7 +1099,8 @@ func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
 			if err := active.Connect(connectCtx, cfg.Comm.Config); err != nil {
 				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", pluginName, err)
 			} else {
-				active.Register(connectCtx, standaloneAgentID, nil)
+				card := buildAgentCard(registry, r.SkillLoader())
+				active.Register(connectCtx, standaloneAgentID, card)
 				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", pluginName, standaloneAgentID)
 			}
 		}
@@ -1454,7 +1486,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 							toolName = event.ToolCall.Name
 							toolID = event.ToolCall.ID
 						}
-						fmt.Printf("[Agent-WS] >>> Received EventTypeToolResult for tool %s (id=%s), content_len=%d, forwarding to server <<<\n", toolName, toolID, len(event.Text))
+						fmt.Printf("[Agent-WS] Tool result: %s (id=%s) len=%d\n", toolName, toolID, len(event.Text))
 						state.sendFrame(map[string]any{
 							"type": "stream",
 							"id":   requestID,
@@ -1695,8 +1727,8 @@ func failTask(ctx context.Context, state *agentState, taskID string, errMsg stri
 	}
 }
 
-// createEmbeddingService creates an embedding service for hybrid memory search
-// Prefers OpenAI (if API key available), falls back to Ollama (if configured)
+// createEmbeddingService creates an embedding service for hybrid memory search.
+// Uses DB auth_profiles as the single source of truth for API keys.
 func createEmbeddingService(db *sql.DB) *embeddings.Service {
 	if db == nil {
 		return nil
@@ -1704,29 +1736,51 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 
 	var embeddingProvider embeddings.Provider
 
-	// Try OpenAI first (most common, high quality embeddings)
-	openaiCreds := provider.GetCredentials("openai")
-	if openaiCreds != nil && openaiCreds.APIKey != "" {
-		embeddingProvider = embeddings.NewOpenAIProvider(embeddings.OpenAIConfig{
-			APIKey: openaiCreds.APIKey,
-		})
-		fmt.Println("[agent] Embeddings: using OpenAI text-embedding-3-small")
-	}
+	// Load from DB auth_profiles — same source as createProviders
+	mgr, err := agentcfg.NewAuthProfileManager(db)
+	if err == nil {
+		defer mgr.Close()
+		ctx := context.Background()
 
-	// Fall back to Ollama if configured
-	if embeddingProvider == nil {
-		ollamaCreds := provider.GetCredentials("ollama")
-		if ollamaCreds != nil && ollamaCreds.BaseURL != "" {
-			embeddingProvider = embeddings.NewOllamaProvider(embeddings.OllamaConfig{
-				BaseURL: ollamaCreds.BaseURL,
-			})
-			fmt.Println("[agent] Embeddings: using Ollama nomic-embed-text")
+		// Try OpenAI first (most common, high quality embeddings)
+		if profiles, err := mgr.ListActiveProfiles(ctx, "openai"); err == nil {
+			for _, p := range profiles {
+				if p.APIKey != "" {
+					embeddingProvider = embeddings.NewOpenAIProvider(embeddings.OpenAIConfig{
+						APIKey: p.APIKey,
+					})
+					fmt.Println("[agent] Embeddings: using OpenAI text-embedding-3-small")
+					break
+				}
+			}
+		}
+
+		// Fall back to Ollama if configured
+		if embeddingProvider == nil {
+			if profiles, err := mgr.ListActiveProfiles(ctx, "ollama"); err == nil {
+				for _, p := range profiles {
+					baseURL := p.BaseURL
+					if baseURL == "" {
+						baseURL = "http://localhost:11434"
+					}
+					// Auto-pull the embedding model if not present
+					embModel := "qwen3-embedding"
+					if err := ai.EnsureOllamaModel(baseURL, embModel); err != nil {
+						fmt.Printf("[agent] Warning: could not ensure embedding model %s: %v\n", embModel, err)
+					}
+					embeddingProvider = embeddings.NewOllamaProvider(embeddings.OllamaConfig{
+						BaseURL: baseURL,
+					})
+					fmt.Println("[agent] Embeddings: using Ollama qwen3-embedding")
+					break
+				}
+			}
 		}
 	}
 
 	// No embedding provider available
 	if embeddingProvider == nil {
-		fmt.Println("[agent] Embeddings: disabled (no OpenAI or Ollama configured)")
+		fmt.Println("[agent] Embeddings: disabled (no OpenAI or Ollama auth profile configured)")
 		return nil
 	}
 
@@ -1741,4 +1795,35 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 	}
 
 	return service
+}
+
+// buildAgentCard collects tool and skill metadata into an A2A-spec-compliant
+// AgentCard for comm registration and NeboLoop discovery.
+func buildAgentCard(registry *tools.Registry, skillLoader *skills.Loader) *comm.AgentCard {
+	card := &comm.AgentCard{
+		Name:               "Nebo",
+		Description:        "Nebo AI agent with lane-based concurrency",
+		PreferredTransport: "jsonrpc",
+		ProtocolVersion:    "1.0",
+		DefaultInputModes:  []string{"text/plain"},
+		DefaultOutputModes: []string{"text/plain"},
+		Capabilities:       map[string]any{"streaming": false},
+		Provider:           &comm.AgentCardProvider{Organization: "Nebo"},
+	}
+
+	if skillLoader != nil {
+		for _, skill := range skillLoader.List() {
+			if !skill.Enabled {
+				continue
+			}
+			card.Skills = append(card.Skills, comm.AgentCardSkill{
+				ID:          skill.Name,
+				Name:        skill.Name,
+				Description: skill.Description,
+				Tags:        skill.Triggers,
+			})
+		}
+	}
+
+	return card
 }

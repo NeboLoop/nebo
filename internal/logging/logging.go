@@ -49,6 +49,20 @@ func Errorf(format string, v ...any) {
 	}
 }
 
+// Warn logs a warning message
+func Warn(v ...any) {
+	if !disabled {
+		logger.Println(v...)
+	}
+}
+
+// Warnf logs a formatted warning message
+func Warnf(format string, v ...any) {
+	if !disabled {
+		logger.Printf(format, v...)
+	}
+}
+
 // Debug logs a debug message (same as Info when not disabled)
 func Debug(v ...any) {
 	if !disabled {

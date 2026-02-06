@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"nebo/internal/agenthub"
-	"nebo/internal/db"
-	"nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/agenthub"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/svc"
 
 	"github.com/google/uuid"
-	"nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/logging"
 )
 
 // ChatContext holds the context needed for chat handling
@@ -26,12 +26,30 @@ type ChatContext struct {
 	pending   map[string]*pendingRequest
 	pendingMu sync.RWMutex
 
+	// Active sessions: sessionID -> requestID (for stream resumption)
+	activeSessions   map[string]string
+	activeSessionsMu sync.RWMutex
+
 	// Pending approvals: approvalID -> agentID
 	pendingApprovals   map[string]string
 	pendingApprovalsMu sync.RWMutex
 
 	// Client hub for broadcasting
 	clientHub *Hub
+}
+
+type toolCallInfo struct {
+	ID     string `json:"id,omitempty"`
+	Name   string `json:"name"`
+	Input  string `json:"input"`
+	Output string `json:"output,omitempty"`
+	Status string `json:"status"`
+}
+
+type contentBlock struct {
+	Type          string `json:"type"`                    // "text" or "tool"
+	Text          string `json:"text,omitempty"`          // accumulated text for text blocks
+	ToolCallIndex *int   `json:"toolCallIndex,omitempty"` // index into toolCalls for tool blocks
 }
 
 type pendingRequest struct {
@@ -42,6 +60,10 @@ type pendingRequest struct {
 	createdAt        time.Time
 	streamedContent  string
 	isNewChat        bool
+	toolCalls        []toolCallInfo
+	thinking         string
+	contentBlocks    []contentBlock
+	messageID        string // DB message ID for partial saves
 }
 
 // NewChatContext creates a new chat context with service context for DB access
@@ -49,6 +71,7 @@ func NewChatContext(svcCtx *svc.ServiceContext, clientHub *Hub) (*ChatContext, e
 	return &ChatContext{
 		svcCtx:           svcCtx,
 		pending:          make(map[string]*pendingRequest),
+		activeSessions:   make(map[string]string),
 		pendingApprovals: make(map[string]string),
 		clientHub:        clientHub,
 	}, nil
@@ -73,6 +96,9 @@ func RegisterChatHandler(chatCtx *ChatContext) {
 	})
 	SetRequestIntroductionHandler(func(c *Client, msg *Message) {
 		go handleRequestIntroduction(c, msg, chatCtx)
+	})
+	SetCheckStreamHandler(func(c *Client, msg *Message) {
+		go handleCheckStream(c, msg, chatCtx)
 	})
 }
 
@@ -152,22 +178,93 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 			return
 		}
 
+		// Handle text chunks
 		if chunk, ok := payload["chunk"].(string); ok {
 			// Accumulate for persistence
 			req.streamedContent += chunk
+			// Track in content blocks: append to last text block or create new one
+			if len(req.contentBlocks) == 0 || req.contentBlocks[len(req.contentBlocks)-1].Type != "text" {
+				req.contentBlocks = append(req.contentBlocks, contentBlock{Type: "text", Text: chunk})
+			} else {
+				req.contentBlocks[len(req.contentBlocks)-1].Text += chunk
+			}
 			c.pendingMu.Unlock()
 			logging.Infof("[Chat] Streaming %d bytes to client for session %s", len(chunk), req.sessionID)
 			sendChatStream(req.client, req.sessionID, chunk)
 		} else {
 			c.pendingMu.Unlock()
-			logging.Infof("[Chat] No chunk in payload: %+v", payload)
 		}
+
+		// Handle tool start
 		if tool, ok := payload["tool"].(string); ok {
-			input, _ := payload["input"].(string)
-			sendToolStart(req.client, req.sessionID, tool, input)
+			input := extractStringOrJSON(payload["input"])
+			toolID, _ := payload["tool_id"].(string)
+			fmt.Printf("[Chat] Tool start: %s (id=%s) input_len=%d\n", tool, toolID, len(input))
+			// Track tool call and content block
+			c.pendingMu.Lock()
+			if req, ok := c.pending[frame.ID]; ok {
+				toolIdx := len(req.toolCalls)
+				req.toolCalls = append(req.toolCalls, toolCallInfo{
+					ID:     toolID,
+					Name:   tool,
+					Input:  input,
+					Status: "running",
+				})
+				req.contentBlocks = append(req.contentBlocks, contentBlock{
+					Type:          "tool",
+					ToolCallIndex: intPtr(toolIdx),
+				})
+			}
+			c.pendingMu.Unlock()
+			// Save partial message on tool start (AI has paused to use a tool)
+			go c.savePartialMessage(frame.ID)
+			sendToolStart(req.client, req.sessionID, tool, toolID, input)
 		}
+
+		// Handle tool result
 		if toolResult, ok := payload["tool_result"].(string); ok {
-			sendToolResult(req.client, req.sessionID, toolResult)
+			toolName, _ := payload["tool_name"].(string)
+			toolID, _ := payload["tool_id"].(string)
+			fmt.Printf("[Chat] Tool result: %s (id=%s) len=%d\n", toolName, toolID, len(toolResult))
+			// Update matching tool call with result (by ID or last one as fallback)
+			c.pendingMu.Lock()
+			if req, ok := c.pending[frame.ID]; ok && len(req.toolCalls) > 0 {
+				updated := false
+				// Try to find by tool ID first
+				for i := range req.toolCalls {
+					if req.toolCalls[i].ID == toolID && toolID != "" {
+						req.toolCalls[i].Output = toolResult
+						req.toolCalls[i].Status = "complete"
+						updated = true
+						break
+					}
+				}
+				// Fallback: update first running tool
+				if !updated {
+					for i := range req.toolCalls {
+						if req.toolCalls[i].Status == "running" {
+							req.toolCalls[i].Output = toolResult
+							req.toolCalls[i].Status = "complete"
+							break
+						}
+					}
+				}
+			}
+			c.pendingMu.Unlock()
+			sendToolResult(req.client, req.sessionID, toolName, toolID, toolResult)
+		} else if payload["tool_result"] != nil {
+			fmt.Printf("[Chat] WARNING: tool_result not a string, type=%T\n", payload["tool_result"])
+		}
+
+		// Handle thinking/reasoning content
+		if thinking, ok := payload["thinking"].(string); ok {
+			// Accumulate thinking content
+			c.pendingMu.Lock()
+			if req, ok := c.pending[frame.ID]; ok {
+				req.thinking += thinking
+			}
+			c.pendingMu.Unlock()
+			sendThinking(req.client, req.sessionID, thinking)
 		}
 		return
 	}
@@ -188,6 +285,11 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 		logging.Infof("[Chat] No pending request for response %s", frame.ID)
 		return
 	}
+
+	// Remove from active sessions
+	c.activeSessionsMu.Lock()
+	delete(c.activeSessions, req.sessionID)
+	c.activeSessionsMu.Unlock()
 
 	logging.Infof("[Chat] Received final response for request %s from agent %s", frame.ID, agentID)
 
@@ -225,20 +327,37 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 	// Save assistant message to DB with day marker
 	if req.streamedContent != "" && c.svcCtx != nil && c.svcCtx.DB != nil {
 		ctx := context.Background()
-		msgID := uuid.New().String()
-		_, err := c.svcCtx.DB.CreateChatMessageWithDay(ctx, db.CreateChatMessageWithDayParams{
-			ID:       msgID,
-			ChatID:   req.sessionID,
-			Role:     "assistant",
-			Content:  req.streamedContent,
-			Metadata: sql.NullString{},
-		})
-		if err != nil {
-			logging.Errorf("[Chat] Failed to save assistant message: %v", err)
+		metadata := c.buildMetadata(req)
+
+		if req.messageID != "" {
+			// Partial save exists — update the existing message
+			err := c.svcCtx.DB.UpdateChatMessageContent(ctx, db.UpdateChatMessageContentParams{
+				ID:       req.messageID,
+				Content:  req.streamedContent,
+				Metadata: metadata,
+			})
+			if err != nil {
+				logging.Errorf("[Chat] Failed to update assistant message: %v", err)
+			} else {
+				logging.Infof("[Chat] Updated assistant message %s in chat %s (len=%d)", req.messageID, req.sessionID, len(req.streamedContent))
+				_ = c.svcCtx.DB.UpdateChatTimestamp(ctx, req.sessionID)
+			}
 		} else {
-			logging.Infof("[Chat] Saved assistant message %s to chat %s (len=%d)", msgID, req.sessionID, len(req.streamedContent))
-			// Update chat timestamp
-			_ = c.svcCtx.DB.UpdateChatTimestamp(ctx, req.sessionID)
+			// No partial save — create new message
+			msgID := uuid.New().String()
+			_, err := c.svcCtx.DB.CreateChatMessageWithDay(ctx, db.CreateChatMessageWithDayParams{
+				ID:       msgID,
+				ChatID:   req.sessionID,
+				Role:     "assistant",
+				Content:  req.streamedContent,
+				Metadata: metadata,
+			})
+			if err != nil {
+				logging.Errorf("[Chat] Failed to save assistant message: %v", err)
+			} else {
+				logging.Infof("[Chat] Saved assistant message %s to chat %s (len=%d)", msgID, req.sessionID, len(req.streamedContent))
+				_ = c.svcCtx.DB.UpdateChatTimestamp(ctx, req.sessionID)
+			}
 		}
 
 		// Generate title for new chats
@@ -425,8 +544,14 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 		streamedContent: "",
 		isNewChat:       isNewChat,
 	}
-	logging.Infof("[Chat] Registered pending request: %s for session %s", requestID, sessionID)
 	chatCtx.pendingMu.Unlock()
+
+	// Track active session for stream resumption
+	chatCtx.activeSessionsMu.Lock()
+	chatCtx.activeSessions[sessionID] = requestID
+	chatCtx.activeSessionsMu.Unlock()
+
+	logging.Infof("[Chat] Registered pending request: %s for session %s", requestID, sessionID)
 
 	// Send "run" request to the agent (agent handles "run" not "chat")
 	frame := &agenthub.Frame{
@@ -497,6 +622,67 @@ Assistant: %s`, userPrompt, assistantResponse)
 	}
 }
 
+// handleCheckStream handles a client checking if there's an active stream for their session
+func handleCheckStream(c *Client, msg *Message, chatCtx *ChatContext) {
+	sessionID, _ := msg.Data["session_id"].(string)
+	if sessionID == "" {
+		return
+	}
+
+	logging.Infof("[Chat] Checking for active stream: session=%s", sessionID)
+
+	// Check if there's an active request for this session
+	chatCtx.activeSessionsMu.RLock()
+	requestID, hasActive := chatCtx.activeSessions[sessionID]
+	chatCtx.activeSessionsMu.RUnlock()
+
+	if !hasActive {
+		logging.Infof("[Chat] No active stream for session %s", sessionID)
+		sendStreamStatus(c, sessionID, false, "")
+		return
+	}
+
+	// Get the accumulated content
+	chatCtx.pendingMu.RLock()
+	req, ok := chatCtx.pending[requestID]
+	var content string
+	if ok {
+		content = req.streamedContent
+	}
+	chatCtx.pendingMu.RUnlock()
+
+	if !ok {
+		logging.Infof("[Chat] Request %s not found for session %s", requestID, sessionID)
+		sendStreamStatus(c, sessionID, false, "")
+		return
+	}
+
+	logging.Infof("[Chat] Resuming stream for session %s, content length=%d", sessionID, len(content))
+
+	// Update the client reference so new chunks go to this client
+	chatCtx.pendingMu.Lock()
+	if req, ok := chatCtx.pending[requestID]; ok {
+		req.client = c
+	}
+	chatCtx.pendingMu.Unlock()
+
+	// Send the accumulated content and mark as streaming
+	sendStreamStatus(c, sessionID, true, content)
+}
+
+func sendStreamStatus(c *Client, sessionID string, active bool, content string) {
+	msg := &Message{
+		Type: "stream_status",
+		Data: map[string]interface{}{
+			"session_id": sessionID,
+			"active":     active,
+			"content":    content,
+		},
+		Timestamp: time.Now(),
+	}
+	sendToClient(c, msg)
+}
+
 func sendChatCreated(c *Client, sessionID string) {
 	msg := &Message{
 		Type:      "chat_created",
@@ -532,19 +718,38 @@ func sendChatComplete(c *Client, sessionID string) {
 	sendToClient(c, msg)
 }
 
-func sendToolStart(c *Client, sessionID, tool, input string) {
+func sendToolStart(c *Client, sessionID, tool, toolID, input string) {
 	msg := &Message{
-		Type:      "tool_start",
-		Data:      map[string]interface{}{"session_id": sessionID, "tool": tool, "input": input},
+		Type: "tool_start",
+		Data: map[string]interface{}{
+			"session_id": sessionID,
+			"tool":       tool,
+			"tool_id":    toolID,
+			"input":      input,
+		},
 		Timestamp: time.Now(),
 	}
 	sendToClient(c, msg)
 }
 
-func sendToolResult(c *Client, sessionID, result string) {
+func sendToolResult(c *Client, sessionID, toolName, toolID, result string) {
 	msg := &Message{
-		Type:      "tool_result",
-		Data:      map[string]interface{}{"session_id": sessionID, "result": result},
+		Type: "tool_result",
+		Data: map[string]interface{}{
+			"session_id": sessionID,
+			"result":     result,
+			"tool_name":  toolName,
+			"tool_id":    toolID,
+		},
+		Timestamp: time.Now(),
+	}
+	sendToClient(c, msg)
+}
+
+func sendThinking(c *Client, sessionID, thinking string) {
+	msg := &Message{
+		Type:      "thinking",
+		Data:      map[string]interface{}{"session_id": sessionID, "content": thinking},
 		Timestamp: time.Now(),
 	}
 	sendToClient(c, msg)
@@ -557,6 +762,118 @@ func sendChatError(c *Client, sessionID, errStr string) {
 		Timestamp: time.Now(),
 	}
 	sendToClient(c, msg)
+}
+
+// getPayloadKeys returns a list of keys in the payload map for debugging
+// extractStringOrJSON converts a value to a string.
+// If it's already a string, returns it directly.
+// If it's a map/slice (from JSON unmarshal), re-marshals it to JSON string.
+func extractStringOrJSON(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	// Re-marshal non-string values (e.g., map[string]interface{} from json.RawMessage)
+	data, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(data)
+}
+
+func getPayloadKeys(payload map[string]any) []string {
+	keys := make([]string, 0, len(payload))
+	for k := range payload {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// buildMetadata serializes tool calls, thinking, and content blocks to metadata JSON
+func (c *ChatContext) buildMetadata(req *pendingRequest) sql.NullString {
+	if len(req.toolCalls) == 0 && req.thinking == "" && len(req.contentBlocks) == 0 {
+		return sql.NullString{}
+	}
+	metaMap := make(map[string]interface{})
+	if len(req.toolCalls) > 0 {
+		metaMap["toolCalls"] = req.toolCalls
+	}
+	if req.thinking != "" {
+		metaMap["thinking"] = req.thinking
+	}
+	if len(req.contentBlocks) > 0 {
+		metaMap["contentBlocks"] = req.contentBlocks
+	}
+	metaJSON, err := json.Marshal(metaMap)
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(metaJSON), Valid: true}
+}
+
+// savePartialMessage creates or updates the DB message for a pending request.
+// Called when the AI pauses (e.g. to execute a tool) so content is persisted mid-stream.
+func (c *ChatContext) savePartialMessage(requestID string) {
+	if c.svcCtx == nil || c.svcCtx.DB == nil {
+		return
+	}
+
+	c.pendingMu.RLock()
+	req, ok := c.pending[requestID]
+	if !ok || req.streamedContent == "" {
+		c.pendingMu.RUnlock()
+		return
+	}
+	content := req.streamedContent
+	messageID := req.messageID
+	sessionID := req.sessionID
+	c.pendingMu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	metadata := c.buildMetadata(req)
+
+	if messageID != "" {
+		// Update existing partial message
+		err := c.svcCtx.DB.UpdateChatMessageContent(ctx, db.UpdateChatMessageContentParams{
+			ID:       messageID,
+			Content:  content,
+			Metadata: metadata,
+		})
+		if err != nil {
+			logging.Errorf("[Chat] Failed to update partial message: %v", err)
+		} else {
+			logging.Infof("[Chat] Updated partial message %s (len=%d)", messageID, len(content))
+		}
+	} else {
+		// Create new partial message
+		msgID := uuid.New().String()
+		_, err := c.svcCtx.DB.CreateChatMessageWithDay(ctx, db.CreateChatMessageWithDayParams{
+			ID:       msgID,
+			ChatID:   sessionID,
+			Role:     "assistant",
+			Content:  content,
+			Metadata: metadata,
+		})
+		if err != nil {
+			logging.Errorf("[Chat] Failed to save partial message: %v", err)
+		} else {
+			logging.Infof("[Chat] Saved partial message %s to chat %s (len=%d)", msgID, sessionID, len(content))
+			// Track the message ID for future updates
+			c.pendingMu.Lock()
+			if req, ok := c.pending[requestID]; ok {
+				req.messageID = msgID
+			}
+			c.pendingMu.Unlock()
+		}
+	}
+}
+
+func intPtr(i int) *int {
+	return &i
 }
 
 func sendToClient(c *Client, msg *Message) {

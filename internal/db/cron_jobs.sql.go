@@ -108,6 +108,33 @@ func (q *Queries) DeleteCronJob(ctx context.Context, id int64) error {
 	return err
 }
 
+const deleteCronJobByName = `-- name: DeleteCronJobByName :execresult
+
+DELETE FROM cron_jobs WHERE name = ?
+`
+
+// Agent tool queries (operations by name for CLI/tool use)
+func (q *Queries) DeleteCronJobByName(ctx context.Context, name string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, deleteCronJobByName, name)
+}
+
+const disableCronJobByName = `-- name: DisableCronJobByName :execresult
+UPDATE cron_jobs SET enabled = 0 WHERE name = ?
+`
+
+func (q *Queries) DisableCronJobByName(ctx context.Context, name string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, disableCronJobByName, name)
+}
+
+const enableCronJobByName = `-- name: EnableCronJobByName :exec
+UPDATE cron_jobs SET enabled = 1 WHERE name = ?
+`
+
+func (q *Queries) EnableCronJobByName(ctx context.Context, name string) error {
+	_, err := q.db.ExecContext(ctx, enableCronJobByName, name)
+	return err
+}
+
 const getCronJob = `-- name: GetCronJob :one
 SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
@@ -170,6 +197,46 @@ LIMIT 10
 
 func (q *Queries) GetRecentCronHistory(ctx context.Context, jobID int64) ([]CronHistory, error) {
 	rows, err := q.db.QueryContext(ctx, getRecentCronHistory, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CronHistory
+	for rows.Next() {
+		var i CronHistory
+		if err := rows.Scan(
+			&i.ID,
+			&i.JobID,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.Success,
+			&i.Output,
+			&i.Error,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getRecentCronHistoryByJobName = `-- name: GetRecentCronHistoryByJobName :many
+SELECT h.id, h.job_id, h.started_at, h.finished_at, h.success, h.output, h.error
+FROM cron_history h
+JOIN cron_jobs j ON j.id = h.job_id
+WHERE j.name = ?
+ORDER BY h.started_at DESC
+LIMIT 10
+`
+
+func (q *Queries) GetRecentCronHistoryByJobName(ctx context.Context, name string) ([]CronHistory, error) {
+	rows, err := q.db.QueryContext(ctx, getRecentCronHistoryByJobName, name)
 	if err != nil {
 		return nil, err
 	}
@@ -439,5 +506,57 @@ type UpdateCronJobLastRunParams struct {
 
 func (q *Queries) UpdateCronJobLastRun(ctx context.Context, arg UpdateCronJobLastRunParams) error {
 	_, err := q.db.ExecContext(ctx, updateCronJobLastRun, arg.LastError, arg.ID)
+	return err
+}
+
+const updateCronJobLastRunByName = `-- name: UpdateCronJobLastRunByName :exec
+UPDATE cron_jobs
+SET last_run = CURRENT_TIMESTAMP,
+    run_count = run_count + 1,
+    last_error = ?1
+WHERE name = ?2
+`
+
+type UpdateCronJobLastRunByNameParams struct {
+	LastError sql.NullString `json:"last_error"`
+	Name      string         `json:"name"`
+}
+
+func (q *Queries) UpdateCronJobLastRunByName(ctx context.Context, arg UpdateCronJobLastRunByNameParams) error {
+	_, err := q.db.ExecContext(ctx, updateCronJobLastRunByName, arg.LastError, arg.Name)
+	return err
+}
+
+const upsertCronJob = `-- name: UpsertCronJob :exec
+INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, enabled)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(name) DO UPDATE SET
+    schedule = excluded.schedule,
+    command = excluded.command,
+    task_type = excluded.task_type,
+    message = excluded.message,
+    deliver = excluded.deliver
+`
+
+type UpsertCronJobParams struct {
+	Name     string         `json:"name"`
+	Schedule string         `json:"schedule"`
+	Command  string         `json:"command"`
+	TaskType string         `json:"task_type"`
+	Message  sql.NullString `json:"message"`
+	Deliver  sql.NullString `json:"deliver"`
+	Enabled  sql.NullInt64  `json:"enabled"`
+}
+
+func (q *Queries) UpsertCronJob(ctx context.Context, arg UpsertCronJobParams) error {
+	_, err := q.db.ExecContext(ctx, upsertCronJob,
+		arg.Name,
+		arg.Schedule,
+		arg.Command,
+		arg.TaskType,
+		arg.Message,
+		arg.Deliver,
+		arg.Enabled,
+	)
 	return err
 }

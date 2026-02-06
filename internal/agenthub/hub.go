@@ -10,7 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"nebo/internal/lifecycle"
+	"github.com/nebolabs/nebo/internal/lifecycle"
 )
 
 // Frame represents a message frame between server and agent
@@ -152,7 +152,15 @@ func (h *Hub) removeAgent(agent *AgentConnection) {
 		name = "main"
 	}
 
+	// Only remove if this agent is still the registered one
+	// (prevents double-close if addAgent already replaced it)
 	if existing, ok := h.agents[name]; ok && existing.ID == agent.ID {
+		// Safe close - channel may already be closed by addAgent
+		defer func() {
+			if r := recover(); r != nil {
+				// Channel already closed, ignore
+			}
+		}()
 		close(agent.Send)
 		if agent.Conn != nil {
 			agent.Conn.Close()
@@ -374,7 +382,7 @@ func (h *Hub) readPump(agent *AgentConnection) {
 		h.unregister <- agent
 	}()
 
-	agent.Conn.SetReadLimit(512 * 1024) // 512KB max message size
+	agent.Conn.SetReadLimit(10 * 1024 * 1024) // 10MB max message size (tool results can be large)
 	agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 	agent.Conn.SetPongHandler(func(string) error {
 		agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))

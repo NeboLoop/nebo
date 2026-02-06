@@ -3,10 +3,10 @@ package provider
 import (
 	"net/http"
 
-	"nebo/internal/httputil"
-	"nebo/internal/provider"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // UpdateModelConfigHandler updates the model configuration (defaults, fallbacks)

@@ -1,18 +1,18 @@
 # Configuration for Air (Go hot reload tool)
-# Run: air
-# Note: This builds nebo.go (server only) for development hot reload.
-# Use 'make build' to build the full CLI from cmd/nebo/
+# Run: air (or make air)
+# Note: Air runs in headless mode (--headless) for hot reload compatibility.
+# Desktop mode (native window) should be tested with 'make desktop'.
 root = "."
 testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
-  args_bin = []
+  args_bin = ["--headless"]
   bin = "./tmp/nebo"
-  cmd = "go build -o ./tmp/nebo ."
-  delay = 1000
-  exclude_dir = ["extensions", "tmp", "vendor", "testdata", ".git", ".vscode", ".idea", "app", "bin", "build"]
-  exclude_file = []
+  cmd = "MACOSX_DEPLOYMENT_TARGET=15.0 CGO_LDFLAGS='-mmacosx-version-min=15.0' go build -o ./tmp/nebo ."
+  delay = 500
+  exclude_dir = ["agent","extensions", "tmp", "vendor", "testdata", ".git", ".vscode", ".idea", "app", "bin", "build"]
+  exclude_file = ["README.md","CLAUDE.md"]
   exclude_regex = ["_test.go"]
   exclude_unchanged = false
   follow_symlink = false
@@ -20,12 +20,14 @@ tmp_dir = "tmp"
   include_dir = []
   include_ext = ["go", "tpl", "tmpl", "html", "yaml"]
   include_file = []
-  kill_delay = "0s"
+  kill_delay = "500ms"
   log = "build-errors.log"
   rerun = false
   rerun_delay = 500
-  send_interrupt = false
+  send_interrupt = true
   stop_on_root = false
+  poll = true
+  poll_interval = 500
 
 [color]
   app = ""

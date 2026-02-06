@@ -167,7 +167,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 
 		<div class="shrink-0 flex items-center gap-2 text-xs text-base-content/50 mt-2">
 			<Info class="w-3.5 h-3.5" />
-			<span>Saved to: ~/.nebo/HEARTBEAT.md</span>
+			<span>Saved to: HEARTBEAT.md in your Nebo data directory</span>
 		</div>
 	{/if}
 

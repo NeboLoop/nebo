@@ -50,3 +50,36 @@ SELECT * FROM mcp_server_registry ORDER BY display_order ASC;
 
 -- name: GetMCPServerRegistry :one
 SELECT * FROM mcp_server_registry WHERE id = ?;
+
+-- name: GetMCPIntegrationByOAuthState :one
+SELECT * FROM mcp_integrations WHERE oauth_state = ? AND oauth_state IS NOT NULL;
+
+-- name: UpdateMCPIntegrationOAuthFlow :exec
+UPDATE mcp_integrations SET
+    oauth_state = ?,
+    oauth_pkce_verifier = ?,
+    oauth_client_id = ?,
+    oauth_client_secret = ?,
+    oauth_authorization_endpoint = ?,
+    oauth_token_endpoint = ?,
+    updated_at = unixepoch()
+WHERE id = ?;
+
+-- name: ClearMCPIntegrationOAuthState :exec
+UPDATE mcp_integrations SET
+    oauth_state = NULL,
+    oauth_pkce_verifier = NULL,
+    updated_at = unixepoch()
+WHERE id = ?;
+
+-- name: UpdateMCPIntegrationConnectionStatus :exec
+UPDATE mcp_integrations SET
+    connection_status = ?,
+    last_connected_at = CASE WHEN ? = 'connected' THEN unixepoch() ELSE last_connected_at END,
+    last_error = ?,
+    updated_at = unixepoch()
+WHERE id = ?;
+
+-- name: GetMCPIntegrationOAuthConfig :one
+SELECT id, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_pkce_verifier, oauth_state
+FROM mcp_integrations WHERE id = ?

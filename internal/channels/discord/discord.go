@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"nebo/internal/channels"
+	"github.com/nebolabs/nebo/internal/channels"
 
 	"github.com/bwmarrin/discordgo"
 )

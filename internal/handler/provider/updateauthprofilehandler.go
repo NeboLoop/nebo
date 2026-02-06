@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"time"
 
-	"nebo/internal/db"
-	"nebo/internal/httputil"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Update auth profile

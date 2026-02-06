@@ -10,9 +10,15 @@ import (
 )
 
 type Querier interface {
+	CancelChildTasks(ctx context.Context, parentTaskID sql.NullString) error
+	CancelTask(ctx context.Context, id string) error
 	CheckEmailExists(ctx context.Context, email string) (int64, error)
+	CleanOldEmbeddingCache(ctx context.Context, createdAt sql.NullTime) error
 	// Run periodically to clean up stale sessions (older than 7 days)
 	CleanupOldMCPSessions(ctx context.Context) error
+	ClearMCPIntegrationOAuthState(ctx context.Context, id string) error
+	ClearSessionOverrides(ctx context.Context, id string) error
+	CompactSession(ctx context.Context, arg CompactSessionParams) error
 	CountChatMessages(ctx context.Context, chatID string) (int64, error)
 	CountChats(ctx context.Context) (int64, error)
 	CountCronHistory(ctx context.Context, jobID int64) (int64, error)
@@ -20,7 +26,9 @@ type Querier interface {
 	CountLeads(ctx context.Context, filterStatus interface{}) (int64, error)
 	CountMemories(ctx context.Context) (int64, error)
 	CountMemoriesByNamespace(ctx context.Context, namespacePrefix sql.NullString) (int64, error)
+	CountMemoryEmbeddings(ctx context.Context, model string) (int64, error)
 	CountSessionMessages(ctx context.Context, sessionID string) (int64, error)
+	CountTasksByStatus(ctx context.Context) (CountTasksByStatusRow, error)
 	CountUnreadNotifications(ctx context.Context, userID string) (int64, error)
 	// Admin queries
 	CountUsers(ctx context.Context) (int64, error)
@@ -52,8 +60,14 @@ type Querier interface {
 	// OAuth Tokens
 	// =============================================================================
 	CreateMCPOAuthToken(ctx context.Context, arg CreateMCPOAuthTokenParams) (McpOauthToken, error)
+	// Memory chunks queries
+	CreateMemoryChunk(ctx context.Context, arg CreateMemoryChunkParams) (CreateMemoryChunkRow, error)
+	// Note: FTS queries use raw SQL in hybrid.go because sqlc doesn't support virtual tables
+	// Memory embeddings queries
+	CreateMemoryEmbedding(ctx context.Context, arg CreateMemoryEmbeddingParams) (MemoryEmbedding, error)
 	CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error)
 	CreateOAuthConnection(ctx context.Context, arg CreateOAuthConnectionParams) (OauthConnection, error)
+	CreatePendingTask(ctx context.Context, arg CreatePendingTaskParams) (PendingTask, error)
 	CreatePersonalityPreset(ctx context.Context, arg CreatePersonalityPresetParams) (PersonalityPreset, error)
 	CreateProviderModel(ctx context.Context, arg CreateProviderModelParams) (ProviderModel, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
@@ -74,13 +88,23 @@ type Querier interface {
 	DeleteChatMessage(ctx context.Context, id string) error
 	DeleteChatMessagesAfter(ctx context.Context, arg DeleteChatMessagesAfterParams) error
 	DeleteCompactedMessages(ctx context.Context, sessionID string) error
+	// Clean up old completed tasks (keep last 7 days)
+	DeleteCompletedTasks(ctx context.Context) error
 	DeleteCronJob(ctx context.Context, id int64) error
+	// Agent tool queries (operations by name for CLI/tool use)
+	DeleteCronJobByName(ctx context.Context, name string) (sql.Result, error)
+	DeleteEmbeddingCache(ctx context.Context, contentHash string) error
 	DeleteExpiredRefreshTokens(ctx context.Context) error
 	DeleteLead(ctx context.Context, id string) error
 	DeleteMCPIntegration(ctx context.Context, id string) error
 	DeleteMCPIntegrationCredentials(ctx context.Context, integrationID string) error
 	DeleteMCPSession(ctx context.Context, sessionID string) error
+	DeleteMemoriesByNamespaceAndUser(ctx context.Context, arg DeleteMemoriesByNamespaceAndUserParams) (sql.Result, error)
 	DeleteMemory(ctx context.Context, id int64) error
+	DeleteMemoryByKeyAndUser(ctx context.Context, arg DeleteMemoryByKeyAndUserParams) (sql.Result, error)
+	DeleteMemoryChunks(ctx context.Context, memoryID sql.NullInt64) error
+	DeleteMemoryEmbeddings(ctx context.Context, chunkID sql.NullInt64) error
+	DeleteMemoryEmbeddingsByModel(ctx context.Context, model string) error
 	DeleteNotification(ctx context.Context, arg DeleteNotificationParams) error
 	DeleteOAuthConnection(ctx context.Context, arg DeleteOAuthConnectionParams) error
 	DeleteOAuthConnectionByProvider(ctx context.Context, arg DeleteOAuthConnectionByProviderParams) error
@@ -91,14 +115,18 @@ type Querier interface {
 	DeleteRefreshToken(ctx context.Context, tokenHash string) error
 	DeleteRefreshTokensByUserID(ctx context.Context, userID string) error
 	DeleteSession(ctx context.Context, id string) error
+	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	DeleteUser(ctx context.Context, id string) error
 	DeleteUserPreferences(ctx context.Context, userID string) error
 	DeleteUserProfile(ctx context.Context, userID string) error
+	DisableCronJobByName(ctx context.Context, name string) (sql.Result, error)
+	EnableCronJobByName(ctx context.Context, name string) error
 	EnsureAgentProfile(ctx context.Context) error
 	// Agent profile queries (singleton table)
 	GetAgentProfile(ctx context.Context) (AgentProfile, error)
 	GetAuthProfile(ctx context.Context, id string) (AuthProfile, error)
 	GetAuthProfileByName(ctx context.Context, name string) (AuthProfile, error)
+	GetAuthProfileErrorCount(ctx context.Context, id string) (sql.NullInt64, error)
 	// Get the best available profile for a provider
 	// Priority: auth_type (OAuth > Token > API Key), then priority, then round-robin by last_used_at
 	GetBestAuthProfile(ctx context.Context, provider string) (AuthProfile, error)
@@ -111,18 +139,23 @@ type Querier interface {
 	GetChatMessage(ctx context.Context, id string) (ChatMessage, error)
 	GetChatMessages(ctx context.Context, chatID string) ([]ChatMessage, error)
 	GetChatWithMessages(ctx context.Context, id string) ([]GetChatWithMessagesRow, error)
+	GetChildTasks(ctx context.Context, parentTaskID sql.NullString) ([]PendingTask, error)
 	GetCompanionChatByUser(ctx context.Context, userID sql.NullString) (Chat, error)
 	GetCronJob(ctx context.Context, id int64) (CronJob, error)
 	GetCronJobByName(ctx context.Context, name string) (CronJob, error)
 	GetDaysWithMessages(ctx context.Context, arg GetDaysWithMessagesParams) ([]GetDaysWithMessagesRow, error)
 	GetDefaultModel(ctx context.Context, profileID string) (ProviderModel, error)
 	GetDistinctNamespaces(ctx context.Context) ([]string, error)
+	// Embedding cache queries
+	GetEmbeddingCache(ctx context.Context, arg GetEmbeddingCacheParams) (EmbeddingCache, error)
 	GetInappNotificationsSetting(ctx context.Context, userID string) (int64, error)
 	GetLeadByEmail(ctx context.Context, email string) (Lead, error)
 	GetLeadByID(ctx context.Context, id string) (Lead, error)
 	GetMCPIntegration(ctx context.Context, id string) (McpIntegration, error)
+	GetMCPIntegrationByOAuthState(ctx context.Context, oauthState sql.NullString) (McpIntegration, error)
 	GetMCPIntegrationByType(ctx context.Context, serverType string) (McpIntegration, error)
 	GetMCPIntegrationCredential(ctx context.Context, integrationID string) (McpIntegrationCredential, error)
+	GetMCPIntegrationOAuthConfig(ctx context.Context, id string) (GetMCPIntegrationOAuthConfigRow, error)
 	GetMCPOAuthClientByClientID(ctx context.Context, clientID string) (McpOauthClient, error)
 	GetMCPOAuthClientByID(ctx context.Context, id string) (McpOauthClient, error)
 	GetMCPOAuthCodeByHash(ctx context.Context, codeHash string) (GetMCPOAuthCodeByHashRow, error)
@@ -133,8 +166,13 @@ type Querier interface {
 	GetMCPSession(ctx context.Context, sessionID string) (McpSession, error)
 	// Get most recent session for a user
 	GetMCPSessionByUser(ctx context.Context, userID string) (McpSession, error)
-	GetMemory(ctx context.Context, id int64) (Memory, error)
-	GetMemoryByKey(ctx context.Context, arg GetMemoryByKeyParams) (Memory, error)
+	// Get the minimum ID of the N most recent messages to keep
+	GetMaxMessageIDToKeep(ctx context.Context, arg GetMaxMessageIDToKeepParams) (interface{}, error)
+	GetMemory(ctx context.Context, id int64) (GetMemoryRow, error)
+	GetMemoryByKey(ctx context.Context, arg GetMemoryByKeyParams) (GetMemoryByKeyRow, error)
+	GetMemoryByKeyAndUser(ctx context.Context, arg GetMemoryByKeyAndUserParams) (GetMemoryByKeyAndUserRow, error)
+	GetMemoryChunk(ctx context.Context, id int64) (GetMemoryChunkRow, error)
+	GetMemoryEmbedding(ctx context.Context, arg GetMemoryEmbeddingParams) (MemoryEmbedding, error)
 	GetMemoryStats(ctx context.Context) ([]GetMemoryStatsRow, error)
 	GetMessagesByDay(ctx context.Context, arg GetMessagesByDayParams) ([]ChatMessage, error)
 	GetNonCompactedMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
@@ -144,20 +182,34 @@ type Querier interface {
 	// Companion Mode queries
 	GetOrCreateCompanionChat(ctx context.Context, arg GetOrCreateCompanionChatParams) (Chat, error)
 	GetOrCreateScopedSession(ctx context.Context, arg GetOrCreateScopedSessionParams) (Session, error)
+	GetPendingTask(ctx context.Context, id string) (PendingTask, error)
+	GetPendingTasksByStatus(ctx context.Context, status string) ([]PendingTask, error)
 	GetPersonalityPreset(ctx context.Context, id string) (PersonalityPreset, error)
 	GetProviderModel(ctx context.Context, id string) (ProviderModel, error)
 	GetProviderModelByModelId(ctx context.Context, arg GetProviderModelByModelIdParams) (ProviderModel, error)
 	// Get last N messages for context window (most recent first, reversed for display)
 	GetRecentChatMessages(ctx context.Context, arg GetRecentChatMessagesParams) ([]ChatMessage, error)
 	GetRecentCronHistory(ctx context.Context, jobID int64) ([]CronHistory, error)
+	GetRecentCronHistoryByJobName(ctx context.Context, name string) ([]CronHistory, error)
+	// Get last N non-compacted messages, ordered by id (insertion order)
+	GetRecentNonCompactedMessages(ctx context.Context, arg GetRecentNonCompactedMessagesParams) ([]SessionMessage, error)
 	// Get last N messages for context window
 	GetRecentSessionMessages(ctx context.Context, arg GetRecentSessionMessagesParams) ([]SessionMessage, error)
+	// Get tasks that were running or pending when agent shut down
+	GetRecoverableTasks(ctx context.Context) ([]PendingTask, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetSession(ctx context.Context, id string) (Session, error)
 	GetSessionByName(ctx context.Context, name sql.NullString) (Session, error)
+	GetSessionByNameAndScope(ctx context.Context, arg GetSessionByNameAndScopeParams) (Session, error)
+	GetSessionByNameAndScopeNullID(ctx context.Context, arg GetSessionByNameAndScopeNullIDParams) (Session, error)
 	GetSessionByScope(ctx context.Context, arg GetSessionByScopeParams) (Session, error)
 	GetSessionMessageStats(ctx context.Context, sessionID string) (GetSessionMessageStatsRow, error)
 	GetSessionMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
+	// Session policy queries
+	GetSessionPolicy(ctx context.Context, id string) (GetSessionPolicyRow, error)
+	GetTacitMemoriesByUser(ctx context.Context, arg GetTacitMemoriesByUserParams) ([]GetTacitMemoriesByUserRow, error)
+	GetTasksByLaneAndStatus(ctx context.Context, arg GetTasksByLaneAndStatusParams) ([]PendingTask, error)
+	GetTasksByUser(ctx context.Context, userID sql.NullString) ([]PendingTask, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByEmailVerifyToken(ctx context.Context, token sql.NullString) (GetUserByEmailVerifyTokenRow, error)
 	GetUserByID(ctx context.Context, id string) (GetUserByIDRow, error)
@@ -170,6 +222,8 @@ type Querier interface {
 	HasAdminUser(ctx context.Context) (int64, error)
 	IncrementChannelMessageCount(ctx context.Context, id string) error
 	IncrementMemoryAccess(ctx context.Context, id int64) error
+	IncrementMemoryAccessByKey(ctx context.Context, arg IncrementMemoryAccessByKeyParams) error
+	IncrementSessionMessageCount(ctx context.Context, id string) error
 	ListActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error)
 	ListActiveModels(ctx context.Context, profileID string) ([]ProviderModel, error)
 	ListAuthProfiles(ctx context.Context) ([]AuthProfile, error)
@@ -188,12 +242,17 @@ type Querier interface {
 	ListMCPIntegrations(ctx context.Context) ([]McpIntegration, error)
 	ListMCPServerRegistry(ctx context.Context) ([]McpServerRegistry, error)
 	// Memory queries
-	ListMemories(ctx context.Context, arg ListMemoriesParams) ([]Memory, error)
-	ListMemoriesByNamespace(ctx context.Context, arg ListMemoriesByNamespaceParams) ([]Memory, error)
+	ListMemories(ctx context.Context, arg ListMemoriesParams) ([]ListMemoriesRow, error)
+	ListMemoriesByNamespace(ctx context.Context, arg ListMemoriesByNamespaceParams) ([]ListMemoriesByNamespaceRow, error)
+	ListMemoriesByUserAndNamespace(ctx context.Context, arg ListMemoriesByUserAndNamespaceParams) ([]ListMemoriesByUserAndNamespaceRow, error)
+	ListMemoryChunks(ctx context.Context, memoryID sql.NullInt64) ([]ListMemoryChunksRow, error)
+	ListMemoryEmbeddingsByModel(ctx context.Context, arg ListMemoryEmbeddingsByModelParams) ([]ListMemoryEmbeddingsByModelRow, error)
 	// Personality presets queries
 	ListPersonalityPresets(ctx context.Context) ([]PersonalityPreset, error)
 	ListProviderModels(ctx context.Context, profileID string) ([]ProviderModel, error)
 	ListSessions(ctx context.Context, arg ListSessionsParams) ([]Session, error)
+	ListSessionsByScope(ctx context.Context, scope sql.NullString) ([]Session, error)
+	ListSessionsByScopeAndScopeID(ctx context.Context, arg ListSessionsByScopeAndScopeIDParams) ([]Session, error)
 	ListUnreadNotifications(ctx context.Context, arg ListUnreadNotificationsParams) ([]Notification, error)
 	ListUserNotifications(ctx context.Context, arg ListUserNotificationsParams) ([]Notification, error)
 	ListUserOAuthConnections(ctx context.Context, userID string) ([]OauthConnection, error)
@@ -201,11 +260,19 @@ type Querier interface {
 	MarkAllNotificationsRead(ctx context.Context, userID string) error
 	MarkMCPOAuthCodeUsed(ctx context.Context, id string) error
 	MarkMessagesCompacted(ctx context.Context, arg MarkMessagesCompactedParams) error
+	// Mark all messages with ID less than the given threshold as compacted
+	MarkMessagesCompactedBeforeID(ctx context.Context, arg MarkMessagesCompactedBeforeIDParams) error
 	MarkNotificationRead(ctx context.Context, arg MarkNotificationReadParams) error
+	RecordMemoryFlush(ctx context.Context, id string) error
+	// Reset error count if cooldown has expired and last update was > 24h ago
+	ResetAuthProfileErrorCountIfStale(ctx context.Context, arg ResetAuthProfileErrorCountIfStaleParams) error
+	ResetSession(ctx context.Context, id string) error
 	RevokeMCPOAuthToken(ctx context.Context, id string) error
 	RevokeUserMCPOAuthTokens(ctx context.Context, userID string) error
 	SearchChatMessages(ctx context.Context, arg SearchChatMessagesParams) ([]ChatMessage, error)
-	SearchMemories(ctx context.Context, arg SearchMemoriesParams) ([]Memory, error)
+	SearchMemories(ctx context.Context, arg SearchMemoriesParams) ([]SearchMemoriesRow, error)
+	SearchMemoriesByUser(ctx context.Context, arg SearchMemoriesByUserParams) ([]SearchMemoriesByUserRow, error)
+	SearchMemoriesByUserAndNamespace(ctx context.Context, arg SearchMemoriesByUserAndNamespaceParams) ([]SearchMemoriesByUserAndNamespaceRow, error)
 	SetAuthProfileCooldown(ctx context.Context, arg SetAuthProfileCooldownParams) error
 	SetCronJobEnabled(ctx context.Context, arg SetCronJobEnabledParams) error
 	SetDefaultModel(ctx context.Context, arg SetDefaultModelParams) error
@@ -215,6 +282,10 @@ type Querier interface {
 	SetOnboardingCompleted(ctx context.Context, userID string) error
 	SetOnboardingStep(ctx context.Context, arg SetOnboardingStepParams) error
 	SetPasswordResetToken(ctx context.Context, arg SetPasswordResetTokenParams) error
+	SetSessionAuthProfileOverride(ctx context.Context, arg SetSessionAuthProfileOverrideParams) error
+	SetSessionLabel(ctx context.Context, arg SetSessionLabelParams) error
+	SetSessionModelOverride(ctx context.Context, arg SetSessionModelOverrideParams) error
+	SetSessionSendPolicy(ctx context.Context, arg SetSessionSendPolicyParams) error
 	ToggleAuthProfile(ctx context.Context, arg ToggleAuthProfileParams) error
 	ToggleCronJob(ctx context.Context, id int64) error
 	UpdateAgentProfile(ctx context.Context, arg UpdateAgentProfileParams) error
@@ -223,21 +294,30 @@ type Querier interface {
 	UpdateAuthProfileUsage(ctx context.Context, id string) error
 	UpdateChannel(ctx context.Context, arg UpdateChannelParams) (Channel, error)
 	UpdateChannelStatus(ctx context.Context, arg UpdateChannelStatusParams) error
+	UpdateChatMessageContent(ctx context.Context, arg UpdateChatMessageContentParams) error
 	UpdateChatTimestamp(ctx context.Context, id string) error
 	UpdateChatTitle(ctx context.Context, arg UpdateChatTitleParams) error
 	UpdateCronHistory(ctx context.Context, arg UpdateCronHistoryParams) error
 	UpdateCronJob(ctx context.Context, arg UpdateCronJobParams) error
 	UpdateCronJobLastRun(ctx context.Context, arg UpdateCronJobLastRunParams) error
+	UpdateCronJobLastRunByName(ctx context.Context, arg UpdateCronJobLastRunByNameParams) error
 	UpdateLeadStatus(ctx context.Context, arg UpdateLeadStatusParams) error
 	UpdateMCPIntegration(ctx context.Context, arg UpdateMCPIntegrationParams) (McpIntegration, error)
+	UpdateMCPIntegrationConnectionStatus(ctx context.Context, arg UpdateMCPIntegrationConnectionStatusParams) error
 	UpdateMCPIntegrationCredential(ctx context.Context, arg UpdateMCPIntegrationCredentialParams) error
+	UpdateMCPIntegrationOAuthFlow(ctx context.Context, arg UpdateMCPIntegrationOAuthFlowParams) error
 	UpdateMCPIntegrationStatus(ctx context.Context, arg UpdateMCPIntegrationStatusParams) error
 	UpdateMemory(ctx context.Context, arg UpdateMemoryParams) error
 	UpdateOAuthConnection(ctx context.Context, arg UpdateOAuthConnectionParams) error
 	UpdatePersonalityPreset(ctx context.Context, arg UpdatePersonalityPresetParams) error
 	UpdateProviderModelActive(ctx context.Context, arg UpdateProviderModelActiveParams) error
+	UpdateSessionPolicy(ctx context.Context, arg UpdateSessionPolicyParams) error
 	UpdateSessionStats(ctx context.Context, arg UpdateSessionStatsParams) error
 	UpdateSessionSummary(ctx context.Context, arg UpdateSessionSummaryParams) error
+	UpdateTaskCompleted(ctx context.Context, id string) error
+	UpdateTaskFailed(ctx context.Context, arg UpdateTaskFailedParams) error
+	UpdateTaskRunning(ctx context.Context, id string) error
+	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) error
 	UpdateUser(ctx context.Context, arg UpdateUserParams) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateUserPreferences(ctx context.Context, arg UpdateUserPreferencesParams) error
@@ -245,8 +325,12 @@ type Querier interface {
 	UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) error
 	UpsertChannelConfig(ctx context.Context, arg UpsertChannelConfigParams) (ChannelConfig, error)
 	UpsertChannelCredential(ctx context.Context, arg UpsertChannelCredentialParams) (ChannelCredential, error)
+	UpsertCronJob(ctx context.Context, arg UpsertCronJobParams) error
+	UpsertEmbeddingCache(ctx context.Context, arg UpsertEmbeddingCacheParams) error
 	// Persist session (upsert to handle both new and existing sessions)
 	UpsertMCPSession(ctx context.Context, arg UpsertMCPSessionParams) error
+	// User-scoped memory queries for agent tools
+	UpsertMemory(ctx context.Context, arg UpsertMemoryParams) error
 	UpsertUserProfile(ctx context.Context, arg UpsertUserProfileParams) (UserProfile, error)
 }
 

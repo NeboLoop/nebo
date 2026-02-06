@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"time"
 
-	"nebo/internal/httputil"
-	models "nebo/internal/provider"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	models "github.com/nebolabs/nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // HTTP client with timeout for API testing
@@ -187,7 +187,7 @@ func testOllama(baseUrl, model string) (*types.TestAuthProfileResponse, error) {
 	}
 	// Fallback to a known model if still empty (e.g., during initial setup)
 	if model == "" {
-		model = "llama3.2"
+		model = "qwen3:4b"
 	}
 
 	// Use fresh context with longer timeout for API calls

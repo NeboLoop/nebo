@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/golang-jwt/jwt/v4"
-	"nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/httputil"
 )
 
 // JWTMiddleware creates a chi middleware that validates JWT tokens

@@ -34,12 +34,15 @@ type Server struct {
 	server          *mcp.Server
 	advisorLoader   *advisors.Loader
 	advisorProvider ai.Provider
+	mu              sync.Mutex
+	registeredTools map[string]bool // tracks which tools are in the MCP server
 }
 
 // NewServer creates a new MCP server for the agent
 func NewServer(registry *tools.Registry, opts ...Option) *Server {
 	s := &Server{
-		registry: registry,
+		registry:        registry,
+		registeredTools: make(map[string]bool),
 	}
 
 	// Apply options
@@ -60,6 +63,13 @@ func NewServer(registry *tools.Registry, opts ...Option) *Server {
 		s.registerAdvisorsTool()
 	}
 
+	// Subscribe to registry changes so new tools (e.g. plugins) are exposed dynamically.
+	// The go-sdk's AddTool/RemoveTools automatically sends notifications/tools/list_changed
+	// to connected clients, so Claude CLI will re-fetch the tool list.
+	registry.OnChange(func(added, removed []string) {
+		s.syncTools(added, removed)
+	})
+
 	return s
 }
 
@@ -67,22 +77,55 @@ func NewServer(registry *tools.Registry, opts ...Option) *Server {
 func (s *Server) registerTools() {
 	toolDefs := s.registry.List()
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	for _, def := range toolDefs {
 		toolDef := def
+		s.addToolToServer(toolDef.Name, toolDef.Description, toolDef.InputSchema)
+	}
+}
 
-		// Parse schema
-		var schemaMap map[string]any
-		if err := json.Unmarshal(toolDef.InputSchema, &schemaMap); err != nil {
-			fmt.Printf("[AgentMCP] Failed to parse schema for %s: %v\n", toolDef.Name, err)
+// addToolToServer adds a single tool to the MCP server (caller must hold s.mu)
+func (s *Server) addToolToServer(name, description string, inputSchema json.RawMessage) {
+	var schemaMap map[string]any
+	if err := json.Unmarshal(inputSchema, &schemaMap); err != nil {
+		fmt.Printf("[AgentMCP] Failed to parse schema for %s: %v\n", name, err)
+		return
+	}
+
+	// AddTool replaces if already exists and auto-notifies connected clients
+	s.server.AddTool(&mcp.Tool{
+		Name:        name,
+		Description: description,
+		InputSchema: schemaMap,
+	}, s.createToolHandler(name))
+	s.registeredTools[name] = true
+}
+
+// syncTools handles dynamic tool changes from the registry.
+// Called when tools are added/removed (e.g. plugin install/uninstall).
+func (s *Server) syncTools(added, removed []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Remove tools that were unregistered from the registry
+	if len(removed) > 0 {
+		s.server.RemoveTools(removed...)
+		for _, name := range removed {
+			delete(s.registeredTools, name)
+		}
+		fmt.Printf("[AgentMCP] Removed tools: %s\n", strings.Join(removed, ", "))
+	}
+
+	// Add/replace tools that were registered
+	for _, name := range added {
+		tool, ok := s.registry.Get(name)
+		if !ok {
 			continue
 		}
-
-		// Use low-level AddTool for full control over CallToolResult content
-		s.server.AddTool(&mcp.Tool{
-			Name:        toolDef.Name,
-			Description: toolDef.Description,
-			InputSchema: schemaMap,
-		}, s.createToolHandler(toolDef.Name))
+		s.addToolToServer(tool.Name(), tool.Description(), tool.Schema())
+		fmt.Printf("[AgentMCP] Added/updated tool: %s\n", name)
 	}
 }
 

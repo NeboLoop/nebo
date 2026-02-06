@@ -33,6 +33,20 @@ func (q *Queries) CountMemoriesByNamespace(ctx context.Context, namespacePrefix 
 	return total, err
 }
 
+const deleteMemoriesByNamespaceAndUser = `-- name: DeleteMemoriesByNamespaceAndUser :execresult
+DELETE FROM memories
+WHERE namespace LIKE ?1 || '%' AND user_id = ?2
+`
+
+type DeleteMemoriesByNamespaceAndUserParams struct {
+	NamespacePrefix sql.NullString `json:"namespace_prefix"`
+	UserID          string         `json:"user_id"`
+}
+
+func (q *Queries) DeleteMemoriesByNamespaceAndUser(ctx context.Context, arg DeleteMemoriesByNamespaceAndUserParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, deleteMemoriesByNamespaceAndUser, arg.NamespacePrefix, arg.UserID)
+}
+
 const deleteMemory = `-- name: DeleteMemory :exec
 DELETE FROM memories WHERE id = ?
 `
@@ -40,6 +54,21 @@ DELETE FROM memories WHERE id = ?
 func (q *Queries) DeleteMemory(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, deleteMemory, id)
 	return err
+}
+
+const deleteMemoryByKeyAndUser = `-- name: DeleteMemoryByKeyAndUser :execresult
+DELETE FROM memories
+WHERE namespace = ? AND key = ? AND user_id = ?
+`
+
+type DeleteMemoryByKeyAndUserParams struct {
+	Namespace string `json:"namespace"`
+	Key       string `json:"key"`
+	UserID    string `json:"user_id"`
+}
+
+func (q *Queries) DeleteMemoryByKeyAndUser(ctx context.Context, arg DeleteMemoryByKeyAndUserParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, deleteMemoryByKeyAndUser, arg.Namespace, arg.Key, arg.UserID)
 }
 
 const getDistinctNamespaces = `-- name: GetDistinctNamespaces :many
@@ -75,9 +104,22 @@ FROM memories
 WHERE id = ?
 `
 
-func (q *Queries) GetMemory(ctx context.Context, id int64) (Memory, error) {
+type GetMemoryRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) GetMemory(ctx context.Context, id int64) (GetMemoryRow, error) {
 	row := q.db.QueryRowContext(ctx, getMemory, id)
-	var i Memory
+	var i GetMemoryRow
 	err := row.Scan(
 		&i.ID,
 		&i.Namespace,
@@ -104,9 +146,65 @@ type GetMemoryByKeyParams struct {
 	Key       string `json:"key"`
 }
 
-func (q *Queries) GetMemoryByKey(ctx context.Context, arg GetMemoryByKeyParams) (Memory, error) {
+type GetMemoryByKeyRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) GetMemoryByKey(ctx context.Context, arg GetMemoryByKeyParams) (GetMemoryByKeyRow, error) {
 	row := q.db.QueryRowContext(ctx, getMemoryByKey, arg.Namespace, arg.Key)
-	var i Memory
+	var i GetMemoryByKeyRow
+	err := row.Scan(
+		&i.ID,
+		&i.Namespace,
+		&i.Key,
+		&i.Value,
+		&i.Tags,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AccessedAt,
+		&i.AccessCount,
+	)
+	return i, err
+}
+
+const getMemoryByKeyAndUser = `-- name: GetMemoryByKeyAndUser :one
+SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
+FROM memories
+WHERE namespace = ? AND key = ? AND user_id = ?
+`
+
+type GetMemoryByKeyAndUserParams struct {
+	Namespace string `json:"namespace"`
+	Key       string `json:"key"`
+	UserID    string `json:"user_id"`
+}
+
+type GetMemoryByKeyAndUserRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) GetMemoryByKeyAndUser(ctx context.Context, arg GetMemoryByKeyAndUserParams) (GetMemoryByKeyAndUserRow, error) {
+	row := q.db.QueryRowContext(ctx, getMemoryByKeyAndUser, arg.Namespace, arg.Key, arg.UserID)
+	var i GetMemoryByKeyAndUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.Namespace,
@@ -164,6 +262,66 @@ func (q *Queries) GetMemoryStats(ctx context.Context) ([]GetMemoryStatsRow, erro
 	return items, nil
 }
 
+const getTacitMemoriesByUser = `-- name: GetTacitMemoriesByUser :many
+SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
+FROM memories
+WHERE namespace LIKE 'tacit.%' AND user_id = ?
+ORDER BY access_count DESC
+LIMIT ?2
+`
+
+type GetTacitMemoriesByUserParams struct {
+	UserID string `json:"user_id"`
+	Limit  int64  `json:"limit"`
+}
+
+type GetTacitMemoriesByUserRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) GetTacitMemoriesByUser(ctx context.Context, arg GetTacitMemoriesByUserParams) ([]GetTacitMemoriesByUserRow, error) {
+	rows, err := q.db.QueryContext(ctx, getTacitMemoriesByUser, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetTacitMemoriesByUserRow
+	for rows.Next() {
+		var i GetTacitMemoriesByUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Namespace,
+			&i.Key,
+			&i.Value,
+			&i.Tags,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AccessedAt,
+			&i.AccessCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const incrementMemoryAccess = `-- name: IncrementMemoryAccess :exec
 UPDATE memories
 SET access_count = access_count + 1,
@@ -173,6 +331,24 @@ WHERE id = ?
 
 func (q *Queries) IncrementMemoryAccess(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, incrementMemoryAccess, id)
+	return err
+}
+
+const incrementMemoryAccessByKey = `-- name: IncrementMemoryAccessByKey :exec
+UPDATE memories
+SET access_count = access_count + 1,
+    accessed_at = CURRENT_TIMESTAMP
+WHERE namespace = ? AND key = ? AND user_id = ?
+`
+
+type IncrementMemoryAccessByKeyParams struct {
+	Namespace string `json:"namespace"`
+	Key       string `json:"key"`
+	UserID    string `json:"user_id"`
+}
+
+func (q *Queries) IncrementMemoryAccessByKey(ctx context.Context, arg IncrementMemoryAccessByKeyParams) error {
+	_, err := q.db.ExecContext(ctx, incrementMemoryAccessByKey, arg.Namespace, arg.Key, arg.UserID)
 	return err
 }
 
@@ -193,16 +369,29 @@ type ListMemoriesParams struct {
 	Limit  int64 `json:"limit"`
 }
 
+type ListMemoriesRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
 // Memory queries
-func (q *Queries) ListMemories(ctx context.Context, arg ListMemoriesParams) ([]Memory, error) {
+func (q *Queries) ListMemories(ctx context.Context, arg ListMemoriesParams) ([]ListMemoriesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listMemories, arg.Offset, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Memory
+	var items []ListMemoriesRow
 	for rows.Next() {
-		var i Memory
+		var i ListMemoriesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Namespace,
@@ -242,15 +431,95 @@ type ListMemoriesByNamespaceParams struct {
 	Limit           int64          `json:"limit"`
 }
 
-func (q *Queries) ListMemoriesByNamespace(ctx context.Context, arg ListMemoriesByNamespaceParams) ([]Memory, error) {
+type ListMemoriesByNamespaceRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) ListMemoriesByNamespace(ctx context.Context, arg ListMemoriesByNamespaceParams) ([]ListMemoriesByNamespaceRow, error) {
 	rows, err := q.db.QueryContext(ctx, listMemoriesByNamespace, arg.NamespacePrefix, arg.Offset, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Memory
+	var items []ListMemoriesByNamespaceRow
 	for rows.Next() {
-		var i Memory
+		var i ListMemoriesByNamespaceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Namespace,
+			&i.Key,
+			&i.Value,
+			&i.Tags,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AccessedAt,
+			&i.AccessCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMemoriesByUserAndNamespace = `-- name: ListMemoriesByUserAndNamespace :many
+SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
+FROM memories
+WHERE user_id = ?1 AND namespace LIKE ?2 || '%'
+ORDER BY access_count DESC
+LIMIT ?4 OFFSET ?3
+`
+
+type ListMemoriesByUserAndNamespaceParams struct {
+	UserID          string         `json:"user_id"`
+	NamespacePrefix sql.NullString `json:"namespace_prefix"`
+	Offset          int64          `json:"offset"`
+	Limit           int64          `json:"limit"`
+}
+
+type ListMemoriesByUserAndNamespaceRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) ListMemoriesByUserAndNamespace(ctx context.Context, arg ListMemoriesByUserAndNamespaceParams) ([]ListMemoriesByUserAndNamespaceRow, error) {
+	rows, err := q.db.QueryContext(ctx, listMemoriesByUserAndNamespace,
+		arg.UserID,
+		arg.NamespacePrefix,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMemoriesByUserAndNamespaceRow
+	for rows.Next() {
+		var i ListMemoriesByUserAndNamespaceRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Namespace,
@@ -292,15 +561,169 @@ type SearchMemoriesParams struct {
 	Limit  int64          `json:"limit"`
 }
 
-func (q *Queries) SearchMemories(ctx context.Context, arg SearchMemoriesParams) ([]Memory, error) {
+type SearchMemoriesRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) SearchMemories(ctx context.Context, arg SearchMemoriesParams) ([]SearchMemoriesRow, error) {
 	rows, err := q.db.QueryContext(ctx, searchMemories, arg.Query, arg.Offset, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Memory
+	var items []SearchMemoriesRow
 	for rows.Next() {
-		var i Memory
+		var i SearchMemoriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Namespace,
+			&i.Key,
+			&i.Value,
+			&i.Tags,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AccessedAt,
+			&i.AccessCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchMemoriesByUser = `-- name: SearchMemoriesByUser :many
+SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
+FROM memories
+WHERE user_id = ?1
+  AND (namespace LIKE '%' || ?2 || '%'
+       OR key LIKE '%' || ?2 || '%'
+       OR value LIKE '%' || ?2 || '%')
+ORDER BY access_count DESC
+LIMIT ?4 OFFSET ?3
+`
+
+type SearchMemoriesByUserParams struct {
+	UserID string         `json:"user_id"`
+	Query  sql.NullString `json:"query"`
+	Offset int64          `json:"offset"`
+	Limit  int64          `json:"limit"`
+}
+
+type SearchMemoriesByUserRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) SearchMemoriesByUser(ctx context.Context, arg SearchMemoriesByUserParams) ([]SearchMemoriesByUserRow, error) {
+	rows, err := q.db.QueryContext(ctx, searchMemoriesByUser,
+		arg.UserID,
+		arg.Query,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchMemoriesByUserRow
+	for rows.Next() {
+		var i SearchMemoriesByUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Namespace,
+			&i.Key,
+			&i.Value,
+			&i.Tags,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AccessedAt,
+			&i.AccessCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchMemoriesByUserAndNamespace = `-- name: SearchMemoriesByUserAndNamespace :many
+SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
+FROM memories
+WHERE user_id = ?1 AND namespace LIKE ?2 || '%'
+  AND (key LIKE '%' || ?3 || '%'
+       OR value LIKE '%' || ?3 || '%')
+ORDER BY access_count DESC
+LIMIT ?5 OFFSET ?4
+`
+
+type SearchMemoriesByUserAndNamespaceParams struct {
+	UserID          string         `json:"user_id"`
+	NamespacePrefix sql.NullString `json:"namespace_prefix"`
+	Query           sql.NullString `json:"query"`
+	Offset          int64          `json:"offset"`
+	Limit           int64          `json:"limit"`
+}
+
+type SearchMemoriesByUserAndNamespaceRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) SearchMemoriesByUserAndNamespace(ctx context.Context, arg SearchMemoriesByUserAndNamespaceParams) ([]SearchMemoriesByUserAndNamespaceRow, error) {
+	rows, err := q.db.QueryContext(ctx, searchMemoriesByUserAndNamespace,
+		arg.UserID,
+		arg.NamespacePrefix,
+		arg.Query,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchMemoriesByUserAndNamespaceRow
+	for rows.Next() {
+		var i SearchMemoriesByUserAndNamespaceRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Namespace,
@@ -348,6 +771,39 @@ func (q *Queries) UpdateMemory(ctx context.Context, arg UpdateMemoryParams) erro
 		arg.Tags,
 		arg.Metadata,
 		arg.ID,
+	)
+	return err
+}
+
+const upsertMemory = `-- name: UpsertMemory :exec
+
+INSERT INTO memories (namespace, key, value, tags, metadata, user_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(namespace, key, user_id) DO UPDATE SET
+    value = excluded.value,
+    tags = excluded.tags,
+    metadata = excluded.metadata,
+    updated_at = CURRENT_TIMESTAMP
+`
+
+type UpsertMemoryParams struct {
+	Namespace string         `json:"namespace"`
+	Key       string         `json:"key"`
+	Value     string         `json:"value"`
+	Tags      sql.NullString `json:"tags"`
+	Metadata  sql.NullString `json:"metadata"`
+	UserID    string         `json:"user_id"`
+}
+
+// User-scoped memory queries for agent tools
+func (q *Queries) UpsertMemory(ctx context.Context, arg UpsertMemoryParams) error {
+	_, err := q.db.ExecContext(ctx, upsertMemory,
+		arg.Namespace,
+		arg.Key,
+		arg.Value,
+		arg.Tags,
+		arg.Metadata,
+		arg.UserID,
 	)
 	return err
 }

@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"nebo/agent/ai"
-	agentcfg "nebo/agent/config"
-	"nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/agent/ai"
+	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
+	"github.com/nebolabs/nebo/internal/provider"
 )
 
 var _ = agentcfg.Config{} // silence unused import if needed
@@ -68,6 +68,12 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 				baseURL = "http://localhost:11434"
 			}
 			if ai.CheckOllamaAvailable(baseURL) {
+				// Auto-pull the model if not present
+				if pcfg.Model != "" {
+					if err := ai.EnsureOllamaModel(baseURL, pcfg.Model); err != nil {
+						fmt.Printf("[Providers] Warning: could not ensure Ollama model %s: %v\n", pcfg.Model, err)
+					}
+				}
 				providers = append(providers, ai.NewOllamaProvider(baseURL, pcfg.Model))
 			} else if verbose {
 				fmt.Fprintf(os.Stderr, "Ollama provider %s: not available at %s\n", pcfg.Name, baseURL)
@@ -86,7 +92,7 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 			// Use factory functions for known CLIs to ensure correct flags
 			switch pcfg.Command {
 			case "claude":
-				providers = append(providers, ai.NewClaudeCodeProvider())
+				providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns))
 			case "codex":
 				providers = append(providers, ai.NewCodexCLIProvider())
 			case "gemini":
@@ -115,8 +121,8 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 		// Check if primary is a CLI provider (e.g., "claude-code/opus", "codex-cli/gpt-5")
 		if strings.HasPrefix(primary, "claude-code") {
 			if ai.CheckCLIAvailable("claude") {
-				providers = append(providers, ai.NewClaudeCodeProvider())
-				fmt.Printf("[Providers] Added Claude CLI provider (primary: %s)\n", primary)
+				providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns))
+				fmt.Printf("[Providers] Added Claude CLI provider (primary: %s, max_turns: %d)\n", primary, cfg.MaxTurns)
 			} else {
 				fmt.Printf("[Providers] Warning: Claude CLI not found in PATH (primary: %s)\n", primary)
 			}
@@ -173,8 +179,10 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 				if model == "" {
 					model = provider.GetDefaultModel("anthropic")
 				}
-				providers = append(providers, ai.NewAnthropicProvider(p.APIKey, model))
-				fmt.Printf("[Providers] Loaded Anthropic provider: %s (model: %s)\n", p.Name, model)
+				// Wrap with ProfiledProvider for per-request profile tracking (moltbot pattern)
+				baseProvider := ai.NewAnthropicProvider(p.APIKey, model)
+				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
+				fmt.Printf("[Providers] Loaded Anthropic provider: %s (model: %s, profileID: %s)\n", p.Name, model, p.ID)
 			}
 		}
 	} else {
@@ -190,8 +198,10 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 				if model == "" {
 					model = provider.GetDefaultModel("openai")
 				}
-				providers = append(providers, ai.NewOpenAIProvider(p.APIKey, model))
-				fmt.Printf("[Providers] Loaded OpenAI provider: %s (model: %s)\n", p.Name, model)
+				// Wrap with ProfiledProvider for per-request profile tracking (moltbot pattern)
+				baseProvider := ai.NewOpenAIProvider(p.APIKey, model)
+				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
+				fmt.Printf("[Providers] Loaded OpenAI provider: %s (model: %s, profileID: %s)\n", p.Name, model, p.ID)
 			}
 		}
 	} else {
@@ -207,8 +217,10 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 				if model == "" {
 					model = provider.GetDefaultModel("google")
 				}
-				providers = append(providers, ai.NewGeminiProvider(p.APIKey, model))
-				fmt.Printf("[Providers] Loaded Gemini provider: %s (model: %s)\n", p.Name, model)
+				// Wrap with ProfiledProvider for per-request profile tracking (moltbot pattern)
+				baseProvider := ai.NewGeminiProvider(p.APIKey, model)
+				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
+				fmt.Printf("[Providers] Loaded Gemini provider: %s (model: %s, profileID: %s)\n", p.Name, model, p.ID)
 			}
 		}
 	} else {
@@ -228,8 +240,14 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 				if model == "" {
 					model = provider.GetDefaultModel("ollama")
 				}
-				providers = append(providers, ai.NewOllamaProvider(baseURL, model))
-				fmt.Printf("[Providers] Loaded Ollama provider: %s (model: %s)\n", p.Name, model)
+				// Auto-pull the chat model if not present
+				if err := ai.EnsureOllamaModel(baseURL, model); err != nil {
+					fmt.Printf("[Providers] Warning: could not ensure Ollama model %s: %v\n", model, err)
+				}
+				// Wrap with ProfiledProvider for per-request profile tracking (moltbot pattern)
+				baseProvider := ai.NewOllamaProvider(baseURL, model)
+				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
+				fmt.Printf("[Providers] Loaded Ollama provider: %s (model: %s, profileID: %s)\n", p.Name, model, p.ID)
 			}
 		}
 	} else {

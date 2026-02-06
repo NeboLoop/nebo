@@ -161,13 +161,18 @@ providers:
       active: true
 
   ollama:
-    - id: llama3.3
-      displayName: Llama 3.3 70B
+    - id: qwen3:4b
+      displayName: Qwen 3 4B
       contextWindow: 128000
-      capabilities: [streaming, tools, code]
+      capabilities: [streaming, tools, code, reasoning]
       active: true
     - id: qwen3
       displayName: Qwen 3
+      contextWindow: 128000
+      capabilities: [streaming, tools, code, reasoning]
+      active: true
+    - id: qwen3:8b
+      displayName: Qwen 3 8B
       contextWindow: 128000
       capabilities: [streaming, tools, code, reasoning]
       active: true

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"nebo/internal/httputil"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // OAuth callback - exchange code for tokens

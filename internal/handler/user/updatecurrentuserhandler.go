@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"time"
 
-	"nebo/internal/auth"
-	"nebo/internal/httputil"
-	"nebo/internal/logging"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/auth"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 func UpdateCurrentUserHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {

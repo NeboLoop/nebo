@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"nebo/internal/db/migrations"
+	"github.com/nebolabs/nebo/internal/db/migrations"
 
 	_ "modernc.org/sqlite" // Pure Go SQLite driver (no CGO)
 
-	"nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/logging"
 )
 
 // NewSQLite creates a new SQLite database connection, runs migrations, and returns a Store
@@ -23,11 +23,16 @@ func NewSQLite(path string) (*Store, error) {
 		}
 	}
 
-	// Open database with WAL mode for better concurrency
-	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=cache_size(1000000000)&_pragma=foreign_keys(1)")
+	// Open database with WAL mode and single connection (no concurrency)
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=cache_size(1000000000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+
+	// CRITICAL: Force single connection - SQLite doesn't handle concurrent writers well
+	// All DB access must be serialized through this single connection
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	// Test connection
 	if err := db.Ping(); err != nil {

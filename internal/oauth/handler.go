@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"nebo/internal/db"
-	"nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/svc"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"

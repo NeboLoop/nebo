@@ -8,6 +8,7 @@
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ApprovalModal from '$lib/components/ui/ApprovalModal.svelte';
 	import { generateUUID } from '$lib/utils';
+	import { MessageGroup, ToolOutputSidebar, ReadingIndicator, ChatInput } from '$lib/components/chat';
 
 	interface ApprovalRequest {
 		requestId: string;
@@ -24,13 +25,22 @@
 		timestamp: Date;
 		toolCalls?: ToolCall[];
 		streaming?: boolean;
+		thinking?: string;
+		contentBlocks?: ContentBlock[];
 	}
 
 	interface ToolCall {
+		id?: string;
 		name: string;
 		input: string;
 		output?: string;
 		status?: 'running' | 'complete' | 'error';
+	}
+
+	interface ContentBlock {
+		type: 'text' | 'tool';
+		text?: string;          // accumulated text for text blocks
+		toolCallIndex?: number; // index into toolCalls for tool blocks
 	}
 
 	let chatId = $state<string | null>(null);
@@ -59,9 +69,44 @@
 	// Available ElevenLabs voices
 	const ttsVoices = ['rachel', 'domi', 'bella', 'antoni', 'elli', 'josh', 'arnold', 'adam', 'sam'];
 
+	// Tool output sidebar
+	let sidebarTool = $state<ToolCall | null>(null);
+
+	// Group consecutive messages by role for Slack-style display
+	// Note: system messages are filtered out during grouping, so role is only user/assistant
+	interface MessageGroupType {
+		role: 'user' | 'assistant';
+		messages: Message[];
+	}
+
+	const groupedMessages = $derived.by((): MessageGroupType[] => {
+		const groups: MessageGroupType[] = [];
+		let currentGroup: MessageGroupType | null = null;
+
+		for (const msg of messages) {
+			// Skip system messages (tool notifications) in grouping - they're handled inline
+			if (msg.role === 'system') {
+				// System messages break groups but aren't displayed in groups
+				currentGroup = null;
+				continue;
+			}
+
+			// At this point, role is only 'user' or 'assistant'
+			const role = msg.role as 'user' | 'assistant';
+
+			if (!currentGroup || currentGroup.role !== role) {
+				currentGroup = { role, messages: [] };
+				groups.push(currentGroup);
+			}
+			currentGroup.messages.push(msg);
+		}
+
+		return groups;
+	});
+
 	// Message queue
 	let messageQueue = $state<string[]>([]);
-	let textareaElement: HTMLTextAreaElement;
+	let chatInputRef: { focus: () => void } | undefined;
 
 	// Approval requests
 	let pendingApproval = $state<ApprovalRequest | null>(null);
@@ -85,15 +130,19 @@
 		);
 
 		// WebSocket event listeners
+		console.log('[Agent] Registering WebSocket event listeners');
 		unsubscribers.push(
 			client.on('chat_stream', handleChatStream),
 			client.on('chat_complete', handleChatComplete),
 			client.on('chat_response', handleChatResponse),
 			client.on('tool_start', handleToolStart),
 			client.on('tool_result', handleToolResult),
+			client.on('thinking', handleThinking),
 			client.on('error', handleError),
-			client.on('approval_request', handleApprovalRequest)
+			client.on('approval_request', handleApprovalRequest),
+			client.on('stream_status', handleStreamStatus)
 		);
+		console.log('[Agent] WebSocket event listeners registered');
 
 		// Load draft from localStorage
 		if (browser) {
@@ -143,20 +192,65 @@
 		}
 	}
 
+	interface ParsedMetadata {
+		toolCalls?: ToolCall[];
+		thinking?: string;
+		contentBlocks?: ContentBlock[];
+	}
+
+	function parseMetadata(metadata: string | undefined): ParsedMetadata {
+		if (!metadata) return {};
+		try {
+			const parsed = JSON.parse(metadata);
+			const result: ParsedMetadata = {};
+
+			if (parsed.toolCalls && Array.isArray(parsed.toolCalls)) {
+				result.toolCalls = parsed.toolCalls.map((tc: { name: string; input: string; output?: string; status?: string }) => ({
+					name: tc.name,
+					input: tc.input,
+					output: tc.output,
+					status: (tc.status === 'complete' ? 'complete' : tc.status === 'error' ? 'error' : 'running') as 'running' | 'complete' | 'error'
+				}));
+			}
+
+			if (parsed.thinking && typeof parsed.thinking === 'string') {
+				result.thinking = parsed.thinking;
+			}
+
+			if (parsed.contentBlocks && Array.isArray(parsed.contentBlocks)) {
+				result.contentBlocks = parsed.contentBlocks;
+			}
+
+			return result;
+		} catch {
+			// Invalid JSON
+		}
+		return {};
+	}
+
 	async function loadCompanionChat() {
 		try {
 			const res = await getCompanionChat();
 			chatId = res.chat.id;
 			console.log('[Agent] Loaded companion chat:', chatId);
-			messages = (res.messages || []).map((m: ApiChatMessage) => ({
-				id: m.id,
-				role: m.role as 'user' | 'assistant' | 'system',
-				content: m.content,
-				timestamp: new Date(m.createdAt)
-			}));
+			messages = (res.messages || []).map((m: ApiChatMessage) => {
+				const meta = parseMetadata((m as { metadata?: string }).metadata);
+				return {
+					id: m.id,
+					role: m.role as 'user' | 'assistant' | 'system',
+					content: m.content,
+					timestamp: new Date(m.createdAt),
+					toolCalls: meta.toolCalls,
+					thinking: meta.thinking,
+					contentBlocks: meta.contentBlocks
+				};
+			});
 			totalMessages = res.totalMessages || messages.length;
 			chatLoaded = true;
 			console.log('[Agent] Messages loaded:', messages.length, 'total:', totalMessages);
+
+			// Check if there's an active stream to resume
+			checkForActiveStream();
 
 			// If chat is empty, request introduction from the agent
 			if (messages.length === 0 && chatId) {
@@ -167,6 +261,23 @@
 			console.error('Failed to load companion chat:', err);
 			chatLoaded = true; // Still mark as loaded, will show empty state
 		}
+	}
+
+	function checkForActiveStream() {
+		const client = getWebSocketClient();
+		if (!client.isConnected() || !chatId) {
+			// Wait for connection
+			const unsub = client.onStatus((status: ConnectionStatus) => {
+				if (status === 'connected' && chatId) {
+					unsub();
+					console.log('[Agent] Checking for active stream on session:', chatId);
+					client.send('check_stream', { session_id: chatId });
+				}
+			});
+			return;
+		}
+		console.log('[Agent] Checking for active stream on session:', chatId);
+		client.send('check_stream', { session_id: chatId });
 	}
 
 	function requestIntroduction() {
@@ -216,8 +327,10 @@
 	}
 
 	function handleChatStream(data: Record<string, unknown>) {
+		console.log('[Agent] handleChatStream called:', data?.session_id, 'chatId:', chatId);
 		// Accept messages for our chat or if we haven't loaded yet
 		if (chatId && data?.session_id !== chatId) {
+			console.log('[Agent] handleChatStream: session_id mismatch, ignoring');
 			return;
 		}
 
@@ -230,6 +343,17 @@
 
 		if (currentStreamingMessage) {
 			currentStreamingMessage.content += chunk;
+			// Track content blocks: append to last text block or create new one
+			if (!currentStreamingMessage.contentBlocks) {
+				currentStreamingMessage.contentBlocks = [];
+			}
+			const blocks = currentStreamingMessage.contentBlocks;
+			if (blocks.length === 0 || blocks[blocks.length - 1].type !== 'text') {
+				blocks.push({ type: 'text', text: chunk });
+			} else {
+				blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], text: (blocks[blocks.length - 1].text || '') + chunk };
+			}
+			currentStreamingMessage.contentBlocks = [...blocks];
 			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
 		} else {
 			currentStreamingMessage = {
@@ -237,7 +361,8 @@
 				role: 'assistant',
 				content: chunk,
 				timestamp: new Date(),
-				streaming: true
+				streaming: true,
+				contentBlocks: [{ type: 'text', text: chunk }]
 			};
 			messages = [...messages, currentStreamingMessage];
 		}
@@ -283,30 +408,137 @@
 	}
 
 	function handleToolStart(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		console.log('[Agent] handleToolStart called:', JSON.stringify(data));
+		if (chatId && data?.session_id !== chatId) {
+			console.log('[Agent] handleToolStart: session_id mismatch, ignoring');
+			return;
+		}
 
 		const toolName = data?.tool as string;
-		const toolMessage: Message = {
-			id: generateUUID(),
-			role: 'system',
-			content: `Running tool: ${toolName}`,
-			timestamp: new Date(),
-			toolCalls: [{ name: toolName, input: (data?.input as string) || '', status: 'running' }]
-		};
-		messages = [...messages, toolMessage];
+		const toolID = (data?.tool_id as string) || '';
+		const toolInput = (data?.input as string) || '';
+		const newToolCall: ToolCall = { id: toolID, name: toolName, input: toolInput, status: 'running' };
+
+		// Attach tool call to current streaming message OR create one
+		if (currentStreamingMessage) {
+			if (!currentStreamingMessage.toolCalls) {
+				currentStreamingMessage.toolCalls = [];
+			}
+			const toolIndex = currentStreamingMessage.toolCalls.length;
+			currentStreamingMessage.toolCalls = [...currentStreamingMessage.toolCalls, newToolCall];
+			// Add tool content block
+			if (!currentStreamingMessage.contentBlocks) {
+				currentStreamingMessage.contentBlocks = [];
+			}
+			currentStreamingMessage.contentBlocks = [...currentStreamingMessage.contentBlocks, { type: 'tool' as const, toolCallIndex: toolIndex }];
+			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+		} else {
+			currentStreamingMessage = {
+				id: generateUUID(),
+				role: 'assistant',
+				content: '',
+				timestamp: new Date(),
+				streaming: true,
+				toolCalls: [newToolCall],
+				contentBlocks: [{ type: 'tool', toolCallIndex: 0 }]
+			};
+			messages = [...messages, currentStreamingMessage];
+		}
 	}
 
 	function handleToolResult(data: Record<string, unknown>) {
+		console.log('[Agent] handleToolResult called:', JSON.stringify(data));
+		console.log('[Agent] handleToolResult state:', {
+			chatId,
+			messagesCount: messages.length,
+			hasStreamingMsg: !!currentStreamingMessage,
+			streamingMsgTools: currentStreamingMessage?.toolCalls?.map(t => ({ id: t.id, name: t.name, status: t.status })),
+			lastMsgRole: messages[messages.length - 1]?.role,
+			lastMsgTools: messages[messages.length - 1]?.toolCalls?.map(t => ({ id: t.id, name: t.name, status: t.status }))
+		});
+
+		if (chatId && data?.session_id !== chatId) {
+			console.log('[Agent] handleToolResult: session mismatch, expected', chatId, 'got', data?.session_id);
+			return;
+		}
+
+		const result = (data?.result as string) || '';
+		const toolID = (data?.tool_id as string) || '';
+		const toolName = (data?.tool_name as string) || '';
+		console.log('[Agent] Tool result received:', toolName, 'id:', toolID, 'result_length:', result?.length);
+
+		// Helper to find and update tool by ID or fallback to first running
+		const findAndUpdateTool = (toolCalls: ToolCall[]): ToolCall[] | null => {
+			const updated = [...toolCalls];
+			// Try to find by ID first
+			if (toolID) {
+				const idx = updated.findIndex(tc => tc.id === toolID);
+				if (idx >= 0) {
+					console.log('[Agent] Found tool by ID at index', idx);
+					updated[idx] = { ...updated[idx], output: result, status: 'complete' };
+					return updated;
+				}
+			}
+			// Fallback: find first running tool
+			const runningIdx = updated.findIndex(tc => tc.status === 'running');
+			if (runningIdx >= 0) {
+				console.log('[Agent] Fallback: updating first running tool at index', runningIdx);
+				updated[runningIdx] = { ...updated[runningIdx], output: result, status: 'complete' };
+				return updated;
+			}
+			return null;
+		};
+
+		// Try to update in current streaming message first
+		if (currentStreamingMessage?.toolCalls?.length) {
+			const updatedToolCalls = findAndUpdateTool(currentStreamingMessage.toolCalls);
+			if (updatedToolCalls) {
+				currentStreamingMessage = { ...currentStreamingMessage, toolCalls: updatedToolCalls };
+				messages = [...messages.slice(0, -1), currentStreamingMessage];
+				console.log('[Agent] Updated tool in streaming message');
+				return;
+			}
+		}
+
+		// Fallback: try to update in last assistant message
+		console.log('[Agent] handleToolResult: trying fallback to last assistant message');
+		const lastMsgIdx = messages.length - 1;
+		if (lastMsgIdx >= 0 && messages[lastMsgIdx].role === 'assistant' && messages[lastMsgIdx].toolCalls?.length) {
+			const lastMsg = messages[lastMsgIdx];
+			const updatedToolCalls = findAndUpdateTool(lastMsg.toolCalls!);
+			if (updatedToolCalls) {
+				messages = [...messages.slice(0, lastMsgIdx), { ...lastMsg, toolCalls: updatedToolCalls }];
+				console.log('[Agent] Fallback: updated tool in last message');
+				return;
+			}
+		}
+
+		console.log('[Agent] handleToolResult: SKIP - no suitable tool to update');
+	}
+
+	function handleThinking(data: Record<string, unknown>) {
+		console.log('[Agent] handleThinking called:', data);
 		if (chatId && data?.session_id !== chatId) return;
 
-		const lastToolIdx = messages.findLastIndex((m) => m.role === 'system' && m.toolCalls?.length);
-		if (lastToolIdx >= 0) {
-			const updated = { ...messages[lastToolIdx] };
-			if (updated.toolCalls?.[0]) {
-				updated.toolCalls[0].output = (data?.result as string) || '';
-				updated.toolCalls[0].status = 'complete';
-			}
-			messages = [...messages.slice(0, lastToolIdx), updated, ...messages.slice(lastToolIdx + 1)];
+		const thinkingContent = (data?.content as string) || '';
+		console.log('[Agent] Thinking content:', thinkingContent?.substring(0, 50));
+
+		// Attach thinking to current streaming message OR create one
+		if (currentStreamingMessage) {
+			// Append to existing thinking content
+			currentStreamingMessage.thinking = (currentStreamingMessage.thinking || '') + thinkingContent;
+			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+		} else {
+			// Create new streaming message with thinking
+			currentStreamingMessage = {
+				id: generateUUID(),
+				role: 'assistant',
+				content: '',
+				timestamp: new Date(),
+				streaming: true,
+				thinking: thinkingContent
+			};
+			messages = [...messages, currentStreamingMessage];
 		}
 	}
 
@@ -332,6 +564,31 @@
 		if (requestId && tool) {
 			pendingApproval = { requestId, tool, input: input || {} };
 		}
+	}
+
+	function handleStreamStatus(data: Record<string, unknown>) {
+		console.log('[Agent] handleStreamStatus:', data);
+		const sessionId = data?.session_id as string;
+		const active = data?.active as boolean;
+		const content = (data?.content as string) || '';
+
+		if (!active || sessionId !== chatId) {
+			console.log('[Agent] No active stream to resume');
+			return;
+		}
+
+		console.log('[Agent] Resuming stream with', content.length, 'bytes of content');
+
+		// Create or update streaming message with accumulated content
+		isLoading = true;
+		currentStreamingMessage = {
+			id: generateUUID(),
+			role: 'assistant',
+			content: content,
+			timestamp: new Date(),
+			streaming: true
+		};
+		messages = [...messages, currentStreamingMessage];
 	}
 
 	function handleApprove(requestId: string) {
@@ -414,15 +671,18 @@
 	$effect(() => {
 		const messageCount = messages.length;
 		const streamingContent = currentStreamingMessage?.content;
+		const isStreaming = !!streamingContent;
 
 		if (messagesContainer && (messageCount > 0 || streamingContent) && autoScrollEnabled) {
 			// Wait for Svelte to update DOM, then wait for browser to paint
 			tick().then(() => {
 				requestAnimationFrame(() => {
 					if (messagesContainer && autoScrollEnabled) {
+						// Use instant scroll during streaming to keep up with content,
+						// smooth scroll when just adding new messages
 						messagesContainer.scrollTo({
 							top: messagesContainer.scrollHeight,
-							behavior: 'smooth'
+							behavior: isStreaming ? 'instant' : 'smooth'
 						});
 					}
 				});
@@ -465,6 +725,26 @@
 			}, 2000);
 		} catch (err) {
 			console.error('Failed to copy:', err);
+		}
+	}
+
+	function openToolSidebar(tool: ToolCall) {
+		sidebarTool = tool;
+	}
+
+	function closeToolSidebar() {
+		sidebarTool = null;
+	}
+
+	function resetChat() {
+		// Reset chat to start a new session
+		messages = [];
+		currentStreamingMessage = null;
+		inputValue = '';
+		clearDraft();
+		// Request a new introduction
+		if (chatId) {
+			requestIntroduction();
 		}
 	}
 
@@ -755,8 +1035,8 @@
 		if (e.ctrlKey || e.metaKey || e.altKey || e.key.length > 1) {
 			return;
 		}
-		if (textareaElement && !isRecording) {
-			textareaElement.focus();
+		if (chatInputRef && !isRecording) {
+			chatInputRef.focus();
 		}
 	}
 </script>
@@ -769,25 +1049,45 @@
 
 <div class="flex flex-col h-full bg-base-100">
 	<!-- Header -->
-	<header class="flex items-center justify-between px-6 h-14 border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
-		<div class="flex items-center gap-3">
-			<div class="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-				<Bot class="w-4 h-4 text-primary" />
-			</div>
-			<h1 class="text-lg font-semibold text-base-content">Companion</h1>
+	<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
+		<div class="max-w-4xl mx-auto flex items-center justify-between px-6 h-14">
+		<div class="flex flex-col justify-center">
+			<h1 class="text-lg font-semibold text-base-content leading-tight">Chat</h1>
+			<p class="text-xs text-base-content/50 leading-tight">Direct chat session with your AI companion.</p>
 		</div>
-		<div class="flex items-center gap-3 shrink-0">
+		<div class="flex items-center gap-2 shrink-0">
+			<!-- Connection status -->
 			{#if wsConnected}
-				<div class="flex items-center gap-1.5 text-xs text-success">
-					<span class="w-2 h-2 rounded-full bg-success animate-pulse"></span>
-					Connected
+				<div class="flex items-center gap-1.5 text-xs text-success px-2">
+					<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+					<span class="hidden sm:inline">Connected</span>
 				</div>
 			{:else}
-				<div class="flex items-center gap-1.5 text-xs text-warning">
-					<span class="w-2 h-2 rounded-full bg-warning"></span>
-					Offline
+				<div class="flex items-center gap-1.5 text-xs text-warning px-2">
+					<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+					<span class="hidden sm:inline">Offline</span>
 				</div>
 			{/if}
+			<!-- Voice output toggle -->
+			<button
+				type="button"
+				onclick={toggleVoiceOutput}
+				class="btn btn-sm btn-ghost btn-square"
+				class:text-primary={voiceOutputEnabled}
+				title={voiceOutputEnabled ? 'Disable voice output' : 'Enable voice output'}
+			>
+				{#if voiceOutputEnabled}
+					<Volume2 class="w-4 h-4" />
+				{:else}
+					<VolumeOff class="w-4 h-4" />
+				{/if}
+			</button>
+			<!-- History link -->
+			<a href="/agent/history" class="btn btn-sm btn-ghost gap-1.5" title="View history">
+				<History class="w-4 h-4" />
+				<span class="hidden sm:inline">History</span>
+			</a>
+		</div>
 		</div>
 	</header>
 
@@ -796,7 +1096,7 @@
 		<div
 			bind:this={messagesContainer}
 			onscroll={handleScroll}
-			class="h-full overflow-y-auto overscroll-contain"
+			class="h-full overflow-y-auto overscroll-contain scroll-pb-4"
 		>
 			<div class="max-w-4xl mx-auto p-6 space-y-6">
 		{#if hasMoreHistory}
@@ -839,83 +1139,30 @@
 				</div>
 			</div>
 		{:else}
-			{#each messages as message (message.id)}
-				{#if message.role === 'system'}
-					<div class="flex justify-center">
-						<div class="bg-base-200 rounded-lg px-3 py-2 text-xs text-base-content/60">
-							{#if message.toolCalls?.length}
-								{@const tool = message.toolCalls[0]}
-								<span class="font-mono text-secondary">{tool.name}</span>
-								{#if tool.status === 'running'}
-									<Loader2 class="w-3 h-3 inline-block ml-1 animate-spin" />
-								{:else if tool.status === 'complete'}
-									<span class="text-success ml-1">done</span>
-								{/if}
-							{:else}
-								{message.content}
-							{/if}
-						</div>
-					</div>
-				{:else}
-					<div class="flex gap-4 {message.role === 'user' ? 'justify-end' : ''}">
-						{#if message.role === 'user'}
-							<div class="max-w-[80%]">
-								<div class="rounded-2xl bg-primary px-4 py-3">
-									<p class="text-primary-content whitespace-pre-wrap">{message.content}</p>
-								</div>
-							</div>
-						{:else}
-							<div class="max-w-[90%] space-y-2 group">
-								{#if message.toolCalls?.length}
-									<div class="flex flex-wrap gap-1.5">
-										{#each message.toolCalls as tool}
-											<div class="flex items-center gap-1.5 text-xs bg-base-200 rounded-md px-2 py-1">
-												<span class="font-mono text-secondary">{tool.name}</span>
-												{#if tool.status === 'running'}
-													<Loader2 class="w-3 h-3 animate-spin text-base-content/40" />
-												{:else if tool.status === 'complete'}
-													<span class="text-success">✓</span>
-												{/if}
-											</div>
-										{/each}
-									</div>
-								{/if}
-								<div class="rounded-2xl bg-base-200/50 px-4 py-3 border border-base-300/50">
-									{#if message.streaming}
-										<Markdown content={message.content} />
-										<span class="inline-block w-2 h-4 bg-base-content/50 animate-pulse ml-0.5"></span>
-									{:else}
-										<Markdown content={message.content} />
-									{/if}
-								</div>
-								<div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-									<button
-										type="button"
-										onclick={() => copyMessage(message.id, message.content)}
-										class="p-1.5 rounded-md text-base-content/40 hover:text-base-content hover:bg-base-200 transition-colors"
-										title="Copy message"
-									>
-										{#if copiedMessageId === message.id}
-											<Check class="w-4 h-4 text-success" />
-										{:else}
-											<Copy class="w-4 h-4" />
-										{/if}
-									</button>
-								</div>
-							</div>
-						{/if}
-					</div>
-				{/if}
+			<!-- Grouped messages for Slack-style display -->
+			{#each groupedMessages as group, groupIndex (groupIndex)}
+				<MessageGroup
+					messages={group.messages}
+					role={group.role}
+					onCopy={copyMessage}
+					copiedId={copiedMessageId}
+					onViewToolOutput={openToolSidebar}
+					isStreaming={group.role === 'assistant' && isLoading && groupIndex === groupedMessages.length - 1}
+				/>
 			{/each}
-			{#if isLoading && !currentStreamingMessage}
-				<div class="flex gap-4">
-					<div class="max-w-[90%] rounded-2xl bg-base-200/50 px-4 py-3 border border-base-300/50">
-						<div class="flex items-center gap-2">
-							<div class="flex gap-1">
-								<span class="w-2 h-2 bg-base-content/30 rounded-full animate-bounce" style="animation-delay: 0ms"></span>
-								<span class="w-2 h-2 bg-base-content/30 rounded-full animate-bounce" style="animation-delay: 150ms"></span>
-								<span class="w-2 h-2 bg-base-content/30 rounded-full animate-bounce" style="animation-delay: 300ms"></span>
-							</div>
+
+			<!-- Loading indicator when waiting for response -->
+			{#if isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
+				<div class="flex gap-3 mb-4">
+					<div class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm bg-base-300 text-base-content/60">
+						A
+					</div>
+					<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] items-start">
+						<div class="rounded-xl px-3.5 py-2.5 bg-base-200 animate-pulse-border">
+							<ReadingIndicator />
+						</div>
+						<div class="flex gap-2 items-baseline mt-1.5">
+							<span class="text-xs font-medium text-base-content/50">Assistant</span>
 						</div>
 					</div>
 				</div>
@@ -940,112 +1187,16 @@
 	</div>
 
 	<!-- Input Area -->
-	<div class="border-t border-base-300 bg-base-100 shrink-0">
-		<div class="max-w-4xl mx-auto p-4">
-			<div class="flex gap-2">
-				<textarea
-					bind:this={textareaElement}
-					bind:value={inputValue}
-					onkeydown={handleKeydown}
-					placeholder={isLoading ? 'Type to queue your next message...' : 'Send a message...'}
-					class="flex-1 resize-none bg-base-200 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 min-h-[48px] max-h-32"
-					rows="1"
-					disabled={isRecording}
-				></textarea>
-				<button
-					type="button"
-					onclick={toggleRecording}
-					disabled={isLoading}
-					class="btn btn-sm btn-square self-end mb-1 {voiceMode ? 'btn-error animate-pulse' : 'btn-ghost'}"
-					title={voiceMode ? 'Exit voice mode (Esc)' : 'Enter voice mode'}
-				>
-					{#if voiceMode}
-						<MicOff class="w-4 h-4" />
-					{:else}
-						<Mic class="w-4 h-4" />
-					{/if}
-				</button>
-				<div class="dropdown dropdown-top dropdown-end self-end mb-1">
-				<button
-					type="button"
-					tabindex="0"
-					class="btn btn-sm btn-square {voiceOutputEnabled ? 'btn-success' : 'btn-ghost'} {isSpeaking ? 'animate-pulse' : ''}"
-					title="Voice output settings"
-				>
-					{#if voiceOutputEnabled}
-						<Volume2 class="w-4 h-4" />
-					{:else}
-						<VolumeOff class="w-4 h-4" />
-					{/if}
-				</button>
-				<div tabindex="0" class="dropdown-content z-50 menu p-3 shadow-lg bg-base-200 rounded-box w-52 mb-2">
-					<div class="flex items-center justify-between mb-3">
-						<span class="text-sm font-medium">Voice Output</span>
-						<input
-							type="checkbox"
-							class="toggle toggle-success toggle-sm"
-							checked={voiceOutputEnabled}
-							onchange={toggleVoiceOutput}
-						/>
-					</div>
-					{#if voiceOutputEnabled}
-						<div class="form-control">
-							<label class="label py-1">
-								<span class="label-text text-xs">Voice</span>
-							</label>
-							<select
-								class="select select-bordered select-sm w-full"
-								bind:value={ttsVoice}
-							>
-								{#each ttsVoices as voice}
-									<option value={voice}>{voice.charAt(0).toUpperCase() + voice.slice(1)}</option>
-								{/each}
-							</select>
-						</div>
-						{#if isSpeaking}
-							<button
-								type="button"
-								class="btn btn-sm btn-error mt-3"
-								onclick={stopSpeaking}
-							>
-								Stop Speaking
-							</button>
-						{/if}
-					{/if}
-				</div>
-			</div>
-				<button
-					type="button"
-					onclick={sendMessage}
-					disabled={!inputValue.trim() || isRecording}
-					class="btn btn-sm btn-square btn-primary self-end mb-1"
-				>
-					<Send class="w-4 h-4" />
-				</button>
-			</div>
-			<div class="flex items-center justify-between mt-2">
-				<p class="text-xs text-base-content/40">
-					{#if recordingError}
-						<span class="text-error">{recordingError}</span>
-					{:else if voiceMode && isRecording}
-						<span class="text-error">Voice mode: Listening... (pause to send, Esc to exit)</span>
-					{:else if voiceMode}
-						<span class="text-warning">Voice mode: Starting...</span>
-					{:else if isSpeaking}
-						<span class="text-success">Speaking response...</span>
-					{:else if messageQueue.length > 0}
-						<span class="text-info">{messageQueue.length} message{messageQueue.length > 1 ? 's' : ''} queued</span>
-					{:else if isLoading}
-						<span>Type to queue your next message</span>
-					{:else if voiceOutputEnabled}
-						<span class="text-success">Voice output enabled (ElevenLabs)</span>
-					{:else}
-						Press Enter to send, Shift+Enter for new line
-					{/if}
-				</p>
-			</div>
-		</div>
-	</div>
+	<ChatInput
+		bind:this={chatInputRef}
+		bind:value={inputValue}
+		{isLoading}
+		{isRecording}
+		{voiceMode}
+		onSend={sendMessage}
+		onNewSession={resetChat}
+		onToggleVoice={toggleRecording}
+	/>
 </div>
 
 <ApprovalModal
@@ -1054,3 +1205,5 @@
 	onApproveAlways={handleApproveAlways}
 	onDeny={handleDeny}
 />
+
+<ToolOutputSidebar tool={sidebarTool} onClose={closeToolSidebar} />

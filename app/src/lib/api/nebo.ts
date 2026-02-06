@@ -28,7 +28,7 @@ export function listPersonalityPresets() {
  * @description "Get agent profile"
  */
 export function getAgentProfile() {
-	return webapi.get<components.MessageResponse>(`/api/v1/agent/profile`)
+	return webapi.get<components.AgentProfileResponse>(`/api/v1/agent/profile`)
 }
 
 /**
@@ -80,7 +80,7 @@ export function updateAgentSettings(req: components.UpdateAgentSettingsRequest) 
  * @description "Get simple agent status"
  */
 export function getSimpleAgentStatus() {
-	return webapi.get<components.MessageResponse>(`/api/v1/agent/status`)
+	return webapi.get<components.SimpleAgentStatusResponse>(`/api/v1/agent/status`)
 }
 
 /**
@@ -102,7 +102,7 @@ export function getAgentStatus(agentId: string) {
  * @description "Get auth config"
  */
 export function getAuthConfig() {
-	return webapi.get<components.MessageResponse>(`/api/v1/auth/config`)
+	return webapi.get<components.AuthConfigResponse>(`/api/v1/auth/config`)
 }
 
 /**
@@ -141,7 +141,7 @@ export function refreshToken(req: components.RefreshTokenRequest) {
  * @param req
  */
 export function register(req: components.RegisterRequest) {
-	return webapi.post<components.MessageResponse>(`/api/v1/auth/register`, req)
+	return webapi.post<components.LoginResponse>(`/api/v1/auth/register`, req)
 }
 
 /**
@@ -241,7 +241,7 @@ export function createChat(req: components.CreateChatRequest) {
  * @description "Get companion chat"
  */
 export function getCompanionChat() {
-	return webapi.get<components.MessageResponse>(`/api/v1/chats/companion`)
+	return webapi.get<components.GetChatResponse>(`/api/v1/chats/companion`)
 }
 
 /**
@@ -330,6 +330,13 @@ export function listMCPServerRegistry() {
 }
 
 /**
+ * @description "List m c p tools"
+ */
+export function listMCPTools() {
+	return webapi.get<components.ListMCPToolsResponse>(`/api/v1/integrations/tools`)
+}
+
+/**
  * @description "Delete m c p integration"
  * @param req
  */
@@ -351,6 +358,22 @@ export function getMCPIntegration(id: string) {
  */
 export function updateMCPIntegration(req: components.UpdateMCPIntegrationRequest, id: string) {
 	return webapi.put<components.UpdateMCPIntegrationResponse>(`/api/v1/integrations/${id}`, req)
+}
+
+/**
+ * @description "Disconnect m c p integration"
+ * @param req
+ */
+export function disconnectMCPIntegration(id: string) {
+	return webapi.post<components.DisconnectMCPIntegrationResponse>(`/api/v1/integrations/${id}/disconnect`)
+}
+
+/**
+ * @description "Get m c p o auth u r l"
+ * @param req
+ */
+export function getMCPOAuthURL(id: string) {
+	return webapi.get<components.GetMCPOAuthURLResponse>(`/api/v1/integrations/${id}/oauth-url`)
 }
 
 /**
@@ -381,7 +404,7 @@ export function searchMemories(params: components.SearchMemoriesRequestParams) {
  * @description "Get memory stats"
  */
 export function getMemoryStats() {
-	return webapi.get<components.MessageResponse>(`/api/v1/memories/stats`)
+	return webapi.get<components.MemoryStatsResponse>(`/api/v1/memories/stats`)
 }
 
 /**
@@ -405,7 +428,7 @@ export function getMemory(id: string) {
  * @param req
  */
 export function updateMemory(req: components.UpdateMemoryRequest, id: string) {
-	return webapi.put<components.MessageResponse>(`/api/v1/memories/${id}`, req)
+	return webapi.put<components.GetMemoryResponse>(`/api/v1/memories/${id}`, req)
 }
 
 /**
@@ -683,14 +706,15 @@ export function deleteAccount(req: components.DeleteAccountRequest) {
  * @description "Get current user"
  */
 export function getCurrentUser() {
-	return webapi.get<components.MessageResponse>(`/api/v1/user/me`)
+	return webapi.get<components.GetUserResponse>(`/api/v1/user/me`)
 }
 
 /**
  * @description "Update current user"
+ * @param req
  */
-export function updateCurrentUser() {
-	return webapi.put<components.MessageResponse>(`/api/v1/user/me`)
+export function updateCurrentUser(req: components.UpdateUserRequest) {
+	return webapi.put<components.GetUserResponse>(`/api/v1/user/me`, req)
 }
 
 /**

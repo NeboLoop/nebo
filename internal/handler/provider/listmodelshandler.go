@@ -3,11 +3,11 @@ package provider
 import (
 	"net/http"
 
-	"nebo/agent/ai"
-	"nebo/internal/httputil"
-	"nebo/internal/provider"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/agent/ai"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // List all available models from YAML cache

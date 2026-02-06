@@ -3,10 +3,10 @@ package chat
 import (
 	"net/http"
 
-	"nebo/internal/httputil"
-	"nebo/internal/logging"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Delete chat

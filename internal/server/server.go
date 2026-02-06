@@ -12,42 +12,40 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 
-	"nebo/app"
-	"nebo/internal/agenthub"
-	"nebo/internal/channels"
-	"nebo/internal/config"
-	"nebo/internal/db"
-	"nebo/internal/handler"
-	"nebo/internal/handler/agent"
-	"nebo/internal/handler/auth"
-	"nebo/internal/handler/channel"
-	"nebo/internal/handler/chat"
-	"nebo/internal/handler/extensions"
-	"nebo/internal/handler/integration"
-	"nebo/internal/handler/memory"
-	"nebo/internal/handler/notification"
-	"nebo/internal/handler/oauth"
-	"nebo/internal/handler/provider"
-	"nebo/internal/handler/setup"
-	"nebo/internal/handler/tasks"
-	"nebo/internal/handler/user"
-	"nebo/internal/mcp"
-	mcpoauth "nebo/internal/mcp/oauth"
-	"nebo/internal/middleware"
-	extOAuth "nebo/internal/oauth"
-	"nebo/internal/realtime"
-	"nebo/internal/router"
-	"nebo/internal/svc"
-	"nebo/internal/voice"
-	"nebo/internal/websocket"
+	"github.com/nebolabs/nebo/app"
+	"github.com/nebolabs/nebo/internal/browser"
+	"github.com/nebolabs/nebo/internal/channels"
+	"github.com/nebolabs/nebo/internal/config"
+	"github.com/nebolabs/nebo/internal/handler"
+	"github.com/nebolabs/nebo/internal/handler/agent"
+	"github.com/nebolabs/nebo/internal/handler/auth"
+	"github.com/nebolabs/nebo/internal/handler/channel"
+	"github.com/nebolabs/nebo/internal/handler/chat"
+	"github.com/nebolabs/nebo/internal/handler/extensions"
+	"github.com/nebolabs/nebo/internal/handler/integration"
+	"github.com/nebolabs/nebo/internal/handler/memory"
+	"github.com/nebolabs/nebo/internal/handler/notification"
+	"github.com/nebolabs/nebo/internal/handler/oauth"
+	"github.com/nebolabs/nebo/internal/handler/provider"
+	"github.com/nebolabs/nebo/internal/handler/setup"
+	"github.com/nebolabs/nebo/internal/handler/tasks"
+	"github.com/nebolabs/nebo/internal/handler/user"
+	"github.com/nebolabs/nebo/internal/mcp"
+	mcpoauth "github.com/nebolabs/nebo/internal/mcp/oauth"
+	"github.com/nebolabs/nebo/internal/middleware"
+	extOAuth "github.com/nebolabs/nebo/internal/oauth"
+	"github.com/nebolabs/nebo/internal/realtime"
+	"github.com/nebolabs/nebo/internal/router"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/voice"
+	"github.com/nebolabs/nebo/internal/websocket"
 )
 
 // ServerOptions holds optional dependencies for the server
 type ServerOptions struct {
 	ChannelManager *channels.Manager
-	AgentHub       *agenthub.Hub // Shared agent hub for single binary mode
-	Database       *db.Store     // Pre-initialized database (optional, for single binary mode)
-	Quiet          bool          // Suppress startup messages for clean CLI output
+	SvcCtx         *svc.ServiceContext // Pre-initialized service context (single binary mode)
+	Quiet          bool                // Suppress startup messages for clean CLI output
 }
 
 // Run starts the Nebo server with the given configuration.
@@ -78,18 +76,13 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 		fmt.Println("Run 'cd app && pnpm build' to build the frontend")
 	}
 
-	// Initialize service context
+	// Use pre-initialized service context if provided, otherwise create one
 	var svcCtx *svc.ServiceContext
-	if opts.Database != nil {
-		svcCtx = svc.NewServiceContextWithDB(c, opts.Database)
+	if opts.SvcCtx != nil {
+		svcCtx = opts.SvcCtx
 	} else {
 		svcCtx = svc.NewServiceContext(c)
-	}
-	defer svcCtx.Close()
-
-	// Use shared AgentHub if provided (single binary mode)
-	if opts.AgentHub != nil {
-		svcCtx.AgentHub = opts.AgentHub
+		defer svcCtx.Close()
 	}
 
 	// Create chi router
@@ -157,6 +150,28 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 
 	r.Get("/ws", websocket.Handler(hub))
 	r.Get("/api/v1/agent/ws", agentWebSocketHandler(svcCtx))
+
+	// Browser relay for Chrome extension
+	relayBaseURL := fmt.Sprintf("http://%s:%d/relay", c.App.Domain, serverPort)
+	browserRelay, err := browser.NewRelayHandler(relayBaseURL)
+	if err != nil {
+		fmt.Printf("Warning: failed to create browser relay: %v\n", err)
+	} else {
+		// Register relay routes
+		r.Get("/relay", browserRelay.HandleRoot)
+		r.Head("/relay", browserRelay.HandleRoot)
+		r.Get("/relay/extension/status", browserRelay.HandleExtensionStatus)
+		r.Get("/relay/json/version", browserRelay.HandleJSONVersion)
+		r.Get("/relay/json", browserRelay.HandleJSONList)
+		r.Get("/relay/json/list", browserRelay.HandleJSONList)
+		r.Get("/relay/json/activate/{targetId}", browserRelay.HandleJSONActivate)
+		r.Get("/relay/json/close/{targetId}", browserRelay.HandleJSONClose)
+		r.HandleFunc("/relay/extension", browserRelay.HandleExtensionWS)
+		r.HandleFunc("/relay/cdp", browserRelay.HandleCdpWS)
+		if !opts.Quiet {
+			fmt.Println("Browser relay mounted at /relay")
+		}
+	}
 
 	// OAuth routes (external provider callbacks)
 	if svcCtx.UseLocal() && c.IsOAuthEnabled() {
@@ -296,11 +311,15 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	// MCP Integration routes
 	r.Get("/integrations", integration.ListMCPIntegrationsHandler(svcCtx))
 	r.Get("/integrations/registry", integration.ListMCPServerRegistryHandler(svcCtx))
+	r.Get("/integrations/tools", integration.ListMCPToolsHandler(svcCtx))
 	r.Post("/integrations", integration.CreateMCPIntegrationHandler(svcCtx))
 	r.Get("/integrations/{id}", integration.GetMCPIntegrationHandler(svcCtx))
 	r.Put("/integrations/{id}", integration.UpdateMCPIntegrationHandler(svcCtx))
 	r.Delete("/integrations/{id}", integration.DeleteMCPIntegrationHandler(svcCtx))
 	r.Post("/integrations/{id}/test", integration.TestMCPIntegrationHandler(svcCtx))
+	r.Get("/integrations/{id}/oauth-url", integration.GetMCPOAuthURLHandler(svcCtx))
+	r.Post("/integrations/{id}/disconnect", integration.DisconnectMCPIntegrationHandler(svcCtx))
+	r.Get("/integrations/oauth/callback", integration.OAuthCallbackHandler(svcCtx, fmt.Sprintf("http://localhost:%d", svcCtx.Config.Port)))
 
 	// Channel routes
 	r.Get("/channels", channel.ListChannelsHandler(svcCtx))

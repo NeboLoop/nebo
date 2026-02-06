@@ -3,11 +3,11 @@ package setup
 import (
 	"net/http"
 
-	"nebo/internal/defaults"
-	"nebo/internal/httputil"
-	"nebo/internal/logging"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 // Mark initial setup as complete

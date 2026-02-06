@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/logging"
 )
 
 const (
@@ -159,6 +159,9 @@ var approvalResponseHandler MessageHandler
 // requestIntroductionHandler is set to handle introduction requests
 var requestIntroductionHandler MessageHandler
 
+// checkStreamHandler is set to handle stream resumption checks
+var checkStreamHandler MessageHandler
+
 // SetRewriteHandler sets the handler for rewrite messages
 func SetRewriteHandler(handler MessageHandler) {
 	rewriteHandler = handler
@@ -179,6 +182,11 @@ func SetRequestIntroductionHandler(handler MessageHandler) {
 	requestIntroductionHandler = handler
 }
 
+// SetCheckStreamHandler sets the handler for stream resumption checks
+func SetCheckStreamHandler(handler MessageHandler) {
+	checkStreamHandler = handler
+}
+
 // handleMessage processes incoming messages from the client
 func (c *Client) handleMessage(msg *Message) {
 	logging.Infof("[Client] Received message type=%s from client %s", msg.Type, c.ID)
@@ -193,6 +201,8 @@ func (c *Client) handleMessage(msg *Message) {
 		c.handleApprovalResponse(msg)
 	case "request_introduction":
 		c.handleRequestIntroduction(msg)
+	case "check_stream":
+		c.handleCheckStream(msg)
 	default:
 		logging.Infof("Unknown message type: %s", msg.Type)
 	}
@@ -204,6 +214,15 @@ func (c *Client) handleRequestIntroduction(msg *Message) {
 		requestIntroductionHandler(c, msg)
 	} else {
 		logging.Error("Request introduction handler not registered")
+	}
+}
+
+// handleCheckStream processes stream resumption checks
+func (c *Client) handleCheckStream(msg *Message) {
+	if checkStreamHandler != nil {
+		checkStreamHandler(c, msg)
+	} else {
+		logging.Error("Check stream handler not registered")
 	}
 }
 

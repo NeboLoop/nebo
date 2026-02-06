@@ -7,8 +7,10 @@ endif
 
 # Nebo Makefile
 EXECUTABLE=nebo
+export MACOSX_DEPLOYMENT_TARGET ?= 15.0
+export CGO_LDFLAGS += -mmacosx-version-min=15.0
 
-.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install
+.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install desktop package
 
 # Default target
 help:
@@ -29,6 +31,10 @@ help:
 	@echo "  nebo agent    - Start agent only"
 	@echo "  nebo chat     - CLI chat mode"
 	@echo "  nebo config   - Show configuration"
+	@echo ""
+	@echo "Desktop:"
+	@echo "  make desktop   - Build desktop app (native window + tray)"
+	@echo "  make package   - Package as installer (.dmg/.msi/.deb)"
 	@echo ""
 	@echo "Installation:"
 	@echo "  make cli       - Build and install nebo globally"
@@ -78,10 +84,16 @@ run: build
 	@echo "Starting $(EXECUTABLE)..."
 	./bin/$(EXECUTABLE)
 
-# Run with air (hot reload)
+# Run with air (hot reload, headless mode)
 air:
-	@echo "Starting with hot reload..."
+	@echo "Starting with hot reload (headless)..."
 	NEBO_NO_BROWSER=1 air
+
+# Desktop dev mode with hot reload (Air)
+# Rebuilds Go binary + restarts desktop app on *.go changes
+dev-desktop:
+	@echo "Starting desktop dev mode with hot reload..."
+	air -c .air-desktop.toml
 
 # Clean build artifacts
 clean:
@@ -169,6 +181,25 @@ release-linux:
 	@mkdir -p dist
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-linux-amd64 .
 	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-linux-arm64 .
+
+# =============================================================================
+# DESKTOP TARGETS (Wails v3)
+# =============================================================================
+
+# Build desktop app for current platform
+desktop:
+	@echo "Building Nebo desktop app..."
+	@cd app && pnpm build
+	go build $(LDFLAGS) -o bin/$(EXECUTABLE) .
+	@echo "Desktop app built: bin/$(EXECUTABLE)"
+	@echo "Run with: ./bin/$(EXECUTABLE)"
+	@echo "Run headless: ./bin/$(EXECUTABLE) --headless"
+
+# Package desktop app as platform installer (.dmg / .msi / .deb)
+package: desktop
+	@echo "Packaging Nebo desktop app..."
+	@echo "Note: Wails packaging requires wails3 CLI"
+	wails3 package
 
 # Install locally (for development)
 install: build

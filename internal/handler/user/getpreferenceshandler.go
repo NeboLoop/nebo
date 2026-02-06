@@ -3,9 +3,9 @@ package user
 import (
 	"net/http"
 
-	"nebo/internal/httputil"
-	"nebo/internal/svc"
-	"nebo/internal/types"
+	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/nebolabs/nebo/internal/types"
 )
 
 func GetPreferencesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
