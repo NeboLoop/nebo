@@ -78,15 +78,18 @@ Nebo uses local models via Ollama for embeddings (`qwen3-embedding`) and backgro
 ## Install
 
 ```bash
-# macOS (desktop app with native window + system tray)
-brew install --cask nebolabs/tap/nebo
-
-# macOS/Linux (CLI binary)
+# macOS/Linux via Homebrew
 brew install nebolabs/tap/nebo
+
+# Or direct install script
+curl -fsSL https://raw.githubusercontent.com/nebolabs/nebo/main/install.sh | sh
 
 # Or build from source
 git clone https://github.com/nebolabs/nebo.git
 cd nebo && make build
+
+# Build desktop app (native window + system tray, macOS only)
+make desktop
 ```
 
 ## Quick Start
