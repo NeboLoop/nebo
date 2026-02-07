@@ -18,6 +18,15 @@
 		toolCallIndex?: number;
 	}
 
+	// A resolved content block with tool data pre-resolved (no indirect lookup)
+	interface ResolvedBlock {
+		type: 'text' | 'tool';
+		key: string;
+		text?: string;
+		tool?: ToolCall;
+		isLastBlock: boolean;
+	}
+
 	interface Message {
 		id: string;
 		role: 'user' | 'assistant' | 'system';
@@ -27,6 +36,14 @@
 		streaming?: boolean;
 		thinking?: string;
 		contentBlocks?: ContentBlock[];
+	}
+
+	interface ResolvedMessage {
+		id: string;
+		message: Message;
+		thinking: string | null;
+		cleanContent: string;
+		blocks: ResolvedBlock[];
 	}
 
 	interface Props {
@@ -48,6 +65,48 @@
 	}: Props = $props();
 
 	const groupTimestamp = $derived(messages[messages.length - 1]?.timestamp || messages[0]?.timestamp);
+
+	// Pre-resolve all message data including tool lookups into a flat structure.
+	// This ensures Svelte's reactivity tracks every piece of data that affects rendering.
+	const resolvedMessages = $derived.by((): ResolvedMessage[] => {
+		return messages.map(message => {
+			const { thinking, cleanContent } = extractThinking(message.content);
+			const blocks: ResolvedBlock[] = [];
+
+			if (message.contentBlocks?.length) {
+				const totalBlocks = message.contentBlocks.length;
+				for (let i = 0; i < totalBlocks; i++) {
+					const block = message.contentBlocks[i];
+					const isLast = i === totalBlocks - 1;
+
+					if (block.type === 'tool' && block.toolCallIndex != null && message.toolCalls?.[block.toolCallIndex]) {
+						const tc = message.toolCalls[block.toolCallIndex];
+						blocks.push({
+							type: 'tool',
+							key: `tool-${i}-${tc.status ?? 'unknown'}`,
+							tool: { ...tc },
+							isLastBlock: isLast
+						});
+					} else if (block.type === 'text' && block.text) {
+						blocks.push({
+							type: 'text',
+							key: `text-${i}`,
+							text: block.text,
+							isLastBlock: isLast
+						});
+					}
+				}
+			}
+
+			return {
+				id: message.id,
+				message,
+				thinking,
+				cleanContent,
+				blocks
+			};
+		});
+	});
 
 	function formatTime(date: Date): string {
 		return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -71,16 +130,6 @@
 		}
 		return { thinking: null, cleanContent: content };
 	}
-
-	// Build a key for content block {#each} that includes tool status,
-	// so Svelte re-renders tool cards when their status changes.
-	function contentBlockKey(block: ContentBlock, blockIdx: number, toolCalls?: ToolCall[]): string {
-		if (block.type === 'tool' && block.toolCallIndex != null && toolCalls?.[block.toolCallIndex]) {
-			const tc = toolCalls[block.toolCallIndex];
-			return `tool-${blockIdx}-${tc.status ?? 'unknown'}`;
-		}
-		return `text-${blockIdx}`;
-	}
 </script>
 
 <!-- Chat group - user on right, assistant on left -->
@@ -93,55 +142,52 @@
 	<!-- Messages container -->
 	<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] {role === 'user' ? 'items-end' : 'items-start'}">
 		<!-- Messages -->
-		{#each messages as message (message.id)}
-			{@const { thinking, cleanContent } = extractThinking(message.content)}
-
+		{#each resolvedMessages as resolved (resolved.id)}
 			<div class="group w-full">
 				<!-- Thinking block (always renders first, above content blocks) -->
-				{#if (thinking || message.thinking) && role === 'assistant'}
+				{#if (resolved.thinking || resolved.message.thinking) && role === 'assistant'}
 					<div class="mb-2">
 						<ThinkingBlock
-							content={thinking || message.thinking || ''}
+							content={resolved.thinking || resolved.message.thinking || ''}
 							initiallyCollapsed={true}
-							isStreaming={message.streaming && !cleanContent}
+							isStreaming={resolved.message.streaming && !resolved.cleanContent}
 						/>
 					</div>
 				{/if}
 
-				<!-- Content blocks: interleaved text and tool calls -->
-				{#if message.contentBlocks?.length}
-					{#each message.contentBlocks as block, blockIdx (contentBlockKey(block, blockIdx, message.toolCalls))}
-						{#if block.type === 'tool' && block.toolCallIndex != null && message.toolCalls?.[block.toolCallIndex]}
+				<!-- Content blocks: interleaved text and tool calls (pre-resolved) -->
+				{#if resolved.blocks.length > 0}
+					{#each resolved.blocks as block (block.key)}
+						{#if block.type === 'tool' && block.tool}
 							<div class="max-w-md mb-2">
 								<ToolCard
-									name={message.toolCalls[block.toolCallIndex].name}
-									input={message.toolCalls[block.toolCallIndex].input}
-									output={message.toolCalls[block.toolCallIndex].output}
-									status={message.toolCalls[block.toolCallIndex].status}
-									onclick={() => handleViewToolOutput(message.toolCalls![block.toolCallIndex!])}
+									name={block.tool.name}
+									input={block.tool.input}
+									output={block.tool.output}
+									status={block.tool.status}
+									onclick={() => handleViewToolOutput(block.tool!)}
 								/>
 							</div>
 						{:else if block.type === 'text' && block.text}
-							{@const isLastBlock = blockIdx === (message.contentBlocks?.length ?? 0) - 1}
 							<div
-								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {message.streaming && isLastBlock ? 'animate-pulse-border' : ''}"
+								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''}"
 							>
 								<div class="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
 									<Markdown content={block.text} />
 								</div>
-								{#if message.streaming && isLastBlock}
+								{#if resolved.message.streaming && block.isLastBlock}
 									<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
 								{/if}
 
 								<!-- Copy button on last text block -->
-								{#if !message.streaming && isLastBlock && role === 'assistant'}
+								{#if !resolved.message.streaming && block.isLastBlock && role === 'assistant'}
 									<button
 										type="button"
-										onclick={() => handleCopy(message.id, cleanContent)}
+										onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
 										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/50 hover:text-base-content"
 										title="Copy"
 									>
-										{#if copiedId === message.id}
+										{#if copiedId === resolved.id}
 											<Check class="w-3.5 h-3.5 text-success" />
 										{:else}
 											<Copy class="w-3.5 h-3.5" />
@@ -153,15 +199,15 @@
 					{/each}
 
 					<!-- Reading indicator when streaming with no content blocks yet -->
-					{#if message.streaming && message.contentBlocks.length === 0}
+					{#if resolved.message.streaming && resolved.blocks.length === 0}
 						<div class="rounded-xl bg-base-200 px-3.5 py-2.5 animate-pulse-border">
 							<ReadingIndicator />
 						</div>
 					{/if}
 				{:else}
 					<!-- Legacy fallback: messages without contentBlocks -->
-					{#if message.toolCalls?.length && role === 'assistant'}
-						{#each message.toolCalls as tool}
+					{#if resolved.message.toolCalls?.length && role === 'assistant'}
+						{#each resolved.message.toolCalls as tool}
 							<div class="max-w-md mb-2">
 								<ToolCard
 									name={tool.name}
@@ -174,30 +220,30 @@
 						{/each}
 					{/if}
 
-					{#if cleanContent || message.streaming}
+					{#if resolved.cleanContent || resolved.message.streaming}
 						<div
-							class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {message.streaming ? 'animate-pulse-border' : ''}"
+							class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming ? 'animate-pulse-border' : ''}"
 						>
-							{#if message.streaming && !cleanContent}
+							{#if resolved.message.streaming && !resolved.cleanContent}
 								<ReadingIndicator />
 							{:else}
 								<div class="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
-									<Markdown content={cleanContent} />
+									<Markdown content={resolved.cleanContent} />
 								</div>
-								{#if message.streaming}
+								{#if resolved.message.streaming}
 									<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
 								{/if}
 							{/if}
 
 							<!-- Copy button -->
-							{#if !message.streaming && cleanContent && role === 'assistant'}
+							{#if !resolved.message.streaming && resolved.cleanContent && role === 'assistant'}
 								<button
 									type="button"
-									onclick={() => handleCopy(message.id, cleanContent)}
+									onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
 									class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/50 hover:text-base-content"
 									title="Copy"
 								>
-									{#if copiedId === message.id}
+									{#if copiedId === resolved.id}
 										<Check class="w-3.5 h-3.5 text-success" />
 									{:else}
 										<Copy class="w-3.5 h-3.5" />
