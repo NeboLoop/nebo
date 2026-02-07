@@ -68,6 +68,13 @@ type agentState struct {
 
 	// Task recovery manager for persistence across restarts
 	recovery *recovery.Manager
+
+	// Comm system references for dynamic settings updates
+	commManager  *comm.CommPluginManager
+	commAgentID  string
+	registry     *tools.Registry
+	skillLoader  *skills.Loader
+	settingsPath string // Path to agent-settings.json for persisting settings changes
 }
 
 // sendFrame sends a JSON frame to the server
@@ -208,7 +215,8 @@ func isNeboLoopCode(prompt string) bool {
 
 // handleNeboLoopCode processes a connection code and emits tool-use-style events.
 // Returns true if the prompt was a connection code (handled), false otherwise.
-func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginStore *plugin.Store, send func(map[string]any)) bool {
+// When state is provided, a successful connection also activates the neboloop comm plugin.
+func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginStore *plugin.Store, state *agentState, settingsPath string, send func(map[string]any)) bool {
 	if !isNeboLoopCode(prompt) {
 		return false
 	}
@@ -306,6 +314,42 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 			}
 		} else {
 			fmt.Printf("[NeboLoop] Warning: neboloop plugin not registered: %v\n", err)
+		}
+	}
+
+	// Step 4: Activate the neboloop comm plugin and persist via settings
+	if state != nil && state.commManager != nil {
+		// Activate and connect the plugin
+		if err := state.commManager.SetActive("neboloop"); err != nil {
+			fmt.Printf("[NeboLoop] Warning: failed to activate comm plugin: %v\n", err)
+		} else if active := state.commManager.GetActive(); active != nil {
+			commConfig := map[string]string{
+				"api_server":    apiServer,
+				"bot_id":        redeemed.ID,
+				"mqtt_username": creds.MQTTUsername,
+				"mqtt_password": creds.MQTTPassword,
+			}
+			if err := active.Connect(ctx, commConfig); err != nil {
+				fmt.Printf("[NeboLoop] Warning: failed to connect comm plugin: %v\n", err)
+			} else {
+				card := buildAgentCard(state.registry, state.skillLoader)
+				active.Register(ctx, state.commAgentID, card)
+				fmt.Printf("[NeboLoop] Comm plugin activated and connected (agent: %s)\n", state.commAgentID)
+			}
+		}
+
+		// Persist to settings so it survives restart
+		if settingsPath != "" {
+			dataDir := filepath.Dir(settingsPath)
+			settingsStore := local.NewAgentSettingsStore(dataDir)
+			settings := settingsStore.Get()
+			settings.CommEnabled = true
+			settings.CommPlugin = "neboloop"
+			if err := settingsStore.Update(settings); err != nil {
+				fmt.Printf("[NeboLoop] Warning: failed to persist comm settings: %v\n", err)
+			} else {
+				fmt.Println("[NeboLoop] Comm settings persisted (commEnabled=true, commPlugin=neboloop)")
+			}
 		}
 	}
 
@@ -693,6 +737,13 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 	commHandler.SetLanes(state.lanes)
 	defer commManager.Shutdown(context.Background())
 
+	// Store comm references on state for dynamic settings updates
+	state.commManager = commManager
+	state.commAgentID = agentID
+	state.registry = registry
+	state.skillLoader = r.SkillLoader()
+	state.settingsPath = opts.SettingsFilePath
+
 	// Create agent domain tool with comm support
 	agentTool, agentToolErr := tools.NewAgentDomainTool(tools.AgentDomainConfig{
 		Sessions:   sessions,
@@ -704,29 +755,44 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		registry.RegisterAgentDomainTool(agentTool)
 	}
 
-	// Connect comm plugin: prefer DB settings, fall back to config.yaml
-	if cfg.Comm.Enabled {
-		pluginName := cfg.Comm.Plugin
-		if pluginName == "" {
-			pluginName = "loopback"
+	// Connect comm plugin: settings take priority, then config.yaml
+	// This allows the UI/NeboLoop code to persist comm activation via settings
+	commEnabled := cfg.Comm.Enabled
+	commPlugin := cfg.Comm.Plugin
+
+	// Check agent settings for comm overrides
+	if opts.SettingsFilePath != "" {
+		dataDir := filepath.Dir(opts.SettingsFilePath)
+		commSettings := local.NewAgentSettingsStore(dataDir).Get()
+		if commSettings.CommEnabled {
+			commEnabled = true
+			if commSettings.CommPlugin != "" {
+				commPlugin = commSettings.CommPlugin
+			}
 		}
-		if err := commManager.SetActive(pluginName); err != nil {
+	}
+
+	if commEnabled {
+		if commPlugin == "" {
+			commPlugin = "loopback"
+		}
+		if err := commManager.SetActive(commPlugin); err != nil {
 			fmt.Printf("[agent] Warning: failed to set active comm plugin: %v\n", err)
 		} else if active := commManager.GetActive(); active != nil {
-			// Load settings from DB (iPhone model) with fallback to config.yaml
+			// Load settings from DB with fallback to config.yaml
 			commConfig := cfg.Comm.Config
 			if opts.PluginStore != nil {
-				if dbSettings, err := opts.PluginStore.GetSettingsByName(ctx, pluginName); err == nil && len(dbSettings) > 0 {
+				if dbSettings, err := opts.PluginStore.GetSettingsByName(ctx, commPlugin); err == nil && len(dbSettings) > 0 {
 					commConfig = dbSettings
-					fmt.Printf("[agent] Loaded %s settings from database (%d keys)\n", pluginName, len(dbSettings))
+					fmt.Printf("[agent] Loaded %s settings from database (%d keys)\n", commPlugin, len(dbSettings))
 				}
 			}
 			if err := active.Connect(ctx, commConfig); err != nil {
-				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", pluginName, err)
+				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", commPlugin, err)
 			} else {
 				card := buildAgentCard(registry, r.SkillLoader())
 				active.Register(ctx, agentID, card)
-				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", pluginName, agentID)
+				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", commPlugin, agentID)
 			}
 		}
 	}
@@ -1386,7 +1452,7 @@ func handleAgentMessage(ctx context.Context, conn *websocket.Conn, r *runner.Run
 			prompt := frame.Params.Prompt
 
 			// Intercept NeboLoop connection codes before enqueueing to LLM
-			if handleNeboLoopCode(ctx, prompt, requestID, nil, func(f map[string]any) {
+			if handleNeboLoopCode(ctx, prompt, requestID, nil, nil, "", func(f map[string]any) {
 				data, _ := json.Marshal(f)
 				conn.WriteMessage(websocket.TextMessage, data)
 			}) {
@@ -1519,10 +1585,12 @@ func handleAgentMessage(ctx context.Context, conn *websocket.Conn, r *runner.Run
 		var eventFrame struct {
 			Method  string `json:"method"`
 			Payload struct {
-				AutonomousMode   bool `json:"autonomousMode"`
-				AutoApproveRead  bool `json:"autoApproveRead"`
-				AutoApproveWrite bool `json:"autoApproveWrite"`
-				AutoApproveBash  bool `json:"autoApproveBash"`
+				AutonomousMode   bool   `json:"autonomousMode"`
+				AutoApproveRead  bool   `json:"autoApproveRead"`
+				AutoApproveWrite bool   `json:"autoApproveWrite"`
+				AutoApproveBash  bool   `json:"autoApproveBash"`
+				CommEnabled      bool   `json:"commEnabled"`
+				CommPlugin       string `json:"commPlugin"`
 			} `json:"payload"`
 		}
 		if err := json.Unmarshal(message, &eventFrame); err == nil {
@@ -1615,7 +1683,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			prompt := frame.Params.Prompt
 
 			// Intercept NeboLoop connection codes before enqueueing to LLM
-			if handleNeboLoopCode(ctx, prompt, requestID, pluginStore, func(f map[string]any) {
+			if handleNeboLoopCode(ctx, prompt, requestID, pluginStore, state, state.settingsPath, func(f map[string]any) {
 				state.sendFrame(f)
 			}) {
 				break
@@ -1752,10 +1820,12 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 		var eventFrame struct {
 			Method  string `json:"method"`
 			Payload struct {
-				AutonomousMode   bool `json:"autonomousMode"`
-				AutoApproveRead  bool `json:"autoApproveRead"`
-				AutoApproveWrite bool `json:"autoApproveWrite"`
-				AutoApproveBash  bool `json:"autoApproveBash"`
+				AutonomousMode   bool   `json:"autonomousMode"`
+				AutoApproveRead  bool   `json:"autoApproveRead"`
+				AutoApproveWrite bool   `json:"autoApproveWrite"`
+				AutoApproveBash  bool   `json:"autoApproveBash"`
+				CommEnabled      bool   `json:"commEnabled"`
+				CommPlugin       string `json:"commPlugin"`
 			} `json:"payload"`
 		}
 		if err := json.Unmarshal(message, &eventFrame); err == nil {
@@ -1778,6 +1848,11 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 						askMode = "off"
 					}
 					r.SetPolicy(tools.NewPolicyFromConfig("allowlist", askMode, nil))
+				}
+
+				// Handle comm plugin activation/deactivation
+				if state.commManager != nil {
+					handleCommSettingsUpdate(ctx, state, p.CommEnabled, p.CommPlugin, pluginStore)
 				}
 			}
 		}
@@ -2011,6 +2086,54 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 	}
 
 	return service
+}
+
+// handleCommSettingsUpdate activates or deactivates the comm plugin based on
+// a settings_updated event from the server.
+func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bool, pluginName string, pluginStore *plugin.Store) {
+	if !enabled {
+		// Deactivate: disconnect the current plugin
+		if active := state.commManager.GetActive(); active != nil {
+			if err := active.Disconnect(ctx); err != nil {
+				fmt.Printf("[Comm] Warning: failed to disconnect comm plugin: %v\n", err)
+			}
+			fmt.Println("[Comm] Comm plugin disconnected via settings update")
+		}
+		return
+	}
+
+	if pluginName == "" {
+		pluginName = "loopback"
+	}
+
+	// Activate the requested plugin
+	if err := state.commManager.SetActive(pluginName); err != nil {
+		fmt.Printf("[Comm] Warning: failed to activate %s: %v\n", pluginName, err)
+		return
+	}
+
+	active := state.commManager.GetActive()
+	if active == nil {
+		return
+	}
+
+	// Load settings from DB
+	var commConfig map[string]string
+	if pluginStore != nil {
+		if dbSettings, err := pluginStore.GetSettingsByName(ctx, pluginName); err == nil && len(dbSettings) > 0 {
+			commConfig = dbSettings
+			fmt.Printf("[Comm] Loaded %s settings from database (%d keys)\n", pluginName, len(dbSettings))
+		}
+	}
+
+	if err := active.Connect(ctx, commConfig); err != nil {
+		fmt.Printf("[Comm] Warning: failed to connect %s: %v\n", pluginName, err)
+		return
+	}
+
+	card := buildAgentCard(state.registry, state.skillLoader)
+	active.Register(ctx, state.commAgentID, card)
+	fmt.Printf("[Comm] Plugin %s activated and connected via settings update (agent: %s)\n", pluginName, state.commAgentID)
 }
 
 // buildAgentCard collects tool and skill metadata into an A2A-spec-compliant

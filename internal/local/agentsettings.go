@@ -9,11 +9,13 @@ import (
 
 // AgentSettings holds the agent configuration
 type AgentSettings struct {
-	AutonomousMode           bool `json:"autonomousMode"`
-	AutoApproveRead          bool `json:"autoApproveRead"`
-	AutoApproveWrite         bool `json:"autoApproveWrite"`
-	AutoApproveBash          bool `json:"autoApproveBash"`
-	HeartbeatIntervalMinutes int  `json:"heartbeatIntervalMinutes"`
+	AutonomousMode           bool   `json:"autonomousMode"`
+	AutoApproveRead          bool   `json:"autoApproveRead"`
+	AutoApproveWrite         bool   `json:"autoApproveWrite"`
+	AutoApproveBash          bool   `json:"autoApproveBash"`
+	HeartbeatIntervalMinutes int    `json:"heartbeatIntervalMinutes"`
+	CommEnabled              bool   `json:"commEnabled"`
+	CommPlugin               string `json:"commPlugin,omitempty"`
 }
 
 // AgentSettingsStore manages agent settings persistence

@@ -47,6 +47,8 @@ export interface AgentSettings {
 	autoApproveWrite: boolean
 	autoApproveBash: boolean
 	heartbeatIntervalMinutes: number
+	commEnabled: boolean
+	commPlugin?: string
 }
 
 export interface AgentStatusRequest {
@@ -983,6 +985,8 @@ export interface UpdateAgentSettingsRequest {
 	autoApproveWrite: boolean
 	autoApproveBash: boolean
 	heartbeatIntervalMinutes: number
+	commEnabled: boolean
+	commPlugin?: string
 }
 
 export interface UpdateAuthProfileRequest {

@@ -35,6 +35,8 @@ func UpdateAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			AutoApproveWrite:         req.AutoApproveWrite,
 			AutoApproveBash:          req.AutoApproveBash,
 			HeartbeatIntervalMinutes: interval,
+			CommEnabled:              req.CommEnabled,
+			CommPlugin:               req.CommPlugin,
 		}
 
 		if err := svcCtx.AgentSettings.Update(settings); err != nil {
@@ -52,6 +54,8 @@ func UpdateAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				"autoApproveWrite":         settings.AutoApproveWrite,
 				"autoApproveBash":          settings.AutoApproveBash,
 				"heartbeatIntervalMinutes": settings.HeartbeatIntervalMinutes,
+				"commEnabled":              settings.CommEnabled,
+				"commPlugin":               settings.CommPlugin,
 			},
 		}
 
@@ -67,6 +71,8 @@ func UpdateAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				AutoApproveWrite:         settings.AutoApproveWrite,
 				AutoApproveBash:          settings.AutoApproveBash,
 				HeartbeatIntervalMinutes: settings.HeartbeatIntervalMinutes,
+				CommEnabled:              settings.CommEnabled,
+				CommPlugin:               settings.CommPlugin,
 			},
 		})
 	}

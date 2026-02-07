@@ -26,6 +26,8 @@ func GetAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				AutoApproveWrite:         settings.AutoApproveWrite,
 				AutoApproveBash:          settings.AutoApproveBash,
 				HeartbeatIntervalMinutes: interval,
+				CommEnabled:              settings.CommEnabled,
+				CommPlugin:               settings.CommPlugin,
 			},
 		})
 	}
