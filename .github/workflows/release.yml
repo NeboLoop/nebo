@@ -357,7 +357,7 @@ jobs:
           apt-ftparchive release dists/stable >> dists/stable/Release
 
       - name: Sign APT repository
-        if: ${{ secrets.APT_GPG_PRIVATE_KEY != '' }}
+        if: env.GPG_KEY != ''
         env:
           GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
         run: |
