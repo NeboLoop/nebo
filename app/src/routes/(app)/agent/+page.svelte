@@ -209,7 +209,10 @@
 					name: tc.name,
 					input: tc.input,
 					output: tc.output,
-					status: (tc.status === 'complete' ? 'complete' : tc.status === 'error' ? 'error' : 'running') as 'running' | 'complete' | 'error'
+					// When loading from persistence, any tool saved as "running" during a
+					// partial save is actually complete (the stream has finished by the time
+					// we load history). Only preserve explicit "error" status.
+					status: (tc.status === 'error' ? 'error' : 'complete') as 'complete' | 'error'
 				}));
 			}
 
@@ -342,6 +345,20 @@
 		const chunk = (data?.content as string) || '';
 
 		if (currentStreamingMessage) {
+			// When new text arrives and there are running tools, mark them complete.
+			// In the agentic loop, the AI only produces text AFTER all tool results
+			// from the previous iteration have been processed. So any tool that's
+			// still marked "running" when text arrives has actually completed — we
+			// just missed (or haven't yet processed) its tool_result event.
+			if (currentStreamingMessage.toolCalls?.length) {
+				const hasRunning = currentStreamingMessage.toolCalls.some(tc => tc.status === 'running');
+				if (hasRunning) {
+					console.log('[Agent] handleChatStream: text arrived with running tools — marking all complete');
+					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					);
+				}
+			}
 			currentStreamingMessage.content += chunk;
 			// Track content blocks: append to last text block or create new one
 			if (!currentStreamingMessage.contentBlocks) {
@@ -369,14 +386,54 @@
 	}
 
 	function handleChatComplete(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		console.log('[Agent] handleChatComplete called:', JSON.stringify(data));
+		console.log('[Agent] handleChatComplete state:', {
+			chatId,
+			sessionMatch: data?.session_id === chatId,
+			hasStreamingMsg: !!currentStreamingMessage,
+			streamingToolCount: currentStreamingMessage?.toolCalls?.length ?? 0,
+			streamingToolStatuses: currentStreamingMessage?.toolCalls?.map(t => ({ name: t.name, status: t.status })),
+			messagesCount: messages.length
+		});
+
+		if (chatId && data?.session_id !== chatId) {
+			console.log('[Agent] handleChatComplete: session mismatch, expected', chatId, 'got', data?.session_id);
+			return;
+		}
 
 		let completedContent = '';
 		if (currentStreamingMessage) {
 			completedContent = currentStreamingMessage.content;
 			currentStreamingMessage.streaming = false;
-			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+			// Safety net: mark any still-running tools as complete
+			// (tool_result may have been missed due to timing or frame drops)
+			if (currentStreamingMessage.toolCalls?.length) {
+				const beforeStatuses = currentStreamingMessage.toolCalls.map(t => t.status);
+				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+					tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+				);
+				const afterStatuses = currentStreamingMessage.toolCalls.map(t => t.status);
+				console.log('[Agent] Safety net: tool statuses before:', beforeStatuses, 'after:', afterStatuses);
+			}
+			const finalMsg = { ...currentStreamingMessage };
+			console.log('[Agent] Safety net: final message tool statuses:', finalMsg.toolCalls?.map(t => ({ name: t.name, status: t.status })));
+			messages = [...messages.slice(0, -1), finalMsg];
 			currentStreamingMessage = null;
+		} else {
+			console.log('[Agent] handleChatComplete: NO currentStreamingMessage!');
+			// Safety net for non-streaming: check last message in array
+			const lastIdx = messages.length - 1;
+			if (lastIdx >= 0 && messages[lastIdx].role === 'assistant' && messages[lastIdx].toolCalls?.length) {
+				const lastMsg = messages[lastIdx];
+				const hasRunning = lastMsg.toolCalls!.some(tc => tc.status === 'running');
+				if (hasRunning) {
+					console.log('[Agent] Safety net (non-streaming): marking running tools as complete in last message');
+					const updatedTools = lastMsg.toolCalls!.map(tc =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					);
+					messages = [...messages.slice(0, lastIdx), { ...lastMsg, toolCalls: updatedTools }];
+				}
+			}
 		}
 		isLoading = false;
 
@@ -500,20 +557,21 @@
 			}
 		}
 
-		// Fallback: try to update in last assistant message
-		console.log('[Agent] handleToolResult: trying fallback to last assistant message');
-		const lastMsgIdx = messages.length - 1;
-		if (lastMsgIdx >= 0 && messages[lastMsgIdx].role === 'assistant' && messages[lastMsgIdx].toolCalls?.length) {
-			const lastMsg = messages[lastMsgIdx];
-			const updatedToolCalls = findAndUpdateTool(lastMsg.toolCalls!);
-			if (updatedToolCalls) {
-				messages = [...messages.slice(0, lastMsgIdx), { ...lastMsg, toolCalls: updatedToolCalls }];
-				console.log('[Agent] Fallback: updated tool in last message');
-				return;
+		// Fallback: search backwards through messages for a matching running tool
+		console.log('[Agent] handleToolResult: trying fallback to recent assistant messages');
+		for (let i = messages.length - 1; i >= Math.max(0, messages.length - 5); i--) {
+			const msg = messages[i];
+			if (msg.role === 'assistant' && msg.toolCalls?.length) {
+				const updatedToolCalls = findAndUpdateTool(msg.toolCalls);
+				if (updatedToolCalls) {
+					messages = [...messages.slice(0, i), { ...msg, toolCalls: updatedToolCalls }, ...messages.slice(i + 1)];
+					console.log('[Agent] Fallback: updated tool in message at index', i);
+					return;
+				}
 			}
 		}
 
-		console.log('[Agent] handleToolResult: SKIP - no suitable tool to update');
+		console.log('[Agent] handleToolResult: SKIP - no suitable tool to update (tool_id:', toolID, ')');
 	}
 
 	function handleThinking(data: Record<string, unknown>) {
@@ -544,6 +602,14 @@
 
 	function handleError(data: Record<string, unknown>) {
 		if (chatId && data?.session_id !== chatId) return;
+
+		// Safety net: mark any running tools as complete before handling error
+		if (currentStreamingMessage?.toolCalls?.length) {
+			currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+				tc.status === 'running' ? { ...tc, status: 'error' as const } : tc
+			);
+			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+		}
 
 		const errorMessage: Message = {
 			id: generateUUID(),

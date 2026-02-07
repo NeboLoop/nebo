@@ -104,6 +104,7 @@ type Querier interface {
 	DeleteMemoriesByNamespaceAndUser(ctx context.Context, arg DeleteMemoriesByNamespaceAndUserParams) (sql.Result, error)
 	DeleteMemory(ctx context.Context, id int64) error
 	DeleteMemoryByKeyAndUser(ctx context.Context, arg DeleteMemoryByKeyAndUserParams) (sql.Result, error)
+	DeleteMemoryByKeyAndUserAnyNamespace(ctx context.Context, arg DeleteMemoryByKeyAndUserAnyNamespaceParams) (sql.Result, error)
 	DeleteMemoryChunks(ctx context.Context, memoryID sql.NullInt64) error
 	DeleteMemoryEmbeddings(ctx context.Context, chunkID sql.NullInt64) error
 	DeleteMemoryEmbeddingsByModel(ctx context.Context, model string) error
@@ -176,6 +177,7 @@ type Querier interface {
 	GetMemory(ctx context.Context, id int64) (GetMemoryRow, error)
 	GetMemoryByKey(ctx context.Context, arg GetMemoryByKeyParams) (GetMemoryByKeyRow, error)
 	GetMemoryByKeyAndUser(ctx context.Context, arg GetMemoryByKeyAndUserParams) (GetMemoryByKeyAndUserRow, error)
+	GetMemoryByKeyAndUserAnyNamespace(ctx context.Context, arg GetMemoryByKeyAndUserAnyNamespaceParams) (GetMemoryByKeyAndUserAnyNamespaceRow, error)
 	GetMemoryChunk(ctx context.Context, id int64) (GetMemoryChunkRow, error)
 	GetMemoryEmbedding(ctx context.Context, arg GetMemoryEmbeddingParams) (MemoryEmbedding, error)
 	GetMemoryStats(ctx context.Context) ([]GetMemoryStatsRow, error)

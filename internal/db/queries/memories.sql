@@ -132,6 +132,17 @@ SET access_count = access_count + 1,
     accessed_at = CURRENT_TIMESTAMP
 WHERE namespace = ? AND key = ? AND user_id = ?;
 
+-- name: GetMemoryByKeyAndUserAnyNamespace :one
+SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
+FROM memories
+WHERE key = ? AND user_id = ?
+ORDER BY access_count DESC
+LIMIT 1;
+
+-- name: DeleteMemoryByKeyAndUserAnyNamespace :execresult
+DELETE FROM memories
+WHERE key = ? AND user_id = ?;
+
 -- name: GetTacitMemoriesByUser :many
 SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
 FROM memories

@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/nebolabs/nebo/internal/agent/ai"
 	"github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/embeddings"
 	"github.com/nebolabs/nebo/internal/agent/orchestrator"
 	"github.com/nebolabs/nebo/internal/agent/recovery"
 	"github.com/nebolabs/nebo/internal/agent/session"
@@ -120,11 +118,10 @@ type AgentDomainInput struct {
 
 // AgentDomainConfig configures the agent domain tool
 type AgentDomainConfig struct {
-	DB              *sql.DB             // Shared database connection
-	Sessions        *session.Manager    // Session manager
-	ChannelMgr      *channels.Manager   // Channel manager (optional)
-	Embedder        *embeddings.Service // Embedding service (optional)
-	SanitizeContent bool                // Enable injection-pattern filtering on stored content
+	Sessions   *session.Manager  // Session manager
+	ChannelMgr *channels.Manager // Channel manager (optional)
+	MemoryTool *MemoryTool       // Shared memory tool instance (created externally)
+	CronTool   *CronTool         // Shared cron tool instance (created externally, optional)
 }
 
 // NewAgentDomainTool creates a new agent domain tool
@@ -132,26 +129,8 @@ func NewAgentDomainTool(cfg AgentDomainConfig) (*AgentDomainTool, error) {
 	tool := &AgentDomainTool{
 		sessions:   cfg.Sessions,
 		channelMgr: cfg.ChannelMgr,
-	}
-
-	// Initialize memory tool if DB is provided
-	if cfg.DB != nil {
-		memTool, err := NewMemoryTool(MemoryConfig{
-			DB:              cfg.DB,
-			Embedder:        cfg.Embedder,
-			SanitizeContent: cfg.SanitizeContent,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create memory tool: %w", err)
-		}
-		tool.memory = memTool
-
-		// Initialize cron tool
-		cronTool, err := NewCronTool(CronConfig{DB: cfg.DB})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create cron tool: %w", err)
-		}
-		tool.cron = cronTool
+		memory:     cfg.MemoryTool,
+		cron:       cfg.CronTool,
 	}
 
 	return tool, nil

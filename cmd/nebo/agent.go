@@ -543,7 +543,10 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			SanitizeContent: cfg.Memory.SanitizeContent,
 		})
 		if err == nil {
-			registry.Register(memoryTool)
+			// NOTE: memoryTool is NOT registered as a standalone tool.
+			// Memory is only accessible via agent(resource: memory, action: ...).
+			// The memoryTool instance is still used for r.SetMemoryTool() (auto-extraction)
+			// and embedding backfill below.
 
 			// Migrate stale embeddings then backfill (runs in background)
 			if embeddingService != nil && embeddingService.HasProvider() {
@@ -785,11 +788,12 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	state.settingsPath = opts.SettingsFilePath
 
 	// Create agent domain tool with comm support
+	// Reuses the existing memoryTool and cronTool instances (single DB connection)
 	agentTool, agentToolErr := tools.NewAgentDomainTool(tools.AgentDomainConfig{
-		Sessions:        sessions,
-		ChannelMgr:      opts.ChannelManager,
-		Embedder:        embeddingService,
-		SanitizeContent: cfg.Memory.SanitizeContent,
+		Sessions:   sessions,
+		ChannelMgr: opts.ChannelManager,
+		MemoryTool: memoryTool,
+		CronTool:   cronTool,
 	})
 	if agentToolErr == nil {
 		agentTool.SetCommService(commHandler)

@@ -71,6 +71,16 @@
 		}
 		return { thinking: null, cleanContent: content };
 	}
+
+	// Build a key for content block {#each} that includes tool status,
+	// so Svelte re-renders tool cards when their status changes.
+	function contentBlockKey(block: ContentBlock, blockIdx: number, toolCalls?: ToolCall[]): string {
+		if (block.type === 'tool' && block.toolCallIndex != null && toolCalls?.[block.toolCallIndex]) {
+			const tc = toolCalls[block.toolCallIndex];
+			return `tool-${blockIdx}-${tc.status ?? 'unknown'}`;
+		}
+		return `text-${blockIdx}`;
+	}
 </script>
 
 <!-- Chat group - user on right, assistant on left -->
@@ -100,16 +110,15 @@
 
 				<!-- Content blocks: interleaved text and tool calls -->
 				{#if message.contentBlocks?.length}
-					{#each message.contentBlocks as block, blockIdx}
+					{#each message.contentBlocks as block, blockIdx (contentBlockKey(block, blockIdx, message.toolCalls))}
 						{#if block.type === 'tool' && block.toolCallIndex != null && message.toolCalls?.[block.toolCallIndex]}
-							{@const tool = message.toolCalls[block.toolCallIndex]}
 							<div class="max-w-md mb-2">
 								<ToolCard
-									name={tool.name}
-									input={tool.input}
-									output={tool.output}
-									status={tool.status}
-									onclick={() => handleViewToolOutput(tool)}
+									name={message.toolCalls[block.toolCallIndex].name}
+									input={message.toolCalls[block.toolCallIndex].input}
+									output={message.toolCalls[block.toolCallIndex].output}
+									status={message.toolCalls[block.toolCallIndex].status}
+									onclick={() => handleViewToolOutput(message.toolCalls![block.toolCallIndex!])}
 								/>
 							</div>
 						{:else if block.type === 'text' && block.text}

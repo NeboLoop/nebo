@@ -71,6 +71,20 @@ func (q *Queries) DeleteMemoryByKeyAndUser(ctx context.Context, arg DeleteMemory
 	return q.db.ExecContext(ctx, deleteMemoryByKeyAndUser, arg.Namespace, arg.Key, arg.UserID)
 }
 
+const deleteMemoryByKeyAndUserAnyNamespace = `-- name: DeleteMemoryByKeyAndUserAnyNamespace :execresult
+DELETE FROM memories
+WHERE key = ? AND user_id = ?
+`
+
+type DeleteMemoryByKeyAndUserAnyNamespaceParams struct {
+	Key    string `json:"key"`
+	UserID string `json:"user_id"`
+}
+
+func (q *Queries) DeleteMemoryByKeyAndUserAnyNamespace(ctx context.Context, arg DeleteMemoryByKeyAndUserAnyNamespaceParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, deleteMemoryByKeyAndUserAnyNamespace, arg.Key, arg.UserID)
+}
+
 const getDistinctNamespaces = `-- name: GetDistinctNamespaces :many
 SELECT DISTINCT namespace FROM memories ORDER BY namespace
 `
@@ -205,6 +219,50 @@ type GetMemoryByKeyAndUserRow struct {
 func (q *Queries) GetMemoryByKeyAndUser(ctx context.Context, arg GetMemoryByKeyAndUserParams) (GetMemoryByKeyAndUserRow, error) {
 	row := q.db.QueryRowContext(ctx, getMemoryByKeyAndUser, arg.Namespace, arg.Key, arg.UserID)
 	var i GetMemoryByKeyAndUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.Namespace,
+		&i.Key,
+		&i.Value,
+		&i.Tags,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AccessedAt,
+		&i.AccessCount,
+	)
+	return i, err
+}
+
+const getMemoryByKeyAndUserAnyNamespace = `-- name: GetMemoryByKeyAndUserAnyNamespace :one
+SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
+FROM memories
+WHERE key = ? AND user_id = ?
+ORDER BY access_count DESC
+LIMIT 1
+`
+
+type GetMemoryByKeyAndUserAnyNamespaceParams struct {
+	Key    string `json:"key"`
+	UserID string `json:"user_id"`
+}
+
+type GetMemoryByKeyAndUserAnyNamespaceRow struct {
+	ID          int64          `json:"id"`
+	Namespace   string         `json:"namespace"`
+	Key         string         `json:"key"`
+	Value       string         `json:"value"`
+	Tags        sql.NullString `json:"tags"`
+	Metadata    sql.NullString `json:"metadata"`
+	CreatedAt   sql.NullTime   `json:"created_at"`
+	UpdatedAt   sql.NullTime   `json:"updated_at"`
+	AccessedAt  sql.NullTime   `json:"accessed_at"`
+	AccessCount sql.NullInt64  `json:"access_count"`
+}
+
+func (q *Queries) GetMemoryByKeyAndUserAnyNamespace(ctx context.Context, arg GetMemoryByKeyAndUserAnyNamespaceParams) (GetMemoryByKeyAndUserAnyNamespaceRow, error) {
+	row := q.db.QueryRowContext(ctx, getMemoryByKeyAndUserAnyNamespace, arg.Key, arg.UserID)
+	var i GetMemoryByKeyAndUserAnyNamespaceRow
 	err := row.Scan(
 		&i.ID,
 		&i.Namespace,

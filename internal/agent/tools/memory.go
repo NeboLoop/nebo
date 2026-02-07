@@ -262,11 +262,11 @@ func (t *MemoryTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 			params.Namespace = params.Layer + "/" + params.Namespace
 		}
 	}
-	// For store/recall/delete, we need a concrete namespace — default to "default"
-	if params.Namespace == "" && (params.Action == "store" || params.Action == "recall" || params.Action == "delete") {
+	// Only store needs a concrete namespace — default to "default" for writes
+	if params.Namespace == "" && params.Action == "store" {
 		params.Namespace = "default"
 	}
-	// For list/search/clear with no namespace, use "" to match everything
+	// For recall/delete/list/search/clear with no namespace, use "" to search all
 
 	var result string
 	var err error
@@ -670,14 +670,47 @@ func (t *MemoryTool) recall(params memoryInput) (string, error) {
 	// Use current user ID for user-scoped queries
 	userID := t.GetCurrentUser()
 
-	// Use sqlc query
-	mem, err := t.queries.GetMemoryByKeyAndUser(context.Background(), db.GetMemoryByKeyAndUserParams{
-		Namespace: params.Namespace,
-		Key:       params.Key,
-		UserID:    userID,
-	})
+	var mem db.GetMemoryByKeyAndUserRow
+	var err error
+
+	if params.Namespace != "" {
+		// Exact namespace match
+		mem, err = t.queries.GetMemoryByKeyAndUser(context.Background(), db.GetMemoryByKeyAndUserParams{
+			Namespace: params.Namespace,
+			Key:       params.Key,
+			UserID:    userID,
+		})
+	} else {
+		// No namespace specified — search across all namespaces
+		anyMem, anyErr := t.queries.GetMemoryByKeyAndUserAnyNamespace(context.Background(), db.GetMemoryByKeyAndUserAnyNamespaceParams{
+			Key:    params.Key,
+			UserID: userID,
+		})
+		if anyErr == nil {
+			// Map to the same row type
+			mem = db.GetMemoryByKeyAndUserRow{
+				ID:          anyMem.ID,
+				Namespace:   anyMem.Namespace,
+				Key:         anyMem.Key,
+				Value:       anyMem.Value,
+				Tags:        anyMem.Tags,
+				Metadata:    anyMem.Metadata,
+				CreatedAt:   anyMem.CreatedAt,
+				UpdatedAt:   anyMem.UpdatedAt,
+				AccessedAt:  anyMem.AccessedAt,
+				AccessCount: anyMem.AccessCount,
+			}
+			params.Namespace = anyMem.Namespace // use the found namespace for access stats
+		}
+		err = anyErr
+	}
+
 	if err == sql.ErrNoRows {
-		return fmt.Sprintf("No memory found with key '%s' in namespace '%s'", params.Key, params.Namespace), nil
+		ns := params.Namespace
+		if ns == "" {
+			ns = "(all)"
+		}
+		return fmt.Sprintf("No memory found with key '%s' in namespace '%s'", params.Key, ns), nil
 	}
 	if err != nil {
 		return "", err
@@ -849,22 +882,44 @@ func (t *MemoryTool) delete(params memoryInput) (string, error) {
 	// Use current user ID for user-scoped operations
 	userID := t.GetCurrentUser()
 
-	// Use sqlc for deletion
-	result, err := t.queries.DeleteMemoryByKeyAndUser(context.Background(), db.DeleteMemoryByKeyAndUserParams{
-		Namespace: params.Namespace,
-		Key:       params.Key,
-		UserID:    userID,
-	})
-	if err != nil {
-		return "", err
+	var rows int64
+
+	if params.Namespace != "" {
+		// Delete from specific namespace
+		result, err := t.queries.DeleteMemoryByKeyAndUser(context.Background(), db.DeleteMemoryByKeyAndUserParams{
+			Namespace: params.Namespace,
+			Key:       params.Key,
+			UserID:    userID,
+		})
+		if err != nil {
+			return "", err
+		}
+		rows, _ = result.RowsAffected()
+	} else {
+		// No namespace specified — delete across all namespaces
+		result, err := t.queries.DeleteMemoryByKeyAndUserAnyNamespace(context.Background(), db.DeleteMemoryByKeyAndUserAnyNamespaceParams{
+			Key:    params.Key,
+			UserID: userID,
+		})
+		if err != nil {
+			return "", err
+		}
+		rows, _ = result.RowsAffected()
 	}
 
-	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Sprintf("No memory found with key '%s' in namespace '%s'", params.Key, params.Namespace), nil
+		ns := params.Namespace
+		if ns == "" {
+			ns = "(all)"
+		}
+		return fmt.Sprintf("No memory found with key '%s' in namespace '%s'", params.Key, ns), nil
 	}
 
-	return fmt.Sprintf("Deleted memory: %s (namespace: %s)", params.Key, params.Namespace), nil
+	ns := params.Namespace
+	if ns == "" {
+		ns = "(all)"
+	}
+	return fmt.Sprintf("Deleted memory: %s (namespace: %s)", params.Key, ns), nil
 }
 
 func (t *MemoryTool) clear(params memoryInput) (string, error) {
