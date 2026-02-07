@@ -70,7 +70,6 @@ RUN go mod download
 
 # Copy Go source code and all packages
 COPY *.go ./
-COPY agent/ ./agent/
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY app/ ./app/
