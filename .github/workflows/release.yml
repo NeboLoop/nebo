@@ -142,6 +142,45 @@ jobs:
           name: nebo-linux-${{ matrix.goarch }}
           path: nebo-linux-${{ matrix.goarch }}
 
+  # ─── Linux headless builds (no CGO, no WebKitGTK dependency) ─────────
+  build-linux-headless:
+    needs: frontend
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: app/build/
+
+      - name: Build headless binary
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build \
+            -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
+            -o nebo-linux-${{ matrix.goarch }}-headless .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-linux-${{ matrix.goarch }}-headless
+          path: nebo-linux-${{ matrix.goarch }}-headless
+
   # ─── Windows desktop build (CGO required for Wails v3 / WebView2) ────
   build-windows:
     needs: frontend
@@ -226,7 +265,7 @@ jobs:
 
   # ─── Create GitHub release with all artifacts ─────────────────────────
   release:
-    needs: [build-macos, build-linux, build-windows, package-deb]
+    needs: [build-macos, build-linux, build-linux-headless, build-windows, package-deb]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

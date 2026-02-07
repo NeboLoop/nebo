@@ -45,11 +45,24 @@ info "Installing Nebo for $OS/$ARCH..."
 TMP_DIR=$(mktemp -d)
 trap "rm -rf $TMP_DIR" EXIT
 
+# On Linux, detect if desktop libraries are available; fall back to headless
+SUFFIX=""
+if [ "$OS" = "linux" ]; then
+    if ldconfig -p 2>/dev/null | grep -q libwebkit2gtk-4.1 && ldconfig -p 2>/dev/null | grep -q libgtk-3; then
+        info "Desktop libraries detected — installing desktop build."
+    else
+        SUFFIX="-headless"
+        info "Desktop libraries not found — installing headless build."
+        info "For desktop mode, install: libwebkit2gtk-4.1-0 libgtk-3-0"
+    fi
+fi
+
 # Download binary
+BINARY_NAME="nebo-$OS-$ARCH$SUFFIX"
 if [ "$VERSION" = "latest" ]; then
-    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/nebo-$OS-$ARCH"
+    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/$BINARY_NAME"
 else
-    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$VERSION/nebo-$OS-$ARCH"
+    DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$VERSION/$BINARY_NAME"
 fi
 
 info "Downloading from $DOWNLOAD_URL..."
