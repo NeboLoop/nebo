@@ -45,9 +45,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-latest    # Apple Silicon
+          - runner: macos-latest    # Apple Silicon (arm64)
             goarch: arm64
-          - runner: macos-13        # Intel
+          - runner: macos-latest    # Cross-compile for Intel
             goarch: amd64
     runs-on: ${{ matrix.runner }}
     steps:
