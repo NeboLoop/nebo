@@ -133,6 +133,11 @@ func (e *Extractor) Extract(ctx context.Context, messages []session.Message) (*E
 	// Parse the response
 	responseText := strings.TrimSpace(result.String())
 
+	// Empty response = no facts to extract (common for trivial conversations)
+	if responseText == "" {
+		return &ExtractedFacts{}, nil
+	}
+
 	// Strip markdown code fences if present (```json ... ``` or ``` ... ```)
 	if strings.HasPrefix(responseText, "```") {
 		// Find the end of the opening fence line
@@ -153,24 +158,31 @@ func (e *Extractor) Extract(ctx context.Context, messages []session.Message) (*E
 	// Try to extract FIRST JSON object from the response
 	// (CLI provider may emit duplicates from both assistant and result messages)
 	jsonStart := strings.Index(responseText, "{")
-	if jsonStart >= 0 {
-		// Find matching closing brace for the first object
-		braceCount := 0
-		jsonEnd := -1
-		for i := jsonStart; i < len(responseText); i++ {
-			if responseText[i] == '{' {
-				braceCount++
-			} else if responseText[i] == '}' {
-				braceCount--
-				if braceCount == 0 {
-					jsonEnd = i
-					break
-				}
+	if jsonStart < 0 {
+		// No JSON object in response — LLM returned prose instead of JSON
+		// (e.g., "No facts to extract from this conversation")
+		return &ExtractedFacts{}, nil
+	}
+
+	// Find matching closing brace for the first object
+	braceCount := 0
+	jsonEnd := -1
+	for i := jsonStart; i < len(responseText); i++ {
+		if responseText[i] == '{' {
+			braceCount++
+		} else if responseText[i] == '}' {
+			braceCount--
+			if braceCount == 0 {
+				jsonEnd = i
+				break
 			}
 		}
-		if jsonEnd > jsonStart {
-			responseText = responseText[jsonStart : jsonEnd+1]
-		}
+	}
+	if jsonEnd > jsonStart {
+		responseText = responseText[jsonStart : jsonEnd+1]
+	} else {
+		// Unbalanced braces — malformed JSON
+		return &ExtractedFacts{}, nil
 	}
 
 	// Final cleanup - remove any backticks that might be embedded

@@ -16,8 +16,6 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
-	"github.com/nebolabs/nebo/internal/agent/advisors"
-	"github.com/nebolabs/nebo/internal/agent/ai"
 	"github.com/nebolabs/nebo/internal/agenthub"
 	"github.com/nebolabs/nebo/internal/channels"
 	"github.com/nebolabs/nebo/internal/daemon"
@@ -127,7 +125,6 @@ func RunDesktop() {
 		serverURL = fmt.Sprintf("http://%s:%d", c.App.Domain, c.Port)
 	}
 	healthURL := fmt.Sprintf("http://localhost:%d", c.Port)
-	mcpPort := 27896
 
 	// Create Wails application
 	wailsApp := application.New(application.Options{
@@ -248,7 +245,6 @@ func RunDesktop() {
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
-	mcpURL := fmt.Sprintf("http://%s:%d/mcp", c.App.Domain, mcpPort)
 
 	// Heartbeat daemon (declared here so defer can access it)
 	var heartbeat *daemon.Heartbeat
@@ -263,7 +259,7 @@ func RunDesktop() {
 	// Start all background services in a goroutine so wailsApp.Run() can
 	// start the macOS event loop immediately on the main thread.
 	// Add to WaitGroup BEFORE spawning goroutines to avoid race with wg.Wait().
-	wg.Add(3) // server, MCP, agent
+	wg.Add(2) // server, agent
 	go func() {
 		// Start server (uses shared database)
 		go func() {
@@ -283,37 +279,13 @@ func RunDesktop() {
 		if !waitForServer(healthURL, 10*time.Second) {
 			fmt.Println("\033[31mError: Server failed to start\033[0m")
 			errCh <- fmt.Errorf("server failed to start")
-			wg.Done() // MCP never spawned
 			wg.Done() // agent never spawned
 			return
 		}
 
 		// Load agent config
 		agentCfg := loadAgentConfig()
-
-		// Load advisors and create provider for MCP server
-		advisorLoader := advisors.NewLoader(agentCfg.AdvisorsDir())
-		if err := advisorLoader.LoadAll(); err != nil {
-			fmt.Printf("[MCP] Warning: failed to load advisors: %v\n", err)
-		}
-
 		SetSharedDB(svcCtx.DB.GetDB())
-		mcpProviders := createProviders(agentCfg)
-		var advisorProvider ai.Provider
-		if len(mcpProviders) > 0 {
-			advisorProvider = mcpProviders[0]
-		}
-
-		// Start MCP server
-		go func() {
-			defer wg.Done()
-			registry := createMCPRegistry(agentCfg)
-			if err := runMCPServerDaemon(ctx, registry, mcpPort, true, advisorLoader, advisorProvider); err != nil {
-				if ctx.Err() == nil {
-					errCh <- fmt.Errorf("MCP server error: %w", err)
-				}
-			}
-		}()
 
 		// Start agent
 		go func() {
@@ -326,7 +298,7 @@ func RunDesktop() {
 				Dangerously:      dangerouslyAll,
 				SettingsFilePath: filepath.Join(settingsDir, "agent-settings.json"),
 			}
-			if err := runAgentLoopWithOptions(ctx, agentCfg, serverURL, agentOpts); err != nil {
+			if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {
 				if ctx.Err() == nil {
 					errCh <- fmt.Errorf("agent error: %w", err)
 				}
@@ -385,8 +357,7 @@ func RunDesktop() {
 		// Print to console (for users who launched from terminal)
 		fmt.Println()
 		fmt.Printf("  Nebo desktop running\n")
-		fmt.Printf("  Web UI:     %s\n", serverURL)
-		fmt.Printf("  MCP Server: %s\n", mcpURL)
+		fmt.Printf("  Web UI: %s\n", serverURL)
 		fmt.Printf("  Data: %s\n", dataDir)
 		fmt.Println()
 	}()

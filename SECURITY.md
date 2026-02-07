@@ -10,7 +10,7 @@
 
 OpenClaw (formerly Clawdbot/Moltbot) has accumulated 5 CVEs, 7+ GitHub Security Advisories, and severe architectural vulnerabilities within three months of launch. This analysis maps each known vulnerability against Nebo's architecture to determine which risks apply, which are avoided by design, and what must be fixed.
 
-Of 18 identified vulnerability classes, Nebo is protected from 5 by architectural differences (no browser gateway UI, no Chrome extension, no Lobster engine, no SSH remote mode, no Docker sandbox). However, Nebo shares 8 critical or high-severity vulnerabilities with OpenClaw — primarily around memory injection, NeboLoop remote access, unsigned plugins, and the absence of origin-based tool policies. Five additional items carry moderate risk requiring attention.
+Of 18 identified vulnerability classes, Nebo is protected from 5 by architectural differences (no browser gateway UI, no Chrome extension, no Lobster engine, no SSH remote mode, no Docker sandbox). Nebo shared 8 critical or high-severity vulnerabilities with OpenClaw — 6 of which are now mitigated (memory injection, compaction poisoning, NeboLoop remote access, origin-based tool policies, SSRF, path traversal). Two critical items remain: unsigned plugins and skills supply chain. Four additional items carry moderate risk requiring attention.
 
 | Critical / Vulnerable | At Risk / Partial | Not Applicable | Total Reviewed |
 |:---:|:---:|:---:|:---:|
@@ -20,7 +20,7 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ## Remediation Progress
 
-*Last updated: February 5, 2026*
+*Last updated: February 7, 2026*
 
 ### Completed Fixes
 
@@ -35,6 +35,8 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 | **Path traversal protections added** | 2026-02-05 | `validateFilePath()` blocks access to sensitive paths (~/.ssh, ~/.aws, ~/.gnupg, ~/.docker/config.json, ~/.kube/config, ~/.npmrc, ~/.password-store, browser profiles, shell rc files, /etc/shadow, /etc/passwd, /etc/sudoers). Symlink resolution via `filepath.EvalSymlinks` prevents symlink-based traversal. Applied to read, write, and edit handlers. 12 tests pass. | `internal/agent/tools/file_tool.go`, `internal/agent/tools/tools_test.go` |
 | **Shell env var sanitization** | 2026-02-05 | `sanitizedEnv()` strips dangerous environment variables before shell execution. Blocks LD_PRELOAD/LD_LIBRARY_PATH/LD_AUDIT (Linux linker injection), DYLD_INSERT_LIBRARIES/DYLD_LIBRARY_PATH/DYLD_FRAMEWORK_PATH (macOS linker injection), IFS/CDPATH/BASH_ENV/PROMPT_COMMAND/SHELLOPTS (shell behavior manipulation), BASH_FUNC_* (ShellShock), PYTHONSTARTUP/NODE_OPTIONS/RUBYOPT/PERL5OPT (interpreter injection). All LD_/DYLD_ prefixes blocked by wildcard. Applied to both foreground (`handleBash`) and background (`SpawnBackgroundProcess`) execution paths. `ShellCommand()` now uses absolute `/bin/bash` path to prevent PATH-based binary substitution. 5 new tests pass. | `internal/agent/tools/shell_tool.go`, `internal/agent/tools/shell_unix.go`, `internal/agent/tools/process_registry.go`, `internal/agent/tools/tools_test.go` |
 | **Origin tagging + origin-aware tool policy** | 2026-02-05 | Every request now carries an `Origin` (user, comm, plugin, skill, system) propagated via `context.Context`. `RunRequest.Origin` field tags all 12 entry points: agent WS handler (user/system/comm), cron callbacks (system), intro flows (system), recovery tasks (system), comm handler (comm), CLI chat (user). `Registry.Execute()` checks `Policy.IsDeniedForOrigin()` before any tool runs — hard deny, no approval prompt. Default deny lists block `shell` for comm/plugin/skill origins. User and system origins unrestricted. 5 new tests pass. | `internal/agent/tools/origin.go` (new), `internal/agent/tools/policy.go`, `internal/agent/tools/registry.go`, `internal/agent/runner/runner.go`, `cmd/nebo/agent.go`, `internal/agent/comm/handler.go`, `cmd/nebo/chat.go`, `internal/agent/tools/tools_test.go` |
+| **Memory sanitization + tool-driven recall** | 2026-02-07 | Memory content sanitization: `sanitizeMemoryKey()` and `sanitizeMemoryValue()` enforce length limits (128/2048 chars), strip control characters, and block 15+ prompt-injection patterns. Applied to both `store()` and `StoreEntryForUser()` paths. Gated by configurable `memory.sanitize_content` setting (default: true). Switched from prompt-injected memory (50 tacit memories dumped into system prompt every turn) to tool-driven pattern: agent retrieves memories via `agent(resource: memory, action: recall/search)`. Embeddings made optional via `memory.embeddings` config (default: false). 6 new test functions covering key/value sanitization, injection pattern blocking, safe content pass-through, and control char stripping. | `internal/agent/tools/memory.go`, `internal/agent/tools/agent_tool.go`, `internal/agent/config/config.go`, `internal/agent/memory/dbcontext.go`, `internal/defaults/dotnebo/config.yaml`, `cmd/nebo/agent.go`, `internal/agent/tools/tools_test.go` |
+| **Compaction summary sanitization** | 2026-02-07 | `sanitizeForSummary()` strips control characters from user content and tool failure output before inclusion in compaction summaries. Applied to `generateSummary()` (user message content) and `CollectToolFailures()` (tool error content). Pre-compaction memory flush verified: runs synchronously before compaction at both call sites, with 45s timeout, dedup tracking, and cheapest-model selection. 1 new test function for summary sanitization. | `internal/agent/runner/compaction.go`, `internal/agent/runner/runner.go`, `internal/agent/runner/compaction_test.go` |
 
 ### Deferred Items
 
@@ -137,23 +139,23 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### ARCH-001: Memory Injection — Critical — VULNERABLE
+### ARCH-001: Memory Injection — Critical — MITIGATED
 
 **OpenClaw Issue:** Memory injection — tool outputs stored as "facts" enter future system prompts as raw prose. Enables persistent prompt injection.
 
-**Nebo Status: VULNERABLE.** Anything stored via `agent(resource: memory, action: store, ...)` ends up in the system prompt with no sanitization layer.
+**Nebo Status: MITIGATED.** Three defenses implemented: (1) **Content sanitization** — `sanitizeMemoryKey()` and `sanitizeMemoryValue()` strip control characters, enforce length limits (key: 128, value: 2048 chars), and block 15+ prompt-injection patterns (instruction overrides, system prompt tags, persona manipulation). Applied to both `store()` and `StoreEntryForUser()` paths. (2) **Tool-driven memory** — memories are no longer bulk-injected into the system prompt. Agent retrieves memories on-demand via `agent(resource: memory, action: recall/search)`. (3) **Configurable** — sanitization gated by `memory.sanitize_content` config setting (default: true); embeddings gated by `memory.embeddings` (default: false, incurs API costs).
 
-**Remediation:** Implement memory write firewall: schema validation, sanitization, approval-by-origin, structured data injection instead of raw prose.
+**Remaining:** Per-origin memory write restrictions (comm/plugin origins could be denied memory store). Structured schema validation for memory entries.
 
 ---
 
-### ARCH-002: Compaction Poisoning — High — VULNERABLE
+### ARCH-002: Compaction Poisoning — High — MITIGATED
 
 **OpenClaw Issue:** Compaction summary poisoning — summaries prepended to system prompt. Poisoned summary persists across sessions.
 
-**Nebo Status: VULNERABLE.** Compaction summaries are prepended to system prompt for future turns.
+**Nebo Status: MITIGATED.** Three defenses: (1) **Pre-compaction memory flush** — `maybeRunMemoryFlush()` extracts and persists important memories before compaction discards context. Runs synchronously with 45s timeout, dedup tracking via `ShouldRunMemoryFlush`/`RecordMemoryFlush`. (2) **Summary sanitization** — `sanitizeForSummary()` strips control characters from user content and tool failure output before inclusion in compaction summaries. Applied to `generateSummary()` and `CollectToolFailures()`. (3) **Tool failure preservation** — `EnhancedSummary()` appends capped, normalized tool failures (max 8, max 240 chars each) so the agent retains error awareness post-compaction.
 
-**Remediation:** Treat summaries as untrusted: structured state snapshots, summary sanitizer, provenance tracking, fallback on suspicious content.
+**Remaining:** Provenance tracking on summaries (mark which summary entries came from which origin). Structured state snapshots instead of free-text summaries.
 
 ---
 
@@ -238,8 +240,8 @@ Nebo's architecture avoids several of OpenClaw's worst vulnerabilities by design
 | 9 | Origin tagging on sessions + messages | Medium | Foundation for all policy fixes | **DONE** |
 | 10 | Origin-aware tool policy in registry | Medium | Blocks injection consequences | **DONE** |
 | 11 | Default-deny dangerous tools for comm/plugin origins | Small | Neutralizes NeboLoop + plugin injection | **DONE** |
-| 12 | Memory schema + sanitization | Medium | Eliminates persistent prompt injection | Not started |
-| 13 | Compaction snapshot hardening | Medium | Prevents session-persistent poisoning | Not started |
+| 12 | Memory schema + sanitization | Medium | Eliminates persistent prompt injection | **DONE** |
+| 13 | Compaction snapshot hardening | Medium | Prevents session-persistent poisoning | **DONE** |
 | 14 | Plugin allowlist by hash + no auto-load | Small | Stops malicious plugin loading | Not started |
 | 15 | Skills signing or data-only format | Medium | Closes supply-chain prompt injection | Not started |
 | 16 | Credential encryption at rest | Medium | Mitigates infostealer harvesting | Not started |
@@ -251,6 +253,6 @@ Nebo's architecture avoids several of OpenClaw's worst vulnerabilities by design
 
 Nebo avoids OpenClaw's most headline-grabbing CVEs (the 1-click RCE, the Chrome extension theft, the Docker escape) through fundamentally different architectural choices. However, it shares the deeper, harder-to-fix vulnerability classes: memory injection into system prompts, unsandboxed plugin execution, remote comm channels with full tool authority, and the absence of origin-based access control.
 
-Eleven fixes have been completed — eight infrastructure-level (auth bypass, CORS, DNS hijack, CSWSH, rate limit bypass, SSRF, path traversal, shell env sanitization) and three application-layer (origin tagging, origin-aware tool policy, default-deny for non-user origins). The origin tagging system provides the foundation for all remaining policy fixes. Remaining items address memory injection defenses and supply chain integrity.
+Thirteen fixes have been completed — eight infrastructure-level (auth bypass, CORS, DNS hijack, CSWSH, rate limit bypass, SSRF, path traversal, shell env sanitization), three application-layer (origin tagging, origin-aware tool policy, default-deny for non-user origins), and two memory/compaction hardening (memory sanitization with tool-driven recall, compaction summary sanitization). The origin tagging system provides the foundation for all remaining policy fixes. Remaining items address supply chain integrity (plugin signing, skills signing) and credential encryption.
 
-**The key lesson from OpenClaw's experience: these vulnerabilities were discovered and exploited within weeks of the project gaining popularity. The origin-based authority wall is now in place — the next priority is memory/compaction hardening.**
+**The key lesson from OpenClaw's experience: these vulnerabilities were discovered and exploited within weeks of the project gaining popularity. The origin-based authority wall and memory injection defenses are now in place — the next priority is supply chain integrity (plugins + skills).**

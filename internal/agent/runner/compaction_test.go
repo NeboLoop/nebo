@@ -237,6 +237,31 @@ func TestEnhancedSummary(t *testing.T) {
 	}
 }
 
+func TestSanitizeForSummary(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"normal text", "User asked about Go", "User asked about Go"},
+		{"strips null bytes", "hello\x00world", "helloworld"},
+		{"strips bell", "test\x07text", "testtext"},
+		{"strips escape sequences", "test\x1b[31mred\x1b[0m", "test[31mred[0m"},
+		{"preserves newlines", "line1\nline2", "line1\nline2"},
+		{"preserves tabs", "col1\tcol2", "col1\tcol2"},
+		{"empty string", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeForSummary(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeForSummary(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnhancedSummary_NoFailures(t *testing.T) {
 	messages := []session.Message{
 		{Role: "user", Content: "Hello"},

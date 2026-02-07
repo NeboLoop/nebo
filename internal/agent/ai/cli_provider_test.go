@@ -22,7 +22,7 @@ func TestNewCLIProvider(t *testing.T) {
 }
 
 func TestNewClaudeCodeProvider(t *testing.T) {
-	p := NewClaudeCodeProvider(25)
+	p := NewClaudeCodeProvider(25, 0)
 	if p == nil {
 		t.Fatal("NewClaudeCodeProvider returned nil")
 	}

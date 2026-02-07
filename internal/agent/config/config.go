@@ -39,6 +39,9 @@ type Config struct {
 	// Comm plugin settings (inter-agent communication)
 	Comm CommConfig `yaml:"comm"`
 
+	// Memory settings (sanitization, limits)
+	Memory MemorySettingsConfig `yaml:"memory"`
+
 	// SaaS connection settings
 	ServerURL string `yaml:"server_url"` // SaaS server URL
 	Token     string `yaml:"token"`      // Authentication token
@@ -51,6 +54,15 @@ type CommConfig struct {
 	AutoConnect bool              `yaml:"auto_connect"` // Connect on agent startup
 	AgentID     string            `yaml:"agent_id"`     // Agent identity (empty = hostname)
 	Config      map[string]string `yaml:"config"`       // Plugin-specific config passed to Connect()
+}
+
+// MemorySettingsConfig holds settings for the memory subsystem
+type MemorySettingsConfig struct {
+	// SanitizeContent enables injection-pattern filtering on stored memory content (default: true)
+	SanitizeContent bool `yaml:"sanitize_content"`
+	// Embeddings enables vector embedding generation for stored memories (default: false)
+	// When enabled, memories are embedded for semantic search; this incurs API costs.
+	Embeddings bool `yaml:"embeddings"`
 }
 
 // LaneConfig holds concurrency limits for each lane
@@ -136,6 +148,10 @@ func DefaultConfig() *Config {
 			SoftTrimHead:         1500,
 			SoftTrimTail:         1500,
 			HardClearPlaceholder: "[Old tool result cleared]",
+		},
+		Memory: MemorySettingsConfig{
+			SanitizeContent: true,  // Enabled by default for security
+			Embeddings:      false, // Disabled by default (incurs API costs)
 		},
 		ServerURL: "http://localhost:27895", // Default local server
 	}

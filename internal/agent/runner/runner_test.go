@@ -95,6 +95,10 @@ func (m *mockProvider) ProfileID() string {
 	return ""
 }
 
+func (m *mockProvider) HandlesTools() bool {
+	return false
+}
+
 func (m *mockProvider) Stream(ctx context.Context, req *ai.ChatRequest) (<-chan ai.StreamEvent, error) {
 	m.callCount++
 	if m.err != nil {
@@ -295,6 +299,10 @@ func (p *toolTestProvider) ID() string {
 
 func (p *toolTestProvider) ProfileID() string {
 	return ""
+}
+
+func (p *toolTestProvider) HandlesTools() bool {
+	return false
 }
 
 func (p *toolTestProvider) Stream(ctx context.Context, req *ai.ChatRequest) (<-chan ai.StreamEvent, error) {

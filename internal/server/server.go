@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -44,9 +45,41 @@ import (
 
 // ServerOptions holds optional dependencies for the server
 type ServerOptions struct {
-	ChannelManager *channels.Manager
-	SvcCtx         *svc.ServiceContext // Pre-initialized service context (single binary mode)
-	Quiet          bool                // Suppress startup messages for clean CLI output
+	ChannelManager  *channels.Manager
+	SvcCtx          *svc.ServiceContext // Pre-initialized service context (single binary mode)
+	Quiet           bool                // Suppress startup messages for clean CLI output
+	AgentMCPHandler *AgentMCPProxy      // Lazy handler for agent MCP tools at /agent/mcp
+}
+
+// AgentMCPProxy is a lazy http.Handler that serves 503 until the real handler is set.
+// This allows the HTTP server to mount /agent/mcp before the agent MCP server is ready.
+type AgentMCPProxy struct {
+	mu      sync.RWMutex
+	handler http.Handler
+}
+
+// NewAgentMCPProxy creates a new lazy proxy for the agent MCP handler.
+func NewAgentMCPProxy() *AgentMCPProxy {
+	return &AgentMCPProxy{}
+}
+
+// Set installs the real MCP handler once the agent is initialized.
+func (p *AgentMCPProxy) Set(h http.Handler) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.handler = h
+}
+
+// ServeHTTP delegates to the real handler, or returns 503 if not yet set.
+func (p *AgentMCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.mu.RLock()
+	h := p.handler
+	p.mu.RUnlock()
+	if h == nil {
+		http.Error(w, "Agent MCP server not ready", http.StatusServiceUnavailable)
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 // Run starts the Nebo server with the given configuration.
@@ -192,6 +225,13 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 
 		mcpOAuthHandler := mcpoauth.NewHandler(svcCtx, baseURL)
 		mcpOAuthHandler.RegisterRoutes(r)
+	}
+
+	// Agent MCP routes - exposes STRAP tools to Claude CLI via MCP protocol.
+	// The proxy starts returning 503 until the agent sets the real handler.
+	if opts.AgentMCPHandler != nil {
+		r.Handle("/agent/mcp", opts.AgentMCPHandler)
+		r.Handle("/agent/mcp/*", opts.AgentMCPHandler)
 	}
 
 	// SPA fallback - serve frontend for all other routes

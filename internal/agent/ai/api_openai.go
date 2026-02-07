@@ -39,6 +39,11 @@ func (p *OpenAIProvider) ProfileID() string {
 	return ""
 }
 
+// HandlesTools returns false - the runner executes tools for API providers
+func (p *OpenAIProvider) HandlesTools() bool {
+	return false
+}
+
 // Stream sends a request and returns streaming events
 func (p *OpenAIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error) {
 	// Build messages

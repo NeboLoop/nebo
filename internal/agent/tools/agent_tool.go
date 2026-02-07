@@ -120,10 +120,11 @@ type AgentDomainInput struct {
 
 // AgentDomainConfig configures the agent domain tool
 type AgentDomainConfig struct {
-	DB           *sql.DB              // Shared database connection
-	Sessions     *session.Manager     // Session manager
-	ChannelMgr   *channels.Manager    // Channel manager (optional)
-	Embedder     *embeddings.Service  // Embedding service (optional)
+	DB              *sql.DB             // Shared database connection
+	Sessions        *session.Manager    // Session manager
+	ChannelMgr      *channels.Manager   // Channel manager (optional)
+	Embedder        *embeddings.Service // Embedding service (optional)
+	SanitizeContent bool                // Enable injection-pattern filtering on stored content
 }
 
 // NewAgentDomainTool creates a new agent domain tool
@@ -136,8 +137,9 @@ func NewAgentDomainTool(cfg AgentDomainConfig) (*AgentDomainTool, error) {
 	// Initialize memory tool if DB is provided
 	if cfg.DB != nil {
 		memTool, err := NewMemoryTool(MemoryConfig{
-			DB:       cfg.DB,
-			Embedder: cfg.Embedder,
+			DB:              cfg.DB,
+			Embedder:        cfg.Embedder,
+			SanitizeContent: cfg.SanitizeContent,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create memory tool: %w", err)

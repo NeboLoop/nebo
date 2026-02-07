@@ -730,7 +730,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 
 		// Process streaming events
 		hasToolCalls := false
-		cliProviderComplete := false // Track if CLI provider completed its full agentic loop
+		providerHandlesTools := provider.HandlesTools()
 		var assistantContent strings.Builder
 		var toolCalls []session.ToolCall
 		eventCount := 0
@@ -738,10 +738,8 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 		for event := range events {
 			eventCount++
 
-			// Forward event to caller (except internal done signals)
-			if !(event.Type == ai.EventTypeDone && event.Text == "cli_complete") {
-				resultCh <- event
-			}
+			// Forward ALL events to caller for display
+			resultCh <- event
 
 			switch event.Type {
 			case ai.EventTypeText:
@@ -758,12 +756,6 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 			case ai.EventTypeError:
 				fmt.Printf("[Runner] Error event received: %v\n", event.Error)
 				return
-
-			case ai.EventTypeDone:
-				// Check for CLI provider completion signal
-				if event.Text == "cli_complete" {
-					cliProviderComplete = true
-				}
 
 			case ai.EventTypeMessage:
 				// Save intermediate messages from CLI provider's internal agentic loop
@@ -782,8 +774,8 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 		fmt.Printf("[Runner] Stream complete: %d events, %d tool calls\n", eventCount, len(toolCalls))
 
 		// Save assistant message (always save unless empty)
-		// Skip if CLI provider completed — messages were already saved via EventTypeMessage
-		if !cliProviderComplete && (assistantContent.Len() > 0 || len(toolCalls) > 0) {
+		// Skip if provider handles tools — messages were already saved via EventTypeMessage
+		if !providerHandlesTools && (assistantContent.Len() > 0 || len(toolCalls) > 0) {
 			var toolCallsJSON json.RawMessage
 			if len(toolCalls) > 0 {
 				toolCallsJSON, _ = json.Marshal(toolCalls)
@@ -800,8 +792,9 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 			}
 		}
 
-		// Execute tool calls (skip if CLI provider already executed them)
-		if hasToolCalls && !cliProviderComplete {
+		// Execute tool calls if the runner is responsible for tool execution.
+		// Providers that handle tools (e.g., CLI via MCP) already executed them.
+		if hasToolCalls && !providerHandlesTools {
 			var toolResults []session.ToolResult
 
 			for _, tc := range toolCalls {
@@ -842,9 +835,9 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 			}
 			// Continue agentic loop - let LLM respond to tool results
 			continue
-		} else if hasToolCalls && cliProviderComplete {
-			fmt.Printf("[Runner] Skipping tool execution - CLI provider already executed %d tools\n", len(toolCalls))
-			// Fall through to done - CLI provider already completed its agentic loop
+		} else if hasToolCalls && providerHandlesTools {
+			fmt.Printf("[Runner] Skipping tool execution - provider already handled %d tools via MCP\n", len(toolCalls))
+			// Fall through to done - provider already completed its agentic loop
 		}
 
 		// No tool calls (or text-only response) - task is complete

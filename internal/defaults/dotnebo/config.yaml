@@ -41,5 +41,10 @@ policy:
     - git diff
     - git branch
 
+# Memory settings
+memory:
+  sanitize_content: true # Block prompt-injection patterns in stored memories (default: true)
+  embeddings: false      # Enable vector embeddings for semantic memory search (incurs API costs)
+
 # Server URL (for agent connecting to server)
 # server_url: http://localhost:27895

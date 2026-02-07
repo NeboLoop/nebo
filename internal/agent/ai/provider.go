@@ -63,6 +63,11 @@ type Provider interface {
 	// Returns empty string for providers without profile tracking
 	ProfileID() string
 
+	// HandlesTools returns true if this provider executes tools itself
+	// (e.g., CLI providers via MCP). When true, the runner forwards
+	// tool call events to the client for display but does not re-execute them.
+	HandlesTools() bool
+
 	// Stream sends a request and returns a channel of streaming events
 	Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error)
 }
@@ -90,6 +95,11 @@ func (p *ProfiledProvider) ID() string {
 // ProfileID returns the auth profile ID for this provider
 func (p *ProfiledProvider) ProfileID() string {
 	return p.profileID
+}
+
+// HandlesTools delegates to the underlying provider
+func (p *ProfiledProvider) HandlesTools() bool {
+	return p.Provider.HandlesTools()
 }
 
 // Stream delegates to the underlying provider

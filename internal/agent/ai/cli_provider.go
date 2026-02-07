@@ -30,29 +30,35 @@ func NewCLIProvider(name, command string, args []string) *CLIProvider {
 	}
 }
 
-// NewClaudeCodeProvider creates a provider that wraps the Claude Code CLI
-// Claude Code: brew install claude-code or npm i -g @anthropic-ai/claude-code
-// Uses ~/.claude/ for auth, supports extended thinking, MCP, agentic tools
-// Runs in dangerously mode for fully autonomous operation (no permission prompts)
-// Model is passed via ChatRequest.Model at runtime (defaults to "sonnet" if not specified)
-// DefaultAgentMCPPort is the port where Nebo's agent MCP server runs
-const DefaultAgentMCPPort = 27896
+// DefaultServerPort is the default HTTP server port where agent MCP tools are served
+const DefaultServerPort = 27895
 
-func NewClaudeCodeProvider(maxTurns int) *CLIProvider {
+// NewClaudeCodeProvider creates a provider that wraps the Claude Code CLI.
+// Claude Code: brew install claude-code or npm i -g @anthropic-ai/claude-code
+// Uses ~/.claude/ for auth, supports extended thinking.
+// Claude CLI connects to Nebo's agent MCP server at /agent/mcp for tool access.
+// All built-in Claude Code tools are disabled (--tools "") so it only uses
+// Nebo's STRAP tools via MCP. Model is passed via ChatRequest.Model at runtime.
+// serverPort is the HTTP server port (0 = DefaultServerPort).
+// maxTurns caps multi-turn tool use (0 = unlimited).
+func NewClaudeCodeProvider(maxTurns int, serverPort int) *CLIProvider {
+	if serverPort == 0 {
+		serverPort = DefaultServerPort
+	}
+
 	// MCP config pointing to Nebo's agent MCP server which exposes all STRAP tools
-	mcpConfig := fmt.Sprintf(`{"mcpServers":{"nebo-agent":{"type":"http","url":"http://localhost:%d/mcp"}}}`, DefaultAgentMCPPort)
+	mcpConfig := fmt.Sprintf(`{"mcpServers":{"nebo-agent":{"type":"http","url":"http://localhost:%d/agent/mcp"}}}`, serverPort)
 
 	args := []string{
-		"--print",                                // Non-interactive output
-		"--verbose",                              // Required for stream-json with --print
-		"--debug",                                // Enable debug logging for subagents
-		"--include-partial-messages",             // Show partial chunks as they arrive
-		"--dangerously-skip-permissions",         // Autonomous mode
-		"--output-format", "stream-json",         // Faster streaming
-		"--tools", "",                            // Disable ALL built-in Claude Code tools
-		"--mcp-config", mcpConfig,                // Use Nebo's STRAP tools via MCP
-		"--strict-mcp-config",                    // Ignore user's other MCP servers
-		"--allowedTools", "mcp__nebo-agent__*",   // Auto-approve all Nebo MCP tool calls
+		"--print",                              // Non-interactive output
+		"--verbose",                            // Required for stream-json with --print
+		"--output-format", "stream-json",       // Streaming JSON events
+		"--include-partial-messages",           // Token-by-token streaming (not just turn-level)
+		"--dangerously-skip-permissions",       // Autonomous mode
+		"--tools", "",                          // Disable ALL built-in Claude Code tools
+		"--mcp-config", mcpConfig,              // Use Nebo's STRAP tools via MCP
+		"--strict-mcp-config",                  // Ignore user's other MCP servers
+		"--allowedTools", "mcp__nebo-agent__*", // Auto-approve all Nebo MCP tool calls
 	}
 
 	// Only add --max-turns if explicitly configured (0 = unlimited)
@@ -99,6 +105,11 @@ func (p *CLIProvider) ProfileID() string {
 	return ""
 }
 
+// HandlesTools returns true - CLI providers execute tools via MCP
+func (p *CLIProvider) HandlesTools() bool {
+	return true
+}
+
 // Stream sends a request to the CLI and streams the response
 func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error) {
 	resultCh := make(chan StreamEvent, 100)
@@ -123,8 +134,6 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 		}
 
 		// Use "--" to separate flags from the positional prompt argument.
-		// Without this, variadic flags like --allowedTools can consume the prompt
-		// as a second pattern value when --system-prompt is absent (e.g., memory extraction).
 		args = append(args, "--", prompt)
 
 		// Log command start (not individual stream lines)
@@ -192,7 +201,6 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 			Input strings.Builder
 		}
 		var pendingTool *pendingToolInfo
-		toolNames := make(map[string]string) // tool_id → tool_name for result correlation
 
 		for scanner.Scan() {
 			select {
@@ -224,7 +232,6 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 								name, _ := block["name"].(string)
 								id, _ := block["id"].(string)
 								pendingTool = &pendingToolInfo{ID: id, Name: name}
-								toolNames[id] = name
 								continue // Don't emit yet — wait for full input
 							}
 						}
@@ -264,28 +271,6 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 
 				// For all other events, use existing parseLine
 				event := p.parseLine(line)
-
-				// Extract tool results from "user" messages and emit EventTypeToolResult.
-				// The CLI provider handles tool execution internally, so these results
-				// arrive as user messages containing tool_result blocks. We must forward
-				// them as proper EventTypeToolResult events for the frontend to update
-				// tool cards from "Running..." to "Complete".
-				if event.Type == EventTypeMessage && event.Message != nil && len(event.Message.ToolResults) > 0 {
-					var toolResults []session.ToolResult
-					if err := json.Unmarshal(event.Message.ToolResults, &toolResults); err == nil {
-						for _, tr := range toolResults {
-							name := toolNames[tr.ToolCallID]
-							resultCh <- StreamEvent{
-								Type: EventTypeToolResult,
-								Text: tr.Content,
-								ToolCall: &ToolCall{
-									ID:   tr.ToolCallID,
-									Name: name,
-								},
-							}
-						}
-					}
-				}
 
 				// Skip empty text events (message_start, etc.)
 				// These generate unnecessary WebSocket frames and UI re-renders
@@ -386,16 +371,13 @@ func (p *CLIProvider) parseLine(line string) StreamEvent {
 		// Tool use blocks are intercepted in Stream() before parseLine is called.
 		// Non-tool blocks fall through here and return empty.
 
-	// Result message - signals completion of CLI provider's agentic loop
+	// Result message - signals completion of this CLI turn
 	case "result":
 		subtype, _ := data["subtype"].(string)
-		if subtype == "success" {
-			// Signal that CLI provider completed its full loop
-			// This tells the runner to skip redundant saves/executions
-			return StreamEvent{Type: EventTypeDone, Text: "cli_complete"}
-		}
-		if subtype == "error_max_turns" {
-			return StreamEvent{Type: EventTypeError, Error: &ProviderError{Message: "max turns reached"}}
+		if subtype == "success" || subtype == "error_max_turns" {
+			// CLI provider completed its full agentic loop.
+			// Runner uses provider.HandlesTools() to skip tool execution.
+			return StreamEvent{Type: EventTypeDone}
 		}
 		// For other cases (errors, etc.), emit the result text
 		if result, ok := data["result"].(string); ok {

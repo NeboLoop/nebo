@@ -65,11 +65,9 @@ func LoadContext(db *sql.DB, userID string) (*DBContext, error) {
 		fmt.Printf("[memory] Warning: failed to load user profile: %v\n", err)
 	}
 
-	// Load tacit memories for specific user
-	if err := loadTacitMemories(ctx, db, result, userID); err != nil {
-		// Continue even if memories fail
-		fmt.Printf("[memory] Warning: failed to load memories: %v\n", err)
-	}
+	// NOTE: Tacit memories are NOT loaded into the system prompt (tool-driven pattern).
+	// The agent retrieves memories on-demand via agent(resource: memory, action: recall/search).
+	// This reduces prompt-injection attack surface and avoids wasting tokens on irrelevant memories.
 
 	return result, nil
 }
@@ -283,16 +281,8 @@ func (c *DBContext) FormatForSystemPrompt() string {
 		parts = append(parts, "# User Information\n\n"+strings.Join(userParts, "\n"))
 	}
 
-	// Memories
-	if len(c.TacitMemories) > 0 {
-		var memParts []string
-		for _, m := range c.TacitMemories {
-			memParts = append(memParts, fmt.Sprintf("- %s: %s", m.Key, m.Value))
-		}
-		parts = append(parts, "# Remembered Facts\n\nThese facts were loaded from your persistent memory database. Your memory system is ACTIVE and WORKING.\n\n"+strings.Join(memParts, "\n"))
-	} else {
-		parts = append(parts, "# Remembered Facts\n\nNo facts stored yet. Your memory system is ACTIVE — use agent(resource: memory, action: store, ...) to save important facts about the user and their preferences.")
-	}
+	// Memory tool instructions (tool-driven pattern — memories are NOT injected into the prompt)
+	parts = append(parts, "# Memory\n\nYou have a persistent memory system. Use it actively:\n- **Recall**: `agent(resource: memory, action: recall, key: \"...\")` — retrieve a specific memory\n- **Search**: `agent(resource: memory, action: search, query: \"...\")` — find relevant memories\n- **Store**: `agent(resource: memory, action: store, key: \"...\", value: \"...\", layer: \"tacit\")` — save facts\n\nWhen a user mentions preferences, personal details, or asks you to remember something, store it immediately. When context seems relevant to past conversations, search your memory proactively.")
 
 	if len(parts) == 0 {
 		return ""
@@ -303,7 +293,7 @@ func (c *DBContext) FormatForSystemPrompt() string {
 
 // IsEmpty returns true if no meaningful context was loaded
 func (c *DBContext) IsEmpty() bool {
-	return c.PersonalityPrompt == "" && c.UserDisplayName == "" && len(c.TacitMemories) == 0
+	return c.PersonalityPrompt == "" && c.UserDisplayName == ""
 }
 
 // NeedsOnboarding returns true if the user hasn't completed onboarding

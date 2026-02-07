@@ -5,12 +5,84 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/nebolabs/nebo/internal/agent/embeddings"
 	"github.com/nebolabs/nebo/internal/db"
 )
+
+// Memory content limits
+const (
+	MaxMemoryKeyLength   = 128
+	MaxMemoryValueLength = 2048
+)
+
+// instructionPatterns matches strings that look like prompt injection attempts.
+// These are checked case-insensitively against memory content.
+var instructionPatterns = regexp.MustCompile(`(?i)` +
+	`(ignore\s+(all\s+)?previous\s+instructions)` +
+	`|(ignore\s+(all\s+)?above)` +
+	`|(disregard\s+(all\s+)?previous)` +
+	`|(you\s+are\s+now\s+)` +
+	`|(new\s+instructions?\s*:)` +
+	`|(system\s*:\s)` +
+	`|(<\s*system\s*>)` +
+	`|(<\s*/?\s*system-?(prompt|message|instruction)\s*>)` +
+	`|(IMPORTANT\s*:\s*you\s+must)` +
+	`|(override\s+(all\s+)?previous)` +
+	`|(forget\s+(all\s+)?previous)` +
+	`|(act\s+as\s+(if|though)\s+you)` +
+	`|(pretend\s+you\s+are)` +
+	`|(from\s+now\s+on\s*,?\s*you)`,
+)
+
+// sanitizeMemoryKey validates and cleans a memory key.
+// Returns the sanitized key and an error if the key is invalid.
+func sanitizeMemoryKey(key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", fmt.Errorf("key is required")
+	}
+	key = stripControlChars(key)
+	if len(key) > MaxMemoryKeyLength {
+		key = key[:MaxMemoryKeyLength]
+	}
+	return key, nil
+}
+
+// sanitizeMemoryValue validates and cleans a memory value.
+// Returns the sanitized value and an error if the value is invalid.
+func sanitizeMemoryValue(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("value is required")
+	}
+	value = stripControlChars(value)
+	if len(value) > MaxMemoryValueLength {
+		value = value[:MaxMemoryValueLength]
+	}
+	// Block instruction-like content
+	if instructionPatterns.MatchString(value) {
+		return "", fmt.Errorf("value contains instruction-like content that cannot be stored in memory")
+	}
+	return value, nil
+}
+
+// stripControlChars removes control characters except newlines and tabs.
+func stripControlChars(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r == '\r' {
+			return r
+		}
+		if unicode.IsControl(r) {
+			return -1 // Drop
+		}
+		return r
+	}, s)
+}
 
 // MemoryTool provides persistent fact storage across sessions
 type MemoryTool struct {
@@ -19,6 +91,7 @@ type MemoryTool struct {
 	embedder      *embeddings.Service    // Embedding service for vector storage
 	searcher      *embeddings.HybridSearcher
 	currentUserID string                 // Set per-request for user-scoped operations
+	sanitize      bool                   // Enable injection-pattern filtering on content
 }
 
 type memoryInput struct {
@@ -41,8 +114,9 @@ const (
 
 // MemoryConfig configures the memory tool
 type MemoryConfig struct {
-	DB       *sql.DB              // Shared database connection (required)
-	Embedder *embeddings.Service  // Optional embedding service for hybrid search
+	DB              *sql.DB             // Shared database connection (required)
+	Embedder        *embeddings.Service // Optional embedding service for hybrid search
+	SanitizeContent bool                // Enable injection-pattern filtering on stored content
 }
 
 // NewMemoryTool creates a new memory tool using the shared database connection.
@@ -54,8 +128,9 @@ func NewMemoryTool(cfg MemoryConfig) (*MemoryTool, error) {
 	}
 
 	tool := &MemoryTool{
-		sqlDB:   cfg.DB,
-		queries: db.New(cfg.DB), // Create sqlc queries from DB connection
+		sqlDB:    cfg.DB,
+		queries:  db.New(cfg.DB), // Create sqlc queries from DB connection
+		sanitize: cfg.SanitizeContent,
 	}
 
 	// Set up embedding service and hybrid search if available
@@ -106,6 +181,7 @@ func (t *MemoryTool) GetCurrentUser() string {
 func (t *MemoryTool) Name() string {
 	return "memory"
 }
+
 
 func (t *MemoryTool) Description() string {
 	return `Store and recall facts persistently across sessions using a three-layer memory system:
@@ -229,11 +305,19 @@ func (t *MemoryTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 }
 
 func (t *MemoryTool) store(params memoryInput) (string, error) {
-	if params.Key == "" {
-		return "", fmt.Errorf("key is required for store action")
-	}
-	if params.Value == "" {
-		return "", fmt.Errorf("value is required for store action")
+	// Sanitize key and value before storing (when enabled)
+	if t.sanitize {
+		key, err := sanitizeMemoryKey(params.Key)
+		if err != nil {
+			return "", fmt.Errorf("key is required for store action")
+		}
+		params.Key = key
+
+		value, valErr := sanitizeMemoryValue(params.Value)
+		if valErr != nil {
+			return "", valErr
+		}
+		params.Value = value
 	}
 
 	tagsJSON, _ := json.Marshal(params.Tags)
@@ -243,7 +327,7 @@ func (t *MemoryTool) store(params memoryInput) (string, error) {
 	userID := t.GetCurrentUser()
 
 	// Upsert into memories table using sqlc (user-scoped)
-	err := t.queries.UpsertMemory(context.Background(), db.UpsertMemoryParams{
+	upsertErr := t.queries.UpsertMemory(context.Background(), db.UpsertMemoryParams{
 		Namespace: params.Namespace,
 		Key:       params.Key,
 		Value:     params.Value,
@@ -251,8 +335,8 @@ func (t *MemoryTool) store(params memoryInput) (string, error) {
 		Metadata:  sql.NullString{String: string(metadataJSON), Valid: len(metadataJSON) > 0},
 		UserID:    userID,
 	})
-	if err != nil {
-		return "", err
+	if upsertErr != nil {
+		return "", upsertErr
 	}
 
 	// Generate vector embedding for this memory (async-safe, non-blocking on failure)
@@ -808,8 +892,18 @@ func (t *MemoryTool) StoreEntry(layer, namespace, key, value string, tags []stri
 
 // StoreEntryForUser stores a memory entry for a specific user (thread-safe for background operations)
 func (t *MemoryTool) StoreEntryForUser(layer, namespace, key, value string, tags []string, userID string) error {
-	if key == "" || value == "" {
-		return fmt.Errorf("key and value are required")
+	// Sanitize key and value (when enabled)
+	if t.sanitize {
+		sanitizedKey, keyErr := sanitizeMemoryKey(key)
+		if keyErr != nil {
+			return fmt.Errorf("key and value are required")
+		}
+		key = sanitizedKey
+		sanitizedValue, valErr := sanitizeMemoryValue(value)
+		if valErr != nil {
+			return valErr
+		}
+		value = sanitizedValue
 	}
 
 	// Apply layer prefix to namespace

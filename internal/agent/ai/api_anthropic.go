@@ -50,6 +50,11 @@ func (p *AnthropicProvider) ProfileID() string {
 	return ""
 }
 
+// HandlesTools returns false - the runner executes tools for API providers
+func (p *AnthropicProvider) HandlesTools() bool {
+	return false
+}
+
 // Stream sends a request and returns streaming events
 func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error) {
 	// Build messages

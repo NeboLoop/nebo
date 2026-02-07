@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/nebolabs/nebo/internal/agent/session"
 )
@@ -59,8 +60,8 @@ func CollectToolFailures(messages []session.Message) []ToolFailure {
 				toolName = "tool"
 			}
 
-			// Normalize and truncate the content
-			summary := normalizeFailureText(r.Content)
+			// Normalize, sanitize, and truncate the content
+			summary := normalizeFailureText(sanitizeForSummary(r.Content))
 			if summary == "" {
 				summary = "failed (no output)"
 			}
@@ -229,4 +230,19 @@ func EnhancedSummary(messages []session.Message, baseSummary string) string {
 	}
 
 	return baseSummary + failureSection
+}
+
+// sanitizeForSummary strips control characters from text included in compaction summaries.
+// This prevents invisible characters or terminal escape sequences from persisting across
+// compaction boundaries. Unlike memory sanitization, this is always-on (data hygiene).
+func sanitizeForSummary(s string) string {
+	var sb strings.Builder
+	sb.Grow(len(s))
+	for _, r := range s {
+		// Keep printable runes, newlines, and tabs; drop everything else
+		if unicode.IsPrint(r) || r == '\n' || r == '\t' {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
 }

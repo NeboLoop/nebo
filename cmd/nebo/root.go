@@ -17,11 +17,6 @@ import (
 	"github.com/nebolabs/nebo/internal/logging"
 
 	"github.com/nebolabs/nebo/app"
-	"github.com/nebolabs/nebo/internal/agent/advisors"
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
-	agentmcp "github.com/nebolabs/nebo/internal/agent/mcp"
-	"github.com/nebolabs/nebo/internal/agent/tools"
 	"github.com/nebolabs/nebo/internal/agenthub"
 	"github.com/nebolabs/nebo/internal/channels"
 	"github.com/nebolabs/nebo/internal/daemon"
@@ -82,6 +77,7 @@ func RunAll() {
 
 	// Create shared components (single binary = shared state)
 	channelMgr := channels.NewManager()
+	agentMCPProxy := server.NewAgentMCPProxy() // Set by agent after MCP server init
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
@@ -94,9 +90,10 @@ func RunAll() {
 			wg.Done()
 		}()
 		opts := server.ServerOptions{
-			ChannelManager: channelMgr,
-			SvcCtx:         svcCtx,
-			Quiet:          true, // Suppress server startup messages
+			ChannelManager:  channelMgr,
+			SvcCtx:          svcCtx,
+			Quiet:           true, // Suppress server startup messages
+			AgentMCPHandler: agentMCPProxy,
 		}
 		if err := server.RunWithOptions(ctx, *c, opts); err != nil {
 			fmt.Printf("[Server] Error: %v\n", err)
@@ -121,39 +118,7 @@ func RunAll() {
 
 	// Load agent config
 	agentCfg := loadAgentConfig()
-
-	// Load advisors and create provider for MCP server
-	advisorLoader := advisors.NewLoader(agentCfg.AdvisorsDir())
-	if err := advisorLoader.LoadAll(); err != nil {
-		fmt.Printf("[MCP] Warning: failed to load advisors: %v\n", err)
-	}
-
-	// Create a provider for the MCP advisors tool (uses same config as agent)
 	SetSharedDB(svcCtx.DB.GetDB())
-	mcpProviders := createProviders(agentCfg)
-	var advisorProvider ai.Provider
-	if len(mcpProviders) > 0 {
-		advisorProvider = mcpProviders[0]
-		fmt.Printf("[MCP] Advisors provider: %s\n", advisorProvider.ID())
-	}
-
-	// Start MCP server in goroutine
-	mcpPort := 27896
-	mcpURL := fmt.Sprintf("http://%s:%d/mcp", c.App.Domain, mcpPort)
-	wg.Add(1)
-	go func() {
-		defer func() {
-			fmt.Println("[MCP] Goroutine exiting")
-			wg.Done()
-		}()
-		registry := createMCPRegistry(agentCfg)
-		if err := runMCPServerDaemon(ctx, registry, mcpPort, true, advisorLoader, advisorProvider); err != nil {
-			fmt.Printf("[MCP] Error: %v\n", err)
-			if ctx.Err() == nil {
-				errCh <- fmt.Errorf("MCP server error: %w", err)
-			}
-		}
-	}()
 
 	// Start agent in goroutine (uses shared database from ServiceContext)
 	wg.Add(1)
@@ -171,8 +136,9 @@ func RunAll() {
 			Quiet:            true,
 			Dangerously:      dangerouslyAll,
 			SettingsFilePath: filepath.Join(settingsDir, "agent-settings.json"),
+			AgentMCPProxy:    agentMCPProxy,
 		}
-		if err := runAgentLoopWithOptions(ctx, agentCfg, serverURL, agentOpts); err != nil {
+		if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {
 			fmt.Printf("[AgentLoop] Error: %v\n", err)
 			if ctx.Err() == nil {
 				errCh <- fmt.Errorf("agent error: %w", err)
@@ -242,7 +208,7 @@ func RunAll() {
 	}
 
 	// Print clean startup banner
-	printStartupBanner(serverURL, mcpURL, dataDir)
+	printStartupBanner(serverURL, dataDir)
 
 	// Auto-open browser (only if not recently opened)
 	openBrowser(serverURL, dataDir)
@@ -262,14 +228,13 @@ func RunAll() {
 }
 
 // printStartupBanner prints a clean, clickable startup message
-func printStartupBanner(serverURL, mcpURL, dataDir string) {
+func printStartupBanner(serverURL, dataDir string) {
 	fmt.Println()
 	fmt.Println("\033[1;32m  ╭─────────────────────────────────────────╮\033[0m")
 	fmt.Println("\033[1;32m  │           \033[1;37m🤖 Nebo is running\033[1;32m            │\033[0m")
 	fmt.Println("\033[1;32m  ╰─────────────────────────────────────────╯\033[0m")
 	fmt.Println()
-	fmt.Printf("  \033[1;36m→\033[0m Web UI:     \033[4;34m%s\033[0m\n", serverURL)
-	fmt.Printf("  \033[1;36m→\033[0m MCP Server: \033[4;34m%s\033[0m\n", mcpURL)
+	fmt.Printf("  \033[1;36m→\033[0m Web UI: \033[4;34m%s\033[0m\n", serverURL)
 	fmt.Println()
 	fmt.Printf("  \033[2mData: %s\033[0m\n", dataDir)
 	fmt.Println()
@@ -361,69 +326,4 @@ func runServe() {
 	}
 }
 
-// createMCPRegistry creates a tool registry for MCP server
-// Uses "full" policy since MCP runs as daemon (no stdin for approval prompts)
-// and Claude Code already uses --dangerously-skip-permissions
-func createMCPRegistry(cfg *agentcfg.Config) *tools.Registry {
-	policy := tools.NewPolicyFromConfig("full", "off", nil)
-	fmt.Printf("[MCP] Creating registry with policy level=full (auto-approve all tools)\n")
-	registry := tools.NewRegistry(policy)
-	registry.RegisterDefaultsWithPermissions(loadToolPermissions(sharedDB))
-
-	// Register agent domain tool (memory, cron, task, message, session)
-	// This requires the shared DB which is set before this function is called
-	if sharedDB != nil {
-		agentTool, err := tools.NewAgentDomainTool(tools.AgentDomainConfig{
-			DB: sharedDB,
-		})
-		if err != nil {
-			fmt.Printf("[MCP] Warning: failed to create agent domain tool: %v\n", err)
-		} else {
-			registry.RegisterAgentDomainTool(agentTool)
-			fmt.Printf("[MCP] Registered agent domain tool (memory, cron, task, message, session)\n")
-		}
-	} else {
-		fmt.Printf("[MCP] Warning: no shared DB available, agent domain tool not registered\n")
-	}
-
-	return registry
-}
-
-// runMCPServerDaemon runs the MCP server in daemon mode
-func runMCPServerDaemon(ctx context.Context, registry *tools.Registry, port int, quiet bool, advisorLoader *advisors.Loader, advisorProvider ai.Provider) error {
-	var opts []agentmcp.Option
-	if advisorLoader != nil && advisorProvider != nil {
-		opts = append(opts, agentmcp.WithAdvisors(advisorLoader, advisorProvider))
-	}
-	mcpServer := agentmcp.NewServer(registry, opts...)
-
-	addr := fmt.Sprintf("localhost:%d", port)
-	if !quiet {
-		fmt.Printf("MCP server listening at http://%s/mcp\n", addr)
-	}
-
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpServer.Handler())
-	mux.Handle("/mcp/", mcpServer.Handler())
-
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
-	}
-
-	go func() {
-		<-ctx.Done()
-		server.Shutdown(context.Background())
-	}()
-
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
-	}
-	return nil
-}
 

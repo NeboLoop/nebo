@@ -26,6 +26,7 @@ import (
 	chantelegram "github.com/nebolabs/nebo/internal/channels/telegram"
 	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
 	"github.com/nebolabs/nebo/internal/agent/embeddings"
+	agentmcp "github.com/nebolabs/nebo/internal/agent/mcp"
 	"github.com/nebolabs/nebo/internal/agent/memory"
 	"github.com/nebolabs/nebo/internal/agent/recovery"
 	"github.com/nebolabs/nebo/internal/agent/runner"
@@ -39,6 +40,7 @@ import (
 	"github.com/nebolabs/nebo/internal/local"
 	"github.com/nebolabs/nebo/internal/plugin"
 	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/nebolabs/nebo/internal/server"
 )
 
 // approvalResponse holds the result of an approval request
@@ -174,8 +176,46 @@ Examples:
   nebo agent                    # Start the agent
   nebo agent --dangerously      # Autonomous mode (no approval prompts)`,
 		Run: func(cmd *cobra.Command, args []string) {
+			if dangerously {
+				if !confirmDangerousMode() {
+					fmt.Println("Aborted.")
+					os.Exit(0)
+				}
+			}
+
 			cfg := loadAgentConfig()
-			runAgent(cfg, serverURL, dangerously)
+
+			if serverURL == "" {
+				serverURL = cfg.ServerURL
+			}
+			if serverURL == "" {
+				serverURL = "http://localhost:27895"
+			}
+
+			fmt.Printf("Connecting to server: %s\n", serverURL)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			go func() {
+				<-sigCh
+				fmt.Println("\n\033[33mDisconnecting...\033[0m")
+				cancel()
+			}()
+
+			opts := AgentOptions{
+				Dangerously: dangerously,
+			}
+
+			if err := runAgent(ctx, cfg, serverURL, opts); err != nil {
+				if ctx.Err() != nil {
+					return // Clean shutdown
+				}
+				fmt.Fprintf(os.Stderr, "Agent error: %v\n", err)
+				os.Exit(1)
+			}
 		},
 	}
 
@@ -190,9 +230,10 @@ type AgentOptions struct {
 	ChannelManager   *channels.Manager
 	Database         *sql.DB
 	PluginStore      *plugin.Store
-	Quiet            bool   // Suppress console output for clean CLI
-	Dangerously      bool   // Bypass all tool approval prompts (CLI flag)
-	SettingsFilePath string // Path to agent-settings.json for UI-based settings
+	Quiet            bool                // Suppress console output for clean CLI
+	Dangerously      bool                // Bypass all tool approval prompts (CLI flag)
+	SettingsFilePath string              // Path to agent-settings.json for UI-based settings
+	AgentMCPProxy    *server.AgentMCPProxy // Lazy handler for CLI provider MCP loopback
 }
 
 // isNeboLoopCode checks if a prompt is a NeboLoop connection code.
@@ -379,18 +420,9 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 	return true
 }
 
-// runAgentLoop connects to the server as an agent (used by runAll)
-func runAgentLoop(ctx context.Context, cfg *agentcfg.Config, serverURL string) error {
-	return runAgentLoopWithOptions(ctx, cfg, serverURL, AgentOptions{})
-}
-
-// runAgentLoopWithChannels connects to the server with shared channel manager (legacy)
-func runAgentLoopWithChannels(ctx context.Context, cfg *agentcfg.Config, serverURL string, channelMgr *channels.Manager) error {
-	return runAgentLoopWithOptions(ctx, cfg, serverURL, AgentOptions{ChannelManager: channelMgr})
-}
-
-// runAgentLoopWithOptions connects to the server with full options
-func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts AgentOptions) error {
+// runAgent connects to the server and runs the agent loop.
+// This is the single code path for all agent modes (RunAll, standalone, etc).
+func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts AgentOptions) error {
 	wsURL := strings.Replace(serverURL, "http://", "ws://", 1)
 	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
 	wsURL = fmt.Sprintf("%s/api/v1/agent/ws", wsURL)
@@ -495,10 +527,10 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 		defer browserMgr.Stop()
 	}
 
-	// Create embedding service for hybrid memory search
+	// Create embedding service for hybrid memory search (only when enabled in config)
 	// Prefer OpenAI, fall back to Ollama if available
 	var embeddingService *embeddings.Service
-	if opts.Database != nil {
+	if opts.Database != nil && cfg.Memory.Embeddings {
 		embeddingService = createEmbeddingService(opts.Database)
 	}
 
@@ -506,8 +538,9 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 	var memoryTool *tools.MemoryTool
 	if opts.Database != nil {
 		memoryTool, err = tools.NewMemoryTool(tools.MemoryConfig{
-			DB:       opts.Database,
-			Embedder: embeddingService,
+			DB:              opts.Database,
+			Embedder:        embeddingService,
+			SanitizeContent: cfg.Memory.SanitizeContent,
 		})
 		if err == nil {
 			registry.Register(memoryTool)
@@ -583,6 +616,13 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 	agentStatusTool := tools.NewAgentStatusTool()
 	agentStatusTool.SetOrchestrator(taskTool.GetOrchestrator())
 	registry.Register(agentStatusTool)
+
+	// Create agent MCP server for CLI provider loopback (exposes all tools via MCP)
+	mcpSrv := agentmcp.NewServer(registry)
+	if opts.AgentMCPProxy != nil {
+		opts.AgentMCPProxy.Set(mcpSrv.Handler())
+		fmt.Println("[Agent] MCP server ready at /agent/mcp")
+	}
 
 	r := runner.New(cfg, sessions, providers, registry)
 
@@ -746,9 +786,10 @@ func runAgentLoopWithOptions(ctx context.Context, cfg *agentcfg.Config, serverUR
 
 	// Create agent domain tool with comm support
 	agentTool, agentToolErr := tools.NewAgentDomainTool(tools.AgentDomainConfig{
-		Sessions:   sessions,
-		ChannelMgr: opts.ChannelManager,
-		Embedder:   embeddingService,
+		Sessions:        sessions,
+		ChannelMgr:      opts.ChannelManager,
+		Embedder:        embeddingService,
+		SanitizeContent: cfg.Memory.SanitizeContent,
 	})
 	if agentToolErr == nil {
 		agentTool.SetCommService(commHandler)
@@ -878,6 +919,19 @@ func maybeIntroduceSelf(ctx context.Context, state *agentState, r *runner.Runner
 					"session_id": companionSession.ID,
 				},
 			})
+		case ai.EventTypeMessage:
+			// CLI provider may send text only in the assistant envelope
+			if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
+				result.WriteString(event.Message.Content)
+				state.sendFrame(map[string]any{
+					"type": "stream",
+					"id":   "introduction",
+					"payload": map[string]any{
+						"chunk":      event.Message.Content,
+						"session_id": companionSession.ID,
+					},
+				})
+			}
 		case ai.EventTypeError:
 			fmt.Printf("[Agent] Introduction error: %v\n", event.Error)
 		}
@@ -989,6 +1043,19 @@ IMPORTANT: When you learn their name, use the memory tool to store it:
 					"session_id": sess.ID,
 				},
 			})
+		case ai.EventTypeMessage:
+			// CLI provider may send text only in the assistant envelope
+			if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
+				result.WriteString(event.Message.Content)
+				state.sendFrame(map[string]any{
+					"type": "stream",
+					"id":   requestID,
+					"payload": map[string]any{
+						"chunk":      event.Message.Content,
+						"session_id": sess.ID,
+					},
+				})
+			}
 		case ai.EventTypeError:
 			fmt.Printf("[Agent] Introduction error: %v\n", event.Error)
 		}
@@ -1065,6 +1132,19 @@ func maybeIntroduceToUser(ctx context.Context, state *agentState, r *runner.Runn
 					"session_id": companionSession.ID,
 				},
 			})
+		case ai.EventTypeMessage:
+			// CLI provider may send text only in the assistant envelope
+			if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
+				result.WriteString(event.Message.Content)
+				state.sendFrame(map[string]any{
+					"type": "stream",
+					"id":   "introduction-" + userID,
+					"payload": map[string]any{
+						"chunk":      event.Message.Content,
+						"session_id": companionSession.ID,
+					},
+				})
+			}
 		case ai.EventTypeError:
 			fmt.Printf("[Agent] Introduction error for user %s: %v\n", userID, event.Error)
 		}
@@ -1082,537 +1162,6 @@ func maybeIntroduceToUser(ctx context.Context, state *agentState, r *runner.Runn
 	})
 
 	fmt.Printf("[Agent] Introduction to user %s complete (%d chars)\n", userID, result.Len())
-}
-
-// runAgent connects to the local server and runs as an agent (standalone command)
-func runAgent(cfg *agentcfg.Config, serverURL string, dangerously bool) {
-	if dangerously {
-		if !confirmDangerousMode() {
-			fmt.Println("Aborted.")
-			os.Exit(0)
-		}
-	}
-
-	if serverURL == "" {
-		serverURL = cfg.ServerURL
-	}
-	if serverURL == "" {
-		serverURL = "http://localhost:27895"
-	}
-
-	wsURL := strings.Replace(serverURL, "http://", "ws://", 1)
-	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
-	wsURL = fmt.Sprintf("%s/api/v1/agent/ws", wsURL)
-
-	fmt.Printf("Connecting to server: %s\n", serverURL)
-
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error connecting to server: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	fmt.Println("\033[32m✓ Connected\033[0m")
-	fmt.Println("Waiting for tasks... (Ctrl+C to exit)")
-
-	// Open database using shared connection pattern
-	store, err := db.NewSQLite(cfg.DBPath())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
-		os.Exit(1)
-	}
-	defer store.Close()
-
-	sqlDB := store.GetDB()
-	SetSharedDB(sqlDB)
-
-	sessions, err := session.New(sqlDB)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error initializing sessions: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Initialize recovery manager for task persistence across restarts
-	recoveryMgr := recovery.NewManager(sqlDB)
-
-	providers := createProviders(cfg)
-	if len(providers) == 0 {
-		fmt.Fprintln(os.Stderr, "Warning: No AI providers configured. Tasks requiring AI will fail.")
-	}
-
-	var policy *tools.Policy
-	if dangerously {
-		policy = tools.NewPolicyFromConfig("full", "off", nil)
-	} else {
-		policy = tools.NewPolicyFromConfig(
-			cfg.Policy.Level,
-			cfg.Policy.AskMode,
-			cfg.Policy.Allowlist,
-		)
-	}
-	registry := tools.NewRegistry(policy)
-	registry.RegisterDefaultsWithPermissions(loadToolPermissions(sqlDB))
-
-	// Start browser manager for web automation
-	browserMgr := browser.GetManager()
-	if err := browserMgr.Start(browser.Config{
-		Enabled:  true,
-		Headless: true, // Default to headless for managed browser
-	}); err != nil {
-		fmt.Printf("[agent] Warning: failed to start browser manager: %v\n", err)
-	} else {
-		fmt.Println("[agent] Browser manager started")
-		defer browserMgr.Stop()
-	}
-
-	// Create embedding service for hybrid memory search
-	embeddingService := createEmbeddingService(sqlDB)
-
-	// Create memory tool for auto-extraction (using shared DB)
-	var memoryTool *tools.MemoryTool
-	memoryTool, err = tools.NewMemoryTool(tools.MemoryConfig{
-		DB:       sqlDB,
-		Embedder: embeddingService,
-	})
-	if err != nil {
-		fmt.Printf("[agent] Warning: failed to initialize memory tool: %v\n", err)
-	} else {
-		registry.Register(memoryTool)
-
-		// Migrate stale embeddings then backfill (runs in background)
-		if embeddingService != nil && embeddingService.HasProvider() {
-			go func() {
-				bgCtx := context.Background()
-				// First: clear embeddings from old models (e.g., nomic-embed-text → qwen3-embedding)
-				if stale, deleted, err := memoryTool.MigrateEmbeddings(bgCtx); err != nil {
-					fmt.Printf("[agent] Embedding migration error: %v\n", err)
-				} else if stale > 0 {
-					fmt.Printf("[agent] Migrated embeddings: %d stale → %d deleted\n", stale, deleted)
-				}
-				// Then: backfill any memories without embeddings
-				n, err := memoryTool.BackfillEmbeddings(bgCtx)
-				if err != nil {
-					fmt.Printf("[agent] Embedding backfill error: %v\n", err)
-				} else if n > 0 {
-					fmt.Printf("[agent] Backfilled embeddings for %d memories\n", n)
-				}
-			}()
-		}
-	}
-
-	// Load advisors (internal deliberation system)
-	advisorLoader := advisors.NewLoader(cfg.AdvisorsDir())
-	if err := advisorLoader.LoadAll(); err != nil {
-		fmt.Printf("[agent] Warning: failed to load advisors: %v\n", err)
-	} else if advisorLoader.Count() > 0 {
-		fmt.Printf("[agent] Loaded %d advisors from %s\n", advisorLoader.Count(), cfg.AdvisorsDir())
-	}
-
-	// Create advisors tool (the agent decides when to consult advisors)
-	advisorsTool := tools.NewAdvisorsTool(advisorLoader)
-	if len(providers) > 0 {
-		advisorsTool.SetProvider(providers[0])
-	}
-	advisorsTool.SetSessionManager(sessions)
-	advisorsTool.SetSearcher(embeddings.NewHybridSearcher(embeddings.HybridSearchConfig{
-		DB:       sqlDB,
-		Embedder: embeddingService,
-	}))
-	registry.RegisterAdvisorsTool(advisorsTool)
-
-	// Create cron tool for scheduled tasks (using shared DB)
-	cronTool, err := tools.NewCronTool(tools.CronConfig{DB: sqlDB})
-	if err != nil {
-		fmt.Printf("[agent] Warning: failed to initialize cron tool: %v\n", err)
-	} else {
-		registry.Register(cronTool)
-	}
-
-	taskTool := tools.NewTaskTool()
-	taskTool.CreateOrchestrator(cfg, sessions, providers, registry)
-	registry.Register(taskTool)
-
-	agentStatusTool := tools.NewAgentStatusTool()
-	agentStatusTool.SetOrchestrator(taskTool.GetOrchestrator())
-	registry.Register(agentStatusTool)
-
-	r := runner.New(cfg, sessions, providers, registry)
-
-	// Set provider loader for dynamic reload (after onboarding adds API key)
-	r.SetProviderLoader(func() []ai.Provider {
-		return createProviders(cfg)
-	})
-
-	// Set up model selector for intelligent model routing and cheapest model selection
-	modelsConfig := provider.GetModelsConfig()
-	if modelsConfig != nil {
-		// Always create selector - needed for GetCheapestModel() even without task routing
-		selector := ai.NewModelSelector(modelsConfig)
-		r.SetModelSelector(selector)
-		// Set up fuzzy matcher for user model switch requests
-		fuzzyMatcher := ai.NewFuzzyMatcher(modelsConfig)
-		r.SetFuzzyMatcher(fuzzyMatcher)
-	}
-
-	// Start config file watcher for hot-reload of models.yaml
-	if err := provider.StartConfigWatcher(cfg.DataDir); err != nil {
-		fmt.Printf("[agent] Warning: could not start config watcher: %v\n", err)
-	}
-
-	// Register callback to update selector/matcher/providers when models.yaml changes
-	provider.OnConfigReload(func(newConfig *provider.ModelsConfig) {
-		if newConfig != nil {
-			newSelector := ai.NewModelSelector(newConfig)
-			r.SetModelSelector(newSelector)
-			newFuzzyMatcher := ai.NewFuzzyMatcher(newConfig)
-			r.SetFuzzyMatcher(newFuzzyMatcher)
-			// Reload providers in case credentials changed
-			r.ReloadProviders()
-			fmt.Printf("[agent] Config reloaded: model selector, fuzzy matcher, and providers updated\n")
-		}
-	})
-
-	// Enable automatic memory extraction after conversations
-	if memoryTool != nil {
-		r.SetMemoryTool(memoryTool)
-	}
-
-	// Set up profile tracking for usage/error recording (moltbot pattern)
-	if profileMgr, err := agentcfg.NewAuthProfileManager(sqlDB); err == nil {
-		r.SetProfileTracker(profileMgr)
-		fmt.Println("[agent] Profile tracking enabled")
-	}
-
-	// Set up subagent persistence (moltbot pattern: survive restarts)
-	if recoveryMgr != nil {
-		r.SetupSubagentPersistence(recoveryMgr)
-		// Recover any pending subagent tasks from previous run
-		startupCtx := context.Background()
-		if recovered, err := r.RecoverSubagents(startupCtx); err != nil {
-			fmt.Printf("[agent] Warning: failed to recover subagents: %v\n", err)
-		} else if recovered > 0 {
-			fmt.Printf("[agent] Recovered %d subagent task(s)\n", recovered)
-		}
-	}
-
-	// Initialize comm system for inter-agent communication
-	standaloneCommManager := comm.NewCommPluginManager()
-	standaloneAgentID := cfg.Comm.AgentID
-	if standaloneAgentID == "" {
-		standaloneAgentID, _ = os.Hostname()
-	}
-	standaloneCommHandler := comm.NewCommHandler(standaloneCommManager, standaloneAgentID)
-	standaloneCommManager.Register(comm.NewLoopbackPlugin())
-
-	// Load external comm plugins
-	standalonePluginLoader := createPluginLoader(cfg)
-	standalonePluginLoader.SetCommCallbacks(
-		func(cp comm.CommPlugin) {
-			standaloneCommManager.Register(cp)
-			fmt.Printf("[agent] Registered external comm plugin: %s\n", cp.Name())
-		},
-		func(name string) {
-			standaloneCommManager.Unregister(name)
-			fmt.Printf("[agent] Unregistered external comm plugin: %s\n", name)
-		},
-	)
-	if err := standalonePluginLoader.LoadAll(); err != nil {
-		fmt.Printf("[agent] Warning: failed to load plugins: %v\n", err)
-	}
-
-	standaloneCommManager.SetMessageHandler(standaloneCommHandler.Handle)
-	standaloneCommHandler.SetRunner(r)
-	standaloneCommHandler.SetLanes(standaloneLanes)
-
-	// Create agent domain tool with comm support
-	standaloneAgentTool, standaloneAgentToolErr := tools.NewAgentDomainTool(tools.AgentDomainConfig{
-		Sessions: sessions,
-	})
-	if standaloneAgentToolErr == nil {
-		standaloneAgentTool.SetCommService(standaloneCommHandler)
-		registry.RegisterAgentDomainTool(standaloneAgentTool)
-	}
-
-	// Connect comm plugin if enabled in config
-	if cfg.Comm.Enabled {
-		pluginName := cfg.Comm.Plugin
-		if pluginName == "" {
-			pluginName = "loopback"
-		}
-		if err := standaloneCommManager.SetActive(pluginName); err != nil {
-			fmt.Printf("[agent] Warning: failed to set active comm plugin: %v\n", err)
-		} else if active := standaloneCommManager.GetActive(); active != nil {
-			connectCtx := context.Background()
-			if err := active.Connect(connectCtx, cfg.Comm.Config); err != nil {
-				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", pluginName, err)
-			} else {
-				card := buildAgentCard(registry, r.SkillLoader())
-				active.Register(connectCtx, standaloneAgentID, card)
-				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", pluginName, standaloneAgentID)
-			}
-		}
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	defer standaloneCommManager.Shutdown(context.Background())
-
-	// Start plugin watcher for hot-reload (needs ctx)
-	go func() {
-		if err := standalonePluginLoader.Watch(ctx); err != nil {
-			fmt.Printf("[agent] Warning: plugin watcher failed: %v\n", err)
-		}
-	}()
-	defer standalonePluginLoader.Stop()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Println("\n\033[33mDisconnecting...\033[0m")
-		cancel()
-		conn.Close()
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				fmt.Fprintf(os.Stderr, "Error reading message: %v\n", err)
-				return
-			}
-
-			handleAgentMessage(ctx, conn, r, message)
-		}
-	}
-}
-
-// standaloneLanes is the lane manager for standalone agent mode
-var standaloneLanes = agenthub.NewLaneManager()
-
-// handleAgentMessage processes a message from the server
-func handleAgentMessage(ctx context.Context, conn *websocket.Conn, r *runner.Runner, message []byte) {
-	var frame struct {
-		Type   string `json:"type"`
-		ID     string `json:"id"`
-		Method string `json:"method"`
-		Params struct {
-			Prompt     string `json:"prompt"`
-			SessionKey string `json:"session_key"`
-			UserID     string `json:"user_id"`
-		} `json:"params"`
-	}
-
-	if err := json.Unmarshal(message, &frame); err != nil {
-		fmt.Fprintf(os.Stderr, "Invalid message: %v\n", err)
-		return
-	}
-
-	switch frame.Type {
-	case "req":
-		switch frame.Method {
-		case "ping":
-			response := map[string]any{
-				"type":    "res",
-				"id":      frame.ID,
-				"ok":      true,
-				"payload": map[string]any{"pong": true},
-			}
-			data, _ := json.Marshal(response)
-			conn.WriteMessage(websocket.TextMessage, data)
-
-		case "introduce":
-			// Introduction requests are not supported in standalone agent mode
-			// Use the default `nebo` command (RunAll) for full functionality
-			fmt.Printf("[Agent] Introduction requested but not supported in standalone mode\n")
-			response := map[string]any{
-				"type":  "res",
-				"id":    frame.ID,
-				"ok":    false,
-				"error": "Introduction not supported in standalone agent mode. Run 'nebo' instead of 'nebo agent'.",
-			}
-			data, _ := json.Marshal(response)
-			conn.WriteMessage(websocket.TextMessage, data)
-
-		case "run", "generate_title":
-			sessionKey := frame.Params.SessionKey
-			if sessionKey == "" {
-				sessionKey = "agent-" + frame.ID
-			}
-			userID := frame.Params.UserID
-			requestID := frame.ID
-			method := frame.Method
-			prompt := frame.Params.Prompt
-
-			// Intercept NeboLoop connection codes before enqueueing to LLM
-			if handleNeboLoopCode(ctx, prompt, requestID, nil, nil, "", func(f map[string]any) {
-				data, _ := json.Marshal(f)
-				conn.WriteMessage(websocket.TextMessage, data)
-			}) {
-				break
-			}
-
-			// Determine which lane this request belongs to
-			isHeartbeat := strings.HasPrefix(sessionKey, "heartbeat-")
-			isCronJob := strings.HasPrefix(sessionKey, "cron-")
-			isCommMsg := strings.HasPrefix(sessionKey, "comm-")
-			lane := agenthub.LaneMain
-			if isHeartbeat {
-				lane = agenthub.LaneHeartbeat // Heartbeats run independently
-			} else if isCronJob {
-				lane = agenthub.LaneEvents // Scheduled/triggered tasks
-			} else if isCommMsg {
-				lane = agenthub.LaneComm // Inter-agent communication
-			}
-
-			fmt.Printf("\n[Agent] Enqueueing %s request: id=%s session=%s lane=%s prompt=%q\n",
-				method, requestID, sessionKey, lane, prompt)
-
-			// SUPERVISOR PATTERN: Enqueue work to lane, don't block
-			standaloneLanes.EnqueueAsync(ctx, lane, func(taskCtx context.Context) error {
-				if method == "generate_title" {
-					fmt.Printf("\n\033[90m[Title Gen %s]\033[0m\n", requestID)
-				} else {
-					fmt.Printf("\n\033[36m[Task %s]\033[0m %s\n", requestID, prompt)
-				}
-
-				// Derive origin from lane
-				origin := tools.OriginUser
-				if isHeartbeat || isCronJob {
-					origin = tools.OriginSystem
-				} else if isCommMsg {
-					origin = tools.OriginComm
-				}
-
-				events, err := r.Run(taskCtx, &runner.RunRequest{
-					SessionKey:        sessionKey,
-					Prompt:            prompt,
-					UserID:            userID,
-					SkipMemoryExtract: isHeartbeat,
-					Origin:            origin,
-				})
-
-				if err != nil {
-					response := map[string]any{
-						"type":  "res",
-						"id":    requestID,
-						"ok":    false,
-						"error": err.Error(),
-					}
-					data, _ := json.Marshal(response)
-					conn.WriteMessage(websocket.TextMessage, data)
-					return err
-				}
-
-				var result strings.Builder
-				for event := range events {
-					switch event.Type {
-					case ai.EventTypeText:
-						if event.Text == "" {
-							continue // Skip empty text events
-						}
-						result.WriteString(event.Text)
-						fmt.Print(event.Text)
-						chunk := map[string]any{
-							"type": "stream",
-							"id":   requestID,
-							"payload": map[string]any{
-								"chunk": event.Text,
-							},
-						}
-						chunkData, _ := json.Marshal(chunk)
-						conn.WriteMessage(websocket.TextMessage, chunkData)
-
-					case ai.EventTypeToolCall:
-						toolEvent := map[string]any{
-							"type": "stream",
-							"id":   requestID,
-							"payload": map[string]any{
-								"tool":  event.ToolCall.Name,
-								"input": event.ToolCall.Input,
-							},
-						}
-						toolData, _ := json.Marshal(toolEvent)
-						conn.WriteMessage(websocket.TextMessage, toolData)
-
-					case ai.EventTypeToolResult:
-						resultEvent := map[string]any{
-							"type": "stream",
-							"id":   requestID,
-							"payload": map[string]any{
-								"tool_result": event.Text,
-							},
-						}
-						resultData, _ := json.Marshal(resultEvent)
-						conn.WriteMessage(websocket.TextMessage, resultData)
-					}
-				}
-				fmt.Println()
-
-				response := map[string]any{
-					"type": "res",
-					"id":   requestID,
-					"ok":   true,
-					"payload": map[string]any{
-						"result": result.String(),
-					},
-				}
-				data, _ := json.Marshal(response)
-				fmt.Printf("[Agent] Completed request %s\n", requestID)
-				conn.WriteMessage(websocket.TextMessage, data)
-				return nil
-			})
-
-		default:
-			response := map[string]any{
-				"type":  "res",
-				"id":    frame.ID,
-				"ok":    false,
-				"error": "unknown method: " + frame.Method,
-			}
-			data, _ := json.Marshal(response)
-			conn.WriteMessage(websocket.TextMessage, data)
-		}
-
-	case "event":
-		var eventFrame struct {
-			Method  string `json:"method"`
-			Payload struct {
-				AutonomousMode   bool   `json:"autonomousMode"`
-				AutoApproveRead  bool   `json:"autoApproveRead"`
-				AutoApproveWrite bool   `json:"autoApproveWrite"`
-				AutoApproveBash  bool   `json:"autoApproveBash"`
-				CommEnabled      bool   `json:"commEnabled"`
-				CommPlugin       string `json:"commPlugin"`
-			} `json:"payload"`
-		}
-		if err := json.Unmarshal(message, &eventFrame); err == nil {
-			if eventFrame.Method == "settings_updated" {
-				p := eventFrame.Payload
-				if p.AutonomousMode {
-					fmt.Println("\033[33m[Settings] Autonomous mode ENABLED - all approvals bypassed\033[0m")
-					r.SetPolicy(tools.NewPolicyFromConfig("full", "off", nil))
-				} else {
-					askMode := "on-miss"
-					if p.AutoApproveRead && p.AutoApproveWrite && p.AutoApproveBash {
-						askMode = "off"
-					}
-					fmt.Printf("\033[36m[Settings] Updated - read:%v write:%v bash:%v\033[0m\n",
-						p.AutoApproveRead, p.AutoApproveWrite, p.AutoApproveBash)
-					r.SetPolicy(tools.NewPolicyFromConfig("allowlist", askMode, nil))
-				}
-			}
-		} else {
-			fmt.Printf("[Event] %s\n", string(message))
-		}
-	}
 }
 
 // handleAgentMessageWithState processes a message from the server (with approval support)
@@ -1789,6 +1338,20 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 								"thinking": event.Text,
 							},
 						})
+
+					case ai.EventTypeMessage:
+						// CLI provider may send text only in the assistant envelope
+						// (no streaming text_delta events). Forward text to frontend.
+						if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
+							result.WriteString(event.Message.Content)
+							state.sendFrame(map[string]any{
+								"type": "stream",
+								"id":   requestID,
+								"payload": map[string]any{
+									"chunk": event.Message.Content,
+								},
+							})
+						}
 
 					case ai.EventTypeError:
 						fmt.Printf("[Agent-WS] Error event: %v\n", event.Error)

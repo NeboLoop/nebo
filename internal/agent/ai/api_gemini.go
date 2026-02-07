@@ -39,6 +39,11 @@ func (p *GeminiProvider) ProfileID() string {
 	return ""
 }
 
+// HandlesTools returns false - the runner executes tools for API providers
+func (p *GeminiProvider) HandlesTools() bool {
+	return false
+}
+
 // Stream sends a request to Gemini and streams the response
 func (p *GeminiProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error) {
 	// Create client

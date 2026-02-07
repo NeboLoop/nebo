@@ -55,6 +55,11 @@ func (p *OllamaProvider) ProfileID() string {
 	return ""
 }
 
+// HandlesTools returns false - the runner executes tools for API providers
+func (p *OllamaProvider) HandlesTools() bool {
+	return false
+}
+
 // Stream sends a request to Ollama and streams the response
 func (p *OllamaProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error) {
 	resultCh := make(chan StreamEvent, 100)

@@ -94,7 +94,7 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 			// Use factory functions for known CLIs to ensure correct flags
 			switch pcfg.Command {
 			case "claude":
-				providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns))
+				providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns, 0))
 			case "codex":
 				providers = append(providers, ai.NewCodexCLIProvider())
 			case "gemini":
@@ -123,7 +123,7 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 		// Check if primary is a CLI provider (e.g., "claude-code/opus", "codex-cli/gpt-5")
 		if strings.HasPrefix(primary, "claude-code") {
 			if ai.CheckCLIAvailable("claude") {
-				providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns))
+				providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns, 0))
 				fmt.Printf("[Providers] Added Claude CLI provider (primary: %s, max_turns: %d)\n", primary, cfg.MaxTurns)
 			} else {
 				fmt.Printf("[Providers] Warning: Claude CLI not found in PATH (primary: %s)\n", primary)
