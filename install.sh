@@ -45,15 +45,41 @@ info "Installing Nebo for $OS/$ARCH..."
 TMP_DIR=$(mktemp -d)
 trap "rm -rf $TMP_DIR" EXIT
 
-# On Linux, detect if desktop libraries are available; fall back to headless
+# On Linux, detect if desktop libraries are available; try to install them
 SUFFIX=""
 if [ "$OS" = "linux" ]; then
     if ldconfig -p 2>/dev/null | grep -q libwebkit2gtk-4.1 && ldconfig -p 2>/dev/null | grep -q libgtk-3; then
         info "Desktop libraries detected — installing desktop build."
     else
-        SUFFIX="-headless"
-        info "Desktop libraries not found — installing headless build."
-        info "For desktop mode, install: libwebkit2gtk-4.1-0 libgtk-3-0"
+        info "Desktop libraries not found. Attempting to install..."
+        if command -v apt-get &>/dev/null; then
+            if sudo apt-get update -qq && sudo apt-get install -y -qq libwebkit2gtk-4.1-0 libgtk-3-0 2>/dev/null; then
+                info "Desktop libraries installed."
+            else
+                warn "Could not install desktop libraries."
+                SUFFIX="-headless"
+                info "Installing headless build instead (web UI via browser)."
+            fi
+        elif command -v dnf &>/dev/null; then
+            if sudo dnf install -y webkit2gtk4.1 gtk3 2>/dev/null; then
+                info "Desktop libraries installed."
+            else
+                warn "Could not install desktop libraries."
+                SUFFIX="-headless"
+                info "Installing headless build instead (web UI via browser)."
+            fi
+        elif command -v pacman &>/dev/null; then
+            if sudo pacman -S --noconfirm webkit2gtk-4.1 gtk3 2>/dev/null; then
+                info "Desktop libraries installed."
+            else
+                warn "Could not install desktop libraries."
+                SUFFIX="-headless"
+                info "Installing headless build instead (web UI via browser)."
+            fi
+        else
+            SUFFIX="-headless"
+            info "No supported package manager found. Installing headless build (web UI via browser)."
+        fi
     fi
 fi
 
