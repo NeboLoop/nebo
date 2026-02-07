@@ -6,9 +6,13 @@ import (
 	"sync"
 
 	"github.com/nebolabs/nebo/internal/channels"
+	"github.com/nebolabs/nebo/internal/plugin"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+// Compile-time check: Adapter implements plugin.Configurable
+var _ plugin.Configurable = (*Adapter)(nil)
 
 // Adapter implements the Channel interface for Discord
 type Adapter struct {
@@ -90,6 +94,35 @@ func (a *Adapter) SetHandler(fn func(channels.InboundMessage)) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.handler = fn
+}
+
+// Manifest returns the settings schema for the Discord plugin.
+func (a *Adapter) Manifest() plugin.SettingsManifest {
+	return plugin.SettingsManifest{
+		Groups: []plugin.SettingsGroup{
+			{
+				Title:       "Discord Bot",
+				Description: "Credentials for your Discord bot",
+				Fields: []plugin.SettingsField{
+					{Key: "bot_token", Title: "Bot Token", Type: plugin.FieldPassword, Required: true, Secret: true, Placeholder: "Paste your Discord bot token"},
+					{Key: "guild_id", Title: "Guild ID", Type: plugin.FieldText, Description: "Optional: restrict to a specific server"},
+				},
+			},
+		},
+	}
+}
+
+// OnSettingsChanged handles hot-reload when settings are updated via the UI.
+func (a *Adapter) OnSettingsChanged(settings map[string]string) error {
+	token := settings["bot_token"]
+	if token == "" {
+		return nil // Nothing to reconnect with
+	}
+	// Disconnect and reconnect with new credentials
+	_ = a.Disconnect()
+	return a.Connect(context.Background(), channels.ChannelConfig{
+		Token: token,
+	})
 }
 
 // messageHandler handles incoming Discord messages

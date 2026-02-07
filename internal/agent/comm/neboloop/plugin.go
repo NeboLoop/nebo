@@ -24,6 +24,7 @@ import (
 	"github.com/eclipse/paho.golang/paho"
 
 	"github.com/nebolabs/nebo/internal/agent/comm"
+	"github.com/nebolabs/nebo/internal/plugin"
 )
 
 // Plugin implements comm.CommPlugin for NeboLoop MQTT v5 transport.
@@ -850,3 +851,93 @@ func exchangeToken(ctx context.Context, apiServer, token string) (username, pass
 
 	return result.MQTTUsername, result.MQTTPassword, nil
 }
+
+// ---------------------------------------------------------------------------
+// Configurable interface (iPhone Settings.bundle model)
+// ---------------------------------------------------------------------------
+
+// Manifest returns the settings schema for the NeboLoop plugin.
+// The UI renders this dynamically — no hardcoded forms needed.
+func (p *Plugin) Manifest() plugin.SettingsManifest {
+	return plugin.SettingsManifest{
+		Groups: []plugin.SettingsGroup{
+			{
+				Title:       "Connection",
+				Description: "MQTT broker connection settings",
+				Fields: []plugin.SettingsField{
+					{
+						Key:         "broker",
+						Title:       "MQTT Broker",
+						Type:        plugin.FieldURL,
+						Required:    true,
+						Placeholder: "tcp://192.168.86.31:1883",
+						Description: "MQTT broker address (tcp:// or ssl://)",
+					},
+					{
+						Key:         "api_server",
+						Title:       "API Server",
+						Type:        plugin.FieldURL,
+						Required:    true,
+						Placeholder: "http://192.168.86.31:8888",
+						Description: "NeboLoop REST API base URL",
+					},
+				},
+			},
+			{
+				Title:       "Authentication",
+				Description: "Bot credentials for NeboLoop network",
+				Fields: []plugin.SettingsField{
+					{
+						Key:         "connection_token",
+						Title:       "Connection Token",
+						Type:        plugin.FieldPassword,
+						Secret:      true,
+						Description: "One-time token from NeboLoop (exchanged for MQTT credentials)",
+					},
+					{
+						Key:         "bot_id",
+						Title:       "Bot ID",
+						Type:        plugin.FieldText,
+						Description: "Bot UUID assigned by NeboLoop",
+					},
+					{
+						Key:         "mqtt_username",
+						Title:       "MQTT Username",
+						Type:        plugin.FieldText,
+						Description: "Direct MQTT username (alternative to token exchange)",
+					},
+					{
+						Key:         "mqtt_password",
+						Title:       "MQTT Password",
+						Type:        plugin.FieldPassword,
+						Secret:      true,
+						Description: "Direct MQTT password",
+					},
+				},
+			},
+		},
+	}
+}
+
+// OnSettingsChanged applies new settings without requiring a restart.
+// If the plugin is connected, it disconnects and reconnects with new values.
+func (p *Plugin) OnSettingsChanged(settings map[string]string) error {
+	p.mu.RLock()
+	wasConnected := p.connected
+	p.mu.RUnlock()
+
+	if wasConnected {
+		// Disconnect with old config, reconnect with new
+		ctx := context.Background()
+		if err := p.Disconnect(ctx); err != nil {
+			fmt.Printf("[neboloop] Warning: disconnect during settings change: %v\n", err)
+		}
+		return p.Connect(ctx, settings)
+	}
+
+	// Not connected — just store the config for next Connect() call
+	return nil
+}
+
+// Compile-time interface check
+var _ plugin.Configurable = (*Plugin)(nil)

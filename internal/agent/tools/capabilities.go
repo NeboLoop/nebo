@@ -180,3 +180,35 @@ func CurrentPlatform() string {
 func RegisterPlatformCapabilities(tr *Registry) {
 	capabilities.RegisterToToolRegistry(tr)
 }
+
+// categoryToPermission maps capability categories to permission keys
+var categoryToPermission = map[string]string{
+	"productivity": "contacts",
+	"system":       "system",
+	"media":        "media",
+	"desktop":      "desktop",
+}
+
+// RegisterPlatformCapabilitiesWithPermissions registers platform capabilities
+// filtered by the given permission map. A nil map registers all capabilities.
+func RegisterPlatformCapabilitiesWithPermissions(tr *Registry, permissions map[string]bool) {
+	if permissions == nil {
+		capabilities.RegisterToToolRegistry(tr)
+		return
+	}
+
+	capabilities.mu.RLock()
+	defer capabilities.mu.RUnlock()
+
+	for _, cap := range capabilities.capabilities {
+		permKey := categoryToPermission[cap.Category]
+		if permKey == "" {
+			// Unknown category — register by default
+			tr.Register(cap.Tool)
+			continue
+		}
+		if permissions[permKey] {
+			tr.Register(cap.Tool)
+		}
+	}
+}

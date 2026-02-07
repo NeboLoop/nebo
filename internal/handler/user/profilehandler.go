@@ -193,6 +193,16 @@ func dbProfileToType(profile db.UserProfile) types.UserProfile {
 		json.Unmarshal([]byte(profile.Interests.String), &interests)
 	}
 
+	var toolPermissions map[string]bool
+	if profile.ToolPermissions.Valid && profile.ToolPermissions.String != "" {
+		json.Unmarshal([]byte(profile.ToolPermissions.String), &toolPermissions)
+	}
+
+	var termsAcceptedAt string
+	if profile.TermsAcceptedAt.Valid {
+		termsAcceptedAt = time.Unix(profile.TermsAcceptedAt.Int64, 0).Format(time.RFC3339)
+	}
+
 	return types.UserProfile{
 		UserId:              profile.UserID,
 		DisplayName:         fromNullString(profile.DisplayName),
@@ -206,6 +216,8 @@ func dbProfileToType(profile db.UserProfile) types.UserProfile {
 		Context:             fromNullString(profile.Context),
 		OnboardingCompleted: profile.OnboardingCompleted.Valid && profile.OnboardingCompleted.Int64 == 1,
 		OnboardingStep:      fromNullString(profile.OnboardingStep),
+		ToolPermissions:     toolPermissions,
+		TermsAcceptedAt:     termsAcceptedAt,
 		CreatedAt:           time.Unix(profile.CreatedAt, 0).Format(time.RFC3339),
 		UpdatedAt:           time.Unix(profile.UpdatedAt, 0).Format(time.RFC3339),
 	}

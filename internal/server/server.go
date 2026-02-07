@@ -26,6 +26,7 @@ import (
 	"github.com/nebolabs/nebo/internal/handler/memory"
 	"github.com/nebolabs/nebo/internal/handler/notification"
 	"github.com/nebolabs/nebo/internal/handler/oauth"
+	"github.com/nebolabs/nebo/internal/handler/plugins"
 	"github.com/nebolabs/nebo/internal/handler/provider"
 	"github.com/nebolabs/nebo/internal/handler/setup"
 	"github.com/nebolabs/nebo/internal/handler/tasks"
@@ -330,6 +331,24 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Delete("/channels/{id}", channel.DeleteChannelHandler(svcCtx))
 	r.Post("/channels/{id}/test", channel.TestChannelHandler(svcCtx))
 
+	// Plugin settings routes (iPhone Settings.bundle model)
+	r.Get("/plugins", plugins.ListPluginsHandler(svcCtx))
+	r.Get("/plugins/{id}", plugins.GetPluginHandler(svcCtx))
+	r.Put("/plugins/{id}/settings", plugins.UpdatePluginSettingsHandler(svcCtx))
+	r.Put("/plugins/{id}/toggle", plugins.TogglePluginHandler(svcCtx))
+
+	// NeboLoop App Store routes
+	r.Get("/store/apps", plugins.ListStoreAppsHandler(svcCtx))
+	r.Post("/store/apps/{id}/install", plugins.InstallStoreAppHandler(svcCtx))
+	r.Delete("/store/apps/{id}/install", plugins.UninstallStoreAppHandler(svcCtx))
+	r.Get("/store/skills", plugins.ListStoreSkillsHandler(svcCtx))
+	r.Post("/store/skills/{id}/install", plugins.InstallStoreSkillHandler(svcCtx))
+	r.Delete("/store/skills/{id}/install", plugins.UninstallStoreSkillHandler(svcCtx))
+
+	// NeboLoop Connection routes
+	r.Post("/neboloop/connect", plugins.NeboLoopConnectHandler(svcCtx))
+	r.Get("/neboloop/status", plugins.NeboLoopStatusHandler(svcCtx))
+
 	// Provider/Models routes
 	r.Get("/models", provider.ListModelsHandler(svcCtx))
 	r.Put("/models/config", provider.UpdateModelConfigHandler(svcCtx))
@@ -345,6 +364,11 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	// User profile routes (public for single-user personal assistant mode)
 	r.Get("/user/me/profile", user.GetUserProfileHandler(svcCtx))
 	r.Put("/user/me/profile", user.UpdateUserProfileHandler(svcCtx))
+
+	// Tool permissions and terms (public for single-user mode)
+	r.Get("/user/me/permissions", user.GetToolPermissionsHandler(svcCtx))
+	r.Put("/user/me/permissions", user.UpdateToolPermissionsHandler(svcCtx))
+	r.Post("/user/me/accept-terms", user.AcceptTermsHandler(svcCtx))
 }
 
 // registerProtectedRoutes registers routes that require JWT authentication

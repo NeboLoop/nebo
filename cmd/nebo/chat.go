@@ -110,7 +110,7 @@ func runChat(cfg *agentcfg.Config, args []string, interactive bool, dangerously 
 		)
 	}
 	registry := tools.NewRegistry(policy)
-	registry.RegisterDefaults()
+	registry.RegisterDefaultsWithPermissions(loadToolPermissions(store.GetDB()))
 
 	taskTool := tools.NewTaskTool()
 	taskTool.CreateOrchestrator(cfg, sessions, providers, registry)
@@ -180,6 +180,7 @@ func runOnce(ctx context.Context, r *runner.Runner, prompt string) {
 	events, err := r.Run(ctx, &runner.RunRequest{
 		SessionKey: sessionKey,
 		Prompt:     prompt,
+		Origin:     tools.OriginUser,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -222,6 +223,7 @@ func runInteractive(ctx context.Context, r *runner.Runner, sessions *session.Man
 		events, err := r.Run(ctx, &runner.RunRequest{
 			SessionKey: sessionKey,
 			Prompt:     line,
+			Origin:     tools.OriginUser,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)

@@ -3,12 +3,14 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/nebolabs/nebo/internal/agent/ai"
 	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
+	"github.com/nebolabs/nebo/internal/db"
 	"github.com/nebolabs/nebo/internal/provider"
 )
 
@@ -273,5 +275,34 @@ func DetectAvailableCLIs() *CLIAvailability {
 		Codex:  ai.CheckCLIAvailable("codex"),
 		Gemini: ai.CheckCLIAvailable("gemini"),
 	}
+}
+
+// loadToolPermissions loads capability permissions from the database for the default user.
+// Returns nil on error (nil means "register all tools" - safe fallback).
+func loadToolPermissions(sqlDB *sql.DB) map[string]bool {
+	if sqlDB == nil {
+		return nil
+	}
+
+	queries := db.New(sqlDB)
+	permJSON, err := queries.GetToolPermissions(context.Background(), "default-user")
+	if err != nil {
+		fmt.Printf("[Permissions] Could not load tool permissions: %v (using defaults)\n", err)
+		return nil
+	}
+
+	var permissions map[string]bool
+	if err := json.Unmarshal([]byte(permJSON), &permissions); err != nil {
+		fmt.Printf("[Permissions] Could not parse tool permissions: %v (using defaults)\n", err)
+		return nil
+	}
+
+	// Empty map means no permissions set yet — register all tools
+	if len(permissions) == 0 {
+		return nil
+	}
+
+	fmt.Printf("[Permissions] Loaded tool permissions: %v\n", permissions)
+	return permissions
 }
 

@@ -463,6 +463,21 @@ export function updateModel(req: components.UpdateModelRequest, provider: string
 }
 
 /**
+ * @description "Nebo loop connect"
+ * @param req
+ */
+export function neboLoopConnect(req: components.NeboLoopConnectRequest) {
+	return webapi.post<components.NeboLoopConnectResponse>(`/api/v1/neboloop/connect`, req)
+}
+
+/**
+ * @description "Nebo loop status"
+ */
+export function neboLoopStatus() {
+	return webapi.get<components.NeboLoopStatusResponse>(`/api/v1/neboloop/status`)
+}
+
+/**
  * @description "List notifications"
  * @param req
  */
@@ -528,6 +543,37 @@ export function oAuthCallback(provider: string) {
  */
 export function getOAuthUrl(params: components.GetOAuthUrlRequestParams, provider: string) {
 	return webapi.get<components.GetOAuthUrlResponse>(`/api/v1/oauth/${provider}/url`, params)
+}
+
+/**
+ * @description "List plugins"
+ */
+export function listPlugins() {
+	return webapi.get<components.ListPluginsResponse>(`/api/v1/plugins`)
+}
+
+/**
+ * @description "Get plugin"
+ * @param req
+ */
+export function getPlugin(id: string) {
+	return webapi.get<components.GetPluginResponse>(`/api/v1/plugins/${id}`)
+}
+
+/**
+ * @description "Update plugin settings"
+ * @param req
+ */
+export function updatePluginSettings(req: components.UpdatePluginSettingsRequest, id: string) {
+	return webapi.put<components.UpdatePluginSettingsResponse>(`/api/v1/plugins/${id}/settings`, req)
+}
+
+/**
+ * @description "Toggle plugin"
+ * @param req
+ */
+export function togglePlugin(req: components.TogglePluginRequest, id: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/plugins/${id}/toggle`, req)
 }
 
 /**
@@ -631,6 +677,48 @@ export function toggleSkill(name: string) {
 }
 
 /**
+ * @description "List store apps"
+ */
+export function listStoreApps() {
+	return webapi.get<components.MessageResponse>(`/api/v1/store/apps`)
+}
+
+/**
+ * @description "Uninstall store app"
+ */
+export function uninstallStoreApp(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/store/apps/${id}/install`)
+}
+
+/**
+ * @description "Install store app"
+ */
+export function installStoreApp(id: string) {
+	return webapi.post<components.MessageResponse>(`/api/v1/store/apps/${id}/install`)
+}
+
+/**
+ * @description "List store skills"
+ */
+export function listStoreSkills() {
+	return webapi.get<components.MessageResponse>(`/api/v1/store/skills`)
+}
+
+/**
+ * @description "Uninstall store skill"
+ */
+export function uninstallStoreSkill(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/store/skills/${id}/install`)
+}
+
+/**
+ * @description "Install store skill"
+ */
+export function installStoreSkill(id: string) {
+	return webapi.post<components.MessageResponse>(`/api/v1/store/skills/${id}/install`)
+}
+
+/**
  * @description "List tasks"
  * @param req
  */
@@ -718,11 +806,33 @@ export function updateCurrentUser(req: components.UpdateUserRequest) {
 }
 
 /**
+ * @description "Accept terms"
+ */
+export function acceptTerms() {
+	return webapi.post<components.AcceptTermsResponse>(`/api/v1/user/me/accept-terms`)
+}
+
+/**
  * @description "Change password"
  * @param req
  */
 export function changePassword(req: components.ChangePasswordRequest) {
 	return webapi.post<components.MessageResponse>(`/api/v1/user/me/change-password`, req)
+}
+
+/**
+ * @description "Get tool permissions"
+ */
+export function getToolPermissions() {
+	return webapi.get<components.GetToolPermissionsResponse>(`/api/v1/user/me/permissions`)
+}
+
+/**
+ * @description "Update tool permissions"
+ * @param req
+ */
+export function updateToolPermissions(req: components.UpdateToolPermissionsRequest) {
+	return webapi.put<components.UpdateToolPermissionsResponse>(`/api/v1/user/me/permissions`, req)
 }
 
 /**

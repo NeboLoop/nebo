@@ -167,6 +167,7 @@ func RunAll() {
 		agentOpts := AgentOptions{
 			ChannelManager:   channelMgr,
 			Database:         svcCtx.DB.GetDB(),
+			PluginStore:      svcCtx.PluginStore,
 			Quiet:            true,
 			Dangerously:      dangerouslyAll,
 			SettingsFilePath: filepath.Join(settingsDir, "agent-settings.json"),
@@ -367,7 +368,7 @@ func createMCPRegistry(cfg *agentcfg.Config) *tools.Registry {
 	policy := tools.NewPolicyFromConfig("full", "off", nil)
 	fmt.Printf("[MCP] Creating registry with policy level=full (auto-approve all tools)\n")
 	registry := tools.NewRegistry(policy)
-	registry.RegisterDefaults()
+	registry.RegisterDefaultsWithPermissions(loadToolPermissions(sharedDB))
 
 	// Register agent domain tool (memory, cron, task, message, session)
 	// This requires the shared DB which is set before this function is called

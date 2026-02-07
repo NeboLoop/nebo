@@ -50,10 +50,14 @@ Nebo is **ONE primary agent** with a **lane-based concurrency system**. Not mult
 ```bash
 # Development (hot reload via air - NO restart needed)
 make air              # Backend with hot reload (runs in headless mode)
+make dev              # Backend + frontend together
 cd app && pnpm dev    # Frontend dev server
 
-# Database
+# Code Generation
 make sqlc             # Regenerate sqlc code after changing .sql files
+make gen              # Regenerate TypeScript API client (runs cmd/genapi)
+
+# Database (uses github.com/pressly/goose/v3)
 make migrate-up       # Run pending migrations
 make migrate-down     # Rollback last migration
 make migrate-status   # Check migration status
@@ -172,13 +176,29 @@ type GetWidgetResponse struct { Name string `json:"name"` }
 
 4. Implement logic in `internal/logic/widget/getwidgetlogic.go`
 
+### httputil Functions (`internal/httputil/`)
+
+| Function | Purpose |
+|----------|---------|
+| `Parse(r, v)` | Parses JSON body, path params (`path:"id"`), query params (`form:"name"`) |
+| `OkJSON(w, v)` | 200 OK with JSON body |
+| `WriteJSON(w, status, v)` | JSON with custom status code |
+| `Error(w, err)` | 400 error response |
+| `ErrorWithCode(w, code, msg)` | Error with specific status code |
+| `Unauthorized(w, msg)` | 401 |
+| `NotFound(w, msg)` | 404 |
+| `InternalError(w, msg)` | 500 |
+| `PathVar(r, name)` | Get path variable (chi.URLParam wrapper) |
+| `QueryInt(r, name, default)` | Query param as int |
+| `QueryString(r, name, default)` | Query param as string |
+
 ---
 
 ## Adding Database Tables
 
-1. Create migration: `internal/db/migrations/000X_description.sql`
-2. Create queries: `internal/db/queries/entity.sql`
-3. Run `make sqlc` to generate Go code
+1. Create migration: `internal/db/migrations/000X_description.sql` (4-digit prefix, uses goose)
+2. Create queries: `internal/db/queries/entity.sql` (one file per entity)
+3. Run `make sqlc` to generate Go code (config in `sqlc.yaml`, engine: sqlite)
 4. Use generated code in `internal/logic/`
 
 ---
@@ -337,7 +357,9 @@ Survives restarts via SQLite:
 
 **Model Selection:** Task classification (Vision/Audio/Reasoning/Code/General) routes to appropriate model with exponential backoff on failures.
 
-**Tool Registration:** Domain tools are registered in `RegisterDefaults()`. The `AgentDomainTool` requires separate registration via `RegisterAgentDomainTool()` since it needs DB and session manager dependencies.
+**Tool Registration:** Domain tools are registered in `RegisterDefaults()`. The `AgentDomainTool` requires separate registration via `RegisterAgentDomainTool()` since it needs DB and session manager dependencies. Platform tools auto-register via `RegisterPlatformCapabilities()` in platform-specific `init()` functions.
+
+**Tool Policy** (`internal/agent/tools/policy.go`): Controls tool approval. Levels: `PolicyDeny` (block all dangerous), `PolicyAllowlist` (allow whitelisted commands, default), `PolicyFull` (allow all). Ask modes: `AskModeOff`, `AskModeOnMiss` (default), `AskModeAlways`. Safe bins (always allowed): ls, pwd, cat, grep, find, git status/log/diff, go/node/python --version.
 
 ### Advisors System (`internal/agent/advisors/`)
 
@@ -406,7 +428,21 @@ agent(resource: comm, action: send, to: "agent-2", topic: "tasks", text: "Can yo
 - `agent_tool.go` - Agent operations (replaces task.go, cron.go, memory.go, message.go, sessions.go)
 - `registry.go` - Tool registration and execution
 
-**Standalone tools:** `screenshot`, `vision` (requires API key), platform capabilities (*_darwin.go)
+**Standalone tools:** `screenshot`, `vision` (requires API key), platform capabilities (*_darwin.go, *_windows.go, *_linux.go — auto-registered via `init()` with build tags)
+
+### Origin-Based Tool Restrictions (`internal/agent/tools/origin.go`)
+
+Origins track where a request came from and enforce per-origin tool restrictions via the policy system:
+
+| Origin | Source | Default Restrictions |
+|--------|--------|---------------------|
+| `OriginUser` | Direct user interaction (web UI, CLI) | None |
+| `OriginComm` | Inter-agent communication | Denies: shell |
+| `OriginPlugin` | External plugin binary | Denies: shell |
+| `OriginSkill` | Matched skill template | Denies: shell |
+| `OriginSystem` | Internal system tasks (heartbeat, cron, recovery) | None |
+
+Use `WithOrigin(ctx, origin)` / `GetOrigin(ctx)` to propagate origin through context. The registry checks `Policy.IsDeniedForOrigin()` before approval logic.
 
 **Memory 3-tier system:**
 - `tacit` - Long-term preferences, learned behaviors

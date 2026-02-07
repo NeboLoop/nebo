@@ -32,3 +32,182 @@ export interface TTSRequest {
 export function speakTTS(req: TTSRequest): Promise<Blob> {
 	return webapi.postBlob('/api/v1/voice/tts', req);
 }
+
+// Plugin Settings API (iPhone model)
+export interface SettingsFieldOption {
+	label: string;
+	value: string;
+}
+
+export interface SettingsField {
+	key: string;
+	title: string;
+	description?: string;
+	type: 'text' | 'password' | 'toggle' | 'select' | 'number' | 'url';
+	default?: string;
+	required?: boolean;
+	options?: SettingsFieldOption[];
+	placeholder?: string;
+	secret?: boolean;
+}
+
+export interface SettingsGroup {
+	title: string;
+	description?: string;
+	fields: SettingsField[];
+}
+
+export interface SettingsManifest {
+	groups: SettingsGroup[];
+}
+
+export interface PluginItem {
+	id: string;
+	name: string;
+	pluginType: string;
+	displayName: string;
+	description: string;
+	icon: string;
+	version: string;
+	isEnabled: boolean;
+	isInstalled: boolean;
+	settingsManifest: SettingsManifest;
+	connectionStatus: string;
+	lastConnectedAt: string;
+	lastError: string;
+	settings?: Record<string, string>;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ListPluginsResponse {
+	plugins: PluginItem[];
+}
+
+export interface GetPluginResponse {
+	plugin: PluginItem;
+}
+
+export interface UpdatePluginSettingsRequest {
+	settings: Record<string, string>;
+	secrets?: Record<string, boolean>;
+}
+
+export interface UpdatePluginSettingsResponse {
+	plugin: PluginItem;
+}
+
+export interface TogglePluginRequest {
+	isEnabled: boolean;
+}
+
+export function listPlugins(type?: string): Promise<ListPluginsResponse> {
+	return webapi.get<ListPluginsResponse>('/api/v1/plugins', type ? { type } : undefined);
+}
+
+export function getPlugin(id: string): Promise<GetPluginResponse> {
+	return webapi.get<GetPluginResponse>(`/api/v1/plugins/${id}`);
+}
+
+export function updatePluginSettings(id: string, req: UpdatePluginSettingsRequest): Promise<UpdatePluginSettingsResponse> {
+	return webapi.put<UpdatePluginSettingsResponse>(`/api/v1/plugins/${id}/settings`, req);
+}
+
+export function togglePlugin(id: string, req: TogglePluginRequest): Promise<GetPluginResponse> {
+	return webapi.put<GetPluginResponse>(`/api/v1/plugins/${id}/toggle`, req);
+}
+
+// NeboLoop App Store
+
+export interface StoreAuthor {
+	id: string;
+	name: string;
+	verified: boolean;
+}
+
+export interface StoreApp {
+	id: string;
+	name: string;
+	slug: string;
+	description: string;
+	icon: string;
+	category: string;
+	version: string;
+	author: StoreAuthor;
+	installCount: number;
+	rating: number;
+	reviewCount: number;
+	isInstalled: boolean;
+	status: string;
+}
+
+export interface StoreSkill {
+	id: string;
+	name: string;
+	slug: string;
+	description: string;
+	icon: string;
+	category: string;
+	version: string;
+	author: StoreAuthor;
+	installCount: number;
+	rating: number;
+	reviewCount: number;
+	isInstalled: boolean;
+	status: string;
+}
+
+export interface StoreAppsResponse {
+	apps: StoreApp[];
+	totalCount: number;
+	page: number;
+	pageSize: number;
+}
+
+export interface StoreSkillsResponse {
+	skills: StoreSkill[];
+	totalCount: number;
+	page: number;
+	pageSize: number;
+}
+
+export interface StoreInstallResponse {
+	pluginId: string;
+	message: string;
+}
+
+export function listStoreApps(params?: {
+	q?: string;
+	category?: string;
+	page?: number;
+	pageSize?: number;
+}): Promise<StoreAppsResponse> {
+	return webapi.get<StoreAppsResponse>('/api/v1/store/apps', params);
+}
+
+export function listStoreSkills(params?: {
+	q?: string;
+	category?: string;
+	page?: number;
+	pageSize?: number;
+}): Promise<StoreSkillsResponse> {
+	return webapi.get<StoreSkillsResponse>('/api/v1/store/skills', params);
+}
+
+export function installStoreApp(id: string): Promise<StoreInstallResponse> {
+	return webapi.post<StoreInstallResponse>(`/api/v1/store/apps/${id}/install`);
+}
+
+export function uninstallStoreApp(id: string): Promise<{ message: string }> {
+	return webapi.delete<{ message: string }>(`/api/v1/store/apps/${id}/install`);
+}
+
+export function installStoreSkill(id: string): Promise<StoreInstallResponse> {
+	return webapi.post<StoreInstallResponse>(`/api/v1/store/skills/${id}/install`);
+}
+
+export function uninstallStoreSkill(id: string): Promise<{ message: string }> {
+	return webapi.delete<{ message: string }>(`/api/v1/store/skills/${id}/install`);
+}
+
+

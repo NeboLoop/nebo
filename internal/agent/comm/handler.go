@@ -11,6 +11,7 @@ import (
 
 	"github.com/nebolabs/nebo/internal/agent/ai"
 	"github.com/nebolabs/nebo/internal/agent/runner"
+	"github.com/nebolabs/nebo/internal/agent/tools"
 	"github.com/nebolabs/nebo/internal/agenthub"
 )
 
@@ -166,6 +167,7 @@ func (h *CommHandler) processMessage(ctx context.Context, msg CommMessage) error
 	events, err := h.runner.Run(ctx, &runner.RunRequest{
 		SessionKey: sessionKey,
 		Prompt:     prompt,
+		Origin:     tools.OriginComm,
 	})
 	if err != nil {
 		fmt.Printf("[Comm] Error running agentic loop for %s: %v\n", sessionKey, err)
@@ -232,6 +234,7 @@ func (h *CommHandler) processTask(ctx context.Context, msg CommMessage) error {
 	events, err := h.runner.Run(ctx, &runner.RunRequest{
 		SessionKey: sessionKey,
 		Prompt:     prompt,
+		Origin:     tools.OriginComm,
 	})
 	if err != nil {
 		// Check if it was a cancellation
@@ -272,6 +275,7 @@ func (h *CommHandler) processTaskResult(ctx context.Context, msg CommMessage) er
 	events, err := h.runner.Run(ctx, &runner.RunRequest{
 		SessionKey: sessionKey,
 		Prompt:     prompt,
+		Origin:     tools.OriginComm,
 	})
 	if err != nil {
 		fmt.Printf("[Comm] Error processing task result %s: %v\n", msg.TaskID, err)

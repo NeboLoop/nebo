@@ -400,7 +400,7 @@ func goTypeToTS(goType string) string {
 		return "number"
 	case "bool":
 		return "boolean"
-	case "any", "interface{}":
+	case "any", "interface{}", "json.RawMessage":
 		return "any"
 	}
 

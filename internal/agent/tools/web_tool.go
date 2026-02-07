@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,11 +59,13 @@ type WebDomainConfig struct {
 	Headless     bool   // Browser headless mode
 }
 
-// NewWebDomainTool creates a new web domain tool
+// NewWebDomainTool creates a new web domain tool with SSRF-safe HTTP client
 func NewWebDomainTool() *WebDomainTool {
 	return &WebDomainTool{
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			Transport:     ssrfSafeTransport(),
+			CheckRedirect: ssrfSafeRedirectCheck(),
 		},
 		headless: true,
 	}
@@ -251,6 +254,11 @@ func (t *WebDomainTool) Execute(ctx context.Context, input json.RawMessage) (*To
 func (t *WebDomainTool) handleFetch(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
 	if in.URL == "" {
 		return &ToolResult{Content: "Error: url is required", IsError: true}, nil
+	}
+
+	// SSRF pre-flight: validate URL before making request
+	if err := validateFetchURL(in.URL); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
 	}
 
 	method := in.Method
@@ -778,4 +786,142 @@ func (t *WebDomainTool) HandleVision(ctx context.Context, imagePath, imageBase64
 		Content: "Vision analysis requires ANTHROPIC_API_KEY configuration",
 		IsError: true,
 	}, nil
+}
+
+// --- SSRF Protection ---
+
+// ssrfBlockedNets contains CIDR ranges that must never be reached by the web fetch tool.
+// This blocks private networks, link-local, loopback, and cloud metadata endpoints.
+var ssrfBlockedNets = func() []*net.IPNet {
+	cidrs := []string{
+		"127.0.0.0/8",    // IPv4 loopback
+		"10.0.0.0/8",     // RFC 1918 private
+		"172.16.0.0/12",  // RFC 1918 private
+		"192.168.0.0/16", // RFC 1918 private
+		"169.254.0.0/16", // Link-local / AWS metadata
+		"0.0.0.0/8",      // Current network
+		"100.64.0.0/10",  // Shared address space (CGNAT)
+		"192.0.0.0/24",   // IETF protocol assignments
+		"198.18.0.0/15",  // Benchmarking
+		"::1/128",        // IPv6 loopback
+		"fc00::/7",       // IPv6 unique local
+		"fe80::/10",      // IPv6 link-local
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, n, err := net.ParseCIDR(cidr)
+		if err == nil {
+			nets = append(nets, n)
+		}
+	}
+	return nets
+}()
+
+// isBlockedIP returns true if the IP falls within any blocked CIDR range.
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true // Block unresolvable addresses
+	}
+	for _, n := range ssrfBlockedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateFetchURL performs pre-flight validation on a URL before fetching.
+// It blocks non-HTTP schemes, private/internal IPs, and cloud metadata endpoints.
+func validateFetchURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+
+	// Only allow http and https
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("blocked: scheme %q not allowed (only http/https)", u.Scheme)
+	}
+
+	hostname := u.Hostname()
+	if hostname == "" {
+		return fmt.Errorf("blocked: empty hostname")
+	}
+
+	// Block cloud metadata hostnames
+	metadataHosts := []string{
+		"metadata.google.internal",
+		"metadata.google.com",
+	}
+	lowerHost := strings.ToLower(hostname)
+	for _, mh := range metadataHosts {
+		if lowerHost == mh {
+			return fmt.Errorf("blocked: cloud metadata endpoint %q", hostname)
+		}
+	}
+
+	// Resolve hostname and check all IPs
+	ips, err := net.LookupIP(hostname)
+	if err != nil {
+		return fmt.Errorf("DNS resolution failed for %q: %w", hostname, err)
+	}
+
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("blocked: %q resolves to private/internal IP %s", hostname, ip)
+		}
+	}
+
+	return nil
+}
+
+// ssrfSafeTransport returns an http.Transport with a custom dialer that
+// re-validates resolved IPs at connection time. This catches DNS rebinding
+// attacks where a hostname resolves to a public IP during pre-flight but
+// to a private IP when the actual connection is made.
+func ssrfSafeTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+			}
+
+			ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("DNS resolution failed: %w", err)
+			}
+
+			for _, ipAddr := range ips {
+				if isBlockedIP(ipAddr.IP) {
+					return nil, fmt.Errorf("SSRF blocked: %q resolved to private IP %s at connect time", host, ipAddr.IP)
+				}
+			}
+
+			// Connect to the first allowed IP
+			dialer := &net.Dialer{Timeout: 10 * time.Second}
+			for _, ipAddr := range ips {
+				target := net.JoinHostPort(ipAddr.IP.String(), port)
+				conn, err := dialer.DialContext(ctx, network, target)
+				if err == nil {
+					return conn, nil
+				}
+			}
+			return nil, fmt.Errorf("failed to connect to any resolved IP for %q", host)
+		},
+	}
+}
+
+// ssrfSafeRedirectCheck returns a CheckRedirect function that validates
+// each redirect target against the SSRF blocklist.
+func ssrfSafeRedirectCheck() func(req *http.Request, via []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		if err := validateFetchURL(req.URL.String()); err != nil {
+			return fmt.Errorf("redirect blocked: %w", err)
+		}
+		return nil
+	}
 }

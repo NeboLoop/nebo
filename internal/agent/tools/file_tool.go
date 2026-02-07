@@ -201,6 +201,11 @@ func (t *FileTool) handleRead(ctx context.Context, in FileInput) (*ToolResult, e
 		return &ToolResult{Content: "Error: path is required", IsError: true}, nil
 	}
 
+	// Validate path is not sensitive (SSH keys, credentials, etc.)
+	if err := validateFilePath(in.Path, "read"); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
+	}
+
 	// Expand home directory
 	path := expandPath(in.Path)
 
@@ -289,6 +294,11 @@ func (t *FileTool) handleWrite(ctx context.Context, in FileInput) (*ToolResult, 
 		return &ToolResult{Content: "Error: path is required", IsError: true}, nil
 	}
 
+	// Validate path is not sensitive (SSH keys, credentials, shell rc files, etc.)
+	if err := validateFilePath(in.Path, "write"); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
+	}
+
 	path := expandPath(in.Path)
 
 	// Create parent directories if needed
@@ -335,6 +345,11 @@ func (t *FileTool) handleEdit(ctx context.Context, in FileInput) (*ToolResult, e
 	}
 	if in.OldString == in.NewString {
 		return &ToolResult{Content: "Error: old_string and new_string are identical", IsError: true}, nil
+	}
+
+	// Validate path is not sensitive (SSH keys, credentials, shell rc files, etc.)
+	if err := validateFilePath(in.Path, "edit"); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
 	}
 
 	path := expandPath(in.Path)
@@ -765,6 +780,89 @@ func (t *FileTool) searchFileForGrep(path string, re *regexp.Regexp, maxMatches 
 	}
 
 	return matches, scanner.Err()
+}
+
+// sensitivePaths contains paths that the agent should never read or write.
+// These are resolved to absolute paths at init time for reliable matching.
+var sensitivePaths = func() []string {
+	home, _ := os.UserHomeDir()
+	paths := []string{
+		// SSH keys and config
+		filepath.Join(home, ".ssh"),
+		// AWS credentials
+		filepath.Join(home, ".aws"),
+		// GCP credentials
+		filepath.Join(home, ".config", "gcloud"),
+		// Azure credentials
+		filepath.Join(home, ".azure"),
+		// GPG keys
+		filepath.Join(home, ".gnupg"),
+		// Docker credentials
+		filepath.Join(home, ".docker", "config.json"),
+		// Kubernetes config
+		filepath.Join(home, ".kube", "config"),
+		// NPM tokens
+		filepath.Join(home, ".npmrc"),
+		// Password databases
+		filepath.Join(home, ".password-store"),
+		// Keychain (macOS)
+		filepath.Join(home, "Library", "Keychains"),
+		// Browser profiles (cookies, saved passwords)
+		filepath.Join(home, "Library", "Application Support", "Google", "Chrome"),
+		filepath.Join(home, "Library", "Application Support", "Firefox"),
+		filepath.Join(home, ".config", "google-chrome"),
+		filepath.Join(home, ".mozilla"),
+		// Shell init files (write protection — prevent backdoors)
+		filepath.Join(home, ".bashrc"),
+		filepath.Join(home, ".bash_profile"),
+		filepath.Join(home, ".zshrc"),
+		filepath.Join(home, ".zprofile"),
+		filepath.Join(home, ".profile"),
+		// System paths
+		"/etc/shadow",
+		"/etc/passwd",
+		"/etc/sudoers",
+	}
+	return paths
+}()
+
+// validateFilePath checks that a path is safe for the agent to access.
+// It blocks sensitive paths (SSH keys, credentials, shell rc files) and
+// resolves symlinks to prevent symlink-based traversal attacks.
+func validateFilePath(rawPath string, action string) error {
+	// Expand and resolve to absolute path
+	expanded := expandPath(rawPath)
+	absPath, err := filepath.Abs(expanded)
+	if err != nil {
+		return fmt.Errorf("invalid path: %w", err)
+	}
+
+	// Resolve symlinks to get the real path (prevents symlink traversal)
+	realPath := absPath
+	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+		realPath = resolved
+	}
+	// If EvalSymlinks fails (file doesn't exist yet for write), use absPath
+
+	// Check both the requested path and the resolved path against sensitive paths
+	for _, sensitive := range sensitivePaths {
+		// Check if the path IS the sensitive path or is inside it
+		if pathMatchesOrIsInside(absPath, sensitive) || pathMatchesOrIsInside(realPath, sensitive) {
+			return fmt.Errorf("blocked: %s access to %q is restricted (sensitive path)", action, rawPath)
+		}
+	}
+
+	return nil
+}
+
+// pathMatchesOrIsInside returns true if path equals target or is inside target directory.
+func pathMatchesOrIsInside(path, target string) bool {
+	if path == target {
+		return true
+	}
+	// Check if path is inside target directory
+	targetWithSep := target + string(filepath.Separator)
+	return strings.HasPrefix(path, targetWithSep)
 }
 
 // expandPath expands ~ to home directory

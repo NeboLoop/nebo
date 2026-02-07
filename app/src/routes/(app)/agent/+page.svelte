@@ -627,6 +627,7 @@
 		if (!inputValue.trim()) return;
 
 		const prompt = inputValue.trim();
+
 		inputValue = '';
 		clearDraft();
 

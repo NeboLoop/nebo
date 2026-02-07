@@ -1,63 +1,256 @@
-# OpenClaw's security landscape: a comprehensive vulnerability inventory
+# NEBO SECURITY GAP ANALYSIS
 
-**OpenClaw (formerly Clawdbot, then Moltbot) has accumulated at least three assigned CVEs, seven GitHub Security Advisories, and a sprawling ecosystem of supply-chain and architectural security concerns — all within roughly three months of its November 2025 launch.** The project, created by Peter Steinberger, is an open-source personal AI assistant with **~160,000 GitHub stars** that integrates with messaging platforms and can execute shell commands, manage files, and take autonomous actions on a user's machine. Its rapid growth has made it a high-value target, and security researchers from CrowdStrike, Cisco, Bitdefender, Tenable, JFrog, and others have published damning assessments. The project itself acknowledges: "There is no 'perfectly secure' setup."
+**Mapping OpenClaw CVEs & Architectural Vulnerabilities Against Nebo's Architecture**
 
-## The naming history matters for tracking vulnerabilities
+*February 5, 2026 — Based on OpenClaw CVE research and Nebo architecture documentation*
 
-Clawdbot launched in November 2025 and was renamed **Moltbot** on January 27, 2026, after trademark pressure from Anthropic over similarity to "Claude." Just two days later, on January 29, it became **OpenClaw**. The npm package remains listed as `clawdbot`. All three names appear interchangeably across CVE databases, advisories, and security reports. The repository lives at `github.com/openclaw/openclaw`, with legacy URLs redirecting from the previous organization names. During the rebrand chaos, crypto scammers seized the abandoned `@clawdbot` handles on X and GitHub, promoting fake $CLAWD tokens to **60,000+ followers** — a supply-chain identity attack in its own right.
+---
 
-## Three CVEs with assigned identifiers target OpenClaw directly
+## Executive Summary
 
-**CVE-2026-25253 (CVSS 8.8, High) — One-click RCE via gateway token exfiltration.** Discovered by Mav Levin of depthfirst and independently by Ethiack's autonomous hacking agent "Hackian," this is the most widely reported vulnerability. The Control UI accepted a `gatewayUrl` parameter from the query string without validation and auto-connected on page load, transmitting the stored gateway authentication token via WebSocket. An attacker could craft a malicious link that, when clicked, exfiltrated the token in milliseconds. Combined with a Cross-Site WebSocket Hijacking flaw (no origin header validation), the full kill chain was: token theft → WebSocket hijack → disable sandbox → escape Docker container → arbitrary command execution on host. **This worked even on localhost-only instances** because the victim's browser acted as the bridge. Patched in v2026.1.29 on January 30, 2026. GitHub Advisory: GHSA-g8p2-7wf7-98mq.
+OpenClaw (formerly Clawdbot/Moltbot) has accumulated 5 CVEs, 7+ GitHub Security Advisories, and severe architectural vulnerabilities within three months of launch. This analysis maps each known vulnerability against Nebo's architecture to determine which risks apply, which are avoided by design, and what must be fixed.
 
-**CVE-2026-24763 (CVSS 8.8, High) — Command injection in Docker sandbox via PATH variable.** Unsafe handling of the PATH environment variable when constructing shell commands in Docker sandbox execution allowed authenticated users who could control environment variables to execute arbitrary commands within the container. Affected versions through v2026.1.24; patched in v2026.1.29. GitHub Advisory: GHSA-mc68-q9jw-2h3v. A public proof-of-concept exists at `github.com/ethiack/moltbot-1click-rce`.
+Of 18 identified vulnerability classes, Nebo is protected from 5 by architectural differences (no browser gateway UI, no Chrome extension, no Lobster engine, no SSH remote mode, no Docker sandbox). However, Nebo shares 8 critical or high-severity vulnerabilities with OpenClaw — primarily around memory injection, NeboLoop remote access, unsigned plugins, and the absence of origin-based tool policies. Five additional items carry moderate risk requiring attention.
 
-**CVE-2026-25157 (High) — OS command injection via SSH project root path.** Two related flaws in the macOS application's `CommandResolver.swift`: the `sshNodeCommand` function constructed a shell script without escaping user-supplied project paths, and `parseSSHTarget` failed to validate SSH targets beginning with dashes, enabling `-oProxyCommand=...` injection. Scope was limited to the macOS desktop app in SSH remote mode only — CLI, web gateway, and mobile apps were unaffected. Patched in v2026.1.29. GitHub Advisory: GHSA-q284-4pvr-m585.
+| Critical / Vulnerable | At Risk / Partial | Not Applicable | Total Reviewed |
+|:---:|:---:|:---:|:---:|
+| **8** | **5** | **5** | **18** |
 
-A fourth CVE, **CVE-2026-22708**, has been referenced in security research from Penligent and CrowdStrike concerning **indirect prompt injection via web browsing** — OpenClaw's failure to sanitize web content before feeding it into the LLM context window allows hidden instructions in webpages, emails, or documents to trigger unauthorized command execution.
+---
 
-## Seven GitHub Security Advisories cover additional attack surfaces
+## Remediation Progress
 
-Beyond the three formally CVE'd vulnerabilities, the project has published or acknowledged additional advisories:
+*Last updated: February 5, 2026*
 
-- **GHSA-g55j-c2v4-pjcg (High, February 4, 2026)** — Unauthenticated local RCE via WebSocket `config.apply` endpoint, allowing any local process to modify the agent's configuration and trigger code execution.
-- **GHSA-r8g4-86fx-92mq (Moderate, February 4, 2026)** — Local file inclusion via the MEDIA path extraction mechanism in the media parser, enabling unauthorized file reads.
-- **GHSA-mr32-vwc2-5j6h** — Credential theft via Chrome extension relay. Reported by ZeroPath (with PoC at `ZeroPathAI/clawdbot-stealer-poc`), malicious websites could exploit OpenClaw's Chrome extension to steal browser session credentials from open tabs (Gmail, Microsoft 365) via an unvalidated `/cdp` WebSocket endpoint accepting arbitrary Chrome DevTools Protocol commands.
-- **GHSA-4mhr-g7xj-cg8j** — Arbitrary execution via `lobsterPath`/`cwd` injection in the Lobster workflow engine.
+### Completed Fixes
 
-The project's changelogs reveal dozens of additional security-relevant fixes that never received formal advisories, including **path traversal in WhatsApp accountId handling**, **sandbox root validation bypasses in message-tool file paths**, **SSRF via DNS pinning in web auto-reply**, **LD_PRELOAD/DYLD_INSERT environment variable injection for host execution**, and **CWE-400 timeout issues in SSE client fetch calls**.
+| Fix | Date | Description | Files Changed |
+|-----|------|-------------|---------------|
+| **Dev-login endpoint removed** | 2026-02-05 | Deleted passwordless JWT login endpoint entirely. Existing auth system (register/login/setup wizard) covers all use cases. | `internal/handler/auth/devloginhandler.go` (deleted), `internal/server/server.go`, `app/src/lib/api/nebo.ts`, `app/src/routes/(app)/dev-login/` (deleted) |
+| **CORS origins restricted** | 2026-02-05 | `DefaultCORSConfig()` now returns explicit localhost-only origins instead of empty list. Added `BaseURL`-derived fallback for production deployments. Three tiers: explicit config > BaseURL-derived > localhost defaults. | `internal/middleware/cors.go`, `internal/middleware/security.go` |
+| **local.nebo.bot purged** | 2026-02-05 | Removed all references to `local.nebo.bot` domain from entire codebase (15+ files) to prevent DNS hijack attacks. All defaults now use `localhost`. | `internal/config/config.go`, `app/vite.config.ts`, `etc/nebo.yaml`, `.env.example`, `internal/browser/relay.go`, `assets/chrome-extension/`, and more |
+| **WebSocket CSWSH fixed** | 2026-02-05 | Added `IsLocalOrigin()` helper that validates Origin header against localhost/127.0.0.1. Applied to agenthub and chat WebSocket upgraders. Empty Origin allowed for direct CLI/agent connections. | `internal/middleware/cors.go`, `internal/agenthub/hub.go`, `internal/websocket/handler.go` |
+| **X-Forwarded-For spoofing fixed** | 2026-02-05 | `DefaultKeyFunc` now uses only `RemoteAddr`, ignoring spoofable headers. Added `TrustedProxyKeyFunc` for known reverse proxy deployments. 10 tests pass. | `internal/middleware/ratelimit.go`, `internal/middleware/ratelimit_test.go` |
+| **SSRF protections added** | 2026-02-05 | Three-layer SSRF defense: (1) `validateFetchURL()` pre-flight blocks private IPs, non-HTTP schemes, metadata endpoints. (2) `ssrfSafeTransport()` custom dialer re-validates at connection time (catches DNS rebinding). (3) `ssrfSafeRedirectCheck()` validates every redirect target. Blocks 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, ::1/128, fc00::/7, fe80::/10, and more. 25 tests pass. | `internal/agent/tools/web_tool.go`, `internal/agent/tools/tools_test.go` |
+| **Path traversal protections added** | 2026-02-05 | `validateFilePath()` blocks access to sensitive paths (~/.ssh, ~/.aws, ~/.gnupg, ~/.docker/config.json, ~/.kube/config, ~/.npmrc, ~/.password-store, browser profiles, shell rc files, /etc/shadow, /etc/passwd, /etc/sudoers). Symlink resolution via `filepath.EvalSymlinks` prevents symlink-based traversal. Applied to read, write, and edit handlers. 12 tests pass. | `internal/agent/tools/file_tool.go`, `internal/agent/tools/tools_test.go` |
+| **Shell env var sanitization** | 2026-02-05 | `sanitizedEnv()` strips dangerous environment variables before shell execution. Blocks LD_PRELOAD/LD_LIBRARY_PATH/LD_AUDIT (Linux linker injection), DYLD_INSERT_LIBRARIES/DYLD_LIBRARY_PATH/DYLD_FRAMEWORK_PATH (macOS linker injection), IFS/CDPATH/BASH_ENV/PROMPT_COMMAND/SHELLOPTS (shell behavior manipulation), BASH_FUNC_* (ShellShock), PYTHONSTARTUP/NODE_OPTIONS/RUBYOPT/PERL5OPT (interpreter injection). All LD_/DYLD_ prefixes blocked by wildcard. Applied to both foreground (`handleBash`) and background (`SpawnBackgroundProcess`) execution paths. `ShellCommand()` now uses absolute `/bin/bash` path to prevent PATH-based binary substitution. 5 new tests pass. | `internal/agent/tools/shell_tool.go`, `internal/agent/tools/shell_unix.go`, `internal/agent/tools/process_registry.go`, `internal/agent/tools/tools_test.go` |
+| **Origin tagging + origin-aware tool policy** | 2026-02-05 | Every request now carries an `Origin` (user, comm, plugin, skill, system) propagated via `context.Context`. `RunRequest.Origin` field tags all 12 entry points: agent WS handler (user/system/comm), cron callbacks (system), intro flows (system), recovery tasks (system), comm handler (comm), CLI chat (user). `Registry.Execute()` checks `Policy.IsDeniedForOrigin()` before any tool runs — hard deny, no approval prompt. Default deny lists block `shell` for comm/plugin/skill origins. User and system origins unrestricted. 5 new tests pass. | `internal/agent/tools/origin.go` (new), `internal/agent/tools/policy.go`, `internal/agent/tools/registry.go`, `internal/agent/runner/runner.go`, `cmd/nebo/agent.go`, `internal/agent/comm/handler.go`, `cmd/nebo/chat.go`, `internal/agent/tools/tools_test.go` |
 
-## Architectural and ecosystem vulnerabilities dwarf the CVE count
+### Deferred Items
 
-The formal CVEs represent only the tip of the iceberg. Multiple independent security audits have identified deep architectural concerns:
+| Item | Reason |
+|------|--------|
+| Web content sanitization before LLM (prompt injection) | Deferred — requires broader prompt injection defense strategy |
+| CDP relay auth for loopback | Skipped — requires local code execution which already grants full machine access |
 
-**Plaintext credential storage** is perhaps the most systemic risk. OX Security, 1Password, and Hudson Rock have documented that OpenClaw stores API keys, OAuth tokens, bot tokens, user profiles, and conversation memories in **plaintext Markdown and JSON files** under `~/.openclaw/`. Even "deleted" credentials persist in `.bak.X` backup files. OX Security further found `eval` used **100 times** and `execSync` **9 times** in the codebase. Infostealer malware families — RedLine, Lumma, Vidar — are already building specific harvesting capabilities targeting this file structure.
+---
 
-**Massive public exposure** compounds every vulnerability. Censys scan data from January 31, 2026 identified over **21,000 publicly accessible OpenClaw instances**, approximately 30% hosted on Alibaba Cloud. Many lacked any authentication. The root cause is a "localhost trust" assumption — the code treated any request from 127.0.0.1 as the owner, which collapses behind reverse proxies where attackers can spoof headers.
+## Vulnerability-by-Vulnerability Mapping
 
-**Supply-chain poisoning through ClawHub skills** has reached alarming scale. Koi Security audited 2,857 skills on ClawHub and found **341 malicious ones (~12%)**, with a campaign codenamed "ClawHavoc" distributing Atomic Stealer (AMOS) malware. Bitdefender independently reported **~17% of analyzed skills exhibited malicious behavior** in the first week of February 2026, with 54% of malicious skills targeting cryptocurrency users. A single account (`sakaen736jih`) published **199 malicious skills**. A trojanized "ClawdBot Agent" VS Code extension was also discovered installing remote access tools — the official team never published a VS Code extension.
+### CVE-2026-25253 — Critical (CVSS 8.8) — NOT APPLICABLE
 
-## Dependency-level CVEs add further exposure
+**OpenClaw Issue:** 1-click RCE via gatewayUrl token exfiltration + cross-site WebSocket hijacking.
 
-OpenClaw's security posture is also affected by vulnerabilities in its dependency chain. The project's own `SECURITY.md` requires **Node.js 22.12.0+** to incorporate patches for CVE-2025-59466 (async_hooks denial of service) and CVE-2026-21636 (permission model bypass). The broader MCP protocol ecosystem that OpenClaw relies on has its own critical vulnerabilities: **CVE-2025-49596** (CVSS 9.4, unauthenticated access in MCP Inspector) and **CVE-2025-6514** (CVSS 9.6, command injection in mcp-remote).
+**Nebo Status: NOT APPLICABLE.** Nebo uses localhost WebSocket IPC between goroutines in the same process — no browser-facing gateway UI, no query-string URL routing.
 
-## What the security community concludes
+**Remediation:** No action needed. Architecture avoids this by design.
 
-Simon Willison, who coined the term "prompt injection," identified OpenClaw as embodying the **"lethal trifecta"**: access to private data, exposure to untrusted content, and ability to communicate externally. Palo Alto Networks added a critical fourth element — **persistent memory** — enabling time-shifted prompt injection and logic-bomb-style attacks. Laurie Voss, founding CTO of npm, was more blunt: "OpenClaw is a security dumpster fire."
+---
 
-The project has no bug bounty program and no budget for paid security reports. Responsible disclosure is requested via GitHub Security Advisories. A built-in `openclaw security audit --deep` command exists for self-assessment, and Tenable has released detection plugins. The `SECURITY.md` explicitly marks public internet exposure and prompt injection attacks as **out of scope** — a telling admission given that both are actively exploited in the wild.
+### CVE-2026-24763 — High (CVSS 8.8) — NOT APPLICABLE (different risk)
 
-| CVE / Advisory | Severity | Description | Fixed Version |
-|---|---|---|---|
-| CVE-2026-25253 / GHSA-g8p2-7wf7-98mq | High (8.8) | 1-click RCE via gatewayUrl token exfiltration | v2026.1.29 |
-| CVE-2026-24763 / GHSA-mc68-q9jw-2h3v | High (8.8) | Docker sandbox command injection via PATH | v2026.1.29 |
-| CVE-2026-25157 / GHSA-q284-4pvr-m585 | High | SSH command injection in macOS app | v2026.1.29 |
-| CVE-2026-22708 | — | Indirect prompt injection via web content | Unconfirmed |
-| GHSA-g55j-c2v4-pjcg | High | Unauthenticated local RCE via WebSocket config.apply | Feb 4, 2026 patch |
-| GHSA-r8g4-86fx-92mq | Moderate | Local file inclusion via MEDIA path extraction | Feb 4, 2026 patch |
-| GHSA-mr32-vwc2-5j6h | — | Chrome extension relay credential theft | Patched (commit a1e89af) |
-| GHSA-4mhr-g7xj-cg8j | — | Arbitrary exec via lobsterPath/cwd injection | Patched |
+**OpenClaw Issue:** Docker sandbox command injection via PATH environment variable.
+
+**Nebo Status: NOT APPLICABLE (different risk profile).** Nebo does not use Docker sandboxing. Shell tool executes directly under host OS user. **Shell env sanitization now strips LD_PRELOAD, DYLD_INSERT_LIBRARIES, and 30+ dangerous env vars.** Absolute `/bin/bash` path prevents PATH-based binary substitution.
+
+**Remediation:** No sandbox escape, but also no sandbox. Shell env hardening complete. Add origin-aware shell restrictions per remediation plan.
+
+---
+
+### CVE-2026-25157 — High — NOT APPLICABLE
+
+**OpenClaw Issue:** OS command injection via unsanitized project root path in SSH command construction.
+
+**Nebo Status: NOT APPLICABLE.** No SSH remote mode, no macOS desktop app, no sshNodeCommand equivalent.
+
+**Remediation:** No action needed currently. If SSH features are added, sanitize all path inputs in shell construction.
+
+---
+
+### CVE-2026-22708 — High — VULNERABLE (deferred)
+
+**OpenClaw Issue:** Indirect prompt injection via unsanitized web content fed into LLM context.
+
+**Nebo Status: VULNERABLE.** Web tool fetches external content. Output enters agentic loop as tool result. No sanitization between web content and LLM context. **SSRF protections added** (private IPs blocked), but content sanitization deferred.
+
+**Remediation:** Implement web content sanitizer. Strip hidden text, CSS-hidden elements, instruction-like patterns. Tag web tool output with `Origin=web_fetch` for policy enforcement.
+
+---
+
+### CVE-2026-25475 — Moderate (CVSS 6.5) — MITIGATED
+
+**OpenClaw Issue:** Local file inclusion via MEDIA path extraction — unauthorized file reads.
+
+**Nebo Status: MITIGATED.** `validateFilePath()` blocks access to ~25 sensitive paths (SSH keys, AWS/GCP/Azure credentials, GPG keys, browser profiles, shell rc files, /etc/shadow, etc.). Symlink resolution via `filepath.EvalSymlinks` prevents symlink-based traversal. Applied to read, write, and edit handlers. 12 tests pass.
+
+**Remaining:** Per-origin read scope now possible via origin tagging (items #9-11 complete). Can add file tool restrictions per origin as needed.
+
+---
+
+### GHSA-g55j-c2v4-pjcg — High — AT RISK
+
+**OpenClaw Issue:** Unauthenticated local RCE via WebSocket config.apply endpoint — any local process can modify agent config.
+
+**Nebo Status: AT RISK.** Server on port 27895 with Chi HTTP router. JWT authentication exists on protected endpoints. **WebSocket origin validation now enforced** via `IsLocalOrigin()`.
+
+**Remediation:** Verify all HTTP/WebSocket endpoints require authentication. Session tokens already in use for protected routes.
+
+---
+
+### GHSA-r8g4-86fx-92mq — Moderate — LOW RISK
+
+**OpenClaw Issue:** Local file inclusion via MEDIA path extraction in media parser.
+
+**Nebo Status: MITIGATED.** No media parser. File tool path traversal protections now in place (see CVE-2026-25475 fix).
+
+**Remediation:** Complete. Sensitive path blocklist + symlink resolution applied to all file operations.
+
+---
+
+### GHSA-mr32-vwc2-5j6h — High — NOT APPLICABLE
+
+**OpenClaw Issue:** Credential theft via Chrome extension relay — unvalidated /cdp WebSocket accepting arbitrary Chrome DevTools Protocol commands.
+
+**Nebo Status: NOT APPLICABLE.** Browser relay exists but CDP loopback exploitation requires prior local code execution, which already grants full machine access. WebSocket origin validation added to all upgraders.
+
+**Remediation:** No action needed. Risk accepted.
+
+---
+
+### GHSA-4mhr-g7xj-cg8j — High — NOT APPLICABLE
+
+**OpenClaw Issue:** Arbitrary execution via lobsterPath/cwd injection in workflow engine.
+
+**Nebo Status: NOT APPLICABLE.** No Lobster workflow engine equivalent.
+
+**Remediation:** No action needed. If workflow features are added, validate all path/cwd inputs.
+
+---
+
+### ARCH-001: Memory Injection — Critical — VULNERABLE
+
+**OpenClaw Issue:** Memory injection — tool outputs stored as "facts" enter future system prompts as raw prose. Enables persistent prompt injection.
+
+**Nebo Status: VULNERABLE.** Anything stored via `agent(resource: memory, action: store, ...)` ends up in the system prompt with no sanitization layer.
+
+**Remediation:** Implement memory write firewall: schema validation, sanitization, approval-by-origin, structured data injection instead of raw prose.
+
+---
+
+### ARCH-002: Compaction Poisoning — High — VULNERABLE
+
+**OpenClaw Issue:** Compaction summary poisoning — summaries prepended to system prompt. Poisoned summary persists across sessions.
+
+**Nebo Status: VULNERABLE.** Compaction summaries are prepended to system prompt for future turns.
+
+**Remediation:** Treat summaries as untrusted: structured state snapshots, summary sanitizer, provenance tracking, fallback on suspicious content.
+
+---
+
+### ARCH-003: Skills Supply Chain — High — VULNERABLE
+
+**OpenClaw Issue:** Skills as supply chain vector — adversarial skill files become system prompt content.
+
+**Nebo Status: VULNERABLE.** Matched skills append template text to system prompt. No signing or validation.
+
+**Remediation:** Sign skills, make them data-only, or compile them. At minimum, strip instruction-like content from skill templates.
+
+---
+
+### ARCH-004: Remote Comm with Full Tool Access — Critical — MITIGATED
+
+**OpenClaw Issue:** Remote comm channel with full tool access — allowed full agentic loop from external messages.
+
+**Nebo Status: MITIGATED.** Comm-origin requests are now tagged with `OriginComm` and checked against per-origin deny lists in `Registry.Execute()`. Shell access is denied by default for comm origins. All 3 comm handler entry points tagged. 5 tests pass.
+
+**Remaining:** Expand deny list as needed (e.g., deny `agent(resource: cron)` for comm). Add capability tokens for fine-grained comm permissions.
+
+---
+
+### ARCH-005: Unsigned Plugins — Critical — VULNERABLE
+
+**OpenClaw Issue:** Unsigned, unsandboxed plugin binaries with OS-level access.
+
+**Nebo Status: VULNERABLE.** `LoadAll()` scans plugin directories and loads any executable binary with no signature verification, no sandboxing, and full OS-level access.
+
+**Remediation:** Plugin integrity: install manifest + hash verification, approved plugin allowlist in SQLite, no auto-load. Tag plugin outputs with origin for policy enforcement.
+
+---
+
+### ARCH-006: Plaintext Credentials — High — AT RISK
+
+**OpenClaw Issue:** Plaintext credential storage — API keys, OAuth tokens in plain files.
+
+**Nebo Status: AT RISK.** `models.yaml` stores API keys as plain YAML. SQLite `auth_profiles` table has `api_key TEXT` with no encryption.
+
+**Remediation:** Encrypt credentials at rest. Use OS keychain (macOS Keychain, Windows Credential Manager, libsecret on Linux) or encrypt config values with a user-derived key.
+
+---
+
+### ARCH-007: Localhost Trust Assumption — High — PARTIALLY MITIGATED
+
+**OpenClaw Issue:** Localhost trust assumption — treated 127.0.0.1 requests as owner. Collapsed behind reverse proxies.
+
+**Nebo Status: PARTIALLY MITIGATED.** JWT authentication exists on protected endpoints. **WebSocket origin validation now enforced.** **CORS restricted to explicit localhost origins.** **X-Forwarded-For spoofing fixed** in rate limiter. **local.nebo.bot DNS hijack vector eliminated.** Remaining: ensure all endpoints require auth tokens, not just origin checks.
+
+**Remediation:** Continue authenticating all endpoints. Per-session tokens with file-lock secret for additional hardening.
+
+---
+
+### ARCH-008: Sub-agent Recursion — Moderate — PARTIALLY VULNERABLE
+
+**OpenClaw Issue:** Unbounded sub-agent recursion — can spawn unlimited sub-agents to brute-force past restrictions.
+
+**Nebo Status: PARTIALLY VULNERABLE.** Nested lane cap=3 limits recursion, but subagent lane is unlimited. A comm-origin task can spawn many subagents.
+
+**Remediation:** Cap subagents per session, add per-origin rate limits, max wall clock per comm-origin session.
+
+---
+
+## What Nebo Already Gets Right
+
+Nebo's architecture avoids several of OpenClaw's worst vulnerabilities by design. The single-binary Go process with goroutine-based IPC eliminates the browser-facing gateway UI that enabled OpenClaw's most critical CVE (CVE-2026-25253). There is no Chrome extension distribution, no SSH remote mode, no Docker sandbox to escape from, and no Lobster workflow engine. The lane system with bounded concurrency (nested:3, main:1) provides natural rate limiting. The tool approval system with configurable policy levels is a solid foundation — it just needs the origin dimension added.
+
+---
+
+## Implementation Priority Matrix
+
+| # | Implementation Item | Effort | Impact | Status |
+|---|---------------------|--------|--------|--------|
+| 1 | Dev-login endpoint removal | Small | Eliminates auth bypass | **DONE** |
+| 2 | CORS origin restriction | Small | Blocks cross-origin attacks | **DONE** |
+| 3 | local.nebo.bot DNS hijack elimination | Small | Removes DNS-based attack vector | **DONE** |
+| 4 | WebSocket origin validation (CSWSH) | Small | Blocks cross-site WS hijacking | **DONE** |
+| 5 | X-Forwarded-For rate limit bypass | Small | Prevents rate limit evasion | **DONE** |
+| 6 | SSRF protections on web fetch | Medium | Blocks internal network scanning | **DONE** |
+| 7 | Path traversal protections in file tools | Medium | Blocks sensitive file access | **DONE** |
+| 8 | Shell env var sanitization | Medium | Blocks LD_PRELOAD/PATH injection | **DONE** |
+| 9 | Origin tagging on sessions + messages | Medium | Foundation for all policy fixes | **DONE** |
+| 10 | Origin-aware tool policy in registry | Medium | Blocks injection consequences | **DONE** |
+| 11 | Default-deny dangerous tools for comm/plugin origins | Small | Neutralizes NeboLoop + plugin injection | **DONE** |
+| 12 | Memory schema + sanitization | Medium | Eliminates persistent prompt injection | Not started |
+| 13 | Compaction snapshot hardening | Medium | Prevents session-persistent poisoning | Not started |
+| 14 | Plugin allowlist by hash + no auto-load | Small | Stops malicious plugin loading | Not started |
+| 15 | Skills signing or data-only format | Medium | Closes supply-chain prompt injection | Not started |
+| 16 | Credential encryption at rest | Medium | Mitigates infostealer harvesting | Not started |
+| 17 | Sub-agent rate limiting + wall clock caps | Small | Prevents brute-force via recursion | Not started |
+
+---
 
 ## Conclusion
 
-OpenClaw's vulnerability surface extends far beyond its three formally assigned CVEs. The combination of **at least 7 GitHub Security Advisories**, dozens of security-relevant code fixes, architectural weaknesses (plaintext credentials, localhost trust assumptions), and a supply-chain ecosystem where **12–17% of community skills are malicious** makes it one of the most security-challenged popular open-source projects of early 2026. Every vulnerability was discovered and disclosed within a compressed three-month window, suggesting the codebase has not yet undergone thorough security hardening. Users running any version prior to v2026.1.29 face critical remote code execution risks, and even patched installations remain exposed to prompt injection, credential theft via infostealers, and malicious skill installation. The project's own documentation concedes there is no perfectly secure configuration — a rare and honest admission that prospective deployers should take seriously.
+Nebo avoids OpenClaw's most headline-grabbing CVEs (the 1-click RCE, the Chrome extension theft, the Docker escape) through fundamentally different architectural choices. However, it shares the deeper, harder-to-fix vulnerability classes: memory injection into system prompts, unsandboxed plugin execution, remote comm channels with full tool authority, and the absence of origin-based access control.
+
+Eleven fixes have been completed — eight infrastructure-level (auth bypass, CORS, DNS hijack, CSWSH, rate limit bypass, SSRF, path traversal, shell env sanitization) and three application-layer (origin tagging, origin-aware tool policy, default-deny for non-user origins). The origin tagging system provides the foundation for all remaining policy fixes. Remaining items address memory injection defenses and supply chain integrity.
+
+**The key lesson from OpenClaw's experience: these vulnerabilities were discovered and exploited within weeks of the project gaining popularity. The origin-based authority wall is now in place — the next priority is memory/compaction hardening.**

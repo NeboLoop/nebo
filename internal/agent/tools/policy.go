@@ -37,6 +37,11 @@ type Policy struct {
 	AskMode          AskMode
 	Allowlist        map[string]bool
 	ApprovalCallback ApprovalCallback // If set, used instead of stdin prompts
+
+	// Origin-based tool restrictions: maps Origin -> set of denied tool names.
+	// If a tool name appears in the deny list for the current origin, execution
+	// is blocked unconditionally (no approval prompt, just denied).
+	OriginDenyList map[Origin]map[string]bool
 }
 
 // SafeBins are commands that never require approval
@@ -47,6 +52,34 @@ var SafeBins = []string{
 	"go version", "node --version", "python --version",
 }
 
+// defaultOriginDenyList returns the default per-origin tool restrictions.
+// Non-user origins are denied access to dangerous tools by default.
+// User origin has no restrictions (governed by existing policy level/approval).
+func defaultOriginDenyList() map[Origin]map[string]bool {
+	// Tools denied for comm-origin (inter-agent messages)
+	commDeny := map[string]bool{
+		"shell": true, // No shell access from remote agents
+	}
+
+	// Tools denied for plugin-origin (external binaries)
+	pluginDeny := map[string]bool{
+		"shell": true, // No shell from plugins
+	}
+
+	// Tools denied for skill-origin (matched skill templates)
+	skillDeny := map[string]bool{
+		"shell": true, // No shell from skill templates
+	}
+
+	return map[Origin]map[string]bool{
+		OriginComm:   commDeny,
+		OriginPlugin: pluginDeny,
+		OriginSkill:  skillDeny,
+		// OriginUser: no restrictions (existing policy governs)
+		// OriginSystem: no restrictions (internal operations need full access)
+	}
+}
+
 // NewPolicy creates a new policy with defaults
 func NewPolicy() *Policy {
 	allowlist := make(map[string]bool)
@@ -55,9 +88,10 @@ func NewPolicy() *Policy {
 	}
 
 	return &Policy{
-		Level:     PolicyAllowlist,
-		AskMode:   AskModeOnMiss,
-		Allowlist: allowlist,
+		Level:          PolicyAllowlist,
+		AskMode:        AskModeOnMiss,
+		Allowlist:      allowlist,
+		OriginDenyList: defaultOriginDenyList(),
 	}
 }
 
@@ -89,6 +123,19 @@ func NewPolicyFromConfig(level, askMode string, allowlist []string) *Policy {
 	}
 
 	return p
+}
+
+// IsDeniedForOrigin returns true if the given tool is blocked for the given origin.
+// This is a hard deny — no approval prompt, just rejected.
+func (p *Policy) IsDeniedForOrigin(origin Origin, toolName string) bool {
+	if p.OriginDenyList == nil {
+		return false
+	}
+	denied, ok := p.OriginDenyList[origin]
+	if !ok {
+		return false
+	}
+	return denied[toolName]
 }
 
 // RequiresApproval checks if a command requires user approval

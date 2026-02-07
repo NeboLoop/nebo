@@ -229,6 +229,8 @@ func (t *ShellTool) handleBash(ctx context.Context, in ShellInput) (*ToolResult,
 		cmd.Dir = in.Cwd
 	}
 
+	cmd.Env = sanitizedEnv()
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -630,4 +632,84 @@ func truncateString(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// dangerousEnvVars contains environment variables that can be exploited
+// for code injection (LD_PRELOAD, DYLD_INSERT_LIBRARIES) or behavior
+// manipulation (IFS, CDPATH, BASH_ENV, PROMPT_COMMAND).
+var dangerousEnvVars = map[string]bool{
+	// Dynamic linker injection (Linux)
+	"LD_PRELOAD":      true,
+	"LD_LIBRARY_PATH": true,
+	"LD_AUDIT":        true,
+	// Dynamic linker injection (macOS)
+	"DYLD_INSERT_LIBRARIES":  true,
+	"DYLD_LIBRARY_PATH":      true,
+	"DYLD_FRAMEWORK_PATH":    true,
+	"DYLD_FALLBACK_LIBRARY_PATH": true,
+	// Shell behavior manipulation
+	"IFS":              true,
+	"CDPATH":           true,
+	"BASH_ENV":         true,
+	"ENV":              true,
+	"PROMPT_COMMAND":   true,
+	"BASH_FUNC_":      true, // ShellShock-style function exports (prefix match below)
+	"SHELLOPTS":        true,
+	"BASHOPTS":         true,
+	"GLOBIGNORE":       true,
+	"BASH_XTRACEFD":   true,
+	// Dangerous locale/format manipulation
+	"LOCALDOMAIN":      true,
+	"HOSTALIASES":      true,
+	"RESOLV_HOST_CONF": true,
+	// Python/Ruby/Perl code injection
+	"PYTHONSTARTUP":    true,
+	"PYTHONPATH":       true,
+	"RUBYOPT":          true,
+	"RUBYLIB":          true,
+	"PERL5OPT":         true,
+	"PERL5LIB":         true,
+	"PERL5DB":          true,
+	"NODE_OPTIONS":     true,
+}
+
+// sanitizedEnv returns a copy of the current environment with dangerous
+// variables removed. This prevents LD_PRELOAD injection, IFS manipulation,
+// BASH_ENV execution, and similar environment-based attacks.
+func sanitizedEnv() []string {
+	env := os.Environ()
+	clean := make([]string, 0, len(env))
+
+	for _, e := range env {
+		key := e
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			key = e[:idx]
+		}
+
+		upperKey := strings.ToUpper(key)
+
+		// Block exact matches
+		if dangerousEnvVars[upperKey] {
+			continue
+		}
+
+		// Block prefix matches (e.g., BASH_FUNC_xxx%%)
+		if strings.HasPrefix(upperKey, "BASH_FUNC_") {
+			continue
+		}
+
+		// Block all LD_ prefixed vars (catches future linker vars)
+		if strings.HasPrefix(upperKey, "LD_") {
+			continue
+		}
+
+		// Block all DYLD_ prefixed vars (catches future macOS linker vars)
+		if strings.HasPrefix(upperKey, "DYLD_") {
+			continue
+		}
+
+		clean = append(clean, e)
+	}
+
+	return clean
 }

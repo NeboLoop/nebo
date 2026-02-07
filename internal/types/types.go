@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 type AgentConnectRequest struct {
 	AgentId string `json:"agentId"`
 }
@@ -617,20 +619,22 @@ type UserPreferences struct {
 // User Profile types
 
 type UserProfile struct {
-	UserId              string   `json:"userId"`
-	DisplayName         string   `json:"displayName,omitempty"`
-	Bio                 string   `json:"bio,omitempty"`
-	Location            string   `json:"location,omitempty"`
-	Timezone            string   `json:"timezone,omitempty"`
-	Occupation          string   `json:"occupation,omitempty"`
-	Interests           []string `json:"interests,omitempty"`
-	CommunicationStyle  string   `json:"communicationStyle,omitempty"`
-	Goals               string   `json:"goals,omitempty"`
-	Context             string   `json:"context,omitempty"`
-	OnboardingCompleted bool     `json:"onboardingCompleted"`
-	OnboardingStep      string   `json:"onboardingStep,omitempty"`
-	CreatedAt           string   `json:"createdAt"`
-	UpdatedAt           string   `json:"updatedAt"`
+	UserId              string            `json:"userId"`
+	DisplayName         string            `json:"displayName,omitempty"`
+	Bio                 string            `json:"bio,omitempty"`
+	Location            string            `json:"location,omitempty"`
+	Timezone            string            `json:"timezone,omitempty"`
+	Occupation          string            `json:"occupation,omitempty"`
+	Interests           []string          `json:"interests,omitempty"`
+	CommunicationStyle  string            `json:"communicationStyle,omitempty"`
+	Goals               string            `json:"goals,omitempty"`
+	Context             string            `json:"context,omitempty"`
+	OnboardingCompleted bool              `json:"onboardingCompleted"`
+	OnboardingStep      string            `json:"onboardingStep,omitempty"`
+	ToolPermissions     map[string]bool   `json:"toolPermissions,omitempty"`
+	TermsAcceptedAt     string            `json:"termsAcceptedAt,omitempty"`
+	CreatedAt           string            `json:"createdAt"`
+	UpdatedAt           string            `json:"updatedAt"`
 }
 
 type GetUserProfileResponse struct {
@@ -1041,4 +1045,155 @@ type MCPToolInfo struct {
 
 type ListMCPToolsResponse struct {
 	Tools []MCPToolInfo `json:"tools"`
+}
+
+// Plugin Settings types (iPhone Settings.bundle model)
+
+type PluginItem struct {
+	Id               string            `json:"id"`
+	Name             string            `json:"name"`
+	PluginType       string            `json:"pluginType"`
+	DisplayName      string            `json:"displayName"`
+	Description      string            `json:"description"`
+	Icon             string            `json:"icon"`
+	Version          string            `json:"version"`
+	IsEnabled        bool              `json:"isEnabled"`
+	IsInstalled      bool              `json:"isInstalled"`
+	SettingsManifest json.RawMessage   `json:"settingsManifest"`
+	ConnectionStatus string            `json:"connectionStatus"`
+	LastConnectedAt  string            `json:"lastConnectedAt,omitempty"`
+	LastError        string            `json:"lastError,omitempty"`
+	Settings         map[string]string `json:"settings,omitempty"`
+	CreatedAt        string            `json:"createdAt"`
+	UpdatedAt        string            `json:"updatedAt"`
+}
+
+type ListPluginsResponse struct {
+	Plugins []PluginItem `json:"plugins"`
+}
+
+type GetPluginRequest struct {
+	Id string `path:"id"`
+}
+
+type GetPluginResponse struct {
+	Plugin PluginItem `json:"plugin"`
+}
+
+type UpdatePluginSettingsRequest struct {
+	Id       string            `path:"id"`
+	Settings map[string]string `json:"settings"`
+	Secrets  map[string]bool   `json:"secrets,omitempty"`
+}
+
+type UpdatePluginSettingsResponse struct {
+	Plugin PluginItem `json:"plugin"`
+}
+
+type TogglePluginRequest struct {
+	Id        string `path:"id"`
+	IsEnabled bool   `json:"isEnabled"`
+}
+
+// NeboLoop App Store types
+
+type StoreAuthor struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Verified bool   `json:"verified"`
+}
+
+type StoreApp struct {
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	Slug         string      `json:"slug"`
+	Description  string      `json:"description"`
+	Icon         string      `json:"icon"`
+	Category     string      `json:"category"`
+	Version      string      `json:"version"`
+	Author       StoreAuthor `json:"author"`
+	InstallCount int         `json:"installCount"`
+	Rating       float64     `json:"rating"`
+	ReviewCount  int         `json:"reviewCount"`
+	IsInstalled  bool        `json:"isInstalled"`
+	Status       string      `json:"status"`
+}
+
+type StoreSkill struct {
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	Slug         string      `json:"slug"`
+	Description  string      `json:"description"`
+	Icon         string      `json:"icon"`
+	Category     string      `json:"category"`
+	Version      string      `json:"version"`
+	Author       StoreAuthor `json:"author"`
+	InstallCount int         `json:"installCount"`
+	Rating       float64     `json:"rating"`
+	ReviewCount  int         `json:"reviewCount"`
+	IsInstalled  bool        `json:"isInstalled"`
+	Status       string      `json:"status"`
+}
+
+type StoreAppsResponse struct {
+	Apps       []StoreApp `json:"apps"`
+	TotalCount int        `json:"totalCount"`
+	Page       int        `json:"page"`
+	PageSize   int        `json:"pageSize"`
+}
+
+type StoreSkillsResponse struct {
+	Skills     []StoreSkill `json:"skills"`
+	TotalCount int          `json:"totalCount"`
+	Page       int          `json:"page"`
+	PageSize   int          `json:"pageSize"`
+}
+
+type StoreInstallResponse struct {
+	PluginID string `json:"pluginId"`
+	Message  string `json:"message"`
+}
+
+// NeboLoop Connection Code types
+
+type NeboLoopConnectRequest struct {
+	Code    string `json:"code"`
+	Name    string `json:"name"`
+	Purpose string `json:"purpose,omitempty"`
+}
+
+type NeboLoopConnectResponse struct {
+	BotID   string `json:"botId"`
+	BotName string `json:"botName"`
+	BotSlug string `json:"botSlug"`
+	Message string `json:"message"`
+}
+
+type NeboLoopStatusResponse struct {
+	Connected bool   `json:"connected"`
+	BotID     string `json:"botId,omitempty"`
+	BotName   string `json:"botName,omitempty"`
+	APIServer string `json:"apiServer,omitempty"`
+}
+
+// Tool Permissions types
+
+type ToolPermissions struct {
+	Permissions map[string]bool `json:"permissions"`
+}
+
+type GetToolPermissionsResponse struct {
+	Permissions map[string]bool `json:"permissions"`
+}
+
+type UpdateToolPermissionsRequest struct {
+	Permissions map[string]bool `json:"permissions"`
+}
+
+type UpdateToolPermissionsResponse struct {
+	Permissions map[string]bool `json:"permissions"`
+}
+
+type AcceptTermsResponse struct {
+	AcceptedAt string `json:"acceptedAt"`
 }

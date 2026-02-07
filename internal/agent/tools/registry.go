@@ -150,6 +150,16 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 		}
 	}
 
+	// Check origin-based deny list before any approval logic
+	origin := GetOrigin(ctx)
+	if r.policy != nil && r.policy.IsDeniedForOrigin(origin, toolCall.Name) {
+		fmt.Printf("[Registry] Tool %q denied for origin=%s\n", toolCall.Name, origin)
+		return &ToolResult{
+			Content: fmt.Sprintf("Tool %q is not permitted for %s-origin requests", toolCall.Name, origin),
+			IsError: true,
+		}
+	}
+
 	// Check if approval is required
 	if tool.RequiresApproval() && r.policy != nil {
 		fmt.Printf("[Registry] Tool requires approval, policy level=%s\n", r.policy.Level)
@@ -196,39 +206,66 @@ func (r *Registry) SetPolicy(policy *Policy) {
 // RegisterDefaults registers the default set of tools using the STRAP domain pattern
 // This consolidates 35+ tools into ~5 domain tools for reduced context window overhead
 func (r *Registry) RegisterDefaults() {
+	r.RegisterDefaultsWithPermissions(nil)
+}
+
+// RegisterDefaultsWithPermissions registers tools filtered by the given permission map.
+// Keys are category names: "chat", "file", "shell", "web", "contacts", "desktop", "media", "system".
+// A nil map registers all tools (no filtering). A missing key defaults to false (denied).
+func (r *Registry) RegisterDefaultsWithPermissions(permissions map[string]bool) {
 	// STRAP Domain Tools (consolidate multiple tools into domain-based routing)
-	r.registerDomainTools()
+	r.registerDomainToolsWithPermissions(permissions)
 
 	// Platform-specific capabilities (clipboard, notification, system, tts, etc.)
 	// These are auto-registered via init() in platform-specific files
-	// and filtered by the current platform
-	RegisterPlatformCapabilities(r)
+	// and filtered by the current platform + permissions
+	RegisterPlatformCapabilitiesWithPermissions(r, permissions)
 }
 
-// registerDomainTools registers STRAP domain tools
+// registerDomainTools registers STRAP domain tools (no permission filtering)
 func (r *Registry) registerDomainTools() {
+	r.registerDomainToolsWithPermissions(nil)
+}
+
+// registerDomainToolsWithPermissions registers STRAP domain tools filtered by permissions
+func (r *Registry) registerDomainToolsWithPermissions(permissions map[string]bool) {
+	allowed := func(category string) bool {
+		if permissions == nil {
+			return true // No permissions = allow all
+		}
+		return permissions[category]
+	}
+
 	// File domain: read, write, edit, glob, grep
-	r.Register(NewFileTool())
+	if allowed("file") {
+		r.Register(NewFileTool())
+	}
 
 	// Shell domain: bash, process, sessions
-	r.Register(NewShellTool(r.policy, r.processRegistry))
+	if allowed("shell") {
+		r.Register(NewShellTool(r.policy, r.processRegistry))
+	}
 
 	// Web domain: fetch, search, browser, screenshot
-	r.Register(NewWebDomainToolWithConfig(WebDomainConfig{
-		Headless: true,
-	}))
+	if allowed("web") {
+		r.Register(NewWebDomainToolWithConfig(WebDomainConfig{
+			Headless: true,
+		}))
+	}
 
 	// Standalone screenshot tool (kept separate for direct capture)
-	r.Register(NewScreenshotTool())
+	if allowed("media") {
+		r.Register(NewScreenshotTool())
 
-	// Vision (image analysis) - requires ANTHROPIC_API_KEY
-	// Kept as standalone since it has different config requirements
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		r.Register(NewVisionTool(VisionConfig{APIKey: apiKey}))
+		// Vision (image analysis) - requires ANTHROPIC_API_KEY
+		if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+			r.Register(NewVisionTool(VisionConfig{APIKey: apiKey}))
+		}
 	}
 
 	// Agent domain: task, cron, memory, message, session
 	// Note: AgentDomainTool requires DB and is registered via RegisterAgentDomainTool()
+	// The agent tool is always registered (it covers chat/memory which is always on)
 }
 
 // RegisterLegacyDefaults registers individual tools (non-domain) for backward compatibility

@@ -6,11 +6,15 @@ import (
 	"sync"
 
 	"github.com/nebolabs/nebo/internal/channels"
+	"github.com/nebolabs/nebo/internal/plugin"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 )
+
+// Compile-time check: Adapter implements plugin.Configurable
+var _ plugin.Configurable = (*Adapter)(nil)
 
 // Adapter implements the Channel interface for Slack
 type Adapter struct {
@@ -100,6 +104,34 @@ func (a *Adapter) SetHandler(fn func(channels.InboundMessage)) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.handler = fn
+}
+
+// Manifest returns the settings schema for the Slack plugin.
+func (a *Adapter) Manifest() plugin.SettingsManifest {
+	return plugin.SettingsManifest{
+		Groups: []plugin.SettingsGroup{
+			{
+				Title:       "Slack App",
+				Description: "Credentials for your Slack app (Socket Mode must be enabled)",
+				Fields: []plugin.SettingsField{
+					{Key: "app_token", Title: "App-Level Token", Type: plugin.FieldPassword, Required: true, Secret: true, Placeholder: "xapp-1-...", Description: "Token starting with xapp- (Socket Mode)"},
+					{Key: "bot_token", Title: "Bot Token", Type: plugin.FieldPassword, Required: true, Secret: true, Placeholder: "xoxb-...", Description: "Bot User OAuth Token starting with xoxb-"},
+				},
+			},
+		},
+	}
+}
+
+// OnSettingsChanged handles hot-reload when settings are updated via the UI.
+func (a *Adapter) OnSettingsChanged(settings map[string]string) error {
+	botToken := settings["bot_token"]
+	if botToken == "" {
+		return nil
+	}
+	_ = a.Disconnect()
+	return a.Connect(context.Background(), channels.ChannelConfig{
+		Token: botToken,
+	})
 }
 
 // listen handles incoming events from Socket Mode

@@ -35,10 +35,10 @@ help:
 	@echo ""
 	@echo "Desktop:"
 	@echo "  make desktop   - Build desktop app (native window + tray)"
-	@echo "  make package   - Package as installer (.dmg/.msi/.deb)"
+	@echo "  make install   - Build and install Nebo.app to /Applications"
 	@echo ""
 	@echo "Installation:"
-	@echo "  make cli       - Build and install nebo globally"
+	@echo "  make cli       - Install nebo binary to PATH (for terminal use)"
 	@echo ""
 	@echo "Database:"
 	@echo "  make migrate-up     - Run pending migrations"
@@ -67,9 +67,12 @@ dev:
 	fi
 
 # Build the unified CLI (server + agent in one binary)
+# Desktop mode is the default — includes native window + system tray via Wails v3.
+# Use CGO_ENABLED=0 go build -o bin/nebo . for headless builds.
 build:
-	@echo "Building $(EXECUTABLE)..."
-	go build -o bin/$(EXECUTABLE) .
+	@echo "Building $(EXECUTABLE) (desktop)..."
+	@cd app && pnpm build
+	CGO_ENABLED=1 go build -tags desktop $(LDFLAGS) -o bin/$(EXECUTABLE) .
 
 # Build CLI only (for backward compatibility, same as build)
 build-cli: build
@@ -190,26 +193,29 @@ release-linux:
 # DESKTOP TARGETS (Wails v3)
 # =============================================================================
 
-# Build desktop app for current platform (requires CGO for Wails v3)
-desktop:
-	@echo "Building Nebo desktop app..."
-	@cd app && pnpm build
-	go build -tags desktop $(LDFLAGS) -o bin/$(EXECUTABLE) .
-	@echo "Desktop app built: bin/$(EXECUTABLE)"
-	@echo "Run with: ./bin/$(EXECUTABLE)"
-	@echo "Run headless: ./bin/$(EXECUTABLE) --headless"
+# Build desktop app (alias for build — desktop is the default)
+desktop: build
 
-# Package desktop app as platform installer (.dmg / .msi / .deb)
-package: desktop
-	@echo "Packaging Nebo desktop app..."
-	@echo "Note: Wails packaging requires wails3 CLI"
-	wails3 package
+# Assemble Nebo.app bundle from the built binary
+# Creates a proper macOS .app that Spotlight can index
+app-bundle: build
+	@echo "Assembling Nebo.app bundle..."
+	@rm -rf dist/Nebo.app
+	@mkdir -p dist/Nebo.app/Contents/MacOS
+	@mkdir -p dist/Nebo.app/Contents/Resources
+	@cp bin/nebo dist/Nebo.app/Contents/MacOS/nebo
+	@sed "s/__VERSION__/$(VERSION)/g" assets/macos/Info.plist > dist/Nebo.app/Contents/Resources/Info.plist
+	@cp assets/macos/Info.plist dist/Nebo.app/Contents/Info.plist
+	@sed -i '' "s/__VERSION__/$$(echo $(VERSION) | sed 's/^v//')/g" dist/Nebo.app/Contents/Info.plist
+	@cp assets/icons/nebo.icns dist/Nebo.app/Contents/Resources/nebo.icns
+	@echo "Built: dist/Nebo.app"
 
-# Install locally (for development)
-install: build
-	@echo "Installing nebo to /usr/local/bin..."
-	@sudo cp bin/nebo /usr/local/bin/nebo
-	@echo "Installed! Run 'nebo' to start."
+# Install Nebo.app to /Applications (macOS)
+install: app-bundle
+	@echo "Installing Nebo.app to /Applications..."
+	@rm -rf /Applications/Nebo.app
+	@cp -R dist/Nebo.app /Applications/Nebo.app
+	@echo "Installed! Nebo is now in your Applications folder and Spotlight."
 
 # Create GitHub release (requires gh CLI)
 github-release: release

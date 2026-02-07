@@ -207,12 +207,13 @@ type Runner struct {
 
 // RunRequest contains parameters for a run
 type RunRequest struct {
-	SessionKey       string // Session identifier (uses "default" if empty)
-	Prompt           string // User prompt
-	System           string // Override system prompt
-	ModelOverride    string // User-specified model override (e.g., "anthropic/claude-opus-4-5")
-	UserID           string // User ID for user-scoped operations (sessions, memories)
-	SkipMemoryExtract bool   // Skip auto memory extraction (e.g., for heartbeats)
+	SessionKey       string       // Session identifier (uses "default" if empty)
+	Prompt           string       // User prompt
+	System           string       // Override system prompt
+	ModelOverride    string       // User-specified model override (e.g., "anthropic/claude-opus-4-5")
+	UserID           string       // User ID for user-scoped operations (sessions, memories)
+	SkipMemoryExtract bool        // Skip auto memory extraction (e.g., for heartbeats)
+	Origin           tools.Origin // Source of this request (user, comm, plugin, skill, system)
 }
 
 // modelOverrideProvider wraps a Provider to use a specific model
@@ -361,7 +362,12 @@ func (r *Runner) SkillLoader() *skills.Loader {
 
 // Run executes the agentic loop
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEvent, error) {
-	fmt.Printf("[Runner] Run: session=%s\n", req.SessionKey)
+	fmt.Printf("[Runner] Run: session=%s origin=%s\n", req.SessionKey, req.Origin)
+
+	// Inject origin into context so tools can check it via GetOrigin(ctx)
+	if req.Origin != "" {
+		ctx = tools.WithOrigin(ctx, req.Origin)
+	}
 
 	// If no providers, try to reload (user may have added API key via onboarding)
 	if len(r.providers) == 0 && r.providerLoader != nil {

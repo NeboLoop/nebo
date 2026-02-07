@@ -1,11 +1,26 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Key, Sparkles, ArrowRight, Check, Loader2, Terminal, Plus } from 'lucide-svelte';
+	import {
+		Key,
+		Sparkles,
+		ArrowRight,
+		Check,
+		Loader2,
+		Terminal,
+		Shield,
+		FileText,
+		Monitor,
+		Globe,
+		Users,
+		Camera,
+		Cpu,
+		MessageCircle
+	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type * as components from '$lib/api/neboComponents';
 	import Button from '$lib/components/ui/Button.svelte';
 
-	type OnboardingStep = 'welcome' | 'provider-choice' | 'api-key' | 'complete';
+	type OnboardingStep = 'welcome' | 'terms' | 'provider-choice' | 'api-key' | 'capabilities' | 'complete';
 	type ProviderChoice = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'api-key';
 
 	let currentStep = $state<OnboardingStep>('welcome');
@@ -22,6 +37,75 @@
 	let isTestingKey = $state(false);
 	let keyValid = $state(false);
 	let isSettingUpCLI = $state(false);
+
+	// Terms
+	let termsAccepted = $state(false);
+	let isAcceptingTerms = $state(false);
+
+	// Capabilities
+	let permissions = $state<Record<string, boolean>>({
+		chat: true,
+		file: false,
+		shell: false,
+		web: false,
+		contacts: false,
+		desktop: false,
+		media: false,
+		system: false
+	});
+	let isSavingPermissions = $state(false);
+
+	const capabilityGroups = [
+		{
+			key: 'chat',
+			label: 'Chat & Memory',
+			description: 'Conversations, memory storage, scheduled tasks',
+			icon: MessageCircle,
+			alwaysOn: true
+		},
+		{
+			key: 'file',
+			label: 'File System',
+			description: 'Read, write, and edit files on your computer',
+			icon: FileText
+		},
+		{
+			key: 'shell',
+			label: 'Shell & Terminal',
+			description: 'Run commands and manage processes',
+			icon: Terminal
+		},
+		{
+			key: 'web',
+			label: 'Web Browsing',
+			description: 'Fetch web pages, search the internet, browser automation',
+			icon: Globe
+		},
+		{
+			key: 'contacts',
+			label: 'Contacts & Calendar',
+			description: 'Access contacts, calendar, reminders, and mail',
+			icon: Users
+		},
+		{
+			key: 'desktop',
+			label: 'Desktop Control',
+			description: 'Window management, accessibility, clipboard',
+			icon: Monitor
+		},
+		{
+			key: 'media',
+			label: 'Media & Capture',
+			description: 'Screenshots, image analysis, music, text-to-speech',
+			icon: Camera
+		},
+		{
+			key: 'system',
+			label: 'System',
+			description: 'Spotlight search, keychain, shortcuts, system info',
+			icon: Cpu
+		}
+	];
 
 	const providerInfo = {
 		anthropic: {
@@ -82,6 +166,9 @@
 		}
 	});
 
+	// Progress dots - steps visible to user
+	const progressSteps = ['welcome', 'terms', 'provider-choice', 'capabilities', 'complete'];
+
 	onMount(async () => {
 		// Check CLI statuses (installed + authenticated)
 		try {
@@ -94,6 +181,19 @@
 		}
 	});
 
+	async function acceptTerms() {
+		isAcceptingTerms = true;
+		error = '';
+		try {
+			await api.acceptTerms();
+			currentStep = 'provider-choice';
+		} catch (err: any) {
+			error = err?.message || 'Failed to accept terms';
+		} finally {
+			isAcceptingTerms = false;
+		}
+	}
+
 	async function setupCLI(cliKey: string) {
 		isSettingUpCLI = true;
 		error = '';
@@ -105,12 +205,7 @@
 				primary: info.model
 			});
 
-			// Mark onboarding complete
-			await api.updateUserProfile({
-				onboardingCompleted: true
-			});
-
-			currentStep = 'complete';
+			currentStep = 'capabilities';
 		} catch (err: any) {
 			error = err?.message || `Failed to configure ${cliProviderInfo[cliKey].name}`;
 		} finally {
@@ -141,12 +236,8 @@
 
 			if (testResponse.success) {
 				keyValid = true;
-				// Mark onboarding complete and go to chat
-				await api.updateUserProfile({
-					onboardingCompleted: true
-				});
 				setTimeout(() => {
-					currentStep = 'complete';
+					currentStep = 'capabilities';
 				}, 500);
 			} else {
 				error = testResponse.message || 'API key validation failed';
@@ -157,6 +248,21 @@
 			error = err?.message || 'Failed to save API key';
 		} finally {
 			isTestingKey = false;
+		}
+	}
+
+	async function savePermissionsAndFinish() {
+		isSavingPermissions = true;
+		error = '';
+
+		try {
+			await api.updateToolPermissions({ permissions });
+			await api.updateUserProfile({ onboardingCompleted: true });
+			currentStep = 'complete';
+		} catch (err: any) {
+			error = err?.message || 'Failed to save permissions';
+		} finally {
+			isSavingPermissions = false;
 		}
 	}
 
@@ -186,15 +292,20 @@
 		};
 		return mapping[choice] || choice.replace('-cli', '');
 	}
+
+	function togglePermission(key: string) {
+		if (key === 'chat') return; // Chat is always on
+		permissions = { ...permissions, [key]: !permissions[key] };
+	}
 </script>
 
 <div class="fixed inset-0 bg-base-100 z-50 flex items-center justify-center">
 	<div class="w-full max-w-lg p-8">
 		<!-- Progress dots -->
 		<div class="flex justify-center gap-2 mb-8">
-			{#each ['welcome', 'provider-choice', 'complete'] as step, i}
-				{@const stepIndex = ['welcome', 'provider-choice', 'api-key', 'complete'].indexOf(currentStep)}
-				{@const dotIndex = ['welcome', 'provider-choice', 'complete'].indexOf(step)}
+			{#each progressSteps as step}
+				{@const stepIndex = progressSteps.indexOf(currentStep === 'api-key' ? 'provider-choice' : currentStep)}
+				{@const dotIndex = progressSteps.indexOf(step)}
 				<div
 					class="w-2 h-2 rounded-full transition-colors {stepIndex >= dotIndex
 						? 'bg-primary'
@@ -213,9 +324,87 @@
 				<p class="text-base-content/70 mb-8 text-lg">
 					Your personal AI assistant. Let's get you set up in just a minute.
 				</p>
-				<Button type="primary" size="lg" onclick={() => (currentStep = 'provider-choice')}>
+				<Button type="primary" size="lg" onclick={() => (currentStep = 'terms')}>
 					Get Started
 					<ArrowRight class="w-5 h-5 ml-2" />
+				</Button>
+			</div>
+		{/if}
+
+		<!-- Terms Step -->
+		{#if currentStep === 'terms'}
+			<div class="animate-in fade-in duration-300">
+				<div class="w-16 h-16 rounded-full bg-warning/20 flex items-center justify-center mx-auto mb-6">
+					<Shield class="w-8 h-8 text-warning" />
+				</div>
+				<h2 class="text-2xl font-bold text-center mb-2">Privacy & Terms</h2>
+				<p class="text-base-content/70 text-center mb-6">
+					Important information about how Nebo handles your data
+				</p>
+
+				{#if error}
+					<div class="alert alert-error mb-4">
+						<span>{error}</span>
+					</div>
+				{/if}
+
+				<div class="bg-base-200 rounded-xl p-5 mb-6 space-y-4 text-sm max-h-64 overflow-y-auto">
+					<div>
+						<h3 class="font-semibold text-base-content mb-1">Your Data Stays Local</h3>
+						<p class="text-base-content/70">
+							All conversations, memories, and settings are stored locally on your device in a SQLite database. Nothing is sent to Nebo's servers.
+						</p>
+					</div>
+					<div>
+						<h3 class="font-semibold text-base-content mb-1">AI Provider Communication</h3>
+						<p class="text-base-content/70">
+							When you chat, your messages are sent to your chosen AI provider (Anthropic, OpenAI, or Google) for processing. Their privacy policies apply to that data.
+						</p>
+					</div>
+					<div>
+						<h3 class="font-semibold text-base-content mb-1">API Keys</h3>
+						<p class="text-base-content/70">
+							Your API keys are stored locally in your device's database. They are only used to authenticate with your AI provider.
+						</p>
+					</div>
+					<div>
+						<h3 class="font-semibold text-base-content mb-1">System Access</h3>
+						<p class="text-base-content/70">
+							Nebo can access system features (files, shell, contacts, etc.) but only capabilities you explicitly enable. You control what the agent can do.
+						</p>
+					</div>
+					<div>
+						<h3 class="font-semibold text-base-content mb-1">No Analytics or Telemetry</h3>
+						<p class="text-base-content/70">
+							Nebo does not collect usage analytics, telemetry, or crash reports. Your usage is completely private.
+						</p>
+					</div>
+				</div>
+
+				<label class="flex items-start gap-3 mb-6 cursor-pointer">
+					<input
+						type="checkbox"
+						class="checkbox checkbox-primary mt-0.5"
+						bind:checked={termsAccepted}
+					/>
+					<span class="text-sm text-base-content/80">
+						I understand that my conversations are sent to my chosen AI provider for processing, and that I control which system capabilities the agent can access.
+					</span>
+				</label>
+
+				<Button
+					type="primary"
+					class="w-full"
+					onclick={acceptTerms}
+					disabled={!termsAccepted || isAcceptingTerms}
+				>
+					{#if isAcceptingTerms}
+						<Loader2 class="w-5 h-5 mr-2 animate-spin" />
+						Saving...
+					{:else}
+						Continue
+						<ArrowRight class="w-5 h-5 ml-2" />
+					{/if}
 				</Button>
 			</div>
 		{/if}
@@ -453,6 +642,78 @@
 						← Back to provider selection
 					</button>
 				</div>
+			</div>
+		{/if}
+
+		<!-- Capabilities Step -->
+		{#if currentStep === 'capabilities'}
+			<div class="animate-in fade-in duration-300">
+				<div class="w-16 h-16 rounded-full bg-info/20 flex items-center justify-center mx-auto mb-6">
+					<Shield class="w-8 h-8 text-info" />
+				</div>
+				<h2 class="text-2xl font-bold text-center mb-2">Agent Capabilities</h2>
+				<p class="text-base-content/70 text-center mb-6">
+					Choose what Nebo can access. You can change these anytime in Settings.
+				</p>
+
+				{#if error}
+					<div class="alert alert-error mb-4">
+						<span>{error}</span>
+					</div>
+				{/if}
+
+				<div class="space-y-2 mb-6 max-h-72 overflow-y-auto">
+					{#each capabilityGroups as cap}
+						<button
+							type="button"
+							class="w-full p-3 rounded-lg border transition-all text-left
+								{permissions[cap.key]
+									? 'border-primary/30 bg-primary/5'
+									: 'border-base-300 hover:border-base-content/20'}
+								{cap.alwaysOn ? 'opacity-80 cursor-default' : ''}"
+							onclick={() => togglePermission(cap.key)}
+							disabled={cap.alwaysOn}
+						>
+							<div class="flex items-center gap-3">
+								<div class="p-1.5 rounded-lg {permissions[cap.key] ? 'bg-primary/20' : 'bg-base-200'}">
+									<cap.icon class="w-4 h-4 {permissions[cap.key] ? 'text-primary' : 'text-base-content/50'}" />
+								</div>
+								<div class="flex-1 min-w-0">
+									<div class="flex items-center gap-2">
+										<span class="font-medium text-sm">{cap.label}</span>
+										{#if cap.alwaysOn}
+											<span class="badge badge-neutral badge-xs">Always on</span>
+										{/if}
+									</div>
+									<p class="text-xs text-base-content/50 truncate">{cap.description}</p>
+								</div>
+								<input
+									type="checkbox"
+									class="toggle toggle-primary toggle-sm"
+									checked={permissions[cap.key]}
+									disabled={cap.alwaysOn}
+									onclick={(e: MouseEvent) => e.stopPropagation()}
+									onchange={() => togglePermission(cap.key)}
+								/>
+							</div>
+						</button>
+					{/each}
+				</div>
+
+				<Button
+					type="primary"
+					class="w-full"
+					onclick={savePermissionsAndFinish}
+					disabled={isSavingPermissions}
+				>
+					{#if isSavingPermissions}
+						<Loader2 class="w-5 h-5 mr-2 animate-spin" />
+						Saving...
+					{:else}
+						Finish Setup
+						<ArrowRight class="w-5 h-5 ml-2" />
+					{/if}
+				</Button>
 			</div>
 		{/if}
 

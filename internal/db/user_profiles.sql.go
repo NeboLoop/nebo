@@ -10,6 +10,18 @@ import (
 	"database/sql"
 )
 
+const acceptTerms = `-- name: AcceptTerms :exec
+UPDATE user_profiles
+SET terms_accepted_at = unixepoch(),
+    updated_at = unixepoch()
+WHERE user_id = ?
+`
+
+func (q *Queries) AcceptTerms(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, acceptTerms, userID)
+	return err
+}
+
 const deleteUserProfile = `-- name: DeleteUserProfile :exec
 DELETE FROM user_profiles WHERE user_id = ?
 `
@@ -19,11 +31,35 @@ func (q *Queries) DeleteUserProfile(ctx context.Context, userID string) error {
 	return err
 }
 
+const getTermsAcceptedAt = `-- name: GetTermsAcceptedAt :one
+SELECT terms_accepted_at
+FROM user_profiles
+WHERE user_id = ?
+`
+
+func (q *Queries) GetTermsAcceptedAt(ctx context.Context, userID string) (sql.NullInt64, error) {
+	row := q.db.QueryRowContext(ctx, getTermsAcceptedAt, userID)
+	var terms_accepted_at sql.NullInt64
+	err := row.Scan(&terms_accepted_at)
+	return terms_accepted_at, err
+}
+
+const getToolPermissions = `-- name: GetToolPermissions :one
+SELECT COALESCE(tool_permissions, '{}') AS tool_permissions
+FROM user_profiles
+WHERE user_id = ?
+`
+
+func (q *Queries) GetToolPermissions(ctx context.Context, userID string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getToolPermissions, userID)
+	var tool_permissions string
+	err := row.Scan(&tool_permissions)
+	return tool_permissions, err
+}
+
 const getUserProfile = `-- name: GetUserProfile :one
 
-SELECT user_id, display_name, bio, location, timezone, occupation, interests,
-       communication_style, goals, context, onboarding_completed, onboarding_step,
-       created_at, updated_at
+SELECT user_id, display_name, bio, location, timezone, occupation, interests, communication_style, goals, context, onboarding_completed, onboarding_step, created_at, updated_at, tool_permissions, terms_accepted_at
 FROM user_profiles
 WHERE user_id = ?
 `
@@ -47,6 +83,8 @@ func (q *Queries) GetUserProfile(ctx context.Context, userID string) (UserProfil
 		&i.OnboardingStep,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ToolPermissions,
+		&i.TermsAcceptedAt,
 	)
 	return i, err
 }
@@ -78,6 +116,23 @@ type SetOnboardingStepParams struct {
 
 func (q *Queries) SetOnboardingStep(ctx context.Context, arg SetOnboardingStepParams) error {
 	_, err := q.db.ExecContext(ctx, setOnboardingStep, arg.OnboardingStep, arg.UserID)
+	return err
+}
+
+const updateToolPermissions = `-- name: UpdateToolPermissions :exec
+UPDATE user_profiles
+SET tool_permissions = ?,
+    updated_at = unixepoch()
+WHERE user_id = ?
+`
+
+type UpdateToolPermissionsParams struct {
+	ToolPermissions sql.NullString `json:"tool_permissions"`
+	UserID          string         `json:"user_id"`
+}
+
+func (q *Queries) UpdateToolPermissions(ctx context.Context, arg UpdateToolPermissionsParams) error {
+	_, err := q.db.ExecContext(ctx, updateToolPermissions, arg.ToolPermissions, arg.UserID)
 	return err
 }
 
@@ -128,8 +183,9 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 const upsertUserProfile = `-- name: UpsertUserProfile :one
 INSERT INTO user_profiles (user_id, display_name, bio, location, timezone, occupation,
                            interests, communication_style, goals, context,
-                           onboarding_completed, onboarding_step, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+                           onboarding_completed, onboarding_step,
+                           tool_permissions, terms_accepted_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
 ON CONFLICT(user_id) DO UPDATE SET
     display_name = COALESCE(excluded.display_name, user_profiles.display_name),
     bio = COALESCE(excluded.bio, user_profiles.bio),
@@ -142,8 +198,10 @@ ON CONFLICT(user_id) DO UPDATE SET
     context = COALESCE(excluded.context, user_profiles.context),
     onboarding_completed = COALESCE(excluded.onboarding_completed, user_profiles.onboarding_completed),
     onboarding_step = COALESCE(excluded.onboarding_step, user_profiles.onboarding_step),
+    tool_permissions = COALESCE(excluded.tool_permissions, user_profiles.tool_permissions),
+    terms_accepted_at = COALESCE(excluded.terms_accepted_at, user_profiles.terms_accepted_at),
     updated_at = unixepoch()
-RETURNING user_id, display_name, bio, location, timezone, occupation, interests, communication_style, goals, context, onboarding_completed, onboarding_step, created_at, updated_at
+RETURNING user_id, display_name, bio, location, timezone, occupation, interests, communication_style, goals, context, onboarding_completed, onboarding_step, created_at, updated_at, tool_permissions, terms_accepted_at
 `
 
 type UpsertUserProfileParams struct {
@@ -159,6 +217,8 @@ type UpsertUserProfileParams struct {
 	Context             sql.NullString `json:"context"`
 	OnboardingCompleted sql.NullInt64  `json:"onboarding_completed"`
 	OnboardingStep      sql.NullString `json:"onboarding_step"`
+	ToolPermissions     sql.NullString `json:"tool_permissions"`
+	TermsAcceptedAt     sql.NullInt64  `json:"terms_accepted_at"`
 }
 
 func (q *Queries) UpsertUserProfile(ctx context.Context, arg UpsertUserProfileParams) (UserProfile, error) {
@@ -175,6 +235,8 @@ func (q *Queries) UpsertUserProfile(ctx context.Context, arg UpsertUserProfilePa
 		arg.Context,
 		arg.OnboardingCompleted,
 		arg.OnboardingStep,
+		arg.ToolPermissions,
+		arg.TermsAcceptedAt,
 	)
 	var i UserProfile
 	err := row.Scan(
@@ -192,6 +254,8 @@ func (q *Queries) UpsertUserProfile(ctx context.Context, arg UpsertUserProfilePa
 		&i.OnboardingStep,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ToolPermissions,
+		&i.TermsAcceptedAt,
 	)
 	return i, err
 }

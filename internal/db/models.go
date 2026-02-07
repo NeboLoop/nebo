@@ -348,6 +348,35 @@ type PersonalityPreset struct {
 	DisplayOrder sql.NullInt64  `json:"display_order"`
 }
 
+type PluginRegistry struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	PluginType       string         `json:"plugin_type"`
+	DisplayName      string         `json:"display_name"`
+	Description      string         `json:"description"`
+	Icon             string         `json:"icon"`
+	Version          string         `json:"version"`
+	IsEnabled        int64          `json:"is_enabled"`
+	IsInstalled      int64          `json:"is_installed"`
+	SettingsManifest string         `json:"settings_manifest"`
+	ConnectionStatus string         `json:"connection_status"`
+	LastConnectedAt  sql.NullInt64  `json:"last_connected_at"`
+	LastError        sql.NullString `json:"last_error"`
+	Metadata         string         `json:"metadata"`
+	CreatedAt        int64          `json:"created_at"`
+	UpdatedAt        int64          `json:"updated_at"`
+}
+
+type PluginSetting struct {
+	ID           string `json:"id"`
+	PluginID     string `json:"plugin_id"`
+	SettingKey   string `json:"setting_key"`
+	SettingValue string `json:"setting_value"`
+	IsSecret     int64  `json:"is_secret"`
+	CreatedAt    int64  `json:"created_at"`
+	UpdatedAt    int64  `json:"updated_at"`
+}
+
 type ProviderModel struct {
 	ID            string          `json:"id"`
 	ProfileID     string          `json:"profile_id"`
@@ -449,4 +478,6 @@ type UserProfile struct {
 	OnboardingStep      sql.NullString `json:"onboarding_step"`
 	CreatedAt           int64          `json:"created_at"`
 	UpdatedAt           int64          `json:"updated_at"`
+	ToolPermissions     sql.NullString `json:"tool_permissions"`
+	TermsAcceptedAt     sql.NullInt64  `json:"terms_accepted_at"`
 }

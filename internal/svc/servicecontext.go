@@ -11,6 +11,7 @@ import (
 	"github.com/nebolabs/nebo/internal/local"
 	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
 	"github.com/nebolabs/nebo/internal/middleware"
+	"github.com/nebolabs/nebo/internal/plugin"
 	"github.com/nebolabs/nebo/internal/provider"
 
 	"github.com/nebolabs/nebo/internal/logging"
@@ -25,6 +26,7 @@ type ServiceContext struct {
 	Email          *local.EmailService
 	AgentSettings  *local.AgentSettingsStore
 	SkillSettings  *local.SkillSettingsStore
+	PluginStore    *plugin.Store
 
 	AgentHub  *agenthub.Hub
 	MCPClient *mcpclient.Client
@@ -91,6 +93,21 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 	if svc.DB != nil {
 		svc.Auth = local.NewAuthService(svc.DB, c)
 		logging.Info("Auth service initialized")
+
+		svc.PluginStore = plugin.NewStore(svc.DB.GetDB())
+		logging.Info("Plugin store initialized")
+
+		// Broadcast plugin settings changes to connected agents/UI
+		svc.PluginStore.OnChange(func(pluginName string, _ map[string]string) {
+			svc.AgentHub.Broadcast(&agenthub.Frame{
+				Type:   "event",
+				Method: "plugin_settings_updated",
+				Payload: map[string]any{
+					"plugin": pluginName,
+				},
+			})
+			logging.Infof("Plugin settings updated: %s", pluginName)
+		})
 
 		// Initialize MCP OAuth client
 		encKey, err := mcpclient.GetEncryptionKey()

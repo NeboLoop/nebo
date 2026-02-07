@@ -76,10 +76,23 @@ jobs:
             -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
             -o nebo-darwin-${{ matrix.goarch }} .
 
+      - name: Assemble Nebo.app bundle
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          PKG_VERSION="${VERSION#v}"
+          mkdir -p Nebo.app/Contents/MacOS
+          mkdir -p Nebo.app/Contents/Resources
+          cp nebo-darwin-${{ matrix.goarch }} Nebo.app/Contents/MacOS/nebo
+          sed "s/__VERSION__/${PKG_VERSION}/g" assets/macos/Info.plist > Nebo.app/Contents/Info.plist
+          cp assets/icons/nebo.icns Nebo.app/Contents/Resources/nebo.icns
+          # Zip for release (ditto preserves macOS metadata)
+          ditto -c -k --keepParent Nebo.app Nebo-darwin-${{ matrix.goarch }}.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: nebo-darwin-${{ matrix.goarch }}
-          path: nebo-darwin-${{ matrix.goarch }}
+          path: Nebo-darwin-${{ matrix.goarch }}.zip
 
   # ─── Linux desktop builds (CGO required for Wails v3 / WebKitGTK) ────
   build-linux:
@@ -239,24 +252,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ─── Update Homebrew formula (cross-repo) ─────────────────────────────
+  # ─── Update Homebrew cask (cross-repo) ────────────────────────────────
   update-homebrew:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: Download macOS and Linux binaries
+      - name: Download macOS artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: nebo-darwin-*
           merge-multiple: true
 
       - name: Compute SHA256 checksums
         id: checksums
         run: |
-          echo "darwin_arm64=$(sha256sum artifacts/nebo-darwin-arm64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "darwin_amd64=$(sha256sum artifacts/nebo-darwin-amd64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "linux_amd64=$(sha256sum artifacts/nebo-linux-amd64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "linux_arm64=$(sha256sum artifacts/nebo-linux-arm64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "darwin_arm64=$(sha256sum artifacts/Nebo-darwin-arm64.zip | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "darwin_amd64=$(sha256sum artifacts/Nebo-darwin-amd64.zip | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
@@ -265,28 +277,29 @@ jobs:
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: homebrew-tap
 
-      - name: Checkout source (for formula template)
+      - name: Checkout source (for cask template)
         uses: actions/checkout@v4
         with:
           path: source
 
-      - name: Update formula
+      - name: Update cask
         env:
           VERSION: ${{ github.ref_name }}
           SHA_DARWIN_ARM64: ${{ steps.checksums.outputs.darwin_arm64 }}
           SHA_DARWIN_AMD64: ${{ steps.checksums.outputs.darwin_amd64 }}
-          SHA_LINUX_AMD64: ${{ steps.checksums.outputs.linux_amd64 }}
-          SHA_LINUX_ARM64: ${{ steps.checksums.outputs.linux_arm64 }}
         run: |
           export PKG_VERSION="${VERSION#v}"
-          envsubst < source/scripts/nebo.rb.tmpl > homebrew-tap/Formula/nebo.rb
+          mkdir -p homebrew-tap/Casks
+          envsubst < source/scripts/nebo.rb.tmpl > homebrew-tap/Casks/nebo.rb
 
-      - name: Push formula update
+      - name: Push cask update
         working-directory: homebrew-tap
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/nebo.rb
+          git add Casks/nebo.rb
+          # Remove old formula if it exists
+          git rm -f Formula/nebo.rb 2>/dev/null || true
           git commit -m "Update nebo to ${{ github.ref_name }}"
           git push
 

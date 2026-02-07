@@ -13,7 +13,9 @@
 		Wrench,
 		MessageCircle,
 		Server,
-		Activity
+		Activity,
+		Puzzle,
+		Shield
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 
@@ -33,6 +35,7 @@
 			tabs: [
 				{ id: 'personality', path: '/settings/personality', label: 'Personality', icon: Sparkles },
 				{ id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key },
+				{ id: 'permissions', path: '/settings/permissions', label: 'Permissions', icon: Shield },
 				{ id: 'agent', path: '/settings/agent', label: 'Agent Config', icon: Bot },
 				{ id: 'heartbeat', path: '/settings/heartbeat', label: 'Heartbeat', icon: Heart },
 				{ id: 'memories', path: '/settings/memories', label: 'Memories', icon: Brain }
@@ -43,6 +46,7 @@
 			tabs: [
 				{ id: 'sessions', path: '/settings/sessions', label: 'Sessions', icon: History },
 				{ id: 'extensions', path: '/settings/extensions', label: 'Extensions', icon: Wrench },
+				{ id: 'plugins', path: '/settings/plugins', label: 'Plugins', icon: Puzzle },
 				{ id: 'channels', path: '/settings/channels', label: 'Channels', icon: MessageCircle },
 				{ id: 'mcp', path: '/settings/mcp', label: 'MCP', icon: Server },
 				{ id: 'status', path: '/settings/status', label: 'Status', icon: Activity }

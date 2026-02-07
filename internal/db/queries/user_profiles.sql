@@ -1,17 +1,16 @@
 -- User profile queries
 
 -- name: GetUserProfile :one
-SELECT user_id, display_name, bio, location, timezone, occupation, interests,
-       communication_style, goals, context, onboarding_completed, onboarding_step,
-       created_at, updated_at
+SELECT *
 FROM user_profiles
 WHERE user_id = ?;
 
 -- name: UpsertUserProfile :one
 INSERT INTO user_profiles (user_id, display_name, bio, location, timezone, occupation,
                            interests, communication_style, goals, context,
-                           onboarding_completed, onboarding_step, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
+                           onboarding_completed, onboarding_step,
+                           tool_permissions, terms_accepted_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
 ON CONFLICT(user_id) DO UPDATE SET
     display_name = COALESCE(excluded.display_name, user_profiles.display_name),
     bio = COALESCE(excluded.bio, user_profiles.bio),
@@ -24,6 +23,8 @@ ON CONFLICT(user_id) DO UPDATE SET
     context = COALESCE(excluded.context, user_profiles.context),
     onboarding_completed = COALESCE(excluded.onboarding_completed, user_profiles.onboarding_completed),
     onboarding_step = COALESCE(excluded.onboarding_step, user_profiles.onboarding_step),
+    tool_permissions = COALESCE(excluded.tool_permissions, user_profiles.tool_permissions),
+    terms_accepted_at = COALESCE(excluded.terms_accepted_at, user_profiles.terms_accepted_at),
     updated_at = unixepoch()
 RETURNING *;
 
@@ -52,6 +53,28 @@ WHERE user_id = ?;
 UPDATE user_profiles
 SET onboarding_step = ?,
     updated_at = unixepoch()
+WHERE user_id = ?;
+
+-- name: GetToolPermissions :one
+SELECT COALESCE(tool_permissions, '{}') AS tool_permissions
+FROM user_profiles
+WHERE user_id = ?;
+
+-- name: UpdateToolPermissions :exec
+UPDATE user_profiles
+SET tool_permissions = ?,
+    updated_at = unixepoch()
+WHERE user_id = ?;
+
+-- name: AcceptTerms :exec
+UPDATE user_profiles
+SET terms_accepted_at = unixepoch(),
+    updated_at = unixepoch()
+WHERE user_id = ?;
+
+-- name: GetTermsAcceptedAt :one
+SELECT terms_accepted_at
+FROM user_profiles
 WHERE user_id = ?;
 
 -- name: DeleteUserProfile :exec

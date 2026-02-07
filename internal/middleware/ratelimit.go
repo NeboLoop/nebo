@@ -227,26 +227,69 @@ func (rl *RateLimiter) cleanup() {
 	}
 }
 
-// DefaultKeyFunc extracts the client IP from the request
+// DefaultKeyFunc extracts the client IP from RemoteAddr only.
+// It intentionally ignores X-Forwarded-For and X-Real-IP headers because
+// those are trivially spoofable by any client. For deployments behind a
+// trusted reverse proxy, use TrustedProxyKeyFunc instead.
 func DefaultKeyFunc(r *http.Request) string {
-	// Check X-Forwarded-For header first (for proxies)
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		// Take the first IP in the chain
-		ips := splitAndTrim(xff, ",")
-		if len(ips) > 0 {
-			return ips[0]
+	return r.RemoteAddr
+}
+
+// TrustedProxyKeyFunc returns a key function that only trusts proxy headers
+// (X-Forwarded-For, X-Real-IP) when the request comes from a known proxy IP.
+// For all other requests, it falls back to RemoteAddr.
+func TrustedProxyKeyFunc(trustedProxies []string) func(*http.Request) string {
+	trusted := make(map[string]bool, len(trustedProxies))
+	for _, ip := range trustedProxies {
+		trusted[ip] = true
+	}
+	return func(r *http.Request) string {
+		remoteIP := r.RemoteAddr
+		if host, _, err := splitHostPort(remoteIP); err == nil {
+			remoteIP = host
+		}
+		if trusted[remoteIP] {
+			xff := r.Header.Get("X-Forwarded-For")
+			if xff != "" {
+				ips := splitAndTrim(xff, ",")
+				if len(ips) > 0 {
+					return ips[0]
+				}
+			}
+			xri := r.Header.Get("X-Real-IP")
+			if xri != "" {
+				return xri
+			}
+		}
+		return r.RemoteAddr
+	}
+}
+
+// splitHostPort splits a host:port string, handling IPv6 bracket notation.
+func splitHostPort(addr string) (string, string, error) {
+	// Handle IPv6 [::1]:port
+	if len(addr) > 0 && addr[0] == '[' {
+		end := len(addr) - 1
+		for i := 1; i < len(addr); i++ {
+			if addr[i] == ']' {
+				end = i
+				break
+			}
+		}
+		host := addr[1:end]
+		port := ""
+		if end+1 < len(addr) && addr[end+1] == ':' {
+			port = addr[end+2:]
+		}
+		return host, port, nil
+	}
+	// Handle IPv4 host:port
+	for i := len(addr) - 1; i >= 0; i-- {
+		if addr[i] == ':' {
+			return addr[:i], addr[i+1:], nil
 		}
 	}
-
-	// Check X-Real-IP header
-	xri := r.Header.Get("X-Real-IP")
-	if xri != "" {
-		return xri
-	}
-
-	// Fall back to RemoteAddr
-	return r.RemoteAddr
+	return addr, "", nil
 }
 
 // DefaultExceededHandler handles rate limit exceeded responses

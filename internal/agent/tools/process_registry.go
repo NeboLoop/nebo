@@ -388,6 +388,8 @@ func (r *ProcessRegistry) SpawnBackgroundProcess(ctx context.Context, command, c
 		cmd.Dir = cwd
 	}
 
+	cmd.Env = sanitizedEnv()
+
 	// Set up pipes
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

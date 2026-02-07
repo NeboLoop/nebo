@@ -160,6 +160,7 @@ func TestRateLimiter_DifferentClients(t *testing.T) {
 }
 
 func TestDefaultKeyFunc(t *testing.T) {
+	// DefaultKeyFunc should ONLY use RemoteAddr, ignoring spoofable headers
 	tests := []struct {
 		name        string
 		remoteAddr  string
@@ -173,23 +174,23 @@ func TestDefaultKeyFunc(t *testing.T) {
 			expectedKey: "192.168.1.1:12345",
 		},
 		{
-			name:        "X-Forwarded-For",
+			name:        "ignores X-Forwarded-For",
 			remoteAddr:  "10.0.0.1:12345",
 			xForwarded:  "203.0.113.195, 70.41.3.18",
-			expectedKey: "203.0.113.195",
+			expectedKey: "10.0.0.1:12345",
 		},
 		{
-			name:        "X-Real-IP",
+			name:        "ignores X-Real-IP",
 			remoteAddr:  "10.0.0.1:12345",
 			xRealIP:     "203.0.113.195",
-			expectedKey: "203.0.113.195",
+			expectedKey: "10.0.0.1:12345",
 		},
 		{
-			name:        "X-Forwarded-For takes precedence",
+			name:        "ignores both proxy headers",
 			remoteAddr:  "10.0.0.1:12345",
 			xForwarded:  "203.0.113.195",
 			xRealIP:     "192.168.1.1",
-			expectedKey: "203.0.113.195",
+			expectedKey: "10.0.0.1:12345",
 		},
 	}
 
@@ -207,6 +208,73 @@ func TestDefaultKeyFunc(t *testing.T) {
 			key := DefaultKeyFunc(req)
 			if key != tt.expectedKey {
 				t.Errorf("DefaultKeyFunc() = %q, want %q", key, tt.expectedKey)
+			}
+		})
+	}
+}
+
+func TestTrustedProxyKeyFunc(t *testing.T) {
+	keyFunc := TrustedProxyKeyFunc([]string{"10.0.0.1"})
+
+	tests := []struct {
+		name        string
+		remoteAddr  string
+		xForwarded  string
+		xRealIP     string
+		expectedKey string
+	}{
+		{
+			name:        "trusted proxy with X-Forwarded-For",
+			remoteAddr:  "10.0.0.1:12345",
+			xForwarded:  "203.0.113.195, 70.41.3.18",
+			expectedKey: "203.0.113.195",
+		},
+		{
+			name:        "trusted proxy with X-Real-IP",
+			remoteAddr:  "10.0.0.1:12345",
+			xRealIP:     "203.0.113.195",
+			expectedKey: "203.0.113.195",
+		},
+		{
+			name:        "trusted proxy no headers falls back to RemoteAddr",
+			remoteAddr:  "10.0.0.1:12345",
+			expectedKey: "10.0.0.1:12345",
+		},
+		{
+			name:        "untrusted source ignores X-Forwarded-For",
+			remoteAddr:  "192.168.1.1:12345",
+			xForwarded:  "203.0.113.195",
+			expectedKey: "192.168.1.1:12345",
+		},
+		{
+			name:        "untrusted source ignores X-Real-IP",
+			remoteAddr:  "192.168.1.1:12345",
+			xRealIP:     "203.0.113.195",
+			expectedKey: "192.168.1.1:12345",
+		},
+		{
+			name:        "trusted proxy X-Forwarded-For takes precedence over X-Real-IP",
+			remoteAddr:  "10.0.0.1:12345",
+			xForwarded:  "198.51.100.1",
+			xRealIP:     "203.0.113.195",
+			expectedKey: "198.51.100.1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.RemoteAddr = tt.remoteAddr
+			if tt.xForwarded != "" {
+				req.Header.Set("X-Forwarded-For", tt.xForwarded)
+			}
+			if tt.xRealIP != "" {
+				req.Header.Set("X-Real-IP", tt.xRealIP)
+			}
+
+			key := keyFunc(req)
+			if key != tt.expectedKey {
+				t.Errorf("TrustedProxyKeyFunc() = %q, want %q", key, tt.expectedKey)
 			}
 		})
 	}

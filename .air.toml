@@ -9,7 +9,7 @@ tmp_dir = "tmp"
 [build]
   args_bin = ["--headless"]
   bin = "./tmp/nebo"
-  cmd = "MACOSX_DEPLOYMENT_TARGET=15.0 CGO_LDFLAGS='-mmacosx-version-min=15.0' go build -o ./tmp/nebo ."
+  cmd = "CGO_ENABLED=1 go build -tags desktop -o ./tmp/nebo ."
   delay = 500
   exclude_dir = ["agent","extensions", "tmp", "vendor", "testdata", ".git", ".vscode", ".idea", "app", "bin", "build"]
   exclude_file = ["README.md","CLAUDE.md"]

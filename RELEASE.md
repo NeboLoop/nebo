@@ -8,15 +8,17 @@ This document covers how Nebo is built, released, and distributed across all pla
 
 Every platform ships a **desktop build** by default — a native window with system tray powered by Wails v3. Users can opt into headless (browser-only) mode with `--headless`.
 
-| Platform | Binary | Desktop Toolkit | Installer |
-|----------|--------|-----------------|-----------|
-| macOS Apple Silicon | `nebo-darwin-arm64` | Cocoa (WebKit) | Homebrew |
-| macOS Intel | `nebo-darwin-amd64` | Cocoa (WebKit) | Homebrew |
+| Platform | Artifact | Desktop Toolkit | Installer |
+|----------|----------|-----------------|-----------|
+| macOS Apple Silicon | `Nebo-darwin-arm64.zip` (.app) | Cocoa (WebKit) | Homebrew Cask |
+| macOS Intel | `Nebo-darwin-amd64.zip` (.app) | Cocoa (WebKit) | Homebrew Cask |
 | Linux x86_64 | `nebo-linux-amd64` | GTK3 + WebKitGTK | APT (.deb) |
 | Linux ARM64 | `nebo-linux-arm64` | GTK3 + WebKitGTK | APT (.deb) |
 | Windows x86_64 | `nebo-windows-amd64.exe` | WebView2 | Direct download |
 
 All builds use `-tags desktop` with `CGO_ENABLED=1` to include Wails v3 native window support.
+
+macOS builds produce a proper `.app` bundle (`Nebo.app`) with icons, `Info.plist`, and Spotlight indexing. The bundle is zipped for distribution.
 
 ---
 
@@ -76,15 +78,16 @@ After the GitHub Release is created, the pipeline automatically:
 
 ## Distribution Channels
 
-### Homebrew (macOS + Linux)
+### Homebrew (macOS)
 
 ```bash
-brew install nebolabs/tap/nebo
+brew install --cask nebolabs/tap/nebo
 ```
 
-- Formula lives in [nebolabs/homebrew-tap](https://github.com/nebolabs/homebrew-tap)
+- Installs `Nebo.app` to `/Applications` (Spotlight-indexable, proper icon)
+- Also symlinks the `nebo` CLI binary to PATH
+- Cask lives in [nebolabs/homebrew-tap](https://github.com/nebolabs/homebrew-tap) (`Casks/nebo.rb`)
 - Template: `scripts/nebo.rb.tmpl` (rendered by CI with checksums)
-- Reference copy: `scripts/nebo.rb`
 
 ### APT (Debian / Ubuntu)
 
@@ -166,11 +169,19 @@ gpg --armor --export nebo > /tmp/key.gpg
 
 ## Local Builds
 
-### Desktop build (current platform)
+### Build and install to /Applications (macOS)
 
 ```bash
-make desktop
-# Output: bin/nebo (with native window + system tray)
+make install
+# Builds desktop binary, assembles Nebo.app, copies to /Applications
+# Nebo is now in Spotlight and the Applications folder
+```
+
+### Build desktop binary only
+
+```bash
+make build
+# Output: bin/nebo (desktop — native window + system tray)
 ```
 
 ### Release builds (all platforms, from macOS)

@@ -10,6 +10,7 @@ import (
 )
 
 type Querier interface {
+	AcceptTerms(ctx context.Context, userID string) error
 	CancelChildTasks(ctx context.Context, parentTaskID sql.NullString) error
 	CancelTask(ctx context.Context, id string) error
 	CheckEmailExists(ctx context.Context, email string) (int64, error)
@@ -69,6 +70,7 @@ type Querier interface {
 	CreateOAuthConnection(ctx context.Context, arg CreateOAuthConnectionParams) (OauthConnection, error)
 	CreatePendingTask(ctx context.Context, arg CreatePendingTaskParams) (PendingTask, error)
 	CreatePersonalityPreset(ctx context.Context, arg CreatePersonalityPresetParams) (PersonalityPreset, error)
+	CreatePlugin(ctx context.Context, arg CreatePluginParams) (PluginRegistry, error)
 	CreateProviderModel(ctx context.Context, arg CreateProviderModelParams) (ProviderModel, error)
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
 	// Session queries for conversation persistence
@@ -110,6 +112,9 @@ type Querier interface {
 	DeleteOAuthConnectionByProvider(ctx context.Context, arg DeleteOAuthConnectionByProviderParams) error
 	DeleteOldNotifications(ctx context.Context, before int64) error
 	DeletePersonalityPreset(ctx context.Context, id string) error
+	DeletePlugin(ctx context.Context, id string) error
+	DeletePluginSetting(ctx context.Context, arg DeletePluginSettingParams) error
+	DeletePluginSettings(ctx context.Context, pluginID string) error
 	DeleteProviderModel(ctx context.Context, id string) error
 	DeleteProviderModelsByProfile(ctx context.Context, profileID string) error
 	DeleteRefreshToken(ctx context.Context, tokenHash string) error
@@ -185,6 +190,10 @@ type Querier interface {
 	GetPendingTask(ctx context.Context, id string) (PendingTask, error)
 	GetPendingTasksByStatus(ctx context.Context, status string) ([]PendingTask, error)
 	GetPersonalityPreset(ctx context.Context, id string) (PersonalityPreset, error)
+	GetPlugin(ctx context.Context, id string) (PluginRegistry, error)
+	GetPluginByName(ctx context.Context, name string) (PluginRegistry, error)
+	// Plugin Settings queries (UPSERT pattern matching channel_config)
+	GetPluginSetting(ctx context.Context, arg GetPluginSettingParams) (PluginSetting, error)
 	GetProviderModel(ctx context.Context, id string) (ProviderModel, error)
 	GetProviderModelByModelId(ctx context.Context, arg GetProviderModelByModelIdParams) (ProviderModel, error)
 	// Get last N messages for context window (most recent first, reversed for display)
@@ -210,6 +219,8 @@ type Querier interface {
 	GetTacitMemoriesByUser(ctx context.Context, arg GetTacitMemoriesByUserParams) ([]GetTacitMemoriesByUserRow, error)
 	GetTasksByLaneAndStatus(ctx context.Context, arg GetTasksByLaneAndStatusParams) ([]PendingTask, error)
 	GetTasksByUser(ctx context.Context, userID sql.NullString) ([]PendingTask, error)
+	GetTermsAcceptedAt(ctx context.Context, userID string) (sql.NullInt64, error)
+	GetToolPermissions(ctx context.Context, userID string) (string, error)
 	GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error)
 	GetUserByEmailVerifyToken(ctx context.Context, token sql.NullString) (GetUserByEmailVerifyTokenRow, error)
 	GetUserByID(ctx context.Context, id string) (GetUserByIDRow, error)
@@ -238,6 +249,7 @@ type Querier interface {
 	ListEnabledChannels(ctx context.Context) ([]Channel, error)
 	ListEnabledCronJobs(ctx context.Context) ([]CronJob, error)
 	ListEnabledMCPIntegrations(ctx context.Context) ([]McpIntegration, error)
+	ListEnabledPlugins(ctx context.Context) ([]PluginRegistry, error)
 	ListLeads(ctx context.Context, arg ListLeadsParams) ([]Lead, error)
 	ListMCPIntegrations(ctx context.Context) ([]McpIntegration, error)
 	ListMCPServerRegistry(ctx context.Context) ([]McpServerRegistry, error)
@@ -249,6 +261,10 @@ type Querier interface {
 	ListMemoryEmbeddingsByModel(ctx context.Context, arg ListMemoryEmbeddingsByModelParams) ([]ListMemoryEmbeddingsByModelRow, error)
 	// Personality presets queries
 	ListPersonalityPresets(ctx context.Context) ([]PersonalityPreset, error)
+	ListPluginSettings(ctx context.Context, pluginID string) ([]PluginSetting, error)
+	// Plugin Registry queries
+	ListPlugins(ctx context.Context) ([]PluginRegistry, error)
+	ListPluginsByType(ctx context.Context, pluginType string) ([]PluginRegistry, error)
 	ListProviderModels(ctx context.Context, profileID string) ([]ProviderModel, error)
 	ListSessions(ctx context.Context, arg ListSessionsParams) ([]Session, error)
 	ListSessionsByScope(ctx context.Context, scope sql.NullString) ([]Session, error)
@@ -288,6 +304,7 @@ type Querier interface {
 	SetSessionSendPolicy(ctx context.Context, arg SetSessionSendPolicyParams) error
 	ToggleAuthProfile(ctx context.Context, arg ToggleAuthProfileParams) error
 	ToggleCronJob(ctx context.Context, id int64) error
+	TogglePlugin(ctx context.Context, arg TogglePluginParams) error
 	UpdateAgentProfile(ctx context.Context, arg UpdateAgentProfileParams) error
 	UpdateAuthProfile(ctx context.Context, arg UpdateAuthProfileParams) error
 	UpdateAuthProfileError(ctx context.Context, id string) error
@@ -310,6 +327,8 @@ type Querier interface {
 	UpdateMemory(ctx context.Context, arg UpdateMemoryParams) error
 	UpdateOAuthConnection(ctx context.Context, arg UpdateOAuthConnectionParams) error
 	UpdatePersonalityPreset(ctx context.Context, arg UpdatePersonalityPresetParams) error
+	UpdatePlugin(ctx context.Context, arg UpdatePluginParams) error
+	UpdatePluginStatus(ctx context.Context, arg UpdatePluginStatusParams) error
 	UpdateProviderModelActive(ctx context.Context, arg UpdateProviderModelActiveParams) error
 	UpdateSessionPolicy(ctx context.Context, arg UpdateSessionPolicyParams) error
 	UpdateSessionStats(ctx context.Context, arg UpdateSessionStatsParams) error
@@ -318,6 +337,7 @@ type Querier interface {
 	UpdateTaskFailed(ctx context.Context, arg UpdateTaskFailedParams) error
 	UpdateTaskRunning(ctx context.Context, id string) error
 	UpdateTaskStatus(ctx context.Context, arg UpdateTaskStatusParams) error
+	UpdateToolPermissions(ctx context.Context, arg UpdateToolPermissionsParams) error
 	UpdateUser(ctx context.Context, arg UpdateUserParams) error
 	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
 	UpdateUserPreferences(ctx context.Context, arg UpdateUserPreferencesParams) error
@@ -331,6 +351,7 @@ type Querier interface {
 	UpsertMCPSession(ctx context.Context, arg UpsertMCPSessionParams) error
 	// User-scoped memory queries for agent tools
 	UpsertMemory(ctx context.Context, arg UpsertMemoryParams) error
+	UpsertPluginSetting(ctx context.Context, arg UpsertPluginSettingParams) (PluginSetting, error)
 	UpsertUserProfile(ctx context.Context, arg UpsertUserProfileParams) (UserProfile, error)
 }
 
