@@ -1,0 +1,83 @@
+syntax = "proto3";
+
+package apps.v1;
+
+option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
+
+import "proto/apps/v1/common.proto";
+
+// UIService is the interface for apps that render structured UI in Nebo.
+// Apps push JSON-described views; Nebo renders them with pre-built components.
+// This is Tier 1 (structured templates) — no custom HTML/CSS/JS.
+service UIService {
+  // HealthCheck verifies the app is running.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // GetView returns the current UI view for the app.
+  rpc GetView(GetViewRequest) returns (UIView);
+
+  // SendEvent sends a user interaction event back to the app (button click, input change, etc.).
+  rpc SendEvent(UIEvent) returns (UIEventResponse);
+
+  // StreamUpdates streams UI view updates from the app to Nebo.
+  // Apps push new views whenever their UI state changes.
+  rpc StreamUpdates(Empty) returns (stream UIView);
+
+  // Configure updates the app's settings.
+  rpc Configure(SettingsMap) returns (Empty);
+}
+
+// GetViewRequest asks the app for its current UI view.
+message GetViewRequest {
+  string context = 1; // Optional: context hint (e.g., "settings", "main")
+}
+
+// UIView is a complete renderable view pushed by an app.
+message UIView {
+  string view_id = 1;         // Unique identifier for this view (for deduplication)
+  string title = 2;           // Panel title
+  repeated UIBlock blocks = 3; // Ordered list of UI blocks to render
+}
+
+// UIBlock is a single renderable element in a view.
+message UIBlock {
+  string block_id = 1;    // Unique ID for this block (used in events)
+  string type = 2;         // Block type: text, heading, input, button, select, toggle, divider, image
+
+  // Common fields (used by relevant block types)
+  string text = 3;         // text, heading, button label
+  string value = 4;        // input value, select value, toggle state ("true"/"false")
+  string placeholder = 5;  // input placeholder
+  string hint = 6;         // helper text below inputs
+  string variant = 7;      // button: primary/secondary/ghost/error; heading: h1/h2/h3
+  string src = 8;          // image source URL
+  string alt = 9;          // image alt text
+  bool disabled = 10;      // button, input, select, toggle
+
+  // Select-specific
+  repeated SelectOption options = 11;
+
+  // Layout
+  string style = 12;       // compact, full-width (optional layout hints, not CSS)
+}
+
+// SelectOption is a single option in a select block.
+message SelectOption {
+  string label = 1;
+  string value = 2;
+}
+
+// UIEvent is sent from Nebo to the app when a user interacts with a block.
+message UIEvent {
+  string view_id = 1;     // Which view the event came from
+  string block_id = 2;    // Which block was interacted with
+  string action = 3;      // "click", "change", "submit"
+  string value = 4;       // New value (for inputs, selects, toggles)
+}
+
+// UIEventResponse is the app's response to a UI event.
+message UIEventResponse {
+  UIView view = 1;         // Optional: updated view to replace the current one
+  string error = 2;        // Error message if the event handling failed
+  string toast = 3;        // Optional: toast notification to show the user
+}

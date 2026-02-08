@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package apps.v1;
+
+option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
+
+import "proto/apps/v1/common.proto";
+
+// GatewayService is the interface for LLM gateway apps (e.g., Janus).
+// The gateway handles model selection and routing — Nebo does not specify a model.
+service GatewayService {
+  // HealthCheck verifies the gateway is running.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Stream starts a chat completion and streams events back.
+  rpc Stream(GatewayRequest) returns (stream GatewayEvent);
+
+  // Poll retrieves buffered events for a given request (alternative to streaming).
+  rpc Poll(PollRequest) returns (PollResponse);
+
+  // Cancel aborts an in-progress stream.
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // Configure updates the app's settings (endpoint, token, etc.).
+  rpc Configure(SettingsMap) returns (Empty);
+}
+
+// GatewayRequest is sent by Nebo to start a chat completion.
+// No model field — the gateway decides routing.
+message GatewayRequest {
+  string request_id = 1;
+  repeated GatewayMessage messages = 2;
+  repeated GatewayToolDef tools = 3;
+  int32 max_tokens = 4;
+  double temperature = 5;
+  string system = 6;
+  UserContext user = 7;   // Per-request user identity (JWT, user_id, plan)
+}
+
+// GatewayMessage represents a single message in the conversation.
+message GatewayMessage {
+  string role = 1;          // "user", "assistant", "tool"
+  string content = 2;       // Text content
+  string tool_call_id = 3;  // For role="tool": which tool call this responds to
+  string tool_calls = 4;    // For role="assistant": JSON-encoded array of tool calls
+}
+
+// GatewayToolDef describes a tool available to the model.
+message GatewayToolDef {
+  string name = 1;
+  string description = 2;
+  bytes input_schema = 3;   // JSON Schema for tool input
+}
+
+// GatewayEvent is a streamed event from the gateway.
+message GatewayEvent {
+  string type = 1;       // "text", "tool_call", "thinking", "error", "done"
+  string content = 2;    // Text chunk, or JSON blob for tool_call: {"id","name","arguments"}
+  string model = 3;      // Informational: which model actually handled the request
+  string request_id = 4; // Correlates to the originating GatewayRequest
+}
+
+// PollRequest asks for buffered events from an active stream.
+message PollRequest {
+  string request_id = 1;
+}
+
+// PollResponse returns buffered events.
+message PollResponse {
+  repeated GatewayEvent events = 1;
+  bool complete = 2;
+}
+
+// CancelRequest aborts an active stream.
+message CancelRequest {
+  string request_id = 1;
+}
+
+// CancelResponse confirms cancellation.
+message CancelResponse {
+  bool cancelled = 1;
+}

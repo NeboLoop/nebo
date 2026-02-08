@@ -660,6 +660,13 @@ export interface ModelPricing {
 	cachedInput?: number
 }
 
+export interface NeboLoopAccountStatusResponse {
+	connected: boolean
+	ownerId?: string
+	email?: string
+	displayName?: string
+}
+
 export interface NeboLoopConnectRequest {
 	code: string
 	name: string
@@ -671,6 +678,35 @@ export interface NeboLoopConnectResponse {
 	botName: string
 	botSlug: string
 	message: string
+}
+
+export interface NeboLoopDisconnectResponse {
+	disconnected: boolean
+}
+
+export interface NeboLoopLoginRequest {
+	email: string
+	password: string
+}
+
+export interface NeboLoopLoginResponse {
+	id: string
+	email: string
+	displayName: string
+	token: string
+}
+
+export interface NeboLoopRegisterRequest {
+	email: string
+	displayName: string
+	password: string
+}
+
+export interface NeboLoopRegisterResponse {
+	id: string
+	email: string
+	displayName: string
+	token: string
 }
 
 export interface NeboLoopStatusResponse {

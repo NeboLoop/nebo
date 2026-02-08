@@ -24,3 +24,10 @@ Auth:
 
 # Database uses ~/.nebo/data/nebo.db by default (shared with agent)
 Database: {}
+
+# NeboLoop integration (managed services)
+# Enables: Loops (social trust circles), Marketplace, Gateway plugins
+NeboLoop:
+  Enabled: true
+  ApiURL: ${NEBOLOOP_API_URL:-https://api.neboloop.com}  # Account/auth API
+  # Dev override: NEBOLOOP_API_URL=http://localhost:8888

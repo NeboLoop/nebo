@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package apps.v1;
+
+option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
+
+// HealthCheck is used by Nebo to verify an app is running.
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  string version = 2;
+  string name = 3;
+}
+
+// SettingsMap is used for Configurable settings exchange.
+message SettingsMap {
+  map<string, string> values = 1;
+}
+
+// UserContext carries per-request user identity for capability calls.
+// Apps that declare "user:token" permission receive the full JWT.
+// All apps receive user_id and plan as convenience fields.
+message UserContext {
+  string token = 1;     // NeboLoop JWT — app forwards to its backend for auth
+  string user_id = 2;   // Convenience: user UUID (also in JWT, saves a decode)
+  string plan = 3;      // Convenience: user plan tier
+}
+
+// Empty is a placeholder for RPCs with no input/output.
+message Empty {}
+
+// ErrorResponse is returned when an RPC encounters an error.
+message ErrorResponse {
+  string message = 1;
+  string code = 2;
+}

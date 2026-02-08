@@ -45,33 +45,6 @@ func SetServerHost(host string, port int, useHTTPS bool) {
 	fmt.Printf("Server Host set to: %s\n", ServerHost)
 }
 
-// NotFoundHandler serves index.html for SPA routing
-func NotFoundHandler(spaFS fs.FS) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-
-		path := r.URL.Path
-		if strings.Contains(path, ".") && !strings.HasSuffix(path, "/") {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-
-		file, err := spaFS.Open("index.html")
-		if err != nil {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			return
-		}
-		defer file.Close()
-
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(http.StatusOK)
-		io.Copy(w, file)
-	})
-}
-
 // SPAHandler returns a handler that serves static files with SPA fallback
 func SPAHandler(spaFS fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(spaFS))

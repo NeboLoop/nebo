@@ -94,6 +94,13 @@ func applyDefaults(c *Config) {
 	if c.Features.NotificationsEnabled == "" {
 		c.Features.NotificationsEnabled = "true"
 	}
+	// NeboLoop defaults
+	if c.NeboLoop.Enabled == "" {
+		c.NeboLoop.Enabled = "true"
+	}
+	if c.NeboLoop.ApiURL == "" {
+		c.NeboLoop.ApiURL = "https://api.neboloop.com"
+	}
 }
 
 // parseBool parses a string as boolean with a default value.
@@ -166,6 +173,10 @@ type Config struct {
 		NotificationsEnabled string `yaml:"NotificationsEnabled"`
 		OAuthEnabled         string `yaml:"OAuthEnabled"`
 	} `yaml:"Features"`
+	NeboLoop struct {
+		Enabled string `yaml:"Enabled"`
+		ApiURL  string `yaml:"ApiURL"`
+	} `yaml:"NeboLoop"`
 }
 
 func (c Config) IsProductionMode() bool {
@@ -206,4 +217,8 @@ func (c Config) IsNotificationsEnabled() bool {
 
 func (c Config) IsOAuthEnabled() bool {
 	return parseBool(c.Features.OAuthEnabled, false)
+}
+
+func (c Config) IsNeboLoopEnabled() bool {
+	return parseBool(c.NeboLoop.Enabled, true)
 }

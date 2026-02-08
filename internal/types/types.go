@@ -1180,6 +1180,44 @@ type NeboLoopStatusResponse struct {
 	APIServer string `json:"apiServer,omitempty"`
 }
 
+// NeboLoop Account types (owner registration/login)
+
+type NeboLoopRegisterRequest struct {
+	Email       string `json:"email"`
+	DisplayName string `json:"displayName"`
+	Password    string `json:"password"`
+}
+
+type NeboLoopRegisterResponse struct {
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	DisplayName string `json:"displayName"`
+	Token       string `json:"token"`
+}
+
+type NeboLoopLoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type NeboLoopLoginResponse struct {
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	DisplayName string `json:"displayName"`
+	Token       string `json:"token"`
+}
+
+type NeboLoopAccountStatusResponse struct {
+	Connected   bool   `json:"connected"`
+	OwnerID     string `json:"ownerId,omitempty"`
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+type NeboLoopDisconnectResponse struct {
+	Disconnected bool `json:"disconnected"`
+}
+
 // Tool Permissions types
 
 type ToolPermissions struct {

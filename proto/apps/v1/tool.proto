@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package apps.v1;
+
+option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
+
+import "proto/apps/v1/common.proto";
+
+// ToolService is the interface for tool apps that extend agent capabilities.
+service ToolService {
+  // HealthCheck verifies the tool app is running.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Name returns the tool's unique identifier.
+  rpc Name(Empty) returns (NameResponse);
+
+  // Description returns a human-readable description.
+  rpc Description(Empty) returns (DescriptionResponse);
+
+  // Schema returns the JSON Schema for the tool's input.
+  rpc Schema(Empty) returns (SchemaResponse);
+
+  // Execute runs the tool with the given input.
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // RequiresApproval indicates if this tool needs user confirmation.
+  rpc RequiresApproval(Empty) returns (ApprovalResponse);
+
+  // Configure updates the app's settings.
+  rpc Configure(SettingsMap) returns (Empty);
+}
+
+message NameResponse {
+  string name = 1;
+}
+
+message DescriptionResponse {
+  string description = 1;
+}
+
+message SchemaResponse {
+  bytes schema = 1; // JSON Schema
+}
+
+message ExecuteRequest {
+  bytes input = 1; // JSON-encoded tool input
+}
+
+message ExecuteResponse {
+  string content = 1;
+  bool is_error = 2;
+}
+
+message ApprovalResponse {
+  bool requires_approval = 1;
+}

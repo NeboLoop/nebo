@@ -89,10 +89,24 @@ jobs:
           # Zip for release (ditto preserves macOS metadata)
           ditto -c -k --keepParent Nebo.app Nebo-darwin-${{ matrix.goarch }}.zip
 
+      - name: Create .dmg installer
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          brew install create-dmg
+          PKG_VERSION="${VERSION#v}"
+          # Move Nebo.app into dist/ so the script can find it
+          mkdir -p dist
+          cp -R Nebo.app dist/Nebo.app
+          chmod +x scripts/create-dmg.sh
+          ./scripts/create-dmg.sh "$VERSION" "${{ matrix.goarch }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: nebo-darwin-${{ matrix.goarch }}
-          path: Nebo-darwin-${{ matrix.goarch }}.zip
+          path: |
+            Nebo-darwin-${{ matrix.goarch }}.zip
+            dist/Nebo-*.dmg
 
   # ─── Linux desktop builds (CGO required for Wails v3 / WebKitGTK) ────
   build-linux:
@@ -213,6 +227,37 @@ jobs:
           name: nebo-windows-amd64
           path: nebo-windows-amd64.exe
 
+  # ─── Build Windows NSIS installer ─────────────────────────────────────
+  package-windows:
+    needs: build-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: nebo-windows-amd64
+          path: .
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Create dist directory
+        run: mkdir dist
+
+      - name: Build installer
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          $PkgVersion = "$env:VERSION" -replace '^v',''
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /DVERSION=$PkgVersion /DEXE_PATH=nebo-windows-amd64.exe scripts\installer.nsi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-windows-installer
+          path: dist/Nebo-*-setup.exe
+
   # ─── Build .deb packages ──────────────────────────────────────────────
   package-deb:
     needs: build-linux
@@ -265,7 +310,7 @@ jobs:
 
   # ─── Create GitHub release with all artifacts ─────────────────────────
   release:
-    needs: [build-macos, build-linux, build-linux-headless, build-windows, package-deb]
+    needs: [build-macos, build-linux, build-linux-headless, build-windows, package-deb, package-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

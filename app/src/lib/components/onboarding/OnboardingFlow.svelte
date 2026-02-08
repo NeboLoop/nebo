@@ -14,13 +14,16 @@
 		Users,
 		Camera,
 		Cpu,
-		MessageCircle
+		MessageCircle,
+		Store,
+		CircleCheck
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
+	import { neboLoopRegister, neboLoopLogin, neboLoopAccountStatus } from '$lib/api';
 	import type * as components from '$lib/api/neboComponents';
 	import Button from '$lib/components/ui/Button.svelte';
 
-	type OnboardingStep = 'welcome' | 'terms' | 'provider-choice' | 'api-key' | 'capabilities' | 'complete';
+	type OnboardingStep = 'welcome' | 'terms' | 'provider-choice' | 'api-key' | 'capabilities' | 'neboloop' | 'complete';
 	type ProviderChoice = 'claude-code' | 'codex-cli' | 'gemini-cli' | 'api-key';
 
 	let currentStep = $state<OnboardingStep>('welcome');
@@ -54,6 +57,19 @@
 		system: false
 	});
 	let isSavingPermissions = $state(false);
+
+	// NeboLoop
+	let neboLoopTab = $state<'signup' | 'login'>('signup');
+	let neboLoopLoading = $state(false);
+	let neboLoopError = $state('');
+	let neboLoopConnected = $state(false);
+	let neboLoopEmail = $state('');
+	let signupEmail = $state('');
+	let signupName = $state('');
+	let signupPassword = $state('');
+	let signupConfirm = $state('');
+	let nlLoginEmail = $state('');
+	let nlLoginPassword = $state('');
 
 	const capabilityGroups = [
 		{
@@ -167,7 +183,7 @@
 	});
 
 	// Progress dots - steps visible to user
-	const progressSteps = ['welcome', 'terms', 'provider-choice', 'capabilities', 'complete'];
+	const progressSteps = ['welcome', 'terms', 'provider-choice', 'capabilities', 'neboloop', 'complete'];
 
 	onMount(async () => {
 		// Check CLI statuses (installed + authenticated)
@@ -257,13 +273,88 @@
 
 		try {
 			await api.updateToolPermissions({ permissions });
-			await api.updateUserProfile({ onboardingCompleted: true });
-			currentStep = 'complete';
+			currentStep = 'neboloop';
+			// Check NeboLoop status when entering the step
+			checkNeboLoopStatus();
 		} catch (err: any) {
 			error = err?.message || 'Failed to save permissions';
 		} finally {
 			isSavingPermissions = false;
 		}
+	}
+
+	async function checkNeboLoopStatus() {
+		try {
+			const status = await neboLoopAccountStatus();
+			if (status.connected) {
+				neboLoopConnected = true;
+				neboLoopEmail = status.email ?? '';
+			}
+		} catch {
+			// Not connected, that's fine
+		}
+	}
+
+	async function handleNeboLoopSignup() {
+		neboLoopError = '';
+		if (!signupEmail || !signupName || !signupPassword) {
+			neboLoopError = 'All fields are required';
+			return;
+		}
+		if (signupPassword !== signupConfirm) {
+			neboLoopError = 'Passwords do not match';
+			return;
+		}
+		if (signupPassword.length < 8) {
+			neboLoopError = 'Password must be at least 8 characters';
+			return;
+		}
+
+		neboLoopLoading = true;
+		try {
+			const resp = await neboLoopRegister({
+				email: signupEmail,
+				displayName: signupName,
+				password: signupPassword
+			});
+			neboLoopConnected = true;
+			neboLoopEmail = resp.email;
+		} catch (e: any) {
+			neboLoopError = e?.message || 'Registration failed. Please try again.';
+		} finally {
+			neboLoopLoading = false;
+		}
+	}
+
+	async function handleNeboLoopLogin() {
+		neboLoopError = '';
+		if (!nlLoginEmail || !nlLoginPassword) {
+			neboLoopError = 'Email and password are required';
+			return;
+		}
+
+		neboLoopLoading = true;
+		try {
+			const resp = await neboLoopLogin({
+				email: nlLoginEmail,
+				password: nlLoginPassword
+			});
+			neboLoopConnected = true;
+			neboLoopEmail = resp.email;
+		} catch (e: any) {
+			neboLoopError = e?.message || 'Login failed. Please check your credentials.';
+		} finally {
+			neboLoopLoading = false;
+		}
+	}
+
+	async function completeOnboarding() {
+		try {
+			await api.updateUserProfile({ onboardingCompleted: true });
+		} catch {
+			// Non-fatal — still proceed to complete
+		}
+		currentStep = 'complete';
 	}
 
 	async function finishOnboarding() {
@@ -710,10 +801,155 @@
 						<Loader2 class="w-5 h-5 mr-2 animate-spin" />
 						Saving...
 					{:else}
-						Finish Setup
+						Continue
 						<ArrowRight class="w-5 h-5 ml-2" />
 					{/if}
 				</Button>
+			</div>
+		{/if}
+
+		<!-- NeboLoop Step -->
+		{#if currentStep === 'neboloop'}
+			<div class="animate-in fade-in duration-300">
+				<div class="w-16 h-16 rounded-full bg-accent/20 flex items-center justify-center mx-auto mb-6">
+					<Store class="w-8 h-8 text-accent" />
+				</div>
+				<h2 class="text-2xl font-bold text-center mb-2">NeboLoop</h2>
+				<p class="text-base-content/70 text-center mb-6">
+					Connect to the NeboLoop marketplace to install apps, skills, and AI providers.
+				</p>
+
+				{#if neboLoopConnected}
+					<div class="flex flex-col items-center gap-4 py-6 mb-6">
+						<CircleCheck class="h-12 w-12 text-success" />
+						<p class="text-lg font-medium">Connected to NeboLoop</p>
+						<p class="text-base-content/70">{neboLoopEmail}</p>
+					</div>
+					<Button type="primary" class="w-full" onclick={completeOnboarding}>
+						Continue
+						<ArrowRight class="w-5 h-5 ml-2" />
+					</Button>
+				{:else}
+					<div role="tablist" class="tabs tabs-bordered mb-6">
+						<button
+							role="tab"
+							class="tab"
+							class:tab-active={neboLoopTab === 'signup'}
+							onclick={() => { neboLoopTab = 'signup'; neboLoopError = ''; }}
+						>
+							Sign Up
+						</button>
+						<button
+							role="tab"
+							class="tab"
+							class:tab-active={neboLoopTab === 'login'}
+							onclick={() => { neboLoopTab = 'login'; neboLoopError = ''; }}
+						>
+							Log In
+						</button>
+					</div>
+
+					{#if neboLoopError}
+						<div class="alert alert-error mb-4">
+							<span>{neboLoopError}</span>
+						</div>
+					{/if}
+
+					{#if neboLoopTab === 'signup'}
+						<form onsubmit={(e) => { e.preventDefault(); handleNeboLoopSignup(); }} class="space-y-3">
+							<input
+								type="text"
+								placeholder="Display Name"
+								class="input input-bordered w-full"
+								bind:value={signupName}
+								disabled={neboLoopLoading}
+							/>
+							<input
+								type="email"
+								placeholder="Email"
+								class="input input-bordered w-full"
+								bind:value={signupEmail}
+								disabled={neboLoopLoading}
+							/>
+							<input
+								type="password"
+								placeholder="Password"
+								class="input input-bordered w-full"
+								bind:value={signupPassword}
+								disabled={neboLoopLoading}
+							/>
+							<input
+								type="password"
+								placeholder="Confirm Password"
+								class="input input-bordered w-full"
+								bind:value={signupConfirm}
+								disabled={neboLoopLoading}
+							/>
+							<Button
+								type="primary"
+								class="w-full"
+								onclick={handleNeboLoopSignup}
+								disabled={neboLoopLoading}
+							>
+								{#if neboLoopLoading}
+									<Loader2 class="w-5 h-5 mr-2 animate-spin" />
+									Creating Account...
+								{:else}
+									Create Account
+									<ArrowRight class="w-5 h-5 ml-2" />
+								{/if}
+							</Button>
+						</form>
+					{:else}
+						<form onsubmit={(e) => { e.preventDefault(); handleNeboLoopLogin(); }} class="space-y-3">
+							<input
+								type="email"
+								placeholder="Email"
+								class="input input-bordered w-full"
+								bind:value={nlLoginEmail}
+								disabled={neboLoopLoading}
+							/>
+							<input
+								type="password"
+								placeholder="Password"
+								class="input input-bordered w-full"
+								bind:value={nlLoginPassword}
+								disabled={neboLoopLoading}
+							/>
+							<Button
+								type="primary"
+								class="w-full"
+								onclick={handleNeboLoopLogin}
+								disabled={neboLoopLoading}
+							>
+								{#if neboLoopLoading}
+									<Loader2 class="w-5 h-5 mr-2 animate-spin" />
+									Logging in...
+								{:else}
+									Log In
+									<ArrowRight class="w-5 h-5 ml-2" />
+								{/if}
+							</Button>
+						</form>
+					{/if}
+
+					<div class="flex justify-between mt-4">
+						<button
+							type="button"
+							class="text-sm text-base-content/60 hover:text-base-content"
+							onclick={() => (currentStep = 'capabilities')}
+						>
+							← Back
+						</button>
+						<button
+							type="button"
+							class="text-sm text-base-content/60 hover:text-base-content"
+							onclick={completeOnboarding}
+						>
+							Skip for now →
+						</button>
+					</div>
+				{/if}
 			</div>
 		{/if}
 

@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package apps.v1;
+
+option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
+
+import "proto/apps/v1/common.proto";
+
+// CommService is the interface for inter-agent communication apps.
+service CommService {
+  // HealthCheck verifies the comm app is running.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Name returns the comm plugin's unique name.
+  rpc Name(Empty) returns (CommNameResponse);
+
+  // Version returns the comm plugin's version.
+  rpc Version(Empty) returns (CommVersionResponse);
+
+  // Connect establishes the communication link.
+  rpc Connect(CommConnectRequest) returns (CommConnectResponse);
+
+  // Disconnect closes the communication link.
+  rpc Disconnect(Empty) returns (CommDisconnectResponse);
+
+  // IsConnected checks if the link is active.
+  rpc IsConnected(Empty) returns (CommIsConnectedResponse);
+
+  // Send sends a message to another agent.
+  rpc Send(CommSendRequest) returns (CommSendResponse);
+
+  // Subscribe registers interest in a topic.
+  rpc Subscribe(CommSubscribeRequest) returns (CommSubscribeResponse);
+
+  // Unsubscribe removes interest in a topic.
+  rpc Unsubscribe(CommUnsubscribeRequest) returns (CommUnsubscribeResponse);
+
+  // Register announces this agent on the network.
+  rpc Register(CommRegisterRequest) returns (CommRegisterResponse);
+
+  // Deregister removes this agent from the network.
+  rpc Deregister(Empty) returns (CommDeregisterResponse);
+
+  // Receive streams inbound messages from the network to Nebo.
+  rpc Receive(Empty) returns (stream CommMessage);
+
+  // Configure updates the app's settings.
+  rpc Configure(SettingsMap) returns (Empty);
+}
+
+message CommNameResponse {
+  string name = 1;
+}
+
+message CommVersionResponse {
+  string version = 1;
+}
+
+message CommConnectRequest {
+  map<string, string> config = 1;
+}
+
+message CommConnectResponse {
+  string error = 1;
+}
+
+message CommDisconnectResponse {
+  string error = 1;
+}
+
+message CommIsConnectedResponse {
+  bool connected = 1;
+}
+
+message CommSendRequest {
+  CommMessage message = 1;
+}
+
+message CommSendResponse {
+  string error = 1;
+}
+
+message CommSubscribeRequest {
+  string topic = 1;
+}
+
+message CommSubscribeResponse {
+  string error = 1;
+}
+
+message CommUnsubscribeRequest {
+  string topic = 1;
+}
+
+message CommUnsubscribeResponse {
+  string error = 1;
+}
+
+message CommRegisterRequest {
+  string agent_id = 1;
+  repeated string capabilities = 2;
+}
+
+message CommRegisterResponse {
+  string error = 1;
+}
+
+message CommDeregisterResponse {
+  string error = 1;
+}
+
+// CommMessage is an inter-agent message.
+message CommMessage {
+  string id = 1;
+  string from = 2;
+  string to = 3;
+  string topic = 4;
+  string conversation_id = 5;
+  string type = 6;        // "message", "mention", "proposal", "command", "info", "task", etc.
+  string content = 7;
+  map<string, string> metadata = 8;
+  int64 timestamp = 9;
+  bool human_injected = 10;
+  string human_id = 11;
+}

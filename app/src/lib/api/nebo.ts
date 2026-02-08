@@ -463,11 +463,41 @@ export function updateModel(req: components.UpdateModelRequest, provider: string
 }
 
 /**
+ * @description "Nebo loop disconnect"
+ */
+export function neboLoopDisconnect() {
+	return webapi.delete<components.NeboLoopDisconnectResponse>(`/api/v1/neboloop/account`)
+}
+
+/**
+ * @description "Nebo loop account status"
+ */
+export function neboLoopAccountStatus() {
+	return webapi.get<components.NeboLoopAccountStatusResponse>(`/api/v1/neboloop/account`)
+}
+
+/**
  * @description "Nebo loop connect"
  * @param req
  */
 export function neboLoopConnect(req: components.NeboLoopConnectRequest) {
 	return webapi.post<components.NeboLoopConnectResponse>(`/api/v1/neboloop/connect`, req)
+}
+
+/**
+ * @description "Nebo loop login"
+ * @param req
+ */
+export function neboLoopLogin(req: components.NeboLoopLoginRequest) {
+	return webapi.post<components.NeboLoopLoginResponse>(`/api/v1/neboloop/login`, req)
+}
+
+/**
+ * @description "Nebo loop register"
+ * @param req
+ */
+export function neboLoopRegister(req: components.NeboLoopRegisterRequest) {
+	return webapi.post<components.NeboLoopRegisterResponse>(`/api/v1/neboloop/register`, req)
 }
 
 /**
@@ -863,6 +893,83 @@ export function getUserProfile() {
  */
 export function updateUserProfile(req: components.UpdateUserProfileRequest) {
 	return webapi.put<components.UpdateUserProfileResponse>(`/api/v1/user/me/profile`, req)
+}
+
+// --- App UI Types (Block Kit structured template system) ---
+
+export interface AppUIInfo {
+	id: string;
+	name: string;
+	version: string;
+}
+
+export interface UIBlockOption {
+	label: string;
+	value: string;
+}
+
+export interface UIBlock {
+	block_id: string;
+	type: 'text' | 'heading' | 'input' | 'button' | 'select' | 'toggle' | 'divider' | 'image';
+	text?: string;
+	value?: string;
+	placeholder?: string;
+	hint?: string;
+	variant?: string;
+	src?: string;
+	alt?: string;
+	disabled?: boolean;
+	options?: UIBlockOption[];
+	style?: string;
+}
+
+export interface UIView {
+	view_id: string;
+	title: string;
+	blocks: UIBlock[];
+}
+
+export interface UIEventPayload {
+	view_id: string;
+	block_id: string;
+	action: string;
+	value: string;
+}
+
+export interface UIEventResponse {
+	view?: UIView;
+	error?: string;
+	toast?: string;
+}
+
+export interface ListUIAppsResponse {
+	apps: AppUIInfo[];
+}
+
+// --- App UI API Functions ---
+
+/**
+ * @description "List UI apps"
+ */
+export function listUIApps() {
+	return webapi.get<ListUIAppsResponse>(`/api/v1/apps/ui`)
+}
+
+/**
+ * @description "Get UI view for an app"
+ * @param appId
+ */
+export function getUIView(appId: string) {
+	return webapi.get<UIView>(`/api/v1/apps/${appId}/ui`)
+}
+
+/**
+ * @description "Send UI event to an app"
+ * @param appId
+ * @param event
+ */
+export function sendUIEvent(appId: string, event: UIEventPayload) {
+	return webapi.post<UIEventResponse>(`/api/v1/apps/${appId}/ui/event`, event)
 }
 
 /**

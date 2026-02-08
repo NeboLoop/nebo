@@ -133,6 +133,7 @@ func RunAll() {
 			ChannelManager:   channelMgr,
 			Database:         svcCtx.DB.GetDB(),
 			PluginStore:      svcCtx.PluginStore,
+			SvcCtx:           svcCtx,
 			Quiet:            true,
 			Dangerously:      dangerouslyAll,
 			SettingsFilePath: filepath.Join(settingsDir, "agent-settings.json"),

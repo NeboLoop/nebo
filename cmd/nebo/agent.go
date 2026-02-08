@@ -34,6 +34,7 @@ import (
 	"github.com/nebolabs/nebo/internal/agent/skills"
 	"github.com/nebolabs/nebo/internal/agent/tools"
 	"github.com/nebolabs/nebo/internal/agenthub"
+	"github.com/nebolabs/nebo/internal/apps"
 	"github.com/nebolabs/nebo/internal/browser"
 	"github.com/nebolabs/nebo/internal/channels"
 	"github.com/nebolabs/nebo/internal/db"
@@ -41,6 +42,7 @@ import (
 	"github.com/nebolabs/nebo/internal/plugin"
 	"github.com/nebolabs/nebo/internal/provider"
 	"github.com/nebolabs/nebo/internal/server"
+	"github.com/nebolabs/nebo/internal/svc"
 )
 
 // approvalResponse holds the result of an approval request
@@ -77,6 +79,9 @@ type agentState struct {
 	registry     *tools.Registry
 	skillLoader  *skills.Loader
 	settingsPath string // Path to agent-settings.json for persisting settings changes
+
+	// App registry for install listener activation on NeboLoop connect
+	appRegistry *apps.AppRegistry
 }
 
 // sendFrame sends a JSON frame to the server
@@ -230,6 +235,7 @@ type AgentOptions struct {
 	ChannelManager   *channels.Manager
 	Database         *sql.DB
 	PluginStore      *plugin.Store
+	SvcCtx           *svc.ServiceContext   // For registering app capabilities with the HTTP layer
 	Quiet            bool                // Suppress console output for clean CLI
 	Dangerously      bool                // Bypass all tool approval prompts (CLI flag)
 	SettingsFilePath string              // Path to agent-settings.json for UI-based settings
@@ -376,6 +382,44 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 				card := buildAgentCard(state.registry, state.skillLoader)
 				active.Register(ctx, state.commAgentID, card)
 				fmt.Printf("[NeboLoop] Comm plugin activated and connected (agent: %s)\n", state.commAgentID)
+
+				// Start install listener for app store and channel bridge
+				if state.appRegistry != nil {
+					go func() {
+						// Merge in broker from plugin settings if available
+						broker := commConfig["broker"]
+						if broker == "" && pluginStore != nil {
+							if dbSettings, err := pluginStore.GetSettingsByName(ctx, "neboloop"); err == nil {
+								broker = dbSettings["broker"]
+							}
+						}
+						if broker == "" {
+							fmt.Printf("[NeboLoop] Warning: no broker configured, install listener not started\n")
+							return
+						}
+						installCfg := apps.InstallListenerConfig{
+							Broker:       broker,
+							APIServer:    apiServer,
+							BotID:        redeemed.ID,
+							MQTTUsername:  creds.MQTTUsername,
+							MQTTPassword:  creds.MQTTPassword,
+						}
+						if err := state.appRegistry.StartInstallListener(ctx, installCfg); err != nil {
+							fmt.Printf("[NeboLoop] Warning: install listener failed: %v\n", err)
+						}
+
+						// Start channel bridge for Telegram/Discord messages via NeboLoop
+						channelCfg := apps.ChannelBridgeConfig{
+							Broker:       broker,
+							BotID:        redeemed.ID,
+							MQTTUsername:  creds.MQTTUsername,
+							MQTTPassword:  creds.MQTTPassword,
+						}
+						if err := state.appRegistry.StartChannelBridge(ctx, channelCfg); err != nil {
+							fmt.Printf("[NeboLoop] Warning: channel bridge failed: %v\n", err)
+						}
+					}()
+				}
 			}
 		}
 
@@ -775,6 +819,29 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	}()
 	defer pluginLoader.Stop()
 
+	// Discover and launch marketplace apps (NeboLoop app store)
+	appRegistry := apps.NewAppRegistry(apps.AppRegistryConfig{
+		DataDir:     cfg.DataDir,
+		Queries:     db.New(sqlDB),
+		PluginStore: opts.PluginStore,
+		ToolReg:     registry,
+		CommMgr:     commManager,
+	})
+	if err := appRegistry.DiscoverAndLaunch(ctx); err != nil {
+		fmt.Printf("[agent] Warning: failed to discover apps: %v\n", err)
+	}
+	defer appRegistry.Stop()
+	go func() {
+		if err := appRegistry.Watch(ctx); err != nil {
+			fmt.Printf("[agent] Warning: app watcher failed: %v\n", err)
+		}
+	}()
+
+	// Append gateway providers from marketplace apps
+	for _, gp := range appRegistry.GatewayProviders() {
+		providers = append(providers, gp)
+	}
+
 	commManager.SetMessageHandler(commHandler.Handle)
 	commHandler.SetRunner(r)
 	commHandler.SetLanes(state.lanes)
@@ -786,6 +853,60 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	state.registry = registry
 	state.skillLoader = r.SkillLoader()
 	state.settingsPath = opts.SettingsFilePath
+	state.appRegistry = appRegistry
+
+	// Wire the channel bridge message handler so inbound messages from NeboLoop
+	// (Telegram, Discord, etc.) are processed through the agentic loop and
+	// responses are published back to the outbound topic.
+	bridge := appRegistry.ChannelBridge()
+	bridge.SetMessageHandler(func(msg channels.InboundMessage) {
+		sessionKey := fmt.Sprintf("channel-%s-%s", msg.ChannelType, msg.ChannelID)
+
+		fmt.Printf("[apps:channels] Processing %s message from %s in session %s\n",
+			msg.ChannelType, msg.SenderName, sessionKey)
+
+		state.lanes.EnqueueAsync(ctx, agenthub.LaneMain, func(taskCtx context.Context) error {
+			events, err := r.Run(taskCtx, &runner.RunRequest{
+				SessionKey: sessionKey,
+				Prompt:     msg.Text,
+				Origin:     tools.OriginUser,
+			})
+			if err != nil {
+				fmt.Printf("[apps:channels] Run failed for %s/%s: %v\n", msg.ChannelType, msg.ChannelID, err)
+				return err
+			}
+
+			var result strings.Builder
+			for event := range events {
+				if event.Type == ai.EventTypeText {
+					result.WriteString(event.Text)
+				} else if event.Type == ai.EventTypeMessage {
+					if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
+						result.WriteString(event.Message.Content)
+					}
+				}
+			}
+
+			if result.Len() > 0 {
+				outbound := channels.OutboundMessage{
+					ChannelID: msg.ChannelID,
+					Text:      result.String(),
+					ReplyToID: msg.MessageID,
+					ThreadID:  msg.ThreadID,
+				}
+				if err := bridge.SendResponse(msg.ChannelType, outbound); err != nil {
+					fmt.Printf("[apps:channels] SendResponse failed: %v\n", err)
+				}
+			}
+
+			return nil
+		})
+	})
+
+	// Register app UI provider with the HTTP layer so /apps/ui endpoints work
+	if opts.SvcCtx != nil {
+		opts.SvcCtx.SetAppUIProvider(appRegistry)
+	}
 
 	// Create agent domain tool with comm support
 	// Reuses the existing memoryTool and cronTool instances (single DB connection)
@@ -838,6 +959,35 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				card := buildAgentCard(registry, r.SkillLoader())
 				active.Register(ctx, agentID, card)
 				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", commPlugin, agentID)
+
+				// Start MQTT install listener and channel bridge if NeboLoop comm is connected
+				if commPlugin == "neboloop" {
+					if botID := commConfig["bot_id"]; botID != "" {
+						go func() {
+							installCfg := apps.InstallListenerConfig{
+								Broker:       commConfig["broker"],
+								APIServer:    commConfig["api_server"],
+								BotID:        botID,
+								MQTTUsername:  commConfig["mqtt_username"],
+								MQTTPassword:  commConfig["mqtt_password"],
+							}
+							if err := appRegistry.StartInstallListener(ctx, installCfg); err != nil {
+								fmt.Printf("[agent] Warning: install listener failed: %v\n", err)
+							}
+
+							// Start channel bridge for Telegram/Discord messages via NeboLoop
+							channelCfg := apps.ChannelBridgeConfig{
+								Broker:       commConfig["broker"],
+								BotID:        botID,
+								MQTTUsername:  commConfig["mqtt_username"],
+								MQTTPassword:  commConfig["mqtt_password"],
+							}
+							if err := appRegistry.StartChannelBridge(ctx, channelCfg); err != nil {
+								fmt.Printf("[agent] Warning: channel bridge failed: %v\n", err)
+							}
+						}()
+					}
+				}
 			}
 		}
 	}

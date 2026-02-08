@@ -52,6 +52,11 @@ type ChatRequest struct {
 	System         string            `json:"system,omitempty"`
 	Model          string            `json:"model,omitempty"`           // Model override (e.g., "haiku", "sonnet", "opus")
 	EnableThinking bool              `json:"enable_thinking,omitempty"` // Enable extended thinking mode for reasoning
+
+	// User context for gateway apps — per-request identity
+	UserToken string `json:"user_token,omitempty"` // NeboLoop JWT
+	UserID    string `json:"user_id,omitempty"`    // User UUID
+	UserPlan  string `json:"user_plan,omitempty"`  // Plan tier
 }
 
 // Provider interface for AI providers

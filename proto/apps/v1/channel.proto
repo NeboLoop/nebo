@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package apps.v1;
+
+option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
+
+import "proto/apps/v1/common.proto";
+
+// ChannelService is the interface for messaging channel apps (Discord, Telegram, etc.).
+service ChannelService {
+  // HealthCheck verifies the channel app is running.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // ID returns the channel's unique identifier.
+  rpc ID(Empty) returns (IDResponse);
+
+  // Connect establishes the channel connection.
+  rpc Connect(ChannelConnectRequest) returns (ChannelConnectResponse);
+
+  // Disconnect closes the channel connection.
+  rpc Disconnect(Empty) returns (ChannelDisconnectResponse);
+
+  // Send sends a message to a channel.
+  rpc Send(ChannelSendRequest) returns (ChannelSendResponse);
+
+  // Receive streams inbound messages from the channel to Nebo.
+  rpc Receive(Empty) returns (stream InboundMessage);
+
+  // Configure updates the app's settings.
+  rpc Configure(SettingsMap) returns (Empty);
+}
+
+message IDResponse {
+  string id = 1;
+}
+
+message ChannelConnectRequest {
+  map<string, string> config = 1;
+}
+
+message ChannelConnectResponse {
+  string error = 1;
+}
+
+message ChannelDisconnectResponse {
+  string error = 1;
+}
+
+message ChannelSendRequest {
+  string channel_id = 1;
+  string text = 2;
+}
+
+message ChannelSendResponse {
+  string error = 1;
+}
+
+message InboundMessage {
+  string channel_id = 1;
+  string user_id = 2;
+  string text = 3;
+  string metadata = 4; // JSON-encoded metadata
+}

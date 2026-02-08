@@ -11,7 +11,7 @@ export MACOSX_DEPLOYMENT_TARGET ?= 15.0
 export CGO_CFLAGS += -mmacosx-version-min=15.0
 export CGO_LDFLAGS += -mmacosx-version-min=15.0
 
-.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install desktop package
+.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install desktop package dmg installer
 
 # Default target
 help:
@@ -36,6 +36,8 @@ help:
 	@echo "Desktop:"
 	@echo "  make desktop   - Build desktop app (native window + tray)"
 	@echo "  make install   - Build and install Nebo.app to /Applications"
+	@echo "  make dmg       - Create macOS .dmg installer"
+	@echo "  make installer - Create Windows NSIS installer"
 	@echo ""
 	@echo "Installation:"
 	@echo "  make cli       - Install nebo binary to PATH (for terminal use)"
@@ -216,6 +218,19 @@ install: app-bundle
 	@rm -rf /Applications/Nebo.app
 	@cp -R dist/Nebo.app /Applications/Nebo.app
 	@echo "Installed! Nebo is now in your Applications folder and Spotlight."
+
+# Create macOS .dmg installer from the app bundle
+# Requires: brew install create-dmg (or falls back to hdiutil)
+dmg: app-bundle
+	@echo "Creating .dmg installer..."
+	@./scripts/create-dmg.sh $(VERSION) $(shell uname -m)
+
+# Create Windows NSIS installer (requires NSIS: choco install nsis)
+# Run on Windows or cross-compile environment with makensis available
+installer:
+	@echo "Creating Windows installer..."
+	@mkdir -p dist
+	makensis /DVERSION=$(subst v,,$(VERSION)) /DEXE_PATH=dist/nebo-windows-amd64.exe scripts/installer.nsi
 
 # Create GitHub release (requires gh CLI)
 github-release: release

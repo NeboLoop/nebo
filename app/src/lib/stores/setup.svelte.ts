@@ -22,11 +22,12 @@ export interface SetupState {
 /**
  * Step names for each mode
  */
-const QUICKSTART_STEPS = ['welcome', 'account', 'provider', 'complete'] as const;
+const QUICKSTART_STEPS = ['welcome', 'account', 'provider', 'neboloop', 'complete'] as const;
 const ADVANCED_STEPS = [
 	'welcome',
 	'account',
 	'provider',
+	'neboloop',
 	'models',
 	'permissions',
 	'personality',

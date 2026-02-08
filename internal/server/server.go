@@ -3,10 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,12 +17,14 @@ import (
 	"github.com/nebolabs/nebo/internal/config"
 	"github.com/nebolabs/nebo/internal/handler"
 	"github.com/nebolabs/nebo/internal/handler/agent"
+	"github.com/nebolabs/nebo/internal/handler/appui"
 	"github.com/nebolabs/nebo/internal/handler/auth"
 	"github.com/nebolabs/nebo/internal/handler/channel"
 	"github.com/nebolabs/nebo/internal/handler/chat"
 	"github.com/nebolabs/nebo/internal/handler/extensions"
 	"github.com/nebolabs/nebo/internal/handler/integration"
 	"github.com/nebolabs/nebo/internal/handler/memory"
+	"github.com/nebolabs/nebo/internal/handler/neboloop"
 	"github.com/nebolabs/nebo/internal/handler/notification"
 	"github.com/nebolabs/nebo/internal/handler/oauth"
 	"github.com/nebolabs/nebo/internal/handler/plugins"
@@ -236,7 +236,7 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 
 	// SPA fallback - serve frontend for all other routes
 	if spaErr == nil {
-		r.NotFound(spaHandler(spaFS))
+		r.NotFound(app.SPAHandler(spaFS).ServeHTTP)
 	}
 
 	// Apply compression and cache control
@@ -377,6 +377,11 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Put("/plugins/{id}/settings", plugins.UpdatePluginSettingsHandler(svcCtx))
 	r.Put("/plugins/{id}/toggle", plugins.TogglePluginHandler(svcCtx))
 
+	// App UI routes (structured template rendering)
+	r.Get("/apps/ui", appui.ListUIAppsHandler(svcCtx))
+	r.Get("/apps/{id}/ui", appui.GetUIViewHandler(svcCtx))
+	r.Post("/apps/{id}/ui/event", appui.SendUIEventHandler(svcCtx))
+
 	// NeboLoop App Store routes
 	r.Get("/store/apps", plugins.ListStoreAppsHandler(svcCtx))
 	r.Post("/store/apps/{id}/install", plugins.InstallStoreAppHandler(svcCtx))
@@ -385,9 +390,15 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Post("/store/skills/{id}/install", plugins.InstallStoreSkillHandler(svcCtx))
 	r.Delete("/store/skills/{id}/install", plugins.UninstallStoreSkillHandler(svcCtx))
 
-	// NeboLoop Connection routes
+	// NeboLoop Connection routes (bot MQTT)
 	r.Post("/neboloop/connect", plugins.NeboLoopConnectHandler(svcCtx))
 	r.Get("/neboloop/status", plugins.NeboLoopStatusHandler(svcCtx))
+
+	// NeboLoop Account routes (owner registration/login)
+	r.Post("/neboloop/register", neboloop.NeboLoopRegisterHandler(svcCtx))
+	r.Post("/neboloop/login", neboloop.NeboLoopLoginHandler(svcCtx))
+	r.Get("/neboloop/account", neboloop.NeboLoopAccountStatusHandler(svcCtx))
+	r.Delete("/neboloop/account", neboloop.NeboLoopDisconnectHandler(svcCtx))
 
 	// Provider/Models routes
 	r.Get("/models", provider.ListModelsHandler(svcCtx))
@@ -467,43 +478,6 @@ func corsMiddleware() func(http.Handler) http.Handler {
 
 			next.ServeHTTP(w, r)
 		})
-	}
-}
-
-// spaHandler serves the SPA for non-API routes
-func spaHandler(spaFS fs.FS) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Try to serve the file directly
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path == "" {
-			path = "index.html"
-		}
-
-		// Check if file exists (static assets, prerendered pages)
-		if _, err := fs.Stat(spaFS, path); err == nil {
-			http.FileServer(http.FS(spaFS)).ServeHTTP(w, r)
-			return
-		}
-
-		// Fallback to 200.html for SPA client-side routing
-		// SvelteKit adapter-static generates 200.html as the SPA fallback
-		// (index.html is prerendered and would show the wrong page)
-		fallbackFile, err := spaFS.Open("200.html")
-		if err != nil {
-			// If 200.html doesn't exist, try index.html as last resort
-			fallbackFile, err = spaFS.Open("index.html")
-			if err != nil {
-				http.Error(w, "SPA not available", http.StatusNotFound)
-				return
-			}
-		}
-		defer fallbackFile.Close()
-
-		stat, _ := fallbackFile.Stat()
-		http.ServeContent(w, r, "200.html", stat.ModTime(), fallbackFile.(interface {
-			Read([]byte) (int, error)
-			Seek(int64, int) (int64, error)
-		}))
 	}
 }
 

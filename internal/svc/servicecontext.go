@@ -1,8 +1,10 @@
 package svc
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"github.com/nebolabs/nebo/internal/agenthub"
 	"github.com/nebolabs/nebo/internal/config"
@@ -17,6 +19,24 @@ import (
 	"github.com/nebolabs/nebo/internal/logging"
 )
 
+// AppUIProvider is the interface for accessing app UI capabilities.
+// Implemented by apps.AppRegistry — defined here to avoid circular imports.
+type AppUIProvider interface {
+	// GetUIView fetches the current view from a UI app.
+	GetUIView(ctx context.Context, appID string) (any, error)
+	// SendUIEvent sends a user interaction event to a UI app.
+	SendUIEvent(ctx context.Context, appID string, event any) (any, error)
+	// ListUIApps returns metadata about apps that provide UI.
+	ListUIApps() []AppUIInfo
+}
+
+// AppUIInfo describes a UI-capable app (returned by ListUIApps).
+type AppUIInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
 type ServiceContext struct {
 	Config             config.Config
 	SecurityMiddleware *middleware.SecurityMiddleware
@@ -30,6 +50,23 @@ type ServiceContext struct {
 
 	AgentHub  *agenthub.Hub
 	MCPClient *mcpclient.Client
+
+	appUI   AppUIProvider
+	appUIMu sync.RWMutex
+}
+
+// SetAppUIProvider installs the app UI provider (called from agent.go after registry init).
+func (svc *ServiceContext) SetAppUIProvider(p AppUIProvider) {
+	svc.appUIMu.Lock()
+	defer svc.appUIMu.Unlock()
+	svc.appUI = p
+}
+
+// AppUI returns the current app UI provider (may be nil before agent starts).
+func (svc *ServiceContext) AppUI() AppUIProvider {
+	svc.appUIMu.RLock()
+	defer svc.appUIMu.RUnlock()
+	return svc.appUI
 }
 
 // NewServiceContext creates a new service context, initializing database if not provided
