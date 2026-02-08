@@ -12,7 +12,7 @@ import (
 	"github.com/nebolabs/nebo/internal/logging"
 )
 
-// JWTClaims represents the claims from a Levee JWT token
+// JWTClaims represents the claims from a JWT token
 type JWTClaims struct {
 	Sub   string `json:"sub"`   // Subject (customer ID)
 	Email string `json:"email"` // Customer email
@@ -44,34 +44,28 @@ const (
 	UserNameKey ContextKey = "userName"
 )
 
-// LeveeTokenTranslator creates middleware that translates Levee JWT tokens to Gobot tokens
-// It intercepts Levee-issued tokens, validates them, extracts claims, and re-signs with Gobot's secret
-// This allows our JWT middleware to validate the translated token
-func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.HandlerFunc {
-	logging.Infof("[LeveeTokenTranslator] Middleware initialized")
+// ExternalTokenTranslator creates middleware that translates external JWT tokens to internal tokens.
+// It intercepts externally-issued tokens, validates them, extracts claims, and re-signs with our secret.
+func ExternalTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.HandlerFunc {
+	logging.Infof("[ExternalTokenTranslator] Middleware initialized")
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			// Skip non-authenticated routes
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				// No auth header, let the request through
 				next(w, r)
 				return
 			}
 
-			logging.Infof("[LeveeTokenTranslator] Processing request to %s with auth header", r.URL.Path)
-
 			// Extract token
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-				logging.Infof("[LeveeTokenTranslator] Invalid auth header format")
 				next(w, r)
 				return
 			}
 
 			token := parts[1]
 			if token == "" {
-				logging.Infof("[LeveeTokenTranslator] Empty token")
 				next(w, r)
 				return
 			}
@@ -79,28 +73,23 @@ func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.
 			// Parse the JWT token
 			claims, err := parseJWTClaims(token)
 			if err != nil {
-				logging.Infof("[LeveeTokenTranslator] Token parse failed: %v", err)
 				next(w, r)
 				return
 			}
 
-			logging.Infof("[LeveeTokenTranslator] Parsed token - iss: %s, sub: %s, email: %s", claims.Iss, claims.Sub, claims.Email)
-
-			// Check if this is a Levee token
-			if claims.Iss != "levee.sh/sdk" {
-				logging.Infof("[LeveeTokenTranslator] Not a Levee token (iss=%s), passing through", claims.Iss)
+			// Only translate tokens from known external issuers
+			if claims.Iss == "nebo" {
 				next(w, r)
 				return
 			}
 
 			// Validate expiration
 			if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
-				logging.Infof("[LeveeTokenTranslator] Token expired for user: %s", claims.Sub)
 				next(w, r)
 				return
 			}
 
-			// Create new claims (using "userId" not "sub")
+			// Create new internal claims
 			newClaims := GoZeroClaims{
 				UserId: claims.Sub,
 				Email:  claims.Email,
@@ -110,19 +99,14 @@ func LeveeTokenTranslator(accessSecret string) func(next http.HandlerFunc) http.
 				Iat:    claims.Iat,
 			}
 
-			// Create new JWT signed with Gobot's secret
 			newToken, err := createJWT(newClaims, accessSecret)
 			if err != nil {
-				logging.Errorf("[LeveeTokenTranslator] Failed to create translated token: %v", err)
+				logging.Errorf("[ExternalTokenTranslator] Failed to create translated token: %v", err)
 				next(w, r)
 				return
 			}
 
-			// Replace the Authorization header with the translated token
 			r.Header.Set("Authorization", "Bearer "+newToken)
-
-			logging.Infof("[LeveeTokenTranslator] Successfully translated token for user: %s (%s)", claims.Sub, claims.Email)
-
 			next(w, r)
 		}
 	}
@@ -148,21 +132,17 @@ func createJWT(claims GoZeroClaims, secret string) (string, error) {
 	return token.SignedString([]byte(secret))
 }
 
-// LeveeJWTMiddleware creates middleware that parses Levee JWT tokens
-// It extracts claims and sets them in the request context
-// Note: This middleware trusts Levee-issued tokens without cryptographic verification
-// because Levee is the trusted auth provider
-func LeveeJWTMiddleware() func(http.Handler) http.Handler {
+// ExternalJWTMiddleware creates middleware that parses external JWT tokens.
+// It extracts claims and sets them in the request context.
+func ExternalJWTMiddleware(trustedIssuer string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Extract token from Authorization header
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
 				unauthorized(w, "missing authorization header")
 				return
 			}
 
-			// Expect "Bearer <token>"
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
 				unauthorized(w, "invalid authorization header format")
@@ -175,7 +155,6 @@ func LeveeJWTMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			// Parse the JWT token (Levee uses standard JWT format)
 			claims, err := parseJWTClaims(token)
 			if err != nil {
 				logging.Errorf("Failed to parse JWT: %v", err)
@@ -183,26 +162,17 @@ func LeveeJWTMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			// Validate issuer
-			if claims.Iss != "levee.sh/sdk" {
+			if trustedIssuer != "" && claims.Iss != trustedIssuer {
 				logging.Errorf("Invalid token issuer: %s", claims.Iss)
 				unauthorized(w, "invalid token issuer")
 				return
 			}
 
-			// Check if token is expired
-			// Note: Levee tokens have their own expiration logic
-
-			// Set claims in context
 			ctx := r.Context()
 			ctx = context.WithValue(ctx, UserIDKey, claims.Sub)
 			ctx = context.WithValue(ctx, UserEmailKey, claims.Email)
 			ctx = context.WithValue(ctx, UserNameKey, claims.Name)
-
-			// Also set "userId" key for backwards compatibility
 			ctx = context.WithValue(ctx, "userId", claims.Sub)
-
-			logging.Infof("JWT auth: user=%s email=%s", claims.Sub, claims.Email)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -210,7 +180,6 @@ func LeveeJWTMiddleware() func(http.Handler) http.Handler {
 }
 
 // parseJWTClaims parses the claims from a JWT token without signature verification
-// This is safe because we trust Levee as the auth provider
 func parseJWTClaims(tokenString string) (*JWTClaims, error) {
 	// JWT format: header.payload.signature
 	parts := strings.Split(tokenString, ".")

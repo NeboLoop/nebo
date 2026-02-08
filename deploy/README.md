@@ -58,11 +58,6 @@ Required variables:
 - `GITHUB_PAT` - GitHub Personal Access Token (needs `read:packages` scope)
 - `IMAGE_TAG` - Initial tag (DOSync will update this automatically)
 
-Optional (for Levee mode):
-- `LEVEE_ENABLED=true`
-- `LEVEE_API_KEY` - Your Levee API key
-- `LEVEE_BASE_URL` - Levee API URL
-
 ### 6. Login to GitHub Container Registry
 
 ```bash

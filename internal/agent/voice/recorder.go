@@ -34,7 +34,7 @@ func (r *Recorder) Record() (string, error) {
 
 	// Create temp file for recording
 	tempDir := os.TempDir()
-	audioFile := filepath.Join(tempDir, fmt.Sprintf("gobot_voice_%d.wav", time.Now().UnixNano()))
+	audioFile := filepath.Join(tempDir, fmt.Sprintf("nebo_voice_%d.wav", time.Now().UnixNano()))
 	defer os.Remove(audioFile)
 
 	// Record audio using platform-specific command

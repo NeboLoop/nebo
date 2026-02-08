@@ -19,8 +19,8 @@ import (
 // Handshake is used to verify plugin compatibility
 var Handshake = plugin.HandshakeConfig{
 	ProtocolVersion:  1,
-	MagicCookieKey:   "GOBOT_PLUGIN",
-	MagicCookieValue: "gobot-plugin-v1",
+	MagicCookieKey:   "NEBO_PLUGIN",
+	MagicCookieValue: "nebo-plugin-v1",
 }
 
 // PluginMap is the map of plugins we can dispense

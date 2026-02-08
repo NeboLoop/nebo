@@ -41,11 +41,11 @@ func runOnboard() {
 	fmt.Println()
 
 	// Step 1: Create config directory
-	gobotDir, _ := defaults.DataDir()
+	neboDir, _ := defaults.DataDir()
 
-	if _, err := os.Stat(gobotDir); os.IsNotExist(err) {
-		fmt.Printf("Creating config directory: %s\n", gobotDir)
-		if err := os.MkdirAll(gobotDir, 0755); err != nil {
+	if _, err := os.Stat(neboDir); os.IsNotExist(err) {
+		fmt.Printf("Creating config directory: %s\n", neboDir)
+		if err := os.MkdirAll(neboDir, 0755); err != nil {
 			fmt.Printf("\033[31m✗ Failed to create directory: %v\033[0m\n", err)
 			os.Exit(1)
 		}
@@ -112,7 +112,7 @@ func runOnboard() {
 	}
 
 	// Write config file
-	configPath := filepath.Join(gobotDir, "config.yaml")
+	configPath := filepath.Join(neboDir, "config.yaml")
 	if providerName != "" {
 		config := generateConfig(providerName, apiKey, model)
 		if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
@@ -140,11 +140,11 @@ func runOnboard() {
 
 	switch channelChoice {
 	case "1":
-		setupTelegram(reader, gobotDir)
+		setupTelegram(reader, neboDir)
 	case "2":
-		setupDiscord(reader, gobotDir)
+		setupDiscord(reader, neboDir)
 	case "3":
-		setupSlack(reader, gobotDir)
+		setupSlack(reader, neboDir)
 	case "4":
 		fmt.Println("Skipping channel setup.")
 	default:
@@ -205,7 +205,7 @@ policy:
 `, provider, keyLine, model)
 }
 
-func setupTelegram(reader *bufio.Reader, gobotDir string) {
+func setupTelegram(reader *bufio.Reader, neboDir string) {
 	fmt.Println()
 	fmt.Println("Telegram Setup")
 	fmt.Println("--------------")
@@ -228,7 +228,7 @@ func setupTelegram(reader *bufio.Reader, gobotDir string) {
   allowed_users: []  # Add Telegram user IDs to restrict access
 `, token)
 
-	channelsPath := filepath.Join(gobotDir, "channels.yaml")
+	channelsPath := filepath.Join(neboDir, "channels.yaml")
 	if err := appendToFile(channelsPath, channelConfig); err != nil {
 		fmt.Printf("\033[31m✗ Failed to save channel config: %v\033[0m\n", err)
 	} else {
@@ -236,7 +236,7 @@ func setupTelegram(reader *bufio.Reader, gobotDir string) {
 	}
 }
 
-func setupDiscord(reader *bufio.Reader, gobotDir string) {
+func setupDiscord(reader *bufio.Reader, neboDir string) {
 	fmt.Println()
 	fmt.Println("Discord Setup")
 	fmt.Println("-------------")
@@ -260,7 +260,7 @@ func setupDiscord(reader *bufio.Reader, gobotDir string) {
   allowed_guilds: []  # Add Discord guild IDs to restrict access
 `, token)
 
-	channelsPath := filepath.Join(gobotDir, "channels.yaml")
+	channelsPath := filepath.Join(neboDir, "channels.yaml")
 	if err := appendToFile(channelsPath, channelConfig); err != nil {
 		fmt.Printf("\033[31m✗ Failed to save channel config: %v\033[0m\n", err)
 	} else {
@@ -268,7 +268,7 @@ func setupDiscord(reader *bufio.Reader, gobotDir string) {
 	}
 }
 
-func setupSlack(reader *bufio.Reader, gobotDir string) {
+func setupSlack(reader *bufio.Reader, neboDir string) {
 	fmt.Println()
 	fmt.Println("Slack Setup")
 	fmt.Println("-----------")
@@ -297,7 +297,7 @@ func setupSlack(reader *bufio.Reader, gobotDir string) {
   allowed_channels: []  # Add Slack channel IDs to restrict access
 `, token, appToken)
 
-	channelsPath := filepath.Join(gobotDir, "channels.yaml")
+	channelsPath := filepath.Join(neboDir, "channels.yaml")
 	if err := appendToFile(channelsPath, channelConfig); err != nil {
 		fmt.Printf("\033[31m✗ Failed to save channel config: %v\033[0m\n", err)
 	} else {

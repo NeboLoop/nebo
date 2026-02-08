@@ -48,7 +48,7 @@ The app defaults to `http://10.0.2.2:29875` (Android emulator's localhost alias)
 ```
 android/
 ├── app/src/main/java/com/nebo/app/
-│   ├── GoBotApplication.kt     # App entry, dependency holder
+│   ├── NeboApplication.kt      # App entry, dependency holder
 │   ├── MainActivity.kt         # Navigation host
 │   ├── ApiClient.kt            # HTTP API calls
 │   ├── WebSocketManager.kt     # Real-time messaging

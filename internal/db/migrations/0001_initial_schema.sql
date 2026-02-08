@@ -1,5 +1,5 @@
 -- +goose Up
--- Gobot Initial Schema (SQLite)
+-- Nebo Initial Schema (SQLite)
 
 -- =============================================================================
 -- USERS

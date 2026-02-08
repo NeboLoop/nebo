@@ -37,7 +37,7 @@ func NewAuthService(store *db.Store, cfg config.Config) *AuthService {
 	}
 }
 
-// AuthResponse mirrors the Levee SDK auth response
+// AuthResponse represents an auth response with token and metadata
 type AuthResponse struct {
 	Token        string
 	RefreshToken string

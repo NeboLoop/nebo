@@ -124,24 +124,24 @@ func checkConfig() []checkResult {
 	var results []checkResult
 
 	// Check data directory
-	gobotDir, _ := defaults.DataDir()
+	neboDir, _ := defaults.DataDir()
 
-	if _, err := os.Stat(gobotDir); os.IsNotExist(err) {
+	if _, err := os.Stat(neboDir); os.IsNotExist(err) {
 		results = append(results, checkResult{
 			name:    "Config Directory",
 			status:  "error",
-			message: fmt.Sprintf("Data directory not found at %s. Run 'nebo onboard' to create it.", gobotDir),
+			message: fmt.Sprintf("Data directory not found at %s. Run 'nebo onboard' to create it.", neboDir),
 		})
 	} else {
 		results = append(results, checkResult{
 			name:    "Config Directory",
 			status:  "ok",
-			message: gobotDir,
+			message: neboDir,
 		})
 	}
 
 	// Check config.yaml
-	configPath := filepath.Join(gobotDir, "config.yaml")
+	configPath := filepath.Join(neboDir, "config.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		results = append(results, checkResult{
 			name:    "Config File",
@@ -221,7 +221,7 @@ func checkAPIKeys() []checkResult {
 func checkGateway() []checkResult {
 	var results []checkResult
 
-	gatewayURL := os.Getenv("GOBOT_GATEWAY_URL")
+	gatewayURL := os.Getenv("NEBO_GATEWAY_URL")
 	if gatewayURL == "" {
 		gatewayURL = "http://localhost:27895"
 	}
@@ -317,7 +317,7 @@ func checkSystem() []checkResult {
 func checkChannels() []checkResult {
 	var results []checkResult
 
-	gatewayURL := os.Getenv("GOBOT_GATEWAY_URL")
+	gatewayURL := os.Getenv("NEBO_GATEWAY_URL")
 	if gatewayURL == "" {
 		gatewayURL = "http://localhost:27895"
 	}

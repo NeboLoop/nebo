@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for Gobot
+# Multi-stage Dockerfile for Nebo
 # Single all-in-one binary with embedded SvelteKit frontend
 # Usage: docker build -t nebo .
 

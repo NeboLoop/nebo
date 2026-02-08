@@ -85,7 +85,7 @@ func runMessageSend(message, to, channel string) {
 	channelID := parts[1]
 
 	// Get gateway URL from config or use default
-	gatewayURL := os.Getenv("GOBOT_GATEWAY_URL")
+	gatewayURL := os.Getenv("NEBO_GATEWAY_URL")
 	if gatewayURL == "" {
 		gatewayURL = "http://localhost:27895"
 	}
@@ -120,7 +120,7 @@ func runMessageSend(message, to, channel string) {
 }
 
 func runListChannels() {
-	gatewayURL := os.Getenv("GOBOT_GATEWAY_URL")
+	gatewayURL := os.Getenv("NEBO_GATEWAY_URL")
 	if gatewayURL == "" {
 		gatewayURL = "http://localhost:27895"
 	}

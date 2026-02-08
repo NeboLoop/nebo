@@ -6,7 +6,7 @@ A native SwiftUI companion app for chatting with Nebo from your iPhone.
 
 ```
 Nebo/
-├── GoBotApp.swift           # App entry point
+├── NeboApp.swift            # App entry point
 ├── Models/
 │   ├── Message.swift        # Chat message model
 │   ├── Conversation.swift   # Conversation model

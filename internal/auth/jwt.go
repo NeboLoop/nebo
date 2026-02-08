@@ -108,9 +108,8 @@ func GetEmailFromContext(ctx interface{ Value(any) any }) (string, error) {
 }
 
 // GetCustomerIDFromContext extracts the customer ID from JWT claims set in context
-// This is used with Levee tokens which include a customer_id claim
 func GetCustomerIDFromContext(ctx interface{ Value(any) any }) (string, error) {
-	// Try customer_id first (Levee format)
+	// Try customer_id first
 	customerIDValue := ctx.Value("customer_id")
 	if customerIDValue == nil {
 		// Fallback to sub (standard JWT claim)

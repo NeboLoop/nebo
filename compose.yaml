@@ -8,7 +8,7 @@ services:
     build:
       context: .
       target: development
-    container_name: gobot_app
+    container_name: nebo_app
     ports:
       - "27895:27895"
     env_file:
@@ -33,4 +33,4 @@ volumes:
 
 networks:
   default:
-    name: gobot_network
+    name: nebo_network

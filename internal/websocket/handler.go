@@ -82,13 +82,5 @@ func extractUserIDFromJWT(r *http.Request) string {
 		}
 	}
 
-	// Try levee_access_token cookie (Levee SDK)
-	cookie, err = r.Cookie("levee_access_token")
-	if err == nil && cookie.Value != "" {
-		if claims, err := middleware.ParseJWTClaimsFromToken(cookie.Value); err == nil {
-			return claims.Sub
-		}
-	}
-
 	return ""
 }

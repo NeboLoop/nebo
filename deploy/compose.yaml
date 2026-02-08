@@ -4,10 +4,10 @@
 # DataSaver handles automated database backups
 
 services:
-  # Gobot Application (DOSync will update this tag automatically)
+  # Nebo Application (DOSync will update this tag automatically)
   app:
     image: ghcr.io/${GITHUB_REPOSITORY}:${IMAGE_TAG}
-    container_name: gobot_app
+    container_name: nebo_app
     restart: unless-stopped
     ports:
       - "80:80"

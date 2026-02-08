@@ -95,3 +95,5 @@ dev-debug.log
 # tasks/
 .taskmaster
 .cursor/
+.discuss-session
+.claude/

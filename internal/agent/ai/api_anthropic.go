@@ -16,7 +16,7 @@ import (
 const defaultMaxTokens = 8192
 
 // debugAI enables verbose AI request/response logging
-var debugAI = os.Getenv("GOBOT_DEBUG_AI") != ""
+var debugAI = os.Getenv("NEBO_DEBUG_AI") != ""
 
 func logDebug(format string, args ...interface{}) {
 	if debugAI {
