@@ -1,5 +1,5 @@
 // Package browser provides Playwright-based browser automation for Nebo.
-// Ported from moltbot's browser system for stable refs and persistent sessions.
+// Provides stable refs and persistent sessions for browser automation.
 package browser
 
 // Default profile constants - branded for Nebo

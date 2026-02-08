@@ -64,6 +64,8 @@ coverage/
 PLAN.md
 plan/
 nebo-cli
+nebo-*
+app/nebo
 
 # Plugin binaries (source is in extensions/tools/)
 extensions/plugins/tools/*

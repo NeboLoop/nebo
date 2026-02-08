@@ -45,7 +45,7 @@ type Skill struct {
 	// Priority determines precedence when multiple skills match (higher = first)
 	Priority int `yaml:"priority"`
 
-	// Metadata holds additional data (OpenClaw compatibility: emoji, requires, install)
+	// Metadata holds additional data (emoji, requires, install)
 	Metadata map[string]any `yaml:"metadata"`
 
 	// Template is the markdown body - the actual skill instructions

@@ -1,5 +1,5 @@
 -- +goose Up
--- Add session policy columns for moltbot parity
+-- Add session policy columns for session policy support
 -- These enable per-session configuration overrides
 
 -- Send policy: "allow" or "deny" for message delivery

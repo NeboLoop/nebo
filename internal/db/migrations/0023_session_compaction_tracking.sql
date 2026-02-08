@@ -1,6 +1,6 @@
 -- +goose Up
 -- Add compaction tracking fields to sessions table
--- Supports the moltbot memory flush pattern: one flush per compaction cycle
+-- Supports the memory flush pattern: one flush per compaction cycle
 
 -- Track number of compactions (for memory flush deduplication)
 ALTER TABLE sessions ADD COLUMN compaction_count INTEGER DEFAULT 0;

@@ -155,7 +155,7 @@ func IsRateLimitOrAuth(err error) bool {
 
 // IsRoleOrderingError checks if an error is due to message role ordering issues
 // These occur when messages don't alternate properly between user/assistant
-// (moltbot pattern: auto-reset session on these errors)
+// Auto-reset session on these errors
 func IsRoleOrderingError(err error) bool {
 	if err == nil {
 		return false

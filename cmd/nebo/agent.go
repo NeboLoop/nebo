@@ -712,7 +712,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		r.SetMemoryTool(memoryTool)
 	}
 
-	// Set up profile tracking for usage/error recording (moltbot pattern)
+	// Set up profile tracking for usage/error recording
 	// Uses AuthProfileManager to track cooldowns and usage stats per auth profile
 	if sqlDB != nil {
 		if profileMgr, err := agentcfg.NewAuthProfileManager(sqlDB); err == nil {
@@ -721,7 +721,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
-	// Set up subagent persistence (moltbot pattern: survive restarts)
+	// Set up subagent persistence for surviving restarts
 	if state.recovery != nil {
 		r.SetupSubagentPersistence(state.recovery)
 		// Recover any pending subagent tasks from previous run

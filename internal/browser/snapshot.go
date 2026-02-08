@@ -15,7 +15,7 @@ type SnapshotOptions struct {
 }
 
 // Snapshot generates an aria snapshot of the page with element refs.
-// This is the key to moltbot's stable cross-call element references.
+// Stable refs enable consistent cross-call element references.
 func (p *Page) Snapshot(ctx context.Context, opts SnapshotOptions) (string, error) {
 	if p.closed {
 		return "", fmt.Errorf("page is closed")

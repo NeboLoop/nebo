@@ -71,7 +71,7 @@ type Orchestrator struct {
 	providers []ai.Provider
 	tools     ToolExecutor
 	config    *config.Config
-	recovery  *recovery.Manager // For persisting subagent runs (moltbot pattern)
+	recovery  *recovery.Manager // For persisting subagent runs across restarts
 
 	// Limits
 	maxConcurrent int
@@ -96,7 +96,7 @@ func (o *Orchestrator) SetMaxConcurrent(max int) {
 	o.mu.Unlock()
 }
 
-// SetRecoveryManager sets the recovery manager for persisting subagent runs (moltbot pattern)
+// SetRecoveryManager sets the recovery manager for persisting subagent runs
 func (o *Orchestrator) SetRecoveryManager(mgr *recovery.Manager) {
 	o.mu.Lock()
 	o.recovery = mgr
@@ -194,7 +194,7 @@ func (o *Orchestrator) Spawn(ctx context.Context, req *SpawnRequest) (*SubAgent,
 		cancel:      cancel,
 	}
 
-	// Persist to database BEFORE spawning (moltbot pattern: survive restart)
+	// Persist to database BEFORE spawning to survive restarts
 	if o.recovery != nil {
 		task := &recovery.PendingTask{
 			TaskType:     recovery.TaskTypeSubagent,
@@ -234,7 +234,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, agent *SubAgent, req *Spawn
 	agent.Status = StatusRunning
 	o.mu.Unlock()
 
-	// Mark task as running in recovery manager (moltbot pattern)
+	// Mark task as running in recovery manager
 	if o.recovery != nil && agent.TaskID != "" {
 		if err := o.recovery.MarkRunning(ctx, agent.TaskID); err != nil {
 			fmt.Printf("[Orchestrator] Warning: failed to mark task running: %v\n", err)
@@ -255,7 +255,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, agent *SubAgent, req *Spawn
 		finalError := agent.Error
 		o.mu.Unlock()
 
-		// Update recovery status (moltbot pattern: persist completion)
+		// Update recovery status to persist completion
 		if o.recovery != nil && agent.TaskID != "" {
 			if finalStatus == StatusCompleted {
 				if err := o.recovery.MarkCompleted(ctx, agent.TaskID); err != nil {
@@ -547,7 +547,7 @@ func (o *Orchestrator) Cleanup(maxAge time.Duration) int {
 	return removed
 }
 
-// RecoverAgents restores pending subagent tasks from the database after restart (moltbot pattern)
+// RecoverAgents restores pending subagent tasks from the database after restart
 // This should be called after SetRecoveryManager during agent startup
 func (o *Orchestrator) RecoverAgents(ctx context.Context) (int, error) {
 	if o.recovery == nil {

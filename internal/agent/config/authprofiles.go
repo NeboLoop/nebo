@@ -174,7 +174,7 @@ func (m *AuthProfileManager) RecordErrorWithCooldownString(ctx context.Context, 
 }
 
 // RecordErrorWithCooldown records an error and applies exponential backoff cooldown
-// Implements moltbot pattern: 60s * 5^(errorCount-1), max 1 hour (or 24h for billing)
+// Uses exponential backoff: 60s * 5^(errorCount-1), max 1 hour (or 24h for billing)
 func (m *AuthProfileManager) RecordErrorWithCooldown(ctx context.Context, profileID string, reason ErrorReason) error {
 	// First, record the error to increment error_count
 	if err := m.RecordError(ctx, profileID); err != nil {
@@ -245,7 +245,7 @@ func calculateCooldownDuration(errorCount int, reason ErrorReason) time.Duration
 }
 
 // ResetErrorCountIfStale resets error count if no failures in the failure window (24h)
-// This implements moltbot's "failure window" pattern
+// This implements the failure window pattern
 func (m *AuthProfileManager) ResetErrorCountIfStale(ctx context.Context, profileID string) error {
 	failureWindowStart := time.Now().Unix() - 86400 // 24 hours ago
 	return m.queries.ResetAuthProfileErrorCountIfStale(ctx, db.ResetAuthProfileErrorCountIfStaleParams{

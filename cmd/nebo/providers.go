@@ -181,7 +181,7 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 				if model == "" {
 					model = provider.GetDefaultModel("anthropic")
 				}
-				// Wrap with ProfiledProvider for per-request profile tracking (moltbot pattern)
+				// Wrap with ProfiledProvider for per-request profile tracking
 				baseProvider := ai.NewAnthropicProvider(p.APIKey, model)
 				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
 				fmt.Printf("[Providers] Loaded Anthropic provider: %s (model: %s, profileID: %s)\n", p.Name, model, p.ID)
@@ -200,7 +200,7 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 				if model == "" {
 					model = provider.GetDefaultModel("openai")
 				}
-				// Wrap with ProfiledProvider for per-request profile tracking (moltbot pattern)
+				// Wrap with ProfiledProvider for per-request profile tracking
 				baseProvider := ai.NewOpenAIProvider(p.APIKey, model)
 				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
 				fmt.Printf("[Providers] Loaded OpenAI provider: %s (model: %s, profileID: %s)\n", p.Name, model, p.ID)
@@ -219,7 +219,7 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 				if model == "" {
 					model = provider.GetDefaultModel("google")
 				}
-				// Wrap with ProfiledProvider for per-request profile tracking (moltbot pattern)
+				// Wrap with ProfiledProvider for per-request profile tracking
 				baseProvider := ai.NewGeminiProvider(p.APIKey, model)
 				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
 				fmt.Printf("[Providers] Loaded Gemini provider: %s (model: %s, profileID: %s)\n", p.Name, model, p.ID)
@@ -246,7 +246,7 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 				if err := ai.EnsureOllamaModel(baseURL, model); err != nil {
 					fmt.Printf("[Providers] Warning: could not ensure Ollama model %s: %v\n", model, err)
 				}
-				// Wrap with ProfiledProvider for per-request profile tracking (moltbot pattern)
+				// Wrap with ProfiledProvider for per-request profile tracking
 				baseProvider := ai.NewOllamaProvider(baseURL, model)
 				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
 				fmt.Printf("[Providers] Loaded Ollama provider: %s (model: %s, profileID: %s)\n", p.Name, model, p.ID)

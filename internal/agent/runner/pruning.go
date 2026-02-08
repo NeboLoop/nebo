@@ -9,7 +9,7 @@ import (
 	"github.com/nebolabs/nebo/internal/agent/session"
 )
 
-// Token estimation constants (matching moltbot)
+// Token estimation constants
 const (
 	CharsPerTokenEstimate = 4
 	ImageCharEstimate     = 8000

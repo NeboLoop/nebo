@@ -26,7 +26,6 @@ const (
 
 // CollectToolFailures extracts failed tool results from messages.
 // Deduplicates by tool_call_id to avoid repeating the same failure.
-// (moltbot pattern: compaction-safeguard.ts)
 func CollectToolFailures(messages []session.Message) []ToolFailure {
 	var failures []ToolFailure
 	seen := make(map[string]bool)

@@ -77,7 +77,7 @@ func (t *TaskTool) GetOrchestrator() *orchestrator.Orchestrator {
 	return t.orchestrator
 }
 
-// SetRecoveryManager sets the recovery manager for subagent persistence (moltbot pattern)
+// SetRecoveryManager sets the recovery manager for subagent persistence
 // This enables subagent runs to survive agent restarts
 func (t *TaskTool) SetRecoveryManager(mgr *recovery.Manager) {
 	if t.orchestrator != nil {
@@ -85,7 +85,7 @@ func (t *TaskTool) SetRecoveryManager(mgr *recovery.Manager) {
 	}
 }
 
-// RecoverSubagents restores pending subagent tasks from the database (moltbot pattern)
+// RecoverSubagents restores pending subagent tasks from the database
 // Call this after SetRecoveryManager during agent startup
 func (t *TaskTool) RecoverSubagents(ctx context.Context) (int, error) {
 	if t.orchestrator == nil {

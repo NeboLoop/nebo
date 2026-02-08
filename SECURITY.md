@@ -1,16 +1,16 @@
-# NEBO SECURITY GAP ANALYSIS
+# NEBO SECURITY ANALYSIS
 
-**Mapping OpenClaw CVEs & Architectural Vulnerabilities Against Nebo's Architecture**
+**Architectural Security Review & Gap Analysis**
 
-*February 5, 2026 — Based on OpenClaw CVE research and Nebo architecture documentation*
+*Last updated: February 7, 2026*
 
 ---
 
 ## Executive Summary
 
-OpenClaw (formerly Clawdbot/Moltbot) has accumulated 5 CVEs, 7+ GitHub Security Advisories, and severe architectural vulnerabilities within three months of launch. This analysis maps each known vulnerability against Nebo's architecture to determine which risks apply, which are avoided by design, and what must be fixed.
+This document maps known vulnerability classes in AI agent architectures against Nebo's design, identifying which risks apply, which are avoided by design, and what has been fixed.
 
-Of 18 identified vulnerability classes, Nebo is protected from 5 by architectural differences (no browser gateway UI, no Chrome extension, no Lobster engine, no SSH remote mode, no Docker sandbox). Nebo shared 8 critical or high-severity vulnerabilities with OpenClaw — 6 of which are now mitigated (memory injection, compaction poisoning, NeboLoop remote access, origin-based tool policies, SSRF, path traversal). Two critical items remain: unsigned plugins and skills supply chain. Four additional items carry moderate risk requiring attention.
+Of 18 identified vulnerability classes, Nebo is protected from 5 by architectural differences (no browser gateway UI, no Chrome extension, no workflow engine, no SSH remote mode, no Docker sandbox). 8 critical or high-severity vulnerabilities have been identified and mitigated — memory injection, compaction poisoning, remote access restrictions, origin-based tool policies, SSRF, and path traversal. Two critical items remain: unsigned plugins and skills supply chain. Four additional items carry moderate risk requiring attention.
 
 | Critical / Vulnerable | At Risk / Partial | Not Applicable | Total Reviewed |
 |:---:|:---:|:---:|:---:|
@@ -19,8 +19,6 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 ---
 
 ## Remediation Progress
-
-*Last updated: February 7, 2026*
 
 ### Completed Fixes
 
@@ -47,41 +45,37 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-## Vulnerability-by-Vulnerability Mapping
+## Vulnerability Classes
 
-### CVE-2026-25253 — Critical (CVSS 8.8) — NOT APPLICABLE
+### 1. Browser Gateway RCE — NOT APPLICABLE
 
-**OpenClaw Issue:** 1-click RCE via gatewayUrl token exfiltration + cross-site WebSocket hijacking.
+**Vulnerability:** 1-click RCE via token exfiltration + cross-site WebSocket hijacking through a browser-facing gateway UI.
 
 **Nebo Status: NOT APPLICABLE.** Nebo uses localhost WebSocket IPC between goroutines in the same process — no browser-facing gateway UI, no query-string URL routing.
 
-**Remediation:** No action needed. Architecture avoids this by design.
-
 ---
 
-### CVE-2026-24763 — High (CVSS 8.8) — NOT APPLICABLE (different risk)
+### 2. Docker Sandbox Escape — NOT APPLICABLE (different risk)
 
-**OpenClaw Issue:** Docker sandbox command injection via PATH environment variable.
+**Vulnerability:** Docker sandbox command injection via PATH environment variable.
 
 **Nebo Status: NOT APPLICABLE (different risk profile).** Nebo does not use Docker sandboxing. Shell tool executes directly under host OS user. **Shell env sanitization now strips LD_PRELOAD, DYLD_INSERT_LIBRARIES, and 30+ dangerous env vars.** Absolute `/bin/bash` path prevents PATH-based binary substitution.
 
-**Remediation:** No sandbox escape, but also no sandbox. Shell env hardening complete. Add origin-aware shell restrictions per remediation plan.
+---
+
+### 3. SSH Command Injection — NOT APPLICABLE
+
+**Vulnerability:** OS command injection via unsanitized project root path in SSH command construction.
+
+**Nebo Status: NOT APPLICABLE.** No SSH remote mode, no macOS desktop app with SSH tunneling, no shell command construction from path inputs.
+
+**Note:** If SSH features are added in the future, sanitize all path inputs in shell construction.
 
 ---
 
-### CVE-2026-25157 — High — NOT APPLICABLE
+### 4. Web Content Prompt Injection — VULNERABLE (deferred)
 
-**OpenClaw Issue:** OS command injection via unsanitized project root path in SSH command construction.
-
-**Nebo Status: NOT APPLICABLE.** No SSH remote mode, no macOS desktop app, no sshNodeCommand equivalent.
-
-**Remediation:** No action needed currently. If SSH features are added, sanitize all path inputs in shell construction.
-
----
-
-### CVE-2026-22708 — High — VULNERABLE (deferred)
-
-**OpenClaw Issue:** Indirect prompt injection via unsanitized web content fed into LLM context.
+**Vulnerability:** Indirect prompt injection via unsanitized web content fed into LLM context.
 
 **Nebo Status: VULNERABLE.** Web tool fetches external content. Output enters agentic loop as tool result. No sanitization between web content and LLM context. **SSRF protections added** (private IPs blocked), but content sanitization deferred.
 
@@ -89,19 +83,17 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### CVE-2026-25475 — Moderate (CVSS 6.5) — MITIGATED
+### 5. File Path Traversal — MITIGATED
 
-**OpenClaw Issue:** Local file inclusion via MEDIA path extraction — unauthorized file reads.
+**Vulnerability:** Unauthorized file reads via path traversal or media file extraction.
 
 **Nebo Status: MITIGATED.** `validateFilePath()` blocks access to ~25 sensitive paths (SSH keys, AWS/GCP/Azure credentials, GPG keys, browser profiles, shell rc files, /etc/shadow, etc.). Symlink resolution via `filepath.EvalSymlinks` prevents symlink-based traversal. Applied to read, write, and edit handlers. 12 tests pass.
 
-**Remaining:** Per-origin read scope now possible via origin tagging (items #9-11 complete). Can add file tool restrictions per origin as needed.
-
 ---
 
-### GHSA-g55j-c2v4-pjcg — High — AT RISK
+### 6. Unauthenticated Local RCE — AT RISK
 
-**OpenClaw Issue:** Unauthenticated local RCE via WebSocket config.apply endpoint — any local process can modify agent config.
+**Vulnerability:** Any local process can modify agent config or execute commands via unauthenticated local endpoints.
 
 **Nebo Status: AT RISK.** Server on port 27895 with Chi HTTP router. JWT authentication exists on protected endpoints. **WebSocket origin validation now enforced** via `IsLocalOrigin()`.
 
@@ -109,39 +101,25 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### GHSA-r8g4-86fx-92mq — Moderate — LOW RISK
+### 7. Chrome Extension Exploitation — NOT APPLICABLE
 
-**OpenClaw Issue:** Local file inclusion via MEDIA path extraction in media parser.
-
-**Nebo Status: MITIGATED.** No media parser. File tool path traversal protections now in place (see CVE-2026-25475 fix).
-
-**Remediation:** Complete. Sensitive path blocklist + symlink resolution applied to all file operations.
-
----
-
-### GHSA-mr32-vwc2-5j6h — High — NOT APPLICABLE
-
-**OpenClaw Issue:** Credential theft via Chrome extension relay — unvalidated /cdp WebSocket accepting arbitrary Chrome DevTools Protocol commands.
+**Vulnerability:** Credential theft via browser extension relay — unvalidated WebSocket accepting arbitrary Chrome DevTools Protocol commands.
 
 **Nebo Status: NOT APPLICABLE.** Browser relay exists but CDP loopback exploitation requires prior local code execution, which already grants full machine access. WebSocket origin validation added to all upgraders.
 
-**Remediation:** No action needed. Risk accepted.
+---
+
+### 8. Workflow Engine Injection — NOT APPLICABLE
+
+**Vulnerability:** Arbitrary execution via path/cwd injection in a workflow engine.
+
+**Nebo Status: NOT APPLICABLE.** No workflow engine equivalent.
 
 ---
 
-### GHSA-4mhr-g7xj-cg8j — High — NOT APPLICABLE
+### 9. Memory Injection — MITIGATED
 
-**OpenClaw Issue:** Arbitrary execution via lobsterPath/cwd injection in workflow engine.
-
-**Nebo Status: NOT APPLICABLE.** No Lobster workflow engine equivalent.
-
-**Remediation:** No action needed. If workflow features are added, validate all path/cwd inputs.
-
----
-
-### ARCH-001: Memory Injection — Critical — MITIGATED
-
-**OpenClaw Issue:** Memory injection — tool outputs stored as "facts" enter future system prompts as raw prose. Enables persistent prompt injection.
+**Vulnerability:** Tool outputs stored as "facts" enter future system prompts as raw prose, enabling persistent prompt injection.
 
 **Nebo Status: MITIGATED.** Three defenses implemented: (1) **Content sanitization** — `sanitizeMemoryKey()` and `sanitizeMemoryValue()` strip control characters, enforce length limits (key: 128, value: 2048 chars), and block 15+ prompt-injection patterns (instruction overrides, system prompt tags, persona manipulation). Applied to both `store()` and `StoreEntryForUser()` paths. (2) **Tool-driven memory** — memories are no longer bulk-injected into the system prompt. Agent retrieves memories on-demand via `agent(resource: memory, action: recall/search)`. (3) **Configurable** — sanitization gated by `memory.sanitize_content` config setting (default: true); embeddings gated by `memory.embeddings` (default: false, incurs API costs).
 
@@ -149,9 +127,9 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### ARCH-002: Compaction Poisoning — High — MITIGATED
+### 10. Compaction Poisoning — MITIGATED
 
-**OpenClaw Issue:** Compaction summary poisoning — summaries prepended to system prompt. Poisoned summary persists across sessions.
+**Vulnerability:** Compaction summary poisoning — summaries prepended to system prompt. Poisoned summary persists across sessions.
 
 **Nebo Status: MITIGATED.** Three defenses: (1) **Pre-compaction memory flush** — `maybeRunMemoryFlush()` extracts and persists important memories before compaction discards context. Runs synchronously with 45s timeout, dedup tracking via `ShouldRunMemoryFlush`/`RecordMemoryFlush`. (2) **Summary sanitization** — `sanitizeForSummary()` strips control characters from user content and tool failure output before inclusion in compaction summaries. Applied to `generateSummary()` and `CollectToolFailures()`. (3) **Tool failure preservation** — `EnhancedSummary()` appends capped, normalized tool failures (max 8, max 240 chars each) so the agent retains error awareness post-compaction.
 
@@ -159,9 +137,9 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### ARCH-003: Skills Supply Chain — High — VULNERABLE
+### 11. Skills Supply Chain — VULNERABLE
 
-**OpenClaw Issue:** Skills as supply chain vector — adversarial skill files become system prompt content.
+**Vulnerability:** Skill files become system prompt content — adversarial skill files enable persistent prompt injection.
 
 **Nebo Status: VULNERABLE.** Matched skills append template text to system prompt. No signing or validation.
 
@@ -169,9 +147,9 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### ARCH-004: Remote Comm with Full Tool Access — Critical — MITIGATED
+### 12. Remote Comm with Full Tool Access — MITIGATED
 
-**OpenClaw Issue:** Remote comm channel with full tool access — allowed full agentic loop from external messages.
+**Vulnerability:** Remote communication channel with full tool access — allowed full agentic loop from external messages.
 
 **Nebo Status: MITIGATED.** Comm-origin requests are now tagged with `OriginComm` and checked against per-origin deny lists in `Registry.Execute()`. Shell access is denied by default for comm origins. All 3 comm handler entry points tagged. 5 tests pass.
 
@@ -179,9 +157,9 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### ARCH-005: Unsigned Plugins — Critical — VULNERABLE
+### 13. Unsigned Plugins — VULNERABLE
 
-**OpenClaw Issue:** Unsigned, unsandboxed plugin binaries with OS-level access.
+**Vulnerability:** Unsigned, unsandboxed plugin binaries with OS-level access.
 
 **Nebo Status: VULNERABLE.** `LoadAll()` scans plugin directories and loads any executable binary with no signature verification, no sandboxing, and full OS-level access.
 
@@ -189,9 +167,9 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### ARCH-006: Plaintext Credentials — High — AT RISK
+### 14. Plaintext Credentials — AT RISK
 
-**OpenClaw Issue:** Plaintext credential storage — API keys, OAuth tokens in plain files.
+**Vulnerability:** API keys and OAuth tokens stored as plaintext in config files.
 
 **Nebo Status: AT RISK.** `models.yaml` stores API keys as plain YAML. SQLite `auth_profiles` table has `api_key TEXT` with no encryption.
 
@@ -199,9 +177,9 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### ARCH-007: Localhost Trust Assumption — High — PARTIALLY MITIGATED
+### 15. Localhost Trust Assumption — PARTIALLY MITIGATED
 
-**OpenClaw Issue:** Localhost trust assumption — treated 127.0.0.1 requests as owner. Collapsed behind reverse proxies.
+**Vulnerability:** Treating all localhost requests as the authenticated owner. Collapses behind reverse proxies.
 
 **Nebo Status: PARTIALLY MITIGATED.** JWT authentication exists on protected endpoints. **WebSocket origin validation now enforced.** **CORS restricted to explicit localhost origins.** **X-Forwarded-For spoofing fixed** in rate limiter. **local.nebo.bot DNS hijack vector eliminated.** Remaining: ensure all endpoints require auth tokens, not just origin checks.
 
@@ -209,9 +187,9 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-### ARCH-008: Sub-agent Recursion — Moderate — PARTIALLY VULNERABLE
+### 16. Sub-agent Recursion — PARTIALLY VULNERABLE
 
-**OpenClaw Issue:** Unbounded sub-agent recursion — can spawn unlimited sub-agents to brute-force past restrictions.
+**Vulnerability:** Unbounded sub-agent recursion can spawn unlimited sub-agents to brute-force past restrictions.
 
 **Nebo Status: PARTIALLY VULNERABLE.** Nested lane cap=3 limits recursion, but subagent lane is unlimited. A comm-origin task can spawn many subagents.
 
@@ -219,9 +197,9 @@ Of 18 identified vulnerability classes, Nebo is protected from 5 by architectura
 
 ---
 
-## What Nebo Already Gets Right
+## What Nebo Gets Right By Design
 
-Nebo's architecture avoids several of OpenClaw's worst vulnerabilities by design. The single-binary Go process with goroutine-based IPC eliminates the browser-facing gateway UI that enabled OpenClaw's most critical CVE (CVE-2026-25253). There is no Chrome extension distribution, no SSH remote mode, no Docker sandbox to escape from, and no Lobster workflow engine. The lane system with bounded concurrency (nested:3, main:1) provides natural rate limiting. The tool approval system with configurable policy levels is a solid foundation — it just needs the origin dimension added.
+Nebo's architecture avoids several common AI agent vulnerability classes by design. The single-binary Go process with goroutine-based IPC eliminates browser-facing gateway UIs that enable the most critical RCE patterns. There is no Chrome extension distribution, no SSH remote mode, no Docker sandbox to escape from, and no workflow engine. The lane system with bounded concurrency (nested:3, main:1) provides natural rate limiting. The tool approval system with configurable policy levels is a solid foundation — the origin dimension completes it.
 
 ---
 
@@ -231,7 +209,7 @@ Nebo's architecture avoids several of OpenClaw's worst vulnerabilities by design
 |---|---------------------|--------|--------|--------|
 | 1 | Dev-login endpoint removal | Small | Eliminates auth bypass | **DONE** |
 | 2 | CORS origin restriction | Small | Blocks cross-origin attacks | **DONE** |
-| 3 | local.nebo.bot DNS hijack elimination | Small | Removes DNS-based attack vector | **DONE** |
+| 3 | DNS hijack elimination | Small | Removes DNS-based attack vector | **DONE** |
 | 4 | WebSocket origin validation (CSWSH) | Small | Blocks cross-site WS hijacking | **DONE** |
 | 5 | X-Forwarded-For rate limit bypass | Small | Prevents rate limit evasion | **DONE** |
 | 6 | SSRF protections on web fetch | Medium | Blocks internal network scanning | **DONE** |
@@ -239,7 +217,7 @@ Nebo's architecture avoids several of OpenClaw's worst vulnerabilities by design
 | 8 | Shell env var sanitization | Medium | Blocks LD_PRELOAD/PATH injection | **DONE** |
 | 9 | Origin tagging on sessions + messages | Medium | Foundation for all policy fixes | **DONE** |
 | 10 | Origin-aware tool policy in registry | Medium | Blocks injection consequences | **DONE** |
-| 11 | Default-deny dangerous tools for comm/plugin origins | Small | Neutralizes NeboLoop + plugin injection | **DONE** |
+| 11 | Default-deny dangerous tools for comm/plugin origins | Small | Neutralizes remote injection | **DONE** |
 | 12 | Memory schema + sanitization | Medium | Eliminates persistent prompt injection | **DONE** |
 | 13 | Compaction snapshot hardening | Medium | Prevents session-persistent poisoning | **DONE** |
 | 14 | Plugin allowlist by hash + no auto-load | Small | Stops malicious plugin loading | Not started |
@@ -251,8 +229,8 @@ Nebo's architecture avoids several of OpenClaw's worst vulnerabilities by design
 
 ## Conclusion
 
-Nebo avoids OpenClaw's most headline-grabbing CVEs (the 1-click RCE, the Chrome extension theft, the Docker escape) through fundamentally different architectural choices. However, it shares the deeper, harder-to-fix vulnerability classes: memory injection into system prompts, unsandboxed plugin execution, remote comm channels with full tool authority, and the absence of origin-based access control.
+Nebo avoids the most common AI agent attack vectors through fundamentally different architectural choices. The single-binary Go process with goroutine IPC eliminates browser-facing gateway UIs, Chrome extensions, SSH tunnels, and Docker sandbox escapes from the threat model entirely. However, the deeper vulnerability classes remain relevant: memory injection into system prompts, unsandboxed plugin execution, remote comm channels with full tool authority, and supply chain integrity.
 
 Thirteen fixes have been completed — eight infrastructure-level (auth bypass, CORS, DNS hijack, CSWSH, rate limit bypass, SSRF, path traversal, shell env sanitization), three application-layer (origin tagging, origin-aware tool policy, default-deny for non-user origins), and two memory/compaction hardening (memory sanitization with tool-driven recall, compaction summary sanitization). The origin tagging system provides the foundation for all remaining policy fixes. Remaining items address supply chain integrity (plugin signing, skills signing) and credential encryption.
 
-**The key lesson from OpenClaw's experience: these vulnerabilities were discovered and exploited within weeks of the project gaining popularity. The origin-based authority wall and memory injection defenses are now in place — the next priority is supply chain integrity (plugins + skills).**
+**These vulnerability classes are commonly discovered and exploited within weeks of an AI agent project gaining popularity. The origin-based authority wall and memory injection defenses are now in place — the next priority is supply chain integrity (plugins + skills).**

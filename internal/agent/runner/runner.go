@@ -202,7 +202,7 @@ type Runner struct {
 	memoryTool      *tools.MemoryTool
 	selector        *ai.ModelSelector
 	fuzzyMatcher    *ai.FuzzyMatcher    // For user model switch requests
-	profileTracker  ai.ProfileTracker   // For recording usage/errors per auth profile (moltbot pattern)
+	profileTracker  ai.ProfileTracker   // For recording usage/errors per auth profile
 }
 
 // RunRequest contains parameters for a run
@@ -286,12 +286,12 @@ func (r *Runner) SetFuzzyMatcher(matcher *ai.FuzzyMatcher) {
 }
 
 // SetProfileTracker sets the profile tracker for recording usage/errors per auth profile
-// This enables moltbot-style cooldown and usage tracking
+// This enables cooldown and usage tracking
 func (r *Runner) SetProfileTracker(tracker ai.ProfileTracker) {
 	r.profileTracker = tracker
 }
 
-// SetupSubagentPersistence configures subagent recovery for restart survival (moltbot pattern)
+// SetupSubagentPersistence configures subagent recovery for restart survival
 // This enables the orchestrator to persist subagent runs and recover them after restart
 func (r *Runner) SetupSubagentPersistence(mgr *recovery.Manager) {
 	if r.tools == nil {
@@ -302,7 +302,7 @@ func (r *Runner) SetupSubagentPersistence(mgr *recovery.Manager) {
 	}
 }
 
-// RecoverSubagents restores pending subagent tasks from the database (moltbot pattern)
+// RecoverSubagents restores pending subagent tasks from the database
 // Call this after SetupSubagentPersistence during agent startup
 func (r *Runner) RecoverSubagents(ctx context.Context) (int, error) {
 	if r.tools == nil {
@@ -572,7 +572,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 			fmt.Printf("[Runner] Token limit exceeded (~%d tokens), compacting...\n", estimatedTokens)
 			compactionAttempted = true
 
-			// Run proactive memory flush before compaction (moltbot pattern)
+			// Run proactive memory flush before compaction
 			// This ensures important memories are persisted before being summarized
 			r.maybeRunMemoryFlush(ctx, sessionID, userID, messages)
 
@@ -686,7 +686,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 				if !compactionAttempted {
 					compactionAttempted = true
 
-					// Run proactive memory flush before compaction (moltbot pattern)
+					// Run proactive memory flush before compaction
 					// This ensures important memories are persisted before being summarized
 					r.maybeRunMemoryFlush(ctx, sessionID, userID, messages)
 
@@ -699,7 +699,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 					}
 					fmt.Printf("[Runner] Compaction failed: %v\n", compactErr)
 				}
-				// Compaction already attempted or failed - notify user (moltbot pattern: never auto-reset)
+				// Compaction already attempted or failed - notify user (never auto-reset)
 				fmt.Printf("[Runner] Context overflow after compaction attempt\n")
 				resultCh <- ai.StreamEvent{
 					Type: ai.EventTypeText,
@@ -709,7 +709,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 				return
 			}
 			if ai.IsRateLimitOrAuth(err) {
-				// Record error for profile cooldown (moltbot pattern)
+				// Record error for profile cooldown
 				r.recordProfileError(ctx, provider, err)
 				// Mark model as failed and try again with a different one
 				if r.selector != nil && selectedModel != "" {
@@ -722,7 +722,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 				fmt.Printf("[Runner] Role ordering error (retrying): %v\n", err)
 				continue
 			}
-			// Record error for profile tracking (moltbot pattern) - generic error case
+			// Record error for profile tracking - generic error case
 			r.recordProfileError(ctx, provider, err)
 			resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
 			return
@@ -841,7 +841,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 		}
 
 		// No tool calls (or text-only response) - task is complete
-		// Record successful usage for profile tracking (moltbot pattern)
+		// Record successful usage for profile tracking
 		r.recordProfileUsage(ctx, provider)
 
 		// Run memory extraction in background (skip for heartbeats and other non-conversation sessions)
@@ -862,7 +862,7 @@ Be warm and conversational - ask ONE question at a time, acknowledge their answe
 // generateSummary creates a summary of the conversation for compaction.
 // Includes compaction safeguard: tool failures are preserved in the summary
 // so the agent knows what went wrong even after context is compacted.
-// (moltbot pattern: compaction-safeguard.ts)
+// Includes compaction safeguard to preserve tool failures in the summary
 func (r *Runner) generateSummary(_ context.Context, messages []session.Message) string {
 	// Build base summary with key conversation points
 	var summary strings.Builder
@@ -917,7 +917,7 @@ func (r *Runner) Chat(ctx context.Context, prompt string) (string, error) {
 
 // extractAndStoreMemories runs in background to extract facts from a completed conversation
 // userID is passed explicitly to avoid race conditions with concurrent requests
-// This follows the moltbot pattern: fire-and-forget, fully non-blocking, with error recovery
+// Fire-and-forget, fully non-blocking, with error recovery
 func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 	// Capture start time for logging
 	startTime := time.Now()
@@ -1021,7 +1021,7 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 
 // maybeRunMemoryFlush checks if the context is approaching the limit and runs
 // a proactive memory flush to persist important memories before compaction.
-// Returns true if a flush was performed. (moltbot pattern: memory-flush.ts)
+// Returns true if a flush was performed.
 // Deduplication: Only runs once per compaction cycle using session tracking.
 func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID string, messages []session.Message) bool {
 	tokens := estimateTokens(messages)
@@ -1029,7 +1029,7 @@ func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID stri
 		return false
 	}
 
-	// Check if we should run flush for this compaction cycle (moltbot pattern)
+	// Check if we should run flush for this compaction cycle
 	// This prevents running flush multiple times for the same compaction
 	if r.sessions != nil {
 		shouldFlush, err := r.sessions.ShouldRunMemoryFlush(sessionID)
@@ -1088,7 +1088,7 @@ func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID stri
 			fmt.Printf("[runner] Memory flush stored %d memories before compaction\n", stored)
 		}
 
-		// Record that we ran memory flush for this compaction cycle (moltbot pattern)
+		// Record that we ran memory flush for this compaction cycle
 		if r.sessions != nil {
 			if err := r.sessions.RecordMemoryFlush(sessionID); err != nil {
 				fmt.Printf("[runner] Warning: failed to record memory flush: %v\n", err)
@@ -1139,7 +1139,7 @@ func (r *Runner) getProviderIDs() []string {
 }
 
 // recordProfileUsage records successful usage of a provider's auth profile
-// This resets error count and updates usage stats (moltbot pattern)
+// This resets error count and updates usage stats
 func (r *Runner) recordProfileUsage(ctx context.Context, provider ai.Provider) {
 	if r.profileTracker == nil {
 		return
@@ -1154,8 +1154,8 @@ func (r *Runner) recordProfileUsage(ctx context.Context, provider ai.Provider) {
 }
 
 // recordProfileError records an error for a provider's auth profile
-// This triggers cooldown with exponential backoff (moltbot pattern)
-// Also applies API error fingerprinting for deduplication (moltbot pattern: dedup.ts)
+// This triggers cooldown with exponential backoff
+// Also applies API error fingerprinting for deduplication
 func (r *Runner) recordProfileError(ctx context.Context, provider ai.Provider, err error) {
 	if r.profileTracker == nil {
 		return
@@ -1165,7 +1165,7 @@ func (r *Runner) recordProfileError(ctx context.Context, provider ai.Provider, e
 		return // Provider doesn't have profile tracking
 	}
 
-	// API error fingerprinting (moltbot pattern)
+	// API error fingerprinting for deduplication
 	// Creates a deterministic fingerprint of the error payload to detect duplicates
 	errStr := err.Error()
 	fingerprint := ai.GetAPIErrorPayloadFingerprint(errStr)
@@ -1207,7 +1207,7 @@ const DefaultContextTokenLimit = 6000
 
 // MemoryFlushThreshold is the token count at which we trigger a proactive memory flush
 // before compaction. This ensures critical memories are persisted before being summarized.
-// (moltbot pattern: memory-flush.ts)
+// Proactive memory flush before compaction
 const MemoryFlushThreshold = 4500
 
 // MemoryFlushPrompt is the prompt sent to trigger a memory flush before compaction

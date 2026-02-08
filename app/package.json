@@ -19,7 +19,7 @@
 		"@eslint/js": "^9.39.2",
 		"@sveltejs/adapter-auto": "^7.0.0",
 		"@sveltejs/adapter-static": "^3.0.10",
-		"@sveltejs/kit": "^2.50.1",
+		"@sveltejs/kit": "^2.50.2",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@tailwindcss/typography": "^0.5.19",
 		"@tailwindcss/vite": "^4.1.18",
@@ -44,8 +44,12 @@
 		"vitest": "^4.0.15",
 		"vitest-browser-svelte": "^2.0.1"
 	},
+	"pnpm": {
+		"overrides": {
+			"cookie": ">=0.7.0"
+		}
+	},
 	"dependencies": {
-		"@levee/sdk": "^0.1.1",
 		"daisyui": "^5.5.14",
 		"lucide-svelte": "^0.562.0",
 		"marked": "^17.0.1",
