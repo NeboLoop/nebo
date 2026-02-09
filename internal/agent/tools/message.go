@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-
-	"github.com/nebolabs/nebo/internal/channels"
 )
 
 // MessageTool allows the agent to send messages to connected channels
 type MessageTool struct {
-	mu       sync.RWMutex
-	channels *channels.Manager
+	mu     sync.RWMutex
+	sender ChannelSender
 }
 
 // NewMessageTool creates a new message tool
@@ -20,11 +18,11 @@ func NewMessageTool() *MessageTool {
 	return &MessageTool{}
 }
 
-// SetChannels sets the channel manager (called after channels are initialized)
-func (t *MessageTool) SetChannels(mgr *channels.Manager) {
+// SetChannelSender sets the channel sender (called after channels are initialized)
+func (t *MessageTool) SetChannelSender(sender ChannelSender) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.channels = mgr
+	t.sender = sender
 }
 
 // Name returns the tool name
@@ -96,93 +94,56 @@ func (t *MessageTool) Execute(ctx context.Context, input json.RawMessage) (*Tool
 	}
 
 	t.mu.RLock()
-	mgr := t.channels
+	sender := t.sender
 	t.mu.RUnlock()
 
-	if mgr == nil {
+	if sender == nil {
 		return &ToolResult{
-			Content: "Error: No channels configured. Connect channels in the UI first.",
+			Content: "Error: No channels configured. Install channel apps first.",
 			IsError: true,
 		}, nil
 	}
 
 	switch in.Action {
 	case "list":
-		return t.listChannels(mgr)
+		ids := sender.ListChannels()
+		if len(ids) == 0 {
+			return &ToolResult{
+				Content: "No channels connected. Install channel apps from the app store.",
+			}, nil
+		}
+		result := "Connected channels:\n"
+		for _, id := range ids {
+			result += fmt.Sprintf("- %s\n", id)
+		}
+		return &ToolResult{Content: result}, nil
+
 	case "send":
-		return t.sendMessage(ctx, mgr, in)
+		if in.Channel == "" {
+			return &ToolResult{Content: "Error: 'channel' is required", IsError: true}, nil
+		}
+		if in.To == "" {
+			return &ToolResult{Content: "Error: 'to' is required", IsError: true}, nil
+		}
+		if in.Text == "" {
+			return &ToolResult{Content: "Error: 'text' is required", IsError: true}, nil
+		}
+		if err := sender.SendToChannel(ctx, in.Channel, in.To, in.Text); err != nil {
+			return &ToolResult{
+				Content: fmt.Sprintf("Error sending message: %v", err),
+				IsError: true,
+			}, nil
+		}
+		return &ToolResult{
+			Content: fmt.Sprintf("Message sent to %s:%s", in.Channel, in.To),
+		}, nil
+
 	default:
 		return &ToolResult{
 			Content: fmt.Sprintf("Error: Unknown action '%s'. Use 'send' or 'list'.", in.Action),
 			IsError: true,
 		}, nil
 	}
-}
-
-// listChannels returns all connected channels
-func (t *MessageTool) listChannels(mgr *channels.Manager) (*ToolResult, error) {
-	ids := mgr.List()
-	if len(ids) == 0 {
-		return &ToolResult{
-			Content: "No channels connected. Connect channels (Telegram, Discord, Slack) in the UI.",
-		}, nil
-	}
-
-	result := "Connected channels:\n"
-	for _, id := range ids {
-		result += fmt.Sprintf("- %s\n", id)
-	}
-	return &ToolResult{Content: result}, nil
-}
-
-// sendMessage sends a message to a channel
-func (t *MessageTool) sendMessage(ctx context.Context, mgr *channels.Manager, in messageInput) (*ToolResult, error) {
-	if in.Channel == "" {
-		return &ToolResult{
-			Content: "Error: 'channel' is required (telegram, discord, slack)",
-			IsError: true,
-		}, nil
-	}
-	if in.To == "" {
-		return &ToolResult{
-			Content: "Error: 'to' is required (chat ID or channel ID)",
-			IsError: true,
-		}, nil
-	}
-	if in.Text == "" {
-		return &ToolResult{
-			Content: "Error: 'text' is required",
-			IsError: true,
-		}, nil
-	}
-
-	ch, ok := mgr.Get(in.Channel)
-	if !ok {
-		ids := mgr.List()
-		return &ToolResult{
-			Content: fmt.Sprintf("Error: Channel '%s' not found. Available: %v", in.Channel, ids),
-			IsError: true,
-		}, nil
-	}
-
-	msg := channels.OutboundMessage{
-		ChannelID: in.To,
-		Text:      in.Text,
-		ReplyToID: in.ReplyTo,
-		ThreadID:  in.ThreadID,
-		ParseMode: "markdown",
-	}
-
-	if err := ch.Send(ctx, msg); err != nil {
-		return &ToolResult{
-			Content: fmt.Sprintf("Error sending message: %v", err),
-			IsError: true,
-		}, nil
-	}
-
-	return &ToolResult{
-		Content: fmt.Sprintf("Message sent to %s:%s", in.Channel, in.To),
-	}, nil
 }
 
 // RequiresApproval returns true - sending messages should be approved

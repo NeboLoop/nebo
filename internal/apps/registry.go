@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/nebolabs/nebo/internal/agent/ai"
@@ -14,7 +15,7 @@ import (
 	"github.com/nebolabs/nebo/internal/agent/tools"
 	pb "github.com/nebolabs/nebo/internal/apps/pb"
 	"github.com/nebolabs/nebo/internal/db"
-	pluginpkg "github.com/nebolabs/nebo/internal/plugin"
+	"github.com/nebolabs/nebo/internal/apps/settings"
 	"github.com/nebolabs/nebo/internal/svc"
 )
 
@@ -23,9 +24,16 @@ type AppRegistryConfig struct {
 	DataDir     string
 	NeboLoopURL string // If set, enables signature verification + revocation checks
 	Queries     db.Querier
-	PluginStore *pluginpkg.Store
+	PluginStore *settings.Store
 	ToolReg     *tools.Registry
 	CommMgr     *comm.CommPluginManager
+}
+
+// QuarantineEvent is emitted when an app is quarantined so the UI can notify the user.
+type QuarantineEvent struct {
+	AppID   string `json:"app_id"`
+	AppName string `json:"app_name"`
+	Reason  string `json:"reason"`
 }
 
 // AppRegistry discovers, launches, and integrates apps with Nebo systems.
@@ -33,15 +41,27 @@ type AppRegistry struct {
 	runtime       *Runtime
 	appsDir       string
 	queries       db.Querier
-	pluginStore   *pluginpkg.Store
+	pluginStore   *settings.Store
 	toolReg       *tools.Registry
 	commMgr       *comm.CommPluginManager
 	installer     *InstallListener
 	channelBridge *ChannelBridge
 
-	providers []ai.Provider
-	uiApps    map[string]*AppProcess // apps that provide UI
-	mu        sync.RWMutex
+	onQuarantine    func(QuarantineEvent)             // callback for UI notification
+	onChannelMsg    func(channelType, channelID, userID, text, metadata string) // callback for inbound channel messages
+	providers       []ai.Provider
+	uiApps          map[string]*AppProcess            // apps that provide UI
+	channelAdapters map[string]*AppChannelAdapter      // registered channel apps
+	scheduleAdapter *AppScheduleAdapter               // app-provided scheduler (replaces built-in)
+	mu              sync.RWMutex
+}
+
+// OnQuarantine sets a callback invoked when an app is quarantined.
+// Used to push notifications to the web UI via WebSocket.
+func (ar *AppRegistry) OnQuarantine(fn func(QuarantineEvent)) {
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	ar.onQuarantine = fn
 }
 
 // NewAppRegistry creates a new app registry.
@@ -86,13 +106,21 @@ func (ar *AppRegistry) DiscoverAndLaunch(ctx context.Context) error {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		// Use os.Stat (not entry.IsDir) to follow symlinks — sideloaded apps are symlinks
+		appDir := filepath.Join(ar.appsDir, entry.Name())
+		info, err := os.Stat(appDir)
+		if err != nil || !info.IsDir() {
 			continue
 		}
-		appDir := filepath.Join(ar.appsDir, entry.Name())
 
 		// Skip directories without a manifest
 		if _, err := os.Stat(filepath.Join(appDir, "manifest.json")); err != nil {
+			continue
+		}
+
+		// Skip quarantined apps (revoked by NeboLoop)
+		if _, err := os.Stat(filepath.Join(appDir, ".quarantined")); err == nil {
+			fmt.Printf("[apps] Skipping quarantined app: %s\n", entry.Name())
 			continue
 		}
 
@@ -107,6 +135,11 @@ func (ar *AppRegistry) DiscoverAndLaunch(ctx context.Context) error {
 
 // launchAndRegister launches a single app and registers its capabilities.
 func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) error {
+	// Refuse to launch quarantined apps
+	if _, err := os.Stat(filepath.Join(appDir, ".quarantined")); err == nil {
+		return fmt.Errorf("app is quarantined (revoked by NeboLoop)")
+	}
+
 	proc, err := ar.runtime.Launch(appDir)
 	if err != nil {
 		return err
@@ -163,12 +196,17 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 			}
 
 		case hasPrefix(cap, CapPrefixChannel) && proc.ChannelClient != nil:
-			// Channel apps need channel: permission for the specific channel type
 			if !HasPermissionPrefix(manifest, PermPrefixChannel) {
 				fmt.Printf("[apps] Warning: %s provides %s but lacks channel: permissions — skipping\n", manifest.ID, cap)
 				continue
 			}
-			fmt.Printf("[apps] Channel capability detected: %s (registration deferred)\n", cap)
+			adapter, err := NewAppChannelAdapter(ctx, proc.ChannelClient)
+			if err != nil {
+				fmt.Printf("[apps] Warning: channel adapter failed for %s: %v\n", manifest.ID, err)
+				continue
+			}
+			ar.registerChannel(adapter)
+			fmt.Printf("[apps] Registered channel: %s\n", adapter.ID())
 
 		case cap == CapUI && proc.UIClient != nil:
 			ar.mu.Lock()
@@ -178,6 +216,21 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 			ar.uiApps[manifest.ID] = proc
 			ar.mu.Unlock()
 			fmt.Printf("[apps] Registered UI app: %s\n", manifest.Name)
+
+		case cap == CapSchedule && proc.ScheduleClient != nil:
+			if !HasPermissionPrefix(manifest, PermPrefixSchedule) {
+				fmt.Printf("[apps] Warning: %s provides schedule but lacks schedule: permissions — skipping\n", manifest.ID)
+				continue
+			}
+			adapter, err := NewAppScheduleAdapter(ctx, proc.ScheduleClient)
+			if err != nil {
+				fmt.Printf("[apps] Warning: schedule adapter failed for %s: %v\n", manifest.ID, err)
+				continue
+			}
+			ar.mu.Lock()
+			ar.scheduleAdapter = adapter
+			ar.mu.Unlock()
+			fmt.Printf("[apps] Registered schedule provider: %s\n", manifest.Name)
 		}
 	}
 
@@ -399,6 +452,316 @@ func (ar *AppRegistry) ChannelBridge() *ChannelBridge {
 	return ar.channelBridge
 }
 
+// registerChannel adds a channel adapter and wires its inbound message handler.
+func (ar *AppRegistry) registerChannel(adapter *AppChannelAdapter) {
+	ar.mu.Lock()
+	if ar.channelAdapters == nil {
+		ar.channelAdapters = make(map[string]*AppChannelAdapter)
+	}
+	ar.channelAdapters[adapter.ID()] = adapter
+	onMsg := ar.onChannelMsg
+	ar.mu.Unlock()
+
+	channelType := adapter.ID()
+	adapter.SetMessageHandler(func(channelID, userID, text, metadata string) {
+		if onMsg != nil {
+			onMsg(channelType, channelID, userID, text, metadata)
+		}
+	})
+}
+
+// SetChannelHandler sets the callback for inbound messages from all channel apps.
+// This is called by cmd/nebo/agent.go to wire channel messages into the main lane.
+func (ar *AppRegistry) SetChannelHandler(fn func(channelType, channelID, userID, text, metadata string)) {
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	ar.onChannelMsg = fn
+}
+
+// SendToChannel sends a message to a specific channel app.
+func (ar *AppRegistry) SendToChannel(ctx context.Context, channelType, channelID, text string) error {
+	ar.mu.RLock()
+	adapter, ok := ar.channelAdapters[channelType]
+	ar.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("no channel adapter for type %q", channelType)
+	}
+	return adapter.Send(ctx, channelID, text)
+}
+
+// ScheduleAdapter returns the app-provided schedule adapter, if any.
+func (ar *AppRegistry) ScheduleAdapter() *AppScheduleAdapter {
+	ar.mu.RLock()
+	defer ar.mu.RUnlock()
+	return ar.scheduleAdapter
+}
+
+// ListChannels returns the IDs of all registered channel adapters.
+func (ar *AppRegistry) ListChannels() []string {
+	ar.mu.RLock()
+	defer ar.mu.RUnlock()
+	ids := make([]string, 0, len(ar.channelAdapters))
+	for id := range ar.channelAdapters {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// StartRevocationSweep runs a background goroutine that periodically checks
+// all running apps against the NeboLoop revocation list. If a running app is
+// found to be revoked, it is immediately stopped but its data/ directory is
+// preserved for forensic analysis.
+//
+// This closes the gap where an app revoked after launch would keep running
+// until Nebo restarts. The sweep interval matches the RevocationChecker TTL (1 hour).
+func (ar *AppRegistry) StartRevocationSweep(ctx context.Context) {
+	if ar.runtime.revChecker == nil {
+		return // dev mode — no revocation checking
+	}
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				ar.sweepRevoked()
+			}
+		}
+	}()
+}
+
+// sweepRevoked checks all running apps against the revocation list and stops any revoked ones.
+func (ar *AppRegistry) sweepRevoked() {
+	if ar.runtime.revChecker == nil {
+		return
+	}
+
+	running := ar.runtime.List()
+	for _, appID := range running {
+		revoked, err := ar.runtime.revChecker.IsRevoked(appID)
+		if err != nil {
+			fmt.Printf("[apps:sweep] Warning: revocation check failed for %s: %v\n", appID, err)
+			continue
+		}
+		if revoked {
+			fmt.Printf("[apps:sweep] App %s has been revoked — quarantining\n", appID)
+			if err := ar.Quarantine(appID); err != nil {
+				fmt.Printf("[apps:sweep] Failed to quarantine revoked app %s: %v\n", appID, err)
+			}
+		}
+	}
+}
+
+// Uninstall stops a running app, unregisters its capabilities, and removes its directory.
+// Returns an error if the app directory does not exist.
+func (ar *AppRegistry) Uninstall(appID string) error {
+	appDir := filepath.Join(ar.appsDir, appID)
+	if _, err := os.Stat(appDir); err != nil {
+		return fmt.Errorf("app not found: %s", appID)
+	}
+
+	// Stop the app if running
+	if _, ok := ar.runtime.Get(appID); ok {
+		if err := ar.runtime.Stop(appID); err != nil {
+			fmt.Printf("[apps] Warning: failed to stop %s during uninstall: %v\n", appID, err)
+		}
+	}
+
+	// Remove UI registration
+	ar.mu.Lock()
+	delete(ar.uiApps, appID)
+	ar.mu.Unlock()
+
+	// Remove DB registration
+	if ar.queries != nil {
+		manifest, err := LoadManifest(appDir)
+		if err == nil {
+			if plugin, err := ar.queries.GetPluginByName(context.Background(), manifest.Name); err == nil {
+				_ = ar.queries.DeletePlugin(context.Background(), plugin.ID)
+			}
+		}
+	}
+
+	// Remove directory entirely
+	if err := os.RemoveAll(appDir); err != nil {
+		return fmt.Errorf("remove app directory: %w", err)
+	}
+
+	// Also clean up any pending update
+	os.RemoveAll(appDir + ".pending")
+	os.RemoveAll(appDir + ".updating")
+
+	fmt.Printf("[apps] Uninstalled %s\n", appID)
+	return nil
+}
+
+// Quarantine stops a running app but preserves its data/ directory for forensic analysis.
+// Used when NeboLoop revokes an app (security issue detected globally).
+func (ar *AppRegistry) Quarantine(appID string) error {
+	appDir := filepath.Join(ar.appsDir, appID)
+
+	// Stop the app if running
+	if _, ok := ar.runtime.Get(appID); ok {
+		if err := ar.runtime.Stop(appID); err != nil {
+			fmt.Printf("[apps] Warning: failed to stop %s during quarantine: %v\n", appID, err)
+		}
+	}
+
+	// Remove UI registration
+	ar.mu.Lock()
+	delete(ar.uiApps, appID)
+	ar.mu.Unlock()
+
+	// Remove the binary so it can never re-launch, but preserve data/ and logs/
+	os.Remove(filepath.Join(appDir, "binary"))
+	os.Remove(filepath.Join(appDir, "app"))
+	os.Remove(filepath.Join(appDir, "app.sock"))
+
+	// Mark as quarantined (creates a marker file)
+	marker := filepath.Join(appDir, ".quarantined")
+	os.WriteFile(marker, []byte(fmt.Sprintf("revoked at %s\n", time.Now().UTC().Format(time.RFC3339))), 0600)
+
+	fmt.Printf("[apps:quarantine] App %s quarantined — binary removed, data preserved for forensics\n", appID)
+
+	// Notify UI so the user sees a banner
+	ar.mu.RLock()
+	cb := ar.onQuarantine
+	ar.mu.RUnlock()
+	if cb != nil {
+		appName := appID
+		if manifest, err := LoadManifest(appDir); err == nil {
+			appName = manifest.Name
+		}
+		cb(QuarantineEvent{
+			AppID:   appID,
+			AppName: appName,
+			Reason:  "Removed due to a security concern",
+		})
+	}
+
+	return nil
+}
+
+// Sideload validates a developer's project directory and creates a symlink in appsDir.
+// The existing watcher detects the symlink and auto-launches the app.
+func (ar *AppRegistry) Sideload(ctx context.Context, projectPath string) (*AppManifest, error) {
+	// Verify the path exists and is a directory
+	info, err := os.Stat(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("path does not exist: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("path is not a directory: %s", projectPath)
+	}
+
+	// Verify manifest.json exists and parses
+	manifest, err := LoadManifest(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid app directory: %w", err)
+	}
+
+	// Verify binary exists
+	binaryPath := filepath.Join(projectPath, "binary")
+	if _, err := os.Stat(binaryPath); err != nil {
+		binaryPath = filepath.Join(projectPath, "app")
+		if _, err := os.Stat(binaryPath); err != nil {
+			return nil, fmt.Errorf("no binary found (expected 'binary' or 'app' file in %s)", projectPath)
+		}
+	}
+
+	// Check for collision — the target symlink path
+	symlinkPath := filepath.Join(ar.appsDir, manifest.ID)
+	if existing, err := os.Lstat(symlinkPath); err == nil {
+		// Something already exists at this path
+		if existing.Mode()&os.ModeSymlink != 0 {
+			// It's already a symlink — check if it points to the same path
+			target, _ := os.Readlink(symlinkPath)
+			if target == projectPath {
+				// Same path — just ensure it's launched
+				if _, ok := ar.runtime.Get(manifest.ID); !ok {
+					if err := ar.launchAndRegister(ctx, symlinkPath); err != nil {
+						return nil, fmt.Errorf("launch failed: %w", err)
+					}
+				}
+				return manifest, nil
+			}
+			// Different path — remove old symlink first
+			os.Remove(symlinkPath)
+		} else {
+			return nil, fmt.Errorf("app %s already exists as a non-sideloaded app", manifest.ID)
+		}
+	}
+
+	// Create symlink
+	if err := os.Symlink(projectPath, symlinkPath); err != nil {
+		return nil, fmt.Errorf("create symlink: %w", err)
+	}
+
+	// Launch immediately for instant feedback (don't wait for watcher)
+	if err := ar.launchAndRegister(ctx, symlinkPath); err != nil {
+		// Clean up symlink on launch failure
+		os.Remove(symlinkPath)
+		return nil, fmt.Errorf("launch failed: %w", err)
+	}
+
+	fmt.Printf("[apps] Sideloaded dev app: %s (%s)\n", manifest.Name, projectPath)
+	return manifest, nil
+}
+
+// Unsideload stops a sideloaded app and removes its symlink.
+func (ar *AppRegistry) Unsideload(appID string) error {
+	symlinkPath := filepath.Join(ar.appsDir, appID)
+
+	// Verify it's a symlink (safety check — don't delete real app directories)
+	info, err := os.Lstat(symlinkPath)
+	if err != nil {
+		return fmt.Errorf("app not found: %s", appID)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("app %s is not sideloaded (not a symlink)", appID)
+	}
+
+	// Stop the app if running
+	if _, ok := ar.runtime.Get(appID); ok {
+		if err := ar.runtime.Stop(appID); err != nil {
+			fmt.Printf("[apps] Warning: failed to stop %s during unsideload: %v\n", appID, err)
+		}
+	}
+
+	// Remove UI registration
+	ar.mu.Lock()
+	delete(ar.uiApps, appID)
+	ar.mu.Unlock()
+
+	// Remove the symlink
+	if err := os.Remove(symlinkPath); err != nil {
+		return fmt.Errorf("remove symlink: %w", err)
+	}
+
+	fmt.Printf("[apps] Unsideloaded dev app: %s\n", appID)
+	return nil
+}
+
+// IsSideloaded returns true if the app directory is a symlink (dev-loaded).
+func (ar *AppRegistry) IsSideloaded(appID string) bool {
+	symlinkPath := filepath.Join(ar.appsDir, appID)
+	info, err := os.Lstat(symlinkPath)
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeSymlink != 0
+}
+
+// IsRunning returns true if the app is currently running.
+func (ar *AppRegistry) IsRunning(appID string) bool {
+	_, ok := ar.runtime.Get(appID)
+	return ok
+}
+
 // Stop stops all running app processes, the install listener, and the channel bridge.
 func (ar *AppRegistry) Stop() error {
 	ar.installer.Stop()
@@ -417,7 +780,7 @@ type appConfigurable struct {
 	proc     *AppProcess
 }
 
-func (ac *appConfigurable) Manifest() pluginpkg.SettingsManifest {
+func (ac *appConfigurable) Manifest() settings.SettingsManifest {
 	return ac.manifest.ToSettingsManifest()
 }
 
@@ -441,6 +804,10 @@ func (ac *appConfigurable) OnSettingsChanged(settings map[string]string) error {
 	}
 	if ac.proc.UIClient != nil {
 		_, err := ac.proc.UIClient.Configure(context.Background(), settingsToProto(settings))
+		return err
+	}
+	if ac.proc.ScheduleClient != nil {
+		_, err := ac.proc.ScheduleClient.Configure(context.Background(), settingsToProto(settings))
 		return err
 	}
 	return nil

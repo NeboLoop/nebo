@@ -109,5 +109,7 @@ func OAuthCallbackHandler(svcCtx *svc.ServiceContext, frontendURL string) http.H
 			httputil.InternalError(w, "MCP client not initialized")
 		}
 	}
-	return mcpclient.OAuthCallbackHandler(svcCtx.DB, svcCtx.MCPClient, frontendURL)
+	return mcpclient.OAuthCallbackHandler(svcCtx.DB, svcCtx.MCPClient, frontendURL, func() {
+		notifyIntegrationsChanged(svcCtx)
+	})
 }

@@ -13,7 +13,7 @@ import (
 	"github.com/nebolabs/nebo/internal/local"
 	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
 	"github.com/nebolabs/nebo/internal/middleware"
-	"github.com/nebolabs/nebo/internal/plugin"
+	"github.com/nebolabs/nebo/internal/apps/settings"
 	"github.com/nebolabs/nebo/internal/provider"
 
 	"github.com/nebolabs/nebo/internal/logging"
@@ -44,15 +44,20 @@ type ServiceContext struct {
 	DB             *db.Store
 	Auth           *local.AuthService
 	Email          *local.EmailService
-	AgentSettings  *local.AgentSettingsStore
 	SkillSettings  *local.SkillSettingsStore
-	PluginStore    *plugin.Store
+	PluginStore    *settings.Store
 
 	AgentHub  *agenthub.Hub
 	MCPClient *mcpclient.Client
 
-	appUI   AppUIProvider
-	appUIMu sync.RWMutex
+	appUI       AppUIProvider
+	appUIMu     sync.RWMutex
+	appRegistry  any // apps.AppRegistry (use any to avoid import cycle)
+	appRegMu     sync.RWMutex
+	toolRegistry any // tools.Registry (use any to avoid import cycle)
+	toolRegMu    sync.RWMutex
+	scheduler    any // tools.Scheduler (use any to avoid import cycle)
+	schedulerMu  sync.RWMutex
 }
 
 // SetAppUIProvider installs the app UI provider (called from agent.go after registry init).
@@ -67,6 +72,48 @@ func (svc *ServiceContext) AppUI() AppUIProvider {
 	svc.appUIMu.RLock()
 	defer svc.appUIMu.RUnlock()
 	return svc.appUI
+}
+
+// SetAppRegistry installs the app registry (called from agent.go after registry init).
+func (svc *ServiceContext) SetAppRegistry(r any) {
+	svc.appRegMu.Lock()
+	defer svc.appRegMu.Unlock()
+	svc.appRegistry = r
+}
+
+// AppRegistry returns the current app registry (may be nil before agent starts).
+func (svc *ServiceContext) AppRegistry() any {
+	svc.appRegMu.RLock()
+	defer svc.appRegMu.RUnlock()
+	return svc.appRegistry
+}
+
+// SetToolRegistry installs the tool registry (called from agent.go after registry init).
+func (svc *ServiceContext) SetToolRegistry(r any) {
+	svc.toolRegMu.Lock()
+	defer svc.toolRegMu.Unlock()
+	svc.toolRegistry = r
+}
+
+// ToolRegistry returns the current tool registry (may be nil before agent starts).
+func (svc *ServiceContext) ToolRegistry() any {
+	svc.toolRegMu.RLock()
+	defer svc.toolRegMu.RUnlock()
+	return svc.toolRegistry
+}
+
+// SetScheduler installs the scheduler provider (called from agent.go after scheduler init).
+func (svc *ServiceContext) SetScheduler(s any) {
+	svc.schedulerMu.Lock()
+	defer svc.schedulerMu.Unlock()
+	svc.scheduler = s
+}
+
+// Scheduler returns the current scheduler (may be nil before agent starts).
+func (svc *ServiceContext) Scheduler() any {
+	svc.schedulerMu.RLock()
+	defer svc.schedulerMu.RUnlock()
+	return svc.scheduler
 }
 
 // NewServiceContext creates a new service context, initializing database if not provided
@@ -100,7 +147,6 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 		Config:             c,
 		SecurityMiddleware: securityMw,
 		AgentHub:           agenthub.NewHub(),
-		AgentSettings:      local.NewAgentSettingsStore(dataDir),
 		SkillSettings:      local.NewSkillSettingsStore(dataDir),
 	}
 
@@ -128,10 +174,13 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 	}
 
 	if svc.DB != nil {
+		local.InitSettings(svc.DB.GetDB())
+		logging.Info("Agent settings singleton initialized")
+
 		svc.Auth = local.NewAuthService(svc.DB, c)
 		logging.Info("Auth service initialized")
 
-		svc.PluginStore = plugin.NewStore(svc.DB.GetDB())
+		svc.PluginStore = settings.NewStore(svc.DB.GetDB())
 		logging.Info("Plugin store initialized")
 
 		// Broadcast plugin settings changes to connected agents/UI
@@ -147,7 +196,7 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 		})
 
 		// Initialize MCP OAuth client
-		encKey, err := mcpclient.GetEncryptionKey()
+		encKey, err := mcpclient.GetEncryptionKey(neboDir)
 		if err != nil {
 			logging.Warnf("MCP encryption key not configured: %v", err)
 		}

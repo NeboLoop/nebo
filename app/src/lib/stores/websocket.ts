@@ -1,5 +1,8 @@
 import { browser } from '$app/environment';
 import { writable, derived, get } from 'svelte/store';
+import { logger } from '$lib/monitoring/logger';
+
+const log = logger.child({ component: 'WS' });
 
 // WebSocket message types
 export interface WSMessage {
@@ -85,13 +88,13 @@ class WebSocketService {
 			state.set({ connected: true, reconnecting: false, error: null });
 			this.reconnectAttempts = 0;
 			this.startPingInterval();
-			console.log('[WS] Connected');
+			log.info('Connected');
 		};
 
 		this.ws.onclose = (event) => {
 			state.update((s) => ({ ...s, connected: false }));
 			this.stopPingInterval();
-			console.log('[WS] Disconnected', event.code, event.reason);
+			log.info('Disconnected ' + event.code + ' ' + event.reason);
 
 			if (!event.wasClean) {
 				this.scheduleReconnect();
@@ -99,7 +102,7 @@ class WebSocketService {
 		};
 
 		this.ws.onerror = (error) => {
-			console.error('[WS] Error:', error);
+			log.error('WebSocket error', error);
 			state.update((s) => ({ ...s, error: 'WebSocket error' }));
 		};
 
@@ -112,7 +115,7 @@ class WebSocketService {
 					this.dispatchMessage(msg);
 				}
 			} catch (err) {
-				console.error('[WS] Failed to parse message:', err);
+				log.error('Failed to parse message', err);
 			}
 		};
 	}
@@ -159,7 +162,7 @@ class WebSocketService {
 		this.reconnectAttempts++;
 		const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
 
-		console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+		log.info(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
 		setTimeout(() => this.connect(this.userId), delay);
 	}
 

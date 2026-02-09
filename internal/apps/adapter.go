@@ -366,6 +366,99 @@ func (a *AppCommAdapter) SetMessageHandler(handler func(comm.CommMessage)) {
 	a.handler = handler
 }
 
+// --- Channel Adapter ---
+
+// AppChannelAdapter bridges a channel app's gRPC client to Nebo's channel interface.
+type AppChannelAdapter struct {
+	client  pb.ChannelServiceClient
+	id      string
+	handler func(channelID, userID, text, metadata string)
+	cancel  context.CancelFunc
+}
+
+// NewAppChannelAdapter creates a channel adapter by querying the app for its ID.
+func NewAppChannelAdapter(ctx context.Context, client pb.ChannelServiceClient) (*AppChannelAdapter, error) {
+	idResp, err := client.ID(ctx, &pb.Empty{})
+	if err != nil {
+		return nil, fmt.Errorf("channel id: %w", err)
+	}
+	return &AppChannelAdapter{
+		client: client,
+		id:     idResp.Id,
+	}, nil
+}
+
+func (a *AppChannelAdapter) ID() string { return a.id }
+
+func (a *AppChannelAdapter) Connect(ctx context.Context, config map[string]string) error {
+	resp, err := a.client.Connect(ctx, &pb.ChannelConnectRequest{Config: config})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+
+	// Start receiving inbound messages via gRPC server streaming
+	recvCtx, cancel := context.WithCancel(context.Background())
+	a.cancel = cancel
+
+	go func() {
+		stream, err := a.client.Receive(recvCtx, &pb.Empty{})
+		if err != nil {
+			fmt.Printf("[apps:channel:%s] Receive stream failed: %v\n", a.id, err)
+			return
+		}
+		for {
+			msg, err := stream.Recv()
+			if err != nil {
+				if err != io.EOF && recvCtx.Err() == nil {
+					fmt.Printf("[apps:channel:%s] Receive error: %v\n", a.id, err)
+				}
+				return
+			}
+			if a.handler != nil {
+				a.handler(msg.ChannelId, msg.UserId, msg.Text, msg.Metadata)
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (a *AppChannelAdapter) Disconnect(ctx context.Context) error {
+	if a.cancel != nil {
+		a.cancel()
+	}
+	resp, err := a.client.Disconnect(ctx, &pb.Empty{})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
+func (a *AppChannelAdapter) Send(ctx context.Context, channelID, text string) error {
+	resp, err := a.client.Send(ctx, &pb.ChannelSendRequest{
+		ChannelId: channelID,
+		Text:      text,
+	})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	return nil
+}
+
+// SetMessageHandler sets the callback for inbound messages from this channel.
+func (a *AppChannelAdapter) SetMessageHandler(handler func(channelID, userID, text, metadata string)) {
+	a.handler = handler
+}
+
 // --- Proto conversion helpers ---
 
 func toProtoCommMessage(msg comm.CommMessage) *pb.CommMessage {

@@ -46,7 +46,7 @@ Collect the following information conversationally (not all at once):
 
 If this is a brand new conversation, start with something like:
 
-> "Hey! I'm Nebo, your AI assistant. I'll be here whenever you need help with tasks, questions, or just want to chat. What should I call you?"
+> "Hey! I'm {agent_name}, your AI assistant. I'll be here whenever you need help with tasks, questions, or just want to chat. What should I call you?"
 
 ## Storing Information
 
@@ -79,7 +79,7 @@ Remember: This is a conversation, not an interview. Be natural and friendly!
 
 **User:** "hello"
 
-**Assistant:** Hey there! I'm Nebo, your AI assistant. I'm here to help with whatever you need - whether that's coding, research, writing, or just thinking through problems.
+**Assistant:** Hey there! I'm {agent_name}, your AI assistant. I'm here to help with whatever you need - whether that's coding, research, writing, or just thinking through problems.
 
 Before we dive in, what should I call you?
 

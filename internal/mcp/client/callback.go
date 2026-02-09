@@ -11,8 +11,9 @@ import (
 	"github.com/nebolabs/nebo/internal/logging"
 )
 
-// OAuthCallbackHandler handles OAuth redirects from external MCP servers
-func OAuthCallbackHandler(database *db.Store, mcpClient *Client, frontendURL string) http.HandlerFunc {
+// OAuthCallbackHandler handles OAuth redirects from external MCP servers.
+// onConnect is called after a successful token exchange so callers can trigger a bridge re-sync.
+func OAuthCallbackHandler(database *db.Store, mcpClient *Client, frontendURL string, onConnect func()) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
@@ -79,8 +80,13 @@ func OAuthCallbackHandler(database *db.Store, mcpClient *Client, frontendURL str
 
 		logging.Infof("OAuth callback: successfully connected integration %s (%s)", integration.Name, integration.ID)
 
+		// Notify bridge to re-sync (picks up new credentials)
+		if onConnect != nil {
+			onConnect()
+		}
+
 		// Redirect to frontend with success
-		redirectURL := fmt.Sprintf("%s/integrations?connected=%s", frontendURL, url.QueryEscape(integration.ID))
+		redirectURL := fmt.Sprintf("%s/settings/mcp?connected=%s", frontendURL, url.QueryEscape(integration.ID))
 		http.Redirect(w, r, redirectURL, http.StatusFound)
 	}
 }
@@ -153,7 +159,7 @@ func OAuthCallbackJSONHandler(database *db.Store, mcpClient *Client) http.Handle
 
 // redirectWithError redirects to the frontend with an error message
 func redirectWithError(w http.ResponseWriter, r *http.Request, frontendURL, errCode, errDesc string) {
-	redirectURL := fmt.Sprintf("%s/integrations?error=%s&error_description=%s",
+	redirectURL := fmt.Sprintf("%s/settings/mcp?error=%s&error_description=%s",
 		frontendURL,
 		url.QueryEscape(errCode),
 		url.QueryEscape(errDesc))

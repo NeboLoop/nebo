@@ -62,6 +62,14 @@ type Hub struct {
 	approvalHandler   ApprovalRequestHandler
 	approvalHandlerMu sync.RWMutex
 
+	// Event handler for agent events (lane updates, etc.)
+	eventHandler   func(agentID string, frame *Frame)
+	eventHandlerMu sync.RWMutex
+
+	// Sync request/response tracking
+	pendingSync   map[string]*pendingSync
+	pendingSyncMu sync.RWMutex
+
 	upgrader websocket.Upgrader
 }
 
@@ -292,6 +300,63 @@ func (h *Hub) Send(frame *Frame) error {
 	return h.SendToAgentByName("main", frame)
 }
 
+// pendingSync tracks synchronous request/response pairs
+type pendingSync struct {
+	ch chan *Frame
+}
+
+// SendRequestSync sends a request to the main agent and waits for the matching response.
+// Returns the response frame or an error on timeout.
+func (h *Hub) SendRequestSync(ctx context.Context, method string, params map[string]any) (*Frame, error) {
+	id := fmt.Sprintf("sync-%d", time.Now().UnixNano())
+	frame := &Frame{
+		Type:   "req",
+		ID:     id,
+		Method: method,
+		Params: params,
+	}
+
+	ch := make(chan *Frame, 1)
+	h.pendingSyncMu.Lock()
+	if h.pendingSync == nil {
+		h.pendingSync = make(map[string]*pendingSync)
+	}
+	h.pendingSync[id] = &pendingSync{ch: ch}
+	h.pendingSyncMu.Unlock()
+
+	defer func() {
+		h.pendingSyncMu.Lock()
+		delete(h.pendingSync, id)
+		h.pendingSyncMu.Unlock()
+	}()
+
+	if err := h.Send(frame); err != nil {
+		return nil, err
+	}
+
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// routeSyncResponse checks if a response matches a pending sync request.
+func (h *Hub) routeSyncResponse(frame *Frame) bool {
+	h.pendingSyncMu.RLock()
+	ps, ok := h.pendingSync[frame.ID]
+	h.pendingSyncMu.RUnlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ps.ch <- frame:
+	default:
+	}
+	return true
+}
+
 // SetResponseHandler sets the handler for agent responses
 func (h *Hub) SetResponseHandler(handler ResponseHandler) {
 	h.responseHandlerMu.Lock()
@@ -305,6 +370,13 @@ func (h *Hub) SetApprovalHandler(handler ApprovalRequestHandler) {
 	h.approvalHandlerMu.Lock()
 	defer h.approvalHandlerMu.Unlock()
 	h.approvalHandler = handler
+}
+
+// SetEventHandler sets the handler for agent events (lane updates, etc.)
+func (h *Hub) SetEventHandler(handler func(agentID string, frame *Frame)) {
+	h.eventHandlerMu.Lock()
+	defer h.eventHandlerMu.Unlock()
+	h.eventHandler = handler
 }
 
 // SendApprovalResponse sends an approval response back to THE agent
@@ -451,6 +523,10 @@ func (h *Hub) writePump(agent *AgentConnection) {
 func (h *Hub) handleFrame(agent *AgentConnection, frame *Frame) {
 	switch frame.Type {
 	case "res":
+		// Check if this is a sync response first
+		if h.routeSyncResponse(frame) {
+			return
+		}
 		// Response to a request we sent - route to handler
 		h.responseHandlerMu.RLock()
 		handler := h.responseHandler
@@ -485,7 +561,12 @@ func (h *Hub) handleFrame(agent *AgentConnection, frame *Frame) {
 			}
 		}
 	case "event":
-		// Event from agent - could be broadcast to other systems
+		h.eventHandlerMu.RLock()
+		handler := h.eventHandler
+		h.eventHandlerMu.RUnlock()
+		if handler != nil {
+			handler(agent.ID, frame)
+		}
 	case "req":
 		// Request from agent - handle and respond
 		h.handleRequest(agent, frame)

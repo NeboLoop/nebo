@@ -4,22 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
+	"sync"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/nebolabs/nebo/internal/logging"
 )
 
-// AuthenticatedTransport wraps http.RoundTripper to add OAuth authentication
+// AuthenticatedTransport wraps http.RoundTripper to add OAuth/API key authentication
 type AuthenticatedTransport struct {
 	Base          http.RoundTripper
 	MCPClient     *Client
 	IntegrationID string
 }
 
-// RoundTrip adds the OAuth Bearer token to requests
+// RoundTrip adds the Bearer token to requests
 func (t *AuthenticatedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Get access token (will refresh if needed)
 	token, err := t.MCPClient.GetAccessToken(req.Context(), t.IntegrationID)
@@ -34,27 +35,84 @@ func (t *AuthenticatedTransport) RoundTrip(req *http.Request) (*http.Response, e
 	return t.Base.RoundTrip(req2)
 }
 
-// MCPTool represents a tool exposed by an external MCP server
-type MCPTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+// sessionEntry holds a cached MCP client session for an integration.
+type sessionEntry struct {
+	session *mcp.ClientSession
 }
 
-// MCPToolResult represents the result of a tool execution
-type MCPToolResult struct {
-	Content []MCPContent `json:"content"`
-	IsError bool         `json:"isError,omitempty"`
+// sessions caches live MCP client sessions per integration ID.
+var (
+	sessions   sync.Map // map[string]*sessionEntry
+	sessionsMu sync.Mutex
+)
+
+// getOrCreateSession returns a cached session or creates a new one.
+func (c *Client) getOrCreateSession(ctx context.Context, integrationID, serverURL string) (*mcp.ClientSession, error) {
+	// Fast path: check cache
+	if entry, ok := sessions.Load(integrationID); ok {
+		return entry.(*sessionEntry).session, nil
+	}
+
+	sessionsMu.Lock()
+	defer sessionsMu.Unlock()
+
+	// Double-check after acquiring lock
+	if entry, ok := sessions.Load(integrationID); ok {
+		return entry.(*sessionEntry).session, nil
+	}
+
+	// Create authenticated HTTP client
+	httpClient := &http.Client{
+		Timeout: 60 * time.Second,
+		Transport: &AuthenticatedTransport{
+			Base:          http.DefaultTransport,
+			MCPClient:     c,
+			IntegrationID: integrationID,
+		},
+	}
+
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:   serverURL,
+		HTTPClient: httpClient,
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{
+		Name:    "nebo",
+		Version: "1.0.0",
+	}, nil)
+
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MCP server: %w", err)
+	}
+
+	sessions.Store(integrationID, &sessionEntry{session: session})
+	logging.Infof("MCP session established for integration %s at %s", integrationID, serverURL)
+
+	return session, nil
 }
 
-// MCPContent represents content in an MCP response
-type MCPContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+// CloseSession closes and removes a cached session for an integration.
+func (c *Client) CloseSession(integrationID string) {
+	if entry, ok := sessions.LoadAndDelete(integrationID); ok {
+		se := entry.(*sessionEntry)
+		se.session.Close()
+		logging.Infof("MCP session closed for integration %s", integrationID)
+	}
 }
 
-// ListTools fetches available tools from an external MCP server
-func (c *Client) ListTools(ctx context.Context, integrationID string) ([]MCPTool, error) {
+// CloseAllSessions closes all cached sessions.
+func (c *Client) CloseAllSessions() {
+	sessions.Range(func(key, value any) bool {
+		se := value.(*sessionEntry)
+		se.session.Close()
+		sessions.Delete(key)
+		return true
+	})
+}
+
+// ListTools fetches available tools from an external MCP server via the SDK.
+func (c *Client) ListTools(ctx context.Context, integrationID string) ([]*mcp.Tool, error) {
 	integration, err := c.db.GetMCPIntegration(ctx, integrationID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get integration: %w", err)
@@ -65,49 +123,32 @@ func (c *Client) ListTools(ctx context.Context, integrationID string) ([]MCPTool
 		return nil, fmt.Errorf("no server URL configured")
 	}
 
-	// Create authenticated HTTP client
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &AuthenticatedTransport{
-			Base:          http.DefaultTransport,
-			MCPClient:     c,
-			IntegrationID: integrationID,
-		},
-	}
-
-	// MCP servers typically expose tools/list endpoint
-	toolsURL := strings.TrimSuffix(serverURL, "/") + "/tools/list"
-
-	req, err := http.NewRequestWithContext(ctx, "POST", toolsURL, strings.NewReader("{}"))
+	session, err := c.getOrCreateSession(ctx, integrationID, serverURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		// Clear stale session on connect failure
+		c.CloseSession(integrationID)
+		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 
-	resp, err := httpClient.Do(req)
+	result, err := session.ListTools(ctx, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("list tools failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Tools []MCPTool `json:"tools"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		// Session may be stale — close and retry once
+		c.CloseSession(integrationID)
+		session, err = c.getOrCreateSession(ctx, integrationID, serverURL)
+		if err != nil {
+			return nil, err
+		}
+		result, err = session.ListTools(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tools: %w", err)
+		}
 	}
 
 	return result.Tools, nil
 }
 
-// CallTool makes an authenticated JSON-RPC call to an external MCP server
-func (c *Client) CallTool(ctx context.Context, integrationID, toolName string, input json.RawMessage) (*MCPToolResult, error) {
+// CallTool executes a tool on an external MCP server via the SDK.
+func (c *Client) CallTool(ctx context.Context, integrationID, toolName string, input json.RawMessage) (*mcp.CallToolResult, error) {
 	integration, err := c.db.GetMCPIntegration(ctx, integrationID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get integration: %w", err)
@@ -118,61 +159,28 @@ func (c *Client) CallTool(ctx context.Context, integrationID, toolName string, i
 		return nil, fmt.Errorf("no server URL configured")
 	}
 
-	// Create authenticated HTTP client
-	httpClient := &http.Client{
-		Timeout: 60 * time.Second, // Longer timeout for tool execution
-		Transport: &AuthenticatedTransport{
-			Base:          http.DefaultTransport,
-			MCPClient:     c,
-			IntegrationID: integrationID,
-		},
-	}
-
-	// MCP servers typically expose tools/call endpoint
-	callURL := strings.TrimSuffix(serverURL, "/") + "/tools/call"
-
-	// Build JSON-RPC request
-	rpcRequest := map[string]interface{}{
-		"name":      toolName,
-		"arguments": json.RawMessage(input),
-	}
-
-	body, err := json.Marshal(rpcRequest)
+	session, err := c.getOrCreateSession(ctx, integrationID, serverURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", callURL, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	logging.Infof("Calling MCP tool %s on %s", toolName, serverURL)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call tool: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("tool call failed with status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var result MCPToolResult
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		// If the response is not a structured result, wrap it as text content
-		result = MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: string(respBody)}},
+	// Convert json.RawMessage to map[string]any for the SDK
+	var args map[string]any
+	if len(input) > 0 {
+		if err := json.Unmarshal(input, &args); err != nil {
+			return nil, fmt.Errorf("failed to parse tool arguments: %w", err)
 		}
 	}
 
-	return &result, nil
+	logging.Infof("Calling MCP tool %s on %s", toolName, serverURL)
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      toolName,
+		Arguments: args,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to call tool %s: %w", toolName, err)
+	}
+
+	return result, nil
 }

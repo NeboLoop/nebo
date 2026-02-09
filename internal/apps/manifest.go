@@ -7,16 +7,17 @@ import (
 	"path/filepath"
 	"strings"
 
-	pluginpkg "github.com/nebolabs/nebo/internal/plugin"
+	"github.com/nebolabs/nebo/internal/apps/settings"
 )
 
 // Known capability types that apps can provide.
 const (
-	CapGateway = "gateway"
-	CapVision  = "vision"
-	CapBrowser = "browser"
-	CapComm    = "comm"
-	CapUI      = "ui"
+	CapGateway  = "gateway"
+	CapVision   = "vision"
+	CapBrowser  = "browser"
+	CapComm     = "comm"
+	CapUI       = "ui"
+	CapSchedule = "schedule"
 )
 
 // Capability prefixes for parameterized capabilities.
@@ -226,18 +227,18 @@ func CheckPermission(m *AppManifest, perm string) bool {
 
 // ToSettingsManifest converts the app's settings fields to the plugin.SettingsManifest
 // format for compatibility with the existing plugin settings UI.
-func (m *AppManifest) ToSettingsManifest() pluginpkg.SettingsManifest {
+func (m *AppManifest) ToSettingsManifest() settings.SettingsManifest {
 	if len(m.Settings) == 0 {
-		return pluginpkg.SettingsManifest{}
+		return settings.SettingsManifest{}
 	}
 
-	fields := make([]pluginpkg.SettingsField, len(m.Settings))
+	fields := make([]settings.SettingsField, len(m.Settings))
 	for i, f := range m.Settings {
-		var opts []pluginpkg.Option
+		var opts []settings.Option
 		for _, o := range f.Options {
-			opts = append(opts, pluginpkg.Option{Label: o.Label, Value: o.Value})
+			opts = append(opts, settings.Option{Label: o.Label, Value: o.Value})
 		}
-		fields[i] = pluginpkg.SettingsField{
+		fields[i] = settings.SettingsField{
 			Key:         f.Key,
 			Title:       f.Title,
 			Type:        f.Type,
@@ -250,8 +251,8 @@ func (m *AppManifest) ToSettingsManifest() pluginpkg.SettingsManifest {
 		}
 	}
 
-	return pluginpkg.SettingsManifest{
-		Groups: []pluginpkg.SettingsGroup{
+	return settings.SettingsManifest{
+		Groups: []settings.SettingsGroup{
 			{
 				Title:  m.Name + " Settings",
 				Fields: fields,
@@ -262,7 +263,7 @@ func (m *AppManifest) ToSettingsManifest() pluginpkg.SettingsManifest {
 
 func isValidCapability(cap string) bool {
 	switch cap {
-	case CapGateway, CapVision, CapBrowser, CapComm, CapUI:
+	case CapGateway, CapVision, CapBrowser, CapComm, CapUI, CapSchedule:
 		return true
 	}
 	if strings.HasPrefix(cap, CapPrefixTool) || strings.HasPrefix(cap, CapPrefixChannel) {

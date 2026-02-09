@@ -14,7 +14,6 @@
 	let content = $state('');
 	let originalContent = $state('');
 	let intervalMinutes = $state(30);
-	let originalInterval = $state(30);
 
 	const intervalOptions = [
 		{ value: 5, label: '5 minutes' },
@@ -56,6 +55,8 @@ Write tasks in plain language - the agent will interpret and act on them.
 - The agent will respond with "HEARTBEAT_OK" if nothing needs attention
 `;
 
+	let currentSettings: Record<string, any> = {};
+
 	onMount(async () => {
 		try {
 			const [heartbeatRes, settingsRes] = await Promise.all([
@@ -67,8 +68,8 @@ Write tasks in plain language - the agent will interpret and act on them.
 				content = defaultTemplate;
 			}
 			originalContent = content;
+			currentSettings = settingsRes.settings;
 			intervalMinutes = settingsRes.settings.heartbeatIntervalMinutes || 30;
-			originalInterval = intervalMinutes;
 		} catch (err) {
 			console.error('Failed to load heartbeat:', err);
 			content = defaultTemplate;
@@ -78,23 +79,27 @@ Write tasks in plain language - the agent will interpret and act on them.
 		}
 	});
 
+	async function handleIntervalChange() {
+		try {
+			await api.updateAgentSettings({
+				...currentSettings,
+				heartbeatIntervalMinutes: intervalMinutes
+			});
+			currentSettings = { ...currentSettings, heartbeatIntervalMinutes: intervalMinutes };
+		} catch (err: any) {
+			console.error('Failed to save interval:', err);
+			saveError = err?.message || 'Failed to save interval';
+		}
+	}
+
 	async function handleSave() {
 		isSaving = true;
 		saveSuccess = false;
 		saveError = '';
 		try {
-			// Save both heartbeat content and interval setting
-			const settingsRes = await api.getAgentSettings();
-			await Promise.all([
-				api.updateHeartbeat({ content }),
-				api.updateAgentSettings({
-					...settingsRes.settings,
-					heartbeatIntervalMinutes: intervalMinutes
-				})
-			]);
+			await api.updateHeartbeat({ content });
 			saveSuccess = true;
 			originalContent = content;
-			originalInterval = intervalMinutes;
 			setTimeout(() => (saveSuccess = false), 3000);
 		} catch (err: any) {
 			saveError = err?.message || 'Failed to save heartbeat settings';
@@ -106,11 +111,12 @@ Write tasks in plain language - the agent will interpret and act on them.
 	function handleReset() {
 		content = defaultTemplate;
 		intervalMinutes = 30;
+		handleIntervalChange();
 		saveSuccess = false;
 		saveError = '';
 	}
 
-	const hasChanges = $derived(content !== originalContent || intervalMinutes !== originalInterval);
+	const hasChanges = $derived(content !== originalContent);
 </script>
 
 <div class="flex flex-col h-full min-h-0">
@@ -139,6 +145,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 						</div>
 						<select
 							bind:value={intervalMinutes}
+							onchange={handleIntervalChange}
 							class="select select-bordered select-sm w-36"
 							disabled={isLoading}
 						>

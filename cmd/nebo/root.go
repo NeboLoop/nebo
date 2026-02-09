@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/nebolabs/nebo/app"
 	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/channels"
 	"github.com/nebolabs/nebo/internal/daemon"
 	"github.com/nebolabs/nebo/internal/db/migrations"
 	"github.com/nebolabs/nebo/internal/defaults"
@@ -76,7 +74,6 @@ func RunAll() {
 	}
 
 	// Create shared components (single binary = shared state)
-	channelMgr := channels.NewManager()
 	agentMCPProxy := server.NewAgentMCPProxy() // Set by agent after MCP server init
 
 	var wg sync.WaitGroup
@@ -90,7 +87,6 @@ func RunAll() {
 			wg.Done()
 		}()
 		opts := server.ServerOptions{
-			ChannelManager:  channelMgr,
 			SvcCtx:          svcCtx,
 			Quiet:           true, // Suppress server startup messages
 			AgentMCPHandler: agentMCPProxy,
@@ -127,16 +123,12 @@ func RunAll() {
 			fmt.Println("[AgentLoop] Goroutine exiting")
 			wg.Done()
 		}()
-		// Settings file is in the same directory as the SQLite database
-		settingsDir := filepath.Dir(c.Database.SQLitePath)
 		agentOpts := AgentOptions{
-			ChannelManager:   channelMgr,
 			Database:         svcCtx.DB.GetDB(),
 			PluginStore:      svcCtx.PluginStore,
 			SvcCtx:           svcCtx,
 			Quiet:            true,
 			Dangerously:      dangerouslyAll,
-			SettingsFilePath: filepath.Join(settingsDir, "agent-settings.json"),
 			AgentMCPProxy:    agentMCPProxy,
 		}
 		if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {

@@ -17,7 +17,6 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/channels"
 	"github.com/nebolabs/nebo/internal/daemon"
 	"github.com/nebolabs/nebo/internal/db/migrations"
 	"github.com/nebolabs/nebo/internal/defaults"
@@ -115,9 +114,6 @@ func RunDesktop() {
 		fmt.Printf("\033[31mError: Failed to initialize database\033[0m\n")
 		os.Exit(1)
 	}
-
-	// Create shared components
-	channelMgr := channels.NewManager()
 
 	// Compute server URL
 	serverURL := c.App.BaseURL
@@ -265,7 +261,6 @@ func RunDesktop() {
 		go func() {
 			defer wg.Done()
 			opts := server.ServerOptions{
-				ChannelManager: channelMgr,
 				SvcCtx:         svcCtx,
 				Quiet:          true,
 			}
@@ -290,15 +285,12 @@ func RunDesktop() {
 		// Start agent
 		go func() {
 			defer wg.Done()
-			settingsDir := filepath.Dir(c.Database.SQLitePath)
 			agentOpts := AgentOptions{
-				ChannelManager:   channelMgr,
 				Database:         svcCtx.DB.GetDB(),
 				PluginStore:      svcCtx.PluginStore,
 				SvcCtx:           svcCtx,
 				Quiet:            true,
 				Dangerously:      dangerouslyAll,
-				SettingsFilePath: filepath.Join(settingsDir, "agent-settings.json"),
 			}
 			if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {
 				if ctx.Err() == nil {

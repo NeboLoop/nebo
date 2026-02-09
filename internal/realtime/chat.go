@@ -84,6 +84,24 @@ func (c *ChatContext) SetHub(hub *agenthub.Hub) {
 	hub.SetResponseHandler(c.handleAgentResponse)
 	// Register to receive approval requests
 	hub.SetApprovalHandler(c.handleApprovalRequest)
+	// Register to receive agent events (lane updates, etc.)
+	hub.SetEventHandler(c.handleAgentEvent)
+}
+
+// handleAgentEvent forwards agent events (lane updates, etc.) to all UI clients
+func (c *ChatContext) handleAgentEvent(agentID string, frame *agenthub.Frame) {
+	if c.clientHub == nil {
+		return
+	}
+	data := make(map[string]interface{})
+	if payload, ok := frame.Payload.(map[string]any); ok {
+		data = payload
+	}
+	c.clientHub.Broadcast(&Message{
+		Type:      frame.Method,
+		Data:      data,
+		Timestamp: time.Now(),
+	})
 }
 
 // RegisterChatHandler sets up the chat handler
@@ -99,6 +117,9 @@ func RegisterChatHandler(chatCtx *ChatContext) {
 	})
 	SetCheckStreamHandler(func(c *Client, msg *Message) {
 		go handleCheckStream(c, msg, chatCtx)
+	})
+	SetCancelHandler(func(c *Client, msg *Message) {
+		go handleCancel(c, msg, chatCtx)
 	})
 }
 
@@ -436,11 +457,62 @@ func handleRequestIntroduction(c *Client, msg *Message, chatCtx *ChatContext) {
 	logging.Infof("[Chat] Sent introduction request to agent %s (request: %s)", agent.ID, requestID)
 }
 
+// handleCancel processes a cancel request from the client.
+// It sends a cancel frame to the agent hub and broadcasts chat_cancelled to UI clients.
+// IMPORTANT: Always broadcasts chat_cancelled even if agent is unavailable,
+// so the frontend can reset its loading state.
+func handleCancel(c *Client, msg *Message, chatCtx *ChatContext) {
+	sessionID, _ := msg.Data["session_id"].(string)
+	logging.Infof("[Chat] Cancel requested for session %s", sessionID)
+
+	// Try to send cancel to agent (best-effort)
+	if chatCtx.hub != nil {
+		if agent := chatCtx.hub.GetAnyAgent(); agent != nil {
+			frame := &agenthub.Frame{
+				Type:   "req",
+				ID:     fmt.Sprintf("cancel-%d", time.Now().UnixNano()),
+				Method: "cancel",
+				Params: map[string]any{
+					"session_id": sessionID,
+				},
+			}
+			if err := chatCtx.hub.SendToAgent(agent.ID, frame); err != nil {
+				logging.Errorf("[Chat] Failed to send cancel to agent: %v", err)
+			}
+		} else {
+			logging.Infof("[Chat] No agent connected for cancel, will still clean up and broadcast")
+		}
+	}
+
+	// Clean up pending request for this session
+	chatCtx.activeSessionsMu.Lock()
+	requestID, hadActive := chatCtx.activeSessions[sessionID]
+	delete(chatCtx.activeSessions, sessionID)
+	chatCtx.activeSessionsMu.Unlock()
+
+	if hadActive {
+		chatCtx.pendingMu.Lock()
+		delete(chatCtx.pending, requestID)
+		chatCtx.pendingMu.Unlock()
+	}
+
+	// Always broadcast cancellation to all UI clients so frontend can reset state
+	cancelMsg := &Message{
+		Type:      "chat_cancelled",
+		Data:      map[string]interface{}{"session_id": sessionID},
+		Timestamp: time.Now(),
+	}
+	if chatCtx.clientHub != nil {
+		chatCtx.clientHub.Broadcast(cancelMsg)
+	}
+}
+
 // handleChatMessage processes a chat message by routing to connected agent
 func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 	sessionID, _ := msg.Data["session_id"].(string)
 	prompt, _ := msg.Data["prompt"].(string)
 	useCompanion, _ := msg.Data["companion"].(bool)
+	system, _ := msg.Data["system"].(string)
 
 	logging.Infof("[Chat] Processing message for session %s: %s", sessionID, prompt)
 
@@ -562,6 +634,7 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 			"session_key": sessionID,
 			"prompt":      prompt,
 			"user_id":     c.UserID, // Thread user_id to agent for user-scoped operations
+			"system":      system,   // Optional system prompt override (dev assistant, etc.)
 		},
 	}
 

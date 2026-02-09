@@ -7,18 +7,11 @@ import (
 	"strings"
 )
 
-// ChannelSender is an interface for sending messages to channels
+// ChannelSender is the interface for sending messages to channel apps.
+// Implemented by apps.AppRegistry — defined here to avoid import cycles.
 type ChannelSender interface {
-	Send(ctx context.Context, channelID, text string) error
-	ListChannels() []ChannelInfo
-}
-
-// ChannelInfo describes an available channel
-type ChannelInfo struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`     // "telegram", "discord", "slack", etc.
-	Name     string `json:"name"`
-	Status   string `json:"status"`   // "connected", "disconnected"
+	SendToChannel(ctx context.Context, channelType, channelID, text string) error
+	ListChannels() []string
 }
 
 // ChannelSendTool allows AI to send messages to channels
@@ -117,30 +110,25 @@ func (t *ChannelSendTool) Execute(ctx context.Context, input json.RawMessage) (*
 func (t *ChannelSendTool) listChannels() (*ToolResult, error) {
 	if t.sender == nil {
 		return &ToolResult{
-			Content: "No channels configured. Channel adapters must be set up first.",
+			Content: "No channels configured. Install channel apps first.",
 			IsError: false,
 		}, nil
 	}
 
-	channels := t.sender.ListChannels()
-	if len(channels) == 0 {
+	ids := t.sender.ListChannels()
+	if len(ids) == 0 {
 		return &ToolResult{
-			Content: "No channels available. Configure channels in the settings.",
+			Content: "No channels available. Install channel apps from the app store.",
 			IsError: false,
 		}, nil
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Available Channels (%d):\n\n", len(channels)))
-	sb.WriteString("| ID | Type | Name | Status |\n")
-	sb.WriteString("|-----|------|------|--------|\n")
-
-	for _, ch := range channels {
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n",
-			ch.ID, ch.Type, ch.Name, ch.Status))
+	sb.WriteString(fmt.Sprintf("Available Channels (%d):\n", len(ids)))
+	for _, id := range ids {
+		sb.WriteString(fmt.Sprintf("- %s\n", id))
 	}
-
-	sb.WriteString("\nTo send a message, use action='send' with the channel ID.")
+	sb.WriteString("\nTo send a message, use action='send' with channel_id='type:chat_id'.")
 
 	return &ToolResult{
 		Content: sb.String(),
@@ -157,14 +145,22 @@ func (t *ChannelSendTool) sendMessage(ctx context.Context, channelID, text strin
 		}, nil
 	}
 
-	if err := t.sender.Send(ctx, channelID, text); err != nil {
+	// Parse "type:identifier" format (e.g., "telegram:123456")
+	parts := strings.SplitN(channelID, ":", 2)
+	if len(parts) != 2 {
+		return &ToolResult{
+			Content: "Error: channel_id must be 'type:identifier' (e.g., 'telegram:123456')",
+			IsError: true,
+		}, nil
+	}
+
+	if err := t.sender.SendToChannel(ctx, parts[0], parts[1], text); err != nil {
 		return &ToolResult{
 			Content: fmt.Sprintf("Failed to send message: %v", err),
 			IsError: true,
 		}, nil
 	}
 
-	// Truncate for display
 	preview := text
 	if len(preview) > 100 {
 		preview = preview[:97] + "..."

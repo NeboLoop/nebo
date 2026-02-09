@@ -2,12 +2,15 @@ package integration
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/nebolabs/nebo/internal/agenthub"
 	"github.com/nebolabs/nebo/internal/db"
 	"github.com/nebolabs/nebo/internal/httputil"
 	"github.com/nebolabs/nebo/internal/svc"
@@ -84,12 +87,35 @@ func CreateMCPIntegrationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
+		if req.ServerUrl == "" {
+			httputil.BadRequest(w, "serverUrl is required")
+			return
+		}
+
+		// Derive serverType and name from the URL hostname if not provided
+		if req.ServerType == "" || req.Name == "" {
+			if parsed, err := url.Parse(req.ServerUrl); err == nil && parsed.Hostname() != "" {
+				if req.ServerType == "" {
+					req.ServerType = parsed.Hostname()
+				}
+				if req.Name == "" {
+					req.Name = parsed.Hostname()
+				}
+			}
+		}
+		if req.ServerType == "" {
+			req.ServerType = "custom"
+		}
+		if req.Name == "" {
+			req.Name = "MCP Server"
+		}
+
 		id := uuid.New().String()
 		integration, err := svcCtx.DB.CreateMCPIntegration(r.Context(), db.CreateMCPIntegrationParams{
 			ID:         id,
 			Name:       req.Name,
 			ServerType: req.ServerType,
-			ServerUrl:  sql.NullString{String: req.ServerUrl, Valid: req.ServerUrl != ""},
+			ServerUrl:  sql.NullString{String: req.ServerUrl, Valid: true},
 			AuthType:   req.AuthType,
 			IsEnabled:  sql.NullInt64{Int64: 1, Valid: true},
 		})
@@ -112,6 +138,7 @@ func CreateMCPIntegrationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			}
 		}
 
+		notifyIntegrationsChanged(svcCtx)
 		httputil.OkJSON(w, types.CreateMCPIntegrationResponse{Integration: toMCPIntegration(integration)})
 	}
 }
@@ -184,6 +211,7 @@ func UpdateMCPIntegrationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			}
 		}
 
+		notifyIntegrationsChanged(svcCtx)
 		httputil.OkJSON(w, types.UpdateMCPIntegrationResponse{Integration: toMCPIntegration(integration)})
 	}
 }
@@ -204,6 +232,7 @@ func DeleteMCPIntegrationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
+		notifyIntegrationsChanged(svcCtx)
 		httputil.OkJSON(w, types.MessageResponse{Message: "Integration deleted"})
 	}
 }
@@ -217,32 +246,64 @@ func TestMCPIntegrationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		// Get integration
-		integration, err := svcCtx.DB.GetMCPIntegration(r.Context(), id)
+		_, err := svcCtx.DB.GetMCPIntegration(r.Context(), id)
 		if err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		// Get credential
-		cred, err := svcCtx.DB.GetMCPIntegrationCredential(r.Context(), id)
-		if err != nil && err != sql.ErrNoRows {
-			httputil.Error(w, err)
+		if svcCtx.MCPClient == nil {
+			httputil.ErrorWithCode(w, http.StatusServiceUnavailable, "MCP client not available")
 			return
 		}
 
-		// TODO: Actually test the connection based on server type
-		// For now, just mark as connected if we have credentials
-		if integration.AuthType == "none" || (cred.CredentialValue != "") {
-			svcCtx.DB.UpdateMCPIntegrationStatus(r.Context(), db.UpdateMCPIntegrationStatusParams{
+		// Actually test the connection by listing tools from the server
+		mcpTools, err := svcCtx.MCPClient.ListTools(r.Context(), id)
+		if err != nil {
+			svcCtx.DB.UpdateMCPIntegrationConnectionStatus(r.Context(), db.UpdateMCPIntegrationConnectionStatusParams{
+				ConnectionStatus: sql.NullString{String: "error", Valid: true},
+				Column2:          "error",
+				LastError:        sql.NullString{String: err.Error(), Valid: true},
 				ID:               id,
-				ConnectionStatus: sql.NullString{String: "connected", Valid: true},
-				LastConnectedAt:  sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
 			})
-			httputil.OkJSON(w, types.TestMCPIntegrationResponse{Success: true, Message: "Connection successful"})
+			httputil.OkJSON(w, types.TestMCPIntegrationResponse{Success: false, Message: err.Error()})
 			return
 		}
 
-		httputil.OkJSON(w, types.TestMCPIntegrationResponse{Success: false, Message: "No credentials configured"})
+		// Connection succeeded — update status and tool count
+		svcCtx.DB.UpdateMCPIntegrationConnectionStatus(r.Context(), db.UpdateMCPIntegrationConnectionStatusParams{
+			ConnectionStatus: sql.NullString{String: "connected", Valid: true},
+			Column2:          "connected",
+			LastError:        sql.NullString{Valid: false},
+			ID:               id,
+		})
+		svcCtx.DB.UpdateMCPIntegrationToolCount(r.Context(), db.UpdateMCPIntegrationToolCountParams{
+			ToolCount: sql.NullInt64{Int64: int64(len(mcpTools)), Valid: true},
+			ID:        id,
+		})
+
+		// Notify agent to re-sync MCP bridge
+		if svcCtx.AgentHub != nil {
+			svcCtx.AgentHub.Broadcast(&agenthub.Frame{
+				Type:   "event",
+				Method: "integrations_changed",
+			})
+		}
+
+		httputil.OkJSON(w, types.TestMCPIntegrationResponse{
+			Success:   true,
+			Message:   fmt.Sprintf("Connected — %d tools available", len(mcpTools)),
+			ToolCount: len(mcpTools),
+		})
+	}
+}
+
+func notifyIntegrationsChanged(svcCtx *svc.ServiceContext) {
+	if svcCtx.AgentHub != nil {
+		svcCtx.AgentHub.Broadcast(&agenthub.Frame{
+			Type:   "event",
+			Method: "integrations_changed",
+		})
 	}
 }
 
@@ -255,6 +316,7 @@ func toMCPIntegration(i db.McpIntegration) types.MCPIntegration {
 		AuthType:         i.AuthType,
 		IsEnabled:        i.IsEnabled.Int64 == 1,
 		ConnectionStatus: nullStringDefault(i.ConnectionStatus, "disconnected"),
+		ToolCount:        int(i.ToolCount.Int64),
 		LastConnectedAt:  nullTimeString(i.LastConnectedAt),
 		LastError:        nullString(i.LastError),
 		CreatedAt:        time.Unix(i.CreatedAt, 0).Format(time.RFC3339),

@@ -18,6 +18,11 @@ type DBContext struct {
 	EmojiUsage        string
 	Formality         string
 	Proactivity       string
+	AgentEmoji        string
+	AgentCreature     string
+	AgentVibe         string
+	AgentRules        string
+	ToolNotes         string
 
 	UserDisplayName  string
 	UserLocation     string
@@ -65,9 +70,10 @@ func LoadContext(db *sql.DB, userID string) (*DBContext, error) {
 		fmt.Printf("[memory] Warning: failed to load user profile: %v\n", err)
 	}
 
-	// NOTE: Tacit memories are NOT loaded into the system prompt (tool-driven pattern).
-	// The agent retrieves memories on-demand via agent(resource: memory, action: recall/search).
-	// This reduces prompt-injection attack surface and avoids wasting tokens on irrelevant memories.
+	// Load tacit memories so the agent retains learned knowledge across restarts
+	if err := loadTacitMemories(ctx, db, result, userID); err != nil {
+		fmt.Printf("[memory] Warning: failed to load tacit memories: %v\n", err)
+	}
 
 	return result, nil
 }
@@ -77,13 +83,16 @@ func loadAgentProfile(ctx context.Context, db *sql.DB, result *DBContext) error 
 	// Get agent profile (created by migrations)
 	var name, preset sql.NullString
 	var customPersonality, voiceStyle, responseLength, emojiUsage, formality, proactivity sql.NullString
+	var emoji, creature, vibe, agentRules, toolNotes sql.NullString
 
 	err := db.QueryRowContext(ctx, `
 		SELECT name, personality_preset, custom_personality, voice_style,
-		       response_length, emoji_usage, formality, proactivity
+		       response_length, emoji_usage, formality, proactivity,
+		       emoji, creature, vibe, agent_rules, tool_notes
 		FROM agent_profile WHERE id = 1
 	`).Scan(&name, &preset, &customPersonality, &voiceStyle,
-		&responseLength, &emojiUsage, &formality, &proactivity)
+		&responseLength, &emojiUsage, &formality, &proactivity,
+		&emoji, &creature, &vibe, &agentRules, &toolNotes)
 
 	if err != nil && err != sql.ErrNoRows {
 		return err
@@ -95,6 +104,11 @@ func loadAgentProfile(ctx context.Context, db *sql.DB, result *DBContext) error 
 	result.EmojiUsage = stringOr(emojiUsage, "moderate")
 	result.Formality = stringOr(formality, "adaptive")
 	result.Proactivity = stringOr(proactivity, "moderate")
+	result.AgentEmoji = stringOr(emoji, "")
+	result.AgentCreature = stringOr(creature, "")
+	result.AgentVibe = stringOr(vibe, "")
+	result.AgentRules = stringOr(agentRules, "")
+	result.ToolNotes = stringOr(toolNotes, "")
 
 	// Get personality prompt from preset or custom
 	if customPersonality.Valid && customPersonality.String != "" {
@@ -109,7 +123,7 @@ func loadAgentProfile(ctx context.Context, db *sql.DB, result *DBContext) error 
 			result.PersonalityPrompt = systemPrompt
 		} else {
 			// Fallback default
-			result.PersonalityPrompt = "You are Nebo, a helpful and friendly AI assistant."
+			result.PersonalityPrompt = "You are {name}, a helpful and friendly AI assistant."
 		}
 	}
 
@@ -183,7 +197,7 @@ func loadTacitMemories(ctx context.Context, db *sql.DB, result *DBContext, userI
 		rows, err = db.QueryContext(ctx, `
 			SELECT namespace, key, value, tags
 			FROM memories
-			WHERE namespace LIKE 'tacit.%' AND user_id = ?
+			WHERE namespace LIKE 'tacit/%' AND user_id = ?
 			ORDER BY access_count DESC
 			LIMIT 50
 		`, userID)
@@ -192,7 +206,7 @@ func loadTacitMemories(ctx context.Context, db *sql.DB, result *DBContext, userI
 		rows, err = db.QueryContext(ctx, `
 			SELECT namespace, key, value, tags
 			FROM memories
-			WHERE namespace LIKE 'tacit.%'
+			WHERE namespace LIKE 'tacit/%'
 			ORDER BY access_count DESC
 			LIMIT 50
 		`)
@@ -236,12 +250,29 @@ func (c *DBContext) FormatForSystemPrompt() string {
 		agentName = "Nebo"
 	}
 
-	identity := fmt.Sprintf("# Identity\n\nYou are %s, a personal AI assistant. You are NOT Claude, ChatGPT, or any other AI brand — always introduce yourself as %s.", agentName, agentName)
 	if c.PersonalityPrompt != "" {
-		// Personality augments identity on new lines, not inline
-		identity += "\n\n" + c.PersonalityPrompt
+		// Replace {name} placeholder in soul documents with the actual agent name
+		prompt := strings.ReplaceAll(c.PersonalityPrompt, "{name}", agentName)
+		parts = append(parts, prompt)
+	} else {
+		identity := fmt.Sprintf("# Identity\n\nYou are %s, a personal AI assistant. You are NOT Claude, ChatGPT, or any other AI brand — always introduce yourself as %s.", agentName, agentName)
+		parts = append(parts, identity)
 	}
-	parts = append(parts, identity)
+
+	// Agent character (creature, vibe, emoji — the "business card")
+	if c.AgentCreature != "" || c.AgentVibe != "" || c.AgentEmoji != "" {
+		var charParts []string
+		if c.AgentCreature != "" {
+			charParts = append(charParts, "You are a "+c.AgentCreature+".")
+		}
+		if c.AgentVibe != "" {
+			charParts = append(charParts, "Your vibe: "+c.AgentVibe)
+		}
+		if c.AgentEmoji != "" {
+			charParts = append(charParts, "Your signature emoji: "+c.AgentEmoji)
+		}
+		parts = append(parts, "## Character\n\n"+strings.Join(charParts, "\n"))
+	}
 
 	// Agent style preferences
 	if c.VoiceStyle != "" || c.Formality != "" || c.EmojiUsage != "" {
@@ -281,7 +312,27 @@ func (c *DBContext) FormatForSystemPrompt() string {
 		parts = append(parts, "# User Information\n\n"+strings.Join(userParts, "\n"))
 	}
 
-	// Memory tool instructions (tool-driven pattern — memories are NOT injected into the prompt)
+	// Agent rules (user-defined behavioral guidelines — AGENTS.md equivalent)
+	if c.AgentRules != "" {
+		parts = append(parts, formatStructuredContent(c.AgentRules, "Rules"))
+	}
+
+	// Tool notes (environment-specific instructions — TOOLS.md equivalent)
+	if c.ToolNotes != "" {
+		parts = append(parts, formatStructuredContent(c.ToolNotes, "Tool Notes"))
+	}
+
+	// Inject tacit memories so the agent retains learned knowledge across restarts
+	if len(c.TacitMemories) > 0 {
+		var memLines []string
+		for _, m := range c.TacitMemories {
+			prefix := strings.TrimPrefix(m.Namespace, "tacit/")
+			memLines = append(memLines, fmt.Sprintf("- %s/%s: %s", prefix, m.Key, m.Value))
+		}
+		parts = append(parts, "## What You Know\n\nThese are facts you've learned and stored. Reference them naturally — don't announce that you're \"recalling\" them:\n"+strings.Join(memLines, "\n"))
+	}
+
+	// Memory tool instructions
 	parts = append(parts, "# Memory\n\nYou have a persistent memory system. Use it actively:\n- **Recall**: `agent(resource: memory, action: recall, key: \"...\")` — retrieve a specific memory\n- **Search**: `agent(resource: memory, action: search, query: \"...\")` — find relevant memories\n- **Store**: `agent(resource: memory, action: store, key: \"...\", value: \"...\", layer: \"tacit\")` — save facts\n\nWhen a user mentions preferences, personal details, or asks you to remember something, store it immediately. When context seems relevant to past conversations, search your memory proactively.")
 
 	if len(parts) == 0 {
@@ -299,6 +350,47 @@ func (c *DBContext) IsEmpty() bool {
 // NeedsOnboarding returns true if the user hasn't completed onboarding
 func (c *DBContext) NeedsOnboarding() bool {
 	return c.OnboardingNeeded
+}
+
+// formatStructuredContent parses JSON structured rules/notes and renders as markdown.
+// Falls back to raw text if the content is not valid structured JSON (backwards compat).
+func formatStructuredContent(content string, heading string) string {
+	var data struct {
+		Version  int `json:"version"`
+		Sections []struct {
+			Name  string `json:"name"`
+			Items []struct {
+				Text    string `json:"text"`
+				Enabled bool   `json:"enabled"`
+			} `json:"items"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal([]byte(content), &data); err == nil && data.Version > 0 {
+		var sb strings.Builder
+		sb.WriteString("# " + heading + "\n\n")
+		for _, s := range data.Sections {
+			hasEnabled := false
+			for _, item := range s.Items {
+				if item.Enabled {
+					hasEnabled = true
+					break
+				}
+			}
+			if !hasEnabled {
+				continue
+			}
+			sb.WriteString("## " + s.Name + "\n")
+			for _, item := range s.Items {
+				if item.Enabled {
+					sb.WriteString("- " + item.Text + "\n")
+				}
+			}
+			sb.WriteString("\n")
+		}
+		return strings.TrimRight(sb.String(), "\n")
+	}
+	// Fallback: raw text (backwards compat with plain markdown)
+	return "# " + heading + "\n\n" + content
 }
 
 // Helper function

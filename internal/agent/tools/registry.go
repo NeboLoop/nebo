@@ -121,8 +121,36 @@ func (r *Registry) List() []ai.ToolDefinition {
 	return defs
 }
 
+// stripMCPPrefix removes the MCP namespace prefix from tool names.
+// Claude CLI exposes tools via MCP as "mcp__{server}__{tool}" (e.g., "mcp__nebo-agent__web").
+// When these prefixed names leak into session history, non-CLI providers may repeat them.
+// This strips the prefix so the registry can find the actual tool.
+func stripMCPPrefix(name string) string {
+	if !strings.HasPrefix(name, "mcp__") {
+		return name
+	}
+	// mcp__{server}__{tool} → tool
+	parts := strings.SplitN(name, "__", 3)
+	if len(parts) == 3 {
+		return parts[2]
+	}
+	return name
+}
+
 // Execute runs a tool and returns the result
 func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResult {
+	// If the tool name has an MCP prefix (e.g., "mcp__nebo-agent__web"), check if it
+	// exists as-is first (external MCP proxy tools). Only strip the prefix as a fallback
+	// for Nebo's own tools exposed via MCP to the CLI provider.
+	if strings.HasPrefix(toolCall.Name, "mcp__") {
+		r.mu.RLock()
+		_, exists := r.tools[toolCall.Name]
+		r.mu.RUnlock()
+		if !exists {
+			toolCall.Name = stripMCPPrefix(toolCall.Name)
+		}
+	}
+
 	fmt.Printf("[Registry] Executing tool: %s\n", toolCall.Name)
 
 	r.mu.RLock()

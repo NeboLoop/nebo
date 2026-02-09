@@ -69,12 +69,10 @@ dev:
 	fi
 
 # Build the unified CLI (server + agent in one binary)
-# Desktop mode is the default — includes native window + system tray via Wails v3.
-# Use CGO_ENABLED=0 go build -o bin/nebo . for headless builds.
 build:
-	@echo "Building $(EXECUTABLE) (desktop)..."
+	@echo "Building $(EXECUTABLE)..."
 	@cd app && pnpm build
-	CGO_ENABLED=1 go build -tags desktop $(LDFLAGS) -o bin/$(EXECUTABLE) .
+	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(EXECUTABLE) .
 
 # Build CLI only (for backward compatibility, same as build)
 build-cli: build

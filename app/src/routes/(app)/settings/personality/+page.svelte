@@ -2,23 +2,23 @@
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { Save, Sparkles, RefreshCw } from 'lucide-svelte';
+	import Alert from '$lib/components/ui/Alert.svelte';
+	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import { Save } from 'lucide-svelte';
 	import {
 		listPersonalityPresets,
 		getAgentProfile,
 		updateAgentProfile,
-		type PersonalityPreset,
-		type AgentProfileResponse
+		type PersonalityPreset
 	} from '$lib/api/nebo';
 
 	let presets = $state<PersonalityPreset[]>([]);
-	let profile = $state<AgentProfileResponse | null>(null);
 	let isLoading = $state(true);
 	let isSaving = $state(false);
 	let saveMessage = $state('');
-	let showCustom = $state(false);
+	let saveError = $state(false);
 
-	// Form state
+	let agentName = $state('Nebo');
 	let selectedPreset = $state('balanced');
 	let customPersonality = $state('');
 	let voiceStyle = $state('neutral');
@@ -27,37 +27,60 @@
 	let formality = $state('adaptive');
 	let proactivity = $state('moderate');
 
-	const voiceStyles = [
-		{ value: 'neutral', label: 'Neutral', description: 'Clear and balanced' },
-		{ value: 'warm', label: 'Warm', description: 'Friendly and approachable' },
-		{ value: 'professional', label: 'Professional', description: 'Business-focused' },
-		{ value: 'enthusiastic', label: 'Enthusiastic', description: 'Energetic and upbeat' }
-	];
-
-	const responseLengths = [
-		{ value: 'concise', label: 'Concise', description: 'Short and to the point' },
-		{ value: 'adaptive', label: 'Adaptive', description: 'Matches the complexity' },
-		{ value: 'detailed', label: 'Detailed', description: 'Comprehensive explanations' }
-	];
-
-	const emojiLevels = [
-		{ value: 'none', label: 'None', description: 'No emojis' },
-		{ value: 'minimal', label: 'Minimal', description: 'Occasional use' },
-		{ value: 'moderate', label: 'Moderate', description: 'Balanced use' },
-		{ value: 'frequent', label: 'Frequent', description: 'Expressive use' }
-	];
-
-	const formalityLevels = [
-		{ value: 'casual', label: 'Casual', description: 'Relaxed and informal' },
-		{ value: 'adaptive', label: 'Adaptive', description: 'Matches context' },
-		{ value: 'formal', label: 'Formal', description: 'Professional tone' }
-	];
-
-	const proactivityLevels = [
-		{ value: 'low', label: 'Reactive', description: 'Only responds when asked' },
-		{ value: 'moderate', label: 'Moderate', description: 'Suggests when relevant' },
-		{ value: 'high', label: 'Proactive', description: 'Anticipates needs' }
-	];
+	const tuningRows = $derived([
+		{
+			label: 'Voice',
+			options: [
+				{ value: 'neutral', label: 'Neutral' },
+				{ value: 'warm', label: 'Warm' },
+				{ value: 'professional', label: 'Professional' },
+				{ value: 'enthusiastic', label: 'Enthusiastic' }
+			],
+			value: voiceStyle,
+			set: (v: string) => (voiceStyle = v)
+		},
+		{
+			label: 'Length',
+			options: [
+				{ value: 'concise', label: 'Concise' },
+				{ value: 'adaptive', label: 'Adaptive' },
+				{ value: 'detailed', label: 'Detailed' }
+			],
+			value: responseLength,
+			set: (v: string) => (responseLength = v)
+		},
+		{
+			label: 'Emojis',
+			options: [
+				{ value: 'none', label: 'None' },
+				{ value: 'minimal', label: 'Minimal' },
+				{ value: 'moderate', label: 'Moderate' },
+				{ value: 'frequent', label: 'Frequent' }
+			],
+			value: emojiUsage,
+			set: (v: string) => (emojiUsage = v)
+		},
+		{
+			label: 'Formality',
+			options: [
+				{ value: 'casual', label: 'Casual' },
+				{ value: 'adaptive', label: 'Adaptive' },
+				{ value: 'formal', label: 'Formal' }
+			],
+			value: formality,
+			set: (v: string) => (formality = v)
+		},
+		{
+			label: 'Proactivity',
+			options: [
+				{ value: 'low', label: 'Reactive' },
+				{ value: 'moderate', label: 'Moderate' },
+				{ value: 'high', label: 'Proactive' }
+			],
+			value: proactivity,
+			set: (v: string) => (proactivity = v)
+		}
+	]);
 
 	onMount(async () => {
 		await Promise.all([loadPresets(), loadProfile()]);
@@ -76,16 +99,21 @@
 		isLoading = true;
 		try {
 			const data = await getAgentProfile();
-			profile = data;
-			if (profile) {
-				selectedPreset = profile.personalityPreset || 'balanced';
-				customPersonality = profile.customPersonality || '';
-				voiceStyle = profile.voiceStyle || 'neutral';
-				responseLength = profile.responseLength || 'adaptive';
-				emojiUsage = profile.emojiUsage || 'moderate';
-				formality = profile.formality || 'adaptive';
-				proactivity = profile.proactivity || 'moderate';
-				showCustom = selectedPreset === 'custom';
+			if (data) {
+				agentName = data.name || 'Nebo';
+				selectedPreset = data.personalityPreset || 'balanced';
+				customPersonality = data.customPersonality || '';
+				voiceStyle = data.voiceStyle || 'neutral';
+				responseLength = data.responseLength || 'adaptive';
+				emojiUsage = data.emojiUsage || 'moderate';
+				formality = data.formality || 'adaptive';
+				proactivity = data.proactivity || 'moderate';
+
+				// If no custom personality saved, seed from the active preset
+				if (!customPersonality) {
+					const preset = presets.find((p) => p.id === selectedPreset);
+					if (preset) customPersonality = preset.systemPrompt;
+				}
 			}
 		} catch (error) {
 			console.error('Failed to load profile:', error);
@@ -97,253 +125,152 @@
 	async function saveProfile() {
 		isSaving = true;
 		saveMessage = '';
+		saveError = false;
 		try {
 			await updateAgentProfile({
+				name: agentName,
 				personalityPreset: selectedPreset,
-				customPersonality: showCustom ? customPersonality : '',
+				customPersonality,
 				voiceStyle,
 				responseLength,
 				emojiUsage,
 				formality,
 				proactivity
 			});
-			saveMessage = 'Personality saved successfully';
+			saveMessage = 'Personality saved';
+			saveError = false;
 			setTimeout(() => (saveMessage = ''), 3000);
 		} catch (error) {
 			console.error('Failed to save profile:', error);
-			saveMessage = 'Failed to save personality';
+			saveMessage = 'Failed to save';
+			saveError = true;
 		} finally {
 			isSaving = false;
 		}
 	}
 
-	function selectPreset(presetId: string) {
-		selectedPreset = presetId;
-		showCustom = presetId === 'custom';
+	let previousPersonality = $state('');
+
+	function loadPreset(e: Event) {
+		const select = e.target as HTMLSelectElement;
+		const presetId = select.value;
+		if (!presetId) return;
+
+		const preset = presets.find((p) => p.id === presetId);
+		if (preset) {
+			previousPersonality = customPersonality;
+			selectedPreset = presetId;
+			customPersonality = preset.systemPrompt;
+			showRevert = true;
+		}
+		select.value = '';
+	}
+
+	let showRevert = $state(false);
+
+	function revertSoul() {
+		customPersonality = previousPersonality;
+		previousPersonality = '';
+		showRevert = false;
 	}
 </script>
 
-<Card>
-	<div class="flex items-center justify-between mb-6">
-		<div>
-			<h2 class="font-display text-xl font-bold text-base-content">Agent Personality</h2>
-			<p class="text-sm text-base-content/60 mt-1">Customize how the agent communicates with you</p>
+{#if isLoading}
+	<Card>
+		<div class="flex items-center justify-center gap-3 py-8">
+			<Spinner size={20} />
+			<span class="text-sm text-base-content/60">Loading personality...</span>
 		</div>
-		<Button
-			type="ghost"
-			onclick={() => {
-				loadPresets();
-				loadProfile();
-			}}
-		>
-			<RefreshCw class="w-4 h-4" />
-		</Button>
-	</div>
-
-	{#if isLoading}
-		<div class="py-8 text-center text-base-content/60">Loading...</div>
-	{:else}
-		<form
-			class="space-y-8"
-			onsubmit={(e) => {
-				e.preventDefault();
-				saveProfile();
-			}}
-		>
-			<!-- Personality Presets -->
-			<div>
-				<h3 class="font-medium text-base-content mb-4 flex items-center gap-2">
-					<Sparkles class="w-4 h-4" />
-					Personality Preset
-				</h3>
-				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-					{#each presets as preset}
-						<button
-							type="button"
-							class="text-left p-4 rounded-xl border-2 transition-all hover:shadow-md {selectedPreset ===
-							preset.id
-								? 'border-primary bg-primary/5 shadow-md'
-								: 'border-base-300 hover:border-primary/30'}"
-							onclick={() => selectPreset(preset.id)}
-						>
-							<div class="text-2xl mb-2">{preset.icon}</div>
-							<div class="font-bold text-base-content">{preset.name}</div>
-							<div class="text-sm text-base-content/60 mt-1">{preset.description}</div>
-						</button>
-					{/each}
-					<!-- Custom option -->
-					<button
-						type="button"
-						class="text-left p-4 rounded-xl border-2 transition-all hover:shadow-md border-dashed {selectedPreset ===
-						'custom'
-							? 'border-primary bg-primary/5 shadow-md'
-							: 'border-base-300 hover:border-primary/30'}"
-						onclick={() => selectPreset('custom')}
+	</Card>
+{:else}
+	<form
+		onsubmit={(e) => {
+			e.preventDefault();
+			saveProfile();
+		}}
+	>
+		<Card>
+			<!-- Soul -->
+			<div class="flex items-center justify-between mb-3">
+				<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider">Soul</h3>
+				{#if presets.length > 0}
+					<select
+						class="select select-bordered select-xs text-xs"
+						onchange={loadPreset}
 					>
-						<div class="text-2xl mb-2">&#10024;</div>
-						<div class="font-bold text-base-content">Custom</div>
-						<div class="text-sm text-base-content/60 mt-1">Write your own personality</div>
-					</button>
-				</div>
-			</div>
-
-			<!-- Custom Personality Editor -->
-			{#if showCustom}
-				<div class="bg-base-200 rounded-xl p-4">
-					<label class="label" for="custom-personality">
-						<span class="label-text font-medium">Custom Personality Prompt</span>
-					</label>
-					<textarea
-						id="custom-personality"
-						class="textarea textarea-bordered w-full"
-						rows="6"
-						placeholder="Describe how the agent should behave, communicate, and interact with you..."
-						bind:value={customPersonality}
-					></textarea>
-					<p class="text-xs text-base-content/50 mt-2">
-						This prompt will be used as the agent's personality. Be specific about tone, style, and
-						behavior.
-					</p>
-				</div>
-			{/if}
-
-			<!-- Voice Style -->
-			<div>
-				<h3 class="font-medium text-base-content mb-4">Voice Style</h3>
-				<div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-					{#each voiceStyles as style}
-						<label
-							class="cursor-pointer p-3 rounded-lg border-2 transition-colors text-center {voiceStyle ===
-							style.value
-								? 'border-primary bg-primary/5'
-								: 'border-base-300 hover:border-base-content/20'}"
-						>
-							<input
-								type="radio"
-								name="voice-style"
-								value={style.value}
-								bind:group={voiceStyle}
-								class="hidden"
-							/>
-							<div class="font-medium text-sm">{style.label}</div>
-							<div class="text-xs text-base-content/50 mt-1">{style.description}</div>
-						</label>
-					{/each}
-				</div>
-			</div>
-
-			<!-- Response Length -->
-			<div>
-				<h3 class="font-medium text-base-content mb-4">Response Length</h3>
-				<div class="grid sm:grid-cols-3 gap-3">
-					{#each responseLengths as length}
-						<label
-							class="cursor-pointer p-3 rounded-lg border-2 transition-colors text-center {responseLength ===
-							length.value
-								? 'border-primary bg-primary/5'
-								: 'border-base-300 hover:border-base-content/20'}"
-						>
-							<input
-								type="radio"
-								name="response-length"
-								value={length.value}
-								bind:group={responseLength}
-								class="hidden"
-							/>
-							<div class="font-medium text-sm">{length.label}</div>
-							<div class="text-xs text-base-content/50 mt-1">{length.description}</div>
-						</label>
-					{/each}
-				</div>
-			</div>
-
-			<!-- Emoji Usage -->
-			<div>
-				<h3 class="font-medium text-base-content mb-4">Emoji Usage</h3>
-				<div class="grid sm:grid-cols-4 gap-3">
-					{#each emojiLevels as level}
-						<label
-							class="cursor-pointer p-3 rounded-lg border-2 transition-colors text-center {emojiUsage ===
-							level.value
-								? 'border-primary bg-primary/5'
-								: 'border-base-300 hover:border-base-content/20'}"
-						>
-							<input
-								type="radio"
-								name="emoji-usage"
-								value={level.value}
-								bind:group={emojiUsage}
-								class="hidden"
-							/>
-							<div class="font-medium text-sm">{level.label}</div>
-							<div class="text-xs text-base-content/50 mt-1">{level.description}</div>
-						</label>
-					{/each}
-				</div>
-			</div>
-
-			<!-- Formality -->
-			<div>
-				<h3 class="font-medium text-base-content mb-4">Formality Level</h3>
-				<div class="grid sm:grid-cols-3 gap-3">
-					{#each formalityLevels as level}
-						<label
-							class="cursor-pointer p-3 rounded-lg border-2 transition-colors text-center {formality ===
-							level.value
-								? 'border-primary bg-primary/5'
-								: 'border-base-300 hover:border-base-content/20'}"
-						>
-							<input
-								type="radio"
-								name="formality"
-								value={level.value}
-								bind:group={formality}
-								class="hidden"
-							/>
-							<div class="font-medium text-sm">{level.label}</div>
-							<div class="text-xs text-base-content/50 mt-1">{level.description}</div>
-						</label>
-					{/each}
-				</div>
-			</div>
-
-			<!-- Proactivity -->
-			<div>
-				<h3 class="font-medium text-base-content mb-4">Proactivity Level</h3>
-				<div class="grid sm:grid-cols-3 gap-3">
-					{#each proactivityLevels as level}
-						<label
-							class="cursor-pointer p-3 rounded-lg border-2 transition-colors text-center {proactivity ===
-							level.value
-								? 'border-primary bg-primary/5'
-								: 'border-base-300 hover:border-base-content/20'}"
-						>
-							<input
-								type="radio"
-								name="proactivity"
-								value={level.value}
-								bind:group={proactivity}
-								class="hidden"
-							/>
-							<div class="font-medium text-sm">{level.label}</div>
-							<div class="text-xs text-base-content/50 mt-1">{level.description}</div>
-						</label>
-					{/each}
-				</div>
-			</div>
-
-			<!-- Save Button -->
-			<div class="flex items-center gap-4 pt-4 border-t border-base-300">
-				<Button type="primary" htmlType="submit" disabled={isSaving}>
-					<Save class="w-4 h-4 mr-2" />
-					{isSaving ? 'Saving...' : 'Save Personality'}
-				</Button>
-				{#if saveMessage}
-					<span class="text-sm {saveMessage.includes('success') ? 'text-success' : 'text-error'}">
-						{saveMessage}
-					</span>
+						<option value="" selected disabled>Load a template...</option>
+						{#each presets.filter((p) => p.id !== 'custom') as preset}
+							<option value={preset.id}>{preset.icon} {preset.name}</option>
+						{/each}
+					</select>
 				{/if}
 			</div>
-		</form>
-	{/if}
-</Card>
+
+			<textarea
+				id="personality-prompt"
+				class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed resize-none overflow-y-auto"
+				style="min-height: 6rem; max-height: 60vh; field-sizing: content;"
+				placeholder="Define your agent's personality, behavior, and communication style..."
+				bind:value={customPersonality}
+			></textarea>
+			{#if showRevert}
+				<div class="flex items-center justify-between mt-2 px-3 py-2 rounded-lg bg-base-200">
+					<span class="text-sm text-base-content/70">Template loaded — replaced your previous soul.</span>
+					<button type="button" class="btn btn-ghost btn-xs" onclick={revertSoul}>
+						Undo
+					</button>
+				</div>
+			{:else}
+				<p class="text-xs text-base-content/30 mt-1">
+					This is your agent's core personality prompt — its soul.
+				</p>
+			{/if}
+
+			<div class="divider"></div>
+
+			<!-- Tuning -->
+			<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider mb-3">Tuning</h3>
+
+			<div class="space-y-3">
+				{#each tuningRows as row}
+					<div class="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+						<span class="text-sm font-medium text-base-content w-24 shrink-0">{row.label}</span>
+						<div class="flex flex-wrap gap-1.5">
+							{#each row.options as option}
+								<button
+									type="button"
+									class="px-2.5 py-1 rounded-md text-xs font-medium border transition-colors
+										{row.value === option.value
+											? 'bg-primary/10 border-primary/30 text-primary'
+											: 'bg-base-200 border-transparent text-base-content/50 hover:border-base-content/15'}"
+									onclick={() => row.set(option.value)}
+								>
+									{option.label}
+								</button>
+							{/each}
+						</div>
+					</div>
+				{/each}
+			</div>
+		</Card>
+
+		{#if saveMessage}
+			<div class="mt-4">
+				<Alert type={saveError ? 'error' : 'success'} title={saveError ? 'Error' : 'Saved'}>
+					{saveMessage}
+				</Alert>
+			</div>
+		{/if}
+
+		<div class="flex justify-end mt-4">
+			<Button type="primary" htmlType="submit" disabled={isSaving}>
+				{#if isSaving}
+					<Spinner size={16} />
+					Saving...
+				{:else}
+					Save Personality
+				{/if}
+			</Button>
+		</div>
+	</form>
+{/if}

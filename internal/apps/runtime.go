@@ -24,11 +24,12 @@ type AppProcess struct {
 	SockPath string
 
 	// Capability-specific gRPC clients (set based on manifest.provides)
-	GatewayClient pb.GatewayServiceClient
-	ToolClient    pb.ToolServiceClient
-	ChannelClient pb.ChannelServiceClient
-	CommClient    pb.CommServiceClient
-	UIClient      pb.UIServiceClient
+	GatewayClient  pb.GatewayServiceClient
+	ToolClient     pb.ToolServiceClient
+	ChannelClient  pb.ChannelServiceClient
+	CommClient     pb.CommServiceClient
+	UIClient       pb.UIServiceClient
+	ScheduleClient pb.ScheduleServiceClient
 
 	cmd        *exec.Cmd
 	conn       *grpc.ClientConn
@@ -182,6 +183,8 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 			proc.ChannelClient = pb.NewChannelServiceClient(conn)
 		case cap == CapUI:
 			proc.UIClient = pb.NewUIServiceClient(conn)
+		case cap == CapSchedule:
+			proc.ScheduleClient = pb.NewScheduleServiceClient(conn)
 		}
 	}
 

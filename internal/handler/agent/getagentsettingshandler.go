@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/nebolabs/nebo/internal/httputil"
+	"github.com/nebolabs/nebo/internal/local"
 	"github.com/nebolabs/nebo/internal/svc"
 	"github.com/nebolabs/nebo/internal/types"
 )
@@ -11,7 +12,7 @@ import (
 // Get agent settings
 func GetAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		settings := svcCtx.AgentSettings.Get()
+		settings := local.GetAgentSettings().Get()
 
 		// Ensure heartbeat interval has a default
 		interval := settings.HeartbeatIntervalMinutes
@@ -28,6 +29,7 @@ func GetAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				HeartbeatIntervalMinutes: interval,
 				CommEnabled:              settings.CommEnabled,
 				CommPlugin:               settings.CommPlugin,
+				DeveloperMode:            settings.DeveloperMode,
 			},
 		})
 	}

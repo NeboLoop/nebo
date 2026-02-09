@@ -1,4 +1,4 @@
-// Package neboloop provides a REST API client for the NeboLoop App Store.
+// Package neboloop provides a REST API client for NeboLoop.
 //
 // It handles bot authentication (JWT caching with auto-refresh) and provides
 // typed methods for browsing, installing, and uninstalling apps and skills.

@@ -1,5 +1,10 @@
 <script lang="ts">
-	import { Mic, MicOff, ArrowUp, Plus, RotateCcw } from 'lucide-svelte';
+	import { Mic, MicOff, ArrowUp, Square, Plus, RotateCcw, X, Clock } from 'lucide-svelte';
+
+	interface QueuedMessage {
+		id: string;
+		content: string;
+	}
 
 	interface Props {
 		value: string;
@@ -8,7 +13,10 @@
 		isLoading?: boolean;
 		isRecording?: boolean;
 		voiceMode?: boolean;
+		queuedMessages?: QueuedMessage[];
 		onSend: () => void;
+		onCancel?: () => void;
+		onCancelQueued?: (id: string) => void;
 		onNewSession?: () => void;
 		onToggleVoice?: () => void;
 	}
@@ -20,7 +28,10 @@
 		isLoading = false,
 		isRecording = false,
 		voiceMode = false,
+		queuedMessages = [],
 		onSend,
+		onCancel,
+		onCancelQueued,
 		onNewSession,
 		onToggleVoice
 	}: Props = $props();
@@ -63,6 +74,28 @@
 
 <div class="sticky bottom-0 flex-shrink-0 mt-auto px-4 pb-2 pt-2 z-10">
 	<div class="max-w-4xl mx-auto">
+		<!-- Queued messages tray -->
+		{#if queuedMessages.length > 0}
+			<div class="flex flex-wrap gap-2 mb-2 px-1">
+				{#each queuedMessages as queued (queued.id)}
+					<div class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-primary/10 border border-primary/20 text-sm text-base-content/70 animate-in fade-in slide-in-from-bottom-1">
+						<Clock class="w-3 h-3 text-primary/50 flex-shrink-0" />
+						<span class="truncate max-w-[200px]">{queued.content}</span>
+						{#if onCancelQueued}
+							<button
+								type="button"
+								onclick={() => onCancelQueued?.(queued.id)}
+								class="p-0.5 rounded hover:bg-error/20 hover:text-error transition-colors flex-shrink-0"
+								title="Cancel queued message"
+							>
+								<X class="w-3 h-3" />
+							</button>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{/if}
+
 		<!-- Input container - modern rounded design -->
 		<div
 			class="bg-base-200 rounded-2xl border border-base-300 focus-within:border-base-content/20 transition-colors"
@@ -74,7 +107,9 @@
 					bind:value
 					onkeydown={handleKeydown}
 					oninput={adjustHeight}
-					placeholder={isLoading ? 'Type to queue your next message...' : placeholder}
+					placeholder={isLoading
+						? 'Type to queue your next message...'
+						: placeholder}
 					disabled={disabled || isRecording}
 					rows="1"
 					class="w-full bg-transparent border-none outline-none resize-none text-sm leading-relaxed placeholder:text-base-content/40 min-h-[24px] max-h-[200px]"
@@ -128,18 +163,29 @@
 						</button>
 					{/if}
 
-					<!-- Send button -->
-					<button
-						type="button"
-						onclick={handleSend}
-						disabled={!canSend}
-						class="btn btn-sm btn-circle transition-all {canSend
-							? 'btn-primary'
-							: 'btn-ghost bg-base-300 text-base-content/30'}"
-						title={isLoading ? 'Queue message' : 'Send message'}
-					>
-						<ArrowUp class="w-4 h-4" />
-					</button>
+					<!-- Send / Stop button -->
+					{#if isLoading && onCancel}
+						<button
+							type="button"
+							onclick={onCancel}
+							class="btn btn-sm btn-circle btn-error transition-all"
+							title="Stop generation"
+						>
+							<Square class="w-3.5 h-3.5 fill-current" />
+						</button>
+					{:else}
+						<button
+							type="button"
+							onclick={handleSend}
+							disabled={!canSend}
+							class="btn btn-sm btn-circle transition-all {canSend
+								? 'btn-primary'
+								: 'btn-ghost bg-base-300 text-base-content/30'}"
+							title="Send message"
+						>
+							<ArrowUp class="w-4 h-4" />
+						</button>
+					{/if}
 				</div>
 			</div>
 		</div>

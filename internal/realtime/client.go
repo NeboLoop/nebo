@@ -162,6 +162,9 @@ var requestIntroductionHandler MessageHandler
 // checkStreamHandler is set to handle stream resumption checks
 var checkStreamHandler MessageHandler
 
+// cancelHandler is set to handle cancel requests
+var cancelHandler MessageHandler
+
 // SetRewriteHandler sets the handler for rewrite messages
 func SetRewriteHandler(handler MessageHandler) {
 	rewriteHandler = handler
@@ -187,6 +190,11 @@ func SetCheckStreamHandler(handler MessageHandler) {
 	checkStreamHandler = handler
 }
 
+// SetCancelHandler sets the handler for cancel requests
+func SetCancelHandler(handler MessageHandler) {
+	cancelHandler = handler
+}
+
 // handleMessage processes incoming messages from the client
 func (c *Client) handleMessage(msg *Message) {
 	logging.Infof("[Client] Received message type=%s from client %s", msg.Type, c.ID)
@@ -203,6 +211,8 @@ func (c *Client) handleMessage(msg *Message) {
 		c.handleRequestIntroduction(msg)
 	case "check_stream":
 		c.handleCheckStream(msg)
+	case "cancel":
+		c.handleCancel(msg)
 	default:
 		logging.Infof("Unknown message type: %s", msg.Type)
 	}
@@ -262,6 +272,15 @@ func (c *Client) handleRewrite(msg *Message) {
 		rewriteHandler(c, msg)
 	} else {
 		logging.Error("Rewrite handler not registered")
+	}
+}
+
+// handleCancel processes cancel requests
+func (c *Client) handleCancel(msg *Message) {
+	if cancelHandler != nil {
+		cancelHandler(c, msg)
+	} else {
+		logging.Error("Cancel handler not registered")
 	}
 }
 

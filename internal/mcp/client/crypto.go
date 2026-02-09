@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
-// GetEncryptionKey returns the encryption key from environment or generates a default
-func GetEncryptionKey() ([]byte, error) {
+// GetEncryptionKey returns the encryption key from environment or loads/generates a
+// persistent key in the data directory so encrypted tokens survive restarts.
+func GetEncryptionKey(dataDir string) ([]byte, error) {
 	// Try environment variable first
 	if key := os.Getenv("MCP_ENCRYPTION_KEY"); key != "" {
 		decoded, err := hex.DecodeString(key)
@@ -25,17 +27,27 @@ func GetEncryptionKey() ([]byte, error) {
 
 	// Try JWT_SECRET as fallback (derive 32 bytes from it)
 	if secret := os.Getenv("JWT_SECRET"); secret != "" {
-		// Use first 32 bytes of JWT_SECRET, padded if necessary
 		key := make([]byte, 32)
 		copy(key, []byte(secret))
 		return key, nil
 	}
 
-	// Generate a random key if none provided (will be different each restart)
-	// This is acceptable for development but tokens won't survive restarts
+	// Load or generate a persistent key in the data directory
+	keyFile := filepath.Join(dataDir, ".mcp-key")
+	if data, err := os.ReadFile(keyFile); err == nil {
+		decoded, err := hex.DecodeString(string(data))
+		if err == nil && len(decoded) == 32 {
+			return decoded, nil
+		}
+	}
+
+	// Generate and persist a new key
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("failed to generate encryption key: %w", err)
+	}
+	if err := os.WriteFile(keyFile, []byte(hex.EncodeToString(key)), 0600); err != nil {
+		return nil, fmt.Errorf("failed to persist encryption key: %w", err)
 	}
 	return key, nil
 }

@@ -98,7 +98,11 @@ make build && cd app && pnpm build
 │   ├── migrations/          → SQL migration files (numbered: 0001, 0002, etc.)
 │   └── queries/             → SQL query files (one per entity)
 ├── internal/channels/       → Channel integrations (Discord, Telegram, Slack)
-└── internal/agenthub/       → WebSocket hub for agent communication
+├── internal/agenthub/       → WebSocket hub for agent communication
+├── internal/mcp/            → MCP server + client (user-scoped MCP, external server bridge)
+│   ├── bridge/              → Connects external MCP servers, proxies tools as mcp__{server}__{tool}
+│   └── client/              → MCP client for connecting to external servers
+└── internal/apps/           → App platform (sandboxed .napp packaging, gRPC adapters)
 ```
 
 ### Agent (CLI + Core)
@@ -115,7 +119,6 @@ internal/agent/
 ├── config/       # Config loading (models.yaml, config.yaml)
 ├── embeddings/   # Hybrid search (vector + FTS) for memories
 ├── memory/       # Memory extraction and context building
-├── mcp/          # MCP (Model Context Protocol) server integration
 ├── orchestrator/ # Sub-agent spawning (up to 5 concurrent)
 ├── plugins/      # hashicorp/go-plugin loader for tool/channel plugins
 ├── recovery/     # Sub-agent task persistence for crash recovery
@@ -187,6 +190,7 @@ type GetWidgetResponse struct { Name string `json:"name"` }
 | `ErrorWithCode(w, code, msg)` | Error with specific status code |
 | `Unauthorized(w, msg)` | 401 |
 | `NotFound(w, msg)` | 404 |
+| `BadRequest(w, msg)` | 400 |
 | `InternalError(w, msg)` | 500 |
 | `PathVar(r, name)` | Get path variable (chi.URLParam wrapper) |
 | `QueryInt(r, name, default)` | Query param as int |
@@ -253,6 +257,25 @@ func (t *NewDomainTool) Execute(ctx context.Context, input json.RawMessage) (*To
 - **Idiomatic Go** - One function with parameters, not multiple variations (e.g., `Register(token string)` not `RegisterWithToken()` + `Register()`)
 - **Minimal changes** - Never remove code that appears unused without asking first
 - **NEVER hardcode model IDs** - All model IDs come from `models.yaml` in the Nebo data directory
+- **NEVER run goctl directly** - Only use `make gen` to regenerate API code
+- **Always build before pushing** - `make build` (includes frontend build)
+
+---
+
+## App Platform (`internal/apps/`)
+
+Sandboxed app system. NeboLoop distributes apps, Nebo runs them.
+
+- `.napp` packages: tar.gz containing manifest.json, binary, signatures.json, optional ui/
+- Apps run in sandboxed UUID directories with gRPC over Unix sockets
+- Deny-by-default permissions; apps don't need permission for their own `data/` directory
+- ED25519 signing (raw bytes, not hashes); signatures.json is separate from manifest
+- MQTT-based install flow: NeboLoop publishes to `neboloop/bot/{botID}/installs`
+- Structured template UI (Tier 1): app pushes JSON blocks, Nebo renders Svelte components
+- 8 block types: text, heading, input, button, select, toggle, divider, image
+- Proto definitions: `proto/apps/v1/` (ui.proto, tool.proto, channel.proto, comm.proto, gateway.proto)
+
+**Key files:** manifest.go (types/validation), runtime.go (process lifecycle), sandbox.go (env sanitization), signing.go (ED25519 verification), napp.go (secure extraction), registry.go (discovery/launch), adapter.go (gRPC bridges), install.go (MQTT listener), channels.go (MQTT channel bridge)
 
 ---
 
@@ -286,7 +309,9 @@ nebo agent        # Agent only
 nebo chat         # CLI chat mode
 nebo chat -i      # Interactive CLI mode
 nebo skills list  # List available skills
-nebo plugins list # List installed plugins
+nebo apps list    # List installed apps
+nebo doctor       # System diagnostics
+nebo session list # Session management
 ```
 
 Web UI at `http://localhost:27895`

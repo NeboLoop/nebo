@@ -82,4 +82,7 @@ WHERE id = ?;
 
 -- name: GetMCPIntegrationOAuthConfig :one
 SELECT id, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_pkce_verifier, oauth_state
-FROM mcp_integrations WHERE id = ?
+FROM mcp_integrations WHERE id = ?;
+
+-- name: UpdateMCPIntegrationToolCount :exec
+UPDATE mcp_integrations SET tool_count = ?, updated_at = unixepoch() WHERE id = ?;

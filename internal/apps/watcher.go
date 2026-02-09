@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
 
 // Watch monitors the apps directory for changes (new apps, removed apps, manifest updates).
-// It blocks until the context is cancelled.
+// It watches both the top-level apps/ directory and all app subdirectories so that
+// new manifest.json files inside new subdirectories are detected.
+// Blocks until the context is cancelled.
 func (ar *AppRegistry) Watch(ctx context.Context) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -18,8 +21,21 @@ func (ar *AppRegistry) Watch(ctx context.Context) error {
 	}
 	defer watcher.Close()
 
+	// Watch the top-level apps directory for new/removed app directories
 	if err := watcher.Add(ar.appsDir); err != nil {
 		return fmt.Errorf("watch apps dir: %w", err)
+	}
+
+	// Watch all existing app subdirectories for manifest/binary changes
+	// Use os.Stat (not entry.IsDir) to follow symlinks — sideloaded apps are symlinks
+	entries, _ := os.ReadDir(ar.appsDir)
+	for _, entry := range entries {
+		subDir := filepath.Join(ar.appsDir, entry.Name())
+		info, err := os.Stat(subDir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		watcher.Add(subDir) // ignore error — best effort
 	}
 
 	fmt.Printf("[apps] Watching %s for changes\n", ar.appsDir)
@@ -33,7 +49,7 @@ func (ar *AppRegistry) Watch(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			ar.handleFSEvent(ctx, event)
+			ar.handleFSEvent(ctx, watcher, event)
 
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -44,36 +60,62 @@ func (ar *AppRegistry) Watch(ctx context.Context) error {
 	}
 }
 
-func (ar *AppRegistry) handleFSEvent(ctx context.Context, event fsnotify.Event) {
-	// We care about directories being created or manifest.json being written
+func (ar *AppRegistry) handleFSEvent(ctx context.Context, watcher *fsnotify.Watcher, event fsnotify.Event) {
 	name := filepath.Base(event.Name)
+	dir := filepath.Dir(event.Name)
 
 	switch {
 	case event.Has(fsnotify.Create):
-		// New directory or file created — check if it's an app directory
 		info, err := os.Stat(event.Name)
 		if err != nil {
 			return
 		}
-		if info.IsDir() {
-			// New app directory — wait for manifest before launching
-			// The manifest write event will trigger the actual launch
+
+		if info.IsDir() && dir == ar.appsDir {
+			// New app directory created — start watching it for manifest.json
+			watcher.Add(event.Name)
+
+			// Check if the directory already has a manifest (e.g., copied as a whole)
+			// Use a short delay to let all files finish writing
+			go func(appDir string) {
+				time.Sleep(500 * time.Millisecond)
+				manifestPath := filepath.Join(appDir, "manifest.json")
+				if _, err := os.Stat(manifestPath); err == nil {
+					fmt.Printf("[apps] New app detected: %s\n", filepath.Base(appDir))
+					if err := ar.launchAndRegister(ctx, appDir); err != nil {
+						fmt.Printf("[apps] Failed to launch new app %s: %v\n", filepath.Base(appDir), err)
+					}
+				}
+			}(event.Name)
 			return
 		}
+
+		// manifest.json created inside a subdirectory
 		if name == "manifest.json" {
-			appDir := filepath.Dir(event.Name)
+			appDir := dir
 			fmt.Printf("[apps] New app detected: %s\n", filepath.Base(appDir))
 			if err := ar.launchAndRegister(ctx, appDir); err != nil {
 				fmt.Printf("[apps] Failed to launch new app %s: %v\n", filepath.Base(appDir), err)
 			}
 		}
 
+		// Binary replaced — restart app if already running
+		if (name == "binary" || name == "app") && dir != ar.appsDir {
+			appID := filepath.Base(dir)
+			if _, ok := ar.runtime.Get(appID); ok {
+				fmt.Printf("[apps] Binary changed, restarting: %s\n", appID)
+				ar.runtime.Stop(appID)
+				if err := ar.launchAndRegister(ctx, dir); err != nil {
+					fmt.Printf("[apps] Failed to restart app %s: %v\n", appID, err)
+				}
+			}
+		}
+
 	case event.Has(fsnotify.Write):
 		if name == "manifest.json" {
-			appDir := filepath.Dir(event.Name)
+			appDir := dir
 			appID := filepath.Base(appDir)
 
-			// Check if app is already running — if so, restart it
 			if _, ok := ar.runtime.Get(appID); ok {
 				fmt.Printf("[apps] Manifest changed, restarting: %s\n", appID)
 				ar.runtime.Stop(appID)
@@ -83,14 +125,29 @@ func (ar *AppRegistry) handleFSEvent(ctx context.Context, event fsnotify.Event) 
 			}
 		}
 
-	case event.Has(fsnotify.Remove):
-		// Directory removed — stop the app if running
-		appID := name
-		if _, ok := ar.runtime.Get(appID); ok {
-			fmt.Printf("[apps] App removed, stopping: %s\n", appID)
-			if err := ar.runtime.Stop(appID); err != nil {
-				fmt.Printf("[apps] Failed to stop removed app %s: %v\n", appID, err)
+		// Binary recompiled in-place — restart
+		if (name == "binary" || name == "app") && dir != ar.appsDir {
+			appID := filepath.Base(dir)
+			if _, ok := ar.runtime.Get(appID); ok {
+				fmt.Printf("[apps] Binary changed, restarting: %s\n", appID)
+				ar.runtime.Stop(appID)
+				if err := ar.launchAndRegister(ctx, dir); err != nil {
+					fmt.Printf("[apps] Failed to restart app %s: %v\n", appID, err)
+				}
 			}
+		}
+
+	case event.Has(fsnotify.Remove):
+		if dir == ar.appsDir {
+			// Top-level entry removed — stop app if running
+			appID := name
+			if _, ok := ar.runtime.Get(appID); ok {
+				fmt.Printf("[apps] App removed, stopping: %s\n", appID)
+				if err := ar.runtime.Stop(appID); err != nil {
+					fmt.Printf("[apps] Failed to stop removed app %s: %v\n", appID, err)
+				}
+			}
+			watcher.Remove(event.Name)
 		}
 	}
 }

@@ -95,6 +95,7 @@ type Querier interface {
 	DeleteCronJob(ctx context.Context, id int64) error
 	// Agent tool queries (operations by name for CLI/tool use)
 	DeleteCronJobByName(ctx context.Context, name string) (sql.Result, error)
+	DeleteDevSideloadedApp(ctx context.Context, appID string) error
 	DeleteEmbeddingCache(ctx context.Context, contentHash string) error
 	DeleteExpiredRefreshTokens(ctx context.Context) error
 	DeleteLead(ctx context.Context, id string) error
@@ -129,7 +130,7 @@ type Querier interface {
 	EnableCronJobByName(ctx context.Context, name string) error
 	EnsureAgentProfile(ctx context.Context) error
 	// Agent profile queries (singleton table)
-	GetAgentProfile(ctx context.Context) (AgentProfile, error)
+	GetAgentProfile(ctx context.Context) (GetAgentProfileRow, error)
 	GetAuthProfile(ctx context.Context, id string) (AuthProfile, error)
 	GetAuthProfileByName(ctx context.Context, name string) (AuthProfile, error)
 	GetAuthProfileErrorCount(ctx context.Context, id string) (sql.NullInt64, error)
@@ -151,6 +152,7 @@ type Querier interface {
 	GetCronJobByName(ctx context.Context, name string) (CronJob, error)
 	GetDaysWithMessages(ctx context.Context, arg GetDaysWithMessagesParams) ([]GetDaysWithMessagesRow, error)
 	GetDefaultModel(ctx context.Context, profileID string) (ProviderModel, error)
+	GetDevSideloadedApp(ctx context.Context, appID string) (DevSideloadedApp, error)
 	GetDistinctNamespaces(ctx context.Context) ([]string, error)
 	// Embedding cache queries
 	GetEmbeddingCache(ctx context.Context, arg GetEmbeddingCacheParams) (EmbeddingCache, error)
@@ -218,6 +220,7 @@ type Querier interface {
 	GetSessionMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
 	// Session policy queries
 	GetSessionPolicy(ctx context.Context, id string) (GetSessionPolicyRow, error)
+	GetSettings(ctx context.Context) (GetSettingsRow, error)
 	GetTacitMemoriesByUser(ctx context.Context, arg GetTacitMemoriesByUserParams) ([]GetTacitMemoriesByUserRow, error)
 	GetTasksByLaneAndStatus(ctx context.Context, arg GetTasksByLaneAndStatusParams) ([]PendingTask, error)
 	GetTasksByUser(ctx context.Context, userID sql.NullString) ([]PendingTask, error)
@@ -237,6 +240,7 @@ type Querier interface {
 	IncrementMemoryAccess(ctx context.Context, id int64) error
 	IncrementMemoryAccessByKey(ctx context.Context, arg IncrementMemoryAccessByKeyParams) error
 	IncrementSessionMessageCount(ctx context.Context, id string) error
+	InsertDevSideloadedApp(ctx context.Context, arg InsertDevSideloadedAppParams) error
 	ListActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error)
 	ListActiveModels(ctx context.Context, profileID string) ([]ProviderModel, error)
 	ListAuthProfiles(ctx context.Context) ([]AuthProfile, error)
@@ -248,6 +252,7 @@ type Querier interface {
 	ListCronHistory(ctx context.Context, arg ListCronHistoryParams) ([]CronHistory, error)
 	// Cron job queries
 	ListCronJobs(ctx context.Context, arg ListCronJobsParams) ([]CronJob, error)
+	ListDevSideloadedApps(ctx context.Context) ([]DevSideloadedApp, error)
 	ListEnabledChannels(ctx context.Context) ([]Channel, error)
 	ListEnabledCronJobs(ctx context.Context) ([]CronJob, error)
 	ListEnabledMCPIntegrations(ctx context.Context) ([]McpIntegration, error)
@@ -326,6 +331,7 @@ type Querier interface {
 	UpdateMCPIntegrationCredential(ctx context.Context, arg UpdateMCPIntegrationCredentialParams) error
 	UpdateMCPIntegrationOAuthFlow(ctx context.Context, arg UpdateMCPIntegrationOAuthFlowParams) error
 	UpdateMCPIntegrationStatus(ctx context.Context, arg UpdateMCPIntegrationStatusParams) error
+	UpdateMCPIntegrationToolCount(ctx context.Context, arg UpdateMCPIntegrationToolCountParams) error
 	UpdateMemory(ctx context.Context, arg UpdateMemoryParams) error
 	UpdateOAuthConnection(ctx context.Context, arg UpdateOAuthConnectionParams) error
 	UpdatePersonalityPreset(ctx context.Context, arg UpdatePersonalityPresetParams) error
@@ -335,6 +341,7 @@ type Querier interface {
 	UpdateSessionPolicy(ctx context.Context, arg UpdateSessionPolicyParams) error
 	UpdateSessionStats(ctx context.Context, arg UpdateSessionStatsParams) error
 	UpdateSessionSummary(ctx context.Context, arg UpdateSessionSummaryParams) error
+	UpdateSettings(ctx context.Context, arg UpdateSettingsParams) error
 	UpdateTaskCompleted(ctx context.Context, id string) error
 	UpdateTaskFailed(ctx context.Context, arg UpdateTaskFailedParams) error
 	UpdateTaskRunning(ctx context.Context, id string) error

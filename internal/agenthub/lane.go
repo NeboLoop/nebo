@@ -38,6 +38,7 @@ var MaxLaneConcurrency = map[string]int{
 type LaneTask struct {
 	ID          string
 	Lane        string
+	Description string
 	Task        func(ctx context.Context) error
 	EnqueuedAt  time.Time
 	StartedAt   time.Time
@@ -51,7 +52,7 @@ type LaneTask struct {
 type LaneState struct {
 	Lane          string
 	Queue         []*laneEntry
-	Active        int
+	active        []*laneEntry
 	MaxConcurrent int
 	draining      bool
 	mu            sync.Mutex
@@ -66,14 +67,26 @@ type laneEntry struct {
 
 // LaneManager manages multiple lanes for command execution
 type LaneManager struct {
-	mu    sync.RWMutex
-	lanes map[string]*LaneState
+	mu      sync.RWMutex
+	lanes   map[string]*LaneState
+	onEvent func(LaneEvent)
 }
 
 // NewLaneManager creates a new lane manager
 func NewLaneManager() *LaneManager {
 	return &LaneManager{
 		lanes: make(map[string]*LaneState),
+	}
+}
+
+// OnEvent registers a callback for lane lifecycle events
+func (m *LaneManager) OnEvent(fn func(LaneEvent)) {
+	m.onEvent = fn
+}
+
+func (m *LaneManager) emit(event LaneEvent) {
+	if fn := m.onEvent; fn != nil {
+		go fn(event)
 	}
 }
 
@@ -140,6 +153,7 @@ func (m *LaneManager) Enqueue(ctx context.Context, lane string, task func(ctx co
 		task: &LaneTask{
 			ID:          fmt.Sprintf("%s-%d", lane, time.Now().UnixNano()),
 			Lane:        lane,
+			Description: cfg.description,
 			Task:        task,
 			EnqueuedAt:  time.Now(),
 			OnWait:      cfg.onWait,
@@ -152,10 +166,11 @@ func (m *LaneManager) Enqueue(ctx context.Context, lane string, task func(ctx co
 
 	state.mu.Lock()
 	state.Queue = append(state.Queue, entry)
-	queueSize := len(state.Queue) + state.Active
+	queueSize := len(state.Queue) + len(state.active)
 	state.mu.Unlock()
 
 	fmt.Printf("[LaneManager] Enqueued task in lane=%s queueSize=%d\n", lane, queueSize)
+	m.emit(LaneEvent{Type: "task_enqueued", Lane: lane, Task: entryToInfo(entry)})
 	m.drain(lane)
 
 	select {
@@ -193,7 +208,7 @@ func (m *LaneManager) pump(state *LaneState) {
 	for {
 		state.mu.Lock()
 		// MaxConcurrent of 0 means unlimited
-		atCapacity := state.MaxConcurrent > 0 && state.Active >= state.MaxConcurrent
+		atCapacity := state.MaxConcurrent > 0 && len(state.active) >= state.MaxConcurrent
 		if atCapacity || len(state.Queue) == 0 {
 			state.draining = false
 			state.mu.Unlock()
@@ -210,15 +225,16 @@ func (m *LaneManager) pump(state *LaneState) {
 				state.Lane, waitedMs, len(state.Queue))
 		}
 
-		state.Active++
+		state.active = append(state.active, entry)
 		state.mu.Unlock()
 
 		fmt.Printf("[LaneManager] Dequeued task in lane=%s waitedMs=%d active=%d queued=%d\n",
-			state.Lane, waitedMs, state.Active, len(state.Queue))
+			state.Lane, waitedMs, len(state.active), len(state.Queue))
 
 		go func(e *laneEntry) {
 			startTime := time.Now()
 			e.task.StartedAt = startTime
+			m.emit(LaneEvent{Type: "task_started", Lane: state.Lane, Task: entryToInfo(e)})
 
 			var err error
 			func() {
@@ -234,9 +250,15 @@ func (m *LaneManager) pump(state *LaneState) {
 			e.task.Error = err
 
 			state.mu.Lock()
-			state.Active--
+			// Remove this entry from the active slice
+			for i, a := range state.active {
+				if a == e {
+					state.active = append(state.active[:i], state.active[i+1:]...)
+					break
+				}
+			}
 			durationMs := time.Since(startTime).Milliseconds()
-			activeAfter := state.Active
+			activeAfter := len(state.active)
 			queuedAfter := len(state.Queue)
 			state.mu.Unlock()
 
@@ -247,6 +269,7 @@ func (m *LaneManager) pump(state *LaneState) {
 				fmt.Printf("[LaneManager] Lane task done: lane=%s durationMs=%d active=%d queued=%d\n",
 					state.Lane, durationMs, activeAfter, queuedAfter)
 			}
+			m.emit(LaneEvent{Type: "task_completed", Lane: state.Lane, Task: entryToInfo(e)})
 
 			e.resolve <- err
 			close(e.resolve)
@@ -269,7 +292,7 @@ func (m *LaneManager) GetQueueSize(lane string) int {
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	return len(state.Queue) + state.Active
+	return len(state.Queue) + len(state.active)
 }
 
 // GetTotalQueueSize returns the total number of tasks across all lanes
@@ -280,7 +303,7 @@ func (m *LaneManager) GetTotalQueueSize() int {
 	total := 0
 	for _, state := range m.lanes {
 		state.mu.Lock()
-		total += len(state.Queue) + state.Active
+		total += len(state.Queue) + len(state.active)
 		state.mu.Unlock()
 	}
 	return total
@@ -319,23 +342,83 @@ func (m *LaneManager) GetLaneStats() map[string]LaneStats {
 	stats := make(map[string]LaneStats)
 	for lane, state := range m.lanes {
 		state.mu.Lock()
-		stats[lane] = LaneStats{
+		ls := LaneStats{
 			Lane:          lane,
 			Queued:        len(state.Queue),
-			Active:        state.Active,
+			Active:        len(state.active),
 			MaxConcurrent: state.MaxConcurrent,
 		}
+		for _, e := range state.active {
+			ls.ActiveTasks = append(ls.ActiveTasks, entryToInfo(e))
+		}
+		for _, e := range state.Queue {
+			ls.QueuedTasks = append(ls.QueuedTasks, entryToInfo(e))
+		}
+		stats[lane] = ls
 		state.mu.Unlock()
 	}
 	return stats
 }
 
+func entryToInfo(e *laneEntry) LaneTaskInfo {
+	info := LaneTaskInfo{
+		ID:          e.task.ID,
+		Description: e.task.Description,
+		EnqueuedAt:  e.task.EnqueuedAt.UnixMilli(),
+	}
+	if !e.task.StartedAt.IsZero() {
+		info.StartedAt = e.task.StartedAt.UnixMilli()
+	}
+	return info
+}
+
 // LaneStats contains statistics for a lane
 type LaneStats struct {
-	Lane          string `json:"lane"`
-	Queued        int    `json:"queued"`
-	Active        int    `json:"active"`
-	MaxConcurrent int    `json:"max_concurrent"`
+	Lane          string         `json:"lane"`
+	Queued        int            `json:"queued"`
+	Active        int            `json:"active"`
+	MaxConcurrent int            `json:"max_concurrent"`
+	ActiveTasks   []LaneTaskInfo `json:"active_tasks,omitempty"`
+	QueuedTasks   []LaneTaskInfo `json:"queued_tasks,omitempty"`
+}
+
+// LaneTaskInfo represents a summary of a task in a lane
+type LaneTaskInfo struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	EnqueuedAt  int64  `json:"enqueued_at"`
+	StartedAt   int64  `json:"started_at,omitempty"`
+}
+
+// LaneEvent represents a lifecycle event for a lane task
+type LaneEvent struct {
+	Type string       `json:"type"` // task_enqueued, task_started, task_completed, task_cancelled
+	Lane string       `json:"lane"`
+	Task LaneTaskInfo `json:"task"`
+}
+
+// CancelActive cancels all active tasks in a lane by calling their cancel functions.
+// Returns the number of tasks cancelled.
+func (m *LaneManager) CancelActive(lane string) int {
+	if lane == "" {
+		lane = LaneMain
+	}
+	m.mu.RLock()
+	state, ok := m.lanes[lane]
+	m.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+
+	state.mu.Lock()
+	cancelled := len(state.active)
+	for _, entry := range state.active {
+		m.emit(LaneEvent{Type: "task_cancelled", Lane: lane, Task: entryToInfo(entry)})
+		entry.cancel()
+	}
+	state.mu.Unlock()
+
+	return cancelled
 }
 
 // EnqueueOption configures enqueue behavior
@@ -343,6 +426,7 @@ type EnqueueOption func(*enqueueConfig)
 
 type enqueueConfig struct {
 	warnAfterMs int64
+	description string
 	onWait      func(waitMs int64, queuedAhead int)
 }
 
@@ -357,5 +441,12 @@ func WithWarnAfter(ms int64) EnqueueOption {
 func WithOnWait(fn func(waitMs int64, queuedAhead int)) EnqueueOption {
 	return func(c *enqueueConfig) {
 		c.onWait = fn
+	}
+}
+
+// WithDescription sets a human-readable description for the task
+func WithDescription(desc string) EnqueueOption {
+	return func(c *enqueueConfig) {
+		c.description = desc
 	}
 }

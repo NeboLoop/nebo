@@ -12,7 +12,8 @@
 		Wifi,
 		WifiOff,
 		Database,
-		Users
+		Users,
+		Layers
 	} from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { auth } from '$lib/stores/auth';
@@ -50,9 +51,42 @@
 		active_sessions: 0,
 		connected_clients: 0
 	});
+	interface LaneTaskInfo {
+		id: string;
+		description: string;
+		enqueued_at: number;
+		started_at?: number;
+	}
+
+	interface LaneStats {
+		lane: string;
+		queued: number;
+		active: number;
+		max_concurrent: number;
+		active_tasks?: LaneTaskInfo[];
+		queued_tasks?: LaneTaskInfo[];
+	}
+
 	let isLoading = $state(true);
+	let lanes = $state<Record<string, LaneStats>>({});
 	let refreshInterval: ReturnType<typeof setInterval>;
 	let unsubscribers: (() => void)[] = [];
+
+	const laneOrder = ['main', 'events', 'subagent', 'heartbeat', 'comm', 'nested'];
+	const laneLabels: Record<string, string> = {
+		main: 'Main',
+		events: 'Events',
+		subagent: 'Sub-agents',
+		heartbeat: 'Heartbeat',
+		comm: 'Communication',
+		nested: 'Nested'
+	};
+
+	const sortedLanes = $derived(
+		laneOrder
+			.filter((l) => lanes[l])
+			.map((l) => lanes[l])
+	);
 
 	onMount(async () => {
 		const client = getWebSocketClient();
@@ -68,10 +102,11 @@
 			client.on('status_update', handleStatusUpdate),
 			client.on('agent_connected', handleAgentConnected),
 			client.on('agent_disconnected', handleAgentDisconnected),
+			client.on('lane_update', handleLaneUpdate),
 			client.on('pong', () => {})
 		);
 
-		await loadStatus();
+		await Promise.all([loadStatus(), loadLanes()]);
 		refreshInterval = setInterval(loadStatus, 10000);
 	});
 
@@ -150,6 +185,29 @@
 		} finally {
 			isLoading = false;
 		}
+	}
+
+	async function loadLanes() {
+		try {
+			const data = await api.getLanes();
+			if (data && typeof data === 'object') {
+				lanes = data as unknown as Record<string, LaneStats>;
+			}
+		} catch {
+			// Agent not connected — ignore
+		}
+	}
+
+	function handleLaneUpdate(data: Record<string, unknown>) {
+		// Lane events trigger a refresh of lane stats
+		loadLanes();
+	}
+
+	function elapsedSince(ms: number): string {
+		const elapsed = Date.now() - ms;
+		if (elapsed < 1000) return '<1s';
+		if (elapsed < 60000) return `${Math.floor(elapsed / 1000)}s`;
+		return `${Math.floor(elapsed / 60000)}m ${Math.floor((elapsed % 60000) / 1000)}s`;
 	}
 
 	function formatTime(dateStr?: string): string {
@@ -346,56 +404,74 @@
 	{/if}
 </Card>
 
-<!-- Quick Stats -->
-<div class="grid sm:grid-cols-4 gap-4 mt-6">
-	<Card>
-		<div class="flex items-center gap-3">
-			<div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-				<Activity class="w-5 h-5 text-primary" />
-			</div>
-			<div>
-				<p class="text-sm text-base-content/60">Active Sessions</p>
-				<p class="font-display text-2xl font-bold text-base-content">
-					{systemStatus.active_sessions}
-				</p>
-			</div>
+<!-- Lane Monitor -->
+<Card class="mt-6">
+	<h2 class="font-display font-bold text-base-content mb-4 flex items-center gap-2">
+		<Layers class="w-5 h-5" />
+		Lane Monitor
+		<Button type="ghost" size="sm" class="ml-auto" onclick={loadLanes}>
+			<RefreshCw class="w-3 h-3" />
+		</Button>
+	</h2>
+
+	{#if sortedLanes.length === 0}
+		<p class="text-base-content/50 text-sm py-4 text-center">No lane data available</p>
+	{:else}
+		<div class="space-y-3">
+			{#each sortedLanes as lane}
+				{@const isActive = lane.active > 0}
+				{@const hasQueued = lane.queued > 0}
+				{@const capacity = lane.max_concurrent === 0 ? 10 : lane.max_concurrent}
+				{@const pct = Math.min((lane.active / capacity) * 100, 100)}
+				<div class="p-3 rounded-lg bg-base-200">
+					<div class="flex items-center justify-between mb-2">
+						<div class="flex items-center gap-2">
+							<div class="w-2 h-2 rounded-full {isActive ? 'bg-success animate-pulse' : 'bg-base-content/20'}"></div>
+							<span class="font-medium text-sm">{laneLabels[lane.lane] || lane.lane}</span>
+						</div>
+						<div class="flex items-center gap-3 text-xs text-base-content/50">
+							<span>{lane.active} active</span>
+							{#if hasQueued}
+								<span class="text-warning">{lane.queued} queued</span>
+							{/if}
+							<span>max {lane.max_concurrent === 0 ? '∞' : lane.max_concurrent}</span>
+						</div>
+					</div>
+
+					<!-- Capacity bar -->
+					<div class="h-1.5 rounded-full bg-base-300 overflow-hidden">
+						<div
+							class="h-full rounded-full transition-all duration-300 {pct > 80 ? 'bg-warning' : 'bg-success'}"
+							style="width: {pct}%"
+						></div>
+					</div>
+
+					<!-- Active tasks -->
+					{#if lane.active_tasks && lane.active_tasks.length > 0}
+						<div class="mt-2 space-y-1">
+							{#each lane.active_tasks as task}
+								<div class="flex items-center justify-between text-xs pl-4">
+									<span class="text-base-content/70 truncate">{task.description || task.id}</span>
+									{#if task.started_at}
+										<span class="text-base-content/40 ml-2 flex-shrink-0">{elapsedSince(task.started_at)}</span>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					{/if}
+
+					<!-- Queued tasks -->
+					{#if lane.queued_tasks && lane.queued_tasks.length > 0}
+						<div class="mt-1 space-y-1">
+							{#each lane.queued_tasks as task}
+								<div class="flex items-center justify-between text-xs pl-4">
+									<span class="text-base-content/40 truncate">⏳ {task.description || task.id}</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			{/each}
 		</div>
-	</Card>
-	<Card>
-		<div class="flex items-center gap-3">
-			<div class="w-10 h-10 rounded-xl bg-secondary/10 flex items-center justify-center">
-				<Users class="w-5 h-5 text-secondary" />
-			</div>
-			<div>
-				<p class="text-sm text-base-content/60">Connected Clients</p>
-				<p class="font-display text-2xl font-bold text-base-content">
-					{systemStatus.connected_clients}
-				</p>
-			</div>
-		</div>
-	</Card>
-	<Card>
-		<div class="flex items-center gap-3">
-			<div class="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-				<Cpu class="w-5 h-5 text-accent" />
-			</div>
-			<div>
-				<p class="text-sm text-base-content/60">Memory Usage</p>
-				<p class="font-display text-2xl font-bold text-base-content">
-					{systemStatus.memory_usage}
-				</p>
-			</div>
-		</div>
-	</Card>
-	<Card>
-		<div class="flex items-center gap-3">
-			<div class="w-10 h-10 rounded-xl bg-info/10 flex items-center justify-center">
-				<Server class="w-5 h-5 text-info" />
-			</div>
-			<div>
-				<p class="text-sm text-base-content/60">Total Agents</p>
-				<p class="font-display text-2xl font-bold text-base-content">{agents.length}</p>
-			</div>
-		</div>
-	</Card>
-</div>
+	{/if}
+</Card>

@@ -4,6 +4,10 @@
 	import { Send, Bot, Loader2, Mic, MicOff, Wifi, WifiOff, ArrowDown, Copy, Check, History, Volume2, VolumeOff } from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat, speakTTS } from '$lib/api';
+	import { logger } from '$lib/monitoring/logger';
+
+	const log = logger.child({ component: 'Agent' });
+	const voiceLog = logger.child({ component: 'Voice' });
 	import type { ChatMessage as ApiChatMessage } from '$lib/api';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ApprovalModal from '$lib/components/ui/ApprovalModal.svelte';
@@ -55,6 +59,7 @@
 	let copiedMessageId = $state<string | null>(null);
 	let showScrollButton = $state(false);
 	let autoScrollEnabled = $state(true);
+	let scrollingProgrammatically = $state(false);
 	let draftInitialized = $state(false);
 
 	// Voice recording state
@@ -104,9 +109,44 @@
 		return groups;
 	});
 
-	// Message queue
-	let messageQueue = $state<string[]>([]);
+	// Message queue — queued messages live here, NOT in messages[]
+	interface QueuedMessage {
+		id: string;
+		content: string;
+	}
+	let messageQueue = $state<QueuedMessage[]>([]);
 	let chatInputRef: { focus: () => void } | undefined;
+	let loadingTimeoutId: ReturnType<typeof setTimeout> | null = null;
+	let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+	// Safety: auto-reset isLoading after 5 minutes of no stream activity
+	// This prevents the UI from getting permanently stuck
+	const LOADING_TIMEOUT_MS = 5 * 60 * 1000;
+
+	$effect(() => {
+		if (isLoading) {
+			// Clear previous timeout
+			if (loadingTimeoutId) clearTimeout(loadingTimeoutId);
+			loadingTimeoutId = setTimeout(() => {
+				if (isLoading) {
+					log.warn('Loading timeout - force resetting state after ' + (LOADING_TIMEOUT_MS / 1000) + ' seconds');
+					if (currentStreamingMessage) {
+						currentStreamingMessage.streaming = false;
+						currentStreamingMessage.content += '\n\n*[Timed out]*';
+						messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+						currentStreamingMessage = null;
+					}
+					isLoading = false;
+					messageQueue = [];
+				}
+			}, LOADING_TIMEOUT_MS);
+		} else {
+			if (loadingTimeoutId) {
+				clearTimeout(loadingTimeoutId);
+				loadingTimeoutId = null;
+			}
+		}
+	});
 
 	// Approval requests
 	let pendingApproval = $state<ApprovalRequest | null>(null);
@@ -130,7 +170,7 @@
 		);
 
 		// WebSocket event listeners
-		console.log('[Agent] Registering WebSocket event listeners');
+		log.debug('Registering WebSocket event listeners');
 		unsubscribers.push(
 			client.on('chat_stream', handleChatStream),
 			client.on('chat_complete', handleChatComplete),
@@ -140,9 +180,10 @@
 			client.on('thinking', handleThinking),
 			client.on('error', handleError),
 			client.on('approval_request', handleApprovalRequest),
-			client.on('stream_status', handleStreamStatus)
+			client.on('stream_status', handleStreamStatus),
+			client.on('chat_cancelled', handleChatCancelled)
 		);
-		console.log('[Agent] WebSocket event listeners registered');
+		log.debug('WebSocket event listeners registered');
 
 		// Load draft from localStorage
 		if (browser) {
@@ -159,6 +200,11 @@
 
 	onDestroy(() => {
 		unsubscribers.forEach((unsub) => unsub());
+		// Clean up loading timeout
+		if (loadingTimeoutId) {
+			clearTimeout(loadingTimeoutId);
+			loadingTimeoutId = null;
+		}
 		// Clean up voice mode
 		voiceMode = false;
 		if (silenceTimer) {
@@ -235,7 +281,7 @@
 		try {
 			const res = await getCompanionChat();
 			chatId = res.chat.id;
-			console.log('[Agent] Loaded companion chat:', chatId);
+			log.debug('Loaded companion chat: ' + chatId);
 			messages = (res.messages || []).map((m: ApiChatMessage) => {
 				const meta = parseMetadata((m as { metadata?: string }).metadata);
 				return {
@@ -250,18 +296,33 @@
 			});
 			totalMessages = res.totalMessages || messages.length;
 			chatLoaded = true;
-			console.log('[Agent] Messages loaded:', messages.length, 'total:', totalMessages);
+			log.debug('Messages loaded: ' + messages.length + ' total: ' + totalMessages);
+
+			// Scroll to bottom after loading history (handles race where $effect
+			// fires before messagesContainer is bound via bind:this)
+			if (messages.length > 0) {
+				tick().then(() => {
+					requestAnimationFrame(() => {
+						if (messagesContainer) {
+							messagesContainer.scrollTo({
+								top: messagesContainer.scrollHeight,
+								behavior: 'smooth'
+							});
+						}
+					});
+				});
+			}
 
 			// Check if there's an active stream to resume
 			checkForActiveStream();
 
 			// If chat is empty, request introduction from the agent
 			if (messages.length === 0 && chatId) {
-				console.log('[Agent] Chat is empty, requesting introduction...');
+				log.debug('Chat is empty, requesting introduction...');
 				requestIntroduction();
 			}
 		} catch (err) {
-			console.error('Failed to load companion chat:', err);
+			log.error('Failed to load companion chat', err);
 			chatLoaded = true; // Still mark as loaded, will show empty state
 		}
 	}
@@ -273,24 +334,24 @@
 			const unsub = client.onStatus((status: ConnectionStatus) => {
 				if (status === 'connected' && chatId) {
 					unsub();
-					console.log('[Agent] Checking for active stream on session:', chatId);
+					log.debug('Checking for active stream on session: ' + chatId);
 					client.send('check_stream', { session_id: chatId });
 				}
 			});
 			return;
 		}
-		console.log('[Agent] Checking for active stream on session:', chatId);
+		log.debug('Checking for active stream on session: ' + chatId);
 		client.send('check_stream', { session_id: chatId });
 	}
 
 	function requestIntroduction() {
 		const client = getWebSocketClient();
-		console.log('[Agent] requestIntroduction called, connected:', client.isConnected());
+		log.debug('requestIntroduction called, connected: ' + client.isConnected());
 		if (!client.isConnected()) {
 			// Wait for connection and try again
-			console.log('[Agent] WebSocket not connected, waiting...');
+			log.debug('WebSocket not connected, waiting...');
 			const unsub = client.onStatus((status: ConnectionStatus) => {
-				console.log('[Agent] WebSocket status changed:', status);
+				log.debug('WebSocket status changed: ' + status);
 				if (status === 'connected') {
 					unsub();
 					doRequestIntroduction();
@@ -302,7 +363,7 @@
 	}
 
 	function doRequestIntroduction() {
-		console.log('[Agent] Sending request_introduction for session:', chatId);
+		log.debug('Sending request_introduction for session: ' + chatId);
 		const client = getWebSocketClient();
 		isLoading = true;
 		client.send('request_introduction', {
@@ -325,15 +386,21 @@
 				companion: true
 			});
 		} else {
+			log.warn('WebSocket not connected, cannot send message');
 			isLoading = false;
+			// Process remaining queue even when disconnected
+			// Use setTimeout to avoid synchronous recursion
+			if (messageQueue.length > 0) {
+				setTimeout(() => processQueue(), 100);
+			}
 		}
 	}
 
 	function handleChatStream(data: Record<string, unknown>) {
-		console.log('[Agent] handleChatStream called:', data?.session_id, 'chatId:', chatId);
+		log.debug('handleChatStream called: ' + data?.session_id + ' chatId: ' + chatId);
 		// Accept messages for our chat or if we haven't loaded yet
 		if (chatId && data?.session_id !== chatId) {
-			console.log('[Agent] handleChatStream: session_id mismatch, ignoring');
+			log.debug('handleChatStream: session_id mismatch, ignoring');
 			return;
 		}
 
@@ -353,7 +420,7 @@
 			if (currentStreamingMessage.toolCalls?.length) {
 				const hasRunning = currentStreamingMessage.toolCalls.some(tc => tc.status === 'running');
 				if (hasRunning) {
-					console.log('[Agent] handleChatStream: text arrived with running tools — marking all complete');
+					log.debug('handleChatStream: text arrived with running tools — marking all complete');
 					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
 						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 					);
@@ -385,20 +452,53 @@
 		}
 	}
 
+	// Process next queued message (if any)
+	function processQueue() {
+		if (messageQueue.length > 0) {
+			const next = messageQueue[0];
+			messageQueue = messageQueue.slice(1);
+			log.debug('Processing queued message: ' + next.content.substring(0, 50));
+
+			// Now add the user message to the chat
+			const userMessage: Message = {
+				id: next.id,
+				role: 'user',
+				content: next.content,
+				timestamp: new Date()
+			};
+			messages = [...messages, userMessage];
+
+			handleSendPrompt(next.content);
+		}
+	}
+
+	// Cancel a single queued message by its ID
+	function cancelQueuedMessage(queuedId: string) {
+		const item = messageQueue.find(q => q.id === queuedId);
+		if (!item) return;
+
+		messageQueue = messageQueue.filter(q => q.id !== queuedId);
+		log.debug('Cancelled queued message: ' + item.content.substring(0, 50));
+	}
+
 	function handleChatComplete(data: Record<string, unknown>) {
-		console.log('[Agent] handleChatComplete called:', JSON.stringify(data));
-		console.log('[Agent] handleChatComplete state:', {
-			chatId,
-			sessionMatch: data?.session_id === chatId,
-			hasStreamingMsg: !!currentStreamingMessage,
-			streamingToolCount: currentStreamingMessage?.toolCalls?.length ?? 0,
-			streamingToolStatuses: currentStreamingMessage?.toolCalls?.map(t => ({ name: t.name, status: t.status })),
-			messagesCount: messages.length
+		log.debug('handleChatComplete called', {
+			sessionId: data?.session_id as string,
+			chatId: chatId ?? undefined,
+			hasStreamingMsg: String(!!currentStreamingMessage),
+			toolCount: String(currentStreamingMessage?.toolCalls?.length ?? 0),
+			messagesCount: String(messages.length)
 		});
 
 		if (chatId && data?.session_id !== chatId) {
-			console.log('[Agent] handleChatComplete: session mismatch, expected', chatId, 'got', data?.session_id);
+			log.debug('handleChatComplete: session mismatch, expected ' + chatId + ' got ' + data?.session_id);
 			return;
+		}
+
+		// Clear any pending cancel timeout — the request completed (naturally or post-cancel)
+		if (cancelTimeoutId) {
+			clearTimeout(cancelTimeoutId);
+			cancelTimeoutId = null;
 		}
 
 		let completedContent = '';
@@ -413,21 +513,20 @@
 					tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 				);
 				const afterStatuses = currentStreamingMessage.toolCalls.map(t => t.status);
-				console.log('[Agent] Safety net: tool statuses before:', beforeStatuses, 'after:', afterStatuses);
+				log.debug('Safety net: tool statuses before: ' + beforeStatuses.join(',') + ' after: ' + afterStatuses.join(','));
 			}
 			const finalMsg = { ...currentStreamingMessage };
-			console.log('[Agent] Safety net: final message tool statuses:', finalMsg.toolCalls?.map(t => ({ name: t.name, status: t.status })));
 			messages = [...messages.slice(0, -1), finalMsg];
 			currentStreamingMessage = null;
 		} else {
-			console.log('[Agent] handleChatComplete: NO currentStreamingMessage!');
+			log.debug('handleChatComplete: NO currentStreamingMessage!');
 			// Safety net for non-streaming: check last message in array
 			const lastIdx = messages.length - 1;
 			if (lastIdx >= 0 && messages[lastIdx].role === 'assistant' && messages[lastIdx].toolCalls?.length) {
 				const lastMsg = messages[lastIdx];
 				const hasRunning = lastMsg.toolCalls!.some(tc => tc.status === 'running');
 				if (hasRunning) {
-					console.log('[Agent] Safety net (non-streaming): marking running tools as complete in last message');
+					log.debug('Safety net (non-streaming): marking running tools as complete in last message');
 					const updatedTools = lastMsg.toolCalls!.map(tc =>
 						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 					);
@@ -443,11 +542,77 @@
 		}
 
 		// Process queued messages
-		if (messageQueue.length > 0) {
-			const nextPrompt = messageQueue[0];
-			messageQueue = messageQueue.slice(1);
-			handleSendPrompt(nextPrompt);
+		processQueue();
+	}
+
+	function cancelMessage() {
+		const client = getWebSocketClient();
+		client.send('cancel', {
+			session_id: chatId || ''
+		});
+
+		// Optimistic cancel: if server doesn't respond with chat_cancelled within 2s,
+		// force-reset the loading state so the UI doesn't get stuck
+		if (cancelTimeoutId) clearTimeout(cancelTimeoutId);
+		cancelTimeoutId = setTimeout(() => {
+			cancelTimeoutId = null;
+			if (isLoading) {
+				log.warn('Cancel timeout - force resetting loading state');
+				if (currentStreamingMessage) {
+					currentStreamingMessage.streaming = false;
+					if (currentStreamingMessage.content) {
+						currentStreamingMessage.content += '\n\n*[Generation cancelled]*';
+					} else {
+						currentStreamingMessage.content = '*[Generation cancelled]*';
+					}
+					if (currentStreamingMessage.toolCalls?.length) {
+						currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+							tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+						);
+					}
+					const finalMsg = { ...currentStreamingMessage };
+					messages = [...messages.slice(0, -1), finalMsg];
+					currentStreamingMessage = null;
+				}
+				isLoading = false;
+
+				// Process any queued messages (don't discard them)
+				processQueue();
+			}
+		}, 2000);
+	}
+
+	function handleChatCancelled(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+
+		// Clear the cancel timeout — server responded, no need for fallback
+		if (cancelTimeoutId) {
+			clearTimeout(cancelTimeoutId);
+			cancelTimeoutId = null;
 		}
+
+		if (currentStreamingMessage) {
+			currentStreamingMessage.streaming = false;
+			if (currentStreamingMessage.content) {
+				currentStreamingMessage.content += '\n\n*[Generation cancelled]*';
+			} else {
+				currentStreamingMessage.content = '*[Generation cancelled]*';
+			}
+			// Mark any running tools as complete
+			if (currentStreamingMessage.toolCalls?.length) {
+				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+					tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+				);
+			}
+			const finalMsg = { ...currentStreamingMessage };
+			messages = [...messages.slice(0, -1), finalMsg];
+			currentStreamingMessage = null;
+		}
+		isLoading = false;
+
+		// Process queued messages — the user typed these while waiting,
+		// they're already visible as user bubbles and should be sent now
+		processQueue();
 	}
 
 	function handleChatResponse(data: Record<string, unknown>) {
@@ -465,9 +630,9 @@
 	}
 
 	function handleToolStart(data: Record<string, unknown>) {
-		console.log('[Agent] handleToolStart called:', JSON.stringify(data));
+		log.debug('handleToolStart: ' + (data?.tool as string));
 		if (chatId && data?.session_id !== chatId) {
-			console.log('[Agent] handleToolStart: session_id mismatch, ignoring');
+			log.debug('handleToolStart: session_id mismatch, ignoring');
 			return;
 		}
 
@@ -504,25 +669,17 @@
 	}
 
 	function handleToolResult(data: Record<string, unknown>) {
-		console.log('[Agent] handleToolResult called:', JSON.stringify(data));
-		console.log('[Agent] handleToolResult state:', {
-			chatId,
-			messagesCount: messages.length,
-			hasStreamingMsg: !!currentStreamingMessage,
-			streamingMsgTools: currentStreamingMessage?.toolCalls?.map(t => ({ id: t.id, name: t.name, status: t.status })),
-			lastMsgRole: messages[messages.length - 1]?.role,
-			lastMsgTools: messages[messages.length - 1]?.toolCalls?.map(t => ({ id: t.id, name: t.name, status: t.status }))
-		});
+		log.debug('handleToolResult: ' + (data?.tool_name as string || data?.tool_id as string));
 
 		if (chatId && data?.session_id !== chatId) {
-			console.log('[Agent] handleToolResult: session mismatch, expected', chatId, 'got', data?.session_id);
+			log.debug('handleToolResult: session mismatch');
 			return;
 		}
 
 		const result = (data?.result as string) || '';
 		const toolID = (data?.tool_id as string) || '';
 		const toolName = (data?.tool_name as string) || '';
-		console.log('[Agent] Tool result received:', toolName, 'id:', toolID, 'result_length:', result?.length);
+		log.debug('Tool result received: ' + toolName + ' id: ' + toolID + ' result_length: ' + result?.length);
 
 		// Helper to find and update tool by ID or fallback to first running
 		const findAndUpdateTool = (toolCalls: ToolCall[]): ToolCall[] | null => {
@@ -531,7 +688,7 @@
 			if (toolID) {
 				const idx = updated.findIndex(tc => tc.id === toolID);
 				if (idx >= 0) {
-					console.log('[Agent] Found tool by ID at index', idx);
+					log.debug('Found tool by ID at index ' + idx);
 					updated[idx] = { ...updated[idx], output: result, status: 'complete' };
 					return updated;
 				}
@@ -539,7 +696,7 @@
 			// Fallback: find first running tool
 			const runningIdx = updated.findIndex(tc => tc.status === 'running');
 			if (runningIdx >= 0) {
-				console.log('[Agent] Fallback: updating first running tool at index', runningIdx);
+				log.debug('Fallback: updating first running tool at index ' + runningIdx);
 				updated[runningIdx] = { ...updated[runningIdx], output: result, status: 'complete' };
 				return updated;
 			}
@@ -552,34 +709,33 @@
 			if (updatedToolCalls) {
 				currentStreamingMessage = { ...currentStreamingMessage, toolCalls: updatedToolCalls };
 				messages = [...messages.slice(0, -1), currentStreamingMessage];
-				console.log('[Agent] Updated tool in streaming message');
+				log.debug('Updated tool in streaming message');
 				return;
 			}
 		}
 
 		// Fallback: search backwards through messages for a matching running tool
-		console.log('[Agent] handleToolResult: trying fallback to recent assistant messages');
+		log.debug('handleToolResult: trying fallback to recent assistant messages');
 		for (let i = messages.length - 1; i >= Math.max(0, messages.length - 5); i--) {
 			const msg = messages[i];
 			if (msg.role === 'assistant' && msg.toolCalls?.length) {
 				const updatedToolCalls = findAndUpdateTool(msg.toolCalls);
 				if (updatedToolCalls) {
 					messages = [...messages.slice(0, i), { ...msg, toolCalls: updatedToolCalls }, ...messages.slice(i + 1)];
-					console.log('[Agent] Fallback: updated tool in message at index', i);
+					log.debug('Fallback: updated tool in message at index ' + i);
 					return;
 				}
 			}
 		}
 
-		console.log('[Agent] handleToolResult: SKIP - no suitable tool to update (tool_id:', toolID, ')');
+		log.warn('handleToolResult: SKIP - no suitable tool to update (tool_id: ' + toolID + ')');
 	}
 
 	function handleThinking(data: Record<string, unknown>) {
-		console.log('[Agent] handleThinking called:', data);
+		log.debug('handleThinking');
 		if (chatId && data?.session_id !== chatId) return;
 
 		const thinkingContent = (data?.content as string) || '';
-		console.log('[Agent] Thinking content:', thinkingContent?.substring(0, 50));
 
 		// Attach thinking to current streaming message OR create one
 		if (currentStreamingMessage) {
@@ -620,6 +776,9 @@
 		messages = [...messages, errorMessage];
 		isLoading = false;
 		currentStreamingMessage = null;
+
+		// Process queued messages even after errors (don't leave orphaned user messages)
+		processQueue();
 	}
 
 	function handleApprovalRequest(data: Record<string, unknown>) {
@@ -633,17 +792,17 @@
 	}
 
 	function handleStreamStatus(data: Record<string, unknown>) {
-		console.log('[Agent] handleStreamStatus:', data);
+		log.debug('handleStreamStatus: active=' + data?.active + ' session=' + data?.session_id);
 		const sessionId = data?.session_id as string;
 		const active = data?.active as boolean;
 		const content = (data?.content as string) || '';
 
 		if (!active || sessionId !== chatId) {
-			console.log('[Agent] No active stream to resume');
+			log.debug('No active stream to resume');
 			return;
 		}
 
-		console.log('[Agent] Resuming stream with', content.length, 'bytes of content');
+		log.info('Resuming stream with ' + content.length + ' bytes of content');
 
 		// Create or update streaming message with accumulated content
 		isLoading = true;
@@ -697,20 +856,14 @@
 		inputValue = '';
 		clearDraft();
 
-		// If already loading, queue the message
+		// If already loading, queue the message — it stays above the input, not in chat
 		if (isLoading) {
-			messageQueue = [...messageQueue, prompt];
-			const userMessage: Message = {
-				id: generateUUID(),
-				role: 'user',
-				content: prompt,
-				timestamp: new Date()
-			};
-			messages = [...messages, userMessage];
+			log.debug('Queuing message (agent busy): ' + prompt.substring(0, 50));
+			messageQueue = [...messageQueue, { id: generateUUID(), content: prompt }];
 			return;
 		}
 
-		// Show user message immediately
+		// Show user message immediately and send
 		const userMessage: Message = {
 			id: generateUUID(),
 			role: 'user',
@@ -718,6 +871,10 @@
 			timestamp: new Date()
 		};
 		messages = [...messages, userMessage];
+
+		// Force scroll to bottom when user sends — they want to see the response
+		autoScrollEnabled = true;
+		showScrollButton = false;
 
 		handleSendPrompt(prompt);
 	}
@@ -741,6 +898,8 @@
 		const isStreaming = !!streamingContent;
 
 		if (messagesContainer && (messageCount > 0 || streamingContent) && autoScrollEnabled) {
+			// Suppress handleScroll from disabling auto-scroll during programmatic scroll
+			scrollingProgrammatically = true;
 			// Wait for Svelte to update DOM, then wait for browser to paint
 			tick().then(() => {
 				requestAnimationFrame(() => {
@@ -752,34 +911,47 @@
 							behavior: isStreaming ? 'instant' : 'smooth'
 						});
 					}
+					// Release the flag after scroll completes
+					requestAnimationFrame(() => {
+						scrollingProgrammatically = false;
+					});
 				});
 			});
 		}
 	});
 
 	function handleScroll() {
-		if (messagesContainer) {
-			const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
-			const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-			const wasNearBottom = !showScrollButton;
-			showScrollButton = distanceFromBottom > 100;
+		if (!messagesContainer) return;
+		// Ignore scroll events triggered by programmatic scrolling (auto-scroll effect)
+		if (scrollingProgrammatically) return;
 
-			if (wasNearBottom && showScrollButton) {
-				autoScrollEnabled = false;
-			} else if (!wasNearBottom && !showScrollButton) {
-				autoScrollEnabled = true;
-			}
+		const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
+		const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+		const wasNearBottom = !showScrollButton;
+		showScrollButton = distanceFromBottom > 100;
+
+		if (wasNearBottom && showScrollButton) {
+			autoScrollEnabled = false;
+		} else if (!wasNearBottom && !showScrollButton) {
+			autoScrollEnabled = true;
 		}
 	}
 
 	function scrollToBottom() {
 		if (messagesContainer) {
+			scrollingProgrammatically = true;
 			messagesContainer.scrollTo({
 				top: messagesContainer.scrollHeight,
 				behavior: 'smooth'
 			});
 			showScrollButton = false;
 			autoScrollEnabled = true;
+			// Release after scroll settles
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => {
+					scrollingProgrammatically = false;
+				});
+			});
 		}
 	}
 
@@ -791,7 +963,7 @@
 				copiedMessageId = null;
 			}, 2000);
 		} catch (err) {
-			console.error('Failed to copy:', err);
+			log.error('Failed to copy', err);
 		}
 	}
 
@@ -882,7 +1054,7 @@
 
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			recognition.onresult = (event: any) => {
-				console.log('[Voice] onresult fired');
+				voiceLog.debug('onresult fired');
 
 				// Reset silence timer on any speech
 				if (silenceTimer) {
@@ -895,7 +1067,7 @@
 					const transcript = event.results[i][0].transcript;
 					if (event.results[i].isFinal) {
 						recordingTranscript += transcript + ' ';
-						console.log('[Voice] Final transcript:', recordingTranscript);
+						voiceLog.debug('Final transcript: ' + recordingTranscript);
 					} else {
 						interim += transcript;
 					}
@@ -904,11 +1076,11 @@
 
 				// Start silence timer - if no more speech for 2s, auto-submit
 				if (inputValue.trim()) {
-					console.log('[Voice] Starting 2s silence timer');
+					voiceLog.debug('Starting 2s silence timer');
 					silenceTimer = setTimeout(() => {
-						console.log('[Voice] Silence timer fired, isRecording:', isRecording);
+						voiceLog.debug('Silence timer fired, isRecording: ' + isRecording);
 						if (isRecording && inputValue.trim()) {
-							console.log('[Voice] Auto-sending!');
+							voiceLog.debug('Auto-sending!');
 							stopRecording();
 							sendMessage();
 						}
@@ -918,7 +1090,7 @@
 
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			recognition.onerror = (event: any) => {
-				console.error('Speech recognition error:', event.error);
+				voiceLog.error('Speech recognition error: ' + event.error);
 				isRecording = false;
 
 				switch (event.error) {
@@ -944,15 +1116,15 @@
 
 			// When speech ends (user stops talking), start shorter timer
 			recognition.onspeechend = () => {
-				console.log('[Voice] onspeechend fired');
+				voiceLog.debug('onspeechend fired');
 				if (silenceTimer) {
 					clearTimeout(silenceTimer);
 				}
 				// Shorter delay after speech officially ends
 				silenceTimer = setTimeout(() => {
-					console.log('[Voice] onspeechend timer fired');
+					voiceLog.debug('onspeechend timer fired');
 					if (isRecording && inputValue.trim()) {
-						console.log('[Voice] Auto-sending from onspeechend!');
+						voiceLog.debug('Auto-sending from onspeechend!');
 						stopRecording();
 						sendMessage();
 					}
@@ -960,7 +1132,7 @@
 			};
 
 			recognition.onend = () => {
-				console.log('[Voice] onend fired, inputValue:', inputValue.trim().substring(0, 50));
+				voiceLog.debug('onend fired, inputValue: ' + inputValue.trim().substring(0, 50));
 				const hadContent = inputValue.trim();
 				isRecording = false;
 				recognition = null;
@@ -971,7 +1143,7 @@
 				}
 				// If we have content when recognition ends, send it
 				if (hadContent && !isLoading) {
-					console.log('[Voice] Auto-sending from onend!');
+					voiceLog.debug('Auto-sending from onend!');
 					sendMessage();
 				}
 				// If still in voice mode, restart listening after bot responds (and TTS finishes)
@@ -983,7 +1155,7 @@
 							return;
 						}
 						if (voiceMode && !isRecording) {
-							console.log('[Voice] Restarting listening (voice mode)');
+							voiceLog.debug('Restarting listening (voice mode)');
 							recordingTranscript = '';
 							startRecording();
 						}
@@ -995,7 +1167,7 @@
 
 			recognition.start();
 		} catch (err) {
-			console.error('Failed to start speech recognition:', err);
+			voiceLog.error('Failed to start speech recognition', err);
 			recordingError = 'Failed to start recording.';
 			recognition = null;
 		}
@@ -1057,14 +1229,14 @@
 				currentAudio = null;
 			};
 			currentAudio.onerror = () => {
-				console.error('Audio playback error');
+				log.error('Audio playback error');
 				isSpeaking = false;
 				URL.revokeObjectURL(audioUrl);
 				currentAudio = null;
 			};
 			currentAudio.play();
 		} catch (err) {
-			console.error('TTS failed:', err);
+			log.error('TTS failed', err);
 			isSpeaking = false;
 		}
 	}
@@ -1114,7 +1286,13 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="flex flex-col h-full bg-base-100">
+<!-- Prevent browser from navigating away when files/images are dragged onto the page -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="flex flex-col h-full bg-base-100"
+	ondragover={(e) => e.preventDefault()}
+	ondrop={(e) => e.preventDefault()}
+>
 	<!-- Header -->
 	<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
 		<div class="max-w-4xl mx-auto flex items-center justify-between px-6 h-14">
@@ -1260,7 +1438,10 @@
 		{isLoading}
 		{isRecording}
 		{voiceMode}
+		queuedMessages={messageQueue}
 		onSend={sendMessage}
+		onCancel={cancelMessage}
+		onCancelQueued={cancelQueuedMessage}
 		onNewSession={resetChat}
 		onToggleVoice={toggleRecording}
 	/>

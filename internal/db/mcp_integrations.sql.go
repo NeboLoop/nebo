@@ -26,7 +26,7 @@ func (q *Queries) ClearMCPIntegrationOAuthState(ctx context.Context, id string) 
 const createMCPIntegration = `-- name: CreateMCPIntegration :one
 INSERT INTO mcp_integrations (id, name, server_type, server_url, auth_type, is_enabled, metadata, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch())
-RETURNING id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint
+RETURNING id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint, tool_count
 `
 
 type CreateMCPIntegrationParams struct {
@@ -70,6 +70,7 @@ func (q *Queries) CreateMCPIntegration(ctx context.Context, arg CreateMCPIntegra
 		&i.OauthAuthorizationEndpoint,
 		&i.OauthTokenEndpoint,
 		&i.OauthRegistrationEndpoint,
+		&i.ToolCount,
 	)
 	return i, err
 }
@@ -134,7 +135,7 @@ func (q *Queries) DeleteMCPIntegrationCredentials(ctx context.Context, integrati
 }
 
 const getMCPIntegration = `-- name: GetMCPIntegration :one
-SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint FROM mcp_integrations WHERE id = ?
+SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint, tool_count FROM mcp_integrations WHERE id = ?
 `
 
 func (q *Queries) GetMCPIntegration(ctx context.Context, id string) (McpIntegration, error) {
@@ -160,12 +161,13 @@ func (q *Queries) GetMCPIntegration(ctx context.Context, id string) (McpIntegrat
 		&i.OauthAuthorizationEndpoint,
 		&i.OauthTokenEndpoint,
 		&i.OauthRegistrationEndpoint,
+		&i.ToolCount,
 	)
 	return i, err
 }
 
 const getMCPIntegrationByOAuthState = `-- name: GetMCPIntegrationByOAuthState :one
-SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint FROM mcp_integrations WHERE oauth_state = ? AND oauth_state IS NOT NULL
+SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint, tool_count FROM mcp_integrations WHERE oauth_state = ? AND oauth_state IS NOT NULL
 `
 
 func (q *Queries) GetMCPIntegrationByOAuthState(ctx context.Context, oauthState sql.NullString) (McpIntegration, error) {
@@ -191,12 +193,13 @@ func (q *Queries) GetMCPIntegrationByOAuthState(ctx context.Context, oauthState 
 		&i.OauthAuthorizationEndpoint,
 		&i.OauthTokenEndpoint,
 		&i.OauthRegistrationEndpoint,
+		&i.ToolCount,
 	)
 	return i, err
 }
 
 const getMCPIntegrationByType = `-- name: GetMCPIntegrationByType :one
-SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint FROM mcp_integrations WHERE server_type = ? AND is_enabled = 1 LIMIT 1
+SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint, tool_count FROM mcp_integrations WHERE server_type = ? AND is_enabled = 1 LIMIT 1
 `
 
 func (q *Queries) GetMCPIntegrationByType(ctx context.Context, serverType string) (McpIntegration, error) {
@@ -222,6 +225,7 @@ func (q *Queries) GetMCPIntegrationByType(ctx context.Context, serverType string
 		&i.OauthAuthorizationEndpoint,
 		&i.OauthTokenEndpoint,
 		&i.OauthRegistrationEndpoint,
+		&i.ToolCount,
 	)
 	return i, err
 }
@@ -304,7 +308,7 @@ func (q *Queries) GetMCPServerRegistry(ctx context.Context, id string) (McpServe
 }
 
 const listEnabledMCPIntegrations = `-- name: ListEnabledMCPIntegrations :many
-SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint FROM mcp_integrations WHERE is_enabled = 1 ORDER BY created_at DESC
+SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint, tool_count FROM mcp_integrations WHERE is_enabled = 1 ORDER BY created_at DESC
 `
 
 func (q *Queries) ListEnabledMCPIntegrations(ctx context.Context) ([]McpIntegration, error) {
@@ -336,6 +340,7 @@ func (q *Queries) ListEnabledMCPIntegrations(ctx context.Context) ([]McpIntegrat
 			&i.OauthAuthorizationEndpoint,
 			&i.OauthTokenEndpoint,
 			&i.OauthRegistrationEndpoint,
+			&i.ToolCount,
 		); err != nil {
 			return nil, err
 		}
@@ -351,7 +356,7 @@ func (q *Queries) ListEnabledMCPIntegrations(ctx context.Context) ([]McpIntegrat
 }
 
 const listMCPIntegrations = `-- name: ListMCPIntegrations :many
-SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint FROM mcp_integrations ORDER BY created_at DESC
+SELECT id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint, tool_count FROM mcp_integrations ORDER BY created_at DESC
 `
 
 func (q *Queries) ListMCPIntegrations(ctx context.Context) ([]McpIntegration, error) {
@@ -383,6 +388,7 @@ func (q *Queries) ListMCPIntegrations(ctx context.Context) ([]McpIntegration, er
 			&i.OauthAuthorizationEndpoint,
 			&i.OauthTokenEndpoint,
 			&i.OauthRegistrationEndpoint,
+			&i.ToolCount,
 		); err != nil {
 			return nil, err
 		}
@@ -443,7 +449,7 @@ const updateMCPIntegration = `-- name: UpdateMCPIntegration :one
 UPDATE mcp_integrations
 SET name = ?, server_url = ?, is_enabled = ?, metadata = ?, updated_at = unixepoch()
 WHERE id = ?
-RETURNING id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint
+RETURNING id, name, server_type, server_url, auth_type, is_enabled, connection_status, last_connected_at, last_error, metadata, created_at, updated_at, oauth_state, oauth_pkce_verifier, oauth_client_id, oauth_client_secret, oauth_authorization_endpoint, oauth_token_endpoint, oauth_registration_endpoint, tool_count
 `
 
 type UpdateMCPIntegrationParams struct {
@@ -483,6 +489,7 @@ func (q *Queries) UpdateMCPIntegration(ctx context.Context, arg UpdateMCPIntegra
 		&i.OauthAuthorizationEndpoint,
 		&i.OauthTokenEndpoint,
 		&i.OauthRegistrationEndpoint,
+		&i.ToolCount,
 	)
 	return i, err
 }
@@ -593,5 +600,19 @@ func (q *Queries) UpdateMCPIntegrationStatus(ctx context.Context, arg UpdateMCPI
 		arg.LastError,
 		arg.ID,
 	)
+	return err
+}
+
+const updateMCPIntegrationToolCount = `-- name: UpdateMCPIntegrationToolCount :exec
+UPDATE mcp_integrations SET tool_count = ?, updated_at = unixepoch() WHERE id = ?
+`
+
+type UpdateMCPIntegrationToolCountParams struct {
+	ToolCount sql.NullInt64 `json:"tool_count"`
+	ID        string        `json:"id"`
+}
+
+func (q *Queries) UpdateMCPIntegrationToolCount(ctx context.Context, arg UpdateMCPIntegrationToolCountParams) error {
+	_, err := q.db.ExecContext(ctx, updateMCPIntegrationToolCount, arg.ToolCount, arg.ID)
 	return err
 }

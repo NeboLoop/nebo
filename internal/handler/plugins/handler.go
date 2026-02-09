@@ -239,7 +239,7 @@ func nullTimeString(t sql.NullInt64) string {
 }
 
 // --------------------------------------------------------------------------
-// NeboLoop App Store Handlers
+// NeboLoop Store Handlers
 // --------------------------------------------------------------------------
 
 // neboLoopClient constructs a neboloop.Client from the stored plugin settings.
@@ -254,7 +254,7 @@ func neboLoopClient(ctx context.Context, svcCtx *svc.ServiceContext) (*neboloop.
 	return neboloop.NewClient(settings)
 }
 
-// ListStoreAppsHandler lists apps from the NeboLoop App Store.
+// ListStoreAppsHandler lists apps from NeboLoop.
 func ListStoreAppsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		client, err := neboLoopClient(r.Context(), svcCtx)
@@ -290,7 +290,7 @@ func ListStoreAppsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
-// ListStoreSkillsHandler lists skills from the NeboLoop App Store.
+// ListStoreSkillsHandler lists skills from NeboLoop.
 func ListStoreSkillsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		client, err := neboLoopClient(r.Context(), svcCtx)
@@ -325,7 +325,7 @@ func ListStoreSkillsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
-// InstallStoreAppHandler installs an app from the NeboLoop App Store.
+// InstallStoreAppHandler installs an app from NeboLoop.
 func InstallStoreAppHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
@@ -387,7 +387,7 @@ func UninstallStoreAppHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
-// InstallStoreSkillHandler installs a skill from the NeboLoop App Store.
+// InstallStoreSkillHandler installs a skill from NeboLoop.
 func InstallStoreSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")

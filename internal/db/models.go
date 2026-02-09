@@ -20,6 +20,12 @@ type AgentProfile struct {
 	Proactivity       sql.NullString `json:"proactivity"`
 	CreatedAt         int64          `json:"created_at"`
 	UpdatedAt         int64          `json:"updated_at"`
+	Emoji             sql.NullString `json:"emoji"`
+	Creature          sql.NullString `json:"creature"`
+	Vibe              sql.NullString `json:"vibe"`
+	Avatar            sql.NullString `json:"avatar"`
+	AgentRules        sql.NullString `json:"agent_rules"`
+	ToolNotes         sql.NullString `json:"tool_notes"`
 }
 
 type AuthProfile struct {
@@ -127,6 +133,12 @@ type CronJob struct {
 	CreatedAt sql.NullTime   `json:"created_at"`
 }
 
+type DevSideloadedApp struct {
+	AppID    string `json:"app_id"`
+	Path     string `json:"path"`
+	LoadedAt int64  `json:"loaded_at"`
+}
+
 type EmbeddingCache struct {
 	ContentHash string       `json:"content_hash"`
 	Embedding   []byte       `json:"embedding"`
@@ -165,6 +177,7 @@ type McpIntegration struct {
 	OauthAuthorizationEndpoint sql.NullString `json:"oauth_authorization_endpoint"`
 	OauthTokenEndpoint         sql.NullString `json:"oauth_token_endpoint"`
 	OauthRegistrationEndpoint  sql.NullString `json:"oauth_registration_endpoint"`
+	ToolCount                  sql.NullInt64  `json:"tool_count"`
 }
 
 type McpIntegrationCredential struct {
@@ -434,6 +447,19 @@ type SessionMessage struct {
 	TokenEstimate sql.NullInt64  `json:"token_estimate"`
 	IsCompacted   sql.NullInt64  `json:"is_compacted"`
 	CreatedAt     int64          `json:"created_at"`
+}
+
+type Setting struct {
+	ID                       int64  `json:"id"`
+	AutonomousMode           int64  `json:"autonomous_mode"`
+	AutoApproveRead          int64  `json:"auto_approve_read"`
+	AutoApproveWrite         int64  `json:"auto_approve_write"`
+	AutoApproveBash          int64  `json:"auto_approve_bash"`
+	HeartbeatIntervalMinutes int64  `json:"heartbeat_interval_minutes"`
+	CommEnabled              int64  `json:"comm_enabled"`
+	CommPlugin               string `json:"comm_plugin"`
+	DeveloperMode            int64  `json:"developer_mode"`
+	UpdatedAt                int64  `json:"updated_at"`
 }
 
 type User struct {

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	"github.com/nebolabs/nebo/internal/agent/orchestrator"
 	"github.com/nebolabs/nebo/internal/agent/recovery"
 	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/channels"
+	"github.com/nebolabs/nebo/internal/db"
 )
 
 // CommService is the interface for inter-agent communication.
@@ -49,14 +50,14 @@ type AgentDomainTool struct {
 	// Task/orchestration
 	orchestrator *orchestrator.Orchestrator
 
-	// Cron scheduling
-	cron *CronTool
+	// Scheduling (built-in CronTool or app-provided via SchedulerManager)
+	scheduler Scheduler
 
 	// Memory storage
 	memory *MemoryTool
 
 	// Message sending
-	channelMgr *channels.Manager
+	channelSender ChannelSender
 
 	// Inter-agent communication
 	commService CommService
@@ -118,19 +119,19 @@ type AgentDomainInput struct {
 
 // AgentDomainConfig configures the agent domain tool
 type AgentDomainConfig struct {
-	Sessions   *session.Manager  // Session manager
-	ChannelMgr *channels.Manager // Channel manager (optional)
-	MemoryTool *MemoryTool       // Shared memory tool instance (created externally)
-	CronTool   *CronTool         // Shared cron tool instance (created externally, optional)
+	Sessions      *session.Manager // Session manager
+	ChannelSender ChannelSender    // Channel sender (optional, set later via SetChannelSender)
+	MemoryTool    *MemoryTool      // Shared memory tool instance (created externally)
+	Scheduler     Scheduler         // Scheduler implementation (SchedulerManager, CronScheduler, or nil)
 }
 
 // NewAgentDomainTool creates a new agent domain tool
 func NewAgentDomainTool(cfg AgentDomainConfig) (*AgentDomainTool, error) {
 	tool := &AgentDomainTool{
-		sessions:   cfg.Sessions,
-		channelMgr: cfg.ChannelMgr,
-		memory:     cfg.MemoryTool,
-		cron:       cfg.CronTool,
+		sessions:      cfg.Sessions,
+		channelSender: cfg.ChannelSender,
+		memory:        cfg.MemoryTool,
+		scheduler:     cfg.Scheduler,
 	}
 
 	return tool, nil
@@ -172,15 +173,24 @@ func (t *AgentDomainTool) SetCommService(svc CommService) {
 	t.commService = svc
 }
 
-// SetChannels sets the channel manager for messaging
-func (t *AgentDomainTool) SetChannels(mgr *channels.Manager) {
-	t.channelMgr = mgr
+// SetChannelSender sets the channel sender for messaging
+func (t *AgentDomainTool) SetChannelSender(sender ChannelSender) {
+	t.channelSender = sender
 }
 
-// SetAgentCallback sets the callback for agent task execution in cron
+// SetAgentCallback sets the callback for agent task execution in cron.
+// Only works when the underlying scheduler is the built-in CronTool (via CronScheduler or SchedulerManager).
 func (t *AgentDomainTool) SetAgentCallback(cb AgentTaskCallback) {
-	if t.cron != nil {
-		t.cron.SetAgentCallback(cb)
+	// Try CronScheduler directly
+	if cs, ok := t.scheduler.(*CronScheduler); ok {
+		cs.cron.SetAgentCallback(cb)
+		return
+	}
+	// Try SchedulerManager wrapping a CronScheduler
+	if sm, ok := t.scheduler.(*SchedulerManager); ok {
+		if cs, ok := sm.builtin.(*CronScheduler); ok {
+			cs.cron.SetAgentCallback(cb)
+		}
 	}
 }
 
@@ -199,8 +209,8 @@ func (t *AgentDomainTool) GetCurrentUser() string {
 
 // Close cleans up resources
 func (t *AgentDomainTool) Close() error {
-	if t.cron != nil {
-		t.cron.Close()
+	if t.scheduler != nil {
+		t.scheduler.Close()
 	}
 	if t.memory != nil {
 		t.memory.Close()
@@ -220,7 +230,7 @@ func (t *AgentDomainTool) Domain() string {
 
 // Resources returns available resources in this domain
 func (t *AgentDomainTool) Resources() []string {
-	return []string{"task", "cron", "memory", "message", "session", "comm"}
+	return []string{"task", "cron", "memory", "message", "session", "comm", "profile"}
 }
 
 // ActionsFor returns available actions for a given resource
@@ -238,6 +248,8 @@ func (t *AgentDomainTool) ActionsFor(resource string) []string {
 		return []string{"list", "history", "status", "clear"}
 	case "comm":
 		return []string{"send", "subscribe", "unsubscribe", "list_topics", "status"}
+	case "profile":
+		return []string{"update"}
 	default:
 		return nil
 	}
@@ -250,6 +262,7 @@ var agentResources = map[string]ResourceConfig{
 	"message": {Name: "message", Actions: []string{"send", "list"}, Description: "Channel messaging"},
 	"session": {Name: "session", Actions: []string{"list", "history", "status", "clear"}, Description: "Conversation sessions"},
 	"comm":    {Name: "comm", Actions: []string{"send", "subscribe", "unsubscribe", "list_topics", "status"}, Description: "Inter-agent communication"},
+	"profile": {Name: "profile", Actions: []string{"get", "update"}, Description: "Read and update agent identity (name, emoji, creature, vibe, personality)"},
 }
 
 // Description returns the tool description
@@ -264,7 +277,8 @@ Resources:
 - memory: Three-tier persistent storage (tacit/daily/entity layers)
 - message: Send messages to Telegram, Discord, Slack
 - session: Manage conversation sessions
-- comm: Inter-agent communication via comm lane (send, subscribe, unsubscribe, list_topics, status)`,
+- comm: Inter-agent communication via comm lane (send, subscribe, unsubscribe, list_topics, status)
+- profile: Read and update your own identity (name, emoji, creature, vibe, personality)`,
 		Resources: agentResources,
 		Examples: []string{
 			`agent(resource: task, action: spawn, prompt: "Find all Go files with errors", agent_type: "explore")`,
@@ -276,6 +290,11 @@ Resources:
 			`agent(resource: comm, action: send, to: "dev-bot", topic: "project-alpha", text: "Review this PR")`,
 			`agent(resource: comm, action: subscribe, topic: "announcements")`,
 			`agent(resource: comm, action: status)`,
+			`agent(resource: profile, action: get)`,
+			`agent(resource: profile, action: update, key: "name", value: "Jarvis")`,
+			`agent(resource: profile, action: update, key: "emoji", value: "🤖")`,
+			`agent(resource: profile, action: update, key: "creature", value: "Rogue Diplomat")`,
+			`agent(resource: profile, action: update, key: "vibe", value: "chill but opinionated")`,
 		},
 	})
 }
@@ -365,6 +384,8 @@ func (t *AgentDomainTool) Execute(ctx context.Context, input json.RawMessage) (*
 		return t.handleSession(ctx, in)
 	case "comm":
 		return t.handleComm(ctx, in)
+	case "profile":
+		return t.handleProfile(ctx, in)
 	default:
 		return &ToolResult{
 			Content: fmt.Sprintf("Unknown resource: %s", in.Resource),
@@ -556,36 +577,122 @@ func (t *AgentDomainTool) taskList() (*ToolResult, error) {
 // =============================================================================
 
 func (t *AgentDomainTool) handleCron(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
-	if t.cron == nil {
+	if t.scheduler == nil {
 		return &ToolResult{
-			Content: "Error: Cron scheduler not configured",
+			Content: "Error: Scheduler not configured",
 			IsError: true,
 		}, nil
 	}
 
-	// Convert domain input to cron input
-	cronIn := cronInput{
-		Action:   in.Action,
-		Name:     in.Name,
-		Schedule: in.Schedule,
-		Command:  in.Command,
-		TaskType: in.TaskType,
-		Message:  in.Message,
-	}
+	var result string
+	var err error
 
-	if in.Deliver != nil {
-		cronIn.Deliver = &struct {
-			Channel string `json:"channel"`
-			To      string `json:"to"`
-		}{
-			Channel: in.Deliver.Channel,
-			To:      in.Deliver.To,
+	switch in.Action {
+	case "create":
+		var deliver string
+		if in.Deliver != nil {
+			d, _ := json.Marshal(in.Deliver)
+			deliver = string(d)
 		}
+		item, createErr := t.scheduler.Create(ctx, ScheduleItem{
+			Name:       in.Name,
+			Expression: in.Schedule,
+			TaskType:   in.TaskType,
+			Command:    in.Command,
+			Message:    in.Message,
+			Deliver:    deliver,
+		})
+		if createErr != nil {
+			err = createErr
+		} else {
+			result = fmt.Sprintf("Created schedule %q (expression: %s, type: %s)", item.Name, item.Expression, item.TaskType)
+		}
+
+	case "list":
+		items, total, listErr := t.scheduler.List(ctx, 50, 0, false)
+		if listErr != nil {
+			err = listErr
+		} else if len(items) == 0 {
+			result = "No scheduled tasks found."
+		} else {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Scheduled tasks (%d total):\n\n", total))
+			for _, item := range items {
+				status := "disabled"
+				if item.Enabled {
+					status = "enabled"
+				}
+				sb.WriteString(fmt.Sprintf("- %s [%s] (%s) — %s\n", item.Name, item.Expression, item.TaskType, status))
+			}
+			result = sb.String()
+		}
+
+	case "delete":
+		if delErr := t.scheduler.Delete(ctx, in.Name); delErr != nil {
+			err = delErr
+		} else {
+			result = fmt.Sprintf("Deleted schedule %q", in.Name)
+		}
+
+	case "pause":
+		if _, disErr := t.scheduler.Disable(ctx, in.Name); disErr != nil {
+			err = disErr
+		} else {
+			result = fmt.Sprintf("Paused schedule %q", in.Name)
+		}
+
+	case "resume":
+		if _, enErr := t.scheduler.Enable(ctx, in.Name); enErr != nil {
+			err = enErr
+		} else {
+			result = fmt.Sprintf("Resumed schedule %q", in.Name)
+		}
+
+	case "run":
+		output, runErr := t.scheduler.Trigger(ctx, in.Name)
+		if runErr != nil {
+			err = runErr
+		} else {
+			result = fmt.Sprintf("Triggered schedule %q: %s", in.Name, output)
+		}
+
+	case "history":
+		entries, _, histErr := t.scheduler.History(ctx, in.Name, 10, 0)
+		if histErr != nil {
+			err = histErr
+		} else if len(entries) == 0 {
+			result = fmt.Sprintf("No history for schedule %q", in.Name)
+		} else {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("History for %q:\n\n", in.Name))
+			for _, e := range entries {
+				status := "success"
+				if !e.Success {
+					status = "failed"
+				}
+				sb.WriteString(fmt.Sprintf("- %s [%s] %s\n", e.StartedAt.Format(time.RFC3339), status, e.Output))
+			}
+			result = sb.String()
+		}
+
+	default:
+		return &ToolResult{
+			Content: fmt.Sprintf("Unknown cron action: %s", in.Action),
+			IsError: true,
+		}, nil
 	}
 
-	// Marshal and pass to cron tool
-	cronJSON, _ := json.Marshal(cronIn)
-	return t.cron.Execute(ctx, cronJSON)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Schedule action failed: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	return &ToolResult{
+		Content: result,
+		IsError: false,
+	}, nil
 }
 
 // =============================================================================
@@ -622,9 +729,9 @@ func (t *AgentDomainTool) handleMemory(ctx context.Context, in AgentDomainInput)
 // =============================================================================
 
 func (t *AgentDomainTool) handleMessage(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
-	if t.channelMgr == nil {
+	if t.channelSender == nil {
 		return &ToolResult{
-			Content: "Error: No channels configured. Connect channels in the UI first.",
+			Content: "Error: No channels configured. Install channel apps first.",
 			IsError: true,
 		}, nil
 	}
@@ -643,10 +750,10 @@ func (t *AgentDomainTool) handleMessage(ctx context.Context, in AgentDomainInput
 }
 
 func (t *AgentDomainTool) messageList() (*ToolResult, error) {
-	ids := t.channelMgr.List()
+	ids := t.channelSender.ListChannels()
 	if len(ids) == 0 {
 		return &ToolResult{
-			Content: "No channels connected. Connect channels (Telegram, Discord, Slack) in the UI.",
+			Content: "No channels connected. Install channel apps from the app store.",
 		}, nil
 	}
 
@@ -660,7 +767,7 @@ func (t *AgentDomainTool) messageList() (*ToolResult, error) {
 func (t *AgentDomainTool) messageSend(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
 	if in.Channel == "" {
 		return &ToolResult{
-			Content: "Error: 'channel' is required (telegram, discord, slack)",
+			Content: "Error: 'channel' is required (e.g., telegram, discord, slack)",
 			IsError: true,
 		}, nil
 	}
@@ -677,24 +784,7 @@ func (t *AgentDomainTool) messageSend(ctx context.Context, in AgentDomainInput) 
 		}, nil
 	}
 
-	ch, ok := t.channelMgr.Get(in.Channel)
-	if !ok {
-		ids := t.channelMgr.List()
-		return &ToolResult{
-			Content: fmt.Sprintf("Error: Channel '%s' not found. Available: %v", in.Channel, ids),
-			IsError: true,
-		}, nil
-	}
-
-	msg := channels.OutboundMessage{
-		ChannelID: in.To,
-		Text:      in.Text,
-		ReplyToID: in.ReplyTo,
-		ThreadID:  in.ThreadID,
-		ParseMode: "markdown",
-	}
-
-	if err := ch.Send(ctx, msg); err != nil {
+	if err := t.channelSender.SendToChannel(ctx, in.Channel, in.To, in.Text); err != nil {
 		return &ToolResult{
 			Content: fmt.Sprintf("Error sending message: %v", err),
 			IsError: true,
@@ -1091,6 +1181,105 @@ func (t *AgentDomainTool) commStatus() (*ToolResult, error) {
 }
 
 // =============================================================================
+// Profile management
+// =============================================================================
+
+// handleProfile handles agent profile reads and updates.
+func (t *AgentDomainTool) handleProfile(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	switch in.Action {
+	case "get":
+		return t.handleProfileGet(ctx)
+	case "update":
+		return t.handleProfileUpdate(ctx, in)
+	default:
+		return &ToolResult{Content: fmt.Sprintf("Unknown profile action: %s. Available: get, update", in.Action)}, nil
+	}
+}
+
+func (t *AgentDomainTool) handleProfileGet(ctx context.Context) (*ToolResult, error) {
+	if t.sessions == nil {
+		return &ToolResult{Content: "Profile unavailable: no database connection"}, nil
+	}
+	rawDB := t.sessions.GetDB()
+	if rawDB == nil {
+		return &ToolResult{Content: "Profile unavailable: no database connection"}, nil
+	}
+	queries := db.New(rawDB)
+	profile, err := queries.GetAgentProfile(ctx)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to read profile: %v", err)}, nil
+	}
+	var sb strings.Builder
+	sb.WriteString("Agent Profile:\n")
+	sb.WriteString(fmt.Sprintf("  Name: %s\n", profile.Name))
+	if profile.Emoji.Valid && profile.Emoji.String != "" {
+		sb.WriteString(fmt.Sprintf("  Emoji: %s\n", profile.Emoji.String))
+	}
+	if profile.Creature.Valid && profile.Creature.String != "" {
+		sb.WriteString(fmt.Sprintf("  Creature: %s\n", profile.Creature.String))
+	}
+	if profile.Vibe.Valid && profile.Vibe.String != "" {
+		sb.WriteString(fmt.Sprintf("  Vibe: %s\n", profile.Vibe.String))
+	}
+	if profile.PersonalityPreset.Valid {
+		sb.WriteString(fmt.Sprintf("  Personality Preset: %s\n", profile.PersonalityPreset.String))
+	}
+	return &ToolResult{Content: sb.String()}, nil
+}
+
+func (t *AgentDomainTool) handleProfileUpdate(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	if in.Key == "" || in.Value == "" {
+		return &ToolResult{Content: "Profile update requires key and value. Supported keys: name, emoji, creature, vibe, custom_personality"}, nil
+	}
+
+	if t.sessions == nil {
+		return &ToolResult{Content: "Profile update unavailable: no database connection"}, nil
+	}
+
+	rawDB := t.sessions.GetDB()
+	if rawDB == nil {
+		return &ToolResult{Content: "Profile update unavailable: no database connection"}, nil
+	}
+
+	queries := db.New(rawDB)
+	params := db.UpdateAgentProfileParams{}
+
+	switch in.Key {
+	case "name":
+		if len(in.Value) > 50 {
+			return &ToolResult{Content: "Name too long (max 50 characters)"}, nil
+		}
+		params.Name = sql.NullString{String: in.Value, Valid: true}
+	case "emoji":
+		params.Emoji = sql.NullString{String: in.Value, Valid: true}
+	case "creature":
+		if len(in.Value) > 100 {
+			return &ToolResult{Content: "Creature too long (max 100 characters)"}, nil
+		}
+		params.Creature = sql.NullString{String: in.Value, Valid: true}
+	case "vibe":
+		if len(in.Value) > 200 {
+			return &ToolResult{Content: "Vibe too long (max 200 characters)"}, nil
+		}
+		params.Vibe = sql.NullString{String: in.Value, Valid: true}
+	case "custom_personality":
+		params.CustomPersonality = sql.NullString{String: in.Value, Valid: true}
+	default:
+		return &ToolResult{Content: fmt.Sprintf("Unknown profile key: %s. Supported keys: name, emoji, creature, vibe, custom_personality", in.Key)}, nil
+	}
+
+	err := queries.UpdateAgentProfile(ctx, params)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to update %s: %v", in.Key, err)}, nil
+	}
+
+	if in.Key == "name" {
+		return &ToolResult{Content: fmt.Sprintf("Updated agent name to %q. I will now refer to myself as %s.", in.Value, in.Value)}, nil
+	}
+	return &ToolResult{Content: fmt.Sprintf("Updated agent %s to %q", in.Key, in.Value)}, nil
+}
+
+// =============================================================================
 // Memory convenience methods for programmatic access
 // =============================================================================
 
@@ -1115,7 +1304,7 @@ func (t *AgentDomainTool) GetMemoryTool() *MemoryTool {
 	return t.memory
 }
 
-// GetCronTool returns the underlying cron tool for direct access
-func (t *AgentDomainTool) GetCronTool() *CronTool {
-	return t.cron
+// GetScheduler returns the underlying scheduler for direct access
+func (t *AgentDomainTool) GetScheduler() Scheduler {
+	return t.scheduler
 }

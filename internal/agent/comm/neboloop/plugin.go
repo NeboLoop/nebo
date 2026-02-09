@@ -24,7 +24,7 @@ import (
 	"github.com/eclipse/paho.golang/paho"
 
 	"github.com/nebolabs/nebo/internal/agent/comm"
-	"github.com/nebolabs/nebo/internal/plugin"
+	"github.com/nebolabs/nebo/internal/apps/settings"
 )
 
 // Plugin implements comm.CommPlugin for NeboLoop MQTT v5 transport.
@@ -61,7 +61,7 @@ type tokenExchangeResponse struct {
 	MQTTPassword string `json:"mqtt_password"`
 }
 
-// New creates a new NeboLoop MQTT plugin.
+// New creates a new NeboLoop MQTT settings.
 func New() *Plugin {
 	return &Plugin{
 		topics: make(map[string]bool),
@@ -853,22 +853,22 @@ func exchangeToken(ctx context.Context, apiServer, token string) (username, pass
 }
 
 // ---------------------------------------------------------------------------
-// Configurable interface (iPhone Settings.bundle model)
+// Configurable interface
 // ---------------------------------------------------------------------------
 
-// Manifest returns the settings schema for the NeboLoop plugin.
+// Manifest returns the settings schema for the NeboLoop settings.
 // The UI renders this dynamically — no hardcoded forms needed.
-func (p *Plugin) Manifest() plugin.SettingsManifest {
-	return plugin.SettingsManifest{
-		Groups: []plugin.SettingsGroup{
+func (p *Plugin) Manifest() settings.SettingsManifest {
+	return settings.SettingsManifest{
+		Groups: []settings.SettingsGroup{
 			{
 				Title:       "Connection",
 				Description: "MQTT broker connection settings",
-				Fields: []plugin.SettingsField{
+				Fields: []settings.SettingsField{
 					{
 						Key:         "broker",
 						Title:       "MQTT Broker",
-						Type:        plugin.FieldURL,
+						Type:        settings.FieldURL,
 						Required:    true,
 						Placeholder: "tcp://192.168.86.31:1883",
 						Description: "MQTT broker address (tcp:// or ssl://)",
@@ -876,7 +876,7 @@ func (p *Plugin) Manifest() plugin.SettingsManifest {
 					{
 						Key:         "api_server",
 						Title:       "API Server",
-						Type:        plugin.FieldURL,
+						Type:        settings.FieldURL,
 						Required:    true,
 						Placeholder: "http://192.168.86.31:8888",
 						Description: "NeboLoop REST API base URL",
@@ -886,30 +886,30 @@ func (p *Plugin) Manifest() plugin.SettingsManifest {
 			{
 				Title:       "Authentication",
 				Description: "Bot credentials for NeboLoop network",
-				Fields: []plugin.SettingsField{
+				Fields: []settings.SettingsField{
 					{
 						Key:         "connection_token",
 						Title:       "Connection Token",
-						Type:        plugin.FieldPassword,
+						Type:        settings.FieldPassword,
 						Secret:      true,
 						Description: "One-time token from NeboLoop (exchanged for MQTT credentials)",
 					},
 					{
 						Key:         "bot_id",
 						Title:       "Bot ID",
-						Type:        plugin.FieldText,
+						Type:        settings.FieldText,
 						Description: "Bot UUID assigned by NeboLoop",
 					},
 					{
 						Key:         "mqtt_username",
 						Title:       "MQTT Username",
-						Type:        plugin.FieldText,
+						Type:        settings.FieldText,
 						Description: "Direct MQTT username (alternative to token exchange)",
 					},
 					{
 						Key:         "mqtt_password",
 						Title:       "MQTT Password",
-						Type:        plugin.FieldPassword,
+						Type:        settings.FieldPassword,
 						Secret:      true,
 						Description: "Direct MQTT password",
 					},
@@ -940,4 +940,4 @@ func (p *Plugin) OnSettingsChanged(settings map[string]string) error {
 }
 
 // Compile-time interface check
-var _ plugin.Configurable = (*Plugin)(nil)
+var _ settings.Configurable = (*Plugin)(nil)

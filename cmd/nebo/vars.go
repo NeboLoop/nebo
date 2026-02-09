@@ -56,7 +56,7 @@ Use --headless to run without a native window (browser-only mode).`,
 	rootCmd.AddCommand(ConfigCmd())
 	rootCmd.AddCommand(SessionCmd())
 	rootCmd.AddCommand(SkillsCmd())
-	rootCmd.AddCommand(PluginsCmd())
+	rootCmd.AddCommand(AppsCmd())
 	rootCmd.AddCommand(CapabilitiesCmd())
 	rootCmd.AddCommand(MessageCmd())
 	rootCmd.AddCommand(DoctorCmd())

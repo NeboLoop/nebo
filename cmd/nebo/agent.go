@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,12 +20,10 @@ import (
 	"github.com/nebolabs/nebo/internal/agent/comm"
 	"github.com/nebolabs/nebo/internal/agent/comm/neboloop"
 	neboloopapi "github.com/nebolabs/nebo/internal/neboloop"
-	chandiscord "github.com/nebolabs/nebo/internal/channels/discord"
-	chanslack "github.com/nebolabs/nebo/internal/channels/slack"
-	chantelegram "github.com/nebolabs/nebo/internal/channels/telegram"
 	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
 	"github.com/nebolabs/nebo/internal/agent/embeddings"
 	agentmcp "github.com/nebolabs/nebo/internal/agent/mcp"
+	mcpbridge "github.com/nebolabs/nebo/internal/mcp/bridge"
 	"github.com/nebolabs/nebo/internal/agent/memory"
 	"github.com/nebolabs/nebo/internal/agent/recovery"
 	"github.com/nebolabs/nebo/internal/agent/runner"
@@ -36,10 +33,9 @@ import (
 	"github.com/nebolabs/nebo/internal/agenthub"
 	"github.com/nebolabs/nebo/internal/apps"
 	"github.com/nebolabs/nebo/internal/browser"
-	"github.com/nebolabs/nebo/internal/channels"
 	"github.com/nebolabs/nebo/internal/db"
 	"github.com/nebolabs/nebo/internal/local"
-	"github.com/nebolabs/nebo/internal/plugin"
+	"github.com/nebolabs/nebo/internal/apps/settings"
 	"github.com/nebolabs/nebo/internal/provider"
 	"github.com/nebolabs/nebo/internal/server"
 	"github.com/nebolabs/nebo/internal/svc"
@@ -78,10 +74,12 @@ type agentState struct {
 	commAgentID  string
 	registry     *tools.Registry
 	skillLoader  *skills.Loader
-	settingsPath string // Path to agent-settings.json for persisting settings changes
 
 	// App registry for install listener activation on NeboLoop connect
 	appRegistry *apps.AppRegistry
+
+	// MCP bridge for external tool integrations
+	mcpBridge *mcpbridge.Bridge
 }
 
 // sendFrame sends a JSON frame to the server
@@ -232,13 +230,11 @@ Examples:
 
 // AgentOptions holds optional dependencies for the agent loop
 type AgentOptions struct {
-	ChannelManager   *channels.Manager
 	Database         *sql.DB
-	PluginStore      *plugin.Store
+	PluginStore      *settings.Store
 	SvcCtx           *svc.ServiceContext   // For registering app capabilities with the HTTP layer
 	Quiet            bool                // Suppress console output for clean CLI
 	Dangerously      bool                // Bypass all tool approval prompts (CLI flag)
-	SettingsFilePath string              // Path to agent-settings.json for UI-based settings
 	AgentMCPProxy    *server.AgentMCPProxy // Lazy handler for CLI provider MCP loopback
 }
 
@@ -263,7 +259,7 @@ func isNeboLoopCode(prompt string) bool {
 // handleNeboLoopCode processes a connection code and emits tool-use-style events.
 // Returns true if the prompt was a connection code (handled), false otherwise.
 // When state is provided, a successful connection also activates the neboloop comm plugin.
-func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginStore *plugin.Store, state *agentState, settingsPath string, send func(map[string]any)) bool {
+func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginStore *settings.Store, state *agentState, send func(map[string]any)) bool {
 	if !isNeboLoopCode(prompt) {
 		return false
 	}
@@ -424,13 +420,11 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 		}
 
 		// Persist to settings so it survives restart
-		if settingsPath != "" {
-			dataDir := filepath.Dir(settingsPath)
-			settingsStore := local.NewAgentSettingsStore(dataDir)
-			settings := settingsStore.Get()
-			settings.CommEnabled = true
-			settings.CommPlugin = "neboloop"
-			if err := settingsStore.Update(settings); err != nil {
+		if store := local.GetAgentSettings(); store != nil {
+			s := store.Get()
+			s.CommEnabled = true
+			s.CommPlugin = "neboloop"
+			if err := store.Update(s); err != nil {
 				fmt.Printf("[NeboLoop] Warning: failed to persist comm settings: %v\n", err)
 			} else {
 				fmt.Println("[NeboLoop] Comm settings persisted (commEnabled=true, commPlugin=neboloop)")
@@ -484,6 +478,19 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		lanes:           agenthub.NewLaneManager(),
 	}
 
+	// Forward lane events to the server for UI clients
+	state.lanes.OnEvent(func(event agenthub.LaneEvent) {
+		state.sendFrame(map[string]any{
+			"type":   "event",
+			"method": "lane_update",
+			"payload": map[string]any{
+				"event_type": event.Type,
+				"lane":       event.Lane,
+				"task":       event.Task,
+			},
+		})
+	})
+
 	// Use shared database if provided, otherwise open our own
 	var sessions *session.Manager
 	var sqlDB *sql.DB
@@ -514,46 +521,37 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		fmt.Fprintln(os.Stderr, "Warning: No AI providers configured. Tasks requiring AI will fail.")
 	}
 
-	// Load initial settings from UI settings file
-	// This allows the Autonomous Mode toggle in settings to take effect
-	var initialAutonomous bool
-	if opts.SettingsFilePath != "" {
-		dataDir := filepath.Dir(opts.SettingsFilePath)
-		settingsStore := local.NewAgentSettingsStore(dataDir)
-		settings := settingsStore.Get()
-		initialAutonomous = settings.AutonomousMode
-		if initialAutonomous && !opts.Quiet {
-			fmt.Println("[Agent] Autonomous mode enabled from settings")
-		}
-	}
-
-	// In dangerously mode (CLI flag or UI setting), use "full" policy level to bypass all approvals
-	policyLevel := cfg.Policy.Level
-	if opts.Dangerously || initialAutonomous {
-		policyLevel = "full"
+	// Initialize settings singleton if DB is available
+	if sqlDB != nil {
+		local.InitSettings(sqlDB)
 	}
 
 	policy := tools.NewPolicyFromConfig(
-		policyLevel,
+		cfg.Policy.Level,
 		cfg.Policy.AskMode,
 		cfg.Policy.Allowlist,
 	)
+
+	// Wire live autonomous check — reads from the singleton on every approval call
+	if opts.Dangerously {
+		policy.IsAutonomous = func() bool { return true }
+	} else {
+		policy.IsAutonomous = func() bool {
+			if store := local.GetAgentSettings(); store != nil {
+				return store.Get().AutonomousMode
+			}
+			return false
+		}
+	}
 
 	// Store policy reference in state for "always" approval handling
 	state.policy = policy
 
 	var approvalCounter int64
-	if opts.Dangerously || initialAutonomous {
-		// Auto-approve everything in dangerous/autonomous mode
-		policy.ApprovalCallback = func(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
-			return true, nil
-		}
-	} else {
-		policy.ApprovalCallback = func(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
-			approvalCounter++
-			requestID := fmt.Sprintf("approval-%d-%d", time.Now().UnixNano(), approvalCounter)
-			return state.requestApproval(ctx, requestID, toolName, input)
-		}
+	policy.ApprovalCallback = func(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
+		approvalCounter++
+		requestID := fmt.Sprintf("approval-%d-%d", time.Now().UnixNano(), approvalCounter)
+		return state.requestApproval(ctx, requestID, toolName, input)
 	}
 
 	registry := tools.NewRegistry(policy)
@@ -637,19 +635,18 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	}
 	registry.RegisterAdvisorsTool(advisorsTool)
 
-	// Register message tool with shared channel manager
+	// Register message tool (channel sender wired after app registry is created)
 	messageTool := tools.NewMessageTool()
-	if opts.ChannelManager != nil {
-		messageTool.SetChannels(opts.ChannelManager)
-	}
 	registry.Register(messageTool)
 
 	// Register cron tool for scheduled tasks (requires shared database)
 	var cronTool *tools.CronTool
+	var schedulerMgr *tools.SchedulerManager
 	if opts.Database != nil {
 		cronTool, err = tools.NewCronTool(tools.CronConfig{DB: opts.Database})
 		if err == nil {
 			registry.Register(cronTool)
+			schedulerMgr = tools.NewSchedulerManager(tools.NewCronScheduler(cronTool))
 		}
 	}
 
@@ -732,6 +729,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
+	// Forward-declare appRegistry so closures below can capture it
+	var appRegistry *apps.AppRegistry
+
 	// Wire up cron agent task callback now that runner exists
 	if cronTool != nil {
 		cronTool.SetAgentCallback(func(ctx context.Context, name, message string, deliver *tools.DeliverConfig) error {
@@ -754,15 +754,10 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				}
 			}
 
-			// Optionally deliver result to channel
-			if deliver != nil && opts.ChannelManager != nil {
-				ch, ok := opts.ChannelManager.Get(deliver.Channel)
-				if ok {
-					ch.Send(ctx, channels.OutboundMessage{
-						ChannelID: deliver.To,
-						Text:      result.String(),
-						ParseMode: "markdown",
-					})
+			// Optionally deliver result to channel via app registry
+			if deliver != nil && appRegistry != nil {
+				if err := appRegistry.SendToChannel(ctx, deliver.Channel, deliver.To, result.String()); err != nil {
+					fmt.Printf("[agent] Channel delivery failed: %v\n", err)
 				}
 			}
 
@@ -784,11 +779,8 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	// Register Configurable plugins so their manifests are persisted
 	// and settings changes trigger hot-reload via OnSettingsChanged
 	if opts.PluginStore != nil {
-		configurables := map[string]plugin.Configurable{
+		configurables := map[string]settings.Configurable{
 			"neboloop": neboloopPlugin,
-			"discord":  chandiscord.New(),
-			"telegram": chantelegram.New(),
-			"slack":    chanslack.New(),
 		}
 		for name, c := range configurables {
 			if err := opts.PluginStore.RegisterConfigurable(ctx, name, c); err != nil {
@@ -797,31 +789,16 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
-	// Load external comm plugins
-	pluginLoader := createPluginLoader(cfg)
-	pluginLoader.SetCommCallbacks(
-		func(cp comm.CommPlugin) {
-			commManager.Register(cp)
-			fmt.Printf("[agent] Registered external comm plugin: %s\n", cp.Name())
-		},
-		func(name string) {
-			commManager.Unregister(name)
-			fmt.Printf("[agent] Unregistered external comm plugin: %s\n", name)
-		},
-	)
-	if err := pluginLoader.LoadAll(); err != nil {
-		fmt.Printf("[agent] Warning: failed to load plugins: %v\n", err)
+	// Resolve NeboLoop API URL from server config for signature verification
+	var neboLoopURL string
+	if opts.SvcCtx != nil {
+		neboLoopURL = opts.SvcCtx.Config.NeboLoop.ApiURL
 	}
-	go func() {
-		if err := pluginLoader.Watch(ctx); err != nil {
-			fmt.Printf("[agent] Warning: plugin watcher failed: %v\n", err)
-		}
-	}()
-	defer pluginLoader.Stop()
 
-	// Discover and launch marketplace apps (NeboLoop app store)
-	appRegistry := apps.NewAppRegistry(apps.AppRegistryConfig{
+	// Discover and launch apps (NeboLoop app store + local dev)
+	appRegistry = apps.NewAppRegistry(apps.AppRegistryConfig{
 		DataDir:     cfg.DataDir,
+		NeboLoopURL: neboLoopURL,
 		Queries:     db.New(sqlDB),
 		PluginStore: opts.PluginStore,
 		ToolReg:     registry,
@@ -831,11 +808,31 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		fmt.Printf("[agent] Warning: failed to discover apps: %v\n", err)
 	}
 	defer appRegistry.Stop()
+	appRegistry.OnQuarantine(func(event apps.QuarantineEvent) {
+		state.sendFrame(map[string]any{
+			"type":   "event",
+			"method": "app_quarantined",
+			"payload": map[string]any{
+				"app_id":   event.AppID,
+				"app_name": event.AppName,
+				"reason":   event.Reason,
+			},
+		})
+	})
+	appRegistry.StartRevocationSweep(ctx)
 	go func() {
 		if err := appRegistry.Watch(ctx); err != nil {
 			fmt.Printf("[agent] Warning: app watcher failed: %v\n", err)
 		}
 	}()
+
+	// Wire schedule app adapter into the SchedulerManager if a schedule app was discovered
+	if schedulerMgr != nil {
+		if sa := appRegistry.ScheduleAdapter(); sa != nil {
+			schedulerMgr.SetAppScheduler(sa)
+			fmt.Println("[agent] Schedule app adapter connected to SchedulerManager")
+		}
+	}
 
 	// Append gateway providers from marketplace apps
 	for _, gp := range appRegistry.GatewayProviders() {
@@ -852,14 +849,13 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	state.commAgentID = agentID
 	state.registry = registry
 	state.skillLoader = r.SkillLoader()
-	state.settingsPath = opts.SettingsFilePath
 	state.appRegistry = appRegistry
 
 	// Wire the channel bridge message handler so inbound messages from NeboLoop
 	// (Telegram, Discord, etc.) are processed through the agentic loop and
 	// responses are published back to the outbound topic.
 	bridge := appRegistry.ChannelBridge()
-	bridge.SetMessageHandler(func(msg channels.InboundMessage) {
+	bridge.SetMessageHandler(func(msg apps.InboundMessage) {
 		sessionKey := fmt.Sprintf("channel-%s-%s", msg.ChannelType, msg.ChannelID)
 
 		fmt.Printf("[apps:channels] Processing %s message from %s in session %s\n",
@@ -888,7 +884,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			}
 
 			if result.Len() > 0 {
-				outbound := channels.OutboundMessage{
+				outbound := apps.OutboundMessage{
 					ChannelID: msg.ChannelID,
 					Text:      result.String(),
 					ReplyToID: msg.MessageID,
@@ -900,25 +896,45 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			}
 
 			return nil
-		})
+		}, agenthub.WithDescription(fmt.Sprintf("Channel: %s from %s", msg.ChannelType, msg.SenderName)))
 	})
 
-	// Register app UI provider with the HTTP layer so /apps/ui endpoints work
+	// Register app UI provider, app registry, tool registry, and scheduler with the HTTP layer
 	if opts.SvcCtx != nil {
 		opts.SvcCtx.SetAppUIProvider(appRegistry)
+		opts.SvcCtx.SetAppRegistry(appRegistry)
+		opts.SvcCtx.SetToolRegistry(registry)
+		if schedulerMgr != nil {
+			opts.SvcCtx.SetScheduler(schedulerMgr)
+		}
 	}
 
 	// Create agent domain tool with comm support
 	// Reuses the existing memoryTool and cronTool instances (single DB connection)
 	agentTool, agentToolErr := tools.NewAgentDomainTool(tools.AgentDomainConfig{
-		Sessions:   sessions,
-		ChannelMgr: opts.ChannelManager,
-		MemoryTool: memoryTool,
-		CronTool:   cronTool,
+		Sessions:      sessions,
+		ChannelSender: appRegistry,
+		MemoryTool:    memoryTool,
+		Scheduler:     schedulerMgr,
 	})
 	if agentToolErr == nil {
 		agentTool.SetCommService(commHandler)
 		registry.RegisterAgentDomainTool(agentTool)
+	}
+
+	// Wire channel sender to message tool (now that appRegistry is available)
+	messageTool.SetChannelSender(appRegistry)
+
+	// Wire MCP bridge for external tool integrations
+	if opts.SvcCtx != nil && opts.SvcCtx.MCPClient != nil {
+		mcpBridge := mcpbridge.New(registry, db.New(sqlDB), opts.SvcCtx.MCPClient)
+		state.mcpBridge = mcpBridge
+		go func() {
+			if err := mcpBridge.SyncAll(ctx); err != nil {
+				fmt.Printf("[agent] MCP bridge sync: %v\n", err)
+			}
+		}()
+		defer mcpBridge.Close()
 	}
 
 	// Connect comm plugin: settings take priority, then config.yaml
@@ -927,9 +943,8 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	commPlugin := cfg.Comm.Plugin
 
 	// Check agent settings for comm overrides
-	if opts.SettingsFilePath != "" {
-		dataDir := filepath.Dir(opts.SettingsFilePath)
-		commSettings := local.NewAgentSettingsStore(dataDir).Get()
+	if store := local.GetAgentSettings(); store != nil {
+		commSettings := store.Get()
 		if commSettings.CommEnabled {
 			commEnabled = true
 			if commSettings.CommPlugin != "" {
@@ -1051,7 +1066,7 @@ func maybeIntroduceSelf(ctx context.Context, state *agentState, r *runner.Runner
 	events, err := r.Run(ctx, &runner.RunRequest{
 		SessionKey: "companion",
 		Prompt:     "", // Empty prompt = agent speaks first
-		System:     "You are starting a conversation with a new user. Introduce yourself warmly and ask what they would like to be called. Keep it brief and friendly.",
+		System:     "You are starting a conversation with a new user. Follow the onboarding instructions in your system prompt to introduce yourself and get to know them.",
 		Origin:     tools.OriginSystem,
 	})
 	if err != nil {
@@ -1264,7 +1279,7 @@ func maybeIntroduceToUser(ctx context.Context, state *agentState, r *runner.Runn
 		SessionKey: "companion",
 		UserID:     userID, // User-scoped session
 		Prompt:     "",     // Empty prompt = agent speaks first
-		System:     "You are starting a conversation with a new user. Introduce yourself warmly and ask what they would like to be called. Keep it brief and friendly.",
+		System:     "You are starting a conversation with a new user. Follow the onboarding instructions in your system prompt to introduce yourself and get to know them.",
 		Origin:     tools.OriginSystem,
 	})
 	if err != nil {
@@ -1319,7 +1334,7 @@ func maybeIntroduceToUser(ctx context.Context, state *agentState, r *runner.Runn
 }
 
 // handleAgentMessageWithState processes a message from the server (with approval support)
-func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runner.Runner, sessions *session.Manager, pluginStore *plugin.Store, message []byte) {
+func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runner.Runner, sessions *session.Manager, pluginStore *settings.Store, message []byte) {
 	fmt.Printf("[Agent-WS] Received message: %s\n", string(message))
 
 	var frame struct {
@@ -1334,6 +1349,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			Prompt     string `json:"prompt"`
 			SessionKey string `json:"session_key"`
 			UserID     string `json:"user_id"`
+			System     string `json:"system"`
 		} `json:"params"`
 	}
 
@@ -1373,6 +1389,34 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			state.lanes.EnqueueAsync(ctx, agenthub.LaneMain, func(taskCtx context.Context) error {
 				handleIntroduction(taskCtx, state, r, sessions, requestID, sessionKey, userID)
 				return nil
+			}, agenthub.WithDescription("Introduction"))
+
+		case "get_lanes":
+			stats := state.lanes.GetLaneStats()
+			state.sendFrame(map[string]any{
+				"type":    "res",
+				"id":      frame.ID,
+				"ok":      true,
+				"payload": stats,
+			})
+
+		case "cancel":
+			// Cancel active task in the main lane.
+			// NOTE: We intentionally do NOT clear the lane queue here.
+			// The frontend manages its own message queue and sends one at a time.
+			// Clearing the lane queue races with new "run" frames arriving from
+			// processQueue() — since each incoming frame is dispatched to a goroutine
+			// (line ~1043), a new run frame can be enqueued before ClearLane runs,
+			// causing the next queued message to be silently dropped.
+			cancelled := state.lanes.CancelActive(agenthub.LaneMain)
+			fmt.Printf("[Agent-WS] Cancel: cancelled %d active\n", cancelled)
+			state.sendFrame(map[string]any{
+				"type": "res",
+				"id":   frame.ID,
+				"ok":   true,
+				"payload": map[string]any{
+					"cancelled": cancelled,
+				},
 			})
 
 		case "run", "generate_title":
@@ -1386,7 +1430,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			prompt := frame.Params.Prompt
 
 			// Intercept NeboLoop connection codes before enqueueing to LLM
-			if handleNeboLoopCode(ctx, prompt, requestID, pluginStore, state, state.settingsPath, func(f map[string]any) {
+			if handleNeboLoopCode(ctx, prompt, requestID, pluginStore, state, func(f map[string]any) {
 				state.sendFrame(f)
 			}) {
 				break
@@ -1403,6 +1447,18 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				lane = agenthub.LaneEvents // Scheduled/triggered tasks
 			} else if isCommMsg {
 				lane = agenthub.LaneComm // Inter-agent communication
+			}
+
+			// Build a description for lane monitoring
+			taskDesc := "User chat"
+			if method == "generate_title" {
+				taskDesc = "Generate title"
+			} else if isHeartbeat {
+				taskDesc = "Heartbeat tick"
+			} else if isCronJob {
+				taskDesc = fmt.Sprintf("Scheduled: %s", sessionKey)
+			} else if isCommMsg {
+				taskDesc = fmt.Sprintf("Comm: %s", sessionKey)
 			}
 
 			fmt.Printf("[Agent-WS] Enqueueing %s request: session=%s user=%s lane=%s prompt=%q\n",
@@ -1422,6 +1478,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				events, err := r.Run(taskCtx, &runner.RunRequest{
 					SessionKey:        sessionKey,
 					Prompt:            prompt,
+					System:            frame.Params.System,
 					UserID:            userID,
 					SkipMemoryExtract: isHeartbeat,
 					Origin:            origin,
@@ -1522,7 +1579,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				})
 				fmt.Printf("[Agent-WS] Completed request %s\n", requestID)
 				return nil
-			})
+			}, agenthub.WithDescription(taskDesc))
 
 		default:
 			state.sendFrame(map[string]any{
@@ -1556,20 +1613,21 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				go recoverPendingTasks(ctx, state, r, sessions)
 
 			case "settings_updated":
+				// Policy reads from the singleton live — no need to replace it.
+				// Handle comm plugin activation/deactivation.
 				p := eventFrame.Payload
-				if p.AutonomousMode {
-					r.SetPolicy(tools.NewPolicyFromConfig("full", "off", nil))
-				} else {
-					askMode := "on-miss"
-					if p.AutoApproveRead && p.AutoApproveWrite && p.AutoApproveBash {
-						askMode = "off"
-					}
-					r.SetPolicy(tools.NewPolicyFromConfig("allowlist", askMode, nil))
-				}
-
-				// Handle comm plugin activation/deactivation
 				if state.commManager != nil {
 					handleCommSettingsUpdate(ctx, state, p.CommEnabled, p.CommPlugin, pluginStore)
+				}
+
+			case "integrations_changed":
+				// Re-sync MCP bridge when integrations are modified via API
+				if state.mcpBridge != nil {
+					go func() {
+						if err := state.mcpBridge.SyncAll(ctx); err != nil {
+							fmt.Printf("[agent] MCP bridge re-sync: %v\n", err)
+						}
+					}()
 				}
 			}
 		}
@@ -1656,7 +1714,7 @@ func recoverPendingTasks(ctx context.Context, state *agentState, r *runner.Runne
 			}
 
 			return nil
-		})
+		}, agenthub.WithDescription(fmt.Sprintf("Recovery: %s", t.Description)))
 	}
 
 	// Schedule periodic cleanup of old tasks
@@ -1807,7 +1865,7 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 
 // handleCommSettingsUpdate activates or deactivates the comm plugin based on
 // a settings_updated event from the server.
-func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bool, pluginName string, pluginStore *plugin.Store) {
+func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bool, pluginName string, pluginStore *settings.Store) {
 	if !enabled {
 		// Deactivate: disconnect the current plugin
 		if active := state.commManager.GetActive(); active != nil {

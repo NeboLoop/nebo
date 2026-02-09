@@ -28,7 +28,6 @@ func UpdateAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			interval = 1440
 		}
 
-		// Update local settings store
 		settings := local.AgentSettings{
 			AutonomousMode:           req.AutonomousMode,
 			AutoApproveRead:          req.AutoApproveRead,
@@ -37,9 +36,10 @@ func UpdateAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			HeartbeatIntervalMinutes: interval,
 			CommEnabled:              req.CommEnabled,
 			CommPlugin:               req.CommPlugin,
+			DeveloperMode:            req.DeveloperMode,
 		}
 
-		if err := svcCtx.AgentSettings.Update(settings); err != nil {
+		if err := local.GetAgentSettings().Update(settings); err != nil {
 			httputil.Error(w, err)
 			return
 		}
@@ -56,13 +56,14 @@ func UpdateAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				"heartbeatIntervalMinutes": settings.HeartbeatIntervalMinutes,
 				"commEnabled":              settings.CommEnabled,
 				"commPlugin":               settings.CommPlugin,
+				"developerMode":            settings.DeveloperMode,
 			},
 		}
 
 		// Broadcast to all connected agents
 		svcCtx.AgentHub.Broadcast(frame)
 
-		logging.Infof("Agent settings updated and broadcast: autonomous=%v", settings.AutonomousMode)
+		logging.Infof("Agent settings updated: autonomous=%v", settings.AutonomousMode)
 
 		httputil.OkJSON(w, &types.GetAgentSettingsResponse{
 			Settings: types.AgentSettings{
@@ -73,6 +74,7 @@ func UpdateAgentSettingsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				HeartbeatIntervalMinutes: settings.HeartbeatIntervalMinutes,
 				CommEnabled:              settings.CommEnabled,
 				CommPlugin:               settings.CommPlugin,
+				DeveloperMode:            settings.DeveloperMode,
 			},
 		})
 	}

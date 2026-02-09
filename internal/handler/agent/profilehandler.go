@@ -84,6 +84,12 @@ func UpdateAgentProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			EmojiUsage:        toNullString(req.EmojiUsage),
 			Formality:         toNullString(req.Formality),
 			Proactivity:       toNullString(req.Proactivity),
+			Emoji:             toNullString(req.Emoji),
+			Creature:          toNullString(req.Creature),
+			Vibe:              toNullString(req.Vibe),
+			Avatar:            toNullString(req.Avatar),
+			AgentRules:        toNullString(req.AgentRules),
+			ToolNotes:         toNullString(req.ToolNotes),
 		})
 		if err != nil {
 			logging.Errorf("Failed to update agent profile: %v", err)
@@ -155,7 +161,7 @@ func fromNullString(ns sql.NullString) string {
 	return ""
 }
 
-func dbAgentProfileToType(profile db.AgentProfile) *types.AgentProfileResponse {
+func dbAgentProfileToType(profile db.GetAgentProfileRow) *types.AgentProfileResponse {
 	return &types.AgentProfileResponse{
 		Name:              profile.Name,
 		PersonalityPreset: fromNullString(profile.PersonalityPreset),
@@ -165,6 +171,12 @@ func dbAgentProfileToType(profile db.AgentProfile) *types.AgentProfileResponse {
 		EmojiUsage:        fromNullString(profile.EmojiUsage),
 		Formality:         fromNullString(profile.Formality),
 		Proactivity:       fromNullString(profile.Proactivity),
+		Emoji:             fromNullString(profile.Emoji),
+		Creature:          fromNullString(profile.Creature),
+		Vibe:              fromNullString(profile.Vibe),
+		Avatar:            fromNullString(profile.Avatar),
+		AgentRules:        fromNullString(profile.AgentRules),
+		ToolNotes:         fromNullString(profile.ToolNotes),
 		CreatedAt:         time.Unix(profile.CreatedAt, 0).Format(time.RFC3339),
 		UpdatedAt:         time.Unix(profile.UpdatedAt, 0).Format(time.RFC3339),
 	}

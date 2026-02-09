@@ -2,6 +2,7 @@ package apps
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -10,9 +11,27 @@ import (
 
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
-
-	"github.com/nebolabs/nebo/internal/channels"
 )
+
+// InboundMessage represents a message received from a channel.
+type InboundMessage struct {
+	ChannelType string `json:"channel_type"`
+	ChannelID   string `json:"channel_id"`
+	MessageID   string `json:"message_id"`
+	Text        string `json:"text"`
+	SenderID    string `json:"sender_id"`
+	SenderName  string `json:"sender_name"`
+	ReplyToID   string `json:"reply_to_id,omitempty"`
+	ThreadID    string `json:"thread_id,omitempty"`
+}
+
+// OutboundMessage represents a message to send to a channel.
+type OutboundMessage struct {
+	ChannelID string `json:"channel_id"`
+	Text      string `json:"text"`
+	ReplyToID string `json:"reply_to_id,omitempty"`
+	ThreadID  string `json:"thread_id,omitempty"`
+}
 
 // ChannelBridgeConfig holds MQTT connection settings for the channel bridge.
 // These are the same credentials used by the NeboLoop comm plugin and install listener.
@@ -23,39 +42,34 @@ type ChannelBridgeConfig struct {
 	MQTTPassword string // MQTT password
 }
 
-// ChannelBridge subscribes to NeboLoop MQTT channel inbound messages and
+// ChannelBridge subscribes to NeboLoop MQTT web chat messages and
 // publishes agent responses back to the outbound topic.
 //
-// Inbound topic:  neboloop/bot/{botID}/channels/inbound
-// Outbound topic: neboloop/bot/{botID}/channels/outbound
+// Inbound topic:  neboloop/bot/{botID}/chat/in   (user → bot)
+// Outbound topic: neboloop/bot/{botID}/chat/out  (bot → user)
 type ChannelBridge struct {
 	config    ChannelBridgeConfig
 	cm        *autopaho.ConnectionManager
-	handler   func(channels.InboundMessage)
+	handler   func(InboundMessage)
 	connected bool
 	cancel    context.CancelFunc
 	mu        sync.RWMutex
 }
 
-// channelInboundMessage is the JSON format published by NeboLoop channel bridges.
-type channelInboundMessage struct {
-	ChannelType string `json:"channel_type"`
-	ChannelID   string `json:"channel_id"`
-	MessageID   string `json:"message_id"`
-	SenderID    string `json:"sender_id"`
-	SenderName  string `json:"sender_name"`
-	Text        string `json:"text"`
-	ReplyToID   string `json:"reply_to_id,omitempty"`
-	ThreadID    string `json:"thread_id,omitempty"`
+// chatInboundMessage is the JSON payload published by NeboLoop web chat (user → bot).
+type chatInboundMessage struct {
+	Text      string `json:"text"`
+	Sender    string `json:"sender"`     // "owner" or "bot"
+	Timestamp string `json:"timestamp"`  // ISO8601
+	MessageID string `json:"message_id"` // UUID
 }
 
-// channelOutboundMessage is the JSON format Nebo publishes for NeboLoop to deliver.
-type channelOutboundMessage struct {
-	ChannelType string `json:"channel_type"`
-	ChannelID   string `json:"channel_id"`
-	Text        string `json:"text"`
-	ReplyToID   string `json:"reply_to_id,omitempty"`
-	ThreadID    string `json:"thread_id,omitempty"`
+// chatOutboundMessage is the JSON payload Nebo publishes to NeboLoop web chat (bot → user).
+type chatOutboundMessage struct {
+	Text      string `json:"text"`
+	Sender    string `json:"sender"`    // always "bot"
+	Timestamp string `json:"timestamp"` // ISO8601
+	MessageID string `json:"message_id,omitempty"`
 }
 
 // NewChannelBridge creates a new channel bridge instance.
@@ -152,7 +166,7 @@ func (cb *ChannelBridge) Start(ctx context.Context, config ChannelBridgeConfig) 
 	return nil
 }
 
-// onConnect subscribes to the channels inbound topic after each (re)connection.
+// onConnect subscribes to the chat inbound topic after each (re)connection.
 func (cb *ChannelBridge) onConnect(cm *autopaho.ConnectionManager) {
 	cb.mu.RLock()
 	botID := cb.config.BotID
@@ -161,7 +175,7 @@ func (cb *ChannelBridge) onConnect(cm *autopaho.ConnectionManager) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	topic := fmt.Sprintf("neboloop/bot/%s/channels/inbound", botID)
+	topic := fmt.Sprintf("neboloop/bot/%s/chat/in", botID)
 	_, err := cm.Subscribe(ctx, &paho.Subscribe{
 		Subscriptions: []paho.SubscribeOptions{
 			{Topic: topic, QoS: 1},
@@ -185,43 +199,46 @@ func (cb *ChannelBridge) onMessage(pub *paho.Publish) {
 		return
 	}
 
-	var raw channelInboundMessage
+	var raw chatInboundMessage
 	if err := json.Unmarshal(pub.Payload, &raw); err != nil {
 		fmt.Printf("[apps:channels] Invalid message on %s: %v\n", pub.Topic, err)
 		return
 	}
 
 	if raw.Text == "" {
-		fmt.Printf("[apps:channels] Empty text in message from %s on %s, ignoring\n", raw.SenderName, raw.ChannelType)
+		fmt.Printf("[apps:channels] Empty text in chat message, ignoring\n")
 		return
 	}
 
-	fmt.Printf("[apps:channels] Inbound %s message from %s (channel=%s): %s\n",
-		raw.ChannelType, raw.SenderName, raw.ChannelID, truncateText(raw.Text, 80))
+	// Ignore messages from the bot itself (echo prevention)
+	if raw.Sender == "bot" {
+		return
+	}
 
-	msg := channels.InboundMessage{
-		ChannelType: raw.ChannelType,
-		ChannelID:   raw.ChannelID,
+	fmt.Printf("[apps:channels] Inbound chat message (sender=%s): %s\n",
+		raw.Sender, truncateText(raw.Text, 80))
+
+	msg := InboundMessage{
+		ChannelType: "neboloop",
+		ChannelID:   cb.config.BotID,
 		MessageID:   raw.MessageID,
-		SenderID:    raw.SenderID,
-		SenderName:  raw.SenderName,
+		SenderID:    raw.Sender,
+		SenderName:  raw.Sender,
 		Text:        raw.Text,
-		ReplyToID:   raw.ReplyToID,
-		ThreadID:    raw.ThreadID,
 	}
 
 	handler(msg)
 }
 
 // SetMessageHandler sets the callback for incoming channel messages.
-func (cb *ChannelBridge) SetMessageHandler(fn func(channels.InboundMessage)) {
+func (cb *ChannelBridge) SetMessageHandler(fn func(InboundMessage)) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	cb.handler = fn
 }
 
-// SendResponse publishes an outbound message to NeboLoop for delivery to the channel.
-func (cb *ChannelBridge) SendResponse(channelType string, msg channels.OutboundMessage) error {
+// SendResponse publishes an outbound message to NeboLoop web chat.
+func (cb *ChannelBridge) SendResponse(channelType string, msg OutboundMessage) error {
 	cb.mu.RLock()
 	if !cb.connected || cb.cm == nil {
 		cb.mu.RUnlock()
@@ -231,12 +248,11 @@ func (cb *ChannelBridge) SendResponse(channelType string, msg channels.OutboundM
 	botID := cb.config.BotID
 	cb.mu.RUnlock()
 
-	outbound := channelOutboundMessage{
-		ChannelType: channelType,
-		ChannelID:   msg.ChannelID,
-		Text:        msg.Text,
-		ReplyToID:   msg.ReplyToID,
-		ThreadID:    msg.ThreadID,
+	outbound := chatOutboundMessage{
+		Text:      msg.Text,
+		Sender:    "bot",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		MessageID: generateMessageID(),
 	}
 
 	payload, err := json.Marshal(outbound)
@@ -244,7 +260,7 @@ func (cb *ChannelBridge) SendResponse(channelType string, msg channels.OutboundM
 		return fmt.Errorf("channel bridge: marshal error: %w", err)
 	}
 
-	topic := fmt.Sprintf("neboloop/bot/%s/channels/outbound", botID)
+	topic := fmt.Sprintf("neboloop/bot/%s/chat/out", botID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -258,8 +274,7 @@ func (cb *ChannelBridge) SendResponse(channelType string, msg channels.OutboundM
 		return fmt.Errorf("channel bridge: publish failed: %w", err)
 	}
 
-	fmt.Printf("[apps:channels] Outbound %s message to channel=%s (%d chars)\n",
-		channelType, msg.ChannelID, len(msg.Text))
+	fmt.Printf("[apps:channels] Outbound chat message (%d chars)\n", len(msg.Text))
 
 	return nil
 }
@@ -290,6 +305,15 @@ func (cb *ChannelBridge) IsRunning() bool {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
 	return cb.connected
+}
+
+// generateMessageID returns a random UUID v4 for message deduplication.
+func generateMessageID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // truncateText truncates a string for logging purposes.

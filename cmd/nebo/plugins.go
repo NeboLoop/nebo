@@ -4,88 +4,120 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/plugins"
 	"github.com/nebolabs/nebo/internal/agent/tools"
+	"github.com/nebolabs/nebo/internal/apps"
 )
 
-// pluginsCmd creates the plugins management command
-func PluginsCmd() *cobra.Command {
+// AppsCmd creates the apps management command
+func AppsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "plugins",
-		Short: "Manage external plugins",
-		Long: `Plugins are external binaries that extend the agent with new tools and channels.
-Plugins are loaded from the Nebo data directory's plugins/ folder or the extensions/plugins/ directory.`,
+		Use:   "apps",
+		Short: "Manage installed apps",
+		Long:  `Apps extend Nebo with new tools, channels, gateways, and UI panels.`,
 	}
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
-		Short: "List all loaded plugins",
+		Short: "List installed apps",
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := loadAgentConfig()
-			listPlugins(cfg)
+			listApps(cfg)
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "uninstall [app-id]",
+		Short: "Uninstall an app",
+		Long:  `Stops a running app, removes its directory, and unregisters its capabilities.`,
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg := loadAgentConfig()
+			uninstallApp(cfg, args[0])
 		},
 	})
 
 	return cmd
 }
 
-// listPlugins lists all loaded plugins
-func listPlugins(cfg *agentcfg.Config) {
-	loader := createPluginLoader(cfg)
-	if err := loader.LoadAll(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading plugins: %v\n", err)
-	}
-	defer loader.Stop()
-
-	toolPlugins := loader.ListTools()
-	channels := loader.ListChannels()
-	comms := loader.ListComms()
-
-	if len(toolPlugins) == 0 && len(channels) == 0 && len(comms) == 0 {
-		fmt.Println("No plugins loaded.")
-		fmt.Printf("\nPlugins directory: %s\n", pluginsDir(cfg))
-		fmt.Println("Place compiled plugin binaries in tools/, channels/, or comm/ subdirectories.")
+// listApps lists all installed apps by scanning the apps directory
+func listApps(cfg *agentcfg.Config) {
+	appsDir := filepath.Join(cfg.DataDir, "apps")
+	entries, err := os.ReadDir(appsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("No apps installed.")
+			fmt.Printf("\nApps directory: %s\n", appsDir)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Error reading apps directory: %v\n", err)
 		return
 	}
 
-	if len(toolPlugins) > 0 {
-		fmt.Println("Tool plugins:")
-		for _, name := range toolPlugins {
-			tool, _ := loader.GetTool(name)
-			fmt.Printf("  - %s: %s\n", tool.Name(), tool.Description())
+	var found int
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
+		appDir := filepath.Join(appsDir, entry.Name())
+		manifest, err := apps.LoadManifest(appDir)
+		if err != nil {
+			continue
+		}
+		found++
+		fmt.Printf("  %s v%s\n", manifest.Name, manifest.Version)
+		if manifest.Description != "" {
+			fmt.Printf("    %s\n", manifest.Description)
+		}
+		fmt.Printf("    Provides: %s\n", strings.Join(manifest.Provides, ", "))
+		if len(manifest.Permissions) > 0 {
+			fmt.Printf("    Permissions: %s\n", strings.Join(manifest.Permissions, ", "))
+		}
+		fmt.Println()
 	}
 
-	if len(channels) > 0 {
-		fmt.Println("Channel plugins:")
-		for _, id := range channels {
-			fmt.Printf("  - %s\n", id)
-		}
-	}
-
-	if len(comms) > 0 {
-		fmt.Println("Comm plugins:")
-		for _, name := range comms {
-			cp, _ := loader.GetComm(name)
-			fmt.Printf("  - %s (v%s)\n", cp.Name(), cp.Version())
-		}
+	if found == 0 {
+		fmt.Println("No apps installed.")
+		fmt.Printf("\nApps directory: %s\n", appsDir)
+	} else {
+		fmt.Printf("%d app(s) installed\n", found)
 	}
 }
 
-func pluginsDir(cfg *agentcfg.Config) string {
-	userDir := filepath.Join(cfg.DataDir, "plugins")
-	if _, err := os.Stat(userDir); err == nil {
-		return userDir
-	}
-	return "extensions/plugins"
-}
+// uninstallApp removes an installed app by its app ID (directory name).
+func uninstallApp(cfg *agentcfg.Config, appID string) {
+	appsDir := filepath.Join(cfg.DataDir, "apps")
+	appDir := filepath.Join(appsDir, appID)
 
-func createPluginLoader(cfg *agentcfg.Config) *plugins.Loader {
-	return plugins.NewLoader(pluginsDir(cfg))
+	if _, err := os.Stat(appDir); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "App not found: %s\n", appID)
+		fmt.Fprintf(os.Stderr, "Use 'nebo apps list' to see installed apps.\n")
+		os.Exit(1)
+	}
+
+	// Show what we're removing
+	manifest, err := apps.LoadManifest(appDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not read manifest: %v\n", err)
+	} else {
+		fmt.Printf("Uninstalling %s v%s (%s)...\n", manifest.Name, manifest.Version, appID)
+	}
+
+	if err := os.RemoveAll(appDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to remove app directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Also clean up any pending update artifacts
+	os.RemoveAll(appDir + ".pending")
+	os.RemoveAll(appDir + ".updating")
+
+	fmt.Printf("Uninstalled %s\n", appID)
+	fmt.Println("Note: if Nebo is running, the app will be stopped on the next health check cycle.")
 }
 
 // CapabilitiesCmd lists platform-specific built-in capabilities

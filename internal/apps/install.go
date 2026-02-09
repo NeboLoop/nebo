@@ -191,6 +191,8 @@ func (il *InstallListener) onMessage(pub *paho.Publish) {
 		il.handleUpdate(event)
 	case "app_uninstalled":
 		il.handleUninstall(event)
+	case "app_revoked":
+		il.handleRevoke(event)
 	default:
 		fmt.Printf("[apps:install] Unknown event type: %s\n", event.Event)
 	}
@@ -357,6 +359,17 @@ func (il *InstallListener) handleUninstall(event installEvent) {
 	}
 
 	fmt.Printf("[apps:install] Uninstalled %s\n", event.AppID)
+}
+
+// handleRevoke quarantines a revoked app — stops it immediately but preserves
+// data/ for forensic analysis. Different from uninstall: the binary is removed
+// so it can never re-launch, but all app data is preserved for investigation.
+// This is the "kill switch" — NeboLoop detected a security issue and needs
+// this app stopped on ALL instances immediately.
+func (il *InstallListener) handleRevoke(event installEvent) {
+	if err := il.registry.Quarantine(event.AppID); err != nil {
+		fmt.Printf("[apps:install] Warning: quarantine failed for %s: %v\n", event.AppID, err)
+	}
 }
 
 // downloadAndExtract downloads a .napp from the URL and extracts it to destDir.

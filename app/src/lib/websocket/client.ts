@@ -4,6 +4,10 @@
  * Handles real-time communication with the backend.
  */
 
+import { logger } from '$lib/monitoring/logger';
+
+const log = logger.child({ component: 'WebSocket' });
+
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 export interface WebSocketMessage<T = any> {
@@ -99,29 +103,30 @@ class WebSocketClient {
 
 		const baseUrl = getWebSocketUrl();
 		const url = `${baseUrl}?clientId=${this.clientId}&userId=${this.userId}`;
-		console.log('[WebSocket] Connecting to:', url);
+		log.debug('Connecting to: ' + url);
 
 		try {
 			this.ws = new WebSocket(url);
 
 			this.ws.onopen = () => {
-				console.log('[WebSocket] Connection opened');
+				log.info('Connection opened');
 				this.setStatus('connected');
 				this.reconnectAttempts = 0;
 
 				// Send queued messages
-				console.log('[WebSocket] Sending', this.messageQueue.length, 'queued messages');
+				if (this.messageQueue.length > 0) {
+					log.debug('Sending ' + this.messageQueue.length + ' queued messages');
+				}
 				while (this.messageQueue.length > 0) {
 					const msg = this.messageQueue.shift();
 					if (msg && this.ws?.readyState === WebSocket.OPEN) {
-						console.log('[WebSocket] Sending queued message');
 						this.ws.send(msg);
 					}
 				}
 			};
 
 			this.ws.onclose = (event) => {
-				console.log('[WebSocket] Connection closed:', event.code, event.reason);
+				log.info('Connection closed: ' + event.code + ' ' + event.reason);
 				this.setStatus('disconnected');
 				this.ws = null;
 
@@ -136,20 +141,18 @@ class WebSocketClient {
 			};
 
 			this.ws.onerror = (event) => {
-				console.error('[WebSocket] Error:', event);
+				log.error('Connection error', event);
 				this.setStatus('error');
 			};
 
 			this.ws.onmessage = async (event) => {
 				// Backend may batch multiple JSON messages into one frame separated by newlines
 				const rawData = event.data as string;
-				console.log('[WebSocket] Raw message received:', rawData.substring(0, 200));
 				const lines = rawData.split('\n').filter((line) => line.trim());
 
 				for (const line of lines) {
 					try {
 						const message: WebSocketMessage = JSON.parse(line);
-						console.log('[WebSocket] Parsed message:', message.type, message.data);
 
 						// Handle ping/pong
 						if (message.type === 'ping') {
@@ -163,23 +166,22 @@ class WebSocketClient {
 
 						// Route to listeners by message type
 						const handlers = this.listeners.get(message.type);
-						console.log('[WebSocket] Handlers for', message.type, ':', handlers?.size ?? 0);
 						if (handlers) {
 							for (const handler of handlers) {
 								try {
 									await handler(message.data);
 								} catch (err) {
-									console.error('Error in message handler:', err);
+									log.error('Error in message handler', err);
 								}
 							}
 						}
 					} catch (err) {
-						console.error('Failed to parse WebSocket message:', err, 'Raw:', line);
+						log.error('Failed to parse message: ' + line.substring(0, 100), err);
 					}
 				}
 			};
 		} catch (err) {
-			console.error('WebSocket connection error:', err);
+			log.error('Connection error', err);
 			this.setStatus('error');
 		}
 	}
@@ -245,13 +247,10 @@ class WebSocketClient {
 			timestamp: new Date().toISOString()
 		};
 		const payload = JSON.stringify(message);
-		console.log('[WebSocket] Sending message:', type, 'readyState:', this.ws?.readyState);
-
 		if (this.ws?.readyState === WebSocket.OPEN) {
 			this.ws.send(payload);
-			console.log('[WebSocket] Message sent successfully');
 		} else {
-			console.log('[WebSocket] Queuing message, WS not open');
+			log.debug('Queuing message, WS not open: ' + type);
 			this.messageQueue.push(payload);
 		}
 	}

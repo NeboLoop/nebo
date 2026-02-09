@@ -3,19 +3,21 @@
 	import {
 		User,
 		Settings,
-		Bot,
 		Key,
 		Heart,
 		Sparkles,
-		UserCircle,
 		Brain,
 		History,
-		Wrench,
-		MessageCircle,
-		Server,
 		Activity,
-		Puzzle,
-		Shield
+		Shield,
+		Code,
+		Package,
+		BookOpen,
+		Link,
+		Users,
+		Fingerprint,
+		ScrollText,
+		StickyNote
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 
@@ -23,33 +25,50 @@
 
 	const groups = [
 		{
-			label: 'Your Account',
+			label: 'You',
 			tabs: [
 				{ id: 'profile', path: '/settings/profile', label: 'Profile', icon: User },
-				{ id: 'about-me', path: '/settings/about-me', label: 'About Me', icon: UserCircle },
 				{ id: 'preferences', path: '/settings/preferences', label: 'Preferences', icon: Settings }
 			]
 		},
 		{
 			label: 'Agent',
 			tabs: [
-				{ id: 'personality', path: '/settings/personality', label: 'Personality', icon: Sparkles },
+				{ id: 'identity', path: '/settings/identity', label: 'Identity', icon: Fingerprint },
+				{ id: 'soul', path: '/settings/personality', label: 'Soul', icon: Sparkles },
+				{ id: 'rules', path: '/settings/rules', label: 'Rules', icon: ScrollText },
+				{ id: 'notes', path: '/settings/notes', label: 'Notes', icon: StickyNote },
 				{ id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key },
 				{ id: 'permissions', path: '/settings/permissions', label: 'Permissions', icon: Shield },
-				{ id: 'agent', path: '/settings/agent', label: 'Agent Config', icon: Bot },
 				{ id: 'heartbeat', path: '/settings/heartbeat', label: 'Heartbeat', icon: Heart },
 				{ id: 'memories', path: '/settings/memories', label: 'Memories', icon: Brain }
+			]
+		},
+		{
+			label: 'Extend',
+			tabs: [
+				{ id: 'apps', path: '/settings/apps', label: 'Apps', icon: Package },
+				{ id: 'skills', path: '/settings/skills', label: 'Skills', icon: BookOpen },
+				{ id: 'integrations', path: '/settings/integrations', label: 'Integrations', icon: Link }
+			]
+		},
+		{
+			label: 'Family',
+			tabs: [
+				{ id: 'family', path: '/settings/family', label: 'Family', icon: Users }
 			]
 		},
 		{
 			label: 'System',
 			tabs: [
 				{ id: 'sessions', path: '/settings/sessions', label: 'Sessions', icon: History },
-				{ id: 'extensions', path: '/settings/extensions', label: 'Extensions', icon: Wrench },
-				{ id: 'plugins', path: '/settings/plugins', label: 'Plugins', icon: Puzzle },
-				{ id: 'channels', path: '/settings/channels', label: 'Channels', icon: MessageCircle },
-				{ id: 'mcp', path: '/settings/mcp', label: 'MCP', icon: Server },
 				{ id: 'status', path: '/settings/status', label: 'Status', icon: Activity }
+			]
+		},
+		{
+			label: 'Developer',
+			tabs: [
+				{ id: 'developer', path: '/settings/developer', label: 'Developer', icon: Code }
 			]
 		}
 	];

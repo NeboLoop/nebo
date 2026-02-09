@@ -31,12 +31,17 @@ const (
 // It receives the tool name and input, and returns true if approved
 type ApprovalCallback func(ctx context.Context, toolName string, input json.RawMessage) (bool, error)
 
+// AutonomousCheck is a live check that returns true when autonomous mode is active.
+// This is read on every approval check so settings changes take effect immediately.
+type AutonomousCheck func() bool
+
 // Policy manages approval for dangerous operations
 type Policy struct {
 	Level            PolicyLevel
 	AskMode          AskMode
 	Allowlist        map[string]bool
 	ApprovalCallback ApprovalCallback // If set, used instead of stdin prompts
+	IsAutonomous     AutonomousCheck  // If set, checked on every approval call
 
 	// Origin-based tool restrictions: maps Origin -> set of denied tool names.
 	// If a tool name appears in the deny list for the current origin, execution
@@ -140,6 +145,11 @@ func (p *Policy) IsDeniedForOrigin(origin Origin, toolName string) bool {
 
 // RequiresApproval checks if a command requires user approval
 func (p *Policy) RequiresApproval(cmd string) bool {
+	// Live check: autonomous mode overrides everything
+	if p.IsAutonomous != nil && p.IsAutonomous() {
+		return false
+	}
+
 	if p.Level == PolicyFull {
 		return false
 	}
@@ -183,6 +193,11 @@ func (p *Policy) isAllowed(cmd string) bool {
 
 // RequestApproval asks the user for approval
 func (p *Policy) RequestApproval(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
+	// Live check: autonomous mode auto-approves everything
+	if p.IsAutonomous != nil && p.IsAutonomous() {
+		return true, nil
+	}
+
 	// Fast path: full policy level means auto-approve everything
 	if p.Level == PolicyFull {
 		fmt.Printf("[Policy] Auto-approving (full policy level)\n")
