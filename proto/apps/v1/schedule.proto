@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package apps.v1;
+
+option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
+
+import "proto/apps/v1/common.proto";
+
+// ScheduleService is the interface for apps that provide scheduling capabilities.
+// Apps that provide this service replace the built-in cron scheduler.
+// The app owns its own schedule state and notifies Nebo via a trigger stream
+// when a schedule fires.
+service ScheduleService {
+  // HealthCheck verifies the schedule app is running.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Create creates a new schedule.
+  rpc Create(CreateScheduleRequest) returns (ScheduleResponse);
+
+  // Get returns a single schedule by name.
+  rpc Get(GetScheduleRequest) returns (ScheduleResponse);
+
+  // List returns all schedules with optional pagination.
+  rpc List(ListSchedulesRequest) returns (ListSchedulesResponse);
+
+  // Update modifies an existing schedule.
+  rpc Update(UpdateScheduleRequest) returns (ScheduleResponse);
+
+  // Delete removes a schedule.
+  rpc Delete(DeleteScheduleRequest) returns (DeleteScheduleResponse);
+
+  // Enable activates a disabled schedule.
+  rpc Enable(ScheduleNameRequest) returns (ScheduleResponse);
+
+  // Disable deactivates a schedule without deleting it.
+  rpc Disable(ScheduleNameRequest) returns (ScheduleResponse);
+
+  // Trigger manually fires a schedule immediately.
+  rpc Trigger(ScheduleNameRequest) returns (TriggerResponse);
+
+  // History returns execution history for a schedule.
+  rpc History(ScheduleHistoryRequest) returns (ScheduleHistoryResponse);
+
+  // Triggers is a server-streaming RPC. The app notifies Nebo each time a schedule fires.
+  // Nebo reads from this stream and routes the triggered task to LaneEvents.
+  rpc Triggers(Empty) returns (stream ScheduleTrigger);
+
+  // Configure updates the app's settings.
+  rpc Configure(SettingsMap) returns (Empty);
+}
+
+// Schedule represents a single scheduled task.
+message Schedule {
+  string id = 1;
+  string name = 2;
+  string expression = 3;       // Cron expression (6-field with seconds)
+  string task_type = 4;        // "bash" or "agent"
+  string command = 5;          // Shell command (for bash tasks)
+  string message = 6;          // Agent prompt (for agent tasks)
+  string deliver = 7;          // JSON: {"channel":"telegram","to":"123"}
+  bool enabled = 8;
+  string last_run = 9;         // RFC3339 timestamp
+  string next_run = 10;        // RFC3339 timestamp
+  int64 run_count = 11;
+  string last_error = 12;
+  string created_at = 13;      // RFC3339 timestamp
+  map<string, string> metadata = 14;
+}
+
+// ScheduleTrigger is emitted by the app when a schedule fires.
+// Denormalized so Nebo can route without an extra lookup.
+message ScheduleTrigger {
+  string schedule_id = 1;
+  string name = 2;
+  string task_type = 3;
+  string command = 4;
+  string message = 5;
+  string deliver = 6;
+  string fired_at = 7;         // RFC3339 timestamp
+  map<string, string> metadata = 8;
+}
+
+// Request/Response messages
+
+message CreateScheduleRequest {
+  string name = 1;
+  string expression = 2;
+  string task_type = 3;
+  string command = 4;
+  string message = 5;
+  string deliver = 6;
+  map<string, string> metadata = 7;
+}
+
+message GetScheduleRequest {
+  string name = 1;
+}
+
+message ListSchedulesRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+  bool enabled_only = 3;
+}
+
+message ListSchedulesResponse {
+  repeated Schedule schedules = 1;
+  int64 total = 2;
+}
+
+message UpdateScheduleRequest {
+  string name = 1;
+  string expression = 2;
+  string task_type = 3;
+  string command = 4;
+  string message = 5;
+  string deliver = 6;
+  map<string, string> metadata = 7;
+}
+
+message ScheduleResponse {
+  Schedule schedule = 1;
+  string error = 2;
+}
+
+message DeleteScheduleRequest {
+  string name = 1;
+}
+
+message DeleteScheduleResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message ScheduleNameRequest {
+  string name = 1;
+}
+
+message TriggerResponse {
+  bool success = 1;
+  string output = 2;
+  string error = 3;
+}
+
+message ScheduleHistoryRequest {
+  string name = 1;
+  int32 limit = 2;
+  int32 offset = 3;
+}
+
+message ScheduleHistoryResponse {
+  repeated ScheduleHistoryEntry entries = 1;
+  int64 total = 2;
+}
+
+message ScheduleHistoryEntry {
+  string id = 1;
+  string schedule_name = 2;
+  string started_at = 3;       // RFC3339
+  string finished_at = 4;      // RFC3339
+  bool success = 5;
+  string output = 6;
+  string error = 7;
+}

@@ -13,14 +13,13 @@ import (
 
 	"github.com/nebolabs/nebo/app"
 	"github.com/nebolabs/nebo/internal/browser"
-	"github.com/nebolabs/nebo/internal/channels"
 	"github.com/nebolabs/nebo/internal/config"
 	"github.com/nebolabs/nebo/internal/handler"
 	"github.com/nebolabs/nebo/internal/handler/agent"
 	"github.com/nebolabs/nebo/internal/handler/appui"
 	"github.com/nebolabs/nebo/internal/handler/auth"
-	"github.com/nebolabs/nebo/internal/handler/channel"
 	"github.com/nebolabs/nebo/internal/handler/chat"
+	"github.com/nebolabs/nebo/internal/handler/dev"
 	"github.com/nebolabs/nebo/internal/handler/extensions"
 	"github.com/nebolabs/nebo/internal/handler/integration"
 	"github.com/nebolabs/nebo/internal/handler/memory"
@@ -37,7 +36,6 @@ import (
 	"github.com/nebolabs/nebo/internal/middleware"
 	extOAuth "github.com/nebolabs/nebo/internal/oauth"
 	"github.com/nebolabs/nebo/internal/realtime"
-	"github.com/nebolabs/nebo/internal/router"
 	"github.com/nebolabs/nebo/internal/svc"
 	"github.com/nebolabs/nebo/internal/voice"
 	"github.com/nebolabs/nebo/internal/websocket"
@@ -45,7 +43,6 @@ import (
 
 // ServerOptions holds optional dependencies for the server
 type ServerOptions struct {
-	ChannelManager  *channels.Manager
 	SvcCtx          *svc.ServiceContext // Pre-initialized service context (single binary mode)
 	Quiet           bool                // Suppress startup messages for clean CLI output
 	AgentMCPHandler *AgentMCPProxy      // Lazy handler for agent MCP tools at /agent/mcp
@@ -170,14 +167,6 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 	}
 	chatCtx.SetHub(svcCtx.AgentHub)
 	realtime.RegisterChatHandler(chatCtx)
-
-	// Initialize message router for channel → agent routing
-	channelMgr := opts.ChannelManager
-	if channelMgr == nil {
-		channelMgr = channels.NewManager()
-	}
-	msgRouter := router.NewRouter(channelMgr, svcCtx.AgentHub)
-	_ = msgRouter
 
 	rewriteHandler := realtime.NewRewriteHandler(svcCtx)
 	rewriteHandler.Register()
@@ -308,8 +297,10 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/agent/heartbeat", agent.GetHeartbeatHandler(svcCtx))
 	r.Put("/agent/heartbeat", agent.UpdateHeartbeatHandler(svcCtx))
 	r.Get("/agent/status", agent.GetSimpleAgentStatusHandler(svcCtx))
+	r.Get("/agent/lanes", agent.GetLanesHandler(svcCtx))
 	r.Get("/agent/profile", agent.GetAgentProfileHandler(svcCtx))
 	r.Put("/agent/profile", agent.UpdateAgentProfileHandler(svcCtx))
+	r.Get("/agent/system-info", agent.GetSystemInfoHandler(svcCtx))
 	r.Get("/agent/personality-presets", agent.ListPersonalityPresetsHandler(svcCtx))
 	r.Get("/agents", agent.ListAgentsHandler(svcCtx))
 	r.Get("/agents/{agentId}/status", agent.GetAgentStatusHandler(svcCtx))
@@ -339,15 +330,15 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Put("/memories/{id}", memory.UpdateMemoryHandler(svcCtx))
 	r.Delete("/memories/{id}", memory.DeleteMemoryHandler(svcCtx))
 
-	// Task routes
+	// Task routes (name-based addressing via Scheduler interface)
 	r.Get("/tasks", tasks.ListTasksHandler(svcCtx))
 	r.Post("/tasks", tasks.CreateTaskHandler(svcCtx))
-	r.Get("/tasks/{id}", tasks.GetTaskHandler(svcCtx))
-	r.Put("/tasks/{id}", tasks.UpdateTaskHandler(svcCtx))
-	r.Delete("/tasks/{id}", tasks.DeleteTaskHandler(svcCtx))
-	r.Post("/tasks/{id}/toggle", tasks.ToggleTaskHandler(svcCtx))
-	r.Post("/tasks/{id}/run", tasks.RunTaskHandler(svcCtx))
-	r.Get("/tasks/{id}/history", tasks.ListTaskHistoryHandler(svcCtx))
+	r.Get("/tasks/{name}", tasks.GetTaskHandler(svcCtx))
+	r.Put("/tasks/{name}", tasks.UpdateTaskHandler(svcCtx))
+	r.Delete("/tasks/{name}", tasks.DeleteTaskHandler(svcCtx))
+	r.Post("/tasks/{name}/toggle", tasks.ToggleTaskHandler(svcCtx))
+	r.Post("/tasks/{name}/run", tasks.RunTaskHandler(svcCtx))
+	r.Get("/tasks/{name}/history", tasks.ListTaskHistoryHandler(svcCtx))
 
 	// MCP Integration routes
 	r.Get("/integrations", integration.ListMCPIntegrationsHandler(svcCtx))
@@ -362,16 +353,7 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Post("/integrations/{id}/disconnect", integration.DisconnectMCPIntegrationHandler(svcCtx))
 	r.Get("/integrations/oauth/callback", integration.OAuthCallbackHandler(svcCtx, fmt.Sprintf("http://localhost:%d", svcCtx.Config.Port)))
 
-	// Channel routes
-	r.Get("/channels", channel.ListChannelsHandler(svcCtx))
-	r.Get("/channels/registry", channel.ListChannelRegistryHandler(svcCtx))
-	r.Post("/channels", channel.CreateChannelHandler(svcCtx))
-	r.Get("/channels/{id}", channel.GetChannelHandler(svcCtx))
-	r.Put("/channels/{id}", channel.UpdateChannelHandler(svcCtx))
-	r.Delete("/channels/{id}", channel.DeleteChannelHandler(svcCtx))
-	r.Post("/channels/{id}/test", channel.TestChannelHandler(svcCtx))
-
-	// Plugin settings routes (iPhone Settings.bundle model)
+	// Plugin settings routes
 	r.Get("/plugins", plugins.ListPluginsHandler(svcCtx))
 	r.Get("/plugins/{id}", plugins.GetPluginHandler(svcCtx))
 	r.Put("/plugins/{id}/settings", plugins.UpdatePluginSettingsHandler(svcCtx))
@@ -382,7 +364,7 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/apps/{id}/ui", appui.GetUIViewHandler(svcCtx))
 	r.Post("/apps/{id}/ui/event", appui.SendUIEventHandler(svcCtx))
 
-	// NeboLoop App Store routes
+	// NeboLoop store routes
 	r.Get("/store/apps", plugins.ListStoreAppsHandler(svcCtx))
 	r.Post("/store/apps/{id}/install", plugins.InstallStoreAppHandler(svcCtx))
 	r.Delete("/store/apps/{id}/install", plugins.UninstallStoreAppHandler(svcCtx))
@@ -411,6 +393,15 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Put("/providers/{id}", provider.UpdateAuthProfileHandler(svcCtx))
 	r.Delete("/providers/{id}", provider.DeleteAuthProfileHandler(svcCtx))
 	r.Post("/providers/{id}/test", provider.TestAuthProfileHandler(svcCtx))
+
+	// Developer mode routes
+	r.Post("/dev/sideload", dev.SideloadHandler(svcCtx))
+	r.Delete("/dev/sideload/{appId}", dev.UnsideloadHandler(svcCtx))
+	r.Get("/dev/apps", dev.ListDevAppsHandler(svcCtx))
+	r.Post("/dev/apps/{appId}/relaunch", dev.RelaunchDevAppHandler(svcCtx))
+	r.Get("/dev/apps/{appId}/logs", dev.LogStreamHandler(svcCtx))
+	r.Get("/dev/tools", dev.ListToolsHandler(svcCtx))
+	r.Post("/dev/tools/execute", dev.ToolExecuteHandler(svcCtx))
 
 	// User profile routes (public for single-user personal assistant mode)
 	r.Get("/user/me/profile", user.GetUserProfileHandler(svcCtx))

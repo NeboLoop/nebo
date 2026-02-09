@@ -50,12 +50,12 @@
 		if (!view || sending) return;
 		sending = true;
 		try {
-			const resp = await sendUIEvent(appId, {
+			const resp = await sendUIEvent({
 				view_id: view.view_id,
 				block_id: blockId,
 				action,
 				value
-			});
+			}, appId);
 
 			if (resp.error) {
 				toastType = 'error';

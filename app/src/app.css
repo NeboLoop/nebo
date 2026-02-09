@@ -355,6 +355,10 @@
 		@apply text-primary bg-primary/10;
 	}
 
+	.active-icon {
+		@apply text-primary bg-primary/10;
+	}
+
 	/* ===== Skip Link ===== */
 	.skip-link {
 		@apply absolute left-1/2 -translate-x-1/2 px-4 py-2 font-semibold rounded-lg z-[9999] transition-all duration-150 bg-primary text-primary-content;
@@ -467,4 +471,23 @@
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;
 	}
+}
+
+/* Developer Window — Log Viewer */
+.dev-log-viewer {
+	font-family: 'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', monospace;
+	font-size: 0.75rem;
+	line-height: 1.5;
+	overflow-y: auto;
+	overflow-x: auto;
+	white-space: pre;
+	padding: 0.75rem;
+}
+
+.dev-log-line {
+	padding: 0.125rem 0;
+}
+
+.dev-log-line:hover {
+	background: oklch(var(--bc) / 0.05);
 }

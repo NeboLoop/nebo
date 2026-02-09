@@ -18,6 +18,13 @@ export function updateHeartbeat(req: components.UpdateHeartbeatRequest) {
 }
 
 /**
+ * @description "Get lanes"
+ */
+export function getLanes() {
+	return webapi.get<components.MessageResponse>(`/api/v1/agent/lanes`)
+}
+
+/**
  * @description "List personality presets"
  */
 export function listPersonalityPresets() {
@@ -84,6 +91,13 @@ export function getSimpleAgentStatus() {
 }
 
 /**
+ * @description "Get system info"
+ */
+export function getSystemInfo() {
+	return webapi.get<components.SystemInfoResponse>(`/api/v1/agent/system-info`)
+}
+
+/**
  * @description "List agents"
  * @param req
  */
@@ -96,6 +110,28 @@ export function listAgents() {
  */
 export function getAgentStatus(agentId: string) {
 	return webapi.get<components.MessageResponse>(`/api/v1/agents/${agentId}/status`)
+}
+
+/**
+ * @description "List u i apps"
+ */
+export function listUIApps() {
+	return webapi.get<components.ListUIAppsResponse>(`/api/v1/apps/ui`)
+}
+
+/**
+ * @description "Get u i view"
+ */
+export function getUIView(id: string) {
+	return webapi.get<components.UIView>(`/api/v1/apps/${id}/ui`)
+}
+
+/**
+ * @description "Send u i event"
+ * @param req
+ */
+export function sendUIEvent(req: components.SendUIEventRequest, id: string) {
+	return webapi.post<components.SendUIEventResponse>(`/api/v1/apps/${id}/ui/event`, req)
 }
 
 /**
@@ -165,60 +201,6 @@ export function resetPassword(req: components.ResetPasswordRequest) {
  */
 export function verifyEmail() {
 	return webapi.post<components.MessageResponse>(`/api/v1/auth/verify-email`)
-}
-
-/**
- * @description "List channels"
- */
-export function listChannels() {
-	return webapi.get<components.ListChannelsResponse>(`/api/v1/channels`)
-}
-
-/**
- * @description "Create channel"
- * @param req
- */
-export function createChannel(req: components.CreateChannelRequest) {
-	return webapi.post<components.CreateChannelResponse>(`/api/v1/channels`, req)
-}
-
-/**
- * @description "List channel registry"
- */
-export function listChannelRegistry() {
-	return webapi.get<components.ListChannelRegistryResponse>(`/api/v1/channels/registry`)
-}
-
-/**
- * @description "Delete channel"
- * @param req
- */
-export function deleteChannel(id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/channels/${id}`)
-}
-
-/**
- * @description "Get channel"
- * @param req
- */
-export function getChannel(id: string) {
-	return webapi.get<components.GetChannelResponse>(`/api/v1/channels/${id}`)
-}
-
-/**
- * @description "Update channel"
- * @param req
- */
-export function updateChannel(req: components.UpdateChannelRequest, id: string) {
-	return webapi.put<components.UpdateChannelResponse>(`/api/v1/channels/${id}`, req)
-}
-
-/**
- * @description "Test channel"
- * @param req
- */
-export function testChannel(id: string) {
-	return webapi.post<components.TestChannelResponse>(`/api/v1/channels/${id}/test`)
 }
 
 /**
@@ -298,6 +280,57 @@ export function getChat(id: string) {
  */
 export function updateChat(req: components.UpdateChatRequest, id: string) {
 	return webapi.put<components.MessageResponse>(`/api/v1/chats/${id}`, req)
+}
+
+/**
+ * @description "List dev apps"
+ */
+export function listDevApps() {
+	return webapi.get<components.ListDevAppsResponse>(`/api/v1/dev/apps`)
+}
+
+/**
+ * @description "Log stream"
+ */
+export function logStream(appId: string) {
+	return webapi.get<components.MessageResponse>(`/api/v1/dev/apps/${appId}/logs`)
+}
+
+/**
+ * @description "Relaunch dev app"
+ */
+export function relaunchDevApp(appId: string) {
+	return webapi.post<components.MessageResponse>(`/api/v1/dev/apps/${appId}/relaunch`)
+}
+
+/**
+ * @description "Sideload"
+ * @param req
+ */
+export function sideload(req: components.SideloadRequest) {
+	return webapi.post<components.SideloadResponse>(`/api/v1/dev/sideload`, req)
+}
+
+/**
+ * @description "Unsideload"
+ */
+export function unsideload(appId: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/dev/sideload/${appId}`)
+}
+
+/**
+ * @description "List tools"
+ */
+export function listTools() {
+	return webapi.get<components.ListToolsResponse>(`/api/v1/dev/tools`)
+}
+
+/**
+ * @description "Tool execute"
+ * @param req
+ */
+export function toolExecute(req: components.ToolExecuteRequest) {
+	return webapi.post<components.ToolExecuteResponse>(`/api/v1/dev/tools/execute`, req)
 }
 
 /**
@@ -768,48 +801,48 @@ export function createTask(req: components.CreateTaskRequest) {
  * @description "Delete task"
  * @param req
  */
-export function deleteTask(id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/tasks/${id}`)
+export function deleteTask(name: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/tasks/${name}`)
 }
 
 /**
  * @description "Get task"
  * @param req
  */
-export function getTask(id: string) {
-	return webapi.get<components.GetTaskResponse>(`/api/v1/tasks/${id}`)
+export function getTask(name: string) {
+	return webapi.get<components.GetTaskResponse>(`/api/v1/tasks/${name}`)
 }
 
 /**
  * @description "Update task"
  * @param req
  */
-export function updateTask(req: components.UpdateTaskRequest, id: string) {
-	return webapi.put<components.MessageResponse>(`/api/v1/tasks/${id}`, req)
+export function updateTask(req: components.UpdateTaskRequest, name: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/tasks/${name}`, req)
 }
 
 /**
  * @description "List task history"
  * @param req
  */
-export function listTaskHistory(params: components.ListTaskHistoryRequestParams, id: string) {
-	return webapi.get<components.ListTaskHistoryResponse>(`/api/v1/tasks/${id}/history`, params)
+export function listTaskHistory(params: components.ListTaskHistoryRequestParams, name: string) {
+	return webapi.get<components.ListTaskHistoryResponse>(`/api/v1/tasks/${name}/history`, params)
 }
 
 /**
  * @description "Run task"
  * @param req
  */
-export function runTask(id: string) {
-	return webapi.post<components.RunTaskResponse>(`/api/v1/tasks/${id}/run`)
+export function runTask(name: string) {
+	return webapi.post<components.RunTaskResponse>(`/api/v1/tasks/${name}/run`)
 }
 
 /**
  * @description "Toggle task"
  * @param req
  */
-export function toggleTask(id: string) {
-	return webapi.post<components.ToggleTaskResponse>(`/api/v1/tasks/${id}/toggle`)
+export function toggleTask(name: string) {
+	return webapi.post<components.ToggleTaskResponse>(`/api/v1/tasks/${name}/toggle`)
 }
 
 /**
@@ -893,83 +926,6 @@ export function getUserProfile() {
  */
 export function updateUserProfile(req: components.UpdateUserProfileRequest) {
 	return webapi.put<components.UpdateUserProfileResponse>(`/api/v1/user/me/profile`, req)
-}
-
-// --- App UI Types (Block Kit structured template system) ---
-
-export interface AppUIInfo {
-	id: string;
-	name: string;
-	version: string;
-}
-
-export interface UIBlockOption {
-	label: string;
-	value: string;
-}
-
-export interface UIBlock {
-	block_id: string;
-	type: 'text' | 'heading' | 'input' | 'button' | 'select' | 'toggle' | 'divider' | 'image';
-	text?: string;
-	value?: string;
-	placeholder?: string;
-	hint?: string;
-	variant?: string;
-	src?: string;
-	alt?: string;
-	disabled?: boolean;
-	options?: UIBlockOption[];
-	style?: string;
-}
-
-export interface UIView {
-	view_id: string;
-	title: string;
-	blocks: UIBlock[];
-}
-
-export interface UIEventPayload {
-	view_id: string;
-	block_id: string;
-	action: string;
-	value: string;
-}
-
-export interface UIEventResponse {
-	view?: UIView;
-	error?: string;
-	toast?: string;
-}
-
-export interface ListUIAppsResponse {
-	apps: AppUIInfo[];
-}
-
-// --- App UI API Functions ---
-
-/**
- * @description "List UI apps"
- */
-export function listUIApps() {
-	return webapi.get<ListUIAppsResponse>(`/api/v1/apps/ui`)
-}
-
-/**
- * @description "Get UI view for an app"
- * @param appId
- */
-export function getUIView(appId: string) {
-	return webapi.get<UIView>(`/api/v1/apps/${appId}/ui`)
-}
-
-/**
- * @description "Send UI event to an app"
- * @param appId
- * @param event
- */
-export function sendUIEvent(appId: string, event: UIEventPayload) {
-	return webapi.post<UIEventResponse>(`/api/v1/apps/${appId}/ui/event`, event)
 }
 
 /**

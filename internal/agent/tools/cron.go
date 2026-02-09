@@ -24,13 +24,16 @@ type DeliverConfig struct {
 	To      string `json:"to"`
 }
 
-// CronTool manages scheduled recurring tasks
+// CronTool manages scheduled recurring tasks.
+// Implements both the Tool interface (for agent use) and the Scheduler interface
+// (for pluggable scheduling via the app platform).
 type CronTool struct {
-	queries       *db.Queries        // sqlc queries for database operations
-	scheduler     *cronlib.Cron
-	jobs          map[string]cronlib.EntryID
-	mu            sync.RWMutex
-	agentCallback AgentTaskCallback
+	queries        *db.Queries        // sqlc queries for database operations
+	scheduler      *cronlib.Cron
+	jobs           map[string]cronlib.EntryID
+	mu             sync.RWMutex
+	agentCallback  AgentTaskCallback
+	triggerHandler func(ScheduleTriggerEvent)
 }
 
 type cronInput struct {
@@ -132,17 +135,36 @@ func (t *CronTool) scheduleJobFull(name, schedule, command, taskType, message, d
 }
 
 func (t *CronTool) executeJobFull(name, command, taskType, message, deliverJSON string) {
-	var err error
+	t.mu.RLock()
+	th := t.triggerHandler
+	cb := t.agentCallback
+	t.mu.RUnlock()
 
+	// If a trigger handler is set (Scheduler interface), use it.
+	// This routes through SchedulerManager → LaneEvents, which is the new unified path.
+	if th != nil {
+		th(ScheduleTriggerEvent{
+			Name:     name,
+			TaskType: taskType,
+			Command:  command,
+			Message:  message,
+			Deliver:  deliverJSON,
+			FiredAt:  time.Now(),
+		})
+
+		// Update job stats
+		t.queries.UpdateCronJobLastRunByName(context.Background(), db.UpdateCronJobLastRunByNameParams{
+			Name: name,
+		})
+		return
+	}
+
+	// Legacy path: direct execution via agentCallback
+	var err error
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	if taskType == "agent" {
-		// Execute agent task via callback
-		t.mu.RLock()
-		cb := t.agentCallback
-		t.mu.RUnlock()
-
 		if cb != nil {
 			var deliver *DeliverConfig
 			if deliverJSON != "" {
@@ -154,14 +176,12 @@ func (t *CronTool) executeJobFull(name, command, taskType, message, deliverJSON 
 			err = fmt.Errorf("no agent callback configured")
 		}
 	} else {
-		// Execute shell command using platform-specific shell
 		shell, shellArgs := ShellCommand()
 		args := append(shellArgs, command)
 		cmd := exec.CommandContext(ctx, shell, args...)
 		_, err = cmd.CombinedOutput()
 	}
 
-	// Update job stats using sqlc
 	var lastError sql.NullString
 	if err != nil {
 		lastError = sql.NullString{String: err.Error(), Valid: true}
@@ -170,9 +190,6 @@ func (t *CronTool) executeJobFull(name, command, taskType, message, deliverJSON 
 		Name:      name,
 		LastError: lastError,
 	})
-
-	// Note: cron_history recording would need a more complex query (INSERT SELECT)
-	// which isn't cleanly supported by sqlc. The history is supplementary data.
 }
 
 // SetAgentCallback sets the callback for agent task execution
@@ -570,6 +587,268 @@ func (t *CronTool) runNow(name string) (string, error) {
 
 	return fmt.Sprintf("Job '%s' executed successfully.\nOutput:\n%s", name, outputStr), nil
 }
+
+// --- Scheduler interface implementation ---
+
+// SetTriggerHandler sets the callback invoked when a schedule fires.
+func (t *CronTool) SetTriggerHandler(fn func(ScheduleTriggerEvent)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.triggerHandler = fn
+}
+
+// SchedulerCreate implements Scheduler.Create.
+func (t *CronTool) SchedulerCreate(ctx context.Context, item ScheduleItem) (*ScheduleItem, error) {
+	if item.Name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	if item.Expression == "" {
+		return nil, fmt.Errorf("expression is required")
+	}
+
+	taskType := item.TaskType
+	if taskType == "" {
+		taskType = "bash"
+	}
+	if taskType == "bash" && item.Command == "" {
+		return nil, fmt.Errorf("command is required for bash tasks")
+	}
+	if taskType == "agent" && item.Message == "" {
+		return nil, fmt.Errorf("message is required for agent tasks")
+	}
+
+	// Validate cron expression
+	parser := cronlib.NewParser(cronlib.Second | cronlib.Minute | cronlib.Hour | cronlib.Dom | cronlib.Month | cronlib.Dow)
+	sched, err := parser.Parse(item.Expression)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cron expression: %w", err)
+	}
+
+	deliverNull := sql.NullString{}
+	if item.Deliver != "" {
+		deliverNull = sql.NullString{String: item.Deliver, Valid: true}
+	}
+
+	err = t.queries.UpsertCronJob(ctx, db.UpsertCronJobParams{
+		Name:     item.Name,
+		Schedule: item.Expression,
+		Command:  item.Command,
+		TaskType: taskType,
+		Message:  sql.NullString{String: item.Message, Valid: item.Message != ""},
+		Deliver:  deliverNull,
+		Enabled:  sql.NullInt64{Int64: 1, Valid: true},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := t.scheduleJobFull(item.Name, item.Expression, item.Command, taskType, item.Message, item.Deliver); err != nil {
+		return nil, err
+	}
+
+	nextRun := sched.Next(time.Now())
+	return &ScheduleItem{
+		Name:       item.Name,
+		Expression: item.Expression,
+		TaskType:   taskType,
+		Command:    item.Command,
+		Message:    item.Message,
+		Deliver:    item.Deliver,
+		Enabled:    true,
+		NextRun:    nextRun,
+		CreatedAt:  time.Now(),
+	}, nil
+}
+
+// SchedulerGet implements Scheduler.Get.
+func (t *CronTool) SchedulerGet(ctx context.Context, name string) (*ScheduleItem, error) {
+	job, err := t.queries.GetCronJobByName(ctx, name)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("schedule not found: %s", name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return t.dbJobToScheduleItem(job), nil
+}
+
+// SchedulerList implements Scheduler.List.
+func (t *CronTool) SchedulerList(ctx context.Context, limit, offset int, enabledOnly bool) ([]ScheduleItem, int64, error) {
+	if enabledOnly {
+		jobs, err := t.queries.ListEnabledCronJobs(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+		items := make([]ScheduleItem, len(jobs))
+		for i, job := range jobs {
+			items[i] = *t.dbJobToScheduleItem(job)
+		}
+		return items, int64(len(items)), nil
+	}
+
+	jobs, err := t.queries.ListCronJobs(ctx, db.ListCronJobsParams{
+		Limit:  int64(limit),
+		Offset: int64(offset),
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	items := make([]ScheduleItem, len(jobs))
+	for i, job := range jobs {
+		items[i] = *t.dbJobToScheduleItem(job)
+	}
+	return items, int64(len(items)), nil
+}
+
+// SchedulerUpdate implements Scheduler.Update.
+func (t *CronTool) SchedulerUpdate(ctx context.Context, item ScheduleItem) (*ScheduleItem, error) {
+	// Upsert — same as Create for CronTool since DB uses upsert
+	return t.SchedulerCreate(ctx, item)
+}
+
+// SchedulerDelete implements Scheduler.Delete.
+func (t *CronTool) SchedulerDelete(ctx context.Context, name string) error {
+	t.mu.Lock()
+	if entryID, exists := t.jobs[name]; exists {
+		t.scheduler.Remove(entryID)
+		delete(t.jobs, name)
+	}
+	t.mu.Unlock()
+
+	_, err := t.queries.DeleteCronJobByName(ctx, name)
+	return err
+}
+
+// SchedulerEnable implements Scheduler.Enable.
+func (t *CronTool) SchedulerEnable(ctx context.Context, name string) (*ScheduleItem, error) {
+	job, err := t.queries.GetCronJobByName(ctx, name)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("schedule not found: %s", name)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if err := t.queries.EnableCronJobByName(ctx, name); err != nil {
+		return nil, err
+	}
+
+	if err := t.scheduleJobFull(name, job.Schedule, job.Command, job.TaskType, job.Message.String, job.Deliver.String); err != nil {
+		return nil, err
+	}
+
+	item := t.dbJobToScheduleItem(job)
+	item.Enabled = true
+	return item, nil
+}
+
+// SchedulerDisable implements Scheduler.Disable.
+func (t *CronTool) SchedulerDisable(ctx context.Context, name string) (*ScheduleItem, error) {
+	job, err := t.queries.GetCronJobByName(ctx, name)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("schedule not found: %s", name)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	t.mu.Lock()
+	if entryID, exists := t.jobs[name]; exists {
+		t.scheduler.Remove(entryID)
+		delete(t.jobs, name)
+	}
+	t.mu.Unlock()
+
+	if _, err := t.queries.DisableCronJobByName(ctx, name); err != nil {
+		return nil, err
+	}
+
+	item := t.dbJobToScheduleItem(job)
+	item.Enabled = false
+	return item, nil
+}
+
+// SchedulerTrigger implements Scheduler.Trigger.
+func (t *CronTool) SchedulerTrigger(ctx context.Context, name string) (string, error) {
+	return t.runNow(name)
+}
+
+// SchedulerHistory implements Scheduler.History.
+func (t *CronTool) SchedulerHistory(ctx context.Context, name string, limit, offset int) ([]ScheduleHistoryEntry, int64, error) {
+	historyItems, err := t.queries.GetRecentCronHistoryByJobName(ctx, name)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	entries := make([]ScheduleHistoryEntry, len(historyItems))
+	for i, h := range historyItems {
+		entry := ScheduleHistoryEntry{
+			ID:           fmt.Sprintf("%d", h.ID),
+			ScheduleName: name,
+			Success:      h.Success.Valid && h.Success.Int64 != 0,
+		}
+		if h.StartedAt.Valid {
+			entry.StartedAt = h.StartedAt.Time
+		}
+		if h.FinishedAt.Valid {
+			entry.FinishedAt = h.FinishedAt.Time
+		}
+		if h.Output.Valid {
+			entry.Output = h.Output.String
+		}
+		if h.Error.Valid {
+			entry.Error = h.Error.String
+		}
+		entries[i] = entry
+	}
+	return entries, int64(len(entries)), nil
+}
+
+// --- DB row converters ---
+
+func (t *CronTool) dbJobToScheduleItem(job db.CronJob) *ScheduleItem {
+	enabled := job.Enabled.Valid && job.Enabled.Int64 != 0
+	item := &ScheduleItem{
+		ID:         fmt.Sprintf("%d", job.ID),
+		Name:       job.Name,
+		Expression: job.Schedule,
+		TaskType:   job.TaskType,
+		Command:    job.Command,
+		Enabled:    enabled,
+	}
+	if job.Message.Valid {
+		item.Message = job.Message.String
+	}
+	if job.Deliver.Valid {
+		item.Deliver = job.Deliver.String
+	}
+	if job.LastRun.Valid {
+		item.LastRun = job.LastRun.Time
+	}
+	if job.RunCount.Valid {
+		item.RunCount = job.RunCount.Int64
+	}
+	if job.LastError.Valid {
+		item.LastError = job.LastError.String
+	}
+	if job.CreatedAt.Valid {
+		item.CreatedAt = job.CreatedAt.Time
+	}
+
+	// Get next run from the scheduler if job is enabled
+	if enabled {
+		t.mu.RLock()
+		if entryID, exists := t.jobs[job.Name]; exists {
+			entry := t.scheduler.Entry(entryID)
+			item.NextRun = entry.Next
+		}
+		t.mu.RUnlock()
+	}
+	return item
+}
+
+
+// --- Tool interface private methods (kept for backwards compat) ---
 
 func (t *CronTool) history(name string) (string, error) {
 	if name == "" {

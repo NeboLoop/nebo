@@ -39,6 +39,9 @@ var responseOverrides = map[string]string{
 	"GetAgents":            "ListAgentsResponse",
 	"GetSystemStatus":      "SimpleAgentStatusResponse",
 	"GetSimpleAgentStatus": "SimpleAgentStatusResponse",
+	"GetSystemInfo":        "SystemInfoResponse",
+	"GetUIView":            "UIView",
+	"SendUIEvent":          "SendUIEventResponse",
 }
 
 // Explicit request type mappings for handlers that don't follow naming convention

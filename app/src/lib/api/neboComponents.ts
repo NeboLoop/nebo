@@ -28,6 +28,12 @@ export interface AgentProfileResponse {
 	emojiUsage: string
 	formality: string
 	proactivity: string
+	emoji?: string
+	creature?: string
+	vibe?: string
+	avatar?: string
+	agentRules?: string
+	toolNotes?: string
 	createdAt: string
 	updatedAt: string
 }
@@ -49,6 +55,7 @@ export interface AgentSettings {
 	heartbeatIntervalMinutes: number
 	commEnabled: boolean
 	commPlugin?: string
+	developerMode: boolean
 }
 
 export interface AgentStatusRequest {
@@ -100,31 +107,6 @@ export interface ChangePasswordRequest {
 	newPassword: string
 }
 
-export interface ChannelItem {
-	id: string
-	name: string
-	channelType: string
-	isEnabled: boolean
-	connectionStatus: string
-	lastConnectedAt?: string
-	lastError?: string
-	messageCount: number
-	config?: { [key: string]: string }
-	createdAt: string
-	updatedAt: string
-}
-
-export interface ChannelRegistryItem {
-	id: string
-	name: string
-	description?: string
-	icon?: string
-	setupInstructions?: string
-	requiredCredentials: Array<string>
-	optionalCredentials?: Array<string>
-	displayOrder: number
-}
-
 export interface Chat {
 	id: string
 	title: string
@@ -171,17 +153,6 @@ export interface CreateAuthProfileResponse {
 	profile: AuthProfile
 }
 
-export interface CreateChannelRequest {
-	name: string
-	channelType: string
-	credentials: { [key: string]: string }
-	config?: { [key: string]: string }
-}
-
-export interface CreateChannelResponse {
-	channel: ChannelItem
-}
-
 export interface CreateChatRequest {
 	title?: string
 }
@@ -191,9 +162,9 @@ export interface CreateChatResponse {
 }
 
 export interface CreateMCPIntegrationRequest {
-	name: string
-	serverType: string
-	serverUrl?: string
+	name?: string
+	serverType?: string
+	serverUrl: string
 	authType: string
 	apiKey?: string
 }
@@ -231,9 +202,6 @@ export interface DeleteAgentSessionRequest {
 export interface DeleteAuthProfileRequest {
 }
 
-export interface DeleteChannelRequest {
-}
-
 export interface DeleteChatRequest {
 }
 
@@ -247,6 +215,15 @@ export interface DeleteNotificationRequest {
 }
 
 export interface DeleteTaskRequest {
+}
+
+export interface DevAppItem {
+	appId: string
+	name: string
+	version: string
+	path: string
+	running: boolean
+	loadedAt: number
 }
 
 export interface DisconnectMCPIntegrationRequest {
@@ -313,13 +290,6 @@ export interface GetAuthProfileRequest {
 
 export interface GetAuthProfileResponse {
 	profile: AuthProfile
-}
-
-export interface GetChannelRequest {
-}
-
-export interface GetChannelResponse {
-	channel: ChannelItem
 }
 
 export interface GetChatRequest {
@@ -444,14 +414,6 @@ export interface ListAuthProfilesResponse {
 	profiles: Array<AuthProfile>
 }
 
-export interface ListChannelRegistryResponse {
-	channels: Array<ChannelRegistryItem>
-}
-
-export interface ListChannelsResponse {
-	channels: Array<ChannelItem>
-}
-
 export interface ListChatDaysRequest {
 }
 
@@ -475,6 +437,10 @@ export interface ListChatsRequestParams {
 export interface ListChatsResponse {
 	chats: Array<Chat>
 	total: number
+}
+
+export interface ListDevAppsResponse {
+	apps: Array<DevAppItem>
 }
 
 export interface ListExtensionsResponse {
@@ -570,6 +536,14 @@ export interface ListTasksResponse {
 	total: number
 }
 
+export interface ListToolsResponse {
+	tools: Array<ToolDefinitionItem>
+}
+
+export interface ListUIAppsResponse {
+	apps: Array<UIAppInfo>
+}
+
 export interface LoginRequest {
 	email: string
 	password: string
@@ -589,6 +563,7 @@ export interface MCPIntegration {
 	authType: string
 	isEnabled: boolean
 	connectionStatus: string
+	toolCount: number
 	lastConnectedAt?: string
 	lastError?: string
 	createdAt: string
@@ -846,6 +821,19 @@ export interface SendMessageResponse {
 	chatId: string
 }
 
+export interface SendUIEventRequest {
+	view_id: string
+	block_id: string
+	action: string
+	value: string
+}
+
+export interface SendUIEventResponse {
+	view?: UIView
+	error?: string
+	toast?: string
+}
+
 export interface SessionMessage {
 	id: number
 	role: string
@@ -857,6 +845,17 @@ export interface SetupStatusResponse {
 	setupRequired: boolean
 	hasAdmin: boolean
 	setupComplete: boolean
+}
+
+export interface SideloadRequest {
+	path: string
+}
+
+export interface SideloadResponse {
+	appId: string
+	name: string
+	version: string
+	path: string
 }
 
 export interface SimpleAgentStatusResponse {
@@ -922,6 +921,14 @@ export interface StoreSkillsResponse {
 	pageSize: number
 }
 
+export interface SystemInfoResponse {
+	os: string
+	arch: string
+	hostname: string
+	homeDir: string
+	username: string
+}
+
 export interface TaskHistoryItem {
 	id: number
 	jobId: number
@@ -965,20 +972,13 @@ export interface TestAuthProfileResponse {
 	model?: string
 }
 
-export interface TestChannelRequest {
-}
-
-export interface TestChannelResponse {
-	success: boolean
-	message: string
-}
-
 export interface TestMCPIntegrationRequest {
 }
 
 export interface TestMCPIntegrationResponse {
 	success: boolean
 	message: string
+	tool_count?: number
 }
 
 export interface TogglePluginRequest {
@@ -1000,8 +1000,56 @@ export interface ToggleTaskResponse {
 	enabled: boolean
 }
 
+export interface ToolDefinitionItem {
+	name: string
+	description: string
+	schema: any
+}
+
+export interface ToolExecuteRequest {
+	tool: string
+	input: any
+}
+
+export interface ToolExecuteResponse {
+	content: string
+	isError: boolean
+}
+
 export interface ToolPermissions {
 	permissions: { [key: string]: boolean }
+}
+
+export interface UIAppInfo {
+	id: string
+	name: string
+	version: string
+}
+
+export interface UIBlock {
+	block_id: string
+	type: string
+	text?: string
+	value?: string
+	placeholder?: string
+	hint?: string
+	variant?: string
+	src?: string
+	alt?: string
+	disabled?: boolean
+	options?: Array<UISelectOption>
+	style?: string
+}
+
+export interface UISelectOption {
+	label: string
+	value: string
+}
+
+export interface UIView {
+	view_id: string
+	title: string
+	blocks: Array<UIBlock>
 }
 
 export interface UpdateAgentProfileRequest {
@@ -1013,6 +1061,12 @@ export interface UpdateAgentProfileRequest {
 	emojiUsage?: string
 	formality?: string
 	proactivity?: string
+	emoji?: string
+	creature?: string
+	vibe?: string
+	avatar?: string
+	agentRules?: string
+	toolNotes?: string
 }
 
 export interface UpdateAgentSettingsRequest {
@@ -1023,6 +1077,7 @@ export interface UpdateAgentSettingsRequest {
 	heartbeatIntervalMinutes: number
 	commEnabled: boolean
 	commPlugin?: string
+	developerMode: boolean
 }
 
 export interface UpdateAuthProfileRequest {
@@ -1032,17 +1087,6 @@ export interface UpdateAuthProfileRequest {
 	baseUrl?: string
 	priority?: number
 	isActive?: boolean
-}
-
-export interface UpdateChannelRequest {
-	name?: string
-	isEnabled?: boolean
-	credentials?: { [key: string]: string }
-	config?: { [key: string]: string }
-}
-
-export interface UpdateChannelResponse {
-	channel: ChannelItem
 }
 
 export interface UpdateChatRequest {

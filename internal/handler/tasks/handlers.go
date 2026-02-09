@@ -1,24 +1,32 @@
 package tasks
 
 import (
-	"database/sql"
 	"net/http"
 	"strconv"
 
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/nebolabs/nebo/internal/agent/tools"
 	"github.com/nebolabs/nebo/internal/httputil"
 	"github.com/nebolabs/nebo/internal/logging"
 	"github.com/nebolabs/nebo/internal/svc"
 	"github.com/nebolabs/nebo/internal/types"
 )
 
+// getScheduler extracts the Scheduler from ServiceContext, returning nil if not wired.
+func getScheduler(svcCtx *svc.ServiceContext) tools.Scheduler {
+	s := svcCtx.Scheduler()
+	if s == nil {
+		return nil
+	}
+	sched, _ := s.(tools.Scheduler)
+	return sched
+}
+
 // ListTasksHandler returns paginated list of tasks
 func ListTasksHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if svcCtx.DB == nil {
-			httputil.InternalError(w, "database not configured")
+		sched := getScheduler(svcCtx)
+		if sched == nil {
+			httputil.InternalError(w, "scheduler not configured")
 			return
 		}
 
@@ -29,72 +37,50 @@ func ListTasksHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 		offset := (page - 1) * pageSize
 
-		tasks, err := svcCtx.DB.ListCronJobs(ctx, db.ListCronJobsParams{
-			Limit:  int64(pageSize),
-			Offset: int64(offset),
-		})
+		items, total, err := sched.List(r.Context(), pageSize, offset, false)
 		if err != nil {
 			logging.Errorf("Failed to list tasks: %v", err)
 			httputil.InternalError(w, "failed to list tasks")
 			return
 		}
 
-		total, _ := svcCtx.DB.CountCronJobs(ctx)
-
-		response := types.ListTasksResponse{
-			Tasks: make([]types.TaskItem, len(tasks)),
+		resp := types.ListTasksResponse{
+			Tasks: make([]types.TaskItem, len(items)),
 			Total: total,
 		}
-
-		for i, t := range tasks {
-			response.Tasks[i] = dbCronJobToType(t)
+		for i, item := range items {
+			resp.Tasks[i] = scheduleItemToType(item)
 		}
-
-		httputil.OkJSON(w, response)
+		httputil.OkJSON(w, resp)
 	}
 }
 
-// GetTaskHandler returns a single task by ID
+// GetTaskHandler returns a single task by name
 func GetTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if svcCtx.DB == nil {
-			httputil.InternalError(w, "database not configured")
+		sched := getScheduler(svcCtx)
+		if sched == nil {
+			httputil.InternalError(w, "scheduler not configured")
 			return
 		}
 
-		idStr := httputil.PathVar(r, "id")
-		id, err := strconv.ParseInt(idStr, 10, 64)
+		name := httputil.PathVar(r, "name")
+		item, err := sched.Get(r.Context(), name)
 		if err != nil {
-			httputil.Error(w, err)
+			httputil.NotFound(w, "task not found")
 			return
 		}
 
-		task, err := svcCtx.DB.GetCronJob(ctx, id)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				httputil.NotFound(w, "task not found")
-				return
-			}
-			logging.Errorf("Failed to get task: %v", err)
-			httputil.InternalError(w, "failed to get task")
-			return
-		}
-
-		httputil.OkJSON(w, types.GetTaskResponse{
-			Task: dbCronJobToType(task),
-		})
+		httputil.OkJSON(w, types.GetTaskResponse{Task: scheduleItemToType(*item)})
 	}
 }
 
 // CreateTaskHandler creates a new task
 func CreateTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if svcCtx.DB == nil {
-			httputil.InternalError(w, "database not configured")
+		sched := getScheduler(svcCtx)
+		if sched == nil {
+			httputil.InternalError(w, "scheduler not configured")
 			return
 		}
 
@@ -113,24 +99,19 @@ func CreateTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		enabled := int64(0)
-		if req.Enabled {
-			enabled = 1
-		}
-
 		taskType := req.TaskType
 		if taskType == "" {
 			taskType = "message"
 		}
 
-		task, err := svcCtx.DB.CreateCronJob(ctx, db.CreateCronJobParams{
-			Name:     req.Name,
-			Schedule: req.Schedule,
-			Command:  req.Command,
-			TaskType: taskType,
-			Message:  toNullString(req.Message),
-			Deliver:  toNullString(req.Deliver),
-			Enabled:  sql.NullInt64{Int64: enabled, Valid: true},
+		item, err := sched.Create(r.Context(), tools.ScheduleItem{
+			Name:       req.Name,
+			Expression: req.Schedule,
+			TaskType:   taskType,
+			Command:    req.Command,
+			Message:    req.Message,
+			Deliver:    req.Deliver,
+			Enabled:    req.Enabled,
 		})
 		if err != nil {
 			logging.Errorf("Failed to create task: %v", err)
@@ -138,28 +119,20 @@ func CreateTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		httputil.OkJSON(w, types.CreateTaskResponse{
-			Task: dbCronJobToType(task),
-		})
+		httputil.OkJSON(w, types.CreateTaskResponse{Task: scheduleItemToType(*item)})
 	}
 }
 
-// UpdateTaskHandler updates a task
+// UpdateTaskHandler updates a task by name
 func UpdateTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if svcCtx.DB == nil {
-			httputil.InternalError(w, "database not configured")
+		sched := getScheduler(svcCtx)
+		if sched == nil {
+			httputil.InternalError(w, "scheduler not configured")
 			return
 		}
 
-		idStr := httputil.PathVar(r, "id")
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			httputil.Error(w, err)
-			return
-		}
+		name := httputil.PathVar(r, "name")
 
 		var req types.UpdateTaskRequest
 		if err := httputil.Parse(r, &req); err != nil {
@@ -167,48 +140,54 @@ func UpdateTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		err = svcCtx.DB.UpdateCronJob(ctx, db.UpdateCronJobParams{
-			ID:       id,
-			Name:     toNullString(req.Name),
-			Schedule: toNullString(req.Schedule),
-			Command:  toNullString(req.Command),
-			TaskType: toNullString(req.TaskType),
-			Message:  toNullString(req.Message),
-			Deliver:  toNullString(req.Deliver),
-		})
+		// Get existing to merge partial updates
+		existing, err := sched.Get(r.Context(), name)
+		if err != nil {
+			httputil.NotFound(w, "task not found")
+			return
+		}
+
+		if req.Name != "" {
+			existing.Name = req.Name
+		}
+		if req.Schedule != "" {
+			existing.Expression = req.Schedule
+		}
+		if req.Command != "" {
+			existing.Command = req.Command
+		}
+		if req.TaskType != "" {
+			existing.TaskType = req.TaskType
+		}
+		if req.Message != "" {
+			existing.Message = req.Message
+		}
+		if req.Deliver != "" {
+			existing.Deliver = req.Deliver
+		}
+
+		updated, err := sched.Update(r.Context(), *existing)
 		if err != nil {
 			logging.Errorf("Failed to update task: %v", err)
 			httputil.InternalError(w, "failed to update task")
 			return
 		}
 
-		// Return updated task
-		task, _ := svcCtx.DB.GetCronJob(ctx, id)
-		httputil.OkJSON(w, types.GetTaskResponse{
-			Task: dbCronJobToType(task),
-		})
+		httputil.OkJSON(w, types.GetTaskResponse{Task: scheduleItemToType(*updated)})
 	}
 }
 
-// DeleteTaskHandler deletes a task
+// DeleteTaskHandler deletes a task by name
 func DeleteTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if svcCtx.DB == nil {
-			httputil.InternalError(w, "database not configured")
+		sched := getScheduler(svcCtx)
+		if sched == nil {
+			httputil.InternalError(w, "scheduler not configured")
 			return
 		}
 
-		idStr := httputil.PathVar(r, "id")
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			httputil.Error(w, err)
-			return
-		}
-
-		err = svcCtx.DB.DeleteCronJob(ctx, id)
-		if err != nil {
+		name := httputil.PathVar(r, "name")
+		if err := sched.Delete(r.Context(), name); err != nil {
 			logging.Errorf("Failed to delete task: %v", err)
 			httputil.InternalError(w, "failed to delete task")
 			return
@@ -221,118 +200,54 @@ func DeleteTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 // ToggleTaskHandler toggles a task's enabled status
 func ToggleTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if svcCtx.DB == nil {
-			httputil.InternalError(w, "database not configured")
+		sched := getScheduler(svcCtx)
+		if sched == nil {
+			httputil.InternalError(w, "scheduler not configured")
 			return
 		}
 
-		idStr := httputil.PathVar(r, "id")
-		id, err := strconv.ParseInt(idStr, 10, 64)
+		name := httputil.PathVar(r, "name")
+
+		// Get current state to toggle
+		existing, err := sched.Get(r.Context(), name)
 		if err != nil {
-			httputil.Error(w, err)
+			httputil.NotFound(w, "task not found")
 			return
 		}
 
-		err = svcCtx.DB.ToggleCronJob(ctx, id)
+		if existing.Enabled {
+			_, err = sched.Disable(r.Context(), name)
+		} else {
+			_, err = sched.Enable(r.Context(), name)
+		}
 		if err != nil {
 			logging.Errorf("Failed to toggle task: %v", err)
 			httputil.InternalError(w, "failed to toggle task")
 			return
 		}
 
-		// Return updated status
-		task, _ := svcCtx.DB.GetCronJob(ctx, id)
-		httputil.OkJSON(w, types.ToggleTaskResponse{
-			Enabled: task.Enabled.Int64 == 1,
-		})
+		httputil.OkJSON(w, types.ToggleTaskResponse{Enabled: !existing.Enabled})
 	}
 }
 
-// RunTaskHandler runs a task immediately
+// RunTaskHandler triggers a task immediately
 func RunTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if svcCtx.DB == nil {
-			httputil.InternalError(w, "database not configured")
+		sched := getScheduler(svcCtx)
+		if sched == nil {
+			httputil.InternalError(w, "scheduler not configured")
 			return
 		}
 
-		idStr := httputil.PathVar(r, "id")
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			httputil.Error(w, err)
-			return
-		}
-
-		task, err := svcCtx.DB.GetCronJob(ctx, id)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				httputil.NotFound(w, "task not found")
-				return
-			}
-			logging.Errorf("Failed to get task: %v", err)
-			httputil.InternalError(w, "failed to get task")
-			return
-		}
-
-		// Create history entry
-		history, err := svcCtx.DB.CreateCronHistory(ctx, id)
-		if err != nil {
-			logging.Errorf("Failed to create history: %v", err)
-		}
-
-		// Execute the task based on type
-		var output string
-		var execErr error
-
-		switch task.TaskType {
-		case "message":
-			// For message type, we just record success
-			// The actual message would be sent via channels
-			output = "Message task triggered"
-		case "bash":
-			// For bash type, we would execute the command
-			// For now, just log it
-			output = "Bash task triggered: " + task.Command
-		default:
-			output = "Task triggered"
-		}
-
-		// Update history
-		if history.ID != 0 {
-			success := sql.NullInt64{Int64: 1, Valid: true}
-			var errStr sql.NullString
-			if execErr != nil {
-				success = sql.NullInt64{Int64: 0, Valid: true}
-				errStr = sql.NullString{String: execErr.Error(), Valid: true}
-			}
-			_ = svcCtx.DB.UpdateCronHistory(ctx, db.UpdateCronHistoryParams{
-				Success: success,
-				Output:  sql.NullString{String: output, Valid: true},
-				Error:   errStr,
-				ID:      history.ID,
-			})
-		}
-
-		// Update last run
-		var lastErr sql.NullString
-		if execErr != nil {
-			lastErr = sql.NullString{String: execErr.Error(), Valid: true}
-		}
-		_ = svcCtx.DB.UpdateCronJobLastRun(ctx, db.UpdateCronJobLastRunParams{
-			ID:        id,
-			LastError: lastErr,
-		})
+		name := httputil.PathVar(r, "name")
+		output, err := sched.Trigger(r.Context(), name)
 
 		resp := types.RunTaskResponse{
-			Success: execErr == nil,
+			Success: err == nil,
 			Output:  output,
 		}
-		if execErr != nil {
-			resp.Error = execErr.Error()
+		if err != nil {
+			resp.Error = err.Error()
 		}
 
 		httputil.OkJSON(w, resp)
@@ -342,104 +257,77 @@ func RunTaskHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 // ListTaskHistoryHandler returns execution history for a task
 func ListTaskHistoryHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		if svcCtx.DB == nil {
-			httputil.InternalError(w, "database not configured")
+		sched := getScheduler(svcCtx)
+		if sched == nil {
+			httputil.InternalError(w, "scheduler not configured")
 			return
 		}
 
-		idStr := httputil.PathVar(r, "id")
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			httputil.Error(w, err)
-			return
-		}
-
+		name := httputil.PathVar(r, "name")
 		page := httputil.QueryInt(r, "page", 1)
 		pageSize := httputil.QueryInt(r, "pageSize", 20)
 		offset := (page - 1) * pageSize
 
-		history, err := svcCtx.DB.ListCronHistory(ctx, db.ListCronHistoryParams{
-			JobID:  id,
-			Limit:  int64(pageSize),
-			Offset: int64(offset),
-		})
+		entries, total, err := sched.History(r.Context(), name, pageSize, offset)
 		if err != nil {
 			logging.Errorf("Failed to list history: %v", err)
 			httputil.InternalError(w, "failed to list history")
 			return
 		}
 
-		total, _ := svcCtx.DB.CountCronHistory(ctx, id)
-
-		response := types.ListTaskHistoryResponse{
-			History: make([]types.TaskHistoryItem, len(history)),
+		resp := types.ListTaskHistoryResponse{
+			History: make([]types.TaskHistoryItem, len(entries)),
 			Total:   total,
 		}
-
-		for i, h := range history {
-			response.History[i] = dbCronHistoryToType(h)
+		for i, e := range entries {
+			resp.History[i] = historyEntryToType(e)
 		}
 
-		httputil.OkJSON(w, response)
+		httputil.OkJSON(w, resp)
 	}
 }
 
-// Helper functions
-
-func toNullString(s string) sql.NullString {
-	if s == "" {
-		return sql.NullString{}
+// scheduleItemToType maps a tools.ScheduleItem to the API response type.
+func scheduleItemToType(item tools.ScheduleItem) types.TaskItem {
+	t := types.TaskItem{
+		Name:     item.Name,
+		Schedule: item.Expression,
+		Command:  item.Command,
+		TaskType: item.TaskType,
+		Message:  item.Message,
+		Deliver:  item.Deliver,
+		Enabled:  item.Enabled,
+		RunCount: item.RunCount,
 	}
-	return sql.NullString{String: s, Valid: true}
+
+	if n, err := strconv.ParseInt(item.ID, 10, 64); err == nil {
+		t.Id = n
+	}
+	if !item.LastRun.IsZero() {
+		t.LastRun = item.LastRun.Format("2006-01-02T15:04:05Z")
+	}
+	t.LastError = item.LastError
+	if !item.CreatedAt.IsZero() {
+		t.CreatedAt = item.CreatedAt.Format("2006-01-02T15:04:05Z")
+	}
+	return t
 }
 
-func dbCronJobToType(job db.CronJob) types.TaskItem {
-	item := types.TaskItem{
-		Id:       job.ID,
-		Name:     job.Name,
-		Schedule: job.Schedule,
-		Command:  job.Command,
-		TaskType: job.TaskType,
-		Message:  job.Message.String,
-		Deliver:  job.Deliver.String,
-		Enabled:  job.Enabled.Int64 == 1,
-		RunCount: job.RunCount.Int64,
+// historyEntryToType maps a tools.ScheduleHistoryEntry to the API response type.
+func historyEntryToType(e tools.ScheduleHistoryEntry) types.TaskHistoryItem {
+	t := types.TaskHistoryItem{
+		Success: e.Success,
+		Output:  e.Output,
+		Error:   e.Error,
 	}
-
-	if job.LastRun.Valid {
-		item.LastRun = job.LastRun.Time.Format("2006-01-02T15:04:05Z")
+	if n, err := strconv.ParseInt(e.ID, 10, 64); err == nil {
+		t.Id = n
 	}
-	if job.LastError.Valid {
-		item.LastError = job.LastError.String
+	if !e.StartedAt.IsZero() {
+		t.StartedAt = e.StartedAt.Format("2006-01-02T15:04:05Z")
 	}
-	if job.CreatedAt.Valid {
-		item.CreatedAt = job.CreatedAt.Time.Format("2006-01-02T15:04:05Z")
+	if !e.FinishedAt.IsZero() {
+		t.FinishedAt = e.FinishedAt.Format("2006-01-02T15:04:05Z")
 	}
-
-	return item
-}
-
-func dbCronHistoryToType(h db.CronHistory) types.TaskHistoryItem {
-	item := types.TaskHistoryItem{
-		Id:      h.ID,
-		JobId:   h.JobID,
-		Success: h.Success.Int64 == 1,
-	}
-
-	if h.StartedAt.Valid {
-		item.StartedAt = h.StartedAt.Time.Format("2006-01-02T15:04:05Z")
-	}
-	if h.FinishedAt.Valid {
-		item.FinishedAt = h.FinishedAt.Time.Format("2006-01-02T15:04:05Z")
-	}
-	if h.Output.Valid {
-		item.Output = h.Output.String
-	}
-	if h.Error.Valid {
-		item.Error = h.Error.String
-	}
-
-	return item
+	return t
 }

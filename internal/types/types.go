@@ -34,6 +34,7 @@ type AgentSettings struct {
 	HeartbeatIntervalMinutes int    `json:"heartbeatIntervalMinutes"`
 	CommEnabled              bool   `json:"commEnabled"`
 	CommPlugin               string `json:"commPlugin,omitempty"`
+	DeveloperMode            bool   `json:"developerMode"`
 }
 
 type AgentStatusRequest struct {
@@ -536,6 +537,7 @@ type UpdateAgentSettingsRequest struct {
 	HeartbeatIntervalMinutes int    `json:"heartbeatIntervalMinutes"`
 	CommEnabled              bool   `json:"commEnabled"`
 	CommPlugin               string `json:"commPlugin,omitempty"`
+	DeveloperMode            bool   `json:"developerMode"`
 }
 
 type UpdateAuthProfileRequest struct {
@@ -673,6 +675,12 @@ type AgentProfileResponse struct {
 	EmojiUsage        string `json:"emojiUsage"`
 	Formality         string `json:"formality"`
 	Proactivity       string `json:"proactivity"`
+	Emoji             string `json:"emoji,omitempty"`
+	Creature          string `json:"creature,omitempty"`
+	Vibe              string `json:"vibe,omitempty"`
+	Avatar            string `json:"avatar,omitempty"`
+	AgentRules        string `json:"agentRules,omitempty"`
+	ToolNotes         string `json:"toolNotes,omitempty"`
 	CreatedAt         string `json:"createdAt"`
 	UpdatedAt         string `json:"updatedAt"`
 }
@@ -686,6 +694,20 @@ type UpdateAgentProfileRequest struct {
 	EmojiUsage        string `json:"emojiUsage,omitempty"`
 	Formality         string `json:"formality,omitempty"`
 	Proactivity       string `json:"proactivity,omitempty"`
+	Emoji             string `json:"emoji,omitempty"`
+	Creature          string `json:"creature,omitempty"`
+	Vibe              string `json:"vibe,omitempty"`
+	Avatar            string `json:"avatar,omitempty"`
+	AgentRules        string `json:"agentRules,omitempty"`
+	ToolNotes         string `json:"toolNotes,omitempty"`
+}
+
+type SystemInfoResponse struct {
+	OS       string `json:"os"`
+	Arch     string `json:"arch"`
+	Hostname string `json:"hostname"`
+	HomeDir  string `json:"homeDir"`
+	Username string `json:"username"`
 }
 
 type PersonalityPreset struct {
@@ -789,7 +811,7 @@ type ListTasksResponse struct {
 }
 
 type GetTaskRequest struct {
-	Id int64 `path:"id"`
+	Name string `path:"name"`
 }
 
 type GetTaskResponse struct {
@@ -820,11 +842,11 @@ type UpdateTaskRequest struct {
 }
 
 type DeleteTaskRequest struct {
-	Id int64 `path:"id"`
+	Name string `path:"name"`
 }
 
 type ToggleTaskRequest struct {
-	Id int64 `path:"id"`
+	Name string `path:"name"`
 }
 
 type ToggleTaskResponse struct {
@@ -832,7 +854,7 @@ type ToggleTaskResponse struct {
 }
 
 type RunTaskRequest struct {
-	Id int64 `path:"id"`
+	Name string `path:"name"`
 }
 
 type RunTaskResponse struct {
@@ -852,9 +874,9 @@ type TaskHistoryItem struct {
 }
 
 type ListTaskHistoryRequest struct {
-	Id       int64 `path:"id"`
-	Page     int   `form:"page,omitempty"`
-	PageSize int   `form:"pageSize,omitempty"`
+	Name     string `path:"name"`
+	Page     int    `form:"page,omitempty"`
+	PageSize int    `form:"pageSize,omitempty"`
 }
 
 type ListTaskHistoryResponse struct {
@@ -872,6 +894,7 @@ type MCPIntegration struct {
 	AuthType         string `json:"authType"`
 	IsEnabled        bool   `json:"isEnabled"`
 	ConnectionStatus string `json:"connectionStatus"`
+	ToolCount        int    `json:"toolCount"`
 	LastConnectedAt  string `json:"lastConnectedAt,omitempty"`
 	LastError        string `json:"lastError,omitempty"`
 	CreatedAt        string `json:"createdAt"`
@@ -907,9 +930,9 @@ type GetMCPIntegrationResponse struct {
 }
 
 type CreateMCPIntegrationRequest struct {
-	Name       string `json:"name"`
-	ServerType string `json:"serverType"`
-	ServerUrl  string `json:"serverUrl,omitempty"`
+	Name       string `json:"name,omitempty"`
+	ServerType string `json:"serverType,omitempty"`
+	ServerUrl  string `json:"serverUrl"`
 	AuthType   string `json:"authType"`
 	ApiKey     string `json:"apiKey,omitempty"`
 }
@@ -939,87 +962,9 @@ type TestMCPIntegrationRequest struct {
 }
 
 type TestMCPIntegrationResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-}
-
-// Channel types
-
-type ChannelItem struct {
-	Id               string            `json:"id"`
-	Name             string            `json:"name"`
-	ChannelType      string            `json:"channelType"`
-	IsEnabled        bool              `json:"isEnabled"`
-	ConnectionStatus string            `json:"connectionStatus"`
-	LastConnectedAt  string            `json:"lastConnectedAt,omitempty"`
-	LastError        string            `json:"lastError,omitempty"`
-	MessageCount     int64             `json:"messageCount"`
-	Config           map[string]string `json:"config,omitempty"`
-	CreatedAt        string            `json:"createdAt"`
-	UpdatedAt        string            `json:"updatedAt"`
-}
-
-type ChannelRegistryItem struct {
-	Id                  string   `json:"id"`
-	Name                string   `json:"name"`
-	Description         string   `json:"description,omitempty"`
-	Icon                string   `json:"icon,omitempty"`
-	SetupInstructions   string   `json:"setupInstructions,omitempty"`
-	RequiredCredentials []string `json:"requiredCredentials"`
-	OptionalCredentials []string `json:"optionalCredentials,omitempty"`
-	DisplayOrder        int      `json:"displayOrder"`
-}
-
-type ListChannelsResponse struct {
-	Channels []ChannelItem `json:"channels"`
-}
-
-type ListChannelRegistryResponse struct {
-	Channels []ChannelRegistryItem `json:"channels"`
-}
-
-type GetChannelRequest struct {
-	Id string `path:"id"`
-}
-
-type GetChannelResponse struct {
-	Channel ChannelItem `json:"channel"`
-}
-
-type CreateChannelRequest struct {
-	Name        string            `json:"name"`
-	ChannelType string            `json:"channelType"`
-	Credentials map[string]string `json:"credentials"`
-	Config      map[string]string `json:"config,omitempty"`
-}
-
-type CreateChannelResponse struct {
-	Channel ChannelItem `json:"channel"`
-}
-
-type UpdateChannelRequest struct {
-	Id          string            `path:"id"`
-	Name        string            `json:"name,omitempty"`
-	IsEnabled   *bool             `json:"isEnabled,omitempty"`
-	Credentials map[string]string `json:"credentials,omitempty"`
-	Config      map[string]string `json:"config,omitempty"`
-}
-
-type UpdateChannelResponse struct {
-	Channel ChannelItem `json:"channel"`
-}
-
-type DeleteChannelRequest struct {
-	Id string `path:"id"`
-}
-
-type TestChannelRequest struct {
-	Id string `path:"id"`
-}
-
-type TestChannelResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
+	ToolCount int    `json:"tool_count,omitempty"`
 }
 
 // MCP OAuth Client types
@@ -1051,7 +996,7 @@ type ListMCPToolsResponse struct {
 	Tools []MCPToolInfo `json:"tools"`
 }
 
-// Plugin Settings types (iPhone Settings.bundle model)
+// Plugin Settings types
 
 type PluginItem struct {
 	Id               string            `json:"id"`
@@ -1099,7 +1044,7 @@ type TogglePluginRequest struct {
 	IsEnabled bool   `json:"isEnabled"`
 }
 
-// NeboLoop App Store types
+// NeboLoop store types
 
 type StoreAuthor struct {
 	ID       string `json:"id"`
@@ -1238,4 +1183,103 @@ type UpdateToolPermissionsResponse struct {
 
 type AcceptTermsResponse struct {
 	AcceptedAt string `json:"acceptedAt"`
+}
+
+// Developer Mode types
+
+type SideloadRequest struct {
+	Path string `json:"path"`
+}
+
+type SideloadResponse struct {
+	AppID   string `json:"appId"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Path    string `json:"path"`
+}
+
+type DevAppItem struct {
+	AppID    string `json:"appId"`
+	Name     string `json:"name"`
+	Version  string `json:"version"`
+	Path     string `json:"path"`
+	Running  bool   `json:"running"`
+	LoadedAt int64  `json:"loadedAt"`
+}
+
+type ListDevAppsResponse struct {
+	Apps []DevAppItem `json:"apps"`
+}
+
+// Tool execution types (Developer Window)
+
+type ToolExecuteRequest struct {
+	Tool  string          `json:"tool"`
+	Input json.RawMessage `json:"input"`
+}
+
+type ToolExecuteResponse struct {
+	Content string `json:"content"`
+	IsError bool   `json:"isError"`
+}
+
+type ToolDefinitionItem struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Schema      json.RawMessage `json:"schema"`
+}
+
+type ListToolsResponse struct {
+	Tools []ToolDefinitionItem `json:"tools"`
+}
+
+// App UI types (structured template blocks)
+
+type UIBlock struct {
+	BlockID     string           `json:"block_id"`
+	Type        string           `json:"type"`
+	Text        string           `json:"text,omitempty"`
+	Value       string           `json:"value,omitempty"`
+	Placeholder string           `json:"placeholder,omitempty"`
+	Hint        string           `json:"hint,omitempty"`
+	Variant     string           `json:"variant,omitempty"`
+	Src         string           `json:"src,omitempty"`
+	Alt         string           `json:"alt,omitempty"`
+	Disabled    bool             `json:"disabled,omitempty"`
+	Options     []UISelectOption `json:"options,omitempty"`
+	Style       string           `json:"style,omitempty"`
+}
+
+type UISelectOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+type UIView struct {
+	ViewID string    `json:"view_id"`
+	Title  string    `json:"title"`
+	Blocks []UIBlock `json:"blocks"`
+}
+
+type UIAppInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type ListUIAppsResponse struct {
+	Apps []UIAppInfo `json:"apps"`
+}
+
+type SendUIEventRequest struct {
+	ViewID  string `json:"view_id"`
+	BlockID string `json:"block_id"`
+	Action  string `json:"action"`
+	Value   string `json:"value"`
+}
+
+type SendUIEventResponse struct {
+	View  *UIView `json:"view,omitempty"`
+	Error string  `json:"error,omitempty"`
+	Toast string  `json:"toast,omitempty"`
 }
