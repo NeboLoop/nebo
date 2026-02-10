@@ -9,7 +9,7 @@ type Origin string
 const (
 	OriginUser   Origin = "user"   // Direct user interaction (web UI, CLI)
 	OriginComm   Origin = "comm"   // Inter-agent communication (NeboLoop, loopback)
-	OriginPlugin Origin = "plugin" // External plugin binary
+	OriginApp Origin = "app" // External app binary
 	OriginSkill  Origin = "skill"  // Matched skill template
 	OriginSystem Origin = "system" // Internal system tasks (heartbeat, cron, recovery)
 )

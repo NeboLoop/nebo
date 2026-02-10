@@ -67,8 +67,8 @@ func defaultOriginDenyList() map[Origin]map[string]bool {
 	}
 
 	// Tools denied for plugin-origin (external binaries)
-	pluginDeny := map[string]bool{
-		"shell": true, // No shell from plugins
+	appDeny := map[string]bool{
+		"shell": true, // No shell from apps
 	}
 
 	// Tools denied for skill-origin (matched skill templates)
@@ -77,9 +77,9 @@ func defaultOriginDenyList() map[Origin]map[string]bool {
 	}
 
 	return map[Origin]map[string]bool{
-		OriginComm:   commDeny,
-		OriginPlugin: pluginDeny,
-		OriginSkill:  skillDeny,
+		OriginComm:  commDeny,
+		OriginApp:   appDeny,
+		OriginSkill: skillDeny,
 		// OriginUser: no restrictions (existing policy governs)
 		// OriginSystem: no restrictions (internal operations need full access)
 	}

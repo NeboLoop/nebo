@@ -463,7 +463,7 @@ Origins track where a request came from and enforce per-origin tool restrictions
 |--------|--------|---------------------|
 | `OriginUser` | Direct user interaction (web UI, CLI) | None |
 | `OriginComm` | Inter-agent communication | Denies: shell |
-| `OriginPlugin` | External plugin binary | Denies: shell |
+| `OriginApp` | External app binary | Denies: shell |
 | `OriginSkill` | Matched skill template | Denies: shell |
 | `OriginSystem` | Internal system tasks (heartbeat, cron, recovery) | None |
 

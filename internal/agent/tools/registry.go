@@ -210,6 +210,15 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 			tool.RequiresApproval(), r.policy != nil)
 	}
 
+	// Hard safety guard — unconditional, cannot be overridden by any setting
+	if err := CheckSafeguard(toolCall.Name, toolCall.Input); err != nil {
+		fmt.Printf("[Registry] SAFEGUARD BLOCKED: %s — %v\n", toolCall.Name, err)
+		return &ToolResult{
+			Content: err.Error(),
+			IsError: true,
+		}
+	}
+
 	fmt.Printf("[Registry] Calling tool.Execute...\n")
 	result, err := tool.Execute(ctx, toolCall.Input)
 	fmt.Printf("[Registry] tool.Execute returned: err=%v\n", err)

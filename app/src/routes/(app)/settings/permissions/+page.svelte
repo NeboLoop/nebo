@@ -69,7 +69,7 @@
 			key: 'file',
 			label: 'File System',
 			description:
-				'Read, write, edit, search, and browse files on your computer. Required for coding assistance.',
+				'Read, write, edit, search, and browse files on your computer. Required for most tasks.',
 			icon: FileText
 		},
 		{
@@ -175,15 +175,20 @@
 		saveAll();
 	}
 
-	function handleAutonomousClick(e: Event) {
-		// Prevent the native checkbox from toggling — we control it
-		e.preventDefault();
-		if (!autonomousMode) {
-			// Trying to turn ON — show terms modal (toggle stays OFF until confirmed)
+	function handleAutonomousChange() {
+		if (autonomousMode) {
+			// Just toggled ON — immediately revert and show terms modal instead
+			autonomousMode = false;
 			showTermsModal = true;
 		} else {
-			// Turning OFF — immediate
-			autonomousMode = false;
+			// Turning OFF — reset everything to safe defaults
+			for (const key of Object.keys(permissions)) {
+				permissions[key] = key === 'chat'; // only chat stays on
+			}
+			permissions = { ...permissions };
+			autoApproveRead = true;
+			autoApproveWrite = false;
+			autoApproveBash = false;
 			saveAll();
 		}
 	}
@@ -269,8 +274,8 @@
 				<input
 					type="checkbox"
 					class="toggle toggle-primary"
-					checked={autonomousMode}
-					onclick={handleAutonomousClick}
+					bind:checked={autonomousMode}
+					onchange={handleAutonomousChange}
 				/>
 			</div>
 

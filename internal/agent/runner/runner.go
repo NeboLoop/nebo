@@ -214,7 +214,7 @@ type RunRequest struct {
 	ModelOverride    string       // User-specified model override (e.g., "anthropic/claude-opus-4-5")
 	UserID           string       // User ID for user-scoped operations (sessions, memories)
 	SkipMemoryExtract bool        // Skip auto memory extraction (e.g., for heartbeats)
-	Origin           tools.Origin // Source of this request (user, comm, plugin, skill, system)
+	Origin           tools.Origin // Source of this request (user, comm, app, skill, system)
 }
 
 // modelOverrideProvider wraps a Provider to use a specific model

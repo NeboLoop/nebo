@@ -49,7 +49,7 @@
 					<span class="font-mono text-sm text-secondary">{request.tool}</span>
 				</div>
 
-				<div class="bg-base-300 rounded-lg p-4 overflow-x-auto">
+				<div class="bg-base-300 rounded-lg p-4 overflow-auto max-h-48">
 					<pre class="text-sm font-mono text-base-content whitespace-pre-wrap break-all">{getInputDisplay(request.input)}</pre>
 				</div>
 

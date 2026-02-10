@@ -482,7 +482,7 @@ func TestOriginContextRoundTrip(t *testing.T) {
 	}
 
 	// Set and retrieve each origin type
-	origins := []Origin{OriginUser, OriginComm, OriginPlugin, OriginSkill, OriginSystem}
+	origins := []Origin{OriginUser, OriginComm, OriginApp, OriginSkill, OriginSystem}
 	for _, origin := range origins {
 		ctx := WithOrigin(ctx, origin)
 		if got := GetOrigin(ctx); got != origin {
@@ -505,8 +505,8 @@ func TestIsDeniedForOrigin(t *testing.T) {
 		{"system can use shell", OriginSystem, "shell", false},
 		{"comm denied shell", OriginComm, "shell", true},
 		{"comm can use file", OriginComm, "file", false},
-		{"plugin denied shell", OriginPlugin, "shell", true},
-		{"plugin can use file", OriginPlugin, "file", false},
+		{"app denied shell", OriginApp, "shell", true},
+		{"app can use file", OriginApp, "file", false},
 		{"skill denied shell", OriginSkill, "shell", true},
 		{"skill can use file", OriginSkill, "file", false},
 	}
@@ -719,7 +719,7 @@ func TestRegistryAllowsFileForAllOrigins(t *testing.T) {
 	os.WriteFile(testFile, []byte("hello"), 0644)
 
 	// All origins should be able to use file(action: read)
-	origins := []Origin{OriginUser, OriginComm, OriginPlugin, OriginSkill, OriginSystem}
+	origins := []Origin{OriginUser, OriginComm, OriginApp, OriginSkill, OriginSystem}
 	for _, origin := range origins {
 		ctx := WithOrigin(context.Background(), origin)
 		result := registry.Execute(ctx, &ai.ToolCall{

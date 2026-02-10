@@ -114,8 +114,9 @@
 		}
 	});
 
-	// Approval requests
-	let pendingApproval = $state<ApprovalRequest | null>(null);
+	// Approval request queue — multiple lanes can request approval concurrently
+	let approvalQueue = $state<ApprovalRequest[]>([]);
+	const pendingApproval = $derived(approvalQueue.length > 0 ? approvalQueue[0] : null);
 
 	let unsubscribers: (() => void)[] = [];
 
@@ -404,7 +405,7 @@
 		const input = data?.input as Record<string, unknown>;
 
 		if (requestId && tool) {
-			pendingApproval = { requestId, tool, input: input || {} };
+			approvalQueue = [...approvalQueue, { requestId, tool, input: input || {} }];
 		}
 	}
 
@@ -455,22 +456,26 @@
 
 	// --- Approval Handlers ---
 
+	function resolveApproval(requestId: string) {
+		approvalQueue = approvalQueue.filter((r) => r.requestId !== requestId);
+	}
+
 	function handleApprove(requestId: string) {
 		const client = getWebSocketClient();
 		client.send('approval_response', { request_id: requestId, approved: true });
-		pendingApproval = null;
+		resolveApproval(requestId);
 	}
 
 	function handleApproveAlways(requestId: string) {
 		const client = getWebSocketClient();
 		client.send('approval_response', { request_id: requestId, approved: true, always: true });
-		pendingApproval = null;
+		resolveApproval(requestId);
 	}
 
 	function handleDeny(requestId: string) {
 		const client = getWebSocketClient();
 		client.send('approval_response', { request_id: requestId, approved: false });
-		pendingApproval = null;
+		resolveApproval(requestId);
 	}
 
 	// --- Send / Cancel ---

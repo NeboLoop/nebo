@@ -399,7 +399,7 @@ Agent sees `mcp__notion__search` in its tool list, calls it, returns results. No
 1. **API keys encrypted at rest** — Already handled by `internal/mcp/client/crypto.go`
 2. **Stdio commands sandboxed** — Only allow user-approved commands; show confirmation dialog
 3. **Tool policies apply** — External MCP tools go through the same `Policy` system as built-in tools
-4. **Origin tracking** — External MCP tool calls get `OriginPlugin` or a new `OriginMCP` origin for policy enforcement
+4. **Origin tracking** — External MCP tool calls get `OriginApp` or a new `OriginMCP` origin for policy enforcement
 5. **No auto-approval** — New integrations require explicit user action to add
 6. **Credential rotation** — OAuth refresh tokens handled automatically; API keys require manual update
 
