@@ -36,8 +36,8 @@ Unicode True
 ;--- Modern UI configuration -------------------------------------------------
 !define MUI_ABORTWARNING
 
-!define MUI_ICON "assets\icons\nebo.ico"
-!define MUI_UNICON "assets\icons\nebo.ico"
+!define MUI_ICON "..\assets\icons\nebo.ico"
+!define MUI_UNICON "..\assets\icons\nebo.ico"
 
 ; Branding
 !define MUI_WELCOMEPAGE_TITLE "Welcome to Nebo Setup"
@@ -49,7 +49,7 @@ Unicode True
 
 ;--- Pages -------------------------------------------------------------------
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "LICENSE"
+!insertmacro MUI_PAGE_LICENSE "..\LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
