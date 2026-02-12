@@ -198,9 +198,16 @@ func (x *ChannelDisconnectResponse) GetError() string {
 }
 
 type ChannelSendRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ChannelId     string                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
-	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ChannelId string                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	Text      string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	// v1 envelope fields (optional — apps can use just channel_id + text)
+	MessageId     string           `protobuf:"bytes,3,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"` // UUID v7, set by Nebo if empty
+	Sender        *MessageSender   `protobuf:"bytes,4,opt,name=sender,proto3" json:"sender,omitempty"`                        // agent identity
+	Attachments   []*Attachment    `protobuf:"bytes,5,rep,name=attachments,proto3" json:"attachments,omitempty"`
+	ReplyTo       string           `protobuf:"bytes,6,opt,name=reply_to,json=replyTo,proto3" json:"reply_to,omitempty"`                // message_id for threading
+	Actions       []*MessageAction `protobuf:"bytes,7,rep,name=actions,proto3" json:"actions,omitempty"`                               // buttons, keyboards
+	PlatformData  []byte           `protobuf:"bytes,8,opt,name=platform_data,json=platformData,proto3" json:"platform_data,omitempty"` // opaque passthrough
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -249,9 +256,52 @@ func (x *ChannelSendRequest) GetText() string {
 	return ""
 }
 
+func (x *ChannelSendRequest) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
+	}
+	return ""
+}
+
+func (x *ChannelSendRequest) GetSender() *MessageSender {
+	if x != nil {
+		return x.Sender
+	}
+	return nil
+}
+
+func (x *ChannelSendRequest) GetAttachments() []*Attachment {
+	if x != nil {
+		return x.Attachments
+	}
+	return nil
+}
+
+func (x *ChannelSendRequest) GetReplyTo() string {
+	if x != nil {
+		return x.ReplyTo
+	}
+	return ""
+}
+
+func (x *ChannelSendRequest) GetActions() []*MessageAction {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
+}
+
+func (x *ChannelSendRequest) GetPlatformData() []byte {
+	if x != nil {
+		return x.PlatformData
+	}
+	return nil
+}
+
 type ChannelSendResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	MessageId     string                 `protobuf:"bytes,2,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"` // echoed or platform-assigned ID
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -293,12 +343,27 @@ func (x *ChannelSendResponse) GetError() string {
 	return ""
 }
 
+func (x *ChannelSendResponse) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
+	}
+	return ""
+}
+
 type InboundMessage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ChannelId     string                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
-	UserId        string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
-	Metadata      string                 `protobuf:"bytes,4,opt,name=metadata,proto3" json:"metadata,omitempty"` // JSON-encoded metadata
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ChannelId string                 `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
+	UserId    string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Text      string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	Metadata  string                 `protobuf:"bytes,4,opt,name=metadata,proto3" json:"metadata,omitempty"` // JSON-encoded metadata (legacy)
+	// v1 envelope fields
+	MessageId     string           `protobuf:"bytes,5,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	Sender        *MessageSender   `protobuf:"bytes,6,opt,name=sender,proto3" json:"sender,omitempty"`
+	Attachments   []*Attachment    `protobuf:"bytes,7,rep,name=attachments,proto3" json:"attachments,omitempty"`
+	ReplyTo       string           `protobuf:"bytes,8,opt,name=reply_to,json=replyTo,proto3" json:"reply_to,omitempty"`
+	Actions       []*MessageAction `protobuf:"bytes,9,rep,name=actions,proto3" json:"actions,omitempty"`
+	PlatformData  []byte           `protobuf:"bytes,10,opt,name=platform_data,json=platformData,proto3" json:"platform_data,omitempty"`
+	Timestamp     string           `protobuf:"bytes,11,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // RFC3339
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -361,6 +426,238 @@ func (x *InboundMessage) GetMetadata() string {
 	return ""
 }
 
+func (x *InboundMessage) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
+	}
+	return ""
+}
+
+func (x *InboundMessage) GetSender() *MessageSender {
+	if x != nil {
+		return x.Sender
+	}
+	return nil
+}
+
+func (x *InboundMessage) GetAttachments() []*Attachment {
+	if x != nil {
+		return x.Attachments
+	}
+	return nil
+}
+
+func (x *InboundMessage) GetReplyTo() string {
+	if x != nil {
+		return x.ReplyTo
+	}
+	return ""
+}
+
+func (x *InboundMessage) GetActions() []*MessageAction {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
+}
+
+func (x *InboundMessage) GetPlatformData() []byte {
+	if x != nil {
+		return x.PlatformData
+	}
+	return nil
+}
+
+func (x *InboundMessage) GetTimestamp() string {
+	if x != nil {
+		return x.Timestamp
+	}
+	return ""
+}
+
+// MessageSender identifies who sent a message.
+type MessageSender struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Role          string                 `protobuf:"bytes,2,opt,name=role,proto3" json:"role,omitempty"`                // relationship dynamic (Friend, COO, Mentor)
+	BotId         string                 `protobuf:"bytes,3,opt,name=bot_id,json=botId,proto3" json:"bot_id,omitempty"` // NeboLoop bot UUID
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MessageSender) Reset() {
+	*x = MessageSender{}
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MessageSender) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MessageSender) ProtoMessage() {}
+
+func (x *MessageSender) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MessageSender.ProtoReflect.Descriptor instead.
+func (*MessageSender) Descriptor() ([]byte, []int) {
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *MessageSender) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *MessageSender) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *MessageSender) GetBotId() string {
+	if x != nil {
+		return x.BotId
+	}
+	return ""
+}
+
+// Attachment represents a file or media attachment.
+type Attachment struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "image", "file", "audio", "video"
+	Url           string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
+	Filename      string                 `protobuf:"bytes,3,opt,name=filename,proto3" json:"filename,omitempty"`
+	Size          int64                  `protobuf:"varint,4,opt,name=size,proto3" json:"size,omitempty"` // bytes
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Attachment) Reset() {
+	*x = Attachment{}
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Attachment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Attachment) ProtoMessage() {}
+
+func (x *Attachment) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Attachment.ProtoReflect.Descriptor instead.
+func (*Attachment) Descriptor() ([]byte, []int) {
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *Attachment) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *Attachment) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *Attachment) GetFilename() string {
+	if x != nil {
+		return x.Filename
+	}
+	return ""
+}
+
+func (x *Attachment) GetSize() int64 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+// MessageAction represents an interactive element (button, keyboard row).
+type MessageAction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Label         string                 `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
+	CallbackId    string                 `protobuf:"bytes,2,opt,name=callback_id,json=callbackId,proto3" json:"callback_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MessageAction) Reset() {
+	*x = MessageAction{}
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MessageAction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MessageAction) ProtoMessage() {}
+
+func (x *MessageAction) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MessageAction.ProtoReflect.Descriptor instead.
+func (*MessageAction) Descriptor() ([]byte, []int) {
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *MessageAction) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *MessageAction) GetCallbackId() string {
+	if x != nil {
+		return x.CallbackId
+	}
+	return ""
+}
+
 var File_proto_apps_v0_channel_proto protoreflect.FileDescriptor
 
 const file_proto_apps_v0_channel_proto_rawDesc = "" +
@@ -377,19 +674,51 @@ const file_proto_apps_v0_channel_proto_rawDesc = "" +
 	"\x16ChannelConnectResponse\x12\x14\n" +
 	"\x05error\x18\x01 \x01(\tR\x05error\"1\n" +
 	"\x19ChannelDisconnectResponse\x12\x14\n" +
-	"\x05error\x18\x01 \x01(\tR\x05error\"G\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\"\xbf\x02\n" +
 	"\x12ChannelSendRequest\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\tR\tchannelId\x12\x12\n" +
-	"\x04text\x18\x02 \x01(\tR\x04text\"+\n" +
+	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\x03 \x01(\tR\tmessageId\x12.\n" +
+	"\x06sender\x18\x04 \x01(\v2\x16.apps.v0.MessageSenderR\x06sender\x125\n" +
+	"\vattachments\x18\x05 \x03(\v2\x13.apps.v0.AttachmentR\vattachments\x12\x19\n" +
+	"\breply_to\x18\x06 \x01(\tR\areplyTo\x120\n" +
+	"\aactions\x18\a \x03(\v2\x16.apps.v0.MessageActionR\aactions\x12#\n" +
+	"\rplatform_data\x18\b \x01(\fR\fplatformData\"J\n" +
 	"\x13ChannelSendResponse\x12\x14\n" +
-	"\x05error\x18\x01 \x01(\tR\x05error\"x\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\x02 \x01(\tR\tmessageId\"\x8e\x03\n" +
 	"\x0eInboundMessage\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\tR\tchannelId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x12\n" +
 	"\x04text\x18\x03 \x01(\tR\x04text\x12\x1a\n" +
-	"\bmetadata\x18\x04 \x01(\tR\bmetadata2\xbf\x03\n" +
+	"\bmetadata\x18\x04 \x01(\tR\bmetadata\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\x05 \x01(\tR\tmessageId\x12.\n" +
+	"\x06sender\x18\x06 \x01(\v2\x16.apps.v0.MessageSenderR\x06sender\x125\n" +
+	"\vattachments\x18\a \x03(\v2\x13.apps.v0.AttachmentR\vattachments\x12\x19\n" +
+	"\breply_to\x18\b \x01(\tR\areplyTo\x120\n" +
+	"\aactions\x18\t \x03(\v2\x16.apps.v0.MessageActionR\aactions\x12#\n" +
+	"\rplatform_data\x18\n" +
+	" \x01(\fR\fplatformData\x12\x1c\n" +
+	"\ttimestamp\x18\v \x01(\tR\ttimestamp\"N\n" +
+	"\rMessageSender\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04role\x18\x02 \x01(\tR\x04role\x12\x15\n" +
+	"\x06bot_id\x18\x03 \x01(\tR\x05botId\"b\n" +
+	"\n" +
+	"Attachment\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x10\n" +
+	"\x03url\x18\x02 \x01(\tR\x03url\x12\x1a\n" +
+	"\bfilename\x18\x03 \x01(\tR\bfilename\x12\x12\n" +
+	"\x04size\x18\x04 \x01(\x03R\x04size\"F\n" +
+	"\rMessageAction\x12\x14\n" +
+	"\x05label\x18\x01 \x01(\tR\x05label\x12\x1f\n" +
+	"\vcallback_id\x18\x02 \x01(\tR\n" +
+	"callbackId2\xbf\x03\n" +
 	"\x0eChannelService\x12H\n" +
 	"\vHealthCheck\x12\x1b.apps.v0.HealthCheckRequest\x1a\x1c.apps.v0.HealthCheckResponse\x12)\n" +
 	"\x02ID\x12\x0e.apps.v0.Empty\x1a\x13.apps.v0.IDResponse\x12J\n" +
@@ -412,7 +741,7 @@ func file_proto_apps_v0_channel_proto_rawDescGZIP() []byte {
 	return file_proto_apps_v0_channel_proto_rawDescData
 }
 
-var file_proto_apps_v0_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_proto_apps_v0_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_proto_apps_v0_channel_proto_goTypes = []any{
 	(*IDResponse)(nil),                // 0: apps.v0.IDResponse
 	(*ChannelConnectRequest)(nil),     // 1: apps.v0.ChannelConnectRequest
@@ -421,33 +750,42 @@ var file_proto_apps_v0_channel_proto_goTypes = []any{
 	(*ChannelSendRequest)(nil),        // 4: apps.v0.ChannelSendRequest
 	(*ChannelSendResponse)(nil),       // 5: apps.v0.ChannelSendResponse
 	(*InboundMessage)(nil),            // 6: apps.v0.InboundMessage
-	nil,                               // 7: apps.v0.ChannelConnectRequest.ConfigEntry
-	(*HealthCheckRequest)(nil),        // 8: apps.v0.HealthCheckRequest
-	(*Empty)(nil),                     // 9: apps.v0.Empty
-	(*SettingsMap)(nil),               // 10: apps.v0.SettingsMap
-	(*HealthCheckResponse)(nil),       // 11: apps.v0.HealthCheckResponse
+	(*MessageSender)(nil),             // 7: apps.v0.MessageSender
+	(*Attachment)(nil),                // 8: apps.v0.Attachment
+	(*MessageAction)(nil),             // 9: apps.v0.MessageAction
+	nil,                               // 10: apps.v0.ChannelConnectRequest.ConfigEntry
+	(*HealthCheckRequest)(nil),        // 11: apps.v0.HealthCheckRequest
+	(*Empty)(nil),                     // 12: apps.v0.Empty
+	(*SettingsMap)(nil),               // 13: apps.v0.SettingsMap
+	(*HealthCheckResponse)(nil),       // 14: apps.v0.HealthCheckResponse
 }
 var file_proto_apps_v0_channel_proto_depIdxs = []int32{
-	7,  // 0: apps.v0.ChannelConnectRequest.config:type_name -> apps.v0.ChannelConnectRequest.ConfigEntry
-	8,  // 1: apps.v0.ChannelService.HealthCheck:input_type -> apps.v0.HealthCheckRequest
-	9,  // 2: apps.v0.ChannelService.ID:input_type -> apps.v0.Empty
-	1,  // 3: apps.v0.ChannelService.Connect:input_type -> apps.v0.ChannelConnectRequest
-	9,  // 4: apps.v0.ChannelService.Disconnect:input_type -> apps.v0.Empty
-	4,  // 5: apps.v0.ChannelService.Send:input_type -> apps.v0.ChannelSendRequest
-	9,  // 6: apps.v0.ChannelService.Receive:input_type -> apps.v0.Empty
-	10, // 7: apps.v0.ChannelService.Configure:input_type -> apps.v0.SettingsMap
-	11, // 8: apps.v0.ChannelService.HealthCheck:output_type -> apps.v0.HealthCheckResponse
-	0,  // 9: apps.v0.ChannelService.ID:output_type -> apps.v0.IDResponse
-	2,  // 10: apps.v0.ChannelService.Connect:output_type -> apps.v0.ChannelConnectResponse
-	3,  // 11: apps.v0.ChannelService.Disconnect:output_type -> apps.v0.ChannelDisconnectResponse
-	5,  // 12: apps.v0.ChannelService.Send:output_type -> apps.v0.ChannelSendResponse
-	6,  // 13: apps.v0.ChannelService.Receive:output_type -> apps.v0.InboundMessage
-	9,  // 14: apps.v0.ChannelService.Configure:output_type -> apps.v0.Empty
-	8,  // [8:15] is the sub-list for method output_type
-	1,  // [1:8] is the sub-list for method input_type
-	1,  // [1:1] is the sub-list for extension type_name
-	1,  // [1:1] is the sub-list for extension extendee
-	0,  // [0:1] is the sub-list for field type_name
+	10, // 0: apps.v0.ChannelConnectRequest.config:type_name -> apps.v0.ChannelConnectRequest.ConfigEntry
+	7,  // 1: apps.v0.ChannelSendRequest.sender:type_name -> apps.v0.MessageSender
+	8,  // 2: apps.v0.ChannelSendRequest.attachments:type_name -> apps.v0.Attachment
+	9,  // 3: apps.v0.ChannelSendRequest.actions:type_name -> apps.v0.MessageAction
+	7,  // 4: apps.v0.InboundMessage.sender:type_name -> apps.v0.MessageSender
+	8,  // 5: apps.v0.InboundMessage.attachments:type_name -> apps.v0.Attachment
+	9,  // 6: apps.v0.InboundMessage.actions:type_name -> apps.v0.MessageAction
+	11, // 7: apps.v0.ChannelService.HealthCheck:input_type -> apps.v0.HealthCheckRequest
+	12, // 8: apps.v0.ChannelService.ID:input_type -> apps.v0.Empty
+	1,  // 9: apps.v0.ChannelService.Connect:input_type -> apps.v0.ChannelConnectRequest
+	12, // 10: apps.v0.ChannelService.Disconnect:input_type -> apps.v0.Empty
+	4,  // 11: apps.v0.ChannelService.Send:input_type -> apps.v0.ChannelSendRequest
+	12, // 12: apps.v0.ChannelService.Receive:input_type -> apps.v0.Empty
+	13, // 13: apps.v0.ChannelService.Configure:input_type -> apps.v0.SettingsMap
+	14, // 14: apps.v0.ChannelService.HealthCheck:output_type -> apps.v0.HealthCheckResponse
+	0,  // 15: apps.v0.ChannelService.ID:output_type -> apps.v0.IDResponse
+	2,  // 16: apps.v0.ChannelService.Connect:output_type -> apps.v0.ChannelConnectResponse
+	3,  // 17: apps.v0.ChannelService.Disconnect:output_type -> apps.v0.ChannelDisconnectResponse
+	5,  // 18: apps.v0.ChannelService.Send:output_type -> apps.v0.ChannelSendResponse
+	6,  // 19: apps.v0.ChannelService.Receive:output_type -> apps.v0.InboundMessage
+	12, // 20: apps.v0.ChannelService.Configure:output_type -> apps.v0.Empty
+	14, // [14:21] is the sub-list for method output_type
+	7,  // [7:14] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_proto_apps_v0_channel_proto_init() }
@@ -462,7 +800,7 @@ func file_proto_apps_v0_channel_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v0_channel_proto_rawDesc), len(file_proto_apps_v0_channel_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

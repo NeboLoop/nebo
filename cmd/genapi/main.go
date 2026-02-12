@@ -24,6 +24,7 @@ type Route struct {
 	Request     string   // Request type (if any)
 	Response    string   // Response type
 	PathParams  []string // Parameters in the path like {id}
+	URLOnly     bool     // If true, generates a URL-returning function (not an API call)
 }
 
 // Explicit response type mappings for handlers that don't follow naming convention
@@ -47,6 +48,24 @@ var responseOverrides = map[string]string{
 	"CreateAdvisor":        "GetAdvisorResponse",
 	"UpdateAdvisor":        "GetAdvisorResponse",
 	"DeleteAdvisor":        "DeleteAdvisorResponse",
+	"Grants":               "GetAppOAuthGrantsResponse",
+	"Disconnect":           "MessageResponse",
+}
+
+// Explicit handler name overrides (when auto-derived TS name isn't right)
+var handlerNameOverrides = map[string]string{
+	"Grants":     "getAppOAuthGrants",
+	"Disconnect": "disconnectAppOAuth",
+}
+
+// Handlers to skip entirely (OAuth callbacks — not called from frontend)
+var skipHandlers = map[string]bool{
+	"Callback": true,
+}
+
+// Handlers that return a URL string instead of making an API call (e.g. OAuth redirects)
+var urlOnlyHandlers = map[string]string{
+	"Connect": "getAppOAuthConnectUrl",
 }
 
 // Explicit request type mappings for handlers that don't follow naming convention
@@ -129,8 +148,8 @@ func parseRoutes(filename string, types []TypeDef) ([]Route, error) {
 	var routes []Route
 
 	// Match patterns like: r.Get("/path", handler.SomeHandler(svcCtx))
-	// Also handles: r.Post, r.Put, r.Delete, r.Patch
-	routePattern := regexp.MustCompile(`r\.(Get|Post|Put|Delete|Patch)\("([^"]+)",\s*(\w+)\.(\w+)\(svcCtx\)\)`)
+	// Also matches: handler.SomeHandler(svcCtx.Field) for dependency injection
+	routePattern := regexp.MustCompile(`r\.(Get|Post|Put|Delete|Patch)\("([^"]+)",\s*(\w+)\.(\w+)\(svcCtx(?:\.\w+)?\)\)`)
 
 	matches := routePattern.FindAllStringSubmatch(string(content), -1)
 
@@ -165,11 +184,26 @@ func parseRoutes(filename string, types []TypeDef) ([]Route, error) {
 
 		// Derive TypeScript function name from handler name
 		// e.g., "ListChatsHandler" -> "listChats"
-		tsHandler := strings.TrimSuffix(handlerName, "Handler")
-		tsHandler = toLowerCamel(tsHandler)
+		baseName := strings.TrimSuffix(handlerName, "Handler")
+
+		// Skip handlers that aren't API endpoints at all (OAuth callbacks)
+		if skipHandlers[baseName] {
+			continue
+		}
+
+		// Check if this is a URL-only handler (returns URL string, not JSON)
+		urlOnly := false
+		tsHandler := ""
+		if urlName, ok := urlOnlyHandlers[baseName]; ok {
+			urlOnly = true
+			tsHandler = urlName
+		} else if override, ok := handlerNameOverrides[baseName]; ok {
+			tsHandler = override
+		} else {
+			tsHandler = toLowerCamel(baseName)
+		}
 
 		// Derive request/response types from handler name
-		baseName := strings.TrimSuffix(handlerName, "Handler")
 		requestType := baseName + "Request"
 		responseType := baseName + "Response"
 
@@ -207,6 +241,7 @@ func parseRoutes(filename string, types []TypeDef) ([]Route, error) {
 			Request:     requestType,
 			Response:    responseType,
 			PathParams:  pathParams,
+			URLOnly:     urlOnly,
 		})
 	}
 
@@ -547,19 +582,24 @@ export * from "./neboComponents"
 		sb.WriteString(" * @description \"" + r.Description + "\"\n")
 
 		// Document parameters
-		if r.Request != "" {
+		if r.Request != "" && !r.URLOnly {
 			sb.WriteString(" * @param req\n")
 		}
 
 		sb.WriteString(" */\n")
 
-		// Generate function signature
-		params := buildFunctionParams(r, typeMap)
-		sb.WriteString("export function " + r.Handler + "(" + params + ") {\n")
-
-		// Generate function body
-		body := buildFunctionBody(r, typeMap)
-		sb.WriteString("\treturn " + body + "\n")
+		if r.URLOnly {
+			// URL-only routes return a path string (e.g. OAuth redirect endpoints)
+			params := buildFunctionParams(r, typeMap)
+			sb.WriteString("export function " + r.Handler + "(" + params + "): string {\n")
+			sb.WriteString("\treturn `" + convertPathParams(r.Path) + "`\n")
+		} else {
+			// Standard JSON API routes
+			params := buildFunctionParams(r, typeMap)
+			sb.WriteString("export function " + r.Handler + "(" + params + ") {\n")
+			body := buildFunctionBody(r, typeMap)
+			sb.WriteString("\treturn " + body + "\n")
+		}
 		sb.WriteString("}\n\n")
 	}
 

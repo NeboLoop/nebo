@@ -16,6 +16,7 @@
 	let agentName = $state('Nebo');
 	let emoji = $state('');
 	let creature = $state('');
+	let role = $state('');
 	let vibe = $state('');
 	let avatar = $state('');
 
@@ -26,6 +27,7 @@
 				agentName = data.name || 'Nebo';
 				emoji = data.emoji || '';
 				creature = data.creature || '';
+				role = data.role || '';
 				vibe = data.vibe || '';
 				avatar = data.avatar || '';
 			}
@@ -45,6 +47,7 @@
 				name: agentName,
 				emoji,
 				creature,
+				role,
 				vibe,
 				avatar
 			});
@@ -85,6 +88,7 @@
 
 	const displayName = $derived(agentName || 'Nebo');
 	const displayCreature = $derived(creature || 'AI Agent');
+	const displayRole = $derived(role || '');
 	const displayVibe = $derived(vibe || '');
 </script>
 
@@ -128,6 +132,9 @@
 						{#if emoji && !avatar}<span class="mr-1.5">{emoji}</span>{/if}{displayName}
 					</h2>
 					<p class="text-sm text-base-content/60">{displayCreature}</p>
+					{#if displayRole}
+						<p class="text-xs text-base-content/50 mt-0.5">{displayRole}</p>
+					{/if}
 					{#if displayVibe}
 						<p class="text-sm text-base-content/40 italic mt-1">"{displayVibe}"</p>
 					{/if}
@@ -174,6 +181,20 @@
 						bind:value={creature}
 					></textarea>
 					<p class="text-xs text-base-content/30 mt-1">The archetype your agent embodies</p>
+				</div>
+
+				<div>
+					<label class="block text-sm font-medium text-base-content mb-1" for="agent-role">
+						Role
+					</label>
+					<input
+						id="agent-role"
+						type="text"
+						class="input input-bordered input-sm w-full max-w-xs"
+						placeholder="Friend, Mentor, Coach, COO..."
+						bind:value={role}
+					/>
+					<p class="text-xs text-base-content/30 mt-1">Your relationship dynamic with this agent</p>
 				</div>
 
 				<div>

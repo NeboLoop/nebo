@@ -159,6 +159,27 @@ export function listUIApps() {
 }
 
 /**
+ * @description "Grants"
+ */
+export function getAppOAuthGrants(appId: string) {
+	return webapi.get<components.GetAppOAuthGrantsResponse>(`/api/v1/apps/${appId}/oauth/grants`)
+}
+
+/**
+ * @description "Disconnect"
+ */
+export function disconnectAppOAuth(appId: string, provider: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/apps/${appId}/oauth/${provider}`)
+}
+
+/**
+ * @description "Connect"
+ */
+export function getAppOAuthConnectUrl(appId: string, provider: string): string {
+	return `/api/v1/apps/${appId}/oauth/${provider}/connect`
+}
+
+/**
  * @description "Get u i view"
  */
 export function getUIView(id: string) {
@@ -837,8 +858,8 @@ export function installStoreApp(id: string) {
 /**
  * @description "Get store app reviews"
  */
-export function getStoreAppReviews(id: string, page = 1, pageSize = 10) {
-	return webapi.get<components.GetStoreAppReviewsResponse>(`/api/v1/store/apps/${id}/reviews`, { page, pageSize })
+export function getStoreAppReviews(id: string) {
+	return webapi.get<components.GetStoreAppReviewsResponse>(`/api/v1/store/apps/${id}/reviews`)
 }
 
 /**
@@ -1014,37 +1035,5 @@ export function updateUserProfile(req: components.UpdateUserProfileRequest) {
  */
 export function healthCheck() {
 	return webapi.get<components.MessageResponse>(`/health`)
-}
-
-// --------------------------------------------------------------------------
-// App OAuth (manual — handlers write raw JSON, not through genapi)
-// --------------------------------------------------------------------------
-
-export interface AppOAuthGrant {
-	provider: string
-	scopes: string
-	connection_status: string
-	expires_at?: string
-}
-
-/**
- * @description "Get app OAuth grants"
- */
-export function getAppOAuthGrants(appId: string) {
-	return webapi.get<{ grants: AppOAuthGrant[] }>(`/api/v1/apps/${appId}/oauth/grants`)
-}
-
-/**
- * @description "Disconnect app OAuth provider"
- */
-export function disconnectAppOAuth(appId: string, provider: string) {
-	return webapi.delete<{ message: string }>(`/api/v1/apps/${appId}/oauth/${provider}`)
-}
-
-/**
- * Returns the URL to open in a popup for the app OAuth connect flow.
- */
-export function getAppOAuthConnectUrl(appId: string, provider: string): string {
-	return `/api/v1/apps/${appId}/oauth/${provider}/connect`
 }
 

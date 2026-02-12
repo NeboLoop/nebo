@@ -43,6 +43,7 @@ export interface AgentProfileResponse {
 	emoji?: string
 	creature?: string
 	vibe?: string
+	role?: string
 	avatar?: string
 	agentRules?: string
 	toolNotes?: string
@@ -77,6 +78,13 @@ export interface AgentStatusResponse {
 	agentId: string
 	connected: boolean
 	uptime: number
+}
+
+export interface AppOAuthGrant {
+	provider: string
+	scopes: string
+	connectionStatus: string
+	expiresAt?: string
 }
 
 export interface AuthConfigResponse {
@@ -324,6 +332,10 @@ export interface GetAgentSessionRequest {
 
 export interface GetAgentSettingsResponse {
 	settings: AgentSettings
+}
+
+export interface GetAppOAuthGrantsResponse {
+	grants: Array<AppOAuthGrant>
 }
 
 export interface GetAuthProfileRequest {
@@ -1183,6 +1195,7 @@ export interface UpdateAgentProfileRequest {
 	emoji?: string
 	creature?: string
 	vibe?: string
+	role?: string
 	avatar?: string
 	agentRules?: string
 	toolNotes?: string

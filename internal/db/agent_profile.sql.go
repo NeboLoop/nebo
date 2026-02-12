@@ -70,7 +70,7 @@ const getAgentProfile = `-- name: GetAgentProfile :one
 
 SELECT id, name, personality_preset, custom_personality, voice_style,
        response_length, emoji_usage, formality, proactivity,
-       emoji, creature, vibe, avatar, agent_rules, tool_notes,
+       emoji, creature, vibe, role, avatar, agent_rules, tool_notes,
        created_at, updated_at
 FROM agent_profile
 WHERE id = 1
@@ -89,6 +89,7 @@ type GetAgentProfileRow struct {
 	Emoji             sql.NullString `json:"emoji"`
 	Creature          sql.NullString `json:"creature"`
 	Vibe              sql.NullString `json:"vibe"`
+	Role              sql.NullString `json:"role"`
 	Avatar            sql.NullString `json:"avatar"`
 	AgentRules        sql.NullString `json:"agent_rules"`
 	ToolNotes         sql.NullString `json:"tool_notes"`
@@ -113,6 +114,7 @@ func (q *Queries) GetAgentProfile(ctx context.Context) (GetAgentProfileRow, erro
 		&i.Emoji,
 		&i.Creature,
 		&i.Vibe,
+		&i.Role,
 		&i.Avatar,
 		&i.AgentRules,
 		&i.ToolNotes,
@@ -193,9 +195,10 @@ SET name = COALESCE(?1, name),
     emoji = COALESCE(?9, emoji),
     creature = COALESCE(?10, creature),
     vibe = COALESCE(?11, vibe),
-    avatar = COALESCE(?12, avatar),
-    agent_rules = COALESCE(?13, agent_rules),
-    tool_notes = COALESCE(?14, tool_notes),
+    role = COALESCE(?12, role),
+    avatar = COALESCE(?13, avatar),
+    agent_rules = COALESCE(?14, agent_rules),
+    tool_notes = COALESCE(?15, tool_notes),
     updated_at = unixepoch()
 WHERE id = 1
 `
@@ -212,6 +215,7 @@ type UpdateAgentProfileParams struct {
 	Emoji             sql.NullString `json:"emoji"`
 	Creature          sql.NullString `json:"creature"`
 	Vibe              sql.NullString `json:"vibe"`
+	Role              sql.NullString `json:"role"`
 	Avatar            sql.NullString `json:"avatar"`
 	AgentRules        sql.NullString `json:"agent_rules"`
 	ToolNotes         sql.NullString `json:"tool_notes"`
@@ -230,6 +234,7 @@ func (q *Queries) UpdateAgentProfile(ctx context.Context, arg UpdateAgentProfile
 		arg.Emoji,
 		arg.Creature,
 		arg.Vibe,
+		arg.Role,
 		arg.Avatar,
 		arg.AgentRules,
 		arg.ToolNotes,

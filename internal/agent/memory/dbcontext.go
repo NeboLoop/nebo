@@ -21,6 +21,7 @@ type DBContext struct {
 	AgentEmoji        string
 	AgentCreature     string
 	AgentVibe         string
+	AgentRole         string
 	AgentRules        string
 	ToolNotes         string
 
@@ -87,16 +88,16 @@ func loadAgentProfile(ctx context.Context, db *sql.DB, result *DBContext) error 
 	// Get agent profile (created by migrations)
 	var name, preset sql.NullString
 	var customPersonality, voiceStyle, responseLength, emojiUsage, formality, proactivity sql.NullString
-	var emoji, creature, vibe, agentRules, toolNotes sql.NullString
+	var emoji, creature, vibe, role, agentRules, toolNotes sql.NullString
 
 	err := db.QueryRowContext(ctx, `
 		SELECT name, personality_preset, custom_personality, voice_style,
 		       response_length, emoji_usage, formality, proactivity,
-		       emoji, creature, vibe, agent_rules, tool_notes
+		       emoji, creature, vibe, role, agent_rules, tool_notes
 		FROM agent_profile WHERE id = 1
 	`).Scan(&name, &preset, &customPersonality, &voiceStyle,
 		&responseLength, &emojiUsage, &formality, &proactivity,
-		&emoji, &creature, &vibe, &agentRules, &toolNotes)
+		&emoji, &creature, &vibe, &role, &agentRules, &toolNotes)
 
 	if err != nil && err != sql.ErrNoRows {
 		return err
@@ -111,6 +112,7 @@ func loadAgentProfile(ctx context.Context, db *sql.DB, result *DBContext) error 
 	result.AgentEmoji = stringOr(emoji, "")
 	result.AgentCreature = stringOr(creature, "")
 	result.AgentVibe = stringOr(vibe, "")
+	result.AgentRole = stringOr(role, "")
 	result.AgentRules = stringOr(agentRules, "")
 	result.ToolNotes = stringOr(toolNotes, "")
 
@@ -263,11 +265,14 @@ func (c *DBContext) FormatForSystemPrompt() string {
 		parts = append(parts, identity)
 	}
 
-	// Agent character (creature, vibe, emoji — the "business card")
-	if c.AgentCreature != "" || c.AgentVibe != "" || c.AgentEmoji != "" {
+	// Agent character (creature, role, vibe, emoji — the "business card")
+	if c.AgentCreature != "" || c.AgentRole != "" || c.AgentVibe != "" || c.AgentEmoji != "" {
 		var charParts []string
 		if c.AgentCreature != "" {
 			charParts = append(charParts, "You are a "+c.AgentCreature+".")
+		}
+		if c.AgentRole != "" {
+			charParts = append(charParts, "Your relationship to the user: "+c.AgentRole+".")
 		}
 		if c.AgentVibe != "" {
 			charParts = append(charParts, "Your vibe: "+c.AgentVibe)

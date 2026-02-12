@@ -3,7 +3,7 @@
 -- name: GetAgentProfile :one
 SELECT id, name, personality_preset, custom_personality, voice_style,
        response_length, emoji_usage, formality, proactivity,
-       emoji, creature, vibe, avatar, agent_rules, tool_notes,
+       emoji, creature, vibe, role, avatar, agent_rules, tool_notes,
        created_at, updated_at
 FROM agent_profile
 WHERE id = 1;
@@ -21,6 +21,7 @@ SET name = COALESCE(sqlc.narg(name), name),
     emoji = COALESCE(sqlc.narg(emoji), emoji),
     creature = COALESCE(sqlc.narg(creature), creature),
     vibe = COALESCE(sqlc.narg(vibe), vibe),
+    role = COALESCE(sqlc.narg(role), role),
     avatar = COALESCE(sqlc.narg(avatar), avatar),
     agent_rules = COALESCE(sqlc.narg(agent_rules), agent_rules),
     tool_notes = COALESCE(sqlc.narg(tool_notes), tool_notes),

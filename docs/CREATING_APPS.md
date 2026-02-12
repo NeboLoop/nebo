@@ -185,6 +185,11 @@ Wildcard permissions are supported: `network:*` matches any `network:` permissio
 
 Settings appear in the Nebo UI under the app's settings panel. Nebo stores them in the database and sends them to your app via the `Configure` RPC when they change.
 
+**Store integration:** Your settings schema is included in the NeboLoop app store listing and in the install notification payload. This means:
+- The store shows "Requires configuration" pre-install if you have required settings
+- After install, Nebo immediately prompts the user with your settings form
+- Apps with unconfigured required settings show a "Needs Setup" badge in the UI
+
 | Type | Description |
 |------|-------------|
 | `text` | Single-line text input |
@@ -403,8 +408,53 @@ Channel apps bridge external messaging platforms (Telegram, Discord, Slack, etc.
 2. Nebo calls `Connect()` with config from your app's settings (API tokens, bot tokens, etc.)
 3. Nebo opens a `Receive()` stream — your app sends inbound messages whenever a user messages the bot
 4. Inbound messages are routed to the agent's main conversation lane
-5. When the agent (or cron jobs) want to send a message, Nebo calls `Send()` with the channel ID and text
+5. When the agent (or cron jobs) want to send a message, Nebo calls `Send()` with the v1 message envelope
 6. On shutdown, Nebo calls `Disconnect()`
+
+### v1 Message Envelope
+
+All channel messages — inbound and outbound — use the common message envelope. This is the shared contract between Nebo, NeboLoop, and every channel plugin.
+
+```json
+{
+  "message_id": "01953f8a-...",
+  "channel_id": "telegram:12345",
+  "sender": { "name": "Alex", "role": "COO", "bot_id": "uuid" },
+  "text": "Q3 numbers look good...",
+  "attachments": [{ "type": "image", "url": "https://...", "filename": "chart.png", "size": 45000 }],
+  "reply_to": "01953f89-...",
+  "actions": [{ "label": "Approve", "callback_id": "approve_q3" }],
+  "platform_data": null,
+  "timestamp": "2026-02-12T15:10:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message_id` | UUID v7 | Time-ordered unique ID. Required for `reply_to` references. |
+| `channel_id` | `{type}:{platform_id}` | Route-able channel identifier (e.g., `telegram:12345`, `discord:98765`) |
+| `sender` | object | Bot identity — `name`, `role`, `bot_id`. Enriched by the NeboLoop broker from cached identity; your app doesn't need to set this on outbound messages. |
+| `text` | string | Message body |
+| `attachments` | array | Files, images, audio. Each has `type`, `url`, `filename`, `size`. |
+| `reply_to` | UUID v7 | Parent message ID for threading. `null` for top-level messages. |
+| `actions` | array | Interactive buttons/keyboards. Each has `label` and `callback_id`. |
+| `platform_data` | bytes | Opaque passthrough for platform-specific features — Telegram inline keyboards, Discord embeds, iMessage balloon effects. Your plugin interprets this; the agent and broker pass it through untouched. |
+| `timestamp` | ISO 8601 | Publisher sets this. For inbound messages, use the platform's original timestamp, not bridge time. |
+
+**Two-layer design:** The common fields (text, attachments, reply_to, actions) cover 90% of agent-initiated messaging. Platform-specific features go in `platform_data` — your plugin maps them to/from the native platform format. This means you can build a basic channel plugin using only the common fields, and add rich platform features incrementally.
+
+**Sender identity:** The `sender` block contains the bot's name and role (relationship dynamic — e.g., "Friend", "COO", "Mentor"). The NeboLoop broker enriches outbound messages with sender identity from its cached bot record. Your channel plugin uses this to format the display name however the platform expects ("Alex/COO" in Slack, "Alex — COO" in Discord embeds, etc.).
+
+### MQTT Topics
+
+Channel messages are routed over per-channel MQTT subtopics for isolation:
+
+```
+neboloop/bot/{botID}/channels/{channelType}/inbound    # messages from users → agent
+neboloop/bot/{botID}/channels/{channelType}/outbound   # messages from agent → channel
+```
+
+Each channel type gets its own queue, so a slow consumer on one channel (e.g., rate-limited WhatsApp API) can't back up another. Nebo subscribes with wildcards — backward-compatible with legacy topics.
 
 ### Go Example — Telegram Channel
 
@@ -413,16 +463,19 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
     "log"
+    "time"
 
+    "github.com/google/uuid"
     tgbot "github.com/go-telegram/bot"
     nebo "github.com/nebolabs/nebo-sdk-go"
 )
 
 type Telegram struct {
     bot      *tgbot.Bot
-    messages chan nebo.InboundMessage
+    messages chan nebo.ChannelEnvelope
     cancel   context.CancelFunc
 }
 
@@ -441,11 +494,30 @@ func (t *Telegram) Connect(_ context.Context, config map[string]string) error {
         if update.Message == nil {
             return
         }
-        t.messages <- nebo.InboundMessage{
-            ChannelID: fmt.Sprintf("%d", update.Message.Chat.ID),
-            UserID:    fmt.Sprintf("%d", update.Message.From.ID),
+
+        env := nebo.ChannelEnvelope{
+            MessageID: uuid.Must(uuid.NewV7()).String(),
+            ChannelID: fmt.Sprintf("telegram:%d", update.Message.Chat.ID),
             Text:      update.Message.Text,
+            Timestamp: time.Unix(int64(update.Message.Date), 0).UTC(),
         }
+
+        // Handle reply threading
+        if update.Message.ReplyToMessage != nil {
+            env.ReplyTo = fmt.Sprintf("%d", update.Message.ReplyToMessage.MessageID)
+        }
+
+        // Handle photo attachments
+        if len(update.Message.Photo) > 0 {
+            best := update.Message.Photo[len(update.Message.Photo)-1]
+            env.Attachments = []nebo.Attachment{{
+                Type: "image",
+                URL:  fmt.Sprintf("tg://file/%s", best.FileID),
+                Size: int64(best.FileSize),
+            }}
+        }
+
+        t.messages <- env
     }))
     if err != nil {
         return err
@@ -463,18 +535,56 @@ func (t *Telegram) Disconnect(_ context.Context) error {
     return nil
 }
 
-func (t *Telegram) Send(ctx context.Context, channelID, text string) error {
+func (t *Telegram) Send(ctx context.Context, env nebo.ChannelEnvelope) (string, error) {
     if t.bot == nil {
-        return fmt.Errorf("not connected")
+        return "", fmt.Errorf("not connected")
     }
-    _, err := t.bot.SendMessage(ctx, &tgbot.SendMessageParams{
-        ChatID: channelID,
-        Text:   text,
-    })
-    return err
+
+    // Extract platform chat ID from channel_id ("telegram:12345" → "12345")
+    chatID := env.ChannelID[len("telegram:"):]
+
+    params := &tgbot.SendMessageParams{
+        ChatID: chatID,
+        Text:   env.Text,
+    }
+
+    // Handle reply threading
+    if env.ReplyTo != "" {
+        params.ReplyParameters = &tgbot.ReplyParameters{MessageID: env.ReplyTo}
+    }
+
+    // Handle inline keyboard actions
+    if len(env.Actions) > 0 {
+        var buttons [][]tgbot.InlineKeyboardButton
+        for _, a := range env.Actions {
+            buttons = append(buttons, []tgbot.InlineKeyboardButton{
+                {Text: a.Label, CallbackData: a.CallbackID},
+            })
+        }
+        params.ReplyMarkup = &tgbot.InlineKeyboardMarkup{InlineKeyboard: buttons}
+    }
+
+    // Handle platform-specific data (e.g., custom Telegram inline keyboards)
+    if env.PlatformData != nil {
+        var pd map[string]json.RawMessage
+        if err := json.Unmarshal(env.PlatformData, &pd); err == nil {
+            if kb, ok := pd["inline_keyboard"]; ok {
+                var markup tgbot.InlineKeyboardMarkup
+                if err := json.Unmarshal(kb, &markup); err == nil {
+                    params.ReplyMarkup = &markup
+                }
+            }
+        }
+    }
+
+    msg, err := t.bot.SendMessage(ctx, params)
+    if err != nil {
+        return "", err
+    }
+    return fmt.Sprintf("%d", msg.MessageID), nil
 }
 
-func (t *Telegram) Receive(_ context.Context) (<-chan nebo.InboundMessage, error) {
+func (t *Telegram) Receive(_ context.Context) (<-chan nebo.ChannelEnvelope, error) {
     return t.messages, nil
 }
 
@@ -484,7 +594,7 @@ func main() {
         log.Fatal(err)
     }
     app.RegisterChannel(&Telegram{
-        messages: make(chan nebo.InboundMessage, 100),
+        messages: make(chan nebo.ChannelEnvelope, 100),
     })
     log.Fatal(app.Run())
 }
@@ -515,7 +625,9 @@ func main() {
 }
 ```
 
-**Message routing:** Inbound messages from `Receive()` are delivered to the agent's main conversation lane. The agent processes them like any other user message. The agent can reply using the `message` tool (`action: send, channel: telegram, to: <chat_id>, text: <response>`), or cron jobs can deliver results to channels automatically.
+**Message routing:** Inbound envelopes from `Receive()` are delivered to the agent's conversation lane. The agent processes them like any other user message. The agent can reply using the `message` tool (`action: send, channel: telegram, to: <chat_id>, text: <response>`), or cron jobs can deliver results to channels automatically. The NeboLoop broker enriches outbound envelopes with the bot's `sender` identity (name + role) before routing to your plugin.
+
+**Send return value:** `Send()` returns a `message_id` (the platform's native message ID) so Nebo can track it for threading via `reply_to`. If your platform doesn't have message IDs, generate a UUID v7.
 
 ---
 
@@ -903,19 +1015,52 @@ nebo apps uninstall com.example.myapp
 
 ## Proto File Reference
 
-All proto files live in `proto/apps/v0/`. The SDKs ship with pre-generated code, so you don't need protoc for normal development.
+Proto files live in `proto/apps/`. Channel proto is v1; others are v0. The SDKs ship with pre-generated code, so you don't need protoc for normal development.
 
 | File | Service | Key RPCs |
 |------|---------|----------|
-| `common.proto` | (messages only) | HealthCheckRequest/Response, SettingsMap, UserContext, Empty |
-| `tool.proto` | `ToolService` | Name, Description, Schema, Execute, RequiresApproval, Configure |
-| `channel.proto` | `ChannelService` | ID, Connect, Disconnect, Send, Receive (stream), Configure |
-| `comm.proto` | `CommService` | Name, Version, Connect, Disconnect, Send, Subscribe, Register, Receive (stream), Configure |
-| `gateway.proto` | `GatewayService` | HealthCheck, Stream (stream), Poll, Cancel, Configure |
-| `ui.proto` | `UIService` | HealthCheck, GetView, SendEvent, StreamUpdates (stream), Configure |
-| `schedule.proto` | `ScheduleService` | HealthCheck, Create, Get, List, Update, Delete, Enable, Disable, Trigger, History, Triggers (stream), Configure |
+| `v0/common.proto` | (messages only) | HealthCheckRequest/Response, SettingsMap, UserContext, Empty |
+| `v0/tool.proto` | `ToolService` | Name, Description, Schema, Execute, RequiresApproval, Configure |
+| `v1/channel.proto` | `ChannelService` | ID, Connect, Disconnect, Send, Receive (stream), Configure |
+| `v0/comm.proto` | `CommService` | Name, Version, Connect, Disconnect, Send, Subscribe, Register, Receive (stream), Configure |
+| `v0/gateway.proto` | `GatewayService` | HealthCheck, Stream (stream), Poll, Cancel, Configure |
+| `v0/ui.proto` | `UIService` | HealthCheck, GetView, SendEvent, StreamUpdates (stream), Configure |
+| `v0/schedule.proto` | `ScheduleService` | HealthCheck, Create, Get, List, Update, Delete, Enable, Disable, Trigger, History, Triggers (stream), Configure |
 
 Every service includes `HealthCheck` and `Configure` RPCs. The SDK handles both automatically.
+
+### v1 Channel Proto Types
+
+The v1 channel proto adds rich messaging support:
+
+| Message Type | Fields | Description |
+|--------------|--------|-------------|
+| `ChannelSendRequest` | `message_id`, `channel_id`, `sender`, `text`, `attachments`, `reply_to`, `actions`, `platform_data` | Outbound message envelope |
+| `ChannelSendResponse` | `message_id` | Platform message ID for threading |
+| `InboundMessage` | `message_id`, `channel_id`, `text`, `attachments`, `reply_to`, `actions`, `platform_data`, `timestamp` | Inbound message envelope |
+| `MessageSender` | `name`, `role`, `bot_id` | Bot identity (enriched by broker) |
+| `Attachment` | `type`, `url`, `filename`, `size` | File/image/audio attachment |
+| `MessageAction` | `label`, `callback_id` | Interactive button/keyboard action |
+
+Proto3 additive — existing apps that only use `channel_id` + `text` still work without changes.
+
+---
+
+## Bot Identity and Roles
+
+Nebo bots have a three-axis identity model that shapes how they behave and present themselves:
+
+- **`creature`** — What the bot is (archetype/competency): "Quick-witted strategist", "Meticulous researcher"
+- **`role`** — How it relates to the user (relationship dynamic): "Friend", "COO", "Son", "Mentor", "Coach"
+- **`vibe`** — Its energy (communication style): "Chill but opinionated", "Warm and encouraging"
+
+**Why this matters for channel apps:** When your channel plugin receives an outbound message, the `sender` field contains the bot's `name` and `role`. Use this to format the display name appropriately for your platform:
+
+- Slack: "Alex/COO" in the message header
+- Discord: "Alex — COO" in the embed author field
+- Telegram: "Alex (COO)" in the bot name
+
+The role isn't a job title — it's a relationship descriptor. "Friend", "Son", and "Mentor" are valid roles alongside "COO" and "DevLead". Your plugin should display whatever the user has set without filtering or interpreting it.
 
 ---
 

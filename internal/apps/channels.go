@@ -2,10 +2,10 @@ package apps
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +40,8 @@ type ChannelBridgeConfig struct {
 	BotID        string // Bot UUID assigned by NeboLoop
 	MQTTUsername string // MQTT username
 	MQTTPassword string // MQTT password
+	AgentName    string // Agent name for outbound envelope sender
+	AgentRole    string // Agent role for outbound envelope sender
 }
 
 // ChannelBridge subscribes to NeboLoop MQTT web chat messages and
@@ -166,7 +168,8 @@ func (cb *ChannelBridge) Start(ctx context.Context, config ChannelBridgeConfig) 
 	return nil
 }
 
-// onConnect subscribes to the chat inbound topic after each (re)connection.
+// onConnect subscribes to channel inbound topics after each (re)connection.
+// Subscribes to both legacy topic and per-channel wildcard for backward compatibility.
 func (cb *ChannelBridge) onConnect(cm *autopaho.ConnectionManager) {
 	cb.mu.RLock()
 	botID := cb.config.BotID
@@ -175,23 +178,30 @@ func (cb *ChannelBridge) onConnect(cm *autopaho.ConnectionManager) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	topic := fmt.Sprintf("neboloop/bot/%s/chat/in", botID)
+	// Legacy topic: neboloop/bot/{botID}/chat/in
+	legacyTopic := fmt.Sprintf("neboloop/bot/%s/chat/in", botID)
+	// Per-channel wildcard: neboloop/bot/{botID}/channels/+/inbound
+	channelTopic := fmt.Sprintf("neboloop/bot/%s/channels/+/inbound", botID)
+
 	_, err := cm.Subscribe(ctx, &paho.Subscribe{
 		Subscriptions: []paho.SubscribeOptions{
-			{Topic: topic, QoS: 1},
+			{Topic: legacyTopic, QoS: 1},
+			{Topic: channelTopic, QoS: 1},
 		},
 	})
 	if err != nil {
-		fmt.Printf("[apps:channels] Subscribe failed for %s: %v\n", topic, err)
+		fmt.Printf("[apps:channels] Subscribe failed: %v\n", err)
 		return
 	}
-	fmt.Printf("[apps:channels] Subscribed to %s\n", topic)
+	fmt.Printf("[apps:channels] Subscribed to %s and %s\n", legacyTopic, channelTopic)
 }
 
 // onMessage handles incoming channel messages from NeboLoop.
+// Supports both v1 envelope format (per-channel topics) and legacy chat format.
 func (cb *ChannelBridge) onMessage(pub *paho.Publish) {
 	cb.mu.RLock()
 	handler := cb.handler
+	botID := cb.config.BotID
 	cb.mu.RUnlock()
 
 	if handler == nil {
@@ -199,6 +209,55 @@ func (cb *ChannelBridge) onMessage(pub *paho.Publish) {
 		return
 	}
 
+	// Detect topic format to choose parser:
+	// Per-channel: neboloop/bot/{botID}/channels/{channelType}/inbound
+	// Legacy:      neboloop/bot/{botID}/chat/in
+	channelType := channelTypeFromTopic(pub.Topic, botID)
+
+	if channelType != "" {
+		// Per-channel topic — try v1 envelope first
+		cb.handleEnvelopeMessage(pub, handler, channelType)
+	} else {
+		// Legacy chat topic
+		cb.handleLegacyChatMessage(pub, handler)
+	}
+}
+
+// handleEnvelopeMessage parses a v1 ChannelEnvelope from a per-channel topic.
+func (cb *ChannelBridge) handleEnvelopeMessage(pub *paho.Publish, handler func(InboundMessage), channelType string) {
+	var env ChannelEnvelope
+	if err := json.Unmarshal(pub.Payload, &env); err != nil {
+		fmt.Printf("[apps:channels] Invalid envelope on %s: %v\n", pub.Topic, err)
+		return
+	}
+
+	if env.Text == "" {
+		return
+	}
+
+	// Echo prevention: ignore messages from this bot
+	if env.Sender.BotID == cb.config.BotID {
+		return
+	}
+
+	fmt.Printf("[apps:channels] Inbound %s message (sender=%s): %s\n",
+		channelType, env.Sender.Name, truncateText(env.Text, 80))
+
+	msg := InboundMessage{
+		ChannelType: channelType,
+		ChannelID:   env.ChannelID,
+		MessageID:   env.MessageID,
+		SenderID:    env.Sender.BotID,
+		SenderName:  env.Sender.Name,
+		Text:        env.Text,
+		ReplyToID:   env.ReplyTo,
+	}
+
+	handler(msg)
+}
+
+// handleLegacyChatMessage parses the old chatInboundMessage format.
+func (cb *ChannelBridge) handleLegacyChatMessage(pub *paho.Publish, handler func(InboundMessage)) {
 	var raw chatInboundMessage
 	if err := json.Unmarshal(pub.Payload, &raw); err != nil {
 		fmt.Printf("[apps:channels] Invalid message on %s: %v\n", pub.Topic, err)
@@ -206,7 +265,6 @@ func (cb *ChannelBridge) onMessage(pub *paho.Publish) {
 	}
 
 	if raw.Text == "" {
-		fmt.Printf("[apps:channels] Empty text in chat message, ignoring\n")
 		return
 	}
 
@@ -230,6 +288,23 @@ func (cb *ChannelBridge) onMessage(pub *paho.Publish) {
 	handler(msg)
 }
 
+// channelTypeFromTopic extracts the channel type from a per-channel MQTT topic.
+// Returns empty string for legacy topics.
+// Per-channel format: neboloop/bot/{botID}/channels/{channelType}/inbound
+func channelTypeFromTopic(topic, botID string) string {
+	prefix := fmt.Sprintf("neboloop/bot/%s/channels/", botID)
+	if !strings.HasPrefix(topic, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(topic, prefix)
+	// rest should be "{channelType}/inbound"
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 2 && parts[1] == "inbound" {
+		return parts[0]
+	}
+	return ""
+}
+
 // SetMessageHandler sets the callback for incoming channel messages.
 func (cb *ChannelBridge) SetMessageHandler(fn func(InboundMessage)) {
 	cb.mu.Lock()
@@ -237,7 +312,9 @@ func (cb *ChannelBridge) SetMessageHandler(fn func(InboundMessage)) {
 	cb.handler = fn
 }
 
-// SendResponse publishes an outbound message to NeboLoop web chat.
+// SendResponse publishes an outbound message.
+// For per-channel types, publishes a v1 envelope to the channel-specific topic.
+// For legacy "neboloop" type, publishes the old chat format for backward compatibility.
 func (cb *ChannelBridge) SendResponse(channelType string, msg OutboundMessage) error {
 	cb.mu.RLock()
 	if !cb.connected || cb.cm == nil {
@@ -245,22 +322,44 @@ func (cb *ChannelBridge) SendResponse(channelType string, msg OutboundMessage) e
 		return fmt.Errorf("channel bridge: not connected")
 	}
 	cm := cb.cm
-	botID := cb.config.BotID
+	config := cb.config
 	cb.mu.RUnlock()
 
-	outbound := chatOutboundMessage{
-		Text:      msg.Text,
-		Sender:    "bot",
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		MessageID: generateMessageID(),
+	var topic string
+	var payload []byte
+	var err error
+
+	if channelType == "" || channelType == "neboloop" {
+		// Legacy chat format for NeboLoop web chat
+		outbound := chatOutboundMessage{
+			Text:      msg.Text,
+			Sender:    "bot",
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+			MessageID: NewMessageID(),
+		}
+		payload, err = json.Marshal(outbound)
+		topic = fmt.Sprintf("neboloop/bot/%s/chat/out", config.BotID)
+	} else {
+		// v1 envelope for per-channel topics
+		env := ChannelEnvelope{
+			MessageID: NewMessageID(),
+			ChannelID: msg.ChannelID,
+			Sender: EnvelopeSender{
+				Name:  config.AgentName,
+				Role:  config.AgentRole,
+				BotID: config.BotID,
+			},
+			Text:      msg.Text,
+			ReplyTo:   msg.ReplyToID,
+			Timestamp: time.Now().UTC(),
+		}
+		payload, err = json.Marshal(env)
+		topic = fmt.Sprintf("neboloop/bot/%s/channels/%s/outbound", config.BotID, channelType)
 	}
 
-	payload, err := json.Marshal(outbound)
 	if err != nil {
 		return fmt.Errorf("channel bridge: marshal error: %w", err)
 	}
-
-	topic := fmt.Sprintf("neboloop/bot/%s/chat/out", botID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -274,7 +373,7 @@ func (cb *ChannelBridge) SendResponse(channelType string, msg OutboundMessage) e
 		return fmt.Errorf("channel bridge: publish failed: %w", err)
 	}
 
-	fmt.Printf("[apps:channels] Outbound chat message (%d chars)\n", len(msg.Text))
+	fmt.Printf("[apps:channels] Outbound %s message (%d chars)\n", channelType, len(msg.Text))
 
 	return nil
 }
@@ -305,15 +404,6 @@ func (cb *ChannelBridge) IsRunning() bool {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
 	return cb.connected
-}
-
-// generateMessageID returns a random UUID v4 for message deduplication.
-func generateMessageID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	b[6] = (b[6] & 0x0f) | 0x40 // version 4
-	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // truncateText truncates a string for logging purposes.

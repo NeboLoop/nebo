@@ -436,6 +436,17 @@ type OAuthProvider struct {
 	Email     string `json:"email,omitempty"`
 }
 
+type AppOAuthGrant struct {
+	Provider         string `json:"provider"`
+	Scopes           string `json:"scopes"`
+	ConnectionStatus string `json:"connectionStatus"`
+	ExpiresAt        string `json:"expiresAt,omitempty"`
+}
+
+type GetAppOAuthGrantsResponse struct {
+	Grants []AppOAuthGrant `json:"grants"`
+}
+
 type RefreshTokenRequest struct {
 	RefreshToken string `json:"refreshToken"`
 }
@@ -679,6 +690,7 @@ type AgentProfileResponse struct {
 	Emoji             string `json:"emoji,omitempty"`
 	Creature          string `json:"creature,omitempty"`
 	Vibe              string `json:"vibe,omitempty"`
+	Role              string `json:"role,omitempty"`
 	Avatar            string `json:"avatar,omitempty"`
 	AgentRules        string `json:"agentRules,omitempty"`
 	ToolNotes         string `json:"toolNotes,omitempty"`
@@ -698,6 +710,7 @@ type UpdateAgentProfileRequest struct {
 	Emoji             string `json:"emoji,omitempty"`
 	Creature          string `json:"creature,omitempty"`
 	Vibe              string `json:"vibe,omitempty"`
+	Role              string `json:"role,omitempty"`
 	Avatar            string `json:"avatar,omitempty"`
 	AgentRules        string `json:"agentRules,omitempty"`
 	ToolNotes         string `json:"toolNotes,omitempty"`

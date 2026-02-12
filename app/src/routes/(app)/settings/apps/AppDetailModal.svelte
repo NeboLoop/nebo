@@ -55,7 +55,8 @@
 		}
 		if (show && plugin) {
 			settingsValues = plugin.settings ? { ...plugin.settings } : {};
-			activeTab = 'info';
+			// Auto-open Settings tab if app needs setup, otherwise show Info
+			activeTab = pluginNeedsSetup() ? 'settings' : 'info';
 			loadOAuthGrants();
 		}
 		if (!show) {
@@ -232,6 +233,13 @@
 
 	const groups = $derived(plugin ? parseSettingsGroups(plugin.settingsManifest) : []);
 	const showSettings = $derived(groups.some(g => g.fields?.length > 0));
+	const pluginNeedsSetup = $derived(() => {
+		if (!plugin || !showSettings) return false;
+		const required = groups.flatMap(g => g.fields).filter(f => f.required).map(f => f.key);
+		if (required.length === 0) return false;
+		const settings = plugin.settings || {};
+		return required.some(key => !settings[key] || settings[key] === '••••••••');
+	});
 	const latestChangelog = $derived(appDetail?.changelog?.[0] || null);
 	const displayedReviews = $derived(
 		showAllReviews
@@ -315,9 +323,13 @@
 				{#if plugin}
 					<div class="flex items-center gap-2 mt-2">
 						<span class="badge badge-sm badge-outline">v{plugin.version}</span>
-						<span class="badge badge-sm {plugin.connectionStatus === 'connected' ? 'badge-success' : plugin.connectionStatus === 'error' ? 'badge-error' : 'badge-ghost'}">
-							{plugin.connectionStatus}
-						</span>
+						{#if pluginNeedsSetup()}
+							<span class="badge badge-sm badge-warning">Needs Setup</span>
+						{:else}
+							<span class="badge badge-sm {plugin.connectionStatus === 'connected' ? 'badge-success' : plugin.connectionStatus === 'error' ? 'badge-error' : 'badge-ghost'}">
+								{plugin.connectionStatus}
+							</span>
+						{/if}
 					</div>
 				{/if}
 			</div>

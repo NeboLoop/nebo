@@ -128,6 +128,16 @@ type InstallResponse struct {
 }
 
 // --------------------------------------------------------------------------
+// Bot Identity Types
+// --------------------------------------------------------------------------
+
+// UpdateBotIdentityRequest is sent to PUT /api/v1/bots/{id}.
+type UpdateBotIdentityRequest struct {
+	Name string `json:"name,omitempty"`
+	Role string `json:"role,omitempty"`
+}
+
+// --------------------------------------------------------------------------
 // Connection Code Types
 // --------------------------------------------------------------------------
 

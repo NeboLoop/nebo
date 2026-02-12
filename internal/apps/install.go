@@ -49,6 +49,9 @@ type installEvent struct {
 	Version string `json:"version"`
 	// Download URL may be provided directly or constructed from APIServer
 	DownloadURL string `json:"download_url,omitempty"`
+	// SettingsSchema is the app's settings fields from NeboLoop.
+	// Used to persist the schema when the .napp manifest doesn't declare settings.
+	SettingsSchema json.RawMessage `json:"settings_schema,omitempty"`
 }
 
 // newInstallListener creates an install listener bound to the given registry.
@@ -228,6 +231,13 @@ func (il *InstallListener) handleInstall(event installEvent) {
 		return
 	}
 
+	// Persist settings schema from the install event if the manifest didn't declare settings.
+	if len(event.SettingsSchema) > 0 {
+		if err := il.registry.PersistEventSettingsSchema(ctx, event.AppName, event.SettingsSchema); err != nil {
+			fmt.Printf("[apps:install] Warning: failed to persist settings schema for %s: %v\n", event.AppID, err)
+		}
+	}
+
 	fmt.Printf("[apps:install] Installed and launched %s v%s\n", event.AppID, event.Version)
 }
 
@@ -324,6 +334,13 @@ func (il *InstallListener) handleUpdate(event installEvent) {
 	if err := il.registry.launchAndRegister(ctx, appDir); err != nil {
 		fmt.Printf("[apps:install] Failed to relaunch %s after update: %v\n", event.AppID, err)
 		return
+	}
+
+	// Persist updated settings schema from the event if present.
+	if len(event.SettingsSchema) > 0 {
+		if err := il.registry.PersistEventSettingsSchema(ctx, event.AppName, event.SettingsSchema); err != nil {
+			fmt.Printf("[apps:install] Warning: failed to persist settings schema for %s: %v\n", event.AppID, err)
+		}
 	}
 
 	fmt.Printf("[apps:install] Updated and relaunched %s v%s\n", event.AppID, event.Version)

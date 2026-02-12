@@ -49,15 +49,52 @@ message ChannelDisconnectResponse {
 message ChannelSendRequest {
   string channel_id = 1;
   string text = 2;
+  // v1 envelope fields (optional — apps can use just channel_id + text)
+  string message_id = 3;       // UUID v7, set by Nebo if empty
+  MessageSender sender = 4;    // agent identity
+  repeated Attachment attachments = 5;
+  string reply_to = 6;         // message_id for threading
+  repeated MessageAction actions = 7;  // buttons, keyboards
+  bytes platform_data = 8;     // opaque passthrough
 }
 
 message ChannelSendResponse {
   string error = 1;
+  string message_id = 2;       // echoed or platform-assigned ID
 }
 
 message InboundMessage {
   string channel_id = 1;
   string user_id = 2;
   string text = 3;
-  string metadata = 4; // JSON-encoded metadata
+  string metadata = 4; // JSON-encoded metadata (legacy)
+  // v1 envelope fields
+  string message_id = 5;
+  MessageSender sender = 6;
+  repeated Attachment attachments = 7;
+  string reply_to = 8;
+  repeated MessageAction actions = 9;
+  bytes platform_data = 10;
+  string timestamp = 11;       // RFC3339
+}
+
+// MessageSender identifies who sent a message.
+message MessageSender {
+  string name = 1;
+  string role = 2;      // relationship dynamic (Friend, COO, Mentor)
+  string bot_id = 3;    // NeboLoop bot UUID
+}
+
+// Attachment represents a file or media attachment.
+message Attachment {
+  string type = 1;       // "image", "file", "audio", "video"
+  string url = 2;
+  string filename = 3;
+  int64 size = 4;        // bytes
+}
+
+// MessageAction represents an interactive element (button, keyboard row).
+message MessageAction {
+  string label = 1;
+  string callback_id = 2;
 }

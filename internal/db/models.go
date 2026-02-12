@@ -41,6 +41,7 @@ type AgentProfile struct {
 	Avatar            sql.NullString `json:"avatar"`
 	AgentRules        sql.NullString `json:"agent_rules"`
 	ToolNotes         sql.NullString `json:"tool_notes"`
+	Role              sql.NullString `json:"role"`
 }
 
 type AppOauthGrant struct {

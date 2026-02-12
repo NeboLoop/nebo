@@ -411,6 +411,7 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 							BotID:        redeemed.ID,
 							MQTTUsername:  creds.MQTTUsername,
 							MQTTPassword:  creds.MQTTPassword,
+							AgentName:    redeemed.Name,
 						}
 						if err := state.appRegistry.StartChannelBridge(ctx, channelCfg); err != nil {
 							fmt.Printf("[NeboLoop] Warning: channel bridge failed: %v\n", err)
@@ -678,10 +679,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 	r := runner.New(cfg, sessions, providers, registry)
 
-	// Set provider loader for dynamic reload (after onboarding adds API key)
-	r.SetProviderLoader(func() []ai.Provider {
-		return createProviders(cfg)
-	})
+	// Provider loader is set below after appRegistry creation (needs gateway providers)
 
 	// Set up model selector for intelligent model routing and cheapest model selection
 	modelsConfig := provider.GetModelsConfig()
@@ -851,6 +849,21 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	for _, gp := range appRegistry.GatewayProviders() {
 		providers = append(providers, gp)
 	}
+
+	// Set provider loader for dynamic reload (after onboarding adds API key).
+	// Must be after appRegistry creation so gateway providers are included.
+	r.SetProviderLoader(func() []ai.Provider {
+		base := createProviders(cfg)
+		if appRegistry != nil {
+			base = append(base, appRegistry.GatewayProviders()...)
+		}
+		return base
+	})
+
+	// Trigger provider reload when a new gateway app is installed at runtime
+	appRegistry.OnGatewayRegistered(func() {
+		r.ReloadProviders()
+	})
 
 	commManager.SetMessageHandler(commHandler.Handle)
 	commHandler.SetRunner(r)

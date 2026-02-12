@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/nebolabs/nebo/internal/db"
 	"github.com/nebolabs/nebo/internal/httputil"
 	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/nebolabs/nebo/internal/neboloop"
 	"github.com/nebolabs/nebo/internal/svc"
 	"github.com/nebolabs/nebo/internal/types"
 )
@@ -87,6 +89,7 @@ func UpdateAgentProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			Emoji:             toNullString(req.Emoji),
 			Creature:          toNullString(req.Creature),
 			Vibe:              toNullString(req.Vibe),
+			Role:              toNullString(req.Role),
 			Avatar:            toNullString(req.Avatar),
 			AgentRules:        toNullString(req.AgentRules),
 			ToolNotes:         toNullString(req.ToolNotes),
@@ -103,6 +106,11 @@ func UpdateAgentProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			logging.Errorf("Failed to get updated agent profile: %v", err)
 			httputil.InternalError(w, "failed to get updated profile")
 			return
+		}
+
+		// Fire-and-forget: sync identity to NeboLoop when name or role changed
+		if req.Name != "" || req.Role != "" {
+			go syncIdentityToNeboLoop(svcCtx, profile.Name, fromNullString(profile.Role))
 		}
 
 		httputil.OkJSON(w, dbAgentProfileToType(profile))
@@ -145,6 +153,34 @@ func ListPersonalityPresetsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc 
 	}
 }
 
+// syncIdentityToNeboLoop pushes the agent's name and role to NeboLoop.
+// Fire-and-forget — logs errors but does not block the caller.
+func syncIdentityToNeboLoop(svcCtx *svc.ServiceContext, name, role string) {
+	if svcCtx.PluginStore == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	settings, err := svcCtx.PluginStore.GetSettingsByName(ctx, "neboloop")
+	if err != nil || len(settings) == 0 {
+		return // NeboLoop not configured, nothing to sync
+	}
+
+	client, err := neboloop.NewClient(settings)
+	if err != nil {
+		logging.Errorf("Identity sync: failed to create NeboLoop client: %v", err)
+		return
+	}
+
+	if err := client.UpdateBotIdentity(ctx, name, role); err != nil {
+		logging.Errorf("Identity sync: failed to push to NeboLoop: %v", err)
+		return
+	}
+
+	logging.Infof("Identity synced to NeboLoop (name=%s, role=%s)", name, role)
+}
+
 // Helper functions
 
 func toNullString(s string) sql.NullString {
@@ -174,6 +210,7 @@ func dbAgentProfileToType(profile db.GetAgentProfileRow) *types.AgentProfileResp
 		Emoji:             fromNullString(profile.Emoji),
 		Creature:          fromNullString(profile.Creature),
 		Vibe:              fromNullString(profile.Vibe),
+		Role:              fromNullString(profile.Role),
 		Avatar:            fromNullString(profile.Avatar),
 		AgentRules:        fromNullString(profile.AgentRules),
 		ToolNotes:         fromNullString(profile.ToolNotes),

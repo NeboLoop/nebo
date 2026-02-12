@@ -119,6 +119,20 @@
 	}
 
 	const installedAppIds = $derived(new Set(plugins.map(p => p.name)));
+
+	function needsSetup(plugin: PluginItem): boolean {
+		const manifest = plugin.settingsManifest;
+		if (!manifest?.groups?.length) return false;
+		const requiredKeys: string[] = [];
+		for (const group of manifest.groups) {
+			for (const field of group.fields) {
+				if (field.required) requiredKeys.push(field.key);
+			}
+		}
+		if (requiredKeys.length === 0) return false;
+		const settings = plugin.settings || {};
+		return requiredKeys.some((key: string) => !settings[key] || settings[key] === '••••••••');
+	}
 </script>
 
 <div class="mb-6 flex items-center justify-between">
@@ -167,9 +181,13 @@
 								<div class="flex items-center gap-2 mb-0.5">
 									<h3 class="font-display font-bold text-base-content">{plugin.displayName || plugin.name}</h3>
 									<span class="badge badge-sm badge-outline">v{plugin.version}</span>
-									<span class="badge badge-sm {getStatusBadgeClass(plugin.connectionStatus)}">
-										{plugin.connectionStatus}
-									</span>
+									{#if needsSetup(plugin)}
+										<span class="badge badge-sm badge-warning">Needs Setup</span>
+									{:else}
+										<span class="badge badge-sm {getStatusBadgeClass(plugin.connectionStatus)}">
+											{plugin.connectionStatus}
+										</span>
+									{/if}
 								</div>
 								<p class="text-sm text-base-content/60 truncate">{plugin.description}</p>
 							</div>

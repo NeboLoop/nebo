@@ -52,9 +52,10 @@ type AppRegistry struct {
 	channelBridge *ChannelBridge
 	grpcInspector *inspector.Inspector
 
-	onQuarantine    func(QuarantineEvent)             // callback for UI notification
-	onChannelMsg    func(channelType, channelID, userID, text, metadata string) // callback for inbound channel messages
-	providers       []ai.Provider
+	onQuarantine        func(QuarantineEvent)             // callback for UI notification
+	onGatewayRegistered func()                             // callback when a new gateway provider is registered
+	onChannelMsg        func(channelType, channelID, userID, text, metadata string) // callback for inbound channel messages
+	providers           []ai.Provider
 	uiApps          map[string]*AppProcess            // apps that provide UI
 	channelAdapters map[string]*AppChannelAdapter      // registered channel apps
 	scheduleAdapter *AppScheduleAdapter               // app-provided scheduler (replaces built-in)
@@ -67,6 +68,15 @@ func (ar *AppRegistry) OnQuarantine(fn func(QuarantineEvent)) {
 	ar.mu.Lock()
 	defer ar.mu.Unlock()
 	ar.onQuarantine = fn
+}
+
+// OnGatewayRegistered sets a callback invoked when a new gateway provider is
+// registered (e.g. after Janus is installed). Used to trigger ReloadProviders
+// so the runner picks up new gateway providers at runtime.
+func (ar *AppRegistry) OnGatewayRegistered(fn func()) {
+	ar.mu.Lock()
+	defer ar.mu.Unlock()
+	ar.onGatewayRegistered = fn
 }
 
 // NewAppRegistry creates a new app registry.
@@ -176,8 +186,19 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 			adapter := NewGatewayProviderAdapter(proc.GatewayClient, manifest, "")
 			ar.mu.Lock()
 			ar.providers = append(ar.providers, adapter)
+			cb := ar.onGatewayRegistered
 			ar.mu.Unlock()
 			fmt.Printf("[apps] Registered gateway provider: %s\n", manifest.Name)
+			if cb != nil {
+				cb()
+			}
+
+			// Auto-inject NeboLoop JWT for apps with user:token permission
+			if CheckPermission(manifest, "user:token") {
+				if err := ar.autoConfigureUserToken(ctx, manifest.Name); err != nil {
+					fmt.Printf("[apps] Warning: auto-configure token for %s: %v\n", manifest.Name, err)
+				}
+			}
 
 		case (cap == CapVision || cap == CapBrowser || hasPrefix(cap, CapPrefixTool)) && proc.ToolClient != nil:
 			adapter, err := NewAppToolAdapter(ctx, proc.ToolClient)
@@ -299,6 +320,62 @@ func (ar *AppRegistry) registerInDB(ctx context.Context, manifest *AppManifest) 
 		Metadata:         string(metadataJSON),
 	})
 	return err
+}
+
+// PersistEventSettingsSchema persists a settings schema from an MQTT install event
+// to the plugin_registry row. This supplements the manifest — if the DB row's
+// settings_manifest is empty (manifest had no settings), the event schema is used.
+// If the manifest already declared settings, the event schema is ignored (manifest wins).
+func (ar *AppRegistry) PersistEventSettingsSchema(ctx context.Context, appName string, schemaJSON json.RawMessage) error {
+	if ar.queries == nil || appName == "" {
+		return nil
+	}
+
+	row, err := ar.queries.GetPluginByName(ctx, appName)
+	if err != nil {
+		return fmt.Errorf("app %q not found in DB: %w", appName, err)
+	}
+
+	// If the manifest already declared settings, don't override
+	if row.SettingsManifest != "" && row.SettingsManifest != "{}" {
+		var existing settings.SettingsManifest
+		if json.Unmarshal([]byte(row.SettingsManifest), &existing) == nil && len(existing.Groups) > 0 {
+			return nil // manifest settings take precedence
+		}
+	}
+
+	// Parse the event schema (array of settings fields) into a SettingsManifest
+	var fields []settings.SettingsField
+	if err := json.Unmarshal(schemaJSON, &fields); err != nil {
+		return fmt.Errorf("parse settings_schema: %w", err)
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+
+	manifest := settings.SettingsManifest{
+		Groups: []settings.SettingsGroup{
+			{
+				Title:  appName + " Settings",
+				Fields: fields,
+			},
+		},
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("marshal settings manifest: %w", err)
+	}
+
+	return ar.queries.UpdatePlugin(ctx, db.UpdatePluginParams{
+		DisplayName:      row.DisplayName,
+		Description:      row.Description,
+		Icon:             row.Icon,
+		Version:          row.Version,
+		IsEnabled:        row.IsEnabled,
+		SettingsManifest: string(manifestJSON),
+		Metadata:         row.Metadata,
+		ID:               row.ID,
+	})
 }
 
 // GatewayProviders returns all registered gateway provider adapters.
@@ -854,6 +931,42 @@ func (ar *AppRegistry) PushOAuthTokens(appID, provider string, tokens map[string
 
 	cfg := &appConfigurable{proc: proc}
 	return cfg.OnSettingsChanged(tokens)
+}
+
+// autoConfigureUserToken reads the NeboLoop JWT from auth_profiles and
+// injects it as the app's "token" setting. Apps with user:token permission
+// use this JWT to authenticate with NeboLoop backend services.
+func (ar *AppRegistry) autoConfigureUserToken(ctx context.Context, appName string) error {
+	if ar.queries == nil || ar.pluginStore == nil {
+		return nil
+	}
+
+	// Read NeboLoop JWT from auth_profiles
+	profiles, err := ar.queries.ListActiveAuthProfilesByProvider(ctx, "neboloop")
+	if err != nil || len(profiles) == 0 {
+		return nil // No NeboLoop profile — nothing to configure
+	}
+	jwt := profiles[0].ApiKey
+	if jwt == "" {
+		return nil
+	}
+
+	// Check if token is already configured
+	existing, _ := ar.pluginStore.GetSettingsByName(ctx, appName)
+	if existing["token"] != "" {
+		return nil // Already configured
+	}
+
+	// Store the JWT as the app's token setting
+	plugin, err := ar.pluginStore.GetPlugin(ctx, appName)
+	if err != nil {
+		return fmt.Errorf("app not in plugin registry: %w", err)
+	}
+
+	return ar.pluginStore.UpdateSettings(ctx, plugin.ID,
+		map[string]string{"token": jwt},
+		map[string]bool{"token": true},
+	)
 }
 
 func settingsToProto(settings map[string]string) *pb.SettingsMap {

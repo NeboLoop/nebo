@@ -245,6 +245,16 @@ func (c *Client) UninstallApp(ctx context.Context, id string) error {
 }
 
 // --------------------------------------------------------------------------
+// Bot Identity
+// --------------------------------------------------------------------------
+
+// UpdateBotIdentity pushes the agent's name and role to NeboLoop.
+func (c *Client) UpdateBotIdentity(ctx context.Context, name, role string) error {
+	req := UpdateBotIdentityRequest{Name: name, Role: role}
+	return c.doJSON(ctx, http.MethodPut, "/api/v1/bots/"+c.botID, req, nil)
+}
+
+// --------------------------------------------------------------------------
 // Skills
 // --------------------------------------------------------------------------
 
