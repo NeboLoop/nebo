@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/nebolabs/nebo/internal/agent/comm"
 	"github.com/nebolabs/nebo/internal/agent/tools"
 	pb "github.com/nebolabs/nebo/internal/apps/pb"
+	"github.com/nebolabs/nebo/internal/apps/inspector"
 	"github.com/nebolabs/nebo/internal/db"
 	"github.com/nebolabs/nebo/internal/apps/settings"
 	"github.com/nebolabs/nebo/internal/svc"
@@ -26,6 +28,7 @@ type AppRegistryConfig struct {
 	Queries     db.Querier
 	PluginStore *settings.Store
 	ToolReg     *tools.Registry
+	SkillTool   *tools.SkillDomainTool // Unified skill tool — apps register here
 	CommMgr     *comm.CommPluginManager
 }
 
@@ -43,9 +46,11 @@ type AppRegistry struct {
 	queries       db.Querier
 	pluginStore   *settings.Store
 	toolReg       *tools.Registry
+	skillTool     *tools.SkillDomainTool
 	commMgr       *comm.CommPluginManager
 	installer     *InstallListener
 	channelBridge *ChannelBridge
+	grpcInspector *inspector.Inspector
 
 	onQuarantine    func(QuarantineEvent)             // callback for UI notification
 	onChannelMsg    func(channelType, channelID, userID, text, metadata string) // callback for inbound channel messages
@@ -80,14 +85,20 @@ func NewAppRegistry(cfg AppRegistryConfig) *AppRegistry {
 		fmt.Println("[apps] Warning: NeboLoopURL not configured — signature verification disabled (dev mode)")
 	}
 
+	// gRPC inspector: always-on ring buffer with zero-cost fast path when no subscribers
+	ins := inspector.New(1024)
+	rt.inspector = ins
+
 	ar := &AppRegistry{
 		runtime:       rt,
 		appsDir:       appsDir,
 		queries:       cfg.Queries,
 		pluginStore:   cfg.PluginStore,
 		toolReg:       cfg.ToolReg,
+		skillTool:     cfg.SkillTool,
 		commMgr:       cfg.CommMgr,
 		channelBridge: NewChannelBridge(),
+		grpcInspector: ins,
 	}
 	ar.installer = newInstallListener(ar)
 
@@ -174,7 +185,14 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 				fmt.Printf("[apps] Warning: tool adapter failed for %s: %v\n", manifest.ID, err)
 				continue
 			}
-			if ar.toolReg != nil {
+			// Register through the unified skill tool if available
+			if ar.skillTool != nil {
+				slug := tools.Slugify(manifest.Name)
+				skillMD := loadSkillMD(appDir)
+				ar.skillTool.Register(slug, manifest.Name, manifest.Description, skillMD, adapter)
+				fmt.Printf("[apps] Registered skill: %s (app-backed)\n", slug)
+			} else if ar.toolReg != nil {
+				// Fallback: register directly in tool registry (no skill tool wired)
 				ar.toolReg.Register(adapter)
 				fmt.Printf("[apps] Registered tool: %s\n", adapter.Name())
 			}
@@ -664,13 +682,21 @@ func (ar *AppRegistry) Sideload(ctx context.Context, projectPath string) (*AppMa
 		return nil, fmt.Errorf("invalid app directory: %w", err)
 	}
 
-	// Verify binary exists
-	binaryPath := filepath.Join(projectPath, "binary")
-	if _, err := os.Stat(binaryPath); err != nil {
-		binaryPath = filepath.Join(projectPath, "app")
-		if _, err := os.Stat(binaryPath); err != nil {
-			return nil, fmt.Errorf("no binary found (expected 'binary' or 'app' file in %s)", projectPath)
+	// Build from source if Makefile exists
+	makefilePath := filepath.Join(projectPath, "Makefile")
+	if _, err := os.Stat(makefilePath); err == nil {
+		fmt.Printf("[apps] Building dev app: make build in %s\n", projectPath)
+		cmd := exec.Command("make", "build")
+		cmd.Dir = projectPath
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("build failed: %s\n%s", err, string(output))
 		}
+	}
+
+	// Verify binary exists (checks root, then tmp/)
+	if _, err := FindBinary(projectPath); err != nil {
+		return nil, fmt.Errorf("no binary found after build: %w", err)
 	}
 
 	// Check for collision — the target symlink path
@@ -756,6 +782,11 @@ func (ar *AppRegistry) IsSideloaded(appID string) bool {
 	return info.Mode()&os.ModeSymlink != 0
 }
 
+// Inspector returns the gRPC traffic inspector for dev tooling.
+func (ar *AppRegistry) Inspector() *inspector.Inspector {
+	return ar.grpcInspector
+}
+
 // IsRunning returns true if the app is currently running.
 func (ar *AppRegistry) IsRunning(appID string) bool {
 	_, ok := ar.runtime.Get(appID)
@@ -813,6 +844,30 @@ func (ac *appConfigurable) OnSettingsChanged(settings map[string]string) error {
 	return nil
 }
 
+// PushOAuthTokens pushes OAuth tokens to a running app via its gRPC Configure RPC.
+// Implements broker.AppTokenReceiver.
+func (ar *AppRegistry) PushOAuthTokens(appID, provider string, tokens map[string]string) error {
+	proc, ok := ar.runtime.Get(appID)
+	if !ok {
+		return fmt.Errorf("app %s is not running", appID)
+	}
+
+	cfg := &appConfigurable{proc: proc}
+	return cfg.OnSettingsChanged(tokens)
+}
+
 func settingsToProto(settings map[string]string) *pb.SettingsMap {
 	return &pb.SettingsMap{Values: settings}
+}
+
+// loadSkillMD reads the SKILL.md file from an app directory.
+// Returns empty string if not found (backwards compatibility with apps installed before SKILL.md was required).
+func loadSkillMD(appDir string) string {
+	for _, name := range []string{"SKILL.md", "skill.md"} {
+		data, err := os.ReadFile(filepath.Join(appDir, name))
+		if err == nil {
+			return string(data)
+		}
+	}
+	return ""
 }

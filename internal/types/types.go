@@ -195,14 +195,15 @@ type ExtensionChannel struct {
 }
 
 type ExtensionSkill struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Version     string   `json:"version"`
-	Triggers    []string `json:"triggers"`
-	Tools       []string `json:"tools"`
-	Priority    int      `json:"priority"`
-	Enabled     bool     `json:"enabled"`
-	FilePath    string   `json:"filePath"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Version      string   `json:"version"`
+	Tags         []string `json:"tags"`
+	Dependencies []string `json:"dependencies"`
+	Tools        []string `json:"tools"`
+	Priority     int      `json:"priority"`
+	Enabled      bool     `json:"enabled"`
+	FilePath     string   `json:"filePath"`
 }
 
 type ExtensionTool struct {
@@ -1013,6 +1014,8 @@ type PluginItem struct {
 	LastConnectedAt  string            `json:"lastConnectedAt,omitempty"`
 	LastError        string            `json:"lastError,omitempty"`
 	Settings         map[string]string `json:"settings,omitempty"`
+	Capabilities     []string          `json:"capabilities,omitempty"`
+	Permissions      []string          `json:"permissions,omitempty"`
 	CreatedAt        string            `json:"createdAt"`
 	UpdatedAt        string            `json:"updatedAt"`
 }
@@ -1084,21 +1087,66 @@ type StoreSkill struct {
 	Status       string      `json:"status"`
 }
 
-type StoreAppsResponse struct {
+type ListStoreAppsResponse struct {
 	Apps       []StoreApp `json:"apps"`
 	TotalCount int        `json:"totalCount"`
 	Page       int        `json:"page"`
 	PageSize   int        `json:"pageSize"`
 }
 
-type StoreSkillsResponse struct {
+type ListStoreSkillsResponse struct {
 	Skills     []StoreSkill `json:"skills"`
 	TotalCount int          `json:"totalCount"`
 	Page       int          `json:"page"`
 	PageSize   int          `json:"pageSize"`
 }
 
-type StoreInstallResponse struct {
+type StoreAppDetail struct {
+	StoreApp
+	AgeRating   string              `json:"ageRating,omitempty"`
+	Platforms   []string            `json:"platforms,omitempty"`
+	Size        map[string]int      `json:"size,omitempty"`
+	Language    string              `json:"language,omitempty"`
+	Screenshots []string            `json:"screenshots,omitempty"`
+	Changelog   []StoreChangelog    `json:"changelog,omitempty"`
+	WebsiteURL  string              `json:"websiteUrl,omitempty"`
+	PrivacyURL  string              `json:"privacyUrl,omitempty"`
+	SupportURL  string              `json:"supportUrl,omitempty"`
+}
+
+type StoreChangelog struct {
+	Version string `json:"version"`
+	Date    string `json:"date"`
+	Notes   string `json:"notes"`
+}
+
+type StoreReview struct {
+	ID        string `json:"id"`
+	UserName  string `json:"userName"`
+	Rating    int    `json:"rating"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"createdAt"`
+	Helpful   int    `json:"helpful"`
+}
+
+type GetStoreAppResponse struct {
+	App StoreAppDetail `json:"app"`
+}
+
+type GetStoreAppReviewsResponse struct {
+	Reviews      []StoreReview `json:"reviews"`
+	TotalCount   int           `json:"totalCount"`
+	Average      float64       `json:"average"`
+	Distribution [5]int        `json:"distribution"`
+}
+
+type InstallStoreAppResponse struct {
+	PluginID string `json:"pluginId"`
+	Message  string `json:"message"`
+}
+
+type InstallStoreSkillResponse struct {
 	PluginID string `json:"pluginId"`
 	Message  string `json:"message"`
 }
@@ -1185,6 +1233,61 @@ type AcceptTermsResponse struct {
 	AcceptedAt string `json:"acceptedAt"`
 }
 
+// Advisor types
+
+type AdvisorItem struct {
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	Role           string `json:"role"`
+	Description    string `json:"description"`
+	Priority       int    `json:"priority"`
+	Enabled        bool   `json:"enabled"`
+	MemoryAccess   bool   `json:"memoryAccess"`
+	Persona        string `json:"persona"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
+}
+
+type ListAdvisorsResponse struct {
+	Advisors []AdvisorItem `json:"advisors"`
+}
+
+type GetAdvisorResponse struct {
+	Advisor AdvisorItem `json:"advisor"`
+}
+
+type CreateAdvisorRequest struct {
+	Name           string `json:"name"`
+	Role           string `json:"role"`
+	Description    string `json:"description"`
+	Priority       int    `json:"priority"`
+	MemoryAccess   bool   `json:"memoryAccess"`
+	Persona        string `json:"persona"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
+}
+
+type UpdateAdvisorRequest struct {
+	Name           string  `path:"name"`
+	Role           *string `json:"role,omitempty"`
+	Description    *string `json:"description,omitempty"`
+	Priority       *int    `json:"priority,omitempty"`
+	Enabled        *bool   `json:"enabled,omitempty"`
+	MemoryAccess   *bool   `json:"memoryAccess,omitempty"`
+	Persona        *string `json:"persona,omitempty"`
+	TimeoutSeconds *int    `json:"timeoutSeconds,omitempty"`
+}
+
+type DeleteAdvisorRequest struct {
+	Name string `path:"name"`
+}
+
+type DeleteAdvisorResponse struct {
+	Success bool `json:"success"`
+}
+
+type GetAdvisorRequest struct {
+	Name string `path:"name"`
+}
+
 // Developer Mode types
 
 type SideloadRequest struct {
@@ -1231,6 +1334,28 @@ type ToolDefinitionItem struct {
 
 type ListToolsResponse struct {
 	Tools []ToolDefinitionItem `json:"tools"`
+}
+
+type BrowseDirectoryResponse struct {
+	Path string `json:"path"`
+}
+
+type OpenDevWindowResponse struct {
+	Opened bool `json:"opened"`
+}
+
+// ProjectContext provides full project state for the Dev Assistant system prompt.
+type ProjectContext struct {
+	Path        string   `json:"path"`
+	AppID       string   `json:"appId,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Version     string   `json:"version,omitempty"`
+	Files       []string `json:"files"`
+	ManifestRaw string   `json:"manifestRaw,omitempty"`
+	HasMakefile bool     `json:"hasMakefile"`
+	BinaryPath  string   `json:"binaryPath,omitempty"`
+	Running     bool     `json:"running"`
+	RecentLogs  string   `json:"recentLogs,omitempty"`
 }
 
 // App UI types (structured template blocks)

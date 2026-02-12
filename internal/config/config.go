@@ -177,6 +177,15 @@ type Config struct {
 		Enabled string `yaml:"Enabled"`
 		ApiURL  string `yaml:"ApiURL"`
 	} `yaml:"NeboLoop"`
+	AppOAuth map[string]AppOAuthProviderConfig `yaml:"AppOAuth"`
+}
+
+// AppOAuthProviderConfig holds client credentials for an OAuth provider
+// used by the app OAuth broker. Distinct from OAuth (user login).
+type AppOAuthProviderConfig struct {
+	ClientID     string `yaml:"ClientID"`
+	ClientSecret string `yaml:"ClientSecret"`
+	TenantID     string `yaml:"TenantID"` // Microsoft only
 }
 
 func (c Config) IsProductionMode() bool {

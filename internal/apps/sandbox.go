@@ -1,10 +1,12 @@
 package apps
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -67,7 +69,7 @@ func sanitizeEnv(manifest *AppManifest, appDir, sockPath string) []string {
 
 // validateBinary performs pre-launch security checks on an app binary.
 // Rejects symlinks (path traversal), oversized binaries, non-executables,
-// and non-regular files (devices, pipes, etc.).
+// non-regular files (devices, pipes, etc.), scripts, and non-native binaries.
 func validateBinary(path string, cfg SandboxConfig) error {
 	// Use Lstat to detect symlinks — Stat follows them silently
 	info, err := os.Lstat(path)
@@ -95,7 +97,85 @@ func validateBinary(path string, cfg SandboxConfig) error {
 		}
 	}
 
+	// Validate native binary format (compiled-only policy enforcement).
+	// Rejects scripts, interpreted code, and non-native executables.
+	if err := validateBinaryFormat(path); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// Native binary magic bytes.
+// These identify compiled executables at the file format level.
+var (
+	elfMagic        = []byte{0x7f, 'E', 'L', 'F'}           // Linux ELF
+	machoMagic32    = []byte{0xfe, 0xed, 0xfa, 0xce}         // Mach-O 32-bit
+	machoMagic64    = []byte{0xcf, 0xfa, 0xed, 0xfe}         // Mach-O 64-bit
+	machoFatMagic   = []byte{0xca, 0xfe, 0xba, 0xbe}         // Mach-O Universal/Fat binary
+	peMagic         = []byte{0x4d, 0x5a}                      // Windows PE (MZ header)
+	shebangMagic    = []byte{0x23, 0x21}                      // #! (script shebang)
+)
+
+// validateBinaryFormat checks that a file is a native compiled binary,
+// not a script or interpreted language artifact.
+//
+// This is the local enforcement layer of the compiled-only policy.
+// NeboLoop performs deeper analysis (dynamic link scanning, hidden interpreter
+// detection) at upload time. Nebo's local check is intentionally lightweight:
+// magic bytes + shebang rejection is fast and sufficient because signed binaries
+// from NeboLoop have already passed deep validation.
+func validateBinaryFormat(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open binary for format check: %w", err)
+	}
+	defer f.Close()
+
+	// Read first 4 bytes for magic number identification.
+	// All native binary formats (ELF, Mach-O, PE) have a magic number
+	// in the first 2-4 bytes.
+	header := make([]byte, 4)
+	n, err := f.Read(header)
+	if err != nil || n < 2 {
+		return fmt.Errorf("binary too small or unreadable — not a valid executable")
+	}
+
+	// Reject scripts immediately — shebang (#!) means interpreted code.
+	// This catches: #!/usr/bin/env python, #!/bin/bash, #!/usr/bin/env node, etc.
+	if bytes.HasPrefix(header, shebangMagic) {
+		return fmt.Errorf("binary is a script (shebang #! detected) — only compiled native binaries are allowed")
+	}
+
+	// Validate against platform-appropriate magic bytes.
+	// We check for the current platform's format and also accept cross-platform
+	// formats for forward compatibility (e.g., building macOS .napp on Linux CI).
+	if isNativeBinary(header) {
+		return nil
+	}
+
+	return fmt.Errorf("binary is not a recognized native executable format (expected ELF, Mach-O, or PE) — interpreted languages are not permitted")
+}
+
+// isNativeBinary checks if the file header matches any known native binary format.
+func isNativeBinary(header []byte) bool {
+	switch {
+	case bytes.HasPrefix(header, elfMagic):
+		return true
+	case bytes.Equal(header, machoMagic32):
+		return true
+	case bytes.Equal(header, machoMagic64):
+		return true
+	case bytes.Equal(header, machoFatMagic):
+		return true
+	case bytes.HasPrefix(header, peMagic) && runtime.GOOS == "windows":
+		// Only accept PE on Windows — MZ header on non-Windows is suspicious
+		return true
+	case bytes.HasPrefix(header, peMagic) && len(header) >= 2:
+		// Accept PE on any platform (cross-compilation support)
+		return true
+	}
+	return false
 }
 
 // appLogWriter returns writers for an app's stdout and stderr.

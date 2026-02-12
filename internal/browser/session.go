@@ -134,6 +134,18 @@ func GetOrCreateSession(ctx context.Context, profile *ResolvedProfile) (*Session
 	return session, nil
 }
 
+// GetSessionIfExists returns the session for a profile if it exists, or nil.
+func GetSessionIfExists(profileName string) *Session {
+	sessionsMu.RLock()
+	defer sessionsMu.RUnlock()
+
+	session, ok := sessions[profileName]
+	if !ok || session.closed {
+		return nil
+	}
+	return session
+}
+
 // CloseSession closes a session by profile name.
 func CloseSession(profileName string) error {
 	sessionsMu.Lock()

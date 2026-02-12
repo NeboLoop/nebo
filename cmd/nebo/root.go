@@ -91,7 +91,7 @@ func RunAll() {
 			Quiet:           true, // Suppress server startup messages
 			AgentMCPHandler: agentMCPProxy,
 		}
-		if err := server.RunWithOptions(ctx, *c, opts); err != nil {
+		if err := server.Run(ctx, *c, opts); err != nil {
 			fmt.Printf("[Server] Error: %v\n", err)
 			errCh <- fmt.Errorf("server error: %w", err)
 		}

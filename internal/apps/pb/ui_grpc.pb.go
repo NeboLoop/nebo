@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.0
 // - protoc             v6.33.0
-// source: proto/apps/v1/ui.proto
+// source: proto/apps/v0/ui.proto
 
 package pb
 
@@ -19,11 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	UIService_HealthCheck_FullMethodName   = "/apps.v1.UIService/HealthCheck"
-	UIService_GetView_FullMethodName       = "/apps.v1.UIService/GetView"
-	UIService_SendEvent_FullMethodName     = "/apps.v1.UIService/SendEvent"
-	UIService_StreamUpdates_FullMethodName = "/apps.v1.UIService/StreamUpdates"
-	UIService_Configure_FullMethodName     = "/apps.v1.UIService/Configure"
+	UIService_HealthCheck_FullMethodName   = "/apps.v0.UIService/HealthCheck"
+	UIService_GetView_FullMethodName       = "/apps.v0.UIService/GetView"
+	UIService_SendEvent_FullMethodName     = "/apps.v0.UIService/SendEvent"
+	UIService_StreamUpdates_FullMethodName = "/apps.v0.UIService/StreamUpdates"
+	UIService_Configure_FullMethodName     = "/apps.v0.UIService/Configure"
 )
 
 // UIServiceClient is the client API for UIService service.
@@ -266,7 +266,7 @@ func _UIService_Configure_Handler(srv interface{}, ctx context.Context, dec func
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var UIService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "apps.v1.UIService",
+	ServiceName: "apps.v0.UIService",
 	HandlerType: (*UIServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -293,5 +293,5 @@ var UIService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/apps/v1/ui.proto",
+	Metadata: "proto/apps/v0/ui.proto",
 }

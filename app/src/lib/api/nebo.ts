@@ -3,6 +3,45 @@ import * as components from "./neboComponents"
 export * from "./neboComponents"
 
 /**
+ * @description "List advisors"
+ */
+export function listAdvisors() {
+	return webapi.get<components.ListAdvisorsResponse>(`/api/v1/agent/advisors`)
+}
+
+/**
+ * @description "Create advisor"
+ * @param req
+ */
+export function createAdvisor(req: components.CreateAdvisorRequest) {
+	return webapi.post<components.GetAdvisorResponse>(`/api/v1/agent/advisors`, req)
+}
+
+/**
+ * @description "Delete advisor"
+ * @param req
+ */
+export function deleteAdvisor(name: string) {
+	return webapi.delete<components.DeleteAdvisorResponse>(`/api/v1/agent/advisors/${name}`)
+}
+
+/**
+ * @description "Get advisor"
+ * @param req
+ */
+export function getAdvisor(name: string) {
+	return webapi.get<components.GetAdvisorResponse>(`/api/v1/agent/advisors/${name}`)
+}
+
+/**
+ * @description "Update advisor"
+ * @param req
+ */
+export function updateAdvisor(req: components.UpdateAdvisorRequest, name: string) {
+	return webapi.put<components.GetAdvisorResponse>(`/api/v1/agent/advisors/${name}`, req)
+}
+
+/**
  * @description "Get heartbeat"
  */
 export function getHeartbeat() {
@@ -290,6 +329,20 @@ export function listDevApps() {
 }
 
 /**
+ * @description "Project context"
+ */
+export function projectContext(appId: string) {
+	return webapi.get<components.ProjectContext>(`/api/v1/dev/apps/${appId}/context`)
+}
+
+/**
+ * @description "Grpc stream"
+ */
+export function grpcStream(appId: string) {
+	return webapi.get<components.MessageResponse>(`/api/v1/dev/apps/${appId}/grpc`)
+}
+
+/**
  * @description "Log stream"
  */
 export function logStream(appId: string) {
@@ -301,6 +354,20 @@ export function logStream(appId: string) {
  */
 export function relaunchDevApp(appId: string) {
 	return webapi.post<components.MessageResponse>(`/api/v1/dev/apps/${appId}/relaunch`)
+}
+
+/**
+ * @description "Browse directory"
+ */
+export function browseDirectory() {
+	return webapi.post<components.BrowseDirectoryResponse>(`/api/v1/dev/browse-directory`)
+}
+
+/**
+ * @description "Open dev window"
+ */
+export function openDevWindow() {
+	return webapi.post<components.OpenDevWindowResponse>(`/api/v1/dev/open-window`)
 }
 
 /**
@@ -743,7 +810,14 @@ export function toggleSkill(name: string) {
  * @description "List store apps"
  */
 export function listStoreApps() {
-	return webapi.get<components.MessageResponse>(`/api/v1/store/apps`)
+	return webapi.get<components.ListStoreAppsResponse>(`/api/v1/store/apps`)
+}
+
+/**
+ * @description "Get store app"
+ */
+export function getStoreApp(id: string) {
+	return webapi.get<components.GetStoreAppResponse>(`/api/v1/store/apps/${id}`)
 }
 
 /**
@@ -757,14 +831,21 @@ export function uninstallStoreApp(id: string) {
  * @description "Install store app"
  */
 export function installStoreApp(id: string) {
-	return webapi.post<components.MessageResponse>(`/api/v1/store/apps/${id}/install`)
+	return webapi.post<components.InstallStoreAppResponse>(`/api/v1/store/apps/${id}/install`)
+}
+
+/**
+ * @description "Get store app reviews"
+ */
+export function getStoreAppReviews(id: string, page = 1, pageSize = 10) {
+	return webapi.get<components.GetStoreAppReviewsResponse>(`/api/v1/store/apps/${id}/reviews`, { page, pageSize })
 }
 
 /**
  * @description "List store skills"
  */
 export function listStoreSkills() {
-	return webapi.get<components.MessageResponse>(`/api/v1/store/skills`)
+	return webapi.get<components.ListStoreSkillsResponse>(`/api/v1/store/skills`)
 }
 
 /**
@@ -778,7 +859,7 @@ export function uninstallStoreSkill(id: string) {
  * @description "Install store skill"
  */
 export function installStoreSkill(id: string) {
-	return webapi.post<components.MessageResponse>(`/api/v1/store/skills/${id}/install`)
+	return webapi.post<components.InstallStoreSkillResponse>(`/api/v1/store/skills/${id}/install`)
 }
 
 /**
@@ -933,5 +1014,37 @@ export function updateUserProfile(req: components.UpdateUserProfileRequest) {
  */
 export function healthCheck() {
 	return webapi.get<components.MessageResponse>(`/health`)
+}
+
+// --------------------------------------------------------------------------
+// App OAuth (manual — handlers write raw JSON, not through genapi)
+// --------------------------------------------------------------------------
+
+export interface AppOAuthGrant {
+	provider: string
+	scopes: string
+	connection_status: string
+	expires_at?: string
+}
+
+/**
+ * @description "Get app OAuth grants"
+ */
+export function getAppOAuthGrants(appId: string) {
+	return webapi.get<{ grants: AppOAuthGrant[] }>(`/api/v1/apps/${appId}/oauth/grants`)
+}
+
+/**
+ * @description "Disconnect app OAuth provider"
+ */
+export function disconnectAppOAuth(appId: string, provider: string) {
+	return webapi.delete<{ message: string }>(`/api/v1/apps/${appId}/oauth/${provider}`)
+}
+
+/**
+ * Returns the URL to open in a popup for the app OAuth connect flow.
+ */
+export function getAppOAuthConnectUrl(appId: string, provider: string): string {
+	return `/api/v1/apps/${appId}/oauth/${provider}/connect`
 }
 

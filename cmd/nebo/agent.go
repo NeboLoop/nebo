@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -620,6 +621,13 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	} else if advisorLoader.Count() > 0 {
 		fmt.Printf("[agent] Loaded %d advisors from %s\n", advisorLoader.Count(), cfg.AdvisorsDir())
 	}
+	// Load DB-backed advisors (override file-based ones with same name)
+	if opts.Database != nil {
+		dbAdvisors, err := db.New(opts.Database).ListAdvisors(context.Background())
+		if err == nil && len(dbAdvisors) > 0 {
+			advisorLoader.LoadFromDB(dbAdvisors)
+		}
+	}
 
 	// Create advisors tool (the agent decides when to consult advisors)
 	advisorsTool := tools.NewAdvisorsTool(advisorLoader)
@@ -795,6 +803,10 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		neboLoopURL = opts.SvcCtx.Config.NeboLoop.ApiURL
 	}
 
+	// Create unified skill tool — all apps and standalone skills register here
+	skillDomainTool := tools.NewSkillDomainTool()
+	registry.Register(skillDomainTool)
+
 	// Discover and launch apps (NeboLoop app store + local dev)
 	appRegistry = apps.NewAppRegistry(apps.AppRegistryConfig{
 		DataDir:     cfg.DataDir,
@@ -802,6 +814,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		Queries:     db.New(sqlDB),
 		PluginStore: opts.PluginStore,
 		ToolReg:     registry,
+		SkillTool:   skillDomainTool,
 		CommMgr:     commManager,
 	})
 	if err := appRegistry.DiscoverAndLaunch(ctx); err != nil {
@@ -844,11 +857,20 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	commHandler.SetLanes(state.lanes)
 	defer commManager.Shutdown(context.Background())
 
+	// Load standalone skills and register them in the unified skill tool
+	skillLoader := loadSkills(cfg)
+	for _, s := range skillLoader.List() {
+		if s.Enabled {
+			skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil)
+		}
+	}
+	fmt.Printf("[agent] Registered %d standalone skills, %d total skills\n", skillLoader.Count(), skillDomainTool.Count())
+
 	// Store comm references on state for dynamic settings updates
 	state.commManager = commManager
 	state.commAgentID = agentID
 	state.registry = registry
-	state.skillLoader = r.SkillLoader()
+	state.skillLoader = skillLoader
 	state.appRegistry = appRegistry
 
 	// Wire the channel bridge message handler so inbound messages from NeboLoop
@@ -906,6 +928,12 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		opts.SvcCtx.SetToolRegistry(registry)
 		if schedulerMgr != nil {
 			opts.SvcCtx.SetScheduler(schedulerMgr)
+		}
+
+		// Wire OAuth broker to push tokens to apps
+		if opts.SvcCtx.OAuthBroker != nil {
+			opts.SvcCtx.OAuthBroker.SetAppReceiver(appRegistry)
+			opts.SvcCtx.OAuthBroker.StartRefreshLoop(ctx)
 		}
 	}
 
@@ -971,7 +999,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			if err := active.Connect(ctx, commConfig); err != nil {
 				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", commPlugin, err)
 			} else {
-				card := buildAgentCard(registry, r.SkillLoader())
+				card := buildAgentCard(registry, skillLoader)
 				active.Register(ctx, agentID, card)
 				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", commPlugin, agentID)
 
@@ -1440,6 +1468,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			isHeartbeat := strings.HasPrefix(sessionKey, "heartbeat-")
 			isCronJob := strings.HasPrefix(sessionKey, "cron-")
 			isCommMsg := strings.HasPrefix(sessionKey, "comm-")
+			isDev := strings.HasPrefix(sessionKey, "dev-")
 			lane := agenthub.LaneMain
 			if isHeartbeat {
 				lane = agenthub.LaneHeartbeat // Heartbeats run independently
@@ -1447,6 +1476,8 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				lane = agenthub.LaneEvents // Scheduled/triggered tasks
 			} else if isCommMsg {
 				lane = agenthub.LaneComm // Inter-agent communication
+			} else if isDev {
+				lane = agenthub.LaneDev // Developer assistant
 			}
 
 			// Build a description for lane monitoring
@@ -1459,6 +1490,8 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				taskDesc = fmt.Sprintf("Scheduled: %s", sessionKey)
 			} else if isCommMsg {
 				taskDesc = fmt.Sprintf("Comm: %s", sessionKey)
+			} else if isDev {
+				taskDesc = fmt.Sprintf("Dev: %s", sessionKey)
 			}
 
 			fmt.Printf("[Agent-WS] Enqueueing %s request: session=%s user=%s lane=%s prompt=%q\n",
@@ -1551,9 +1584,12 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 						})
 
 					case ai.EventTypeMessage:
-						// CLI provider may send text only in the assistant envelope
-						// (no streaming text_delta events). Forward text to frontend.
-						if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
+						if event.Message == nil {
+							continue
+						}
+
+						// Forward text content (CLI provider may send text only in the assistant envelope)
+						if event.Message.Content != "" && result.Len() == 0 {
 							result.WriteString(event.Message.Content)
 							state.sendFrame(map[string]any{
 								"type": "stream",
@@ -1562,6 +1598,28 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 									"chunk": event.Message.Content,
 								},
 							})
+						}
+
+						// NOTE: ToolCalls are NOT forwarded here — they arrive via
+						// EventTypeToolCall from the CLI provider's content_block pre-parse.
+						// Forwarding them here would cause duplicate ToolCards.
+
+						// Forward tool results (CLI provider embeds these in user messages)
+						if len(event.Message.ToolResults) > 0 {
+							var toolResults []session.ToolResult
+							if err := json.Unmarshal(event.Message.ToolResults, &toolResults); err == nil {
+								for _, tr := range toolResults {
+									fmt.Printf("[Agent-WS] Tool result (from message): id=%s len=%d\n", tr.ToolCallID, len(tr.Content))
+									state.sendFrame(map[string]any{
+										"type": "stream",
+										"id":   requestID,
+										"payload": map[string]any{
+											"tool_result": tr.Content,
+											"tool_id":     tr.ToolCallID,
+										},
+									})
+								}
+							}
 						}
 
 					case ai.EventTypeError:
@@ -1934,10 +1992,49 @@ func buildAgentCard(registry *tools.Registry, skillLoader *skills.Loader) *comm.
 				ID:          skill.Name,
 				Name:        skill.Name,
 				Description: skill.Description,
-				Tags:        skill.Triggers,
+				Tags:        skill.Tags,
 			})
 		}
 	}
 
 	return card
+}
+
+// loadSkills loads standalone skills from extensions and user directories.
+func loadSkills(cfg *agentcfg.Config) *skills.Loader {
+	loader := skills.NewLoader(filepath.Join("extensions", "skills"))
+	if err := loader.LoadAll(); err != nil {
+		fmt.Printf("[agent] Warning: failed to load skills: %v\n", err)
+	}
+
+	// Merge user skills from data directory
+	userLoader := skills.NewLoader(filepath.Join(cfg.DataDir, "skills"))
+	if err := userLoader.LoadAll(); err == nil {
+		for _, s := range userLoader.List() {
+			loader.Add(s)
+		}
+	}
+
+	// Apply disabled skills from settings
+	disabledSkills := loadDisabledSkills(cfg.DataDir)
+	if len(disabledSkills) > 0 {
+		loader.SetDisabledSkills(disabledSkills)
+	}
+
+	return loader
+}
+
+// loadDisabledSkills reads the skill-settings.json file and returns disabled skill names.
+func loadDisabledSkills(dataDir string) []string {
+	data, err := os.ReadFile(filepath.Join(dataDir, "skill-settings.json"))
+	if err != nil {
+		return nil
+	}
+	var settings struct {
+		DisabledSkills []string `json:"disabledSkills"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return nil
+	}
+	return settings.DisabledSkills
 }

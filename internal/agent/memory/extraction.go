@@ -16,6 +16,8 @@ type ExtractedFacts struct {
 	Preferences []Fact `json:"preferences"` // User preferences and behaviors
 	Entities    []Fact `json:"entities"`    // People, places, things mentioned
 	Decisions   []Fact `json:"decisions"`   // Decisions made during conversation
+	Styles      []Fact `json:"styles"`      // Communication/personality style observations
+	Artifacts   []Fact `json:"artifacts"`   // Content the agent produced that the user may reference later
 }
 
 // Fact represents a single extracted fact
@@ -60,15 +62,17 @@ func (f *Fact) UnmarshalJSON(data []byte) error {
 // ExtractFactsPrompt is the prompt used to extract facts from messages
 const ExtractFactsPrompt = `Analyze the following conversation and extract durable facts that should be remembered long-term.
 
-Return a JSON object with three arrays:
+Return a JSON object with five arrays:
 1. "preferences" - User preferences and learned behaviors (e.g., code style, favorite tools, communication preferences)
 2. "entities" - Information about people, places, projects mentioned (format key as "type/name", e.g., "person/sarah", "project/nebo")
 3. "decisions" - Important decisions made during this conversation
+4. "styles" - Observations about how the user communicates or how they want the assistant to behave. These are emergent personality signals — things like humor preferences, directness level, topic engagement patterns, emotional tone, or pacing. Key format: "style/trait-name" (e.g., "style/humor-dry", "style/prefers-terse-responses", "style/engages-deeply-on-architecture"). Only include clear, repeated signals — not one-off moments.
+5. "artifacts" - Important content the assistant produced that the user may reference later. This includes: copy/text written for the user (headlines, taglines, marketing copy, emails), plans or strategies outlined, specific recommendations given, code architecture decisions explained, or any creative output the user accepted or built on. Key format: "artifact/description" (e.g., "artifact/landing-page-hero-copy", "artifact/launch-strategy-summary"). Store the VERBATIM text or a precise summary — not a vague description.
 
 Each fact should have:
 - "key": A unique, descriptive key for retrieval (use path-like format: "category/name")
 - "value": The actual information to remember
-- "category": One of "preference", "entity", "decision"
+- "category": One of "preference", "entity", "decision", "style", "artifact"
 - "tags": Relevant tags for searching
 
 Skip:
@@ -234,6 +238,27 @@ func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 		})
 	}
 
+	for _, style := range f.Styles {
+		entries = append(entries, MemoryEntry{
+			Layer:     "tacit",
+			Namespace: "personality",
+			Key:       style.Key,
+			Value:     style.Value,
+			Tags:      append(style.Tags, "style"),
+			IsStyle:   true,
+		})
+	}
+
+	for _, artifact := range f.Artifacts {
+		entries = append(entries, MemoryEntry{
+			Layer:     "tacit",
+			Namespace: "artifacts",
+			Key:       artifact.Key,
+			Value:     artifact.Value,
+			Tags:      append(artifact.Tags, "artifact"),
+		})
+	}
+
 	return entries
 }
 
@@ -244,14 +269,15 @@ type MemoryEntry struct {
 	Key       string
 	Value     string
 	Tags      []string
+	IsStyle   bool // Style observations use reinforcement tracking instead of overwrite
 }
 
 // IsEmpty returns true if no facts were extracted
 func (f *ExtractedFacts) IsEmpty() bool {
-	return len(f.Preferences) == 0 && len(f.Entities) == 0 && len(f.Decisions) == 0
+	return len(f.Preferences) == 0 && len(f.Entities) == 0 && len(f.Decisions) == 0 && len(f.Styles) == 0 && len(f.Artifacts) == 0
 }
 
 // TotalCount returns the total number of facts
 func (f *ExtractedFacts) TotalCount() int {
-	return len(f.Preferences) + len(f.Entities) + len(f.Decisions)
+	return len(f.Preferences) + len(f.Entities) + len(f.Decisions) + len(f.Styles) + len(f.Artifacts)
 }

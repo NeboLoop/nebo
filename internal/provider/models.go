@@ -396,7 +396,7 @@ type CLIProviderInfo struct {
 var KnownCLIProviders = []CLIProviderInfo{
 	{
 		ID:          "claude-code",
-		DisplayName: "Claude Code CLI",
+		DisplayName: "Claude Agent",
 		Command:     "claude",
 		InstallHint: "brew install claude-code",
 		Models:      []string{"opus", "sonnet", "haiku"},

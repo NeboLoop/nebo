@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.0
 // - protoc             v6.33.0
-// source: proto/apps/v1/tool.proto
+// source: proto/apps/v0/tool.proto
 
 package pb
 
@@ -19,13 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ToolService_HealthCheck_FullMethodName      = "/apps.v1.ToolService/HealthCheck"
-	ToolService_Name_FullMethodName             = "/apps.v1.ToolService/Name"
-	ToolService_Description_FullMethodName      = "/apps.v1.ToolService/Description"
-	ToolService_Schema_FullMethodName           = "/apps.v1.ToolService/Schema"
-	ToolService_Execute_FullMethodName          = "/apps.v1.ToolService/Execute"
-	ToolService_RequiresApproval_FullMethodName = "/apps.v1.ToolService/RequiresApproval"
-	ToolService_Configure_FullMethodName        = "/apps.v1.ToolService/Configure"
+	ToolService_HealthCheck_FullMethodName      = "/apps.v0.ToolService/HealthCheck"
+	ToolService_Name_FullMethodName             = "/apps.v0.ToolService/Name"
+	ToolService_Description_FullMethodName      = "/apps.v0.ToolService/Description"
+	ToolService_Schema_FullMethodName           = "/apps.v0.ToolService/Schema"
+	ToolService_Execute_FullMethodName          = "/apps.v0.ToolService/Execute"
+	ToolService_RequiresApproval_FullMethodName = "/apps.v0.ToolService/RequiresApproval"
+	ToolService_Configure_FullMethodName        = "/apps.v0.ToolService/Configure"
 )
 
 // ToolServiceClient is the client API for ToolService service.
@@ -330,7 +330,7 @@ func _ToolService_Configure_Handler(srv interface{}, ctx context.Context, dec fu
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ToolService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "apps.v1.ToolService",
+	ServiceName: "apps.v0.ToolService",
 	HandlerType: (*ToolServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -363,5 +363,5 @@ var ToolService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/apps/v1/tool.proto",
+	Metadata: "proto/apps/v0/tool.proto",
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	pb "github.com/nebolabs/nebo/internal/apps/pb"
+	"github.com/nebolabs/nebo/internal/apps/inspector"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -42,8 +43,9 @@ type AppProcess struct {
 type Runtime struct {
 	dataDir     string
 	sandbox     SandboxConfig
-	keyProvider *SigningKeyProvider  // nil = skip signature verification (dev mode)
-	revChecker  *RevocationChecker  // nil = skip revocation check (dev mode)
+	keyProvider *SigningKeyProvider     // nil = skip signature verification (dev mode)
+	revChecker  *RevocationChecker     // nil = skip revocation check (dev mode)
+	inspector   *inspector.Inspector   // nil = no gRPC inspection
 	processes   map[string]*AppProcess
 	mu          sync.RWMutex
 }
@@ -57,6 +59,37 @@ func NewRuntime(dataDir string, sandbox SandboxConfig) *Runtime {
 	}
 }
 
+// findBinary locates the app executable in appDir.
+// Search order: binary, app, then any executable in tmp/.
+func FindBinary(appDir string) (string, error) {
+	for _, name := range []string{"binary", "app"} {
+		p := filepath.Join(appDir, name)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p, nil
+		}
+	}
+
+	tmpDir := filepath.Join(appDir, "tmp")
+	entries, err := os.ReadDir(tmpDir)
+	if err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			p := filepath.Join(tmpDir, e.Name())
+			info, err := os.Stat(p)
+			if err != nil {
+				continue
+			}
+			if info.Mode()&0111 != 0 {
+				return p, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no binary found (expected 'binary', 'app', or executable in tmp/)")
+}
+
 // Launch starts an app binary, waits for its Unix socket, and connects via gRPC.
 func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 	manifest, err := LoadManifest(appDir)
@@ -64,13 +97,9 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 		return nil, fmt.Errorf("load manifest: %w", err)
 	}
 
-	binaryPath := filepath.Join(appDir, "binary")
-	if _, err := os.Stat(binaryPath); err != nil {
-		// Try platform-specific binary name
-		binaryPath = filepath.Join(appDir, "app")
-		if _, err := os.Stat(binaryPath); err != nil {
-			return nil, fmt.Errorf("no binary found in %s", appDir)
-		}
+	binaryPath, err := FindBinary(appDir)
+	if err != nil {
+		return nil, err
 	}
 
 	// Revocation check: refuse to launch apps revoked by NeboLoop
@@ -83,18 +112,21 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 		}
 	}
 
-	// Signature verification: verify NeboLoop code-signed manifest + binary
+	// Signature verification: skip for sideloaded dev apps (symlinks), verify for store apps
 	if rt.keyProvider != nil {
-		key, err := rt.keyProvider.GetKey()
-		if err != nil {
-			// Try refresh in case of key rotation
-			key, err = rt.keyProvider.Refresh()
+		if info, lerr := os.Lstat(appDir); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+			fmt.Printf("[apps] Skipping signature verification for sideloaded app: %s\n", manifest.ID)
+		} else {
+			key, err := rt.keyProvider.GetKey()
 			if err != nil {
-				return nil, fmt.Errorf("cannot verify signatures — failed to fetch signing key: %w", err)
+				key, err = rt.keyProvider.Refresh()
+				if err != nil {
+					return nil, fmt.Errorf("cannot verify signatures — failed to fetch signing key: %w", err)
+				}
 			}
-		}
-		if err := VerifyAppSignatures(appDir, binaryPath, key); err != nil {
-			return nil, fmt.Errorf("signature verification failed: %w", err)
+			if err := VerifyAppSignatures(appDir, binaryPath, key); err != nil {
+				return nil, fmt.Errorf("signature verification failed: %w", err)
+			}
 		}
 	} else {
 		fmt.Printf("[apps] Warning: no signing key provider — skipping signature verification for %s\n", manifest.ID)
@@ -149,10 +181,16 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 	os.Chmod(sockPath, 0600)
 
 	// Connect via gRPC over Unix domain socket
-	conn, err := grpc.NewClient(
-		"unix://"+sockPath,
+	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	}
+	if rt.inspector != nil {
+		dialOpts = append(dialOpts,
+			grpc.WithUnaryInterceptor(inspector.UnaryInterceptor(rt.inspector, manifest.ID)),
+			grpc.WithStreamInterceptor(inspector.StreamInterceptor(rt.inspector, manifest.ID)),
+		)
+	}
+	conn, err := grpc.NewClient("unix://"+sockPath, dialOpts...)
 	if err != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		logCleanup()

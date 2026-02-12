@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/apps/v1/schedule.proto
+// source: proto/apps/v0/schedule.proto
 
 package pb
 
@@ -44,7 +44,7 @@ type Schedule struct {
 
 func (x *Schedule) Reset() {
 	*x = Schedule{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -56,7 +56,7 @@ func (x *Schedule) String() string {
 func (*Schedule) ProtoMessage() {}
 
 func (x *Schedule) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -69,7 +69,7 @@ func (x *Schedule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Schedule.ProtoReflect.Descriptor instead.
 func (*Schedule) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{0}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Schedule) GetId() string {
@@ -188,7 +188,7 @@ type ScheduleTrigger struct {
 
 func (x *ScheduleTrigger) Reset() {
 	*x = ScheduleTrigger{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -200,7 +200,7 @@ func (x *ScheduleTrigger) String() string {
 func (*ScheduleTrigger) ProtoMessage() {}
 
 func (x *ScheduleTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -213,7 +213,7 @@ func (x *ScheduleTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleTrigger.ProtoReflect.Descriptor instead.
 func (*ScheduleTrigger) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{1}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ScheduleTrigger) GetScheduleId() string {
@@ -287,7 +287,7 @@ type CreateScheduleRequest struct {
 
 func (x *CreateScheduleRequest) Reset() {
 	*x = CreateScheduleRequest{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -299,7 +299,7 @@ func (x *CreateScheduleRequest) String() string {
 func (*CreateScheduleRequest) ProtoMessage() {}
 
 func (x *CreateScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -312,7 +312,7 @@ func (x *CreateScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateScheduleRequest.ProtoReflect.Descriptor instead.
 func (*CreateScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{2}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *CreateScheduleRequest) GetName() string {
@@ -373,7 +373,7 @@ type GetScheduleRequest struct {
 
 func (x *GetScheduleRequest) Reset() {
 	*x = GetScheduleRequest{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -385,7 +385,7 @@ func (x *GetScheduleRequest) String() string {
 func (*GetScheduleRequest) ProtoMessage() {}
 
 func (x *GetScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -398,7 +398,7 @@ func (x *GetScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetScheduleRequest.ProtoReflect.Descriptor instead.
 func (*GetScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{3}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *GetScheduleRequest) GetName() string {
@@ -419,7 +419,7 @@ type ListSchedulesRequest struct {
 
 func (x *ListSchedulesRequest) Reset() {
 	*x = ListSchedulesRequest{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -431,7 +431,7 @@ func (x *ListSchedulesRequest) String() string {
 func (*ListSchedulesRequest) ProtoMessage() {}
 
 func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -444,7 +444,7 @@ func (x *ListSchedulesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulesRequest.ProtoReflect.Descriptor instead.
 func (*ListSchedulesRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{4}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListSchedulesRequest) GetLimit() int32 {
@@ -478,7 +478,7 @@ type ListSchedulesResponse struct {
 
 func (x *ListSchedulesResponse) Reset() {
 	*x = ListSchedulesResponse{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -490,7 +490,7 @@ func (x *ListSchedulesResponse) String() string {
 func (*ListSchedulesResponse) ProtoMessage() {}
 
 func (x *ListSchedulesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -503,7 +503,7 @@ func (x *ListSchedulesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulesResponse.ProtoReflect.Descriptor instead.
 func (*ListSchedulesResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{5}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListSchedulesResponse) GetSchedules() []*Schedule {
@@ -535,7 +535,7 @@ type UpdateScheduleRequest struct {
 
 func (x *UpdateScheduleRequest) Reset() {
 	*x = UpdateScheduleRequest{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[6]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -547,7 +547,7 @@ func (x *UpdateScheduleRequest) String() string {
 func (*UpdateScheduleRequest) ProtoMessage() {}
 
 func (x *UpdateScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[6]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -560,7 +560,7 @@ func (x *UpdateScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateScheduleRequest.ProtoReflect.Descriptor instead.
 func (*UpdateScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{6}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *UpdateScheduleRequest) GetName() string {
@@ -622,7 +622,7 @@ type ScheduleResponse struct {
 
 func (x *ScheduleResponse) Reset() {
 	*x = ScheduleResponse{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[7]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -634,7 +634,7 @@ func (x *ScheduleResponse) String() string {
 func (*ScheduleResponse) ProtoMessage() {}
 
 func (x *ScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[7]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -647,7 +647,7 @@ func (x *ScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleResponse.ProtoReflect.Descriptor instead.
 func (*ScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{7}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ScheduleResponse) GetSchedule() *Schedule {
@@ -673,7 +673,7 @@ type DeleteScheduleRequest struct {
 
 func (x *DeleteScheduleRequest) Reset() {
 	*x = DeleteScheduleRequest{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[8]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -685,7 +685,7 @@ func (x *DeleteScheduleRequest) String() string {
 func (*DeleteScheduleRequest) ProtoMessage() {}
 
 func (x *DeleteScheduleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[8]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -698,7 +698,7 @@ func (x *DeleteScheduleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteScheduleRequest.ProtoReflect.Descriptor instead.
 func (*DeleteScheduleRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{8}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DeleteScheduleRequest) GetName() string {
@@ -718,7 +718,7 @@ type DeleteScheduleResponse struct {
 
 func (x *DeleteScheduleResponse) Reset() {
 	*x = DeleteScheduleResponse{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[9]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -730,7 +730,7 @@ func (x *DeleteScheduleResponse) String() string {
 func (*DeleteScheduleResponse) ProtoMessage() {}
 
 func (x *DeleteScheduleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[9]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -743,7 +743,7 @@ func (x *DeleteScheduleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteScheduleResponse.ProtoReflect.Descriptor instead.
 func (*DeleteScheduleResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{9}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DeleteScheduleResponse) GetSuccess() bool {
@@ -769,7 +769,7 @@ type ScheduleNameRequest struct {
 
 func (x *ScheduleNameRequest) Reset() {
 	*x = ScheduleNameRequest{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[10]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -781,7 +781,7 @@ func (x *ScheduleNameRequest) String() string {
 func (*ScheduleNameRequest) ProtoMessage() {}
 
 func (x *ScheduleNameRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[10]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -794,7 +794,7 @@ func (x *ScheduleNameRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleNameRequest.ProtoReflect.Descriptor instead.
 func (*ScheduleNameRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{10}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ScheduleNameRequest) GetName() string {
@@ -815,7 +815,7 @@ type TriggerResponse struct {
 
 func (x *TriggerResponse) Reset() {
 	*x = TriggerResponse{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[11]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -827,7 +827,7 @@ func (x *TriggerResponse) String() string {
 func (*TriggerResponse) ProtoMessage() {}
 
 func (x *TriggerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[11]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -840,7 +840,7 @@ func (x *TriggerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerResponse.ProtoReflect.Descriptor instead.
 func (*TriggerResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{11}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *TriggerResponse) GetSuccess() bool {
@@ -875,7 +875,7 @@ type ScheduleHistoryRequest struct {
 
 func (x *ScheduleHistoryRequest) Reset() {
 	*x = ScheduleHistoryRequest{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[12]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -887,7 +887,7 @@ func (x *ScheduleHistoryRequest) String() string {
 func (*ScheduleHistoryRequest) ProtoMessage() {}
 
 func (x *ScheduleHistoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[12]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -900,7 +900,7 @@ func (x *ScheduleHistoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleHistoryRequest.ProtoReflect.Descriptor instead.
 func (*ScheduleHistoryRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{12}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ScheduleHistoryRequest) GetName() string {
@@ -934,7 +934,7 @@ type ScheduleHistoryResponse struct {
 
 func (x *ScheduleHistoryResponse) Reset() {
 	*x = ScheduleHistoryResponse{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[13]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -946,7 +946,7 @@ func (x *ScheduleHistoryResponse) String() string {
 func (*ScheduleHistoryResponse) ProtoMessage() {}
 
 func (x *ScheduleHistoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[13]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -959,7 +959,7 @@ func (x *ScheduleHistoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleHistoryResponse.ProtoReflect.Descriptor instead.
 func (*ScheduleHistoryResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{13}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ScheduleHistoryResponse) GetEntries() []*ScheduleHistoryEntry {
@@ -991,7 +991,7 @@ type ScheduleHistoryEntry struct {
 
 func (x *ScheduleHistoryEntry) Reset() {
 	*x = ScheduleHistoryEntry{}
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[14]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1003,7 +1003,7 @@ func (x *ScheduleHistoryEntry) String() string {
 func (*ScheduleHistoryEntry) ProtoMessage() {}
 
 func (x *ScheduleHistoryEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_schedule_proto_msgTypes[14]
+	mi := &file_proto_apps_v0_schedule_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1016,7 +1016,7 @@ func (x *ScheduleHistoryEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleHistoryEntry.ProtoReflect.Descriptor instead.
 func (*ScheduleHistoryEntry) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_schedule_proto_rawDescGZIP(), []int{14}
+	return file_proto_apps_v0_schedule_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ScheduleHistoryEntry) GetId() string {
@@ -1068,11 +1068,11 @@ func (x *ScheduleHistoryEntry) GetError() string {
 	return ""
 }
 
-var File_proto_apps_v1_schedule_proto protoreflect.FileDescriptor
+var File_proto_apps_v0_schedule_proto protoreflect.FileDescriptor
 
-const file_proto_apps_v1_schedule_proto_rawDesc = "" +
+const file_proto_apps_v0_schedule_proto_rawDesc = "" +
 	"\n" +
-	"\x1cproto/apps/v1/schedule.proto\x12\aapps.v1\x1a\x1aproto/apps/v1/common.proto\"\xde\x03\n" +
+	"\x1cproto/apps/v0/schedule.proto\x12\aapps.v0\x1a\x1aproto/apps/v0/common.proto\"\xde\x03\n" +
 	"\bSchedule\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1e\n" +
@@ -1092,7 +1092,7 @@ const file_proto_apps_v1_schedule_proto_rawDesc = "" +
 	"last_error\x18\f \x01(\tR\tlastError\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\r \x01(\tR\tcreatedAt\x12;\n" +
-	"\bmetadata\x18\x0e \x03(\v2\x1f.apps.v1.Schedule.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\x0e \x03(\v2\x1f.apps.v0.Schedule.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcd\x02\n" +
@@ -1105,7 +1105,7 @@ const file_proto_apps_v1_schedule_proto_rawDesc = "" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x12\x18\n" +
 	"\adeliver\x18\x06 \x01(\tR\adeliver\x12\x19\n" +
 	"\bfired_at\x18\a \x01(\tR\afiredAt\x12B\n" +
-	"\bmetadata\x18\b \x03(\v2&.apps.v1.ScheduleTrigger.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\b \x03(\v2&.apps.v0.ScheduleTrigger.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbd\x02\n" +
@@ -1118,7 +1118,7 @@ const file_proto_apps_v1_schedule_proto_rawDesc = "" +
 	"\acommand\x18\x04 \x01(\tR\acommand\x12\x18\n" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x12\x18\n" +
 	"\adeliver\x18\x06 \x01(\tR\adeliver\x12H\n" +
-	"\bmetadata\x18\a \x03(\v2,.apps.v1.CreateScheduleRequest.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\a \x03(\v2,.apps.v0.CreateScheduleRequest.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"(\n" +
@@ -1129,7 +1129,7 @@ const file_proto_apps_v1_schedule_proto_rawDesc = "" +
 	"\x06offset\x18\x02 \x01(\x05R\x06offset\x12!\n" +
 	"\fenabled_only\x18\x03 \x01(\bR\venabledOnly\"^\n" +
 	"\x15ListSchedulesResponse\x12/\n" +
-	"\tschedules\x18\x01 \x03(\v2\x11.apps.v1.ScheduleR\tschedules\x12\x14\n" +
+	"\tschedules\x18\x01 \x03(\v2\x11.apps.v0.ScheduleR\tschedules\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x03R\x05total\"\xbd\x02\n" +
 	"\x15UpdateScheduleRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1e\n" +
@@ -1140,12 +1140,12 @@ const file_proto_apps_v1_schedule_proto_rawDesc = "" +
 	"\acommand\x18\x04 \x01(\tR\acommand\x12\x18\n" +
 	"\amessage\x18\x05 \x01(\tR\amessage\x12\x18\n" +
 	"\adeliver\x18\x06 \x01(\tR\adeliver\x12H\n" +
-	"\bmetadata\x18\a \x03(\v2,.apps.v1.UpdateScheduleRequest.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\a \x03(\v2,.apps.v0.UpdateScheduleRequest.MetadataEntryR\bmetadata\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"W\n" +
 	"\x10ScheduleResponse\x12-\n" +
-	"\bschedule\x18\x01 \x01(\v2\x11.apps.v1.ScheduleR\bschedule\x12\x14\n" +
+	"\bschedule\x18\x01 \x01(\v2\x11.apps.v0.ScheduleR\bschedule\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"+\n" +
 	"\x15DeleteScheduleRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"H\n" +
@@ -1163,7 +1163,7 @@ const file_proto_apps_v1_schedule_proto_rawDesc = "" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
 	"\x06offset\x18\x03 \x01(\x05R\x06offset\"h\n" +
 	"\x17ScheduleHistoryResponse\x127\n" +
-	"\aentries\x18\x01 \x03(\v2\x1d.apps.v1.ScheduleHistoryEntryR\aentries\x12\x14\n" +
+	"\aentries\x18\x01 \x03(\v2\x1d.apps.v0.ScheduleHistoryEntryR\aentries\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x03R\x05total\"\xd3\x01\n" +
 	"\x14ScheduleHistoryEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12#\n" +
@@ -1176,89 +1176,89 @@ const file_proto_apps_v1_schedule_proto_rawDesc = "" +
 	"\x06output\x18\x06 \x01(\tR\x06output\x12\x14\n" +
 	"\x05error\x18\a \x01(\tR\x05error2\xb9\x06\n" +
 	"\x0fScheduleService\x12H\n" +
-	"\vHealthCheck\x12\x1b.apps.v1.HealthCheckRequest\x1a\x1c.apps.v1.HealthCheckResponse\x12C\n" +
-	"\x06Create\x12\x1e.apps.v1.CreateScheduleRequest\x1a\x19.apps.v1.ScheduleResponse\x12=\n" +
-	"\x03Get\x12\x1b.apps.v1.GetScheduleRequest\x1a\x19.apps.v1.ScheduleResponse\x12E\n" +
-	"\x04List\x12\x1d.apps.v1.ListSchedulesRequest\x1a\x1e.apps.v1.ListSchedulesResponse\x12C\n" +
-	"\x06Update\x12\x1e.apps.v1.UpdateScheduleRequest\x1a\x19.apps.v1.ScheduleResponse\x12I\n" +
-	"\x06Delete\x12\x1e.apps.v1.DeleteScheduleRequest\x1a\x1f.apps.v1.DeleteScheduleResponse\x12A\n" +
-	"\x06Enable\x12\x1c.apps.v1.ScheduleNameRequest\x1a\x19.apps.v1.ScheduleResponse\x12B\n" +
-	"\aDisable\x12\x1c.apps.v1.ScheduleNameRequest\x1a\x19.apps.v1.ScheduleResponse\x12A\n" +
-	"\aTrigger\x12\x1c.apps.v1.ScheduleNameRequest\x1a\x18.apps.v1.TriggerResponse\x12L\n" +
-	"\aHistory\x12\x1f.apps.v1.ScheduleHistoryRequest\x1a .apps.v1.ScheduleHistoryResponse\x126\n" +
-	"\bTriggers\x12\x0e.apps.v1.Empty\x1a\x18.apps.v1.ScheduleTrigger0\x01\x121\n" +
-	"\tConfigure\x12\x14.apps.v1.SettingsMap\x1a\x0e.apps.v1.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\vHealthCheck\x12\x1b.apps.v0.HealthCheckRequest\x1a\x1c.apps.v0.HealthCheckResponse\x12C\n" +
+	"\x06Create\x12\x1e.apps.v0.CreateScheduleRequest\x1a\x19.apps.v0.ScheduleResponse\x12=\n" +
+	"\x03Get\x12\x1b.apps.v0.GetScheduleRequest\x1a\x19.apps.v0.ScheduleResponse\x12E\n" +
+	"\x04List\x12\x1d.apps.v0.ListSchedulesRequest\x1a\x1e.apps.v0.ListSchedulesResponse\x12C\n" +
+	"\x06Update\x12\x1e.apps.v0.UpdateScheduleRequest\x1a\x19.apps.v0.ScheduleResponse\x12I\n" +
+	"\x06Delete\x12\x1e.apps.v0.DeleteScheduleRequest\x1a\x1f.apps.v0.DeleteScheduleResponse\x12A\n" +
+	"\x06Enable\x12\x1c.apps.v0.ScheduleNameRequest\x1a\x19.apps.v0.ScheduleResponse\x12B\n" +
+	"\aDisable\x12\x1c.apps.v0.ScheduleNameRequest\x1a\x19.apps.v0.ScheduleResponse\x12A\n" +
+	"\aTrigger\x12\x1c.apps.v0.ScheduleNameRequest\x1a\x18.apps.v0.TriggerResponse\x12L\n" +
+	"\aHistory\x12\x1f.apps.v0.ScheduleHistoryRequest\x1a .apps.v0.ScheduleHistoryResponse\x126\n" +
+	"\bTriggers\x12\x0e.apps.v0.Empty\x1a\x18.apps.v0.ScheduleTrigger0\x01\x121\n" +
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
 
 var (
-	file_proto_apps_v1_schedule_proto_rawDescOnce sync.Once
-	file_proto_apps_v1_schedule_proto_rawDescData []byte
+	file_proto_apps_v0_schedule_proto_rawDescOnce sync.Once
+	file_proto_apps_v0_schedule_proto_rawDescData []byte
 )
 
-func file_proto_apps_v1_schedule_proto_rawDescGZIP() []byte {
-	file_proto_apps_v1_schedule_proto_rawDescOnce.Do(func() {
-		file_proto_apps_v1_schedule_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v1_schedule_proto_rawDesc), len(file_proto_apps_v1_schedule_proto_rawDesc)))
+func file_proto_apps_v0_schedule_proto_rawDescGZIP() []byte {
+	file_proto_apps_v0_schedule_proto_rawDescOnce.Do(func() {
+		file_proto_apps_v0_schedule_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v0_schedule_proto_rawDesc), len(file_proto_apps_v0_schedule_proto_rawDesc)))
 	})
-	return file_proto_apps_v1_schedule_proto_rawDescData
+	return file_proto_apps_v0_schedule_proto_rawDescData
 }
 
-var file_proto_apps_v1_schedule_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
-var file_proto_apps_v1_schedule_proto_goTypes = []any{
-	(*Schedule)(nil),                // 0: apps.v1.Schedule
-	(*ScheduleTrigger)(nil),         // 1: apps.v1.ScheduleTrigger
-	(*CreateScheduleRequest)(nil),   // 2: apps.v1.CreateScheduleRequest
-	(*GetScheduleRequest)(nil),      // 3: apps.v1.GetScheduleRequest
-	(*ListSchedulesRequest)(nil),    // 4: apps.v1.ListSchedulesRequest
-	(*ListSchedulesResponse)(nil),   // 5: apps.v1.ListSchedulesResponse
-	(*UpdateScheduleRequest)(nil),   // 6: apps.v1.UpdateScheduleRequest
-	(*ScheduleResponse)(nil),        // 7: apps.v1.ScheduleResponse
-	(*DeleteScheduleRequest)(nil),   // 8: apps.v1.DeleteScheduleRequest
-	(*DeleteScheduleResponse)(nil),  // 9: apps.v1.DeleteScheduleResponse
-	(*ScheduleNameRequest)(nil),     // 10: apps.v1.ScheduleNameRequest
-	(*TriggerResponse)(nil),         // 11: apps.v1.TriggerResponse
-	(*ScheduleHistoryRequest)(nil),  // 12: apps.v1.ScheduleHistoryRequest
-	(*ScheduleHistoryResponse)(nil), // 13: apps.v1.ScheduleHistoryResponse
-	(*ScheduleHistoryEntry)(nil),    // 14: apps.v1.ScheduleHistoryEntry
-	nil,                             // 15: apps.v1.Schedule.MetadataEntry
-	nil,                             // 16: apps.v1.ScheduleTrigger.MetadataEntry
-	nil,                             // 17: apps.v1.CreateScheduleRequest.MetadataEntry
-	nil,                             // 18: apps.v1.UpdateScheduleRequest.MetadataEntry
-	(*HealthCheckRequest)(nil),      // 19: apps.v1.HealthCheckRequest
-	(*Empty)(nil),                   // 20: apps.v1.Empty
-	(*SettingsMap)(nil),             // 21: apps.v1.SettingsMap
-	(*HealthCheckResponse)(nil),     // 22: apps.v1.HealthCheckResponse
+var file_proto_apps_v0_schedule_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_proto_apps_v0_schedule_proto_goTypes = []any{
+	(*Schedule)(nil),                // 0: apps.v0.Schedule
+	(*ScheduleTrigger)(nil),         // 1: apps.v0.ScheduleTrigger
+	(*CreateScheduleRequest)(nil),   // 2: apps.v0.CreateScheduleRequest
+	(*GetScheduleRequest)(nil),      // 3: apps.v0.GetScheduleRequest
+	(*ListSchedulesRequest)(nil),    // 4: apps.v0.ListSchedulesRequest
+	(*ListSchedulesResponse)(nil),   // 5: apps.v0.ListSchedulesResponse
+	(*UpdateScheduleRequest)(nil),   // 6: apps.v0.UpdateScheduleRequest
+	(*ScheduleResponse)(nil),        // 7: apps.v0.ScheduleResponse
+	(*DeleteScheduleRequest)(nil),   // 8: apps.v0.DeleteScheduleRequest
+	(*DeleteScheduleResponse)(nil),  // 9: apps.v0.DeleteScheduleResponse
+	(*ScheduleNameRequest)(nil),     // 10: apps.v0.ScheduleNameRequest
+	(*TriggerResponse)(nil),         // 11: apps.v0.TriggerResponse
+	(*ScheduleHistoryRequest)(nil),  // 12: apps.v0.ScheduleHistoryRequest
+	(*ScheduleHistoryResponse)(nil), // 13: apps.v0.ScheduleHistoryResponse
+	(*ScheduleHistoryEntry)(nil),    // 14: apps.v0.ScheduleHistoryEntry
+	nil,                             // 15: apps.v0.Schedule.MetadataEntry
+	nil,                             // 16: apps.v0.ScheduleTrigger.MetadataEntry
+	nil,                             // 17: apps.v0.CreateScheduleRequest.MetadataEntry
+	nil,                             // 18: apps.v0.UpdateScheduleRequest.MetadataEntry
+	(*HealthCheckRequest)(nil),      // 19: apps.v0.HealthCheckRequest
+	(*Empty)(nil),                   // 20: apps.v0.Empty
+	(*SettingsMap)(nil),             // 21: apps.v0.SettingsMap
+	(*HealthCheckResponse)(nil),     // 22: apps.v0.HealthCheckResponse
 }
-var file_proto_apps_v1_schedule_proto_depIdxs = []int32{
-	15, // 0: apps.v1.Schedule.metadata:type_name -> apps.v1.Schedule.MetadataEntry
-	16, // 1: apps.v1.ScheduleTrigger.metadata:type_name -> apps.v1.ScheduleTrigger.MetadataEntry
-	17, // 2: apps.v1.CreateScheduleRequest.metadata:type_name -> apps.v1.CreateScheduleRequest.MetadataEntry
-	0,  // 3: apps.v1.ListSchedulesResponse.schedules:type_name -> apps.v1.Schedule
-	18, // 4: apps.v1.UpdateScheduleRequest.metadata:type_name -> apps.v1.UpdateScheduleRequest.MetadataEntry
-	0,  // 5: apps.v1.ScheduleResponse.schedule:type_name -> apps.v1.Schedule
-	14, // 6: apps.v1.ScheduleHistoryResponse.entries:type_name -> apps.v1.ScheduleHistoryEntry
-	19, // 7: apps.v1.ScheduleService.HealthCheck:input_type -> apps.v1.HealthCheckRequest
-	2,  // 8: apps.v1.ScheduleService.Create:input_type -> apps.v1.CreateScheduleRequest
-	3,  // 9: apps.v1.ScheduleService.Get:input_type -> apps.v1.GetScheduleRequest
-	4,  // 10: apps.v1.ScheduleService.List:input_type -> apps.v1.ListSchedulesRequest
-	6,  // 11: apps.v1.ScheduleService.Update:input_type -> apps.v1.UpdateScheduleRequest
-	8,  // 12: apps.v1.ScheduleService.Delete:input_type -> apps.v1.DeleteScheduleRequest
-	10, // 13: apps.v1.ScheduleService.Enable:input_type -> apps.v1.ScheduleNameRequest
-	10, // 14: apps.v1.ScheduleService.Disable:input_type -> apps.v1.ScheduleNameRequest
-	10, // 15: apps.v1.ScheduleService.Trigger:input_type -> apps.v1.ScheduleNameRequest
-	12, // 16: apps.v1.ScheduleService.History:input_type -> apps.v1.ScheduleHistoryRequest
-	20, // 17: apps.v1.ScheduleService.Triggers:input_type -> apps.v1.Empty
-	21, // 18: apps.v1.ScheduleService.Configure:input_type -> apps.v1.SettingsMap
-	22, // 19: apps.v1.ScheduleService.HealthCheck:output_type -> apps.v1.HealthCheckResponse
-	7,  // 20: apps.v1.ScheduleService.Create:output_type -> apps.v1.ScheduleResponse
-	7,  // 21: apps.v1.ScheduleService.Get:output_type -> apps.v1.ScheduleResponse
-	5,  // 22: apps.v1.ScheduleService.List:output_type -> apps.v1.ListSchedulesResponse
-	7,  // 23: apps.v1.ScheduleService.Update:output_type -> apps.v1.ScheduleResponse
-	9,  // 24: apps.v1.ScheduleService.Delete:output_type -> apps.v1.DeleteScheduleResponse
-	7,  // 25: apps.v1.ScheduleService.Enable:output_type -> apps.v1.ScheduleResponse
-	7,  // 26: apps.v1.ScheduleService.Disable:output_type -> apps.v1.ScheduleResponse
-	11, // 27: apps.v1.ScheduleService.Trigger:output_type -> apps.v1.TriggerResponse
-	13, // 28: apps.v1.ScheduleService.History:output_type -> apps.v1.ScheduleHistoryResponse
-	1,  // 29: apps.v1.ScheduleService.Triggers:output_type -> apps.v1.ScheduleTrigger
-	20, // 30: apps.v1.ScheduleService.Configure:output_type -> apps.v1.Empty
+var file_proto_apps_v0_schedule_proto_depIdxs = []int32{
+	15, // 0: apps.v0.Schedule.metadata:type_name -> apps.v0.Schedule.MetadataEntry
+	16, // 1: apps.v0.ScheduleTrigger.metadata:type_name -> apps.v0.ScheduleTrigger.MetadataEntry
+	17, // 2: apps.v0.CreateScheduleRequest.metadata:type_name -> apps.v0.CreateScheduleRequest.MetadataEntry
+	0,  // 3: apps.v0.ListSchedulesResponse.schedules:type_name -> apps.v0.Schedule
+	18, // 4: apps.v0.UpdateScheduleRequest.metadata:type_name -> apps.v0.UpdateScheduleRequest.MetadataEntry
+	0,  // 5: apps.v0.ScheduleResponse.schedule:type_name -> apps.v0.Schedule
+	14, // 6: apps.v0.ScheduleHistoryResponse.entries:type_name -> apps.v0.ScheduleHistoryEntry
+	19, // 7: apps.v0.ScheduleService.HealthCheck:input_type -> apps.v0.HealthCheckRequest
+	2,  // 8: apps.v0.ScheduleService.Create:input_type -> apps.v0.CreateScheduleRequest
+	3,  // 9: apps.v0.ScheduleService.Get:input_type -> apps.v0.GetScheduleRequest
+	4,  // 10: apps.v0.ScheduleService.List:input_type -> apps.v0.ListSchedulesRequest
+	6,  // 11: apps.v0.ScheduleService.Update:input_type -> apps.v0.UpdateScheduleRequest
+	8,  // 12: apps.v0.ScheduleService.Delete:input_type -> apps.v0.DeleteScheduleRequest
+	10, // 13: apps.v0.ScheduleService.Enable:input_type -> apps.v0.ScheduleNameRequest
+	10, // 14: apps.v0.ScheduleService.Disable:input_type -> apps.v0.ScheduleNameRequest
+	10, // 15: apps.v0.ScheduleService.Trigger:input_type -> apps.v0.ScheduleNameRequest
+	12, // 16: apps.v0.ScheduleService.History:input_type -> apps.v0.ScheduleHistoryRequest
+	20, // 17: apps.v0.ScheduleService.Triggers:input_type -> apps.v0.Empty
+	21, // 18: apps.v0.ScheduleService.Configure:input_type -> apps.v0.SettingsMap
+	22, // 19: apps.v0.ScheduleService.HealthCheck:output_type -> apps.v0.HealthCheckResponse
+	7,  // 20: apps.v0.ScheduleService.Create:output_type -> apps.v0.ScheduleResponse
+	7,  // 21: apps.v0.ScheduleService.Get:output_type -> apps.v0.ScheduleResponse
+	5,  // 22: apps.v0.ScheduleService.List:output_type -> apps.v0.ListSchedulesResponse
+	7,  // 23: apps.v0.ScheduleService.Update:output_type -> apps.v0.ScheduleResponse
+	9,  // 24: apps.v0.ScheduleService.Delete:output_type -> apps.v0.DeleteScheduleResponse
+	7,  // 25: apps.v0.ScheduleService.Enable:output_type -> apps.v0.ScheduleResponse
+	7,  // 26: apps.v0.ScheduleService.Disable:output_type -> apps.v0.ScheduleResponse
+	11, // 27: apps.v0.ScheduleService.Trigger:output_type -> apps.v0.TriggerResponse
+	13, // 28: apps.v0.ScheduleService.History:output_type -> apps.v0.ScheduleHistoryResponse
+	1,  // 29: apps.v0.ScheduleService.Triggers:output_type -> apps.v0.ScheduleTrigger
+	20, // 30: apps.v0.ScheduleService.Configure:output_type -> apps.v0.Empty
 	19, // [19:31] is the sub-list for method output_type
 	7,  // [7:19] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
@@ -1266,27 +1266,27 @@ var file_proto_apps_v1_schedule_proto_depIdxs = []int32{
 	0,  // [0:7] is the sub-list for field type_name
 }
 
-func init() { file_proto_apps_v1_schedule_proto_init() }
-func file_proto_apps_v1_schedule_proto_init() {
-	if File_proto_apps_v1_schedule_proto != nil {
+func init() { file_proto_apps_v0_schedule_proto_init() }
+func file_proto_apps_v0_schedule_proto_init() {
+	if File_proto_apps_v0_schedule_proto != nil {
 		return
 	}
-	file_proto_apps_v1_common_proto_init()
+	file_proto_apps_v0_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v1_schedule_proto_rawDesc), len(file_proto_apps_v1_schedule_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v0_schedule_proto_rawDesc), len(file_proto_apps_v0_schedule_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_apps_v1_schedule_proto_goTypes,
-		DependencyIndexes: file_proto_apps_v1_schedule_proto_depIdxs,
-		MessageInfos:      file_proto_apps_v1_schedule_proto_msgTypes,
+		GoTypes:           file_proto_apps_v0_schedule_proto_goTypes,
+		DependencyIndexes: file_proto_apps_v0_schedule_proto_depIdxs,
+		MessageInfos:      file_proto_apps_v0_schedule_proto_msgTypes,
 	}.Build()
-	File_proto_apps_v1_schedule_proto = out.File
-	file_proto_apps_v1_schedule_proto_goTypes = nil
-	file_proto_apps_v1_schedule_proto_depIdxs = nil
+	File_proto_apps_v0_schedule_proto = out.File
+	file_proto_apps_v0_schedule_proto_goTypes = nil
+	file_proto_apps_v0_schedule_proto_depIdxs = nil
 }

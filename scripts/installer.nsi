@@ -36,9 +36,8 @@ Unicode True
 ;--- Modern UI configuration -------------------------------------------------
 !define MUI_ABORTWARNING
 
-; Uncomment these when assets/icons/nebo.ico exists:
-; !define MUI_ICON "assets\icons\nebo.ico"
-; !define MUI_UNICON "assets\icons\nebo.ico"
+!define MUI_ICON "assets\icons\nebo.ico"
+!define MUI_UNICON "assets\icons\nebo.ico"
 
 ; Branding
 !define MUI_WELCOMEPAGE_TITLE "Welcome to Nebo Setup"

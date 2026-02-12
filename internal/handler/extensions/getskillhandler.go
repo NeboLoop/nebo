@@ -43,14 +43,15 @@ func GetSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		httputil.OkJSON(w, &types.GetSkillResponse{
 			Skill: types.ExtensionSkill{
-				Name:        skill.Name,
-				Description: skill.Description,
-				Version:     skill.Version,
-				Triggers:    skill.Triggers,
-				Tools:       skill.Tools,
-				Priority:    skill.Priority,
-				Enabled:     enabled,
-				FilePath:    skill.FilePath,
+				Name:         skill.Name,
+				Description:  skill.Description,
+				Version:      skill.Version,
+				Tags:         skill.Tags,
+				Dependencies: skill.Dependencies,
+				Tools:        skill.Tools,
+				Priority:     skill.Priority,
+				Enabled:      enabled,
+				FilePath:     skill.FilePath,
 			},
 		})
 	}

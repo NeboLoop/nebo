@@ -6,7 +6,22 @@ package db
 
 import (
 	"database/sql"
+	"time"
 )
+
+type Advisor struct {
+	ID             int64  `json:"id"`
+	Name           string `json:"name"`
+	Role           string `json:"role"`
+	Description    string `json:"description"`
+	Priority       int64  `json:"priority"`
+	Enabled        int64  `json:"enabled"`
+	MemoryAccess   int64  `json:"memory_access"`
+	Persona        string `json:"persona"`
+	TimeoutSeconds int64  `json:"timeout_seconds"`
+	CreatedAt      int64  `json:"created_at"`
+	UpdatedAt      int64  `json:"updated_at"`
+}
 
 type AgentProfile struct {
 	ID                int64          `json:"id"`
@@ -26,6 +41,22 @@ type AgentProfile struct {
 	Avatar            sql.NullString `json:"avatar"`
 	AgentRules        sql.NullString `json:"agent_rules"`
 	ToolNotes         sql.NullString `json:"tool_notes"`
+}
+
+type AppOauthGrant struct {
+	ID               string         `json:"id"`
+	AppID            string         `json:"app_id"`
+	Provider         string         `json:"provider"`
+	Scopes           string         `json:"scopes"`
+	AccessToken      string         `json:"access_token"`
+	RefreshToken     string         `json:"refresh_token"`
+	TokenType        string         `json:"token_type"`
+	ExpiresAt        sql.NullTime   `json:"expires_at"`
+	OauthState       sql.NullString `json:"oauth_state"`
+	PkceVerifier     sql.NullString `json:"pkce_verifier"`
+	ConnectionStatus string         `json:"connection_status"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }
 
 type AuthProfile struct {

@@ -34,6 +34,7 @@ type Querier interface {
 	// Admin queries
 	CountUsers(ctx context.Context) (int64, error)
 	CountUsersCreatedAfter(ctx context.Context, after int64) (int64, error)
+	CreateAdvisor(ctx context.Context, arg CreateAdvisorParams) (Advisor, error)
 	// Auth profiles queries
 	CreateAuthProfile(ctx context.Context, arg CreateAuthProfileParams) (AuthProfile, error)
 	CreateChannel(ctx context.Context, arg CreateChannelParams) (Channel, error)
@@ -81,6 +82,8 @@ type Querier interface {
 	CreateUserFromOAuth(ctx context.Context, arg CreateUserFromOAuthParams) (User, error)
 	CreateUserPreferences(ctx context.Context, userID string) (CreateUserPreferencesRow, error)
 	CreateUserWithRole(ctx context.Context, arg CreateUserWithRoleParams) (CreateUserWithRoleRow, error)
+	DeleteAdvisor(ctx context.Context, name string) error
+	DeleteAppOAuthGrant(ctx context.Context, arg DeleteAppOAuthGrantParams) error
 	DeleteAuthProfile(ctx context.Context, id string) error
 	DeleteChannel(ctx context.Context, id string) error
 	DeleteChannelConfig(ctx context.Context, arg DeleteChannelConfigParams) error
@@ -129,8 +132,12 @@ type Querier interface {
 	DisableCronJobByName(ctx context.Context, name string) (sql.Result, error)
 	EnableCronJobByName(ctx context.Context, name string) error
 	EnsureAgentProfile(ctx context.Context) error
+	GetAdvisor(ctx context.Context, name string) (Advisor, error)
+	GetAdvisorByID(ctx context.Context, id int64) (Advisor, error)
 	// Agent profile queries (singleton table)
 	GetAgentProfile(ctx context.Context) (GetAgentProfileRow, error)
+	GetAppOAuthGrant(ctx context.Context, arg GetAppOAuthGrantParams) (AppOauthGrant, error)
+	GetAppOAuthGrantByState(ctx context.Context, oauthState sql.NullString) (AppOauthGrant, error)
 	GetAuthProfile(ctx context.Context, id string) (AuthProfile, error)
 	GetAuthProfileByName(ctx context.Context, name string) (AuthProfile, error)
 	GetAuthProfileErrorCount(ctx context.Context, id string) (sql.NullInt64, error)
@@ -243,6 +250,8 @@ type Querier interface {
 	InsertDevSideloadedApp(ctx context.Context, arg InsertDevSideloadedAppParams) error
 	ListActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error)
 	ListActiveModels(ctx context.Context, profileID string) ([]ProviderModel, error)
+	ListAdvisors(ctx context.Context) ([]Advisor, error)
+	ListAppOAuthGrants(ctx context.Context, appID string) ([]AppOauthGrant, error)
 	ListAuthProfiles(ctx context.Context) ([]AuthProfile, error)
 	ListChannelConfig(ctx context.Context, channelID string) ([]ChannelConfig, error)
 	ListChannelCredentials(ctx context.Context, channelID string) ([]ChannelCredential, error)
@@ -253,10 +262,12 @@ type Querier interface {
 	// Cron job queries
 	ListCronJobs(ctx context.Context, arg ListCronJobsParams) ([]CronJob, error)
 	ListDevSideloadedApps(ctx context.Context) ([]DevSideloadedApp, error)
+	ListEnabledAdvisors(ctx context.Context) ([]Advisor, error)
 	ListEnabledChannels(ctx context.Context) ([]Channel, error)
 	ListEnabledCronJobs(ctx context.Context) ([]CronJob, error)
 	ListEnabledMCPIntegrations(ctx context.Context) ([]McpIntegration, error)
 	ListEnabledPlugins(ctx context.Context) ([]PluginRegistry, error)
+	ListExpiringOAuthGrants(ctx context.Context, dollar_1 sql.NullString) ([]AppOauthGrant, error)
 	ListLeads(ctx context.Context, arg ListLeadsParams) ([]Lead, error)
 	ListMCPIntegrations(ctx context.Context) ([]McpIntegration, error)
 	ListMCPServerRegistry(ctx context.Context) ([]McpServerRegistry, error)
@@ -312,7 +323,9 @@ type Querier interface {
 	ToggleAuthProfile(ctx context.Context, arg ToggleAuthProfileParams) error
 	ToggleCronJob(ctx context.Context, id int64) error
 	TogglePlugin(ctx context.Context, arg TogglePluginParams) error
+	UpdateAdvisor(ctx context.Context, arg UpdateAdvisorParams) error
 	UpdateAgentProfile(ctx context.Context, arg UpdateAgentProfileParams) error
+	UpdateAppOAuthTokens(ctx context.Context, arg UpdateAppOAuthTokensParams) error
 	UpdateAuthProfile(ctx context.Context, arg UpdateAuthProfileParams) error
 	UpdateAuthProfileError(ctx context.Context, id string) error
 	UpdateAuthProfileUsage(ctx context.Context, id string) error
@@ -352,6 +365,7 @@ type Querier interface {
 	UpdateUserPreferences(ctx context.Context, arg UpdateUserPreferencesParams) error
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) error
+	UpsertAppOAuthGrant(ctx context.Context, arg UpsertAppOAuthGrantParams) error
 	UpsertChannelConfig(ctx context.Context, arg UpsertChannelConfigParams) (ChannelConfig, error)
 	UpsertChannelCredential(ctx context.Context, arg UpsertChannelCredentialParams) (ChannelCredential, error)
 	UpsertCronJob(ctx context.Context, arg UpsertCronJobParams) error

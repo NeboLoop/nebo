@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/apps/v1/common.proto
+// source: proto/apps/v0/common.proto
 
 package pb
 
@@ -30,7 +30,7 @@ type HealthCheckRequest struct {
 
 func (x *HealthCheckRequest) Reset() {
 	*x = HealthCheckRequest{}
-	mi := &file_proto_apps_v1_common_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -42,7 +42,7 @@ func (x *HealthCheckRequest) String() string {
 func (*HealthCheckRequest) ProtoMessage() {}
 
 func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_common_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -55,7 +55,7 @@ func (x *HealthCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckRequest.ProtoReflect.Descriptor instead.
 func (*HealthCheckRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_common_proto_rawDescGZIP(), []int{0}
+	return file_proto_apps_v0_common_proto_rawDescGZIP(), []int{0}
 }
 
 type HealthCheckResponse struct {
@@ -69,7 +69,7 @@ type HealthCheckResponse struct {
 
 func (x *HealthCheckResponse) Reset() {
 	*x = HealthCheckResponse{}
-	mi := &file_proto_apps_v1_common_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -81,7 +81,7 @@ func (x *HealthCheckResponse) String() string {
 func (*HealthCheckResponse) ProtoMessage() {}
 
 func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_common_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -94,7 +94,7 @@ func (x *HealthCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthCheckResponse.ProtoReflect.Descriptor instead.
 func (*HealthCheckResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_common_proto_rawDescGZIP(), []int{1}
+	return file_proto_apps_v0_common_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *HealthCheckResponse) GetHealthy() bool {
@@ -128,7 +128,7 @@ type SettingsMap struct {
 
 func (x *SettingsMap) Reset() {
 	*x = SettingsMap{}
-	mi := &file_proto_apps_v1_common_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -140,7 +140,7 @@ func (x *SettingsMap) String() string {
 func (*SettingsMap) ProtoMessage() {}
 
 func (x *SettingsMap) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_common_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -153,7 +153,7 @@ func (x *SettingsMap) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SettingsMap.ProtoReflect.Descriptor instead.
 func (*SettingsMap) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_common_proto_rawDescGZIP(), []int{2}
+	return file_proto_apps_v0_common_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SettingsMap) GetValues() map[string]string {
@@ -177,7 +177,7 @@ type UserContext struct {
 
 func (x *UserContext) Reset() {
 	*x = UserContext{}
-	mi := &file_proto_apps_v1_common_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -189,7 +189,7 @@ func (x *UserContext) String() string {
 func (*UserContext) ProtoMessage() {}
 
 func (x *UserContext) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_common_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -202,7 +202,7 @@ func (x *UserContext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UserContext.ProtoReflect.Descriptor instead.
 func (*UserContext) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_common_proto_rawDescGZIP(), []int{3}
+	return file_proto_apps_v0_common_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *UserContext) GetToken() string {
@@ -235,7 +235,7 @@ type Empty struct {
 
 func (x *Empty) Reset() {
 	*x = Empty{}
-	mi := &file_proto_apps_v1_common_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -247,7 +247,7 @@ func (x *Empty) String() string {
 func (*Empty) ProtoMessage() {}
 
 func (x *Empty) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_common_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -260,7 +260,7 @@ func (x *Empty) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Empty.ProtoReflect.Descriptor instead.
 func (*Empty) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_common_proto_rawDescGZIP(), []int{4}
+	return file_proto_apps_v0_common_proto_rawDescGZIP(), []int{4}
 }
 
 // ErrorResponse is returned when an RPC encounters an error.
@@ -274,7 +274,7 @@ type ErrorResponse struct {
 
 func (x *ErrorResponse) Reset() {
 	*x = ErrorResponse{}
-	mi := &file_proto_apps_v1_common_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -286,7 +286,7 @@ func (x *ErrorResponse) String() string {
 func (*ErrorResponse) ProtoMessage() {}
 
 func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_common_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_common_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -299,7 +299,7 @@ func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorResponse.ProtoReflect.Descriptor instead.
 func (*ErrorResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_common_proto_rawDescGZIP(), []int{5}
+	return file_proto_apps_v0_common_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ErrorResponse) GetMessage() string {
@@ -316,18 +316,18 @@ func (x *ErrorResponse) GetCode() string {
 	return ""
 }
 
-var File_proto_apps_v1_common_proto protoreflect.FileDescriptor
+var File_proto_apps_v0_common_proto protoreflect.FileDescriptor
 
-const file_proto_apps_v1_common_proto_rawDesc = "" +
+const file_proto_apps_v0_common_proto_rawDesc = "" +
 	"\n" +
-	"\x1aproto/apps/v1/common.proto\x12\aapps.v1\"\x14\n" +
+	"\x1aproto/apps/v0/common.proto\x12\aapps.v0\"\x14\n" +
 	"\x12HealthCheckRequest\"]\n" +
 	"\x13HealthCheckResponse\x12\x18\n" +
 	"\ahealthy\x18\x01 \x01(\bR\ahealthy\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\"\x82\x01\n" +
 	"\vSettingsMap\x128\n" +
-	"\x06values\x18\x01 \x03(\v2 .apps.v1.SettingsMap.ValuesEntryR\x06values\x1a9\n" +
+	"\x06values\x18\x01 \x03(\v2 .apps.v0.SettingsMap.ValuesEntryR\x06values\x1a9\n" +
 	"\vValuesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"P\n" +
@@ -341,29 +341,29 @@ const file_proto_apps_v1_common_proto_rawDesc = "" +
 	"\x04code\x18\x02 \x01(\tR\x04codeB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
 
 var (
-	file_proto_apps_v1_common_proto_rawDescOnce sync.Once
-	file_proto_apps_v1_common_proto_rawDescData []byte
+	file_proto_apps_v0_common_proto_rawDescOnce sync.Once
+	file_proto_apps_v0_common_proto_rawDescData []byte
 )
 
-func file_proto_apps_v1_common_proto_rawDescGZIP() []byte {
-	file_proto_apps_v1_common_proto_rawDescOnce.Do(func() {
-		file_proto_apps_v1_common_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v1_common_proto_rawDesc), len(file_proto_apps_v1_common_proto_rawDesc)))
+func file_proto_apps_v0_common_proto_rawDescGZIP() []byte {
+	file_proto_apps_v0_common_proto_rawDescOnce.Do(func() {
+		file_proto_apps_v0_common_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v0_common_proto_rawDesc), len(file_proto_apps_v0_common_proto_rawDesc)))
 	})
-	return file_proto_apps_v1_common_proto_rawDescData
+	return file_proto_apps_v0_common_proto_rawDescData
 }
 
-var file_proto_apps_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
-var file_proto_apps_v1_common_proto_goTypes = []any{
-	(*HealthCheckRequest)(nil),  // 0: apps.v1.HealthCheckRequest
-	(*HealthCheckResponse)(nil), // 1: apps.v1.HealthCheckResponse
-	(*SettingsMap)(nil),         // 2: apps.v1.SettingsMap
-	(*UserContext)(nil),         // 3: apps.v1.UserContext
-	(*Empty)(nil),               // 4: apps.v1.Empty
-	(*ErrorResponse)(nil),       // 5: apps.v1.ErrorResponse
-	nil,                         // 6: apps.v1.SettingsMap.ValuesEntry
+var file_proto_apps_v0_common_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_proto_apps_v0_common_proto_goTypes = []any{
+	(*HealthCheckRequest)(nil),  // 0: apps.v0.HealthCheckRequest
+	(*HealthCheckResponse)(nil), // 1: apps.v0.HealthCheckResponse
+	(*SettingsMap)(nil),         // 2: apps.v0.SettingsMap
+	(*UserContext)(nil),         // 3: apps.v0.UserContext
+	(*Empty)(nil),               // 4: apps.v0.Empty
+	(*ErrorResponse)(nil),       // 5: apps.v0.ErrorResponse
+	nil,                         // 6: apps.v0.SettingsMap.ValuesEntry
 }
-var file_proto_apps_v1_common_proto_depIdxs = []int32{
-	6, // 0: apps.v1.SettingsMap.values:type_name -> apps.v1.SettingsMap.ValuesEntry
+var file_proto_apps_v0_common_proto_depIdxs = []int32{
+	6, // 0: apps.v0.SettingsMap.values:type_name -> apps.v0.SettingsMap.ValuesEntry
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -371,26 +371,26 @@ var file_proto_apps_v1_common_proto_depIdxs = []int32{
 	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_proto_apps_v1_common_proto_init() }
-func file_proto_apps_v1_common_proto_init() {
-	if File_proto_apps_v1_common_proto != nil {
+func init() { file_proto_apps_v0_common_proto_init() }
+func file_proto_apps_v0_common_proto_init() {
+	if File_proto_apps_v0_common_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v1_common_proto_rawDesc), len(file_proto_apps_v1_common_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v0_common_proto_rawDesc), len(file_proto_apps_v0_common_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_proto_apps_v1_common_proto_goTypes,
-		DependencyIndexes: file_proto_apps_v1_common_proto_depIdxs,
-		MessageInfos:      file_proto_apps_v1_common_proto_msgTypes,
+		GoTypes:           file_proto_apps_v0_common_proto_goTypes,
+		DependencyIndexes: file_proto_apps_v0_common_proto_depIdxs,
+		MessageInfos:      file_proto_apps_v0_common_proto_msgTypes,
 	}.Build()
-	File_proto_apps_v1_common_proto = out.File
-	file_proto_apps_v1_common_proto_goTypes = nil
-	file_proto_apps_v1_common_proto_depIdxs = nil
+	File_proto_apps_v0_common_proto = out.File
+	file_proto_apps_v0_common_proto_goTypes = nil
+	file_proto_apps_v0_common_proto_depIdxs = nil
 }

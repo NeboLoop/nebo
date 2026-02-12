@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/apps/v1/ui.proto
+// source: proto/apps/v0/ui.proto
 
 package pb
 
@@ -31,7 +31,7 @@ type GetViewRequest struct {
 
 func (x *GetViewRequest) Reset() {
 	*x = GetViewRequest{}
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +43,7 @@ func (x *GetViewRequest) String() string {
 func (*GetViewRequest) ProtoMessage() {}
 
 func (x *GetViewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +56,7 @@ func (x *GetViewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetViewRequest.ProtoReflect.Descriptor instead.
 func (*GetViewRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_ui_proto_rawDescGZIP(), []int{0}
+	return file_proto_apps_v0_ui_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *GetViewRequest) GetContext() string {
@@ -78,7 +78,7 @@ type UIView struct {
 
 func (x *UIView) Reset() {
 	*x = UIView{}
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -90,7 +90,7 @@ func (x *UIView) String() string {
 func (*UIView) ProtoMessage() {}
 
 func (x *UIView) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -103,7 +103,7 @@ func (x *UIView) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UIView.ProtoReflect.Descriptor instead.
 func (*UIView) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_ui_proto_rawDescGZIP(), []int{1}
+	return file_proto_apps_v0_ui_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *UIView) GetViewId() string {
@@ -151,7 +151,7 @@ type UIBlock struct {
 
 func (x *UIBlock) Reset() {
 	*x = UIBlock{}
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -163,7 +163,7 @@ func (x *UIBlock) String() string {
 func (*UIBlock) ProtoMessage() {}
 
 func (x *UIBlock) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -176,7 +176,7 @@ func (x *UIBlock) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UIBlock.ProtoReflect.Descriptor instead.
 func (*UIBlock) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_ui_proto_rawDescGZIP(), []int{2}
+	return file_proto_apps_v0_ui_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *UIBlock) GetBlockId() string {
@@ -274,7 +274,7 @@ type SelectOption struct {
 
 func (x *SelectOption) Reset() {
 	*x = SelectOption{}
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -286,7 +286,7 @@ func (x *SelectOption) String() string {
 func (*SelectOption) ProtoMessage() {}
 
 func (x *SelectOption) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -299,7 +299,7 @@ func (x *SelectOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelectOption.ProtoReflect.Descriptor instead.
 func (*SelectOption) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_ui_proto_rawDescGZIP(), []int{3}
+	return file_proto_apps_v0_ui_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SelectOption) GetLabel() string {
@@ -329,7 +329,7 @@ type UIEvent struct {
 
 func (x *UIEvent) Reset() {
 	*x = UIEvent{}
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -341,7 +341,7 @@ func (x *UIEvent) String() string {
 func (*UIEvent) ProtoMessage() {}
 
 func (x *UIEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -354,7 +354,7 @@ func (x *UIEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UIEvent.ProtoReflect.Descriptor instead.
 func (*UIEvent) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_ui_proto_rawDescGZIP(), []int{4}
+	return file_proto_apps_v0_ui_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *UIEvent) GetViewId() string {
@@ -397,7 +397,7 @@ type UIEventResponse struct {
 
 func (x *UIEventResponse) Reset() {
 	*x = UIEventResponse{}
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -409,7 +409,7 @@ func (x *UIEventResponse) String() string {
 func (*UIEventResponse) ProtoMessage() {}
 
 func (x *UIEventResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_ui_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_ui_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -422,7 +422,7 @@ func (x *UIEventResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UIEventResponse.ProtoReflect.Descriptor instead.
 func (*UIEventResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_ui_proto_rawDescGZIP(), []int{5}
+	return file_proto_apps_v0_ui_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *UIEventResponse) GetView() *UIView {
@@ -446,17 +446,17 @@ func (x *UIEventResponse) GetToast() string {
 	return ""
 }
 
-var File_proto_apps_v1_ui_proto protoreflect.FileDescriptor
+var File_proto_apps_v0_ui_proto protoreflect.FileDescriptor
 
-const file_proto_apps_v1_ui_proto_rawDesc = "" +
+const file_proto_apps_v0_ui_proto_rawDesc = "" +
 	"\n" +
-	"\x16proto/apps/v1/ui.proto\x12\aapps.v1\x1a\x1aproto/apps/v1/common.proto\"*\n" +
+	"\x16proto/apps/v0/ui.proto\x12\aapps.v0\x1a\x1aproto/apps/v0/common.proto\"*\n" +
 	"\x0eGetViewRequest\x12\x18\n" +
 	"\acontext\x18\x01 \x01(\tR\acontext\"a\n" +
 	"\x06UIView\x12\x17\n" +
 	"\aview_id\x18\x01 \x01(\tR\x06viewId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12(\n" +
-	"\x06blocks\x18\x03 \x03(\v2\x10.apps.v1.UIBlockR\x06blocks\"\xb9\x02\n" +
+	"\x06blocks\x18\x03 \x03(\v2\x10.apps.v0.UIBlockR\x06blocks\"\xb9\x02\n" +
 	"\aUIBlock\x12\x19\n" +
 	"\bblock_id\x18\x01 \x01(\tR\ablockId\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
@@ -469,7 +469,7 @@ const file_proto_apps_v1_ui_proto_rawDesc = "" +
 	"\x03alt\x18\t \x01(\tR\x03alt\x12\x1a\n" +
 	"\bdisabled\x18\n" +
 	" \x01(\bR\bdisabled\x12/\n" +
-	"\aoptions\x18\v \x03(\v2\x15.apps.v1.SelectOptionR\aoptions\x12\x14\n" +
+	"\aoptions\x18\v \x03(\v2\x15.apps.v0.SelectOptionR\aoptions\x12\x14\n" +
 	"\x05style\x18\f \x01(\tR\x05style\":\n" +
 	"\fSelectOption\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x12\x14\n" +
@@ -480,55 +480,55 @@ const file_proto_apps_v1_ui_proto_rawDesc = "" +
 	"\x06action\x18\x03 \x01(\tR\x06action\x12\x14\n" +
 	"\x05value\x18\x04 \x01(\tR\x05value\"b\n" +
 	"\x0fUIEventResponse\x12#\n" +
-	"\x04view\x18\x01 \x01(\v2\x0f.apps.v1.UIViewR\x04view\x12\x14\n" +
+	"\x04view\x18\x01 \x01(\v2\x0f.apps.v0.UIViewR\x04view\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x14\n" +
 	"\x05toast\x18\x03 \x01(\tR\x05toast2\xaa\x02\n" +
 	"\tUIService\x12H\n" +
-	"\vHealthCheck\x12\x1b.apps.v1.HealthCheckRequest\x1a\x1c.apps.v1.HealthCheckResponse\x123\n" +
-	"\aGetView\x12\x17.apps.v1.GetViewRequest\x1a\x0f.apps.v1.UIView\x127\n" +
-	"\tSendEvent\x12\x10.apps.v1.UIEvent\x1a\x18.apps.v1.UIEventResponse\x122\n" +
-	"\rStreamUpdates\x12\x0e.apps.v1.Empty\x1a\x0f.apps.v1.UIView0\x01\x121\n" +
-	"\tConfigure\x12\x14.apps.v1.SettingsMap\x1a\x0e.apps.v1.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\vHealthCheck\x12\x1b.apps.v0.HealthCheckRequest\x1a\x1c.apps.v0.HealthCheckResponse\x123\n" +
+	"\aGetView\x12\x17.apps.v0.GetViewRequest\x1a\x0f.apps.v0.UIView\x127\n" +
+	"\tSendEvent\x12\x10.apps.v0.UIEvent\x1a\x18.apps.v0.UIEventResponse\x122\n" +
+	"\rStreamUpdates\x12\x0e.apps.v0.Empty\x1a\x0f.apps.v0.UIView0\x01\x121\n" +
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
 
 var (
-	file_proto_apps_v1_ui_proto_rawDescOnce sync.Once
-	file_proto_apps_v1_ui_proto_rawDescData []byte
+	file_proto_apps_v0_ui_proto_rawDescOnce sync.Once
+	file_proto_apps_v0_ui_proto_rawDescData []byte
 )
 
-func file_proto_apps_v1_ui_proto_rawDescGZIP() []byte {
-	file_proto_apps_v1_ui_proto_rawDescOnce.Do(func() {
-		file_proto_apps_v1_ui_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v1_ui_proto_rawDesc), len(file_proto_apps_v1_ui_proto_rawDesc)))
+func file_proto_apps_v0_ui_proto_rawDescGZIP() []byte {
+	file_proto_apps_v0_ui_proto_rawDescOnce.Do(func() {
+		file_proto_apps_v0_ui_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v0_ui_proto_rawDesc), len(file_proto_apps_v0_ui_proto_rawDesc)))
 	})
-	return file_proto_apps_v1_ui_proto_rawDescData
+	return file_proto_apps_v0_ui_proto_rawDescData
 }
 
-var file_proto_apps_v1_ui_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
-var file_proto_apps_v1_ui_proto_goTypes = []any{
-	(*GetViewRequest)(nil),      // 0: apps.v1.GetViewRequest
-	(*UIView)(nil),              // 1: apps.v1.UIView
-	(*UIBlock)(nil),             // 2: apps.v1.UIBlock
-	(*SelectOption)(nil),        // 3: apps.v1.SelectOption
-	(*UIEvent)(nil),             // 4: apps.v1.UIEvent
-	(*UIEventResponse)(nil),     // 5: apps.v1.UIEventResponse
-	(*HealthCheckRequest)(nil),  // 6: apps.v1.HealthCheckRequest
-	(*Empty)(nil),               // 7: apps.v1.Empty
-	(*SettingsMap)(nil),         // 8: apps.v1.SettingsMap
-	(*HealthCheckResponse)(nil), // 9: apps.v1.HealthCheckResponse
+var file_proto_apps_v0_ui_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_proto_apps_v0_ui_proto_goTypes = []any{
+	(*GetViewRequest)(nil),      // 0: apps.v0.GetViewRequest
+	(*UIView)(nil),              // 1: apps.v0.UIView
+	(*UIBlock)(nil),             // 2: apps.v0.UIBlock
+	(*SelectOption)(nil),        // 3: apps.v0.SelectOption
+	(*UIEvent)(nil),             // 4: apps.v0.UIEvent
+	(*UIEventResponse)(nil),     // 5: apps.v0.UIEventResponse
+	(*HealthCheckRequest)(nil),  // 6: apps.v0.HealthCheckRequest
+	(*Empty)(nil),               // 7: apps.v0.Empty
+	(*SettingsMap)(nil),         // 8: apps.v0.SettingsMap
+	(*HealthCheckResponse)(nil), // 9: apps.v0.HealthCheckResponse
 }
-var file_proto_apps_v1_ui_proto_depIdxs = []int32{
-	2, // 0: apps.v1.UIView.blocks:type_name -> apps.v1.UIBlock
-	3, // 1: apps.v1.UIBlock.options:type_name -> apps.v1.SelectOption
-	1, // 2: apps.v1.UIEventResponse.view:type_name -> apps.v1.UIView
-	6, // 3: apps.v1.UIService.HealthCheck:input_type -> apps.v1.HealthCheckRequest
-	0, // 4: apps.v1.UIService.GetView:input_type -> apps.v1.GetViewRequest
-	4, // 5: apps.v1.UIService.SendEvent:input_type -> apps.v1.UIEvent
-	7, // 6: apps.v1.UIService.StreamUpdates:input_type -> apps.v1.Empty
-	8, // 7: apps.v1.UIService.Configure:input_type -> apps.v1.SettingsMap
-	9, // 8: apps.v1.UIService.HealthCheck:output_type -> apps.v1.HealthCheckResponse
-	1, // 9: apps.v1.UIService.GetView:output_type -> apps.v1.UIView
-	5, // 10: apps.v1.UIService.SendEvent:output_type -> apps.v1.UIEventResponse
-	1, // 11: apps.v1.UIService.StreamUpdates:output_type -> apps.v1.UIView
-	7, // 12: apps.v1.UIService.Configure:output_type -> apps.v1.Empty
+var file_proto_apps_v0_ui_proto_depIdxs = []int32{
+	2, // 0: apps.v0.UIView.blocks:type_name -> apps.v0.UIBlock
+	3, // 1: apps.v0.UIBlock.options:type_name -> apps.v0.SelectOption
+	1, // 2: apps.v0.UIEventResponse.view:type_name -> apps.v0.UIView
+	6, // 3: apps.v0.UIService.HealthCheck:input_type -> apps.v0.HealthCheckRequest
+	0, // 4: apps.v0.UIService.GetView:input_type -> apps.v0.GetViewRequest
+	4, // 5: apps.v0.UIService.SendEvent:input_type -> apps.v0.UIEvent
+	7, // 6: apps.v0.UIService.StreamUpdates:input_type -> apps.v0.Empty
+	8, // 7: apps.v0.UIService.Configure:input_type -> apps.v0.SettingsMap
+	9, // 8: apps.v0.UIService.HealthCheck:output_type -> apps.v0.HealthCheckResponse
+	1, // 9: apps.v0.UIService.GetView:output_type -> apps.v0.UIView
+	5, // 10: apps.v0.UIService.SendEvent:output_type -> apps.v0.UIEventResponse
+	1, // 11: apps.v0.UIService.StreamUpdates:output_type -> apps.v0.UIView
+	7, // 12: apps.v0.UIService.Configure:output_type -> apps.v0.Empty
 	8, // [8:13] is the sub-list for method output_type
 	3, // [3:8] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
@@ -536,27 +536,27 @@ var file_proto_apps_v1_ui_proto_depIdxs = []int32{
 	0, // [0:3] is the sub-list for field type_name
 }
 
-func init() { file_proto_apps_v1_ui_proto_init() }
-func file_proto_apps_v1_ui_proto_init() {
-	if File_proto_apps_v1_ui_proto != nil {
+func init() { file_proto_apps_v0_ui_proto_init() }
+func file_proto_apps_v0_ui_proto_init() {
+	if File_proto_apps_v0_ui_proto != nil {
 		return
 	}
-	file_proto_apps_v1_common_proto_init()
+	file_proto_apps_v0_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v1_ui_proto_rawDesc), len(file_proto_apps_v1_ui_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v0_ui_proto_rawDesc), len(file_proto_apps_v0_ui_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_apps_v1_ui_proto_goTypes,
-		DependencyIndexes: file_proto_apps_v1_ui_proto_depIdxs,
-		MessageInfos:      file_proto_apps_v1_ui_proto_msgTypes,
+		GoTypes:           file_proto_apps_v0_ui_proto_goTypes,
+		DependencyIndexes: file_proto_apps_v0_ui_proto_depIdxs,
+		MessageInfos:      file_proto_apps_v0_ui_proto_msgTypes,
 	}.Build()
-	File_proto_apps_v1_ui_proto = out.File
-	file_proto_apps_v1_ui_proto_goTypes = nil
-	file_proto_apps_v1_ui_proto_depIdxs = nil
+	File_proto_apps_v0_ui_proto = out.File
+	file_proto_apps_v0_ui_proto_goTypes = nil
+	file_proto_apps_v0_ui_proto_depIdxs = nil
 }

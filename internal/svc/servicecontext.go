@@ -13,6 +13,7 @@ import (
 	"github.com/nebolabs/nebo/internal/local"
 	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
 	"github.com/nebolabs/nebo/internal/middleware"
+	"github.com/nebolabs/nebo/internal/oauth/broker"
 	"github.com/nebolabs/nebo/internal/apps/settings"
 	"github.com/nebolabs/nebo/internal/provider"
 
@@ -47,8 +48,9 @@ type ServiceContext struct {
 	SkillSettings  *local.SkillSettingsStore
 	PluginStore    *settings.Store
 
-	AgentHub  *agenthub.Hub
-	MCPClient *mcpclient.Client
+	AgentHub    *agenthub.Hub
+	MCPClient   *mcpclient.Client
+	OAuthBroker *broker.Broker
 
 	appUI       AppUIProvider
 	appUIMu     sync.RWMutex
@@ -58,6 +60,12 @@ type ServiceContext struct {
 	toolRegMu    sync.RWMutex
 	scheduler    any // tools.Scheduler (use any to avoid import cycle)
 	schedulerMu  sync.RWMutex
+
+	browseDir   func() (string, error) // Native directory picker (desktop only)
+	browseDirMu sync.RWMutex
+
+	openDevWindow   func() // Open dev window (desktop only)
+	openDevWindowMu sync.RWMutex
 }
 
 // SetAppUIProvider installs the app UI provider (called from agent.go after registry init).
@@ -116,13 +124,45 @@ func (svc *ServiceContext) Scheduler() any {
 	return svc.scheduler
 }
 
-// NewServiceContext creates a new service context, initializing database if not provided
-func NewServiceContext(c config.Config) *ServiceContext {
-	return NewServiceContextWithDB(c, nil)
+// SetBrowseDirectory installs the native directory picker callback (desktop mode only).
+func (svc *ServiceContext) SetBrowseDirectory(fn func() (string, error)) {
+	svc.browseDirMu.Lock()
+	defer svc.browseDirMu.Unlock()
+	svc.browseDir = fn
 }
 
-// NewServiceContextWithDB creates a new service context with an optional pre-initialized database
-func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContext {
+// BrowseDirectory returns the native directory picker callback, or nil if not in desktop mode.
+func (svc *ServiceContext) BrowseDirectory() func() (string, error) {
+	svc.browseDirMu.RLock()
+	defer svc.browseDirMu.RUnlock()
+	return svc.browseDir
+}
+
+// SetOpenDevWindow installs the dev window opener callback (desktop mode only).
+func (svc *ServiceContext) SetOpenDevWindow(fn func()) {
+	svc.openDevWindowMu.Lock()
+	defer svc.openDevWindowMu.Unlock()
+	svc.openDevWindow = fn
+}
+
+// OpenDevWindow returns the dev window opener callback, or nil if not in desktop mode.
+func (svc *ServiceContext) OpenDevWindow() func() {
+	svc.openDevWindowMu.RLock()
+	defer svc.openDevWindowMu.RUnlock()
+	return svc.openDevWindow
+}
+
+// NewServiceContext creates a new service context. Pass a *db.Store to reuse
+// an existing database connection, or nil to create a new one.
+func NewServiceContext(c config.Config, database ...*db.Store) *ServiceContext {
+	var db0 *db.Store
+	if len(database) > 0 {
+		db0 = database[0]
+	}
+	return newServiceContext(c, db0)
+}
+
+func newServiceContext(c config.Config, database *db.Store) *ServiceContext {
 	securityMw := middleware.NewSecurityMiddleware(c)
 	logging.Info("Security middleware initialized")
 
@@ -203,6 +243,26 @@ func NewServiceContextWithDB(c config.Config, database *db.Store) *ServiceContex
 		baseURL := fmt.Sprintf("http://localhost:%d", c.Port)
 		svc.MCPClient = mcpclient.NewClient(svc.DB, encKey, baseURL)
 		logging.Info("MCP OAuth client initialized")
+
+		// Initialize App OAuth Broker
+		brokerProviders := broker.BuiltinProviders()
+		for name, provCfg := range c.AppOAuth {
+			if p, ok := brokerProviders[name]; ok {
+				p.ClientID = provCfg.ClientID
+				p.ClientSecret = provCfg.ClientSecret
+				if provCfg.TenantID != "" {
+					p.TenantID = provCfg.TenantID
+				}
+				brokerProviders[name] = p
+			}
+		}
+		svc.OAuthBroker = broker.New(broker.Config{
+			DB:            svc.DB,
+			EncryptionKey: encKey,
+			BaseURL:       baseURL,
+			Providers:     brokerProviders,
+		})
+		logging.Info("App OAuth broker initialized")
 	}
 
 	return svc

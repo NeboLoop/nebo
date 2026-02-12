@@ -17,7 +17,7 @@ func SkillsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
 		Short: "Manage skill definitions",
-		Long: `Skills are SKILL.md files that modify agent behavior without code changes.
+		Long: `Skills are SKILL.md files that define AI capabilities.
 They use YAML frontmatter for metadata and markdown body for instructions.
 
 Skills are loaded from the Nebo data directory's skills/ folder or the extensions/skills/ directory.
@@ -40,16 +40,6 @@ Each skill should be in its own subdirectory with a SKILL.md file.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := loadAgentConfig()
 			showSkill(cfg, args[0])
-		},
-	})
-
-	cmd.AddCommand(&cobra.Command{
-		Use:   "test [name] [input]",
-		Short: "Test if a skill matches input",
-		Args:  cobra.MinimumNArgs(2),
-		Run: func(cmd *cobra.Command, args []string) {
-			cfg := loadAgentConfig()
-			testSkill(cfg, args[0], strings.Join(args[1:], " "))
 		},
 	})
 
@@ -80,8 +70,11 @@ func listSkills(cfg *agentcfg.Config) {
 		}
 		fmt.Printf("  %s %s (priority: %d)\n", status, s.Name, s.Priority)
 		fmt.Printf("      %s\n", s.Description)
-		if len(s.Triggers) > 0 {
-			fmt.Printf("      Triggers: %s\n", strings.Join(s.Triggers, ", "))
+		if len(s.Tags) > 0 {
+			fmt.Printf("      Tags: %s\n", strings.Join(s.Tags, ", "))
+		}
+		if len(s.Dependencies) > 0 {
+			fmt.Printf("      Dependencies: %s\n", strings.Join(s.Dependencies, ", "))
 		}
 	}
 }
@@ -106,12 +99,23 @@ func showSkill(cfg *agentcfg.Config, name string) {
 	fmt.Printf("Priority: %d\n", skill.Priority)
 	fmt.Printf("Enabled: %v\n", skill.Enabled)
 	fmt.Printf("File: %s\n", skill.FilePath)
+	if skill.Author != "" {
+		fmt.Printf("Author: %s\n", skill.Author)
+	}
 	fmt.Println()
 
-	if len(skill.Triggers) > 0 {
-		fmt.Println("Triggers:")
-		for _, t := range skill.Triggers {
+	if len(skill.Tags) > 0 {
+		fmt.Println("Tags:")
+		for _, t := range skill.Tags {
 			fmt.Printf("  - %s\n", t)
+		}
+		fmt.Println()
+	}
+
+	if len(skill.Dependencies) > 0 {
+		fmt.Println("Dependencies:")
+		for _, d := range skill.Dependencies {
+			fmt.Printf("  - %s\n", d)
 		}
 		fmt.Println()
 	}
@@ -125,33 +129,8 @@ func showSkill(cfg *agentcfg.Config, name string) {
 	}
 
 	if skill.Template != "" {
-		fmt.Println("Template (markdown body):")
+		fmt.Println("Content (markdown body):")
 		fmt.Println(skill.Template)
-	}
-}
-
-// testSkill tests if a skill matches the given input
-func testSkill(cfg *agentcfg.Config, name, input string) {
-	loader := createSkillLoader(cfg)
-	if err := loader.LoadAll(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading skills: %v\n", err)
-		os.Exit(1)
-	}
-
-	skill, ok := loader.Get(name)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Skill not found: %s\n", name)
-		os.Exit(1)
-	}
-
-	if skill.Matches(input) {
-		fmt.Printf("\033[32m✓ Skill '%s' matches input\033[0m\n", name)
-		fmt.Println("\nPrompt would be modified with:")
-		modified := skill.ApplyToPrompt("")
-		fmt.Println(modified)
-	} else {
-		fmt.Printf("\033[31m✗ Skill '%s' does not match input\033[0m\n", name)
-		fmt.Printf("\nTriggers: %s\n", strings.Join(skill.Triggers, ", "))
 	}
 }
 
@@ -165,12 +144,4 @@ func skillsDir(cfg *agentcfg.Config) string {
 
 func createSkillLoader(cfg *agentcfg.Config) *skills.Loader {
 	return skills.NewLoader(skillsDir(cfg))
-}
-
-func truncateString(s string, max int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
 }

@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.0
 // - protoc             v6.33.0
-// source: proto/apps/v1/comm.proto
+// source: proto/apps/v0/comm.proto
 
 package pb
 
@@ -19,19 +19,19 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CommService_HealthCheck_FullMethodName = "/apps.v1.CommService/HealthCheck"
-	CommService_Name_FullMethodName        = "/apps.v1.CommService/Name"
-	CommService_Version_FullMethodName     = "/apps.v1.CommService/Version"
-	CommService_Connect_FullMethodName     = "/apps.v1.CommService/Connect"
-	CommService_Disconnect_FullMethodName  = "/apps.v1.CommService/Disconnect"
-	CommService_IsConnected_FullMethodName = "/apps.v1.CommService/IsConnected"
-	CommService_Send_FullMethodName        = "/apps.v1.CommService/Send"
-	CommService_Subscribe_FullMethodName   = "/apps.v1.CommService/Subscribe"
-	CommService_Unsubscribe_FullMethodName = "/apps.v1.CommService/Unsubscribe"
-	CommService_Register_FullMethodName    = "/apps.v1.CommService/Register"
-	CommService_Deregister_FullMethodName  = "/apps.v1.CommService/Deregister"
-	CommService_Receive_FullMethodName     = "/apps.v1.CommService/Receive"
-	CommService_Configure_FullMethodName   = "/apps.v1.CommService/Configure"
+	CommService_HealthCheck_FullMethodName = "/apps.v0.CommService/HealthCheck"
+	CommService_Name_FullMethodName        = "/apps.v0.CommService/Name"
+	CommService_Version_FullMethodName     = "/apps.v0.CommService/Version"
+	CommService_Connect_FullMethodName     = "/apps.v0.CommService/Connect"
+	CommService_Disconnect_FullMethodName  = "/apps.v0.CommService/Disconnect"
+	CommService_IsConnected_FullMethodName = "/apps.v0.CommService/IsConnected"
+	CommService_Send_FullMethodName        = "/apps.v0.CommService/Send"
+	CommService_Subscribe_FullMethodName   = "/apps.v0.CommService/Subscribe"
+	CommService_Unsubscribe_FullMethodName = "/apps.v0.CommService/Unsubscribe"
+	CommService_Register_FullMethodName    = "/apps.v0.CommService/Register"
+	CommService_Deregister_FullMethodName  = "/apps.v0.CommService/Deregister"
+	CommService_Receive_FullMethodName     = "/apps.v0.CommService/Receive"
+	CommService_Configure_FullMethodName   = "/apps.v0.CommService/Configure"
 )
 
 // CommServiceClient is the client API for CommService service.
@@ -548,7 +548,7 @@ func _CommService_Configure_Handler(srv interface{}, ctx context.Context, dec fu
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var CommService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "apps.v1.CommService",
+	ServiceName: "apps.v0.CommService",
 	HandlerType: (*CommServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -607,5 +607,5 @@ var CommService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/apps/v1/comm.proto",
+	Metadata: "proto/apps/v0/comm.proto",
 }

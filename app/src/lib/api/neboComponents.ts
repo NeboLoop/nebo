@@ -4,6 +4,18 @@ export interface AcceptTermsResponse {
 	acceptedAt: string
 }
 
+export interface AdvisorItem {
+	id: number
+	name: string
+	role: string
+	description: string
+	priority: number
+	enabled: boolean
+	memoryAccess: boolean
+	persona: string
+	timeoutSeconds: number
+}
+
 export interface AgentConnectRequest {
 	agentId: string
 }
@@ -84,6 +96,10 @@ export interface AuthProfile {
 	updatedAt: string
 }
 
+export interface BrowseDirectoryResponse {
+	path: string
+}
+
 export interface CLIAvailability {
 	claude: boolean
 	codex: boolean
@@ -140,6 +156,16 @@ export interface CreateAdminResponse {
 	user: User
 }
 
+export interface CreateAdvisorRequest {
+	name: string
+	role: string
+	description: string
+	priority: number
+	memoryAccess: boolean
+	persona: string
+	timeoutSeconds: number
+}
+
 export interface CreateAuthProfileRequest {
 	name: string
 	provider: string
@@ -194,6 +220,13 @@ export interface DayInfo {
 
 export interface DeleteAccountRequest {
 	password: string
+}
+
+export interface DeleteAdvisorRequest {
+}
+
+export interface DeleteAdvisorResponse {
+	success: boolean
 }
 
 export interface DeleteAgentSessionRequest {
@@ -253,7 +286,8 @@ export interface ExtensionSkill {
 	name: string
 	description: string
 	version: string
-	triggers: Array<string>
+	tags: Array<string>
+	dependencies: Array<string>
 	tools: Array<string>
 	priority: number
 	enabled: boolean
@@ -271,6 +305,13 @@ export interface ExtensionTool {
 
 export interface ForgotPasswordRequest {
 	email: string
+}
+
+export interface GetAdvisorRequest {
+}
+
+export interface GetAdvisorResponse {
+	advisor: AdvisorItem
 }
 
 export interface GetAgentSessionMessagesResponse {
@@ -368,6 +409,17 @@ export interface GetSkillResponse {
 	skill: ExtensionSkill
 }
 
+export interface GetStoreAppResponse {
+	app: StoreAppDetail
+}
+
+export interface GetStoreAppReviewsResponse {
+	reviews: Array<StoreReview>
+	totalCount: number
+	average: number
+	distribution: Array<number>
+}
+
 export interface GetTaskRequest {
 }
 
@@ -395,6 +447,20 @@ export interface HealthResponse {
 	status: string
 	version: string
 	timestamp: string
+}
+
+export interface InstallStoreAppResponse {
+	pluginId: string
+	message: string
+}
+
+export interface InstallStoreSkillResponse {
+	pluginId: string
+	message: string
+}
+
+export interface ListAdvisorsResponse {
+	advisors: Array<AdvisorItem>
 }
 
 export interface ListAgentSessionsResponse {
@@ -508,6 +574,20 @@ export interface ListPersonalityPresetsResponse {
 
 export interface ListPluginsResponse {
 	plugins: Array<PluginItem>
+}
+
+export interface ListStoreAppsResponse {
+	apps: Array<StoreApp>
+	totalCount: number
+	page: number
+	pageSize: number
+}
+
+export interface ListStoreSkillsResponse {
+	skills: Array<StoreSkill>
+	totalCount: number
+	page: number
+	pageSize: number
 }
 
 export interface ListTaskHistoryRequest {
@@ -720,6 +800,10 @@ export interface OAuthProvider {
 	email?: string
 }
 
+export interface OpenDevWindowResponse {
+	opened: boolean
+}
+
 export interface PersonalityPreset {
 	id: string
 	name: string
@@ -744,8 +828,24 @@ export interface PluginItem {
 	lastConnectedAt?: string
 	lastError?: string
 	settings?: { [key: string]: string }
+	capabilities?: Array<string>
+	permissions?: Array<string>
 	createdAt: string
 	updatedAt: string
+}
+
+// ProjectContext provides full project state for the Dev Assistant system prompt.
+export interface ProjectContext {
+	path: string
+	appId?: string
+	name?: string
+	version?: string
+	files: Array<string>
+	manifestRaw?: string
+	hasMakefile: boolean
+	binaryPath?: string
+	running: boolean
+	recentLogs?: string
 }
 
 export interface RefreshTokenRequest {
@@ -880,11 +980,16 @@ export interface StoreApp {
 	status: string
 }
 
-export interface StoreAppsResponse {
-	apps: Array<StoreApp>
-	totalCount: number
-	page: number
-	pageSize: number
+export interface StoreAppDetail extends StoreApp {
+	ageRating?: string
+	platforms?: Array<string>
+	size?: { [key: string]: number }
+	language?: string
+	screenshots?: Array<string>
+	changelog?: Array<StoreChangelog>
+	websiteUrl?: string
+	privacyUrl?: string
+	supportUrl?: string
 }
 
 export interface StoreAuthor {
@@ -893,9 +998,20 @@ export interface StoreAuthor {
 	verified: boolean
 }
 
-export interface StoreInstallResponse {
-	pluginId: string
-	message: string
+export interface StoreChangelog {
+	version: string
+	date: string
+	notes: string
+}
+
+export interface StoreReview {
+	id: string
+	userName: string
+	rating: number
+	title: string
+	body: string
+	createdAt: string
+	helpful: number
 }
 
 export interface StoreSkill {
@@ -912,13 +1028,6 @@ export interface StoreSkill {
 	reviewCount: number
 	isInstalled: boolean
 	status: string
-}
-
-export interface StoreSkillsResponse {
-	skills: Array<StoreSkill>
-	totalCount: number
-	page: number
-	pageSize: number
 }
 
 export interface SystemInfoResponse {
@@ -1050,6 +1159,16 @@ export interface UIView {
 	view_id: string
 	title: string
 	blocks: Array<UIBlock>
+}
+
+export interface UpdateAdvisorRequest {
+	role?: string
+	description?: string
+	priority?: number
+	enabled?: boolean
+	memoryAccess?: boolean
+	persona?: string
+	timeoutSeconds?: number
 }
 
 export interface UpdateAgentProfileRequest {

@@ -6,64 +6,6 @@ import (
 	"testing"
 )
 
-func TestSkillMatches(t *testing.T) {
-	skill := &Skill{
-		Name:        "test-skill",
-		Description: "A test skill",
-		Triggers:    []string{"review", "check code"},
-		Enabled:     true,
-	}
-
-	tests := []struct {
-		input   string
-		matches bool
-	}{
-		{"please review my code", true},
-		{"can you check code for bugs", true},
-		{"REVIEW this file", true}, // Case insensitive
-		{"hello world", false},
-		{"run tests", false},
-	}
-
-	for _, tt := range tests {
-		result := skill.Matches(tt.input)
-		if result != tt.matches {
-			t.Errorf("Matches(%q) = %v, want %v", tt.input, result, tt.matches)
-		}
-	}
-}
-
-func TestSkillMatchesDisabled(t *testing.T) {
-	skill := &Skill{
-		Name:     "disabled-skill",
-		Triggers: []string{"hello"},
-		Enabled:  false,
-	}
-
-	if skill.Matches("hello world") {
-		t.Error("Disabled skill should not match")
-	}
-}
-
-func TestSkillApplyToPrompt(t *testing.T) {
-	skill := &Skill{
-		Name:        "test-skill",
-		Description: "Test",
-		Template:    "When reviewing code, look for bugs.\n\n## Example\n\nUser: Review this\nAssistant: I'll check for issues.",
-		Enabled:     true,
-	}
-
-	result := skill.ApplyToPrompt("Base prompt")
-
-	if result == "Base prompt" {
-		t.Error("ApplyToPrompt should modify the prompt")
-	}
-
-	if len(result) <= len("Base prompt") {
-		t.Error("ApplyToPrompt should add content to prompt")
-	}
-}
-
 func TestSkillValidate(t *testing.T) {
 	tests := []struct {
 		skill   Skill
@@ -88,11 +30,15 @@ func TestParseSkillMD(t *testing.T) {
 name: test-skill
 description: A test skill
 version: "1.0.0"
-triggers:
-  - test
-  - testing
+author: nebo-community
+dependencies:
+  - calendar
+  - gmail
+tags:
+  - productivity
+  - meetings
 tools:
-  - bash
+  - skill
 ---
 
 # Test Skill
@@ -117,8 +63,16 @@ Just test it!
 		t.Errorf("Description = %q, want %q", skill.Description, "A test skill")
 	}
 
-	if len(skill.Triggers) != 2 {
-		t.Errorf("len(Triggers) = %d, want 2", len(skill.Triggers))
+	if skill.Author != "nebo-community" {
+		t.Errorf("Author = %q, want %q", skill.Author, "nebo-community")
+	}
+
+	if len(skill.Dependencies) != 2 {
+		t.Errorf("len(Dependencies) = %d, want 2", len(skill.Dependencies))
+	}
+
+	if len(skill.Tags) != 2 {
+		t.Errorf("len(Tags) = %d, want 2", len(skill.Tags))
 	}
 
 	if skill.Template == "" {
@@ -154,9 +108,8 @@ func TestLoaderLoadAll(t *testing.T) {
 name: test-skill
 description: A test skill for testing
 version: "1.0.0"
-triggers:
+tags:
   - test
-  - testing
 ---
 
 # Test Skill
@@ -187,7 +140,7 @@ This is a test template.
 	}
 }
 
-func TestLoaderFindMatching(t *testing.T) {
+func TestLoaderList(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create skill directories
@@ -200,8 +153,6 @@ func TestLoaderFindMatching(t *testing.T) {
 	skill1MD := `---
 name: skill-1
 description: First skill
-triggers:
-  - hello
 priority: 10
 ---
 
@@ -210,8 +161,6 @@ First skill content.
 	skill2MD := `---
 name: skill-2
 description: Second skill
-triggers:
-  - world
 priority: 5
 ---
 
@@ -220,8 +169,6 @@ Second skill content.
 	skill3MD := `---
 name: skill-3
 description: Third skill
-triggers:
-  - hello
 priority: 20
 ---
 
@@ -235,20 +182,14 @@ Third skill content.
 	loader := NewLoader(dir)
 	loader.LoadAll()
 
-	// Test matching "hello" - should return 2 skills, highest priority first
-	matching := loader.FindMatching("hello there")
-	if len(matching) != 2 {
-		t.Errorf("FindMatching() returned %d skills, want 2", len(matching))
+	list := loader.List()
+	if len(list) != 3 {
+		t.Errorf("List() returned %d skills, want 3", len(list))
 	}
 
-	if matching[0].Name != "skill-3" {
-		t.Errorf("First match should be skill-3 (priority 20), got %s", matching[0].Name)
-	}
-
-	// Test matching "world" - should return 1 skill
-	matching = loader.FindMatching("hello world")
-	if len(matching) != 3 {
-		t.Errorf("FindMatching('hello world') returned %d skills, want 3", len(matching))
+	// Should be sorted by priority (highest first)
+	if list[0].Name != "skill-3" {
+		t.Errorf("First skill should be skill-3 (priority 20), got %s", list[0].Name)
 	}
 }
 

@@ -17,7 +17,7 @@ import (
 	"github.com/nebolabs/nebo/internal/browser"
 )
 
-// WebDomainTool provides web operations: fetch, search, browser automation
+// WebDomainTool provides web operations: HTTP requests, search, and browser automation.
 type WebDomainTool struct {
 	client       *http.Client
 	searchAPIKey string
@@ -25,12 +25,13 @@ type WebDomainTool struct {
 	headless     bool
 }
 
-// WebDomainInput represents the consolidated input for all web operations
+// WebDomainInput represents the consolidated input for all web operations.
 type WebDomainInput struct {
 	// STRAP fields
-	Action string `json:"action"` // fetch, search, browser (navigate, click, type, screenshot, etc.)
+	Resource string `json:"resource"` // http, search, browser
+	Action   string `json:"action"`
 
-	// Fetch fields
+	// HTTP fields
 	URL     string            `json:"url,omitempty"`
 	Method  string            `json:"method,omitempty"` // GET, POST, etc.
 	Headers map[string]string `json:"headers,omitempty"`
@@ -52,14 +53,14 @@ type WebDomainInput struct {
 	TargetID string `json:"target_id,omitempty"` // Page/tab ID for multi-tab control
 }
 
-// WebDomainConfig configures the web domain tool
+// WebDomainConfig configures the web domain tool.
 type WebDomainConfig struct {
 	SearchAPIKey string // For Google Custom Search (optional)
 	SearchCX     string // Google Custom Search Engine ID (optional)
 	Headless     bool   // Browser headless mode
 }
 
-// NewWebDomainTool creates a new web domain tool with SSRF-safe HTTP client
+// NewWebDomainTool creates a new web domain tool with SSRF-safe HTTP client.
 func NewWebDomainTool() *WebDomainTool {
 	return &WebDomainTool{
 		client: &http.Client{
@@ -71,7 +72,7 @@ func NewWebDomainTool() *WebDomainTool {
 	}
 }
 
-// NewWebDomainToolWithConfig creates a web tool with full configuration
+// NewWebDomainToolWithConfig creates a web tool with full configuration.
 func NewWebDomainToolWithConfig(cfg WebDomainConfig) *WebDomainTool {
 	t := NewWebDomainTool()
 	t.searchAPIKey = cfg.SearchAPIKey
@@ -80,183 +81,143 @@ func NewWebDomainToolWithConfig(cfg WebDomainConfig) *WebDomainTool {
 	return t
 }
 
-// Name returns the tool name
-func (t *WebDomainTool) Name() string {
-	return "web"
-}
+func (t *WebDomainTool) Name() string   { return "web" }
+func (t *WebDomainTool) Domain() string { return "web" }
 
-// Domain returns the domain name
-func (t *WebDomainTool) Domain() string {
-	return "web"
-}
-
-// Resources returns available resources
 func (t *WebDomainTool) Resources() []string {
-	return []string{"fetch", "search", "browser"}
+	return []string{"http", "search", "browser"}
 }
 
-// ActionsFor returns available actions
 func (t *WebDomainTool) ActionsFor(resource string) []string {
 	switch resource {
-	case "fetch":
-		return []string{"get", "post", "put", "delete"}
+	case "http":
+		return []string{"fetch"}
 	case "search":
-		return []string{"search"}
+		return []string{"query"}
 	case "browser":
-		return []string{"navigate", "click", "type", "screenshot", "text", "html", "evaluate", "wait", "snapshot", "click_ref", "type_ref"}
+		return []string{
+			"navigate", "snapshot", "click", "fill", "type",
+			"screenshot", "text", "evaluate", "wait", "scroll",
+			"hover", "select", "back", "forward", "reload",
+			"status", "launch", "close", "list_pages",
+		}
 	default:
-		return []string{}
+		return nil
 	}
 }
 
-// Description returns the tool description
 func (t *WebDomainTool) Description() string {
-	return `Web operations: fetch URLs, search the web, browser automation with profile support.
-
-Profiles:
-- nebo (default): Managed browser instance with isolated profile
-- chrome: Connect to user's Chrome via extension relay (access to logged-in sessions)
-
-Actions:
-- fetch: HTTP requests (GET, POST, etc.)
-- search: Web search using DuckDuckGo or Google
-- navigate: Browser navigation to URL
-- click: Click element by ref (from snapshot) or CSS selector
-- fill: Fill input field (clears first, then types)
-- type: Type text (character by character, for complex inputs)
-- screenshot: Capture page screenshot
-- snapshot: Get accessibility tree with element refs [e1], [e2], etc.
-- text: Extract text content
-- evaluate: Run JavaScript
-- wait: Wait for element
-- scroll: Scroll page (up, down, or to element)
-- hover: Hover over element
-- select: Select option from dropdown
-- back/forward/reload: Navigation controls
-
-Examples:
-  web(action: fetch, url: "https://api.example.com/data")
-  web(action: navigate, url: "https://gmail.com", profile: "chrome")
-  web(action: snapshot)
-  web(action: click, ref: "e5")
-  web(action: fill, ref: "e3", value: "search query")
-  web(action: type, ref: "e3", text: "hello")
-  web(action: screenshot, output: "page.png")`
+	return BuildDomainDescription(t.schemaConfig())
 }
 
-// Schema returns the JSON schema
 func (t *WebDomainTool) Schema() json.RawMessage {
-	return json.RawMessage(`{
-		"type": "object",
-		"properties": {
-			"action": {
-				"type": "string",
-				"description": "Web action: fetch, search, navigate, click, fill, type, screenshot, snapshot, text, evaluate, wait, scroll, hover, select, back, forward, reload",
-				"enum": ["fetch", "search", "navigate", "click", "fill", "type", "screenshot", "snapshot", "text", "evaluate", "wait", "scroll", "hover", "select", "back", "forward", "reload"]
+	return BuildDomainSchema(t.schemaConfig())
+}
+
+func (t *WebDomainTool) schemaConfig() DomainSchemaConfig {
+	return DomainSchemaConfig{
+		Domain:      "web",
+		Description: "Web operations: HTTP requests, web search, and full browser automation with profile support.",
+		Resources: map[string]ResourceConfig{
+			"http": {
+				Name:        "http",
+				Actions:     []string{"fetch"},
+				Description: "HTTP requests (GET, POST, PUT, DELETE, etc.) — no JavaScript rendering",
 			},
-			"profile": {
-				"type": "string",
-				"description": "Browser profile: nebo (managed, default) or chrome (extension relay with authenticated sessions)",
-				"enum": ["nebo", "chrome"]
+			"search": {
+				Name:        "search",
+				Actions:     []string{"query"},
+				Description: "Web search via DuckDuckGo or Google",
 			},
-			"url": {
-				"type": "string",
-				"description": "URL for fetch or navigate actions"
+			"browser": {
+				Name: "browser",
+				Actions: []string{
+					"navigate", "snapshot", "click", "fill", "type",
+					"screenshot", "text", "evaluate", "wait", "scroll",
+					"hover", "select", "back", "forward", "reload",
+					"status", "launch", "close", "list_pages",
+				},
+				Description: "Full browser automation with lifecycle control",
 			},
-			"method": {
-				"type": "string",
-				"description": "HTTP method for fetch (default: GET)",
-				"enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
-			},
-			"headers": {
-				"type": "object",
-				"description": "HTTP headers for fetch",
-				"additionalProperties": { "type": "string" }
-			},
-			"body": {
-				"type": "string",
-				"description": "Request body for fetch (POST/PUT/PATCH)"
-			},
-			"query": {
-				"type": "string",
-				"description": "Search query (for search action)"
-			},
-			"engine": {
-				"type": "string",
-				"description": "Search engine: duckduckgo (default), google",
-				"enum": ["duckduckgo", "google"]
-			},
-			"limit": {
-				"type": "integer",
-				"description": "Max search results (default: 10)"
-			},
-			"ref": {
-				"type": "string",
-				"description": "Element ref from snapshot (e.g., 'e1', 'e5') for click, fill, type, hover, select"
-			},
-			"selector": {
-				"type": "string",
-				"description": "CSS selector for browser element actions (alternative to ref)"
-			},
-			"value": {
-				"type": "string",
-				"description": "Value for fill action (clears field first then enters value)"
-			},
-			"text": {
-				"type": "string",
-				"description": "Text for type action (types character by character) or JavaScript for evaluate"
-			},
-			"output": {
-				"type": "string",
-				"description": "Output path for screenshot (returns base64 if empty)"
-			},
-			"timeout": {
-				"type": "integer",
-				"description": "Action timeout in seconds (default: 30)"
-			},
-			"target_id": {
-				"type": "string",
-				"description": "Page/tab ID for multi-tab control (use list_pages to see available)"
-			}
 		},
-		"required": ["action"]
-	}`)
+		Fields: []FieldConfig{
+			{Name: "url", Type: "string", Description: "URL for fetch or navigate"},
+			{Name: "method", Type: "string", Description: "HTTP method for fetch (default: GET)", Enum: []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}},
+			{Name: "headers", Type: "object", Description: "HTTP headers for fetch"},
+			{Name: "body", Type: "string", Description: "Request body for fetch (POST/PUT/PATCH)"},
+			{Name: "query", Type: "string", Description: "Search query (for search/query)"},
+			{Name: "engine", Type: "string", Description: "Search engine: duckduckgo (default), google", Enum: []string{"duckduckgo", "google"}},
+			{Name: "limit", Type: "integer", Description: "Max search results (default: 10)"},
+			{Name: "profile", Type: "string", Description: "Browser profile: nebo (managed, default) or chrome (extension relay with authenticated sessions)", Enum: []string{"nebo", "chrome"}},
+			{Name: "ref", Type: "string", Description: "Element ref from snapshot (e.g., 'e1', 'e5') for click, fill, type, hover, select"},
+			{Name: "selector", Type: "string", Description: "CSS selector for browser element actions (alternative to ref)"},
+			{Name: "value", Type: "string", Description: "Value for fill action (clears field first then enters value)"},
+			{Name: "text", Type: "string", Description: "Text for type action (types character by character) or JavaScript for evaluate"},
+			{Name: "output", Type: "string", Description: "Output path for screenshot (returns base64 if empty)"},
+			{Name: "timeout", Type: "integer", Description: "Action timeout in seconds (default: 30)"},
+			{Name: "target_id", Type: "string", Description: "Page/tab ID for multi-tab control (use list_pages to see available)"},
+		},
+		Examples: []string{
+			`web(resource: http, action: fetch, url: "https://api.example.com/data")`,
+			`web(resource: search, action: query, query: "golang tutorials")`,
+			`web(resource: browser, action: status)`,
+			`web(resource: browser, action: status, profile: "chrome")`,
+			`web(resource: browser, action: launch, profile: "nebo")`,
+			`web(resource: browser, action: navigate, url: "https://gmail.com", profile: "chrome")`,
+			`web(resource: browser, action: snapshot)`,
+			`web(resource: browser, action: click, ref: "e5")`,
+			`web(resource: browser, action: fill, ref: "e3", value: "search query")`,
+			`web(resource: browser, action: close, profile: "nebo")`,
+			`web(resource: browser, action: list_pages, profile: "chrome")`,
+		},
+	}
 }
 
-// RequiresApproval returns true for browser actions
 func (t *WebDomainTool) RequiresApproval() bool {
-	return true // Browser operations can be dangerous
+	return true
 }
 
-// Execute routes to the appropriate handler
+// Execute routes to the appropriate handler based on resource.
 func (t *WebDomainTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var in WebDomainInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return nil, fmt.Errorf("invalid input: %w", err)
 	}
 
-	switch in.Action {
-	case "fetch":
-		return t.handleFetch(ctx, in)
+	switch in.Resource {
+	case "http":
+		return t.executeHTTP(ctx, in)
 	case "search":
-		return t.handleSearch(ctx, in)
-	case "navigate", "click", "fill", "type", "screenshot", "snapshot", "text", "evaluate", "wait", "scroll", "hover", "select", "back", "forward", "reload":
-		return t.handleBrowser(ctx, in)
+		return t.executeSearch(ctx, in)
+	case "browser":
+		return t.executeBrowser(ctx, in)
 	default:
 		return &ToolResult{
-			Content: fmt.Sprintf("Unknown action: %s (valid: fetch, search, navigate, click, fill, type, screenshot, snapshot, text, evaluate, wait, scroll, hover, select, back, forward, reload)", in.Action),
+			Content: fmt.Sprintf("Unknown resource: %q (valid: http, search, browser)", in.Resource),
 			IsError: true,
 		}, nil
 	}
 }
 
-// handleFetch performs HTTP requests
+// --- HTTP Resource ---
+
+func (t *WebDomainTool) executeHTTP(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
+	switch in.Action {
+	case "fetch":
+		return t.handleFetch(ctx, in)
+	default:
+		return &ToolResult{
+			Content: fmt.Sprintf("Unknown action %q for resource 'http' (valid: fetch)", in.Action),
+			IsError: true,
+		}, nil
+	}
+}
+
 func (t *WebDomainTool) handleFetch(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
 	if in.URL == "" {
 		return &ToolResult{Content: "Error: url is required", IsError: true}, nil
 	}
 
-	// SSRF pre-flight: validate URL before making request
 	if err := validateFetchURL(in.URL); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
 	}
@@ -277,7 +238,6 @@ func (t *WebDomainTool) handleFetch(ctx context.Context, in WebDomainInput) (*To
 	}
 
 	req.Header.Set("User-Agent", "Nebo/1.0")
-
 	for k, v := range in.Headers {
 		req.Header.Set(k, v)
 	}
@@ -293,7 +253,6 @@ func (t *WebDomainTool) handleFetch(ctx context.Context, in WebDomainInput) (*To
 		return &ToolResult{Content: fmt.Sprintf("Error reading response: %v", err), IsError: true}, nil
 	}
 
-	// Truncate very long responses
 	const maxContent = 100000
 	result := string(content)
 	if len(result) > maxContent {
@@ -301,10 +260,8 @@ func (t *WebDomainTool) handleFetch(ctx context.Context, in WebDomainInput) (*To
 	}
 
 	header := fmt.Sprintf("HTTP %d %s\nContent-Type: %s\nContent-Length: %d\n\n",
-		resp.StatusCode,
-		resp.Status,
-		resp.Header.Get("Content-Type"),
-		len(content),
+		resp.StatusCode, resp.Status,
+		resp.Header.Get("Content-Type"), len(content),
 	)
 
 	return &ToolResult{
@@ -313,7 +270,20 @@ func (t *WebDomainTool) handleFetch(ctx context.Context, in WebDomainInput) (*To
 	}, nil
 }
 
-// handleSearch performs web searches
+// --- Search Resource ---
+
+func (t *WebDomainTool) executeSearch(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
+	switch in.Action {
+	case "query":
+		return t.handleSearch(ctx, in)
+	default:
+		return &ToolResult{
+			Content: fmt.Sprintf("Unknown action %q for resource 'search' (valid: query)", in.Action),
+			IsError: true,
+		}, nil
+	}
+}
+
 func (t *WebDomainTool) handleSearch(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
 	if in.Query == "" {
 		return &ToolResult{Content: "Error: query is required", IsError: true}, nil
@@ -366,6 +336,381 @@ func (t *WebDomainTool) handleSearch(ctx context.Context, in WebDomainInput) (*T
 	return &ToolResult{Content: sb.String()}, nil
 }
 
+// --- Browser Resource ---
+
+func (t *WebDomainTool) executeBrowser(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
+	// Lifecycle actions don't need a session
+	switch in.Action {
+	case "status":
+		return t.handleBrowserStatus(ctx, in)
+	case "launch":
+		return t.handleBrowserLaunch(ctx, in)
+	case "close":
+		return t.handleBrowserClose(ctx, in)
+	case "list_pages":
+		return t.handleBrowserListPages(ctx, in)
+	}
+
+	// All other browser actions need a session + page
+	return t.handleBrowserAction(ctx, in)
+}
+
+func (t *WebDomainTool) handleBrowserStatus(_ context.Context, in WebDomainInput) (*ToolResult, error) {
+	mgr := browser.GetManager()
+
+	if in.Profile != "" {
+		status, err := mgr.GetProfileStatus(in.Profile)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
+		}
+		data, _ := json.MarshalIndent(status, "", "  ")
+		return &ToolResult{Content: string(data)}, nil
+	}
+
+	// Return all profiles
+	statuses := mgr.GetAllProfileStatuses()
+	if len(statuses) == 0 {
+		return &ToolResult{Content: "No browser profiles configured"}, nil
+	}
+
+	data, _ := json.MarshalIndent(map[string]any{"profiles": statuses}, "", "  ")
+	return &ToolResult{Content: string(data)}, nil
+}
+
+func (t *WebDomainTool) handleBrowserLaunch(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
+	mgr := browser.GetManager()
+
+	profile := in.Profile
+	if profile == "" {
+		profile = browser.DefaultProfileName
+	}
+
+	// Chrome extension profile can't be launched by us
+	p := mgr.GetProfile(profile)
+	if p == nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Unknown profile: %q", profile),
+			IsError: true,
+		}, nil
+	}
+
+	if p.Driver == browser.DriverExtension {
+		return &ToolResult{
+			Content: fmt.Sprintf("Cannot launch the %q profile — it connects via the Chrome extension. Ensure the Nebo extension is active in Chrome.", profile),
+			IsError: true,
+		}, nil
+	}
+
+	// GetSession triggers ensureBrowserRunning for managed profiles
+	_, err := mgr.GetSession(ctx, profile)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Failed to launch browser for profile %q: %v", profile, err),
+			IsError: true,
+		}, nil
+	}
+
+	status, _ := mgr.GetProfileStatus(profile)
+	data, _ := json.MarshalIndent(status, "", "  ")
+	return &ToolResult{Content: fmt.Sprintf("Browser launched for profile %q\n%s", profile, string(data))}, nil
+}
+
+func (t *WebDomainTool) handleBrowserClose(_ context.Context, in WebDomainInput) (*ToolResult, error) {
+	mgr := browser.GetManager()
+
+	profile := in.Profile
+	if profile == "" {
+		profile = browser.DefaultProfileName
+	}
+
+	p := mgr.GetProfile(profile)
+	if p == nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Unknown profile: %q", profile),
+			IsError: true,
+		}, nil
+	}
+
+	if p.Driver == browser.DriverExtension {
+		// For extension profiles, close the Playwright session (disconnect) but don't close Chrome
+		_ = browser.CloseSession(profile)
+		return &ToolResult{Content: fmt.Sprintf("Disconnected from Chrome extension profile %q (Chrome itself remains open)", profile)}, nil
+	}
+
+	// For managed profiles, stop the browser
+	if err := mgr.StopBrowser(profile); err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Failed to stop browser for profile %q: %v", profile, err),
+			IsError: true,
+		}, nil
+	}
+
+	return &ToolResult{Content: fmt.Sprintf("Browser stopped for profile %q", profile)}, nil
+}
+
+func (t *WebDomainTool) handleBrowserListPages(_ context.Context, in WebDomainInput) (*ToolResult, error) {
+	profile := in.Profile
+	if profile == "" {
+		profile = browser.DefaultProfileName
+	}
+
+	// Check if session exists without creating one
+	session := browser.GetSessionIfExists(profile)
+	if session == nil {
+		return &ToolResult{Content: fmt.Sprintf("No active session for profile %q. Use launch or navigate first.", profile)}, nil
+	}
+
+	pages := session.ListPages()
+	if len(pages) == 0 {
+		return &ToolResult{Content: fmt.Sprintf("No pages open in profile %q", profile)}, nil
+	}
+
+	type pageInfo struct {
+		TargetID string `json:"target_id"`
+		URL      string `json:"url"`
+		Title    string `json:"title"`
+	}
+
+	infos := make([]pageInfo, 0, len(pages))
+	for _, p := range pages {
+		_ = p.UpdateState()
+		s := p.State()
+		infos = append(infos, pageInfo{
+			TargetID: p.TargetID(),
+			URL:      s.URL,
+			Title:    s.Title,
+		})
+	}
+
+	data, _ := json.MarshalIndent(infos, "", "  ")
+	return &ToolResult{Content: string(data)}, nil
+}
+
+func (t *WebDomainTool) handleBrowserAction(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
+	mgr := browser.GetManager()
+
+	profile := in.Profile
+	if profile == "" {
+		profile = browser.DefaultProfileName
+	}
+
+	// Get session (creates browser if needed for managed profiles)
+	session, err := mgr.GetSession(ctx, profile)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Browser not available for profile %q: %v\n\nUse web(resource: browser, action: status) to check availability, or web(resource: browser, action: launch) to start the managed browser.", profile, err),
+			IsError: true,
+		}, nil
+	}
+
+	// Get page (create new if needed)
+	page, err := session.GetPage(in.TargetID)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Failed to get page: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	// Set timeout
+	timeout := 30 * time.Second
+	if in.Timeout > 0 {
+		timeout = time.Duration(in.Timeout) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	switch in.Action {
+	case "navigate":
+		if in.URL == "" {
+			return &ToolResult{Content: "Error: url is required for navigate", IsError: true}, nil
+		}
+		result, err := page.Navigate(ctx, browser.NavigateOptions{URL: in.URL})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Navigate failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: fmt.Sprintf("Navigated to: %s\nTitle: %s", in.URL, result.Title)}, nil
+
+	case "click":
+		result, err := page.Click(ctx, browser.ClickOptions{Ref: in.Ref, Selector: in.Selector})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Click failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "fill":
+		if in.Value == "" && in.Text == "" {
+			return &ToolResult{Content: "Error: value or text is required for fill", IsError: true}, nil
+		}
+		value := in.Value
+		if value == "" {
+			value = in.Text
+		}
+		result, err := page.Fill(ctx, browser.FillOptions{Ref: in.Ref, Selector: in.Selector, Value: value})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Fill failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "type":
+		if in.Text == "" {
+			return &ToolResult{Content: "Error: text is required for type", IsError: true}, nil
+		}
+		result, err := page.Type(ctx, browser.TypeOptions{Ref: in.Ref, Selector: in.Selector, Text: in.Text})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Type failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "screenshot":
+		b64, err := page.Screenshot(ctx, browser.ScreenshotOptions{FullPage: true})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Screenshot failed: %v", err), IsError: true}, nil
+		}
+		if in.Output != "" {
+			data, err := base64.StdEncoding.DecodeString(b64)
+			if err != nil {
+				return &ToolResult{Content: fmt.Sprintf("Failed to decode screenshot: %v", err), IsError: true}, nil
+			}
+			if err := writeScreenshotFile(in.Output, data); err != nil {
+				return &ToolResult{Content: fmt.Sprintf("Failed to save screenshot: %v", err), IsError: true}, nil
+			}
+			return &ToolResult{Content: fmt.Sprintf("Screenshot saved to: %s (%d bytes)", in.Output, len(data))}, nil
+		}
+		return &ToolResult{Content: fmt.Sprintf("Screenshot captured\ndata:image/png;base64,%s", b64)}, nil
+
+	case "snapshot":
+		snapshot, err := page.Snapshot(ctx, browser.SnapshotOptions{IncludeRefs: true})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Snapshot failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: snapshot}, nil
+
+	case "text":
+		text, err := page.GetText(ctx, in.Ref, in.Selector)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Get text failed: %v", err), IsError: true}, nil
+		}
+		if len(text) > 10000 {
+			text = text[:10000] + "\n... (truncated)"
+		}
+		return &ToolResult{Content: text}, nil
+
+	case "evaluate":
+		if in.Text == "" {
+			return &ToolResult{Content: "Error: text (JavaScript code) is required for evaluate", IsError: true}, nil
+		}
+		result, err := page.Evaluate(ctx, in.Text)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Evaluate failed: %v", err), IsError: true}, nil
+		}
+		switch v := result.(type) {
+		case string:
+			return &ToolResult{Content: v}, nil
+		case nil:
+			return &ToolResult{Content: "undefined"}, nil
+		default:
+			jsonResult, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return &ToolResult{Content: fmt.Sprintf("%v", result)}, nil
+			}
+			return &ToolResult{Content: string(jsonResult)}, nil
+		}
+
+	case "wait":
+		if in.Selector == "" && in.Ref == "" {
+			return &ToolResult{Content: "Error: selector or ref is required for wait", IsError: true}, nil
+		}
+		result, err := page.Wait(ctx, browser.WaitOptions{Ref: in.Ref, Selector: in.Selector})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Wait failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "scroll":
+		direction := in.Text
+		if direction == "" {
+			direction = "down"
+		}
+		result, err := page.Scroll(ctx, browser.ScrollOptions{Direction: direction, Ref: in.Ref, Selector: in.Selector})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Scroll failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "hover":
+		result, err := page.Hover(ctx, browser.HoverOptions{Ref: in.Ref, Selector: in.Selector})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Hover failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "select":
+		if in.Value == "" {
+			return &ToolResult{Content: "Error: value is required for select", IsError: true}, nil
+		}
+		result, err := page.Select(ctx, browser.SelectOptions{Ref: in.Ref, Selector: in.Selector, Values: []string{in.Value}})
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Select failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "back":
+		result, err := page.GoBack(ctx)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Back failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "forward":
+		result, err := page.GoForward(ctx)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Forward failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	case "reload":
+		result, err := page.Reload(ctx)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Reload failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: result.Message}, nil
+
+	default:
+		return &ToolResult{
+			Content: fmt.Sprintf("Unknown action %q for resource 'browser' (valid: navigate, snapshot, click, fill, type, screenshot, text, evaluate, wait, scroll, hover, select, back, forward, reload, status, launch, close, list_pages)", in.Action),
+			IsError: true,
+		}, nil
+	}
+}
+
+// Close cleans up browser resources.
+func (t *WebDomainTool) Close() {
+	// Browser cleanup is handled by the manager
+}
+
+// HandleVision analyzes images (placeholder - requires API key).
+func (t *WebDomainTool) HandleVision(ctx context.Context, imagePath, imageBase64, prompt string) (*ToolResult, error) {
+	var b64 string
+	if imagePath != "" {
+		data, err := io.ReadAll(strings.NewReader(imagePath))
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Error reading image: %v", err), IsError: true}, nil
+		}
+		b64 = base64.StdEncoding.EncodeToString(data)
+	} else {
+		b64 = imageBase64
+	}
+
+	if b64 == "" {
+		return &ToolResult{Content: "Error: image_path or image_base64 is required", IsError: true}, nil
+	}
+
+	return &ToolResult{Content: "Vision analysis requires ANTHROPIC_API_KEY configuration", IsError: true}, nil
+}
+
+// --- Search implementations ---
+
 type webSearchResult struct {
 	Title   string
 	URL     string
@@ -379,7 +724,6 @@ func (t *WebDomainTool) searchDuckDuckGo(ctx context.Context, query string, limi
 	if err != nil {
 		return nil, err
 	}
-
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Nebo/1.0)")
 
 	resp, err := t.client.Do(req)
@@ -507,6 +851,8 @@ func (t *WebDomainTool) searchGoogle(ctx context.Context, query string, limit in
 	return results, nil
 }
 
+// --- Helpers ---
+
 func stripWebHTMLTags(s string) string {
 	var result strings.Builder
 	inTag := false
@@ -532,9 +878,7 @@ func stripWebHTMLTags(s string) string {
 	return text
 }
 
-// writeScreenshotFile writes screenshot data to a file, creating directories as needed
 func writeScreenshotFile(path string, data []byte) error {
-	// Expand ~ to home directory
 	if strings.HasPrefix(path, "~/") {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
@@ -543,7 +887,6 @@ func writeScreenshotFile(path string, data []byte) error {
 		path = homeDir + path[1:]
 	}
 
-	// Ensure parent directory exists
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
@@ -552,260 +895,13 @@ func writeScreenshotFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// handleBrowser uses the new browser package with profile support
-func (t *WebDomainTool) handleBrowser(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
-	// Get browser manager
-	mgr := browser.GetManager()
-
-	// Default to "nebo" profile if not specified
-	profile := in.Profile
-	if profile == "" {
-		profile = browser.DefaultProfileName
-	}
-
-	// Get session for this profile
-	session, err := mgr.GetSession(ctx, profile)
-	if err != nil {
-		return &ToolResult{
-			Content: fmt.Sprintf("Failed to get browser session: %v", err),
-			IsError: true,
-		}, nil
-	}
-
-	// Get page (create new if needed)
-	page, err := session.GetPage(in.TargetID)
-	if err != nil {
-		return &ToolResult{
-			Content: fmt.Sprintf("Failed to get page: %v", err),
-			IsError: true,
-		}, nil
-	}
-
-	// Set timeout if specified
-	timeout := 30 * time.Second
-	if in.Timeout > 0 {
-		timeout = time.Duration(in.Timeout) * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	switch in.Action {
-	case "navigate":
-		if in.URL == "" {
-			return &ToolResult{Content: "Error: url is required for navigate", IsError: true}, nil
-		}
-		result, err := page.Navigate(ctx, browser.NavigateOptions{URL: in.URL})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Navigate failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: fmt.Sprintf("Navigated to: %s\nTitle: %s", in.URL, result.Title)}, nil
-
-	case "click":
-		result, err := page.Click(ctx, browser.ClickOptions{Ref: in.Ref, Selector: in.Selector})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Click failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "fill":
-		if in.Value == "" && in.Text == "" {
-			return &ToolResult{Content: "Error: value or text is required for fill", IsError: true}, nil
-		}
-		value := in.Value
-		if value == "" {
-			value = in.Text
-		}
-		result, err := page.Fill(ctx, browser.FillOptions{Ref: in.Ref, Selector: in.Selector, Value: value})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Fill failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "type":
-		if in.Text == "" {
-			return &ToolResult{Content: "Error: text is required for type", IsError: true}, nil
-		}
-		result, err := page.Type(ctx, browser.TypeOptions{Ref: in.Ref, Selector: in.Selector, Text: in.Text})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Type failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "screenshot":
-		b64, err := page.Screenshot(ctx, browser.ScreenshotOptions{FullPage: true})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Screenshot failed: %v", err), IsError: true}, nil
-		}
-		if in.Output != "" {
-			// Decode base64 and save to file
-			data, err := base64.StdEncoding.DecodeString(b64)
-			if err != nil {
-				return &ToolResult{Content: fmt.Sprintf("Failed to decode screenshot: %v", err), IsError: true}, nil
-			}
-			if err := writeScreenshotFile(in.Output, data); err != nil {
-				return &ToolResult{Content: fmt.Sprintf("Failed to save screenshot: %v", err), IsError: true}, nil
-			}
-			return &ToolResult{Content: fmt.Sprintf("Screenshot saved to: %s (%d bytes)", in.Output, len(data))}, nil
-		}
-		return &ToolResult{Content: fmt.Sprintf("Screenshot captured\ndata:image/png;base64,%s", b64)}, nil
-
-	case "snapshot":
-		snapshot, err := page.Snapshot(ctx, browser.SnapshotOptions{IncludeRefs: true})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Snapshot failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: snapshot}, nil
-
-	case "text":
-		text, err := page.GetText(ctx, in.Ref, in.Selector)
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Get text failed: %v", err), IsError: true}, nil
-		}
-		// Truncate if too long
-		if len(text) > 10000 {
-			text = text[:10000] + "\n... (truncated)"
-		}
-		return &ToolResult{Content: text}, nil
-
-	case "evaluate":
-		if in.Text == "" {
-			return &ToolResult{Content: "Error: text (JavaScript code) is required for evaluate", IsError: true}, nil
-		}
-		result, err := page.Evaluate(ctx, in.Text)
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Evaluate failed: %v", err), IsError: true}, nil
-		}
-		// Convert result to string
-		switch v := result.(type) {
-		case string:
-			return &ToolResult{Content: v}, nil
-		case nil:
-			return &ToolResult{Content: "undefined"}, nil
-		default:
-			jsonResult, err := json.MarshalIndent(result, "", "  ")
-			if err != nil {
-				return &ToolResult{Content: fmt.Sprintf("%v", result)}, nil
-			}
-			return &ToolResult{Content: string(jsonResult)}, nil
-		}
-
-	case "wait":
-		if in.Selector == "" && in.Ref == "" {
-			return &ToolResult{Content: "Error: selector or ref is required for wait", IsError: true}, nil
-		}
-		result, err := page.Wait(ctx, browser.WaitOptions{Ref: in.Ref, Selector: in.Selector})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Wait failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "scroll":
-		direction := in.Text // Use text field for direction: up, down, left, right
-		if direction == "" {
-			direction = "down"
-		}
-		result, err := page.Scroll(ctx, browser.ScrollOptions{Direction: direction, Ref: in.Ref, Selector: in.Selector})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Scroll failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "hover":
-		result, err := page.Hover(ctx, browser.HoverOptions{Ref: in.Ref, Selector: in.Selector})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Hover failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "select":
-		if in.Value == "" {
-			return &ToolResult{Content: "Error: value is required for select", IsError: true}, nil
-		}
-		result, err := page.Select(ctx, browser.SelectOptions{Ref: in.Ref, Selector: in.Selector, Values: []string{in.Value}})
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Select failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "back":
-		result, err := page.GoBack(ctx)
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Back failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "forward":
-		result, err := page.GoForward(ctx)
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Forward failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	case "reload":
-		result, err := page.Reload(ctx)
-		if err != nil {
-			return &ToolResult{Content: fmt.Sprintf("Reload failed: %v", err), IsError: true}, nil
-		}
-		return &ToolResult{Content: result.Message}, nil
-
-	default:
-		return &ToolResult{Content: fmt.Sprintf("Unknown browser action: %s", in.Action), IsError: true}, nil
-	}
-}
-
-// Close cleans up browser resources
-func (t *WebDomainTool) Close() {
-	// Browser cleanup is handled by the manager
-}
-
-// HandleVision analyzes images (placeholder - requires API key)
-func (t *WebDomainTool) HandleVision(ctx context.Context, imagePath, imageBase64, prompt string) (*ToolResult, error) {
-	// Encode image if path provided
-	var b64 string
-	if imagePath != "" {
-		data, err := io.ReadAll(strings.NewReader(imagePath))
-		if err != nil {
-			return &ToolResult{
-				Content: fmt.Sprintf("Error reading image: %v", err),
-				IsError: true,
-			}, nil
-		}
-		b64 = base64.StdEncoding.EncodeToString(data)
-	} else {
-		b64 = imageBase64
-	}
-
-	if b64 == "" {
-		return &ToolResult{
-			Content: "Error: image_path or image_base64 is required",
-			IsError: true,
-		}, nil
-	}
-
-	return &ToolResult{
-		Content: "Vision analysis requires ANTHROPIC_API_KEY configuration",
-		IsError: true,
-	}, nil
-}
-
 // --- SSRF Protection ---
 
-// ssrfBlockedNets contains CIDR ranges that must never be reached by the web fetch tool.
-// This blocks private networks, link-local, loopback, and cloud metadata endpoints.
 var ssrfBlockedNets = func() []*net.IPNet {
 	cidrs := []string{
-		"127.0.0.0/8",    // IPv4 loopback
-		"10.0.0.0/8",     // RFC 1918 private
-		"172.16.0.0/12",  // RFC 1918 private
-		"192.168.0.0/16", // RFC 1918 private
-		"169.254.0.0/16", // Link-local / AWS metadata
-		"0.0.0.0/8",      // Current network
-		"100.64.0.0/10",  // Shared address space (CGNAT)
-		"192.0.0.0/24",   // IETF protocol assignments
-		"198.18.0.0/15",  // Benchmarking
-		"::1/128",        // IPv6 loopback
-		"fc00::/7",       // IPv6 unique local
-		"fe80::/10",      // IPv6 link-local
+		"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"169.254.0.0/16", "0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24",
+		"198.18.0.0/15", "::1/128", "fc00::/7", "fe80::/10",
 	}
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, cidr := range cidrs {
@@ -817,10 +913,9 @@ var ssrfBlockedNets = func() []*net.IPNet {
 	return nets
 }()
 
-// isBlockedIP returns true if the IP falls within any blocked CIDR range.
 func isBlockedIP(ip net.IP) bool {
 	if ip == nil {
-		return true // Block unresolvable addresses
+		return true
 	}
 	for _, n := range ssrfBlockedNets {
 		if n.Contains(ip) {
@@ -830,15 +925,12 @@ func isBlockedIP(ip net.IP) bool {
 	return false
 }
 
-// validateFetchURL performs pre-flight validation on a URL before fetching.
-// It blocks non-HTTP schemes, private/internal IPs, and cloud metadata endpoints.
 func validateFetchURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 
-	// Only allow http and https
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("blocked: scheme %q not allowed (only http/https)", u.Scheme)
 	}
@@ -848,11 +940,7 @@ func validateFetchURL(rawURL string) error {
 		return fmt.Errorf("blocked: empty hostname")
 	}
 
-	// Block cloud metadata hostnames
-	metadataHosts := []string{
-		"metadata.google.internal",
-		"metadata.google.com",
-	}
+	metadataHosts := []string{"metadata.google.internal", "metadata.google.com"}
 	lowerHost := strings.ToLower(hostname)
 	for _, mh := range metadataHosts {
 		if lowerHost == mh {
@@ -860,7 +948,6 @@ func validateFetchURL(rawURL string) error {
 		}
 	}
 
-	// Resolve hostname and check all IPs
 	ips, err := net.LookupIP(hostname)
 	if err != nil {
 		return fmt.Errorf("DNS resolution failed for %q: %w", hostname, err)
@@ -875,10 +962,6 @@ func validateFetchURL(rawURL string) error {
 	return nil
 }
 
-// ssrfSafeTransport returns an http.Transport with a custom dialer that
-// re-validates resolved IPs at connection time. This catches DNS rebinding
-// attacks where a hostname resolves to a public IP during pre-flight but
-// to a private IP when the actual connection is made.
 func ssrfSafeTransport() *http.Transport {
 	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -898,7 +981,6 @@ func ssrfSafeTransport() *http.Transport {
 				}
 			}
 
-			// Connect to the first allowed IP
 			dialer := &net.Dialer{Timeout: 10 * time.Second}
 			for _, ipAddr := range ips {
 				target := net.JoinHostPort(ipAddr.IP.String(), port)
@@ -912,8 +994,6 @@ func ssrfSafeTransport() *http.Transport {
 	}
 }
 
-// ssrfSafeRedirectCheck returns a CheckRedirect function that validates
-// each redirect target against the SSRF blocklist.
 func ssrfSafeRedirectCheck() func(req *http.Request, via []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {

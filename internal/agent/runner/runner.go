@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/nebolabs/nebo/internal/agent/memory"
 	"github.com/nebolabs/nebo/internal/agent/recovery"
 	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/agent/skills"
 	"github.com/nebolabs/nebo/internal/agent/tools"
 	"github.com/nebolabs/nebo/internal/lifecycle"
 )
@@ -24,7 +22,7 @@ import (
 // Use {agent_name} placeholder — replaced at runtime with the actual agent name from DB
 const DefaultSystemPrompt = `You are {agent_name}, a local AI agent running on this computer. You are NOT Claude Code, Cursor, Copilot, or any other coding assistant. You have your own unique tool set described below. When a user asks what tools you have, ONLY list the tools described in this prompt and in your tool definitions — never list tools from your training data.
 
-CRITICAL: Your ONLY tools are the ones listed below and provided in the tool definitions. You do NOT have "WebFetch", "WebSearch", "Read", "Write", "Edit", "Grep", "Glob", "Bash", "TodoWrite", "EnterPlanMode", "AskUserQuestion", "Task", or "Context7" as tools. Those do not exist in your runtime. If you reference or attempt to call a tool not in your tool definitions, it will fail. Your actual tools are: file, shell, web, agent, screenshot, vision, and platform capabilities.
+CRITICAL: Your ONLY tools are the ones listed below and provided in the tool definitions. You do NOT have "WebFetch", "WebSearch", "Read", "Write", "Edit", "Grep", "Glob", "Bash", "TodoWrite", "EnterPlanMode", "AskUserQuestion", "Task", or "Context7" as tools. Those do not exist in your runtime. If you reference or attempt to call a tool not in your tool definitions, it will fail. Your actual tools are: file, shell, web, agent, skill, screenshot, vision, and platform capabilities.
 
 ## Your Tools (STRAP Pattern)
 
@@ -123,6 +121,20 @@ Sessions:
 - agent(resource: session, action: status) — Current session status
 - agent(resource: session, action: clear) — Clear current session
 
+### skill — Capabilities & Knowledge
+All installed apps and orchestration skills are available through the skill tool:
+- skill(action: "catalog") — Browse available skills
+- skill(name: "calendar") — Load detailed instructions for a skill
+- skill(name: "calendar", resource: "events", action: "list") — Execute a skill action
+- skill(name: "meeting-prep") — Load orchestration guidance
+
+Check the catalog when you're unsure what's available. Use skill(name: "x") to load detailed
+instructions before using an unfamiliar skill. Orchestration skills may reference other skills —
+follow their guidance to compose capabilities together.
+
+If a skill returns an auth error, guide the user to Settings → Apps to reconnect.
+If a skill is not found, suggest checking the app store or running skill(action: "catalog").
+
 ### advisors — Internal Deliberation
 For complex decisions, call the 'advisors' tool. Advisors run concurrently and return counsel that YOU synthesize.
 - advisors(task: "Should we use PostgreSQL or SQLite for this use case?") — Consult all enabled advisors
@@ -148,10 +160,9 @@ These tools are available when running on macOS:
 - spotlight — Search files and content via Spotlight
 - shortcuts — Run Apple Shortcuts automations
 - window — Manage window positions and sizes
-- desktop — Desktop operations
+- desktop — Launch and manage desktop applications
 - accessibility — Accessibility features and UI automation
 - system — System controls (volume, brightness, Wi-Fi, Bluetooth, dark mode, sleep, lock)
-- app — Launch and manage applications
 - keychain — Securely store and retrieve credentials
 
 ## Memory System — CRITICAL
@@ -199,7 +210,6 @@ type Runner struct {
 	providerMap     map[string]ai.Provider // providerID -> Provider for model-based switching
 	tools           *tools.Registry
 	config          *config.Config
-	skillLoader     *skills.Loader
 	memoryTool      *tools.MemoryTool
 	selector        *ai.ModelSelector
 	fuzzyMatcher    *ai.FuzzyMatcher    // For user model switch requests
@@ -231,31 +241,6 @@ func (p *modelOverrideProvider) Stream(ctx context.Context, req *ai.ChatRequest)
 
 // New creates a new runner
 func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider, toolRegistry *tools.Registry) *Runner {
-	// Load skills from extensions/skills directory (in working directory)
-	// Also load user-installed skills from data directory
-	skillLoader := skills.NewLoader(filepath.Join("extensions", "skills"))
-	if err := skillLoader.LoadAll(); err != nil {
-		// Log error but continue - skills are optional
-		fmt.Printf("[runner] Warning: failed to load skills: %v\n", err)
-	}
-
-	// Also load user skills from data directory
-	userSkillsDir := filepath.Join(cfg.DataDir, "skills")
-	userSkillLoader := skills.NewLoader(userSkillsDir)
-	if err := userSkillLoader.LoadAll(); err == nil {
-		// Merge user skills into main loader
-		for _, skill := range userSkillLoader.List() {
-			skillLoader.Add(skill)
-		}
-	}
-
-	// Load disabled skills from settings file (if exists)
-	// This syncs the runner with UI-configured skill states
-	disabledSkills := loadDisabledSkills(cfg.DataDir)
-	if len(disabledSkills) > 0 {
-		skillLoader.SetDisabledSkills(disabledSkills)
-	}
-
 	// Build provider map for model-based switching
 	providerMap := make(map[string]ai.Provider)
 	for _, p := range providers {
@@ -272,7 +257,6 @@ func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider,
 		providerMap: providerMap,
 		tools:       toolRegistry,
 		config:      cfg,
-		skillLoader: skillLoader,
 	}
 }
 
@@ -315,24 +299,6 @@ func (r *Runner) RecoverSubagents(ctx context.Context) (int, error) {
 	return 0, nil
 }
 
-// loadDisabledSkills reads the skill-settings.json file and returns disabled skill names
-func loadDisabledSkills(dataDir string) []string {
-	settingsPath := filepath.Join(dataDir, "skill-settings.json")
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return nil
-	}
-
-	var settings struct {
-		DisabledSkills []string `json:"disabledSkills"`
-	}
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return nil
-	}
-
-	return settings.DisabledSkills
-}
-
 // SetPolicy updates the tool registry's policy
 func (r *Runner) SetPolicy(policy *tools.Policy) {
 	r.tools.SetPolicy(policy)
@@ -354,11 +320,6 @@ func (r *Runner) ReloadProviders() {
 	if r.providerLoader != nil {
 		r.providers = r.providerLoader()
 	}
-}
-
-// SkillLoader returns the skill loader for managing skills
-func (r *Runner) SkillLoader() *skills.Loader {
-	return r.skillLoader
 }
 
 // Run executes the agentic loop
@@ -547,22 +508,6 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 		aliases := r.fuzzyMatcher.GetAliases()
 		if len(aliases) > 0 {
 			systemPrompt += "\n\n## Model Switching\n\nUsers can ask to switch models. Available models:\n" + strings.Join(aliases, "\n") + "\n\nWhen a user asks to switch models, acknowledge the request and confirm the switch."
-		}
-	}
-
-	// Apply matching skills based on the user's last message
-	if r.skillLoader != nil {
-		// Get the last user message to match against skills
-		messages, _ := r.sessions.GetMessages(sessionID, r.config.MaxContext)
-		var lastUserInput string
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == "user" && messages[i].Content != "" {
-				lastUserInput = messages[i].Content
-				break
-			}
-		}
-		if lastUserInput != "" {
-			systemPrompt = r.skillLoader.ApplyMatchingSkills(systemPrompt, lastUserInput)
 		}
 	}
 
@@ -895,16 +840,49 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 	}
 }
 
+// compactionSummaryPrompt is the prompt used to generate an intelligent working-state
+// summary of the conversation before compaction. The LLM produces a structured summary
+// that preserves task context, progress, and next steps so the agent can continue
+// seamlessly after context is compacted.
+const compactionSummaryPrompt = `You are summarizing a conversation for context continuity. The conversation will be compacted and this summary is all the agent will have to continue working.
+
+Produce a structured summary covering:
+
+1. **Current Task**: What is the user trying to accomplish right now?
+2. **Progress**: What has been done so far? List specific files read, modified, or created. Commands run and their outcomes.
+3. **Key Decisions**: Important choices made during the conversation (architecture, approach, naming, etc.)
+4. **Errors & Blockers**: What failed and why. Include specific error messages if relevant.
+5. **Next Steps**: What needs to happen next to complete the task? Be specific.
+6. **Important Context**: User preferences, constraints, or requirements mentioned that affect ongoing work.
+7. **Agent-Generated Content**: Any text, copy, code, plans, or creative output the agent produced for the user. Reproduce this VERBATIM — headlines, taglines, marketing copy, email drafts, architectural plans, specific recommendations. The user WILL reference this content later by saying things like "use the headline you wrote" or "keep the copy from before." If you lose this content, the agent cannot fulfill those requests.
+
+Be concise but specific. Include file paths, function names, and concrete details — not vague descriptions.
+For code changes, note the key modifications (not full code). But for creative text output (copy, headlines, plans, emails), preserve the EXACT text.
+
+Conversation to summarize:
+%s
+
+Respond with the structured summary only. No preamble.`
+
 // generateSummary creates a summary of the conversation for compaction.
-// Includes compaction safeguard: tool failures are preserved in the summary
-// so the agent knows what went wrong even after context is compacted.
-// Includes compaction safeguard to preserve tool failures in the summary
-func (r *Runner) generateSummary(_ context.Context, messages []session.Message) string {
-	// Build base summary with key conversation points
+// Uses an LLM to produce a structured working-state summary that preserves
+// task context, progress, decisions, and next steps.
+// Falls back to naive extraction if no provider is available.
+func (r *Runner) generateSummary(ctx context.Context, messages []session.Message) string {
+	// Try LLM-powered summary first
+	if len(r.providers) > 0 {
+		llmSummary := r.generateLLMSummary(ctx, messages)
+		if llmSummary != "" {
+			// Wrap with header and append tool failures
+			result := "[Previous conversation summary]\n\n" + llmSummary
+			return EnhancedSummary(messages, result)
+		}
+	}
+
+	// Fallback: naive extraction (user messages + tool failures)
 	var summary strings.Builder
 	summary.WriteString("[Previous conversation summary]\n")
 
-	// Extract key points from messages
 	for _, msg := range messages {
 		if msg.Role == "user" && msg.Content != "" {
 			summary.WriteString("- User request: ")
@@ -917,9 +895,121 @@ func (r *Runner) generateSummary(_ context.Context, messages []session.Message) 
 		}
 	}
 
-	// Apply compaction safeguard: append tool failures section
-	// This ensures the agent knows about errors that occurred before compaction
 	return EnhancedSummary(messages, summary.String())
+}
+
+// generateLLMSummary sends the conversation to a cheap model for intelligent summarization.
+// Returns empty string on any failure (caller falls back to naive extraction).
+func (r *Runner) generateLLMSummary(ctx context.Context, messages []session.Message) string {
+	// Pick the cheapest available model
+	var provider ai.Provider
+	if r.selector != nil {
+		cheapestModelID := r.selector.GetCheapestModel()
+		if cheapestModelID != "" {
+			providerID, modelName := ai.ParseModelID(cheapestModelID)
+			if p, ok := r.providerMap[providerID]; ok {
+				provider = &modelOverrideProvider{Provider: p, model: modelName}
+			}
+		}
+	}
+	if provider == nil {
+		provider = r.providers[0]
+	}
+
+	// Build conversation text for the prompt
+	var conv strings.Builder
+	for _, msg := range messages {
+		switch msg.Role {
+		case "user":
+			if msg.Content != "" {
+				content := msg.Content
+				if len(content) > 1000 {
+					content = content[:1000] + "..."
+				}
+				conv.WriteString(fmt.Sprintf("[User]: %s\n\n", content))
+			}
+		case "assistant":
+			if msg.Content != "" {
+				content := msg.Content
+				if len(content) > 1000 {
+					content = content[:1000] + "..."
+				}
+				conv.WriteString(fmt.Sprintf("[Assistant]: %s\n\n", content))
+			}
+			// Include tool call names for context
+			if len(msg.ToolCalls) > 0 {
+				var calls []session.ToolCall
+				if err := json.Unmarshal(msg.ToolCalls, &calls); err == nil {
+					for _, tc := range calls {
+						conv.WriteString(fmt.Sprintf("[Tool Call]: %s(%s)\n", tc.Name, truncateToolArgs(string(tc.Input))))
+					}
+				}
+			}
+		case "tool":
+			// Include tool results (truncated) for progress tracking
+			if len(msg.ToolResults) > 0 {
+				var results []session.ToolResult
+				if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
+					for _, tr := range results {
+						status := "ok"
+						if tr.IsError {
+							status = "ERROR"
+						}
+						content := tr.Content
+						if len(content) > 300 {
+							content = content[:300] + "..."
+						}
+						conv.WriteString(fmt.Sprintf("[Tool Result %s]: %s\n", status, content))
+					}
+				}
+			}
+		}
+	}
+
+	prompt := fmt.Sprintf(compactionSummaryPrompt, conv.String())
+
+	// Use a tight timeout — summary generation shouldn't block the main loop for long
+	summaryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	events, err := provider.Stream(summaryCtx, &ai.ChatRequest{
+		Messages: []session.Message{
+			{Role: "user", Content: prompt},
+		},
+	})
+	if err != nil {
+		fmt.Printf("[Runner] LLM summary generation failed: %v\n", err)
+		return ""
+	}
+
+	var result strings.Builder
+	for event := range events {
+		if event.Type == ai.EventTypeText {
+			result.WriteString(event.Text)
+		}
+		if event.Type == ai.EventTypeError {
+			fmt.Printf("[Runner] LLM summary stream error: %v\n", event.Error)
+			// Return what we have so far if anything
+			if result.Len() > 0 {
+				return result.String()
+			}
+			return ""
+		}
+	}
+
+	summary := strings.TrimSpace(result.String())
+	if summary != "" {
+		fmt.Printf("[Runner] Generated LLM summary (%d chars)\n", len(summary))
+	}
+	return summary
+}
+
+// truncateToolArgs truncates tool call arguments for summary inclusion.
+func truncateToolArgs(args string) string {
+	if len(args) <= 100 {
+		return args
+	}
+	return args[:100] + "..."
 }
 
 // Chat is a convenience method for one-shot chat without tool use
@@ -1040,8 +1130,15 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 	entries := facts.FormatForStorage()
 	stored := 0
 	for _, entry := range entries {
-		if err := r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID); err != nil {
-			fmt.Printf("[runner] Failed to store memory %s: %v\n", entry.Key, err)
+		var storeErr error
+		if entry.IsStyle {
+			// Style observations use reinforcement tracking — increment count on duplicates
+			storeErr = r.memoryTool.StoreStyleEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
+		} else {
+			storeErr = r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
+		}
+		if storeErr != nil {
+			fmt.Printf("[runner] Failed to store memory %s: %v\n", entry.Key, storeErr)
 		} else {
 			stored++
 		}
@@ -1052,6 +1149,19 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 		fmt.Printf("[runner] Auto-extracted %d memories from conversation (user: %s) in %dms\n", stored, userID, durationMs)
 	} else {
 		fmt.Printf("[runner] Memory extraction complete (no new memories) in %dms\n", durationMs)
+	}
+
+	// If styles were extracted, attempt personality directive synthesis
+	if len(facts.Styles) > 0 && r.sessions != nil {
+		if db := r.sessions.GetDB(); db != nil {
+			directive, err := memory.SynthesizeDirective(ctx, db, extractionProvider, userID)
+			if err != nil {
+				fmt.Printf("[runner] Personality synthesis failed: %v\n", err)
+			} else if directive != "" {
+				fmt.Printf("[runner] Personality directive updated for user %s\n", userID)
+			}
+			// directive == "" means not enough observations yet — that's fine
+		}
 	}
 }
 
@@ -1253,6 +1363,7 @@ IMPORTANT: Review the conversation and use the memory tool to store any importan
 - User preferences or facts about them (layer: "tacit", namespace: "user")
 - Important decisions or agreements (layer: "daily", namespace: today's date)
 - Information about people, projects, or entities mentioned (layer: "entity", namespace: "default")
+- Content you produced for the user — copy, headlines, plans, strategies, emails, code architecture (layer: "tacit", namespace: "artifacts"). Store the VERBATIM text, not a summary. The user will reference this later.
 
 If there's nothing important to store, simply reply "NO_STORE_NEEDED" and nothing else.`
 

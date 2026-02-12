@@ -54,14 +54,15 @@ func ListExtensionsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				// Check enabled state from persistent settings
 				enabled := svcCtx.SkillSettings.IsEnabled(skill.Name)
 				resp.Skills = append(resp.Skills, types.ExtensionSkill{
-					Name:        skill.Name,
-					Description: skill.Description,
-					Version:     skill.Version,
-					Triggers:    skill.Triggers,
-					Tools:       skill.Tools,
-					Priority:    skill.Priority,
-					Enabled:     enabled,
-					FilePath:    skill.FilePath,
+					Name:         skill.Name,
+					Description:  skill.Description,
+					Version:      skill.Version,
+					Tags:         skill.Tags,
+					Dependencies: skill.Dependencies,
+					Tools:        skill.Tools,
+					Priority:     skill.Priority,
+					Enabled:      enabled,
+					FilePath:     skill.FilePath,
 				})
 			}
 		}

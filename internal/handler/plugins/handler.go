@@ -205,6 +205,19 @@ func toPluginItem(p db.PluginRegistry) types.PluginItem {
 		manifest = json.RawMessage(`{}`)
 	}
 
+	// Extract capabilities and permissions from metadata (stored by AppRegistry)
+	var capabilities, permissions []string
+	if p.Metadata != "" {
+		var meta struct {
+			Provides    []string `json:"provides"`
+			Permissions []string `json:"permissions"`
+		}
+		if json.Unmarshal([]byte(p.Metadata), &meta) == nil {
+			capabilities = meta.Provides
+			permissions = meta.Permissions
+		}
+	}
+
 	return types.PluginItem{
 		Id:               p.ID,
 		Name:             p.Name,
@@ -219,6 +232,8 @@ func toPluginItem(p db.PluginRegistry) types.PluginItem {
 		ConnectionStatus: p.ConnectionStatus,
 		LastConnectedAt:  nullTimeString(p.LastConnectedAt),
 		LastError:        nullString(p.LastError),
+		Capabilities:     capabilities,
+		Permissions:      permissions,
 		CreatedAt:        time.Unix(p.CreatedAt, 0).Format(time.RFC3339),
 		UpdatedAt:        time.Unix(p.UpdatedAt, 0).Format(time.RFC3339),
 	}
@@ -254,6 +269,80 @@ func neboLoopClient(ctx context.Context, svcCtx *svc.ServiceContext) (*neboloop.
 	return neboloop.NewClient(settings)
 }
 
+// GetStoreAppHandler returns a single app's detail from NeboLoop.
+func GetStoreAppHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			httputil.BadRequest(w, "id is required")
+			return
+		}
+
+		client, err := neboLoopClient(r.Context(), svcCtx)
+		if err != nil {
+			httputil.BadRequest(w, "NeboLoop not configured: "+err.Error())
+			return
+		}
+
+		detail, err := client.GetApp(r.Context(), id)
+		if err != nil {
+			httputil.InternalError(w, "NeboLoop: "+err.Error())
+			return
+		}
+
+		installed := installedPluginNames(r.Context(), svcCtx)
+		httputil.OkJSON(w, types.GetStoreAppResponse{
+			App: toStoreAppDetail(detail, installed),
+		})
+	}
+}
+
+// GetStoreAppReviewsHandler returns reviews for an app from NeboLoop.
+func GetStoreAppReviewsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			httputil.BadRequest(w, "id is required")
+			return
+		}
+
+		client, err := neboLoopClient(r.Context(), svcCtx)
+		if err != nil {
+			httputil.BadRequest(w, "NeboLoop not configured: "+err.Error())
+			return
+		}
+
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+
+		reviews, err := client.GetAppReviews(r.Context(), id, page, pageSize)
+		if err != nil {
+			httputil.InternalError(w, "NeboLoop: "+err.Error())
+			return
+		}
+
+		storeReviews := make([]types.StoreReview, 0, len(reviews.Reviews))
+		for _, rv := range reviews.Reviews {
+			storeReviews = append(storeReviews, types.StoreReview{
+				ID:        rv.ID,
+				UserName:  rv.UserName,
+				Rating:    rv.Rating,
+				Title:     rv.Title,
+				Body:      rv.Body,
+				CreatedAt: rv.CreatedAt,
+				Helpful:   rv.Helpful,
+			})
+		}
+
+		httputil.OkJSON(w, types.GetStoreAppReviewsResponse{
+			Reviews:      storeReviews,
+			TotalCount:   reviews.TotalCount,
+			Average:      reviews.Average,
+			Distribution: reviews.Distribution,
+		})
+	}
+}
+
 // ListStoreAppsHandler lists apps from NeboLoop.
 func ListStoreAppsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -281,7 +370,7 @@ func ListStoreAppsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			apps = append(apps, toStoreApp(a, installed))
 		}
 
-		httputil.OkJSON(w, types.StoreAppsResponse{
+		httputil.OkJSON(w, types.ListStoreAppsResponse{
 			Apps:       apps,
 			TotalCount: upstream.TotalCount,
 			Page:       upstream.Page,
@@ -316,7 +405,7 @@ func ListStoreSkillsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			skills = append(skills, toStoreSkill(s, installed))
 		}
 
-		httputil.OkJSON(w, types.StoreSkillsResponse{
+		httputil.OkJSON(w, types.ListStoreSkillsResponse{
 			Skills:     skills,
 			TotalCount: upstream.TotalCount,
 			Page:       upstream.Page,
@@ -353,7 +442,7 @@ func InstallStoreAppHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		httputil.OkJSON(w, types.StoreInstallResponse{
+		httputil.OkJSON(w, types.InstallStoreAppResponse{
 			PluginID: pluginID,
 			Message:  "app installed",
 		})
@@ -414,7 +503,7 @@ func InstallStoreSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		httputil.OkJSON(w, types.StoreInstallResponse{
+		httputil.OkJSON(w, types.InstallStoreSkillResponse{
 			PluginID: pluginID,
 			Message:  "skill installed",
 		})
@@ -656,6 +745,31 @@ func toStoreApp(a neboloop.AppItem, installed map[string]bool) types.StoreApp {
 		ReviewCount:  a.ReviewCount,
 		IsInstalled:  a.IsInstalled || installed[a.Slug],
 		Status:       a.Status,
+	}
+}
+
+// toStoreAppDetail converts a NeboLoop AppDetail to a types.StoreAppDetail, marking installed status.
+func toStoreAppDetail(d *neboloop.AppDetail, installed map[string]bool) types.StoreAppDetail {
+	changelog := make([]types.StoreChangelog, 0, len(d.Changelog))
+	for _, c := range d.Changelog {
+		changelog = append(changelog, types.StoreChangelog{
+			Version: c.Version,
+			Date:    c.Date,
+			Notes:   c.Notes,
+		})
+	}
+
+	return types.StoreAppDetail{
+		StoreApp:    toStoreApp(d.AppItem, installed),
+		AgeRating:   d.AgeRating,
+		Platforms:   d.Platforms,
+		Size:        d.Size,
+		Language:    d.Language,
+		Screenshots: d.Screenshots,
+		Changelog:   changelog,
+		WebsiteURL:  d.WebsiteURL,
+		PrivacyURL:  d.PrivacyURL,
+		SupportURL:  d.SupportURL,
 	}
 }
 

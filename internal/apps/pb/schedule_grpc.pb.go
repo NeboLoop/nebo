@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.0
 // - protoc             v6.33.0
-// source: proto/apps/v1/schedule.proto
+// source: proto/apps/v0/schedule.proto
 
 package pb
 
@@ -19,18 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ScheduleService_HealthCheck_FullMethodName = "/apps.v1.ScheduleService/HealthCheck"
-	ScheduleService_Create_FullMethodName      = "/apps.v1.ScheduleService/Create"
-	ScheduleService_Get_FullMethodName         = "/apps.v1.ScheduleService/Get"
-	ScheduleService_List_FullMethodName        = "/apps.v1.ScheduleService/List"
-	ScheduleService_Update_FullMethodName      = "/apps.v1.ScheduleService/Update"
-	ScheduleService_Delete_FullMethodName      = "/apps.v1.ScheduleService/Delete"
-	ScheduleService_Enable_FullMethodName      = "/apps.v1.ScheduleService/Enable"
-	ScheduleService_Disable_FullMethodName     = "/apps.v1.ScheduleService/Disable"
-	ScheduleService_Trigger_FullMethodName     = "/apps.v1.ScheduleService/Trigger"
-	ScheduleService_History_FullMethodName     = "/apps.v1.ScheduleService/History"
-	ScheduleService_Triggers_FullMethodName    = "/apps.v1.ScheduleService/Triggers"
-	ScheduleService_Configure_FullMethodName   = "/apps.v1.ScheduleService/Configure"
+	ScheduleService_HealthCheck_FullMethodName = "/apps.v0.ScheduleService/HealthCheck"
+	ScheduleService_Create_FullMethodName      = "/apps.v0.ScheduleService/Create"
+	ScheduleService_Get_FullMethodName         = "/apps.v0.ScheduleService/Get"
+	ScheduleService_List_FullMethodName        = "/apps.v0.ScheduleService/List"
+	ScheduleService_Update_FullMethodName      = "/apps.v0.ScheduleService/Update"
+	ScheduleService_Delete_FullMethodName      = "/apps.v0.ScheduleService/Delete"
+	ScheduleService_Enable_FullMethodName      = "/apps.v0.ScheduleService/Enable"
+	ScheduleService_Disable_FullMethodName     = "/apps.v0.ScheduleService/Disable"
+	ScheduleService_Trigger_FullMethodName     = "/apps.v0.ScheduleService/Trigger"
+	ScheduleService_History_FullMethodName     = "/apps.v0.ScheduleService/History"
+	ScheduleService_Triggers_FullMethodName    = "/apps.v0.ScheduleService/Triggers"
+	ScheduleService_Configure_FullMethodName   = "/apps.v0.ScheduleService/Configure"
 )
 
 // ScheduleServiceClient is the client API for ScheduleService service.
@@ -520,7 +520,7 @@ func _ScheduleService_Configure_Handler(srv interface{}, ctx context.Context, de
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ScheduleService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "apps.v1.ScheduleService",
+	ServiceName: "apps.v0.ScheduleService",
 	HandlerType: (*ScheduleServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -575,5 +575,5 @@ var ScheduleService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/apps/v1/schedule.proto",
+	Metadata: "proto/apps/v0/schedule.proto",
 }

@@ -1,6 +1,72 @@
 # Creating Nebo Apps
 
-This guide covers everything you need to build apps for Nebo. Apps communicate over gRPC via Unix sockets, run in a sandboxed environment, and support rich capabilities including tools, channels, gateways, UI panels, and inter-agent communication.
+## What Nebo Is
+
+Nebo is a personal operating system — an always-running AI agent that manages your digital life. Think of Nebo the way you think of an iPhone: a powerful platform that becomes transformative through its apps.
+
+On its own, Nebo is a capable agent with memory, scheduling, web browsing, file management, and shell access. But the real unlock is Apps. Just as the iPhone's power comes from the App Store ecosystem, Nebo's power comes from the apps that extend what it can do.
+
+## What Apps Are
+
+Nebo Apps are self-contained, precompiled units of incredible functionality. Each app gives Nebo a new superpower — calendar management, email triage, project tracking, home automation, financial analysis — anything a developer can imagine.
+
+**Apps provide incredible power in a very safe manner.** That's the goal. Every app runs in a sandbox with deny-by-default permissions. It can only access what its manifest declares and the user approves. An app that manages your calendar can't read your files. An app that browses the web can't execute shell commands. The permission boundary is absolute.
+
+**The interface is 100% conversational.** Users don't interact with apps through separate screens or dashboards. They talk to Nebo, and Nebo uses the app's tools to get things done. "What's on my calendar tomorrow?" — Nebo calls the calendar app. "Create a meeting with Sarah at 3pm" — Nebo calls the calendar app. The user never leaves the conversation.
+
+Apps can optionally provide a **UI panel** — a supplementary, glanceable dashboard that shows status at a glance (today's schedule, connection status, a quick summary). But the UI is never the primary interface. It's a complement to the conversation, not a replacement for it.
+
+**Apps replace and extend Nebo's built-in capabilities.** Nebo ships with basic platform tools (local calendar access, screenshots, etc.). When you install a calendar app, it replaces the built-in calendar tool and becomes a superset — local + cloud + aggregation + availability checking. The agent seamlessly uses whichever tool is registered, whether built-in or app-provided.
+
+## Compiled-Only Policy
+
+Nebo enforces a strict compiled-only binary policy. All apps must be native compiled executables.
+
+| Status | Languages |
+|--------|-----------|
+| **Supported** | Go (recommended), Rust, C/C++, Zig |
+| **Rejected** | Python, Node.js, Ruby, Java, .NET, shell scripts |
+
+**Rationale:**
+
+- **AI self-modification prevention** — An agent with shell access could modify an interpreted script's behavior at runtime. Compiled binaries are immutable after signing.
+- **Signature integrity** — Ed25519 signatures cover raw binary bytes. A signed binary cannot be modified without invalidating the signature. Scripts can be modified between signature verification and execution.
+- **Sandbox enforcement** — Binary format validation (ELF/Mach-O/PE magic bytes) is a fast, reliable gate. Detecting all possible shebang interpreters is a whack-a-mole game.
+
+**What happens:** Nebo validates binary format at launch time. Binaries with a shebang (`#!`) are rejected immediately with a clear error:
+
+```
+binary is a script (shebang #! detected) — only compiled native binaries are allowed
+```
+
+## How Apps Work
+
+Apps communicate over gRPC via Unix sockets, run in a sandboxed environment, and support rich capabilities including tools, channels, gateways, UI panels, and inter-agent communication.
+
+---
+
+## Quick Start with the SDK
+
+Official SDKs handle all gRPC server setup, signal handling, and protocol bridging. You just implement handler interfaces. Full API documentation at [developer.neboloop.com](https://developer.neboloop.com).
+
+**Go** (recommended):
+
+```bash
+go get github.com/nebolabs/nebo-sdk-go
+```
+
+**Rust:**
+
+```toml
+[dependencies]
+nebo-sdk = "0.1"
+```
+
+**C/C++:**
+
+```bash
+# Add as a CMake subdirectory or copy headers from sdk/c/include/
+```
 
 ---
 
@@ -171,7 +237,7 @@ Your app process receives a sanitized environment. All secrets are stripped. You
 3. Checks for `.quarantined` marker (refuses to launch quarantined apps)
 4. Revocation check (NeboLoop-distributed apps only)
 5. Signature verification (NeboLoop-distributed apps only, skipped in dev)
-6. Binary validation (rejects symlinks, non-executables, oversized files)
+6. Binary validation (rejects symlinks, scripts, non-executables, oversized files)
 7. Cleans up stale socket from previous run
 8. Creates `data/` directory for sandboxed storage
 9. Sets up per-app log files (`logs/stdout.log`, `logs/stderr.log`)
@@ -186,23 +252,55 @@ Your app process receives a sanitized environment. All secrets are stripped. You
 
 ## Tool App
 
-Implement the `ToolService` gRPC service. Declare `"provides": ["tool:my_tool_name"]` in your manifest.
+Declare `"provides": ["tool:my_tool_name"]` in your manifest.
 
-**Proto definition:**
+### The STRAP Pattern
 
-```protobuf
-service ToolService {
-    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-    rpc Name(Empty) returns (NameResponse);
-    rpc Description(Empty) returns (DescriptionResponse);
-    rpc Schema(Empty) returns (SchemaResponse);
-    rpc Execute(ExecuteRequest) returns (ExecuteResponse);
-    rpc RequiresApproval(Empty) returns (ApprovalResponse);
-    rpc Configure(SettingsMap) returns (Empty);
-}
+All Nebo tool apps **must** use the **STRAP (Single Tool Resource Action Pattern)** for their schema and execution routing. This is the same pattern Nebo uses internally to consolidate 35+ individual tools into 4 domain tools — reducing LLM context overhead by ~80%.
+
+**Read the full article:** [Reduced MCP Tools 96→10: The STRAP Pattern](https://almatuck.com/articles/reduced-mcp-tools-96-to-10-strap-pattern)
+
+**Core idea:** Instead of registering multiple tools (`get_events`, `check_availability`, `suggest_slots`), register ONE tool with `action` (and optionally `resource`) fields that route to the right handler.
+
+**Structure:** `tool_name(action: "do_something", ...params)`
+
+For tools with multiple resource types, add a `resource` field:
+
+**Structure:** `tool_name(resource: "thing", action: "do_something", ...params)`
+
+**Schema rules:**
+
+1. Always include an `action` field as a required string enum
+2. Add a `resource` field (required string enum) only if your tool manages multiple distinct resource types
+3. All other fields are action-specific parameters
+4. The `action` enum description should list all available actions
+
+**Single-resource example (calendar):**
+
+```
+calendar(action: "get_events", start: "2025-01-15T09:00:00Z", end: "2025-01-16T00:00:00Z")
+calendar(action: "next_event")
+calendar(action: "check_availability", start: "...", end: "...")
+calendar(action: "suggest_slots", duration_minutes: 30, preferred_time: "morning")
 ```
 
-**Complete example in Go — a calculator tool app:**
+**Multi-resource example (project manager):**
+
+```
+project(resource: "task", action: "create", title: "Ship v2", assignee: "alice")
+project(resource: "task", action: "list", status: "open")
+project(resource: "milestone", action: "create", name: "Beta", deadline: "2025-03-01")
+project(resource: "milestone", action: "list")
+```
+
+**Why STRAP matters:**
+
+- LLMs learn the `action` routing pattern once and generalize across all operations
+- Tool definitions consume ~6% of context — STRAP cuts that by 80%
+- New operations are just enum additions, not new tool registrations
+- Works identically across Claude, GPT, Gemini, and local models
+
+### Go Example — Calculator Tool
 
 ```go
 package main
@@ -211,133 +309,60 @@ import (
     "context"
     "encoding/json"
     "fmt"
-    "net"
-    "os"
-    "os/signal"
-    "syscall"
+    "log"
 
-    pb "github.com/nebolabs/nebo/internal/apps/pb"
-    "google.golang.org/grpc"
+    nebo "github.com/nebolabs/nebo-sdk-go"
 )
 
-type calculatorServer struct {
-    pb.UnimplementedToolServiceServer
+type Calculator struct{}
+
+func (c *Calculator) Name() string        { return "calculator" }
+func (c *Calculator) Description() string { return "Performs arithmetic calculations." }
+
+func (c *Calculator) Schema() json.RawMessage {
+    return nebo.NewSchema("add", "subtract", "multiply", "divide").
+        Number("a", "First operand", true).
+        Number("b", "Second operand", true).
+        Build()
 }
 
-func (s *calculatorServer) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {
-    return &pb.HealthCheckResponse{Healthy: true, Name: "calculator", Version: "1.0.0"}, nil
-}
-
-func (s *calculatorServer) Name(ctx context.Context, req *pb.Empty) (*pb.NameResponse, error) {
-    return &pb.NameResponse{Name: "calculator"}, nil
-}
-
-func (s *calculatorServer) Description(ctx context.Context, req *pb.Empty) (*pb.DescriptionResponse, error) {
-    return &pb.DescriptionResponse{
-        Description: "Performs arithmetic calculations. Supports add, subtract, multiply, divide.",
-    }, nil
-}
-
-func (s *calculatorServer) Schema(ctx context.Context, req *pb.Empty) (*pb.SchemaResponse, error) {
-    schema := map[string]interface{}{
-        "type": "object",
-        "properties": map[string]interface{}{
-            "operation": map[string]interface{}{
-                "type":        "string",
-                "enum":        []string{"add", "subtract", "multiply", "divide"},
-                "description": "The arithmetic operation to perform",
-            },
-            "a": map[string]interface{}{
-                "type":        "number",
-                "description": "First operand",
-            },
-            "b": map[string]interface{}{
-                "type":        "number",
-                "description": "Second operand",
-            },
-        },
-        "required": []string{"operation", "a", "b"},
+func (c *Calculator) Execute(_ context.Context, input json.RawMessage) (string, error) {
+    var in struct {
+        Action string  `json:"action"`
+        A      float64 `json:"a"`
+        B      float64 `json:"b"`
     }
-    data, _ := json.Marshal(schema)
-    return &pb.SchemaResponse{Schema: data}, nil
-}
-
-type CalcInput struct {
-    Operation string  `json:"operation"`
-    A         float64 `json:"a"`
-    B         float64 `json:"b"`
-}
-
-func (s *calculatorServer) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.ExecuteResponse, error) {
-    var input CalcInput
-    if err := json.Unmarshal(req.Input, &input); err != nil {
-        return &pb.ExecuteResponse{Content: "Invalid input: " + err.Error(), IsError: true}, nil
+    if err := json.Unmarshal(input, &in); err != nil {
+        return "", fmt.Errorf("invalid input: %w", err)
     }
 
     var result float64
-    switch input.Operation {
+    switch in.Action {
     case "add":
-        result = input.A + input.B
+        result = in.A + in.B
     case "subtract":
-        result = input.A - input.B
+        result = in.A - in.B
     case "multiply":
-        result = input.A * input.B
+        result = in.A * in.B
     case "divide":
-        if input.B == 0 {
-            return &pb.ExecuteResponse{Content: "Division by zero", IsError: true}, nil
+        if in.B == 0 {
+            return "", fmt.Errorf("division by zero")
         }
-        result = input.A / input.B
+        result = in.A / in.B
     default:
-        return &pb.ExecuteResponse{
-            Content: fmt.Sprintf("Unknown operation: %s", input.Operation),
-            IsError: true,
-        }, nil
+        return "", fmt.Errorf("unknown action: %s", in.Action)
     }
 
-    return &pb.ExecuteResponse{
-        Content: fmt.Sprintf("%g %s %g = %g", input.A, input.Operation, input.B, result),
-    }, nil
-}
-
-func (s *calculatorServer) RequiresApproval(ctx context.Context, req *pb.Empty) (*pb.ApprovalResponse, error) {
-    return &pb.ApprovalResponse{RequiresApproval: false}, nil
-}
-
-func (s *calculatorServer) Configure(ctx context.Context, req *pb.SettingsMap) (*pb.Empty, error) {
-    fmt.Printf("[calculator] Settings updated: %v\n", req.Values)
-    return &pb.Empty{}, nil
+    return fmt.Sprintf("%g %s %g = %g", in.A, in.Action, in.B, result), nil
 }
 
 func main() {
-    sockPath := os.Getenv("NEBO_APP_SOCK")
-    if sockPath == "" {
-        fmt.Fprintln(os.Stderr, "NEBO_APP_SOCK not set")
-        os.Exit(1)
-    }
-
-    os.Remove(sockPath)
-
-    listener, err := net.Listen("unix", sockPath)
+    app, err := nebo.New()
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Failed to listen: %v\n", err)
-        os.Exit(1)
+        log.Fatal(err)
     }
-
-    server := grpc.NewServer()
-    pb.RegisterToolServiceServer(server, &calculatorServer{})
-
-    go func() {
-        sigCh := make(chan os.Signal, 1)
-        signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-        <-sigCh
-        server.GracefulStop()
-    }()
-
-    fmt.Printf("[calculator] Listening on %s\n", sockPath)
-    if err := server.Serve(listener); err != nil {
-        fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
-        os.Exit(1)
-    }
+    app.RegisterTool(&Calculator{})
+    log.Fatal(app.Run())
 }
 ```
 
@@ -359,69 +384,29 @@ func main() {
 **Build and install:**
 
 ```bash
-go build -o binary ./cmd/calculator
+go build -o binary .
 mkdir -p ~/Library/Application\ Support/Nebo/apps/com.example.calculator
-cp binary ~/Library/Application\ Support/Nebo/apps/com.example.calculator/
-cp manifest.json ~/Library/Application\ Support/Nebo/apps/com.example.calculator/
+cp binary manifest.json ~/Library/Application\ Support/Nebo/apps/com.example.calculator/
 ```
 
 ---
 
 ## Channel App
 
-Implement the `ChannelService` gRPC service. Declare `"provides": ["channel:my_channel"]` and `"permissions": ["channel:send"]` (or `"channel:*"`).
+Declare `"provides": ["channel:my_channel"]` and `"permissions": ["channel:send"]` (or `"channel:*"`).
 
-Channel apps bridge external messaging platforms (Telegram, Discord, Slack, etc.) to Nebo's agent. When a user sends a message on the external platform, your app streams it to Nebo via `Receive`. When the agent wants to reply, Nebo calls your app's `Send` RPC.
-
-**Proto definition:**
-
-```protobuf
-service ChannelService {
-    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-    rpc ID(Empty) returns (IDResponse);
-    rpc Connect(ChannelConnectRequest) returns (ChannelConnectResponse);
-    rpc Disconnect(Empty) returns (ChannelDisconnectResponse);
-    rpc Send(ChannelSendRequest) returns (ChannelSendResponse);
-    rpc Receive(Empty) returns (stream InboundMessage);  // Server streaming
-    rpc Configure(SettingsMap) returns (Empty);
-}
-```
+Channel apps bridge external messaging platforms (Telegram, Discord, Slack, etc.) to Nebo's agent. When a user sends a message on the external platform, your app streams it to Nebo via `Receive`. When the agent wants to reply, Nebo calls your app's `Send`.
 
 **How it works:**
 
 1. Nebo calls `ID()` to get your channel's unique identifier (e.g., `"telegram"`, `"discord"`)
 2. Nebo calls `Connect()` with config from your app's settings (API tokens, bot tokens, etc.)
-3. Nebo opens a `Receive()` stream — your app sends `InboundMessage` whenever a user messages the bot
+3. Nebo opens a `Receive()` stream — your app sends inbound messages whenever a user messages the bot
 4. Inbound messages are routed to the agent's main conversation lane
 5. When the agent (or cron jobs) want to send a message, Nebo calls `Send()` with the channel ID and text
 6. On shutdown, Nebo calls `Disconnect()`
 
-**Key points:**
-
-- `ID` must return a stable, unique identifier for this channel type
-- `Connect` receives a `map<string, string>` config populated from your app's settings
-- `Send` sends a message to a specific chat/channel/room identified by `channel_id`
-- `Receive` is a **server-streaming RPC** — keep the stream open and push `InboundMessage` whenever a user messages the bot
-- Return empty string in error fields for success
-- The agent can send messages to your channel via the `message` tool or cron delivery
-
-**Message formats:**
-
-```protobuf
-message ChannelSendRequest {
-    string channel_id = 1;  // Chat/channel/room to send to
-    string text = 2;        // Message text
-}
-
-message InboundMessage {
-    string channel_id = 1;  // Chat/channel/room identifier
-    string user_id = 2;     // Who sent the message
-    string text = 3;        // Message content
-    string metadata = 4;    // JSON-encoded extra data (optional)
-}
-```
-
-**Complete example in Go — a Telegram channel app:**
+### Go Example — Telegram Channel
 
 ```go
 package main
@@ -429,132 +414,79 @@ package main
 import (
     "context"
     "fmt"
-    "net"
-    "os"
-    "os/signal"
-    "sync"
-    "syscall"
+    "log"
 
     tgbot "github.com/go-telegram/bot"
-    pb "github.com/nebolabs/nebo/internal/apps/pb"
-    "google.golang.org/grpc"
+    nebo "github.com/nebolabs/nebo-sdk-go"
 )
 
-type telegramServer struct {
-    pb.UnimplementedChannelServiceServer
-    mu       sync.Mutex
+type Telegram struct {
     bot      *tgbot.Bot
-    messages chan *pb.InboundMessage
+    messages chan nebo.InboundMessage
     cancel   context.CancelFunc
 }
 
-func (s *telegramServer) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {
-    return &pb.HealthCheckResponse{Healthy: true, Name: "telegram", Version: "1.0.0"}, nil
-}
+func (t *Telegram) ID() string { return "telegram" }
 
-func (s *telegramServer) ID(ctx context.Context, req *pb.Empty) (*pb.IDResponse, error) {
-    return &pb.IDResponse{Id: "telegram"}, nil
-}
-
-func (s *telegramServer) Connect(ctx context.Context, req *pb.ChannelConnectRequest) (*pb.ChannelConnectResponse, error) {
-    token := req.Config["bot_token"]
+func (t *Telegram) Connect(_ context.Context, config map[string]string) error {
+    token := config["bot_token"]
     if token == "" {
-        return &pb.ChannelConnectResponse{Error: "bot_token is required"}, nil
+        return fmt.Errorf("bot_token is required")
     }
 
     botCtx, cancel := context.WithCancel(context.Background())
-    s.cancel = cancel
+    t.cancel = cancel
 
     bot, err := tgbot.New(token, tgbot.WithDefaultHandler(func(bCtx context.Context, b *tgbot.Bot, update *tgbot.Update) {
         if update.Message == nil {
             return
         }
-        s.messages <- &pb.InboundMessage{
-            ChannelId: fmt.Sprintf("%d", update.Message.Chat.ID),
-            UserId:    fmt.Sprintf("%d", update.Message.From.ID),
+        t.messages <- nebo.InboundMessage{
+            ChannelID: fmt.Sprintf("%d", update.Message.Chat.ID),
+            UserID:    fmt.Sprintf("%d", update.Message.From.ID),
             Text:      update.Message.Text,
         }
     }))
     if err != nil {
-        return &pb.ChannelConnectResponse{Error: err.Error()}, nil
+        return err
     }
 
-    s.bot = bot
+    t.bot = bot
     go bot.Start(botCtx)
-    return &pb.ChannelConnectResponse{}, nil
+    return nil
 }
 
-func (s *telegramServer) Disconnect(ctx context.Context, req *pb.Empty) (*pb.ChannelDisconnectResponse, error) {
-    if s.cancel != nil {
-        s.cancel()
+func (t *Telegram) Disconnect(_ context.Context) error {
+    if t.cancel != nil {
+        t.cancel()
     }
-    return &pb.ChannelDisconnectResponse{}, nil
+    return nil
 }
 
-func (s *telegramServer) Send(ctx context.Context, req *pb.ChannelSendRequest) (*pb.ChannelSendResponse, error) {
-    if s.bot == nil {
-        return &pb.ChannelSendResponse{Error: "not connected"}, nil
+func (t *Telegram) Send(ctx context.Context, channelID, text string) error {
+    if t.bot == nil {
+        return fmt.Errorf("not connected")
     }
-    _, err := s.bot.SendMessage(ctx, &tgbot.SendMessageParams{
-        ChatID: req.ChannelId,
-        Text:   req.Text,
+    _, err := t.bot.SendMessage(ctx, &tgbot.SendMessageParams{
+        ChatID: channelID,
+        Text:   text,
     })
-    if err != nil {
-        return &pb.ChannelSendResponse{Error: err.Error()}, nil
-    }
-    return &pb.ChannelSendResponse{}, nil
+    return err
 }
 
-func (s *telegramServer) Receive(req *pb.Empty, stream pb.ChannelService_ReceiveServer) error {
-    for {
-        select {
-        case msg := <-s.messages:
-            if err := stream.Send(msg); err != nil {
-                return err
-            }
-        case <-stream.Context().Done():
-            return nil
-        }
-    }
-}
-
-func (s *telegramServer) Configure(ctx context.Context, req *pb.SettingsMap) (*pb.Empty, error) {
-    fmt.Printf("[telegram] Settings updated: %v\n", req.Values)
-    return &pb.Empty{}, nil
+func (t *Telegram) Receive(_ context.Context) (<-chan nebo.InboundMessage, error) {
+    return t.messages, nil
 }
 
 func main() {
-    sockPath := os.Getenv("NEBO_APP_SOCK")
-    if sockPath == "" {
-        fmt.Fprintln(os.Stderr, "NEBO_APP_SOCK not set")
-        os.Exit(1)
-    }
-
-    os.Remove(sockPath)
-
-    listener, err := net.Listen("unix", sockPath)
+    app, err := nebo.New()
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Failed to listen: %v\n", err)
-        os.Exit(1)
+        log.Fatal(err)
     }
-
-    srv := grpc.NewServer()
-    pb.RegisterChannelServiceServer(srv, &telegramServer{
-        messages: make(chan *pb.InboundMessage, 100),
+    app.RegisterChannel(&Telegram{
+        messages: make(chan nebo.InboundMessage, 100),
     })
-
-    go func() {
-        sigCh := make(chan os.Signal, 1)
-        signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-        <-sigCh
-        srv.GracefulStop()
-    }()
-
-    fmt.Printf("[telegram] Listening on %s\n", sockPath)
-    if err := srv.Serve(listener); err != nil {
-        fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
-        os.Exit(1)
-    }
+    log.Fatal(app.Run())
 }
 ```
 
@@ -589,45 +521,17 @@ func main() {
 
 ## Comm App
 
-Implement the `CommService` gRPC service. Declare `"provides": ["comm"]` and `"permissions": ["comm:*"]`.
-
-**Proto definition:**
-
-```protobuf
-service CommService {
-    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-    rpc Name(Empty) returns (CommNameResponse);
-    rpc Version(Empty) returns (CommVersionResponse);
-    rpc Connect(CommConnectRequest) returns (CommConnectResponse);
-    rpc Disconnect(Empty) returns (CommDisconnectResponse);
-    rpc IsConnected(Empty) returns (CommIsConnectedResponse);
-    rpc Send(CommSendRequest) returns (CommSendResponse);
-    rpc Subscribe(CommSubscribeRequest) returns (CommSubscribeResponse);
-    rpc Unsubscribe(CommUnsubscribeRequest) returns (CommUnsubscribeResponse);
-    rpc Register(CommRegisterRequest) returns (CommRegisterResponse);
-    rpc Deregister(Empty) returns (CommDeregisterResponse);
-    rpc Receive(Empty) returns (stream CommMessage);  // Server streaming
-    rpc Configure(SettingsMap) returns (Empty);
-}
-```
+Declare `"provides": ["comm"]` and `"permissions": ["comm:*"]`.
 
 **CommMessage format:**
 
-```protobuf
-message CommMessage {
-    string id = 1;
-    string from = 2;              // Sender agent ID
-    string to = 3;                // Recipient agent ID
-    string topic = 4;             // Message topic/channel
-    string conversation_id = 5;   // Thread identifier
-    string type = 6;              // "message", "mention", "proposal", "command", "info", "task"
-    string content = 7;           // Message body
-    map<string, string> metadata = 8;
-    int64 timestamp = 9;          // Unix milliseconds
-    bool human_injected = 10;     // True if message was injected by a human
-    string human_id = 11;         // Human's identifier
-}
-```
+| Field | Description |
+|-------|-------------|
+| `from` | Sender agent ID |
+| `to` | Recipient agent ID |
+| `topic` | Message topic/channel |
+| `type` | `"message"`, `"mention"`, `"proposal"`, `"command"`, `"info"`, `"task"` |
+| `content` | Message body |
 
 **Key behaviors:**
 
@@ -641,18 +545,6 @@ message CommMessage {
 ## Gateway App
 
 A gateway app routes LLM requests to models. This is how Janus (Nebo's cloud AI gateway) works. Declare `"provides": ["gateway"]` and `"permissions": ["network:outbound", "user:token"]`.
-
-**Proto definition:**
-
-```protobuf
-service GatewayService {
-    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-    rpc Stream(GatewayRequest) returns (stream GatewayEvent);
-    rpc Poll(PollRequest) returns (PollResponse);
-    rpc Cancel(CancelRequest) returns (CancelResponse);
-    rpc Configure(SettingsMap) returns (Empty);
-}
-```
 
 **GatewayRequest** contains messages, tools, system prompt, max tokens, temperature, and a `UserContext` (JWT token if `user:token` permission is granted).
 
@@ -674,18 +566,6 @@ The `model` field in each event tells Nebo which model actually handled the requ
 
 A UI app renders structured panels in the Nebo web interface. Declare `"provides": ["ui"]`.
 
-**Proto definition:**
-
-```protobuf
-service UIService {
-    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-    rpc GetView(GetViewRequest) returns (UIView);
-    rpc SendEvent(UIEvent) returns (UIEventResponse);
-    rpc StreamUpdates(Empty) returns (stream UIView);
-    rpc Configure(SettingsMap) returns (Empty);
-}
-```
-
 **UIView** contains an ordered list of **UIBlocks**. These are pre-built components rendered by Nebo (no custom HTML/CSS/JS):
 
 | Block Type | Fields Used | Description |
@@ -699,48 +579,58 @@ service UIService {
 | `divider` | — | Horizontal separator |
 | `image` | `src`, `alt` | Image display |
 
-**UIEvent** is sent when a user interacts with a block:
-
-```protobuf
-message UIEvent {
-    string view_id = 1;   // Which view
-    string block_id = 2;  // Which block was interacted with
-    string action = 3;    // "click", "change", "submit"
-    string value = 4;     // New value (for inputs, selects, toggles)
-}
-```
-
-**UIEventResponse** can return an updated `UIView` to replace the current one, a `toast` message to show the user, or an `error`.
-
 **StreamUpdates** is a server-streaming RPC that pushes new views whenever your app's state changes. Use this for live-updating dashboards.
 
-**Example — a counter UI app:**
+### Go Example — Counter UI
 
 ```go
-func (s *counterServer) GetView(ctx context.Context, req *pb.GetViewRequest) (*pb.UIView, error) {
-    return &pb.UIView{
-        ViewId: "counter-main",
-        Title:  "Counter",
-        Blocks: []*pb.UIBlock{
-            {BlockId: "count", Type: "heading", Text: fmt.Sprintf("Count: %d", s.count), Variant: "h1"},
-            {BlockId: "increment", Type: "button", Text: "Increment", Variant: "primary"},
-            {BlockId: "decrement", Type: "button", Text: "Decrement", Variant: "secondary"},
-            {BlockId: "reset", Type: "button", Text: "Reset", Variant: "ghost"},
-        },
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "sync/atomic"
+
+    nebo "github.com/nebolabs/nebo-sdk-go"
+)
+
+type Counter struct {
+    count atomic.Int64
+}
+
+func (c *Counter) GetView(_ context.Context, _ string) (*nebo.View, error) {
+    return nebo.NewView("counter-main", "Counter").
+        Heading("count", fmt.Sprintf("Count: %d", c.count.Load()), "h1").
+        Button("increment", "Increment", "primary").
+        Button("decrement", "Decrement", "secondary").
+        Button("reset", "Reset", "ghost").
+        Build(), nil
+}
+
+func (c *Counter) OnEvent(_ context.Context, event nebo.UIEvent) (*nebo.UIEventResult, error) {
+    switch event.BlockID {
+    case "increment":
+        c.count.Add(1)
+    case "decrement":
+        c.count.Add(-1)
+    case "reset":
+        c.count.Store(0)
+    }
+    view, _ := c.GetView(context.Background(), "")
+    return &nebo.UIEventResult{
+        View:  view,
+        Toast: fmt.Sprintf("Count is now %d", c.count.Load()),
     }, nil
 }
 
-func (s *counterServer) SendEvent(ctx context.Context, req *pb.UIEvent) (*pb.UIEventResponse, error) {
-    switch req.BlockId {
-    case "increment":
-        s.count++
-    case "decrement":
-        s.count--
-    case "reset":
-        s.count = 0
+func main() {
+    app, err := nebo.New()
+    if err != nil {
+        log.Fatal(err)
     }
-    view, _ := s.GetView(ctx, &pb.GetViewRequest{})
-    return &pb.UIEventResponse{View: view, Toast: fmt.Sprintf("Count is now %d", s.count)}, nil
+    app.RegisterUI(&Counter{})
+    log.Fatal(app.Run())
 }
 ```
 
@@ -756,63 +646,6 @@ Declare `"provides": ["schedule"]` and `"permissions": ["schedule:create"]` (or 
 
 Nebo uses a **SchedulerManager** internally. On startup, the built-in cron engine handles everything. When your schedule app launches, Nebo detects the `schedule` capability and routes all scheduling through your app instead. If your app crashes or is uninstalled, Nebo automatically falls back to the built-in engine.
 
-**Proto definition:**
-
-```protobuf
-service ScheduleService {
-    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-    rpc Create(CreateScheduleRequest) returns (ScheduleResponse);
-    rpc Get(GetScheduleRequest) returns (ScheduleResponse);
-    rpc List(ListSchedulesRequest) returns (ListSchedulesResponse);
-    rpc Update(UpdateScheduleRequest) returns (ScheduleResponse);
-    rpc Delete(DeleteScheduleRequest) returns (DeleteScheduleResponse);
-    rpc Enable(ScheduleNameRequest) returns (ScheduleResponse);
-    rpc Disable(ScheduleNameRequest) returns (ScheduleResponse);
-    rpc Trigger(ScheduleNameRequest) returns (TriggerResponse);
-    rpc History(ScheduleHistoryRequest) returns (ScheduleHistoryResponse);
-    rpc Triggers(Empty) returns (stream ScheduleTrigger);  // App → Nebo trigger stream
-    rpc Configure(SettingsMap) returns (Empty);
-}
-```
-
-**Key messages:**
-
-```protobuf
-message Schedule {
-    string id = 1;
-    string name = 2;
-    string expression = 3;       // Cron expression
-    string task_type = 4;        // "bash" or "agent"
-    string command = 5;          // Shell command (for bash tasks)
-    string message = 6;          // Agent prompt (for agent tasks)
-    string deliver = 7;          // JSON: {"channel":"telegram","to":"123"}
-    bool enabled = 8;
-    string last_run = 9;         // RFC3339
-    string next_run = 10;        // RFC3339
-    int64 run_count = 11;
-    string last_error = 12;
-    string created_at = 13;      // RFC3339
-    map<string, string> metadata = 14;
-}
-
-message ScheduleTrigger {
-    string schedule_id = 1;
-    string name = 2;
-    string task_type = 3;
-    string command = 4;
-    string message = 5;
-    string deliver = 6;
-    string fired_at = 7;         // RFC3339
-    map<string, string> metadata = 8;
-}
-```
-
-**How triggering works:**
-
-The `Triggers` RPC is a **server-streaming RPC**. Your app keeps this stream open and sends a `ScheduleTrigger` message whenever a schedule fires. Nebo reads from this stream and routes the triggered task to its events lane for execution.
-
-The `ScheduleTrigger` message is **denormalized** — it contains everything Nebo needs (task type, command/message, delivery config) so it doesn't need a follow-up lookup. This is the same pattern used by channel apps' `Receive` stream.
-
 **Key behaviors:**
 
 - Your app **owns the schedule state** — Nebo doesn't store schedules in its own DB when a schedule app is active
@@ -820,262 +653,13 @@ The `ScheduleTrigger` message is **denormalized** — it contains everything Neb
 - `Trigger` — manually fire a schedule (used by the "Run Now" button in the UI)
 - `History` — execution history for the UI's history panel
 - `Triggers` — the live stream that tells Nebo when to execute tasks
-- `Configure` — called when settings change (same as all other app types)
 - Schedules are addressed by **name** (not ID) for CLI ergonomics
 
-**Complete example in Go — a timezone-aware scheduler:**
+**How triggering works:**
 
-```go
-package main
+The `Triggers` RPC is a **server-streaming RPC**. Your app keeps this stream open and sends a `ScheduleTrigger` message whenever a schedule fires. Nebo reads from this stream and routes the triggered task to its events lane for execution.
 
-import (
-    "context"
-    "fmt"
-    "net"
-    "os"
-    "os/signal"
-    "sync"
-    "syscall"
-    "time"
-
-    pb "github.com/nebolabs/nebo/internal/apps/pb"
-    "google.golang.org/grpc"
-)
-
-type scheduleServer struct {
-    pb.UnimplementedScheduleServiceServer
-    mu        sync.Mutex
-    schedules map[string]*pb.Schedule
-    triggers  chan *pb.ScheduleTrigger
-    nextID    int
-}
-
-func (s *scheduleServer) HealthCheck(ctx context.Context, req *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {
-    return &pb.HealthCheckResponse{Healthy: true, Name: "tz-scheduler", Version: "1.0.0"}, nil
-}
-
-func (s *scheduleServer) Create(ctx context.Context, req *pb.CreateScheduleRequest) (*pb.ScheduleResponse, error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    if _, exists := s.schedules[req.Name]; exists {
-        return &pb.ScheduleResponse{Error: "schedule already exists: " + req.Name}, nil
-    }
-
-    s.nextID++
-    sched := &pb.Schedule{
-        Id:         fmt.Sprintf("%d", s.nextID),
-        Name:       req.Name,
-        Expression: req.Expression,
-        TaskType:   req.TaskType,
-        Command:    req.Command,
-        Message:    req.Message,
-        Deliver:    req.Deliver,
-        Enabled:    true,
-        CreatedAt:  time.Now().Format(time.RFC3339),
-        Metadata:   req.Metadata,
-    }
-    s.schedules[req.Name] = sched
-
-    // Start your scheduling logic here (e.g., parse expression, set timers)
-
-    return &pb.ScheduleResponse{Schedule: sched}, nil
-}
-
-func (s *scheduleServer) Get(ctx context.Context, req *pb.GetScheduleRequest) (*pb.ScheduleResponse, error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    sched, ok := s.schedules[req.Name]
-    if !ok {
-        return &pb.ScheduleResponse{Error: "not found: " + req.Name}, nil
-    }
-    return &pb.ScheduleResponse{Schedule: sched}, nil
-}
-
-func (s *scheduleServer) List(ctx context.Context, req *pb.ListSchedulesRequest) (*pb.ListSchedulesResponse, error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    var items []*pb.Schedule
-    for _, sched := range s.schedules {
-        if req.EnabledOnly && !sched.Enabled {
-            continue
-        }
-        items = append(items, sched)
-    }
-    return &pb.ListSchedulesResponse{Schedules: items, Total: int64(len(items))}, nil
-}
-
-func (s *scheduleServer) Delete(ctx context.Context, req *pb.DeleteScheduleRequest) (*pb.DeleteScheduleResponse, error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    if _, ok := s.schedules[req.Name]; !ok {
-        return &pb.DeleteScheduleResponse{Error: "not found: " + req.Name}, nil
-    }
-    delete(s.schedules, req.Name)
-    return &pb.DeleteScheduleResponse{Success: true}, nil
-}
-
-func (s *scheduleServer) Enable(ctx context.Context, req *pb.ScheduleNameRequest) (*pb.ScheduleResponse, error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    sched, ok := s.schedules[req.Name]
-    if !ok {
-        return &pb.ScheduleResponse{Error: "not found: " + req.Name}, nil
-    }
-    sched.Enabled = true
-    return &pb.ScheduleResponse{Schedule: sched}, nil
-}
-
-func (s *scheduleServer) Disable(ctx context.Context, req *pb.ScheduleNameRequest) (*pb.ScheduleResponse, error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    sched, ok := s.schedules[req.Name]
-    if !ok {
-        return &pb.ScheduleResponse{Error: "not found: " + req.Name}, nil
-    }
-    sched.Enabled = false
-    return &pb.ScheduleResponse{Schedule: sched}, nil
-}
-
-func (s *scheduleServer) Trigger(ctx context.Context, req *pb.ScheduleNameRequest) (*pb.TriggerResponse, error) {
-    s.mu.Lock()
-    sched, ok := s.schedules[req.Name]
-    s.mu.Unlock()
-
-    if !ok {
-        return &pb.TriggerResponse{Error: "not found: " + req.Name}, nil
-    }
-
-    // Push a trigger event so Nebo executes the task
-    s.triggers <- &pb.ScheduleTrigger{
-        ScheduleId: sched.Id,
-        Name:       sched.Name,
-        TaskType:   sched.TaskType,
-        Command:    sched.Command,
-        Message:    sched.Message,
-        Deliver:    sched.Deliver,
-        FiredAt:    time.Now().Format(time.RFC3339),
-    }
-
-    return &pb.TriggerResponse{Success: true, Output: "triggered"}, nil
-}
-
-func (s *scheduleServer) Triggers(req *pb.Empty, stream pb.ScheduleService_TriggersServer) error {
-    for {
-        select {
-        case trigger := <-s.triggers:
-            if err := stream.Send(trigger); err != nil {
-                return err
-            }
-        case <-stream.Context().Done():
-            return nil
-        }
-    }
-}
-
-func (s *scheduleServer) History(ctx context.Context, req *pb.ScheduleHistoryRequest) (*pb.ScheduleHistoryResponse, error) {
-    // Return execution history from your storage
-    return &pb.ScheduleHistoryResponse{Entries: nil, Total: 0}, nil
-}
-
-func (s *scheduleServer) Update(ctx context.Context, req *pb.UpdateScheduleRequest) (*pb.ScheduleResponse, error) {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-
-    sched, ok := s.schedules[req.Name]
-    if !ok {
-        return &pb.ScheduleResponse{Error: "not found: " + req.Name}, nil
-    }
-    if req.Expression != "" {
-        sched.Expression = req.Expression
-    }
-    if req.TaskType != "" {
-        sched.TaskType = req.TaskType
-    }
-    if req.Command != "" {
-        sched.Command = req.Command
-    }
-    if req.Message != "" {
-        sched.Message = req.Message
-    }
-    return &pb.ScheduleResponse{Schedule: sched}, nil
-}
-
-func (s *scheduleServer) Configure(ctx context.Context, req *pb.SettingsMap) (*pb.Empty, error) {
-    fmt.Printf("[tz-scheduler] Settings updated: %v\n", req.Values)
-    return &pb.Empty{}, nil
-}
-
-func main() {
-    sockPath := os.Getenv("NEBO_APP_SOCK")
-    if sockPath == "" {
-        fmt.Fprintln(os.Stderr, "NEBO_APP_SOCK not set")
-        os.Exit(1)
-    }
-
-    os.Remove(sockPath)
-
-    listener, err := net.Listen("unix", sockPath)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "Failed to listen: %v\n", err)
-        os.Exit(1)
-    }
-
-    srv := grpc.NewServer()
-    pb.RegisterScheduleServiceServer(srv, &scheduleServer{
-        schedules: make(map[string]*pb.Schedule),
-        triggers:  make(chan *pb.ScheduleTrigger, 100),
-    })
-
-    go func() {
-        sigCh := make(chan os.Signal, 1)
-        signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-        <-sigCh
-        srv.GracefulStop()
-    }()
-
-    fmt.Printf("[tz-scheduler] Listening on %s\n", sockPath)
-    if err := srv.Serve(listener); err != nil {
-        fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
-        os.Exit(1)
-    }
-}
-```
-
-**manifest.json:**
-
-```json
-{
-    "id": "com.example.tz-scheduler",
-    "name": "Timezone Scheduler",
-    "version": "1.0.0",
-    "description": "Timezone-aware task scheduler for Nebo",
-    "runtime": "local",
-    "protocol": "grpc",
-    "provides": ["schedule"],
-    "permissions": ["schedule:create"],
-    "settings": [
-        {
-            "key": "default_timezone",
-            "title": "Default Timezone",
-            "type": "select",
-            "default": "America/New_York",
-            "options": [
-                {"label": "Eastern", "value": "America/New_York"},
-                {"label": "Central", "value": "America/Chicago"},
-                {"label": "Mountain", "value": "America/Denver"},
-                {"label": "Pacific", "value": "America/Los_Angeles"},
-                {"label": "UTC", "value": "UTC"}
-            ]
-        }
-    ]
-}
-```
+The `ScheduleTrigger` message is **denormalized** — it contains everything Nebo needs (task type, command/message, delivery config) so it doesn't need a follow-up lookup. This is the same pattern used by channel apps' `Receive` stream.
 
 **Important:** Only one schedule app can be active at a time. When your app is installed, it takes over all scheduling. When uninstalled or stopped, Nebo reverts to the built-in cron engine automatically.
 
@@ -1095,86 +679,118 @@ An app can provide multiple capabilities. For example, a dashboard app that prov
 }
 ```
 
-Register both services on the same gRPC server:
+Register both handlers with the SDK:
 
 ```go
-server := grpc.NewServer()
-pb.RegisterToolServiceServer(server, &dashboardToolServer{})
-pb.RegisterUIServiceServer(server, &dashboardUIServer{})
+app, _ := nebo.New()
+app.RegisterTool(&dashboardTool{})
+app.RegisterUI(&dashboardUI{})
+log.Fatal(app.Run())
 ```
 
 ---
 
-## Writing Apps in Other Languages
+## Rust
 
-The app system uses gRPC, so you can write apps in any language with gRPC support. Copy the proto files from `proto/apps/v1/` and generate your language's stubs.
+The Rust SDK uses async traits and tonic for gRPC:
 
-### Python Example
+```rust
+use async_trait::async_trait;
+use nebo_sdk::{NeboApp, NeboError, SchemaBuilder};
+use nebo_sdk::tool::ToolHandler;
+use serde::Deserialize;
+use serde_json::Value;
+
+struct Calculator;
+
+#[derive(Deserialize)]
+struct Input { action: String, a: f64, b: f64 }
+
+#[async_trait]
+impl ToolHandler for Calculator {
+    fn name(&self) -> &str { "calculator" }
+    fn description(&self) -> &str { "Performs arithmetic calculations." }
+    fn schema(&self) -> Value {
+        SchemaBuilder::new(&["add", "subtract", "multiply", "divide"])
+            .number("a", "First operand", true)
+            .number("b", "Second operand", true)
+            .build()
+    }
+    async fn execute(&self, input: Value) -> Result<String, NeboError> {
+        let i: Input = serde_json::from_value(input)
+            .map_err(|e| NeboError::Execution(e.to_string()))?;
+        let r = match i.action.as_str() {
+            "add" => i.a + i.b,
+            "subtract" => i.a - i.b,
+            "multiply" => i.a * i.b,
+            "divide" => {
+                if i.b == 0.0 {
+                    return Err(NeboError::Execution("division by zero".into()));
+                }
+                i.a / i.b
+            }
+            other => return Err(NeboError::Execution(format!("unknown action: {other}"))),
+        };
+        Ok(format!("{} {} {} = {}", i.a, i.action, i.b, r))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    NeboApp::new()?.register_tool(Calculator).run().await?;
+    Ok(())
+}
+```
+
+Install: `cargo add nebo-sdk`
+
+---
+
+## C/C++
+
+The C SDK provides a pure C API with function pointer-based handlers:
+
+```c
+#include <nebo/nebo.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int calculator_execute(const char *input_json, char **output, int *is_error) {
+    /* Parse JSON, compute result, set *output */
+    *output = strdup("2 add 3 = 5");
+    *is_error = 0;
+    return 0;
+}
+
+int main(void) {
+    const char *actions[] = {"add", "subtract", "multiply", "divide", NULL};
+    nebo_schema_builder_t *sb = nebo_schema_new(actions);
+    nebo_schema_number(sb, "a", "First operand", 1);
+    nebo_schema_number(sb, "b", "Second operand", 1);
+    char *schema = nebo_schema_build(sb);
+    nebo_schema_free(sb);
+
+    nebo_tool_handler_t calculator = {
+        .name = "calculator",
+        .description = "Performs arithmetic calculations.",
+        .schema = schema,
+        .execute = calculator_execute,
+    };
+
+    nebo_app_t *app = nebo_app_new();
+    nebo_app_register_tool(app, &calculator);
+    int ret = nebo_app_run(app);
+    free(schema);
+    return ret;
+}
+```
+
+Build with CMake:
 
 ```bash
-pip install grpcio grpcio-tools
-python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. proto/apps/v1/*.proto
+mkdir build && cd build && cmake .. && make
 ```
-
-```python
-import os
-import sys
-import json
-import grpc
-from concurrent import futures
-from proto.apps.v1 import tool_pb2, tool_pb2_grpc, common_pb2
-
-class MyToolServicer(tool_pb2_grpc.ToolServiceServicer):
-    def HealthCheck(self, request, context):
-        return common_pb2.HealthCheckResponse(healthy=True, name="my-tool", version="1.0.0")
-
-    def Name(self, request, context):
-        return tool_pb2.NameResponse(name="my_python_tool")
-
-    def Description(self, request, context):
-        return tool_pb2.DescriptionResponse(description="A tool written in Python")
-
-    def Schema(self, request, context):
-        schema = json.dumps({"type": "object", "properties": {"query": {"type": "string"}}}).encode()
-        return tool_pb2.SchemaResponse(schema=schema)
-
-    def Execute(self, request, context):
-        input_data = json.loads(request.input)
-        result = f"You said: {input_data.get('query', '')}"
-        return tool_pb2.ExecuteResponse(content=result, is_error=False)
-
-    def RequiresApproval(self, request, context):
-        return tool_pb2.ApprovalResponse(requires_approval=False)
-
-    def Configure(self, request, context):
-        print(f"Settings updated: {dict(request.values)}")
-        return common_pb2.Empty()
-
-def main():
-    sock_path = os.environ.get("NEBO_APP_SOCK")
-    if not sock_path:
-        print("NEBO_APP_SOCK not set", file=sys.stderr)
-        sys.exit(1)
-
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
-    tool_pb2_grpc.add_ToolServiceServicer_to_server(MyToolServicer(), server)
-    server.add_insecure_port(f"unix://{sock_path}")
-    server.start()
-    print(f"[my-tool] Listening on {sock_path}")
-    server.wait_for_termination()
-
-if __name__ == "__main__":
-    main()
-```
-
-For Python apps, the `binary` in the app directory should be a shell script wrapper:
-
-```bash
-#!/bin/bash
-exec python3 "$NEBO_APP_DIR/main.py"
-```
-
-Make it executable: `chmod +x binary`.
 
 ---
 
@@ -1287,7 +903,7 @@ nebo apps uninstall com.example.myapp
 
 ## Proto File Reference
 
-All proto files live in `proto/apps/v1/`. Copy these into your project if writing in a non-Go language.
+All proto files live in `proto/apps/v0/`. The SDKs ship with pre-generated code, so you don't need protoc for normal development.
 
 | File | Service | Key RPCs |
 |------|---------|----------|
@@ -1299,7 +915,7 @@ All proto files live in `proto/apps/v1/`. Copy these into your project if writin
 | `ui.proto` | `UIService` | HealthCheck, GetView, SendEvent, StreamUpdates (stream), Configure |
 | `schedule.proto` | `ScheduleService` | HealthCheck, Create, Get, List, Update, Delete, Enable, Disable, Trigger, History, Triggers (stream), Configure |
 
-Every service includes `HealthCheck` and `Configure` RPCs. Always implement both.
+Every service includes `HealthCheck` and `Configure` RPCs. The SDK handles both automatically.
 
 ---
 
@@ -1400,12 +1016,9 @@ Screenshots, changelogs, and pricing are planned but not yet available.
 ## Minimal App Checklist
 
 1. Create `manifest.json` with `id`, `name`, `version`, `provides`
-2. Write binary that:
-   - Reads `NEBO_APP_SOCK` from environment
-   - Creates gRPC server on that Unix socket
-   - Implements the required service(s) for your capability
-   - Implements `HealthCheck` (return `healthy: true`)
-   - Handles `SIGTERM` for graceful shutdown
-3. Make binary executable (`chmod +x`)
-4. Place in `apps/<your-app-id>/` directory
-5. Nebo auto-discovers and launches it
+2. Install the SDK (`go get github.com/nebolabs/nebo-sdk-go`)
+3. Implement the handler interface for your capability (`ToolHandler`, `ChannelHandler`, etc.)
+4. Register the handler and call `app.Run()`
+5. Build a native binary (`go build -o binary .`)
+6. Place binary + manifest.json in `apps/<your-app-id>/` directory
+7. Nebo auto-discovers and launches it

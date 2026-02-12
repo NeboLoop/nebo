@@ -88,10 +88,10 @@ run: build
 	@echo "Starting $(EXECUTABLE)..."
 	./bin/$(EXECUTABLE)
 
-# Run with air (hot reload, headless mode)
+# Run with air (hot reload, desktop mode with dev routes)
 air:
-	@echo "Starting with hot reload (headless)..."
-	NEBO_NO_BROWSER=1 air
+	@echo "Starting with hot reload (desktop)..."
+	air
 
 # Desktop dev mode with hot reload (Air)
 # Rebuilds Go binary + restarts desktop app on *.go changes
@@ -193,12 +193,16 @@ release-linux:
 # DESKTOP TARGETS (Wails v3)
 # =============================================================================
 
-# Build desktop app (alias for build — desktop is the default)
-desktop: build
+# Build desktop app (native window + system tray via Wails v3)
+# Requires CGO for Wails — only builds for the current platform.
+desktop:
+	@echo "Building $(EXECUTABLE) (desktop)..."
+	@cd app && pnpm build
+	CGO_ENABLED=1 go build -tags desktop $(LDFLAGS) -o bin/$(EXECUTABLE) .
 
 # Assemble Nebo.app bundle from the built binary
 # Creates a proper macOS .app that Spotlight can index
-app-bundle: build
+app-bundle: desktop
 	@echo "Assembling Nebo.app bundle..."
 	@rm -rf dist/Nebo.app
 	@mkdir -p dist/Nebo.app/Contents/MacOS

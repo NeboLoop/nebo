@@ -10,14 +10,14 @@
 		History,
 		Activity,
 		Shield,
-		Code,
 		Package,
 		BookOpen,
 		Link,
-		Users,
 		Fingerprint,
 		ScrollText,
-		StickyNote
+		StickyNote,
+		MessagesSquare,
+		Code
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 
@@ -41,7 +41,8 @@
 				{ id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key },
 				{ id: 'permissions', path: '/settings/permissions', label: 'Permissions', icon: Shield },
 				{ id: 'heartbeat', path: '/settings/heartbeat', label: 'Heartbeat', icon: Heart },
-				{ id: 'memories', path: '/settings/memories', label: 'Memories', icon: Brain }
+				{ id: 'memories', path: '/settings/memories', label: 'Memories', icon: Brain },
+				{ id: 'advisors', path: '/settings/advisors', label: 'Advisors', icon: MessagesSquare }
 			]
 		},
 		{
@@ -52,13 +53,7 @@
 				{ id: 'integrations', path: '/settings/integrations', label: 'Integrations', icon: Link }
 			]
 		},
-		{
-			label: 'Family',
-			tabs: [
-				{ id: 'family', path: '/settings/family', label: 'Family', icon: Users }
-			]
-		},
-		{
+			{
 			label: 'System',
 			tabs: [
 				{ id: 'sessions', path: '/settings/sessions', label: 'Sessions', icon: History },
@@ -110,13 +105,13 @@
 						<li>
 							<a
 								href={tab.path}
-								class="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-left transition-colors
+								class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors
 									{activeTab === tab.id
 										? 'bg-primary/10 text-primary border border-primary/20'
-										: 'text-base-content/70 hover:bg-base-200 hover:text-base-content'}"
+										: 'text-base-content/70 hover:bg-base-200 hover:text-base-content border border-transparent'}"
 								aria-current={activeTab === tab.id ? 'page' : undefined}
 							>
-								<tab.icon class="w-5 h-5" />
+								<tab.icon class="w-4 h-4" />
 								<span class="font-medium">{tab.label}</span>
 							</a>
 						</li>

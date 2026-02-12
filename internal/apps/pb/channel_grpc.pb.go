@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.0
 // - protoc             v6.33.0
-// source: proto/apps/v1/channel.proto
+// source: proto/apps/v0/channel.proto
 
 package pb
 
@@ -19,13 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ChannelService_HealthCheck_FullMethodName = "/apps.v1.ChannelService/HealthCheck"
-	ChannelService_ID_FullMethodName          = "/apps.v1.ChannelService/ID"
-	ChannelService_Connect_FullMethodName     = "/apps.v1.ChannelService/Connect"
-	ChannelService_Disconnect_FullMethodName  = "/apps.v1.ChannelService/Disconnect"
-	ChannelService_Send_FullMethodName        = "/apps.v1.ChannelService/Send"
-	ChannelService_Receive_FullMethodName     = "/apps.v1.ChannelService/Receive"
-	ChannelService_Configure_FullMethodName   = "/apps.v1.ChannelService/Configure"
+	ChannelService_HealthCheck_FullMethodName = "/apps.v0.ChannelService/HealthCheck"
+	ChannelService_ID_FullMethodName          = "/apps.v0.ChannelService/ID"
+	ChannelService_Connect_FullMethodName     = "/apps.v0.ChannelService/Connect"
+	ChannelService_Disconnect_FullMethodName  = "/apps.v0.ChannelService/Disconnect"
+	ChannelService_Send_FullMethodName        = "/apps.v0.ChannelService/Send"
+	ChannelService_Receive_FullMethodName     = "/apps.v0.ChannelService/Receive"
+	ChannelService_Configure_FullMethodName   = "/apps.v0.ChannelService/Configure"
 )
 
 // ChannelServiceClient is the client API for ChannelService service.
@@ -332,7 +332,7 @@ func _ChannelService_Configure_Handler(srv interface{}, ctx context.Context, dec
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var ChannelService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "apps.v1.ChannelService",
+	ServiceName: "apps.v0.ChannelService",
 	HandlerType: (*ChannelServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -367,5 +367,5 @@ var ChannelService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/apps/v1/channel.proto",
+	Metadata: "proto/apps/v0/channel.proto",
 }

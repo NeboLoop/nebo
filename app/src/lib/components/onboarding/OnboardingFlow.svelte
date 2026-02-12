@@ -144,7 +144,7 @@
 	const cliProviderInfo: Record<string, { id: string; name: string; description: string; model: string }> = {
 		claude: {
 			id: 'claude-code',
-			name: 'Claude Code',
+			name: 'Claude Agent',
 			description: 'Use your existing Claude subscription',
 			model: 'claude-code/opus'
 		},

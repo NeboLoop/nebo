@@ -10,7 +10,7 @@
 		show?: boolean;
 		open?: boolean;
 		title: string;
-		size?: 'sm' | 'md' | 'lg' | 'xl';
+		size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
 		closeOnBackdrop?: boolean;
 		closeOnEscape?: boolean;
 		showCloseButton?: boolean;
@@ -39,7 +39,8 @@
 		sm: 'modal-box max-w-md',
 		md: 'modal-box max-w-lg',
 		lg: 'modal-box max-w-2xl',
-		xl: 'modal-box max-w-4xl'
+		xl: 'modal-box max-w-4xl',
+		full: 'modal-box w-full max-w-5xl h-[calc(100vh-2rem)] max-h-[calc(100vh-2rem)] overflow-x-hidden'
 	};
 
 	function closeModal() {
@@ -78,7 +79,7 @@
 		</div>
 
 		<!-- Body -->
-		<div class="py-4 overflow-y-auto max-h-[60vh]">
+		<div class="py-4 overflow-y-auto {size === 'full' ? 'max-h-[calc(100vh-10rem)]' : 'max-h-[60vh]'}">
 			{@render children()}
 		</div>
 

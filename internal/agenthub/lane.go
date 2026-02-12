@@ -15,6 +15,7 @@ const (
 	LaneNested    = "nested"    // Nested tool calls
 	LaneHeartbeat = "heartbeat" // Proactive heartbeat ticks
 	LaneComm      = "comm"      // Inter-agent communication messages
+	LaneDev       = "dev"       // Developer assistant (independent of main lane)
 )
 
 // DefaultLaneConcurrency defines default max concurrent tasks per lane
@@ -26,6 +27,7 @@ var DefaultLaneConcurrency = map[string]int{
 	LaneNested:    3,
 	LaneHeartbeat: 1,  // Sequential heartbeat processing
 	LaneComm:      5,  // Concurrent comm message processing
+	LaneDev:       1,  // Developer assistant (serialized per project)
 }
 
 // MaxLaneConcurrency defines hard limits that cannot be exceeded

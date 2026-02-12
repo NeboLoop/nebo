@@ -945,6 +945,78 @@ func (t *MemoryTool) StoreEntry(layer, namespace, key, value string, tags []stri
 	return t.StoreEntryForUser(layer, namespace, key, value, tags, t.GetCurrentUser())
 }
 
+// StoreStyleEntryForUser stores a style observation with reinforcement tracking.
+// If the style already exists, increments the reinforcement count in metadata
+// instead of overwriting the value. This lets frequently-observed traits become stronger signals.
+func (t *MemoryTool) StoreStyleEntryForUser(layer, namespace, key, value string, tags []string, userID string) error {
+	// Build the full namespace the same way StoreEntryForUser does
+	fullNamespace := namespace
+	if layer != "" {
+		fullNamespace = layer + "/" + namespace
+	}
+	if fullNamespace == "" {
+		fullNamespace = "default"
+	}
+
+	// Check if this style observation already exists
+	existing, err := t.queries.GetMemoryByKeyAndUser(context.Background(), db.GetMemoryByKeyAndUserParams{
+		Namespace: fullNamespace,
+		Key:       key,
+		UserID:    userID,
+	})
+
+	if err == nil {
+		// Style exists — reinforce it
+		var meta map[string]interface{}
+		if existing.Metadata.Valid && existing.Metadata.String != "" {
+			json.Unmarshal([]byte(existing.Metadata.String), &meta)
+		}
+		if meta == nil {
+			meta = map[string]interface{}{}
+		}
+
+		count, _ := meta["reinforced_count"].(float64)
+		meta["reinforced_count"] = count + 1
+		meta["last_reinforced"] = time.Now().Format(time.RFC3339)
+
+		metaJSON, _ := json.Marshal(meta)
+		metaStr := string(metaJSON)
+
+		// Update metadata and bump updated_at — don't overwrite value (keep the original observation)
+		return t.queries.UpdateMemory(context.Background(), db.UpdateMemoryParams{
+			ID:       existing.ID,
+			Metadata: sql.NullString{String: metaStr, Valid: true},
+		})
+	}
+
+	// New style observation — store with initial reinforcement metadata
+	meta := map[string]interface{}{
+		"reinforced_count": float64(1),
+		"first_observed":   time.Now().Format(time.RFC3339),
+		"last_reinforced":  time.Now().Format(time.RFC3339),
+	}
+	metaJSON, _ := json.Marshal(meta)
+
+	tagsJSON, _ := json.Marshal(tags)
+
+	err = t.queries.UpsertMemory(context.Background(), db.UpsertMemoryParams{
+		Namespace: fullNamespace,
+		Key:       key,
+		Value:     value,
+		Tags:      sql.NullString{String: string(tagsJSON), Valid: len(tagsJSON) > 0},
+		Metadata:  sql.NullString{String: string(metaJSON), Valid: true},
+		UserID:    userID,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Generate vector embedding for this memory
+	t.embedMemory(fullNamespace, key, value, userID)
+
+	return nil
+}
+
 // StoreEntryForUser stores a memory entry for a specific user (thread-safe for background operations)
 func (t *MemoryTool) StoreEntryForUser(layer, namespace, key, value string, tags []string, userID string) error {
 	// Sanitize key and value (when enabled)

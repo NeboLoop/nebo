@@ -1,15 +1,13 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { Terminal, Pause, Play, Trash2, ArrowDown } from 'lucide-svelte';
-	import type * as components from '$lib/api/neboComponents';
 
 	interface Props {
-		devApps: components.DevAppItem[];
+		appId: string;
 	}
 
-	let { devApps }: Props = $props();
+	let { appId }: Props = $props();
 
-	let selectedAppId = $state('');
 	let selectedStream = $state<'stdout' | 'stderr'>('stdout');
 	let logLines = $state<string[]>([]);
 	let paused = $state(false);
@@ -25,17 +23,10 @@
 			: logLines
 	);
 
-	// Auto-select first app
-	$effect(() => {
-		if (devApps.length > 0 && !selectedAppId) {
-			selectedAppId = devApps[0].appId;
-		}
-	});
-
 	// Connect/reconnect when app or stream changes
 	$effect(() => {
-		if (selectedAppId) {
-			connectLogs(selectedAppId, selectedStream);
+		if (appId) {
+			connectLogs(appId, selectedStream);
 		}
 	});
 
@@ -108,19 +99,6 @@
 <div class="flex flex-col h-full">
 	<!-- Log Controls -->
 	<div class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-base-300 bg-base-100">
-		<!-- App Selector -->
-		<select
-			bind:value={selectedAppId}
-			class="select select-bordered select-xs flex-shrink-0"
-		>
-			{#if devApps.length === 0}
-				<option value="">No apps loaded</option>
-			{/if}
-			{#each devApps as app}
-				<option value={app.appId}>{app.name || app.appId}</option>
-			{/each}
-		</select>
-
 		<!-- Stream Toggle -->
 		<div class="btn-group">
 			<button
@@ -186,7 +164,7 @@
 	</div>
 
 	<!-- Log Content -->
-	{#if !selectedAppId}
+	{#if !appId}
 		<div class="flex flex-col items-center justify-center flex-1 text-base-content/50 gap-2">
 			<Terminal class="w-8 h-8" />
 			<p class="text-sm">No apps loaded</p>

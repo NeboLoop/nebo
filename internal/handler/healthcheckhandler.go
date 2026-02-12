@@ -9,7 +9,7 @@ import (
 	"github.com/nebolabs/nebo/internal/types"
 )
 
-const version = "1.0.0"
+const version = "0.1.0"
 
 func HealthCheckHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

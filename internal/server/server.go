@@ -16,6 +16,7 @@ import (
 	"github.com/nebolabs/nebo/internal/config"
 	"github.com/nebolabs/nebo/internal/handler"
 	"github.com/nebolabs/nebo/internal/handler/agent"
+	"github.com/nebolabs/nebo/internal/handler/appoauth"
 	"github.com/nebolabs/nebo/internal/handler/appui"
 	"github.com/nebolabs/nebo/internal/handler/auth"
 	"github.com/nebolabs/nebo/internal/handler/chat"
@@ -46,6 +47,7 @@ type ServerOptions struct {
 	SvcCtx          *svc.ServiceContext // Pre-initialized service context (single binary mode)
 	Quiet           bool                // Suppress startup messages for clean CLI output
 	AgentMCPHandler *AgentMCPProxy      // Lazy handler for agent MCP tools at /agent/mcp
+	DevMode         bool                // Enable developer routes (desktop mode only)
 }
 
 // AgentMCPProxy is a lazy http.Handler that serves 503 until the real handler is set.
@@ -81,12 +83,16 @@ func (p *AgentMCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Run starts the Nebo server with the given configuration.
 // It blocks until the context is cancelled or an error occurs.
-func Run(ctx context.Context, c config.Config) error {
-	return RunWithOptions(ctx, c, ServerOptions{})
+// Pass a ServerOptions to configure shared dependencies, dev mode, etc.
+func Run(ctx context.Context, c config.Config, opts ...ServerOptions) error {
+	var o ServerOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	return run(ctx, c, o)
 }
 
-// RunWithOptions starts the server with optional shared dependencies
-func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) error {
+func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 	serverPort := c.Port
 
 	// Check if port is available
@@ -153,6 +159,11 @@ func RunWithOptions(ctx context.Context, c config.Config, opts ServerOptions) er
 			r.Use(middleware.JWTMiddleware(svcCtx.Config.Auth.AccessSecret))
 			registerProtectedRoutes(r, svcCtx)
 		})
+
+		// Developer mode routes (desktop only)
+		if opts.DevMode {
+			registerDevRoutes(r, svcCtx)
+		}
 	})
 
 	// WebSocket routes
@@ -296,6 +307,11 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Put("/agent/settings", agent.UpdateAgentSettingsHandler(svcCtx))
 	r.Get("/agent/heartbeat", agent.GetHeartbeatHandler(svcCtx))
 	r.Put("/agent/heartbeat", agent.UpdateHeartbeatHandler(svcCtx))
+	r.Get("/agent/advisors", agent.ListAdvisorsHandler(svcCtx))
+	r.Get("/agent/advisors/{name}", agent.GetAdvisorHandler(svcCtx))
+	r.Post("/agent/advisors", agent.CreateAdvisorHandler(svcCtx))
+	r.Put("/agent/advisors/{name}", agent.UpdateAdvisorHandler(svcCtx))
+	r.Delete("/agent/advisors/{name}", agent.DeleteAdvisorHandler(svcCtx))
 	r.Get("/agent/status", agent.GetSimpleAgentStatusHandler(svcCtx))
 	r.Get("/agent/lanes", agent.GetLanesHandler(svcCtx))
 	r.Get("/agent/profile", agent.GetAgentProfileHandler(svcCtx))
@@ -364,8 +380,18 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/apps/{id}/ui", appui.GetUIViewHandler(svcCtx))
 	r.Post("/apps/{id}/ui/event", appui.SendUIEventHandler(svcCtx))
 
+	// App OAuth broker routes
+	if svcCtx.OAuthBroker != nil {
+		r.Get("/apps/{appId}/oauth/{provider}/connect", appoauth.ConnectHandler(svcCtx.OAuthBroker))
+		r.Get("/apps/oauth/callback", appoauth.CallbackHandler(svcCtx.OAuthBroker))
+		r.Get("/apps/{appId}/oauth/grants", appoauth.GrantsHandler(svcCtx.OAuthBroker))
+		r.Delete("/apps/{appId}/oauth/{provider}", appoauth.DisconnectHandler(svcCtx.OAuthBroker))
+	}
+
 	// NeboLoop store routes
 	r.Get("/store/apps", plugins.ListStoreAppsHandler(svcCtx))
+	r.Get("/store/apps/{id}", plugins.GetStoreAppHandler(svcCtx))
+	r.Get("/store/apps/{id}/reviews", plugins.GetStoreAppReviewsHandler(svcCtx))
 	r.Post("/store/apps/{id}/install", plugins.InstallStoreAppHandler(svcCtx))
 	r.Delete("/store/apps/{id}/install", plugins.UninstallStoreAppHandler(svcCtx))
 	r.Get("/store/skills", plugins.ListStoreSkillsHandler(svcCtx))
@@ -393,15 +419,6 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Put("/providers/{id}", provider.UpdateAuthProfileHandler(svcCtx))
 	r.Delete("/providers/{id}", provider.DeleteAuthProfileHandler(svcCtx))
 	r.Post("/providers/{id}/test", provider.TestAuthProfileHandler(svcCtx))
-
-	// Developer mode routes
-	r.Post("/dev/sideload", dev.SideloadHandler(svcCtx))
-	r.Delete("/dev/sideload/{appId}", dev.UnsideloadHandler(svcCtx))
-	r.Get("/dev/apps", dev.ListDevAppsHandler(svcCtx))
-	r.Post("/dev/apps/{appId}/relaunch", dev.RelaunchDevAppHandler(svcCtx))
-	r.Get("/dev/apps/{appId}/logs", dev.LogStreamHandler(svcCtx))
-	r.Get("/dev/tools", dev.ListToolsHandler(svcCtx))
-	r.Post("/dev/tools/execute", dev.ToolExecuteHandler(svcCtx))
 
 	// User profile routes (public for single-user personal assistant mode)
 	r.Get("/user/me/profile", user.GetUserProfileHandler(svcCtx))
@@ -477,6 +494,21 @@ func agentWebSocketHandler(ctx *svc.ServiceContext) http.HandlerFunc {
 		agentID := "nebo-agent"
 		ctx.AgentHub.HandleWebSocket(w, r, agentID)
 	}
+}
+
+// registerDevRoutes registers developer-only routes (desktop mode).
+func registerDevRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
+	r.Post("/dev/sideload", dev.SideloadHandler(svcCtx))
+	r.Delete("/dev/sideload/{appId}", dev.UnsideloadHandler(svcCtx))
+	r.Get("/dev/apps", dev.ListDevAppsHandler(svcCtx))
+	r.Post("/dev/apps/{appId}/relaunch", dev.RelaunchDevAppHandler(svcCtx))
+	r.Get("/dev/apps/{appId}/logs", dev.LogStreamHandler(svcCtx))
+	r.Get("/dev/apps/{appId}/grpc", dev.GrpcStreamHandler(svcCtx))
+	r.Get("/dev/apps/{appId}/context", dev.ProjectContextHandler(svcCtx))
+	r.Get("/dev/tools", dev.ListToolsHandler(svcCtx))
+	r.Post("/dev/tools/execute", dev.ToolExecuteHandler(svcCtx))
+	r.Post("/dev/browse-directory", dev.BrowseDirectoryHandler(svcCtx))
+	r.Post("/dev/open-window", dev.OpenDevWindowHandler(svcCtx))
 }
 
 // checkPortAvailable checks if a port is available for binding

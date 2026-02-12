@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/apps/v1/gateway.proto
+// source: proto/apps/v0/gateway.proto
 
 package pb
 
@@ -38,7 +38,7 @@ type GatewayRequest struct {
 
 func (x *GatewayRequest) Reset() {
 	*x = GatewayRequest{}
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -50,7 +50,7 @@ func (x *GatewayRequest) String() string {
 func (*GatewayRequest) ProtoMessage() {}
 
 func (x *GatewayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -63,7 +63,7 @@ func (x *GatewayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayRequest.ProtoReflect.Descriptor instead.
 func (*GatewayRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_gateway_proto_rawDescGZIP(), []int{0}
+	return file_proto_apps_v0_gateway_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *GatewayRequest) GetRequestId() string {
@@ -128,7 +128,7 @@ type GatewayMessage struct {
 
 func (x *GatewayMessage) Reset() {
 	*x = GatewayMessage{}
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -140,7 +140,7 @@ func (x *GatewayMessage) String() string {
 func (*GatewayMessage) ProtoMessage() {}
 
 func (x *GatewayMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -153,7 +153,7 @@ func (x *GatewayMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayMessage.ProtoReflect.Descriptor instead.
 func (*GatewayMessage) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_gateway_proto_rawDescGZIP(), []int{1}
+	return file_proto_apps_v0_gateway_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *GatewayMessage) GetRole() string {
@@ -196,7 +196,7 @@ type GatewayToolDef struct {
 
 func (x *GatewayToolDef) Reset() {
 	*x = GatewayToolDef{}
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -208,7 +208,7 @@ func (x *GatewayToolDef) String() string {
 func (*GatewayToolDef) ProtoMessage() {}
 
 func (x *GatewayToolDef) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -221,7 +221,7 @@ func (x *GatewayToolDef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayToolDef.ProtoReflect.Descriptor instead.
 func (*GatewayToolDef) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_gateway_proto_rawDescGZIP(), []int{2}
+	return file_proto_apps_v0_gateway_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GatewayToolDef) GetName() string {
@@ -258,7 +258,7 @@ type GatewayEvent struct {
 
 func (x *GatewayEvent) Reset() {
 	*x = GatewayEvent{}
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -270,7 +270,7 @@ func (x *GatewayEvent) String() string {
 func (*GatewayEvent) ProtoMessage() {}
 
 func (x *GatewayEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -283,7 +283,7 @@ func (x *GatewayEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayEvent.ProtoReflect.Descriptor instead.
 func (*GatewayEvent) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_gateway_proto_rawDescGZIP(), []int{3}
+	return file_proto_apps_v0_gateway_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *GatewayEvent) GetType() string {
@@ -324,7 +324,7 @@ type PollRequest struct {
 
 func (x *PollRequest) Reset() {
 	*x = PollRequest{}
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -336,7 +336,7 @@ func (x *PollRequest) String() string {
 func (*PollRequest) ProtoMessage() {}
 
 func (x *PollRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -349,7 +349,7 @@ func (x *PollRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollRequest.ProtoReflect.Descriptor instead.
 func (*PollRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_gateway_proto_rawDescGZIP(), []int{4}
+	return file_proto_apps_v0_gateway_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *PollRequest) GetRequestId() string {
@@ -370,7 +370,7 @@ type PollResponse struct {
 
 func (x *PollResponse) Reset() {
 	*x = PollResponse{}
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -382,7 +382,7 @@ func (x *PollResponse) String() string {
 func (*PollResponse) ProtoMessage() {}
 
 func (x *PollResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -395,7 +395,7 @@ func (x *PollResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PollResponse.ProtoReflect.Descriptor instead.
 func (*PollResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_gateway_proto_rawDescGZIP(), []int{5}
+	return file_proto_apps_v0_gateway_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PollResponse) GetEvents() []*GatewayEvent {
@@ -422,7 +422,7 @@ type CancelRequest struct {
 
 func (x *CancelRequest) Reset() {
 	*x = CancelRequest{}
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[6]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -434,7 +434,7 @@ func (x *CancelRequest) String() string {
 func (*CancelRequest) ProtoMessage() {}
 
 func (x *CancelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[6]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -447,7 +447,7 @@ func (x *CancelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelRequest.ProtoReflect.Descriptor instead.
 func (*CancelRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_gateway_proto_rawDescGZIP(), []int{6}
+	return file_proto_apps_v0_gateway_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CancelRequest) GetRequestId() string {
@@ -467,7 +467,7 @@ type CancelResponse struct {
 
 func (x *CancelResponse) Reset() {
 	*x = CancelResponse{}
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[7]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -479,7 +479,7 @@ func (x *CancelResponse) String() string {
 func (*CancelResponse) ProtoMessage() {}
 
 func (x *CancelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_gateway_proto_msgTypes[7]
+	mi := &file_proto_apps_v0_gateway_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -492,7 +492,7 @@ func (x *CancelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelResponse.ProtoReflect.Descriptor instead.
 func (*CancelResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_gateway_proto_rawDescGZIP(), []int{7}
+	return file_proto_apps_v0_gateway_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CancelResponse) GetCancelled() bool {
@@ -502,21 +502,21 @@ func (x *CancelResponse) GetCancelled() bool {
 	return false
 }
 
-var File_proto_apps_v1_gateway_proto protoreflect.FileDescriptor
+var File_proto_apps_v0_gateway_proto protoreflect.FileDescriptor
 
-const file_proto_apps_v1_gateway_proto_rawDesc = "" +
+const file_proto_apps_v0_gateway_proto_rawDesc = "" +
 	"\n" +
-	"\x1bproto/apps/v1/gateway.proto\x12\aapps.v1\x1a\x1aproto/apps/v1/common.proto\"\x96\x02\n" +
+	"\x1bproto/apps/v0/gateway.proto\x12\aapps.v0\x1a\x1aproto/apps/v0/common.proto\"\x96\x02\n" +
 	"\x0eGatewayRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x123\n" +
-	"\bmessages\x18\x02 \x03(\v2\x17.apps.v1.GatewayMessageR\bmessages\x12-\n" +
-	"\x05tools\x18\x03 \x03(\v2\x17.apps.v1.GatewayToolDefR\x05tools\x12\x1d\n" +
+	"\bmessages\x18\x02 \x03(\v2\x17.apps.v0.GatewayMessageR\bmessages\x12-\n" +
+	"\x05tools\x18\x03 \x03(\v2\x17.apps.v0.GatewayToolDefR\x05tools\x12\x1d\n" +
 	"\n" +
 	"max_tokens\x18\x04 \x01(\x05R\tmaxTokens\x12 \n" +
 	"\vtemperature\x18\x05 \x01(\x01R\vtemperature\x12\x16\n" +
 	"\x06system\x18\x06 \x01(\tR\x06system\x12(\n" +
-	"\x04user\x18\a \x01(\v2\x14.apps.v1.UserContextR\x04user\"\x7f\n" +
+	"\x04user\x18\a \x01(\v2\x14.apps.v0.UserContextR\x04user\"\x7f\n" +
 	"\x0eGatewayMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\tR\acontent\x12 \n" +
@@ -538,7 +538,7 @@ const file_proto_apps_v1_gateway_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\"Y\n" +
 	"\fPollResponse\x12-\n" +
-	"\x06events\x18\x01 \x03(\v2\x15.apps.v1.GatewayEventR\x06events\x12\x1a\n" +
+	"\x06events\x18\x01 \x03(\v2\x15.apps.v0.GatewayEventR\x06events\x12\x1a\n" +
 	"\bcomplete\x18\x02 \x01(\bR\bcomplete\".\n" +
 	"\rCancelRequest\x12\x1d\n" +
 	"\n" +
@@ -546,55 +546,55 @@ const file_proto_apps_v1_gateway_proto_rawDesc = "" +
 	"\x0eCancelResponse\x12\x1c\n" +
 	"\tcancelled\x18\x01 \x01(\bR\tcancelled2\xb9\x02\n" +
 	"\x0eGatewayService\x12H\n" +
-	"\vHealthCheck\x12\x1b.apps.v1.HealthCheckRequest\x1a\x1c.apps.v1.HealthCheckResponse\x12:\n" +
-	"\x06Stream\x12\x17.apps.v1.GatewayRequest\x1a\x15.apps.v1.GatewayEvent0\x01\x123\n" +
-	"\x04Poll\x12\x14.apps.v1.PollRequest\x1a\x15.apps.v1.PollResponse\x129\n" +
-	"\x06Cancel\x12\x16.apps.v1.CancelRequest\x1a\x17.apps.v1.CancelResponse\x121\n" +
-	"\tConfigure\x12\x14.apps.v1.SettingsMap\x1a\x0e.apps.v1.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\vHealthCheck\x12\x1b.apps.v0.HealthCheckRequest\x1a\x1c.apps.v0.HealthCheckResponse\x12:\n" +
+	"\x06Stream\x12\x17.apps.v0.GatewayRequest\x1a\x15.apps.v0.GatewayEvent0\x01\x123\n" +
+	"\x04Poll\x12\x14.apps.v0.PollRequest\x1a\x15.apps.v0.PollResponse\x129\n" +
+	"\x06Cancel\x12\x16.apps.v0.CancelRequest\x1a\x17.apps.v0.CancelResponse\x121\n" +
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
 
 var (
-	file_proto_apps_v1_gateway_proto_rawDescOnce sync.Once
-	file_proto_apps_v1_gateway_proto_rawDescData []byte
+	file_proto_apps_v0_gateway_proto_rawDescOnce sync.Once
+	file_proto_apps_v0_gateway_proto_rawDescData []byte
 )
 
-func file_proto_apps_v1_gateway_proto_rawDescGZIP() []byte {
-	file_proto_apps_v1_gateway_proto_rawDescOnce.Do(func() {
-		file_proto_apps_v1_gateway_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v1_gateway_proto_rawDesc), len(file_proto_apps_v1_gateway_proto_rawDesc)))
+func file_proto_apps_v0_gateway_proto_rawDescGZIP() []byte {
+	file_proto_apps_v0_gateway_proto_rawDescOnce.Do(func() {
+		file_proto_apps_v0_gateway_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v0_gateway_proto_rawDesc), len(file_proto_apps_v0_gateway_proto_rawDesc)))
 	})
-	return file_proto_apps_v1_gateway_proto_rawDescData
+	return file_proto_apps_v0_gateway_proto_rawDescData
 }
 
-var file_proto_apps_v1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
-var file_proto_apps_v1_gateway_proto_goTypes = []any{
-	(*GatewayRequest)(nil),      // 0: apps.v1.GatewayRequest
-	(*GatewayMessage)(nil),      // 1: apps.v1.GatewayMessage
-	(*GatewayToolDef)(nil),      // 2: apps.v1.GatewayToolDef
-	(*GatewayEvent)(nil),        // 3: apps.v1.GatewayEvent
-	(*PollRequest)(nil),         // 4: apps.v1.PollRequest
-	(*PollResponse)(nil),        // 5: apps.v1.PollResponse
-	(*CancelRequest)(nil),       // 6: apps.v1.CancelRequest
-	(*CancelResponse)(nil),      // 7: apps.v1.CancelResponse
-	(*UserContext)(nil),         // 8: apps.v1.UserContext
-	(*HealthCheckRequest)(nil),  // 9: apps.v1.HealthCheckRequest
-	(*SettingsMap)(nil),         // 10: apps.v1.SettingsMap
-	(*HealthCheckResponse)(nil), // 11: apps.v1.HealthCheckResponse
-	(*Empty)(nil),               // 12: apps.v1.Empty
+var file_proto_apps_v0_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_proto_apps_v0_gateway_proto_goTypes = []any{
+	(*GatewayRequest)(nil),      // 0: apps.v0.GatewayRequest
+	(*GatewayMessage)(nil),      // 1: apps.v0.GatewayMessage
+	(*GatewayToolDef)(nil),      // 2: apps.v0.GatewayToolDef
+	(*GatewayEvent)(nil),        // 3: apps.v0.GatewayEvent
+	(*PollRequest)(nil),         // 4: apps.v0.PollRequest
+	(*PollResponse)(nil),        // 5: apps.v0.PollResponse
+	(*CancelRequest)(nil),       // 6: apps.v0.CancelRequest
+	(*CancelResponse)(nil),      // 7: apps.v0.CancelResponse
+	(*UserContext)(nil),         // 8: apps.v0.UserContext
+	(*HealthCheckRequest)(nil),  // 9: apps.v0.HealthCheckRequest
+	(*SettingsMap)(nil),         // 10: apps.v0.SettingsMap
+	(*HealthCheckResponse)(nil), // 11: apps.v0.HealthCheckResponse
+	(*Empty)(nil),               // 12: apps.v0.Empty
 }
-var file_proto_apps_v1_gateway_proto_depIdxs = []int32{
-	1,  // 0: apps.v1.GatewayRequest.messages:type_name -> apps.v1.GatewayMessage
-	2,  // 1: apps.v1.GatewayRequest.tools:type_name -> apps.v1.GatewayToolDef
-	8,  // 2: apps.v1.GatewayRequest.user:type_name -> apps.v1.UserContext
-	3,  // 3: apps.v1.PollResponse.events:type_name -> apps.v1.GatewayEvent
-	9,  // 4: apps.v1.GatewayService.HealthCheck:input_type -> apps.v1.HealthCheckRequest
-	0,  // 5: apps.v1.GatewayService.Stream:input_type -> apps.v1.GatewayRequest
-	4,  // 6: apps.v1.GatewayService.Poll:input_type -> apps.v1.PollRequest
-	6,  // 7: apps.v1.GatewayService.Cancel:input_type -> apps.v1.CancelRequest
-	10, // 8: apps.v1.GatewayService.Configure:input_type -> apps.v1.SettingsMap
-	11, // 9: apps.v1.GatewayService.HealthCheck:output_type -> apps.v1.HealthCheckResponse
-	3,  // 10: apps.v1.GatewayService.Stream:output_type -> apps.v1.GatewayEvent
-	5,  // 11: apps.v1.GatewayService.Poll:output_type -> apps.v1.PollResponse
-	7,  // 12: apps.v1.GatewayService.Cancel:output_type -> apps.v1.CancelResponse
-	12, // 13: apps.v1.GatewayService.Configure:output_type -> apps.v1.Empty
+var file_proto_apps_v0_gateway_proto_depIdxs = []int32{
+	1,  // 0: apps.v0.GatewayRequest.messages:type_name -> apps.v0.GatewayMessage
+	2,  // 1: apps.v0.GatewayRequest.tools:type_name -> apps.v0.GatewayToolDef
+	8,  // 2: apps.v0.GatewayRequest.user:type_name -> apps.v0.UserContext
+	3,  // 3: apps.v0.PollResponse.events:type_name -> apps.v0.GatewayEvent
+	9,  // 4: apps.v0.GatewayService.HealthCheck:input_type -> apps.v0.HealthCheckRequest
+	0,  // 5: apps.v0.GatewayService.Stream:input_type -> apps.v0.GatewayRequest
+	4,  // 6: apps.v0.GatewayService.Poll:input_type -> apps.v0.PollRequest
+	6,  // 7: apps.v0.GatewayService.Cancel:input_type -> apps.v0.CancelRequest
+	10, // 8: apps.v0.GatewayService.Configure:input_type -> apps.v0.SettingsMap
+	11, // 9: apps.v0.GatewayService.HealthCheck:output_type -> apps.v0.HealthCheckResponse
+	3,  // 10: apps.v0.GatewayService.Stream:output_type -> apps.v0.GatewayEvent
+	5,  // 11: apps.v0.GatewayService.Poll:output_type -> apps.v0.PollResponse
+	7,  // 12: apps.v0.GatewayService.Cancel:output_type -> apps.v0.CancelResponse
+	12, // 13: apps.v0.GatewayService.Configure:output_type -> apps.v0.Empty
 	9,  // [9:14] is the sub-list for method output_type
 	4,  // [4:9] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
@@ -602,27 +602,27 @@ var file_proto_apps_v1_gateway_proto_depIdxs = []int32{
 	0,  // [0:4] is the sub-list for field type_name
 }
 
-func init() { file_proto_apps_v1_gateway_proto_init() }
-func file_proto_apps_v1_gateway_proto_init() {
-	if File_proto_apps_v1_gateway_proto != nil {
+func init() { file_proto_apps_v0_gateway_proto_init() }
+func file_proto_apps_v0_gateway_proto_init() {
+	if File_proto_apps_v0_gateway_proto != nil {
 		return
 	}
-	file_proto_apps_v1_common_proto_init()
+	file_proto_apps_v0_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v1_gateway_proto_rawDesc), len(file_proto_apps_v1_gateway_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v0_gateway_proto_rawDesc), len(file_proto_apps_v0_gateway_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_apps_v1_gateway_proto_goTypes,
-		DependencyIndexes: file_proto_apps_v1_gateway_proto_depIdxs,
-		MessageInfos:      file_proto_apps_v1_gateway_proto_msgTypes,
+		GoTypes:           file_proto_apps_v0_gateway_proto_goTypes,
+		DependencyIndexes: file_proto_apps_v0_gateway_proto_depIdxs,
+		MessageInfos:      file_proto_apps_v0_gateway_proto_msgTypes,
 	}.Build()
-	File_proto_apps_v1_gateway_proto = out.File
-	file_proto_apps_v1_gateway_proto_goTypes = nil
-	file_proto_apps_v1_gateway_proto_depIdxs = nil
+	File_proto_apps_v0_gateway_proto = out.File
+	file_proto_apps_v0_gateway_proto_goTypes = nil
+	file_proto_apps_v0_gateway_proto_depIdxs = nil
 }

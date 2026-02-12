@@ -2,259 +2,311 @@
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { Wrench, Shield, ShieldAlert, RefreshCw, Terminal, FileText, Globe, Search, Cpu, Zap, Plug, MessageSquare, Power } from 'lucide-svelte';
+	import { Package, RefreshCw, Store, Download, Check, WifiOff, Star } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
-	import type { ListExtensionsResponse } from '$lib/api/nebo';
+	import type { PluginItem, StoreApp } from '$lib/api/nebo';
+	import AppDetailModal from './AppDetailModal.svelte';
 
-	let extensions = $state<ListExtensionsResponse | null>(null);
+	let plugins = $state<PluginItem[]>([]);
+	let storeApps = $state<StoreApp[]>([]);
+	let neboLoopConnected = $state(false);
 	let isLoading = $state(true);
-	let togglingSkill = $state<string | null>(null);
-	let activeTab = $state<'tools' | 'skills' | 'plugins'>('tools');
-	let toolFilter = $state<'all' | 'builtin' | 'plugins'>('all');
+	let isLoadingStore = $state(false);
+	let togglingPlugin = $state<string | null>(null);
+	let installingApp = $state<string | null>(null);
 
-	const categoryIcons: Record<string, any> = {
-		'shell': Terminal,
-		'file': FileText,
-		'web': Globe,
-		'search': Search,
-		'process': Cpu,
-		'default': Wrench
-	};
+	// Modal state
+	let selectedPlugin = $state<PluginItem | null>(null);
+	let selectedStoreApp = $state<StoreApp | null>(null);
+	let showModal = $state(false);
 
 	onMount(async () => {
-		await loadExtensions();
+		await loadAll();
 	});
 
-	async function loadExtensions() {
+	async function loadAll() {
 		isLoading = true;
 		try {
-			extensions = await api.listExtensions();
+			const [pluginsResp, loopStatus] = await Promise.all([
+				api.listPlugins(),
+				api.neboLoopStatus()
+			]);
+			plugins = (pluginsResp.plugins || []).filter(p => p.pluginType === 'app');
+			neboLoopConnected = loopStatus.connected;
+
+			if (neboLoopConnected) {
+				loadStoreApps();
+			}
 		} catch (error) {
-			console.error('Failed to load extensions:', error);
+			console.error('Failed to load apps:', error);
 		} finally {
 			isLoading = false;
 		}
 	}
 
-	const filteredTools = $derived(() => {
-		if (!extensions?.tools) return [];
-		if (toolFilter === 'all') return extensions.tools;
-		if (toolFilter === 'builtin') return extensions.tools.filter(t => !t.isPlugin);
-		return extensions.tools.filter(t => t.isPlugin);
-	});
-
-	function getIcon(name: string) {
-		if (name === 'bash') return Terminal;
-		if (['read', 'write', 'edit', 'glob'].includes(name)) return FileText;
-		if (['web', 'browser'].includes(name)) return Globe;
-		if (['grep', 'search'].includes(name)) return Search;
-		if (['process', 'task'].includes(name)) return Cpu;
-		return Wrench;
-	}
-
-	async function toggleSkill(name: string) {
-		togglingSkill = name;
+	async function loadStoreApps() {
+		isLoadingStore = true;
 		try {
-			await api.toggleSkill(name);
-			await loadExtensions();
+			const resp = await api.listStoreApps();
+			storeApps = resp.apps || [];
 		} catch (error) {
-			console.error('Failed to toggle skill:', error);
+			console.error('Failed to load store apps:', error);
 		} finally {
-			togglingSkill = null;
+			isLoadingStore = false;
 		}
 	}
+
+	async function handleToggle(event: Event, plugin: PluginItem) {
+		event.stopPropagation();
+		togglingPlugin = plugin.id;
+		try {
+			await api.togglePlugin({ isEnabled: !plugin.isEnabled }, plugin.id);
+			await loadAll();
+		} catch (error) {
+			console.error('Failed to toggle plugin:', error);
+		} finally {
+			togglingPlugin = null;
+		}
+	}
+
+	async function handleInstall(app: StoreApp) {
+		installingApp = app.id;
+		try {
+			await api.installStoreApp(app.id);
+			await loadAll();
+		} catch (error) {
+			console.error('Failed to install app:', error);
+		} finally {
+			installingApp = null;
+		}
+	}
+
+	async function handleUninstall(app: StoreApp) {
+		installingApp = app.id;
+		try {
+			await api.uninstallStoreApp(app.id);
+			await loadAll();
+		} catch (error) {
+			console.error('Failed to uninstall app:', error);
+		} finally {
+			installingApp = null;
+		}
+	}
+
+	function openDetail(plugin: PluginItem) {
+		selectedPlugin = plugin;
+		selectedStoreApp = null;
+		showModal = true;
+	}
+
+	function openStoreDetail(app: StoreApp) {
+		selectedStoreApp = app;
+		selectedPlugin = null;
+		showModal = true;
+	}
+
+	function getStatusBadgeClass(status: string): string {
+		switch (status) {
+			case 'connected': return 'badge-success';
+			case 'disconnected': return 'badge-ghost';
+			case 'error': return 'badge-error';
+			default: return 'badge-ghost';
+		}
+	}
+
+	function getInitial(name: string): string {
+		return (name || '?').charAt(0).toUpperCase();
+	}
+
+	const installedAppIds = $derived(new Set(plugins.map(p => p.name)));
 </script>
 
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Apps</h2>
-		<p class="text-sm text-base-content/60">Tools, skills, and plugins for the AI agent</p>
+		<p class="text-sm text-base-content/60">Installed apps and the app store</p>
 	</div>
-	<Button type="ghost" onclick={loadExtensions}>
+	<Button type="ghost" onclick={loadAll}>
 		<RefreshCw class="w-4 h-4 mr-2" />
 		Refresh
 	</Button>
 </div>
 
-<!-- Main Tabs -->
-<div class="tabs tabs-boxed bg-base-200 mb-6 p-1 w-fit">
-	<button
-		class="tab gap-2 {activeTab === 'tools' ? 'tab-active bg-base-100' : ''}"
-		onclick={() => activeTab = 'tools'}
-	>
-		<Wrench class="w-4 h-4" />
-		Tools
-		{#if extensions?.tools}
-			<span class="badge badge-sm badge-ghost">{extensions.tools.length}</span>
-		{/if}
-	</button>
-	<button
-		class="tab gap-2 {activeTab === 'skills' ? 'tab-active bg-base-100' : ''}"
-		onclick={() => activeTab = 'skills'}
-	>
-		<Zap class="w-4 h-4" />
-		Skills
-		{#if extensions?.skills}
-			<span class="badge badge-sm badge-ghost">{extensions.skills.length}</span>
-		{/if}
-	</button>
-	<button
-		class="tab gap-2 {activeTab === 'plugins' ? 'tab-active bg-base-100' : ''}"
-		onclick={() => activeTab = 'plugins'}
-	>
-		<Plug class="w-4 h-4" />
-		Channels
-		{#if extensions?.channels}
-			<span class="badge badge-sm badge-ghost">{extensions.channels.length}</span>
-		{/if}
-	</button>
-</div>
-
 {#if isLoading}
 	<Card>
-		<div class="py-12 text-center text-base-content/60">Loading extensions...</div>
+		<div class="py-12 text-center text-base-content/60">
+			<span class="loading loading-spinner loading-md"></span>
+			<p class="mt-2">Loading apps...</p>
+		</div>
 	</Card>
-{:else if activeTab === 'tools'}
-	<!-- Tool Filter -->
-	<div class="flex gap-2 mb-6">
-		<button
-			onclick={() => toolFilter = 'all'}
-			class="px-4 py-2 rounded-lg text-sm font-medium transition-colors {toolFilter === 'all' ? 'bg-primary text-primary-content' : 'bg-base-200 hover:bg-base-300'}"
-		>
-			All ({extensions?.tools?.length || 0})
-		</button>
-		<button
-			onclick={() => toolFilter = 'builtin'}
-			class="px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 {toolFilter === 'builtin' ? 'bg-info text-info-content' : 'bg-base-200 hover:bg-base-300'}"
-		>
-			<Wrench class="w-4 h-4" />
-			Built-in ({extensions?.tools?.filter(t => !t.isPlugin).length || 0})
-		</button>
-		<button
-			onclick={() => toolFilter = 'plugins'}
-			class="px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 {toolFilter === 'plugins' ? 'bg-secondary text-secondary-content' : 'bg-base-200 hover:bg-base-300'}"
-		>
-			<Plug class="w-4 h-4" />
-			Plugins ({extensions?.tools?.filter(t => t.isPlugin).length || 0})
-		</button>
-	</div>
+{:else}
+	<!-- Installed Apps -->
+	<div class="mb-8">
+		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 mb-4">Installed Apps</h3>
 
-	<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-		{#each filteredTools() as tool}
-			{@const Icon = getIcon(tool.name)}
-			<Card class="hover:border-primary/30 transition-colors">
-				<div class="flex items-start gap-3">
-					<div class="w-10 h-10 rounded-xl {tool.requiresApproval ? 'bg-warning/10' : 'bg-success/10'} flex items-center justify-center shrink-0">
-						<Icon class="w-5 h-5 {tool.requiresApproval ? 'text-warning' : 'text-success'}" />
-					</div>
-					<div class="flex-1 min-w-0">
-						<div class="flex items-center gap-2 mb-1">
-							<h3 class="font-display font-bold text-base-content">{tool.name}</h3>
-							{#if tool.isPlugin}
-								<span class="px-2 py-0.5 rounded text-xs bg-secondary/20 text-secondary">
-									Plugin
-								</span>
-							{/if}
-							{#if tool.requiresApproval}
-								<span class="px-2 py-0.5 rounded text-xs bg-warning/20 text-warning">
-									Approval
-								</span>
-							{/if}
-						</div>
-						<p class="text-sm text-base-content/60">{tool.description}</p>
-					</div>
-				</div>
-			</Card>
-		{/each}
-	</div>
+		{#if plugins.length > 0}
+			<div class="flex flex-col gap-3">
+				{#each plugins as plugin}
+					<Card>
+						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+						<div
+							class="flex items-center gap-4 cursor-pointer"
+							onclick={() => openDetail(plugin)}
+						>
+							<!-- Icon -->
+							<div class="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+								{#if plugin.icon}
+									<img src={plugin.icon} alt={plugin.displayName} class="w-8 h-8 rounded" />
+								{:else}
+									<span class="text-lg font-bold text-primary">{getInitial(plugin.displayName)}</span>
+								{/if}
+							</div>
 
-{:else if activeTab === 'skills'}
-	{#if extensions?.skills && extensions.skills.length > 0}
-		<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-			{#each extensions.skills as skill}
-				<Card class="hover:border-primary/30 transition-colors">
-					<div class="flex items-start gap-3">
-						<div class="w-10 h-10 rounded-xl {skill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
-							<Zap class="w-5 h-5 {skill.enabled ? 'text-primary' : 'text-base-content/30'}" />
-						</div>
-						<div class="flex-1 min-w-0">
-							<div class="flex items-center justify-between gap-2 mb-1">
-								<div class="flex items-center gap-2">
-									<h3 class="font-display font-bold text-base-content">{skill.name}</h3>
-									<span class="px-2 py-0.5 rounded text-xs bg-base-200">
-										v{skill.version}
+							<!-- Info -->
+							<div class="flex-1 min-w-0">
+								<div class="flex items-center gap-2 mb-0.5">
+									<h3 class="font-display font-bold text-base-content">{plugin.displayName || plugin.name}</h3>
+									<span class="badge badge-sm badge-outline">v{plugin.version}</span>
+									<span class="badge badge-sm {getStatusBadgeClass(plugin.connectionStatus)}">
+										{plugin.connectionStatus}
 									</span>
 								</div>
-								<button
-									class="btn btn-xs btn-ghost {skill.enabled ? 'text-success' : 'text-base-content/40'}"
-									onclick={() => toggleSkill(skill.name)}
-									disabled={togglingSkill === skill.name}
-									title={skill.enabled ? 'Click to disable' : 'Click to enable'}
-								>
-									{#if togglingSkill === skill.name}
-										<span class="loading loading-spinner loading-xs"></span>
-									{:else}
-										<Power class="w-4 h-4" />
-									{/if}
-								</button>
+								<p class="text-sm text-base-content/60 truncate">{plugin.description}</p>
 							</div>
-							<p class="text-sm text-base-content/60 mb-2 {!skill.enabled ? 'opacity-50' : ''}">{skill.description}</p>
 
-							{#if skill.triggers && skill.triggers.length > 0}
-								<div class="flex flex-wrap gap-1 mb-2 {!skill.enabled ? 'opacity-50' : ''}">
-									{#each skill.triggers.slice(0, 3) as trigger}
-										<span class="badge badge-sm badge-outline">{trigger}</span>
-									{/each}
-									{#if skill.triggers.length > 3}
-										<span class="badge badge-sm badge-ghost">+{skill.triggers.length - 3}</span>
+							<!-- Actions -->
+							<div class="flex items-center gap-2 shrink-0">
+								<input
+									type="checkbox"
+									class="toggle toggle-primary toggle-sm"
+									checked={plugin.isEnabled}
+									disabled={togglingPlugin === plugin.id}
+									onclick={(e) => e.stopPropagation()}
+									onchange={(e) => handleToggle(e, plugin)}
+								/>
+							</div>
+						</div>
+					</Card>
+				{/each}
+			</div>
+		{:else}
+			<Card>
+				<div class="py-12 text-center text-base-content/60">
+					<Package class="w-12 h-12 mx-auto mb-4 opacity-20" />
+					<p class="font-medium mb-2">No apps installed</p>
+					<p class="text-sm">Browse the App Store to get started.</p>
+				</div>
+			</Card>
+		{/if}
+	</div>
+
+	<!-- App Store -->
+	<div>
+		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 mb-4">App Store</h3>
+
+		{#if !neboLoopConnected}
+			<Card>
+				<div class="py-8 text-center text-base-content/60">
+					<WifiOff class="w-10 h-10 mx-auto mb-3 opacity-20" />
+					<p class="font-medium mb-2">Connect to NeboLoop to browse the App Store</p>
+					<a href="/settings/status" class="btn btn-sm btn-primary mt-2">
+						Go to Status
+					</a>
+				</div>
+			</Card>
+		{:else if isLoadingStore}
+			<Card>
+				<div class="py-8 text-center text-base-content/60">
+					<span class="loading loading-spinner loading-md"></span>
+					<p class="mt-2">Loading store...</p>
+				</div>
+			</Card>
+		{:else if storeApps.length > 0}
+			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+				{#each storeApps as app}
+					<Card class="hover:border-primary/30 transition-colors" onclick={() => openStoreDetail(app)}>
+						<div class="flex items-start gap-3">
+							<div class="w-10 h-10 rounded-xl bg-base-200 flex items-center justify-center shrink-0">
+								{#if app.icon}
+									<img src={app.icon} alt={app.name} class="w-8 h-8 rounded" />
+								{:else}
+									<Store class="w-5 h-5 text-base-content/40" />
+								{/if}
+							</div>
+							<div class="flex-1 min-w-0">
+								<h3 class="font-display font-bold text-base-content mb-0.5">{app.name}</h3>
+								<p class="text-xs text-base-content/50 mb-1">
+									by {app.author.name}
+									{#if app.author.verified}
+										<Check class="w-3 h-3 inline text-success" />
+									{/if}
+								</p>
+								<p class="text-sm text-base-content/60 mb-3 line-clamp-2">{app.description}</p>
+
+								<div class="flex items-center justify-between">
+									<div class="flex items-center gap-3 text-xs text-base-content/40">
+										{#if app.rating > 0}
+											<span class="flex items-center gap-1">
+												<Star class="w-3 h-3" />
+												{app.rating.toFixed(1)}
+											</span>
+										{/if}
+										{#if app.installCount > 0}
+											<span class="flex items-center gap-1">
+												<Download class="w-3 h-3" />
+												{app.installCount}
+											</span>
+										{/if}
+									</div>
+
+									{#if app.isInstalled || installedAppIds.has(app.slug)}
+										<button
+											class="btn btn-xs btn-ghost text-success"
+											onclick={(e) => { e.stopPropagation(); handleUninstall(app); }}
+											disabled={installingApp === app.id}
+										>
+											{#if installingApp === app.id}
+												<span class="loading loading-spinner loading-xs"></span>
+											{:else}
+												<Check class="w-3 h-3" />
+												Installed
+											{/if}
+										</button>
+									{:else}
+										<button
+											class="btn btn-xs btn-primary"
+											onclick={(e) => { e.stopPropagation(); handleInstall(app); }}
+											disabled={installingApp === app.id}
+										>
+											{#if installingApp === app.id}
+												<span class="loading loading-spinner loading-xs"></span>
+											{:else}
+												Install
+											{/if}
+										</button>
 									{/if}
 								</div>
-							{/if}
-
-							{#if skill.tools && skill.tools.length > 0}
-								<div class="text-xs text-base-content/50 {!skill.enabled ? 'opacity-50' : ''}">
-									Uses: {skill.tools.join(', ')}
-								</div>
-							{/if}
+							</div>
 						</div>
-					</div>
-				</Card>
-			{/each}
-		</div>
-	{:else}
-		<Card>
-			<div class="py-12 text-center text-base-content/60">
-				<Zap class="w-12 h-12 mx-auto mb-4 opacity-20" />
-				<p class="font-medium mb-2">No skills found</p>
-				<p class="text-sm">Add YAML skill files to <code class="bg-base-200 px-2 py-1 rounded">extensions/skills/</code></p>
+					</Card>
+				{/each}
 			</div>
-		</Card>
-	{/if}
-
-{:else if activeTab === 'plugins'}
-	{#if extensions?.channels && extensions.channels.length > 0}
-		<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-			{#each extensions.channels as channel}
-				<Card class="hover:border-primary/30 transition-colors">
-					<div class="flex items-start gap-3">
-						<div class="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center shrink-0">
-							<MessageSquare class="w-5 h-5 text-accent" />
-						</div>
-						<div class="flex-1 min-w-0">
-							<h3 class="font-display font-bold text-base-content mb-1">{channel.id}</h3>
-							<p class="text-sm text-base-content/60 truncate">{channel.path}</p>
-						</div>
-					</div>
-				</Card>
-			{/each}
-		</div>
-	{:else}
-		<Card>
-			<div class="py-12 text-center text-base-content/60">
-				<Plug class="w-12 h-12 mx-auto mb-4 opacity-20" />
-				<p class="font-medium mb-2">No channel plugins found</p>
-				<p class="text-sm">Add plugin executables to <code class="bg-base-200 px-2 py-1 rounded">extensions/plugins/channels/</code></p>
-			</div>
-		</Card>
-	{/if}
+		{:else}
+			<Card>
+				<div class="py-8 text-center text-base-content/60">
+					<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
+					<p class="font-medium mb-1">No apps available yet</p>
+					<p class="text-sm">Check back later for new apps.</p>
+				</div>
+			</Card>
+		{/if}
+	</div>
 {/if}
+
+<AppDetailModal
+	plugin={selectedPlugin}
+	storeApp={selectedStoreApp}
+	bind:show={showModal}
+	onclose={() => { selectedPlugin = null; selectedStoreApp = null; }}
+	onupdated={loadAll}
+/>

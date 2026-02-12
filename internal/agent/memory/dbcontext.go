@@ -34,7 +34,8 @@ type DBContext struct {
 	UserCommStyle    string
 	OnboardingNeeded bool
 
-	TacitMemories []DBMemoryItem
+	TacitMemories        []DBMemoryItem
+	PersonalityDirective string // Synthesized personality directive from style observations
 }
 
 // DBMemoryItem represents a memory item from the database (distinct from MemoryEntry for storage)
@@ -74,6 +75,9 @@ func LoadContext(db *sql.DB, userID string) (*DBContext, error) {
 	if err := loadTacitMemories(ctx, db, result, userID); err != nil {
 		fmt.Printf("[memory] Warning: failed to load tacit memories: %v\n", err)
 	}
+
+	// Load synthesized personality directive (if any)
+	result.PersonalityDirective = GetDirective(ctx, db, userID)
 
 	return result, nil
 }
@@ -272,6 +276,11 @@ func (c *DBContext) FormatForSystemPrompt() string {
 			charParts = append(charParts, "Your signature emoji: "+c.AgentEmoji)
 		}
 		parts = append(parts, "## Character\n\n"+strings.Join(charParts, "\n"))
+	}
+
+	// Emergent personality directive (learned from interaction patterns)
+	if c.PersonalityDirective != "" {
+		parts = append(parts, "## Personality (Learned)\n\n"+c.PersonalityDirective)
 	}
 
 	// Agent style preferences

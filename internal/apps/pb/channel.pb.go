@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/apps/v1/channel.proto
+// source: proto/apps/v0/channel.proto
 
 package pb
 
@@ -30,7 +30,7 @@ type IDResponse struct {
 
 func (x *IDResponse) Reset() {
 	*x = IDResponse{}
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -42,7 +42,7 @@ func (x *IDResponse) String() string {
 func (*IDResponse) ProtoMessage() {}
 
 func (x *IDResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -55,7 +55,7 @@ func (x *IDResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IDResponse.ProtoReflect.Descriptor instead.
 func (*IDResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_channel_proto_rawDescGZIP(), []int{0}
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *IDResponse) GetId() string {
@@ -74,7 +74,7 @@ type ChannelConnectRequest struct {
 
 func (x *ChannelConnectRequest) Reset() {
 	*x = ChannelConnectRequest{}
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -86,7 +86,7 @@ func (x *ChannelConnectRequest) String() string {
 func (*ChannelConnectRequest) ProtoMessage() {}
 
 func (x *ChannelConnectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -99,7 +99,7 @@ func (x *ChannelConnectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelConnectRequest.ProtoReflect.Descriptor instead.
 func (*ChannelConnectRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_channel_proto_rawDescGZIP(), []int{1}
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *ChannelConnectRequest) GetConfig() map[string]string {
@@ -118,7 +118,7 @@ type ChannelConnectResponse struct {
 
 func (x *ChannelConnectResponse) Reset() {
 	*x = ChannelConnectResponse{}
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -130,7 +130,7 @@ func (x *ChannelConnectResponse) String() string {
 func (*ChannelConnectResponse) ProtoMessage() {}
 
 func (x *ChannelConnectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -143,7 +143,7 @@ func (x *ChannelConnectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelConnectResponse.ProtoReflect.Descriptor instead.
 func (*ChannelConnectResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_channel_proto_rawDescGZIP(), []int{2}
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ChannelConnectResponse) GetError() string {
@@ -162,7 +162,7 @@ type ChannelDisconnectResponse struct {
 
 func (x *ChannelDisconnectResponse) Reset() {
 	*x = ChannelDisconnectResponse{}
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -174,7 +174,7 @@ func (x *ChannelDisconnectResponse) String() string {
 func (*ChannelDisconnectResponse) ProtoMessage() {}
 
 func (x *ChannelDisconnectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -187,7 +187,7 @@ func (x *ChannelDisconnectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelDisconnectResponse.ProtoReflect.Descriptor instead.
 func (*ChannelDisconnectResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_channel_proto_rawDescGZIP(), []int{3}
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ChannelDisconnectResponse) GetError() string {
@@ -207,7 +207,7 @@ type ChannelSendRequest struct {
 
 func (x *ChannelSendRequest) Reset() {
 	*x = ChannelSendRequest{}
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -219,7 +219,7 @@ func (x *ChannelSendRequest) String() string {
 func (*ChannelSendRequest) ProtoMessage() {}
 
 func (x *ChannelSendRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -232,7 +232,7 @@ func (x *ChannelSendRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelSendRequest.ProtoReflect.Descriptor instead.
 func (*ChannelSendRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_channel_proto_rawDescGZIP(), []int{4}
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ChannelSendRequest) GetChannelId() string {
@@ -258,7 +258,7 @@ type ChannelSendResponse struct {
 
 func (x *ChannelSendResponse) Reset() {
 	*x = ChannelSendResponse{}
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -270,7 +270,7 @@ func (x *ChannelSendResponse) String() string {
 func (*ChannelSendResponse) ProtoMessage() {}
 
 func (x *ChannelSendResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -283,7 +283,7 @@ func (x *ChannelSendResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelSendResponse.ProtoReflect.Descriptor instead.
 func (*ChannelSendResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_channel_proto_rawDescGZIP(), []int{5}
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ChannelSendResponse) GetError() string {
@@ -305,7 +305,7 @@ type InboundMessage struct {
 
 func (x *InboundMessage) Reset() {
 	*x = InboundMessage{}
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[6]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -317,7 +317,7 @@ func (x *InboundMessage) String() string {
 func (*InboundMessage) ProtoMessage() {}
 
 func (x *InboundMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_channel_proto_msgTypes[6]
+	mi := &file_proto_apps_v0_channel_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -330,7 +330,7 @@ func (x *InboundMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InboundMessage.ProtoReflect.Descriptor instead.
 func (*InboundMessage) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_channel_proto_rawDescGZIP(), []int{6}
+	return file_proto_apps_v0_channel_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *InboundMessage) GetChannelId() string {
@@ -361,16 +361,16 @@ func (x *InboundMessage) GetMetadata() string {
 	return ""
 }
 
-var File_proto_apps_v1_channel_proto protoreflect.FileDescriptor
+var File_proto_apps_v0_channel_proto protoreflect.FileDescriptor
 
-const file_proto_apps_v1_channel_proto_rawDesc = "" +
+const file_proto_apps_v0_channel_proto_rawDesc = "" +
 	"\n" +
-	"\x1bproto/apps/v1/channel.proto\x12\aapps.v1\x1a\x1aproto/apps/v1/common.proto\"\x1c\n" +
+	"\x1bproto/apps/v0/channel.proto\x12\aapps.v0\x1a\x1aproto/apps/v0/common.proto\"\x1c\n" +
 	"\n" +
 	"IDResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x96\x01\n" +
 	"\x15ChannelConnectRequest\x12B\n" +
-	"\x06config\x18\x01 \x03(\v2*.apps.v1.ChannelConnectRequest.ConfigEntryR\x06config\x1a9\n" +
+	"\x06config\x18\x01 \x03(\v2*.apps.v0.ChannelConnectRequest.ConfigEntryR\x06config\x1a9\n" +
 	"\vConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\".\n" +
@@ -391,58 +391,58 @@ const file_proto_apps_v1_channel_proto_rawDesc = "" +
 	"\x04text\x18\x03 \x01(\tR\x04text\x12\x1a\n" +
 	"\bmetadata\x18\x04 \x01(\tR\bmetadata2\xbf\x03\n" +
 	"\x0eChannelService\x12H\n" +
-	"\vHealthCheck\x12\x1b.apps.v1.HealthCheckRequest\x1a\x1c.apps.v1.HealthCheckResponse\x12)\n" +
-	"\x02ID\x12\x0e.apps.v1.Empty\x1a\x13.apps.v1.IDResponse\x12J\n" +
-	"\aConnect\x12\x1e.apps.v1.ChannelConnectRequest\x1a\x1f.apps.v1.ChannelConnectResponse\x12@\n" +
+	"\vHealthCheck\x12\x1b.apps.v0.HealthCheckRequest\x1a\x1c.apps.v0.HealthCheckResponse\x12)\n" +
+	"\x02ID\x12\x0e.apps.v0.Empty\x1a\x13.apps.v0.IDResponse\x12J\n" +
+	"\aConnect\x12\x1e.apps.v0.ChannelConnectRequest\x1a\x1f.apps.v0.ChannelConnectResponse\x12@\n" +
 	"\n" +
-	"Disconnect\x12\x0e.apps.v1.Empty\x1a\".apps.v1.ChannelDisconnectResponse\x12A\n" +
-	"\x04Send\x12\x1b.apps.v1.ChannelSendRequest\x1a\x1c.apps.v1.ChannelSendResponse\x124\n" +
-	"\aReceive\x12\x0e.apps.v1.Empty\x1a\x17.apps.v1.InboundMessage0\x01\x121\n" +
-	"\tConfigure\x12\x14.apps.v1.SettingsMap\x1a\x0e.apps.v1.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"Disconnect\x12\x0e.apps.v0.Empty\x1a\".apps.v0.ChannelDisconnectResponse\x12A\n" +
+	"\x04Send\x12\x1b.apps.v0.ChannelSendRequest\x1a\x1c.apps.v0.ChannelSendResponse\x124\n" +
+	"\aReceive\x12\x0e.apps.v0.Empty\x1a\x17.apps.v0.InboundMessage0\x01\x121\n" +
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
 
 var (
-	file_proto_apps_v1_channel_proto_rawDescOnce sync.Once
-	file_proto_apps_v1_channel_proto_rawDescData []byte
+	file_proto_apps_v0_channel_proto_rawDescOnce sync.Once
+	file_proto_apps_v0_channel_proto_rawDescData []byte
 )
 
-func file_proto_apps_v1_channel_proto_rawDescGZIP() []byte {
-	file_proto_apps_v1_channel_proto_rawDescOnce.Do(func() {
-		file_proto_apps_v1_channel_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v1_channel_proto_rawDesc), len(file_proto_apps_v1_channel_proto_rawDesc)))
+func file_proto_apps_v0_channel_proto_rawDescGZIP() []byte {
+	file_proto_apps_v0_channel_proto_rawDescOnce.Do(func() {
+		file_proto_apps_v0_channel_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v0_channel_proto_rawDesc), len(file_proto_apps_v0_channel_proto_rawDesc)))
 	})
-	return file_proto_apps_v1_channel_proto_rawDescData
+	return file_proto_apps_v0_channel_proto_rawDescData
 }
 
-var file_proto_apps_v1_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
-var file_proto_apps_v1_channel_proto_goTypes = []any{
-	(*IDResponse)(nil),                // 0: apps.v1.IDResponse
-	(*ChannelConnectRequest)(nil),     // 1: apps.v1.ChannelConnectRequest
-	(*ChannelConnectResponse)(nil),    // 2: apps.v1.ChannelConnectResponse
-	(*ChannelDisconnectResponse)(nil), // 3: apps.v1.ChannelDisconnectResponse
-	(*ChannelSendRequest)(nil),        // 4: apps.v1.ChannelSendRequest
-	(*ChannelSendResponse)(nil),       // 5: apps.v1.ChannelSendResponse
-	(*InboundMessage)(nil),            // 6: apps.v1.InboundMessage
-	nil,                               // 7: apps.v1.ChannelConnectRequest.ConfigEntry
-	(*HealthCheckRequest)(nil),        // 8: apps.v1.HealthCheckRequest
-	(*Empty)(nil),                     // 9: apps.v1.Empty
-	(*SettingsMap)(nil),               // 10: apps.v1.SettingsMap
-	(*HealthCheckResponse)(nil),       // 11: apps.v1.HealthCheckResponse
+var file_proto_apps_v0_channel_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_proto_apps_v0_channel_proto_goTypes = []any{
+	(*IDResponse)(nil),                // 0: apps.v0.IDResponse
+	(*ChannelConnectRequest)(nil),     // 1: apps.v0.ChannelConnectRequest
+	(*ChannelConnectResponse)(nil),    // 2: apps.v0.ChannelConnectResponse
+	(*ChannelDisconnectResponse)(nil), // 3: apps.v0.ChannelDisconnectResponse
+	(*ChannelSendRequest)(nil),        // 4: apps.v0.ChannelSendRequest
+	(*ChannelSendResponse)(nil),       // 5: apps.v0.ChannelSendResponse
+	(*InboundMessage)(nil),            // 6: apps.v0.InboundMessage
+	nil,                               // 7: apps.v0.ChannelConnectRequest.ConfigEntry
+	(*HealthCheckRequest)(nil),        // 8: apps.v0.HealthCheckRequest
+	(*Empty)(nil),                     // 9: apps.v0.Empty
+	(*SettingsMap)(nil),               // 10: apps.v0.SettingsMap
+	(*HealthCheckResponse)(nil),       // 11: apps.v0.HealthCheckResponse
 }
-var file_proto_apps_v1_channel_proto_depIdxs = []int32{
-	7,  // 0: apps.v1.ChannelConnectRequest.config:type_name -> apps.v1.ChannelConnectRequest.ConfigEntry
-	8,  // 1: apps.v1.ChannelService.HealthCheck:input_type -> apps.v1.HealthCheckRequest
-	9,  // 2: apps.v1.ChannelService.ID:input_type -> apps.v1.Empty
-	1,  // 3: apps.v1.ChannelService.Connect:input_type -> apps.v1.ChannelConnectRequest
-	9,  // 4: apps.v1.ChannelService.Disconnect:input_type -> apps.v1.Empty
-	4,  // 5: apps.v1.ChannelService.Send:input_type -> apps.v1.ChannelSendRequest
-	9,  // 6: apps.v1.ChannelService.Receive:input_type -> apps.v1.Empty
-	10, // 7: apps.v1.ChannelService.Configure:input_type -> apps.v1.SettingsMap
-	11, // 8: apps.v1.ChannelService.HealthCheck:output_type -> apps.v1.HealthCheckResponse
-	0,  // 9: apps.v1.ChannelService.ID:output_type -> apps.v1.IDResponse
-	2,  // 10: apps.v1.ChannelService.Connect:output_type -> apps.v1.ChannelConnectResponse
-	3,  // 11: apps.v1.ChannelService.Disconnect:output_type -> apps.v1.ChannelDisconnectResponse
-	5,  // 12: apps.v1.ChannelService.Send:output_type -> apps.v1.ChannelSendResponse
-	6,  // 13: apps.v1.ChannelService.Receive:output_type -> apps.v1.InboundMessage
-	9,  // 14: apps.v1.ChannelService.Configure:output_type -> apps.v1.Empty
+var file_proto_apps_v0_channel_proto_depIdxs = []int32{
+	7,  // 0: apps.v0.ChannelConnectRequest.config:type_name -> apps.v0.ChannelConnectRequest.ConfigEntry
+	8,  // 1: apps.v0.ChannelService.HealthCheck:input_type -> apps.v0.HealthCheckRequest
+	9,  // 2: apps.v0.ChannelService.ID:input_type -> apps.v0.Empty
+	1,  // 3: apps.v0.ChannelService.Connect:input_type -> apps.v0.ChannelConnectRequest
+	9,  // 4: apps.v0.ChannelService.Disconnect:input_type -> apps.v0.Empty
+	4,  // 5: apps.v0.ChannelService.Send:input_type -> apps.v0.ChannelSendRequest
+	9,  // 6: apps.v0.ChannelService.Receive:input_type -> apps.v0.Empty
+	10, // 7: apps.v0.ChannelService.Configure:input_type -> apps.v0.SettingsMap
+	11, // 8: apps.v0.ChannelService.HealthCheck:output_type -> apps.v0.HealthCheckResponse
+	0,  // 9: apps.v0.ChannelService.ID:output_type -> apps.v0.IDResponse
+	2,  // 10: apps.v0.ChannelService.Connect:output_type -> apps.v0.ChannelConnectResponse
+	3,  // 11: apps.v0.ChannelService.Disconnect:output_type -> apps.v0.ChannelDisconnectResponse
+	5,  // 12: apps.v0.ChannelService.Send:output_type -> apps.v0.ChannelSendResponse
+	6,  // 13: apps.v0.ChannelService.Receive:output_type -> apps.v0.InboundMessage
+	9,  // 14: apps.v0.ChannelService.Configure:output_type -> apps.v0.Empty
 	8,  // [8:15] is the sub-list for method output_type
 	1,  // [1:8] is the sub-list for method input_type
 	1,  // [1:1] is the sub-list for extension type_name
@@ -450,27 +450,27 @@ var file_proto_apps_v1_channel_proto_depIdxs = []int32{
 	0,  // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_proto_apps_v1_channel_proto_init() }
-func file_proto_apps_v1_channel_proto_init() {
-	if File_proto_apps_v1_channel_proto != nil {
+func init() { file_proto_apps_v0_channel_proto_init() }
+func file_proto_apps_v0_channel_proto_init() {
+	if File_proto_apps_v0_channel_proto != nil {
 		return
 	}
-	file_proto_apps_v1_common_proto_init()
+	file_proto_apps_v0_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v1_channel_proto_rawDesc), len(file_proto_apps_v1_channel_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v0_channel_proto_rawDesc), len(file_proto_apps_v0_channel_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_apps_v1_channel_proto_goTypes,
-		DependencyIndexes: file_proto_apps_v1_channel_proto_depIdxs,
-		MessageInfos:      file_proto_apps_v1_channel_proto_msgTypes,
+		GoTypes:           file_proto_apps_v0_channel_proto_goTypes,
+		DependencyIndexes: file_proto_apps_v0_channel_proto_depIdxs,
+		MessageInfos:      file_proto_apps_v0_channel_proto_msgTypes,
 	}.Build()
-	File_proto_apps_v1_channel_proto = out.File
-	file_proto_apps_v1_channel_proto_goTypes = nil
-	file_proto_apps_v1_channel_proto_depIdxs = nil
+	File_proto_apps_v0_channel_proto = out.File
+	file_proto_apps_v0_channel_proto_goTypes = nil
+	file_proto_apps_v0_channel_proto_depIdxs = nil
 }

@@ -46,6 +46,9 @@ type Advisor struct {
 	// When true, relevant memories are retrieved via hybrid search and injected into context.
 	MemoryAccess bool `yaml:"memory_access"`
 
+	// TimeoutSeconds is the per-advisor timeout for deliberation (0 = use global default)
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+
 	// Persona is the markdown body - the system prompt that shapes this advisor's voice
 	// This is NOT from YAML, it's parsed from the markdown body
 	Persona string `yaml:"-"`

@@ -29,8 +29,43 @@ type AppItem struct {
 // AppDetail extends AppItem with manifest (returned by GET /apps/{id}).
 type AppDetail struct {
 	AppItem
-	ManifestURL string          `json:"manifestUrl,omitempty"`
-	Manifest    json.RawMessage `json:"manifest,omitempty"`
+	ManifestURL  string           `json:"manifestUrl,omitempty"`
+	Manifest     json.RawMessage  `json:"manifest,omitempty"`
+	AgeRating    string           `json:"ageRating,omitempty"`
+	Platforms    []string         `json:"platforms,omitempty"`
+	Size         map[string]int   `json:"size,omitempty"`
+	Language     string           `json:"language,omitempty"`
+	Screenshots  []string         `json:"screenshots,omitempty"`
+	Changelog    []ChangelogEntry `json:"changelog,omitempty"`
+	WebsiteURL   string           `json:"websiteUrl,omitempty"`
+	PrivacyURL   string           `json:"privacyUrl,omitempty"`
+	SupportURL   string           `json:"supportUrl,omitempty"`
+}
+
+// ChangelogEntry represents a single version entry in an app's changelog.
+type ChangelogEntry struct {
+	Version string `json:"version"`
+	Date    string `json:"date"`
+	Notes   string `json:"notes"`
+}
+
+// ReviewsResponse is the paginated response for GET /api/v1/apps/{id}/reviews.
+type ReviewsResponse struct {
+	Reviews      []Review `json:"reviews"`
+	TotalCount   int      `json:"totalCount"`
+	Average      float64  `json:"average"`
+	Distribution [5]int   `json:"distribution"`
+}
+
+// Review represents a single user review of an app.
+type Review struct {
+	ID        string `json:"id"`
+	UserName  string `json:"userName"`
+	Rating    int    `json:"rating"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"createdAt"`
+	Helpful   int    `json:"helpful"`
 }
 
 // SkillItem is the compact representation returned in list responses.

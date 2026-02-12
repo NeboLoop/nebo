@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/apps/v1/tool.proto
+// source: proto/apps/v0/tool.proto
 
 package pb
 
@@ -30,7 +30,7 @@ type NameResponse struct {
 
 func (x *NameResponse) Reset() {
 	*x = NameResponse{}
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -42,7 +42,7 @@ func (x *NameResponse) String() string {
 func (*NameResponse) ProtoMessage() {}
 
 func (x *NameResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -55,7 +55,7 @@ func (x *NameResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NameResponse.ProtoReflect.Descriptor instead.
 func (*NameResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_tool_proto_rawDescGZIP(), []int{0}
+	return file_proto_apps_v0_tool_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *NameResponse) GetName() string {
@@ -74,7 +74,7 @@ type DescriptionResponse struct {
 
 func (x *DescriptionResponse) Reset() {
 	*x = DescriptionResponse{}
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -86,7 +86,7 @@ func (x *DescriptionResponse) String() string {
 func (*DescriptionResponse) ProtoMessage() {}
 
 func (x *DescriptionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -99,7 +99,7 @@ func (x *DescriptionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DescriptionResponse.ProtoReflect.Descriptor instead.
 func (*DescriptionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_tool_proto_rawDescGZIP(), []int{1}
+	return file_proto_apps_v0_tool_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *DescriptionResponse) GetDescription() string {
@@ -118,7 +118,7 @@ type SchemaResponse struct {
 
 func (x *SchemaResponse) Reset() {
 	*x = SchemaResponse{}
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -130,7 +130,7 @@ func (x *SchemaResponse) String() string {
 func (*SchemaResponse) ProtoMessage() {}
 
 func (x *SchemaResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -143,7 +143,7 @@ func (x *SchemaResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchemaResponse.ProtoReflect.Descriptor instead.
 func (*SchemaResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_tool_proto_rawDescGZIP(), []int{2}
+	return file_proto_apps_v0_tool_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SchemaResponse) GetSchema() []byte {
@@ -162,7 +162,7 @@ type ExecuteRequest struct {
 
 func (x *ExecuteRequest) Reset() {
 	*x = ExecuteRequest{}
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -174,7 +174,7 @@ func (x *ExecuteRequest) String() string {
 func (*ExecuteRequest) ProtoMessage() {}
 
 func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -187,7 +187,7 @@ func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_tool_proto_rawDescGZIP(), []int{3}
+	return file_proto_apps_v0_tool_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ExecuteRequest) GetInput() []byte {
@@ -207,7 +207,7 @@ type ExecuteResponse struct {
 
 func (x *ExecuteResponse) Reset() {
 	*x = ExecuteResponse{}
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -219,7 +219,7 @@ func (x *ExecuteResponse) String() string {
 func (*ExecuteResponse) ProtoMessage() {}
 
 func (x *ExecuteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -232,7 +232,7 @@ func (x *ExecuteResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_tool_proto_rawDescGZIP(), []int{4}
+	return file_proto_apps_v0_tool_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ExecuteResponse) GetContent() string {
@@ -258,7 +258,7 @@ type ApprovalResponse struct {
 
 func (x *ApprovalResponse) Reset() {
 	*x = ApprovalResponse{}
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -270,7 +270,7 @@ func (x *ApprovalResponse) String() string {
 func (*ApprovalResponse) ProtoMessage() {}
 
 func (x *ApprovalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_tool_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_tool_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -283,7 +283,7 @@ func (x *ApprovalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovalResponse.ProtoReflect.Descriptor instead.
 func (*ApprovalResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_tool_proto_rawDescGZIP(), []int{5}
+	return file_proto_apps_v0_tool_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ApprovalResponse) GetRequiresApproval() bool {
@@ -293,11 +293,11 @@ func (x *ApprovalResponse) GetRequiresApproval() bool {
 	return false
 }
 
-var File_proto_apps_v1_tool_proto protoreflect.FileDescriptor
+var File_proto_apps_v0_tool_proto protoreflect.FileDescriptor
 
-const file_proto_apps_v1_tool_proto_rawDesc = "" +
+const file_proto_apps_v0_tool_proto_rawDesc = "" +
 	"\n" +
-	"\x18proto/apps/v1/tool.proto\x12\aapps.v1\x1a\x1aproto/apps/v1/common.proto\"\"\n" +
+	"\x18proto/apps/v0/tool.proto\x12\aapps.v0\x1a\x1aproto/apps/v0/common.proto\"\"\n" +
 	"\fNameResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"7\n" +
 	"\x13DescriptionResponse\x12 \n" +
@@ -312,54 +312,54 @@ const file_proto_apps_v1_tool_proto_rawDesc = "" +
 	"\x10ApprovalResponse\x12+\n" +
 	"\x11requires_approval\x18\x01 \x01(\bR\x10requiresApproval2\xa6\x03\n" +
 	"\vToolService\x12H\n" +
-	"\vHealthCheck\x12\x1b.apps.v1.HealthCheckRequest\x1a\x1c.apps.v1.HealthCheckResponse\x12-\n" +
-	"\x04Name\x12\x0e.apps.v1.Empty\x1a\x15.apps.v1.NameResponse\x12;\n" +
-	"\vDescription\x12\x0e.apps.v1.Empty\x1a\x1c.apps.v1.DescriptionResponse\x121\n" +
-	"\x06Schema\x12\x0e.apps.v1.Empty\x1a\x17.apps.v1.SchemaResponse\x12<\n" +
-	"\aExecute\x12\x17.apps.v1.ExecuteRequest\x1a\x18.apps.v1.ExecuteResponse\x12=\n" +
-	"\x10RequiresApproval\x12\x0e.apps.v1.Empty\x1a\x19.apps.v1.ApprovalResponse\x121\n" +
-	"\tConfigure\x12\x14.apps.v1.SettingsMap\x1a\x0e.apps.v1.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\vHealthCheck\x12\x1b.apps.v0.HealthCheckRequest\x1a\x1c.apps.v0.HealthCheckResponse\x12-\n" +
+	"\x04Name\x12\x0e.apps.v0.Empty\x1a\x15.apps.v0.NameResponse\x12;\n" +
+	"\vDescription\x12\x0e.apps.v0.Empty\x1a\x1c.apps.v0.DescriptionResponse\x121\n" +
+	"\x06Schema\x12\x0e.apps.v0.Empty\x1a\x17.apps.v0.SchemaResponse\x12<\n" +
+	"\aExecute\x12\x17.apps.v0.ExecuteRequest\x1a\x18.apps.v0.ExecuteResponse\x12=\n" +
+	"\x10RequiresApproval\x12\x0e.apps.v0.Empty\x1a\x19.apps.v0.ApprovalResponse\x121\n" +
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
 
 var (
-	file_proto_apps_v1_tool_proto_rawDescOnce sync.Once
-	file_proto_apps_v1_tool_proto_rawDescData []byte
+	file_proto_apps_v0_tool_proto_rawDescOnce sync.Once
+	file_proto_apps_v0_tool_proto_rawDescData []byte
 )
 
-func file_proto_apps_v1_tool_proto_rawDescGZIP() []byte {
-	file_proto_apps_v1_tool_proto_rawDescOnce.Do(func() {
-		file_proto_apps_v1_tool_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v1_tool_proto_rawDesc), len(file_proto_apps_v1_tool_proto_rawDesc)))
+func file_proto_apps_v0_tool_proto_rawDescGZIP() []byte {
+	file_proto_apps_v0_tool_proto_rawDescOnce.Do(func() {
+		file_proto_apps_v0_tool_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v0_tool_proto_rawDesc), len(file_proto_apps_v0_tool_proto_rawDesc)))
 	})
-	return file_proto_apps_v1_tool_proto_rawDescData
+	return file_proto_apps_v0_tool_proto_rawDescData
 }
 
-var file_proto_apps_v1_tool_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
-var file_proto_apps_v1_tool_proto_goTypes = []any{
-	(*NameResponse)(nil),        // 0: apps.v1.NameResponse
-	(*DescriptionResponse)(nil), // 1: apps.v1.DescriptionResponse
-	(*SchemaResponse)(nil),      // 2: apps.v1.SchemaResponse
-	(*ExecuteRequest)(nil),      // 3: apps.v1.ExecuteRequest
-	(*ExecuteResponse)(nil),     // 4: apps.v1.ExecuteResponse
-	(*ApprovalResponse)(nil),    // 5: apps.v1.ApprovalResponse
-	(*HealthCheckRequest)(nil),  // 6: apps.v1.HealthCheckRequest
-	(*Empty)(nil),               // 7: apps.v1.Empty
-	(*SettingsMap)(nil),         // 8: apps.v1.SettingsMap
-	(*HealthCheckResponse)(nil), // 9: apps.v1.HealthCheckResponse
+var file_proto_apps_v0_tool_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_proto_apps_v0_tool_proto_goTypes = []any{
+	(*NameResponse)(nil),        // 0: apps.v0.NameResponse
+	(*DescriptionResponse)(nil), // 1: apps.v0.DescriptionResponse
+	(*SchemaResponse)(nil),      // 2: apps.v0.SchemaResponse
+	(*ExecuteRequest)(nil),      // 3: apps.v0.ExecuteRequest
+	(*ExecuteResponse)(nil),     // 4: apps.v0.ExecuteResponse
+	(*ApprovalResponse)(nil),    // 5: apps.v0.ApprovalResponse
+	(*HealthCheckRequest)(nil),  // 6: apps.v0.HealthCheckRequest
+	(*Empty)(nil),               // 7: apps.v0.Empty
+	(*SettingsMap)(nil),         // 8: apps.v0.SettingsMap
+	(*HealthCheckResponse)(nil), // 9: apps.v0.HealthCheckResponse
 }
-var file_proto_apps_v1_tool_proto_depIdxs = []int32{
-	6, // 0: apps.v1.ToolService.HealthCheck:input_type -> apps.v1.HealthCheckRequest
-	7, // 1: apps.v1.ToolService.Name:input_type -> apps.v1.Empty
-	7, // 2: apps.v1.ToolService.Description:input_type -> apps.v1.Empty
-	7, // 3: apps.v1.ToolService.Schema:input_type -> apps.v1.Empty
-	3, // 4: apps.v1.ToolService.Execute:input_type -> apps.v1.ExecuteRequest
-	7, // 5: apps.v1.ToolService.RequiresApproval:input_type -> apps.v1.Empty
-	8, // 6: apps.v1.ToolService.Configure:input_type -> apps.v1.SettingsMap
-	9, // 7: apps.v1.ToolService.HealthCheck:output_type -> apps.v1.HealthCheckResponse
-	0, // 8: apps.v1.ToolService.Name:output_type -> apps.v1.NameResponse
-	1, // 9: apps.v1.ToolService.Description:output_type -> apps.v1.DescriptionResponse
-	2, // 10: apps.v1.ToolService.Schema:output_type -> apps.v1.SchemaResponse
-	4, // 11: apps.v1.ToolService.Execute:output_type -> apps.v1.ExecuteResponse
-	5, // 12: apps.v1.ToolService.RequiresApproval:output_type -> apps.v1.ApprovalResponse
-	7, // 13: apps.v1.ToolService.Configure:output_type -> apps.v1.Empty
+var file_proto_apps_v0_tool_proto_depIdxs = []int32{
+	6, // 0: apps.v0.ToolService.HealthCheck:input_type -> apps.v0.HealthCheckRequest
+	7, // 1: apps.v0.ToolService.Name:input_type -> apps.v0.Empty
+	7, // 2: apps.v0.ToolService.Description:input_type -> apps.v0.Empty
+	7, // 3: apps.v0.ToolService.Schema:input_type -> apps.v0.Empty
+	3, // 4: apps.v0.ToolService.Execute:input_type -> apps.v0.ExecuteRequest
+	7, // 5: apps.v0.ToolService.RequiresApproval:input_type -> apps.v0.Empty
+	8, // 6: apps.v0.ToolService.Configure:input_type -> apps.v0.SettingsMap
+	9, // 7: apps.v0.ToolService.HealthCheck:output_type -> apps.v0.HealthCheckResponse
+	0, // 8: apps.v0.ToolService.Name:output_type -> apps.v0.NameResponse
+	1, // 9: apps.v0.ToolService.Description:output_type -> apps.v0.DescriptionResponse
+	2, // 10: apps.v0.ToolService.Schema:output_type -> apps.v0.SchemaResponse
+	4, // 11: apps.v0.ToolService.Execute:output_type -> apps.v0.ExecuteResponse
+	5, // 12: apps.v0.ToolService.RequiresApproval:output_type -> apps.v0.ApprovalResponse
+	7, // 13: apps.v0.ToolService.Configure:output_type -> apps.v0.Empty
 	7, // [7:14] is the sub-list for method output_type
 	0, // [0:7] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
@@ -367,27 +367,27 @@ var file_proto_apps_v1_tool_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_proto_apps_v1_tool_proto_init() }
-func file_proto_apps_v1_tool_proto_init() {
-	if File_proto_apps_v1_tool_proto != nil {
+func init() { file_proto_apps_v0_tool_proto_init() }
+func file_proto_apps_v0_tool_proto_init() {
+	if File_proto_apps_v0_tool_proto != nil {
 		return
 	}
-	file_proto_apps_v1_common_proto_init()
+	file_proto_apps_v0_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v1_tool_proto_rawDesc), len(file_proto_apps_v1_tool_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v0_tool_proto_rawDesc), len(file_proto_apps_v0_tool_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_apps_v1_tool_proto_goTypes,
-		DependencyIndexes: file_proto_apps_v1_tool_proto_depIdxs,
-		MessageInfos:      file_proto_apps_v1_tool_proto_msgTypes,
+		GoTypes:           file_proto_apps_v0_tool_proto_goTypes,
+		DependencyIndexes: file_proto_apps_v0_tool_proto_depIdxs,
+		MessageInfos:      file_proto_apps_v0_tool_proto_msgTypes,
 	}.Build()
-	File_proto_apps_v1_tool_proto = out.File
-	file_proto_apps_v1_tool_proto_goTypes = nil
-	file_proto_apps_v1_tool_proto_depIdxs = nil
+	File_proto_apps_v0_tool_proto = out.File
+	file_proto_apps_v0_tool_proto_goTypes = nil
+	file_proto_apps_v0_tool_proto_depIdxs = nil
 }

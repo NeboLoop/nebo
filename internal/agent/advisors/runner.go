@@ -55,8 +55,17 @@ func (r *Runner) Deliberate(ctx context.Context, task string, recentMessages []s
 	fmt.Printf("[advisors] Starting deliberation with %d advisors for task: %s\n",
 		len(advisors), truncateTask(task, 100))
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(ctx, AdvisorTimeout)
+	// Use max per-advisor timeout as the overall deadline
+	maxTimeout := AdvisorTimeout
+	for _, adv := range advisors {
+		if adv.TimeoutSeconds > 0 {
+			t := time.Duration(adv.TimeoutSeconds) * time.Second
+			if t > maxTimeout {
+				maxTimeout = t
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, maxTimeout)
 	defer cancel()
 
 	// Run advisors in parallel
@@ -68,7 +77,14 @@ func (r *Runner) Deliberate(ctx context.Context, task string, recentMessages []s
 		wg.Add(1)
 		go func(idx int, adv *Advisor) {
 			defer wg.Done()
-			resp, err := r.runAdvisor(ctx, adv, task, recentMessages)
+			// Per-advisor timeout
+			advCtx := ctx
+			if adv.TimeoutSeconds > 0 {
+				var advCancel context.CancelFunc
+				advCtx, advCancel = context.WithTimeout(ctx, time.Duration(adv.TimeoutSeconds)*time.Second)
+				defer advCancel()
+			}
+			resp, err := r.runAdvisor(advCtx, adv, task, recentMessages)
 			if err != nil {
 				errors[idx] = err
 				fmt.Printf("[advisors] Advisor %s failed: %v\n", adv.Name, err)

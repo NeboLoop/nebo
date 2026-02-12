@@ -42,6 +42,11 @@ var responseOverrides = map[string]string{
 	"GetSystemInfo":        "SystemInfoResponse",
 	"GetUIView":            "UIView",
 	"SendUIEvent":          "SendUIEventResponse",
+	"ListAdvisors":         "ListAdvisorsResponse",
+	"GetAdvisor":           "GetAdvisorResponse",
+	"CreateAdvisor":        "GetAdvisorResponse",
+	"UpdateAdvisor":        "GetAdvisorResponse",
+	"DeleteAdvisor":        "DeleteAdvisorResponse",
 }
 
 // Explicit request type mappings for handlers that don't follow naming convention
@@ -63,6 +68,7 @@ type Field struct {
 // TypeDef represents a Go type definition
 type TypeDef struct {
 	Name    string
+	Extends string // embedded struct name (TypeScript extends clause)
 	Fields  []Field
 	Comment string
 }
@@ -281,7 +287,11 @@ func parseTypes(filename string) ([]TypeDef, error) {
 
 			for _, field := range structType.Fields.List {
 				if len(field.Names) == 0 {
-					continue // Skip embedded fields
+					// Capture embedded struct name for TypeScript extends
+					if ident, ok := field.Type.(*ast.Ident); ok {
+						typeDef.Extends = ident.Name
+					}
+					continue
 				}
 
 				f := Field{
@@ -466,23 +476,27 @@ func generateComponents(types []TypeDef) string {
 		}
 
 		// Write the main interface (JSON body fields only)
-		writeInterface(&sb, t.Name, jsonFields, t.Comment)
+		writeInterface(&sb, t.Name, t.Extends, jsonFields, t.Comment)
 
 		// For request types with form params, write a separate Params interface
 		// (only contains form params, path params become function args)
 		if len(formFields) > 0 {
-			writeInterface(&sb, t.Name+"Params", formFields, "")
+			writeInterface(&sb, t.Name+"Params", "", formFields, "")
 		}
 	}
 
 	return sb.String()
 }
 
-func writeInterface(sb *strings.Builder, name string, fields []Field, comment string) {
+func writeInterface(sb *strings.Builder, name string, extends string, fields []Field, comment string) {
 	if comment != "" {
 		sb.WriteString("// " + strings.TrimSpace(comment) + "\n")
 	}
-	sb.WriteString("export interface " + name + " {\n")
+	if extends != "" {
+		sb.WriteString("export interface " + name + " extends " + extends + " {\n")
+	} else {
+		sb.WriteString("export interface " + name + " {\n")
+	}
 
 	for _, f := range fields {
 		tsType := goTypeToTS(f.Type)

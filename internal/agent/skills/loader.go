@@ -107,7 +107,7 @@ func (l *Loader) loadFile(path string) error {
 	}
 
 	l.skills[skill.Name] = skill
-	logging.Debugf("[skills] Loaded skill: %s (triggers: %v)", skill.Name, skill.Triggers)
+	logging.Debugf("[skills] Loaded skill: %s", skill.Name)
 	return nil
 }
 
@@ -248,40 +248,6 @@ func (l *Loader) List() []*Skill {
 	})
 
 	return skills
-}
-
-// FindMatching returns all skills that match the given input
-func (l *Loader) FindMatching(input string) []*Skill {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-
-	var matching []*Skill
-	for _, skill := range l.skills {
-		if skill.Matches(input) {
-			matching = append(matching, skill)
-		}
-	}
-
-	// Sort by priority
-	sort.Slice(matching, func(i, j int) bool {
-		return matching[i].Priority > matching[j].Priority
-	})
-
-	return matching
-}
-
-// ApplyMatchingSkills applies all matching skills to the system prompt
-func (l *Loader) ApplyMatchingSkills(systemPrompt, userInput string) string {
-	matching := l.FindMatching(userInput)
-	if len(matching) == 0 {
-		return systemPrompt
-	}
-
-	result := systemPrompt
-	for _, skill := range matching {
-		result = skill.ApplyToPrompt(result)
-	}
-	return result
 }
 
 // Count returns the number of loaded skills

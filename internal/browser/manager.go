@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Manager manages browser instances and sessions.
@@ -69,7 +70,7 @@ func (m *Manager) Stop() error {
 	// Stop all managed browsers
 	for name, running := range m.browsers {
 		if running != nil {
-			_ = StopChrome(running, 5000)
+			_ = StopChrome(running, 5*time.Second)
 		}
 		delete(m.browsers, name)
 	}
@@ -127,7 +128,7 @@ func (m *Manager) ensureBrowserRunning(profile *ResolvedProfile) error {
 	// Check if already running
 	if running, ok := m.browsers[profile.Name]; ok && running != nil {
 		// Verify it's still reachable
-		if IsChromeReachable(profile.CDPUrl, 1000) {
+		if IsChromeReachable(profile.CDPUrl, time.Second) {
 			return nil
 		}
 		// Browser died, clean up
@@ -158,7 +159,7 @@ func (m *Manager) StopBrowser(profileName string) error {
 		return nil
 	}
 
-	err := StopChrome(running, 5000)
+	err := StopChrome(running, 5*time.Second)
 	delete(m.browsers, profileName)
 	return err
 }
@@ -200,7 +201,7 @@ func (m *Manager) IsBrowserRunning(profileName string) bool {
 		return false
 	}
 
-	return IsChromeReachable(profile.CDPUrl, 1000)
+	return IsChromeReachable(profile.CDPUrl, time.Second)
 }
 
 // ProfileStatus returns status info for a profile.
@@ -232,7 +233,7 @@ func (m *Manager) GetProfileStatus(profileName string) (*ProfileStatus, error) {
 		Name:    profile.Name,
 		Driver:  profile.Driver,
 		CDPUrl:  profile.CDPUrl,
-		Running: IsChromeReachable(profile.CDPUrl, 1000),
+		Running: IsChromeReachable(profile.CDPUrl, time.Second),
 		Color:   profile.Color,
 	}
 

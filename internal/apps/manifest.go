@@ -84,6 +84,14 @@ type AppManifest struct {
 	Provides    []string          `json:"provides"`
 	Permissions []string          `json:"permissions"`
 	Settings    []SettingsField   `json:"settings,omitempty"`
+	OAuth       []OAuthRequirement `json:"oauth,omitempty"`
+}
+
+// OAuthRequirement declares an OAuth provider and scopes the app needs.
+// Nebo's OAuth broker handles the entire flow — apps receive tokens automatically.
+type OAuthRequirement struct {
+	Provider string   `json:"provider"` // "google", "microsoft", "github"
+	Scopes   []string `json:"scopes"`   // e.g. ["https://www.googleapis.com/auth/calendar"]
 }
 
 // ManifestSignature holds NeboLoop code-signing information.

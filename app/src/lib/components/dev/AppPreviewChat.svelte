@@ -9,14 +9,14 @@
 	import { Bot, Send, Loader2, RotateCcw } from 'lucide-svelte';
 	import UIBlock from '$lib/components/appui/UIBlock.svelte';
 	import { getUIView, sendUIEvent } from '$lib/api/nebo';
-	import type { UIView, DevAppItem } from '$lib/api/nebo';
+	import type { UIView } from '$lib/api/nebo';
 	import { generateUUID } from '$lib/utils';
 
 	interface Props {
-		devApps: DevAppItem[];
+		appId: string;
 	}
 
-	let { devApps }: Props = $props();
+	let { appId }: Props = $props();
 
 	interface PreviewMessage {
 		id: string;
@@ -27,22 +27,14 @@
 		error?: string;
 	}
 
-	let selectedAppId = $state('');
 	let messages = $state<PreviewMessage[]>([]);
 	let loading = $state(false);
 	let inputValue = $state('');
 	let messagesContainer: HTMLDivElement;
 
-	// Auto-select first app
-	$effect(() => {
-		if (devApps.length > 0 && !selectedAppId) {
-			selectedAppId = devApps[0].appId;
-		}
-	});
-
 	// Reload view when app changes
 	$effect(() => {
-		if (selectedAppId) {
+		if (appId) {
 			loadAppView();
 		}
 	});
@@ -62,7 +54,7 @@
 		loading = true;
 		messages = [];
 		try {
-			const view = await getUIView(selectedAppId);
+			const view = await getUIView(appId);
 			messages = [{
 				id: generateUUID(),
 				role: 'agent',
@@ -82,7 +74,7 @@
 
 	async function handleBlockEvent(blockId: string, action: string, value: string) {
 		const currentView = messages.findLast(m => m.view)?.view;
-		if (!currentView || !selectedAppId) return;
+		if (!currentView || !appId) return;
 
 		try {
 			const resp = await sendUIEvent({
@@ -90,7 +82,7 @@
 				block_id: blockId,
 				action,
 				value
-			}, selectedAppId);
+			}, appId);
 
 			const msg: PreviewMessage = {
 				id: generateUUID(),
@@ -127,9 +119,9 @@
 		}];
 
 		// Mock agent response: reload the app's current view
-		if (selectedAppId) {
+		if (appId) {
 			loading = true;
-			getUIView(selectedAppId)
+			getUIView(appId)
 				.then(view => {
 					messages = [...messages, {
 						id: generateUUID(),
@@ -160,25 +152,13 @@
 
 	function resetPreview() {
 		messages = [];
-		if (selectedAppId) loadAppView();
+		if (appId) loadAppView();
 	}
 </script>
 
 <div class="flex flex-col h-full">
 	<!-- Header -->
 	<div class="flex items-center gap-2 px-3 py-2 border-b border-base-300 bg-base-100 shrink-0">
-		<select
-			bind:value={selectedAppId}
-			class="select select-bordered select-xs flex-shrink-0"
-		>
-			{#if devApps.length === 0}
-				<option value="">No apps loaded</option>
-			{/if}
-			{#each devApps as app}
-				<option value={app.appId}>{app.name || app.appId}</option>
-			{/each}
-		</select>
-
 		<span class="text-xs text-base-content/40 flex-1">Inline Preview</span>
 
 		<button
@@ -196,7 +176,7 @@
 		bind:this={messagesContainer}
 		class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 space-y-4"
 	>
-		{#if !selectedAppId}
+		{#if !appId}
 			<div class="flex flex-col items-center justify-center h-full text-base-content/50 gap-2">
 				<Bot class="w-8 h-8" />
 				<p class="text-sm font-medium">No App Selected</p>
@@ -274,13 +254,13 @@
 				onkeydown={handleKeydown}
 				placeholder="Type a test message..."
 				class="input input-bordered input-sm flex-1"
-				disabled={!selectedAppId || loading}
+				disabled={!appId || loading}
 			/>
 			<button
 				type="button"
 				class="btn btn-sm btn-primary"
 				onclick={sendTestMessage}
-				disabled={!inputValue.trim() || !selectedAppId || loading}
+				disabled={!inputValue.trim() || !appId || loading}
 			>
 				<Send class="w-4 h-4" />
 			</button>

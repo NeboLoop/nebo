@@ -51,7 +51,7 @@
 	let selectedCLI = $state<{ id: string; name: string; command: string; installHint: string } | null>(null);
 
 	const cliProviderInfo: { [key: string]: { id: string; name: string; command: string; installHint: string } } = {
-		claude: { id: 'claude-code', name: 'Claude Code', command: 'claude', installHint: 'brew install claude-code' },
+		claude: { id: 'claude-code', name: 'Claude Agent', command: 'claude', installHint: 'brew install claude-code' },
 		codex: { id: 'codex-cli', name: 'Codex CLI', command: 'codex', installHint: 'npm i -g @openai/codex' },
 		gemini: { id: 'gemini-cli', name: 'Gemini CLI', command: 'gemini', installHint: 'npm i -g @google/gemini-cli' }
 	};
@@ -606,8 +606,8 @@
 										<CheckCircle class="w-4 h-4 text-success" />
 									</div>
 									<div class="text-left">
-										<p class="font-medium text-base-content">Claude Code</p>
-										<p class="text-xs text-base-content/60">Anthropic's agentic coding assistant</p>
+										<p class="font-medium text-base-content">Claude Agent</p>
+										<p class="text-xs text-base-content/60">Anthropic's agentic assistant</p>
 									</div>
 								</div>
 								<span class="badge badge-success badge-sm">Available</span>

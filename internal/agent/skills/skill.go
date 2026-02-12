@@ -1,14 +1,13 @@
 // Package skills provides a Markdown-based skill definition and loading system.
-// Skills are declarative definitions that modify agent behavior without requiring
-// compiled code - just SKILL.md files that can be hot-reloaded.
+// Skills are the unified abstraction for AI capabilities — whether backed by
+// a .napp binary or standalone orchestration guidance.
 //
-// Skills use YAML frontmatter for metadata and the markdown body as the template:
+// Skills use YAML frontmatter for metadata and the markdown body as content:
 //
 //	---
 //	name: my-skill
 //	description: Does something useful
-//	triggers:
-//	  - keyword
+//	version: "1.0.0"
 //	---
 //
 //	# My Skill
@@ -19,36 +18,40 @@ package skills
 import (
 	"bytes"
 	"fmt"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Skill represents a declarative skill definition that modifies agent behavior.
-// Skills can add context to prompts, require specific tools, and provide examples.
+// Skill represents a skill definition parsed from a SKILL.md file.
 type Skill struct {
 	// Name is the unique identifier for the skill
 	Name string `yaml:"name"`
 
-	// Description explains what the skill does
+	// Description explains what the skill does (one-liner for catalog)
 	Description string `yaml:"description"`
 
 	// Version for tracking skill updates
 	Version string `yaml:"version"`
 
-	// Triggers are keywords/phrases that activate this skill
-	Triggers []string `yaml:"triggers"`
+	// Author of the skill (for future ecosystem/marketplace)
+	Author string `yaml:"author"`
+
+	// Dependencies lists required skill names that must be installed
+	Dependencies []string `yaml:"dependencies"`
+
+	// Tags for categorization and discovery
+	Tags []string `yaml:"tags"`
 
 	// Tools lists required tool names for this skill
 	Tools []string `yaml:"tools"`
 
-	// Priority determines precedence when multiple skills match (higher = first)
+	// Priority determines precedence (higher = first)
 	Priority int `yaml:"priority"`
 
-	// Metadata holds additional data (emoji, requires, install)
+	// Metadata holds additional data
 	Metadata map[string]any `yaml:"metadata"`
 
-	// Template is the markdown body - the actual skill instructions
+	// Template is the markdown body — the actual skill instructions
 	// This is NOT from YAML, it's parsed from the markdown body
 	Template string `yaml:"-"`
 
@@ -57,44 +60,6 @@ type Skill struct {
 
 	// FilePath stores where this skill was loaded from
 	FilePath string `yaml:"-"`
-}
-
-// Matches checks if the given input text triggers this skill
-func (s *Skill) Matches(input string) bool {
-	if !s.Enabled {
-		return false
-	}
-
-	inputLower := strings.ToLower(input)
-	for _, trigger := range s.Triggers {
-		if strings.Contains(inputLower, strings.ToLower(trigger)) {
-			return true
-		}
-	}
-	return false
-}
-
-// ApplyToPrompt modifies the system prompt with skill-specific content
-func (s *Skill) ApplyToPrompt(systemPrompt string) string {
-	if s.Template == "" {
-		return systemPrompt
-	}
-
-	var sb strings.Builder
-	sb.WriteString(systemPrompt)
-
-	// Add skill template (the markdown body)
-	sb.WriteString("\n\n## Skill: ")
-	sb.WriteString(s.Name)
-	sb.WriteString("\n\n")
-	sb.WriteString(s.Template)
-
-	return sb.String()
-}
-
-// RequiredTools returns the list of tools this skill needs
-func (s *Skill) RequiredTools() []string {
-	return s.Tools
 }
 
 // Validate checks if the skill definition is valid
@@ -122,7 +87,7 @@ func ParseSkillMD(data []byte) (*Skill, error) {
 	}
 
 	// The markdown body IS the template
-	skill.Template = strings.TrimSpace(string(body))
+	skill.Template = string(bytes.TrimSpace(body))
 
 	return &skill, nil
 }

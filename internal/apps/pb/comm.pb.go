@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.10
 // 	protoc        v6.33.0
-// source: proto/apps/v1/comm.proto
+// source: proto/apps/v0/comm.proto
 
 package pb
 
@@ -30,7 +30,7 @@ type CommNameResponse struct {
 
 func (x *CommNameResponse) Reset() {
 	*x = CommNameResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -42,7 +42,7 @@ func (x *CommNameResponse) String() string {
 func (*CommNameResponse) ProtoMessage() {}
 
 func (x *CommNameResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[0]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -55,7 +55,7 @@ func (x *CommNameResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommNameResponse.ProtoReflect.Descriptor instead.
 func (*CommNameResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{0}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *CommNameResponse) GetName() string {
@@ -74,7 +74,7 @@ type CommVersionResponse struct {
 
 func (x *CommVersionResponse) Reset() {
 	*x = CommVersionResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -86,7 +86,7 @@ func (x *CommVersionResponse) String() string {
 func (*CommVersionResponse) ProtoMessage() {}
 
 func (x *CommVersionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[1]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -99,7 +99,7 @@ func (x *CommVersionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommVersionResponse.ProtoReflect.Descriptor instead.
 func (*CommVersionResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{1}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *CommVersionResponse) GetVersion() string {
@@ -118,7 +118,7 @@ type CommConnectRequest struct {
 
 func (x *CommConnectRequest) Reset() {
 	*x = CommConnectRequest{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -130,7 +130,7 @@ func (x *CommConnectRequest) String() string {
 func (*CommConnectRequest) ProtoMessage() {}
 
 func (x *CommConnectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[2]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -143,7 +143,7 @@ func (x *CommConnectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommConnectRequest.ProtoReflect.Descriptor instead.
 func (*CommConnectRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{2}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *CommConnectRequest) GetConfig() map[string]string {
@@ -162,7 +162,7 @@ type CommConnectResponse struct {
 
 func (x *CommConnectResponse) Reset() {
 	*x = CommConnectResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -174,7 +174,7 @@ func (x *CommConnectResponse) String() string {
 func (*CommConnectResponse) ProtoMessage() {}
 
 func (x *CommConnectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[3]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -187,7 +187,7 @@ func (x *CommConnectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommConnectResponse.ProtoReflect.Descriptor instead.
 func (*CommConnectResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{3}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CommConnectResponse) GetError() string {
@@ -206,7 +206,7 @@ type CommDisconnectResponse struct {
 
 func (x *CommDisconnectResponse) Reset() {
 	*x = CommDisconnectResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -218,7 +218,7 @@ func (x *CommDisconnectResponse) String() string {
 func (*CommDisconnectResponse) ProtoMessage() {}
 
 func (x *CommDisconnectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[4]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -231,7 +231,7 @@ func (x *CommDisconnectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommDisconnectResponse.ProtoReflect.Descriptor instead.
 func (*CommDisconnectResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{4}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *CommDisconnectResponse) GetError() string {
@@ -250,7 +250,7 @@ type CommIsConnectedResponse struct {
 
 func (x *CommIsConnectedResponse) Reset() {
 	*x = CommIsConnectedResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -262,7 +262,7 @@ func (x *CommIsConnectedResponse) String() string {
 func (*CommIsConnectedResponse) ProtoMessage() {}
 
 func (x *CommIsConnectedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[5]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -275,7 +275,7 @@ func (x *CommIsConnectedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommIsConnectedResponse.ProtoReflect.Descriptor instead.
 func (*CommIsConnectedResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{5}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CommIsConnectedResponse) GetConnected() bool {
@@ -294,7 +294,7 @@ type CommSendRequest struct {
 
 func (x *CommSendRequest) Reset() {
 	*x = CommSendRequest{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[6]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -306,7 +306,7 @@ func (x *CommSendRequest) String() string {
 func (*CommSendRequest) ProtoMessage() {}
 
 func (x *CommSendRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[6]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -319,7 +319,7 @@ func (x *CommSendRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommSendRequest.ProtoReflect.Descriptor instead.
 func (*CommSendRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{6}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CommSendRequest) GetMessage() *CommMessage {
@@ -338,7 +338,7 @@ type CommSendResponse struct {
 
 func (x *CommSendResponse) Reset() {
 	*x = CommSendResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[7]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -350,7 +350,7 @@ func (x *CommSendResponse) String() string {
 func (*CommSendResponse) ProtoMessage() {}
 
 func (x *CommSendResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[7]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -363,7 +363,7 @@ func (x *CommSendResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommSendResponse.ProtoReflect.Descriptor instead.
 func (*CommSendResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{7}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CommSendResponse) GetError() string {
@@ -382,7 +382,7 @@ type CommSubscribeRequest struct {
 
 func (x *CommSubscribeRequest) Reset() {
 	*x = CommSubscribeRequest{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[8]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -394,7 +394,7 @@ func (x *CommSubscribeRequest) String() string {
 func (*CommSubscribeRequest) ProtoMessage() {}
 
 func (x *CommSubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[8]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -407,7 +407,7 @@ func (x *CommSubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommSubscribeRequest.ProtoReflect.Descriptor instead.
 func (*CommSubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{8}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CommSubscribeRequest) GetTopic() string {
@@ -426,7 +426,7 @@ type CommSubscribeResponse struct {
 
 func (x *CommSubscribeResponse) Reset() {
 	*x = CommSubscribeResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[9]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -438,7 +438,7 @@ func (x *CommSubscribeResponse) String() string {
 func (*CommSubscribeResponse) ProtoMessage() {}
 
 func (x *CommSubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[9]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -451,7 +451,7 @@ func (x *CommSubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommSubscribeResponse.ProtoReflect.Descriptor instead.
 func (*CommSubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{9}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CommSubscribeResponse) GetError() string {
@@ -470,7 +470,7 @@ type CommUnsubscribeRequest struct {
 
 func (x *CommUnsubscribeRequest) Reset() {
 	*x = CommUnsubscribeRequest{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[10]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -482,7 +482,7 @@ func (x *CommUnsubscribeRequest) String() string {
 func (*CommUnsubscribeRequest) ProtoMessage() {}
 
 func (x *CommUnsubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[10]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -495,7 +495,7 @@ func (x *CommUnsubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommUnsubscribeRequest.ProtoReflect.Descriptor instead.
 func (*CommUnsubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{10}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CommUnsubscribeRequest) GetTopic() string {
@@ -514,7 +514,7 @@ type CommUnsubscribeResponse struct {
 
 func (x *CommUnsubscribeResponse) Reset() {
 	*x = CommUnsubscribeResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[11]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -526,7 +526,7 @@ func (x *CommUnsubscribeResponse) String() string {
 func (*CommUnsubscribeResponse) ProtoMessage() {}
 
 func (x *CommUnsubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[11]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -539,7 +539,7 @@ func (x *CommUnsubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommUnsubscribeResponse.ProtoReflect.Descriptor instead.
 func (*CommUnsubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{11}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CommUnsubscribeResponse) GetError() string {
@@ -559,7 +559,7 @@ type CommRegisterRequest struct {
 
 func (x *CommRegisterRequest) Reset() {
 	*x = CommRegisterRequest{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[12]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -571,7 +571,7 @@ func (x *CommRegisterRequest) String() string {
 func (*CommRegisterRequest) ProtoMessage() {}
 
 func (x *CommRegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[12]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -584,7 +584,7 @@ func (x *CommRegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommRegisterRequest.ProtoReflect.Descriptor instead.
 func (*CommRegisterRequest) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{12}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CommRegisterRequest) GetAgentId() string {
@@ -610,7 +610,7 @@ type CommRegisterResponse struct {
 
 func (x *CommRegisterResponse) Reset() {
 	*x = CommRegisterResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[13]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -622,7 +622,7 @@ func (x *CommRegisterResponse) String() string {
 func (*CommRegisterResponse) ProtoMessage() {}
 
 func (x *CommRegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[13]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -635,7 +635,7 @@ func (x *CommRegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommRegisterResponse.ProtoReflect.Descriptor instead.
 func (*CommRegisterResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{13}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *CommRegisterResponse) GetError() string {
@@ -654,7 +654,7 @@ type CommDeregisterResponse struct {
 
 func (x *CommDeregisterResponse) Reset() {
 	*x = CommDeregisterResponse{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[14]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -666,7 +666,7 @@ func (x *CommDeregisterResponse) String() string {
 func (*CommDeregisterResponse) ProtoMessage() {}
 
 func (x *CommDeregisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[14]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -679,7 +679,7 @@ func (x *CommDeregisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommDeregisterResponse.ProtoReflect.Descriptor instead.
 func (*CommDeregisterResponse) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{14}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CommDeregisterResponse) GetError() string {
@@ -709,7 +709,7 @@ type CommMessage struct {
 
 func (x *CommMessage) Reset() {
 	*x = CommMessage{}
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[15]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -721,7 +721,7 @@ func (x *CommMessage) String() string {
 func (*CommMessage) ProtoMessage() {}
 
 func (x *CommMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_apps_v1_comm_proto_msgTypes[15]
+	mi := &file_proto_apps_v0_comm_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -734,7 +734,7 @@ func (x *CommMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommMessage.ProtoReflect.Descriptor instead.
 func (*CommMessage) Descriptor() ([]byte, []int) {
-	return file_proto_apps_v1_comm_proto_rawDescGZIP(), []int{15}
+	return file_proto_apps_v0_comm_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CommMessage) GetId() string {
@@ -814,17 +814,17 @@ func (x *CommMessage) GetHumanId() string {
 	return ""
 }
 
-var File_proto_apps_v1_comm_proto protoreflect.FileDescriptor
+var File_proto_apps_v0_comm_proto protoreflect.FileDescriptor
 
-const file_proto_apps_v1_comm_proto_rawDesc = "" +
+const file_proto_apps_v0_comm_proto_rawDesc = "" +
 	"\n" +
-	"\x18proto/apps/v1/comm.proto\x12\aapps.v1\x1a\x1aproto/apps/v1/common.proto\"&\n" +
+	"\x18proto/apps/v0/comm.proto\x12\aapps.v0\x1a\x1aproto/apps/v0/common.proto\"&\n" +
 	"\x10CommNameResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\"/\n" +
 	"\x13CommVersionResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\"\x90\x01\n" +
 	"\x12CommConnectRequest\x12?\n" +
-	"\x06config\x18\x01 \x03(\v2'.apps.v1.CommConnectRequest.ConfigEntryR\x06config\x1a9\n" +
+	"\x06config\x18\x01 \x03(\v2'.apps.v0.CommConnectRequest.ConfigEntryR\x06config\x1a9\n" +
 	"\vConfigEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"+\n" +
@@ -835,7 +835,7 @@ const file_proto_apps_v1_comm_proto_rawDesc = "" +
 	"\x17CommIsConnectedResponse\x12\x1c\n" +
 	"\tconnected\x18\x01 \x01(\bR\tconnected\"A\n" +
 	"\x0fCommSendRequest\x12.\n" +
-	"\amessage\x18\x01 \x01(\v2\x14.apps.v1.CommMessageR\amessage\"(\n" +
+	"\amessage\x18\x01 \x01(\v2\x14.apps.v0.CommMessageR\amessage\"(\n" +
 	"\x10CommSendResponse\x12\x14\n" +
 	"\x05error\x18\x01 \x01(\tR\x05error\",\n" +
 	"\x14CommSubscribeRequest\x12\x14\n" +
@@ -861,7 +861,7 @@ const file_proto_apps_v1_comm_proto_rawDesc = "" +
 	"\x0fconversation_id\x18\x05 \x01(\tR\x0econversationId\x12\x12\n" +
 	"\x04type\x18\x06 \x01(\tR\x04type\x12\x18\n" +
 	"\acontent\x18\a \x01(\tR\acontent\x12>\n" +
-	"\bmetadata\x18\b \x03(\v2\".apps.v1.CommMessage.MetadataEntryR\bmetadata\x12\x1c\n" +
+	"\bmetadata\x18\b \x03(\v2\".apps.v0.CommMessage.MetadataEntryR\bmetadata\x12\x1c\n" +
 	"\ttimestamp\x18\t \x01(\x03R\ttimestamp\x12%\n" +
 	"\x0ehuman_injected\x18\n" +
 	" \x01(\bR\rhumanInjected\x12\x19\n" +
@@ -870,89 +870,89 @@ const file_proto_apps_v1_comm_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xd2\x06\n" +
 	"\vCommService\x12H\n" +
-	"\vHealthCheck\x12\x1b.apps.v1.HealthCheckRequest\x1a\x1c.apps.v1.HealthCheckResponse\x121\n" +
-	"\x04Name\x12\x0e.apps.v1.Empty\x1a\x19.apps.v1.CommNameResponse\x127\n" +
-	"\aVersion\x12\x0e.apps.v1.Empty\x1a\x1c.apps.v1.CommVersionResponse\x12D\n" +
-	"\aConnect\x12\x1b.apps.v1.CommConnectRequest\x1a\x1c.apps.v1.CommConnectResponse\x12=\n" +
+	"\vHealthCheck\x12\x1b.apps.v0.HealthCheckRequest\x1a\x1c.apps.v0.HealthCheckResponse\x121\n" +
+	"\x04Name\x12\x0e.apps.v0.Empty\x1a\x19.apps.v0.CommNameResponse\x127\n" +
+	"\aVersion\x12\x0e.apps.v0.Empty\x1a\x1c.apps.v0.CommVersionResponse\x12D\n" +
+	"\aConnect\x12\x1b.apps.v0.CommConnectRequest\x1a\x1c.apps.v0.CommConnectResponse\x12=\n" +
 	"\n" +
-	"Disconnect\x12\x0e.apps.v1.Empty\x1a\x1f.apps.v1.CommDisconnectResponse\x12?\n" +
-	"\vIsConnected\x12\x0e.apps.v1.Empty\x1a .apps.v1.CommIsConnectedResponse\x12;\n" +
-	"\x04Send\x12\x18.apps.v1.CommSendRequest\x1a\x19.apps.v1.CommSendResponse\x12J\n" +
-	"\tSubscribe\x12\x1d.apps.v1.CommSubscribeRequest\x1a\x1e.apps.v1.CommSubscribeResponse\x12P\n" +
-	"\vUnsubscribe\x12\x1f.apps.v1.CommUnsubscribeRequest\x1a .apps.v1.CommUnsubscribeResponse\x12G\n" +
-	"\bRegister\x12\x1c.apps.v1.CommRegisterRequest\x1a\x1d.apps.v1.CommRegisterResponse\x12=\n" +
+	"Disconnect\x12\x0e.apps.v0.Empty\x1a\x1f.apps.v0.CommDisconnectResponse\x12?\n" +
+	"\vIsConnected\x12\x0e.apps.v0.Empty\x1a .apps.v0.CommIsConnectedResponse\x12;\n" +
+	"\x04Send\x12\x18.apps.v0.CommSendRequest\x1a\x19.apps.v0.CommSendResponse\x12J\n" +
+	"\tSubscribe\x12\x1d.apps.v0.CommSubscribeRequest\x1a\x1e.apps.v0.CommSubscribeResponse\x12P\n" +
+	"\vUnsubscribe\x12\x1f.apps.v0.CommUnsubscribeRequest\x1a .apps.v0.CommUnsubscribeResponse\x12G\n" +
+	"\bRegister\x12\x1c.apps.v0.CommRegisterRequest\x1a\x1d.apps.v0.CommRegisterResponse\x12=\n" +
 	"\n" +
-	"Deregister\x12\x0e.apps.v1.Empty\x1a\x1f.apps.v1.CommDeregisterResponse\x121\n" +
-	"\aReceive\x12\x0e.apps.v1.Empty\x1a\x14.apps.v1.CommMessage0\x01\x121\n" +
-	"\tConfigure\x12\x14.apps.v1.SettingsMap\x1a\x0e.apps.v1.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"Deregister\x12\x0e.apps.v0.Empty\x1a\x1f.apps.v0.CommDeregisterResponse\x121\n" +
+	"\aReceive\x12\x0e.apps.v0.Empty\x1a\x14.apps.v0.CommMessage0\x01\x121\n" +
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
 
 var (
-	file_proto_apps_v1_comm_proto_rawDescOnce sync.Once
-	file_proto_apps_v1_comm_proto_rawDescData []byte
+	file_proto_apps_v0_comm_proto_rawDescOnce sync.Once
+	file_proto_apps_v0_comm_proto_rawDescData []byte
 )
 
-func file_proto_apps_v1_comm_proto_rawDescGZIP() []byte {
-	file_proto_apps_v1_comm_proto_rawDescOnce.Do(func() {
-		file_proto_apps_v1_comm_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v1_comm_proto_rawDesc), len(file_proto_apps_v1_comm_proto_rawDesc)))
+func file_proto_apps_v0_comm_proto_rawDescGZIP() []byte {
+	file_proto_apps_v0_comm_proto_rawDescOnce.Do(func() {
+		file_proto_apps_v0_comm_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_apps_v0_comm_proto_rawDesc), len(file_proto_apps_v0_comm_proto_rawDesc)))
 	})
-	return file_proto_apps_v1_comm_proto_rawDescData
+	return file_proto_apps_v0_comm_proto_rawDescData
 }
 
-var file_proto_apps_v1_comm_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
-var file_proto_apps_v1_comm_proto_goTypes = []any{
-	(*CommNameResponse)(nil),        // 0: apps.v1.CommNameResponse
-	(*CommVersionResponse)(nil),     // 1: apps.v1.CommVersionResponse
-	(*CommConnectRequest)(nil),      // 2: apps.v1.CommConnectRequest
-	(*CommConnectResponse)(nil),     // 3: apps.v1.CommConnectResponse
-	(*CommDisconnectResponse)(nil),  // 4: apps.v1.CommDisconnectResponse
-	(*CommIsConnectedResponse)(nil), // 5: apps.v1.CommIsConnectedResponse
-	(*CommSendRequest)(nil),         // 6: apps.v1.CommSendRequest
-	(*CommSendResponse)(nil),        // 7: apps.v1.CommSendResponse
-	(*CommSubscribeRequest)(nil),    // 8: apps.v1.CommSubscribeRequest
-	(*CommSubscribeResponse)(nil),   // 9: apps.v1.CommSubscribeResponse
-	(*CommUnsubscribeRequest)(nil),  // 10: apps.v1.CommUnsubscribeRequest
-	(*CommUnsubscribeResponse)(nil), // 11: apps.v1.CommUnsubscribeResponse
-	(*CommRegisterRequest)(nil),     // 12: apps.v1.CommRegisterRequest
-	(*CommRegisterResponse)(nil),    // 13: apps.v1.CommRegisterResponse
-	(*CommDeregisterResponse)(nil),  // 14: apps.v1.CommDeregisterResponse
-	(*CommMessage)(nil),             // 15: apps.v1.CommMessage
-	nil,                             // 16: apps.v1.CommConnectRequest.ConfigEntry
-	nil,                             // 17: apps.v1.CommMessage.MetadataEntry
-	(*HealthCheckRequest)(nil),      // 18: apps.v1.HealthCheckRequest
-	(*Empty)(nil),                   // 19: apps.v1.Empty
-	(*SettingsMap)(nil),             // 20: apps.v1.SettingsMap
-	(*HealthCheckResponse)(nil),     // 21: apps.v1.HealthCheckResponse
+var file_proto_apps_v0_comm_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_proto_apps_v0_comm_proto_goTypes = []any{
+	(*CommNameResponse)(nil),        // 0: apps.v0.CommNameResponse
+	(*CommVersionResponse)(nil),     // 1: apps.v0.CommVersionResponse
+	(*CommConnectRequest)(nil),      // 2: apps.v0.CommConnectRequest
+	(*CommConnectResponse)(nil),     // 3: apps.v0.CommConnectResponse
+	(*CommDisconnectResponse)(nil),  // 4: apps.v0.CommDisconnectResponse
+	(*CommIsConnectedResponse)(nil), // 5: apps.v0.CommIsConnectedResponse
+	(*CommSendRequest)(nil),         // 6: apps.v0.CommSendRequest
+	(*CommSendResponse)(nil),        // 7: apps.v0.CommSendResponse
+	(*CommSubscribeRequest)(nil),    // 8: apps.v0.CommSubscribeRequest
+	(*CommSubscribeResponse)(nil),   // 9: apps.v0.CommSubscribeResponse
+	(*CommUnsubscribeRequest)(nil),  // 10: apps.v0.CommUnsubscribeRequest
+	(*CommUnsubscribeResponse)(nil), // 11: apps.v0.CommUnsubscribeResponse
+	(*CommRegisterRequest)(nil),     // 12: apps.v0.CommRegisterRequest
+	(*CommRegisterResponse)(nil),    // 13: apps.v0.CommRegisterResponse
+	(*CommDeregisterResponse)(nil),  // 14: apps.v0.CommDeregisterResponse
+	(*CommMessage)(nil),             // 15: apps.v0.CommMessage
+	nil,                             // 16: apps.v0.CommConnectRequest.ConfigEntry
+	nil,                             // 17: apps.v0.CommMessage.MetadataEntry
+	(*HealthCheckRequest)(nil),      // 18: apps.v0.HealthCheckRequest
+	(*Empty)(nil),                   // 19: apps.v0.Empty
+	(*SettingsMap)(nil),             // 20: apps.v0.SettingsMap
+	(*HealthCheckResponse)(nil),     // 21: apps.v0.HealthCheckResponse
 }
-var file_proto_apps_v1_comm_proto_depIdxs = []int32{
-	16, // 0: apps.v1.CommConnectRequest.config:type_name -> apps.v1.CommConnectRequest.ConfigEntry
-	15, // 1: apps.v1.CommSendRequest.message:type_name -> apps.v1.CommMessage
-	17, // 2: apps.v1.CommMessage.metadata:type_name -> apps.v1.CommMessage.MetadataEntry
-	18, // 3: apps.v1.CommService.HealthCheck:input_type -> apps.v1.HealthCheckRequest
-	19, // 4: apps.v1.CommService.Name:input_type -> apps.v1.Empty
-	19, // 5: apps.v1.CommService.Version:input_type -> apps.v1.Empty
-	2,  // 6: apps.v1.CommService.Connect:input_type -> apps.v1.CommConnectRequest
-	19, // 7: apps.v1.CommService.Disconnect:input_type -> apps.v1.Empty
-	19, // 8: apps.v1.CommService.IsConnected:input_type -> apps.v1.Empty
-	6,  // 9: apps.v1.CommService.Send:input_type -> apps.v1.CommSendRequest
-	8,  // 10: apps.v1.CommService.Subscribe:input_type -> apps.v1.CommSubscribeRequest
-	10, // 11: apps.v1.CommService.Unsubscribe:input_type -> apps.v1.CommUnsubscribeRequest
-	12, // 12: apps.v1.CommService.Register:input_type -> apps.v1.CommRegisterRequest
-	19, // 13: apps.v1.CommService.Deregister:input_type -> apps.v1.Empty
-	19, // 14: apps.v1.CommService.Receive:input_type -> apps.v1.Empty
-	20, // 15: apps.v1.CommService.Configure:input_type -> apps.v1.SettingsMap
-	21, // 16: apps.v1.CommService.HealthCheck:output_type -> apps.v1.HealthCheckResponse
-	0,  // 17: apps.v1.CommService.Name:output_type -> apps.v1.CommNameResponse
-	1,  // 18: apps.v1.CommService.Version:output_type -> apps.v1.CommVersionResponse
-	3,  // 19: apps.v1.CommService.Connect:output_type -> apps.v1.CommConnectResponse
-	4,  // 20: apps.v1.CommService.Disconnect:output_type -> apps.v1.CommDisconnectResponse
-	5,  // 21: apps.v1.CommService.IsConnected:output_type -> apps.v1.CommIsConnectedResponse
-	7,  // 22: apps.v1.CommService.Send:output_type -> apps.v1.CommSendResponse
-	9,  // 23: apps.v1.CommService.Subscribe:output_type -> apps.v1.CommSubscribeResponse
-	11, // 24: apps.v1.CommService.Unsubscribe:output_type -> apps.v1.CommUnsubscribeResponse
-	13, // 25: apps.v1.CommService.Register:output_type -> apps.v1.CommRegisterResponse
-	14, // 26: apps.v1.CommService.Deregister:output_type -> apps.v1.CommDeregisterResponse
-	15, // 27: apps.v1.CommService.Receive:output_type -> apps.v1.CommMessage
-	19, // 28: apps.v1.CommService.Configure:output_type -> apps.v1.Empty
+var file_proto_apps_v0_comm_proto_depIdxs = []int32{
+	16, // 0: apps.v0.CommConnectRequest.config:type_name -> apps.v0.CommConnectRequest.ConfigEntry
+	15, // 1: apps.v0.CommSendRequest.message:type_name -> apps.v0.CommMessage
+	17, // 2: apps.v0.CommMessage.metadata:type_name -> apps.v0.CommMessage.MetadataEntry
+	18, // 3: apps.v0.CommService.HealthCheck:input_type -> apps.v0.HealthCheckRequest
+	19, // 4: apps.v0.CommService.Name:input_type -> apps.v0.Empty
+	19, // 5: apps.v0.CommService.Version:input_type -> apps.v0.Empty
+	2,  // 6: apps.v0.CommService.Connect:input_type -> apps.v0.CommConnectRequest
+	19, // 7: apps.v0.CommService.Disconnect:input_type -> apps.v0.Empty
+	19, // 8: apps.v0.CommService.IsConnected:input_type -> apps.v0.Empty
+	6,  // 9: apps.v0.CommService.Send:input_type -> apps.v0.CommSendRequest
+	8,  // 10: apps.v0.CommService.Subscribe:input_type -> apps.v0.CommSubscribeRequest
+	10, // 11: apps.v0.CommService.Unsubscribe:input_type -> apps.v0.CommUnsubscribeRequest
+	12, // 12: apps.v0.CommService.Register:input_type -> apps.v0.CommRegisterRequest
+	19, // 13: apps.v0.CommService.Deregister:input_type -> apps.v0.Empty
+	19, // 14: apps.v0.CommService.Receive:input_type -> apps.v0.Empty
+	20, // 15: apps.v0.CommService.Configure:input_type -> apps.v0.SettingsMap
+	21, // 16: apps.v0.CommService.HealthCheck:output_type -> apps.v0.HealthCheckResponse
+	0,  // 17: apps.v0.CommService.Name:output_type -> apps.v0.CommNameResponse
+	1,  // 18: apps.v0.CommService.Version:output_type -> apps.v0.CommVersionResponse
+	3,  // 19: apps.v0.CommService.Connect:output_type -> apps.v0.CommConnectResponse
+	4,  // 20: apps.v0.CommService.Disconnect:output_type -> apps.v0.CommDisconnectResponse
+	5,  // 21: apps.v0.CommService.IsConnected:output_type -> apps.v0.CommIsConnectedResponse
+	7,  // 22: apps.v0.CommService.Send:output_type -> apps.v0.CommSendResponse
+	9,  // 23: apps.v0.CommService.Subscribe:output_type -> apps.v0.CommSubscribeResponse
+	11, // 24: apps.v0.CommService.Unsubscribe:output_type -> apps.v0.CommUnsubscribeResponse
+	13, // 25: apps.v0.CommService.Register:output_type -> apps.v0.CommRegisterResponse
+	14, // 26: apps.v0.CommService.Deregister:output_type -> apps.v0.CommDeregisterResponse
+	15, // 27: apps.v0.CommService.Receive:output_type -> apps.v0.CommMessage
+	19, // 28: apps.v0.CommService.Configure:output_type -> apps.v0.Empty
 	16, // [16:29] is the sub-list for method output_type
 	3,  // [3:16] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
@@ -960,27 +960,27 @@ var file_proto_apps_v1_comm_proto_depIdxs = []int32{
 	0,  // [0:3] is the sub-list for field type_name
 }
 
-func init() { file_proto_apps_v1_comm_proto_init() }
-func file_proto_apps_v1_comm_proto_init() {
-	if File_proto_apps_v1_comm_proto != nil {
+func init() { file_proto_apps_v0_comm_proto_init() }
+func file_proto_apps_v0_comm_proto_init() {
+	if File_proto_apps_v0_comm_proto != nil {
 		return
 	}
-	file_proto_apps_v1_common_proto_init()
+	file_proto_apps_v0_common_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v1_comm_proto_rawDesc), len(file_proto_apps_v1_comm_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_apps_v0_comm_proto_rawDesc), len(file_proto_apps_v0_comm_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_apps_v1_comm_proto_goTypes,
-		DependencyIndexes: file_proto_apps_v1_comm_proto_depIdxs,
-		MessageInfos:      file_proto_apps_v1_comm_proto_msgTypes,
+		GoTypes:           file_proto_apps_v0_comm_proto_goTypes,
+		DependencyIndexes: file_proto_apps_v0_comm_proto_depIdxs,
+		MessageInfos:      file_proto_apps_v0_comm_proto_msgTypes,
 	}.Build()
-	File_proto_apps_v1_comm_proto = out.File
-	file_proto_apps_v1_comm_proto_goTypes = nil
-	file_proto_apps_v1_comm_proto_depIdxs = nil
+	File_proto_apps_v0_comm_proto = out.File
+	file_proto_apps_v0_comm_proto_goTypes = nil
+	file_proto_apps_v0_comm_proto_depIdxs = nil
 }

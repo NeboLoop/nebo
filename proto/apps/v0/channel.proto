@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package apps.v1;
+package apps.v0;
 
 option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
 
-import "proto/apps/v1/common.proto";
+import "proto/apps/v0/common.proto";
 
 // ChannelService is the interface for messaging channel apps (Discord, Telegram, etc.).
 service ChannelService {

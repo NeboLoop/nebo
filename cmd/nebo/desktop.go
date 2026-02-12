@@ -209,7 +209,7 @@ func RunDesktop() {
 	// Create system tray
 	systray := wailsApp.SystemTray.New()
 	systray.SetIcon(trayIcon)
-	systray.SetLabel("Nebo")
+	systray.SetLabel("")
 
 	// Tray menu
 	trayMenu := wailsApp.NewMenu()
@@ -258,13 +258,44 @@ func RunDesktop() {
 	wg.Add(2) // server, agent
 	go func() {
 		// Start server (uses shared database)
+		// Install native directory picker for dev sideload
+		svcCtx.SetBrowseDirectory(func() (string, error) {
+			return wailsApp.Dialog.OpenFile().
+				CanChooseDirectories(true).
+				CanChooseFiles(false).
+				SetTitle("Select App Directory").
+				PromptForSingleSelection()
+		})
+
+		// Install dev window opener — creates or focuses the dev window
+		svcCtx.SetOpenDevWindow(func() {
+			if existing, ok := wailsApp.Window.Get("dev"); ok {
+				existing.Show()
+				existing.Focus()
+				return
+			}
+			wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+				Name:      "dev",
+				Title:     "Nebo Developer",
+				Width:     1400,
+				Height:    900,
+				MinWidth:  800,
+				MinHeight: 600,
+				URL:       serverURL + "/dev",
+			})
+		})
+
+		agentMCPProxy := server.NewAgentMCPProxy()
+
 		go func() {
 			defer wg.Done()
 			opts := server.ServerOptions{
-				SvcCtx:         svcCtx,
-				Quiet:          true,
+				SvcCtx:          svcCtx,
+				Quiet:           true,
+				DevMode:         true,
+				AgentMCPHandler: agentMCPProxy,
 			}
-			if err := server.RunWithOptions(ctx, *c, opts); err != nil {
+			if err := server.Run(ctx, *c, opts); err != nil {
 				fmt.Printf("[Server] Error: %v\n", err)
 				errCh <- fmt.Errorf("server error: %w", err)
 			}
@@ -291,6 +322,7 @@ func RunDesktop() {
 				SvcCtx:           svcCtx,
 				Quiet:            true,
 				Dangerously:      dangerouslyAll,
+				AgentMCPProxy:    agentMCPProxy,
 			}
 			if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {
 				if ctx.Err() == nil {

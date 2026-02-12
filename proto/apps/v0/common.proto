@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package apps.v1;
+package apps.v0;
 
 option go_package = "github.com/nebolabs/nebo/internal/apps/pb";
 

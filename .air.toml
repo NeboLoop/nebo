@@ -1,13 +1,12 @@
 # Configuration for Air (Go hot reload tool)
 # Run: air (or make air)
-# Note: Air runs in headless mode (--headless) for hot reload compatibility.
-# Desktop mode (native window) should be tested with 'make desktop'.
+# Runs in desktop mode (native window + dev routes).
 root = "."
 testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
-  args_bin = ["--headless"]
+  args_bin = []
   bin = "./tmp/nebo"
   cmd = "CGO_ENABLED=1 go build -tags desktop -o ./tmp/nebo ."
   delay = 500

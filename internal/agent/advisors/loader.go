@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/nebolabs/nebo/internal/db"
 	"github.com/nebolabs/nebo/internal/logging"
 )
 
@@ -288,6 +289,28 @@ func (l *Loader) SetEnabled(name string, enabled bool) bool {
 		return true
 	}
 	return false
+}
+
+// LoadFromDB loads advisors from database rows into the in-memory map.
+// DB advisors override file-based advisors with the same name.
+func (l *Loader) LoadFromDB(rows []db.Advisor) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for _, row := range rows {
+		l.advisors[row.Name] = &Advisor{
+			Name:           row.Name,
+			Role:           row.Role,
+			Description:    row.Description,
+			Priority:       int(row.Priority),
+			Enabled:        row.Enabled == 1,
+			MemoryAccess:   row.MemoryAccess == 1,
+			Persona:        row.Persona,
+			TimeoutSeconds: int(row.TimeoutSeconds),
+		}
+	}
+
+	logging.Infof("[advisors] Loaded %d advisors from database", len(rows))
 }
 
 // Dir returns the directory being watched

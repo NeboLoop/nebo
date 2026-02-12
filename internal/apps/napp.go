@@ -45,6 +45,7 @@ func ExtractNapp(nappPath, destDir string) error {
 	hasManifest := false
 	hasBinary := false
 	hasSignatures := false
+	hasSkillMD := false
 
 	cleanDestDir := filepath.Clean(destDir)
 
@@ -111,6 +112,8 @@ func ExtractNapp(nappPath, destDir string) error {
 				hasBinary = true
 			case "signatures.json":
 				hasSignatures = true
+			case "SKILL.md", "skill.md":
+				hasSkillMD = true
 			}
 		}
 	}
@@ -123,6 +126,23 @@ func ExtractNapp(nappPath, destDir string) error {
 	}
 	if !hasSignatures {
 		return fmt.Errorf("missing signatures.json in .napp")
+	}
+	if !hasSkillMD {
+		return fmt.Errorf("missing SKILL.md in .napp — every app must include a skill definition")
+	}
+
+	// Validate the extracted binary is a native compiled executable.
+	// This enforces the compiled-only policy at extraction time —
+	// scripts and interpreted language artifacts are rejected before
+	// they ever reach the sandbox launch path.
+	binaryPath := filepath.Join(destDir, "binary")
+	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+		binaryPath = filepath.Join(destDir, "app")
+	}
+	if err := validateBinaryFormat(binaryPath); err != nil {
+		// Clean up extracted files — don't leave a rejected package on disk
+		os.RemoveAll(destDir)
+		return fmt.Errorf("binary format validation failed: %w", err)
 	}
 
 	return nil
@@ -155,7 +175,7 @@ func extractFile(r io.Reader, target string, perm os.FileMode, maxSize int64) er
 // isAllowedNappFile returns true if the file path is expected in a .napp package.
 func isAllowedNappFile(path string) bool {
 	switch path {
-	case "manifest.json", "binary", "app", "signatures.json":
+	case "manifest.json", "binary", "app", "signatures.json", "SKILL.md", "skill.md":
 		return true
 	}
 	if strings.HasPrefix(path, "ui/") {

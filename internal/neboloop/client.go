@@ -210,6 +210,26 @@ func (c *Client) GetApp(ctx context.Context, id string) (*AppDetail, error) {
 	return &resp, nil
 }
 
+// GetAppReviews fetches reviews for an app from NeboLoop.
+func (c *Client) GetAppReviews(ctx context.Context, id string, page, pageSize int) (*ReviewsResponse, error) {
+	params := url.Values{}
+	if page > 0 {
+		params.Set("page", strconv.Itoa(page))
+	}
+	if pageSize > 0 {
+		params.Set("pageSize", strconv.Itoa(pageSize))
+	}
+	path := "/api/v1/apps/" + id + "/reviews"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+	var resp ReviewsResponse
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // InstallApp installs an app for this bot.
 func (c *Client) InstallApp(ctx context.Context, id string) (*InstallResponse, error) {
 	var resp InstallResponse

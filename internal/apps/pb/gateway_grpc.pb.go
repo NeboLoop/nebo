@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.0
 // - protoc             v6.33.0
-// source: proto/apps/v1/gateway.proto
+// source: proto/apps/v0/gateway.proto
 
 package pb
 
@@ -19,11 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	GatewayService_HealthCheck_FullMethodName = "/apps.v1.GatewayService/HealthCheck"
-	GatewayService_Stream_FullMethodName      = "/apps.v1.GatewayService/Stream"
-	GatewayService_Poll_FullMethodName        = "/apps.v1.GatewayService/Poll"
-	GatewayService_Cancel_FullMethodName      = "/apps.v1.GatewayService/Cancel"
-	GatewayService_Configure_FullMethodName   = "/apps.v1.GatewayService/Configure"
+	GatewayService_HealthCheck_FullMethodName = "/apps.v0.GatewayService/HealthCheck"
+	GatewayService_Stream_FullMethodName      = "/apps.v0.GatewayService/Stream"
+	GatewayService_Poll_FullMethodName        = "/apps.v0.GatewayService/Poll"
+	GatewayService_Cancel_FullMethodName      = "/apps.v0.GatewayService/Cancel"
+	GatewayService_Configure_FullMethodName   = "/apps.v0.GatewayService/Configure"
 )
 
 // GatewayServiceClient is the client API for GatewayService service.
@@ -262,7 +262,7 @@ func _GatewayService_Configure_Handler(srv interface{}, ctx context.Context, dec
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var GatewayService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "apps.v1.GatewayService",
+	ServiceName: "apps.v0.GatewayService",
 	HandlerType: (*GatewayServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
@@ -289,5 +289,5 @@ var GatewayService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/apps/v1/gateway.proto",
+	Metadata: "proto/apps/v0/gateway.proto",
 }

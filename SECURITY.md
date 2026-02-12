@@ -20,6 +20,8 @@ Nebo runs an AI agent with access to your computer's file system, shell, and net
 ├──────────────────────────────────────────────────────┤
 │  App Sandbox (for third-party apps)                  │  ← Env isolation, signing, permissions
 ├──────────────────────────────────────────────────────┤
+│  Compiled-Only Binary Policy (anti-self-modification)│  ← No interpreted languages, opaque binaries
+├──────────────────────────────────────────────────────┤
 │  Network Security (auth, CSRF, headers, rate limits) │  ← JWT, CORS, CSP, rate limiting
 └──────────────────────────────────────────────────────┘
 ```
@@ -207,7 +209,165 @@ Permission changes on app updates require user re-approval.
 
 ---
 
-## 6. Network Security
+## 6. Compiled-Only Binary Policy (No Interpreted Languages)
+
+**Status:** ENFORCED | **Files:** `internal/apps/sandbox.go`, `internal/apps/napp.go`
+
+Nebo's app platform **exclusively runs compiled native binaries**. Apps written in interpreted or scripted languages — Node.js, Python, Ruby, PHP, Perl, shell scripts, Java/JVM, .NET/Mono — are rejected. This is a non-negotiable security boundary.
+
+### Threat Model: AI Agent Self-Modification
+
+Nebo is an AI agent platform. The agent has file system access — it can read and write files as part of its normal operation. This creates a unique and critical threat that traditional app platforms do not face:
+
+**If an app's source code is accessible at runtime, the agent can modify it.**
+
+An interpreted app (e.g., a Node.js app with `index.js` in its directory) exposes its entire logic as readable, modifiable plaintext. The agent — or an attacker who compromises the agent via prompt injection — could:
+
+1. **Rewrite the app's logic** — Change what the app does without the user's knowledge
+2. **Inject backdoors** — Add data exfiltration, credential theft, or remote access code
+3. **Bypass permission checks** — Remove the app's own security validations
+4. **Escalate privileges** — Modify the app to request capabilities it wasn't granted
+5. **Persist across restarts** — Modified source code survives process restarts since the changes are on disk
+
+This is not a theoretical risk. It is a direct consequence of combining AI file system access with interpreted code execution.
+
+### Why Compiled Binaries Are Safe
+
+A compiled native binary (ELF on Linux, Mach-O on macOS, PE on Windows) is **opaque to the agent**:
+
+- The agent cannot meaningfully read or understand compiled machine code
+- Random byte modifications to a compiled binary will crash it, not change its behavior
+- The binary's logic is not accessible as modifiable source text
+- ED25519 signature verification (see Section 5) detects any tampering
+- The binary is a sealed, verified artifact — what was signed is what runs
+
+```
+Interpreted App (REJECTED):
+┌──────────────────────────────┐
+│  app/                        │
+│  ├── index.js    ← Agent can read, modify, inject code
+│  ├── package.json            │
+│  └── node_modules/           │
+│       └── ...    ← Thousands of modifiable JS files
+└──────────────────────────────┘
+
+Compiled App (REQUIRED):
+┌──────────────────────────────┐
+│  app/                        │
+│  ├── binary      ← Opaque machine code, signed, verified
+│  ├── manifest.json           │
+│  └── signatures.json         │
+└──────────────────────────────┘
+```
+
+### Supported Languages
+
+Any language that compiles to a **native binary** with no runtime interpreter dependency:
+
+| Language | Status | Notes |
+|----------|--------|-------|
+| Go | **Recommended** | Static binary, cross-compiles easily, proto/gRPC ecosystem |
+| Rust | Supported | Static binary, excellent security properties |
+| C / C++ | Supported | Native binary, requires careful memory management |
+| Zig | Supported | Native binary, C-interop, cross-compilation |
+
+### Rejected Languages
+
+Any language that requires an interpreter, VM, or runtime to execute:
+
+| Language | Status | Reason |
+|----------|--------|--------|
+| Node.js / JavaScript | **Rejected** | Source code is plaintext `.js` files — fully readable and modifiable |
+| Python | **Rejected** | Source code is plaintext `.py` files; `.pyc` bytecode is trivially decompilable |
+| Ruby | **Rejected** | Source code is plaintext `.rb` files |
+| PHP | **Rejected** | Source code is plaintext `.php` files |
+| Perl | **Rejected** | Source code is plaintext `.pl` files |
+| Shell scripts | **Rejected** | Source code is plaintext; direct command injection vector |
+| Java / Kotlin (JVM) | **Rejected** | `.jar` files contain decompilable bytecode; requires JVM runtime |
+| .NET / C# (Mono) | **Rejected** | `.dll` assemblies contain decompilable IL; requires runtime |
+
+### Enforcement Layers
+
+The compiled-only policy is enforced at multiple independent points across two tiers:
+
+#### Tier 1: NeboLoop (Distribution-Time Deep Validation)
+
+NeboLoop performs **expensive, thorough analysis once per upload** before signing the binary. All binaries distributed through the app store have passed this gauntlet:
+
+1. **Magic byte verification** — Validates ELF (`\x7fELF`), Mach-O (`\xFE\xED\xFA\xCE` / `\xCF\xFA\xED\xFE` / `\xCA\xFE\xBA\xBE`), or PE (`MZ`) headers
+2. **Hidden interpreter detection** — Scans binary strings for `_PYINSTALLER`, `_pyinstaller_pyz`, `cpython`, `node.js`, `_MEI` temp directory markers (PyInstaller extraction folders)
+3. **Dynamic link analysis** — Uses ELF/Mach-O/PE section parsing to inspect shared library dependencies. **Red flags that trigger rejection:** `libpython`, `libnode`, `libjvm`, `libmono`, `libruby`. These indicate a compiled wrapper around an interpreted runtime
+4. **Go build info verification** — For Go binaries (the recommended language), reads Go module build info to confirm the binary was built with the Go toolchain
+5. **Dropper pattern detection** — Flags binaries that extract files to `/tmp` at runtime (PyInstaller `_MEI` folders, Node.js SEA extraction patterns)
+6. **ED25519 signing** — Only binaries that pass all checks are signed. The signature is the trust anchor for Nebo's local verification
+
+#### Tier 2: Nebo (Install/Launch-Time Fast Verification)
+
+Nebo's local checks are intentionally **lightweight and fast** — magic bytes + signature is sufficient because signed binaries from NeboLoop have already passed deep validation:
+
+1. **Extraction time** (`napp.go`): Validates magic bytes immediately after extracting the binary from a `.napp` package. Rejects scripts (shebang `#!` detection) and non-native formats. Cleans up extracted files on failure
+2. **Launch time** (`sandbox.go`): Re-validates magic bytes before every process execution. Catches binaries replaced on disk between extraction and launch
+3. **Signature verification** (`signing.go`): ED25519 signature over raw binary bytes — any modification (even a single byte) invalidates the signature and prevents launch
+4. **File permissions**: Binary installed as `0555` (read + execute, no write), manifest and signatures as `0444` (read-only)
+
+```
+NeboLoop (deep, once per upload):           Nebo (fast, every launch):
+┌─────────────────────────────┐             ┌─────────────────────────────┐
+│ 1. Magic byte check         │             │ 1. Magic byte check         │
+│ 2. Hidden interpreter scan  │             │ 2. Shebang rejection        │
+│ 3. Dynamic link analysis    │             │ 3. ED25519 signature verify │
+│ 4. Go build info verify     │             │ 4. File permission check    │
+│ 5. Dropper pattern detect   │             └─────────────────────────────┘
+│ 6. ED25519 sign if clean    │
+└─────────────────────────────┘
+```
+
+#### Sideloaded Apps (Developer Mode)
+
+Sideloaded apps bypass NeboLoop and have no signature. Nebo still enforces:
+- Magic byte validation (no scripts, no non-native formats)
+- No signature verification (expected — developer mode)
+- Warning displayed to user: "This app is unsigned and not verified by NeboLoop"
+
+### W^X and Memory Protection
+
+Modern operating systems enforce **Write XOR Execute (W^X)** — memory pages cannot be simultaneously writable and executable. This is an OS-level protection that Nebo relies on as an additional defense layer:
+
+| Platform | Protection | How It Helps |
+|----------|-----------|-------------|
+| **macOS** | Hardened Runtime + code signing required for execution | Even if the agent wrote a new binary to disk, macOS would refuse to execute it without a valid code signature (Gatekeeper). Apple Silicon enforces W^X in hardware via PAC (Pointer Authentication Codes) |
+| **Linux** | `mprotect` W^X enforcement, SELinux/AppArmor | Kernel prevents mapping memory as both writable and executable. Distribution-level policies (SELinux `execmem` denial) add further protection |
+| **Windows** | DEP (Data Execution Prevention) + ASLR | Prevents execution of code in data pages. Modern Windows requires signed binaries for protected processes |
+
+**Why this matters for Nebo:** Even in a worst-case scenario where a buffer overflow in a C/C++ app is exploited, the attacker cannot:
+1. Write shellcode to memory and execute it (W^X prevents this)
+2. Write a new binary to disk and execute it (signature verification prevents this)
+3. Modify the running binary's code in memory (code pages are read+execute only, not writable)
+
+Nebo does not implement W^X — it is an OS guarantee we **depend on** and **document as a security assumption**. Apps that disable W^X protections (e.g., JIT compilers) would need explicit permission in the manifest.
+
+### What About Bundled Interpreters?
+
+A compiled binary that internally embeds an interpreter (e.g., a Go binary that embeds a Lua VM) is permitted — the outer binary is still a compiled, signed, opaque artifact. The embedded interpreter runs within the sandbox with no file system access to its own code. This is acceptable because:
+
+- The agent cannot modify the embedded scripts (they're inside the compiled binary)
+- The binary's signature covers the entire artifact including embedded resources
+- The sandbox environment prevents the process from modifying its own binary
+
+**However**, binaries that are wrappers around full interpreted runtimes are **rejected**:
+- **PyInstaller** bundles a complete Python interpreter + bytecode → rejected by NeboLoop's deep scan (`_PYINSTALLER` string detection, `libpython` link check)
+- **Node.js SEA** (Single Executable Applications) embeds the V8 engine → rejected (`libnode` link check)
+- **GraalVM native-image** is an exception — it compiles to true native code with no interpreter, so it passes validation
+
+### Design Rationale
+
+This policy exists because Nebo occupies a unique position in software: **it is an AI agent that runs third-party code on the user's machine**. Traditional app sandboxing focuses on preventing apps from accessing unauthorized resources. Nebo must additionally prevent the agent from modifying the apps it runs. Compiled binaries achieve this by making app code opaque and immutable at the file system level.
+
+The two-tier architecture (NeboLoop deep scan + Nebo fast verify) follows the same pattern as mobile app stores: Apple/Google perform deep analysis at submission time, devices do fast signature checks at install/launch time. This gives us the best of both worlds — thorough security without launch-time latency.
+
+---
+
+## 7. Network Security
 
 ### Authentication
 - **JWT** (HMAC-SHA256) for all API requests
@@ -263,7 +423,7 @@ All database queries use **sqlc-generated parameterized queries** (prepared stat
 
 ---
 
-## 7. Process Safety
+## 8. Process Safety
 
 ### Single Instance Lock
 Only one Nebo instance per computer. Uses filesystem locks (`flock` on Unix, `LockFileEx` on Windows) with PID tracking.
@@ -282,7 +442,7 @@ Only one Nebo instance per computer. Uses filesystem locks (`flock` on Unix, `Lo
 
 ---
 
-## 8. Vulnerability Hardening Log
+## 9. Vulnerability Hardening Log
 
 This section tracks every security vulnerability identified during development, how each was resolved, and which remain open. Vulnerabilities are sourced from internal audits, the OpenClaw comparison analysis, and the MAESTRO threat framework.
 
