@@ -1,95 +1,40 @@
 # Nebo
 
-Your personal AI assistant that runs locally. One primary agent with a lane-based concurrency system and persistent memory.
+A personal AI that lives on your computer. You name it, shape its personality, and it learns how you think. One persistent intelligence that compounds understanding the longer it stays with you.
 
-## The Nebo Paradigm
+## Why Nebo
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                            THE NEBO AGENT                                    │
-│                                                                              │
-│   • One primary WebSocket connection (enforced by hub)                       │
-│   • Lane-based concurrency for different work types                          │
-│   • Spawns SUB-AGENTS as goroutines for parallel work                        │
-│   • SQLite persistence survives restarts (crash recovery)                    │
-│   • Proactive via heartbeat lane + scheduled events                          │
-│   • Inter-agent communication via comm lane + plugins                        │
-│                                                                              │
-│   Channels (how you reach THE agent):                                        │
-│     ┌─────────┐  ┌─────────┐  ┌──────────┐  ┌─────────┐  ┌───────┐         │
-│     │ Web UI  │  │   CLI   │  │ Telegram │  │ Discord │  │ Slack │         │
-│     └────┬────┘  └────┬────┘  └────┬─────┘  └────┬────┘  └───┬───┘         │
-│          │            │            │             │           │              │
-│          └────────────┴────────────┴─────────────┴───────────┘              │
-│                                    │                                         │
-│                        ┌───────────┴───────────┐                            │
-│                        │      LANE SYSTEM      │                            │
-│                        │  (supervisor pattern) │                            │
-│                        └───────────┬───────────┘                            │
-│                                    │                                         │
-│    ┌────────┬────────┬─────────────┼──────────┬───────────┬──────────┐      │
-│    │        │        │             │          │           │          │      │
-│  ┌─┴──┐ ┌──┴───┐ ┌──┴────┐ ┌─────┴────┐ ┌───┴──┐ ┌─────┴────┐    │      │
-│  │main│ │events│ │subagnt│ │  nested  │ │ hb   │ │   comm   │    │      │
-│  │ (1)│ │  (2) │ │       │ │   (3)   │ │ (1)  │ │   (5)   │    │      │
-│  └─┬──┘ └──┬───┘ └──┬────┘ └─────┬────┘ └───┬──┘ └─────┬────┘    │      │
-│    │        │        │            │          │           │          │      │
-│    ▼        ▼        ▼            ▼          ▼           ▼          │      │
-│  User    Scheduled  Sub-Agent   Tool      Proactive  Inter-agent   │      │
-│  chat    tasks      goroutines  recursion heartbeat  messages      │      │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Key Architectural Concepts:**
-
-| Concept | What It Means |
-|---------|---------------|
-| **One Agent** | Single WebSocket connection to hub. If reconnected, old connection is dropped. |
-| **Lane System** | Work queues for different types of work. Main lane serializes user chat (1 at a time). |
-| **Sub-Agents** | Goroutines (not separate processes) spawned for parallel work. Each gets its own session. |
-| **Crash Recovery** | Pending sub-agent tasks persist to SQLite, recovered on restart. |
-
-**This is NOT a multi-agent chat system.** Users interact with ONE agent that:
-- Serializes your conversations (one at a time via main lane)
-- Spawns temporary sub-agents for parallel work
-- Connects through any channel you prefer
-- Runs scheduled tasks concurrently (events lane)
-
-## Features
-
-- **Persistent Memory** - SQLite-backed conversation history, facts, and preferences
-- **Sub-Agent System** - Spawn parallel workers for complex tasks
-- **Multi-Provider** - Anthropic, OpenAI, Google Gemini, DeepSeek, Ollama
-- **Computer Control** - Browser automation, screenshots, file operations, shell commands
-- **Multi-Channel** - Web UI, CLI, Telegram, Discord, Slack
-- **Inter-Agent Comm** - Plugin-based communication between agents (loopback, MQTT, NATS)
-- **Extensible** - YAML skills and compiled plugins
-- **Proactive** - Scheduled tasks and heartbeat-driven actions
-
-## System Requirements
-
-- macOS with Apple Silicon (M1 or later)
-- 16 GB RAM minimum
-- ~4 GB disk space (for Nebo + local models)
-
-Nebo uses local models via Ollama for embeddings (`qwen3-embedding`) and background tasks (`qwen3:4b`). These are auto-pulled on first run. See [ADR-001](docs/decisions/001-local-model-strategy.md) for details.
+- **It's yours.** Runs locally on your machine. Your data stays on your computer.
+- **It remembers.** Persistent memory across sessions — preferences, projects, people, patterns.
+- **It grows.** The longer you use it, the more useful it becomes.
+- **It works.** Browser automation, file operations, shell commands, calendar, email — one AI for your entire workflow.
+- **It's extensible.** An app platform where developers build and distribute capabilities via [NeboLoop](https://neboloop.com).
 
 ## Install
 
+### macOS
+
 ```bash
-# macOS/Linux via Homebrew
+# Homebrew (recommended)
 brew install nebolabs/tap/nebo
 
-# Or direct install script
-curl -fsSL https://raw.githubusercontent.com/nebolabs/nebo/main/install.sh | sh
+# Or download the .dmg installer from the latest release
+```
+
+### Windows
+
+Download the installer (`Nebo-setup.exe`) from the [latest release](https://github.com/nebolabs/nebo/releases/latest).
+
+### Linux
+
+```bash
+# Debian/Ubuntu (.deb)
+# Download from the latest release, then:
+sudo dpkg -i nebo_*.deb
 
 # Or build from source
 git clone https://github.com/nebolabs/nebo.git
 cd nebo && make build
-
-# Build desktop app (native window + system tray, macOS only)
-make desktop
 ```
 
 ## Quick Start
@@ -98,323 +43,88 @@ make desktop
 # Desktop mode — native window + system tray (default)
 nebo
 
-# Headless mode — browser-only, no native window (current behavior)
+# Headless mode — opens in your browser
 nebo --headless
 
-# Open the web UI to add your API key
-open http://localhost:27895/settings/providers
+# CLI chat
+nebo chat "What can you do?"
+nebo chat -i    # Interactive mode
 ```
 
-Or use the CLI:
+Web UI runs at `http://localhost:27895`. Add your API key in **Settings > Providers**.
 
-```bash
-nebo chat "Hello, what can you do?"
-nebo chat --interactive    # REPL mode
-```
+## Multi-Provider
 
-## How Lanes and Sub-Agents Work
+Nebo works with the model you prefer:
 
-**Lanes** are work queues that organize different types of work:
+- **Anthropic** (Claude) — streaming, tool calls, extended thinking
+- **OpenAI** (GPT) — streaming, tool calls
+- **Google Gemini** — streaming, tool calls
+- **Ollama** — local models, no API key needed
+- **CLI wrappers** — `claude`, `gemini`, `codex` commands
 
-| Lane | Concurrency | Purpose |
-|------|-------------|---------|
-| `main` | 1 | User conversations (serialized, one at a time) |
-| `events` | 2 | Scheduled/triggered tasks |
-| `subagent` | unlimited | Sub-agent goroutines |
-| `nested` | 3 | Tool recursion/callbacks |
-| `heartbeat` | 1 | Proactive heartbeat ticks |
-| `comm` | 5 | Inter-agent communication messages |
+Configure providers via the Web UI or `models.yaml` in your data directory.
 
-**Sub-agents** are spawned for parallel work:
+## Built-in Capabilities
 
-```
-User: "Analyze this codebase and create a security report"
+| Domain | What it does |
+|--------|-------------|
+| **File** | Read, write, edit, search files and code |
+| **Shell** | Execute commands, manage processes, background tasks |
+| **Web** | Fetch pages, search the web, full browser automation |
+| **Memory** | Store and recall facts, preferences, project context |
+| **Tasks** | Spawn parallel sub-agents, schedule recurring jobs |
+| **Communication** | Inter-agent messaging via comm plugins |
 
-THE AGENT (main lane, serialized):
-├─► spawn("Explore authentication code")
-│       └─► Sub-Agent goroutine (subagent lane)
-│           └─► Gets own session, runs own agentic loop
-│
-├─► spawn("Find all API endpoints")
-│       └─► Sub-Agent goroutine (subagent lane)
-│
-├─► spawn("Check for hardcoded secrets")
-│       └─► Sub-Agent goroutine (subagent lane)
-│
-└─► (waits for all sub-agents, synthesizes report)
-```
+Platform-specific capabilities (macOS: accessibility, calendar, contacts; Windows/Linux: desktop automation) are auto-detected.
 
-**Sub-agent characteristics:**
-- **Goroutines** - NOT separate processes or WebSocket connections
-- **Own Session** - Each gets a session key like `subagent-{uuid}`
-- **Persisted** - Tasks saved to SQLite for crash recovery
-- **Temporary** - Cleaned up after completion
+## App Platform
 
-> **Note:** Only ONE Nebo instance runs per computer (lock file enforced). Sub-agents are parallel workers inside THE agent's process.
+Nebo has a sandboxed app platform. Developers build `.napp` packages that extend Nebo with new tools, channels, UI panels, and integrations.
 
-## Configuration
+- **Sandboxed** — apps run in isolated directories with gRPC over Unix sockets
+- **Deny-by-default permissions** — apps only access what their manifest declares
+- **Signed** — ED25519 signature verification for every app binary and manifest
+- **Distributed via NeboLoop** — install apps from the marketplace or deploy privately to your loop
 
-Add your API key in the Web UI: **Settings > Providers**
+See [Creating Apps](docs/CREATING_APPS.md) for the developer guide. The App SDK and protocol definitions (`proto/apps/`) are licensed under Apache 2.0.
 
-Or configure via `models.yaml` in your Nebo data directory:
+## Channels
 
-```yaml
-version: "1.0"
+Reach your Nebo from anywhere:
 
-defaults:
-  primary: anthropic/claude-sonnet-4-5-20250929
-  fallbacks:
-    - anthropic/claude-haiku-4-5-20250929
-
-providers:
-  anthropic:
-    - id: claude-sonnet-4-5-20250929
-      displayName: Claude Sonnet 4.5
-      contextWindow: 1000000
-      active: true
-  openai:
-    - id: gpt-5.2
-      displayName: GPT-5.2
-      contextWindow: 400000
-      active: true
-```
-
-## Built-in Tools (STRAP Pattern)
-
-Tools use the **STRAP (Single Tool Resource Action Pattern)** — consolidating many tools into domain tools for reduced LLM context overhead.
-
-| Domain | Tool | Resources / Actions |
-|--------|------|---------------------|
-| File | `file` | read, write, edit, glob, grep |
-| Shell | `shell` | bash exec/bg/kill, process list/kill, session management |
-| Web | `web` | fetch, search, browser automation (navigate, click, type, screenshot) |
-| Agent | `agent` | task (spawn/status/cancel), cron (create/list/delete), memory (store/recall), message (send/list), session (list/history/clear), comm (send/subscribe/status) |
-
-**Standalone tools:** `screenshot`, `vision` (image analysis), platform-specific capabilities (macOS: accessibility, calendar, contacts, etc.)
-
-## Skills System
-
-Skills are YAML files that enhance agent behavior for specific tasks.
-
-```yaml
-# skills/security-audit.yaml (in Nebo data directory)
-name: security-audit
-triggers: [security, audit, vulnerability]
-template: |
-  When performing a security audit:
-  1. Check for OWASP Top 10 vulnerabilities
-  2. Look for hardcoded secrets
-  3. Review authentication flows
-  ...
-```
-
-Bundled skills: `code-review`, `git-workflow`, `security-audit`, `api-design`, `database-expert`, `debugging`
-
-## Advisors System
-
-Advisors are internal "voices" that deliberate on tasks before the agent decides. They do NOT speak to users, commit memory, or persist independently — they only inform the agent's decisions.
-
-```
-User: "Should we rewrite the auth system?"
-                    │
-            ┌───────┴───────┐
-            │  THE AGENT    │
-            │  (main lane)  │
-            └───────┬───────┘
-                    │ advisors(task: "Evaluate auth rewrite")
-                    │
-        ┌───────────┼───────────┬───────────┐
-        ▼           ▼           ▼           ▼
-   ┌─────────┐ ┌──────────┐ ┌─────────┐ ┌─────────┐
-   │ Skeptic │ │Pragmatist│ │Historian│ │Creative │
-   │(critic) │ │(builder) │ │(context)│ │(explorer│
-   └────┬────┘ └────┬─────┘ └────┬────┘ └────┬────┘
-        │           │            │            │
-        └───────────┴────────────┴────────────┘
-                    │
-            Agent synthesizes and decides
-```
-
-**Key properties:**
-- Run concurrently (up to 5, with 30s timeout)
-- Each advisor sees the same context but not other advisors' responses
-- The agent is the decision-maker — advisors only provide counsel
-- Hot-reload: edit files and changes take effect immediately
-
-### Defining Advisors
-
-Advisors are Markdown files with YAML frontmatter, stored in the `advisors/` directory:
-
-```
-advisors/
-├── skeptic/
-│   └── ADVISOR.md
-├── pragmatist/
-│   └── ADVISOR.md
-├── historian/
-│   └── ADVISOR.md
-└── creative/
-    └── ADVISOR.md
-```
-
-Each `ADVISOR.md`:
-
-```markdown
----
-name: skeptic
-role: critic
-description: Challenges assumptions and identifies weaknesses
-priority: 10
-enabled: true
----
-
-# The Skeptic
-
-You are the Skeptic. Your role is to challenge ideas and find flaws.
-
-## Your Approach
-- Question every assumption
-- Look for edge cases and failure modes
-- Challenge optimistic estimates
-```
-
-| Field | Required | Purpose |
-|-------|----------|---------|
-| `name` | Yes | Unique identifier |
-| `role` | No | Category (critic, builder, historian, etc.) |
-| `description` | Yes | What this advisor does |
-| `priority` | No | Execution order (higher = first, default: 0) |
-| `enabled` | No | Disable without deleting (default: true) |
-| `memory_access` | No | Enable persistent memory recall for this advisor (default: false) |
-
-The markdown body after the frontmatter is the advisor's persona — the system prompt that shapes their voice.
-
-### Using Advisors
-
-The agent decides when to consult advisors via the `advisors` tool:
-
-```
-advisors(task: "Should we migrate from REST to GraphQL?")
-advisors(task: "Evaluate caching strategy", advisors: ["skeptic", "pragmatist"])
-```
-
-**Use advisors for:** Significant decisions, multiple valid approaches, when uncertain.
-**Skip advisors for:** Simple, routine, or time-sensitive tasks.
-
-### Configuration
-
-```yaml
-# config.yaml (in Nebo data directory)
-advisors:
-  enabled: true           # Disable all advisors globally
-  max_advisors: 5         # Max concurrent advisors per deliberation
-  timeout_seconds: 30     # Per-deliberation timeout
-```
-
-### Built-in Advisors
-
-| Advisor | Role | Memory | Purpose |
-|---------|------|--------|---------|
-| **Skeptic** | critic | No | Challenges assumptions, identifies weaknesses |
-| **Pragmatist** | builder | No | Finds simplest viable action, cuts complexity |
-| **Historian** | context | Yes | Brings context from past decisions and patterns |
-| **Creative** | explorer | No | Explores novel or unconventional approaches |
-| **Optimist** | advocate | No | Focuses on possibilities and upside potential |
-
-The Historian has `memory_access: true`, so it receives relevant memories from Nebo's persistent memory (hybrid vector + FTS search) before deliberating. Any advisor can opt into memory access by adding this flag to their frontmatter.
-
-## Channel Integrations
-
-Connect Nebo to messaging platforms:
-
-| Channel | Setup |
-|---------|-------|
+| Channel | How |
+|---------|-----|
+| **Web UI** | `http://localhost:27895` — the primary interface |
+| **CLI** | `nebo chat` — terminal chat mode |
 | **Telegram** | Create bot via @BotFather, add token in Settings |
 | **Discord** | Create application, add bot token in Settings |
 | **Slack** | Create app with Socket Mode, add tokens in Settings |
 
-Messages from these channels are routed to THE agent, and responses are sent back.
+All channels route to the same agent with the same memory and context.
 
-## CLI Reference
+## System Requirements
 
-```
-nebo                  Desktop mode (native window + system tray + agent)
-nebo --headless       Headless mode (HTTP server + agent, opens browser)
-nebo serve            Server only (for remote agents)
-nebo agent            Agent only (connects to server)
-nebo chat "prompt"    One-shot chat
-nebo chat -i          Interactive REPL
-nebo chat --dangerously   No approval prompts (caution!)
-```
+| Platform | Requirements |
+|----------|-------------|
+| **macOS** | macOS 13+ (Apple Silicon or Intel) |
+| **Windows** | Windows 10+ (64-bit) |
+| **Linux** | Ubuntu 22.04+ or equivalent (amd64/arm64) |
+
+Nebo uses local models via Ollama for embeddings and background tasks. These are auto-pulled on first run (~4 GB).
 
 ## Development
 
 ```bash
-make air              # Backend with hot reload (headless mode)
+make dev-setup        # First-time: install dependencies
+make air              # Backend with hot reload
 cd app && pnpm dev    # Frontend dev server
-go test ./...         # Run tests
-make build            # Build binary (headless + desktop)
-make desktop          # Build desktop app (includes frontend build)
-make package          # Package as installer (.dmg/.msi/.deb)
+make test             # Run tests
+make build            # Build binary (headless)
+make desktop          # Build desktop app (native window + tray)
 ```
 
-## Architecture
-
-```
-nebo/
-├── internal/
-│   ├── agent/                # The Agent Core
-│   │   ├── ai/               # AI providers (Anthropic, OpenAI, Gemini, Ollama)
-│   │   ├── comm/             # Inter-agent communication (CommPlugin, handler, manager)
-│   │   ├── runner/           # Agentic loop (model selection, tool execution)
-│   │   ├── orchestrator/     # Sub-agent spawning + crash recovery
-│   │   ├── tools/            # STRAP domain tools (file, shell, web, agent)
-│   │   ├── session/          # Conversation persistence + compaction
-│   │   ├── embeddings/       # Vector + FTS hybrid search for memories
-│   │   ├── skills/           # YAML skill loader (hot-reload)
-│   │   ├── plugins/          # hashicorp/go-plugin for extensions
-│   │   └── recovery/         # Pending task persistence for crash recovery
-│   ├── agenthub/             # WebSocket hub + lane system
-│   │   ├── hub.go            # Connection management, message routing
-│   │   └── lane.go           # Concurrency queues (main/events/subagent/nested/heartbeat/comm)
-│   ├── channels/             # Telegram, Discord, Slack integrations
-│   └── server/               # HTTP server (chi router)
-├── cmd/nebo/                 # CLI commands (agent, chat, serve, desktop, etc.)
-│   ├── desktop.go            # Wails v3 native window + system tray
-│   ├── root.go               # Headless mode (RunAll)
-│   └── vars.go               # --headless flag routing
-├── app/                      # Web UI (SvelteKit 2 + Svelte 5)
-├── assets/icons/             # App icons for all platforms
-└── extensions/               # Bundled skills & plugins
-```
-
-### Component Responsibilities
-
-| Component | Role |
-|-----------|------|
-| **Hub** (`agenthub/hub.go`) | WebSocket connections, agent registry, message routing |
-| **Lanes** (`agenthub/lane.go`) | Work queues with concurrency limits per lane type |
-| **Runner** (`agent/runner/`) | Agentic loop: model selection, tool execution, streaming |
-| **Orchestrator** (`agent/orchestrator/`) | Sub-agent spawning, task persistence, crash recovery |
-| **Session** (`agent/session/`) | Conversation history, context compaction |
-
-### Data Flow
-
-```
-Channel (Web/CLI/Telegram/Discord/Slack)
-    ↓
-Hub receives WebSocket message
-    ↓
-Routes to Agent via channel
-    ↓
-Agent command enqueues to Lane
-    ↓
-Lane worker (respecting concurrency) calls Runner.Run()
-    ↓
-Runner executes agentic loop (stream events back)
-    ↓
-Hub broadcasts to connected clients
-```
+See [CLAUDE.md](CLAUDE.md) for full architecture documentation.
 
 ## Author
 
@@ -425,4 +135,6 @@ Hub broadcasts to connected clients
 
 ## License
 
-MIT
+Nebo core is source-available under the [Elastic License 2.0 (ELv2)](LICENSE). You can read, use, and modify the code — you cannot offer it as a competing product or managed service.
+
+The App SDK, protocol definitions (`proto/apps/`), and reference apps are licensed under [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0). Build freely on our platform.
