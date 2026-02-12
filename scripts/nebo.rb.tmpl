@@ -3,12 +3,12 @@ cask "nebo" do
   version "${PKG_VERSION}"
 
   on_arm do
-    url "https://github.com/nebolabs/nebo/releases/download/${VERSION}/Nebo-darwin-arm64.zip"
+    url "https://github.com/nebolabs/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-arm64.dmg"
     sha256 "${SHA_DARWIN_ARM64}"
   end
 
   on_intel do
-    url "https://github.com/nebolabs/nebo/releases/download/${VERSION}/Nebo-darwin-amd64.zip"
+    url "https://github.com/nebolabs/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-amd64.dmg"
     sha256 "${SHA_DARWIN_AMD64}"
   end
 

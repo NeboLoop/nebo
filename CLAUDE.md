@@ -48,6 +48,9 @@ Nebo is **ONE primary agent** with a **lane-based concurrency system**. Not mult
 ## Quick Reference
 
 ```bash
+# First-time setup
+make dev-setup        # go mod download/tidy + pnpm install
+
 # Development (hot reload via air - NO restart needed)
 make air              # Backend with hot reload (runs in headless mode)
 make dev              # Backend + frontend together
@@ -63,21 +66,21 @@ make migrate-down     # Rollback last migration
 make migrate-status   # Check migration status
 
 # Testing
-go test ./...                                          # All Go tests
+make test                                              # All Go tests
 go test -v ./internal/logic/...                        # Logic tests with verbose
 go test -v -run TestName ./internal/logic/auth/        # Single test
 cd app && pnpm check                                   # TypeScript check
 cd app && pnpm test:unit                               # Frontend tests
 
 # Build & Release
-make build            # Build binary to bin/nebo
-make desktop          # Build desktop app (frontend + Go binary)
+make build            # Build binary to bin/nebo (CGO_ENABLED=0, headless)
+make desktop          # Build desktop app (CGO_ENABLED=1, -tags desktop)
 make package          # Package installer (.dmg/.msi/.deb)
 make cli              # Build and install globally
 make release          # Build for all platforms (darwin/linux, amd64/arm64)
 
 # Before committing
-make build && cd app && pnpm build
+make build
 ```
 
 ---
@@ -482,13 +485,3 @@ Use `WithOrigin(ctx, origin)` / `GetOrigin(ctx)` to propagate origin through con
 | Telegram | `go-telegram/bot` |
 | Slack | `slack-go/slack` (Socket Mode) |
 
----
-
-## Not Yet Implemented
-
-| Feature | Notes |
-|---------|-------|
-| AWS Bedrock | No provider implementation |
-| Azure OpenAI | No provider implementation |
-| Groq | No provider implementation |
-| DeepSeek (native) | Currently uses Ollama; no dedicated provider |

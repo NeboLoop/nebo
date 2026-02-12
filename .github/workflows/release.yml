@@ -86,15 +86,12 @@ jobs:
           cp nebo-darwin-${{ matrix.goarch }} Nebo.app/Contents/MacOS/nebo
           sed "s/__VERSION__/${PKG_VERSION}/g" assets/macos/Info.plist > Nebo.app/Contents/Info.plist
           cp assets/icons/nebo.icns Nebo.app/Contents/Resources/nebo.icns
-          # Zip for release (ditto preserves macOS metadata)
-          ditto -c -k --keepParent Nebo.app Nebo-darwin-${{ matrix.goarch }}.zip
 
       - name: Create .dmg installer
         env:
           VERSION: ${{ github.ref_name }}
         run: |
           brew install create-dmg
-          PKG_VERSION="${VERSION#v}"
           # Move Nebo.app into dist/ so the script can find it
           mkdir -p dist
           cp -R Nebo.app dist/Nebo.app
@@ -104,9 +101,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: nebo-darwin-${{ matrix.goarch }}
-          path: |
-            Nebo-darwin-${{ matrix.goarch }}.zip
-            dist/Nebo-*.dmg
+          path: dist/Nebo-*.dmg
 
   # ─── Linux desktop builds (CGO required for Wails v3 / WebKitGTK) ────
   build-linux:
@@ -355,8 +350,8 @@ jobs:
       - name: Compute SHA256 checksums
         id: checksums
         run: |
-          echo "darwin_arm64=$(sha256sum artifacts/Nebo-darwin-arm64.zip | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "darwin_amd64=$(sha256sum artifacts/Nebo-darwin-amd64.zip | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "darwin_arm64=$(sha256sum artifacts/Nebo-*-arm64.dmg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "darwin_amd64=$(sha256sum artifacts/Nebo-*-amd64.dmg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
