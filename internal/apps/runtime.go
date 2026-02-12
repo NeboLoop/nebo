@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	pb "github.com/nebolabs/nebo/internal/apps/pb"
@@ -161,9 +160,7 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	// Process group isolation: enables clean kill of app + all child processes
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
+	setProcGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		logCleanup()
@@ -172,7 +169,7 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 
 	// Wait for socket to appear (exponential backoff, max 10s)
 	if err := waitForSocket(sockPath, 10*time.Second); err != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		killProcGroup(cmd)
 		logCleanup()
 		return nil, fmt.Errorf("app did not create socket: %w", err)
 	}
@@ -192,7 +189,7 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 	}
 	conn, err := grpc.NewClient("unix://"+sockPath, dialOpts...)
 	if err != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		killProcGroup(cmd)
 		logCleanup()
 		return nil, fmt.Errorf("grpc dial: %w", err)
 	}
@@ -368,21 +365,8 @@ func (p *AppProcess) stop() error {
 	}
 
 	if p.cmd != nil && p.cmd.Process != nil {
-		// Graceful: SIGTERM the entire process group (kills child processes too)
-		pid := p.cmd.Process.Pid
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
-
-		// Wait up to 5 seconds
-		done := make(chan error, 1)
-		go func() { done <- p.cmd.Wait() }()
-
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			// Force kill the entire process group
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			<-done
-		}
+		// Graceful shutdown with timeout, then force kill
+		gracefulStopProc(p.cmd, 5*time.Second)
 	}
 
 	// Close per-app log files
