@@ -207,6 +207,15 @@ export interface CreateMCPIntegrationResponse {
 	integration: MCPIntegration
 }
 
+export interface CreateSkillRequest {
+	content: string // Full SKILL.md text (YAML frontmatter + markdown body)
+	slug?: string // Optional directory name override
+}
+
+export interface CreateSkillResponse {
+	skill: ExtensionSkill
+}
+
 export interface CreateTaskRequest {
 	name: string
 	schedule: string
@@ -255,6 +264,9 @@ export interface DeleteMemoryRequest {
 export interface DeleteNotificationRequest {
 }
 
+export interface DeleteSkillRequest {
+}
+
 export interface DeleteTaskRequest {
 }
 
@@ -300,6 +312,8 @@ export interface ExtensionSkill {
 	priority: number
 	enabled: boolean
 	filePath: string
+	source: string // "bundled" or "user"
+	editable: boolean // true for user skills
 }
 
 export interface ExtensionTool {
@@ -412,6 +426,14 @@ export interface GetPluginResponse {
 
 export interface GetPreferencesResponse {
 	preferences: UserPreferences
+}
+
+export interface GetSkillContentRequest {
+}
+
+export interface GetSkillContentResponse {
+	content: string
+	editable: boolean
 }
 
 export interface GetSkillRequest {
@@ -1288,6 +1310,14 @@ export interface UpdatePreferencesRequest {
 	timezone?: string
 	language?: string
 	theme?: string
+}
+
+export interface UpdateSkillRequest {
+	content: string
+}
+
+export interface UpdateSkillResponse {
+	skill: ExtensionSkill
 }
 
 export interface UpdateTaskRequest {

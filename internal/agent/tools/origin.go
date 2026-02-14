@@ -17,7 +17,10 @@ const (
 // contextKey is an unexported type for context keys to avoid collisions.
 type contextKey int
 
-const originKey contextKey = iota
+const (
+	originKey contextKey = iota
+	sessionKeyKey
+)
 
 // WithOrigin returns a new context carrying the given origin.
 func WithOrigin(ctx context.Context, origin Origin) context.Context {
@@ -31,4 +34,17 @@ func GetOrigin(ctx context.Context) Origin {
 		return origin
 	}
 	return OriginUser
+}
+
+// WithSessionKey returns a new context carrying the session key.
+func WithSessionKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, sessionKeyKey, key)
+}
+
+// GetSessionKey extracts the session key from a context.
+func GetSessionKey(ctx context.Context) string {
+	if key, ok := ctx.Value(sessionKeyKey).(string); ok {
+		return key
+	}
+	return ""
 }

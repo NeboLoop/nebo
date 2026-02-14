@@ -81,6 +81,10 @@ var trayIcon []byte
 
 // RunDesktop starts Nebo in desktop mode with a native window and system tray.
 func RunDesktop() {
+	// Augment PATH so CLI tools (claude, codex, gemini) are discoverable
+	// even when launched as a macOS .app from Finder/Dock
+	ensureUserPath()
+
 	// Suppress verbose logging
 	logging.Disable()
 

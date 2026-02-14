@@ -299,6 +299,12 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Post("/oauth/{provider}/callback", oauth.OAuthCallbackHandler(svcCtx))
 	r.Get("/oauth/{provider}/url", oauth.GetOAuthUrlHandler(svcCtx))
 
+	// NeboLoop account routes (public — entry point for NeboLoop auth)
+	r.Post("/neboloop/register", neboloop.NeboLoopRegisterHandler(svcCtx))
+	r.Post("/neboloop/login", neboloop.NeboLoopLoginHandler(svcCtx))
+	r.Get("/neboloop/account", neboloop.NeboLoopAccountStatusHandler(svcCtx))
+	r.Delete("/neboloop/account", neboloop.NeboLoopDisconnectHandler(svcCtx))
+
 	// Agent routes
 	r.Get("/agent/sessions", agent.ListAgentSessionsHandler(svcCtx))
 	r.Delete("/agent/sessions/{id}", agent.DeleteAgentSessionHandler(svcCtx))
@@ -335,7 +341,11 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 
 	// Extensions routes
 	r.Get("/extensions", extensions.ListExtensionsHandler(svcCtx))
+	r.Post("/skills", extensions.CreateSkillHandler(svcCtx))
 	r.Get("/skills/{name}", extensions.GetSkillHandler(svcCtx))
+	r.Get("/skills/{name}/content", extensions.GetSkillContentHandler(svcCtx))
+	r.Put("/skills/{name}", extensions.UpdateSkillHandler(svcCtx))
+	r.Delete("/skills/{name}", extensions.DeleteSkillHandler(svcCtx))
 	r.Post("/skills/{name}/toggle", extensions.ToggleSkillHandler(svcCtx))
 
 	// Memory routes
@@ -401,12 +411,6 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	// NeboLoop Connection routes (bot MQTT)
 	r.Post("/neboloop/connect", plugins.NeboLoopConnectHandler(svcCtx))
 	r.Get("/neboloop/status", plugins.NeboLoopStatusHandler(svcCtx))
-
-	// NeboLoop Account routes (owner registration/login)
-	r.Post("/neboloop/register", neboloop.NeboLoopRegisterHandler(svcCtx))
-	r.Post("/neboloop/login", neboloop.NeboLoopLoginHandler(svcCtx))
-	r.Get("/neboloop/account", neboloop.NeboLoopAccountStatusHandler(svcCtx))
-	r.Delete("/neboloop/account", neboloop.NeboLoopDisconnectHandler(svcCtx))
 
 	// Provider/Models routes
 	r.Get("/models", provider.ListModelsHandler(svcCtx))

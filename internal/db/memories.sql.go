@@ -281,9 +281,9 @@ func (q *Queries) GetMemoryByKeyAndUserAnyNamespace(ctx context.Context, arg Get
 const getMemoryStats = `-- name: GetMemoryStats :many
 SELECT
     CASE
-        WHEN namespace LIKE 'tacit.%' THEN 'tacit'
-        WHEN namespace LIKE 'daily.%' THEN 'daily'
-        WHEN namespace LIKE 'entity.%' THEN 'entity'
+        WHEN namespace LIKE 'tacit/%' THEN 'tacit'
+        WHEN namespace LIKE 'daily/%' THEN 'daily'
+        WHEN namespace LIKE 'entity/%' THEN 'entity'
         ELSE 'other'
     END as layer,
     COUNT(*) as count
@@ -323,7 +323,7 @@ func (q *Queries) GetMemoryStats(ctx context.Context) ([]GetMemoryStatsRow, erro
 const getTacitMemoriesByUser = `-- name: GetTacitMemoriesByUser :many
 SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
 FROM memories
-WHERE namespace LIKE 'tacit.%' AND user_id = ?
+WHERE namespace LIKE 'tacit/%' AND user_id = ?
 ORDER BY access_count DESC
 LIMIT ?2
 `
@@ -415,8 +415,8 @@ const listMemories = `-- name: ListMemories :many
 SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
 FROM memories
 ORDER BY
-    CASE WHEN namespace LIKE 'tacit.%' THEN 0
-         WHEN namespace LIKE 'entity.%' THEN 1
+    CASE WHEN namespace LIKE 'tacit/%' THEN 0
+         WHEN namespace LIKE 'entity/%' THEN 1
          ELSE 2 END,
     access_count DESC
 LIMIT ?2 OFFSET ?1

@@ -36,6 +36,23 @@ type Server struct {
 	advisorProvider ai.Provider
 	mu              sync.Mutex
 	registeredTools map[string]bool // tracks which tools are in the MCP server
+
+	// Context values injected by the runner before each agentic loop.
+	// CLI providers (claude-code, gemini-cli) call tools via HTTP, which
+	// creates a fresh request context that loses the runner's context.Values.
+	// We store them here so createToolHandler can re-inject them.
+	sessionKey string
+	origin     tools.Origin
+}
+
+// SetContext sets the session key and origin for MCP tool calls.
+// Called by the runner before each agentic loop so that tools invoked
+// via CLI providers (which cross an HTTP boundary) get the correct context.
+func (s *Server) SetContext(sessionKey string, origin tools.Origin) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionKey = sessionKey
+	s.origin = origin
 }
 
 // NewServer creates a new MCP server for the agent
@@ -143,6 +160,18 @@ func (s *Server) createToolHandler(toolName string) mcp.ToolHandler {
 				retErr = nil
 			}
 		}()
+
+		// Re-inject session key and origin that were lost at the HTTP boundary.
+		// CLI providers (claude-code) call tools via HTTP POST to /agent/mcp,
+		// which creates a fresh context without the runner's context.Values.
+		s.mu.Lock()
+		if s.sessionKey != "" {
+			ctx = tools.WithSessionKey(ctx, s.sessionKey)
+		}
+		if s.origin != "" {
+			ctx = tools.WithOrigin(ctx, s.origin)
+		}
+		s.mu.Unlock()
 
 		// Arguments come as json.RawMessage from the request
 		inputJSON := json.RawMessage(req.Params.Arguments)

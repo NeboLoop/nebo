@@ -44,16 +44,16 @@ func ListExtensionsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 		resp.Tools = append(resp.Tools, builtinTools...)
 
-		// Load skills from extensions/skills
+		// Load bundled skills from extensions/skills
+		skillsByName := make(map[string]types.ExtensionSkill)
 		skillsDir := filepath.Join(extensionsDir, "skills")
-		skillLoader := skills.NewLoader(skillsDir)
-		if err := skillLoader.LoadAll(); err != nil {
-			logging.Errorf("Failed to load skills: %v", err)
+		bundledLoader := skills.NewLoader(skillsDir)
+		if err := bundledLoader.LoadAll(); err != nil {
+			logging.Errorf("Failed to load bundled skills: %v", err)
 		} else {
-			for _, skill := range skillLoader.List() {
-				// Check enabled state from persistent settings
+			for _, skill := range bundledLoader.List() {
 				enabled := svcCtx.SkillSettings.IsEnabled(skill.Name)
-				resp.Skills = append(resp.Skills, types.ExtensionSkill{
+				skillsByName[skill.Name] = types.ExtensionSkill{
 					Name:         skill.Name,
 					Description:  skill.Description,
 					Version:      skill.Version,
@@ -63,8 +63,35 @@ func ListExtensionsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 					Priority:     skill.Priority,
 					Enabled:      enabled,
 					FilePath:     skill.FilePath,
-				})
+					Source:       "bundled",
+					Editable:     false,
+				}
 			}
+		}
+
+		// Load user skills (override bundled on name collision)
+		userSkillsDir := filepath.Join(svcCtx.NeboDir, "skills")
+		userLoader := skills.NewLoader(userSkillsDir)
+		if err := userLoader.LoadAll(); err == nil {
+			for _, skill := range userLoader.List() {
+				enabled := svcCtx.SkillSettings.IsEnabled(skill.Name)
+				skillsByName[skill.Name] = types.ExtensionSkill{
+					Name:         skill.Name,
+					Description:  skill.Description,
+					Version:      skill.Version,
+					Tags:         skill.Tags,
+					Dependencies: skill.Dependencies,
+					Tools:        skill.Tools,
+					Priority:     skill.Priority,
+					Enabled:      enabled,
+					FilePath:     skill.FilePath,
+					Source:       "user",
+					Editable:     true,
+				}
+			}
+		}
+		for _, s := range skillsByName {
+			resp.Skills = append(resp.Skills, s)
 		}
 
 		// Load plugin tools from extensions/tools

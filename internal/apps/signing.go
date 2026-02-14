@@ -32,6 +32,9 @@ type SigningKey struct {
 	PublicKey string `json:"publicKey"` // base64-encoded ED25519 public key
 }
 
+// signingClient is a shared HTTP client with a short timeout for signing/revocation checks.
+var signingClient = &http.Client{Timeout: 5 * time.Second}
+
 // SigningKeyProvider fetches and caches the NeboLoop signing key.
 // Thread-safe. Caches for 24 hours, force-refreshable on verification failure.
 type SigningKeyProvider struct {
@@ -68,7 +71,7 @@ func (p *SigningKeyProvider) Refresh() (*SigningKey, error) {
 	defer p.mu.Unlock()
 
 	url := p.neboloopURL + "/api/v1/apps/signing-key"
-	resp, err := http.Get(url)
+	resp, err := signingClient.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch signing key: %w", err)
 	}
@@ -256,7 +259,7 @@ func (rc *RevocationChecker) refresh() error {
 	}
 
 	url := rc.neboloopURL + "/api/v1/apps/revocations"
-	resp, err := http.Get(url)
+	resp, err := signingClient.Get(url)
 	if err != nil {
 		return fmt.Errorf("fetch revocation list: %w", err)
 	}

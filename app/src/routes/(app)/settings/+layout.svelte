@@ -17,13 +17,23 @@
 		ScrollText,
 		StickyNote,
 		MessagesSquare,
-		Code
+		Code,
+		Cloud
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 
 	let { children }: { children: Snippet } = $props();
 
 	const groups = [
+		{
+			label: 'Extend',
+			tabs: [
+				{ id: 'neboloop', path: '/settings/neboloop', label: 'NeboLoop', icon: Cloud },
+				{ id: 'apps', path: '/settings/apps', label: 'Apps', icon: Package },
+				{ id: 'skills', path: '/settings/skills', label: 'Skills', icon: BookOpen },
+				{ id: 'integrations', path: '/settings/integrations', label: 'Integrations', icon: Link }
+			]
+		},
 		{
 			label: 'You',
 			tabs: [
@@ -46,14 +56,6 @@
 			]
 		},
 		{
-			label: 'Extend',
-			tabs: [
-				{ id: 'apps', path: '/settings/apps', label: 'Apps', icon: Package },
-				{ id: 'skills', path: '/settings/skills', label: 'Skills', icon: BookOpen },
-				{ id: 'integrations', path: '/settings/integrations', label: 'Integrations', icon: Link }
-			]
-		},
-			{
 			label: 'System',
 			tabs: [
 				{ id: 'sessions', path: '/settings/sessions', label: 'Sessions', icon: History },
@@ -90,8 +92,8 @@
 
 	<div class="flex flex-col lg:flex-row gap-6">
 		<!-- Sidebar Navigation -->
-		<nav class="lg:w-56 flex-shrink-0" aria-label="Settings navigation">
-			<ul class="flex lg:flex-col gap-1">
+		<nav class="lg:w-56 flex-shrink-0 overflow-x-auto lg:overflow-x-visible scrollbar-none" aria-label="Settings navigation">
+			<ul class="flex lg:flex-col gap-1 flex-nowrap lg:flex-wrap">
 				{#each groups as group, gi}
 					{#if gi > 0}
 						<li class="hidden lg:block h-3"></li>
@@ -105,7 +107,7 @@
 						<li>
 							<a
 								href={tab.path}
-								class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors
+								class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors whitespace-nowrap
 									{activeTab === tab.id
 										? 'bg-primary/10 text-primary border border-primary/20'
 										: 'text-base-content/70 hover:bg-base-200 hover:text-base-content border border-transparent'}"

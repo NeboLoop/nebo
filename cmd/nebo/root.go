@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,8 +27,50 @@ import (
 	"github.com/nebolabs/nebo/internal/svc"
 )
 
+// ensureUserPath augments PATH with common CLI tool locations.
+// macOS GUI apps (launched from Finder/Dock) inherit a minimal PATH that
+// excludes Homebrew, user-local, and nvm/cargo/go paths. Without this,
+// exec.LookPath cannot find tools like "claude", "codex", or "gemini".
+func ensureUserPath() {
+	current := os.Getenv("PATH")
+	home, _ := os.UserHomeDir()
+
+	// Directories where CLI tools are commonly installed
+	extra := []string{
+		"/opt/homebrew/bin",      // Homebrew (Apple Silicon)
+		"/usr/local/bin",         // Homebrew (Intel) / manual installs
+		filepath.Join(home, ".local/bin"),      // pipx, user installs
+		filepath.Join(home, "go/bin"),          // Go binaries
+		filepath.Join(home, ".cargo/bin"),      // Rust/cargo
+		filepath.Join(home, ".nvm/current/bin"), // nvm-managed node
+	}
+
+	var added []string
+	for _, dir := range extra {
+		if dir == "" {
+			continue
+		}
+		// Skip if already in PATH
+		if strings.Contains(current, dir) {
+			continue
+		}
+		// Only add if the directory actually exists
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			added = append(added, dir)
+		}
+	}
+
+	if len(added) > 0 {
+		os.Setenv("PATH", current+":"+strings.Join(added, ":"))
+	}
+}
+
 // RunAll starts both server and agent together (default mode)
 func RunAll() {
+	// Augment PATH so CLI tools (claude, codex, gemini) are discoverable
+	// even when launched as a macOS .app from Finder/Dock
+	ensureUserPath()
+
 	// Suppress verbose logging
 	logging.Disable()
 

@@ -812,11 +812,43 @@ export function setupStatus() {
 }
 
 /**
+ * @description "Create skill"
+ * @param req
+ */
+export function createSkill(req: components.CreateSkillRequest) {
+	return webapi.post<components.CreateSkillResponse>(`/api/v1/skills`, req)
+}
+
+/**
+ * @description "Delete skill"
+ * @param req
+ */
+export function deleteSkill(name: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/skills/${name}`)
+}
+
+/**
  * @description "Get skill"
  * @param req
  */
 export function getSkill(name: string) {
 	return webapi.get<components.GetSkillResponse>(`/api/v1/skills/${name}`)
+}
+
+/**
+ * @description "Update skill"
+ * @param req
+ */
+export function updateSkill(req: components.UpdateSkillRequest, name: string) {
+	return webapi.put<components.UpdateSkillResponse>(`/api/v1/skills/${name}`, req)
+}
+
+/**
+ * @description "Get skill content"
+ * @param req
+ */
+export function getSkillContent(name: string) {
+	return webapi.get<components.GetSkillContentResponse>(`/api/v1/skills/${name}/content`)
 }
 
 /**

@@ -37,10 +37,6 @@
 		agent: {
 			viewBox: '0 0 24 24',
 			path: '<path d="M12 8V4H8"/><rect x="8" y="8" width="8" height="8" rx="1"/><path d="M12 16v4h4"/><path d="M8 12H4"/><path d="M20 12h-4"/>'
-		},
-		store: {
-			viewBox: '0 0 24 24',
-			path: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>'
 		}
 	};
 
@@ -85,18 +81,6 @@
 		</div>
 
 		<div class="hidden sm:flex items-center gap-1">
-		<!-- Store Link (Desktop) -->
-		<a
-			href="/store"
-			class="flex items-center justify-center w-9 h-9 rounded-lg transition-colors {currentPath.startsWith('/store') ? 'active-icon' : 'text-base-content/50 hover:text-base-content hover:bg-base-200'}"
-			aria-label="App Store"
-			title="App Store"
-		>
-			<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				{@html icons.store.path}
-			</svg>
-		</a>
-
 		<!-- Settings Link (Desktop) -->
 		<a
 			href="/settings"
@@ -159,17 +143,6 @@
 				{/each}
 			</nav>
 			<div class="border-t border-base-300 pt-4 space-y-1">
-				<a
-					href="/store"
-					class="nav-link"
-					class:active={currentPath.startsWith('/store')}
-					onclick={closeMobileMenu}
-				>
-					<svg class="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						{@html icons.store.path}
-					</svg>
-					App Store
-				</a>
 				<a
 					href="/settings"
 					class="nav-link"

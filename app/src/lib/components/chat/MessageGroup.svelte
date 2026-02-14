@@ -13,17 +13,21 @@
 	}
 
 	interface ContentBlock {
-		type: 'text' | 'tool';
+		type: 'text' | 'tool' | 'image';
 		text?: string;
 		toolCallIndex?: number;
+		imageData?: string;
+		imageMimeType?: string;
 	}
 
 	// A resolved content block with tool data pre-resolved (no indirect lookup)
 	interface ResolvedBlock {
-		type: 'text' | 'tool';
+		type: 'text' | 'tool' | 'image';
 		key: string;
 		text?: string;
 		tool?: ToolCall;
+		imageData?: string;
+		imageMimeType?: string;
 		isLastBlock: boolean;
 	}
 
@@ -85,6 +89,14 @@
 							type: 'tool',
 							key: `tool-${i}-${tc.status ?? 'unknown'}`,
 							tool: { ...tc },
+							isLastBlock: isLast
+						});
+					} else if (block.type === 'image' && block.imageData) {
+						blocks.push({
+							type: 'image',
+							key: `image-${i}`,
+							imageData: block.imageData,
+							imageMimeType: block.imageMimeType,
 							isLastBlock: isLast
 						});
 					} else if (block.type === 'text' && block.text) {
@@ -166,6 +178,14 @@
 									output={block.tool.output}
 									status={block.tool.status}
 									onclick={() => handleViewToolOutput(block.tool!)}
+								/>
+							</div>
+						{:else if block.type === 'image' && block.imageData}
+							<div class="rounded-xl overflow-hidden mb-1 max-w-sm">
+								<img
+									src="data:{block.imageMimeType || 'image/png'};base64,{block.imageData}"
+									alt="Shared content"
+									class="max-w-full h-auto rounded-xl"
 								/>
 							</div>
 						{:else if block.type === 'text' && block.text}

@@ -41,6 +41,7 @@ type AppUIInfo struct {
 type ServiceContext struct {
 	Config             config.Config
 	SecurityMiddleware *middleware.SecurityMiddleware
+	NeboDir            string // Root Nebo data directory (e.g. ~/Library/Application Support/Nebo)
 
 	DB             *db.Store
 	Auth           *local.AuthService
@@ -186,6 +187,7 @@ func newServiceContext(c config.Config, database *db.Store) *ServiceContext {
 	svc := &ServiceContext{
 		Config:             c,
 		SecurityMiddleware: securityMw,
+		NeboDir:            neboDir,
 		AgentHub:           agenthub.NewHub(),
 		SkillSettings:      local.NewSkillSettingsStore(dataDir),
 	}

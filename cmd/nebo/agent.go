@@ -692,6 +692,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		r.SetFuzzyMatcher(fuzzyMatcher)
 	}
 
+	// Forward-declare appRegistry so closures below can capture it
+	var appRegistry *apps.AppRegistry
+
 	// Start config file watcher for hot-reload of models.yaml
 	if err := provider.StartConfigWatcher(cfg.DataDir); err != nil {
 		fmt.Printf("[agent] Warning: could not start config watcher: %v\n", err)
@@ -703,6 +706,15 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			newSelector := ai.NewModelSelector(newConfig)
 			r.SetModelSelector(newSelector)
 			newFuzzyMatcher := ai.NewFuzzyMatcher(newConfig)
+			// Re-register gateway aliases on the new matcher
+			if appRegistry != nil {
+				for _, gp := range appRegistry.GatewayProviders() {
+					providerID := gp.ID()
+					parts := strings.Split(providerID, ".")
+					shortName := parts[len(parts)-1]
+					newFuzzyMatcher.AddAlias(shortName, providerID+"/default")
+				}
+			}
 			r.SetFuzzyMatcher(newFuzzyMatcher)
 			// Reload providers in case credentials changed
 			r.ReloadProviders()
@@ -724,6 +736,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
+	// Bridge MCP server context for CLI providers (claude-code, gemini-cli)
+	r.SetMCPServer(mcpSrv)
+
 	// Set up subagent persistence for surviving restarts
 	if state.recovery != nil {
 		r.SetupSubagentPersistence(state.recovery)
@@ -734,9 +749,6 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			fmt.Printf("[agent] Recovered %d subagent task(s)\n", recovered)
 		}
 	}
-
-	// Forward-declare appRegistry so closures below can capture it
-	var appRegistry *apps.AppRegistry
 
 	// Wire up cron agent task callback now that runner exists
 	if cronTool != nil {
@@ -802,8 +814,11 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	}
 
 	// Create unified skill tool — all apps and standalone skills register here
-	skillDomainTool := tools.NewSkillDomainTool()
+	userSkillsDir := filepath.Join(cfg.DataDir, "skills")
+	os.MkdirAll(userSkillsDir, 0755)
+	skillDomainTool := tools.NewSkillDomainTool(userSkillsDir)
 	registry.Register(skillDomainTool)
+	r.SetSkillProvider(skillDomainTool)
 
 	// Discover and launch apps (NeboLoop app store + local dev)
 	appRegistry = apps.NewAppRegistry(apps.AppRegistryConfig{
@@ -845,11 +860,6 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
-	// Append gateway providers from marketplace apps
-	for _, gp := range appRegistry.GatewayProviders() {
-		providers = append(providers, gp)
-	}
-
 	// Set provider loader for dynamic reload (after onboarding adds API key).
 	// Must be after appRegistry creation so gateway providers are included.
 	r.SetProviderLoader(func() []ai.Provider {
@@ -860,9 +870,38 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		return base
 	})
 
+	// Load gateway providers into runner (reload rebuilds providerMap)
+	r.ReloadProviders()
+
+	// Register gateway app names as fuzzy matcher aliases so users can "switch to janus"
+	if modelsConfig != nil {
+		fuzzyMatcher := ai.NewFuzzyMatcher(modelsConfig)
+		for _, gp := range appRegistry.GatewayProviders() {
+			// Provider ID is "gateway-com.neboloop.janus", alias is the app name
+			providerID := gp.ID()
+			// Extract short name from ID: "gateway-com.neboloop.janus" -> "janus"
+			parts := strings.Split(providerID, ".")
+			shortName := parts[len(parts)-1]
+			fuzzyMatcher.AddAlias(shortName, providerID+"/default")
+			fmt.Printf("[agent] Registered gateway alias: %s -> %s\n", shortName, providerID)
+		}
+		r.SetFuzzyMatcher(fuzzyMatcher)
+	}
+
 	// Trigger provider reload when a new gateway app is installed at runtime
 	appRegistry.OnGatewayRegistered(func() {
 		r.ReloadProviders()
+		// Re-register gateway aliases
+		if modelsConfig != nil {
+			fuzzyMatcher := ai.NewFuzzyMatcher(modelsConfig)
+			for _, gp := range appRegistry.GatewayProviders() {
+				providerID := gp.ID()
+				parts := strings.Split(providerID, ".")
+				shortName := parts[len(parts)-1]
+				fuzzyMatcher.AddAlias(shortName, providerID+"/default")
+			}
+			r.SetFuzzyMatcher(fuzzyMatcher)
+		}
 	})
 
 	commManager.SetMessageHandler(commHandler.Handle)
@@ -878,6 +917,23 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 	fmt.Printf("[agent] Registered %d standalone skills, %d total skills\n", skillLoader.Count(), skillDomainTool.Count())
+
+	// Watch user skills directory for hot-reload (CRUD from API writes here)
+	userSkillWatcher := skills.NewLoader(userSkillsDir)
+	userSkillWatcher.OnChange(func(_ []*skills.Skill) {
+		skillDomainTool.UnregisterStandalone()
+		fresh := loadSkills(cfg)
+		for _, s := range fresh.List() {
+			if s.Enabled {
+				skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil)
+			}
+		}
+		fmt.Printf("[agent] Skills reloaded: %d standalone, %d total\n", fresh.Count(), skillDomainTool.Count())
+	})
+	if err := userSkillWatcher.Watch(ctx); err != nil {
+		fmt.Printf("[agent] Warning: failed to watch user skills dir: %v\n", err)
+	}
+	defer userSkillWatcher.Stop()
 
 	// Store comm references on state for dynamic settings updates
 	state.commManager = commManager
@@ -1216,7 +1272,7 @@ Ask what they'd like to be called so you can address them properly.
 Keep it brief (2-3 sentences max). Do NOT acknowledge the system message.
 
 IMPORTANT: When you learn their name, use the memory tool to store it:
-- Use namespace "tacit.user" and key "name" to remember their name
+- Use layer "tacit", namespace "user", and key "name" to remember their name
 - This ensures you'll remember them next time`
 	}
 

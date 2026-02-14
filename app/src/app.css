@@ -165,6 +165,53 @@
 
 /* ===== Utilities ===== */
 @layer utilities {
+	.scrollbar-none {
+		-ms-overflow-style: none;
+		scrollbar-width: none;
+		&::-webkit-scrollbar {
+			display: none;
+		}
+	}
+
+	.scrollbar-thin {
+		scrollbar-width: thin;
+		scrollbar-color: oklch(var(--bc) / 0.2) transparent;
+		&::-webkit-scrollbar {
+			width: 6px;
+		}
+		&::-webkit-scrollbar-track {
+			background: transparent;
+		}
+		&::-webkit-scrollbar-thumb {
+			background: oklch(var(--bc) / 0.2);
+			border-radius: 3px;
+		}
+		&::-webkit-scrollbar-thumb:hover {
+			background: oklch(var(--bc) / 0.35);
+		}
+	}
+
+	.scrollbar-overlay {
+		overflow-y: auto;
+		overflow-y: overlay;
+		scrollbar-width: thin;
+		scrollbar-color: oklch(var(--bc) / 0.2) transparent;
+		&::-webkit-scrollbar {
+			width: 6px;
+			background: transparent;
+		}
+		&::-webkit-scrollbar-track {
+			background: transparent;
+		}
+		&::-webkit-scrollbar-thumb {
+			background: oklch(var(--bc) / 0.2);
+			border-radius: 3px;
+		}
+		&::-webkit-scrollbar-thumb:hover {
+			background: oklch(var(--bc) / 0.35);
+		}
+	}
+
 	.font-display {
 		font-family: var(--font-display);
 	}

@@ -213,6 +213,21 @@ func NeboLoopDisconnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			}
 		}
 
+		// Also clear bot MQTT credentials so the connection actually stops
+		if svcCtx.PluginStore != nil {
+			plugin, err := svcCtx.PluginStore.GetPlugin(ctx, "neboloop")
+			if err == nil {
+				clearSettings := map[string]string{
+					"bot_id":        "",
+					"mqtt_username": "",
+					"mqtt_password": "",
+				}
+				if err := svcCtx.PluginStore.UpdateSettings(ctx, plugin.ID, clearSettings, nil); err != nil {
+					fmt.Printf("[NeboLoop] Warning: failed to clear MQTT settings: %v\n", err)
+				}
+			}
+		}
+
 		httputil.OkJSON(w, types.NeboLoopDisconnectResponse{Disconnected: true})
 	}
 }

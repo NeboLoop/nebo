@@ -42,9 +42,11 @@
 	}
 
 	interface ContentBlock {
-		type: 'text' | 'tool';
+		type: 'text' | 'tool' | 'image';
 		text?: string;          // accumulated text for text blocks
 		toolCallIndex?: number; // index into toolCalls for tool blocks
+		imageData?: string;     // base64 data for image blocks
+		imageMimeType?: string; // e.g. "image/png"
 	}
 
 	let chatId = $state<string | null>(null);
@@ -278,6 +280,33 @@
 		return {};
 	}
 
+	// Detect Anthropic-format multipart content arrays and convert to ContentBlocks
+	function parseMultipartContent(content: string): { text: string; blocks: ContentBlock[] } | null {
+		if (!content.startsWith('[')) return null;
+		try {
+			const parts = JSON.parse(content);
+			if (!Array.isArray(parts)) return null;
+			const blocks: ContentBlock[] = [];
+			const textParts: string[] = [];
+			for (const part of parts) {
+				if (part.type === 'text' && part.text) {
+					blocks.push({ type: 'text', text: part.text });
+					textParts.push(part.text);
+				} else if (part.type === 'image' && part.source?.data) {
+					blocks.push({
+						type: 'image',
+						imageData: part.source.data,
+						imageMimeType: part.source.media_type || 'image/png'
+					});
+				}
+			}
+			if (blocks.length === 0) return null;
+			return { text: textParts.join('\n'), blocks };
+		} catch {
+			return null;
+		}
+	}
+
 	async function loadCompanionChat() {
 		try {
 			const res = await getCompanionChat();
@@ -285,14 +314,26 @@
 			log.debug('Loaded companion chat: ' + chatId);
 			messages = (res.messages || []).map((m: ApiChatMessage) => {
 				const meta = parseMetadata((m as { metadata?: string }).metadata);
+				let content = m.content;
+				let contentBlocks = meta.contentBlocks;
+
+				// Detect multipart content (images) stored as JSON arrays
+				if (!contentBlocks?.length) {
+					const multipart = parseMultipartContent(content);
+					if (multipart) {
+						content = multipart.text;
+						contentBlocks = multipart.blocks;
+					}
+				}
+
 				return {
 					id: m.id,
 					role: m.role as 'user' | 'assistant' | 'system',
-					content: m.content,
+					content,
 					timestamp: new Date(m.createdAt),
 					toolCalls: meta.toolCalls,
 					thinking: meta.thinking,
-					contentBlocks: meta.contentBlocks
+					contentBlocks
 				};
 			});
 			totalMessages = res.totalMessages || messages.length;

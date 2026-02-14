@@ -4,8 +4,8 @@
 SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
 FROM memories
 ORDER BY
-    CASE WHEN namespace LIKE 'tacit.%' THEN 0
-         WHEN namespace LIKE 'entity.%' THEN 1
+    CASE WHEN namespace LIKE 'tacit/%' THEN 0
+         WHEN namespace LIKE 'entity/%' THEN 1
          ELSE 2 END,
     access_count DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
@@ -57,9 +57,9 @@ WHERE namespace LIKE sqlc.arg(namespace_prefix) || '%';
 -- name: GetMemoryStats :many
 SELECT
     CASE
-        WHEN namespace LIKE 'tacit.%' THEN 'tacit'
-        WHEN namespace LIKE 'daily.%' THEN 'daily'
-        WHEN namespace LIKE 'entity.%' THEN 'entity'
+        WHEN namespace LIKE 'tacit/%' THEN 'tacit'
+        WHEN namespace LIKE 'daily/%' THEN 'daily'
+        WHEN namespace LIKE 'entity/%' THEN 'entity'
         ELSE 'other'
     END as layer,
     COUNT(*) as count
@@ -146,6 +146,6 @@ WHERE key = ? AND user_id = ?;
 -- name: GetTacitMemoriesByUser :many
 SELECT id, namespace, key, value, tags, metadata, created_at, updated_at, accessed_at, access_count
 FROM memories
-WHERE namespace LIKE 'tacit.%' AND user_id = ?
+WHERE namespace LIKE 'tacit/%' AND user_id = ?
 ORDER BY access_count DESC
 LIMIT sqlc.arg(limit);

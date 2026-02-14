@@ -21,24 +21,36 @@ func GetSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		// Load skills from extensions/skills directory
-		extensionsDir := "extensions"
-		skillsDir := filepath.Join(extensionsDir, "skills")
-		skillLoader := skills.NewLoader(skillsDir)
-		if err := skillLoader.LoadAll(); err != nil {
-			logging.Errorf("Failed to load skills: %v", err)
-			httputil.Error(w, fmt.Errorf("failed to load skills: %w", err))
+		// Search user skills first, then bundled
+		var skill *skills.Skill
+		var source string
+
+		userLoader := skills.NewLoader(filepath.Join(svcCtx.NeboDir, "skills"))
+		if err := userLoader.LoadAll(); err == nil {
+			if s, ok := userLoader.Get(req.Name); ok {
+				skill = s
+				source = "user"
+			}
+		}
+
+		if skill == nil {
+			bundledLoader := skills.NewLoader(filepath.Join("extensions", "skills"))
+			if err := bundledLoader.LoadAll(); err != nil {
+				logging.Errorf("Failed to load skills: %v", err)
+				httputil.Error(w, fmt.Errorf("failed to load skills: %w", err))
+				return
+			}
+			if s, ok := bundledLoader.Get(req.Name); ok {
+				skill = s
+				source = "bundled"
+			}
+		}
+
+		if skill == nil {
+			httputil.NotFound(w, "skill not found: "+req.Name)
 			return
 		}
 
-		// Find the requested skill
-		skill, found := skillLoader.Get(req.Name)
-		if !found {
-			httputil.Error(w, fmt.Errorf("skill not found: %s", req.Name))
-			return
-		}
-
-		// Check enabled state from persistent settings
 		enabled := svcCtx.SkillSettings.IsEnabled(skill.Name)
 
 		httputil.OkJSON(w, &types.GetSkillResponse{
@@ -52,6 +64,8 @@ func GetSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				Priority:     skill.Priority,
 				Enabled:      enabled,
 				FilePath:     skill.FilePath,
+				Source:       source,
+				Editable:     source == "user",
 			},
 		})
 	}

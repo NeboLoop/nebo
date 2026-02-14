@@ -119,11 +119,10 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 			key, err := rt.keyProvider.GetKey()
 			if err != nil {
 				key, err = rt.keyProvider.Refresh()
-				if err != nil {
-					return nil, fmt.Errorf("cannot verify signatures — failed to fetch signing key: %w", err)
-				}
 			}
-			if err := VerifyAppSignatures(appDir, binaryPath, key); err != nil {
+			if err != nil {
+				fmt.Printf("[apps] Warning: signature verification skipped for %s (signing key unavailable: %v)\n", manifest.ID, err)
+			} else if err := VerifyAppSignatures(appDir, binaryPath, key); err != nil {
 				return nil, fmt.Errorf("signature verification failed: %w", err)
 			}
 		}

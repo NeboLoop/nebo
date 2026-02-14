@@ -104,7 +104,7 @@ Cron (scheduled events):
 
 Memory (3-tier persistence):
 - agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit") — Store a fact
-- agent(resource: memory, action: recall, query: "user preferences") — Recall relevant memories
+- agent(resource: memory, action: recall, key: "user/name") — Recall a specific memory by key
 - agent(resource: memory, action: search, query: "...") — Search memories
 - agent(resource: memory, action: list) — List stored memories
 - agent(resource: memory, action: delete, key: "...") — Delete a memory
@@ -202,7 +202,20 @@ Your remembered facts (if any) appear in the "# Remembered Facts" section of you
 // ProviderLoaderFunc is a function that loads providers (for dynamic reload)
 type ProviderLoaderFunc func() []ai.Provider
 
+// SkillProvider provides active skill content for a session.
+// Implemented by SkillDomainTool to avoid circular imports.
+type SkillProvider interface {
+	ActiveSkillContent(sessionKey string) string
+}
+
 // Runner executes the agentic loop
+// MCPContextSetter receives session context so MCP tool calls get the right
+// session key and origin. CLI providers cross an HTTP boundary that loses
+// the runner's context.Values; this bridges the gap.
+type MCPContextSetter interface {
+	SetContext(sessionKey string, origin tools.Origin)
+}
+
 type Runner struct {
 	sessions        *session.Manager
 	providers       []ai.Provider
@@ -211,9 +224,11 @@ type Runner struct {
 	tools           *tools.Registry
 	config          *config.Config
 	memoryTool      *tools.MemoryTool
+	skillProvider   SkillProvider       // Per-session active skill injection
 	selector        *ai.ModelSelector
 	fuzzyMatcher    *ai.FuzzyMatcher    // For user model switch requests
 	profileTracker  ai.ProfileTracker   // For recording usage/errors per auth profile
+	mcpServer       MCPContextSetter    // Bridges context across HTTP boundary for CLI providers
 }
 
 // RunRequest contains parameters for a run
@@ -276,6 +291,14 @@ func (r *Runner) SetProfileTracker(tracker ai.ProfileTracker) {
 	r.profileTracker = tracker
 }
 
+// SetMCPServer sets the MCP server for session context bridging.
+// CLI providers (claude-code, gemini-cli) call tools via HTTP, creating a
+// fresh context that loses session key and origin. The runner calls
+// SetContext on the MCP server before each run to bridge the gap.
+func (r *Runner) SetMCPServer(mcp MCPContextSetter) {
+	r.mcpServer = mcp
+}
+
 // SetupSubagentPersistence configures subagent recovery for restart survival
 // This enables the orchestrator to persist subagent runs and recover them after restart
 func (r *Runner) SetupSubagentPersistence(mgr *recovery.Manager) {
@@ -310,15 +333,30 @@ func (r *Runner) SetMemoryTool(mt *tools.MemoryTool) {
 	r.memoryTool = mt
 }
 
+// SetSkillProvider sets the skill provider for per-session active skill injection.
+func (r *Runner) SetSkillProvider(sp SkillProvider) {
+	r.skillProvider = sp
+}
+
 // SetProviderLoader sets the function to reload providers (for dynamic reload after onboarding)
 func (r *Runner) SetProviderLoader(loader ProviderLoaderFunc) {
 	r.providerLoader = loader
 }
 
-// ReloadProviders attempts to reload providers from the loader function
+// ReloadProviders attempts to reload providers from the loader function.
+// Also rebuilds the providerMap so new providers (e.g., gateway apps) are routable.
 func (r *Runner) ReloadProviders() {
 	if r.providerLoader != nil {
 		r.providers = r.providerLoader()
+		// Rebuild provider map so new providers are accessible for model switching
+		providerMap := make(map[string]ai.Provider)
+		for _, p := range r.providers {
+			providerID := p.ID()
+			if _, exists := providerMap[providerID]; !exists {
+				providerMap[providerID] = p
+			}
+		}
+		r.providerMap = providerMap
 	}
 }
 
@@ -341,6 +379,14 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 
 	if req.SessionKey == "" {
 		req.SessionKey = "default"
+	}
+
+	// Inject session key into context so tools can scope per-session state
+	ctx = tools.WithSessionKey(ctx, req.SessionKey)
+
+	// Bridge context to MCP server for CLI providers that cross an HTTP boundary
+	if r.mcpServer != nil {
+		r.mcpServer.SetContext(req.SessionKey, req.Origin)
 	}
 
 	// Get or create session (user-scoped if UserID provided)
@@ -369,13 +415,13 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 	}
 
 	resultCh := make(chan ai.StreamEvent, 100)
-	go r.runLoop(ctx, sess.ID, req.System, req.ModelOverride, req.UserID, req.SkipMemoryExtract, resultCh)
+	go r.runLoop(ctx, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.SkipMemoryExtract, resultCh)
 
 	return resultCh, nil
 }
 
 // runLoop is the main agentic execution loop
-func (r *Runner) runLoop(ctx context.Context, sessionID, systemPrompt, modelOverride, userID string, skipMemoryExtract bool, resultCh chan<- ai.StreamEvent) {
+func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPrompt, modelOverride, userID string, skipMemoryExtract bool, resultCh chan<- ai.StreamEvent) {
 	startTime := time.Now()
 	defer func() {
 		close(resultCh)
@@ -503,6 +549,13 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 
 	systemPrompt = contextSection + "\n\n---\n\n" + systemPrompt
 
+	// Inject active skills for this session (loaded via skill(action: "load"))
+	if r.skillProvider != nil {
+		if skillContent := r.skillProvider.ActiveSkillContent(sessionKey); skillContent != "" {
+			systemPrompt += skillContent
+		}
+	}
+
 	// Add model aliases section so agent knows what models are available
 	if r.fuzzyMatcher != nil {
 		aliases := r.fuzzyMatcher.GetAliases()
@@ -553,9 +606,8 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 			fmt.Printf("[Runner] Token limit exceeded (~%d tokens), compacting...\n", estimatedTokens)
 			compactionAttempted = true
 
-			// Run proactive memory flush before compaction
-			// This ensures important memories are persisted before being summarized
-			r.maybeRunMemoryFlush(ctx, sessionID, userID, messages)
+			// Run proactive memory flush in background — don't block the response
+			go r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
 
 			summary := r.generateSummary(ctx, messages)
 			if compactErr := r.sessions.Compact(sessionID, summary); compactErr == nil {
@@ -667,9 +719,8 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 				if !compactionAttempted {
 					compactionAttempted = true
 
-					// Run proactive memory flush before compaction
-					// This ensures important memories are persisted before being summarized
-					r.maybeRunMemoryFlush(ctx, sessionID, userID, messages)
+					// Run proactive memory flush in background — don't block the retry
+					go r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
 
 					// Compact session and retry
 					fmt.Printf("[Runner] Context overflow - attempting compaction\n")
@@ -1348,13 +1399,13 @@ func estimateTokens(messages []session.Message) int {
 }
 
 // DefaultContextTokenLimit is the default max tokens before proactive compaction.
-// Set conservatively to work with smaller context windows (gpt-5-nano, haiku, etc.)
-const DefaultContextTokenLimit = 6000
+// Most models support 100k+ tokens. Set high enough to avoid frequent compaction
+// which causes multiple synchronous LLM calls (memory flush + summary) before the response.
+const DefaultContextTokenLimit = 80000
 
 // MemoryFlushThreshold is the token count at which we trigger a proactive memory flush
 // before compaction. This ensures critical memories are persisted before being summarized.
-// Proactive memory flush before compaction
-const MemoryFlushThreshold = 4500
+const MemoryFlushThreshold = 60000
 
 // MemoryFlushPrompt is the prompt sent to trigger a memory flush before compaction
 const MemoryFlushPrompt = `Pre-compaction memory flush. The conversation is getting long and will soon be summarized.

@@ -14,7 +14,6 @@
 		BadgeCheck,
 		Loader2,
 		Link,
-		Wifi,
 		WifiOff
 	} from 'lucide-svelte';
 	import {
@@ -24,8 +23,7 @@
 		uninstallStoreApp,
 		installStoreSkill,
 		uninstallStoreSkill,
-		neboLoopStatus as fetchNeboLoopStatus,
-		neboLoopConnect
+		neboLoopStatus as fetchNeboLoopStatus
 	} from '$lib/api/index';
 	import type { StoreApp, StoreSkill, NeboLoopStatusResponse } from '$lib/api';
 	import { getWebSocketClient } from '$lib/websocket/client';
@@ -60,11 +58,6 @@
 
 	// NeboLoop connection state
 	let neboLoopStatus = $state<NeboLoopStatusResponse | null>(null);
-	let showConnectModal = $state(false);
-	let connectCode = $state('');
-	let connectName = $state('');
-	let isConnectingNeboLoop = $state(false);
-	let connectError = $state<string | null>(null);
 
 	let unsubscribers: (() => void)[] = [];
 
@@ -221,27 +214,6 @@
 		}
 	}
 
-	function openConnectModal() {
-		connectCode = '';
-		connectName = '';
-		connectError = null;
-		showConnectModal = true;
-	}
-
-	async function handleConnect() {
-		if (!connectCode.trim() || !connectName.trim()) return;
-		isConnectingNeboLoop = true;
-		connectError = null;
-		try {
-			await neboLoopConnect({ code: connectCode.trim(), name: connectName.trim() });
-			showConnectModal = false;
-			await loadNeboLoopStatus();
-		} catch (err: any) {
-			connectError = err?.message || 'Connection failed';
-		} finally {
-			isConnectingNeboLoop = false;
-		}
-	}
 </script>
 
 <div class="max-w-5xl mx-auto px-4 py-6">
@@ -259,99 +231,22 @@
 	</div>
 
 	<!-- NeboLoop connection status -->
-	{#if neboLoopStatus}
+	{#if neboLoopStatus && !neboLoopStatus.connected}
 		<Card>
 			<div class="flex items-center justify-between">
 				<div class="flex items-center gap-3">
-					{#if neboLoopStatus.connected}
-						<Wifi class="w-5 h-5 text-success" />
-						<div>
-							<div class="text-sm font-medium text-base-content">
-								Connected to NeboLoop
-								{#if neboLoopStatus.botName}
-									<span class="text-base-content/60">as {neboLoopStatus.botName}</span>
-								{/if}
-							</div>
-							{#if neboLoopStatus.botId}
-								<div class="text-xs text-base-content/40 font-mono">{neboLoopStatus.botId}</div>
-							{/if}
-						</div>
-					{:else}
-						<WifiOff class="w-5 h-5 text-base-content/40" />
-						<div>
-							<div class="text-sm font-medium text-base-content">Not connected to NeboLoop</div>
-							<div class="text-xs text-base-content/40">Enter a connection code to browse the store</div>
-						</div>
-					{/if}
+					<WifiOff class="w-5 h-5 text-base-content/40" />
+					<div>
+						<div class="text-sm font-medium text-base-content">Not connected to NeboLoop</div>
+						<div class="text-xs text-base-content/40">Connect your account to browse the store</div>
+					</div>
 				</div>
-				{#if !neboLoopStatus.connected}
-					<button
-						type="button"
-						class="btn btn-sm btn-primary"
-						onclick={openConnectModal}
-					>
-						<Link class="w-4 h-4 mr-1" />
-						Connect
-					</button>
-				{/if}
+				<a href="/settings/neboloop" class="btn btn-sm btn-primary">
+					<Link class="w-4 h-4 mr-1" />
+					Connect
+				</a>
 			</div>
 		</Card>
-	{/if}
-
-	<!-- Connect to NeboLoop modal -->
-	{#if showConnectModal}
-	<div class="modal modal-open">
-		<div class="modal-box">
-			<h3 class="text-lg font-bold">Connect to NeboLoop</h3>
-			<p class="py-2 text-sm text-base-content/60">
-				Enter your connection code from NeboLoop and a name for your bot.
-			</p>
-			<div class="space-y-4 mt-2">
-				<div>
-					<label for="connect-code" class="block text-sm font-medium text-base-content mb-1">Connection Code</label>
-					<input
-						id="connect-code"
-						type="text"
-						class="input input-bordered w-full font-mono"
-						placeholder="NEBO-XXXX-XXXX"
-						bind:value={connectCode}
-						disabled={isConnectingNeboLoop}
-					/>
-				</div>
-				<div>
-					<label for="connect-name" class="block text-sm font-medium text-base-content mb-1">Bot Name</label>
-					<input
-						id="connect-name"
-						type="text"
-						class="input input-bordered w-full"
-						placeholder="My Nebo Agent"
-						bind:value={connectName}
-						onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') handleConnect(); }}
-						disabled={isConnectingNeboLoop}
-					/>
-				</div>
-			</div>
-			{#if connectError}
-				<p class="text-error text-sm mt-2">{connectError}</p>
-			{/if}
-			<div class="modal-action">
-				<button class="btn btn-ghost" onclick={() => showConnectModal = false} disabled={isConnectingNeboLoop}>Cancel</button>
-				<button
-					class="btn btn-primary"
-					onclick={handleConnect}
-					disabled={isConnectingNeboLoop || !connectCode.trim() || !connectName.trim()}
-				>
-					{#if isConnectingNeboLoop}
-						<Loader2 class="w-4 h-4 animate-spin" />
-						Connecting...
-					{:else}
-						Connect
-					{/if}
-				</button>
-			</div>
-		</div>
-		<div class="modal-backdrop" onclick={() => showConnectModal = false}></div>
-	</div>
 	{/if}
 
 	<!-- Apps / Skills sub-tabs -->

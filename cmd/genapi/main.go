@@ -50,6 +50,7 @@ var responseOverrides = map[string]string{
 	"DeleteAdvisor":        "DeleteAdvisorResponse",
 	"Grants":               "GetAppOAuthGrantsResponse",
 	"Disconnect":           "MessageResponse",
+	"DeleteSkill":          "MessageResponse",
 }
 
 // Explicit handler name overrides (when auto-derived TS name isn't right)

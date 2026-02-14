@@ -275,7 +275,7 @@ func (t *MemoryTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 	case "store":
 		result, err = t.store(params)
 	case "recall":
-		result, err = t.recall(params)
+		result, err = t.recall(ctx, params)
 	case "search":
 		result, err = t.searchWithContext(ctx, params)
 	case "list":
@@ -662,7 +662,7 @@ func (t *MemoryTool) syncToUserProfile(key, value, userID string) {
 	}
 }
 
-func (t *MemoryTool) recall(params memoryInput) (string, error) {
+func (t *MemoryTool) recall(ctx context.Context, params memoryInput) (string, error) {
 	if params.Key == "" {
 		return "", fmt.Errorf("key is required for recall action")
 	}
@@ -706,6 +706,16 @@ func (t *MemoryTool) recall(params memoryInput) (string, error) {
 	}
 
 	if err == sql.ErrNoRows {
+		// Fall back to search using the key as a query — the LLM may not
+		// remember the exact key format, but a fuzzy search often finds it.
+		searchParams := memoryInput{
+			Action:    "search",
+			Query:     params.Key,
+			Namespace: params.Namespace,
+		}
+		if result, searchErr := t.searchWithContext(ctx, searchParams); searchErr == nil && result != "" {
+			return result, nil
+		}
 		ns := params.Namespace
 		if ns == "" {
 			ns = "(all)"

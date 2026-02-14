@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { FileEdit, FileText, Terminal, Search, Globe, Check, Loader2 } from 'lucide-svelte';
+	import { FileEdit, FileText, Terminal, Search, Globe, Check, Loader2, Zap } from 'lucide-svelte';
 
 	interface Props {
 		name: string;
@@ -14,6 +14,7 @@
 
 	function getToolIcon(toolName: string) {
 		const lower = toolName.toLowerCase();
+		if (lower === 'skill') return Zap;
 		if (lower.includes('write') || lower.includes('edit')) return FileEdit;
 		if (lower.includes('read') || lower.includes('file')) return FileText;
 		if (lower.includes('bash') || lower.includes('shell') || lower.includes('exec')) return Terminal;
@@ -41,6 +42,11 @@
 		if (!inputStr) return '';
 		try {
 			const parsed = JSON.parse(inputStr);
+			// Skill tool: show "action: skill-name"
+			if (parsed.action && name === 'skill') {
+				if (parsed.name) return `${parsed.action}: ${parsed.name}`;
+				return parsed.action;
+			}
 			// Try common field names
 			if (parsed.command) return truncate(parsed.command, 80);
 			if (parsed.path) return parsed.path.replace(/^\/Users\/\w+/, '~');
@@ -48,6 +54,11 @@
 			if (parsed.query) return truncate(parsed.query, 80);
 			if (parsed.url) return truncate(parsed.url, 80);
 			if (parsed.pattern) return truncate(parsed.pattern, 80);
+			// Domain tools with action: show "action: resource" or just "action"
+			if (parsed.action) {
+				if (parsed.resource) return `${parsed.action}: ${parsed.resource}`;
+				return parsed.action;
+			}
 			// For generic tool inputs, show first meaningful value
 			for (const key of Object.keys(parsed)) {
 				const val = parsed[key];

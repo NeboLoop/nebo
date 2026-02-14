@@ -276,7 +276,7 @@ Sandboxed app system. NeboLoop distributes apps, Nebo runs them.
 - MQTT-based install flow: NeboLoop publishes to `neboloop/bot/{botID}/installs`
 - Structured template UI (Tier 1): app pushes JSON blocks, Nebo renders Svelte components
 - 8 block types: text, heading, input, button, select, toggle, divider, image
-- Proto definitions: `proto/apps/v1/` (ui.proto, tool.proto, channel.proto, comm.proto, gateway.proto)
+- Proto definitions: `proto/apps/v0/` (ui.proto, tool.proto, channel.proto, comm.proto, gateway.proto, schedule.proto, common.proto)
 
 **Key files:** manifest.go (types/validation), runtime.go (process lifecycle), sandbox.go (env sanitization), signing.go (ED25519 verification), napp.go (secure extraction), registry.go (discovery/launch), adapter.go (gRPC bridges), install.go (MQTT listener), channels.go (MQTT channel bridge)
 
@@ -477,11 +477,29 @@ Use `WithOrigin(ctx, origin)` / `GetOrigin(ctx)` to propagate origin through con
 - `daily` - Day-specific facts (keyed by date)
 - `entity` - Information about people, places, things
 
-### Channel Integrations (`internal/channels/`)
+### Channel Integrations
 
-| Channel | Library |
-|---------|---------|
-| Discord | `bwmarrin/discordgo` |
-| Telegram | `go-telegram/bot` |
-| Slack | `slack-go/slack` (Socket Mode) |
+Channels (Telegram, Discord, Slack) are bridged through NeboLoop via MQTT, not embedded directly in Nebo.
+
+- **Inbound:** NeboLoop runs platform bridges, publishes messages to MQTT topic `neboloop/bot/{botID}/channels/{channelType}/inbound` (legacy: `chat/in`)
+- **Outbound:** Nebo publishes replies to `neboloop/bot/{botID}/channels/{channelType}/outbound` (legacy: `chat/out`)
+- **Implementation:** `internal/apps/channels.go` — ChannelBridge using autopaho MQTT client
+- **Wired in:** `cmd/nebo/agent.go` — starts on NeboLoop comm connect (startup + mid-session code redemption)
+
+### Provider Loading (`cmd/nebo/providers.go`)
+
+Provider detection priority:
+1. **Database** — API keys from UI (Settings > Providers) stored in `auth_profiles` table
+2. **Config file** — `models.yaml` credentials section (env var expansion via `os.ExpandEnv`)
+3. **CLI auto-discovery** — If `models.yaml` `defaults.primary` starts with `claude-code`/`codex-cli`/`gemini-cli`, checks PATH for the CLI binary
+
+**Desktop app PATH caveat:** macOS GUI apps get a minimal PATH. `ensureUserPath()` in `cmd/nebo/root.go` augments PATH with `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, etc. so CLI tools are discoverable when launched from Finder/Dock.
+
+---
+
+## Licensing
+
+- **Core runtime:** Elastic License 2.0 (ELv2) — source-available, no competing products or managed services
+- **App SDK + proto definitions (`proto/apps/`):** Apache 2.0 — developers build freely on the platform
+- NEVER reference iPhone/iOS/App Store in code comments
 

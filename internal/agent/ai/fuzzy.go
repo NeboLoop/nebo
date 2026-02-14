@@ -477,6 +477,12 @@ func levenshteinDistance(s1, s2 string) int {
 	return prev[len2]
 }
 
+// AddAlias registers an additional alias pointing to a model/provider ID.
+// Used to register gateway app providers (e.g., "janus" -> "gateway-com.neboloop.janus/default").
+func (f *FuzzyMatcher) AddAlias(alias, modelID string) {
+	f.aliases[strings.ToLower(alias)] = modelID
+}
+
 // GetAliases returns all aliases for system prompt injection
 // Returns lines like "- sonnet: anthropic/claude-sonnet-4"
 func (f *FuzzyMatcher) GetAliases() []string {
@@ -514,7 +520,9 @@ func (f *FuzzyMatcher) GetAliases() []string {
 	return lines
 }
 
-// isModelAvailable checks if a model is available in the config AND has credentials
+// isModelAvailable checks if a model is available in the config AND has credentials.
+// Gateway providers (prefixed with "gateway-") are always considered available
+// since they're registered dynamically from apps, not from models.yaml.
 func (f *FuzzyMatcher) isModelAvailable(modelID string) bool {
 	if f.config == nil {
 		return true
@@ -527,6 +535,11 @@ func (f *FuzzyMatcher) isModelAvailable(modelID string) bool {
 
 	providerID := parts[0]
 	modelName := parts[1]
+
+	// Gateway providers are app-backed — always available if registered
+	if strings.HasPrefix(providerID, "gateway-") {
+		return true
+	}
 
 	// Check if provider has credentials configured
 	if f.config.Credentials != nil {

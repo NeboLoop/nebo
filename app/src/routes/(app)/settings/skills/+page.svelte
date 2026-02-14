@@ -2,7 +2,8 @@
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { Zap, RefreshCw, Power, Store, Download, Check, WifiOff, Star } from 'lucide-svelte';
+	import SkillEditorModal from '$lib/components/skills/SkillEditorModal.svelte';
+	import { Zap, RefreshCw, Power, Store, Download, Check, WifiOff, Star, Plus, Pencil, Trash2 } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { ExtensionSkill, StoreSkill } from '$lib/api/nebo';
 
@@ -13,6 +14,10 @@
 	let isLoadingStore = $state(false);
 	let togglingSkill = $state<string | null>(null);
 	let installingSkill = $state<string | null>(null);
+	let deletingSkill = $state<string | null>(null);
+
+	let showEditor = $state(false);
+	let editingSkill = $state<ExtensionSkill | null>(null);
 
 	onMount(async () => {
 		await loadAll();
@@ -62,6 +67,29 @@
 		}
 	}
 
+	async function handleDelete(skill: ExtensionSkill) {
+		if (!confirm(`Delete skill "${skill.name}"? This cannot be undone.`)) return;
+		deletingSkill = skill.name;
+		try {
+			await api.deleteSkill(skill.name);
+			await loadAll();
+		} catch (error) {
+			console.error('Failed to delete skill:', error);
+		} finally {
+			deletingSkill = null;
+		}
+	}
+
+	function openCreate() {
+		editingSkill = null;
+		showEditor = true;
+	}
+
+	function openEdit(skill: ExtensionSkill) {
+		editingSkill = skill;
+		showEditor = true;
+	}
+
 	async function handleInstall(skill: StoreSkill) {
 		installingSkill = skill.id;
 		try {
@@ -92,10 +120,16 @@
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Skills</h2>
 		<p class="text-sm text-base-content/60">Standalone orchestration skills for the agent</p>
 	</div>
-	<Button type="ghost" onclick={loadAll}>
-		<RefreshCw class="w-4 h-4 mr-2" />
-		Refresh
-	</Button>
+	<div class="flex items-center gap-2">
+		<Button type="primary" onclick={openCreate}>
+			<Plus class="w-4 h-4 mr-2" />
+			Create Skill
+		</Button>
+		<Button type="ghost" onclick={loadAll}>
+			<RefreshCw class="w-4 h-4 mr-2" />
+			Refresh
+		</Button>
+	</div>
 </div>
 
 {#if isLoading}
@@ -123,19 +157,45 @@
 									<div class="flex items-center gap-2">
 										<h3 class="font-display font-bold text-base-content">{skill.name}</h3>
 										<span class="badge badge-sm badge-outline">v{skill.version}</span>
-									</div>
-									<button
-										class="btn btn-xs btn-ghost {skill.enabled ? 'text-success' : 'text-base-content/40'}"
-										onclick={() => handleToggle(skill.name)}
-										disabled={togglingSkill === skill.name}
-										title={skill.enabled ? 'Click to disable' : 'Click to enable'}
-									>
-										{#if togglingSkill === skill.name}
-											<span class="loading loading-spinner loading-xs"></span>
-										{:else}
-											<Power class="w-4 h-4" />
+										{#if skill.source === 'bundled'}
+											<span class="badge badge-sm badge-ghost">Bundled</span>
 										{/if}
-									</button>
+									</div>
+									<div class="flex items-center gap-1">
+										{#if skill.editable}
+											<button
+												class="btn btn-xs btn-ghost text-base-content/40 hover:text-primary"
+												onclick={() => openEdit(skill)}
+												title="Edit skill"
+											>
+												<Pencil class="w-3.5 h-3.5" />
+											</button>
+											<button
+												class="btn btn-xs btn-ghost text-base-content/40 hover:text-error"
+												onclick={() => handleDelete(skill)}
+												disabled={deletingSkill === skill.name}
+												title="Delete skill"
+											>
+												{#if deletingSkill === skill.name}
+													<span class="loading loading-spinner loading-xs"></span>
+												{:else}
+													<Trash2 class="w-3.5 h-3.5" />
+												{/if}
+											</button>
+										{/if}
+										<button
+											class="btn btn-xs btn-ghost {skill.enabled ? 'text-success' : 'text-base-content/40'}"
+											onclick={() => handleToggle(skill.name)}
+											disabled={togglingSkill === skill.name}
+											title={skill.enabled ? 'Click to disable' : 'Click to enable'}
+										>
+											{#if togglingSkill === skill.name}
+												<span class="loading loading-spinner loading-xs"></span>
+											{:else}
+												<Power class="w-4 h-4" />
+											{/if}
+										</button>
+									</div>
 								</div>
 								<p class="text-sm text-base-content/60 mb-2 {!skill.enabled ? 'opacity-50' : ''}">{skill.description}</p>
 
@@ -165,7 +225,7 @@
 				<div class="py-12 text-center text-base-content/60">
 					<Zap class="w-12 h-12 mx-auto mb-4 opacity-20" />
 					<p class="font-medium mb-2">No skills found</p>
-					<p class="text-sm">Add SKILL.md files to the skills/ directory or browse the store.</p>
+					<p class="text-sm">Create a skill or browse the store.</p>
 				</div>
 			</Card>
 		{/if}
@@ -265,3 +325,10 @@
 		</div>
 	{/if}
 {/if}
+
+<SkillEditorModal
+	bind:show={showEditor}
+	skill={editingSkill}
+	onclose={() => { showEditor = false; }}
+	onsaved={() => loadAll()}
+/>

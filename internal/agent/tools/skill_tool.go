@@ -4,19 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/nebolabs/nebo/internal/agent/skills"
 )
 
 // SkillDomainTool is the unified skill domain tool.
 // All installed apps and standalone skills are exposed through this single tool.
 // The LLM sees one catalog of capabilities and interacts through one interface.
 type SkillDomainTool struct {
-	mu      sync.RWMutex
-	entries map[string]*skillEntry
-	dirty   bool   // schema/description cache invalidation
+	mu           sync.RWMutex
+	entries      map[string]*skillEntry
+	activeSkills map[string]map[string]bool // sessionKey -> set of active skill slugs
+	dirty        bool                       // schema/description cache invalidation
+	skillsDir    string                     // user skills directory for create/update/delete
 	cachedSchema json.RawMessage
 	cachedDesc   string
 }
@@ -34,14 +40,19 @@ type skillEntry struct {
 type SkillDomainInput struct {
 	Name     string `json:"name,omitempty"`     // Skill slug
 	Resource string `json:"resource,omitempty"` // Passed through to adapter
-	Action   string `json:"action,omitempty"`   // "catalog", "help", or passed through
+	Action   string `json:"action,omitempty"`   // "catalog", "help", "create", "update", "delete", or passed through
+	Content  string `json:"content,omitempty"`  // SKILL.md content for create/update
 }
 
 // NewSkillDomainTool creates a new unified skill domain tool.
-func NewSkillDomainTool() *SkillDomainTool {
+// skillsDir is the user skills directory where create/update/delete write files.
+// The fsnotify watcher on this directory handles re-registration automatically.
+func NewSkillDomainTool(skillsDir string) *SkillDomainTool {
 	return &SkillDomainTool{
-		entries: make(map[string]*skillEntry),
-		dirty:   true,
+		entries:      make(map[string]*skillEntry),
+		activeSkills: make(map[string]map[string]bool),
+		skillsDir:    skillsDir,
+		dirty:        true,
 	}
 }
 
@@ -87,8 +98,24 @@ func (t *SkillDomainTool) Execute(ctx context.Context, input json.RawMessage) (*
 		return &ToolResult{Content: fmt.Sprintf("Invalid input: %v", err), IsError: true}, nil
 	}
 
+	// Skill lifecycle and session actions
+	switch in.Action {
+	case "catalog":
+		return t.catalog()
+	case "create":
+		return t.createSkill(in)
+	case "update":
+		return t.updateSkill(in)
+	case "delete":
+		return t.deleteSkill(in)
+	case "load":
+		return t.loadSkill(ctx, in)
+	case "unload":
+		return t.unloadSkill(ctx, in)
+	}
+
 	// No name → return catalog
-	if in.Name == "" || in.Action == "catalog" {
+	if in.Name == "" {
 		return t.catalog()
 	}
 
@@ -142,7 +169,7 @@ func (t *SkillDomainTool) Resources() []string {
 }
 
 func (t *SkillDomainTool) ActionsFor(resource string) []string {
-	return []string{"catalog", "help"}
+	return []string{"catalog", "help", "create", "update", "delete", "load", "unload"}
 }
 
 // --- Registration ---
@@ -172,6 +199,20 @@ func (t *SkillDomainTool) Unregister(slug string) {
 	t.dirty = true
 }
 
+// UnregisterStandalone removes all standalone skills (no gRPC adapter).
+// App-backed skills are preserved.
+func (t *SkillDomainTool) UnregisterStandalone() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for slug, entry := range t.entries {
+		if entry.adapter == nil {
+			delete(t.entries, slug)
+		}
+	}
+	t.dirty = true
+}
+
 // Slugs returns all registered skill slugs sorted alphabetically.
 func (t *SkillDomainTool) Slugs() []string {
 	return t.Resources()
@@ -184,6 +225,202 @@ func (t *SkillDomainTool) Count() int {
 	return len(t.entries)
 }
 
+// --- Session-scoped load/unload ---
+
+// loadSkill activates a skill for the current session.
+// The skill's template is injected into the system prompt on subsequent runs.
+func (t *SkillDomainTool) loadSkill(ctx context.Context, in SkillDomainInput) (*ToolResult, error) {
+	if in.Name == "" {
+		return &ToolResult{Content: "Name is required for load.", IsError: true}, nil
+	}
+
+	sessionKey := GetSessionKey(ctx)
+	if sessionKey == "" {
+		return &ToolResult{Content: "No session context available.", IsError: true}, nil
+	}
+
+	t.mu.Lock()
+	entry, ok := t.entries[in.Name]
+	if !ok {
+		t.mu.Unlock()
+		return &ToolResult{
+			Content: fmt.Sprintf("Skill %q not found. Use skill(action: \"catalog\") to see available skills.", in.Name),
+			IsError: true,
+		}, nil
+	}
+
+	if t.activeSkills[sessionKey] == nil {
+		t.activeSkills[sessionKey] = make(map[string]bool)
+	}
+	t.activeSkills[sessionKey][in.Name] = true
+	content := entry.skillMD
+	name := entry.name
+	t.mu.Unlock()
+
+	if content == "" {
+		content = fmt.Sprintf("# %s\n\n%s", name, entry.description)
+	}
+
+	return &ToolResult{
+		Content: fmt.Sprintf("Skill %q loaded for this conversation. Follow the instructions below:\n\n%s", name, content),
+	}, nil
+}
+
+// unloadSkill deactivates a skill for the current session.
+func (t *SkillDomainTool) unloadSkill(ctx context.Context, in SkillDomainInput) (*ToolResult, error) {
+	if in.Name == "" {
+		return &ToolResult{Content: "Name is required for unload.", IsError: true}, nil
+	}
+
+	sessionKey := GetSessionKey(ctx)
+	if sessionKey == "" {
+		return &ToolResult{Content: "No session context available.", IsError: true}, nil
+	}
+
+	t.mu.Lock()
+	if active, ok := t.activeSkills[sessionKey]; ok {
+		delete(active, in.Name)
+		if len(active) == 0 {
+			delete(t.activeSkills, sessionKey)
+		}
+	}
+	t.mu.Unlock()
+
+	return &ToolResult{
+		Content: fmt.Sprintf("Skill %q unloaded from this conversation.", in.Name),
+	}, nil
+}
+
+// ActiveSkillContent returns the concatenated templates of all skills
+// loaded for the given session. Used by the runner to inject into the system prompt.
+func (t *SkillDomainTool) ActiveSkillContent(sessionKey string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	active, ok := t.activeSkills[sessionKey]
+	if !ok || len(active) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n## Active Skills\n\n")
+	b.WriteString("The following skills are loaded for this conversation. Follow their instructions.\n\n")
+
+	for slug := range active {
+		if entry, ok := t.entries[slug]; ok {
+			content := entry.skillMD
+			if content == "" {
+				content = fmt.Sprintf("# %s\n\n%s", entry.name, entry.description)
+			}
+			b.WriteString(content)
+			b.WriteString("\n\n---\n\n")
+		}
+	}
+
+	return b.String()
+}
+
+// ClearSession removes all active skills for a session (called on session clear/end).
+func (t *SkillDomainTool) ClearSession(sessionKey string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.activeSkills, sessionKey)
+}
+
+// --- Skill lifecycle ---
+
+// createSkill writes a new SKILL.md to the user skills directory.
+func (t *SkillDomainTool) createSkill(in SkillDomainInput) (*ToolResult, error) {
+	if t.skillsDir == "" {
+		return &ToolResult{Content: "Skill creation not available (no skills directory configured).", IsError: true}, nil
+	}
+	if in.Content == "" {
+		return &ToolResult{Content: "Content is required. Provide valid SKILL.md content with YAML frontmatter.", IsError: true}, nil
+	}
+
+	parsed, err := skills.ParseSkillMD([]byte(in.Content))
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Invalid SKILL.md content: %v", err), IsError: true}, nil
+	}
+	if err := parsed.Validate(); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Validation failed: %v", err), IsError: true}, nil
+	}
+
+	slug := Slugify(parsed.Name)
+	if slug == "" {
+		return &ToolResult{Content: "Could not derive a valid slug from the skill name.", IsError: true}, nil
+	}
+
+	skillDir := filepath.Join(t.skillsDir, slug)
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
+		return &ToolResult{Content: fmt.Sprintf("Skill %q already exists. Use action: \"update\" to modify it.", slug), IsError: true}, nil
+	}
+
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to create skill directory: %v", err), IsError: true}, nil
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(in.Content), 0644); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to write SKILL.md: %v", err), IsError: true}, nil
+	}
+
+	return &ToolResult{Content: fmt.Sprintf("Skill %q created and available in catalog. Use skill(name: %q, action: \"load\") to activate it for this conversation.", parsed.Name, slug)}, nil
+}
+
+// updateSkill overwrites an existing user SKILL.md.
+func (t *SkillDomainTool) updateSkill(in SkillDomainInput) (*ToolResult, error) {
+	if t.skillsDir == "" {
+		return &ToolResult{Content: "Skill update not available (no skills directory configured).", IsError: true}, nil
+	}
+	if in.Name == "" {
+		return &ToolResult{Content: "Name is required for update.", IsError: true}, nil
+	}
+	if in.Content == "" {
+		return &ToolResult{Content: "Content is required. Provide the full updated SKILL.md content.", IsError: true}, nil
+	}
+
+	parsed, err := skills.ParseSkillMD([]byte(in.Content))
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Invalid SKILL.md content: %v", err), IsError: true}, nil
+	}
+	if err := parsed.Validate(); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Validation failed: %v", err), IsError: true}, nil
+	}
+
+	slug := Slugify(in.Name)
+	skillPath := filepath.Join(t.skillsDir, slug, "SKILL.md")
+	if _, err := os.Stat(skillPath); os.IsNotExist(err) {
+		return &ToolResult{Content: fmt.Sprintf("Skill %q not found in user skills. Only user-created skills can be updated.", slug), IsError: true}, nil
+	}
+
+	if err := os.WriteFile(skillPath, []byte(in.Content), 0644); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to write SKILL.md: %v", err), IsError: true}, nil
+	}
+
+	return &ToolResult{Content: fmt.Sprintf("Skill %q updated. If it's loaded in this session, unload and reload it to pick up changes.", parsed.Name)}, nil
+}
+
+// deleteSkill removes a user skill directory.
+func (t *SkillDomainTool) deleteSkill(in SkillDomainInput) (*ToolResult, error) {
+	if t.skillsDir == "" {
+		return &ToolResult{Content: "Skill deletion not available (no skills directory configured).", IsError: true}, nil
+	}
+	if in.Name == "" {
+		return &ToolResult{Content: "Name is required for delete.", IsError: true}, nil
+	}
+
+	slug := Slugify(in.Name)
+	skillDir := filepath.Join(t.skillsDir, slug)
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); os.IsNotExist(err) {
+		return &ToolResult{Content: fmt.Sprintf("Skill %q not found in user skills. Only user-created skills can be deleted.", slug), IsError: true}, nil
+	}
+
+	if err := os.RemoveAll(skillDir); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to delete skill: %v", err), IsError: true}, nil
+	}
+
+	return &ToolResult{Content: fmt.Sprintf("Skill %q deleted successfully. It will be unloaded automatically.", in.Name)}, nil
+}
+
 // --- Internals ---
 
 // catalog returns a formatted listing of all registered skills.
@@ -192,7 +429,7 @@ func (t *SkillDomainTool) catalog() (*ToolResult, error) {
 	defer t.mu.RUnlock()
 
 	if len(t.entries) == 0 {
-		return &ToolResult{Content: "No skills installed. Visit the App Store to install apps, or create standalone skills in the skills/ directory."}, nil
+		return &ToolResult{Content: "No skills installed. Use skill(action: \"create\", content: \"...\") to create one, or visit the App Store."}, nil
 	}
 
 	// Sort entries for stable output
@@ -232,7 +469,8 @@ func (t *SkillDomainTool) catalog() (*ToolResult, error) {
 		b.WriteString("\n")
 	}
 
-	b.WriteString("Use `skill(name: \"<name>\")` to load detailed instructions for any skill.")
+	b.WriteString("Use `skill(name: \"<name>\", action: \"load\")` to activate a skill for this conversation.\n")
+	b.WriteString("Use `skill(name: \"<name>\", action: \"unload\")` when done. Skills are NOT auto-triggered.")
 
 	return &ToolResult{Content: b.String()}, nil
 }
@@ -246,8 +484,9 @@ func (t *SkillDomainTool) rebuildCache() {
 
 	// Build description with catalog one-liners
 	var desc strings.Builder
-	desc.WriteString("Unified interface for all installed skills and apps. ")
-	desc.WriteString("Use skill(action: \"catalog\") to browse, skill(name: \"x\") to load instructions.\n\n")
+	desc.WriteString("Unified interface for skills and apps. Skills are NOT active by default — they must be explicitly loaded per conversation.\n")
+	desc.WriteString("LIFECYCLE: create → available in catalog. load → active in THIS session (injected into system prompt). unload → removed from session. Skills do NOT auto-trigger.\n")
+	desc.WriteString("Actions: catalog (browse), help (read instructions), load (activate for session), unload (deactivate), create/update/delete (manage on disk).\n\n")
 	desc.WriteString("Available skills:\n")
 
 	slugs := make([]string, 0, len(t.entries))
@@ -272,15 +511,19 @@ func (t *SkillDomainTool) rebuildCache() {
 	properties := map[string]any{
 		"name": map[string]any{
 			"type":        "string",
-			"description": "Skill name (see list above)",
+			"description": "Skill name/slug (see list above)",
 		},
 		"action": map[string]any{
 			"type":        "string",
-			"description": "Action: catalog (list skills), help (load instructions), or skill-specific action",
+			"description": "Action: catalog (list), help (show instructions), load (activate for session), unload (deactivate), create (new skill), update (modify), delete (remove), or skill-specific",
 		},
 		"resource": map[string]any{
 			"type":        "string",
 			"description": "Resource type (skill-specific, e.g. events, email, contacts)",
+		},
+		"content": map[string]any{
+			"type":        "string",
+			"description": "Full SKILL.md content with YAML frontmatter for create/update actions",
 		},
 	}
 

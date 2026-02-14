@@ -399,8 +399,8 @@
 	}
 </script>
 
-<div class="fixed inset-0 bg-base-100 z-50 flex items-center justify-center">
-	<div class="w-full max-w-lg p-8">
+<div class="fixed inset-0 bg-base-100 z-50 scrollbar-overlay">
+	<div class="w-full max-w-lg mx-auto py-8 px-8 min-h-full flex flex-col justify-center">
 		<!-- Progress dots -->
 		<div class="flex justify-center gap-2 mb-8">
 			{#each progressSteps as step}
@@ -448,7 +448,7 @@
 					</div>
 				{/if}
 
-				<div class="bg-base-200 rounded-xl p-5 mb-6 space-y-4 text-sm max-h-64 overflow-y-auto">
+				<div class="bg-base-200 rounded-xl p-5 mb-6 space-y-4 text-sm max-h-64 scrollbar-overlay">
 					<div>
 						<h3 class="font-semibold text-base-content mb-1">Your Data Stays Local</h3>
 						<p class="text-base-content/70">
@@ -511,22 +511,22 @@
 
 		<!-- Provider Choice Step -->
 		{#if currentStep === 'provider-choice'}
-			<div class="animate-in fade-in duration-300">
-				<div class="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-6">
+			<div class="animate-in fade-in duration-300 flex flex-col max-h-[85vh]">
+				<div class="w-16 h-16 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-6 shrink-0">
 					<Sparkles class="w-8 h-8 text-primary" />
 				</div>
-				<h2 class="text-2xl font-bold text-center mb-2">Connect Your AI</h2>
-				<p class="text-base-content/70 text-center mb-6">
+				<h2 class="text-2xl font-bold text-center mb-2 shrink-0">Connect Your AI</h2>
+				<p class="text-base-content/70 text-center mb-6 shrink-0">
 					Choose how to power Nebo
 				</p>
 
 				{#if error}
-					<div class="alert alert-error mb-4">
+					<div class="alert alert-error mb-4 shrink-0">
 						<span>{error}</span>
 					</div>
 				{/if}
 
-				<div class="space-y-3 mb-6">
+				<div class="space-y-3 mb-6 shrink-0">
 					<!-- Janus - Primary option -->
 					<button
 						type="button"
@@ -569,11 +569,12 @@
 						Use your own API key or CLI instead
 						<ChevronDown class="w-4 h-4 transition-transform {showMoreProviders ? 'rotate-180' : ''}" />
 					</button>
+				</div>
 
-					<!-- Expanded: CLI + API Key options -->
-					{#if showMoreProviders}
-						<div class="space-y-3">
-							{#if isCheckingCLI}
+				<!-- Expanded: CLI + API Key options -->
+				{#if showMoreProviders}
+					<div class="space-y-3 mb-6 scrollbar-overlay min-h-0">
+						{#if isCheckingCLI}
 								<div class="flex items-center justify-center py-4">
 									<Loader2 class="w-5 h-5 animate-spin text-base-content/40" />
 									<span class="ml-2 text-sm text-base-content/40">Detecting CLI tools...</span>
@@ -680,7 +681,6 @@
 							</button>
 						</div>
 					{/if}
-				</div>
 
 				<Button
 					type="primary"
@@ -807,7 +807,7 @@
 					</div>
 				{/if}
 
-				<div class="space-y-2 mb-6 max-h-72 overflow-y-auto">
+				<div class="space-y-2 mb-6 max-h-72 scrollbar-overlay">
 					{#each capabilityGroups as cap}
 						<button
 							type="button"

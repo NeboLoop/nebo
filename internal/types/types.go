@@ -204,6 +204,8 @@ type ExtensionSkill struct {
 	Priority     int      `json:"priority"`
 	Enabled      bool     `json:"enabled"`
 	FilePath     string   `json:"filePath"`
+	Source       string   `json:"source"`   // "bundled" or "user"
+	Editable     bool     `json:"editable"` // true for user skills
 }
 
 type ExtensionTool struct {
@@ -539,6 +541,37 @@ type ToggleSkillRequest struct {
 type ToggleSkillResponse struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+}
+
+type CreateSkillRequest struct {
+	Content string `json:"content"`          // Full SKILL.md text (YAML frontmatter + markdown body)
+	Slug    string `json:"slug,omitempty"`   // Optional directory name override
+}
+
+type CreateSkillResponse struct {
+	Skill ExtensionSkill `json:"skill"`
+}
+
+type UpdateSkillRequest struct {
+	Name    string `path:"name"`
+	Content string `json:"content"`
+}
+
+type UpdateSkillResponse struct {
+	Skill ExtensionSkill `json:"skill"`
+}
+
+type DeleteSkillRequest struct {
+	Name string `path:"name"`
+}
+
+type GetSkillContentRequest struct {
+	Name string `path:"name"`
+}
+
+type GetSkillContentResponse struct {
+	Content  string `json:"content"`
+	Editable bool   `json:"editable"`
 }
 
 type UpdateAgentSettingsRequest struct {

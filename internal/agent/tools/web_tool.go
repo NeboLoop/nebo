@@ -612,7 +612,7 @@ func (t *WebDomainTool) handleBrowserAction(ctx context.Context, in WebDomainInp
 		default:
 			jsonResult, err := json.MarshalIndent(result, "", "  ")
 			if err != nil {
-				return &ToolResult{Content: fmt.Sprintf("%v", result)}, nil
+				return &ToolResult{Content: fmt.Sprintf("(non-serializable %T)", result)}, nil
 			}
 			return &ToolResult{Content: string(jsonResult)}, nil
 		}
