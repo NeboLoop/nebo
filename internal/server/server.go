@@ -40,6 +40,7 @@ import (
 	"github.com/neboloop/nebo/internal/realtime"
 	"github.com/neboloop/nebo/internal/svc"
 	"github.com/neboloop/nebo/internal/voice"
+	"github.com/neboloop/nebo/internal/webview"
 	"github.com/neboloop/nebo/internal/websocket"
 )
 
@@ -138,6 +139,7 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 
 	// Health check at root
 	r.Get("/health", handler.HealthCheckHandler(svcCtx))
+	r.Get("/api/v1/update/check", handler.UpdateCheckHandler(svcCtx))
 
 	// Rate limiters
 	authLimiter := middleware.NewRateLimiter(middleware.AuthRateLimitConfig())
@@ -248,6 +250,13 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 		r.Handle("/agent/mcp", opts.AgentMCPHandler)
 		r.Handle("/agent/mcp/*", opts.AgentMCPHandler)
 	}
+
+	// Native webview callback — used by agent-controlled browser windows
+	// to send DOM interaction results back to Go via fetch().
+	// HandleFunc so both POST and OPTIONS (CORS preflight) reach the handler.
+	handler := webview.CallbackHandler()
+	r.Post("/internal/webview/callback", handler)
+	r.Options("/internal/webview/callback", handler)
 
 	// SPA fallback - serve frontend for all other routes
 	if spaErr == nil {

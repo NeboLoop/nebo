@@ -7,6 +7,8 @@
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import OnboardingFlow from '$lib/components/onboarding/OnboardingFlow.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
+	import UpdateBanner from '$lib/components/UpdateBanner.svelte';
+	import { checkForUpdate, updateInfo, type UpdateInfo } from '$lib/stores/update';
 	import { auth } from '$lib/stores/auth';
 	import * as api from '$lib/api/nebo';
 
@@ -43,6 +45,16 @@
 			}
 		});
 
+		// Listen for background update_available events pushed by the server
+		const unsubUpdate = wsClient.on<UpdateInfo>('update_available', (data) => {
+			if (data) {
+				updateInfo.set({ ...data, available: true });
+			}
+		});
+
+		// Check for updates (non-blocking)
+		checkForUpdate();
+
 		// Check if user needs onboarding
 		try {
 			const response = await api.getUserProfile();
@@ -56,6 +68,7 @@
 
 		return () => {
 			unsubQuarantine();
+			unsubUpdate();
 		};
 	});
 
@@ -75,6 +88,7 @@
 {:else if isFullHeightRoute}
 	<div class="h-dvh flex flex-col overflow-hidden bg-base-100">
 		<AppNav />
+		<UpdateBanner />
 		{#each quarantineNotices as notice (notice.app_id)}
 			<div class="px-4 pt-2">
 				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>
@@ -89,6 +103,7 @@
 {:else}
 	<div class="layout-app h-full">
 		<AppNav />
+		<UpdateBanner />
 		{#each quarantineNotices as notice (notice.app_id)}
 			<div class="px-6 pt-2">
 				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>

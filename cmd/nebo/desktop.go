@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"strings"
+
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/neboloop/nebo/internal/logging"
 	"github.com/neboloop/nebo/internal/server"
 	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/webview"
 
 	neboapp "github.com/neboloop/nebo/app"
 )
@@ -114,6 +117,7 @@ func RunDesktop() {
 
 	// Initialize shared ServiceContext ONCE — single owner of the database connection
 	svcCtx := svc.NewServiceContext(*c)
+	svcCtx.Version = AppVersion
 	defer svcCtx.Close()
 
 	if svcCtx.DB == nil {
@@ -142,6 +146,21 @@ func RunDesktop() {
 		Linux: application.LinuxOptions{
 			DisableQuitOnLastWindowClosed: true,
 			ProgramName:                  "nebo",
+		},
+		// Route native bridge messages from agent-controlled browser windows
+		// to the webview callback collector. JS sends "nebo:cb:{json}" via
+		// window._wails.invoke() which bypasses CORS and mixed content blocking.
+		RawMessageHandler: func(_ application.Window, message string, _ *application.OriginInfo) {
+			const prefix = "nebo:cb:"
+			if !strings.HasPrefix(message, prefix) {
+				return
+			}
+			jsonStr := message[len(prefix):]
+			var result webview.CallbackResult
+			if err := json.Unmarshal([]byte(jsonStr), &result); err != nil || result.RequestID == "" {
+				return
+			}
+			webview.GetCollector().Deliver(result)
 		},
 		OnShutdown: func() {
 			fmt.Println("\n\033[32mNebo stopped.\033[0m")
@@ -295,6 +314,48 @@ func RunDesktop() {
 			})
 		})
 
+		// Install native browser window creator for agent-controlled webview windows.
+		// Each call creates a new Wails webview window that the agent can control
+		// via ExecJS for DOM interaction — native WebKit/WebView2, not detectable as bot.
+		wvm := webview.GetManager()
+		wvm.SetCreator(func(opts webview.WindowCreatorOptions) webview.WindowHandle {
+			name := opts.Name
+			if existing, ok := wailsApp.Window.Get(name); ok {
+				if ww, ok := existing.(*application.WebviewWindow); ok {
+					ww.Show()
+					ww.Focus()
+					return wailsWindowHandle{win: ww}
+				}
+			}
+			width := opts.Width
+			if width <= 0 {
+				width = 1200
+			}
+			height := opts.Height
+			if height <= 0 {
+				height = 800
+			}
+			title := opts.Title
+			if title == "" {
+				title = "Nebo Browser"
+			}
+			w := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+				Name:      name,
+				Title:     title,
+				Width:     width,
+				Height:    height,
+				MinWidth:  400,
+				MinHeight: 300,
+				URL:       opts.URL,
+				// Bootstrap JS runs via impl-level execJS after EVERY navigation,
+				// bypassing the runtimeLoaded gate on public ExecJS. Forces the
+				// Wails runtime to be "ready" and pre-defines the callback function.
+				JS: neboBootstrapJS,
+			})
+			return wailsWindowHandle{win: w}
+		})
+		wvm.SetCallbackURL(fmt.Sprintf("http://localhost:%d/internal/webview/callback", c.Port))
+
 		agentMCPProxy := server.NewAgentMCPProxy()
 
 		go func() {
@@ -439,3 +500,61 @@ func RunDesktop() {
 	cancel()
 	wg.Wait()
 }
+
+// neboBootstrapJS is injected into every browser window via WebviewWindowOptions.JS.
+// It runs via the impl-level execJS after EVERY navigation — this is critical because
+// it bypasses the runtimeLoaded check that gates the public ExecJS method.
+//
+// Without this, ExecJS queues all JS forever on external pages where the Wails runtime
+// fails to send "wails:runtime:ready", leaving runtimeLoaded permanently false.
+//
+// This script:
+// 1. Defines window.__nebo_cb — the native callback function for agent actions
+// 2. Sends "wails:runtime:ready" via the platform's native message handler,
+//    forcing runtimeLoaded=true so queued ExecJS calls flush
+const neboBootstrapJS = `
+(function(){
+  // Define the callback function on window so ExecJS-injected code can use it.
+  // Uses native platform message handlers (not HTTP fetch) to bypass CORS/mixed content.
+  window.__nebo_cb = function(d) {
+    var m = "nebo:cb:" + JSON.stringify(d);
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.external) {
+        window.webkit.messageHandlers.external.postMessage(m);
+      } else if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage(m);
+      } else if (window._wails && window._wails.invoke) {
+        window._wails.invoke(m);
+      }
+    } catch(e) {}
+  };
+
+  // Force "wails:runtime:ready" so runtimeLoaded becomes true and ExecJS works.
+  // Use a short delay to let the Wails runtime attempt its own initialization first.
+  setTimeout(function() {
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.external) {
+        window.webkit.messageHandlers.external.postMessage("wails:runtime:ready");
+      } else if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.postMessage("wails:runtime:ready");
+      }
+    } catch(e) {}
+  }, 200);
+})();
+`
+
+// wailsWindowHandle adapts a Wails WebviewWindow to the webview.WindowHandle interface.
+type wailsWindowHandle struct {
+	win *application.WebviewWindow
+}
+
+func (w wailsWindowHandle) SetURL(url string)       { w.win.SetURL(url) }
+func (w wailsWindowHandle) ExecJS(js string)         { w.win.ExecJS(js) }
+func (w wailsWindowHandle) SetTitle(title string)    { w.win.SetTitle(title) }
+func (w wailsWindowHandle) Show()                    { w.win.Show() }
+func (w wailsWindowHandle) Hide()                    { w.win.Hide() }
+func (w wailsWindowHandle) Focus()                   { w.win.Focus() }
+func (w wailsWindowHandle) Close()                   { w.win.Close() }
+func (w wailsWindowHandle) SetSize(width, height int) { w.win.SetSize(width, height) }
+func (w wailsWindowHandle) Reload()                  { w.win.Reload() }
+func (w wailsWindowHandle) Name() string             { return w.win.Name() }

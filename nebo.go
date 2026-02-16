@@ -14,6 +14,9 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Version is set at build time via ldflags: -X main.Version=v0.x.x
+var Version = "dev"
+
 //go:embed etc/nebo.yaml
 var embeddedConfig []byte
 
@@ -54,7 +57,7 @@ func main() {
 	}
 
 	// Pass config to CLI and execute
-	if err := cli.SetupRootCmd(&c).Execute(); err != nil {
+	if err := cli.SetupRootCmd(&c, Version).Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

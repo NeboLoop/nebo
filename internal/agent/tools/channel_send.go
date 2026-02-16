@@ -40,7 +40,7 @@ func (t *ChannelSendTool) Name() string {
 
 // Description returns the tool description
 func (t *ChannelSendTool) Description() string {
-	return "Send messages to communication channels (Telegram, Discord, Slack, etc.). Use 'list' action to see available channels."
+	return "Send messages to connected communication channels. Use 'list' action to see available channels. Channels are provided by installed apps."
 }
 
 // Schema returns the JSON schema
@@ -55,7 +55,7 @@ func (t *ChannelSendTool) Schema() json.RawMessage {
 			},
 			"channel_id": {
 				"type": "string",
-				"description": "Channel ID to send to (required for 'send' action). Format: 'type:identifier' (e.g., 'telegram:123456', 'discord:channel_id', 'slack:#general')"
+				"description": "Channel ID to send to (required for 'send' action). Format: 'type:identifier' — use 'list' action to see available channels and their IDs"
 			},
 			"text": {
 				"type": "string",
@@ -149,7 +149,7 @@ func (t *ChannelSendTool) sendMessage(ctx context.Context, channelID, text strin
 	parts := strings.SplitN(channelID, ":", 2)
 	if len(parts) != 2 {
 		return &ToolResult{
-			Content: "Error: channel_id must be 'type:identifier' (e.g., 'telegram:123456')",
+			Content: "Error: channel_id must be 'type:identifier' — use 'list' action to see available channels",
 			IsError: true,
 		}, nil
 	}

@@ -181,6 +181,17 @@ type EmbeddingCache struct {
 	CreatedAt   sql.NullTime `json:"created_at"`
 }
 
+type ErrorLog struct {
+	ID         int64          `json:"id"`
+	Timestamp  time.Time      `json:"timestamp"`
+	Level      string         `json:"level"`
+	Module     string         `json:"module"`
+	Message    string         `json:"message"`
+	Stacktrace sql.NullString `json:"stacktrace"`
+	Context    sql.NullString `json:"context"`
+	Resolved   int64          `json:"resolved"`
+}
+
 type Lead struct {
 	ID        string         `json:"id"`
 	Email     string         `json:"email"`

@@ -1090,6 +1090,8 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	})
 	if agentToolErr == nil {
 		agentTool.SetCommService(commHandler)
+		// Share the orchestrator from taskTool so agent(resource:task) can spawn sub-agents
+		agentTool.SetOrchestrator(taskTool.GetOrchestrator())
 		registry.RegisterAgentDomainTool(agentTool)
 	}
 

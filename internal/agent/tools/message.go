@@ -32,13 +32,13 @@ func (t *MessageTool) Name() string {
 
 // Description returns the tool description
 func (t *MessageTool) Description() string {
-	return `Send messages proactively to connected messaging channels.
+	return `Send messages proactively to connected channels.
 
 Actions:
 - "send": Send a message to a channel (requires channel, to, text)
 - "list": List all connected channels
 
-Use this to send updates, reminders, or notifications to users on Telegram, Discord, Slack, etc.`
+Channels are provided by installed apps. Use 'list' to see what's available.`
 }
 
 // Schema returns the JSON schema for the tool input
@@ -53,7 +53,7 @@ func (t *MessageTool) Schema() json.RawMessage {
 			},
 			"channel": {
 				"type": "string",
-				"description": "Channel type: telegram, discord, slack"
+				"description": "Channel type (provided by installed apps — use 'list' to see available)"
 			},
 			"to": {
 				"type": "string",

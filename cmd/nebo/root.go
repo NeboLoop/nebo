@@ -112,6 +112,7 @@ func RunAll() {
 
 	// Initialize shared ServiceContext ONCE — single owner of the database connection
 	svcCtx := svc.NewServiceContext(*c)
+	svcCtx.Version = AppVersion
 	defer svcCtx.Close()
 
 	if svcCtx.DB == nil {

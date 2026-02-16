@@ -20,9 +20,11 @@
 		Code,
 		Cloud,
 		Menu,
-		X
+		X,
+		ArrowUpCircle
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
+	import { updateInfo } from '$lib/stores/update';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -174,4 +176,23 @@
 			{/each}
 		{/each}
 	</ul>
+	<!-- Version info -->
+	{#if $updateInfo}
+		<div class="mt-6 px-3">
+			<p class="text-xs text-base-content/40">
+				Nebo {$updateInfo.current_version}
+			</p>
+			{#if $updateInfo.available}
+				<a
+					href={$updateInfo.release_url}
+					target="_blank"
+					rel="noopener noreferrer"
+					class="flex items-center gap-1.5 mt-1 text-xs text-info hover:text-info/80 transition-colors"
+				>
+					<ArrowUpCircle class="w-3.5 h-3.5" />
+					<span>{$updateInfo.latest_version} available</span>
+				</a>
+			{/if}
+		</div>
+	{/if}
 {/snippet}

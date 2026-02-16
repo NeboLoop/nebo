@@ -18,6 +18,7 @@ type Querier interface {
 	// Run periodically to clean up stale sessions (older than 7 days)
 	CleanupOldMCPSessions(ctx context.Context) error
 	ClearMCPIntegrationOAuthState(ctx context.Context, id string) error
+	ClearOldErrorLogs(ctx context.Context, dollar_1 interface{}) error
 	ClearSessionActiveTask(ctx context.Context, id string) error
 	ClearSessionOverrides(ctx context.Context, id string) error
 	CompactSession(ctx context.Context, arg CompactSessionParams) error
@@ -25,6 +26,7 @@ type Querier interface {
 	CountChats(ctx context.Context) (int64, error)
 	CountCronHistory(ctx context.Context, jobID int64) (int64, error)
 	CountCronJobs(ctx context.Context) (int64, error)
+	CountErrorLogs(ctx context.Context) (int64, error)
 	CountLeads(ctx context.Context, filterStatus interface{}) (int64, error)
 	CountMemories(ctx context.Context) (int64, error)
 	CountMemoriesByNamespace(ctx context.Context, namespacePrefix sql.NullString) (int64, error)
@@ -255,6 +257,8 @@ type Querier interface {
 	IncrementMemoryAccessByKey(ctx context.Context, arg IncrementMemoryAccessByKeyParams) error
 	IncrementSessionMessageCount(ctx context.Context, id string) error
 	InsertDevSideloadedApp(ctx context.Context, arg InsertDevSideloadedAppParams) error
+	// Error log queries
+	InsertErrorLog(ctx context.Context, arg InsertErrorLogParams) error
 	ListActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error)
 	ListActiveModels(ctx context.Context, profileID string) ([]ProviderModel, error)
 	ListAdvisors(ctx context.Context) ([]Advisor, error)
@@ -274,6 +278,8 @@ type Querier interface {
 	ListEnabledCronJobs(ctx context.Context) ([]CronJob, error)
 	ListEnabledMCPIntegrations(ctx context.Context) ([]McpIntegration, error)
 	ListEnabledPlugins(ctx context.Context) ([]PluginRegistry, error)
+	ListErrorLogs(ctx context.Context, arg ListErrorLogsParams) ([]ErrorLog, error)
+	ListErrorLogsByLevel(ctx context.Context, arg ListErrorLogsByLevelParams) ([]ErrorLog, error)
 	ListExpiringOAuthGrants(ctx context.Context, dollar_1 sql.NullString) ([]AppOauthGrant, error)
 	ListLeads(ctx context.Context, arg ListLeadsParams) ([]Lead, error)
 	ListMCPIntegrations(ctx context.Context) ([]McpIntegration, error)
@@ -308,6 +314,7 @@ type Querier interface {
 	// Reset error count if cooldown has expired and last update was > 24h ago
 	ResetAuthProfileErrorCountIfStale(ctx context.Context, arg ResetAuthProfileErrorCountIfStaleParams) error
 	ResetSession(ctx context.Context, id string) error
+	ResolveErrorLog(ctx context.Context, id int64) error
 	RevokeMCPOAuthToken(ctx context.Context, id string) error
 	RevokeUserMCPOAuthTokens(ctx context.Context, userID string) error
 	SearchChatMessages(ctx context.Context, arg SearchChatMessagesParams) ([]ChatMessage, error)

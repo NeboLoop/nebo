@@ -57,34 +57,50 @@ Call them like: tool_name(resource: "resource", action: "action", param: "value"
 - shell(resource: session, action: kill, id: "...") — End a session
 
 ### web — Web & Browser Automation
-Two modes:
+Three modes:
 - **fetch/search:** Simple HTTP requests and web search (no JavaScript, no rendering)
-- **navigate/snapshot/click/fill/etc.:** FULL BROWSER with JavaScript, rendering, and login sessions
+- **native browser:** Opens pages in Nebo's own window — fast, native, undetectable as bot. Best for reading and research.
+- **managed/extension browser:** FULL Playwright automation with DevTools. Best for complex interactions or authenticated sessions.
 
-Decision: If the site uses JavaScript (Twitter/X, Gmail, dashboards, most modern sites) → use navigate. For APIs, docs, or simple static pages → use fetch.
+Decision: If you just need to read a page → native. If the site needs login sessions → chrome. If you need DevTools or complex automation → nebo. For APIs or static pages → fetch.
 
 Profiles (for browser actions):
-- profile: "nebo" (default) — Managed browser, isolated session
+- profile: "native" — Nebo's own browser window. Fastest, native WebKit/WebView2, not detectable as bot. REUSE windows by navigating with target_id instead of opening new ones. Use target_id to address specific windows.
+- profile: "nebo" — Managed Playwright browser, isolated session. Full DevTools, headless-capable.
 - profile: "chrome" — Chrome extension relay, access the user's logged-in sessions (Gmail, Twitter, etc.)
 
 Actions:
 - web(action: fetch, url: "https://api.example.com") — Simple HTTP request (no JS)
 - web(action: search, query: "golang tutorials") — Web search
-- web(action: navigate, url: "https://...", profile: "chrome") — Open URL in FULL BROWSER
-- web(action: snapshot, profile: "chrome") — Get page accessibility tree with element refs [e1], [e2], etc.
-- web(action: click, ref: "e5", profile: "chrome") — Click element by ref from snapshot
-- web(action: fill, ref: "e3", value: "text", profile: "chrome") — Fill input field
-- web(action: type, ref: "e3", text: "hello", profile: "chrome") — Type character by character
-- web(action: screenshot, output: "page.png") — Capture screenshot
+- web(action: navigate, url: "https://...", profile: "native") — Open in Nebo's own window (returns window ID)
+- web(action: navigate, url: "https://...", profile: "chrome") — Open in managed browser
+- web(action: snapshot, profile: "native") — Get page structure with interactive element refs [e1], [e2], etc.
+- web(action: snapshot, profile: "chrome") — Same, via Playwright
+- web(action: click, ref: "e5") — Click element by ref from snapshot
+- web(action: fill, ref: "e3", value: "text") — Fill input field
+- web(action: type, ref: "e3", text: "hello") — Type character by character
+- web(action: screenshot, output: "page.png") — Capture screenshot (nebo/chrome profiles only)
 - web(action: scroll, text: "down") — Scroll page
-- web(action: hover, ref: "e2") — Hover over element
-- web(action: select, ref: "e4", value: "option1") — Select dropdown option
-- web(action: evaluate, expression: "document.title") — Run JavaScript
+- web(action: evaluate, text: "document.title") — Run JavaScript
 - web(action: wait, selector: ".loaded") — Wait for element
 - web(action: text) — Get page text content
+- web(action: list_pages, profile: "native") — See all open native windows
+- web(action: close, target_id: "win-...", profile: "native") — Close specific window
 - web(action: back/forward/reload) — Navigation controls
 
-Browser workflow: navigate → snapshot (see elements + refs) → click/fill/type (using refs) → snapshot again to verify.
+Browser workflow (FOLLOW THIS):
+1. navigate — open the page (returns window ID / target_id)
+2. snapshot — read the page structure; interactive elements get refs like [e1], [e2], [e3]
+3. Interact: click(ref:"e5"), fill(ref:"e3", value:"..."), type(ref:"e3", text:"..."), scroll(text:"down"), hover(ref:"e2"), select(ref:"e7", value:"...")
+4. snapshot again — verify the interaction worked, see new page state
+5. Repeat 3-4 as needed (click links to follow them, fill forms, scroll to load more content)
+6. CLOSE windows when done — web(action: close, target_id: "win-...", profile: "native"). Never leave windows open after finishing.
+
+You MUST use snapshot before interacting — refs are only valid from the most recent snapshot. After clicking a link or submitting a form, snapshot again to see the new page.
+Scrolling: use scroll(text:"down") to reveal more content, then snapshot to read it. Repeat to paginate through long pages.
+Filling forms: snapshot → identify input refs → fill each field → click the submit button → snapshot to verify.
+Parallel research: Open a few windows for different URLs, reuse them by navigating with target_id instead of always opening new ones.
+Window discipline: ALWAYS close windows when you are finished with them. Never leave orphan windows open. When a task or research is complete, close every window you opened.
 
 ### agent — Orchestration & State
 
@@ -621,12 +637,13 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 	if utcHours < 0 {
 		utcSign = ""
 	}
-	dateHeader := fmt.Sprintf("Current date: %s | Time: %s | Timezone: %s (UTC%s%d, %s)\n\n",
+	dateHeader := fmt.Sprintf("IMPORTANT — Current date: %s | Time: %s | Timezone: %s (UTC%s%d, %s). The year is %d, not 2025. Use this date for all time-sensitive reasoning.\n\n",
 		now.Format("January 2, 2006"),
 		now.Format("3:04 PM"),
 		now.Location().String(),
 		utcSign, utcHours,
 		zone,
+		now.Year(),
 	)
 
 	systemPrompt = dateHeader + contextSection + "\n\n---\n\n" + systemPrompt

@@ -173,6 +173,20 @@ func (l *Loader) watchLoop(ctx context.Context) {
 
 // handleEvent processes a file system event
 func (l *Loader) handleEvent(event fsnotify.Event) {
+	// When a new directory is created, add it to the watcher so we catch
+	// SKILL.md files written inside it later. This handles the case where
+	// createSkill() makes a new subdirectory at runtime.
+	if event.Op&fsnotify.Create == fsnotify.Create {
+		if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+			if err := l.watcher.Add(event.Name); err != nil {
+				logging.Debugf("[skills] Could not watch new dir %s: %v", event.Name, err)
+			} else {
+				logging.Debugf("[skills] Watching new skill dir: %s", event.Name)
+			}
+			return
+		}
+	}
+
 	// Only care about SKILL.md files (case-insensitive check)
 	if !strings.EqualFold(filepath.Base(event.Name), SkillFileName) {
 		return

@@ -42,6 +42,7 @@ type ServiceContext struct {
 	Config             config.Config
 	SecurityMiddleware *middleware.SecurityMiddleware
 	NeboDir            string // Root Nebo data directory (e.g. ~/Library/Application Support/Nebo)
+	Version            string // Build version (e.g. "v0.2.0" or "dev")
 
 	DB             *db.Store
 	Auth           *local.AuthService

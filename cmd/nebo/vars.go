@@ -19,14 +19,18 @@ var (
 // ServerConfig holds the loaded server configuration (set by main)
 var ServerConfig *config.Config
 
+// AppVersion is the build version, set by main from ldflags.
+var AppVersion = "dev"
+
 // SetupRootCmd configures the root command with all subcommands and flags
-func SetupRootCmd(c *config.Config) *cobra.Command {
+func SetupRootCmd(c *config.Config, version string) *cobra.Command {
 	ServerConfig = c
+	AppVersion = version
 
 	rootCmd := &cobra.Command{
 		Use:     "nebo",
 		Short:   "Nebo - AI Assistant",
-		Version: "0.1.0",
+		Version: version,
 		Long: `Nebo is an AI assistant with tool use capabilities for software development and automation.
 
 Just type 'nebo' to start both the server and agent together.

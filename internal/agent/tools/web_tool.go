@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/neboloop/nebo/internal/browser"
+	"github.com/neboloop/nebo/internal/webview"
 )
 
 // WebDomainTool provides web operations: HTTP requests, search, and browser automation.
@@ -148,7 +149,7 @@ func (t *WebDomainTool) schemaConfig() DomainSchemaConfig {
 			{Name: "query", Type: "string", Description: "Search query (for search/query)"},
 			{Name: "engine", Type: "string", Description: "Search engine: duckduckgo (default), google", Enum: []string{"duckduckgo", "google"}},
 			{Name: "limit", Type: "integer", Description: "Max search results (default: 10)"},
-			{Name: "profile", Type: "string", Description: "Browser profile: nebo (managed, default) or chrome (extension relay with authenticated sessions)", Enum: []string{"nebo", "chrome"}},
+			{Name: "profile", Type: "string", Description: "Browser profile: native (Nebo's own window — fast, undetectable), nebo (managed Playwright), or chrome (extension relay with authenticated sessions)", Enum: []string{"native", "nebo", "chrome"}},
 			{Name: "ref", Type: "string", Description: "Element ref from snapshot (e.g., 'e1', 'e5') for click, fill, type, hover, select"},
 			{Name: "selector", Type: "string", Description: "CSS selector for browser element actions (alternative to ref)"},
 			{Name: "value", Type: "string", Description: "Value for fill action (clears field first then enters value)"},
@@ -160,15 +161,15 @@ func (t *WebDomainTool) schemaConfig() DomainSchemaConfig {
 		Examples: []string{
 			`web(resource: http, action: fetch, url: "https://api.example.com/data")`,
 			`web(resource: search, action: query, query: "golang tutorials")`,
+			`web(resource: browser, action: navigate, url: "https://example.com", profile: "native")`,
+			`web(resource: browser, action: snapshot, profile: "native")`,
 			`web(resource: browser, action: status)`,
-			`web(resource: browser, action: status, profile: "chrome")`,
 			`web(resource: browser, action: launch, profile: "nebo")`,
 			`web(resource: browser, action: navigate, url: "https://gmail.com", profile: "chrome")`,
-			`web(resource: browser, action: snapshot)`,
 			`web(resource: browser, action: click, ref: "e5")`,
 			`web(resource: browser, action: fill, ref: "e3", value: "search query")`,
-			`web(resource: browser, action: close, profile: "nebo")`,
-			`web(resource: browser, action: list_pages, profile: "chrome")`,
+			`web(resource: browser, action: list_pages, profile: "native")`,
+			`web(resource: browser, action: close, target_id: "win-12345", profile: "native")`,
 		},
 	}
 }
@@ -339,6 +340,11 @@ func (t *WebDomainTool) handleSearch(ctx context.Context, in WebDomainInput) (*T
 // --- Browser Resource ---
 
 func (t *WebDomainTool) executeBrowser(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
+	// Native profile — agent-controlled Wails webview windows
+	if in.Profile == "native" {
+		return t.handleNativeBrowser(ctx, in)
+	}
+
 	// Lifecycle actions don't need a session
 	switch in.Action {
 	case "status":
@@ -682,6 +688,254 @@ func (t *WebDomainTool) handleBrowserAction(ctx context.Context, in WebDomainInp
 			IsError: true,
 		}, nil
 	}
+}
+
+// handleNativeBrowser routes actions to the native webview manager.
+func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
+	mgr := webview.GetManager()
+
+	if !mgr.IsAvailable() {
+		return &ToolResult{
+			Content: "Native browser requires desktop mode. Use profile \"nebo\" (managed Playwright) or \"chrome\" (extension) in headless mode.",
+			IsError: true,
+		}, nil
+	}
+
+	timeout := 15 * time.Second
+	if in.Timeout > 0 {
+		timeout = time.Duration(in.Timeout) * time.Second
+	}
+
+	switch in.Action {
+	case "status":
+		count := mgr.WindowCount()
+		windows := mgr.ListWindows()
+		type winInfo struct {
+			ID    string `json:"id"`
+			URL   string `json:"url"`
+			Title string `json:"title"`
+		}
+		infos := make([]winInfo, 0, len(windows))
+		for _, w := range windows {
+			infos = append(infos, winInfo{ID: w.ID, URL: w.URL, Title: w.Title})
+		}
+		data, _ := json.MarshalIndent(map[string]any{
+			"profile":      "native",
+			"available":    true,
+			"window_count": count,
+			"windows":      infos,
+		}, "", "  ")
+		return &ToolResult{Content: string(data)}, nil
+
+	case "launch", "navigate":
+		if in.URL == "" && in.Action == "navigate" {
+			return &ToolResult{Content: "Error: url is required for navigate", IsError: true}, nil
+		}
+		// If target_id specified, navigate existing window
+		if in.TargetID != "" {
+			result, err := webview.Navigate(ctx, mgr, in.TargetID, in.URL, timeout)
+			if err != nil {
+				return &ToolResult{Content: fmt.Sprintf("Navigate failed: %v", err), IsError: true}, nil
+			}
+			return &ToolResult{Content: fmt.Sprintf("Navigated window %s to %s\n%s", in.TargetID, in.URL, string(result))}, nil
+		}
+		// Create new window
+		url := in.URL
+		if url == "" {
+			url = "about:blank"
+		}
+		win, err := mgr.CreateWindow(url, "Nebo Browser")
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Failed to create window: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: fmt.Sprintf("Opened native browser window\nWindow ID: %s\nURL: %s\n\nUse target_id: %q for subsequent actions on this window.", win.ID, url, win.ID)}, nil
+
+	case "close":
+		if in.TargetID != "" {
+			if err := mgr.CloseWindow(in.TargetID); err != nil {
+				return &ToolResult{Content: fmt.Sprintf("Close failed: %v", err), IsError: true}, nil
+			}
+			return &ToolResult{Content: fmt.Sprintf("Closed window %s", in.TargetID)}, nil
+		}
+		// Close most recent
+		win, err := mgr.GetWindow("")
+		if err != nil {
+			return &ToolResult{Content: "No windows to close"}, nil
+		}
+		id := win.ID
+		_ = mgr.CloseWindow(id)
+		return &ToolResult{Content: fmt.Sprintf("Closed window %s", id)}, nil
+
+	case "list_pages":
+		windows := mgr.ListWindows()
+		if len(windows) == 0 {
+			return &ToolResult{Content: "No native browser windows open"}, nil
+		}
+		type winInfo struct {
+			TargetID string `json:"target_id"`
+			URL      string `json:"url"`
+			Title    string `json:"title"`
+		}
+		infos := make([]winInfo, 0, len(windows))
+		for _, w := range windows {
+			infos = append(infos, winInfo{TargetID: w.ID, URL: w.URL, Title: w.Title})
+		}
+		data, _ := json.MarshalIndent(infos, "", "  ")
+		return &ToolResult{Content: string(data)}, nil
+
+	case "snapshot":
+		result, err := webview.Snapshot(ctx, mgr, in.TargetID, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Snapshot failed: %v", err), IsError: true}, nil
+		}
+		// Snapshot returns a string (the DOM tree text)
+		var text string
+		if err := json.Unmarshal(result, &text); err != nil {
+			text = string(result)
+		}
+		return &ToolResult{Content: text}, nil
+
+	case "click":
+		result, err := webview.Click(ctx, mgr, in.TargetID, in.Ref, in.Selector, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Click failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Clicked")}, nil
+
+	case "fill":
+		value := in.Value
+		if value == "" {
+			value = in.Text
+		}
+		if value == "" {
+			return &ToolResult{Content: "Error: value is required for fill", IsError: true}, nil
+		}
+		result, err := webview.Fill(ctx, mgr, in.TargetID, in.Ref, in.Selector, value, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Fill failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Filled")}, nil
+
+	case "type":
+		if in.Text == "" {
+			return &ToolResult{Content: "Error: text is required for type", IsError: true}, nil
+		}
+		result, err := webview.Type(ctx, mgr, in.TargetID, in.Ref, in.Selector, in.Text, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Type failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Typed")}, nil
+
+	case "text":
+		result, err := webview.GetText(ctx, mgr, in.TargetID, in.Selector, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Get text failed: %v", err), IsError: true}, nil
+		}
+		var text string
+		if err := json.Unmarshal(result, &text); err != nil {
+			text = string(result)
+		}
+		if len(text) > 10000 {
+			text = text[:10000] + "\n... (truncated)"
+		}
+		return &ToolResult{Content: text}, nil
+
+	case "evaluate":
+		if in.Text == "" {
+			return &ToolResult{Content: "Error: text (JavaScript code) is required for evaluate", IsError: true}, nil
+		}
+		result, err := webview.Evaluate(ctx, mgr, in.TargetID, in.Text, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Evaluate failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: string(result)}, nil
+
+	case "scroll":
+		direction := in.Text
+		if direction == "" {
+			direction = "down"
+		}
+		result, err := webview.Scroll(ctx, mgr, in.TargetID, direction, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Scroll failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Scrolled")}, nil
+
+	case "wait":
+		if in.Selector == "" && in.Ref == "" {
+			return &ToolResult{Content: "Error: selector is required for wait", IsError: true}, nil
+		}
+		sel := in.Selector
+		if sel == "" && in.Ref != "" {
+			sel = fmt.Sprintf("[data-nebo-ref=%q]", in.Ref)
+		}
+		result, err := webview.Wait(ctx, mgr, in.TargetID, sel, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Wait failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Wait complete")}, nil
+
+	case "hover":
+		result, err := webview.Hover(ctx, mgr, in.TargetID, in.Ref, in.Selector, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Hover failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Hovered")}, nil
+
+	case "select":
+		if in.Value == "" {
+			return &ToolResult{Content: "Error: value is required for select", IsError: true}, nil
+		}
+		result, err := webview.Select(ctx, mgr, in.TargetID, in.Ref, in.Selector, in.Value, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Select failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Selected")}, nil
+
+	case "back":
+		result, err := webview.Back(ctx, mgr, in.TargetID, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Back failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Navigated back")}, nil
+
+	case "forward":
+		result, err := webview.Forward(ctx, mgr, in.TargetID, timeout)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Forward failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatJSONResult(result, "Navigated forward")}, nil
+
+	case "reload":
+		if err := webview.Reload(ctx, mgr, in.TargetID); err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Reload failed: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: "Page reloaded"}, nil
+
+	case "screenshot":
+		return &ToolResult{
+			Content: "Screenshot not yet supported for native browser windows. Use snapshot to read the page structure, or evaluate to extract specific data.",
+		}, nil
+
+	default:
+		return &ToolResult{
+			Content: fmt.Sprintf("Unknown action %q for native browser (valid: navigate, snapshot, click, fill, type, text, evaluate, scroll, wait, hover, select, back, forward, reload, status, launch, close, list_pages)", in.Action),
+			IsError: true,
+		}, nil
+	}
+}
+
+// formatJSONResult formats a JSON result with a prefix message.
+func formatJSONResult(data json.RawMessage, prefix string) string {
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return prefix + ": " + string(data)
+	}
+	if errMsg, ok := m["error"]; ok {
+		return fmt.Sprintf("Error: %v", errMsg)
+	}
+	formatted, _ := json.MarshalIndent(m, "", "  ")
+	return prefix + "\n" + string(formatted)
 }
 
 // Close cleans up browser resources.
