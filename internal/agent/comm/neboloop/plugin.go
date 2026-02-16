@@ -1,85 +1,77 @@
 // Package neboloop implements a CommPlugin that connects to a NeboLoop server
-// via MQTT v5 for real-time inter-agent communication.
-//
-// NeboLoop runs an embedded mochi-mqtt broker. This plugin connects as an MQTT v5
-// client using autopaho for automatic reconnection, authenticating with credentials
-// obtained via the NeboLoop REST API token exchange flow. All topic permissions are
-// enforced server-side via Redis-backed ACL.
+// via the NeboLoop Comms SDK (WebSocket + binary framing + protobuf payloads).
 package neboloop
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/eclipse/paho.golang/autopaho"
-	"github.com/eclipse/paho.golang/paho"
-
 	"github.com/neboloop/nebo/internal/agent/comm"
 	"github.com/neboloop/nebo/internal/apps/settings"
+	"github.com/neboloop/nebo/internal/neboloop/sdk"
 )
 
-// Plugin implements comm.CommPlugin for NeboLoop MQTT v5 transport.
+// Plugin implements comm.CommPlugin for NeboLoop comms SDK transport.
 type Plugin struct {
-	cm      *autopaho.ConnectionManager
+	client  *sdk.Client
 	handler func(comm.CommMessage)
 
 	agentID   string
 	botID     string
-	broker    string
 	apiServer string
-
-	mqttUsername string
-	mqttPassword string
+	gateway   string
 
 	card *comm.AgentCard // Stored for re-publish on reconnect
 
-	topics    map[string]bool
 	connected bool
-	authDead  bool // Set when credentials are revoked (0x86) — stop reconnecting
 	mu        sync.RWMutex
 
-	cancelConn context.CancelFunc // Cancel the autopaho connection manager
+	// Handlers for install events and channel messages (set by agent.go)
+	onInstall        func(sdk.InstallEvent)
+	onChannelMessage func(sdk.ChannelMessage)
 }
 
-// tokenExchangeRequest is the JSON body for POST /api/v1/bots/exchange-token.
-type tokenExchangeRequest struct {
-	Token string `json:"token"`
-}
-
-// tokenExchangeResponse is the JSON response from POST /api/v1/bots/exchange-token.
-type tokenExchangeResponse struct {
-	MQTTUsername string `json:"mqtt_username"`
-	MQTTPassword string `json:"mqtt_password"`
-}
-
-// New creates a new NeboLoop MQTT settings.
+// New creates a new NeboLoop plugin.
 func New() *Plugin {
-	return &Plugin{
-		topics: make(map[string]bool),
-	}
+	return &Plugin{}
 }
 
 func (p *Plugin) Name() string    { return "neboloop" }
-func (p *Plugin) Version() string { return "2.0.0" }
+func (p *Plugin) Version() string { return "3.0.0" }
 
-// Connect establishes an MQTT v5 connection to the NeboLoop broker.
+// OnInstall registers a handler for app install events delivered via the SDK.
+func (p *Plugin) OnInstall(fn func(sdk.InstallEvent)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onInstall = fn
+}
+
+// OnChannelMessage registers a handler for inbound channel messages delivered via the SDK.
+func (p *Plugin) OnChannelMessage(fn func(sdk.ChannelMessage)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onChannelMessage = fn
+}
+
+// Client returns the underlying SDK client for direct send operations (e.g. channel outbound).
+func (p *Plugin) Client() *sdk.Client {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.client
+}
+
+// Connect establishes a WebSocket connection to the NeboLoop gateway via the SDK.
 //
 // Config keys:
-//   - broker:           MQTT broker address (e.g., "tcp://localhost:1883")
-//   - api_server:       NeboLoop REST API URL (e.g., "http://localhost:8888")
-//   - connection_token: One-time token to exchange for MQTT credentials
-//   - mqtt_username:    Direct MQTT username (skip token exchange)
-//   - mqtt_password:    Direct MQTT password (skip token exchange)
-//   - bot_id:           Bot UUID for topic addressing
+//   - gateway:     WebSocket URL (e.g. "wss://comms.neboloop.com")
+//   - api_server:  NeboLoop REST API URL (e.g. "http://localhost:8888")
+//   - bot_id:      Bot UUID for addressing
+//   - api_key:     Bot API key for authentication
+//   - device_id:   Optional device/session identifier
 func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -88,313 +80,168 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 		return fmt.Errorf("already connected")
 	}
 
-	// Read config
-	p.broker = config["broker"]
-	if p.broker == "" {
-		return fmt.Errorf("neboloop: 'broker' config is required (e.g., tcp://localhost:1883)")
-	}
 	p.apiServer = config["api_server"]
 	p.botID = config["bot_id"]
-	p.mqttUsername = config["mqtt_username"]
-	p.mqttPassword = config["mqtt_password"]
 
-	// Exchange connection token for MQTT credentials if needed
-	token := config["connection_token"]
-	if token != "" && p.mqttUsername == "" {
-		if p.apiServer == "" {
-			return fmt.Errorf("neboloop: 'api_server' is required when using connection_token")
-		}
-		username, password, err := exchangeToken(ctx, p.apiServer, token)
-		if err != nil {
-			return fmt.Errorf("neboloop: token exchange failed: %w", err)
-		}
-		p.mqttUsername = username
-		p.mqttPassword = password
+	// Gateway URL: explicit, or derived from api_server
+	p.gateway = config["gateway"]
+	if p.gateway == "" && p.apiServer != "" {
+		p.gateway = deriveGatewayURL(p.apiServer)
+	}
+	if p.gateway == "" {
+		return fmt.Errorf("neboloop: 'gateway' or 'api_server' config is required")
 	}
 
-	// Convert broker URL to autopaho format (tcp:// → mqtt://)
-	serverURL, err := brokerToURL(p.broker)
+	apiKey := config["api_key"]
+	// Backwards compat: accept mqtt_password as api_key during migration
+	if apiKey == "" {
+		apiKey = config["mqtt_password"]
+	}
+	if apiKey == "" {
+		return fmt.Errorf("neboloop: 'api_key' config is required")
+	}
+
+	client, err := sdk.Connect(ctx, sdk.Config{
+		Gateway:  p.gateway,
+		BotID:    p.botID,
+		APIKey:   apiKey,
+		DeviceID: config["device_id"],
+	})
 	if err != nil {
-		return fmt.Errorf("neboloop: invalid broker URL: %w", err)
+		return fmt.Errorf("neboloop: %w", err)
 	}
 
-	// Build autopaho config
-	cfg := autopaho.ClientConfig{
-		ServerUrls:                    []*url.URL{serverURL},
-		KeepAlive:                     30,
-		CleanStartOnInitialConnection: false, // Persist subscriptions + queue QoS 1 messages while offline
-		ConnectUsername:                p.mqttUsername,
-		ConnectPassword:               []byte(p.mqttPassword),
-		ConnectTimeout:                10 * time.Second,
+	p.client = client
+	p.connected = true
 
-		// Exponential backoff: 1s initial, max 60s per spec
-		ReconnectBackoff: autopaho.NewExponentialBackoff(
-			1*time.Second,  // minDelay
-			60*time.Second, // maxDelay (spec says max 60s)
-			2*time.Second,  // initialMaxDelay
-			2.0,            // factor
-		),
+	// Wire SDK handlers
+	p.wireHandlers()
 
-		// OnConnectionUp runs the mandatory on-connect sequence (spec §4)
-		OnConnectionUp: func(cm *autopaho.ConnectionManager, connack *paho.Connack) {
-			p.mu.Lock()
-			p.connected = true
-			p.mu.Unlock()
-
-			fmt.Printf("[Comm:neboloop] Connected to %s\n", p.broker)
-			p.onConnect(cm)
-		},
-
-		// OnConnectionDown handles connection loss; return false to stop reconnecting
-		OnConnectionDown: func() bool {
-			p.mu.Lock()
-			p.connected = false
-			dead := p.authDead
-			p.mu.Unlock()
-
-			if dead {
-				fmt.Printf("[Comm:neboloop] Auth revoked, stopping reconnect\n")
-				return false
-			}
-
-			fmt.Printf("[Comm:neboloop] Connection lost, will reconnect\n")
-			return true
-		},
-
-		// OnConnectError handles connect failures; check for auth errors (0x86)
-		OnConnectError: func(err error) {
-			var connackErr *autopaho.ConnackError
-			if errors.As(err, &connackErr) && connackErr.ReasonCode == 0x86 {
-				fmt.Printf("[Comm:neboloop] Auth rejected (0x86): credentials revoked\n")
-				p.mu.Lock()
-				p.authDead = true
-				p.mu.Unlock()
-				return
-			}
-			fmt.Printf("[Comm:neboloop] Connect error: %v\n", err)
-		},
-
-		ClientConfig: paho.ClientConfig{
-			ClientID: fmt.Sprintf("nebo-%s", p.agentID),
-			OnServerDisconnect: func(d *paho.Disconnect) {
-				if d.ReasonCode == 0x8B {
-					fmt.Printf("[Comm:neboloop] Force-disconnected by server (0x8B)\n")
-				} else if d.ReasonCode == 0x86 {
-					fmt.Printf("[Comm:neboloop] Auth rejected (0x86): credentials revoked\n")
-					p.mu.Lock()
-					p.authDead = true
-					p.mu.Unlock()
-				} else {
-					fmt.Printf("[Comm:neboloop] Server disconnect: reason=0x%02X\n", d.ReasonCode)
-				}
-			},
-			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
-				func(pr paho.PublishReceived) (bool, error) {
-					p.onMessage(pr.Packet)
-					return true, nil
-				},
-			},
-		},
-	}
-
-	// Will message: offline status on unexpected disconnect (spec §2.3)
-	if p.botID != "" {
-		willTopic := fmt.Sprintf("neboloop/bot/%s/status", p.botID)
-		willPayload, _ := json.Marshal(map[string]string{
-			"status": "offline",
-			"reason": "unexpected",
-		})
-		cfg.WillMessage = &paho.WillMessage{
-			Topic:   willTopic,
-			Payload: willPayload,
-			QoS:     1,
-			Retain:  true,
-		}
-	}
-
-	connCtx, cancel := context.WithCancel(context.Background())
-	p.cancelConn = cancel
-
-	cm, err := autopaho.NewConnection(connCtx, cfg)
-	if err != nil {
-		cancel()
-		return fmt.Errorf("neboloop: failed to create connection: %w", err)
-	}
-	p.cm = cm
-
-	// Wait briefly for initial connection — don't block agent startup if broker is unreachable.
-	// autopaho will keep reconnecting in the background regardless.
-	awaitCtx, awaitCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer awaitCancel()
-	if err := cm.AwaitConnection(awaitCtx); err != nil {
-		// Not fatal — autopaho reconnects in background, OnConnectionUp will fire later
-		fmt.Printf("[Comm:neboloop] Initial connection not ready (will retry in background): %v\n", err)
-	}
-
+	fmt.Printf("[Comm:neboloop] Connected to %s\n", p.gateway)
 	return nil
 }
 
-// onConnect runs the mandatory on-connect sequence per spec §4.
-// Called from OnConnectionUp — must not block long.
-func (p *Plugin) onConnect(cm *autopaho.ConnectionManager) {
-	p.mu.RLock()
-	botID := p.botID
-	card := p.card
-	topics := make(map[string]bool, len(p.topics))
-	for t := range p.topics {
-		topics[t] = true
-	}
-	p.mu.RUnlock()
-
-	if botID == "" {
+// wireHandlers connects SDK callbacks to the plugin's dispatch logic.
+// Must be called with p.mu held or during init.
+func (p *Plugin) wireHandlers() {
+	if p.client == nil {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Step 1: Subscribe to tasks topic (mandatory)
-	tasksTopic := fmt.Sprintf("neboloop/bot/%s/tasks", botID)
-	p.subscribeOne(ctx, cm, tasksTopic)
-
-	// Step 2: Subscribe to inbox (mandatory)
-	inboxTopic := fmt.Sprintf("neboloop/bot/%s/inbox", botID)
-	p.subscribeOne(ctx, cm, inboxTopic)
-
-	// Also subscribe to results (for tasks we submitted to other bots)
-	resultsTopic := fmt.Sprintf("neboloop/bot/%s/results", botID)
-	p.subscribeOne(ctx, cm, resultsTopic)
-
-	// Step 3: Publish online status (retained, mandatory)
-	statusTopic := fmt.Sprintf("neboloop/bot/%s/status", botID)
-	statusPayload, _ := json.Marshal(map[string]string{
-		"status":  "online",
-		"version": "1.0.0",
-	})
-	p.publishRetained(ctx, cm, statusTopic, statusPayload)
-
-	// Step 4: Publish capabilities (retained, optional but recommended)
-	if card != nil {
-		// Capabilities as plain JSON array per spec §4
-		var caps []string
-		for _, skill := range card.Skills {
-			caps = append(caps, skill.ID)
-		}
-		if len(caps) > 0 {
-			capsTopic := fmt.Sprintf("neboloop/bot/%s/capabilities", botID)
-			capsPayload, _ := json.Marshal(caps)
-			p.publishRetained(ctx, cm, capsTopic, capsPayload)
-		}
-
-		// Re-publish Agent Card (retained)
-		cardTopic := fmt.Sprintf("neboloop/bot/%s/card", botID)
-		cardPayload, _ := json.Marshal(card)
-		p.publishRetained(ctx, cm, cardTopic, cardPayload)
-	}
-
-	// Step 5: Re-subscribe to any loop channels or custom topics
-	for topic := range topics {
-		// Skip topics we already subscribed to above
-		if topic == tasksTopic || topic == inboxTopic || topic == resultsTopic {
-			continue
-		}
-		p.subscribeOne(ctx, cm, topic)
-	}
-
-	// Step 6: Subscribe to system announcements
-	p.subscribeOne(ctx, cm, "neboloop/system/announcements")
-}
-
-// subscribeOne subscribes to a single topic with QoS 1.
-func (p *Plugin) subscribeOne(ctx context.Context, cm *autopaho.ConnectionManager, topic string) {
-	_, err := cm.Subscribe(ctx, &paho.Subscribe{
-		Subscriptions: []paho.SubscribeOptions{
-			{Topic: topic, QoS: 1},
-		},
-	})
-	if err != nil {
-		fmt.Printf("[Comm:neboloop] Subscribe failed for %s: %v\n", topic, err)
-	}
-}
-
-// publishRetained publishes a retained QoS 1 message.
-func (p *Plugin) publishRetained(ctx context.Context, cm *autopaho.ConnectionManager, topic string, payload []byte) {
-	_, err := cm.Publish(ctx, &paho.Publish{
-		Topic:   topic,
-		Payload: payload,
-		QoS:     1,
-		Retain:  true,
-	})
-	if err != nil {
-		fmt.Printf("[Comm:neboloop] Publish failed for %s: %v\n", topic, err)
-	}
-}
-
-// Disconnect performs graceful shutdown per spec §13.
-func (p *Plugin) Disconnect(ctx context.Context) error {
-	p.mu.Lock()
-	if !p.connected || p.cm == nil {
-		p.mu.Unlock()
-		return nil
-	}
-	cm := p.cm
-	botID := p.botID
-	p.mu.Unlock()
-
-	// Step 1: Publish offline status
-	if botID != "" {
-		statusTopic := fmt.Sprintf("neboloop/bot/%s/status", botID)
-		payload, _ := json.Marshal(map[string]string{
-			"status": "offline",
-		})
-		_, _ = cm.Publish(ctx, &paho.Publish{
-			Topic:   statusTopic,
-			Payload: payload,
-			QoS:     1,
-			Retain:  true,
-		})
-
-		// Step 3: Unsubscribe from all bot topics
-		topics := []string{
-			fmt.Sprintf("neboloop/bot/%s/tasks", botID),
-			fmt.Sprintf("neboloop/bot/%s/inbox", botID),
-			fmt.Sprintf("neboloop/bot/%s/results", botID),
-			"neboloop/system/announcements",
-		}
-
-		// Also unsubscribe from any custom topics
+	// A2A task submissions → comm handler
+	p.client.OnTask(func(task sdk.TaskSubmission) {
 		p.mu.RLock()
-		for t := range p.topics {
-			topics = append(topics, t)
+		handler := p.handler
+		p.mu.RUnlock()
+		if handler == nil {
+			return
 		}
+
+		handler(comm.CommMessage{
+			ID:            task.CorrelationID,
+			From:          task.From,
+			Type:          comm.CommTypeTask,
+			Content:       task.Input,
+			TaskID:        task.CorrelationID,
+			CorrelationID: task.CorrelationID,
+			TaskStatus:    comm.TaskStatusSubmitted,
+			Timestamp:     time.Now().Unix(),
+		})
+	})
+
+	// A2A task results → comm handler
+	p.client.OnTaskResult(func(result sdk.TaskResult) {
+		p.mu.RLock()
+		handler := p.handler
+		p.mu.RUnlock()
+		if handler == nil {
+			return
+		}
+
+		handler(comm.CommMessage{
+			ID:            result.CorrelationID,
+			Type:          comm.CommTypeTaskResult,
+			Content:       result.Output,
+			TaskID:        result.CorrelationID,
+			CorrelationID: result.CorrelationID,
+			TaskStatus:    comm.TaskStatus(result.Status),
+			Error:         result.Error,
+			Timestamp:     time.Now().Unix(),
+		})
+	})
+
+	// A2A direct messages → comm handler
+	p.client.OnDirectMessage(func(dm sdk.DirectMessage) {
+		p.mu.RLock()
+		handler := p.handler
+		p.mu.RUnlock()
+		if handler == nil {
+			return
+		}
+
+		handler(comm.CommMessage{
+			From:      dm.From,
+			Type:      comm.CommMessageType(dm.Type),
+			Content:   dm.Content,
+			Timestamp: time.Now().Unix(),
+		})
+	})
+
+	// Install events → forwarded to plugin's install handler
+	p.client.OnInstall(func(evt sdk.InstallEvent) {
+		p.mu.RLock()
+		fn := p.onInstall
+		p.mu.RUnlock()
+		if fn != nil {
+			fn(evt)
+		}
+	})
+
+	// Channel messages → forwarded to plugin's channel handler
+	p.client.OnChannelMessage(func(msg sdk.ChannelMessage) {
+		p.mu.RLock()
+		fn := p.onChannelMessage
+		p.mu.RUnlock()
+		if fn != nil {
+			fn(msg)
+		}
+	})
+
+	// Reconnect → re-publish agent card
+	p.client.OnReconnect(func() {
+		p.mu.Lock()
+		p.connected = true
+		p.mu.Unlock()
+
+		fmt.Printf("[Comm:neboloop] Reconnected to %s\n", p.gateway)
+
+		// Re-register if we had a card
+		p.mu.RLock()
+		card := p.card
+		agentID := p.agentID
 		p.mu.RUnlock()
 
-		if len(topics) > 0 {
-			_, _ = cm.Unsubscribe(ctx, &paho.Unsubscribe{
-				Topics: topics,
-			})
+		if card != nil {
+			p.Register(context.Background(), agentID, card)
 		}
-	}
+	})
+}
 
-	// Step 4: Disconnect MQTT cleanly
-	if p.cancelConn != nil {
-		p.cancelConn()
-	}
-
-	// Wait for clean shutdown
-	select {
-	case <-cm.Done():
-	case <-ctx.Done():
-	}
-
+// Disconnect performs graceful shutdown.
+func (p *Plugin) Disconnect(_ context.Context) error {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.connected || p.client == nil {
+		return nil
+	}
+
+	err := p.client.Close()
 	p.connected = false
-	p.cm = nil
-	p.topics = make(map[string]bool)
-	p.mu.Unlock()
+	p.client = nil
 
 	fmt.Printf("[Comm:neboloop] Disconnected\n")
-	return nil
+	return err
 }
 
 func (p *Plugin) IsConnected() bool {
@@ -403,214 +250,103 @@ func (p *Plugin) IsConnected() bool {
 	return p.connected
 }
 
-// Send publishes a CommMessage to the appropriate MQTT topic.
-// Task results/status go to OWN /results topic with MQTT v5 Correlation Data.
-// Standard messages go to msg.Topic or the recipient's /inbox.
+// Send publishes a CommMessage via the SDK.
 func (p *Plugin) Send(ctx context.Context, msg comm.CommMessage) error {
 	p.mu.RLock()
-	if !p.connected || p.cm == nil {
+	if !p.connected || p.client == nil {
 		p.mu.RUnlock()
 		return fmt.Errorf("neboloop: not connected")
 	}
-	cm := p.cm
-	botID := p.botID
+	client := p.client
 	p.mu.RUnlock()
 
-	var topic string
-	var payload []byte
-	var props *paho.PublishProperties
-	var err error
+	convID := msg.ConversationID
+	if convID == "" {
+		convID = msg.To
+	}
 
 	switch msg.Type {
+	case comm.CommTypeTask:
+		return client.SubmitTask(ctx, convID, sdk.TaskSubmission{
+			From:          msg.From,
+			Input:         msg.Content,
+			CorrelationID: msg.CorrelationID,
+		})
+
 	case comm.CommTypeTaskResult, comm.CommTypeTaskStatus:
-		// Publish results to OWN /results topic (spec §5.3)
-		if botID == "" {
-			return fmt.Errorf("neboloop: no bot_id configured for results")
-		}
-		topic = fmt.Sprintf("neboloop/bot/%s/results", botID)
-
-		// Set MQTT v5 Correlation Data property (spec §5.4)
-		if msg.CorrelationID != "" {
-			props = &paho.PublishProperties{
-				CorrelationData: []byte(msg.CorrelationID),
-			}
-		}
-
-		// Marshal in NeboLoop's A2A result format
-		result := a2aResultMessage{
-			TaskID:        msg.TaskID,
+		return client.SendTaskResult(ctx, convID, sdk.TaskResult{
 			CorrelationID: msg.CorrelationID,
 			Status:        string(msg.TaskStatus),
-		}
-
-		// Include error field for failed tasks (spec appendix B)
-		if msg.TaskStatus == comm.TaskStatusFailed && msg.Error != "" {
-			result.Error = msg.Error
-		}
-
-		for _, art := range msg.Artifacts {
-			var parts []a2aArtifactPart
-			for _, pt := range art.Parts {
-				parts = append(parts, a2aArtifactPart{
-					Type: pt.Type,
-					Text: pt.Text,
-					Data: pt.Data,
-				})
-			}
-			result.Artifacts = append(result.Artifacts, a2aArtifact{Parts: parts})
-		}
-		payload, err = json.Marshal(result)
+			Output:        msg.Content,
+			Error:         msg.Error,
+		})
 
 	default:
-		// Standard message routing
-		topic = msg.Topic
-		if topic == "" && msg.To != "" {
-			topic = fmt.Sprintf("neboloop/bot/%s/inbox", msg.To)
-		}
-		if topic == "" {
-			return fmt.Errorf("neboloop: message has no topic and no recipient")
-		}
-		payload, err = json.Marshal(msg)
+		// Standard messages → direct message
+		return client.SendDirect(ctx, convID, sdk.DirectMessage{
+			From:    msg.From,
+			Type:    string(msg.Type),
+			Content: msg.Content,
+		})
 	}
-
-	if err != nil {
-		return fmt.Errorf("neboloop: marshal error: %w", err)
-	}
-
-	pub := &paho.Publish{
-		Topic:      topic,
-		Payload:    payload,
-		QoS:        1,
-		Properties: props,
-	}
-	if _, err := cm.Publish(ctx, pub); err != nil {
-		return fmt.Errorf("neboloop: publish failed: %w", err)
-	}
-
-	return nil
 }
 
-// Subscribe subscribes to an MQTT topic and tracks it for auto-resubscribe.
+// Subscribe joins a conversation on the NeboLoop gateway.
 func (p *Plugin) Subscribe(ctx context.Context, topic string) error {
-	p.mu.Lock()
-	if !p.connected || p.cm == nil {
-		p.mu.Unlock()
+	p.mu.RLock()
+	if !p.connected || p.client == nil {
+		p.mu.RUnlock()
 		return fmt.Errorf("neboloop: not connected")
 	}
-	p.topics[topic] = true
-	cm := p.cm
-	p.mu.Unlock()
+	client := p.client
+	p.mu.RUnlock()
 
-	_, err := cm.Subscribe(ctx, &paho.Subscribe{
-		Subscriptions: []paho.SubscribeOptions{
-			{Topic: topic, QoS: 1},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("neboloop: subscribe failed: %w", err)
-	}
-
-	return nil
+	return client.Join(ctx, topic)
 }
 
-// Unsubscribe unsubscribes from an MQTT topic.
+// Unsubscribe leaves a conversation on the NeboLoop gateway.
 func (p *Plugin) Unsubscribe(ctx context.Context, topic string) error {
-	p.mu.Lock()
-	if !p.connected || p.cm == nil {
-		p.mu.Unlock()
+	p.mu.RLock()
+	if !p.connected || p.client == nil {
+		p.mu.RUnlock()
 		return fmt.Errorf("neboloop: not connected")
 	}
-	delete(p.topics, topic)
-	cm := p.cm
-	p.mu.Unlock()
+	client := p.client
+	p.mu.RUnlock()
 
-	_, err := cm.Unsubscribe(ctx, &paho.Unsubscribe{
-		Topics: []string{topic},
-	})
-	if err != nil {
-		return fmt.Errorf("neboloop: unsubscribe failed: %w", err)
-	}
-
-	return nil
+	return client.Leave(ctx, topic)
 }
 
 // Register announces this agent to the NeboLoop network.
-// Stores the Agent Card for re-publish on reconnect. The actual publishing
-// happens in onConnect() which runs on every (re)connection.
-func (p *Plugin) Register(ctx context.Context, agentID string, card *comm.AgentCard) error {
+// Stores the card for re-publish on reconnect. Agent card is published via REST API.
+func (p *Plugin) Register(_ context.Context, agentID string, card *comm.AgentCard) error {
 	p.mu.Lock()
 	p.agentID = agentID
 	p.card = card
+	apiServer := p.apiServer
 	botID := p.botID
-	cm := p.cm
-	connected := p.connected
 	p.mu.Unlock()
 
-	if botID == "" || !connected || cm == nil {
-		fmt.Printf("[Comm:neboloop] Registered agent %s (no bot_id or not connected, skipping)\n", agentID)
+	if card == nil || apiServer == "" || botID == "" {
 		return nil
 	}
 
-	// Publish card, capabilities, and status immediately
-	if card != nil {
-		// Publish Agent Card (retained)
-		cardTopic := fmt.Sprintf("neboloop/bot/%s/card", botID)
-		cardPayload, _ := json.Marshal(card)
-		p.publishRetained(ctx, cm, cardTopic, cardPayload)
-
-		// Publish capabilities as plain JSON array (spec §4)
-		var caps []string
-		for _, skill := range card.Skills {
-			caps = append(caps, skill.ID)
-		}
-		if len(caps) > 0 {
-			capsTopic := fmt.Sprintf("neboloop/bot/%s/capabilities", botID)
-			capsPayload, _ := json.Marshal(caps)
-			p.publishRetained(ctx, cm, capsTopic, capsPayload)
-		}
+	// Publish agent card via REST API (not wire protocol)
+	cardPayload, err := json.Marshal(card)
+	if err != nil {
+		return fmt.Errorf("marshal card: %w", err)
 	}
+	_ = cardPayload // TODO: POST to {apiServer}/api/v1/bots/{botID}/card
 
 	fmt.Printf("[Comm:neboloop] Registered agent %s (bot: %s)\n", agentID, botID)
 	return nil
 }
 
 // Deregister removes this agent from the NeboLoop network.
-// Clears retained status, card, and capabilities. Unsubscribes from all bot topics.
-func (p *Plugin) Deregister(ctx context.Context) error {
-	p.mu.RLock()
-	if !p.connected || p.cm == nil {
-		p.mu.RUnlock()
-		return fmt.Errorf("neboloop: not connected")
-	}
-	cm := p.cm
-	botID := p.botID
-	p.mu.RUnlock()
-
-	if botID == "" {
-		return nil
-	}
-
-	// Clear retained messages by publishing empty retained payloads
-	for _, suffix := range []string{"status", "card", "capabilities"} {
-		topic := fmt.Sprintf("neboloop/bot/%s/%s", botID, suffix)
-		_, _ = cm.Publish(ctx, &paho.Publish{
-			Topic:  topic,
-			QoS:    1,
-			Retain: true,
-		})
-	}
-
-	// Unsubscribe from all bot topics
-	topics := []string{
-		fmt.Sprintf("neboloop/bot/%s/inbox", botID),
-		fmt.Sprintf("neboloop/bot/%s/tasks", botID),
-		fmt.Sprintf("neboloop/bot/%s/results", botID),
-	}
-	_, _ = cm.Unsubscribe(ctx, &paho.Unsubscribe{
-		Topics: topics,
-	})
-
-	fmt.Printf("[Comm:neboloop] Deregistered bot %s\n", botID)
+func (p *Plugin) Deregister(_ context.Context) error {
+	p.mu.Lock()
+	p.card = nil
+	p.mu.Unlock()
 	return nil
 }
 
@@ -621,271 +357,31 @@ func (p *Plugin) SetMessageHandler(handler func(msg comm.CommMessage)) {
 	p.handler = handler
 }
 
-// onMessage is the MQTT v5 message callback. It dispatches to topic-specific
-// handlers based on the MQTT topic suffix.
-func (p *Plugin) onMessage(pub *paho.Publish) {
-	p.mu.RLock()
-	handler := p.handler
-	p.mu.RUnlock()
-
-	if handler == nil {
-		return
-	}
-
-	topic := pub.Topic
-
-	if strings.HasSuffix(topic, "/tasks") {
-		p.handleTaskMessage(handler, topic, pub.Payload)
-		return
-	}
-	if strings.HasSuffix(topic, "/results") {
-		p.handleResultMessage(handler, topic, pub.Payload)
-		return
-	}
-
-	// Standard message (inbox, loop channels, system announcements, etc.)
-	p.handleStandardMessage(handler, topic, pub.Payload)
-}
-
-// handleStandardMessage parses a standard CommMessage from an MQTT payload.
-func (p *Plugin) handleStandardMessage(handler func(comm.CommMessage), topic string, payload []byte) {
-	var commMsg comm.CommMessage
-	if err := json.Unmarshal(payload, &commMsg); err != nil {
-		fmt.Printf("[Comm:neboloop] Invalid message on %s: %v\n", topic, err)
-		return
-	}
-	if commMsg.Topic == "" {
-		commMsg.Topic = topic
-	}
-	handler(commMsg)
-}
-
-// a2aTaskMessage is the NeboLoop A2A task format on MQTT.
-type a2aTaskMessage struct {
-	TaskID        string `json:"task_id"`
-	CorrelationID string `json:"correlation_id"`
-	From          string `json:"from"`
-	Status        string `json:"status"`
-	Message       struct {
-		Role  string `json:"role"`
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"parts"`
-	} `json:"message"`
-}
-
-// handleTaskMessage parses an A2A task submission from the /tasks topic.
-// Distinguishes between new tasks (status=submitted) and cancellations (status=canceled).
-func (p *Plugin) handleTaskMessage(handler func(comm.CommMessage), topic string, payload []byte) {
-	var task a2aTaskMessage
-	if err := json.Unmarshal(payload, &task); err != nil {
-		fmt.Printf("[Comm:neboloop] Invalid task on %s: %v\n", topic, err)
-		return
-	}
-
-	// Check for cancellation (spec §5.2)
-	if task.Status == "canceled" {
-		commMsg := comm.CommMessage{
-			ID:            task.TaskID,
-			From:          task.From,
-			Topic:         topic,
-			Type:          comm.CommTypeTask,
-			TaskID:        task.TaskID,
-			CorrelationID: task.CorrelationID,
-			TaskStatus:    comm.TaskStatusCanceled,
-			Timestamp:     time.Now().Unix(),
-		}
-		handler(commMsg)
-		return
-	}
-
-	// Extract text content from message parts
-	var content strings.Builder
-	for _, part := range task.Message.Parts {
-		if part.Type == "text" {
-			if content.Len() > 0 {
-				content.WriteString("\n")
-			}
-			content.WriteString(part.Text)
-		}
-	}
-
-	commMsg := comm.CommMessage{
-		ID:            task.TaskID,
-		From:          task.From,
-		Topic:         topic,
-		Type:          comm.CommTypeTask,
-		Content:       content.String(),
-		TaskID:        task.TaskID,
-		CorrelationID: task.CorrelationID,
-		TaskStatus:    comm.TaskStatus(task.Status),
-		Timestamp:     time.Now().Unix(),
-	}
-
-	handler(commMsg)
-}
-
-// a2aArtifactPart is a single part within an artifact.
-type a2aArtifactPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-	Data []byte `json:"data,omitempty"`
-}
-
-// a2aArtifact is a structured result from a completed A2A task.
-type a2aArtifact struct {
-	Parts []a2aArtifactPart `json:"parts"`
-}
-
-// a2aResultMessage is the NeboLoop A2A task result format on MQTT.
-type a2aResultMessage struct {
-	TaskID        string        `json:"task_id"`
-	CorrelationID string        `json:"correlation_id"`
-	Status        string        `json:"status"`
-	Artifacts     []a2aArtifact `json:"artifacts,omitempty"`
-	Error         string        `json:"error,omitempty"`
-}
-
-// handleResultMessage parses an A2A task result from the /results topic.
-func (p *Plugin) handleResultMessage(handler func(comm.CommMessage), topic string, payload []byte) {
-	var result a2aResultMessage
-	if err := json.Unmarshal(payload, &result); err != nil {
-		fmt.Printf("[Comm:neboloop] Invalid result on %s: %v\n", topic, err)
-		return
-	}
-
-	// Convert artifacts
-	var artifacts []comm.TaskArtifact
-	var contentText strings.Builder
-	for _, art := range result.Artifacts {
-		var parts []comm.ArtifactPart
-		for _, pt := range art.Parts {
-			parts = append(parts, comm.ArtifactPart{
-				Type: pt.Type,
-				Text: pt.Text,
-				Data: pt.Data,
-			})
-			if pt.Type == "text" {
-				if contentText.Len() > 0 {
-					contentText.WriteString("\n")
-				}
-				contentText.WriteString(pt.Text)
-			}
-		}
-		artifacts = append(artifacts, comm.TaskArtifact{Parts: parts})
-	}
-
-	commMsg := comm.CommMessage{
-		ID:            result.TaskID,
-		Topic:         topic,
-		Type:          comm.CommTypeTaskResult,
-		Content:       contentText.String(),
-		TaskID:        result.TaskID,
-		CorrelationID: result.CorrelationID,
-		TaskStatus:    comm.TaskStatus(result.Status),
-		Artifacts:     artifacts,
-		Error:         result.Error,
-		Timestamp:     time.Now().Unix(),
-	}
-
-	handler(commMsg)
-}
-
-// brokerToURL converts a broker address to a *url.URL for autopaho.
-// Handles scheme conversion: tcp:// → mqtt://, ssl:// → mqtts://, ws:// stays ws://
-func brokerToURL(broker string) (*url.URL, error) {
-	// If no scheme, infer from port (443 = TLS, else plain)
-	if !strings.Contains(broker, "://") {
-		if strings.HasSuffix(broker, ":443") {
-			broker = "mqtts://" + broker
-		} else {
-			broker = "mqtt://" + broker
-		}
-	}
-
-	u, err := url.Parse(broker)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert scheme for autopaho compatibility
-	switch u.Scheme {
-	case "tcp":
-		u.Scheme = "mqtt"
-	case "ssl", "tls":
-		u.Scheme = "mqtts"
-	case "mqtt", "mqtts", "ws", "wss":
-		// Already valid
-	default:
-		return nil, fmt.Errorf("unsupported scheme: %s", u.Scheme)
-	}
-
-	return u, nil
-}
-
-// exchangeToken calls the NeboLoop REST API to exchange a connection token
-// for MQTT credentials.
-func exchangeToken(ctx context.Context, apiServer, token string) (username, password string, err error) {
-	reqBody, _ := json.Marshal(tokenExchangeRequest{Token: token})
-
-	apiURL := apiServer + "/api/v1/bots/exchange-token"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(reqBody))
-	if err != nil {
-		return "", "", err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return "", "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("exchange returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result tokenExchangeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", fmt.Errorf("decode response: %w", err)
-	}
-
-	if result.MQTTUsername == "" || result.MQTTPassword == "" {
-		return "", "", fmt.Errorf("empty credentials in response")
-	}
-
-	return result.MQTTUsername, result.MQTTPassword, nil
-}
-
 // ---------------------------------------------------------------------------
 // Configurable interface
 // ---------------------------------------------------------------------------
 
-// Manifest returns the settings schema for the NeboLoop settings.
-// The UI renders this dynamically — no hardcoded forms needed.
+// Manifest returns the settings schema for the NeboLoop plugin.
 func (p *Plugin) Manifest() settings.SettingsManifest {
 	return settings.SettingsManifest{
 		Groups: []settings.SettingsGroup{
 			{
 				Title:       "Connection",
-				Description: "MQTT broker connection settings",
+				Description: "NeboLoop gateway connection settings",
 				Fields: []settings.SettingsField{
 					{
-						Key:         "broker",
-						Title:       "MQTT Broker",
+						Key:         "gateway",
+						Title:       "Gateway URL",
 						Type:        settings.FieldURL,
-						Required:    true,
-						Placeholder: "tcp://192.168.86.31:1883",
-						Description: "MQTT broker address (tcp:// or ssl://)",
+						Placeholder: "wss://comms.neboloop.com",
+						Description: "WebSocket URL for the NeboLoop comms gateway",
 					},
 					{
 						Key:         "api_server",
 						Title:       "API Server",
 						Type:        settings.FieldURL,
 						Required:    true,
-						Placeholder: "http://192.168.86.31:8888",
+						Placeholder: "http://localhost:8888",
 						Description: "NeboLoop REST API base URL",
 					},
 				},
@@ -895,30 +391,17 @@ func (p *Plugin) Manifest() settings.SettingsManifest {
 				Description: "Bot credentials for NeboLoop network",
 				Fields: []settings.SettingsField{
 					{
-						Key:         "connection_token",
-						Title:       "Connection Token",
-						Type:        settings.FieldPassword,
-						Secret:      true,
-						Description: "One-time token from NeboLoop (exchanged for MQTT credentials)",
-					},
-					{
 						Key:         "bot_id",
 						Title:       "Bot ID",
 						Type:        settings.FieldText,
 						Description: "Bot UUID assigned by NeboLoop",
 					},
 					{
-						Key:         "mqtt_username",
-						Title:       "MQTT Username",
-						Type:        settings.FieldText,
-						Description: "Direct MQTT username (alternative to token exchange)",
-					},
-					{
-						Key:         "mqtt_password",
-						Title:       "MQTT Password",
+						Key:         "api_key",
+						Title:       "API Key",
 						Type:        settings.FieldPassword,
 						Secret:      true,
-						Description: "Direct MQTT password",
+						Description: "Bot API key for authentication",
 					},
 				},
 			},
@@ -927,24 +410,34 @@ func (p *Plugin) Manifest() settings.SettingsManifest {
 }
 
 // OnSettingsChanged applies new settings without requiring a restart.
-// If the plugin is connected, it disconnects and reconnects with new values.
-func (p *Plugin) OnSettingsChanged(settings map[string]string) error {
+func (p *Plugin) OnSettingsChanged(newSettings map[string]string) error {
 	p.mu.RLock()
 	wasConnected := p.connected
 	p.mu.RUnlock()
 
 	if wasConnected {
-		// Disconnect with old config, reconnect with new
 		ctx := context.Background()
 		if err := p.Disconnect(ctx); err != nil {
 			fmt.Printf("[neboloop] Warning: disconnect during settings change: %v\n", err)
 		}
-		return p.Connect(ctx, settings)
+		return p.Connect(ctx, newSettings)
 	}
 
-	// Not connected — just store the config for next Connect() call
 	return nil
 }
 
-// Compile-time interface check
-var _ settings.Configurable = (*Plugin)(nil)
+// --- helpers ---
+
+// deriveGatewayURL converts an API server URL to a WebSocket gateway URL.
+// http://host:port → ws://host:port/ws, https://host:port → wss://host:port/ws
+func deriveGatewayURL(apiServer string) string {
+	gw := strings.Replace(apiServer, "https://", "wss://", 1)
+	gw = strings.Replace(gw, "http://", "ws://", 1)
+	return strings.TrimRight(gw, "/") + "/ws"
+}
+
+// Compile-time interface checks
+var (
+	_ comm.CommPlugin       = (*Plugin)(nil)
+	_ settings.Configurable = (*Plugin)(nil)
+)

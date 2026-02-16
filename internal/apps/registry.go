@@ -51,8 +51,6 @@ type AppRegistry struct {
 	toolReg       *tools.Registry
 	skillTool     *tools.SkillDomainTool
 	commMgr       *comm.CommPluginManager
-	installer     *InstallListener
-	channelBridge *ChannelBridge
 	grpcInspector *inspector.Inspector
 
 	supervisor          *Supervisor
@@ -111,10 +109,8 @@ func NewAppRegistry(cfg AppRegistryConfig) *AppRegistry {
 		toolReg:       cfg.ToolReg,
 		skillTool:     cfg.SkillTool,
 		commMgr:       cfg.CommMgr,
-		channelBridge: NewChannelBridge(),
 		grpcInspector: ins,
 	}
-	ar.installer = newInstallListener(ar)
 
 	return ar
 }
@@ -582,25 +578,6 @@ func uiViewToJSON(view *pb.UIView) map[string]any {
 	}
 }
 
-// StartInstallListener connects to NeboLoop's MQTT broker and subscribes to
-// app install events. This enables the full install flow: user clicks Install
-// in NeboLoop → MQTT notification → download .napp → extract → verify → launch.
-func (ar *AppRegistry) StartInstallListener(ctx context.Context, config InstallListenerConfig) error {
-	return ar.installer.Start(ctx, config)
-}
-
-// StartChannelBridge connects to NeboLoop's MQTT broker and subscribes to
-// channel inbound messages. This enables Nebo to receive messages from
-// NeboLoop's channel bridges (Telegram, Discord, etc.) and send responses back.
-func (ar *AppRegistry) StartChannelBridge(ctx context.Context, config ChannelBridgeConfig) error {
-	return ar.channelBridge.Start(ctx, config)
-}
-
-// ChannelBridge returns the channel bridge instance for setting message handlers
-// and sending responses.
-func (ar *AppRegistry) ChannelBridge() *ChannelBridge {
-	return ar.channelBridge
-}
 
 // registerChannel adds a channel adapter and wires its inbound message handler.
 // The handler looks up onChannelMsg lazily at call time so SetChannelHandler can
@@ -941,13 +918,11 @@ func (ar *AppRegistry) restartApp(ctx context.Context, appDir string) error {
 	return ar.launchAndRegister(ctx, appDir)
 }
 
-// Stop stops all running app processes, the install listener, and the channel bridge.
+// Stop stops all running app processes.
 func (ar *AppRegistry) Stop() error {
 	if ar.supervisor != nil {
 		ar.supervisor.Stop()
 	}
-	ar.installer.Stop()
-	ar.channelBridge.Stop()
 	return ar.runtime.StopAll()
 }
 

@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package comms.v1;
+
+option go_package = "github.com/neboloop/nebo/internal/neboloop/sdk/pb";
+
+// --- Auth ---
+
+message ConnectPayload {
+  string bot_id = 1;
+  string api_key = 2;
+  string device_id = 3;
+}
+
+message AuthOKPayload {
+  string session_id = 1;
+  string loop_id = 2;
+  repeated string roles = 3;
+}
+
+message AuthFailPayload {
+  string reason = 1;
+  uint32 code = 2;
+}
+
+// --- Conversations ---
+
+message JoinPayload {
+  // conversation_id → last_acked_seq for delta replay on reconnect
+  map<string, uint64> last_acked_seqs = 1;
+}
+
+message LeavePayload {}
+
+// --- Messages ---
+
+message SendPayload {
+  string content_type = 1; // "install", "channel", "task", "task_result", "direct"
+  bytes body = 2;          // Type-specific protobuf (see typed bodies below)
+  string correlation_id = 3;
+  string stream = 4;       // "a2a" for comm lane routing, empty for main lane
+}
+
+message DeliveryPayload {
+  string from = 1;
+  string content_type = 2;
+  bytes body = 3;
+  string correlation_id = 4;
+  string stream = 5;
+}
+
+// --- Ack ---
+
+message AckPayload {
+  uint64 last_seq = 1;
+}
+
+// --- Presence ---
+
+message PresencePayload {
+  string status = 1; // "online", "away", etc.
+}
+
+// --- Resume (PRD §6.4) ---
+
+message ResumeSummaryPayload {
+  repeated ConversationGap gaps = 1;
+}
+
+message ConversationGap {
+  bytes conversation_id = 1; // 16-byte UUID
+  uint64 last_seq = 2;
+  uint64 current_seq = 3;
+  uint32 gap_size = 4;
+}
+
+// --- Typed Message Bodies (nested in SendPayload.body / DeliveryPayload.body) ---
+
+// content_type: "install"
+message InstallEvent {
+  string type = 1;         // "installed", "updated", "uninstalled", "revoked"
+  string app_id = 2;
+  string version = 3;
+  string download_url = 4;
+}
+
+// content_type: "channel"
+message ChannelMessage {
+  string channel_type = 1;  // "telegram", "discord", "slack"
+  string sender_name = 2;
+  string text = 3;
+  repeated Attachment attachments = 4;
+  string reply_to = 5;
+  bytes platform_data = 6;  // Opaque passthrough
+}
+
+message Attachment {
+  string type = 1;     // "image", "file", "audio", "video"
+  string url = 2;
+  string name = 3;
+  string mime_type = 4;
+  int64 size = 5;
+}
+
+// content_type: "task" (A2A task submission)
+message TaskSubmission {
+  string from = 1;
+  string input = 2;
+  string correlation_id = 3;
+}
+
+// content_type: "task_result" (A2A task completion)
+message TaskResult {
+  string correlation_id = 1;
+  string status = 2;       // "completed", "failed", "canceled", "working", "input-required"
+  string output = 3;
+  string error = 4;
+}
+
+// content_type: "direct" (A2A direct message)
+message DirectMessage {
+  string from = 1;
+  string msg_type = 2;    // "message", "mention", "proposal", "command", "info"
+  string content = 3;
+}

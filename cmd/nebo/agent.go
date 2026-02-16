@@ -33,6 +33,7 @@ import (
 	"github.com/neboloop/nebo/internal/agent/tools"
 	"github.com/neboloop/nebo/internal/agenthub"
 	"github.com/neboloop/nebo/internal/apps"
+	"github.com/neboloop/nebo/internal/neboloop/sdk"
 	"github.com/neboloop/nebo/internal/crashlog"
 	"github.com/neboloop/nebo/internal/daemon"
 	"github.com/neboloop/nebo/internal/browser"
@@ -324,41 +325,17 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 		return true
 	}
 
-	// Step 2: Exchange token for MQTT credentials
-	creds, err := neboloopapi.ExchangeToken(ctx, apiServer, redeemed.ConnectionToken)
-	if err != nil {
-		errMsg := fmt.Sprintf("Failed to exchange token: %s", err)
-		fmt.Printf("[NeboLoop] %s\n", errMsg)
-		send(map[string]any{
-			"type": "stream",
-			"id":   requestID,
-			"payload": map[string]any{
-				"tool_result": errMsg,
-			},
-		})
-		send(map[string]any{
-			"type": "stream",
-			"id":   requestID,
-			"payload": map[string]any{
-				"chunk": "Something went wrong while finishing the connection. Please try again with a new code.",
-			},
-		})
-		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": errMsg}})
-		return true
-	}
-
-	// Step 3: Store credentials via PluginStore (triggers OnSettingsChanged → MQTT auto-reconnect)
+	// Step 2: Store credentials via PluginStore (triggers OnSettingsChanged → SDK auto-reconnect)
 	if pluginStore != nil {
 		p, err := pluginStore.GetPlugin(ctx, "neboloop")
 		if err == nil {
 			newSettings := map[string]string{
-				"api_server":    apiServer,
-				"bot_id":        redeemed.ID,
-				"mqtt_username": creds.MQTTUsername,
-				"mqtt_password": creds.MQTTPassword,
+				"api_server": apiServer,
+				"bot_id":     redeemed.ID,
+				"api_key":    redeemed.ConnectionToken,
 			}
 			secrets := map[string]bool{
-				"mqtt_password": true,
+				"api_key": true,
 			}
 			if err := pluginStore.UpdateSettings(ctx, p.ID, newSettings, secrets); err != nil {
 				fmt.Printf("[NeboLoop] Warning: failed to save credentials: %v\n", err)
@@ -368,17 +345,15 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 		}
 	}
 
-	// Step 4: Activate the neboloop comm plugin and persist via settings
+	// Step 3: Activate the neboloop comm plugin and persist via settings
 	if state != nil && state.commManager != nil {
-		// Activate and connect the plugin
 		if err := state.commManager.SetActive("neboloop"); err != nil {
 			fmt.Printf("[NeboLoop] Warning: failed to activate comm plugin: %v\n", err)
 		} else if active := state.commManager.GetActive(); active != nil {
 			commConfig := map[string]string{
-				"api_server":    apiServer,
-				"bot_id":        redeemed.ID,
-				"mqtt_username": creds.MQTTUsername,
-				"mqtt_password": creds.MQTTPassword,
+				"api_server": apiServer,
+				"bot_id":     redeemed.ID,
+				"api_key":    redeemed.ConnectionToken,
 			}
 			if err := active.Connect(ctx, commConfig); err != nil {
 				fmt.Printf("[NeboLoop] Warning: failed to connect comm plugin: %v\n", err)
@@ -386,45 +361,6 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 				card := buildAgentCard(state.registry, state.skillLoader)
 				active.Register(ctx, state.commAgentID, card)
 				fmt.Printf("[NeboLoop] Comm plugin activated and connected (agent: %s)\n", state.commAgentID)
-
-				// Start install listener for app store and channel bridge
-				if state.appRegistry != nil {
-					go func() {
-						// Merge in broker from plugin settings if available
-						broker := commConfig["broker"]
-						if broker == "" && pluginStore != nil {
-							if dbSettings, err := pluginStore.GetSettingsByName(ctx, "neboloop"); err == nil {
-								broker = dbSettings["broker"]
-							}
-						}
-						if broker == "" {
-							fmt.Printf("[NeboLoop] Warning: no broker configured, install listener not started\n")
-							return
-						}
-						installCfg := apps.InstallListenerConfig{
-							Broker:       broker,
-							APIServer:    apiServer,
-							BotID:        redeemed.ID,
-							MQTTUsername:  creds.MQTTUsername,
-							MQTTPassword:  creds.MQTTPassword,
-						}
-						if err := state.appRegistry.StartInstallListener(ctx, installCfg); err != nil {
-							fmt.Printf("[NeboLoop] Warning: install listener failed: %v\n", err)
-						}
-
-						// Start channel bridge for Telegram/Discord messages via NeboLoop
-						channelCfg := apps.ChannelBridgeConfig{
-							Broker:       broker,
-							BotID:        redeemed.ID,
-							MQTTUsername:  creds.MQTTUsername,
-							MQTTPassword:  creds.MQTTPassword,
-							AgentName:    redeemed.Name,
-						}
-						if err := state.appRegistry.StartChannelBridge(ctx, channelCfg); err != nil {
-							fmt.Printf("[NeboLoop] Warning: channel bridge failed: %v\n", err)
-						}
-					}()
-				}
 			}
 		}
 
@@ -976,14 +912,12 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	state.skillLoader = skillLoader
 	state.appRegistry = appRegistry
 
-	// Wire the channel bridge message handler so inbound messages from NeboLoop
-	// (Telegram, Discord, etc.) are processed through the agentic loop and
-	// responses are published back to the outbound topic.
-	bridge := appRegistry.ChannelBridge()
-	bridge.SetMessageHandler(func(msg apps.InboundMessage) {
-		sessionKey := fmt.Sprintf("channel-%s-%s", msg.ChannelType, msg.ChannelID)
+	// Wire SDK channel messages → agentic loop (replaces old MQTT channel bridge).
+	// Install events and channel messages are delivered via the SDK's single WebSocket.
+	neboloopPlugin.OnChannelMessage(func(msg sdk.ChannelMessage) {
+		sessionKey := fmt.Sprintf("channel-%s-%s", msg.ChannelType, msg.ConversationID)
 
-		fmt.Printf("[apps:channels] Processing %s message from %s in session %s\n",
+		fmt.Printf("[sdk:channels] Processing %s message from %s in session %s\n",
 			msg.ChannelType, msg.SenderName, sessionKey)
 
 		state.lanes.EnqueueAsync(ctx, agenthub.LaneMain, func(taskCtx context.Context) error {
@@ -993,7 +927,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				Origin:     tools.OriginUser,
 			})
 			if err != nil {
-				fmt.Printf("[apps:channels] Run failed for %s/%s: %v\n", msg.ChannelType, msg.ChannelID, err)
+				fmt.Printf("[sdk:channels] Run failed for %s: %v\n", msg.ChannelType, err)
 				return err
 			}
 
@@ -1009,19 +943,26 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			}
 
 			if result.Len() > 0 {
-				outbound := apps.OutboundMessage{
-					ChannelID: msg.ChannelID,
-					Text:      result.String(),
-					ReplyToID: msg.MessageID,
-					ThreadID:  msg.ThreadID,
-				}
-				if err := bridge.SendResponse(msg.ChannelType, outbound); err != nil {
-					fmt.Printf("[apps:channels] SendResponse failed: %v\n", err)
+				client := neboloopPlugin.Client()
+				if client != nil {
+					outMsg := sdk.ChannelMessage{
+						ChannelType: msg.ChannelType,
+						Text:        result.String(),
+						ReplyTo:     msg.MessageID,
+					}
+					if err := client.SendChannelMessage(taskCtx, msg.ConversationID, outMsg); err != nil {
+						fmt.Printf("[sdk:channels] SendChannelMessage failed: %v\n", err)
+					}
 				}
 			}
 
 			return nil
 		}, agenthub.WithDescription(fmt.Sprintf("Channel: %s from %s", msg.ChannelType, msg.SenderName)))
+	})
+
+	// Wire SDK install events → app registry
+	neboloopPlugin.OnInstall(func(evt sdk.InstallEvent) {
+		appRegistry.HandleInstallEvent(ctx, evt)
 	})
 
 	// Wire local channel apps (e.g., voice) so their inbound messages are processed
@@ -1148,34 +1089,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				active.Register(ctx, agentID, card)
 				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", commPlugin, agentID)
 
-				// Start MQTT install listener and channel bridge if NeboLoop comm is connected
-				if commPlugin == "neboloop" {
-					if botID := commConfig["bot_id"]; botID != "" {
-						go func() {
-							installCfg := apps.InstallListenerConfig{
-								Broker:       commConfig["broker"],
-								APIServer:    commConfig["api_server"],
-								BotID:        botID,
-								MQTTUsername:  commConfig["mqtt_username"],
-								MQTTPassword:  commConfig["mqtt_password"],
-							}
-							if err := appRegistry.StartInstallListener(ctx, installCfg); err != nil {
-								fmt.Printf("[agent] Warning: install listener failed: %v\n", err)
-							}
-
-							// Start channel bridge for Telegram/Discord messages via NeboLoop
-							channelCfg := apps.ChannelBridgeConfig{
-								Broker:       commConfig["broker"],
-								BotID:        botID,
-								MQTTUsername:  commConfig["mqtt_username"],
-								MQTTPassword:  commConfig["mqtt_password"],
-							}
-							if err := appRegistry.StartChannelBridge(ctx, channelCfg); err != nil {
-								fmt.Printf("[agent] Warning: channel bridge failed: %v\n", err)
-							}
-						}()
-					}
-				}
+				// Install events and channel messages are handled by the SDK
+				// via neboloopPlugin.OnInstall and neboloopPlugin.OnChannelMessage
+				// which were wired above — no separate connections needed.
 			}
 		}
 	}
@@ -2164,34 +2080,9 @@ func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bo
 	active.Register(ctx, state.commAgentID, card)
 	fmt.Printf("[Comm] Plugin %s activated and connected via settings update (agent: %s)\n", pluginName, state.commAgentID)
 
-	// Start MQTT install listener and channel bridge for NeboLoop
-	// This enables the Janus gateway app to be installed after onboarding
-	if pluginName == "neboloop" && state.appRegistry != nil {
-		if botID := commConfig["bot_id"]; botID != "" {
-			go func() {
-				installCfg := apps.InstallListenerConfig{
-					Broker:       commConfig["broker"],
-					APIServer:    commConfig["api_server"],
-					BotID:        botID,
-					MQTTUsername: commConfig["mqtt_username"],
-					MQTTPassword: commConfig["mqtt_password"],
-				}
-				if err := state.appRegistry.StartInstallListener(ctx, installCfg); err != nil {
-					fmt.Printf("[Comm] Warning: install listener failed: %v\n", err)
-				}
-
-				channelCfg := apps.ChannelBridgeConfig{
-					Broker:       commConfig["broker"],
-					BotID:        botID,
-					MQTTUsername: commConfig["mqtt_username"],
-					MQTTPassword: commConfig["mqtt_password"],
-				}
-				if err := state.appRegistry.StartChannelBridge(ctx, channelCfg); err != nil {
-					fmt.Printf("[Comm] Warning: channel bridge failed: %v\n", err)
-				}
-			}()
-		}
-	}
+	// Install events and channel messages are handled by the SDK
+	// via neboloopPlugin.OnInstall and neboloopPlugin.OnChannelMessage
+	// which were wired during agent startup — no separate connections needed.
 }
 
 // buildAgentCard collects tool and skill metadata into an A2A-spec-compliant
