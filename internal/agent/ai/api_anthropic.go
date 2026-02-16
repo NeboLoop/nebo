@@ -10,7 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 const defaultMaxTokens = 8192

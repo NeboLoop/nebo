@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nebolabs/nebo/internal/apps/settings"
+	"github.com/neboloop/nebo/internal/apps/settings"
 )
 
 // Known capability types that apps can provide.

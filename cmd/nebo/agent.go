@@ -16,30 +16,31 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 
-	"github.com/nebolabs/nebo/internal/agent/advisors"
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/comm"
-	"github.com/nebolabs/nebo/internal/agent/comm/neboloop"
-	neboloopapi "github.com/nebolabs/nebo/internal/neboloop"
-	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/embeddings"
-	agentmcp "github.com/nebolabs/nebo/internal/agent/mcp"
-	mcpbridge "github.com/nebolabs/nebo/internal/mcp/bridge"
-	"github.com/nebolabs/nebo/internal/agent/memory"
-	"github.com/nebolabs/nebo/internal/agent/recovery"
-	"github.com/nebolabs/nebo/internal/agent/runner"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/agent/skills"
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/apps"
-	"github.com/nebolabs/nebo/internal/browser"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/local"
-	"github.com/nebolabs/nebo/internal/apps/settings"
-	"github.com/nebolabs/nebo/internal/provider"
-	"github.com/nebolabs/nebo/internal/server"
-	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/agent/advisors"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/comm"
+	"github.com/neboloop/nebo/internal/agent/comm/neboloop"
+	neboloopapi "github.com/neboloop/nebo/internal/neboloop"
+	agentcfg "github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/embeddings"
+	agentmcp "github.com/neboloop/nebo/internal/agent/mcp"
+	mcpbridge "github.com/neboloop/nebo/internal/mcp/bridge"
+	"github.com/neboloop/nebo/internal/agent/memory"
+	"github.com/neboloop/nebo/internal/agent/recovery"
+	"github.com/neboloop/nebo/internal/agent/runner"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/skills"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/apps"
+	"github.com/neboloop/nebo/internal/daemon"
+	"github.com/neboloop/nebo/internal/browser"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/local"
+	"github.com/neboloop/nebo/internal/apps/settings"
+	"github.com/neboloop/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/server"
+	"github.com/neboloop/nebo/internal/svc"
 )
 
 // approvalResponse holds the result of an approval request
@@ -81,6 +82,9 @@ type agentState struct {
 
 	// MCP bridge for external tool integrations
 	mcpBridge *mcpbridge.Bridge
+
+	// Heartbeat daemon for cron wake/enqueue (pointer-to-pointer: filled in by root.go/desktop.go after creation)
+	heartbeat **daemon.Heartbeat
 }
 
 // sendFrame sends a JSON frame to the server
@@ -237,6 +241,7 @@ type AgentOptions struct {
 	Quiet            bool                // Suppress console output for clean CLI
 	Dangerously      bool                // Bypass all tool approval prompts (CLI flag)
 	AgentMCPProxy    *server.AgentMCPProxy // Lazy handler for CLI provider MCP loopback
+	Heartbeat        **daemon.Heartbeat    // Pointer-to-pointer: set by root.go/desktop.go after creation
 }
 
 // isNeboLoopCode checks if a prompt is a NeboLoop connection code.
@@ -478,6 +483,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		pendingApproval: make(map[string]*pendingApprovalInfo),
 		quiet:           opts.Quiet,
 		lanes:           agenthub.NewLaneManager(),
+		heartbeat:       opts.Heartbeat,
 	}
 
 	// Forward lane events to the server for UI clients
@@ -833,7 +839,11 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	if err := appRegistry.DiscoverAndLaunch(ctx); err != nil {
 		fmt.Printf("[agent] Warning: failed to discover apps: %v\n", err)
 	}
+	appRegistry.StartSupervisor(ctx)
 	defer appRegistry.Stop()
+
+	// Inject app catalog into agent system prompt so it knows about installed apps
+	r.SetAppCatalog(appRegistry)
 	appRegistry.OnQuarantine(func(event apps.QuarantineEvent) {
 		state.sendFrame(map[string]any{
 			"type":   "event",
@@ -913,10 +923,29 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	skillLoader := loadSkills(cfg)
 	for _, s := range skillLoader.List() {
 		if s.Enabled {
-			skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil)
+			skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority)
 		}
 	}
 	fmt.Printf("[agent] Registered %d standalone skills, %d total skills\n", skillLoader.Count(), skillDomainTool.Count())
+
+	// Re-register skills when enabled/disabled state changes via the UI toggle
+	opts.SvcCtx.SkillSettings.OnChange(func(name string, enabled bool) {
+		slug := tools.Slugify(name)
+		if enabled {
+			// Find the skill from a fresh load and register it
+			fresh := loadSkills(cfg)
+			for _, s := range fresh.List() {
+				if tools.Slugify(s.Name) == slug {
+					skillDomainTool.Register(slug, s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority)
+					fmt.Printf("[agent] Skill %q enabled and registered\n", name)
+					return
+				}
+			}
+		} else {
+			skillDomainTool.Unregister(slug)
+			fmt.Printf("[agent] Skill %q disabled and unregistered\n", name)
+		}
+	})
 
 	// Watch user skills directory for hot-reload (CRUD from API writes here)
 	userSkillWatcher := skills.NewLoader(userSkillsDir)
@@ -925,7 +954,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		fresh := loadSkills(cfg)
 		for _, s := range fresh.List() {
 			if s.Enabled {
-				skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil)
+				skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority)
 			}
 		}
 		fmt.Printf("[agent] Skills reloaded: %d standalone, %d total\n", fresh.Count(), skillDomainTool.Count())
@@ -988,6 +1017,46 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 			return nil
 		}, agenthub.WithDescription(fmt.Sprintf("Channel: %s from %s", msg.ChannelType, msg.SenderName)))
+	})
+
+	// Wire local channel apps (e.g., voice) so their inbound messages are processed
+	// through the agentic loop. Responses are sent back via SendToChannel.
+	appRegistry.SetChannelHandler(func(channelType, channelID, userID, text, metadata string) {
+		sessionKey := fmt.Sprintf("channel-%s-%s", channelType, channelID)
+
+		fmt.Printf("[apps:local-channel] Processing %s message from %s in session %s\n",
+			channelType, userID, sessionKey)
+
+		state.lanes.EnqueueAsync(ctx, agenthub.LaneMain, func(taskCtx context.Context) error {
+			events, err := r.Run(taskCtx, &runner.RunRequest{
+				SessionKey: sessionKey,
+				Prompt:     text,
+				Origin:     tools.OriginUser,
+			})
+			if err != nil {
+				fmt.Printf("[apps:local-channel] Run failed for %s/%s: %v\n", channelType, channelID, err)
+				return err
+			}
+
+			var result strings.Builder
+			for event := range events {
+				if event.Type == ai.EventTypeText {
+					result.WriteString(event.Text)
+				} else if event.Type == ai.EventTypeMessage {
+					if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
+						result.WriteString(event.Message.Content)
+					}
+				}
+			}
+
+			if result.Len() > 0 {
+				if err := appRegistry.SendToChannel(taskCtx, channelType, channelID, result.String()); err != nil {
+					fmt.Printf("[apps:local-channel] SendToChannel failed: %v\n", err)
+				}
+			}
+
+			return nil
+		}, agenthub.WithDescription(fmt.Sprintf("Local channel: %s from %s", channelType, userID)))
 	})
 
 	// Register app UI provider, app registry, tool registry, and scheduler with the HTTP layer
@@ -1062,7 +1131,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			if opts.PluginStore != nil {
 				if dbSettings, err := opts.PluginStore.GetSettingsByName(ctx, commPlugin); err == nil && len(dbSettings) > 0 {
 					commConfig = dbSettings
-					fmt.Printf("[agent] Loaded %s settings from database (%d keys)\n", commPlugin, len(dbSettings))
+					fmt.Printf("[agent] Loaded %s settings from database (%d keys, broker=%s)\n", commPlugin, len(dbSettings), dbSettings["broker"])
 				}
 			}
 			if err := active.Connect(ctx, commConfig); err != nil {
@@ -1104,10 +1173,30 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
+	// Agent-side keepalive: send pings to hub so the hub's readPump
+	// receives data and resets its read deadline. This complements the
+	// hub-side pings (which trigger auto-pong via gorilla/websocket).
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				state.connMu.Lock()
+				err := conn.WriteMessage(websocket.PingMessage, nil)
+				state.connMu.Unlock()
+				if err != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// Close connection when context is cancelled to unblock ReadMessage
 	go func() {
 		<-ctx.Done()
-		fmt.Printf("[Agent] Context done, closing connection: %v\n", ctx.Err())
 		conn.Close()
 	}()
 
@@ -1696,6 +1785,20 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 					}
 				}
 
+				// If a cron job just completed, enqueue its result into heartbeat
+				if isCronJob && state.heartbeat != nil && *state.heartbeat != nil {
+					summary := result.String()
+					if len(summary) > 200 {
+						summary = summary[:200]
+					}
+					(*state.heartbeat).Enqueue(daemon.HeartbeatEvent{
+						Source:    "cron:" + sessionKey,
+						Summary:  summary,
+						Timestamp: time.Now(),
+					})
+					(*state.heartbeat).Wake("cron:" + sessionKey)
+				}
+
 				state.sendFrame(map[string]any{
 					"type": "res",
 					"id":   requestID,
@@ -2036,6 +2139,35 @@ func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bo
 	card := buildAgentCard(state.registry, state.skillLoader)
 	active.Register(ctx, state.commAgentID, card)
 	fmt.Printf("[Comm] Plugin %s activated and connected via settings update (agent: %s)\n", pluginName, state.commAgentID)
+
+	// Start MQTT install listener and channel bridge for NeboLoop
+	// This enables the Janus gateway app to be installed after onboarding
+	if pluginName == "neboloop" && state.appRegistry != nil {
+		if botID := commConfig["bot_id"]; botID != "" {
+			go func() {
+				installCfg := apps.InstallListenerConfig{
+					Broker:       commConfig["broker"],
+					APIServer:    commConfig["api_server"],
+					BotID:        botID,
+					MQTTUsername: commConfig["mqtt_username"],
+					MQTTPassword: commConfig["mqtt_password"],
+				}
+				if err := state.appRegistry.StartInstallListener(ctx, installCfg); err != nil {
+					fmt.Printf("[Comm] Warning: install listener failed: %v\n", err)
+				}
+
+				channelCfg := apps.ChannelBridgeConfig{
+					Broker:       commConfig["broker"],
+					BotID:        botID,
+					MQTTUsername: commConfig["mqtt_username"],
+					MQTTPassword: commConfig["mqtt_password"],
+				}
+				if err := state.appRegistry.StartChannelBridge(ctx, channelCfg); err != nil {
+					fmt.Printf("[Comm] Warning: channel bridge failed: %v\n", err)
+				}
+			}()
+		}
+	}
 }
 
 // buildAgentCard collects tool and skill metadata into an A2A-spec-compliant

@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/orchestrator"
-	"github.com/nebolabs/nebo/internal/agent/recovery"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/orchestrator"
+	"github.com/neboloop/nebo/internal/agent/recovery"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/db"
 )
 
 // CommService is the interface for inter-agent communication.
@@ -262,7 +262,7 @@ var agentResources = map[string]ResourceConfig{
 	"message": {Name: "message", Actions: []string{"send", "list"}, Description: "Channel messaging"},
 	"session": {Name: "session", Actions: []string{"list", "history", "status", "clear"}, Description: "Conversation sessions"},
 	"comm":    {Name: "comm", Actions: []string{"send", "subscribe", "unsubscribe", "list_topics", "status"}, Description: "Inter-agent communication"},
-	"profile": {Name: "profile", Actions: []string{"get", "update"}, Description: "Read and update agent identity (name, emoji, creature, vibe, personality)"},
+	"profile": {Name: "profile", Actions: []string{"get", "update"}, Description: "Read and update agent identity (name, emoji, creature, vibe, personality, quiet_hours_start/end as HH:MM)"},
 }
 
 // Description returns the tool description
@@ -1228,8 +1228,12 @@ func (t *AgentDomainTool) handleProfileGet(ctx context.Context) (*ToolResult, er
 }
 
 func (t *AgentDomainTool) handleProfileUpdate(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
-	if in.Key == "" || in.Value == "" {
-		return &ToolResult{Content: "Profile update requires key and value. Supported keys: name, emoji, creature, vibe, custom_personality"}, nil
+	if in.Key == "" {
+		return &ToolResult{Content: "Profile update requires key and value. Supported keys: name, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end"}, nil
+	}
+	// Allow empty value for clearing quiet hours
+	if in.Value == "" && in.Key != "quiet_hours_start" && in.Key != "quiet_hours_end" {
+		return &ToolResult{Content: "Profile update requires key and value. Supported keys: name, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end"}, nil
 	}
 
 	if t.sessions == nil {
@@ -1264,8 +1268,21 @@ func (t *AgentDomainTool) handleProfileUpdate(ctx context.Context, in AgentDomai
 		params.Vibe = sql.NullString{String: in.Value, Valid: true}
 	case "custom_personality":
 		params.CustomPersonality = sql.NullString{String: in.Value, Valid: true}
+	case "quiet_hours_start", "quiet_hours_end":
+		// Validate HH:MM format (or empty to clear)
+		if in.Value != "" {
+			parts := strings.SplitN(in.Value, ":", 2)
+			if len(parts) != 2 {
+				return &ToolResult{Content: "Quiet hours must be in HH:MM format (e.g., \"22:00\") or empty to clear"}, nil
+			}
+		}
+		if in.Key == "quiet_hours_start" {
+			params.QuietHoursStart = sql.NullString{String: in.Value, Valid: true}
+		} else {
+			params.QuietHoursEnd = sql.NullString{String: in.Value, Valid: true}
+		}
 	default:
-		return &ToolResult{Content: fmt.Sprintf("Unknown profile key: %s. Supported keys: name, emoji, creature, vibe, custom_personality", in.Key)}, nil
+		return &ToolResult{Content: fmt.Sprintf("Unknown profile key: %s. Supported keys: name, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end", in.Key)}, nil
 	}
 
 	err := queries.UpdateAgentProfile(ctx, params)

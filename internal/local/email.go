@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"net/smtp"
 
-	"github.com/nebolabs/nebo/internal/config"
+	"github.com/neboloop/nebo/internal/config"
 
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 type EmailService struct {

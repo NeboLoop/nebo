@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/defaults"
 )
 
 // Settings holds local configuration that can't be in the embedded yaml

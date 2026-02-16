@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/provider"
 
 	_ "modernc.org/sqlite"
 )
@@ -50,6 +51,7 @@ func openTestDB(t *testing.T) *sql.DB {
 			auth_profile_override_source TEXT,
 			verbose_level TEXT,
 			custom_label TEXT,
+			last_embedded_message_id INTEGER DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)
@@ -480,6 +482,114 @@ func TestDefaultSystemPrompt(t *testing.T) {
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || contains(s[1:], substr) || s[:len(substr)] == substr)
+}
+
+func TestContextTokenLimit(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	db := openTestDB(t)
+	defer db.Close()
+
+	sessions, err := session.New(db)
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+	defer sessions.Close()
+
+	t.Run("no selector uses default", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		limit := r.contextTokenLimit()
+		if limit != DefaultContextTokenLimit {
+			t.Errorf("expected %d without selector, got %d", DefaultContextTokenLimit, limit)
+		}
+	})
+
+	t.Run("selector with 200k model", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		modelsConfig := &provider.ModelsConfig{
+			Providers: map[string][]provider.ModelInfo{
+				"anthropic": {
+					{ID: "claude-sonnet-4-5", ContextWindow: 200000, Capabilities: []string{"general"}},
+				},
+			},
+			Credentials: map[string]provider.ProviderCredentials{
+				"anthropic": {APIKey: "test"},
+			},
+			Defaults: &provider.Defaults{Primary: "anthropic/claude-sonnet-4-5"},
+		}
+		r.selector = ai.NewModelSelector(modelsConfig)
+
+		limit := r.contextTokenLimit()
+		// (200000 - 20000) * 0.8 = 144000
+		if limit != 144000 {
+			t.Errorf("expected 144000 for 200k model, got %d", limit)
+		}
+	})
+
+	t.Run("selector with small model falls back to default", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		modelsConfig := &provider.ModelsConfig{
+			Providers: map[string][]provider.ModelInfo{
+				"ollama": {
+					{ID: "tiny", ContextWindow: 8000},
+				},
+			},
+			Credentials: map[string]provider.ProviderCredentials{
+				"ollama": {BaseURL: "http://localhost:11434"},
+			},
+			Defaults: &provider.Defaults{Primary: "ollama/tiny"},
+		}
+		r.selector = ai.NewModelSelector(modelsConfig)
+
+		limit := r.contextTokenLimit()
+		if limit != DefaultContextTokenLimit {
+			t.Errorf("expected default %d for small model, got %d", DefaultContextTokenLimit, limit)
+		}
+	})
+
+	t.Run("flush threshold is 75 percent of context limit", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		modelsConfig := &provider.ModelsConfig{
+			Providers: map[string][]provider.ModelInfo{
+				"anthropic": {
+					{ID: "claude-sonnet-4-5", ContextWindow: 200000},
+				},
+			},
+			Credentials: map[string]provider.ProviderCredentials{
+				"anthropic": {APIKey: "test"},
+			},
+			Defaults: &provider.Defaults{Primary: "anthropic/claude-sonnet-4-5"},
+		}
+		r.selector = ai.NewModelSelector(modelsConfig)
+
+		limit := r.contextTokenLimit()
+		flush := r.memoryFlushThreshold()
+		expected := limit * 75 / 100
+		if flush != expected {
+			t.Errorf("expected flush %d (75%% of %d), got %d", expected, limit, flush)
+		}
+	})
+
+	t.Run("caps at 500k", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		modelsConfig := &provider.ModelsConfig{
+			Providers: map[string][]provider.ModelInfo{
+				"anthropic": {
+					{ID: "claude-opus-4-6", ContextWindow: 1000000},
+				},
+			},
+			Credentials: map[string]provider.ProviderCredentials{
+				"anthropic": {APIKey: "test"},
+			},
+			Defaults: &provider.Defaults{Primary: "anthropic/claude-opus-4-6"},
+		}
+		r.selector = ai.NewModelSelector(modelsConfig)
+
+		limit := r.contextTokenLimit()
+		if limit != 500000 {
+			t.Errorf("expected 500000 cap for 1M model, got %d", limit)
+		}
+	})
 }
 
 func TestGenerateSummary(t *testing.T) {

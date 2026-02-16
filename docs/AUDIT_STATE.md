@@ -35,7 +35,7 @@ README.md is in good shape after the recent rewrite. SECURITY.md is technically 
 | Ollama auto-pull (~4 GB) | VERIFIED | EnsureOllamaModel() exists |
 | macOS 13+ / Windows 10+ / Ubuntu 22.04+ | CLAIMED | Not enforced at runtime |
 | App platform (sandbox, signing, NeboLoop) | VERIFIED | Full implementation in internal/apps/ |
-| License (ELv2 core, Apache 2.0 SDK) | VERIFIED | LICENSE file matches |
+| License (Apache 2.0) | VERIFIED | LICENSE file updated February 16, 2026 |
 
 ### Issues to Fix
 
@@ -111,7 +111,7 @@ This document has the most discrepancies. It's a developer guide so accuracy mat
 
 | Issue | Severity | Details |
 |-------|----------|---------|
-| **SDK packages don't exist** | **HIGH** | Doc references `github.com/nebolabs/nebo-sdk-go`, Rust `nebo-sdk` crate, and C headers. None of these exist. This is the primary developer on-ramp and it's missing. |
+| **SDK packages don't exist** | **HIGH** | Doc references `github.com/neboloop/nebo-sdk-go`, Rust `nebo-sdk` crate, and C headers. None of these exist. This is the primary developer on-ramp and it's missing. |
 | **Proto version wrong** | MEDIUM | Doc says channel proto is v1 (`proto/apps/v1/channel.proto`). Actual: `proto/apps/v0/channel.proto`. All protos are in v0/. |
 | **MQTT topics don't match code** | MEDIUM | Doc says `neboloop/bot/{botID}/channels/{channelType}/inbound`. Code uses `neboloop/bot/{botID}/chat/in` and `chat/out`. |
 | **`nebo apps info` doesn't exist** | LOW | Referenced in doc but not implemented as a CLI command. |

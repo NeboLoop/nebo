@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
-	"github.com/nebolabs/nebo/internal/events"
+	"github.com/neboloop/nebo/internal/events"
 )
 
 const (

@@ -3,8 +3,8 @@ package ai
 import (
 	"testing"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 // TestIntegration_ModelSelectionWithProviderSwitching verifies the full model selection flow
@@ -13,7 +13,7 @@ func TestIntegration_ModelSelectionWithProviderSwitching(t *testing.T) {
 	config := &provider.ModelsConfig{
 		TaskRouting: &provider.TaskRouting{
 			Vision:    "anthropic/claude-sonnet-4-5",
-			Reasoning: "anthropic/claude-opus-4-5",
+			Reasoning: "anthropic/claude-opus-4-6",
 			Code:      "openai/gpt-5.2-codex", // Code goes to OpenAI Codex
 			General:   "anthropic/claude-sonnet-4-5",
 			Fallbacks: map[string][]string{
@@ -25,7 +25,7 @@ func TestIntegration_ModelSelectionWithProviderSwitching(t *testing.T) {
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5", Capabilities: []string{"code", "vision"}},
-				{ID: "claude-opus-4-5", Capabilities: []string{"reasoning", "thinking"}},
+				{ID: "claude-opus-4-6", Capabilities: []string{"reasoning", "thinking"}},
 			},
 			"openai": {
 				{ID: "gpt-5.2", Capabilities: []string{"general"}},
@@ -62,8 +62,8 @@ func TestIntegration_ModelSelectionWithProviderSwitching(t *testing.T) {
 	if providerID != "anthropic" {
 		t.Errorf("Reasoning task: expected provider 'anthropic', got '%s'", providerID)
 	}
-	if modelName != "claude-opus-4-5" {
-		t.Errorf("Reasoning task: expected model 'claude-opus-4-5', got '%s'", modelName)
+	if modelName != "claude-opus-4-6" {
+		t.Errorf("Reasoning task: expected model 'claude-opus-4-6', got '%s'", modelName)
 	}
 	t.Logf("Reasoning task selected: %s (provider: %s, model: %s)", selectedModel, providerID, modelName)
 
@@ -112,7 +112,7 @@ func TestIntegration_FuzzyModelMatching(t *testing.T) {
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5", Active: &active, Kind: []string{"smart"}},
-				{ID: "claude-opus-4-5", Active: &active, Kind: []string{"smart", "reason"}},
+				{ID: "claude-opus-4-6", Active: &active, Kind: []string{"smart", "reason"}},
 				{ID: "claude-haiku-4-5", Active: &active, Kind: []string{"fast"}},
 			},
 			"openai": {

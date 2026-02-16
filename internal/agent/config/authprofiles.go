@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/db"
 )
 
 // AuthProfile represents an API key configuration stored in the database

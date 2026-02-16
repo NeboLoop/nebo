@@ -50,8 +50,8 @@ Tag push (v*)
     │               │
     │               └─► release         Create GitHub Release with all binaries
     │                       │
-    │                       ├─► update-homebrew   Push formula to nebolabs/homebrew-tap
-    │                       └─► update-apt        Push .deb to nebolabs/apt
+    │                       ├─► update-homebrew   Push formula to neboloop/homebrew-tap
+    │                       └─► update-apt        Push .deb to neboloop/apt
     │
     Done
 ```
@@ -70,9 +70,9 @@ Tag push (v*)
 
 After the GitHub Release is created, the pipeline automatically:
 
-1. **Homebrew** — Computes SHA256 checksums, renders `scripts/nebo.rb.tmpl` with `envsubst`, and pushes the updated formula to `nebolabs/homebrew-tap`.
+1. **Homebrew** — Computes SHA256 checksums, renders `scripts/nebo.rb.tmpl` with `envsubst`, and pushes the updated formula to `neboloop/homebrew-tap`.
 
-2. **APT** — Copies `.deb` packages into the pool, regenerates `Packages` and `Release` indexes, and pushes to `nebolabs/apt` (served via GitHub Pages).
+2. **APT** — Copies `.deb` packages into the pool, regenerates `Packages` and `Release` indexes, and pushes to `neboloop/apt` (served via GitHub Pages).
 
 ---
 
@@ -81,22 +81,22 @@ After the GitHub Release is created, the pipeline automatically:
 ### Homebrew (macOS)
 
 ```bash
-brew install --cask nebolabs/tap/nebo
+brew install --cask neboloop/tap/nebo
 ```
 
 - Installs `Nebo.app` to `/Applications` (Spotlight-indexable, proper icon)
 - Also symlinks the `nebo` CLI binary to PATH
-- Cask lives in [nebolabs/homebrew-tap](https://github.com/nebolabs/homebrew-tap) (`Casks/nebo.rb`)
+- Cask lives in [neboloop/homebrew-tap](https://github.com/neboloop/homebrew-tap) (`Casks/nebo.rb`)
 - Template: `scripts/nebo.rb.tmpl` (rendered by CI with checksums)
 
 ### APT (Debian / Ubuntu)
 
 ```bash
 # Add GPG key
-curl -fsSL https://nebolabs.github.io/apt/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/nebo.gpg
+curl -fsSL https://neboloop.github.io/apt/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/nebo.gpg
 
 # Add repository
-echo "deb [signed-by=/usr/share/keyrings/nebo.gpg] https://nebolabs.github.io/apt stable main" \
+echo "deb [signed-by=/usr/share/keyrings/nebo.gpg] https://neboloop.github.io/apt stable main" \
   | sudo tee /etc/apt/sources.list.d/nebo.list
 
 # Install
@@ -104,13 +104,13 @@ sudo apt update
 sudo apt install nebo
 ```
 
-- Repo lives in [nebolabs/apt](https://github.com/nebolabs/apt) with GitHub Pages enabled
+- Repo lives in [neboloop/apt](https://github.com/neboloop/apt) with GitHub Pages enabled
 - Packages built via [nfpm](https://nfpm.goreleaser.com/) using `nfpm.yaml.tmpl`
 - Runtime dependencies: `libwebkit2gtk-4.1-0`, `libgtk-3-0`
 
 ### Direct Download (all platforms)
 
-Binaries available on the [GitHub Releases](https://github.com/nebolabs/nebo/releases) page.
+Binaries available on the [GitHub Releases](https://github.com/neboloop/nebo/releases) page.
 
 ### Windows
 
@@ -120,7 +120,7 @@ Download `nebo-windows-amd64.exe` from the GitHub Release. Future: winget and/or
 
 ## Required Secrets
 
-The CI pipeline needs these GitHub repository secrets configured on `nebolabs/nebo`:
+The CI pipeline needs these GitHub repository secrets configured on `neboloop/nebo`:
 
 ### `TAP_GITHUB_TOKEN` (required)
 
@@ -133,7 +133,7 @@ A fine-grained Personal Access Token with write access to the cross-repo distrib
 3. Configure:
    - **Name:** `nebo-release-bot`
    - **Expiration:** 1 year (renew annually)
-   - **Resource owner:** `nebolabs`
+   - **Resource owner:** `neboloop`
    - **Repository access:** Select repositories → `homebrew-tap` and `apt`
    - **Permissions → Repository permissions → Contents:** Read and write
 4. Click **"Generate token"** and copy the value
@@ -155,14 +155,14 @@ GPG private key for signing the APT repository. Without this, packages are unsig
 gpg --full-generate-key
 # Choose: RSA and RSA, 4096 bits, 0 (no expiry)
 # Real name: Nebo
-# Email: support@nebolabs.dev
+# Email: support@neboloop.dev
 
 # Export and set as secret
 gpg --export-secret-keys --armor nebo | gh secret set APT_GPG_PRIVATE_KEY
 
 # Export public key for the apt repo
 gpg --armor --export nebo > /tmp/key.gpg
-# Upload to nebolabs/apt repo root
+# Upload to neboloop/apt repo root
 ```
 
 ---
@@ -250,9 +250,9 @@ gh release upload v0.2.0 dist/*
 
 | Repo | Purpose |
 |------|---------|
-| [nebolabs/nebo](https://github.com/nebolabs/nebo) | Main source code + CI pipeline |
-| [nebolabs/homebrew-tap](https://github.com/nebolabs/homebrew-tap) | Homebrew formula (`brew install nebolabs/tap/nebo`) |
-| [nebolabs/apt](https://github.com/nebolabs/apt) | APT repository for Debian/Ubuntu (`apt install nebo`) |
+| [neboloop/nebo](https://github.com/neboloop/nebo) | Main source code + CI pipeline |
+| [neboloop/homebrew-tap](https://github.com/neboloop/homebrew-tap) | Homebrew formula (`brew install neboloop/tap/nebo`) |
+| [neboloop/apt](https://github.com/neboloop/apt) | APT repository for Debian/Ubuntu (`apt install nebo`) |
 
 ---
 

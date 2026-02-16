@@ -5,7 +5,7 @@ package session
 import (
 	"database/sql"
 
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/db"
 )
 
 // Type aliases for backward compatibility

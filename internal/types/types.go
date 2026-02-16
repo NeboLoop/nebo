@@ -343,12 +343,23 @@ type ListExtensionsResponse struct {
 	Channels []ExtensionChannel `json:"channels"`
 }
 
+// CLIProviderInfo describes a CLI provider (from models.yaml cli_providers)
+type CLIProviderInfo struct {
+	ID           string   `json:"id"`
+	DisplayName  string   `json:"displayName"`
+	Command      string   `json:"command"`
+	InstallHint  string   `json:"installHint"`
+	Models       []string `json:"models"`
+	DefaultModel string   `json:"defaultModel"`
+}
+
 type ListModelsResponse struct {
 	Models        map[string][]ModelInfo `json:"models"`
 	TaskRouting   *TaskRouting           `json:"taskRouting,omitempty"`
 	Aliases       []ModelAlias           `json:"aliases,omitempty"`
 	AvailableCLIs *CLIAvailability       `json:"availableCLIs,omitempty"`
 	CLIStatuses   *CLIStatusMap          `json:"cliStatuses,omitempty"`
+	CLIProviders  []CLIProviderInfo      `json:"cliProviders,omitempty"`
 }
 
 type ListNotificationsRequest struct {

@@ -17,8 +17,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // Client handles OAuth flows for connecting to external MCP servers

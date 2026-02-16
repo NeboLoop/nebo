@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nebolabs/nebo/internal/defaults"
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/provider"
 	"github.com/spf13/cobra"
 )
 

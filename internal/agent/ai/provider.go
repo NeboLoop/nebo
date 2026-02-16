@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // StreamEventType defines the type of streaming event

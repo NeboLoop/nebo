@@ -10,14 +10,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 
 	"github.com/google/uuid"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/httputil"
-	neboloopapi "github.com/nebolabs/nebo/internal/neboloop"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/local"
+	neboloopapi "github.com/neboloop/nebo/internal/neboloop"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 // NeboLoopRegisterHandler proxies registration to NeboLoop and stores the JWT
@@ -81,6 +82,9 @@ func NeboLoopRegisterHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		if upstream.ConnectionToken != "" {
 			if err := autoConnectBot(r.Context(), svcCtx, svcCtx.Config.NeboLoop.ApiURL, upstream.BotID, upstream.ConnectionToken); err != nil {
 				fmt.Printf("[NeboLoop] Warning: auto-connect failed: %v\n", err)
+			} else {
+				// Persist comm settings so the agent activates NeboLoop on restart
+				activateNeboLoopComm(svcCtx)
 			}
 		}
 
@@ -150,6 +154,9 @@ func NeboLoopLoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		if upstream.ConnectionToken != "" {
 			if err := autoConnectBot(r.Context(), svcCtx, svcCtx.Config.NeboLoop.ApiURL, upstream.BotID, upstream.ConnectionToken); err != nil {
 				fmt.Printf("[NeboLoop] Warning: auto-connect failed: %v\n", err)
+			} else {
+				// Persist comm settings so the agent activates NeboLoop on restart
+				activateNeboLoopComm(svcCtx)
 			}
 		}
 
@@ -245,12 +252,10 @@ func autoConnectBot(ctx context.Context, svcCtx *svc.ServiceContext, apiURL, bot
 		return fmt.Errorf("token exchange: %w", err)
 	}
 
-	// Derive MQTT broker from API URL (same host, port 1883)
-	parsed, err := url.Parse(apiURL)
-	if err != nil {
-		return fmt.Errorf("parse api url: %w", err)
+	broker := creds.MQTTBroker
+	if broker == "" {
+		return fmt.Errorf("server did not return mqtt_broker")
 	}
-	broker := "tcp://" + parsed.Hostname() + ":1883"
 
 	// Store in neboloop plugin settings (triggers OnSettingsChanged → MQTT connect)
 	plugin, err := svcCtx.PluginStore.GetPlugin(ctx, "neboloop")
@@ -301,4 +306,33 @@ func storeNeboLoopProfile(ctx context.Context, store *db.Store, apiURL, ownerID,
 		Metadata: sql.NullString{String: string(metadataJSON), Valid: true},
 	})
 	return err
+}
+
+// activateNeboLoopComm persists comm settings and notifies the agent to activate
+// the NeboLoop comm plugin. This is called after a successful NeboLoop registration
+// or login during onboarding so the agent starts the MQTT install listener
+// and receives the Janus gateway app before the user sends their first message.
+func activateNeboLoopComm(svcCtx *svc.ServiceContext) {
+	// Persist comm settings so the agent re-activates on restart
+	if store := local.GetAgentSettings(); store != nil {
+		s := store.Get()
+		s.CommEnabled = true
+		s.CommPlugin = "neboloop"
+		if err := store.Update(s); err != nil {
+			fmt.Printf("[NeboLoop] Warning: failed to persist comm settings: %v\n", err)
+		}
+	}
+
+	// Notify the agent to activate the NeboLoop comm plugin now
+	if svcCtx.AgentHub != nil {
+		svcCtx.AgentHub.Broadcast(&agenthub.Frame{
+			Type:   "event",
+			Method: "settings_updated",
+			Payload: map[string]any{
+				"commEnabled": true,
+				"commPlugin":  "neboloop",
+			},
+		})
+		fmt.Println("[NeboLoop] Broadcast settings_updated to agent for comm activation")
+	}
 }

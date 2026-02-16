@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/defaults"
 	"github.com/spf13/cobra"
 )
 

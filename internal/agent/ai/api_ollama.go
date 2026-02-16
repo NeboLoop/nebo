@@ -11,7 +11,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // OllamaProvider implements the Provider interface for Ollama (local models) using the official SDK

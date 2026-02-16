@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/nebolabs/nebo/internal/mcp/mcpctx"
+	"github.com/neboloop/nebo/internal/mcp/mcpctx"
 )
 
 // ToolFunc is a function that executes a tool with JSON args.

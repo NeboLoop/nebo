@@ -7,11 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
-	pb "github.com/nebolabs/nebo/internal/apps/pb"
-	"github.com/nebolabs/nebo/internal/apps/inspector"
+	pb "github.com/neboloop/nebo/internal/apps/pb"
+	"github.com/neboloop/nebo/internal/apps/inspector"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -166,6 +167,9 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 		return nil, fmt.Errorf("start binary: %w", err)
 	}
 
+	// Write PID file so we can kill orphans on next startup if nebo dies hard
+	_ = os.WriteFile(filepath.Join(appDir, ".pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
+
 	// Wait for socket to appear (exponential backoff, max 10s)
 	if err := waitForSocket(sockPath, 10*time.Second); err != nil {
 		killProcGroup(cmd)
@@ -229,6 +233,10 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 	}
 
 	rt.mu.Lock()
+	if old, ok := rt.processes[manifest.ID]; ok {
+		// Stop the old process to prevent zombie leaks (e.g., watcher re-launching on binary change)
+		go old.stop()
+	}
 	rt.processes[manifest.ID] = proc
 	rt.mu.Unlock()
 
@@ -277,6 +285,14 @@ func (rt *Runtime) Get(appID string) (*AppProcess, bool) {
 	defer rt.mu.RUnlock()
 	p, ok := rt.processes[appID]
 	return p, ok
+}
+
+// IsRunning returns true if an app process exists for the given ID.
+func (rt *Runtime) IsRunning(appID string) bool {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	_, ok := rt.processes[appID]
+	return ok
 }
 
 // List returns all running app IDs.
@@ -365,7 +381,7 @@ func (p *AppProcess) stop() error {
 
 	if p.cmd != nil && p.cmd.Process != nil {
 		// Graceful shutdown with timeout, then force kill
-		gracefulStopProc(p.cmd, 5*time.Second)
+		gracefulStopProc(p.cmd, 2*time.Second)
 	}
 
 	// Close per-app log files
@@ -373,10 +389,54 @@ func (p *AppProcess) stop() error {
 		p.logCleanup()
 	}
 
-	// Clean up socket
+	// Clean up socket and PID file
 	os.Remove(p.SockPath)
+	os.Remove(filepath.Join(p.Dir, ".pid"))
 
 	return nil
+}
+
+// cleanupStaleProcess kills an orphaned app process left over from a previous
+// nebo run that died without cleaning up (SIGKILL, crash, air hot-reload).
+// Reads the .pid file, checks if the process is still alive, kills it, and
+// removes the .pid file. Safe to call even if no stale process exists.
+func cleanupStaleProcess(appDir string) {
+	pidFile := filepath.Join(appDir, ".pid")
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return // No PID file — nothing to clean up
+	}
+	defer os.Remove(pidFile)
+
+	pid, err := strconv.Atoi(string(data))
+	if err != nil || pid <= 0 {
+		return // Corrupt PID file
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return
+	}
+
+	// Check if process is alive (signal 0 probe). If already dead, nothing to do.
+	if !isProcessAlive(pid) {
+		return
+	}
+
+	fmt.Printf("[apps] Killing orphaned process %d from %s\n", pid, filepath.Base(appDir))
+	_ = proc.Signal(os.Interrupt)
+
+	// Give it a moment to exit gracefully, then force kill
+	done := make(chan struct{})
+	go func() {
+		proc.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = proc.Kill()
+	}
 }
 
 func waitForSocket(path string, timeout time.Duration) error {

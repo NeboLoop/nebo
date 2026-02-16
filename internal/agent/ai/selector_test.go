@@ -4,22 +4,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 func TestNewModelSelector(t *testing.T) {
 	config := &provider.ModelsConfig{
 		TaskRouting: &provider.TaskRouting{
 			Vision:    "anthropic/claude-sonnet-4-5",
-			Reasoning: "anthropic/claude-opus-4-5",
+			Reasoning: "anthropic/claude-opus-4-6",
 			Code:      "anthropic/claude-sonnet-4-5",
 			General:   "anthropic/claude-sonnet-4-5",
 		},
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5", Capabilities: []string{"vision", "tools", "streaming", "code"}},
-				{ID: "claude-opus-4-5", Capabilities: []string{"vision", "tools", "streaming", "code", "reasoning"}},
+				{ID: "claude-opus-4-6", Capabilities: []string{"vision", "tools", "streaming", "code", "reasoning"}},
 			},
 		},
 	}
@@ -59,12 +59,12 @@ func TestClassifyTask_Vision(t *testing.T) {
 func TestClassifyTask_Reasoning(t *testing.T) {
 	config := &provider.ModelsConfig{
 		TaskRouting: &provider.TaskRouting{
-			Reasoning: "anthropic/claude-opus-4-5",
+			Reasoning: "anthropic/claude-opus-4-6",
 			General:   "anthropic/claude-sonnet-4-5",
 		},
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
-				{ID: "claude-opus-4-5"},
+				{ID: "claude-opus-4-6"},
 				{ID: "claude-sonnet-4-5"},
 			},
 		},
@@ -247,14 +247,14 @@ func TestSelectModel_WithRouting(t *testing.T) {
 	config := &provider.ModelsConfig{
 		TaskRouting: &provider.TaskRouting{
 			Vision:    "anthropic/claude-sonnet-4-5",
-			Reasoning: "anthropic/claude-opus-4-5",
+			Reasoning: "anthropic/claude-opus-4-6",
 			Code:      "anthropic/claude-sonnet-4-5",
 			General:   "anthropic/claude-haiku-4-5",
 		},
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5"},
-				{ID: "claude-opus-4-5"},
+				{ID: "claude-opus-4-6"},
 				{ID: "claude-haiku-4-5"},
 			},
 		},
@@ -276,8 +276,8 @@ func TestSelectModel_WithRouting(t *testing.T) {
 		{Role: "user", Content: "analyze this complex problem step by step"},
 	}
 	reasoningModel := selector.Select(reasoningMessages)
-	if reasoningModel != "anthropic/claude-opus-4-5" {
-		t.Errorf("expected anthropic/claude-opus-4-5 for reasoning task, got %s", reasoningModel)
+	if reasoningModel != "anthropic/claude-opus-4-6" {
+		t.Errorf("expected anthropic/claude-opus-4-6 for reasoning task, got %s", reasoningModel)
 	}
 
 	// Test general task selects general model
@@ -296,13 +296,13 @@ func TestSelectModel_WithFallbacks(t *testing.T) {
 			Vision:  "anthropic/claude-sonnet-4-5",
 			General: "anthropic/claude-sonnet-4-5",
 			Fallbacks: map[string][]string{
-				"vision": {"anthropic/claude-opus-4-5", "openai/gpt-5.2"},
+				"vision": {"anthropic/claude-opus-4-6", "openai/gpt-5.2"},
 			},
 		},
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5"},
-				{ID: "claude-opus-4-5"},
+				{ID: "claude-opus-4-6"},
 			},
 			"openai": {
 				{ID: "gpt-5.2"},
@@ -325,14 +325,14 @@ func TestSelectModel_WithFallbacks(t *testing.T) {
 
 	// Selection with exclusion should fallback
 	model = selector.SelectWithExclusions(visionMessages, []string{"anthropic/claude-sonnet-4-5"})
-	if model != "anthropic/claude-opus-4-5" {
+	if model != "anthropic/claude-opus-4-6" {
 		t.Errorf("expected first fallback model, got %s", model)
 	}
 
 	// Exclude both primary and first fallback
 	model = selector.SelectWithExclusions(visionMessages, []string{
 		"anthropic/claude-sonnet-4-5",
-		"anthropic/claude-opus-4-5",
+		"anthropic/claude-opus-4-6",
 	})
 	if model != "openai/gpt-5.2" {
 		t.Errorf("expected second fallback model, got %s", model)
@@ -415,7 +415,7 @@ func TestIsModelAvailable(t *testing.T) {
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5", Active: &active},
-				{ID: "claude-opus-4-5", Active: &inactive},
+				{ID: "claude-opus-4-6", Active: &inactive},
 			},
 		},
 	}
@@ -428,7 +428,7 @@ func TestIsModelAvailable(t *testing.T) {
 	}
 
 	// Inactive model should not be available
-	if selector.isModelAvailable("anthropic/claude-opus-4-5") {
+	if selector.isModelAvailable("anthropic/claude-opus-4-6") {
 		t.Error("expected inactive model to not be available")
 	}
 
@@ -545,7 +545,7 @@ func TestGetCheapestModel(t *testing.T) {
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{
-					ID:      "claude-opus-4-5",
+					ID:      "claude-opus-4-6",
 					Active:  &active,
 					Pricing: &provider.ModelPricing{Input: 5, Output: 25},
 				},
@@ -599,7 +599,7 @@ func TestGetCheapestModel_FallbackToKind(t *testing.T) {
 		},
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
-				{ID: "claude-opus-4-5", Active: &active},
+				{ID: "claude-opus-4-6", Active: &active},
 				{ID: "claude-haiku-4-5", Active: &active, Kind: []string{"fast"}},
 			},
 			"openai": {

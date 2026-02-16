@@ -9,13 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/memory"
-	"github.com/nebolabs/nebo/internal/agent/recovery"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	"github.com/nebolabs/nebo/internal/lifecycle"
+	"github.com/neboloop/nebo/internal/agent/afv"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/memory"
+	"github.com/neboloop/nebo/internal/agent/recovery"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/lifecycle"
 )
 
 // DefaultSystemPrompt is the base system prompt (agent identity is prepended from DB)
@@ -206,6 +207,12 @@ type ProviderLoaderFunc func() []ai.Provider
 // Implemented by SkillDomainTool to avoid circular imports.
 type SkillProvider interface {
 	ActiveSkillContent(sessionKey string) string
+	AutoMatchSkills(sessionKey, message string)
+}
+
+// AppCatalogProvider returns a formatted catalog of installed apps for system prompt injection.
+type AppCatalogProvider interface {
+	AppCatalog() string
 }
 
 // Runner executes the agentic loop
@@ -229,6 +236,8 @@ type Runner struct {
 	fuzzyMatcher    *ai.FuzzyMatcher    // For user model switch requests
 	profileTracker  ai.ProfileTracker   // For recording usage/errors per auth profile
 	mcpServer       MCPContextSetter    // Bridges context across HTTP boundary for CLI providers
+	appCatalog      AppCatalogProvider  // Installed app catalog for system prompt
+	quarantine      *afv.QuarantineStore // In-memory quarantine for failed fence verification
 }
 
 // RunRequest contains parameters for a run
@@ -236,7 +245,7 @@ type RunRequest struct {
 	SessionKey       string       // Session identifier (uses "default" if empty)
 	Prompt           string       // User prompt
 	System           string       // Override system prompt
-	ModelOverride    string       // User-specified model override (e.g., "anthropic/claude-opus-4-5")
+	ModelOverride    string       // User-specified model override (e.g., "anthropic/claude-opus-4-6")
 	UserID           string       // User ID for user-scoped operations (sessions, memories)
 	SkipMemoryExtract bool        // Skip auto memory extraction (e.g., for heartbeats)
 	Origin           tools.Origin // Source of this request (user, comm, app, skill, system)
@@ -272,6 +281,7 @@ func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider,
 		providerMap: providerMap,
 		tools:       toolRegistry,
 		config:      cfg,
+		quarantine:  afv.NewQuarantineStore(),
 	}
 }
 
@@ -336,6 +346,11 @@ func (r *Runner) SetMemoryTool(mt *tools.MemoryTool) {
 // SetSkillProvider sets the skill provider for per-session active skill injection.
 func (r *Runner) SetSkillProvider(sp SkillProvider) {
 	r.skillProvider = sp
+}
+
+// SetAppCatalog sets the app catalog provider for system prompt injection.
+func (r *Runner) SetAppCatalog(provider AppCatalogProvider) {
+	r.appCatalog = provider
 }
 
 // SetProviderLoader sets the function to reload providers (for dynamic reload after onboarding)
@@ -415,13 +430,13 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 	}
 
 	resultCh := make(chan ai.StreamEvent, 100)
-	go r.runLoop(ctx, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.SkipMemoryExtract, resultCh)
+	go r.runLoop(ctx, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.Prompt, req.SkipMemoryExtract, resultCh)
 
 	return resultCh, nil
 }
 
 // runLoop is the main agentic execution loop
-func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPrompt, modelOverride, userID string, skipMemoryExtract bool, resultCh chan<- ai.StreamEvent) {
+func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPrompt, modelOverride, userID, userPrompt string, skipMemoryExtract bool, resultCh chan<- ai.StreamEvent) {
 	startTime := time.Now()
 	defer func() {
 		close(resultCh)
@@ -439,6 +454,10 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		UserID:        userID,
 		ModelOverride: modelOverride,
 	})
+
+	// Create per-run fence store for arithmetic fence verification (AFV).
+	// Volatile — discarded when run ends. Checksums never persist.
+	fenceStore := afv.NewFenceStore()
 
 	// Set user ID on memory tool for user-scoped operations
 	if r.memoryTool != nil && userID != "" {
@@ -547,12 +566,40 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 		systemPrompt += "\n\n## Registered Tools (runtime)\nTool names are case-sensitive. Call tools exactly as listed: " + strings.Join(toolNames, ", ") + "\nThese are your ONLY tools. Do not reference or attempt to call any tool not in this list."
 	}
 
-	systemPrompt = contextSection + "\n\n---\n\n" + systemPrompt
+	// Inject current date/time at the very top so the model can't miss it
+	now := time.Now()
+	zone, offset := now.Zone()
+	utcHours := offset / 3600
+	utcSign := "+"
+	if utcHours < 0 {
+		utcSign = ""
+	}
+	dateHeader := fmt.Sprintf("Current date: %s | Time: %s | Timezone: %s (UTC%s%d, %s)\n\n",
+		now.Format("January 2, 2006"),
+		now.Format("3:04 PM"),
+		now.Location().String(),
+		utcSign, utcHours,
+		zone,
+	)
 
-	// Inject active skills for this session (loaded via skill(action: "load"))
+	systemPrompt = dateHeader + contextSection + "\n\n---\n\n" + systemPrompt
+
+	// Auto-match skills based on user message triggers (before injecting active skills)
+	if r.skillProvider != nil && userPrompt != "" {
+		r.skillProvider.AutoMatchSkills(sessionKey, userPrompt)
+	}
+
+	// Inject active skills for this session (loaded via skill(action: "load") or auto-matched)
 	if r.skillProvider != nil {
 		if skillContent := r.skillProvider.ActiveSkillContent(sessionKey); skillContent != "" {
 			systemPrompt += skillContent
+		}
+	}
+
+	// Inject installed app catalog so the agent knows what apps are available
+	if r.appCatalog != nil {
+		if catalog := r.appCatalog.AppCatalog(); catalog != "" {
+			systemPrompt += catalog
 		}
 	}
 
@@ -576,6 +623,13 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 
 	// Replace {agent_name} placeholder with the actual name throughout the system prompt
 	systemPrompt = strings.ReplaceAll(systemPrompt, "{agent_name}", agentName)
+
+	// Inject self-authenticating system guides with AFV fences
+	guides := afv.BuildSystemGuides(fenceStore, agentName)
+	systemPrompt += "\n\n## Security Directives\n"
+	for _, g := range guides {
+		systemPrompt += g.Format() + "\n"
+	}
 
 	iteration := 0
 	maxIterations := r.config.MaxIterations
@@ -602,15 +656,34 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 		// Proactive token check - compact BEFORE hitting API limits
 		estimatedTokens := estimateTokens(messages)
 
-		if estimatedTokens > DefaultContextTokenLimit && !compactionAttempted {
-			fmt.Printf("[Runner] Token limit exceeded (~%d tokens), compacting...\n", estimatedTokens)
+		tokenLimit := r.contextTokenLimit()
+		if estimatedTokens > tokenLimit && !compactionAttempted {
+			fmt.Printf("[Runner] Token limit exceeded (~%d tokens, limit: %d), compacting...\n", estimatedTokens, tokenLimit)
 			compactionAttempted = true
 
-			// Run proactive memory flush in background — don't block the response
-			go r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
+			// Run memory flush BEFORE compaction — ordered, not async
+			// Flush must complete before Compact() discards messages
+			r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
 
 			summary := r.generateSummary(ctx, messages)
+
+			// Extract and pin the active task from the summary
+			if taskLine := extractTaskFromSummary(summary); taskLine != "" {
+				if err := r.sessions.SetActiveTask(sessionID, taskLine); err != nil {
+					fmt.Printf("[Runner] Warning: failed to set active task: %v\n", err)
+				} else {
+					fmt.Printf("[Runner] Pinned active task: %s\n", truncateForLog(taskLine, 100))
+				}
+			}
+
+			// Cumulative summaries: compress previous summary and prepend
+			summary = r.buildCumulativeSummary(sessionID, summary)
+
 			if compactErr := r.sessions.Compact(sessionID, summary); compactErr == nil {
+				// Index compacted messages for semantic search
+				if r.memoryTool != nil {
+					go r.memoryTool.IndexSessionTranscript(context.WithoutCancel(ctx), sessionID, userID)
+				}
 				// Reload messages after compaction
 				messages, err = r.sessions.GetMessages(sessionID, r.config.MaxContext)
 				if err != nil {
@@ -687,6 +760,11 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 		// Inject model and system context into system prompt
 		enrichedPrompt := injectSystemContext(systemPrompt, provider.ID(), modelName)
 
+		// If session has a pinned active task, inject it at high priority
+		if task, _ := r.sessions.GetActiveTask(sessionID); task != "" {
+			enrichedPrompt = enrichedPrompt + "\n\n---\n## ACTIVE TASK\nYou are currently working on: " + task + "\nDo not lose sight of this goal.\n---"
+		}
+
 		// If session has a compaction summary, inject it for continuity
 		if summary, _ := r.sessions.GetSummary(sessionID); summary != "" {
 			enrichedPrompt = enrichedPrompt + "\n\n---\n[Previous Conversation Summary]\n" + summary + "\n---"
@@ -694,6 +772,38 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 
 		// Two-stage context pruning: soft trim (head+tail) then hard clear (placeholder)
 		truncatedMessages := pruneContext(messages, r.config.ContextPruning)
+
+		// AFV pre-send verification: check that all fence markers are intact
+		// in the context before sending to the LLM
+		if fenceStore.Count() > 0 {
+			contextRecord := buildContextRecord(enrichedPrompt, truncatedMessages)
+			vr := afv.Verify(fenceStore, contextRecord)
+			if !vr.OK {
+				fmt.Printf("[Runner] AFV VIOLATION: %d/%d fences failed\n", vr.Failed, vr.Total)
+				for _, v := range vr.Violations {
+					fmt.Printf("[Runner]   - %s: %s\n", v.FenceID, v.Reason)
+				}
+				// Quarantine: do not send to LLM, do not persist, do not extract memory
+				r.quarantine.Add(afv.QuarantinedResponse{
+					SessionID:    sessionID,
+					Content:      contextRecord,
+					Timestamp:     time.Now(),
+					VerifyResult: vr,
+				})
+				// Persist sanitized placeholder
+				_ = r.sessions.AppendMessage(sessionID, session.Message{
+					SessionID: sessionID,
+					Role:      "assistant",
+					Content:   "[Response quarantined: integrity check failed]",
+				})
+				resultCh <- ai.StreamEvent{
+					Type: ai.EventTypeText,
+					Text: "I detected a potential prompt injection in the tool output and blocked it for safety. The response has been quarantined.",
+				}
+				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
+				return
+			}
+		}
 
 		// Build chat request
 		chatReq := &ai.ChatRequest{
@@ -719,14 +829,31 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 				if !compactionAttempted {
 					compactionAttempted = true
 
-					// Run proactive memory flush in background — don't block the retry
-					go r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
+					// Run memory flush BEFORE compaction — ordered, not async
+					r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
 
 					// Compact session and retry
 					fmt.Printf("[Runner] Context overflow - attempting compaction\n")
 					summary := r.generateSummary(ctx, messages)
+
+					// Extract and pin the active task from the summary
+					if taskLine := extractTaskFromSummary(summary); taskLine != "" {
+						if err := r.sessions.SetActiveTask(sessionID, taskLine); err != nil {
+							fmt.Printf("[Runner] Warning: failed to set active task: %v\n", err)
+						} else {
+							fmt.Printf("[Runner] Pinned active task: %s\n", truncateForLog(taskLine, 100))
+						}
+					}
+
+					// Cumulative summaries: compress previous summary and prepend
+					summary = r.buildCumulativeSummary(sessionID, summary)
+
 					compactErr := r.sessions.Compact(sessionID, summary)
 					if compactErr == nil {
+						// Index compacted messages for semantic search
+						if r.memoryTool != nil {
+							go r.memoryTool.IndexSessionTranscript(context.WithoutCancel(ctx), sessionID, userID)
+						}
 						continue // Retry with compacted session
 					}
 					fmt.Printf("[Runner] Compaction failed: %v\n", compactErr)
@@ -837,6 +964,14 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 					Input: tc.Input,
 				})
 
+				// Wrap tool result in AFV fences if origin/tool requires it
+				fencedContent := result.Content
+				if afv.ShouldFence(tools.GetOrigin(ctx), tc.Name) {
+					contentFence := fenceStore.Generate("tool_" + tc.Name + "_" + tc.ID)
+					guide := afv.BuildToolResultGuide(fenceStore, tc.Name)
+					fencedContent = guide.Format() + "\n" + contentFence.Wrap(fencedContent)
+				}
+
 				// Send tool result event with tool info for correlation
 				resultCh <- ai.StreamEvent{
 					Type: ai.EventTypeToolResult,
@@ -850,7 +985,7 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 
 				toolResults = append(toolResults, session.ToolResult{
 					ToolCallID: tc.ID,
-					Content:    result.Content,
+					Content:    fencedContent,
 					IsError:    result.IsError,
 				})
 			}
@@ -889,6 +1024,20 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 		Type:  ai.EventTypeError,
 		Error: fmt.Errorf("reached maximum iterations (%d)", maxIterations),
 	}
+}
+
+// buildContextRecord concatenates the system prompt and all message contents
+// into a single string for AFV fence verification.
+func buildContextRecord(systemPrompt string, messages []session.Message) string {
+	var b strings.Builder
+	b.WriteString(systemPrompt)
+	for _, m := range messages {
+		b.WriteString(m.Content)
+		if len(m.ToolResults) > 0 {
+			b.Write(m.ToolResults)
+		}
+	}
+	return b.String()
 }
 
 // compactionSummaryPrompt is the prompt used to generate an intelligent working-state
@@ -1063,6 +1212,96 @@ func truncateToolArgs(args string) string {
 	return args[:100] + "..."
 }
 
+// extractTaskFromSummary parses the "Current Task" line from a structured compaction summary.
+// The summary follows the compactionSummaryPrompt format where point #1 is "Current Task".
+func extractTaskFromSummary(summary string) string {
+	lines := strings.Split(summary, "\n")
+	inTaskSection := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect the "Current Task" heading (markdown bold or numbered)
+		if strings.Contains(trimmed, "Current Task") {
+			inTaskSection = true
+			// If the task is on the same line after a colon, grab it
+			if idx := strings.Index(trimmed, ":"); idx >= 0 {
+				task := strings.TrimSpace(trimmed[idx+1:])
+				if task != "" {
+					return task
+				}
+			}
+			continue
+		}
+
+		// Grab the first non-empty line after the heading
+		if inTaskSection && trimmed != "" {
+			// Strip leading markdown list markers
+			task := strings.TrimLeft(trimmed, "- *•")
+			task = strings.TrimSpace(task)
+			if task != "" {
+				return task
+			}
+		}
+
+		// Stop at the next section heading
+		if inTaskSection && (strings.HasPrefix(trimmed, "2.") || strings.HasPrefix(trimmed, "**Progress") || strings.HasPrefix(trimmed, "## ")) {
+			break
+		}
+	}
+
+	return ""
+}
+
+// buildCumulativeSummary compresses the previous summary and prepends it to the new one.
+// This prevents summary-of-summary dilution by preserving compressed history.
+// The cumulative summary is capped at 4000 chars to bound growth.
+func (r *Runner) buildCumulativeSummary(sessionID, newSummary string) string {
+	prevSummary, err := r.sessions.GetSummary(sessionID)
+	if err != nil || prevSummary == "" {
+		return newSummary
+	}
+
+	// Compress previous summary to ~800 chars
+	compressed := compressSummary(prevSummary, 800)
+
+	cumulative := "[Earlier context]\n" + compressed + "\n\n---\n\n" + newSummary
+
+	// Hard cap at 4000 chars — drop oldest context if exceeded
+	const maxCumulativeLen = 4000
+	if len(cumulative) > maxCumulativeLen {
+		cumulative = cumulative[len(cumulative)-maxCumulativeLen:]
+		// Find the first newline to avoid starting mid-line
+		if idx := strings.Index(cumulative, "\n"); idx >= 0 {
+			cumulative = "..." + cumulative[idx:]
+		}
+	}
+
+	return cumulative
+}
+
+// compressSummary truncates a summary to approximately maxLen characters,
+// cutting at the last newline before the limit to avoid partial lines.
+func compressSummary(summary string, maxLen int) string {
+	if len(summary) <= maxLen {
+		return summary
+	}
+	truncated := summary[:maxLen]
+	// Cut at last newline to avoid partial lines
+	if idx := strings.LastIndex(truncated, "\n"); idx > maxLen/2 {
+		truncated = truncated[:idx]
+	}
+	return truncated + "\n..."
+}
+
+// truncateForLog truncates a string for log output.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // Chat is a convenience method for one-shot chat without tool use
 func (r *Runner) Chat(ctx context.Context, prompt string) (string, error) {
 	if len(r.providers) == 0 {
@@ -1177,15 +1416,20 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 		return
 	}
 
-	// Store extracted facts using explicit userID (thread-safe)
+	// Store extracted facts using explicit userID (thread-safe, with dedup)
 	entries := facts.FormatForStorage()
-	stored := 0
+	stored, skipped := 0, 0
 	for _, entry := range entries {
 		var storeErr error
 		if entry.IsStyle {
 			// Style observations use reinforcement tracking — increment count on duplicates
 			storeErr = r.memoryTool.StoreStyleEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
 		} else {
+			// Skip if identical value already stored (dedup)
+			if r.memoryTool.IsDuplicate(entry.Layer, entry.Namespace, entry.Key, entry.Value, userID) {
+				skipped++
+				continue
+			}
 			storeErr = r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
 		}
 		if storeErr != nil {
@@ -1196,8 +1440,8 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 	}
 
 	durationMs := time.Since(startTime).Milliseconds()
-	if stored > 0 {
-		fmt.Printf("[runner] Auto-extracted %d memories from conversation (user: %s) in %dms\n", stored, userID, durationMs)
+	if stored > 0 || skipped > 0 {
+		fmt.Printf("[runner] Auto-extracted %d memories, skipped %d duplicates (user: %s) in %dms\n", stored, skipped, userID, durationMs)
 	} else {
 		fmt.Printf("[runner] Memory extraction complete (no new memories) in %dms\n", durationMs)
 	}
@@ -1216,13 +1460,14 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 	}
 }
 
-// maybeRunMemoryFlush checks if the context is approaching the limit and runs
-// a proactive memory flush to persist important memories before compaction.
+// maybeRunMemoryFlush persists important memories before compaction discards messages.
+// Called synchronously before Compact() to guarantee ordering.
 // Returns true if a flush was performed.
-// Deduplication: Only runs once per compaction cycle using session tracking.
+// Deduplication: Only runs once per compaction cycle (tracked via session).
 func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID string, messages []session.Message) bool {
 	tokens := estimateTokens(messages)
-	if tokens < MemoryFlushThreshold {
+	flushThreshold := r.memoryFlushThreshold()
+	if tokens < flushThreshold {
 		return false
 	}
 
@@ -1238,7 +1483,7 @@ func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID stri
 		}
 	}
 
-	fmt.Printf("[runner] Context at %d tokens (threshold: %d) - running proactive memory flush (session: %s)\n", tokens, MemoryFlushThreshold, sessionID)
+	fmt.Printf("[runner] Context at %d tokens (threshold: %d) - running proactive memory flush (session: %s)\n", tokens, flushThreshold, sessionID)
 
 	// Run memory extraction immediately (not in background) to ensure it completes before compaction
 	if r.memoryTool != nil && len(r.providers) > 0 {
@@ -1272,17 +1517,21 @@ func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID stri
 		if facts.IsEmpty() {
 			fmt.Printf("[runner] Memory flush complete (no memories to store)\n")
 		} else {
-			// Store extracted facts
+			// Store extracted facts (with dedup: skip if identical value already exists)
 			entries := facts.FormatForStorage()
-			stored := 0
+			stored, skipped := 0, 0
 			for _, entry := range entries {
+				if r.memoryTool.IsDuplicate(entry.Layer, entry.Namespace, entry.Key, entry.Value, userID) {
+					skipped++
+					continue
+				}
 				if err := r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID); err != nil {
 					fmt.Printf("[runner] Memory flush store failed for %s: %v\n", entry.Key, err)
 				} else {
 					stored++
 				}
 			}
-			fmt.Printf("[runner] Memory flush stored %d memories before compaction\n", stored)
+			fmt.Printf("[runner] Memory flush: stored %d, skipped %d duplicates (before compaction)\n", stored, skipped)
 		}
 
 		// Record that we ran memory flush for this compaction cycle
@@ -1398,19 +1647,63 @@ func estimateTokens(messages []session.Message) int {
 	return totalChars / 4
 }
 
-// DefaultContextTokenLimit is the default max tokens before proactive compaction.
-// Most models support 100k+ tokens. Set high enough to avoid frequent compaction
-// which causes multiple synchronous LLM calls (memory flush + summary) before the response.
+// DefaultContextTokenLimit is the fallback max tokens before proactive compaction.
+// Used when the active model's context window is unknown.
 const DefaultContextTokenLimit = 80000
 
-// MemoryFlushThreshold is the token count at which we trigger a proactive memory flush
-// before compaction. This ensures critical memories are persisted before being summarized.
-const MemoryFlushThreshold = 60000
+// DefaultMemoryFlushThreshold is the fallback token count for proactive memory flush.
+// Used when the active model's context window is unknown.
+const DefaultMemoryFlushThreshold = 60000
+
+// contextTokenLimit returns the max tokens before proactive compaction triggers.
+// Computed from the active model's context window (80% of usable context),
+// falling back to DefaultContextTokenLimit if no model info is available.
+func (r *Runner) contextTokenLimit() int {
+	if r.selector == nil {
+		return DefaultContextTokenLimit
+	}
+
+	// Get the general/default model (nil messages → TaskTypeGeneral)
+	modelID := r.selector.Select(nil)
+	if modelID == "" {
+		return DefaultContextTokenLimit
+	}
+
+	info := r.selector.GetModelInfo(modelID)
+	if info == nil || info.ContextWindow <= 0 {
+		return DefaultContextTokenLimit
+	}
+
+	// Reserve tokens for system prompt, tool definitions, and response buffer
+	const reserveTokens = 20000
+	effective := info.ContextWindow - reserveTokens
+	if effective <= DefaultContextTokenLimit {
+		return DefaultContextTokenLimit
+	}
+
+	// Compact at 80% of effective context
+	limit := effective * 80 / 100
+
+	// Cap to avoid extremely long summarization tasks
+	const maxLimit = 500000
+	if limit > maxLimit {
+		return maxLimit
+	}
+
+	return limit
+}
+
+// memoryFlushThreshold returns the token count at which memory flush triggers.
+// Set to 75% of the compaction limit so flush runs before compaction discards messages.
+func (r *Runner) memoryFlushThreshold() int {
+	return r.contextTokenLimit() * 75 / 100
+}
 
 // MemoryFlushPrompt is the prompt sent to trigger a memory flush before compaction
 const MemoryFlushPrompt = `Pre-compaction memory flush. The conversation is getting long and will soon be summarized.
 
 IMPORTANT: Review the conversation and use the memory tool to store any important information that should be remembered long-term:
+- The current active task or goal — what you are building/doing right now (layer: "daily", namespace: today's date, key: "active_task"). Store the COMPLETE description including technologies, user requirements, and current progress.
 - User preferences or facts about them (layer: "tacit", namespace: "user")
 - Important decisions or agreements (layer: "daily", namespace: today's date)
 - Information about people, projects, or entities mentioned (layer: "entity", namespace: "default")

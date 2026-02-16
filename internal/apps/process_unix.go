@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+// isProcessAlive checks if a process with the given PID is still running.
+func isProcessAlive(pid int) bool {
+	return syscall.Kill(pid, 0) == nil
+}
+
 // setProcGroup configures the command to run in its own process group.
 // This enables killing the app and all its child processes together.
 func setProcGroup(cmd *exec.Cmd) {

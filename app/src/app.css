@@ -509,6 +509,36 @@
 	}
 }
 
+/* ===== Media Embeds ===== */
+.embed-container {
+	margin: 0.75rem 0;
+	border-radius: 0.75rem;
+	overflow: hidden;
+}
+
+.embed-video {
+	position: relative;
+	padding-bottom: 56.25%; /* 16:9 */
+	height: 0;
+}
+
+.embed-video iframe {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	border-radius: 0.75rem;
+}
+
+.embed-tweet {
+	max-width: 550px;
+}
+
+.embed-tweet blockquote {
+	margin: 0 !important;
+}
+
 /* ===== Reduced Motion ===== */
 @media (prefers-reduced-motion: reduce) {
 	*,

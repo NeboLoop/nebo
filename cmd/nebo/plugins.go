@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	"github.com/nebolabs/nebo/internal/apps"
+	agentcfg "github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/apps"
 )
 
 // AppsCmd creates the apps management command

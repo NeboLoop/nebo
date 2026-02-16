@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // SkillFileName is the expected filename for skill definitions

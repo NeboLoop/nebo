@@ -16,14 +16,14 @@ A personal AI that lives on your computer. You name it, shape its personality, a
 
 ```bash
 # Homebrew (recommended)
-brew install nebolabs/tap/nebo
+brew install neboloop/tap/nebo
 
 # Or download the .dmg installer from the latest release
 ```
 
 ### Windows
 
-Download the installer (`Nebo-setup.exe`) from the [latest release](https://github.com/nebolabs/nebo/releases/latest).
+Download the installer (`Nebo-setup.exe`) from the [latest release](https://github.com/neboloop/nebo/releases/latest).
 
 ### Linux
 
@@ -33,7 +33,7 @@ Download the installer (`Nebo-setup.exe`) from the [latest release](https://gith
 sudo dpkg -i nebo_*.deb
 
 # Or build from source
-git clone https://github.com/nebolabs/nebo.git
+git clone https://github.com/neboloop/nebo.git
 cd nebo && make build
 ```
 
@@ -87,7 +87,7 @@ Nebo has a sandboxed app platform. Developers build `.napp` packages that extend
 - **Signed** — ED25519 signature verification for every app binary and manifest
 - **Distributed via NeboLoop** — install apps from the marketplace or deploy privately to your loop
 
-See [Creating Apps](docs/CREATING_APPS.md) for the developer guide. The App SDK and protocol definitions (`proto/apps/`) are licensed under Apache 2.0.
+See [Creating Apps](docs/CREATING_APPS.md) for the developer guide.
 
 ## Channels
 
@@ -135,6 +135,4 @@ See [CLAUDE.md](CLAUDE.md) for full architecture documentation.
 
 ## License
 
-Nebo core is source-available under the [Elastic License 2.0 (ELv2)](LICENSE). You can read, use, and modify the code — you cannot offer it as a competing product or managed service.
-
-The App SDK, protocol definitions (`proto/apps/`), and reference apps are licensed under [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0). Build freely on our platform.
+Nebo is licensed under the [Apache License 2.0](LICENSE). Use it, modify it, build on it — freely.

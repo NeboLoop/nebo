@@ -17,6 +17,7 @@ type SkillSettingsStore struct {
 	filePath string
 	mu       sync.RWMutex
 	settings SkillSettings
+	onChange func(name string, enabled bool)
 }
 
 // NewSkillSettingsStore creates a new skill settings store
@@ -29,6 +30,13 @@ func NewSkillSettingsStore(dataDir string) *SkillSettingsStore {
 	}
 	store.load()
 	return store
+}
+
+// OnChange registers a callback fired after a skill is toggled or its enabled state changes.
+func (s *SkillSettingsStore) OnChange(fn func(name string, enabled bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onChange = fn
 }
 
 // Get returns the current settings
@@ -60,7 +68,6 @@ func (s *SkillSettingsStore) IsEnabled(name string) bool {
 // Toggle toggles the enabled state of a skill and returns the new state
 func (s *SkillSettingsStore) Toggle(name string) (enabled bool, err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Check if currently disabled
 	for i, disabled := range s.settings.DisabledSkills {
@@ -71,6 +78,11 @@ func (s *SkillSettingsStore) Toggle(name string) (enabled bool, err error) {
 				s.settings.DisabledSkills[i+1:]...,
 			)
 			err = s.save()
+			cb := s.onChange
+			s.mu.Unlock()
+			if err == nil && cb != nil {
+				cb(name, true)
+			}
 			return true, err
 		}
 	}
@@ -78,6 +90,11 @@ func (s *SkillSettingsStore) Toggle(name string) (enabled bool, err error) {
 	// Not in disabled list, add it (disable)
 	s.settings.DisabledSkills = append(s.settings.DisabledSkills, name)
 	err = s.save()
+	cb := s.onChange
+	s.mu.Unlock()
+	if err == nil && cb != nil {
+		cb(name, false)
+	}
 	return false, err
 }
 

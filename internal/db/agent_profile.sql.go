@@ -71,6 +71,7 @@ const getAgentProfile = `-- name: GetAgentProfile :one
 SELECT id, name, personality_preset, custom_personality, voice_style,
        response_length, emoji_usage, formality, proactivity,
        emoji, creature, vibe, role, avatar, agent_rules, tool_notes,
+       quiet_hours_start, quiet_hours_end,
        created_at, updated_at
 FROM agent_profile
 WHERE id = 1
@@ -93,6 +94,8 @@ type GetAgentProfileRow struct {
 	Avatar            sql.NullString `json:"avatar"`
 	AgentRules        sql.NullString `json:"agent_rules"`
 	ToolNotes         sql.NullString `json:"tool_notes"`
+	QuietHoursStart   string         `json:"quiet_hours_start"`
+	QuietHoursEnd     string         `json:"quiet_hours_end"`
 	CreatedAt         int64          `json:"created_at"`
 	UpdatedAt         int64          `json:"updated_at"`
 }
@@ -118,6 +121,8 @@ func (q *Queries) GetAgentProfile(ctx context.Context) (GetAgentProfileRow, erro
 		&i.Avatar,
 		&i.AgentRules,
 		&i.ToolNotes,
+		&i.QuietHoursStart,
+		&i.QuietHoursEnd,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -199,6 +204,8 @@ SET name = COALESCE(?1, name),
     avatar = COALESCE(?13, avatar),
     agent_rules = COALESCE(?14, agent_rules),
     tool_notes = COALESCE(?15, tool_notes),
+    quiet_hours_start = COALESCE(?16, quiet_hours_start),
+    quiet_hours_end = COALESCE(?17, quiet_hours_end),
     updated_at = unixepoch()
 WHERE id = 1
 `
@@ -219,6 +226,8 @@ type UpdateAgentProfileParams struct {
 	Avatar            sql.NullString `json:"avatar"`
 	AgentRules        sql.NullString `json:"agent_rules"`
 	ToolNotes         sql.NullString `json:"tool_notes"`
+	QuietHoursStart   sql.NullString `json:"quiet_hours_start"`
+	QuietHoursEnd     sql.NullString `json:"quiet_hours_end"`
 }
 
 func (q *Queries) UpdateAgentProfile(ctx context.Context, arg UpdateAgentProfileParams) error {
@@ -238,6 +247,8 @@ func (q *Queries) UpdateAgentProfile(ctx context.Context, arg UpdateAgentProfile
 		arg.Avatar,
 		arg.AgentRules,
 		arg.ToolNotes,
+		arg.QuietHoursStart,
+		arg.QuietHoursEnd,
 	)
 	return err
 }

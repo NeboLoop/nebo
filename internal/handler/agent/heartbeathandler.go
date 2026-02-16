@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nebolabs/nebo/internal/defaults"
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/svc"
 )
 
 // GetHeartbeatHandler returns the contents of HEARTBEAT.md

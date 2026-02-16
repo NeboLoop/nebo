@@ -52,7 +52,7 @@ Official SDKs handle all gRPC server setup, signal handling, and protocol bridgi
 **Go** (recommended):
 
 ```bash
-go get github.com/nebolabs/nebo-sdk-go
+go get github.com/neboloop/nebo-sdk-go
 ```
 
 **Rust:**
@@ -316,7 +316,7 @@ import (
     "fmt"
     "log"
 
-    nebo "github.com/nebolabs/nebo-sdk-go"
+    nebo "github.com/neboloop/nebo-sdk-go"
 )
 
 type Calculator struct{}
@@ -470,7 +470,7 @@ import (
 
     "github.com/google/uuid"
     tgbot "github.com/go-telegram/bot"
-    nebo "github.com/nebolabs/nebo-sdk-go"
+    nebo "github.com/neboloop/nebo-sdk-go"
 )
 
 type Telegram struct {
@@ -704,7 +704,7 @@ import (
     "log"
     "sync/atomic"
 
-    nebo "github.com/nebolabs/nebo-sdk-go"
+    nebo "github.com/neboloop/nebo-sdk-go"
 )
 
 type Counter struct {
@@ -1161,7 +1161,7 @@ Screenshots, changelogs, and pricing are planned but not yet available.
 ## Minimal App Checklist
 
 1. Create `manifest.json` with `id`, `name`, `version`, `provides`
-2. Install the SDK (`go get github.com/nebolabs/nebo-sdk-go`)
+2. Install the SDK (`go get github.com/neboloop/nebo-sdk-go`)
 3. Implement the handler interface for your capability (`ToolHandler`, `ChannelHandler`, etc.)
 4. Register the handler and call `app.Run()`
 5. Build a native binary (`go build -o binary .`)

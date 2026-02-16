@@ -34,12 +34,13 @@ func DefaultSandboxConfig() SandboxConfig {
 // Everything else is stripped to prevent leaking API keys, tokens, and credentials
 // from the parent environment (MAESTRO LM-003, DO-001).
 var allowedEnvKeys = map[string]bool{
-	"PATH":   true,
-	"HOME":   true,
-	"TMPDIR": true,
-	"LANG":   true,
-	"LC_ALL": true,
-	"TZ":     true,
+	"PATH":              true,
+	"HOME":              true,
+	"TMPDIR":            true,
+	"LANG":              true,
+	"LC_ALL":            true,
+	"TZ":                true,
+	"ELEVENLABS_API_KEY": true,
 }
 
 // sanitizeEnv builds a minimal, safe environment for an app process.

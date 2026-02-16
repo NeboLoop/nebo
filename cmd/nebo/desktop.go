@@ -16,16 +16,18 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
-	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/daemon"
-	"github.com/nebolabs/nebo/internal/db/migrations"
-	"github.com/nebolabs/nebo/internal/defaults"
-	"github.com/nebolabs/nebo/internal/lifecycle"
-	"github.com/nebolabs/nebo/internal/logging"
-	"github.com/nebolabs/nebo/internal/server"
-	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/daemon"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/db/migrations"
+	"github.com/neboloop/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/lifecycle"
+	"github.com/neboloop/nebo/internal/local"
+	"github.com/neboloop/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/server"
+	"github.com/neboloop/nebo/internal/svc"
 
-	neboapp "github.com/nebolabs/nebo/app"
+	neboapp "github.com/neboloop/nebo/app"
 )
 
 // windowState persists the desktop window position and size between restarts.
@@ -145,6 +147,10 @@ func RunDesktop() {
 			fmt.Println("\n\033[32mNebo stopped.\033[0m")
 		},
 	})
+
+	// Inject media capture permission handler into Wails' WebviewWindowDelegate
+	// so microphone/camera access is auto-granted without a permission dialog.
+	InjectWebViewMediaPermissions()
 
 	// Restore saved window position/size or use defaults
 	winWidth, winHeight := 1280, 860
@@ -327,6 +333,7 @@ func RunDesktop() {
 				Quiet:            true,
 				Dangerously:      dangerouslyAll,
 				AgentMCPProxy:    agentMCPProxy,
+				Heartbeat:        &heartbeat,
 			}
 			if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {
 				if ctx.Err() == nil {
@@ -347,27 +354,45 @@ func RunDesktop() {
 
 			heartbeatOnce.Do(func() {
 				heartbeat = daemon.NewHeartbeat(daemon.HeartbeatConfig{
-					Interval: 30 * time.Minute,
-					OnHeartbeat: func(hbCtx context.Context, tasks string) error {
+					Interval: heartbeatInterval(),
+					OnHeartbeat: func(hbCtx context.Context, prompt string) error {
 						agent := svcCtx.AgentHub.GetAnyAgent()
 						if agent == nil {
+							fmt.Println("[heartbeat] No agent connected, skipping")
 							return nil
 						}
-						prompt := daemon.FormatHeartbeatPrompt(tasks)
-						sk := fmt.Sprintf("heartbeat-%d", time.Now().UnixNano())
+
+						sessionKey := fmt.Sprintf("heartbeat-%d", time.Now().UnixNano())
 						frame := &agenthub.Frame{
 							Type:   "req",
-							ID:     sk,
+							ID:     sessionKey,
 							Method: "run",
 							Params: map[string]any{
 								"prompt":      prompt,
-								"session_key": sk,
+								"session_key": sessionKey,
 							},
 						}
 						return svcCtx.AgentHub.SendToAgent(agent.ID, frame)
 					},
+					IsQuietHours: func() bool {
+						if rawDB := svcCtx.DB.GetDB(); rawDB != nil {
+							q := db.New(rawDB)
+							profile, err := q.GetAgentProfile(context.Background())
+							if err == nil {
+								return daemon.IsInQuietHours(profile.QuietHoursStart, profile.QuietHoursEnd, time.Now())
+							}
+						}
+						return false
+					},
 				})
 				heartbeat.Start(ctx)
+
+				// Update interval at runtime when user changes it in Settings
+				local.GetAgentSettings().OnChange(func(s local.AgentSettings) {
+					if s.HeartbeatIntervalMinutes > 0 {
+						heartbeat.SetInterval(time.Duration(s.HeartbeatIntervalMinutes) * time.Minute)
+					}
+				})
 			})
 
 			// Update tray status

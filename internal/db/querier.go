@@ -18,6 +18,7 @@ type Querier interface {
 	// Run periodically to clean up stale sessions (older than 7 days)
 	CleanupOldMCPSessions(ctx context.Context) error
 	ClearMCPIntegrationOAuthState(ctx context.Context, id string) error
+	ClearSessionActiveTask(ctx context.Context, id string) error
 	ClearSessionOverrides(ctx context.Context, id string) error
 	CompactSession(ctx context.Context, arg CompactSessionParams) error
 	CountChatMessages(ctx context.Context, chatID string) (int64, error)
@@ -63,7 +64,7 @@ type Querier interface {
 	// =============================================================================
 	CreateMCPOAuthToken(ctx context.Context, arg CreateMCPOAuthTokenParams) (McpOauthToken, error)
 	// Memory chunks queries
-	CreateMemoryChunk(ctx context.Context, arg CreateMemoryChunkParams) (CreateMemoryChunkRow, error)
+	CreateMemoryChunk(ctx context.Context, arg CreateMemoryChunkParams) (MemoryChunk, error)
 	// Note: FTS queries use raw SQL in hybrid.go because sqlc doesn't support virtual tables
 	// Memory embeddings queries
 	CreateMemoryEmbedding(ctx context.Context, arg CreateMemoryEmbeddingParams) (MemoryEmbedding, error)
@@ -190,6 +191,8 @@ type Querier interface {
 	GetMemoryChunk(ctx context.Context, id int64) (GetMemoryChunkRow, error)
 	GetMemoryEmbedding(ctx context.Context, arg GetMemoryEmbeddingParams) (MemoryEmbedding, error)
 	GetMemoryStats(ctx context.Context) ([]GetMemoryStatsRow, error)
+	// Get messages after a given ID for embedding (user and assistant only)
+	GetMessagesAfterID(ctx context.Context, arg GetMessagesAfterIDParams) ([]GetMessagesAfterIDRow, error)
 	GetMessagesByDay(ctx context.Context, arg GetMessagesByDayParams) ([]ChatMessage, error)
 	GetNonCompactedMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
 	GetNotification(ctx context.Context, arg GetNotificationParams) (Notification, error)
@@ -219,10 +222,14 @@ type Querier interface {
 	GetRecoverableTasks(ctx context.Context) ([]PendingTask, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetSession(ctx context.Context, id string) (Session, error)
+	// Active task tracking (survives compaction)
+	GetSessionActiveTask(ctx context.Context, id string) (string, error)
 	GetSessionByName(ctx context.Context, name sql.NullString) (Session, error)
 	GetSessionByNameAndScope(ctx context.Context, arg GetSessionByNameAndScopeParams) (Session, error)
 	GetSessionByNameAndScopeNullID(ctx context.Context, arg GetSessionByNameAndScopeNullIDParams) (Session, error)
 	GetSessionByScope(ctx context.Context, arg GetSessionByScopeParams) (Session, error)
+	// Session transcript embedding tracking
+	GetSessionLastEmbeddedMessageID(ctx context.Context, id string) (int64, error)
 	GetSessionMessageStats(ctx context.Context, sessionID string) (GetSessionMessageStatsRow, error)
 	GetSessionMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
 	// Session policy queries
@@ -316,6 +323,7 @@ type Querier interface {
 	SetOnboardingCompleted(ctx context.Context, userID string) error
 	SetOnboardingStep(ctx context.Context, arg SetOnboardingStepParams) error
 	SetPasswordResetToken(ctx context.Context, arg SetPasswordResetTokenParams) error
+	SetSessionActiveTask(ctx context.Context, arg SetSessionActiveTaskParams) error
 	SetSessionAuthProfileOverride(ctx context.Context, arg SetSessionAuthProfileOverrideParams) error
 	SetSessionLabel(ctx context.Context, arg SetSessionLabelParams) error
 	SetSessionModelOverride(ctx context.Context, arg SetSessionModelOverrideParams) error
@@ -351,6 +359,7 @@ type Querier interface {
 	UpdatePlugin(ctx context.Context, arg UpdatePluginParams) error
 	UpdatePluginStatus(ctx context.Context, arg UpdatePluginStatusParams) error
 	UpdateProviderModelActive(ctx context.Context, arg UpdateProviderModelActiveParams) error
+	UpdateSessionLastEmbeddedMessageID(ctx context.Context, arg UpdateSessionLastEmbeddedMessageIDParams) error
 	UpdateSessionPolicy(ctx context.Context, arg UpdateSessionPolicyParams) error
 	UpdateSessionStats(ctx context.Context, arg UpdateSessionStatsParams) error
 	UpdateSessionSummary(ctx context.Context, arg UpdateSessionSummaryParams) error

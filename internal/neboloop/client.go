@@ -29,6 +29,9 @@ type Client struct {
 	mu        sync.RWMutex
 }
 
+// APIServer returns the base API server URL.
+func (c *Client) APIServer() string { return c.apiServer }
+
 // NewClient creates a NeboLoop API client from plugin settings.
 // Required keys: api_server, bot_id, mqtt_password.
 func NewClient(settings map[string]string) (*Client, error) {

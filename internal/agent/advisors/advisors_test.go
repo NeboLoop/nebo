@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/defaults"
 )
 
 func TestLoaderLoadAll(t *testing.T) {

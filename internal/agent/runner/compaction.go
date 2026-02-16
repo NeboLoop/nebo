@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // ToolFailure represents a failed tool execution to preserve in compaction summary

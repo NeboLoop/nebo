@@ -42,6 +42,9 @@ type Skill struct {
 	// Tags for categorization and discovery
 	Tags []string `yaml:"tags"`
 
+	// Triggers are phrases that auto-activate this skill when matched in user messages
+	Triggers []string `yaml:"triggers"`
+
 	// Tools lists required tool names for this skill
 	Tools []string `yaml:"tools"`
 

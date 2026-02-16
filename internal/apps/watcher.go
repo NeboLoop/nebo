@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -40,16 +41,48 @@ func (ar *AppRegistry) Watch(ctx context.Context) error {
 
 	fmt.Printf("[apps] Watching %s for changes\n", ar.appsDir)
 
+	// Debounce map: appDir → timer. A binary rebuild fires Create+Write in quick
+	// succession — we coalesce them into a single restart after a short delay.
+	var dmu sync.Mutex
+	debounce := make(map[string]*time.Timer)
+
+	debouncedRestart := func(appDir string) {
+		dmu.Lock()
+		defer dmu.Unlock()
+
+		if t, ok := debounce[appDir]; ok {
+			t.Stop()
+		}
+		debounce[appDir] = time.AfterFunc(500*time.Millisecond, func() {
+			dmu.Lock()
+			delete(debounce, appDir)
+			dmu.Unlock()
+
+			appID := filepath.Base(appDir)
+			fmt.Printf("[apps] Restarting app after file change: %s\n", appID)
+			ar.runtime.Stop(appID)
+			if err := ar.launchAndRegister(ctx, appDir); err != nil {
+				fmt.Printf("[apps] Failed to restart app %s: %v\n", appID, err)
+			}
+		})
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			// Cancel all pending debounce timers
+			dmu.Lock()
+			for _, t := range debounce {
+				t.Stop()
+			}
+			dmu.Unlock()
 			return nil
 
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
 			}
-			ar.handleFSEvent(ctx, watcher, event)
+			ar.handleFSEvent(ctx, watcher, event, debouncedRestart)
 
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -60,7 +93,7 @@ func (ar *AppRegistry) Watch(ctx context.Context) error {
 	}
 }
 
-func (ar *AppRegistry) handleFSEvent(ctx context.Context, watcher *fsnotify.Watcher, event fsnotify.Event) {
+func (ar *AppRegistry) handleFSEvent(ctx context.Context, watcher *fsnotify.Watcher, event fsnotify.Event, debouncedRestart func(string)) {
 	name := filepath.Base(event.Name)
 	dir := filepath.Dir(event.Name)
 
@@ -90,50 +123,36 @@ func (ar *AppRegistry) handleFSEvent(ctx context.Context, watcher *fsnotify.Watc
 			return
 		}
 
-		// manifest.json created inside a subdirectory
+		// manifest.json created inside a subdirectory — new app
 		if name == "manifest.json" {
 			appDir := dir
-			fmt.Printf("[apps] New app detected: %s\n", filepath.Base(appDir))
-			if err := ar.launchAndRegister(ctx, appDir); err != nil {
-				fmt.Printf("[apps] Failed to launch new app %s: %v\n", filepath.Base(appDir), err)
+			if !ar.runtime.IsRunning(filepath.Base(appDir)) {
+				fmt.Printf("[apps] New app detected: %s\n", filepath.Base(appDir))
+				if err := ar.launchAndRegister(ctx, appDir); err != nil {
+					fmt.Printf("[apps] Failed to launch new app %s: %v\n", filepath.Base(appDir), err)
+				}
 			}
 		}
 
-		// Binary replaced — restart app if already running
+		// Binary replaced — debounced restart (coalesces Create+Write events)
 		if (name == "binary" || name == "app") && dir != ar.appsDir {
-			appID := filepath.Base(dir)
-			if _, ok := ar.runtime.Get(appID); ok {
-				fmt.Printf("[apps] Binary changed, restarting: %s\n", appID)
-				ar.runtime.Stop(appID)
-				if err := ar.launchAndRegister(ctx, dir); err != nil {
-					fmt.Printf("[apps] Failed to restart app %s: %v\n", appID, err)
-				}
+			if ar.runtime.IsRunning(filepath.Base(dir)) {
+				debouncedRestart(dir)
 			}
 		}
 
 	case event.Has(fsnotify.Write):
 		if name == "manifest.json" {
 			appDir := dir
-			appID := filepath.Base(appDir)
-
-			if _, ok := ar.runtime.Get(appID); ok {
-				fmt.Printf("[apps] Manifest changed, restarting: %s\n", appID)
-				ar.runtime.Stop(appID)
-				if err := ar.launchAndRegister(ctx, appDir); err != nil {
-					fmt.Printf("[apps] Failed to restart app %s: %v\n", appID, err)
-				}
+			if ar.runtime.IsRunning(filepath.Base(appDir)) {
+				debouncedRestart(appDir)
 			}
 		}
 
-		// Binary recompiled in-place — restart
+		// Binary recompiled in-place — debounced restart
 		if (name == "binary" || name == "app") && dir != ar.appsDir {
-			appID := filepath.Base(dir)
-			if _, ok := ar.runtime.Get(appID); ok {
-				fmt.Printf("[apps] Binary changed, restarting: %s\n", appID)
-				ar.runtime.Stop(appID)
-				if err := ar.launchAndRegister(ctx, dir); err != nil {
-					fmt.Printf("[apps] Failed to restart app %s: %v\n", appID, err)
-				}
+			if ar.runtime.IsRunning(filepath.Base(dir)) {
+				debouncedRestart(dir)
 			}
 		}
 

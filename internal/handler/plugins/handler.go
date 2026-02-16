@@ -12,11 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/neboloop"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/neboloop"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 // ListPluginsHandler returns all registered plugins with their settings.
@@ -442,6 +442,26 @@ func InstallStoreAppHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
+		// Trigger actual download and launch in background (don't rely solely on MQTT)
+		if reg := svcCtx.AppRegistry(); reg != nil && result.App != nil {
+			type installer interface {
+				InstallFromURL(ctx context.Context, downloadURL string) error
+			}
+			if inst, ok := reg.(installer); ok {
+				downloadURL := client.APIServer() + "/api/v1/apps/" + id + "/download"
+				if result.App.Version != "" {
+					downloadURL += "?version=" + result.App.Version
+				}
+				go func() {
+					bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					defer cancel()
+					if err := inst.InstallFromURL(bgCtx, downloadURL); err != nil {
+						fmt.Printf("[plugins] Background install failed for %s: %v\n", id, err)
+					}
+				}()
+			}
+		}
+
 		httputil.OkJSON(w, types.InstallStoreAppResponse{
 			PluginID: pluginID,
 			Message:  "app installed",
@@ -675,8 +695,11 @@ func createLocalPlugin(ctx context.Context, svcCtx *svc.ServiceContext, result *
 		manifestStr = string(item.Manifest)
 	}
 
-	// Store NeboLoop install ID in metadata so we can match on uninstall
-	meta, _ := json.Marshal(map[string]string{"store_install_id": result.ID})
+	// Store NeboLoop IDs in metadata for uninstall matching and reconciliation
+	meta, _ := json.Marshal(map[string]string{
+		"store_install_id": result.ID,
+		"store_app_id":     item.ID,
+	})
 
 	_, err := svcCtx.DB.CreatePlugin(ctx, db.CreatePluginParams{
 		ID:               pluginID,
@@ -697,7 +720,7 @@ func createLocalPlugin(ctx context.Context, svcCtx *svc.ServiceContext, result *
 	return pluginID, nil
 }
 
-// removeLocalPluginByStoreID removes the local plugin_registry row matching a NeboLoop store install ID stored in metadata.
+// removeLocalPluginByStoreID removes the local plugin_registry row matching a NeboLoop store app ID stored in metadata.
 func removeLocalPluginByStoreID(ctx context.Context, svcCtx *svc.ServiceContext, storeID string) {
 	rows, err := svcCtx.DB.ListPlugins(ctx)
 	if err != nil {
@@ -706,7 +729,7 @@ func removeLocalPluginByStoreID(ctx context.Context, svcCtx *svc.ServiceContext,
 	for _, p := range rows {
 		var meta map[string]string
 		if err := json.Unmarshal([]byte(p.Metadata), &meta); err == nil {
-			if meta["store_install_id"] == storeID {
+			if meta["store_app_id"] == storeID || meta["store_install_id"] == storeID {
 				_ = svcCtx.DB.DeletePlugin(ctx, p.ID)
 				return
 			}

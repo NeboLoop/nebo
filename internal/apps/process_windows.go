@@ -3,10 +3,22 @@
 package apps
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 	"time"
 )
+
+// isProcessAlive checks if a process with the given PID is still running.
+func isProcessAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// On Windows, FindProcess always succeeds. Signal(0) returns an error
+	// if the process doesn't exist or access is denied.
+	return p.Signal(syscall.Signal(0)) == nil
+}
 
 // setProcGroup configures the command to run in its own process group.
 // On Windows, CREATE_NEW_PROCESS_GROUP enables sending CTRL_BREAK_EVENT to the group.

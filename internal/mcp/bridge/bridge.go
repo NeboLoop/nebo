@@ -10,9 +10,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	"github.com/nebolabs/nebo/internal/db"
-	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/db"
+	mcpclient "github.com/neboloop/nebo/internal/mcp/client"
 )
 
 // Bridge manages connections to external MCP servers and registers their tools

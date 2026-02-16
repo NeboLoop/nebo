@@ -91,7 +91,7 @@ func (il *InstallListener) Start(ctx context.Context, config InstallListenerConf
 	cfg := autopaho.ClientConfig{
 		ServerUrls:                    []*url.URL{serverURL},
 		KeepAlive:                     30,
-		CleanStartOnInitialConnection: true,
+		CleanStartOnInitialConnection: false, // Persist subscriptions + queue QoS 1 messages while offline
 		ConnectUsername:                config.MQTTUsername,
 		ConnectPassword:               []byte(config.MQTTPassword),
 		ConnectTimeout:                10 * time.Second,
@@ -391,6 +391,11 @@ func (il *InstallListener) handleRevoke(event installEvent) {
 
 // downloadAndExtract downloads a .napp from the URL and extracts it to destDir.
 func (il *InstallListener) downloadAndExtract(downloadURL, destDir string) error {
+	return DownloadAndExtractNapp(downloadURL, destDir)
+}
+
+// DownloadAndExtractNapp downloads a .napp from the URL and extracts it to destDir.
+func DownloadAndExtractNapp(downloadURL, destDir string) error {
 	// Download to temp file
 	resp, err := http.Get(downloadURL)
 	if err != nil {
@@ -484,7 +489,11 @@ func (il *InstallListener) IsRunning() bool {
 // Same logic as the comm plugin's brokerToURL.
 func brokerToInstallURL(broker string) (*url.URL, error) {
 	if !strings.Contains(broker, "://") {
-		broker = "mqtt://" + broker
+		if strings.HasSuffix(broker, ":443") {
+			broker = "mqtts://" + broker
+		} else {
+			broker = "mqtt://" + broker
+		}
 	}
 
 	u, err := url.Parse(broker)

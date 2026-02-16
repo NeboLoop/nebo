@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 // TaskType represents the type of task being performed
@@ -479,15 +479,20 @@ func (s *ModelSelector) isModelAvailable(modelID string) bool {
 
 	// Handle CLI providers specially - they don't need credentials config
 	// They just need the CLI command to be available in PATH
-	switch providerID {
-	case "claude-code":
-		// Claude CLI is available if 'claude' command exists
-		// Model name (opus, sonnet, haiku) is passed at runtime
-		return CheckCLIAvailable("claude") && (modelName == "opus" || modelName == "sonnet" || modelName == "haiku")
-	case "codex-cli":
-		return CheckCLIAvailable("codex")
-	case "gemini-cli":
-		return CheckCLIAvailable("gemini")
+	if cli := provider.GetCLIProviderByID(providerID); cli != nil {
+		if !cli.Installed {
+			return false
+		}
+		// Check that the requested model is in the CLI's supported models
+		if modelName != "" && len(cli.Models) > 0 {
+			for _, m := range cli.Models {
+				if m == modelName {
+					return true
+				}
+			}
+			return false
+		}
+		return true
 	}
 
 	// For API providers, check credentials

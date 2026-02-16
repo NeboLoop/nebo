@@ -4,6 +4,7 @@
 SELECT id, name, personality_preset, custom_personality, voice_style,
        response_length, emoji_usage, formality, proactivity,
        emoji, creature, vibe, role, avatar, agent_rules, tool_notes,
+       quiet_hours_start, quiet_hours_end,
        created_at, updated_at
 FROM agent_profile
 WHERE id = 1;
@@ -25,6 +26,8 @@ SET name = COALESCE(sqlc.narg(name), name),
     avatar = COALESCE(sqlc.narg(avatar), avatar),
     agent_rules = COALESCE(sqlc.narg(agent_rules), agent_rules),
     tool_notes = COALESCE(sqlc.narg(tool_notes), tool_notes),
+    quiet_hours_start = COALESCE(sqlc.narg(quiet_hours_start), quiet_hours_start),
+    quiet_hours_end = COALESCE(sqlc.narg(quiet_hours_end), quiet_hours_end),
     updated_at = unixepoch()
 WHERE id = 1;
 

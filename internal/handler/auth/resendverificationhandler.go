@@ -3,9 +3,9 @@ package auth
 import (
 	"net/http"
 
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 func ResendVerificationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {

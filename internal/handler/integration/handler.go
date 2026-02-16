@@ -10,11 +10,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 func ListMCPIntegrationsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {

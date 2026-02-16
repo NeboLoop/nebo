@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	agentcfg "github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 var _ = agentcfg.Config{} // silence unused import if needed
@@ -120,23 +120,27 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 	modelsConfig := provider.GetModelsConfig()
 	if modelsConfig != nil && modelsConfig.Defaults != nil {
 		primary := modelsConfig.Defaults.Primary
-		// Check if primary is a CLI provider (e.g., "claude-code/opus", "codex-cli/gpt-5")
-		if strings.HasPrefix(primary, "claude-code") {
-			if ai.CheckCLIAvailable("claude") {
-				providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns, 0))
-				fmt.Printf("[Providers] Added Claude CLI provider (primary: %s, max_turns: %d)\n", primary, cfg.MaxTurns)
+		// Extract provider ID from "provider/model" format
+		providerID := primary
+		if idx := strings.Index(primary, "/"); idx >= 0 {
+			providerID = primary[:idx]
+		}
+		// Check if the primary is a CLI provider (defined in models.yaml cli_providers)
+		if cli := provider.GetCLIProviderByID(providerID); cli != nil {
+			if cli.Installed {
+				switch cli.Command {
+				case "claude":
+					providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns, 0))
+				case "codex":
+					providers = append(providers, ai.NewCodexCLIProvider())
+				case "gemini":
+					providers = append(providers, ai.NewGeminiCLIProvider())
+				default:
+					providers = append(providers, ai.NewCLIProvider(cli.ID, cli.Command, nil))
+				}
+				fmt.Printf("[Providers] Added %s CLI provider (primary: %s)\n", cli.DisplayName, primary)
 			} else {
-				fmt.Printf("[Providers] Warning: Claude CLI not found in PATH (primary: %s)\n", primary)
-			}
-		} else if strings.HasPrefix(primary, "codex-cli") {
-			if ai.CheckCLIAvailable("codex") {
-				providers = append(providers, ai.NewCodexCLIProvider())
-				fmt.Printf("[Providers] Added Codex CLI provider (primary: %s)\n", primary)
-			}
-		} else if strings.HasPrefix(primary, "gemini-cli") {
-			if ai.CheckCLIAvailable("gemini") {
-				providers = append(providers, ai.NewGeminiCLIProvider())
-				fmt.Printf("[Providers] Added Gemini CLI provider (primary: %s)\n", primary)
+				fmt.Printf("[Providers] Warning: %s not found in PATH (primary: %s)\n", cli.Command, primary)
 			}
 		}
 	}

@@ -38,6 +38,12 @@ type SearchResult struct {
 	VectorScore float64 `json:"vector_score,omitempty"`
 	TextScore   float64 `json:"text_score,omitempty"`
 	Source      string  `json:"source,omitempty"`
+	// Citation fields — populated when vector search contributes a matching chunk.
+	// FTS-only matches won't have these fields populated.
+	ChunkText string `json:"chunk_text,omitempty"` // The specific chunk that matched
+	StartChar int    `json:"start_char,omitempty"` // Position in original memory value
+	EndChar   int    `json:"end_char,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"` // When the memory was created
 }
 
 // SearchOptions configures search behavior
@@ -46,6 +52,7 @@ type SearchOptions struct {
 	Limit        int
 	VectorWeight float64 // Weight for vector search (default: 0.7)
 	TextWeight   float64 // Weight for FTS search (default: 0.3)
+	MinScore     float64 // Minimum combined score to include (default: 0.3)
 	UserID       string  // User ID for user-scoped queries
 }
 
@@ -69,12 +76,18 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts SearchOp
 		opts.VectorWeight = 0.7
 		opts.TextWeight = 0.3
 	}
+	if opts.MinScore == 0 {
+		opts.MinScore = 0.3
+	}
+
+	// Over-fetch candidates (8x) for better scoring — Go cosine is microsecond-scale
+	candidates := opts.Limit * 8
 
 	// Get FTS results (user-scoped)
-	ftsResults, err := h.searchFTS(query, opts.Namespace, opts.UserID, opts.Limit*2)
+	ftsResults, err := h.searchFTS(query, opts.Namespace, opts.UserID, candidates)
 	if err != nil {
 		// FTS might fail, fall back to LIKE search
-		ftsResults, err = h.searchLike(query, opts.Namespace, opts.UserID, opts.Limit*2)
+		ftsResults, err = h.searchLike(query, opts.Namespace, opts.UserID, candidates)
 		if err != nil {
 			return nil, fmt.Errorf("text search failed: %w", err)
 		}
@@ -83,7 +96,7 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts SearchOp
 	// Get vector results if embedder is available (user-scoped)
 	var vectorResults []SearchResult
 	if h.embedder != nil && h.embedder.HasProvider() {
-		vectorResults, err = h.searchVector(ctx, query, opts.Namespace, opts.UserID, opts.Limit*2)
+		vectorResults, err = h.searchVector(ctx, query, opts.Namespace, opts.UserID, candidates)
 		if err != nil {
 			// Vector search failure is not fatal, continue with FTS only
 			fmt.Printf("[HybridSearch] Vector search failed: %v\n", err)
@@ -93,12 +106,20 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts SearchOp
 	// Merge results
 	merged := h.mergeResults(ftsResults, vectorResults, opts.VectorWeight, opts.TextWeight)
 
-	// Limit results
-	if len(merged) > opts.Limit {
-		merged = merged[:opts.Limit]
+	// Filter out low-relevance noise
+	filtered := merged[:0]
+	for _, r := range merged {
+		if r.Score >= opts.MinScore {
+			filtered = append(filtered, r)
+		}
 	}
 
-	return merged, nil
+	// Limit results
+	if len(filtered) > opts.Limit {
+		filtered = filtered[:opts.Limit]
+	}
+
+	return filtered, nil
 }
 
 // searchFTS performs full-text search using FTS5 (user-scoped)
@@ -176,13 +197,18 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query, namespace, use
 
 	model := h.embedder.Model()
 
-	// Get all embeddings for this namespace and user
+	// Get all embeddings for this user — includes both memory and session chunks.
+	// LEFT JOIN memories so session chunks (memory_id IS NULL) are also returned.
 	rows, err := h.db.Query(`
-		SELECT c.id, m.key, c.text, m.namespace, e.embedding
+		SELECT c.id, COALESCE(m.key, 'session:' || c.path), c.text,
+		       COALESCE(m.namespace, c.source), e.embedding, COALESCE(c.memory_id, 0),
+		       COALESCE(c.start_char, 0), COALESCE(c.end_char, 0),
+		       COALESCE(m.created_at, c.created_at)
 		FROM memory_embeddings e
 		JOIN memory_chunks c ON e.chunk_id = c.id
-		JOIN memories m ON c.memory_id = m.id
-		WHERE m.namespace LIKE ? || '%' AND m.user_id = ? AND e.model = ?
+		LEFT JOIN memories m ON c.memory_id = m.id
+		WHERE (m.namespace LIKE ? || '%' OR c.source = 'session')
+		  AND c.user_id = ? AND e.model = ?
 	`, namespace, userID, model)
 	if err != nil {
 		return nil, err
@@ -190,16 +216,24 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query, namespace, use
 	defer rows.Close()
 
 	type scoredResult struct {
-		result SearchResult
-		score  float64
+		result   SearchResult
+		score    float64
+		memoryID int64
 	}
 
 	var scored []scoredResult
 	for rows.Next() {
 		var r SearchResult
 		var embeddingBlob []byte
-		if err := rows.Scan(&r.ID, &r.Key, &r.Value, &r.Namespace, &embeddingBlob); err != nil {
+		var memoryID int64
+		var createdAt interface{}
+		if err := rows.Scan(&r.ID, &r.Key, &r.Value, &r.Namespace, &embeddingBlob, &memoryID,
+			&r.StartChar, &r.EndChar, &createdAt); err != nil {
 			continue
+		}
+		r.ChunkText = r.Value // The chunk text is in Value from c.text
+		if createdAt != nil {
+			r.CreatedAt = fmt.Sprintf("%v", createdAt)
 		}
 
 		embedding, err := blobToFloats(embeddingBlob)
@@ -210,21 +244,34 @@ func (h *HybridSearcher) searchVector(ctx context.Context, query, namespace, use
 		similarity := CosineSimilarity(queryVec, embedding)
 		r.VectorScore = similarity
 		r.Source = "vector"
-		scored = append(scored, scoredResult{result: r, score: similarity})
+		scored = append(scored, scoredResult{result: r, score: similarity, memoryID: memoryID})
+	}
+
+	// Dedup by memory_id: keep only the best-scoring chunk per memory
+	bestByMemory := make(map[int64]scoredResult)
+	for _, s := range scored {
+		if existing, ok := bestByMemory[s.memoryID]; !ok || s.score > existing.score {
+			bestByMemory[s.memoryID] = s
+		}
+	}
+
+	deduped := make([]scoredResult, 0, len(bestByMemory))
+	for _, s := range bestByMemory {
+		deduped = append(deduped, s)
 	}
 
 	// Sort by score descending
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
+	sort.Slice(deduped, func(i, j int) bool {
+		return deduped[i].score > deduped[j].score
 	})
 
 	// Limit results
-	if len(scored) > limit {
-		scored = scored[:limit]
+	if len(deduped) > limit {
+		deduped = deduped[:limit]
 	}
 
-	results := make([]SearchResult, len(scored))
-	for i, s := range scored {
+	results := make([]SearchResult, len(deduped))
+	for i, s := range deduped {
 		results[i] = s.result
 	}
 
@@ -247,7 +294,7 @@ func (h *HybridSearcher) mergeResults(ftsResults, vectorResults []SearchResult, 
 		}
 	}
 
-	// Process vector results
+	// Process vector results — preserve citation metadata from vector matches
 	for _, r := range vectorResults {
 		key := fmt.Sprintf("%s:%s", r.Namespace, r.Key)
 		if existing, ok := byKey[key]; ok {
@@ -255,6 +302,11 @@ func (h *HybridSearcher) mergeResults(ftsResults, vectorResults []SearchResult, 
 			if r.Value != "" {
 				existing.Value = r.Value
 			}
+			// Preserve chunk citation from vector result
+			existing.ChunkText = r.ChunkText
+			existing.StartChar = r.StartChar
+			existing.EndChar = r.EndChar
+			existing.CreatedAt = r.CreatedAt
 		} else {
 			result := r
 			byKey[key] = &result

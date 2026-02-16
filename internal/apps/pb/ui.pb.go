@@ -488,7 +488,7 @@ const file_proto_apps_v0_ui_proto_rawDesc = "" +
 	"\aGetView\x12\x17.apps.v0.GetViewRequest\x1a\x0f.apps.v0.UIView\x127\n" +
 	"\tSendEvent\x12\x10.apps.v0.UIEvent\x1a\x18.apps.v0.UIEventResponse\x122\n" +
 	"\rStreamUpdates\x12\x0e.apps.v0.Empty\x1a\x0f.apps.v0.UIView0\x01\x121\n" +
-	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/neboloop/nebo/internal/apps/pbb\x06proto3"
 
 var (
 	file_proto_apps_v0_ui_proto_rawDescOnce sync.Once

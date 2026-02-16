@@ -338,7 +338,7 @@ const file_proto_apps_v0_common_proto_rawDesc = "" +
 	"\x05Empty\"=\n" +
 	"\rErrorResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12\x12\n" +
-	"\x04code\x18\x02 \x01(\tR\x04codeB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\x04code\x18\x02 \x01(\tR\x04codeB+Z)github.com/neboloop/nebo/internal/apps/pbb\x06proto3"
 
 var (
 	file_proto_apps_v0_common_proto_rawDescOnce sync.Once

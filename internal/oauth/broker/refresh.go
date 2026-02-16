@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
+	mcpclient "github.com/neboloop/nebo/internal/mcp/client"
 )
 
 // StartRefreshLoop starts a background goroutine that refreshes tokens

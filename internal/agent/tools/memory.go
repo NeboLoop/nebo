@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/nebolabs/nebo/internal/agent/embeddings"
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/agent/embeddings"
+	"github.com/neboloop/nebo/internal/db"
 )
 
 // Memory content limits
@@ -342,9 +342,16 @@ func (t *MemoryTool) store(params memoryInput) (string, error) {
 	// Generate vector embedding for this memory (async-safe, non-blocking on failure)
 	t.embedMemory(params.Namespace, params.Key, params.Value, userID)
 
-	// Sync tacit.user memories to user_profiles table for onboarding
+	// Sync user-related memories to user_profiles table.
+	// Handles multiple naming conventions used by skills and auto-extraction:
+	//   - namespace="tacit/user", key="name"       (onboarding skill)
+	//   - namespace="tacit", key="user/name"        (auto-extraction)
+	//   - namespace="tacit.user", key="name"        (dot notation)
 	if params.Namespace == "tacit/user" || params.Namespace == "tacit.user" {
 		t.syncToUserProfile(params.Key, params.Value, userID)
+	} else if params.Namespace == "tacit" && strings.HasPrefix(params.Key, "user/") {
+		profileKey := strings.TrimPrefix(params.Key, "user/")
+		t.syncToUserProfile(profileKey, params.Value, userID)
 	}
 
 	return fmt.Sprintf("Stored memory: %s (namespace: %s, user: %s)", params.Key, params.Namespace, userID), nil
@@ -381,40 +388,57 @@ func (t *MemoryTool) embedMemory(namespace, key, value, userID string) {
 	}
 
 	// Build chunk text: "key: value" gives better semantic context for short memories
-	chunkText := key + ": " + value
+	fullText := key + ": " + value
 	model := t.embedder.Model()
 
-	// Create the chunk
-	chunk, err := t.queries.CreateMemoryChunk(ctx, db.CreateMemoryChunkParams{
-		MemoryID:   memoryID,
-		ChunkIndex: 0,
-		Text:       chunkText,
-		Source:     sql.NullString{String: "memory", Valid: true},
-		Model:      sql.NullString{String: model, Valid: true},
-	})
+	// Split into overlapping chunks
+	chunks := embeddings.SplitText(fullText)
+
+	// Collect texts for batch embedding
+	texts := make([]string, len(chunks))
+	for i, c := range chunks {
+		texts[i] = c.Text
+	}
+
+	// Batch embed all chunks
+	vectors, err := t.embedder.Embed(ctx, texts)
 	if err != nil {
-		fmt.Printf("[Memory] Failed to create chunk for memory %d: %v\n", mem.ID, err)
+		fmt.Printf("[Memory] Failed to generate embeddings for memory %d: %v\n", mem.ID, err)
 		return
 	}
 
-	// Generate embedding
-	embedding, err := t.embedder.EmbedOne(ctx, chunkText)
-	if err != nil {
-		fmt.Printf("[Memory] Failed to generate embedding for memory %d: %v\n", mem.ID, err)
-		return
-	}
+	// Create chunk + embedding rows
+	for i, c := range chunks {
+		if i >= len(vectors) {
+			break
+		}
 
-	// Store embedding
-	blob, _ := json.Marshal(embedding)
-	_, err = t.queries.CreateMemoryEmbedding(ctx, db.CreateMemoryEmbeddingParams{
-		ChunkID:    sql.NullInt64{Int64: chunk.ID, Valid: true},
-		Model:      model,
-		Dimensions: int64(len(embedding)),
-		Embedding:  blob,
-	})
-	if err != nil {
-		fmt.Printf("[Memory] Failed to store embedding for memory %d chunk %d: %v\n", mem.ID, chunk.ID, err)
-		return
+		chunk, err := t.queries.CreateMemoryChunk(ctx, db.CreateMemoryChunkParams{
+			MemoryID:   memoryID,
+			ChunkIndex: int64(c.Index),
+			Text:       c.Text,
+			Source:     sql.NullString{String: "memory", Valid: true},
+			Path:       sql.NullString{},
+			StartChar:  sql.NullInt64{Int64: int64(c.StartChar), Valid: true},
+			EndChar:    sql.NullInt64{Int64: int64(c.EndChar), Valid: true},
+			Model:      sql.NullString{String: model, Valid: true},
+			UserID:     userID,
+		})
+		if err != nil {
+			fmt.Printf("[Memory] Failed to create chunk %d for memory %d: %v\n", i, mem.ID, err)
+			continue
+		}
+
+		blob, _ := json.Marshal(vectors[i])
+		_, err = t.queries.CreateMemoryEmbedding(ctx, db.CreateMemoryEmbeddingParams{
+			ChunkID:    sql.NullInt64{Int64: chunk.ID, Valid: true},
+			Model:      model,
+			Dimensions: int64(len(vectors[i])),
+			Embedding:  blob,
+		})
+		if err != nil {
+			fmt.Printf("[Memory] Failed to store embedding for memory %d chunk %d: %v\n", mem.ID, chunk.ID, err)
+		}
 	}
 }
 
@@ -542,7 +566,7 @@ func (t *MemoryTool) BackfillEmbeddings(ctx context.Context) (int, error) {
 	model := t.embedder.Model()
 	embedded := 0
 
-	// Process in batches of 20 for efficiency
+	// Process each memory: chunk, then batch-embed all chunks
 	batchSize := 20
 	for i := 0; i < len(memories); i += batchSize {
 		end := i + batchSize
@@ -551,13 +575,30 @@ func (t *MemoryTool) BackfillEmbeddings(ctx context.Context) (int, error) {
 		}
 		batch := memories[i:end]
 
-		// Build texts for batch embedding
-		texts := make([]string, len(batch))
+		// Build chunks for all memories in batch
+		type chunkEntry struct {
+			memIdx int
+			chunk  embeddings.Chunk
+		}
+		var allChunks []chunkEntry
 		for j, m := range batch {
-			texts[j] = m.key + ": " + m.value
+			fullText := m.key + ": " + m.value
+			chunks := embeddings.SplitText(fullText)
+			for _, c := range chunks {
+				allChunks = append(allChunks, chunkEntry{memIdx: j, chunk: c})
+			}
 		}
 
-		// Generate embeddings in batch
+		if len(allChunks) == 0 {
+			continue
+		}
+
+		// Batch embed all chunk texts
+		texts := make([]string, len(allChunks))
+		for j, ce := range allChunks {
+			texts[j] = ce.chunk.Text
+		}
+
 		embeddingVecs, err := t.embedder.Embed(ctx, texts)
 		if err != nil {
 			errStr := err.Error()
@@ -571,19 +612,25 @@ func (t *MemoryTool) BackfillEmbeddings(ctx context.Context) (int, error) {
 		}
 
 		// Store chunks + embeddings
-		for j, m := range batch {
+		lastMemIdx := -1
+		for j, ce := range allChunks {
 			if j >= len(embeddingVecs) {
 				break
 			}
 
+			m := batch[ce.memIdx]
 			memoryID := sql.NullInt64{Int64: m.id, Valid: true}
 
 			chunk, err := t.queries.CreateMemoryChunk(ctx, db.CreateMemoryChunkParams{
 				MemoryID:   memoryID,
-				ChunkIndex: 0,
-				Text:       texts[j],
+				ChunkIndex: int64(ce.chunk.Index),
+				Text:       ce.chunk.Text,
 				Source:     sql.NullString{String: "memory", Valid: true},
+				Path:       sql.NullString{},
+				StartChar:  sql.NullInt64{Int64: int64(ce.chunk.StartChar), Valid: true},
+				EndChar:    sql.NullInt64{Int64: int64(ce.chunk.EndChar), Valid: true},
 				Model:      sql.NullString{String: model, Valid: true},
+				UserID:     m.userID,
 			})
 			if err != nil {
 				fmt.Printf("[Memory] Backfill chunk failed for memory %d: %v\n", m.id, err)
@@ -602,7 +649,11 @@ func (t *MemoryTool) BackfillEmbeddings(ctx context.Context) (int, error) {
 				continue
 			}
 
-			embedded++
+			// Count each memory once (not each chunk)
+			if ce.memIdx != lastMemIdx {
+				embedded++
+				lastMemIdx = ce.memIdx
+			}
 		}
 	}
 
@@ -1027,6 +1078,160 @@ func (t *MemoryTool) StoreStyleEntryForUser(layer, namespace, key, value string,
 	return nil
 }
 
+// IsDuplicate checks if a memory with the same namespace:key:user_id already exists
+// with an identical value. Returns true if the value is unchanged (skip storing).
+func (t *MemoryTool) IsDuplicate(layer, namespace, key, value, userID string) bool {
+	if t.queries == nil {
+		return false
+	}
+	fullNamespace := namespace
+	if layer != "" {
+		fullNamespace = layer + "/" + namespace
+	}
+	if fullNamespace == "" {
+		fullNamespace = "default"
+	}
+	existing, err := t.queries.GetMemoryByKeyAndUser(context.Background(), db.GetMemoryByKeyAndUserParams{
+		Namespace: fullNamespace,
+		Key:       key,
+		UserID:    userID,
+	})
+	if err != nil {
+		return false // Not found or error — not a duplicate
+	}
+	return existing.Value == value
+}
+
+// IndexSessionTranscript creates searchable chunks from session messages
+// that haven't been embedded yet. Called after compaction to make compacted
+// messages discoverable via semantic search.
+func (t *MemoryTool) IndexSessionTranscript(ctx context.Context, sessionID, userID string) (int, error) {
+	if t.embedder == nil || !t.embedder.HasProvider() {
+		return 0, nil
+	}
+
+	// Get the high-water mark for this session
+	lastID, err := t.queries.GetSessionLastEmbeddedMessageID(ctx, sessionID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get last embedded message ID: %w", err)
+	}
+
+	// Fetch new messages since last embedding
+	msgs, err := t.queries.GetMessagesAfterID(ctx, db.GetMessagesAfterIDParams{
+		SessionID: sessionID,
+		ID:        lastID,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to get messages: %w", err)
+	}
+	if len(msgs) == 0 {
+		return 0, nil
+	}
+
+	// Group messages into blocks (~5 messages per block with role prefixes)
+	const blockSize = 5
+	model := t.embedder.Model()
+	chunksCreated := 0
+	var maxMsgID int64
+
+	for i := 0; i < len(msgs); i += blockSize {
+		end := i + blockSize
+		if end > len(msgs) {
+			end = len(msgs)
+		}
+		block := msgs[i:end]
+
+		// Build block text with role prefixes
+		var buf strings.Builder
+		for _, m := range block {
+			content := ""
+			if m.Content.Valid {
+				content = m.Content.String
+			}
+			buf.WriteString(m.Role)
+			buf.WriteString(": ")
+			buf.WriteString(content)
+			buf.WriteString("\n\n")
+			if m.ID > maxMsgID {
+				maxMsgID = m.ID
+			}
+		}
+		blockText := strings.TrimSpace(buf.String())
+		if blockText == "" {
+			continue
+		}
+
+		// Chunk the block
+		chunks := embeddings.SplitText(blockText)
+
+		// Batch embed
+		texts := make([]string, len(chunks))
+		for j, c := range chunks {
+			texts[j] = c.Text
+		}
+
+		vectors, embErr := t.embedder.Embed(ctx, texts)
+		if embErr != nil {
+			errStr := embErr.Error()
+			if strings.Contains(errStr, "401") || strings.Contains(errStr, "Unauthorized") ||
+				strings.Contains(errStr, "invalid_api_key") || strings.Contains(errStr, "403") {
+				return chunksCreated, fmt.Errorf("embedding provider auth failed: %w", embErr)
+			}
+			fmt.Printf("[Memory] Session indexing embed failed for session %s: %v\n", sessionID, embErr)
+			continue
+		}
+
+		for j, c := range chunks {
+			if j >= len(vectors) {
+				break
+			}
+
+			chunk, chunkErr := t.queries.CreateMemoryChunk(ctx, db.CreateMemoryChunkParams{
+				MemoryID:   sql.NullInt64{}, // NULL — session chunk, not tied to a memory
+				ChunkIndex: int64(c.Index),
+				Text:       c.Text,
+				Source:     sql.NullString{String: "session", Valid: true},
+				Path:       sql.NullString{String: sessionID, Valid: true},
+				StartChar:  sql.NullInt64{Int64: int64(c.StartChar), Valid: true},
+				EndChar:    sql.NullInt64{Int64: int64(c.EndChar), Valid: true},
+				Model:      sql.NullString{String: model, Valid: true},
+				UserID:     userID,
+			})
+			if chunkErr != nil {
+				fmt.Printf("[Memory] Session chunk create failed: %v\n", chunkErr)
+				continue
+			}
+
+			blob, _ := json.Marshal(vectors[j])
+			_, embStoreErr := t.queries.CreateMemoryEmbedding(ctx, db.CreateMemoryEmbeddingParams{
+				ChunkID:    sql.NullInt64{Int64: chunk.ID, Valid: true},
+				Model:      model,
+				Dimensions: int64(len(vectors[j])),
+				Embedding:  blob,
+			})
+			if embStoreErr != nil {
+				fmt.Printf("[Memory] Session embedding create failed: %v\n", embStoreErr)
+				continue
+			}
+			chunksCreated++
+		}
+	}
+
+	// Update the high-water mark
+	if maxMsgID > 0 {
+		_ = t.queries.UpdateSessionLastEmbeddedMessageID(ctx, db.UpdateSessionLastEmbeddedMessageIDParams{
+			LastEmbeddedMessageID: sql.NullInt64{Int64: maxMsgID, Valid: true},
+			ID:                    sessionID,
+		})
+	}
+
+	if chunksCreated > 0 {
+		fmt.Printf("[Memory] Indexed %d chunks from session %s\n", chunksCreated, sessionID)
+	}
+
+	return chunksCreated, nil
+}
+
 // StoreEntryForUser stores a memory entry for a specific user (thread-safe for background operations)
 func (t *MemoryTool) StoreEntryForUser(layer, namespace, key, value string, tags []string, userID string) error {
 	// Sanitize key and value (when enabled)
@@ -1069,6 +1274,13 @@ func (t *MemoryTool) StoreEntryForUser(layer, namespace, key, value string, tags
 
 	// Generate vector embedding for this memory
 	t.embedMemory(fullNamespace, key, value, userID)
+
+	// Sync user-related memories to user_profiles (same logic as store())
+	if fullNamespace == "tacit/user" || fullNamespace == "tacit.user" {
+		t.syncToUserProfile(key, value, userID)
+	} else if fullNamespace == "tacit" && strings.HasPrefix(key, "user/") {
+		t.syncToUserProfile(strings.TrimPrefix(key, "user/"), value, userID)
+	}
 
 	return nil
 }

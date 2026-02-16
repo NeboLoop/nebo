@@ -3,11 +3,11 @@ package dev
 import (
 	"net/http"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 // getToolRegistry extracts the *tools.Registry from the ServiceContext.

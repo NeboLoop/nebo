@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 func TestNewCLIProvider(t *testing.T) {

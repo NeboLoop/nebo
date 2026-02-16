@@ -10,8 +10,8 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // Loader manages loading and hot-reloading of advisor definitions

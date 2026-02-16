@@ -1,4 +1,4 @@
-module github.com/nebolabs/nebo
+module github.com/neboloop/nebo
 
 go 1.25.6
 

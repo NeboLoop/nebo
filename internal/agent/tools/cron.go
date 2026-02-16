@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/db"
 
 	cronlib "github.com/robfig/cron/v3"
 )

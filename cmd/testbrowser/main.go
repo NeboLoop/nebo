@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/browser"
+	"github.com/neboloop/nebo/internal/browser"
 )
 
 func main() {

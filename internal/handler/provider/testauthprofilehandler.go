@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/httputil"
-	models "github.com/nebolabs/nebo/internal/provider"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/httputil"
+	models "github.com/neboloop/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 // HTTP client with timeout for API testing
@@ -67,9 +67,13 @@ func testAnthropic(apiKey, model string) (*types.TestAuthProfileResponse, error)
 	if model == "" {
 		model = models.GetDefaultModel("anthropic")
 	}
-	// Fallback to a known model if still empty (e.g., during initial setup)
 	if model == "" {
-		model = "claude-sonnet-4-20250514"
+		// No model configured — pick the first active model from models.yaml
+		if m := firstActiveModel("anthropic"); m != "" {
+			model = m
+		} else {
+			return &types.TestAuthProfileResponse{Success: false, Message: "No Anthropic models configured in models.yaml"}, nil
+		}
 	}
 
 	payload := map[string]interface{}{
@@ -106,9 +110,12 @@ func testOpenAI(apiKey, model string) (*types.TestAuthProfileResponse, error) {
 	if model == "" {
 		model = models.GetDefaultModel("openai")
 	}
-	// Fallback to a known model if still empty (e.g., during initial setup)
 	if model == "" {
-		model = "gpt-4o"
+		if m := firstActiveModel("openai"); m != "" {
+			model = m
+		} else {
+			return &types.TestAuthProfileResponse{Success: false, Message: "No OpenAI models configured in models.yaml"}, nil
+		}
 	}
 
 	payload := map[string]interface{}{
@@ -144,9 +151,12 @@ func testGoogle(apiKey, model string) (*types.TestAuthProfileResponse, error) {
 	if model == "" {
 		model = models.GetDefaultModel("google")
 	}
-	// Fallback to a known model if still empty (e.g., during initial setup)
 	if model == "" {
-		model = "gemini-2.0-flash"
+		if m := firstActiveModel("google"); m != "" {
+			model = m
+		} else {
+			return &types.TestAuthProfileResponse{Success: false, Message: "No Google models configured in models.yaml"}, nil
+		}
 	}
 
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s", model, apiKey)
@@ -185,9 +195,12 @@ func testOllama(baseUrl, model string) (*types.TestAuthProfileResponse, error) {
 	if model == "" {
 		model = models.GetDefaultModel("ollama")
 	}
-	// Fallback to a known model if still empty (e.g., during initial setup)
 	if model == "" {
-		model = "qwen3:4b"
+		if m := firstActiveModel("ollama"); m != "" {
+			model = m
+		} else {
+			return &types.TestAuthProfileResponse{Success: false, Message: "No Ollama models configured in models.yaml"}, nil
+		}
 	}
 
 	// Use fresh context with longer timeout for API calls
@@ -207,4 +220,14 @@ func testOllama(baseUrl, model string) (*types.TestAuthProfileResponse, error) {
 	}
 
 	return &types.TestAuthProfileResponse{Success: false, Message: "Ollama not responding"}, nil
+}
+
+// firstActiveModel returns the first active model ID for a provider from models.yaml.
+func firstActiveModel(providerType string) string {
+	for _, m := range models.GetProviderModels(providerType) {
+		if m.IsActive() {
+			return m.ID
+		}
+	}
+	return ""
 }

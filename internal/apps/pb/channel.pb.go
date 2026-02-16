@@ -727,7 +727,7 @@ const file_proto_apps_v0_channel_proto_rawDesc = "" +
 	"Disconnect\x12\x0e.apps.v0.Empty\x1a\".apps.v0.ChannelDisconnectResponse\x12A\n" +
 	"\x04Send\x12\x1b.apps.v0.ChannelSendRequest\x1a\x1c.apps.v0.ChannelSendResponse\x124\n" +
 	"\aReceive\x12\x0e.apps.v0.Empty\x1a\x17.apps.v0.InboundMessage0\x01\x121\n" +
-	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/neboloop/nebo/internal/apps/pbb\x06proto3"
 
 var (
 	file_proto_apps_v0_channel_proto_rawDescOnce sync.Once

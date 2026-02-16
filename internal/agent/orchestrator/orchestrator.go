@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/recovery"
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/recovery"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // ToolExecutor is an interface for executing tools (avoids circular import)

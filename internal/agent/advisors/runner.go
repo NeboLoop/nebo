@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // MaxAdvisors is the maximum number of advisors that can run concurrently.

@@ -18,11 +18,15 @@
 		StickyNote,
 		MessagesSquare,
 		Code,
-		Cloud
+		Cloud,
+		Menu,
+		X
 	} from 'lucide-svelte';
 	import type { Snippet } from 'svelte';
 
 	let { children }: { children: Snippet } = $props();
+
+	let drawerOpen = $state(false);
 
 	const groups = [
 		{
@@ -77,6 +81,13 @@
 		allTabs.find((t) => $page.url.pathname.startsWith(t.path))?.id || 'profile'
 	);
 
+	let activeLabel = $derived(
+		allTabs.find((t) => t.id === activeTab)?.label || 'Settings'
+	);
+
+	function closeDrawer() {
+		drawerOpen = false;
+	}
 </script>
 
 <svelte:head>
@@ -85,41 +96,24 @@
 </svelte:head>
 
 <div class="flex flex-col">
-	<div class="mb-8 shrink-0">
-		<h1 class="font-display text-2xl font-bold text-base-content mb-1">Settings</h1>
-		<p class="text-sm text-base-content/60">Manage your account and preferences</p>
+	<div class="mb-6 shrink-0 flex items-center gap-3">
+		<button
+			class="md:hidden btn btn-ghost btn-sm btn-square"
+			onclick={() => (drawerOpen = true)}
+			aria-label="Open settings menu"
+		>
+			<Menu class="w-5 h-5" />
+		</button>
+		<div>
+			<h1 class="font-display text-2xl font-bold text-base-content mb-1">Settings</h1>
+			<p class="text-sm text-base-content/60">Manage your account and preferences</p>
+		</div>
 	</div>
 
-	<div class="flex flex-col lg:flex-row gap-6">
-		<!-- Sidebar Navigation -->
-		<nav class="lg:w-56 flex-shrink-0 overflow-x-auto lg:overflow-x-visible scrollbar-none" aria-label="Settings navigation">
-			<ul class="flex lg:flex-col gap-1 flex-nowrap lg:flex-wrap">
-				{#each groups as group, gi}
-					{#if gi > 0}
-						<li class="hidden lg:block h-3"></li>
-					{/if}
-					<li class="hidden lg:block">
-						<span class="px-4 text-xs font-semibold uppercase tracking-wider text-base-content/40">
-							{group.label}
-						</span>
-					</li>
-					{#each group.tabs as tab}
-						<li>
-							<a
-								href={tab.path}
-								class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors whitespace-nowrap
-									{activeTab === tab.id
-										? 'bg-primary/10 text-primary border border-primary/20'
-										: 'text-base-content/70 hover:bg-base-200 hover:text-base-content border border-transparent'}"
-								aria-current={activeTab === tab.id ? 'page' : undefined}
-							>
-								<tab.icon class="w-4 h-4" />
-								<span class="font-medium">{tab.label}</span>
-							</a>
-						</li>
-					{/each}
-				{/each}
-			</ul>
+	<div class="flex flex-row gap-6">
+		<!-- Sidebar Navigation (desktop) -->
+		<nav class="hidden md:block w-48 flex-shrink-0" aria-label="Settings navigation">
+			{@render navItems()}
 		</nav>
 
 		<!-- Content Area -->
@@ -128,3 +122,56 @@
 		</main>
 	</div>
 </div>
+
+<!-- Mobile drawer overlay -->
+{#if drawerOpen}
+	<div class="fixed inset-0 z-50 md:hidden">
+		<!-- Backdrop -->
+		<button
+			class="absolute inset-0 bg-black/40"
+			onclick={closeDrawer}
+			aria-label="Close settings menu"
+		></button>
+		<!-- Drawer panel -->
+		<nav class="absolute inset-y-0 left-0 w-64 bg-base-100 shadow-xl p-4 overflow-y-auto" aria-label="Settings navigation">
+			<div class="flex items-center justify-between mb-4">
+				<span class="font-semibold text-base-content">Settings</span>
+				<button class="btn btn-ghost btn-sm btn-square" onclick={closeDrawer} aria-label="Close">
+					<X class="w-4 h-4" />
+				</button>
+			</div>
+			{@render navItems()}
+		</nav>
+	</div>
+{/if}
+
+{#snippet navItems()}
+	<ul class="flex flex-col gap-1">
+		{#each groups as group, gi}
+			{#if gi > 0}
+				<li class="h-3"></li>
+			{/if}
+			<li>
+				<span class="px-3 text-xs font-semibold uppercase tracking-wider text-base-content/40">
+					{group.label}
+				</span>
+			</li>
+			{#each group.tabs as tab}
+				<li>
+					<a
+						href={tab.path}
+						onclick={closeDrawer}
+						class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors whitespace-nowrap
+							{activeTab === tab.id
+								? 'bg-primary/10 text-primary border border-primary/20'
+								: 'text-base-content/70 hover:bg-base-200 hover:text-base-content border border-transparent'}"
+						aria-current={activeTab === tab.id ? 'page' : undefined}
+					>
+						<tab.icon class="w-4 h-4" />
+						<span class="font-medium">{tab.label}</span>
+					</a>
+				</li>
+			{/each}
+		{/each}
+	</ul>
+{/snippet}

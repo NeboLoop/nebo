@@ -11,14 +11,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/runner"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	"github.com/nebolabs/nebo/internal/agent/voice"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	agentcfg "github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/runner"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/agent/voice"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 // chatCmd creates the chat command

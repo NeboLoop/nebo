@@ -3,7 +3,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/nebolabs/nebo/internal/config"
+	"github.com/neboloop/nebo/internal/config"
 )
 
 // Shared CLI flags (used across multiple command files)

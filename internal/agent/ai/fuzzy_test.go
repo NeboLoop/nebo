@@ -3,7 +3,7 @@ package ai
 import (
 	"testing"
 
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 func TestFuzzyMatcherExactAlias(t *testing.T) {
@@ -12,7 +12,7 @@ func TestFuzzyMatcherExactAlias(t *testing.T) {
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5", Active: &active, Kind: []string{"smart"}},
-				{ID: "claude-opus-4-5", Active: &active, Kind: []string{"smart", "reason"}},
+				{ID: "claude-opus-4-6", Active: &active, Kind: []string{"smart", "reason"}},
 				{ID: "claude-haiku-4-5", Active: &active, Kind: []string{"fast"}},
 			},
 			"openai": {
@@ -33,7 +33,7 @@ func TestFuzzyMatcherExactAlias(t *testing.T) {
 		want  string
 	}{
 		{"sonnet", "anthropic/claude-sonnet-4-5"},
-		{"opus", "anthropic/claude-opus-4-5"},
+		{"opus", "anthropic/claude-opus-4-6"},
 		{"haiku", "anthropic/claude-haiku-4-5"},
 		{"gpt-5.2", "openai/gpt-5.2"},
 		{"claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"},
@@ -60,7 +60,7 @@ func TestFuzzyMatcherNormalized(t *testing.T) {
 			},
 			"anthropic": {
 				{ID: "claude-sonnet-4-5", Active: &active},
-				{ID: "claude-opus-4-5", Active: &active},
+				{ID: "claude-opus-4-6", Active: &active},
 			},
 		},
 	}
@@ -96,7 +96,7 @@ func TestFuzzyMatcherKeywordContains(t *testing.T) {
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5", Active: &active},
-				{ID: "claude-opus-4-5", Active: &active},
+				{ID: "claude-opus-4-6", Active: &active},
 			},
 		},
 	}
@@ -108,7 +108,7 @@ func TestFuzzyMatcherKeywordContains(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"use the opus model", "anthropic/claude-opus-4-5"},
+		{"use the opus model", "anthropic/claude-opus-4-6"},
 		{"i want sonnet please", "anthropic/claude-sonnet-4-5"},
 	}
 
@@ -126,7 +126,7 @@ func TestFuzzyMatcherTypoTolerance(t *testing.T) {
 		Providers: map[string][]provider.ModelInfo{
 			"anthropic": {
 				{ID: "claude-sonnet-4-5", Active: &active},
-				{ID: "claude-opus-4-5", Active: &active},
+				{ID: "claude-opus-4-6", Active: &active},
 				{ID: "claude-haiku-4-5", Active: &active},
 			},
 		},
@@ -140,7 +140,7 @@ func TestFuzzyMatcherTypoTolerance(t *testing.T) {
 		want  string
 	}{
 		{"sonet", "anthropic/claude-sonnet-4-5"},   // missing 'n'
-		{"opuss", "anthropic/claude-opus-4-5"},     // extra 's'
+		{"opuss", "anthropic/claude-opus-4-6"},     // extra 's'
 		{"haiuk", "anthropic/claude-haiku-4-5"},    // transposed letters
 		{"sonnett", "anthropic/claude-sonnet-4-5"}, // extra 't'
 	}

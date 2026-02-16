@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	cli "github.com/nebolabs/nebo/cmd/nebo"
-	"github.com/nebolabs/nebo/internal/config"
-	"github.com/nebolabs/nebo/internal/defaults"
-	"github.com/nebolabs/nebo/internal/local"
+	cli "github.com/neboloop/nebo/cmd/nebo"
+	"github.com/neboloop/nebo/internal/config"
+	"github.com/neboloop/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/local"
 
 	"github.com/joho/godotenv"
 )

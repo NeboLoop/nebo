@@ -23,17 +23,17 @@ DELETE FROM embedding_cache WHERE created_at < ?;
 -- Memory chunks queries
 
 -- name: CreateMemoryChunk :one
-INSERT INTO memory_chunks (memory_id, chunk_index, text, source, path, start_line, end_line, model)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, memory_id, chunk_index, text, source, path, start_line, end_line, model, created_at;
+INSERT INTO memory_chunks (memory_id, chunk_index, text, source, path, start_char, end_char, model, user_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, memory_id, chunk_index, text, source, path, start_char, end_char, model, user_id, created_at;
 
 -- name: GetMemoryChunk :one
-SELECT id, memory_id, chunk_index, text, source, path, start_line, end_line, model, created_at
+SELECT id, memory_id, chunk_index, text, source, path, start_char, end_char, model, created_at
 FROM memory_chunks
 WHERE id = ?;
 
 -- name: ListMemoryChunks :many
-SELECT id, memory_id, chunk_index, text, source, path, start_line, end_line, model, created_at
+SELECT id, memory_id, chunk_index, text, source, path, start_char, end_char, model, created_at
 FROM memory_chunks
 WHERE memory_id = ?
 ORDER BY chunk_index;

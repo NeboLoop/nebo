@@ -356,7 +356,7 @@ jobs:
       - name: Checkout homebrew-tap
         uses: actions/checkout@v4
         with:
-          repository: nebolabs/homebrew-tap
+          repository: neboloop/homebrew-tap
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: homebrew-tap
 
@@ -402,7 +402,7 @@ jobs:
       - name: Checkout apt repo
         uses: actions/checkout@v4
         with:
-          repository: nebolabs/apt
+          repository: neboloop/apt
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: apt-repo
 

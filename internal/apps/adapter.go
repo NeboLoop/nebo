@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/comm"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	pb "github.com/nebolabs/nebo/internal/apps/pb"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/comm"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	pb "github.com/neboloop/nebo/internal/apps/pb"
 )
 
 // --- Gateway-to-Provider Adapter ---

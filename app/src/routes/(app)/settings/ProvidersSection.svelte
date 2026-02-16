@@ -50,11 +50,8 @@
 	let showCLIModal = $state(false);
 	let selectedCLI = $state<{ id: string; name: string; command: string; installHint: string } | null>(null);
 
-	const cliProviderInfo: { [key: string]: { id: string; name: string; command: string; installHint: string } } = {
-		claude: { id: 'claude-code', name: 'Claude Agent', command: 'claude', installHint: 'brew install claude-code' },
-		codex: { id: 'codex-cli', name: 'Codex CLI', command: 'codex', installHint: 'npm i -g @openai/codex' },
-		gemini: { id: 'gemini-cli', name: 'Gemini CLI', command: 'gemini', installHint: 'npm i -g @google/gemini-cli' }
-	};
+	// CLI provider info loaded from models.yaml via API (no hardcoded model IDs)
+	let cliProviderInfo = $state<{ [key: string]: { id: string; name: string; command: string; installHint: string } }>({});
 
 	function openCLIModal(cliKey: string) {
 		selectedCLI = cliProviderInfo[cliKey];
@@ -95,8 +92,8 @@
 		// Also include providers from providerOptions that may not have models yet
 		const allTypes = new Set([...modelProviderTypes, ...providerOptions.map(p => p.value)]);
 
-		// Skip CLI providers (they're shown separately)
-		const cliProviders = ['claude-code', 'codex-cli', 'gemini-cli'];
+		// Skip CLI providers (they're shown separately) — derive IDs from loaded config
+		const cliProviders = Object.values(cliProviderInfo).map(p => p.id);
 
 		for (const providerType of allTypes) {
 			if (cliProviders.includes(providerType)) continue;
@@ -157,6 +154,20 @@
 			}
 			// Initialize aliases form
 			aliasesForm = aliases.map((a) => ({ alias: a.alias, modelId: a.modelId }));
+
+			// Build CLI provider info from API response (from models.yaml)
+			if (response.cliProviders) {
+				const info: { [key: string]: { id: string; name: string; command: string; installHint: string } } = {};
+				for (const cp of response.cliProviders) {
+					info[cp.command] = {
+						id: cp.id,
+						name: cp.displayName,
+						command: cp.command,
+						installHint: cp.installHint
+					};
+				}
+				cliProviderInfo = info;
+			}
 		} catch (err: any) {
 			console.error('Failed to load models:', err);
 		}

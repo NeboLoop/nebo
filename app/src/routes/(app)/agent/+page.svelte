@@ -73,6 +73,13 @@
 	let currentAudio: HTMLAudioElement | null = null;
 	let ttsVoice = $state('rachel'); // Default ElevenLabs voice
 
+	// Streaming TTS queue — speaks sentences as they arrive during streaming
+	let ttsSentenceBuffer = ''; // Accumulates text until a sentence boundary
+	let ttsQueue: string[] = []; // Sentences waiting to be spoken
+	let ttsPlaying = false; // Whether the queue player is active
+	let ttsStreamingActive = false; // Whether we're collecting from the stream
+	let ttsCancelToken = 0; // Incremented on stop to kill any running playNextTTS loop
+
 	// Available ElevenLabs voices
 	const ttsVoices = ['rachel', 'domi', 'bella', 'antoni', 'elli', 'josh', 'arnold', 'adam', 'sam'];
 
@@ -117,7 +124,9 @@
 		content: string;
 	}
 	let messageQueue = $state<QueuedMessage[]>([]);
-	let chatInputRef: { focus: () => void } | undefined;
+	let chatInputRef: { focus: () => void; handleDrop: (e: DragEvent) => void } | undefined;
+	let isDraggingOver = $state(false);
+	let dragCounter = 0; // Track enter/leave for nested elements
 	let loadingTimeoutId: ReturnType<typeof setTimeout> | null = null;
 	let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
@@ -208,20 +217,8 @@
 			clearTimeout(loadingTimeoutId);
 			loadingTimeoutId = null;
 		}
-		// Clean up voice mode
-		voiceMode = false;
-		if (silenceTimer) {
-			clearTimeout(silenceTimer);
-		}
-		if (recognition) {
-			recognition.abort();
-			recognition = null;
-		}
-		// Clean up audio playback
-		if (currentAudio) {
-			currentAudio.pause();
-			currentAudio = null;
-		}
+		// Clean up voice mode (kills stream, monitor, recorder, audio)
+		exitVoiceMode();
 	});
 
 	// Save draft to localStorage when input changes
@@ -453,6 +450,16 @@
 
 		const chunk = (data?.content as string) || '';
 
+		// Feed chunk to streaming TTS (speaks sentences as they complete)
+		if (voiceOutputEnabled && chunk) {
+			if (!ttsStreamingActive) {
+				// First chunk of a new response — start streaming TTS
+				stopTTSQueue();
+				ttsStreamingActive = true;
+			}
+			feedTTSStream(chunk);
+		}
+
 		if (currentStreamingMessage) {
 			// When new text arrives and there are running tools, mark them complete.
 			// In the agentic loop, the AI only produces text AFTER all tool results
@@ -578,8 +585,11 @@
 		}
 		isLoading = false;
 
-		// Speak the response if voice output is enabled
-		if (voiceOutputEnabled && completedContent) {
+		// Flush any remaining TTS buffer (streaming TTS already spoke most of it)
+		if (voiceOutputEnabled && ttsStreamingActive) {
+			flushTTSBuffer();
+		} else if (voiceOutputEnabled && completedContent) {
+			// Fallback: if streaming TTS wasn't active, speak the full response
 			speakText(completedContent);
 		}
 
@@ -902,11 +912,36 @@
 		inputValue = '';
 		clearDraft();
 
-		// If already loading, queue the message — it stays above the input, not in chat
+		// Barge-in: if agent is responding, cancel and send the new message immediately
 		if (isLoading) {
-			log.debug('Queuing message (agent busy): ' + prompt.substring(0, 50));
-			messageQueue = [...messageQueue, { id: generateUUID(), content: prompt }];
-			return;
+			log.debug('Barge-in: cancelling current response and sending: ' + prompt.substring(0, 50));
+
+			// Stop any TTS playback
+			stopSpeaking();
+			stopTTSQueue();
+
+			// Cancel the active response on the backend
+			const client = getWebSocketClient();
+			client.send('cancel', { session_id: chatId || '' });
+
+			// Mark the current streaming message as interrupted
+			if (currentStreamingMessage) {
+				currentStreamingMessage.streaming = false;
+				if (currentStreamingMessage.toolCalls?.length) {
+					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					);
+				}
+				const finalMsg = { ...currentStreamingMessage };
+				messages = [...messages.slice(0, -1), finalMsg];
+				currentStreamingMessage = null;
+			}
+			isLoading = false;
+
+			// Clear any queued messages — new message supersedes them
+			messageQueue = [];
+
+			// Fall through to send the new message immediately
 		}
 
 		// Show user message immediately and send
@@ -1033,15 +1068,26 @@
 		}
 	}
 
-	// Voice mode state - continuous listening
+	// Voice mode state - conversational loop with interruption support
+	// State machine: idle → listening → processing → speaking → listening (loop)
 	let voiceMode = $state(false);
 	let isTogglingRecording = $state(false);
 	let recordingError = $state<string | null>(null);
 	let recordingTranscript = $state('');
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	let recognition: any = null;
+
+	// Persistent mic stream — stays alive throughout voice mode
+	let voiceStream: MediaStream | null = null;
+	let mediaRecorder: MediaRecorder | null = null;
+	let audioChunks: Blob[] = [];
 	let silenceTimer: ReturnType<typeof setTimeout> | null = null;
-	const SILENCE_TIMEOUT = 2000;
+	let audioContext: AudioContext | null = null;
+	let analyser: AnalyserNode | null = null;
+	let voiceMonitorInterval: ReturnType<typeof setInterval> | null = null;
+	let voiceMimeType = '';
+
+	const SILENCE_TIMEOUT = 2500; // 2.5s of silence before finishing recording
+	const SILENCE_THRESHOLD = 0.06; // RMS threshold for silence detection (raised to ignore keyboard clicks)
+	const INTERRUPT_THRESHOLD = 0.02; // LOW threshold — user must be able to interrupt TTS easily
 
 	async function toggleRecording() {
 		// Debounce rapid clicks
@@ -1050,13 +1096,9 @@
 
 		try {
 			if (voiceMode) {
-				// Exit voice mode
-				voiceMode = false;
-				stopRecording();
+				exitVoiceMode();
 			} else {
-				// Enter voice mode
-				voiceMode = true;
-				await startRecording();
+				await enterVoiceMode();
 			}
 		} finally {
 			requestAnimationFrame(() => {
@@ -1065,16 +1107,9 @@
 		}
 	}
 
-	async function startRecording() {
+	async function enterVoiceMode() {
 		recordingError = null;
 		recordingTranscript = '';
-
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-		if (!SpeechRecognition) {
-			recordingError = 'Speech recognition not supported. Try Chrome.';
-			return;
-		}
 
 		// Check microphone permission
 		try {
@@ -1088,174 +1123,382 @@
 		}
 
 		try {
-			recognition = new SpeechRecognition();
-			recognition.continuous = false; // Stop after pause - triggers auto-send
-			recognition.interimResults = true;
-			recognition.lang = navigator.language || 'en-US';
+			// Get persistent mic stream — stays alive for entire voice mode session
+			voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-			recognition.onstart = () => {
-				isRecording = true;
-				recordingError = null;
-			};
+			// Set up audio analysis (persistent)
+			audioContext = new AudioContext();
+			const source = audioContext.createMediaStreamSource(voiceStream);
+			analyser = audioContext.createAnalyser();
+			analyser.fftSize = 2048;
+			source.connect(analyser);
 
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			recognition.onresult = (event: any) => {
-				voiceLog.debug('onresult fired');
+			// Determine best supported MIME type
+			voiceMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+				? 'audio/webm;codecs=opus'
+				: MediaRecorder.isTypeSupported('audio/webm')
+					? 'audio/webm'
+					: MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+						? 'audio/ogg;codecs=opus'
+						: '';
 
-				// Reset silence timer on any speech
-				if (silenceTimer) {
-					clearTimeout(silenceTimer);
-					silenceTimer = null;
-				}
+			voiceMode = true;
+			voiceOutputEnabled = true; // Auto-enable TTS in voice mode
 
-				let interim = '';
-				for (let i = event.resultIndex; i < event.results.length; i++) {
-					const transcript = event.results[i][0].transcript;
-					if (event.results[i].isFinal) {
-						recordingTranscript += transcript + ' ';
-						voiceLog.debug('Final transcript: ' + recordingTranscript);
-					} else {
-						interim += transcript;
-					}
-				}
-				inputValue = recordingTranscript + interim;
+			// Start the persistent voice monitor — handles interruption + silence detection
+			startVoiceMonitor();
 
-				// Start silence timer - if no more speech for 2s, auto-submit
-				if (inputValue.trim()) {
-					voiceLog.debug('Starting 2s silence timer');
-					silenceTimer = setTimeout(() => {
-						voiceLog.debug('Silence timer fired, isRecording: ' + isRecording);
-						if (isRecording && inputValue.trim()) {
-							voiceLog.debug('Auto-sending!');
-							stopRecording();
-							sendMessage();
-						}
-					}, SILENCE_TIMEOUT);
-				}
-			};
+			// Begin first listening turn
+			startListening();
 
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			recognition.onerror = (event: any) => {
-				voiceLog.error('Speech recognition error: ' + event.error);
-				isRecording = false;
-
-				switch (event.error) {
-					case 'no-speech':
-						recordingError = 'No speech detected. Try again.';
-						break;
-					case 'not-allowed':
-					case 'service-not-allowed':
-						recordingError = 'Microphone access denied.';
-						break;
-					case 'network':
-						recordingError = 'Network error. Try Chrome (not Brave).';
-						break;
-					case 'audio-capture':
-						recordingError = 'No microphone found.';
-						break;
-					case 'aborted':
-						break;
-					default:
-						recordingError = `Error: ${event.error}`;
-				}
-			};
-
-			// When speech ends (user stops talking), start shorter timer
-			recognition.onspeechend = () => {
-				voiceLog.debug('onspeechend fired');
-				if (silenceTimer) {
-					clearTimeout(silenceTimer);
-				}
-				// Shorter delay after speech officially ends
-				silenceTimer = setTimeout(() => {
-					voiceLog.debug('onspeechend timer fired');
-					if (isRecording && inputValue.trim()) {
-						voiceLog.debug('Auto-sending from onspeechend!');
-						stopRecording();
-						sendMessage();
-					}
-				}, 1000); // 1 second after speech ends
-			};
-
-			recognition.onend = () => {
-				voiceLog.debug('onend fired, inputValue: ' + inputValue.trim().substring(0, 50));
-				const hadContent = inputValue.trim();
-				isRecording = false;
-				recognition = null;
-				// Clear any pending timer
-				if (silenceTimer) {
-					clearTimeout(silenceTimer);
-					silenceTimer = null;
-				}
-				// If we have content when recognition ends, send it
-				if (hadContent && !isLoading) {
-					voiceLog.debug('Auto-sending from onend!');
-					sendMessage();
-				}
-				// If still in voice mode, restart listening after bot responds (and TTS finishes)
-				if (voiceMode) {
-					const waitForResponse = () => {
-						// Wait until bot is done responding AND TTS is done speaking
-						if (isLoading || isSpeaking) {
-							setTimeout(waitForResponse, 500);
-							return;
-						}
-						if (voiceMode && !isRecording) {
-							voiceLog.debug('Restarting listening (voice mode)');
-							recordingTranscript = '';
-							startRecording();
-						}
-					};
-					// Start checking after a brief delay
-					setTimeout(waitForResponse, 1000);
-				}
-			};
-
-			recognition.start();
 		} catch (err) {
-			voiceLog.error('Failed to start speech recognition', err);
-			recordingError = 'Failed to start recording.';
-			recognition = null;
+			voiceLog.error('Failed to enter voice mode', err);
+			if ((err as Error)?.name === 'NotAllowedError') {
+				recordingError = 'Microphone access denied.';
+			} else if ((err as Error)?.name === 'NotFoundError') {
+				recordingError = 'No microphone found.';
+			} else {
+				recordingError = 'Failed to start recording.';
+			}
 		}
-	}
-
-	function stopRecording() {
-		if (silenceTimer) {
-			clearTimeout(silenceTimer);
-			silenceTimer = null;
-		}
-		if (recognition) {
-			recognition.abort();
-			recognition = null;
-		}
-		isRecording = false;
 	}
 
 	function exitVoiceMode() {
 		voiceMode = false;
-		stopRecording();
+		voiceMonitorStarting = false;
+		stopSpeaking();
+		stopListening();
+		stopVoiceMonitor();
+
+		// Kill persistent stream
+		if (voiceStream) {
+			voiceStream.getTracks().forEach(t => t.stop());
+			voiceStream = null;
+		}
+		if (audioContext) {
+			audioContext.close().catch(() => {});
+			audioContext = null;
+		}
+		analyser = null;
+		isRecording = false;
 	}
 
-	// TTS playback function
-	async function speakText(text: string) {
-		if (!voiceOutputEnabled || !text.trim()) return;
+	// Start recording from the persistent stream
+	function startListening() {
+		if (!voiceStream || !voiceMode) return;
 
-		// Stop any current playback
-		if (currentAudio) {
-			currentAudio.pause();
-			currentAudio = null;
+		// Interrupt TTS immediately when user starts talking
+		stopTTSQueue();
+
+		audioChunks = [];
+		recordingTranscript = '';
+
+		const options: MediaRecorderOptions = {};
+		if (voiceMimeType) options.mimeType = voiceMimeType;
+
+		mediaRecorder = new MediaRecorder(voiceStream, options);
+
+		mediaRecorder.ondataavailable = (event) => {
+			if (event.data.size > 0) {
+				audioChunks.push(event.data);
+			}
+		};
+
+		mediaRecorder.onstop = async () => {
+			// Capture chunks locally before they get cleared by startListening
+			const chunks = audioChunks.slice();
+			audioChunks = [];
+
+			// Don't stop stream tracks — they're persistent
+			if (chunks.length === 0) {
+				restartListeningIfNeeded();
+				return;
+			}
+
+			const audioBlob = new Blob(chunks, { type: voiceMimeType || 'audio/webm' });
+
+			// Skip tiny recordings (likely just noise)
+			if (audioBlob.size < 1000) {
+				restartListeningIfNeeded();
+				return;
+			}
+
+			// Show transcribing state
+			inputValue = '🎙️ Transcribing...';
+
+			try {
+				const { transcribeAudio } = await import('$lib/api');
+				const result = await transcribeAudio(audioBlob);
+				const text = result.text?.trim() || '';
+				handleRecordingComplete(text);
+			} catch (err) {
+				voiceLog.error('Transcription failed', err);
+				inputValue = '';
+				recordingError = 'Transcription failed. Check that whisper-cli is installed.';
+				restartListeningIfNeeded();
+			}
+		};
+
+		mediaRecorder.onerror = () => {
+			voiceLog.error('MediaRecorder error');
+			isRecording = false;
+			recordingError = 'Recording error.';
+		};
+
+		mediaRecorder.start(250);
+		isRecording = true;
+		recordingError = null;
+		voiceLog.debug('Listening started');
+	}
+
+	function stopListening() {
+		if (silenceTimer) {
+			clearTimeout(silenceTimer);
+			silenceTimer = null;
 		}
+		if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+			// Stop without triggering transcription
+			mediaRecorder.ondataavailable = null;
+			mediaRecorder.onstop = () => {}; // no-op
+			mediaRecorder.stop();
+			mediaRecorder = null;
+		}
+		audioChunks = [];
+		isRecording = false;
+	}
 
-		// Clean text for TTS (remove markdown formatting)
-		const cleanText = text
+	function finishRecording() {
+		if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+			mediaRecorder.stop(); // triggers onstop → transcription
+			// Don't set isRecording = false here — let onstop/handleRecordingComplete do it
+			// Otherwise the monitor restarts listening before transcription processes
+		} else {
+			isRecording = false;
+		}
+	}
+
+	// Persistent voice monitor — runs entire voice mode session
+	// Handles: silence detection while recording, interruption detection while speaking
+	let voiceMonitorStarting = false; // guard against double-start from interval race
+
+	function startVoiceMonitor() {
+		if (!analyser) return;
+
+		const dataArray = new Float32Array(analyser.fftSize);
+		let silenceStart: number | null = null;
+		let hasSpeech = false;
+
+		voiceMonitorInterval = setInterval(() => {
+			if (!analyser || !voiceMode) return;
+
+			analyser.getFloatTimeDomainData(dataArray);
+
+			// Calculate RMS
+			let sum = 0;
+			for (let i = 0; i < dataArray.length; i++) {
+				sum += dataArray[i] * dataArray[i];
+			}
+			const rms = Math.sqrt(sum / dataArray.length);
+
+			// INTERRUPT MODE: If TTS is playing and user speaks, stop TTS immediately
+			if (isSpeaking && rms > INTERRUPT_THRESHOLD) {
+				voiceLog.debug('User interrupted TTS — stopping playback');
+				stopSpeaking();
+				return;
+			}
+
+			// LISTENING MODE: Detect silence after speech → finish recording
+			if (isRecording) {
+				if (rms > SILENCE_THRESHOLD) {
+					hasSpeech = true;
+					silenceStart = null;
+				} else if (hasSpeech) {
+					if (silenceStart === null) {
+						silenceStart = Date.now();
+					} else if (Date.now() - silenceStart > SILENCE_TIMEOUT) {
+						voiceLog.debug('Silence detected, finishing recording');
+						hasSpeech = false;
+						silenceStart = null;
+						finishRecording();
+					}
+				}
+			}
+
+			// IDLE: Not recording, not speaking, voice mode active → restart listening
+			// Key change: we listen even while isLoading (bot streaming) so user can
+			// speak their next message while the response comes in
+			if (!isRecording && !isSpeaking && voiceMode && !voiceMonitorStarting) {
+				hasSpeech = false;
+				silenceStart = null;
+				voiceMonitorStarting = true;
+				startListening();
+				// Clear guard after a tick so startListening has time to set isRecording
+				setTimeout(() => { voiceMonitorStarting = false; }, 200);
+			}
+		}, 100);
+	}
+
+	function stopVoiceMonitor() {
+		if (voiceMonitorInterval) {
+			clearInterval(voiceMonitorInterval);
+			voiceMonitorInterval = null;
+		}
+	}
+
+	function handleRecordingComplete(text: string) {
+		isRecording = false;
+
+		if (text && text !== '[BLANK_AUDIO]' && text !== '(silence)') {
+			inputValue = text;
+			voiceLog.debug('Transcribed: ' + text);
+
+			// Auto-send — always send in voice mode, even if bot is still streaming
+			// The WebSocket handles queuing; the user shouldn't have to wait
+			sendMessage();
+		} else {
+			inputValue = '';
+			// Empty transcription — restart listening via monitor loop
+		}
+	}
+
+	function restartListeningIfNeeded() {
+		// The voice monitor handles restart — just make sure state is clean
+		isRecording = false;
+	}
+
+	// Clean markdown/formatting from text for TTS
+	function cleanTextForTTS(text: string): string {
+		return text
 			.replace(/```[\s\S]*?```/g, '') // Remove code blocks
 			.replace(/`[^`]+`/g, '') // Remove inline code
 			.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Convert links to text
 			.replace(/[*_~]+/g, '') // Remove bold/italic/strikethrough
 			.replace(/^#+\s*/gm, '') // Remove headers
 			.replace(/^[-*]\s*/gm, '') // Remove list markers
+			.replace(/\n{2,}/g, '. ') // Collapse paragraph breaks
+			.replace(/\n/g, ' ') // Collapse remaining newlines
+			.replace(/\s{2,}/g, ' ') // Collapse whitespace
 			.trim();
+	}
 
+	// Feed streaming text chunks into the TTS sentence buffer
+	function feedTTSStream(chunk: string) {
+		if (!voiceOutputEnabled || !ttsStreamingActive) return;
+
+		ttsSentenceBuffer += chunk;
+
+		// Extract complete sentences from the buffer
+		// Match sentences ending with . ! ? followed by space or end-of-string
+		const sentencePattern = /^([\s\S]*?[.!?])(\s|$)/;
+		let match;
+		while ((match = sentencePattern.exec(ttsSentenceBuffer)) !== null) {
+			const sentence = match[1].trim();
+			ttsSentenceBuffer = ttsSentenceBuffer.slice(match[0].length);
+
+			const clean = cleanTextForTTS(sentence);
+			if (clean.length > 2) { // Skip tiny fragments
+				ttsQueue.push(clean);
+				playNextTTS(); // Kick the queue player
+			}
+		}
+	}
+
+	// Flush any remaining buffered text (called on stream complete)
+	function flushTTSBuffer() {
+		if (ttsSentenceBuffer.trim()) {
+			const clean = cleanTextForTTS(ttsSentenceBuffer);
+			if (clean.length > 2) {
+				ttsQueue.push(clean);
+				playNextTTS();
+			}
+		}
+		ttsSentenceBuffer = '';
+		ttsStreamingActive = false;
+	}
+
+	// Play the next sentence from the queue
+	async function playNextTTS() {
+		if (ttsPlaying || ttsQueue.length === 0) return;
+		ttsPlaying = true;
+		isSpeaking = true;
+		const myToken = ttsCancelToken;
+
+		while (ttsQueue.length > 0) {
+			// Bail if cancelled (stopTTSQueue was called)
+			if (ttsCancelToken !== myToken) break;
+
+			const sentence = ttsQueue.shift()!;
+
+			try {
+				const audioBlob = await speakTTS({
+					text: sentence,
+					voice: ttsVoice,
+					speed: 1.0
+				});
+
+				// Check again after async TTS fetch
+				if (ttsCancelToken !== myToken) break;
+
+				const audioUrl = URL.createObjectURL(audioBlob);
+
+				await new Promise<void>((resolve) => {
+					currentAudio = new Audio(audioUrl);
+					currentAudio.onended = () => {
+						URL.revokeObjectURL(audioUrl);
+						currentAudio = null;
+						resolve();
+					};
+					currentAudio.onerror = () => {
+						log.error('Audio playback error');
+						URL.revokeObjectURL(audioUrl);
+						currentAudio = null;
+						resolve();
+					};
+					currentAudio.play();
+				});
+			} catch (err) {
+				log.error('TTS failed for sentence', err);
+			}
+
+			// Check if TTS was stopped mid-playback (e.g., user interrupted)
+			if (!voiceOutputEnabled || ttsCancelToken !== myToken) {
+				ttsQueue.length = 0;
+				break;
+			}
+		}
+
+		// Only clear state if we're still the active player (not cancelled)
+		if (ttsCancelToken === myToken) {
+			ttsPlaying = false;
+			isSpeaking = false;
+		}
+	}
+
+	// Stop all TTS playback and clear the queue
+	function stopTTSQueue() {
+		ttsCancelToken++; // Kill any running playNextTTS loop
+		ttsQueue.length = 0;
+		ttsSentenceBuffer = '';
+		ttsStreamingActive = false;
+		ttsPlaying = false;
+		if (currentAudio) {
+			// Fire onended/onerror to resolve the pending promise, then pause
+			const audio = currentAudio;
+			currentAudio = null;
+			audio.onended = null;
+			audio.onerror = null;
+			audio.pause();
+		}
+		isSpeaking = false;
+	}
+
+	// Legacy non-streaming TTS (used when voice output is on but not in voice mode streaming)
+	async function speakText(text: string) {
+		if (!voiceOutputEnabled || !text.trim()) return;
+
+		stopTTSQueue(); // Clear any pending queue
+
+		const cleanText = cleanTextForTTS(text);
 		if (!cleanText) return;
 
 		isSpeaking = true;
@@ -1284,13 +1527,22 @@
 		} catch (err) {
 			log.error('TTS failed', err);
 			isSpeaking = false;
+			if ('speechSynthesis' in window) {
+				const utterance = new SpeechSynthesisUtterance(cleanText);
+				utterance.onend = () => { isSpeaking = false; };
+				utterance.onerror = () => { isSpeaking = false; };
+				speechSynthesis.speak(utterance);
+			} else {
+				isSpeaking = false;
+			}
 		}
 	}
 
 	function stopSpeaking() {
-		if (currentAudio) {
-			currentAudio.pause();
-			currentAudio = null;
+		stopTTSQueue(); // Clear streaming queue + current playback
+		// Also stop browser speechSynthesis if it's running
+		if ('speechSynthesis' in window) {
+			speechSynthesis.cancel();
 		}
 		isSpeaking = false;
 	}
@@ -1309,8 +1561,7 @@
 		// Escape exits voice mode
 		if (e.key === 'Escape' && voiceMode) {
 			e.preventDefault();
-			voiceMode = false;
-			stopRecording();
+			exitVoiceMode();
 			return;
 		}
 
@@ -1332,12 +1583,33 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<!-- Prevent browser from navigating away when files/images are dragged onto the page -->
+<!-- File drop zone for the entire chat area -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="flex flex-col h-full bg-base-100"
 	ondragover={(e) => e.preventDefault()}
-	ondrop={(e) => e.preventDefault()}
+	ondragenter={(e) => {
+		e.preventDefault();
+		dragCounter++;
+		if (e.dataTransfer?.types.includes('Files')) {
+			isDraggingOver = true;
+		}
+	}}
+	ondragleave={() => {
+		dragCounter--;
+		if (dragCounter <= 0) {
+			dragCounter = 0;
+			isDraggingOver = false;
+		}
+	}}
+	ondrop={(e) => {
+		e.preventDefault();
+		dragCounter = 0;
+		isDraggingOver = false;
+		if (e.dataTransfer?.files.length) {
+			chatInputRef?.handleDrop(e);
+		}
+	}}
 >
 	<!-- Header -->
 	<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
@@ -1484,6 +1756,7 @@
 		{isLoading}
 		{isRecording}
 		{voiceMode}
+		{isDraggingOver}
 		queuedMessages={messageQueue}
 		onSend={sendMessage}
 		onCancel={cancelMessage}

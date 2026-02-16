@@ -109,7 +109,7 @@ func (cb *ChannelBridge) Start(ctx context.Context, config ChannelBridgeConfig) 
 	cfg := autopaho.ClientConfig{
 		ServerUrls:                    []*url.URL{serverURL},
 		KeepAlive:                     30,
-		CleanStartOnInitialConnection: true,
+		CleanStartOnInitialConnection: false, // Persist subscriptions + queue QoS 1 messages while offline
 		ConnectUsername:                config.MQTTUsername,
 		ConnectPassword:               []byte(config.MQTTPassword),
 		ConnectTimeout:                10 * time.Second,

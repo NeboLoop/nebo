@@ -318,7 +318,7 @@ const file_proto_apps_v0_tool_proto_rawDesc = "" +
 	"\x06Schema\x12\x0e.apps.v0.Empty\x1a\x17.apps.v0.SchemaResponse\x12<\n" +
 	"\aExecute\x12\x17.apps.v0.ExecuteRequest\x1a\x18.apps.v0.ExecuteResponse\x12=\n" +
 	"\x10RequiresApproval\x12\x0e.apps.v0.Empty\x1a\x19.apps.v0.ApprovalResponse\x121\n" +
-	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/neboloop/nebo/internal/apps/pbb\x06proto3"
 
 var (
 	file_proto_apps_v0_tool_proto_rawDescOnce sync.Once

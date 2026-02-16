@@ -167,4 +167,5 @@ type ExchangeTokenRequest struct {
 type ExchangeTokenResponse struct {
 	MQTTUsername string `json:"mqtt_username"`
 	MQTTPassword string `json:"mqtt_password"`
+	MQTTBroker   string `json:"mqtt_broker,omitempty"`
 }

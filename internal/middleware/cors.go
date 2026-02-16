@@ -201,6 +201,22 @@ func CORSMiddleware(config *CORSConfig) func(http.Handler) http.Handler {
 }
 
 // ParseAllowedOrigins parses a comma-separated list of origins
+// IsLocalhostOrigin checks if an origin is from localhost (any port).
+// Used by CORS middleware and WebSocket upgraders to restrict to local connections.
+func IsLocalhostOrigin(origin string) bool {
+	for _, prefix := range []string{
+		"http://localhost",
+		"https://localhost",
+		"http://127.0.0.1",
+		"https://127.0.0.1",
+	} {
+		if origin == prefix || (len(origin) > len(prefix) && origin[:len(prefix)+1] == prefix+":") {
+			return true
+		}
+	}
+	return false
+}
+
 func ParseAllowedOrigins(origins string) []string {
 	if origins == "" {
 		return []string{}

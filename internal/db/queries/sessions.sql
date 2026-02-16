@@ -50,7 +50,7 @@ WHERE id = ?;
 UPDATE sessions
 SET message_count = 0, token_count = 0, summary = NULL, last_compacted_at = NULL,
     compaction_count = 0, memory_flush_at = NULL, memory_flush_compaction_count = NULL,
-    updated_at = unixepoch()
+    active_task = NULL, updated_at = unixepoch()
 WHERE id = ?;
 
 -- name: CompactSession :exec
@@ -201,4 +201,38 @@ WHERE id = ?;
 -- name: SetSessionLabel :exec
 UPDATE sessions
 SET custom_label = ?, updated_at = unixepoch()
+WHERE id = ?;
+
+-- Session transcript embedding tracking
+
+-- name: GetSessionLastEmbeddedMessageID :one
+SELECT COALESCE(last_embedded_message_id, 0) as last_embedded_message_id
+FROM sessions WHERE id = ?;
+
+-- name: UpdateSessionLastEmbeddedMessageID :exec
+UPDATE sessions
+SET last_embedded_message_id = ?, updated_at = unixepoch()
+WHERE id = ?;
+
+-- name: GetMessagesAfterID :many
+-- Get messages after a given ID for embedding (user and assistant only)
+SELECT id, session_id, role, content, created_at
+FROM session_messages
+WHERE session_id = ? AND id > ? AND role IN ('user', 'assistant')
+ORDER BY id ASC;
+
+-- Active task tracking (survives compaction)
+
+-- name: GetSessionActiveTask :one
+SELECT COALESCE(active_task, '') as active_task
+FROM sessions WHERE id = ?;
+
+-- name: SetSessionActiveTask :exec
+UPDATE sessions
+SET active_task = ?, updated_at = unixepoch()
+WHERE id = ?;
+
+-- name: ClearSessionActiveTask :exec
+UPDATE sessions
+SET active_task = NULL, updated_at = unixepoch()
 WHERE id = ?;

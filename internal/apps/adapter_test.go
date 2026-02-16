@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/comm"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	pb "github.com/nebolabs/nebo/internal/apps/pb"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/comm"
+	"github.com/neboloop/nebo/internal/agent/session"
+	pb "github.com/neboloop/nebo/internal/apps/pb"
 )
 
 func TestConvertChatToGateway_Basic(t *testing.T) {

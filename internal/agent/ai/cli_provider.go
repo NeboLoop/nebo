@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // CLIProvider wraps an official CLI tool (claude, gemini, codex) as a provider
@@ -124,7 +124,7 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 		args := append([]string{}, p.args...)
 
 		// Add model flag if specified in request (for CLI providers that support it)
-		if req.Model != "" && (p.name == "claude-cli" || p.name == "codex-cli") {
+		if req.Model != "" && (p.name == "claude-code" || p.name == "codex-cli") {
 			args = append(args, "--model", req.Model)
 		}
 

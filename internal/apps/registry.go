@@ -7,18 +7,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"database/sql"
+
 	"github.com/google/uuid"
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/comm"
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	pb "github.com/nebolabs/nebo/internal/apps/pb"
-	"github.com/nebolabs/nebo/internal/apps/inspector"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/apps/settings"
-	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/comm"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	pb "github.com/neboloop/nebo/internal/apps/pb"
+	"github.com/neboloop/nebo/internal/apps/inspector"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/apps/settings"
+	"github.com/neboloop/nebo/internal/svc"
 )
 
 // AppRegistryConfig holds dependencies for the app registry.
@@ -52,6 +55,7 @@ type AppRegistry struct {
 	channelBridge *ChannelBridge
 	grpcInspector *inspector.Inspector
 
+	supervisor          *Supervisor
 	onQuarantine        func(QuarantineEvent)             // callback for UI notification
 	onGatewayRegistered func()                             // callback when a new gateway provider is registered
 	onChannelMsg        func(channelType, channelID, userID, text, metadata string) // callback for inbound channel messages
@@ -154,12 +158,52 @@ func (ar *AppRegistry) DiscoverAndLaunch(ctx context.Context) error {
 	return nil
 }
 
+// InstallFromURL downloads a .napp from the given URL and launches the app.
+// Used by the HTTP install handler for immediate installation without waiting for MQTT.
+func (ar *AppRegistry) InstallFromURL(ctx context.Context, downloadURL string) error {
+	// Download to temp dir inside appsDir (same filesystem → rename is atomic)
+	tmpDir, err := os.MkdirTemp(ar.appsDir, ".installing-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := DownloadAndExtractNapp(downloadURL, tmpDir); err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+
+	manifest, err := LoadManifest(tmpDir)
+	if err != nil {
+		return fmt.Errorf("invalid app: %w", err)
+	}
+
+	appDir := filepath.Join(ar.appsDir, manifest.ID)
+
+	// Already installed on disk — just ensure it's running
+	if _, err := os.Stat(filepath.Join(appDir, "manifest.json")); err == nil {
+		if !ar.IsRunning(manifest.ID) {
+			return ar.launchAndRegister(ctx, appDir)
+		}
+		return nil
+	}
+
+	// Move downloaded app to permanent location
+	if err := os.Rename(tmpDir, appDir); err != nil {
+		return fmt.Errorf("move app to %s: %w", appDir, err)
+	}
+
+	return ar.launchAndRegister(ctx, appDir)
+}
+
 // launchAndRegister launches a single app and registers its capabilities.
 func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) error {
 	// Refuse to launch quarantined apps
 	if _, err := os.Stat(filepath.Join(appDir, ".quarantined")); err == nil {
 		return fmt.Errorf("app is quarantined (revoked by NeboLoop)")
 	}
+
+	// Kill orphaned process from a previous nebo run that died without cleanup
+	cleanupStaleProcess(appDir)
 
 	proc, err := ar.runtime.Launch(appDir)
 	if err != nil {
@@ -210,7 +254,7 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 			if ar.skillTool != nil {
 				slug := tools.Slugify(manifest.Name)
 				skillMD := loadSkillMD(appDir)
-				ar.skillTool.Register(slug, manifest.Name, manifest.Description, skillMD, adapter)
+				ar.skillTool.Register(slug, manifest.Name, manifest.Description, skillMD, adapter, nil, 0)
 				fmt.Printf("[apps] Registered skill: %s (app-backed)\n", slug)
 			} else if ar.toolReg != nil {
 				// Fallback: register directly in tool registry (no skill tool wired)
@@ -281,6 +325,17 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 		}
 		if err := ar.pluginStore.RegisterConfigurable(ctx, manifest.Name, configurable); err != nil {
 			fmt.Printf("[apps] Warning: settings registration failed for %s: %v\n", manifest.ID, err)
+		}
+	}
+
+	// Update connection_status to "connected" now that the app is running
+	if ar.queries != nil {
+		if plugin, err := ar.queries.GetPluginByName(ctx, manifest.Name); err == nil {
+			_ = ar.queries.UpdatePluginStatus(ctx, db.UpdatePluginStatusParams{
+				ConnectionStatus: "connected",
+				LastConnectedAt:  sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
+				ID:               plugin.ID,
+			})
 		}
 	}
 
@@ -548,17 +603,21 @@ func (ar *AppRegistry) ChannelBridge() *ChannelBridge {
 }
 
 // registerChannel adds a channel adapter and wires its inbound message handler.
+// The handler looks up onChannelMsg lazily at call time so SetChannelHandler can
+// be called after DiscoverAndLaunch and already-registered channels still pick it up.
 func (ar *AppRegistry) registerChannel(adapter *AppChannelAdapter) {
 	ar.mu.Lock()
 	if ar.channelAdapters == nil {
 		ar.channelAdapters = make(map[string]*AppChannelAdapter)
 	}
 	ar.channelAdapters[adapter.ID()] = adapter
-	onMsg := ar.onChannelMsg
 	ar.mu.Unlock()
 
 	channelType := adapter.ID()
 	adapter.SetMessageHandler(func(channelID, userID, text, metadata string) {
+		ar.mu.RLock()
+		onMsg := ar.onChannelMsg
+		ar.mu.RUnlock()
 		if onMsg != nil {
 			onMsg(channelType, channelID, userID, text, metadata)
 		}
@@ -870,8 +929,23 @@ func (ar *AppRegistry) IsRunning(appID string) bool {
 	return ok
 }
 
+// StartSupervisor starts the background process supervisor that auto-restarts crashed apps.
+func (ar *AppRegistry) StartSupervisor(ctx context.Context) {
+	ar.supervisor = NewSupervisor(ar, ar.runtime)
+	ar.supervisor.Start(ctx)
+}
+
+// restartApp re-launches an app from its directory. Used by the supervisor
+// to restart crashed apps. Wraps launchAndRegister with error recovery.
+func (ar *AppRegistry) restartApp(ctx context.Context, appDir string) error {
+	return ar.launchAndRegister(ctx, appDir)
+}
+
 // Stop stops all running app processes, the install listener, and the channel bridge.
 func (ar *AppRegistry) Stop() error {
+	if ar.supervisor != nil {
+		ar.supervisor.Stop()
+	}
 	ar.installer.Stop()
 	ar.channelBridge.Stop()
 	return ar.runtime.StopAll()
@@ -971,6 +1045,37 @@ func (ar *AppRegistry) autoConfigureUserToken(ctx context.Context, appName strin
 
 func settingsToProto(settings map[string]string) *pb.SettingsMap {
 	return &pb.SettingsMap{Values: settings}
+}
+
+// AppCatalog returns a formatted markdown section listing all running apps
+// with their capabilities and descriptions. Intended for injection into the
+// agent's system prompt so it knows what apps are installed.
+func (ar *AppRegistry) AppCatalog() string {
+	running := ar.runtime.List()
+	if len(running) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n\n## Installed Apps\n\n")
+
+	for _, appID := range running {
+		proc, ok := ar.runtime.Get(appID)
+		if !ok || proc.Manifest == nil {
+			continue
+		}
+		m := proc.Manifest
+		b.WriteString(fmt.Sprintf("- **%s** (%s)", m.Name, m.ID))
+		if m.Description != "" {
+			b.WriteString(fmt.Sprintf(" — %s", m.Description))
+		}
+		if len(m.Provides) > 0 {
+			b.WriteString(fmt.Sprintf(". Provides: %s.", strings.Join(m.Provides, ", ")))
+		}
+		b.WriteString(" Status: running.\n")
+	}
+
+	return b.String()
 }
 
 // loadSkillMD reads the SKILL.md file from an app directory.

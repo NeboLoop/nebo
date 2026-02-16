@@ -11,35 +11,36 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 
-	"github.com/nebolabs/nebo/app"
-	"github.com/nebolabs/nebo/internal/browser"
-	"github.com/nebolabs/nebo/internal/config"
-	"github.com/nebolabs/nebo/internal/handler"
-	"github.com/nebolabs/nebo/internal/handler/agent"
-	"github.com/nebolabs/nebo/internal/handler/appoauth"
-	"github.com/nebolabs/nebo/internal/handler/appui"
-	"github.com/nebolabs/nebo/internal/handler/auth"
-	"github.com/nebolabs/nebo/internal/handler/chat"
-	"github.com/nebolabs/nebo/internal/handler/dev"
-	"github.com/nebolabs/nebo/internal/handler/extensions"
-	"github.com/nebolabs/nebo/internal/handler/integration"
-	"github.com/nebolabs/nebo/internal/handler/memory"
-	"github.com/nebolabs/nebo/internal/handler/neboloop"
-	"github.com/nebolabs/nebo/internal/handler/notification"
-	"github.com/nebolabs/nebo/internal/handler/oauth"
-	"github.com/nebolabs/nebo/internal/handler/plugins"
-	"github.com/nebolabs/nebo/internal/handler/provider"
-	"github.com/nebolabs/nebo/internal/handler/setup"
-	"github.com/nebolabs/nebo/internal/handler/tasks"
-	"github.com/nebolabs/nebo/internal/handler/user"
-	"github.com/nebolabs/nebo/internal/mcp"
-	mcpoauth "github.com/nebolabs/nebo/internal/mcp/oauth"
-	"github.com/nebolabs/nebo/internal/middleware"
-	extOAuth "github.com/nebolabs/nebo/internal/oauth"
-	"github.com/nebolabs/nebo/internal/realtime"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/voice"
-	"github.com/nebolabs/nebo/internal/websocket"
+	"github.com/neboloop/nebo/app"
+	"github.com/neboloop/nebo/internal/browser"
+	"github.com/neboloop/nebo/internal/config"
+	"github.com/neboloop/nebo/internal/handler"
+	"github.com/neboloop/nebo/internal/handler/agent"
+	"github.com/neboloop/nebo/internal/handler/appoauth"
+	"github.com/neboloop/nebo/internal/handler/appui"
+	"github.com/neboloop/nebo/internal/handler/auth"
+	"github.com/neboloop/nebo/internal/handler/chat"
+	"github.com/neboloop/nebo/internal/handler/dev"
+	"github.com/neboloop/nebo/internal/handler/extensions"
+	"github.com/neboloop/nebo/internal/handler/files"
+	"github.com/neboloop/nebo/internal/handler/integration"
+	"github.com/neboloop/nebo/internal/handler/memory"
+	"github.com/neboloop/nebo/internal/handler/neboloop"
+	"github.com/neboloop/nebo/internal/handler/notification"
+	"github.com/neboloop/nebo/internal/handler/oauth"
+	"github.com/neboloop/nebo/internal/handler/plugins"
+	"github.com/neboloop/nebo/internal/handler/provider"
+	"github.com/neboloop/nebo/internal/handler/setup"
+	"github.com/neboloop/nebo/internal/handler/tasks"
+	"github.com/neboloop/nebo/internal/handler/user"
+	"github.com/neboloop/nebo/internal/mcp"
+	mcpoauth "github.com/neboloop/nebo/internal/mcp/oauth"
+	"github.com/neboloop/nebo/internal/middleware"
+	extOAuth "github.com/neboloop/nebo/internal/oauth"
+	"github.com/neboloop/nebo/internal/realtime"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/voice"
+	"github.com/neboloop/nebo/internal/websocket"
 )
 
 // ServerOptions holds optional dependencies for the server
@@ -138,11 +139,19 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 	// Health check at root
 	r.Get("/health", handler.HealthCheckHandler(svcCtx))
 
+	// Rate limiters
+	authLimiter := middleware.NewRateLimiter(middleware.AuthRateLimitConfig())
+	apiLimiter := middleware.NewRateLimiter(middleware.APIRateLimitConfig())
+
 	// API v1 routes - apply strict security headers only to API
 	r.Route("/api/v1", func(r chi.Router) {
 		if c.IsSecurityHeadersEnabled() {
 			r.Use(securityHeadersMiddleware())
 		}
+
+		// Apply general API rate limit to all /api/v1 routes
+		r.Use(apiLimiter.Middleware())
+
 		// CSRF token endpoint
 		r.Get("/csrf-token", svcCtx.SecurityMiddleware.GetCSRFTokenHandler())
 
@@ -150,6 +159,12 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 		r.Post("/voice/transcribe", voice.TranscribeHandler)
 		r.Post("/voice/tts", voice.TTSHandler)
 		r.Get("/voice/voices", voice.VoicesHandler)
+
+		// Auth routes with stricter rate limiting
+		r.Group(func(r chi.Router) {
+			r.Use(authLimiter.Middleware())
+			registerAuthRoutes(r, svcCtx)
+		})
 
 		// Public routes (no auth required)
 		registerPublicRoutes(r, svcCtx)
@@ -243,12 +258,13 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 	finalHandler := middleware.Gzip(middleware.CacheControl(r))
 
 	// Create and start HTTP server
+	// Note: ReadTimeout/WriteTimeout are intentionally omitted — they set deadlines
+	// on the underlying net.Conn which interfere with hijacked WebSocket connections.
+	// WebSocket keepalive is handled via ping/pong in agenthub and realtime packages.
 	httpServer := &http.Server{
-		Addr:         fmt.Sprintf(":%d", serverPort),
-		Handler:      finalHandler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:        fmt.Sprintf(":%d", serverPort),
+		Handler:     finalHandler,
+		IdleTimeout: 120 * time.Second,
 	}
 
 	if !opts.Quiet {
@@ -275,9 +291,8 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 	return nil
 }
 
-// registerPublicRoutes registers routes that don't require authentication
-func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
-	// Auth routes
+// registerAuthRoutes registers auth routes with stricter rate limiting
+func registerAuthRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/auth/config", auth.GetAuthConfigHandler(svcCtx))
 	r.Get("/auth/dev-login", auth.DevLoginHandler(svcCtx))
 	r.Post("/auth/forgot-password", auth.ForgotPasswordHandler(svcCtx))
@@ -287,7 +302,10 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Post("/auth/resend-verification", auth.ResendVerificationHandler(svcCtx))
 	r.Post("/auth/reset-password", auth.ResetPasswordHandler(svcCtx))
 	r.Post("/auth/verify-email", auth.VerifyEmailHandler(svcCtx))
+}
 
+// registerPublicRoutes registers routes that don't require authentication
+func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	// Setup routes
 	r.Post("/setup/admin", setup.CreateAdminHandler(svcCtx))
 	r.Post("/setup/complete", setup.CompleteSetupHandler(svcCtx))
@@ -424,6 +442,9 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Delete("/providers/{id}", provider.DeleteAuthProfileHandler(svcCtx))
 	r.Post("/providers/{id}/test", provider.TestAuthProfileHandler(svcCtx))
 
+	// Agent files (screenshots, images, downloads)
+	r.Get("/files/*", files.ServeFileHandler(svcCtx))
+
 	// User profile routes (public for single-user personal assistant mode)
 	r.Get("/user/me/profile", user.GetUserProfileHandler(svcCtx))
 	r.Put("/user/me/profile", user.UpdateUserProfileHandler(svcCtx))
@@ -474,11 +495,20 @@ func securityHeadersMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
-// corsMiddleware handles CORS
+// corsMiddleware handles CORS — Nebo is a local app, so only localhost origins are allowed.
 func corsMiddleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
+			origin := r.Header.Get("Origin")
+
+			// Allow localhost origins (any port) for the local SvelteKit dev server
+			// and the embedded SPA. Also allow no origin (same-origin requests).
+			if origin == "" || middleware.IsLocalhostOrigin(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+			// Non-localhost origins get no CORS headers → browser blocks the request
+
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
 			w.Header().Set("Access-Control-Expose-Headers", "X-CSRF-Token")
@@ -492,6 +522,7 @@ func corsMiddleware() func(http.Handler) http.Handler {
 		})
 	}
 }
+
 
 func agentWebSocketHandler(ctx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

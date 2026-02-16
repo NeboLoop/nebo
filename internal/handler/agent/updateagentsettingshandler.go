@@ -3,12 +3,12 @@ package agent
 import (
 	"net/http"
 
-	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/local"
-	"github.com/nebolabs/nebo/internal/logging"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/local"
+	"github.com/neboloop/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 // Update agent settings

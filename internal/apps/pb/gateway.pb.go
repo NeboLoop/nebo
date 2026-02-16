@@ -550,7 +550,7 @@ const file_proto_apps_v0_gateway_proto_rawDesc = "" +
 	"\x06Stream\x12\x17.apps.v0.GatewayRequest\x1a\x15.apps.v0.GatewayEvent0\x01\x123\n" +
 	"\x04Poll\x12\x14.apps.v0.PollRequest\x1a\x15.apps.v0.PollResponse\x129\n" +
 	"\x06Cancel\x12\x16.apps.v0.CancelRequest\x1a\x17.apps.v0.CancelResponse\x121\n" +
-	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/neboloop/nebo/internal/apps/pbb\x06proto3"
 
 var (
 	file_proto_apps_v0_gateway_proto_rawDescOnce sync.Once

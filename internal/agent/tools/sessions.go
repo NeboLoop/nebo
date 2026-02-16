@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // SessionsTool allows AI to query and manage sessions

@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
-	db "github.com/nebolabs/nebo/internal/db"
+	db "github.com/neboloop/nebo/internal/db"
 )
 
 // ChangeHandler is called when app settings change.

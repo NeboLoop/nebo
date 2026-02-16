@@ -28,5 +28,9 @@
 	<true/>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Nebo needs microphone access for voice input</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Nebo needs camera access for video capture</string>
 </dict>
 </plist>

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/browser"
+	"github.com/neboloop/nebo/internal/browser"
 )
 
 // WebDomainTool provides web operations: HTTP requests, search, and browser automation.

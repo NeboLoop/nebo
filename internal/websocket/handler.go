@@ -3,21 +3,20 @@ package websocket
 import (
 	"net/http"
 
-	"github.com/nebolabs/nebo/internal/middleware"
-	"github.com/nebolabs/nebo/internal/realtime"
+	"github.com/neboloop/nebo/internal/middleware"
+	"github.com/neboloop/nebo/internal/realtime"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// Allow all origins in development
-		// TODO: Tighten this in production to check specific origins
-		return true
+		origin := r.Header.Get("Origin")
+		return origin == "" || middleware.IsLocalhostOrigin(origin)
 	},
 }
 
@@ -37,9 +36,6 @@ func Handler(hub *realtime.Hub) http.HandlerFunc {
 		// TODO: Remove this fallback once all clients send JWT cookies
 		if userID == "" {
 			userID = r.URL.Query().Get("userId")
-			if userID != "" {
-				logging.Infof("WebSocket using legacy userId query param (deprecated): %s", userID)
-			}
 		}
 
 		// Require authentication for WebSocket connections

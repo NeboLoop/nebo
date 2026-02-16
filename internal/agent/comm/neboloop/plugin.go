@@ -23,8 +23,8 @@ import (
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
 
-	"github.com/nebolabs/nebo/internal/agent/comm"
-	"github.com/nebolabs/nebo/internal/apps/settings"
+	"github.com/neboloop/nebo/internal/agent/comm"
+	"github.com/neboloop/nebo/internal/apps/settings"
 )
 
 // Plugin implements comm.CommPlugin for NeboLoop MQTT v5 transport.
@@ -122,7 +122,7 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 	cfg := autopaho.ClientConfig{
 		ServerUrls:                    []*url.URL{serverURL},
 		KeepAlive:                     30,
-		CleanStartOnInitialConnection: true,
+		CleanStartOnInitialConnection: false, // Persist subscriptions + queue QoS 1 messages while offline
 		ConnectUsername:                p.mqttUsername,
 		ConnectPassword:               []byte(p.mqttPassword),
 		ConnectTimeout:                10 * time.Second,
@@ -222,10 +222,13 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 	}
 	p.cm = cm
 
-	// Wait for initial connection (with caller's context timeout)
-	if err := cm.AwaitConnection(ctx); err != nil {
-		cancel()
-		return fmt.Errorf("neboloop: initial connection failed: %w", err)
+	// Wait briefly for initial connection — don't block agent startup if broker is unreachable.
+	// autopaho will keep reconnecting in the background regardless.
+	awaitCtx, awaitCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer awaitCancel()
+	if err := cm.AwaitConnection(awaitCtx); err != nil {
+		// Not fatal — autopaho reconnects in background, OnConnectionUp will fire later
+		fmt.Printf("[Comm:neboloop] Initial connection not ready (will retry in background): %v\n", err)
 	}
 
 	return nil
@@ -792,9 +795,13 @@ func (p *Plugin) handleResultMessage(handler func(comm.CommMessage), topic strin
 // brokerToURL converts a broker address to a *url.URL for autopaho.
 // Handles scheme conversion: tcp:// → mqtt://, ssl:// → mqtts://, ws:// stays ws://
 func brokerToURL(broker string) (*url.URL, error) {
-	// If no scheme, assume mqtt://
+	// If no scheme, infer from port (443 = TLS, else plain)
 	if !strings.Contains(broker, "://") {
-		broker = "mqtt://" + broker
+		if strings.HasSuffix(broker, ":443") {
+			broker = "mqtts://" + broker
+		} else {
+			broker = "mqtt://" + broker
+		}
 	}
 
 	u, err := url.Parse(broker)

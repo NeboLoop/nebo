@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 func defaultPruningConfig() config.ContextPruningConfig {

@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/advisors"
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/agent/advisors"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/tools"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

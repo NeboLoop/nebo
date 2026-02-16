@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/svc"
 
 	"github.com/google/uuid"
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // ChatContext holds the context needed for chat handling
@@ -408,8 +408,8 @@ func handleRequestIntroduction(c *Client, msg *Message, chatCtx *ChatContext) {
 		return
 	}
 
-	// Find any connected agent
-	agent := chatCtx.hub.GetAnyAgent()
+	// Wait for agent to connect (handles startup race where frontend loads before agent)
+	agent := waitForAgent(chatCtx.hub, 5*time.Second)
 	if agent == nil {
 		sendChatError(c, sessionID, "No agent connected. Make sure nebo is running.")
 		return
@@ -514,15 +514,13 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 	useCompanion, _ := msg.Data["companion"].(bool)
 	system, _ := msg.Data["system"].(string)
 
-	logging.Infof("[Chat] Processing message for session %s: %s", sessionID, prompt)
-
 	if chatCtx.hub == nil {
 		sendChatError(c, sessionID, "Agent hub not initialized")
 		return
 	}
 
-	// Find any connected agent
-	agent := chatCtx.hub.GetAnyAgent()
+	// Wait for agent to connect (handles startup race where frontend loads before agent)
+	agent := waitForAgent(chatCtx.hub, 5*time.Second)
 	if agent == nil {
 		sendChatError(c, sessionID, "No agent connected. Make sure nebo is running.")
 		return
@@ -826,6 +824,23 @@ func sendThinking(c *Client, sessionID, thinking string) {
 		Timestamp: time.Now(),
 	}
 	sendToClient(c, msg)
+}
+
+// waitForAgent polls for a connected agent, waiting up to timeout.
+// Handles the startup race where the frontend connects before the agent.
+func waitForAgent(hub *agenthub.Hub, timeout time.Duration) *agenthub.AgentConnection {
+	agent := hub.GetAnyAgent()
+	if agent != nil {
+		return agent
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+		if agent = hub.GetAnyAgent(); agent != nil {
+			return agent
+		}
+	}
+	return nil
 }
 
 func sendChatError(c *Client, sessionID, errStr string) {

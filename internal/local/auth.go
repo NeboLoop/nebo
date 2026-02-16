@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/config"
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/config"
+	"github.com/neboloop/nebo/internal/db"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"

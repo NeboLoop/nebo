@@ -499,7 +499,7 @@ Provider detection priority:
 
 ## Licensing
 
-- **Core runtime:** Elastic License 2.0 (ELv2) — source-available, no competing products or managed services
-- **App SDK + proto definitions (`proto/apps/`):** Apache 2.0 — developers build freely on the platform
+- **Entire project:** Apache License 2.0 — fully open source as of February 16, 2026
+- Includes core runtime, App SDK, proto definitions, and reference apps
 - NEVER reference iPhone/iOS/App Store in code comments
 

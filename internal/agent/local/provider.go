@@ -8,8 +8,8 @@ import (
 
 	"github.com/hybridgroup/yzma/pkg/llama"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // ChatProvider implements ai.Provider using yzma (llama.cpp via purego).

@@ -1187,7 +1187,7 @@ const file_proto_apps_v0_schedule_proto_rawDesc = "" +
 	"\aTrigger\x12\x1c.apps.v0.ScheduleNameRequest\x1a\x18.apps.v0.TriggerResponse\x12L\n" +
 	"\aHistory\x12\x1f.apps.v0.ScheduleHistoryRequest\x1a .apps.v0.ScheduleHistoryResponse\x126\n" +
 	"\bTriggers\x12\x0e.apps.v0.Empty\x1a\x18.apps.v0.ScheduleTrigger0\x01\x121\n" +
-	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/neboloop/nebo/internal/apps/pbb\x06proto3"
 
 var (
 	file_proto_apps_v0_schedule_proto_rawDescOnce sync.Once

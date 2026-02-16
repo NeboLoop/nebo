@@ -33,6 +33,38 @@ export function speakTTS(req: TTSRequest): Promise<Blob> {
 	return webapi.postBlob('/api/v1/voice/tts', req);
 }
 
+// Voice transcription via backend (local whisper-cli or OpenAI fallback)
+export interface TranscribeResponse {
+	text: string;
+}
+
+export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeResponse> {
+	const formData = new FormData();
+	formData.append('audio', audioBlob, 'recording.webm');
+
+	const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+	const token = typeof window !== 'undefined' ? localStorage.getItem('nebo_token') : null;
+
+	const headers: Record<string, string> = {};
+	if (token) {
+		headers['Authorization'] = `Bearer ${token}`;
+	}
+
+	const response = await fetch(`${baseUrl}/api/v1/voice/transcribe`, {
+		method: 'POST',
+		credentials: 'include',
+		headers,
+		body: formData
+	});
+
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(text || `HTTP ${response.status}`);
+	}
+
+	return response.json();
+}
+
 // Plugin Settings API (iPhone model)
 export interface SettingsFieldOption {
 	label: string;

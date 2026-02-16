@@ -32,9 +32,9 @@ func (q *Queries) CountMemoryEmbeddings(ctx context.Context, model string) (int6
 
 const createMemoryChunk = `-- name: CreateMemoryChunk :one
 
-INSERT INTO memory_chunks (memory_id, chunk_index, text, source, path, start_line, end_line, model)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, memory_id, chunk_index, text, source, path, start_line, end_line, model, created_at
+INSERT INTO memory_chunks (memory_id, chunk_index, text, source, path, start_char, end_char, model, user_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, memory_id, chunk_index, text, source, path, start_char, end_char, model, user_id, created_at
 `
 
 type CreateMemoryChunkParams struct {
@@ -43,37 +43,26 @@ type CreateMemoryChunkParams struct {
 	Text       string         `json:"text"`
 	Source     sql.NullString `json:"source"`
 	Path       sql.NullString `json:"path"`
-	StartLine  sql.NullInt64  `json:"start_line"`
-	EndLine    sql.NullInt64  `json:"end_line"`
+	StartChar  sql.NullInt64  `json:"start_char"`
+	EndChar    sql.NullInt64  `json:"end_char"`
 	Model      sql.NullString `json:"model"`
-}
-
-type CreateMemoryChunkRow struct {
-	ID         int64          `json:"id"`
-	MemoryID   sql.NullInt64  `json:"memory_id"`
-	ChunkIndex int64          `json:"chunk_index"`
-	Text       string         `json:"text"`
-	Source     sql.NullString `json:"source"`
-	Path       sql.NullString `json:"path"`
-	StartLine  sql.NullInt64  `json:"start_line"`
-	EndLine    sql.NullInt64  `json:"end_line"`
-	Model      sql.NullString `json:"model"`
-	CreatedAt  sql.NullTime   `json:"created_at"`
+	UserID     string         `json:"user_id"`
 }
 
 // Memory chunks queries
-func (q *Queries) CreateMemoryChunk(ctx context.Context, arg CreateMemoryChunkParams) (CreateMemoryChunkRow, error) {
+func (q *Queries) CreateMemoryChunk(ctx context.Context, arg CreateMemoryChunkParams) (MemoryChunk, error) {
 	row := q.db.QueryRowContext(ctx, createMemoryChunk,
 		arg.MemoryID,
 		arg.ChunkIndex,
 		arg.Text,
 		arg.Source,
 		arg.Path,
-		arg.StartLine,
-		arg.EndLine,
+		arg.StartChar,
+		arg.EndChar,
 		arg.Model,
+		arg.UserID,
 	)
-	var i CreateMemoryChunkRow
+	var i MemoryChunk
 	err := row.Scan(
 		&i.ID,
 		&i.MemoryID,
@@ -81,9 +70,10 @@ func (q *Queries) CreateMemoryChunk(ctx context.Context, arg CreateMemoryChunkPa
 		&i.Text,
 		&i.Source,
 		&i.Path,
-		&i.StartLine,
-		&i.EndLine,
+		&i.StartChar,
+		&i.EndChar,
 		&i.Model,
+		&i.UserID,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -188,7 +178,7 @@ func (q *Queries) GetEmbeddingCache(ctx context.Context, arg GetEmbeddingCachePa
 }
 
 const getMemoryChunk = `-- name: GetMemoryChunk :one
-SELECT id, memory_id, chunk_index, text, source, path, start_line, end_line, model, created_at
+SELECT id, memory_id, chunk_index, text, source, path, start_char, end_char, model, created_at
 FROM memory_chunks
 WHERE id = ?
 `
@@ -200,8 +190,8 @@ type GetMemoryChunkRow struct {
 	Text       string         `json:"text"`
 	Source     sql.NullString `json:"source"`
 	Path       sql.NullString `json:"path"`
-	StartLine  sql.NullInt64  `json:"start_line"`
-	EndLine    sql.NullInt64  `json:"end_line"`
+	StartChar  sql.NullInt64  `json:"start_char"`
+	EndChar    sql.NullInt64  `json:"end_char"`
 	Model      sql.NullString `json:"model"`
 	CreatedAt  sql.NullTime   `json:"created_at"`
 }
@@ -216,8 +206,8 @@ func (q *Queries) GetMemoryChunk(ctx context.Context, id int64) (GetMemoryChunkR
 		&i.Text,
 		&i.Source,
 		&i.Path,
-		&i.StartLine,
-		&i.EndLine,
+		&i.StartChar,
+		&i.EndChar,
 		&i.Model,
 		&i.CreatedAt,
 	)
@@ -250,7 +240,7 @@ func (q *Queries) GetMemoryEmbedding(ctx context.Context, arg GetMemoryEmbedding
 }
 
 const listMemoryChunks = `-- name: ListMemoryChunks :many
-SELECT id, memory_id, chunk_index, text, source, path, start_line, end_line, model, created_at
+SELECT id, memory_id, chunk_index, text, source, path, start_char, end_char, model, created_at
 FROM memory_chunks
 WHERE memory_id = ?
 ORDER BY chunk_index
@@ -263,8 +253,8 @@ type ListMemoryChunksRow struct {
 	Text       string         `json:"text"`
 	Source     sql.NullString `json:"source"`
 	Path       sql.NullString `json:"path"`
-	StartLine  sql.NullInt64  `json:"start_line"`
-	EndLine    sql.NullInt64  `json:"end_line"`
+	StartChar  sql.NullInt64  `json:"start_char"`
+	EndChar    sql.NullInt64  `json:"end_char"`
 	Model      sql.NullString `json:"model"`
 	CreatedAt  sql.NullTime   `json:"created_at"`
 }
@@ -285,8 +275,8 @@ func (q *Queries) ListMemoryChunks(ctx context.Context, memoryID sql.NullInt64) 
 			&i.Text,
 			&i.Source,
 			&i.Path,
-			&i.StartLine,
-			&i.EndLine,
+			&i.StartChar,
+			&i.EndChar,
 			&i.Model,
 			&i.CreatedAt,
 		); err != nil {

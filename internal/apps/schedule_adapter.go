@@ -6,8 +6,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/tools"
-	pb "github.com/nebolabs/nebo/internal/apps/pb"
+	"github.com/neboloop/nebo/internal/agent/tools"
+	pb "github.com/neboloop/nebo/internal/apps/pb"
 )
 
 // AppScheduleAdapter bridges a schedule app's gRPC client to Nebo's tools.Scheduler interface.

@@ -322,6 +322,31 @@ func (m *SessionManager) ShouldRunMemoryFlush(sessionID string) (bool, error) {
 	return dbSession.CompactionCount.Int64 != dbSession.MemoryFlushCompactionCount.Int64, nil
 }
 
+// GetActiveTask returns the pinned active task for a session (survives compaction)
+func (m *SessionManager) GetActiveTask(sessionID string) (string, error) {
+	ctx := context.Background()
+	task, err := m.queries.GetSessionActiveTask(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return task, nil
+}
+
+// SetActiveTask pins a task description to the session (survives compaction)
+func (m *SessionManager) SetActiveTask(sessionID, task string) error {
+	ctx := context.Background()
+	return m.queries.SetSessionActiveTask(ctx, SetSessionActiveTaskParams{
+		ActiveTask: sql.NullString{String: task, Valid: task != ""},
+		ID:         sessionID,
+	})
+}
+
+// ClearActiveTask removes the pinned task from a session
+func (m *SessionManager) ClearActiveTask(sessionID string) error {
+	ctx := context.Background()
+	return m.queries.ClearSessionActiveTask(ctx, sessionID)
+}
+
 // Reset clears all messages from a session
 func (m *SessionManager) Reset(sessionID string) error {
 	ctx := context.Background()

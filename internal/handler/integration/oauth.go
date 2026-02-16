@@ -5,10 +5,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/nebolabs/nebo/internal/httputil"
-	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/httputil"
+	mcpclient "github.com/neboloop/nebo/internal/mcp/client"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 // GetMCPOAuthURLHandler returns the OAuth authorization URL for an integration

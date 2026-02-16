@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
+	"time"
 
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/db"
 )
 
 // Provider interface for embedding providers
@@ -43,11 +45,17 @@ func NewService(cfg Config) (*Service, error) {
 		return nil, fmt.Errorf("database connection required")
 	}
 
-	return &Service{
+	svc := &Service{
 		queries:  db.New(cfg.DB),
 		sqlDB:    cfg.DB,
 		provider: cfg.Provider,
-	}, nil
+	}
+
+	// Evict stale cache entries (older than 30 days) on startup
+	cutoff := sql.NullTime{Time: time.Now().AddDate(0, 0, -30), Valid: true}
+	_ = svc.queries.CleanOldEmbeddingCache(context.Background(), cutoff)
+
+	return svc, nil
 }
 
 // SetProvider sets the embedding provider
@@ -94,9 +102,29 @@ func (s *Service) Embed(ctx context.Context, texts []string) ([][]float32, error
 		}
 	}
 
-	// Generate embeddings for uncached texts
+	// Generate embeddings for uncached texts (with retry on transient errors)
 	if len(uncachedTexts) > 0 {
-		embeddings, err := provider.Embed(ctx, uncachedTexts)
+		var embeddings [][]float32
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			embeddings, err = provider.Embed(ctx, uncachedTexts)
+			if err == nil {
+				break
+			}
+			// Don't retry on auth/client errors (4xx)
+			errStr := err.Error()
+			if containsAny(errStr, "401", "403", "400", "Unauthorized", "invalid_api_key", "Bad Request") {
+				break
+			}
+			// Exponential backoff: 500ms, 2s, 8s
+			backoff := time.Duration(1<<uint(attempt*2)) * 500 * time.Millisecond
+			fmt.Printf("[Embeddings] Attempt %d failed: %v — retrying in %v\n", attempt+1, err, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate embeddings: %w", err)
 		}
@@ -209,6 +237,16 @@ func hashText(text string) string {
 func floatsToBlob(floats []float32) []byte {
 	data, _ := json.Marshal(floats)
 	return data
+}
+
+// containsAny returns true if s contains any of the substrings.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // blobToFloats converts a byte slice to a float32 slice

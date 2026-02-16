@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 func TestCollectToolFailures(t *testing.T) {

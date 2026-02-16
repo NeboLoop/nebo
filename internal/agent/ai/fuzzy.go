@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 // Variant tokens - common model suffixes that affect scoring

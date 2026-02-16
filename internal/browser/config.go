@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/defaults"
 )
 
 // Config is the browser configuration from nebo config.

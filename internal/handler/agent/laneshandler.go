@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/svc"
 )
 
 // GetLanesHandler returns lane statistics from the agent

@@ -10,7 +10,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // AuthenticatedTransport wraps http.RoundTripper to add OAuth/API key authentication

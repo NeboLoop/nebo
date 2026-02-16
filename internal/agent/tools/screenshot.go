@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/kbinani/screenshot"
-	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/defaults"
 )
 
 // ScreenshotTool captures screenshots of the screen or specific displays
@@ -126,14 +126,15 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 	// Handle output based on format
 	switch params.Format {
 	case "file":
-		filePath, err := t.saveToFile(img, params.Output)
+		filePath, fileName, err := t.saveToFile(img, params.Output)
 		if err != nil {
 			return &ToolResult{
 				Content: fmt.Sprintf("Failed to save screenshot: %v", err),
 				IsError: true,
 			}, nil
 		}
-		result.WriteString(fmt.Sprintf("Saved to: %s", filePath))
+		result.WriteString(fmt.Sprintf("Saved to: %s\n", filePath))
+		result.WriteString(fmt.Sprintf("![Screenshot](/api/v1/files/%s)", fileName))
 
 	case "base64":
 		b64, err := t.toBase64(img)
@@ -146,7 +147,7 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 		result.WriteString(fmt.Sprintf("Base64 image (data:image/png;base64,%s)", b64))
 
 	case "both":
-		filePath, err := t.saveToFile(img, params.Output)
+		filePath, fileName, err := t.saveToFile(img, params.Output)
 		if err != nil {
 			return &ToolResult{
 				Content: fmt.Sprintf("Failed to save screenshot: %v", err),
@@ -161,6 +162,7 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 			}, nil
 		}
 		result.WriteString(fmt.Sprintf("Saved to: %s\n", filePath))
+		result.WriteString(fmt.Sprintf("![Screenshot](/api/v1/files/%s)\n", fileName))
 		result.WriteString(fmt.Sprintf("Base64 image (data:image/png;base64,%s)", b64))
 	}
 
@@ -170,32 +172,38 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 	}, nil
 }
 
-func (t *ScreenshotTool) saveToFile(img *image.RGBA, outputPath string) (string, error) {
+// saveToFile saves the screenshot and returns (fullPath, fileName, error).
+// fileName is the relative name suitable for the /api/v1/files/ URL.
+func (t *ScreenshotTool) saveToFile(img *image.RGBA, outputPath string) (string, string, error) {
+	var fileName string
 	if outputPath == "" {
-		// Generate default path
+		// Save to <data_dir>/files/ so the file server can serve it
 		dataDir, _ := defaults.DataDir()
-		screenshotsDir := filepath.Join(dataDir, "screenshots")
-		os.MkdirAll(screenshotsDir, 0755)
-		outputPath = filepath.Join(screenshotsDir, fmt.Sprintf("screenshot_%s.png", time.Now().Format("20060102_150405")))
+		filesDir := filepath.Join(dataDir, "files")
+		os.MkdirAll(filesDir, 0755)
+		fileName = fmt.Sprintf("screenshot_%s.png", time.Now().Format("20060102_150405"))
+		outputPath = filepath.Join(filesDir, fileName)
+	} else {
+		fileName = filepath.Base(outputPath)
 	}
 
 	// Ensure directory exists
 	dir := filepath.Dir(outputPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create directory: %w", err)
+		return "", "", fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	file, err := os.Create(outputPath)
 	if err != nil {
-		return "", fmt.Errorf("failed to create file: %w", err)
+		return "", "", fmt.Errorf("failed to create file: %w", err)
 	}
 	defer file.Close()
 
 	if err := png.Encode(file, img); err != nil {
-		return "", fmt.Errorf("failed to encode PNG: %w", err)
+		return "", "", fmt.Errorf("failed to encode PNG: %w", err)
 	}
 
-	return outputPath, nil
+	return outputPath, fileName, nil
 }
 
 func (t *ScreenshotTool) toBase64(img *image.RGBA) (string, error) {

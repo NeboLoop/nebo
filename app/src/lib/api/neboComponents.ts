@@ -114,6 +114,16 @@ export interface CLIAvailability {
 	gemini: boolean
 }
 
+// CLIProviderInfo describes a CLI provider (from models.yaml cli_providers)
+export interface CLIProviderInfo {
+	id: string
+	displayName: string
+	command: string
+	installHint: string
+	models: Array<string>
+	defaultModel: string
+}
+
 export interface CLIStatus {
 	installed: boolean
 	authenticated: boolean
@@ -581,6 +591,7 @@ export interface ListModelsResponse {
 	aliases?: Array<ModelAlias>
 	availableCLIs?: CLIAvailability
 	cliStatuses?: CLIStatusMap
+	cliProviders?: Array<CLIProviderInfo>
 }
 
 export interface ListNotificationsRequest {

@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	agentcfg "github.com/nebolabs/nebo/internal/agent/config"
-	"github.com/nebolabs/nebo/internal/agent/session"
-	"github.com/nebolabs/nebo/internal/db"
+	agentcfg "github.com/neboloop/nebo/internal/agent/config"
+	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/db"
 )
 
 // sessionCmd creates the session command

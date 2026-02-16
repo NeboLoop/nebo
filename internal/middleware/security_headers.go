@@ -32,7 +32,7 @@ func DefaultSecurityHeaders() *SecurityHeaders {
 		// Content Security Policy - restrictive default, customize as needed
 		ContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 		// Permissions Policy - disable potentially dangerous features
-		PermissionsPolicy: "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
+		PermissionsPolicy: "accelerometer=(), camera=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()",
 		// Referrer Policy - send referrer only for same-origin requests
 		ReferrerPolicy: "strict-origin-when-cross-origin",
 		// Strict Transport Security - enforce HTTPS for 1 year, include subdomains
@@ -54,7 +54,7 @@ func APISecurityHeaders() *SecurityHeaders {
 	return &SecurityHeaders{
 		// APIs typically don't need CSP, but we set a restrictive one anyway
 		ContentSecurityPolicy:   "default-src 'none'; frame-ancestors 'none'",
-		PermissionsPolicy:       "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()",
+		PermissionsPolicy:       "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()",
 		ReferrerPolicy:          "strict-origin-when-cross-origin",
 		StrictTransportSecurity: "max-age=31536000; includeSubDomains; preload",
 		XContentTypeOptions:     "nosniff",

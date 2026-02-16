@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/nebolabs/nebo/internal/db/migrations"
+	"github.com/neboloop/nebo/internal/db/migrations"
 
 	_ "modernc.org/sqlite"
 )

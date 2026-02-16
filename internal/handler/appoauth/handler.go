@@ -3,8 +3,8 @@ package appoauth
 import (
 	"net/http"
 
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/oauth/broker"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/oauth/broker"
 )
 
 // ConnectHandler starts the OAuth flow for an app+provider.

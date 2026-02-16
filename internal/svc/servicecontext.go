@@ -6,18 +6,18 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/config"
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/defaults"
-	"github.com/nebolabs/nebo/internal/local"
-	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
-	"github.com/nebolabs/nebo/internal/middleware"
-	"github.com/nebolabs/nebo/internal/oauth/broker"
-	"github.com/nebolabs/nebo/internal/apps/settings"
-	"github.com/nebolabs/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/config"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/local"
+	mcpclient "github.com/neboloop/nebo/internal/mcp/client"
+	"github.com/neboloop/nebo/internal/middleware"
+	"github.com/neboloop/nebo/internal/oauth/broker"
+	"github.com/neboloop/nebo/internal/apps/settings"
+	"github.com/neboloop/nebo/internal/provider"
 
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // AppUIProvider is the interface for accessing app UI capabilities.

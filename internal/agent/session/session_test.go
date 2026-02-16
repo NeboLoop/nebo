@@ -42,6 +42,7 @@ func openTestDB(t *testing.T) *sql.DB {
 			auth_profile_override_source TEXT,
 			verbose_level TEXT,
 			custom_label TEXT,
+			last_embedded_message_id INTEGER DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // Hub maintains the set of active clients and broadcasts messages to the clients.

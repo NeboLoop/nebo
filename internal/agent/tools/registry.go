@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/ai"
 )
 
 // ToolResult represents the result of a tool execution

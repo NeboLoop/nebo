@@ -97,7 +97,9 @@ func TestValidateBinary(t *testing.T) {
 	t.Run("valid binary", func(t *testing.T) {
 		dir := t.TempDir()
 		binPath := filepath.Join(dir, "binary")
-		os.WriteFile(binPath, []byte("#!/bin/sh\necho hello"), 0755)
+		// Write a fake Mach-O 64-bit header (magic bytes + padding)
+		fakeNative := append([]byte{0xcf, 0xfa, 0xed, 0xfe}, make([]byte, 100)...)
+		os.WriteFile(binPath, fakeNative, 0755)
 
 		if err := validateBinary(binPath, cfg); err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -121,7 +123,8 @@ func TestValidateBinary(t *testing.T) {
 	t.Run("symlink rejected", func(t *testing.T) {
 		dir := t.TempDir()
 		realBin := filepath.Join(dir, "real")
-		os.WriteFile(realBin, []byte("#!/bin/sh\necho hello"), 0755)
+		fakeNative := append([]byte{0xcf, 0xfa, 0xed, 0xfe}, make([]byte, 100)...)
+		os.WriteFile(realBin, fakeNative, 0755)
 
 		linkBin := filepath.Join(dir, "link")
 		os.Symlink(realBin, linkBin)
@@ -154,7 +157,9 @@ func TestValidateBinary(t *testing.T) {
 	t.Run("no size limit", func(t *testing.T) {
 		dir := t.TempDir()
 		binPath := filepath.Join(dir, "binary")
+		// Start with Mach-O magic so format validation passes
 		data := make([]byte, 2*1024*1024)
+		copy(data, []byte{0xcf, 0xfa, 0xed, 0xfe})
 		os.WriteFile(binPath, data, 0755)
 
 		// MaxBinarySizeMB = 0 means no limit

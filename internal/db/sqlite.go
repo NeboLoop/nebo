@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nebolabs/nebo/internal/db/migrations"
+	"github.com/neboloop/nebo/internal/db/migrations"
 
 	_ "modernc.org/sqlite" // Pure Go SQLite driver (no CGO)
 
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // NewSQLite creates a new SQLite database connection, runs migrations, and returns a Store

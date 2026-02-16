@@ -10,6 +10,17 @@ import (
 	"database/sql"
 )
 
+const clearSessionActiveTask = `-- name: ClearSessionActiveTask :exec
+UPDATE sessions
+SET active_task = NULL, updated_at = unixepoch()
+WHERE id = ?
+`
+
+func (q *Queries) ClearSessionActiveTask(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, clearSessionActiveTask, id)
+	return err
+}
+
 const clearSessionOverrides = `-- name: ClearSessionOverrides :exec
 UPDATE sessions
 SET model_override = NULL,
@@ -58,7 +69,7 @@ const createSession = `-- name: CreateSession :one
 
 INSERT INTO sessions (id, name, scope, scope_id, metadata, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, unixepoch(), unixepoch())
-RETURNING id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label
+RETURNING id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task
 `
 
 type CreateSessionParams struct {
@@ -101,6 +112,8 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.AuthProfileOverrideSource,
 		&i.VerboseLevel,
 		&i.CustomLabel,
+		&i.LastEmbeddedMessageID,
+		&i.ActiveTask,
 	)
 	return i, err
 }
@@ -196,6 +209,56 @@ func (q *Queries) GetMaxMessageIDToKeep(ctx context.Context, arg GetMaxMessageID
 	return coalesce, err
 }
 
+const getMessagesAfterID = `-- name: GetMessagesAfterID :many
+SELECT id, session_id, role, content, created_at
+FROM session_messages
+WHERE session_id = ? AND id > ? AND role IN ('user', 'assistant')
+ORDER BY id ASC
+`
+
+type GetMessagesAfterIDParams struct {
+	SessionID string `json:"session_id"`
+	ID        int64  `json:"id"`
+}
+
+type GetMessagesAfterIDRow struct {
+	ID        int64          `json:"id"`
+	SessionID string         `json:"session_id"`
+	Role      string         `json:"role"`
+	Content   sql.NullString `json:"content"`
+	CreatedAt int64          `json:"created_at"`
+}
+
+// Get messages after a given ID for embedding (user and assistant only)
+func (q *Queries) GetMessagesAfterID(ctx context.Context, arg GetMessagesAfterIDParams) ([]GetMessagesAfterIDRow, error) {
+	rows, err := q.db.QueryContext(ctx, getMessagesAfterID, arg.SessionID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetMessagesAfterIDRow
+	for rows.Next() {
+		var i GetMessagesAfterIDRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Content,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getNonCompactedMessages = `-- name: GetNonCompactedMessages :many
 SELECT id, session_id, role, content, tool_calls, tool_results, token_estimate, is_compacted, created_at FROM session_messages
 WHERE session_id = ? AND (is_compacted IS NULL OR is_compacted = 0)
@@ -239,7 +302,7 @@ const getOrCreateScopedSession = `-- name: GetOrCreateScopedSession :one
 INSERT INTO sessions (id, name, scope, scope_id, metadata, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, unixepoch(), unixepoch())
 ON CONFLICT(name, scope, scope_id) DO UPDATE SET updated_at = unixepoch()
-RETURNING id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label
+RETURNING id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task
 `
 
 type GetOrCreateScopedSessionParams struct {
@@ -281,6 +344,8 @@ func (q *Queries) GetOrCreateScopedSession(ctx context.Context, arg GetOrCreateS
 		&i.AuthProfileOverrideSource,
 		&i.VerboseLevel,
 		&i.CustomLabel,
+		&i.LastEmbeddedMessageID,
+		&i.ActiveTask,
 	)
 	return i, err
 }
@@ -382,7 +447,7 @@ func (q *Queries) GetRecentSessionMessages(ctx context.Context, arg GetRecentSes
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label FROM sessions WHERE id = ?
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
@@ -410,12 +475,28 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 		&i.AuthProfileOverrideSource,
 		&i.VerboseLevel,
 		&i.CustomLabel,
+		&i.LastEmbeddedMessageID,
+		&i.ActiveTask,
 	)
 	return i, err
 }
 
+const getSessionActiveTask = `-- name: GetSessionActiveTask :one
+
+SELECT COALESCE(active_task, '') as active_task
+FROM sessions WHERE id = ?
+`
+
+// Active task tracking (survives compaction)
+func (q *Queries) GetSessionActiveTask(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getSessionActiveTask, id)
+	var active_task string
+	err := row.Scan(&active_task)
+	return active_task, err
+}
+
 const getSessionByName = `-- name: GetSessionByName :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label FROM sessions WHERE name = ?
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions WHERE name = ?
 `
 
 func (q *Queries) GetSessionByName(ctx context.Context, name sql.NullString) (Session, error) {
@@ -443,12 +524,14 @@ func (q *Queries) GetSessionByName(ctx context.Context, name sql.NullString) (Se
 		&i.AuthProfileOverrideSource,
 		&i.VerboseLevel,
 		&i.CustomLabel,
+		&i.LastEmbeddedMessageID,
+		&i.ActiveTask,
 	)
 	return i, err
 }
 
 const getSessionByNameAndScope = `-- name: GetSessionByNameAndScope :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label FROM sessions
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions
 WHERE name = ? AND scope = ? AND scope_id = ?
 `
 
@@ -483,12 +566,14 @@ func (q *Queries) GetSessionByNameAndScope(ctx context.Context, arg GetSessionBy
 		&i.AuthProfileOverrideSource,
 		&i.VerboseLevel,
 		&i.CustomLabel,
+		&i.LastEmbeddedMessageID,
+		&i.ActiveTask,
 	)
 	return i, err
 }
 
 const getSessionByNameAndScopeNullID = `-- name: GetSessionByNameAndScopeNullID :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label FROM sessions
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions
 WHERE name = ? AND scope = ? AND (scope_id IS NULL OR scope_id = '')
 `
 
@@ -522,12 +607,14 @@ func (q *Queries) GetSessionByNameAndScopeNullID(ctx context.Context, arg GetSes
 		&i.AuthProfileOverrideSource,
 		&i.VerboseLevel,
 		&i.CustomLabel,
+		&i.LastEmbeddedMessageID,
+		&i.ActiveTask,
 	)
 	return i, err
 }
 
 const getSessionByScope = `-- name: GetSessionByScope :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label FROM sessions WHERE scope = ? AND scope_id = ?
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions WHERE scope = ? AND scope_id = ?
 `
 
 type GetSessionByScopeParams struct {
@@ -560,8 +647,24 @@ func (q *Queries) GetSessionByScope(ctx context.Context, arg GetSessionByScopePa
 		&i.AuthProfileOverrideSource,
 		&i.VerboseLevel,
 		&i.CustomLabel,
+		&i.LastEmbeddedMessageID,
+		&i.ActiveTask,
 	)
 	return i, err
+}
+
+const getSessionLastEmbeddedMessageID = `-- name: GetSessionLastEmbeddedMessageID :one
+
+SELECT COALESCE(last_embedded_message_id, 0) as last_embedded_message_id
+FROM sessions WHERE id = ?
+`
+
+// Session transcript embedding tracking
+func (q *Queries) GetSessionLastEmbeddedMessageID(ctx context.Context, id string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getSessionLastEmbeddedMessageID, id)
+	var last_embedded_message_id int64
+	err := row.Scan(&last_embedded_message_id)
+	return last_embedded_message_id, err
 }
 
 const getSessionMessageStats = `-- name: GetSessionMessageStats :one
@@ -669,7 +772,7 @@ func (q *Queries) IncrementSessionMessageCount(ctx context.Context, id string) e
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?
 `
 
 type ListSessionsParams struct {
@@ -708,6 +811,8 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.AuthProfileOverrideSource,
 			&i.VerboseLevel,
 			&i.CustomLabel,
+			&i.LastEmbeddedMessageID,
+			&i.ActiveTask,
 		); err != nil {
 			return nil, err
 		}
@@ -723,7 +828,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsByScope = `-- name: ListSessionsByScope :many
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label FROM sessions
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions
 WHERE scope = ?
 ORDER BY updated_at DESC
 `
@@ -759,6 +864,8 @@ func (q *Queries) ListSessionsByScope(ctx context.Context, scope sql.NullString)
 			&i.AuthProfileOverrideSource,
 			&i.VerboseLevel,
 			&i.CustomLabel,
+			&i.LastEmbeddedMessageID,
+			&i.ActiveTask,
 		); err != nil {
 			return nil, err
 		}
@@ -774,7 +881,7 @@ func (q *Queries) ListSessionsByScope(ctx context.Context, scope sql.NullString)
 }
 
 const listSessionsByScopeAndScopeID = `-- name: ListSessionsByScopeAndScopeID :many
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label FROM sessions
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions
 WHERE scope = ? AND scope_id = ?
 ORDER BY updated_at DESC
 `
@@ -815,6 +922,8 @@ func (q *Queries) ListSessionsByScopeAndScopeID(ctx context.Context, arg ListSes
 			&i.AuthProfileOverrideSource,
 			&i.VerboseLevel,
 			&i.CustomLabel,
+			&i.LastEmbeddedMessageID,
+			&i.ActiveTask,
 		); err != nil {
 			return nil, err
 		}
@@ -879,12 +988,28 @@ const resetSession = `-- name: ResetSession :exec
 UPDATE sessions
 SET message_count = 0, token_count = 0, summary = NULL, last_compacted_at = NULL,
     compaction_count = 0, memory_flush_at = NULL, memory_flush_compaction_count = NULL,
-    updated_at = unixepoch()
+    active_task = NULL, updated_at = unixepoch()
 WHERE id = ?
 `
 
 func (q *Queries) ResetSession(ctx context.Context, id string) error {
 	_, err := q.db.ExecContext(ctx, resetSession, id)
+	return err
+}
+
+const setSessionActiveTask = `-- name: SetSessionActiveTask :exec
+UPDATE sessions
+SET active_task = ?, updated_at = unixepoch()
+WHERE id = ?
+`
+
+type SetSessionActiveTaskParams struct {
+	ActiveTask sql.NullString `json:"active_task"`
+	ID         string         `json:"id"`
+}
+
+func (q *Queries) SetSessionActiveTask(ctx context.Context, arg SetSessionActiveTaskParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionActiveTask, arg.ActiveTask, arg.ID)
 	return err
 }
 
@@ -953,6 +1078,22 @@ type SetSessionSendPolicyParams struct {
 
 func (q *Queries) SetSessionSendPolicy(ctx context.Context, arg SetSessionSendPolicyParams) error {
 	_, err := q.db.ExecContext(ctx, setSessionSendPolicy, arg.SendPolicy, arg.ID)
+	return err
+}
+
+const updateSessionLastEmbeddedMessageID = `-- name: UpdateSessionLastEmbeddedMessageID :exec
+UPDATE sessions
+SET last_embedded_message_id = ?, updated_at = unixepoch()
+WHERE id = ?
+`
+
+type UpdateSessionLastEmbeddedMessageIDParams struct {
+	LastEmbeddedMessageID sql.NullInt64 `json:"last_embedded_message_id"`
+	ID                    string        `json:"id"`
+}
+
+func (q *Queries) UpdateSessionLastEmbeddedMessageID(ctx context.Context, arg UpdateSessionLastEmbeddedMessageIDParams) error {
+	_, err := q.db.ExecContext(ctx, updateSessionLastEmbeddedMessageID, arg.LastEmbeddedMessageID, arg.ID)
 	return err
 }
 

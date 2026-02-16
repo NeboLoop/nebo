@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // ExtractedFacts contains facts extracted from a conversation

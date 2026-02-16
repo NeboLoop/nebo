@@ -3,8 +3,8 @@ package mcpctx
 import (
 	"context"
 
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/svc"
 )
 
 // AuthMode indicates how the MCP session was authenticated.

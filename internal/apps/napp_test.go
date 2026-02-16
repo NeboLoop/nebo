@@ -15,6 +15,7 @@ func TestIsAllowedNappFile(t *testing.T) {
 		"binary",
 		"app",
 		"signatures.json",
+		"SKILL.md",
 		"ui/index.html",
 		"ui/style.css",
 		"ui/js/app.js",
@@ -58,10 +59,13 @@ func TestMaxSizeForFile(t *testing.T) {
 }
 
 func TestExtractNapp_Valid(t *testing.T) {
+	// Use Mach-O 64-bit magic bytes so binary format validation passes
+	fakeBinary := string([]byte{0xcf, 0xfa, 0xed, 0xfe}) + string(make([]byte, 100))
 	nappPath := createTestNapp(t, map[string]testEntry{
-		"manifest.json":  {content: `{"id":"test","name":"Test","version":"1.0.0","provides":["gateway"]}`},
-		"binary":         {content: "#!/bin/sh\necho hello", mode: 0755},
+		"manifest.json":   {content: `{"id":"test","name":"Test","version":"1.0.0","provides":["gateway"]}`},
+		"binary":          {content: fakeBinary, mode: 0755},
 		"signatures.json": {content: `{"key_id":"abc","algorithm":"ed25519","binary_sha256":"x","binary_signature":"y","manifest_signature":"z"}`},
+		"SKILL.md":        {content: "# Test Skill\nA test skill definition."},
 	})
 
 	destDir := filepath.Join(t.TempDir(), "extracted")
@@ -85,10 +89,12 @@ func TestExtractNapp_Valid(t *testing.T) {
 }
 
 func TestExtractNapp_WithUIFiles(t *testing.T) {
+	fakeBinary := string([]byte{0xcf, 0xfa, 0xed, 0xfe}) + string(make([]byte, 100))
 	nappPath := createTestNapp(t, map[string]testEntry{
 		"manifest.json":   {content: `{"id":"test"}`},
-		"binary":          {content: "bin", mode: 0755},
+		"binary":          {content: fakeBinary, mode: 0755},
 		"signatures.json": {content: `{"key_id":"k","algorithm":"ed25519","binary_sha256":"x","binary_signature":"y","manifest_signature":"z"}`},
+		"SKILL.md":        {content: "# Test Skill"},
 		"ui/index.html":   {content: "<html></html>"},
 		"ui/style.css":    {content: "body{}"},
 	})

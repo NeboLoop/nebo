@@ -15,16 +15,18 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 
-	"github.com/nebolabs/nebo/app"
-	"github.com/nebolabs/nebo/internal/agenthub"
-	"github.com/nebolabs/nebo/internal/daemon"
-	"github.com/nebolabs/nebo/internal/db/migrations"
-	"github.com/nebolabs/nebo/internal/defaults"
-	"github.com/nebolabs/nebo/internal/lifecycle"
-	"github.com/nebolabs/nebo/internal/server"
-	"github.com/nebolabs/nebo/internal/svc"
+	"github.com/neboloop/nebo/app"
+	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/daemon"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/db/migrations"
+	"github.com/neboloop/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/lifecycle"
+	"github.com/neboloop/nebo/internal/local"
+	"github.com/neboloop/nebo/internal/server"
+	"github.com/neboloop/nebo/internal/svc"
 )
 
 // ensureUserPath augments PATH with common CLI tool locations.
@@ -160,6 +162,11 @@ func RunAll() {
 	agentCfg := loadAgentConfig()
 	SetSharedDB(svcCtx.DB.GetDB())
 
+	// Heartbeat daemon - started when agent connects via lifecycle hook
+	var heartbeat *daemon.Heartbeat
+	var heartbeatOnce sync.Once
+	agentReady := make(chan struct{})
+
 	// Start agent in goroutine (uses shared database from ServiceContext)
 	wg.Add(1)
 	go func() {
@@ -174,6 +181,7 @@ func RunAll() {
 			Quiet:            true,
 			Dangerously:      dangerouslyAll,
 			AgentMCPProxy:    agentMCPProxy,
+			Heartbeat:        &heartbeat,
 		}
 		if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {
 			fmt.Printf("[AgentLoop] Error: %v\n", err)
@@ -182,11 +190,6 @@ func RunAll() {
 			}
 		}
 	}()
-
-	// Heartbeat daemon - started when agent connects via lifecycle hook
-	var heartbeat *daemon.Heartbeat
-	var heartbeatOnce sync.Once
-	agentReady := make(chan struct{})
 
 	lifecycle.OnAgentConnected(func(agentID string) {
 		// Signal that agent is ready
@@ -199,16 +202,14 @@ func RunAll() {
 		// Start heartbeat daemon only once, when first agent connects
 		heartbeatOnce.Do(func() {
 			heartbeat = daemon.NewHeartbeat(daemon.HeartbeatConfig{
-				Interval: 30 * time.Minute,
-				OnHeartbeat: func(hbCtx context.Context, tasks string) error {
+				Interval: heartbeatInterval(),
+				OnHeartbeat: func(hbCtx context.Context, prompt string) error {
 					agent := svcCtx.AgentHub.GetAnyAgent()
 					if agent == nil {
 						fmt.Println("[heartbeat] No agent connected, skipping")
 						return nil
 					}
 
-					prompt := daemon.FormatHeartbeatPrompt(tasks)
-					// Use unique session key each time to avoid accumulating history
 					sessionKey := fmt.Sprintf("heartbeat-%d", time.Now().UnixNano())
 					frame := &agenthub.Frame{
 						Type:   "req",
@@ -221,8 +222,25 @@ func RunAll() {
 					}
 					return svcCtx.AgentHub.SendToAgent(agent.ID, frame)
 				},
+				IsQuietHours: func() bool {
+					if rawDB := svcCtx.DB.GetDB(); rawDB != nil {
+						q := db.New(rawDB)
+						profile, err := q.GetAgentProfile(context.Background())
+						if err == nil {
+							return daemon.IsInQuietHours(profile.QuietHoursStart, profile.QuietHoursEnd, time.Now())
+						}
+					}
+					return false
+				},
 			})
 			heartbeat.Start(ctx)
+
+			// Update interval at runtime when user changes it in Settings
+			local.GetAgentSettings().OnChange(func(s local.AgentSettings) {
+				if s.HeartbeatIntervalMinutes > 0 {
+					heartbeat.SetInterval(time.Duration(s.HeartbeatIntervalMinutes) * time.Minute)
+				}
+			})
 		})
 	})
 
@@ -361,6 +379,17 @@ func runServe() {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// heartbeatInterval reads the configured interval from AgentSettingsStore,
+// falling back to 30 minutes if unset or zero.
+func heartbeatInterval() time.Duration {
+	if s := local.GetAgentSettings(); s != nil {
+		if mins := s.Get().HeartbeatIntervalMinutes; mins > 0 {
+			return time.Duration(mins) * time.Minute
+		}
+	}
+	return 30 * time.Minute
 }
 
 

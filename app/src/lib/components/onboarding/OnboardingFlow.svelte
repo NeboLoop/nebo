@@ -144,26 +144,8 @@
 		}
 	};
 
-	const cliProviderInfo: Record<string, { id: string; name: string; description: string; model: string }> = {
-		claude: {
-			id: 'claude-code',
-			name: 'Claude Agent',
-			description: 'Use your existing Claude subscription',
-			model: 'claude-code/opus'
-		},
-		codex: {
-			id: 'codex-cli',
-			name: 'Codex CLI',
-			description: 'Use your ChatGPT/OpenAI subscription',
-			model: 'codex-cli/gpt-5'
-		},
-		gemini: {
-			id: 'gemini-cli',
-			name: 'Gemini CLI',
-			description: 'Use your Google AI subscription (FREE)',
-			model: 'gemini-cli/gemini-2.5-pro'
-		}
-	};
+	// CLI provider info loaded from models.yaml via API (no hardcoded model IDs)
+	let cliProviderInfo = $state<Record<string, { id: string; name: string; description: string; model: string }>>({});
 
 	// Get list of authenticated CLIs
 	let authenticatedCLIs = $derived(() => {
@@ -185,11 +167,34 @@
 	// Progress dots - steps visible to user
 	const progressSteps = ['welcome', 'terms', 'provider-choice', 'capabilities', 'neboloop', 'complete'];
 
+	// CLI command → description (static, not model-dependent)
+	const cliDescriptions: Record<string, string> = {
+		claude: 'Use your existing Claude subscription',
+		codex: 'Use your ChatGPT/OpenAI subscription',
+		gemini: 'Use your Google AI subscription (FREE)'
+	};
+
 	onMount(async () => {
-		// Check CLI statuses (installed + authenticated)
+		// Check CLI statuses and load CLI provider config from models.yaml
 		try {
 			const response = await api.listModels();
 			cliStatuses = response.cliStatuses ?? null;
+
+			// Build cliProviderInfo from API response (models come from models.yaml)
+			if (response.cliProviders) {
+				const info: Record<string, { id: string; name: string; description: string; model: string }> = {};
+				for (const cp of response.cliProviders) {
+					// defaultModel comes from models.yaml cli_providers section
+					const defaultModel = cp.defaultModel || (cp.models?.[0] ?? '');
+					info[cp.command] = {
+						id: cp.id,
+						name: cp.displayName,
+						description: cliDescriptions[cp.command] ?? `Use ${cp.displayName}`,
+						model: defaultModel ? `${cp.id}/${defaultModel}` : cp.id
+					};
+				}
+				cliProviderInfo = info;
+			}
 		} catch {
 			cliStatuses = null;
 		} finally {

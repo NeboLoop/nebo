@@ -10,7 +10,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/nebolabs/nebo/internal/lifecycle"
+	"github.com/neboloop/nebo/internal/lifecycle"
+	"github.com/neboloop/nebo/internal/middleware"
 )
 
 // Frame represents a message frame between server and agent
@@ -83,7 +84,8 @@ func NewHub() *Hub {
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
-				return true // Allow all origins for agents
+				origin := r.Header.Get("Origin")
+				return origin == "" || middleware.IsLocalhostOrigin(origin)
 			},
 		},
 	}
@@ -450,7 +452,6 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, agentID st
 // readPump reads messages from the agent
 func (h *Hub) readPump(agent *AgentConnection) {
 	defer func() {
-		fmt.Printf("[AgentHub] readPump exiting for agent %s\n", agent.ID)
 		h.unregister <- agent
 	}()
 
@@ -460,21 +461,27 @@ func (h *Hub) readPump(agent *AgentConnection) {
 		agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 		return nil
 	})
+	agent.Conn.SetPingHandler(func(appData string) error {
+		agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
+		return agent.Conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
+	})
 
 	for {
 		_, message, err := agent.Conn.ReadMessage()
 		if err != nil {
-			fmt.Printf("[AgentHub] ReadMessage error for %s: %v\n", agent.ID, err)
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				fmt.Printf("[AgentHub] Unexpected close error: %v\n", err)
+				fmt.Printf("[AgentHub] Unexpected close error for %s: %v\n", agent.ID, err)
 			}
 			break
 		}
 
+		// Reset deadline on any received data (belt-and-suspenders with pong handler)
+		agent.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
+
 		// Parse frame
 		var frame Frame
 		if err := json.Unmarshal(message, &frame); err != nil {
-			fmt.Printf("[AgentHub] Invalid frame: %v\n", err)
+			fmt.Printf("[AgentHub] Invalid frame from %s: %v\n", agent.ID, err)
 			continue
 		}
 

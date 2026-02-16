@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/ai"
 )
 
 func TestReadTool(t *testing.T) {

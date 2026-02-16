@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"sync"
 
-	"github.com/nebolabs/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/db"
 )
 
 // AgentSettings holds the agent configuration

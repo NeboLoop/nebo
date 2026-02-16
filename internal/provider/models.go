@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/nebolabs/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/defaults"
 	"gopkg.in/yaml.v3"
 )
 
@@ -70,16 +70,27 @@ type ModelAlias struct {
 	ModelId string `yaml:"modelId" json:"modelId"`
 }
 
+// CLIProviderConfig defines a CLI provider in models.yaml
+type CLIProviderConfig struct {
+	ID           string   `json:"id" yaml:"id"`
+	DisplayName  string   `json:"displayName" yaml:"displayName"`
+	Command      string   `json:"command" yaml:"command"`
+	InstallHint  string   `json:"installHint" yaml:"installHint"`
+	Models       []string `json:"models" yaml:"models"`
+	DefaultModel string   `json:"defaultModel" yaml:"defaultModel"`
+}
+
 // ModelsConfig is the YAML structure for storing provider models
 // The agent populates this file itself using its tools (web search, memory, etc.)
 type ModelsConfig struct {
-	Version     string                         `yaml:"version"`
-	UpdatedAt   string                         `yaml:"updatedAt"`
-	Credentials map[string]ProviderCredentials `yaml:"credentials,omitempty"`
-	Defaults    *Defaults                      `yaml:"defaults,omitempty"`
-	TaskRouting *TaskRouting                   `yaml:"task_routing,omitempty"`
-	Aliases     []ModelAlias                   `yaml:"aliases,omitempty"`
-	Providers   map[string][]ModelInfo         `yaml:"providers"`
+	Version      string                         `yaml:"version"`
+	UpdatedAt    string                         `yaml:"updatedAt"`
+	Credentials  map[string]ProviderCredentials `yaml:"credentials,omitempty"`
+	Defaults     *Defaults                      `yaml:"defaults,omitempty"`
+	TaskRouting  *TaskRouting                   `yaml:"task_routing,omitempty"`
+	Aliases      []ModelAlias                   `yaml:"aliases,omitempty"`
+	Providers    map[string][]ModelInfo         `yaml:"providers"`
+	CLIProviders []CLIProviderConfig            `yaml:"cli_providers,omitempty"`
 }
 
 // Singleton instance
@@ -240,6 +251,18 @@ func loadFromYAML() *ModelsConfig {
 		config.Providers = make(map[string][]ModelInfo)
 	}
 
+	// Merge cli_providers from embedded defaults if missing from user config.
+	// This ensures existing users who already have a models.yaml get the
+	// cli_providers section without needing to manually add it.
+	if len(config.CLIProviders) == 0 {
+		if defaultData, err := defaults.GetDefault("models.yaml"); err == nil {
+			var defaultConfig ModelsConfig
+			if err := yaml.Unmarshal(defaultData, &defaultConfig); err == nil && len(defaultConfig.CLIProviders) > 0 {
+				config.CLIProviders = defaultConfig.CLIProviders
+			}
+		}
+	}
+
 	return &config
 }
 
@@ -383,43 +406,72 @@ func UpdateModel(providerType, modelID string, update ModelUpdate) error {
 
 // CLIProviderInfo describes an available CLI provider
 type CLIProviderInfo struct {
-	ID          string   `json:"id"`          // e.g., "claude-code"
-	DisplayName string   `json:"displayName"` // e.g., "Claude Code CLI"
-	Command     string   `json:"command"`     // e.g., "claude"
-	Installed   bool     `json:"installed"`   // true if command found in PATH
-	Path        string   `json:"path"`        // Full path to command (if installed)
-	InstallHint string   `json:"installHint"` // e.g., "brew install claude-code"
-	Models      []string `json:"models"`      // Available model aliases
+	ID           string   `json:"id"`           // e.g., "claude-code"
+	DisplayName  string   `json:"displayName"`  // e.g., "Claude Code CLI"
+	Command      string   `json:"command"`      // e.g., "claude"
+	Installed    bool     `json:"installed"`     // true if command found in PATH
+	Path         string   `json:"path"`         // Full path to command (if installed)
+	InstallHint  string   `json:"installHint"`  // e.g., "brew install claude-code"
+	Models       []string `json:"models"`       // Available model aliases
+	DefaultModel string   `json:"defaultModel"` // Default model alias (e.g., "opus")
 }
 
-// KnownCLIProviders defines the CLI providers we support
-var KnownCLIProviders = []CLIProviderInfo{
-	{
-		ID:          "claude-code",
-		DisplayName: "Claude Agent",
-		Command:     "claude",
-		InstallHint: "brew install claude-code",
-		Models:      []string{"opus", "sonnet", "haiku"},
-	},
-	{
-		ID:          "codex-cli",
-		DisplayName: "OpenAI Codex CLI",
-		Command:     "codex",
-		InstallHint: "npm i -g @openai/codex",
-		Models:      []string{"gpt-5.2", "o3", "o4-mini"},
-	},
-	{
-		ID:          "gemini-cli",
-		DisplayName: "Gemini CLI",
-		Command:     "gemini",
-		InstallHint: "npm i -g @google/gemini-cli",
-		Models:      []string{"gemini-3-flash", "gemini-3-pro"},
-	},
+// GetCLIProviders returns CLI providers from models.yaml config.
+// Falls back to empty list if not configured.
+func GetCLIProviders() []CLIProviderInfo {
+	config := GetModelsConfig()
+	if config == nil || len(config.CLIProviders) == 0 {
+		return nil
+	}
+	result := make([]CLIProviderInfo, len(config.CLIProviders))
+	for i, c := range config.CLIProviders {
+		result[i] = CLIProviderInfo{
+			ID:           c.ID,
+			DisplayName:  c.DisplayName,
+			Command:      c.Command,
+			InstallHint:  c.InstallHint,
+			Models:       c.Models,
+			DefaultModel: c.DefaultModel,
+		}
+	}
+	return result
+}
+
+// KnownCLIProviders returns the hardcoded list of CLI providers Nebo supports.
+// These definitions are stable — new CLI providers are rare. The list is hardcoded
+// to avoid timing/config-loading issues that occur when reading from models.yaml.
+func KnownCLIProviders() []CLIProviderInfo {
+	return []CLIProviderInfo{
+		{
+			ID:           "claude-code",
+			DisplayName:  "Claude Agent",
+			Command:      "claude",
+			InstallHint:  "brew install claude-code",
+			Models:       []string{"opus", "sonnet", "haiku"},
+			DefaultModel: "opus",
+		},
+		{
+			ID:           "codex-cli",
+			DisplayName:  "OpenAI Codex CLI",
+			Command:      "codex",
+			InstallHint:  "npm i -g @openai/codex",
+			Models:       []string{"gpt-5.2", "o3", "o4-mini"},
+			DefaultModel: "gpt-5.2",
+		},
+		{
+			ID:           "gemini-cli",
+			DisplayName:  "Gemini CLI",
+			Command:      "gemini",
+			InstallHint:  "npm i -g @google/gemini-cli",
+			Models:       []string{"gemini-3-flash", "gemini-3-pro"},
+			DefaultModel: "gemini-3-pro",
+		},
+	}
 }
 
 // IsCLIProvider returns true if the provider ID is a CLI provider
 func IsCLIProvider(providerID string) bool {
-	for _, p := range KnownCLIProviders {
+	for _, p := range KnownCLIProviders() {
 		if p.ID == providerID {
 			return true
 		}
@@ -438,8 +490,9 @@ func CheckCLIInstalled(command string) (bool, string) {
 
 // GetAvailableCLIProviders returns all CLI providers with installation status
 func GetAvailableCLIProviders() []CLIProviderInfo {
-	result := make([]CLIProviderInfo, len(KnownCLIProviders))
-	for i, p := range KnownCLIProviders {
+	known := KnownCLIProviders()
+	result := make([]CLIProviderInfo, len(known))
+	for i, p := range known {
 		result[i] = p
 		result[i].Installed, result[i].Path = CheckCLIInstalled(p.Command)
 	}
@@ -449,7 +502,7 @@ func GetAvailableCLIProviders() []CLIProviderInfo {
 // GetInstalledCLIProviders returns only the installed CLI providers
 func GetInstalledCLIProviders() []CLIProviderInfo {
 	var result []CLIProviderInfo
-	for _, p := range KnownCLIProviders {
+	for _, p := range KnownCLIProviders() {
 		installed, path := CheckCLIInstalled(p.Command)
 		if installed {
 			p.Installed = true
@@ -462,13 +515,31 @@ func GetInstalledCLIProviders() []CLIProviderInfo {
 
 // GetCLIProviderByID returns a CLI provider by ID (with installation status)
 func GetCLIProviderByID(id string) *CLIProviderInfo {
-	for _, p := range KnownCLIProviders {
+	for _, p := range KnownCLIProviders() {
 		if p.ID == id {
 			p.Installed, p.Path = CheckCLIInstalled(p.Command)
 			return &p
 		}
 	}
 	return nil
+}
+
+// GetCLIDefaultModel returns the full "provider/model" string for a CLI provider.
+// E.g., "claude-code" → "claude-code/opus" (from models.yaml cli_providers config).
+func GetCLIDefaultModel(cliProviderID string) string {
+	for _, p := range KnownCLIProviders() {
+		if p.ID == cliProviderID {
+			model := p.DefaultModel
+			if model == "" && len(p.Models) > 0 {
+				model = p.Models[0]
+			}
+			if model != "" {
+				return cliProviderID + "/" + model
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 // GetDefaultModel returns the default model for a provider from models.yaml

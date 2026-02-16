@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/db"
-	"github.com/nebolabs/nebo/internal/mcp/mcpctx"
+	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/mcp/mcpctx"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

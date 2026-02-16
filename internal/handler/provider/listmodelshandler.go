@@ -3,11 +3,11 @@ package provider
 import (
 	"net/http"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/httputil"
-	"github.com/nebolabs/nebo/internal/provider"
-	"github.com/nebolabs/nebo/internal/svc"
-	"github.com/nebolabs/nebo/internal/types"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/httputil"
+	"github.com/neboloop/nebo/internal/provider"
+	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 // List all available models from YAML cache
@@ -89,12 +89,26 @@ func ListModelsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			},
 		}
 
+		// Include CLI providers from models.yaml config
+		var cliProviders []types.CLIProviderInfo
+		for _, cp := range provider.GetAvailableCLIProviders() {
+			cliProviders = append(cliProviders, types.CLIProviderInfo{
+				ID:           cp.ID,
+				DisplayName:  cp.DisplayName,
+				Command:      cp.Command,
+				InstallHint:  cp.InstallHint,
+				Models:       cp.Models,
+				DefaultModel: cp.DefaultModel,
+			})
+		}
+
 		httputil.OkJSON(w, &types.ListModelsResponse{
 			Models:        result,
 			TaskRouting:   taskRouting,
 			Aliases:       aliases,
 			AvailableCLIs: cliAvailability,
 			CLIStatuses:   cliStatuses,
+			CLIProviders:  cliProviders,
 		})
 	}
 }

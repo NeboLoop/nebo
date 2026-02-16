@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nebolabs/nebo/internal/agent/ai"
-	"github.com/nebolabs/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/ai"
+	"github.com/neboloop/nebo/internal/agent/session"
 )
 
 // PersonalityDirectiveKey is the memory key where the synthesized directive is stored

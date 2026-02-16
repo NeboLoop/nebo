@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nebolabs/nebo/internal/agent/skills"
+	"github.com/neboloop/nebo/internal/agent/skills"
 )
 
 // SkillDomainTool is the unified skill domain tool.
@@ -29,11 +29,13 @@ type SkillDomainTool struct {
 
 // skillEntry represents a registered skill — either app-backed or standalone.
 type skillEntry struct {
-	slug        string // URL-safe identifier: "calendar", "meeting-prep"
-	name        string // Display name: "Calendar", "Meeting Prep"
-	description string // One-liner for catalog
-	skillMD     string // Full SKILL.md content
-	adapter     Tool   // gRPC adapter for app-backed skills; nil for standalone
+	slug        string   // URL-safe identifier: "calendar", "meeting-prep"
+	name        string   // Display name: "Calendar", "Meeting Prep"
+	description string   // One-liner for catalog
+	skillMD     string   // Full SKILL.md content
+	adapter     Tool     // gRPC adapter for app-backed skills; nil for standalone
+	triggers    []string // Phrases that auto-activate this skill
+	priority    int      // Higher = matched first when multiple skills trigger
 }
 
 // SkillDomainInput is the input schema for the skill tool.
@@ -176,7 +178,8 @@ func (t *SkillDomainTool) ActionsFor(resource string) []string {
 
 // Register adds or updates a skill entry.
 // adapter is nil for standalone skills (SKILL.md only).
-func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adapter Tool) {
+// triggers are phrases that auto-activate this skill when matched in user messages.
+func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adapter Tool, triggers []string, priority int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -186,6 +189,8 @@ func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adap
 		description: description,
 		skillMD:     skillMD,
 		adapter:     adapter,
+		triggers:    triggers,
+		priority:    priority,
 	}
 	t.dirty = true
 }
@@ -318,6 +323,65 @@ func (t *SkillDomainTool) ActiveSkillContent(sessionKey string) string {
 	}
 
 	return b.String()
+}
+
+// AutoMatchSkills checks the user message against skill triggers and auto-loads matching skills.
+// Skills are matched by case-insensitive substring. Higher-priority skills are loaded first.
+// Skills already active for the session are skipped.
+func (t *SkillDomainTool) AutoMatchSkills(sessionKey, message string) {
+	if message == "" || sessionKey == "" {
+		return
+	}
+
+	msgLower := strings.ToLower(message)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Collect matching entries sorted by priority (higher first)
+	type match struct {
+		slug     string
+		priority int
+	}
+	var matches []match
+
+	for slug, entry := range t.entries {
+		// Skip already active skills
+		if active, ok := t.activeSkills[sessionKey]; ok && active[slug] {
+			continue
+		}
+		// Check triggers
+		for _, trigger := range entry.triggers {
+			if strings.Contains(msgLower, strings.ToLower(trigger)) {
+				matches = append(matches, match{slug: slug, priority: entry.priority})
+				break
+			}
+		}
+	}
+
+	if len(matches) == 0 {
+		return
+	}
+
+	// Sort by priority descending
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].priority > matches[j].priority
+	})
+
+	// Auto-load matched skills (limit to top 2 to avoid prompt bloat)
+	limit := 2
+	if len(matches) < limit {
+		limit = len(matches)
+	}
+
+	if t.activeSkills[sessionKey] == nil {
+		t.activeSkills[sessionKey] = make(map[string]bool)
+	}
+
+	for _, m := range matches[:limit] {
+		t.activeSkills[sessionKey][m.slug] = true
+		fmt.Printf("[skills] Auto-matched skill %q for session %s\n", m.slug, sessionKey)
+	}
 }
 
 // ClearSession removes all active skills for a session (called on session clear/end).
@@ -469,8 +533,9 @@ func (t *SkillDomainTool) catalog() (*ToolResult, error) {
 		b.WriteString("\n")
 	}
 
+	b.WriteString("Skills with triggers auto-activate when the user's message matches. You can also manually load/unload:\n")
 	b.WriteString("Use `skill(name: \"<name>\", action: \"load\")` to activate a skill for this conversation.\n")
-	b.WriteString("Use `skill(name: \"<name>\", action: \"unload\")` when done. Skills are NOT auto-triggered.")
+	b.WriteString("Use `skill(name: \"<name>\", action: \"unload\")` to deactivate.")
 
 	return &ToolResult{Content: b.String()}, nil
 }
@@ -484,8 +549,8 @@ func (t *SkillDomainTool) rebuildCache() {
 
 	// Build description with catalog one-liners
 	var desc strings.Builder
-	desc.WriteString("Unified interface for skills and apps. Skills are NOT active by default — they must be explicitly loaded per conversation.\n")
-	desc.WriteString("LIFECYCLE: create → available in catalog. load → active in THIS session (injected into system prompt). unload → removed from session. Skills do NOT auto-trigger.\n")
+	desc.WriteString("Unified interface for skills and apps. Skills with triggers auto-activate when the user's message matches.\n")
+	desc.WriteString("LIFECYCLE: create → available in catalog. Auto-matched or manually loaded → active in THIS session (injected into system prompt). unload → removed from session.\n")
 	desc.WriteString("Actions: catalog (browse), help (read instructions), load (activate for session), unload (deactivate), create/update/delete (manage on disk).\n\n")
 	desc.WriteString("Available skills:\n")
 

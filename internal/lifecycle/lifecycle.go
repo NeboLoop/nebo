@@ -4,7 +4,7 @@ package lifecycle
 import (
 	"sync"
 
-	"github.com/nebolabs/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/logging"
 )
 
 // Event types for lifecycle hooks

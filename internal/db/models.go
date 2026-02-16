@@ -42,6 +42,8 @@ type AgentProfile struct {
 	AgentRules        sql.NullString `json:"agent_rules"`
 	ToolNotes         sql.NullString `json:"tool_notes"`
 	Role              sql.NullString `json:"role"`
+	QuietHoursStart   string         `json:"quiet_hours_start"`
+	QuietHoursEnd     string         `json:"quiet_hours_end"`
 }
 
 type AppOauthGrant struct {
@@ -315,11 +317,11 @@ type MemoryChunk struct {
 	Text       string         `json:"text"`
 	Source     sql.NullString `json:"source"`
 	Path       sql.NullString `json:"path"`
-	StartLine  sql.NullInt64  `json:"start_line"`
-	EndLine    sql.NullInt64  `json:"end_line"`
+	StartChar  sql.NullInt64  `json:"start_char"`
+	EndChar    sql.NullInt64  `json:"end_char"`
 	Model      sql.NullString `json:"model"`
-	CreatedAt  sql.NullTime   `json:"created_at"`
 	UserID     string         `json:"user_id"`
+	CreatedAt  sql.NullTime   `json:"created_at"`
 }
 
 type MemoryChunksFt struct {
@@ -467,6 +469,8 @@ type Session struct {
 	AuthProfileOverrideSource  sql.NullString `json:"auth_profile_override_source"`
 	VerboseLevel               sql.NullString `json:"verbose_level"`
 	CustomLabel                sql.NullString `json:"custom_label"`
+	LastEmbeddedMessageID      sql.NullInt64  `json:"last_embedded_message_id"`
+	ActiveTask                 sql.NullString `json:"active_task"`
 }
 
 type SessionMessage struct {

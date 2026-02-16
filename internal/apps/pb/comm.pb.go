@@ -884,7 +884,7 @@ const file_proto_apps_v0_comm_proto_rawDesc = "" +
 	"\n" +
 	"Deregister\x12\x0e.apps.v0.Empty\x1a\x1f.apps.v0.CommDeregisterResponse\x121\n" +
 	"\aReceive\x12\x0e.apps.v0.Empty\x1a\x14.apps.v0.CommMessage0\x01\x121\n" +
-	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/nebolabs/nebo/internal/apps/pbb\x06proto3"
+	"\tConfigure\x12\x14.apps.v0.SettingsMap\x1a\x0e.apps.v0.EmptyB+Z)github.com/neboloop/nebo/internal/apps/pbb\x06proto3"
 
 var (
 	file_proto_apps_v0_comm_proto_rawDescOnce sync.Once

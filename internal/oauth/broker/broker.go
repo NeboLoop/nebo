@@ -14,8 +14,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/nebolabs/nebo/internal/db"
-	mcpclient "github.com/nebolabs/nebo/internal/mcp/client"
+	"github.com/neboloop/nebo/internal/db"
+	mcpclient "github.com/neboloop/nebo/internal/mcp/client"
 )
 
 // AppTokenReceiver pushes OAuth tokens to running apps via the settings pipeline.
