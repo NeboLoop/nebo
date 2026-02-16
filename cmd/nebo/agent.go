@@ -33,6 +33,7 @@ import (
 	"github.com/neboloop/nebo/internal/agent/tools"
 	"github.com/neboloop/nebo/internal/agenthub"
 	"github.com/neboloop/nebo/internal/apps"
+	"github.com/neboloop/nebo/internal/crashlog"
 	"github.com/neboloop/nebo/internal/daemon"
 	"github.com/neboloop/nebo/internal/browser"
 	"github.com/neboloop/nebo/internal/db"
@@ -41,6 +42,7 @@ import (
 	"github.com/neboloop/nebo/internal/provider"
 	"github.com/neboloop/nebo/internal/server"
 	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/updater"
 )
 
 // approvalResponse holds the result of an approval request
@@ -521,6 +523,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		return fmt.Errorf("failed to initialize sessions: %w", err)
 	}
 
+	// Initialize crash logger for persistent error tracking
+	crashlog.Init(sqlDB)
+
 	// Initialize recovery manager for task persistence across restarts
 	state.recovery = recovery.NewManager(sqlDB)
 
@@ -762,7 +767,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 			// Run the agent task
 			events, err := r.Run(ctx, &runner.RunRequest{
-				SessionKey: fmt.Sprintf("cron-%s", name),
+				SessionKey: fmt.Sprintf("routine-%s", name),
 				Prompt:     message,
 				Origin:     tools.OriginSystem,
 			})
@@ -1171,6 +1176,23 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				}
 			}
 		}
+	}
+
+	// Background update checker: checks every 6 hours, notifies frontend once per new version.
+	if opts.SvcCtx != nil && opts.SvcCtx.Version != "" && opts.SvcCtx.Version != "dev" {
+		checker := updater.NewBackgroundChecker(opts.SvcCtx.Version, 6*time.Hour, func(result *updater.Result) {
+			state.sendFrame(map[string]any{
+				"type":   "event",
+				"method": "update_available",
+				"payload": map[string]any{
+					"current_version": result.CurrentVersion,
+					"latest_version":  result.LatestVersion,
+					"release_url":     result.ReleaseURL,
+					"release_notes":   result.ReleaseNotes,
+				},
+			})
+		})
+		go checker.Run(ctx)
 	}
 
 	// Agent-side keepalive: send pings to hub so the hub's readPump
@@ -1624,7 +1646,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 
 			// Determine which lane this request belongs to
 			isHeartbeat := strings.HasPrefix(sessionKey, "heartbeat-")
-			isCronJob := strings.HasPrefix(sessionKey, "cron-")
+			isCronJob := strings.HasPrefix(sessionKey, "routine-")
 			isCommMsg := strings.HasPrefix(sessionKey, "comm-")
 			isDev := strings.HasPrefix(sessionKey, "dev-")
 			lane := agenthub.LaneMain

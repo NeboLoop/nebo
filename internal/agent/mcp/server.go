@@ -13,6 +13,7 @@ import (
 	"github.com/neboloop/nebo/internal/agent/ai"
 	"github.com/neboloop/nebo/internal/agent/session"
 	"github.com/neboloop/nebo/internal/agent/tools"
+	"github.com/neboloop/nebo/internal/crashlog"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -152,7 +153,7 @@ func (s *Server) createToolHandler(toolName string) mcp.ToolHandler {
 		// Recover from panics to prevent EOF
 		defer func() {
 			if r := recover(); r != nil {
-				fmt.Printf("[AgentMCP] PANIC in tool %s: %v\n", toolName, r)
+				crashlog.LogPanic("mcp", r, map[string]string{"tool": toolName})
 				retResult = &mcp.CallToolResult{
 					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("tool panicked: %v", r)}},
 					IsError: true,

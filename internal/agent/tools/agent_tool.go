@@ -41,9 +41,9 @@ type CommService interface {
 //
 // Resources:
 //   - task: Spawn and manage sub-agents for parallel work
-//   - cron: Schedule recurring tasks with cron expressions
+//   - routine: Schedule recurring tasks
 //   - memory: Persistent fact storage across sessions (3-tier system)
-//   - message: Send messages to connected channels (Telegram, Discord, Slack)
+//   - message: Send messages to connected channels (provided by installed apps)
 //   - session: Query and manage conversation sessions
 //   - comm: Inter-agent communication via comm lane plugins
 type AgentDomainTool struct {
@@ -70,7 +70,7 @@ type AgentDomainTool struct {
 // AgentDomainInput defines the input for the agent domain tool
 type AgentDomainInput struct {
 	// Required fields
-	Resource string `json:"resource"` // task, cron, memory, message, session
+	Resource string `json:"resource"` // task, routine, memory, message, session
 	Action   string `json:"action"`   // varies by resource
 
 	// Task fields
@@ -81,14 +81,14 @@ type AgentDomainInput struct {
 	AgentType   string `json:"agent_type,omitempty"`  // explore, plan, general
 	AgentID     string `json:"agent_id,omitempty"`    // For status/cancel operations
 
-	// Cron fields
+	// Routine (scheduling) fields
 	Name     string `json:"name,omitempty"`      // Job name
 	Schedule string `json:"schedule,omitempty"`  // Cron expression
 	Command  string `json:"command,omitempty"`   // Shell command (for bash tasks)
 	TaskType string `json:"task_type,omitempty"` // bash or agent
 	Message  string `json:"message,omitempty"`   // Agent prompt (for agent tasks)
 	Deliver  *struct {
-		Channel string `json:"channel"` // telegram, discord, slack
+		Channel string `json:"channel"` // channel type (from installed apps)
 		To      string `json:"to"`      // chat/channel ID
 	} `json:"deliver,omitempty"` // Where to send result
 
@@ -102,7 +102,7 @@ type AgentDomainInput struct {
 	Metadata  map[string]string `json:"metadata,omitempty"`  // Additional metadata
 
 	// Message fields
-	Channel  string `json:"channel,omitempty"`   // Channel type: telegram, discord, slack
+	Channel  string `json:"channel,omitempty"`   // Channel type (from installed apps)
 	To       string `json:"to,omitempty"`        // Destination chat/channel ID
 	Text     string `json:"text,omitempty"`      // Message text
 	ReplyTo  string `json:"reply_to,omitempty"`  // Message ID to reply to
@@ -230,7 +230,7 @@ func (t *AgentDomainTool) Domain() string {
 
 // Resources returns available resources in this domain
 func (t *AgentDomainTool) Resources() []string {
-	return []string{"task", "cron", "memory", "message", "session", "comm", "profile"}
+	return []string{"task", "routine", "memory", "message", "session", "comm", "profile"}
 }
 
 // ActionsFor returns available actions for a given resource
@@ -238,7 +238,7 @@ func (t *AgentDomainTool) ActionsFor(resource string) []string {
 	switch resource {
 	case "task":
 		return []string{"spawn", "status", "cancel", "list"}
-	case "cron":
+	case "routine":
 		return []string{"create", "list", "delete", "pause", "resume", "run", "history"}
 	case "memory":
 		return []string{"store", "recall", "search", "list", "delete", "clear"}
@@ -257,7 +257,7 @@ func (t *AgentDomainTool) ActionsFor(resource string) []string {
 
 var agentResources = map[string]ResourceConfig{
 	"task":    {Name: "task", Actions: []string{"spawn", "status", "cancel", "list"}, Description: "Sub-agent management"},
-	"cron":    {Name: "cron", Actions: []string{"create", "list", "delete", "pause", "resume", "run", "history"}, Description: "Scheduled tasks"},
+	"routine": {Name: "routine", Actions: []string{"create", "list", "delete", "pause", "resume", "run", "history"}, Description: "Scheduled tasks"},
 	"memory":  {Name: "memory", Actions: []string{"store", "recall", "search", "list", "delete", "clear"}, Description: "Persistent storage"},
 	"message": {Name: "message", Actions: []string{"send", "list"}, Description: "Channel messaging"},
 	"session": {Name: "session", Actions: []string{"list", "history", "status", "clear"}, Description: "Conversation sessions"},
@@ -273,19 +273,19 @@ func (t *AgentDomainTool) Description() string {
 
 Resources:
 - task: Spawn sub-agents for parallel work (spawn, status, cancel, list)
-- cron: Schedule recurring tasks with cron expressions
+- routine: Schedule recurring tasks
 - memory: Three-tier persistent storage (tacit/daily/entity layers)
-- message: Send messages to Telegram, Discord, Slack
+- message: Send messages to connected channels (provided by installed apps)
 - session: Manage conversation sessions
 - comm: Inter-agent communication via comm lane (send, subscribe, unsubscribe, list_topics, status)
 - profile: Read and update your own identity (name, emoji, creature, vibe, personality)`,
 		Resources: agentResources,
 		Examples: []string{
 			`agent(resource: task, action: spawn, prompt: "Find all Go files with errors", agent_type: "explore")`,
-			`agent(resource: cron, action: create, name: "daily-backup", schedule: "0 0 2 * * *", command: "backup.sh")`,
+			`agent(resource: routine, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send me a summary")`,
 			`agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit")`,
 			`agent(resource: memory, action: search, query: "preferences", layer: "tacit")`,
-			`agent(resource: message, action: send, channel: "telegram", to: "123456", text: "Task complete!")`,
+			`agent(resource: message, action: send, channel: "voice", to: "default", text: "Task complete!")`,
 			`agent(resource: session, action: list)`,
 			`agent(resource: comm, action: send, to: "dev-bot", topic: "project-alpha", text: "Review this PR")`,
 			`agent(resource: comm, action: subscribe, topic: "announcements")`,
@@ -314,9 +314,9 @@ func (t *AgentDomainTool) Schema() json.RawMessage {
 			{Name: "agent_type", Type: "string", Description: "Agent type: explore, plan, general", Enum: []string{"explore", "plan", "general"}},
 			{Name: "agent_id", Type: "string", Description: "Agent ID for status/cancel operations"},
 
-			// Cron fields
+			// Routine (scheduling) fields
 			{Name: "name", Type: "string", Description: "Unique job name/identifier"},
-			{Name: "schedule", Type: "string", Description: "Cron expression: 'second minute hour day-of-month month day-of-week'"},
+			{Name: "schedule", Type: "string", Description: "Schedule expression: 'second minute hour day-of-month month day-of-week'"},
 			{Name: "command", Type: "string", Description: "Shell command (for bash tasks)"},
 			{Name: "task_type", Type: "string", Description: "Task type: bash or agent", Enum: []string{"bash", "agent"}},
 
@@ -329,7 +329,7 @@ func (t *AgentDomainTool) Schema() json.RawMessage {
 			{Name: "layer", Type: "string", Description: "Memory layer: tacit (long-term), daily (day-specific), entity (people/places/things)", Enum: []string{"tacit", "daily", "entity"}},
 
 			// Message fields
-			{Name: "channel", Type: "string", Description: "Channel type: telegram, discord, slack"},
+			{Name: "channel", Type: "string", Description: "Channel type (from installed apps — use list action to see available)"},
 			{Name: "to", Type: "string", Description: "Destination chat/channel ID"},
 			{Name: "text", Type: "string", Description: "Message text to send"},
 			{Name: "reply_to", Type: "string", Description: "Message ID to reply to"},
@@ -374,7 +374,7 @@ func (t *AgentDomainTool) Execute(ctx context.Context, input json.RawMessage) (*
 	switch in.Resource {
 	case "task":
 		return t.handleTask(ctx, in)
-	case "cron":
+	case "routine":
 		return t.handleCron(ctx, in)
 	case "memory":
 		return t.handleMemory(ctx, in)
@@ -573,7 +573,7 @@ func (t *AgentDomainTool) taskList() (*ToolResult, error) {
 }
 
 // =============================================================================
-// Cron handlers (scheduled tasks)
+// Routine handlers (scheduled tasks)
 // =============================================================================
 
 func (t *AgentDomainTool) handleCron(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
@@ -677,7 +677,7 @@ func (t *AgentDomainTool) handleCron(ctx context.Context, in AgentDomainInput) (
 
 	default:
 		return &ToolResult{
-			Content: fmt.Sprintf("Unknown cron action: %s", in.Action),
+			Content: fmt.Sprintf("Unknown routine action: %s", in.Action),
 			IsError: true,
 		}, nil
 	}
@@ -767,7 +767,7 @@ func (t *AgentDomainTool) messageList() (*ToolResult, error) {
 func (t *AgentDomainTool) messageSend(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
 	if in.Channel == "" {
 		return &ToolResult{
-			Content: "Error: 'channel' is required (e.g., telegram, discord, slack)",
+			Content: "Error: 'channel' is required — use list action to see available channels",
 			IsError: true,
 		}, nil
 	}

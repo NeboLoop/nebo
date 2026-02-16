@@ -561,6 +561,62 @@ func TestRegistryBlocksToolForOrigin(t *testing.T) {
 	}
 }
 
+func TestRegistryBlocksShellForAppOrigin(t *testing.T) {
+	policy := NewPolicy()
+	policy.Level = PolicyFull
+	registry := NewRegistry(policy)
+	registry.RegisterDefaults()
+
+	ctx := WithOrigin(context.Background(), OriginApp)
+	result := registry.Execute(ctx, &ai.ToolCall{
+		Name:  "shell",
+		Input: json.RawMessage(`{"resource":"bash","action":"exec","command":"whoami"}`),
+	})
+	if !result.IsError {
+		t.Error("expected shell to be denied for app origin")
+	}
+	if !strings.Contains(result.Content, "not permitted") {
+		t.Errorf("expected 'not permitted' in error, got: %s", result.Content)
+	}
+
+	// App should still be able to use file tool
+	result = registry.Execute(ctx, &ai.ToolCall{
+		Name:  "file",
+		Input: json.RawMessage(`{"action":"read","path":"/dev/null"}`),
+	})
+	if result.IsError && strings.Contains(result.Content, "not permitted") {
+		t.Error("expected file tool to be allowed for app origin")
+	}
+}
+
+func TestRegistryBlocksShellForSkillOrigin(t *testing.T) {
+	policy := NewPolicy()
+	policy.Level = PolicyFull
+	registry := NewRegistry(policy)
+	registry.RegisterDefaults()
+
+	ctx := WithOrigin(context.Background(), OriginSkill)
+	result := registry.Execute(ctx, &ai.ToolCall{
+		Name:  "shell",
+		Input: json.RawMessage(`{"resource":"bash","action":"exec","command":"id"}`),
+	})
+	if !result.IsError {
+		t.Error("expected shell to be denied for skill origin")
+	}
+	if !strings.Contains(result.Content, "not permitted") {
+		t.Errorf("expected 'not permitted' in error, got: %s", result.Content)
+	}
+
+	// Skill should still be able to use file tool
+	result = registry.Execute(ctx, &ai.ToolCall{
+		Name:  "file",
+		Input: json.RawMessage(`{"action":"read","path":"/dev/null"}`),
+	})
+	if result.IsError && strings.Contains(result.Content, "not permitted") {
+		t.Error("expected file tool to be allowed for skill origin")
+	}
+}
+
 // =============================================================================
 // Memory sanitization tests
 // =============================================================================

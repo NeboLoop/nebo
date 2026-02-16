@@ -44,7 +44,7 @@ type cronInput struct {
 	TaskType string `json:"task_type"` // "bash" (default) or "agent"
 	Message  string `json:"message"`   // Agent prompt (for agent tasks)
 	Deliver  *struct {
-		Channel string `json:"channel"` // telegram, discord, slack
+		Channel string `json:"channel"` // channel type (from installed apps)
 		To      string `json:"to"`      // chat/channel ID
 	} `json:"deliver,omitempty"` // Optional: where to send result
 	Enabled *bool `json:"enabled"` // Enable/disable job
@@ -208,11 +208,11 @@ func (t *CronTool) Close() error {
 }
 
 func (t *CronTool) Name() string {
-	return "cron"
+	return "routine"
 }
 
 func (t *CronTool) Description() string {
-	return "Schedule recurring tasks using cron expressions. Create, list, pause, resume, or delete scheduled jobs."
+	return "Schedule recurring tasks. Create, list, pause, resume, or delete routines."
 }
 
 func (t *CronTool) Schema() json.RawMessage {
@@ -222,15 +222,15 @@ func (t *CronTool) Schema() json.RawMessage {
 			"action": {
 				"type": "string",
 				"enum": ["create", "list", "delete", "pause", "resume", "run", "history"],
-				"description": "Cron action: create (new job), list (show all jobs), delete (remove job), pause (disable), resume (enable), run (execute now), history (show run history)"
+				"description": "Routine action: create (new routine), list (show all routines), delete (remove routine), pause (disable), resume (enable), run (execute now), history (show run history)"
 			},
 			"name": {
 				"type": "string",
-				"description": "Unique job name/identifier (required for create, delete, pause, resume, run, history)"
+				"description": "Unique routine name/identifier (required for create, delete, pause, resume, run, history)"
 			},
 			"schedule": {
 				"type": "string",
-				"description": "Cron expression with seconds: 'second minute hour day-of-month month day-of-week'. Examples: '0 */5 * * * *' (every 5 min), '0 0 9 * * 1-5' (9am weekdays)"
+				"description": "Schedule expression with seconds: 'second minute hour day-of-month month day-of-week'. Examples: '0 */5 * * * *' (every 5 min), '0 0 9 * * 1-5' (9am weekdays)"
 			},
 			"task_type": {
 				"type": "string",
@@ -298,7 +298,7 @@ func (t *CronTool) Execute(ctx context.Context, input json.RawMessage) (*ToolRes
 
 	if err != nil {
 		return &ToolResult{
-			Content: fmt.Sprintf("Cron action failed: %v", err),
+			Content: fmt.Sprintf("Routine action failed: %v", err),
 			IsError: true,
 		}, nil
 	}
@@ -335,7 +335,7 @@ func (t *CronTool) create(params cronInput) (string, error) {
 	parser := cronlib.NewParser(cronlib.Second | cronlib.Minute | cronlib.Hour | cronlib.Dom | cronlib.Month | cronlib.Dow)
 	schedule, err := parser.Parse(params.Schedule)
 	if err != nil {
-		return "", fmt.Errorf("invalid cron schedule: %w", err)
+		return "", fmt.Errorf("invalid schedule: %w", err)
 	}
 
 	// Serialize deliver config
@@ -366,10 +366,10 @@ func (t *CronTool) create(params cronInput) (string, error) {
 
 	nextRun := schedule.Next(time.Now())
 	if taskType == "agent" {
-		return fmt.Sprintf("Created agent cron job '%s'\nSchedule: %s\nPrompt: %s\nNext run: %s",
+		return fmt.Sprintf("Created routine '%s'\nSchedule: %s\nPrompt: %s\nNext run: %s",
 			params.Name, params.Schedule, params.Message, nextRun.Format(time.RFC3339)), nil
 	}
-	return fmt.Sprintf("Created cron job '%s'\nSchedule: %s\nCommand: %s\nNext run: %s",
+	return fmt.Sprintf("Created routine '%s'\nSchedule: %s\nCommand: %s\nNext run: %s",
 		params.Name, params.Schedule, params.Command, nextRun.Format(time.RFC3339)), nil
 }
 
@@ -430,10 +430,10 @@ func (t *CronTool) list() (string, error) {
 	}
 
 	if len(jobs) == 0 {
-		return "No cron jobs configured", nil
+		return "No routines configured", nil
 	}
 
-	return fmt.Sprintf("Cron jobs (%d):\n\n%s", len(jobs), strings.Join(jobs, "\n\n")), nil
+	return fmt.Sprintf("Routines (%d):\n\n%s", len(jobs), strings.Join(jobs, "\n\n")), nil
 }
 
 func (t *CronTool) delete(name string) (string, error) {
@@ -457,10 +457,10 @@ func (t *CronTool) delete(name string) (string, error) {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Sprintf("No cron job found with name '%s'", name), nil
+		return fmt.Sprintf("No routine found with name '%s'", name), nil
 	}
 
-	return fmt.Sprintf("Deleted cron job '%s'", name), nil
+	return fmt.Sprintf("Deleted routine '%s'", name), nil
 }
 
 func (t *CronTool) pause(name string) (string, error) {
@@ -484,10 +484,10 @@ func (t *CronTool) pause(name string) (string, error) {
 
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
-		return fmt.Sprintf("No cron job found with name '%s'", name), nil
+		return fmt.Sprintf("No routine found with name '%s'", name), nil
 	}
 
-	return fmt.Sprintf("Paused cron job '%s'", name), nil
+	return fmt.Sprintf("Paused routine '%s'", name), nil
 }
 
 func (t *CronTool) resume(name string) (string, error) {
@@ -498,7 +498,7 @@ func (t *CronTool) resume(name string) (string, error) {
 	// Get full job details using sqlc
 	job, err := t.queries.GetCronJobByName(context.Background(), name)
 	if err == sql.ErrNoRows {
-		return fmt.Sprintf("No cron job found with name '%s'", name), nil
+		return fmt.Sprintf("No routine found with name '%s'", name), nil
 	}
 	if err != nil {
 		return "", err
@@ -515,7 +515,7 @@ func (t *CronTool) resume(name string) (string, error) {
 		return "", err
 	}
 
-	return fmt.Sprintf("Resumed cron job '%s'", name), nil
+	return fmt.Sprintf("Resumed routine '%s'", name), nil
 }
 
 func (t *CronTool) runNow(name string) (string, error) {
@@ -526,7 +526,7 @@ func (t *CronTool) runNow(name string) (string, error) {
 	// Get full job details using sqlc
 	job, err := t.queries.GetCronJobByName(context.Background(), name)
 	if err == sql.ErrNoRows {
-		return fmt.Sprintf("No cron job found with name '%s'", name), nil
+		return fmt.Sprintf("No routine found with name '%s'", name), nil
 	}
 	if err != nil {
 		return "", err
@@ -621,7 +621,7 @@ func (t *CronTool) SchedulerCreate(ctx context.Context, item ScheduleItem) (*Sch
 	parser := cronlib.NewParser(cronlib.Second | cronlib.Minute | cronlib.Hour | cronlib.Dom | cronlib.Month | cronlib.Dow)
 	sched, err := parser.Parse(item.Expression)
 	if err != nil {
-		return nil, fmt.Errorf("invalid cron expression: %w", err)
+		return nil, fmt.Errorf("invalid schedule expression: %w", err)
 	}
 
 	deliverNull := sql.NullString{}

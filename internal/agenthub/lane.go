@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/neboloop/nebo/internal/crashlog"
 )
 
 // Lane types for command queue
@@ -242,6 +244,7 @@ func (m *LaneManager) pump(state *LaneState) {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
+						crashlog.LogPanic("lane", r, map[string]string{"lane": string(state.Lane)})
 						err = fmt.Errorf("panic in lane task: %v", r)
 					}
 				}()
