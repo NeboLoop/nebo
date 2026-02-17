@@ -179,18 +179,31 @@ func isNativeBinary(header []byte) bool {
 	return false
 }
 
+// maxAppLogSize is the maximum size of a single app log file before rotation.
+// When exceeded, the current log is renamed to .log.1 and a new file is created.
+const maxAppLogSize = 2 * 1024 * 1024 // 2 MB
+
 // appLogWriter returns writers for an app's stdout and stderr.
-// When LogToFile is true, output goes to {appDir}/logs/stdout.log and stderr.log
-// instead of inheriting Nebo's stdout/stderr.
+// When LogToFile is true, output goes to {appDir}/logs/stdout.log and stderr.log.
+// Logs are also tee'd to Nebo's stderr with an [app:ID] prefix so they appear
+// in the main console for real-time debugging.
 func appLogWriter(appDir string, cfg SandboxConfig) (stdout, stderr io.Writer, cleanup func(), err error) {
+	appID := filepath.Base(appDir)
+
 	if !cfg.LogToFile {
-		return os.Stdout, os.Stderr, func() {}, nil
+		prefix := fmt.Sprintf("[app:%s] ", appID)
+		pw := &prefixWriter{prefix: prefix, dest: os.Stderr}
+		return pw, pw, func() {}, nil
 	}
 
 	logDir := filepath.Join(appDir, "logs")
 	if mkErr := os.MkdirAll(logDir, 0700); mkErr != nil {
 		return nil, nil, nil, fmt.Errorf("create log dir: %w", mkErr)
 	}
+
+	// Rotate logs if they've grown too large
+	rotateLogFile(filepath.Join(logDir, "stdout.log"))
+	rotateLogFile(filepath.Join(logDir, "stderr.log"))
 
 	outFile, err := os.OpenFile(
 		filepath.Join(logDir, "stdout.log"),
@@ -211,10 +224,52 @@ func appLogWriter(appDir string, cfg SandboxConfig) (stdout, stderr io.Writer, c
 		return nil, nil, nil, fmt.Errorf("open stderr log: %w", err)
 	}
 
+	// Tee: write to both the log file and Nebo's stderr with [app:ID] prefix
+	prefix := fmt.Sprintf("[app:%s] ", appID)
+	outWriter := io.MultiWriter(outFile, &prefixWriter{prefix: prefix, dest: os.Stderr})
+	errWriter := io.MultiWriter(errFile, &prefixWriter{prefix: prefix, dest: os.Stderr})
+
 	cleanup = func() {
 		outFile.Close()
 		errFile.Close()
 	}
 
-	return outFile, errFile, cleanup, nil
+	return outWriter, errWriter, cleanup, nil
+}
+
+// rotateLogFile renames logPath to logPath.1 if it exceeds maxAppLogSize.
+// Only keeps one rotated backup — this is for crash loop protection, not
+// long-term log archival.
+func rotateLogFile(logPath string) {
+	info, err := os.Stat(logPath)
+	if err != nil || info.Size() < maxAppLogSize {
+		return
+	}
+	backup := logPath + ".1"
+	os.Remove(backup)
+	os.Rename(logPath, backup)
+}
+
+// prefixWriter prepends a prefix to each line written, making it easy to
+// identify which app produced which log line in Nebo's console output.
+type prefixWriter struct {
+	prefix string
+	dest   io.Writer
+	buf    []byte // partial line buffer
+}
+
+func (pw *prefixWriter) Write(p []byte) (n int, err error) {
+	pw.buf = append(pw.buf, p...)
+	for {
+		idx := bytes.IndexByte(pw.buf, '\n')
+		if idx < 0 {
+			break
+		}
+		line := pw.buf[:idx+1]
+		pw.buf = pw.buf[idx+1:]
+		if _, err := fmt.Fprintf(pw.dest, "%s%s", pw.prefix, line); err != nil {
+			return len(p), err
+		}
+	}
+	return len(p), nil
 }

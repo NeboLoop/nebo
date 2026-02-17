@@ -59,6 +59,14 @@ func (ar *AppRegistry) Watch(ctx context.Context) error {
 			dmu.Unlock()
 
 			appID := filepath.Base(appDir)
+
+			// Skip if a managed restart (supervisor/registry) is already handling this app.
+			// Without this check, supervisor restart → binary write → watcher fires → double launch.
+			if ar.runtime.IsWatcherSuppressed(appID) {
+				fmt.Printf("[apps] Skipping watcher restart for %s (managed restart in progress)\n", appID)
+				return
+			}
+
 			fmt.Printf("[apps] Restarting app after file change: %s\n", appID)
 			ar.runtime.Stop(appID)
 			if err := ar.launchAndRegister(ctx, appDir); err != nil {

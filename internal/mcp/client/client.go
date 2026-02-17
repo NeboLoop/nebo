@@ -558,8 +558,9 @@ func (c *Client) GetAccessToken(ctx context.Context, integrationID string) (stri
 	}
 
 	if creds.CredentialType != "oauth_token" {
-		// Not an OAuth credential, return as-is for API keys
-		return creds.CredentialValue, nil
+		// Not an OAuth credential — decrypt API key (strip enc: prefix if present)
+		raw := strings.TrimPrefix(creds.CredentialValue, "enc:")
+		return DecryptString(raw, c.encryptionKey)
 	}
 
 	// Check if token is expired

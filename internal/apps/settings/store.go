@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/neboloop/nebo/internal/credential"
 	db "github.com/neboloop/nebo/internal/db"
 )
 
@@ -114,7 +115,13 @@ func (s *Store) GetSettings(ctx context.Context, pluginID string) (map[string]st
 
 	settings := make(map[string]string, len(rows))
 	for _, row := range rows {
-		settings[row.SettingKey] = row.SettingValue
+		val := row.SettingValue
+		if row.IsSecret != 0 {
+			if decrypted, err := credential.Decrypt(val); err == nil {
+				val = decrypted
+			}
+		}
+		settings[row.SettingKey] = val
 	}
 	return settings, nil
 }
@@ -133,14 +140,18 @@ func (s *Store) GetSettingsByName(ctx context.Context, appName string) (map[stri
 func (s *Store) UpdateSettings(ctx context.Context, pluginID string, values map[string]string, secrets map[string]bool) error {
 	for key, value := range values {
 		isSecret := int64(0)
+		storeValue := value
 		if secrets != nil && secrets[key] {
 			isSecret = 1
+			if enc, encErr := credential.Encrypt(value); encErr == nil {
+				storeValue = enc
+			}
 		}
 		_, err := s.queries.UpsertPluginSetting(ctx, db.UpsertPluginSettingParams{
 			ID:           uuid.New().String(),
 			PluginID:     pluginID,
 			SettingKey:   key,
-			SettingValue: value,
+			SettingValue: storeValue,
 			IsSecret:     isSecret,
 		})
 		if err != nil {

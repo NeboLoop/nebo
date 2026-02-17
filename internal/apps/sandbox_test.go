@@ -184,11 +184,20 @@ func TestAppLogWriter_NoLog(t *testing.T) {
 	}
 	defer cleanup()
 
-	if stdout != os.Stdout {
-		t.Error("stdout should be os.Stdout when LogToFile is false")
+	// When LogToFile is false, output goes through a prefixWriter to stderr.
+	// Verify they are prefixWriters with the correct app ID prefix.
+	pw1, ok1 := stdout.(*prefixWriter)
+	pw2, ok2 := stderr.(*prefixWriter)
+	if !ok1 || !ok2 {
+		t.Error("stdout/stderr should be prefixWriters when LogToFile is false")
+		return
 	}
-	if stderr != os.Stderr {
-		t.Error("stderr should be os.Stderr when LogToFile is false")
+	expectedPrefix := "[app:" + filepath.Base(dir) + "] "
+	if pw1.prefix != expectedPrefix {
+		t.Errorf("stdout prefix = %q, want %q", pw1.prefix, expectedPrefix)
+	}
+	if pw2.prefix != expectedPrefix {
+		t.Errorf("stderr prefix = %q, want %q", pw2.prefix, expectedPrefix)
 	}
 }
 

@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +30,7 @@ import (
 	"github.com/neboloop/nebo/internal/logging"
 	"github.com/neboloop/nebo/internal/server"
 	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/updater"
 	"github.com/neboloop/nebo/internal/webview"
 
 	neboapp "github.com/neboloop/nebo/app"
@@ -255,6 +258,30 @@ func RunDesktop() {
 
 	statusItem := trayMenu.Add("Status: Starting...")
 	statusItem.SetEnabled(false)
+
+	updateItem := trayMenu.Add("Check for Updates")
+	updateItem.OnClick(func(_ *application.Context) {
+		updateItem.SetLabel("Checking...")
+		updateItem.SetEnabled(false)
+		go func() {
+			defer func() { updateItem.SetEnabled(true) }()
+
+			result, err := updater.Check(context.Background(), AppVersion)
+			if err != nil || result == nil {
+				updateItem.SetLabel("Check for Updates")
+				return
+			}
+			if result.Available {
+				updateItem.SetLabel("Update: " + result.LatestVersion + " Available")
+				openURL(result.ReleaseURL)
+			} else {
+				updateItem.SetLabel("Up to Date (" + result.CurrentVersion + ")")
+				time.AfterFunc(5*time.Second, func() {
+					updateItem.SetLabel("Check for Updates")
+				})
+			}
+		}()
+	})
 
 	trayMenu.AddSeparator()
 	trayMenu.Add("Quit Nebo").OnClick(func(ctx *application.Context) {
@@ -558,3 +585,21 @@ func (w wailsWindowHandle) Close()                   { w.win.Close() }
 func (w wailsWindowHandle) SetSize(width, height int) { w.win.SetSize(width, height) }
 func (w wailsWindowHandle) Reload()                  { w.win.Reload() }
 func (w wailsWindowHandle) Name() string             { return w.win.Name() }
+
+// openURL opens a URL in the default browser.
+func openURL(url string) {
+	var cmd string
+	var args []string
+	switch goruntime.GOOS {
+	case "darwin":
+		cmd = "open"
+		args = []string{url}
+	case "windows":
+		cmd = "rundll32"
+		args = []string{"url.dll,FileProtocolHandler", url}
+	default:
+		cmd = "xdg-open"
+		args = []string{url}
+	}
+	_ = exec.Command(cmd, args...).Start()
+}

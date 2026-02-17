@@ -192,58 +192,132 @@ func loadUserProfile(ctx context.Context, db *sql.DB, result *DBContext, userID 
 	return nil
 }
 
-// loadTacitMemories loads persistent memories from the tacit layer for a specific user
-// If userID is empty, loads memories without user filtering (backwards compatibility)
+// Memory budget constants for system prompt injection.
+// Style/personality observations are capped to prevent them from crowding out
+// actionable memories like preferences, artifacts, and project context.
+const (
+	maxTacitMemories = 50 // Total memories injected into system prompt
+	maxStyleMemories = 10 // Cap for tacit/personality entries
+)
+
+// loadTacitMemories loads persistent memories from the tacit layer for a specific user.
+// Uses a two-pass strategy to prevent style observations from crowding out useful memories:
+//   1. Load up to maxStyleMemories from tacit/personality (capped)
+//   2. Fill remaining slots from all other tacit/* namespaces (preferences, artifacts, etc.)
+// If userID is empty, loads memories without user filtering (backwards compatibility).
 func loadTacitMemories(ctx context.Context, db *sql.DB, result *DBContext, userID string) error {
+	remaining := maxTacitMemories
+
+	// Pass 1: Load capped personality/style memories
+	styleCount, err := loadTacitSlice(ctx, db, result, userID, "tacit/personality", maxStyleMemories)
+	if err != nil {
+		return err
+	}
+	remaining -= styleCount
+
+	// Pass 2: Fill the rest from non-personality tacit memories
+	_, err = loadTacitNonPersonality(ctx, db, result, userID, remaining)
+	return err
+}
+
+// loadTacitSlice loads memories from a specific namespace with a limit.
+func loadTacitSlice(ctx context.Context, db *sql.DB, result *DBContext, userID, namespace string, limit int) (int, error) {
 	var rows *sql.Rows
 	var err error
 
 	if userID != "" {
-		// Load user-specific memories
 		rows, err = db.QueryContext(ctx, `
 			SELECT namespace, key, value, tags
 			FROM memories
-			WHERE namespace LIKE 'tacit/%' AND user_id = ?
+			WHERE namespace = ? AND user_id = ?
 			ORDER BY access_count DESC
-			LIMIT 50
-		`, userID)
+			LIMIT ?
+		`, namespace, userID, limit)
 	} else {
-		// Backwards compatibility: load all tacit memories (or first user's)
 		rows, err = db.QueryContext(ctx, `
 			SELECT namespace, key, value, tags
 			FROM memories
-			WHERE namespace LIKE 'tacit/%'
+			WHERE namespace = ?
 			ORDER BY access_count DESC
-			LIMIT 50
-		`)
+			LIMIT ?
+		`, namespace, limit)
 	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rows.Close()
 
+	count := 0
 	for rows.Next() {
-		var namespace, key, value string
-		var tagsJSON sql.NullString
-
-		if err := rows.Scan(&namespace, &key, &value, &tagsJSON); err != nil {
+		entry, scanErr := scanMemoryRow(rows)
+		if scanErr != nil {
 			continue
 		}
-
-		entry := DBMemoryItem{
-			Namespace: namespace,
-			Key:       key,
-			Value:     value,
-		}
-
-		if tagsJSON.Valid && tagsJSON.String != "" {
-			json.Unmarshal([]byte(tagsJSON.String), &entry.Tags)
-		}
-
 		result.TacitMemories = append(result.TacitMemories, entry)
+		count++
+	}
+	return count, nil
+}
+
+// loadTacitNonPersonality loads memories from all tacit/* namespaces EXCEPT tacit/personality.
+func loadTacitNonPersonality(ctx context.Context, db *sql.DB, result *DBContext, userID string, limit int) (int, error) {
+	var rows *sql.Rows
+	var err error
+
+	if userID != "" {
+		rows, err = db.QueryContext(ctx, `
+			SELECT namespace, key, value, tags
+			FROM memories
+			WHERE (namespace = 'tacit' OR namespace LIKE 'tacit/%') AND namespace != 'tacit/personality' AND user_id = ?
+			ORDER BY access_count DESC
+			LIMIT ?
+		`, userID, limit)
+	} else {
+		rows, err = db.QueryContext(ctx, `
+			SELECT namespace, key, value, tags
+			FROM memories
+			WHERE (namespace = 'tacit' OR namespace LIKE 'tacit/%') AND namespace != 'tacit/personality'
+			ORDER BY access_count DESC
+			LIMIT ?
+		`, limit)
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		entry, scanErr := scanMemoryRow(rows)
+		if scanErr != nil {
+			continue
+		}
+		result.TacitMemories = append(result.TacitMemories, entry)
+		count++
+	}
+	return count, nil
+}
+
+// scanMemoryRow scans a single memory row into a DBMemoryItem.
+func scanMemoryRow(rows *sql.Rows) (DBMemoryItem, error) {
+	var namespace, key, value string
+	var tagsJSON sql.NullString
+
+	if err := rows.Scan(&namespace, &key, &value, &tagsJSON); err != nil {
+		return DBMemoryItem{}, err
 	}
 
-	return nil
+	entry := DBMemoryItem{
+		Namespace: namespace,
+		Key:       key,
+		Value:     value,
+	}
+
+	if tagsJSON.Valid && tagsJSON.String != "" {
+		json.Unmarshal([]byte(tagsJSON.String), &entry.Tags)
+	}
+
+	return entry, nil
 }
 
 // FormatForSystemPrompt formats the database context for injection into the system prompt

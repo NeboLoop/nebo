@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/neboloop/nebo/internal/credential"
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/svc"
@@ -35,9 +36,15 @@ func UpdateAuthProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			name = existing.Name
 		}
 
-		apiKey := req.ApiKey
-		if apiKey == "" {
-			apiKey = existing.ApiKey
+		apiKey := existing.ApiKey // Already encrypted in DB
+		if req.ApiKey != "" {
+			// New key provided — encrypt it
+			var encErr error
+			apiKey, encErr = credential.Encrypt(req.ApiKey)
+			if encErr != nil {
+				httputil.InternalError(w, "failed to encrypt API key")
+				return
+			}
 		}
 
 		model := req.Model

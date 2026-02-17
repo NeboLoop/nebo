@@ -5,8 +5,8 @@ package apps
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
-	"time"
 )
 
 // isProcessAlive checks if a process with the given PID is still running.
@@ -28,27 +28,32 @@ func setProcGroup(cmd *exec.Cmd) {
 	}
 }
 
-// killProcGroup force-kills the process on Windows.
+// killProcGroup force-kills the process AND all its children on Windows.
+// Uses taskkill.exe /t (tree kill) to recursively terminate the entire process
+// tree. Without /t, only the leader dies and children become orphans.
 func killProcGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
-		_ = cmd.Process.Kill()
+		_ = exec.Command("taskkill.exe", "/t", "/f", "/pid", strconv.Itoa(cmd.Process.Pid)).Run()
 	}
 }
 
-// gracefulStopProc attempts graceful shutdown, waits up to timeout,
-// then force-kills if still running.
-func gracefulStopProc(cmd *exec.Cmd, timeout time.Duration) {
-	// On Windows, send CTRL_BREAK_EVENT for graceful shutdown
-	// Falls back to Kill if the process doesn't exit in time
-	_ = cmd.Process.Signal(syscall.SIGTERM)
+// killProcGroupTerm sends a termination signal to the process tree on Windows.
+// Windows doesn't have SIGTERM for process groups — taskkill without /f sends
+// WM_CLOSE to GUI apps (graceful) but console apps need /f. We try graceful
+// first; the caller should follow up with killProcGroup after a timeout.
+func killProcGroupTerm(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		// Try graceful tree kill (WM_CLOSE for GUI apps, no effect on console apps)
+		_ = exec.Command("taskkill.exe", "/t", "/pid", strconv.Itoa(cmd.Process.Pid)).Run()
+	}
+}
 
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case <-done:
-	case <-time.After(timeout):
-		_ = cmd.Process.Kill()
-		<-done
+// killOrphanGroup kills an orphaned process tree on Windows.
+func killOrphanGroup(pid int) {
+	// Force kill the entire process tree
+	_ = exec.Command("taskkill.exe", "/t", "/f", "/pid", strconv.Itoa(pid)).Run()
+	// Reap the process handle
+	if proc, err := os.FindProcess(pid); err == nil {
+		proc.Wait()
 	}
 }

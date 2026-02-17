@@ -11,7 +11,11 @@ export MACOSX_DEPLOYMENT_TARGET ?= 15.0
 export CGO_CFLAGS += -mmacosx-version-min=15.0
 export CGO_LDFLAGS += -mmacosx-version-min=15.0
 
-.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install desktop package dmg installer
+# macOS code signing — override with your own Developer ID for forks
+SIGN_IDENTITY ?= Developer ID Application: Alma Tuck (7Y2D3KQ2UM)
+NOTARIZE_PROFILE ?= nebo-notarize
+
+.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install desktop package dmg notarize installer
 
 # Default target
 help:
@@ -37,6 +41,7 @@ help:
 	@echo "  make desktop   - Build desktop app (native window + tray)"
 	@echo "  make install   - Build and install Nebo.app to /Applications"
 	@echo "  make dmg       - Create macOS .dmg installer"
+	@echo "  make notarize  - Sign, notarize, and staple .dmg for Gatekeeper"
 	@echo "  make installer - Create Windows NSIS installer"
 	@echo ""
 	@echo "Installation:"
@@ -212,20 +217,47 @@ app-bundle: desktop
 	@cp assets/macos/Info.plist dist/Nebo.app/Contents/Info.plist
 	@sed -i '' "s/__VERSION__/$$(echo $(VERSION) | sed 's/^v//')/g" dist/Nebo.app/Contents/Info.plist
 	@cp assets/icons/nebo.icns dist/Nebo.app/Contents/Resources/nebo.icns
-	@echo "Built: dist/Nebo.app"
+	@echo "Signing Nebo.app with Developer ID..."
+	@codesign --force --sign "$(SIGN_IDENTITY)" \
+		--identifier dev.nebolabs.nebo \
+		--entitlements assets/macos/nebo.entitlements \
+		--options runtime \
+		dist/Nebo.app/Contents/MacOS/nebo
+	@codesign --force --sign "$(SIGN_IDENTITY)" \
+		--identifier dev.nebolabs.nebo \
+		--entitlements assets/macos/nebo.entitlements \
+		--options runtime \
+		dist/Nebo.app
+	@echo "Built: dist/Nebo.app (Developer ID signed)"
 
-# Install Nebo.app to /Applications (macOS)
+# Install Nebo.app to /Applications (signed + notarized)
 install: app-bundle
+	@echo "Notarizing Nebo.app..."
+	@cd dist && zip -qr Nebo.zip Nebo.app
+	xcrun notarytool submit dist/Nebo.zip \
+		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
+	xcrun stapler staple dist/Nebo.app
+	@rm dist/Nebo.zip
 	@echo "Installing Nebo.app to /Applications..."
 	@rm -rf /Applications/Nebo.app
 	@cp -R dist/Nebo.app /Applications/Nebo.app
-	@echo "Installed! Nebo is now in your Applications folder and Spotlight."
+	@echo "Installed! Nebo.app is signed, notarized, and in your Applications folder."
 
 # Create macOS .dmg installer from the app bundle
 # Requires: brew install create-dmg (or falls back to hdiutil)
 dmg: app-bundle
 	@echo "Creating .dmg installer..."
 	@./scripts/create-dmg.sh $(VERSION) $(shell uname -m)
+
+# Notarize the DMG with Apple (requires stored keychain credentials)
+# First-time setup: xcrun notarytool store-credentials "nebo-notarize"
+notarize: dmg
+	@echo "Submitting to Apple for notarization..."
+	xcrun notarytool submit "dist/Nebo-$$(echo $(VERSION) | sed 's/^v//')-$(shell uname -m).dmg" \
+		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
+	@echo "Stapling notarization ticket..."
+	xcrun stapler staple "dist/Nebo-$$(echo $(VERSION) | sed 's/^v//')-$(shell uname -m).dmg"
+	@echo "Done! DMG is signed and notarized."
 
 # Create Windows NSIS installer (requires NSIS: choco install nsis)
 # Run on Windows or cross-compile environment with makensis available

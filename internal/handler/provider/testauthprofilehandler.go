@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/neboloop/nebo/internal/credential"
 	"github.com/neboloop/nebo/internal/httputil"
 	models "github.com/neboloop/nebo/internal/provider"
 	"github.com/neboloop/nebo/internal/svc"
@@ -37,15 +38,21 @@ func TestAuthProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
+		// Decrypt the API key before testing
+		apiKey := profile.ApiKey
+		if decrypted, decErr := credential.Decrypt(apiKey); decErr == nil {
+			apiKey = decrypted
+		}
+
 		// Test the API key based on provider
 		var resp *types.TestAuthProfileResponse
 		switch profile.Provider {
 		case "anthropic":
-			resp, err = testAnthropic(profile.ApiKey, profile.Model.String)
+			resp, err = testAnthropic(apiKey, profile.Model.String)
 		case "openai":
-			resp, err = testOpenAI(profile.ApiKey, profile.Model.String)
+			resp, err = testOpenAI(apiKey, profile.Model.String)
 		case "google":
-			resp, err = testGoogle(profile.ApiKey, profile.Model.String)
+			resp, err = testGoogle(apiKey, profile.Model.String)
 		case "ollama":
 			resp, err = testOllama(profile.BaseUrl.String, profile.Model.String)
 		default:

@@ -76,9 +76,27 @@ jobs:
             -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
             -o nebo-darwin-${{ matrix.goarch }} .
 
+      - name: Import signing certificate
+        if: env.APPLE_CERTIFICATE_P12 != ''
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > $RUNNER_TEMP/cert.p12
+          security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm $RUNNER_TEMP/cert.p12
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+
       - name: Assemble Nebo.app bundle
         env:
           VERSION: ${{ github.ref_name }}
+          SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           PKG_VERSION="${VERSION#v}"
           mkdir -p Nebo.app/Contents/MacOS
@@ -86,6 +104,20 @@ jobs:
           cp nebo-darwin-${{ matrix.goarch }} Nebo.app/Contents/MacOS/nebo
           sed "s/__VERSION__/${PKG_VERSION}/g" assets/macos/Info.plist > Nebo.app/Contents/Info.plist
           cp assets/icons/nebo.icns Nebo.app/Contents/Resources/nebo.icns
+          # Code sign if identity is available
+          if [ -n "$SIGN_IDENTITY" ]; then
+            codesign --force --sign "$SIGN_IDENTITY" \
+              --identifier dev.nebolabs.nebo \
+              --entitlements assets/macos/nebo.entitlements \
+              --options runtime \
+              Nebo.app/Contents/MacOS/nebo
+            codesign --force --sign "$SIGN_IDENTITY" \
+              --identifier dev.nebolabs.nebo \
+              --entitlements assets/macos/nebo.entitlements \
+              --options runtime \
+              Nebo.app
+            echo "Nebo.app signed with Developer ID"
+          fi
 
       - name: Create .dmg installer
         env:
@@ -97,6 +129,23 @@ jobs:
           cp -R Nebo.app dist/Nebo.app
           chmod +x scripts/create-dmg.sh
           ./scripts/create-dmg.sh "$VERSION" "${{ matrix.goarch }}"
+
+      - name: Notarize .dmg
+        if: env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG_FILE=$(ls dist/Nebo-*.dmg)
+          echo "Submitting $DMG_FILE for notarization..."
+          xcrun notarytool submit "$DMG_FILE" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG_FILE"
+          echo "Notarization complete"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -43,6 +43,18 @@ async function connect(): Promise<void> {
     throw new Error(`Relay not reachable at ${httpUrl}`)
   }
 
+  // Fetch auth token from relay (loopback-only endpoint)
+  const tokenUrl = httpUrl.replace(/\/+$/, '') + '/extension/token'
+  let authToken: string
+  try {
+    const resp = await fetch(tokenUrl, { signal: AbortSignal.timeout(2000) })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = (await resp.json()) as { token: string }
+    authToken = data.token
+  } catch (err) {
+    throw new Error(`Failed to get relay auth token: ${err instanceof Error ? err.message : err}`)
+  }
+
   // Connect WebSocket
   const ws = new WebSocket(wsUrl)
   socket = ws
@@ -54,6 +66,8 @@ async function connect(): Promise<void> {
 
     ws.onopen = () => {
       clearTimeout(timeout)
+      // Send auth handshake as first message
+      ws.send(JSON.stringify({ method: 'auth', params: { token: authToken } }))
       resolve()
     }
 
@@ -68,8 +82,31 @@ async function connect(): Promise<void> {
     }
   })
 
-  // Set up message handling
-  ws.onmessage = (event) => handleMessage(String(event.data || ''))
+  // Wait for auth response before proceeding
+  await new Promise<void>((resolve, reject) => {
+    const authTimeout = setTimeout(() => {
+      reject(new Error('Auth handshake timeout'))
+    }, 3000)
+
+    ws.onmessage = (event) => {
+      clearTimeout(authTimeout)
+      let msg: { method?: string; error?: string }
+      try {
+        msg = JSON.parse(String(event.data)) as { method?: string; error?: string }
+      } catch {
+        reject(new Error('Invalid auth response'))
+        return
+      }
+      if (msg.method === 'auth_ok') {
+        // Auth successful — switch to normal message handler
+        ws.onmessage = (ev) => handleMessage(String(ev.data || ''))
+        resolve()
+      } else {
+        reject(new Error(msg.error || 'Auth rejected'))
+      }
+    }
+  })
+
   ws.onclose = () => handleDisconnect('closed')
   ws.onerror = () => handleDisconnect('error')
 

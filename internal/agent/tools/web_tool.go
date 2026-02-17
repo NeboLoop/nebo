@@ -43,6 +43,9 @@ type WebDomainInput struct {
 	Engine string `json:"engine,omitempty"` // duckduckgo, google
 	Limit  int    `json:"limit,omitempty"`
 
+	// Pagination fields (for fetch chunking)
+	Offset int `json:"offset,omitempty"` // Chunk offset (0-based) for paginating large responses
+
 	// Browser fields
 	Profile  string `json:"profile,omitempty"`  // "nebo" (managed) or "chrome" (extension relay)
 	Selector string `json:"selector,omitempty"` // CSS selector
@@ -157,6 +160,7 @@ func (t *WebDomainTool) schemaConfig() DomainSchemaConfig {
 			{Name: "output", Type: "string", Description: "Output path for screenshot (returns base64 if empty)"},
 			{Name: "timeout", Type: "integer", Description: "Action timeout in seconds (default: 30)"},
 			{Name: "target_id", Type: "string", Description: "Page/tab ID for multi-tab control (use list_pages to see available)"},
+			{Name: "offset", Type: "integer", Description: "Chunk offset (0-based) for paginating large fetch/text responses"},
 		},
 		Examples: []string{
 			`web(resource: http, action: fetch, url: "https://api.example.com/data")`,
@@ -254,19 +258,16 @@ func (t *WebDomainTool) handleFetch(ctx context.Context, in WebDomainInput) (*To
 		return &ToolResult{Content: fmt.Sprintf("Error reading response: %v", err), IsError: true}, nil
 	}
 
-	const maxContent = 100000
-	result := string(content)
-	if len(result) > maxContent {
-		result = result[:maxContent] + "\n... (content truncated)"
-	}
+	contentType := resp.Header.Get("Content-Type")
 
-	header := fmt.Sprintf("HTTP %d %s\nContent-Type: %s\nContent-Length: %d\n\n",
-		resp.StatusCode, resp.Status,
-		resp.Header.Get("Content-Type"), len(content),
-	)
+	// Extract visible text from HTML, pass through other content types unchanged.
+	text := ExtractVisibleText(content, contentType)
+
+	// Format with chunking — no truncation, full content accessible via offset.
+	result := FormatFetchResult(resp.StatusCode, resp.Status, contentType, len(content), text, defaultChunkSize, in.Offset)
 
 	return &ToolResult{
-		Content: header + result,
+		Content: result,
 		IsError: resp.StatusCode >= 400,
 	}, nil
 }
@@ -597,10 +598,11 @@ func (t *WebDomainTool) handleBrowserAction(ctx context.Context, in WebDomainInp
 		if err != nil {
 			return &ToolResult{Content: fmt.Sprintf("Get text failed: %v", err), IsError: true}, nil
 		}
-		if len(text) > 10000 {
-			text = text[:10000] + "\n... (truncated)"
+		chunk, totalChunks := ChunkText(text, defaultChunkSize, in.Offset)
+		if totalChunks > 1 {
+			chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
 		}
-		return &ToolResult{Content: text}, nil
+		return &ToolResult{Content: chunk}, nil
 
 	case "evaluate":
 		if in.Text == "" {
@@ -835,10 +837,11 @@ func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInp
 		if err := json.Unmarshal(result, &text); err != nil {
 			text = string(result)
 		}
-		if len(text) > 10000 {
-			text = text[:10000] + "\n... (truncated)"
+		chunk, totalChunks := ChunkText(text, defaultChunkSize, in.Offset)
+		if totalChunks > 1 {
+			chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
 		}
-		return &ToolResult{Content: text}, nil
+		return &ToolResult{Content: chunk}, nil
 
 	case "evaluate":
 		if in.Text == "" {

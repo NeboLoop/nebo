@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/neboloop/nebo/internal/credential"
 	"github.com/neboloop/nebo/internal/db"
 )
 
@@ -50,11 +51,17 @@ func (m *AuthProfileManager) Close() error {
 
 // dbProfileToAuthProfile converts a sqlc AuthProfile to config.AuthProfile
 func dbProfileToAuthProfile(p db.AuthProfile) *AuthProfile {
+	// Decrypt API key (handles both enc:-prefixed and plaintext for migration window)
+	apiKey := p.ApiKey
+	if decrypted, err := credential.Decrypt(apiKey); err == nil {
+		apiKey = decrypted
+	}
+
 	result := &AuthProfile{
 		ID:       p.ID,
 		Name:     p.Name,
 		Provider: p.Provider,
-		APIKey:   p.ApiKey,
+		APIKey:   apiKey,
 	}
 
 	if p.Model.Valid {

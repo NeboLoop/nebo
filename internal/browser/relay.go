@@ -49,6 +49,45 @@ type cdpClientState struct {
 	subscription events.Subscription
 }
 
+// connRateLimiter is a simple sliding-window rate limiter for connection attempts.
+type connRateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func newConnRateLimiter(limit int, window time.Duration) *connRateLimiter {
+	return &connRateLimiter{
+		attempts: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+}
+
+func (l *connRateLimiter) allow(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-l.window)
+
+	// Prune old attempts
+	valid := make([]time.Time, 0, l.limit)
+	for _, t := range l.attempts[ip] {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= l.limit {
+		l.attempts[ip] = valid
+		return false
+	}
+
+	l.attempts[ip] = append(valid, now)
+	return true
+}
+
 // ExtensionRelay bridges a Chrome extension to CDP clients.
 type ExtensionRelay struct {
 	mu      sync.RWMutex
@@ -71,6 +110,9 @@ type ExtensionRelay struct {
 	// Pending requests to extension
 	pendingRequests map[int]*pendingRequest
 	nextRequestID   int
+
+	connLimiter *connRateLimiter
+	auditLog    *cdpAuditLogger
 
 	stopped bool
 }
@@ -261,6 +303,8 @@ func newExtensionRelay(host string, port int) (*ExtensionRelay, error) {
 		connectedTargets: make(map[string]*ConnectedTarget),
 		pendingRequests:  make(map[int]*pendingRequest),
 		nextRequestID:    1,
+		connLimiter:      newConnRateLimiter(10, time.Minute),
+		auditLog:         newCDPAuditLogger(),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				origin := r.Header.Get("Origin")
@@ -280,6 +324,7 @@ func newExtensionRelay(host string, port int) (*ExtensionRelay, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", relay.HandleRoot)
 	mux.HandleFunc("/extension/status", relay.HandleExtensionStatus)
+	mux.HandleFunc("/extension/token", relay.HandleExtensionToken)
 	mux.HandleFunc("/json/version", relay.HandleJSONVersion)
 	mux.HandleFunc("/json/version/", relay.HandleJSONVersion)
 	mux.HandleFunc("/json", relay.HandleJSONList)
@@ -371,6 +416,7 @@ func (r *ExtensionRelay) Handler() http.Handler {
 	router.Get("/", r.HandleRoot)
 	router.Head("/", r.HandleRoot)
 	router.Get("/extension/status", r.HandleExtensionStatus)
+	router.Get("/extension/token", r.HandleExtensionToken)
 	router.Get("/json/version", r.HandleJSONVersion)
 	router.Get("/json", r.HandleJSONList)
 	router.Get("/json/list", r.HandleJSONList)
@@ -412,6 +458,8 @@ func NewRelayHandler(baseURL string) (*ExtensionRelay, error) {
 		connectedTargets: make(map[string]*ConnectedTarget),
 		pendingRequests:  make(map[int]*pendingRequest),
 		nextRequestID:    1,
+		connLimiter:      newConnRateLimiter(10, time.Minute),
+		auditLog:         newCDPAuditLogger(),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				origin := r.Header.Get("Origin")
@@ -452,6 +500,27 @@ func (r *ExtensionRelay) HandleExtensionStatus(w http.ResponseWriter, req *http.
 		"connected": r.ExtensionConnected(),
 		"port":      r.port,
 	})
+}
+
+// HandleExtensionToken serves the auth token to the Chrome extension.
+// Loopback-only and rate-limited. The browser WebSocket API cannot set custom
+// headers, so the extension fetches the token via HTTP first, then sends it
+// as the first WebSocket message during the auth handshake.
+func (r *ExtensionRelay) HandleExtensionToken(w http.ResponseWriter, req *http.Request) {
+	remoteIP := req.RemoteAddr
+	if host, _, err := net.SplitHostPort(remoteIP); err == nil {
+		remoteIP = host
+	}
+	if !isLoopbackIP(remoteIP) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if !r.connLimiter.allow(remoteIP) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"token": r.authToken})
 }
 
 func (r *ExtensionRelay) HandleJSONVersion(w http.ResponseWriter, req *http.Request) {
@@ -554,28 +623,17 @@ func (r *ExtensionRelay) HandleJSONClose(w http.ResponseWriter, req *http.Reques
 }
 
 func (r *ExtensionRelay) checkAuth(w http.ResponseWriter, req *http.Request) bool {
-	// Only verify auth for /json paths (both standalone and when mounted at /relay)
-	if !strings.HasPrefix(req.URL.Path, "/json") && !strings.Contains(req.URL.Path, "/json") {
-		return true
-	}
-
-	// Allow loopback connections without token (same policy as HandleCdpWS)
+	// Loopback-only
 	remoteIP := req.RemoteAddr
 	if host, _, err := net.SplitHostPort(remoteIP); err == nil {
 		remoteIP = host
 	}
-	if isLoopbackIP(remoteIP) {
-		// Loopback: allow if token is empty OR matches
-		token := req.Header.Get(RelayAuthHeader)
-		if token == "" || token == r.authToken {
-			return true
-		}
-		// Token provided but wrong
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	if !isLoopbackIP(remoteIP) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return false
 	}
 
-	// Non-loopback: require valid token
+	// Auth token required for all authenticated endpoints
 	token := req.Header.Get(RelayAuthHeader)
 	if token != r.authToken {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -597,6 +655,12 @@ func (r *ExtensionRelay) HandleExtensionWS(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
+	// Rate limit connection attempts
+	if !r.connLimiter.allow(remoteIP) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return
+	}
+
 	r.mu.Lock()
 	if r.extensionWS != nil {
 		r.mu.Unlock()
@@ -611,6 +675,31 @@ func (r *ExtensionRelay) HandleExtensionWS(w http.ResponseWriter, req *http.Requ
 		relayLog("Extension WS upgrade failed: %v", err)
 		return
 	}
+
+	// Auth handshake: first message must be {"method":"auth","params":{"token":"..."}}
+	ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, authMsg, err := ws.ReadMessage()
+	if err != nil {
+		relayLog("Extension auth: read timeout or error: %v", err)
+		ws.Close()
+		return
+	}
+	ws.SetReadDeadline(time.Time{}) // Clear deadline
+
+	var authFrame struct {
+		Method string `json:"method"`
+		Params struct {
+			Token string `json:"token"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(authMsg, &authFrame); err != nil ||
+		authFrame.Method != "auth" || authFrame.Params.Token != r.authToken {
+		relayLog("Extension auth: invalid credentials from %s", remoteIP)
+		ws.WriteJSON(map[string]string{"method": "auth_error", "error": "invalid token"})
+		ws.Close()
+		return
+	}
+	ws.WriteJSON(map[string]string{"method": "auth_ok"})
 
 	relayLog("Extension connected from %s", req.RemoteAddr)
 	r.mu.Lock()
@@ -679,10 +768,15 @@ func (r *ExtensionRelay) HandleCdpWS(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Check auth - but allow loopback connections without token
-	// since we already verified the request is from localhost
+	// Rate limit connection attempts
+	if !r.connLimiter.allow(remoteIP) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return
+	}
+
+	// Auth token required for all CDP connections
 	token := req.Header.Get(RelayAuthHeader)
-	if token != "" && token != r.authToken {
+	if token != r.authToken {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -924,6 +1018,8 @@ func (r *ExtensionRelay) handleTargetInfoChanged(params any) {
 }
 
 func (r *ExtensionRelay) handleCdpCommand(clientID string, cmd *cdpCommand) {
+	r.auditLog.logCommand(clientID, cmd.Method, cmd.SessionID)
+
 	topic := events.CDPClientTopic(clientID)
 
 	var result any

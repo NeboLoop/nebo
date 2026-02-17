@@ -250,14 +250,32 @@ type AgentOptions struct {
 // isNeboLoopCode checks if a prompt is a NeboLoop connection code.
 func isNeboLoopCode(prompt string) bool {
 	prompt = strings.TrimSpace(prompt)
-	if len(prompt) != 14 {
+	if len(prompt) != 19 {
 		return false
 	}
-	// Pattern: NEBO-XXXX-XXXX (uppercase alphanumeric)
-	if prompt[:5] != "NEBO-" || prompt[9] != '-' {
+	// Pattern: NEBO-XXXX-XXXX-XXXX (uppercase alphanumeric)
+	if prompt[:5] != "NEBO-" || prompt[9] != '-' || prompt[14] != '-' {
 		return false
 	}
-	for _, c := range prompt[5:9] + prompt[10:] {
+	for _, c := range prompt[5:9] + prompt[10:14] + prompt[15:] {
+		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// isLoopCode checks if a prompt is a NeboLoop loop invite code.
+func isLoopCode(prompt string) bool {
+	prompt = strings.TrimSpace(prompt)
+	if len(prompt) != 19 {
+		return false
+	}
+	// Pattern: LOOP-XXXX-XXXX-XXXX (uppercase alphanumeric)
+	if prompt[:5] != "LOOP-" || prompt[9] != '-' || prompt[14] != '-' {
+		return false
+	}
+	for _, c := range prompt[5:9] + prompt[10:14] + prompt[15:] {
 		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
 			return false
 		}
@@ -399,6 +417,79 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 	})
 
 	// Complete the request
+	send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": successMsg}})
+	return true
+}
+
+// handleLoopCode processes a loop invite code and joins the bot to the loop.
+// Returns true if the prompt was a loop code (handled), false otherwise.
+// The bot must already be connected to NeboLoop (has credentials in plugin store).
+func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *settings.Store, send func(map[string]any)) bool {
+	if !isLoopCode(prompt) {
+		return false
+	}
+
+	code := strings.TrimSpace(prompt)
+	fmt.Printf("[NeboLoop] Loop invite code detected: %s\n", code)
+
+	// Emit tool call event
+	send(map[string]any{
+		"type": "stream",
+		"id":   requestID,
+		"payload": map[string]any{
+			"tool":  "loop_join",
+			"input": map[string]string{"code": code},
+		},
+	})
+
+	// Get NeboLoop credentials from plugin store (bot must already be connected)
+	if pluginStore == nil {
+		errMsg := "Cannot join loop: settings not available"
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": errMsg}})
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": errMsg}})
+		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": errMsg}})
+		return true
+	}
+
+	neboloopSettings, err := pluginStore.GetSettingsByName(ctx, "neboloop")
+	if err != nil || neboloopSettings["bot_id"] == "" {
+		errMsg := "You need to connect to NeboLoop first. Paste a NEBO-XXXX-XXXX-XXXX connection code to get started."
+		fmt.Printf("[NeboLoop] %s\n", errMsg)
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": errMsg}})
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": errMsg}})
+		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": errMsg}})
+		return true
+	}
+
+	// Create NeboLoop API client from stored credentials
+	client, err := neboloopapi.NewClient(neboloopSettings)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to create NeboLoop client: %s", err)
+		fmt.Printf("[NeboLoop] %s\n", errMsg)
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": errMsg}})
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": "Couldn't connect to NeboLoop. Please check your connection settings."}})
+		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": errMsg}})
+		return true
+	}
+
+	// Join the loop
+	result, err := client.JoinLoop(ctx, code)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to join loop: %s", err)
+		fmt.Printf("[NeboLoop] %s\n", errMsg)
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": errMsg}})
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": "Couldn't join the loop. The invite code may have expired or already been used. Please try a new one."}})
+		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": errMsg}})
+		return true
+	}
+
+	// Emit success
+	resultText := fmt.Sprintf("Joined loop: %s (ID: %s)", result.Name, result.ID)
+	fmt.Printf("[NeboLoop] %s\n", resultText)
+	send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": resultText}})
+
+	successMsg := fmt.Sprintf("You've joined the **%s** loop! You can now communicate with other agents in this loop.", result.Name)
+	send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": successMsg}})
 	send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": successMsg}})
 	return true
 }
@@ -612,6 +703,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	// We'll set this callback after creating the runner below
 	taskTool.CreateOrchestrator(cfg, sessions, providers, registry)
 	registry.Register(taskTool)
+	defer taskTool.GetOrchestrator().Shutdown(context.Background())
 
 	agentStatusTool := tools.NewAgentStatusTool()
 	agentStatusTool.SetOrchestrator(taskTool.GetOrchestrator())
@@ -1557,6 +1649,13 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 
 			// Intercept NeboLoop connection codes before enqueueing to LLM
 			if handleNeboLoopCode(ctx, prompt, requestID, pluginStore, state, func(f map[string]any) {
+				state.sendFrame(f)
+			}) {
+				break
+			}
+
+			// Intercept loop invite codes before enqueueing to LLM
+			if handleLoopCode(ctx, prompt, requestID, pluginStore, func(f map[string]any) {
 				state.sendFrame(f)
 			}) {
 				break

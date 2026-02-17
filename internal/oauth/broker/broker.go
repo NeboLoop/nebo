@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/neboloop/nebo/internal/credential"
 	"github.com/neboloop/nebo/internal/db"
 	mcpclient "github.com/neboloop/nebo/internal/mcp/client"
 )
@@ -104,7 +105,7 @@ func (b *Broker) StartFlow(ctx context.Context, appID, providerName, scopes stri
 	}
 
 	// Encrypt verifier before storing
-	encryptedVerifier, err := mcpclient.EncryptString(verifier, b.encryptionKey)
+	encryptedVerifier, err := credential.Encrypt(verifier)
 	if err != nil {
 		return "", fmt.Errorf("encrypt verifier: %w", err)
 	}
@@ -166,7 +167,7 @@ func (b *Broker) HandleCallback(ctx context.Context, state, code string) error {
 	// Decrypt PKCE verifier
 	verifier := ""
 	if grant.PkceVerifier.Valid && grant.PkceVerifier.String != "" {
-		verifier, err = mcpclient.DecryptString(grant.PkceVerifier.String, b.encryptionKey)
+		verifier, err = credential.Decrypt(grant.PkceVerifier.String)
 		if err != nil {
 			return fmt.Errorf("decrypt PKCE verifier: %w", err)
 		}
@@ -267,14 +268,14 @@ func (b *Broker) storeAndPushTokens(ctx context.Context, appID, providerName str
 	}
 
 	// Encrypt tokens
-	encAccessToken, err := mcpclient.EncryptString(accessToken, b.encryptionKey)
+	encAccessToken, err := credential.Encrypt(accessToken)
 	if err != nil {
 		return fmt.Errorf("encrypt access token: %w", err)
 	}
 
 	encRefreshToken := ""
 	if refreshToken != "" {
-		encRefreshToken, err = mcpclient.EncryptString(refreshToken, b.encryptionKey)
+		encRefreshToken, err = credential.Encrypt(refreshToken)
 		if err != nil {
 			return fmt.Errorf("encrypt refresh token: %w", err)
 		}
@@ -360,7 +361,7 @@ func (b *Broker) PushExistingTokens(ctx context.Context, appID string) error {
 			continue
 		}
 
-		accessToken, err := mcpclient.DecryptString(grant.AccessToken, b.encryptionKey)
+		accessToken, err := credential.Decrypt(grant.AccessToken)
 		if err != nil {
 			fmt.Printf("[oauth-broker] failed to decrypt token for %s/%s: %v\n", appID, grant.Provider, err)
 			continue

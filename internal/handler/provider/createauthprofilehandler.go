@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/neboloop/nebo/internal/credential"
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/svc"
@@ -31,11 +32,17 @@ func CreateAuthProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			priority = 10
 		}
 
+		encKey, err := credential.Encrypt(req.ApiKey)
+		if err != nil {
+			httputil.InternalError(w, "failed to encrypt API key")
+			return
+		}
+
 		profile, err := svcCtx.DB.CreateAuthProfile(ctx, db.CreateAuthProfileParams{
 			ID:       id,
 			Name:     req.Name,
 			Provider: req.Provider,
-			ApiKey:   req.ApiKey,
+			ApiKey:   encKey,
 			Model:    sql.NullString{String: req.Model, Valid: req.Model != ""},
 			BaseUrl:  sql.NullString{String: req.BaseUrl, Valid: req.BaseUrl != ""},
 			Priority: sql.NullInt64{Int64: priority, Valid: true},

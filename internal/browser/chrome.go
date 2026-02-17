@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -158,12 +159,18 @@ func LaunchChrome(config *ResolvedConfig, profile *ResolvedProfile) (*RunningChr
 	// Ensure clean exit state
 	EnsureCleanExit(userDataDir)
 
-	// Build Chrome args
-	args := buildChromeArgs(userDataDir, profile.CDPPort, config)
+	// Allocate a random ephemeral port instead of using the predictable default (9222).
+	// This eliminates the attack surface of a well-known port.
+	cdpPort, err := randomAvailablePort()
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate CDP port: %w", err)
+	}
 
-	// Launch Chrome
+	args := buildChromeArgs(userDataDir, cdpPort, config)
+
 	cmd := exec.Command(exe.Path, args...)
 	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+	setChromeProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start Chrome: %w", err)
@@ -173,13 +180,17 @@ func LaunchChrome(config *ResolvedConfig, profile *ResolvedProfile) (*RunningChr
 		PID:         cmd.Process.Pid,
 		Executable:  exe,
 		UserDataDir: userDataDir,
-		CDPPort:     profile.CDPPort,
+		CDPPort:     cdpPort,
 		StartedAt:   time.Now(),
 		cmd:         cmd,
 	}
 
+	// Update profile to reflect the actual port
+	profile.CDPPort = cdpPort
+	profile.CDPUrl = fmt.Sprintf("http://127.0.0.1:%d", cdpPort)
+
 	// Wait for CDP to be ready
-	cdpURL := fmt.Sprintf("http://127.0.0.1:%d", profile.CDPPort)
+	cdpURL := fmt.Sprintf("http://127.0.0.1:%d", cdpPort)
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if IsChromeReachable(cdpURL, 500*time.Millisecond) {
@@ -188,19 +199,20 @@ func LaunchChrome(config *ResolvedConfig, profile *ResolvedProfile) (*RunningChr
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// CDP didn't come up, kill the process
 	_ = cmd.Process.Kill()
-	return nil, fmt.Errorf("Chrome CDP did not start on port %d within 15s", profile.CDPPort)
+	return nil, fmt.Errorf("Chrome CDP did not start on port %d within 15s", cdpPort)
 }
 
-// StopChrome stops a running Chrome instance.
+// StopChrome stops a running Chrome instance and all its child processes.
+// Chrome spawns renderer subprocesses that must be killed as a group
+// to avoid orphaned processes surviving after Nebo shuts down.
 func StopChrome(running *RunningChrome, timeout time.Duration) error {
 	if running.cmd == nil || running.cmd.Process == nil {
 		return nil
 	}
 
-	// Try graceful shutdown first
-	_ = running.cmd.Process.Signal(os.Interrupt)
+	// Try graceful shutdown — signal the entire process group
+	killChromeProcessGroup(running.cmd, false)
 
 	done := make(chan error, 1)
 	go func() {
@@ -211,7 +223,8 @@ func StopChrome(running *RunningChrome, timeout time.Duration) error {
 	case <-done:
 		return nil
 	case <-time.After(timeout):
-		// Force kill
+		// Force kill the entire process group
+		killChromeProcessGroup(running.cmd, true)
 		return running.cmd.Process.Kill()
 	}
 }
@@ -247,6 +260,19 @@ func buildChromeArgs(userDataDir string, cdpPort int, config *ResolvedConfig) []
 	args = append(args, "about:blank")
 
 	return args
+}
+
+// randomAvailablePort finds a free TCP port by briefly binding to :0 and returning
+// the OS-assigned port. There's a tiny race between closing the listener and Chrome
+// binding to the same port, but in practice it's reliable.
+func randomAvailablePort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	return port, nil
 }
 
 func needsBootstrap(userDataDir string) bool {

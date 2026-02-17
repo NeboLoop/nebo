@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/neboloop/nebo/internal/agenthub"
+	"github.com/neboloop/nebo/internal/credential"
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/svc"
@@ -126,11 +127,16 @@ func CreateMCPIntegrationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		// Store credential if API key provided
 		if req.ApiKey != "" {
+			encKey, encErr := credential.Encrypt(req.ApiKey)
+			if encErr != nil {
+				httputil.InternalError(w, "failed to encrypt API key")
+				return
+			}
 			_, err = svcCtx.DB.CreateMCPIntegrationCredential(r.Context(), db.CreateMCPIntegrationCredentialParams{
 				ID:              uuid.New().String(),
 				IntegrationID:   id,
 				CredentialType:  "api_key",
-				CredentialValue: req.ApiKey,
+				CredentialValue: encKey,
 			})
 			if err != nil {
 				httputil.Error(w, err)
@@ -197,13 +203,18 @@ func UpdateMCPIntegrationHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		// Update credential if API key provided
 		if req.ApiKey != "" {
+			encKey, encErr := credential.Encrypt(req.ApiKey)
+			if encErr != nil {
+				httputil.InternalError(w, "failed to encrypt API key")
+				return
+			}
 			// Delete old credentials and create new
 			svcCtx.DB.DeleteMCPIntegrationCredentials(r.Context(), id)
 			_, err = svcCtx.DB.CreateMCPIntegrationCredential(r.Context(), db.CreateMCPIntegrationCredentialParams{
 				ID:              uuid.New().String(),
 				IntegrationID:   id,
 				CredentialType:  "api_key",
-				CredentialValue: req.ApiKey,
+				CredentialValue: encKey,
 			})
 			if err != nil {
 				httputil.Error(w, err)

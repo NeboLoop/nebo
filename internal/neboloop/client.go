@@ -45,7 +45,10 @@ func NewClient(settings map[string]string) (*Client, error) {
 	}
 	mqttPassword := settings["mqtt_password"]
 	if mqttPassword == "" {
-		return nil, fmt.Errorf("mqtt_password not configured")
+		mqttPassword = settings["api_key"] // Fallback: NEBO code handler stores as api_key
+	}
+	if mqttPassword == "" {
+		return nil, fmt.Errorf("mqtt_password or api_key not configured")
 	}
 	return &Client{
 		apiServer:    apiServer,
@@ -292,6 +295,21 @@ func (c *Client) InstallSkill(ctx context.Context, id string) (*InstallResponse,
 // UninstallSkill uninstalls a skill for this bot.
 func (c *Client) UninstallSkill(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/skills/"+id+"/install", nil, nil)
+}
+
+// --------------------------------------------------------------------------
+// Loops
+// --------------------------------------------------------------------------
+
+// JoinLoop joins the bot to a loop using an invite code.
+func (c *Client) JoinLoop(ctx context.Context, inviteCode string) (*JoinLoopResponse, error) {
+	var resp JoinLoopResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/loops/join", JoinLoopRequest{
+		InviteCode: inviteCode,
+	}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 // --------------------------------------------------------------------------

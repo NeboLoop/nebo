@@ -212,6 +212,7 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 		r.Get("/relay", browserRelay.HandleRoot)
 		r.Head("/relay", browserRelay.HandleRoot)
 		r.Get("/relay/extension/status", browserRelay.HandleExtensionStatus)
+		r.Get("/relay/extension/token", browserRelay.HandleExtensionToken)
 		r.Get("/relay/json/version", browserRelay.HandleJSONVersion)
 		r.Get("/relay/json", browserRelay.HandleJSONList)
 		r.Get("/relay/json/list", browserRelay.HandleJSONList)

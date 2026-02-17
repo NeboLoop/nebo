@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -176,15 +175,54 @@ func (m *Manager) GetRecoverableTasks(ctx context.Context) ([]*PendingTask, erro
 	return tasks, rows.Err()
 }
 
-// CheckTaskCompletion checks if a task was actually completed by examining its session
+// CheckTaskCompletion checks if a task was actually completed by examining its session.
+// A task is considered complete if:
+// 1. The session has assistant messages with tool calls or substantial content, OR
+// 2. The session has multiple exchange rounds (user → assistant → tool → assistant).
+// This is deliberately generous — it's better to skip a completed task than re-run it.
 func (m *Manager) CheckTaskCompletion(ctx context.Context, task *PendingTask) (bool, error) {
-	// Query the session_messages table to see if there's a completion indicator
-	// A task is considered complete if:
-	// 1. The last message is from the assistant
-	// 2. The content doesn't indicate an error or interruption
+	// Count how many assistant messages exist in the session
+	var assistantCount int
+	var totalCount int
+	var toolCallCount int
 
-	var lastRole, lastContent sql.NullString
 	err := m.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*) as total,
+			SUM(CASE WHEN sm.role = 'assistant' THEN 1 ELSE 0 END) as assistant_count,
+			SUM(CASE WHEN sm.tool_calls IS NOT NULL AND sm.tool_calls != '' AND sm.tool_calls != 'null' THEN 1 ELSE 0 END) as tool_count
+		FROM session_messages sm
+		JOIN sessions s ON sm.session_id = s.id
+		WHERE s.name = ?
+	`, task.SessionKey).Scan(&totalCount, &assistantCount, &toolCallCount)
+
+	if err == sql.ErrNoRows || totalCount == 0 {
+		// No messages at all — task never started
+		fmt.Printf("[Recovery] Task %s: no session messages found\n", task.ID[:8])
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	fmt.Printf("[Recovery] Task %s: %d messages, %d assistant, %d with tool calls\n",
+		task.ID[:8], totalCount, assistantCount, toolCallCount)
+
+	// If the agent made tool calls, it was actively working — consider it complete
+	// (better to lose partial work than re-run and duplicate side effects)
+	if toolCallCount > 0 {
+		return true, nil
+	}
+
+	// If the agent produced any assistant response, it at least started processing
+	// Multiple messages means it went through the loop
+	if assistantCount > 0 && totalCount > 2 {
+		return true, nil
+	}
+
+	// Check the last message — if it's from assistant with real content, it's done
+	var lastRole, lastContent sql.NullString
+	err = m.db.QueryRowContext(ctx, `
 		SELECT sm.role, sm.content
 		FROM session_messages sm
 		JOIN sessions s ON sm.session_id = s.id
@@ -193,31 +231,12 @@ func (m *Manager) CheckTaskCompletion(ctx context.Context, task *PendingTask) (b
 		LIMIT 1
 	`, task.SessionKey).Scan(&lastRole, &lastContent)
 
-	if err == sql.ErrNoRows {
-		// No messages - task hasn't started
-		return false, nil
-	}
-	if err != nil {
+	if err != nil && err != sql.ErrNoRows {
 		return false, err
 	}
 
-	// If the last message is from the assistant and looks complete, consider it done
-	if lastRole.String == "assistant" && lastContent.Valid {
-		content := strings.ToLower(lastContent.String)
-		// Check for completion indicators
-		completionIndicators := []string{
-			"completed", "done", "finished", "success",
-			"here is", "here are", "i have", "i've",
-		}
-		for _, indicator := range completionIndicators {
-			if strings.Contains(content, indicator) {
-				return true, nil
-			}
-		}
-		// If there's substantial content (>100 chars), assume it's a response
-		if len(lastContent.String) > 100 {
-			return true, nil
-		}
+	if lastRole.String == "assistant" && lastContent.Valid && len(lastContent.String) > 50 {
+		return true, nil
 	}
 
 	return false, nil
@@ -265,6 +284,17 @@ func (m *Manager) RecoverTasks(ctx context.Context) ([]*PendingTask, error) {
 	}
 
 	return toRecover, nil
+}
+
+// MarkCancelled unconditionally marks a task as cancelled.
+// Unlike MarkFailed, this never re-queues — use for shutdown.
+func (m *Manager) MarkCancelled(ctx context.Context, taskID string) error {
+	_, err := m.db.ExecContext(ctx, `
+		UPDATE pending_tasks
+		SET status = 'cancelled', last_error = 'shutdown', completed_at = ?
+		WHERE id = ?
+	`, time.Now().Unix(), taskID)
+	return err
 }
 
 // CleanupOldTasks removes completed/failed tasks older than 7 days

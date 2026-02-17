@@ -8,6 +8,7 @@ import (
 
 	"github.com/neboloop/nebo/internal/agenthub"
 	"github.com/neboloop/nebo/internal/config"
+	"github.com/neboloop/nebo/internal/credential"
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/defaults"
 	"github.com/neboloop/nebo/internal/local"
@@ -243,6 +244,13 @@ func newServiceContext(c config.Config, database *db.Store) *ServiceContext {
 		if err != nil {
 			logging.Warnf("MCP encryption key not configured: %v", err)
 		}
+		credential.Init(encKey)
+
+		// Encrypt any plaintext credentials from before the encryption feature
+		if err := credential.Migrate(context.Background(), svc.DB.GetDB()); err != nil {
+			logging.Errorf("Credential migration failed: %v", err)
+		}
+
 		baseURL := fmt.Sprintf("http://localhost:%d", c.Port)
 		svc.MCPClient = mcpclient.NewClient(svc.DB, encKey, baseURL)
 		logging.Info("MCP OAuth client initialized")

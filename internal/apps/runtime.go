@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,7 @@ type AppProcess struct {
 	conn       *grpc.ClientConn
 	startedAt  time.Time
 	logCleanup func() // closes per-app log files
+	waitDone   chan struct{} // closed when cmd.Wait() returns (reaper goroutine)
 	mu         sync.RWMutex
 }
 
@@ -48,6 +50,8 @@ type Runtime struct {
 	inspector   *inspector.Inspector   // nil = no gRPC inspection
 	processes   map[string]*AppProcess
 	mu          sync.RWMutex
+	launchMu    sync.Map               // map[appID]*sync.Mutex — per-app launch serialization
+	restarting  sync.Map               // map[appID]time.Time — suppresses watcher during managed restarts
 }
 
 // NewRuntime creates a new app runtime manager with the given sandbox config.
@@ -90,12 +94,58 @@ func FindBinary(appDir string) (string, error) {
 	return "", fmt.Errorf("no binary found (expected 'binary', 'app', or executable in tmp/)")
 }
 
+// SuppressWatcher marks an app as "being restarted by supervisor/registry" so
+// the file watcher won't fire a redundant restart. The suppression expires
+// after the given duration as a safety net (prevents permanent suppression if
+// the restart fails and nobody clears it).
+func (rt *Runtime) SuppressWatcher(appID string, d time.Duration) {
+	rt.restarting.Store(appID, time.Now().Add(d))
+}
+
+// ClearWatcherSuppression removes the watcher suppression for an app.
+func (rt *Runtime) ClearWatcherSuppression(appID string) {
+	rt.restarting.Delete(appID)
+}
+
+// IsWatcherSuppressed returns true if the watcher should skip this app
+// because a managed restart is in progress.
+func (rt *Runtime) IsWatcherSuppressed(appID string) bool {
+	v, ok := rt.restarting.Load(appID)
+	if !ok {
+		return false
+	}
+	expiry := v.(time.Time)
+	if time.Now().After(expiry) {
+		// Expired — clean up and allow watcher
+		rt.restarting.Delete(appID)
+		return false
+	}
+	return true
+}
+
+// appLaunchMutex returns the per-app mutex for serializing launches.
+// Guarantees at most ONE Launch() in flight per app ID — prevents the race
+// where watcher, supervisor, and DiscoverAndLaunch all try to start the same
+// app concurrently, resulting in duplicate processes.
+func (rt *Runtime) appLaunchMutex(appID string) *sync.Mutex {
+	v, _ := rt.launchMu.LoadOrStore(appID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 // Launch starts an app binary, waits for its Unix socket, and connects via gRPC.
+// Serialized per app ID — concurrent calls for the same app block until the
+// first completes. Different apps launch in parallel.
 func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 	manifest, err := LoadManifest(appDir)
 	if err != nil {
 		return nil, fmt.Errorf("load manifest: %w", err)
 	}
+
+	// Serialize launches for the same app. Without this, watcher + supervisor
+	// can both call Launch() for the same app and spawn duplicate processes.
+	mu := rt.appLaunchMutex(manifest.ID)
+	mu.Lock()
+	defer mu.Unlock()
 
 	binaryPath, err := FindBinary(appDir)
 	if err != nil {
@@ -170,6 +220,15 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 	// Write PID file so we can kill orphans on next startup if nebo dies hard
 	_ = os.WriteFile(filepath.Join(appDir, ".pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0600)
 
+	// Reaper goroutine: calls cmd.Wait() so the OS can reclaim the process
+	// table entry immediately when the app exits. Without this, dead app
+	// processes become zombies until someone else calls Wait().
+	waitDone := make(chan struct{})
+	go func() {
+		defer close(waitDone)
+		_ = cmd.Wait()
+	}()
+
 	// Wait for socket to appear (exponential backoff, max 10s)
 	if err := waitForSocket(sockPath, 10*time.Second); err != nil {
 		killProcGroup(cmd)
@@ -206,6 +265,7 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 		conn:       conn,
 		startedAt:  time.Now(),
 		logCleanup: logCleanup,
+		waitDone:   waitDone,
 	}
 
 	// Create capability-specific clients based on manifest.provides
@@ -240,7 +300,8 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 	rt.processes[manifest.ID] = proc
 	rt.mu.Unlock()
 
-	fmt.Printf("[apps] Launched %s v%s (provides: %v)\n", manifest.Name, manifest.Version, manifest.Provides)
+	fmt.Printf("[apps] Launched %s v%s (PID %d, provides: %v)\n",
+		manifest.Name, manifest.Version, cmd.Process.Pid, manifest.Provides)
 	return proc, nil
 }
 
@@ -380,8 +441,22 @@ func (p *AppProcess) stop() error {
 	}
 
 	if p.cmd != nil && p.cmd.Process != nil {
-		// Graceful shutdown with timeout, then force kill
-		gracefulStopProc(p.cmd, 2*time.Second)
+		// Send SIGTERM to the entire process group
+		killProcGroupTerm(p.cmd)
+
+		// Wait for the reaper goroutine to confirm the process exited,
+		// or force-kill after timeout. We NEVER call cmd.Wait() directly
+		// here because the reaper goroutine already owns that call.
+		if p.waitDone != nil {
+			select {
+			case <-p.waitDone:
+				// Process exited cleanly after SIGTERM
+			case <-time.After(2 * time.Second):
+				// Still alive after SIGTERM — force kill the process group
+				killProcGroup(p.cmd)
+				<-p.waitDone // wait for reaper to finish
+			}
+		}
 	}
 
 	// Close per-app log files
@@ -396,47 +471,45 @@ func (p *AppProcess) stop() error {
 	return nil
 }
 
-// cleanupStaleProcess kills an orphaned app process left over from a previous
+// cleanupStaleProcess kills orphaned app processes left over from a previous
 // nebo run that died without cleaning up (SIGKILL, crash, air hot-reload).
-// Reads the .pid file, checks if the process is still alive, kills it, and
-// removes the .pid file. Safe to call even if no stale process exists.
+//
+// Strategy:
+// 1. Read .pid file and kill that specific process if alive.
+// 2. Scan the process table for any process running the app's binary path
+//    that we didn't spawn — catches orphans whose .pid was overwritten.
+//
+// Safe to call even if no stale process exists.
 func cleanupStaleProcess(appDir string) {
 	pidFile := filepath.Join(appDir, ".pid")
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		return // No PID file — nothing to clean up
-	}
-	defer os.Remove(pidFile)
+	appID := filepath.Base(appDir)
 
-	pid, err := strconv.Atoi(string(data))
-	if err != nil || pid <= 0 {
-		return // Corrupt PID file
+	// Phase 1: Kill by PID file
+	if data, err := os.ReadFile(pidFile); err == nil {
+		os.Remove(pidFile)
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
+			if isProcessAlive(pid) {
+				killOrphan(pid, appID)
+			}
+		}
 	}
 
-	proc, err := os.FindProcess(pid)
+	// Phase 2: Scan process table for any other instances of this binary
+	// This catches orphans whose .pid was already overwritten by a restart
+	binaryPath, err := FindBinary(appDir)
 	if err != nil {
 		return
 	}
+	killOrphansByBinary(binaryPath, appID)
+}
 
-	// Check if process is alive (signal 0 probe). If already dead, nothing to do.
-	if !isProcessAlive(pid) {
-		return
-	}
-
-	fmt.Printf("[apps] Killing orphaned process %d from %s\n", pid, filepath.Base(appDir))
-	_ = proc.Signal(os.Interrupt)
-
-	// Give it a moment to exit gracefully, then force kill
-	done := make(chan struct{})
-	go func() {
-		proc.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		_ = proc.Kill()
-	}
+// killOrphan gracefully kills a single orphaned process and its process group.
+// Since we launch apps with Setpgid: true, the app PID == its PGID.
+// Killing -PID sends the signal to the entire group, including children
+// like sox/rec that the voice app spawns.
+func killOrphan(pid int, appID string) {
+	fmt.Printf("[apps] Killing orphaned process group %d from %s\n", pid, appID)
+	killOrphanGroup(pid)
 }
 
 func waitForSocket(path string, timeout time.Duration) error {

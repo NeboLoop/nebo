@@ -169,3 +169,18 @@ type ExchangeTokenResponse struct {
 	MQTTPassword string `json:"mqtt_password"`
 	MQTTBroker   string `json:"mqtt_broker,omitempty"`
 }
+
+// --------------------------------------------------------------------------
+// Loop Invite Types
+// --------------------------------------------------------------------------
+
+// JoinLoopRequest is sent to POST /api/v1/loops/join.
+type JoinLoopRequest struct {
+	InviteCode string `json:"invite_code"`
+}
+
+// JoinLoopResponse is returned by POST /api/v1/loops/join.
+type JoinLoopResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}

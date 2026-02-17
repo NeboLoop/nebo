@@ -229,6 +229,34 @@ func (o *Orchestrator) Spawn(ctx context.Context, req *SpawnRequest) (*SubAgent,
 
 // runAgent executes the sub-agent's task
 func (o *Orchestrator) runAgent(ctx context.Context, agent *SubAgent, req *SpawnRequest, sessionKey string) {
+	// Panic recovery — a sub-agent must never crash the process
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[Orchestrator] PANIC in sub-agent %s (%s): %v\n", agent.ID, agent.Description, r)
+			o.mu.Lock()
+			agent.Status = StatusFailed
+			agent.Error = fmt.Errorf("panic: %v", r)
+			agent.CompletedAt = time.Now()
+			o.mu.Unlock()
+
+			// Mark failed in recovery DB
+			if o.recovery != nil && agent.TaskID != "" {
+				if err := o.recovery.MarkFailed(context.Background(), agent.TaskID, fmt.Sprintf("panic: %v", r)); err != nil {
+					fmt.Printf("[Orchestrator] Warning: failed to mark panicked task as failed: %v\n", err)
+				}
+			}
+
+			// Still send result so waiters don't hang
+			o.results <- AgentResult{
+				AgentID: agent.ID,
+				Success: false,
+				Error:   agent.Error,
+			}
+		}
+	}()
+
+	fmt.Printf("[Orchestrator] Starting sub-agent %s: %s\n", agent.ID, agent.Description)
+
 	// Update status
 	o.mu.Lock()
 	agent.Status = StatusRunning
@@ -255,15 +283,23 @@ func (o *Orchestrator) runAgent(ctx context.Context, agent *SubAgent, req *Spawn
 		finalError := agent.Error
 		o.mu.Unlock()
 
+		fmt.Printf("[Orchestrator] Sub-agent %s finished: status=%s\n", agent.ID, finalStatus)
+
 		// Update recovery status to persist completion
+		// Use Background context because the agent's ctx may be cancelled
 		if o.recovery != nil && agent.TaskID != "" {
+			dbCtx := context.Background()
 			if finalStatus == StatusCompleted {
-				if err := o.recovery.MarkCompleted(ctx, agent.TaskID); err != nil {
+				if err := o.recovery.MarkCompleted(dbCtx, agent.TaskID); err != nil {
 					fmt.Printf("[Orchestrator] Warning: failed to mark task completed: %v\n", err)
 				}
 			} else if finalStatus == StatusFailed && finalError != nil {
-				if err := o.recovery.MarkFailed(ctx, agent.TaskID, finalError.Error()); err != nil {
+				if err := o.recovery.MarkFailed(dbCtx, agent.TaskID, finalError.Error()); err != nil {
 					fmt.Printf("[Orchestrator] Warning: failed to mark task failed: %v\n", err)
+				}
+			} else if finalStatus == StatusCancelled {
+				if err := o.recovery.MarkFailed(dbCtx, agent.TaskID, "cancelled"); err != nil {
+					fmt.Printf("[Orchestrator] Warning: failed to mark cancelled task: %v\n", err)
 				}
 			}
 		}
@@ -503,20 +539,35 @@ func (o *Orchestrator) ListAgents() []*SubAgent {
 // CancelAgent cancels a running sub-agent
 func (o *Orchestrator) CancelAgent(agentID string) error {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 
 	agent, exists := o.agents[agentID]
 	if !exists {
+		o.mu.Unlock()
 		return fmt.Errorf("agent not found: %s", agentID)
 	}
 
 	if agent.Status != StatusRunning && agent.Status != StatusPending {
+		o.mu.Unlock()
 		return fmt.Errorf("agent is not running: %s", agent.Status)
 	}
 
+	fmt.Printf("[Orchestrator] Cancelling sub-agent %s (%s)\n", agentID, agent.Description)
 	agent.Status = StatusCancelled
-	if agent.cancel != nil {
-		agent.cancel()
+	agent.CompletedAt = time.Now()
+	taskID := agent.TaskID
+	cancelFn := agent.cancel
+	o.mu.Unlock()
+
+	// Mark cancelled in recovery DB so it won't be recovered on next restart
+	if o.recovery != nil && taskID != "" {
+		if err := o.recovery.MarkCancelled(context.Background(), taskID); err != nil {
+			fmt.Printf("[Orchestrator] Warning: failed to mark task %s as cancelled in DB: %v\n", taskID, err)
+		}
+	}
+
+	// Cancel the context last — this triggers the goroutine to wind down
+	if cancelFn != nil {
+		cancelFn()
 	}
 
 	return nil
@@ -525,6 +576,46 @@ func (o *Orchestrator) CancelAgent(agentID string) error {
 // Results returns the results channel for monitoring
 func (o *Orchestrator) Results() <-chan AgentResult {
 	return o.results
+}
+
+// Shutdown cancels all running/pending sub-agents and marks them cancelled in
+// the recovery DB so they won't be re-spawned on the next startup.
+func (o *Orchestrator) Shutdown(ctx context.Context) {
+	o.mu.Lock()
+	var running []*SubAgent
+	for _, agent := range o.agents {
+		if agent.Status == StatusRunning || agent.Status == StatusPending {
+			running = append(running, agent)
+		}
+	}
+	o.mu.Unlock()
+
+	if len(running) == 0 {
+		return
+	}
+
+	fmt.Printf("[Orchestrator] Shutting down %d sub-agents\n", len(running))
+
+	for _, agent := range running {
+		o.mu.Lock()
+		agent.Status = StatusCancelled
+		agent.CompletedAt = time.Now()
+		cancelFn := agent.cancel
+		taskID := agent.TaskID
+		o.mu.Unlock()
+
+		// Mark cancelled in recovery DB so it won't be recovered
+		if o.recovery != nil && taskID != "" {
+			if err := o.recovery.MarkCancelled(ctx, taskID); err != nil {
+				fmt.Printf("[Orchestrator] Warning: failed to mark task %s cancelled: %v\n", taskID, err)
+			}
+		}
+
+		// Cancel the context to stop the goroutine
+		if cancelFn != nil {
+			cancelFn()
+		}
+	}
 }
 
 // Cleanup removes completed agents older than the given duration
@@ -547,53 +638,90 @@ func (o *Orchestrator) Cleanup(maxAge time.Duration) int {
 	return removed
 }
 
-// RecoverAgents restores pending subagent tasks from the database after restart
-// This should be called after SetRecoveryManager during agent startup
+// RecoverAgents restores pending subagent tasks from the database after restart.
+// This should be called after SetRecoveryManager during agent startup.
+//
+// Recovery rules:
+// 1. Tasks with session messages containing assistant responses are considered complete.
+// 2. Tasks older than maxRecoveryAge are marked stale and skipped.
+// 3. Tasks that have exhausted retry attempts are marked failed.
+// 4. Only genuinely incomplete, recent tasks are re-spawned.
 func (o *Orchestrator) RecoverAgents(ctx context.Context) (int, error) {
 	if o.recovery == nil {
-		return 0, nil // No recovery manager, nothing to recover
+		return 0, nil
 	}
+
+	const maxRecoveryAge = 2 * time.Hour // Don't recover tasks older than this
 
 	tasks, err := o.recovery.GetRecoverableTasks(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get recoverable tasks: %w", err)
 	}
 
+	fmt.Printf("[Recovery] Found %d recoverable tasks\n", len(tasks))
+
 	recovered := 0
 	for _, task := range tasks {
-		// Only recover subagent tasks - other task types handled elsewhere
+		// Only recover subagent tasks
 		if task.TaskType != recovery.TaskTypeSubagent {
 			continue
 		}
 
-		// Check if task was actually completed (heuristic check)
-		completed, err := o.recovery.CheckTaskCompletion(ctx, task)
-		if err != nil {
-			fmt.Printf("[Orchestrator] Warning: failed to check completion for task %s: %v\n", task.ID, err)
-			continue
-		}
-		if completed {
-			if err := o.recovery.MarkCompleted(ctx, task.ID); err != nil {
-				fmt.Printf("[Orchestrator] Warning: failed to mark task %s as completed: %v\n", task.ID, err)
+		taskAge := time.Since(task.CreatedAt)
+		fmt.Printf("[Recovery] Evaluating task %s (%s): age=%s, attempts=%d/%d, status=%s\n",
+			task.ID[:8], task.Description, taskAge.Round(time.Second), task.Attempts, task.MaxAttempts, task.Status)
+
+		// Rule 1: Too old — mark stale and skip
+		if taskAge > maxRecoveryAge {
+			fmt.Printf("[Recovery] Task %s is too old (%s > %s), marking as failed\n",
+				task.ID[:8], taskAge.Round(time.Second), maxRecoveryAge)
+			if err := o.recovery.MarkFailed(ctx, task.ID, "stale: exceeded max recovery age"); err != nil {
+				fmt.Printf("[Recovery] Warning: failed to mark stale task %s: %v\n", task.ID[:8], err)
 			}
 			continue
 		}
 
-		// Re-spawn the subagent
-		fmt.Printf("[Orchestrator] Recovering subagent task %s: %s\n", task.ID, task.Description)
+		// Rule 2: Too many attempts — mark failed
+		if task.Attempts >= task.MaxAttempts {
+			fmt.Printf("[Recovery] Task %s exhausted retries (%d/%d), marking failed\n",
+				task.ID[:8], task.Attempts, task.MaxAttempts)
+			if err := o.recovery.MarkFailed(ctx, task.ID, "exhausted retry attempts"); err != nil {
+				fmt.Printf("[Recovery] Warning: failed to mark exhausted task %s: %v\n", task.ID[:8], err)
+			}
+			continue
+		}
+
+		// Rule 3: Check if session shows completion (assistant produced output)
+		completed, err := o.recovery.CheckTaskCompletion(ctx, task)
+		if err != nil {
+			fmt.Printf("[Recovery] Warning: completion check failed for task %s: %v\n", task.ID[:8], err)
+			// On error, err on the side of NOT re-running
+			if err := o.recovery.MarkFailed(ctx, task.ID, fmt.Sprintf("completion check error: %v", err)); err != nil {
+				fmt.Printf("[Recovery] Warning: failed to mark errored task %s: %v\n", task.ID[:8], err)
+			}
+			continue
+		}
+		if completed {
+			fmt.Printf("[Recovery] Task %s already completed (found in session), marking done\n", task.ID[:8])
+			if err := o.recovery.MarkCompleted(ctx, task.ID); err != nil {
+				fmt.Printf("[Recovery] Warning: failed to mark completed task %s: %v\n", task.ID[:8], err)
+			}
+			continue
+		}
+
+		// Task is genuinely incomplete and recent — re-spawn it
+		fmt.Printf("[Recovery] Re-spawning sub-agent for task %s: %s\n", task.ID[:8], task.Description)
 
 		req := &SpawnRequest{
 			Task:         task.Prompt,
 			Description:  task.Description,
 			Lane:         task.Lane,
 			SystemPrompt: task.SystemPrompt,
-			Wait:         false, // Don't block recovery
+			Wait:         false,
 		}
 
-		// Spawn without re-persisting (task already exists)
 		o.mu.Lock()
 
-		// Generate unique ID for this recovery
 		agentID := fmt.Sprintf("agent-recovered-%s", task.ID[:8])
 		agentCtx, cancel := context.WithCancel(ctx)
 
@@ -604,7 +732,7 @@ func (o *Orchestrator) RecoverAgents(ctx context.Context) (int, error) {
 
 		agent := &SubAgent{
 			ID:          agentID,
-			TaskID:      task.ID, // Link to existing task
+			TaskID:      task.ID,
 			Task:        task.Prompt,
 			Description: task.Description,
 			Lane:        lane,
@@ -616,10 +744,10 @@ func (o *Orchestrator) RecoverAgents(ctx context.Context) (int, error) {
 		o.agents[agentID] = agent
 		o.mu.Unlock()
 
-		// Start the agent
 		go o.runAgent(agentCtx, agent, req, task.SessionKey)
 		recovered++
 	}
 
+	fmt.Printf("[Recovery] Recovered %d sub-agents out of %d candidates\n", recovered, len(tasks))
 	return recovered, nil
 }
