@@ -24,6 +24,16 @@ func SetSharedDB(db *sql.DB) {
 	sharedDB = db
 }
 
+// Janus URL for NeboLoop provider (set from config, default for production)
+var sharedJanusURL = "https://janus.neboloop.com"
+
+// SetJanusURL overrides the Janus gateway URL (e.g. for local dev)
+func SetJanusURL(url string) {
+	if url != "" {
+		sharedJanusURL = url
+	}
+}
+
 // createProviders creates AI providers from config and database
 func createProviders(cfg *agentcfg.Config) []ai.Provider {
 	var providers []ai.Provider
@@ -258,6 +268,25 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 		}
 	} else {
 		fmt.Printf("[Providers] Error loading ollama profiles: %v\n", err)
+	}
+
+	// Load neboloop/janus provider (direct to Janus OpenAI-compatible endpoint)
+	if profiles, err := mgr.ListActiveProfiles(ctx, "neboloop"); err == nil {
+		fmt.Printf("[Providers] Found %d neboloop profiles\n", len(profiles))
+		for _, p := range profiles {
+			if p.APIKey != "" && sharedJanusURL != "" {
+				model := provider.GetDefaultModel("neboloop")
+				if model == "" {
+					model = "claude-sonnet-4-5-20250929"
+				}
+				baseProvider := ai.NewOpenAIProvider(p.APIKey, model, sharedJanusURL+"/v1")
+				baseProvider.SetProviderID("janus")
+				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
+				fmt.Printf("[Providers] Loaded Janus provider: %s (model: %s, baseURL: %s, profileID: %s)\n", p.Name, model, sharedJanusURL, p.ID)
+			}
+		}
+	} else {
+		fmt.Printf("[Providers] Error loading neboloop profiles: %v\n", err)
 	}
 
 	fmt.Printf("[Providers] Total providers from DB: %d\n", len(providers))

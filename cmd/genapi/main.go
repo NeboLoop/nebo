@@ -61,7 +61,8 @@ var handlerNameOverrides = map[string]string{
 
 // Handlers to skip entirely (OAuth callbacks — not called from frontend)
 var skipHandlers = map[string]bool{
-	"Callback": true,
+	"Callback":              true,
+	"NeboLoopOAuthCallback": true,
 }
 
 // Handlers that return a URL string instead of making an API call (e.g. OAuth redirects)

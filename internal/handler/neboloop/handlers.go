@@ -74,7 +74,7 @@ func NeboLoopRegisterHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		// Store the credentials in auth_profiles
-		if err := storeNeboLoopProfile(r.Context(), svcCtx.DB, svcCtx.Config.NeboLoop.ApiURL, upstream.ID, upstream.Email, upstream.Token); err != nil {
+		if err := storeNeboLoopProfile(r.Context(), svcCtx.DB, svcCtx.Config.NeboLoop.ApiURL, upstream.ID, upstream.Email, upstream.Token, ""); err != nil {
 			fmt.Printf("[NeboLoop] Warning: failed to store profile: %v\n", err)
 		}
 
@@ -146,7 +146,7 @@ func NeboLoopLoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		// Store the credentials in auth_profiles
-		if err := storeNeboLoopProfile(r.Context(), svcCtx.DB, svcCtx.Config.NeboLoop.ApiURL, upstream.ID, upstream.Email, upstream.Token); err != nil {
+		if err := storeNeboLoopProfile(r.Context(), svcCtx.DB, svcCtx.Config.NeboLoop.ApiURL, upstream.ID, upstream.Email, upstream.Token, ""); err != nil {
 			fmt.Printf("[NeboLoop] Warning: failed to store profile: %v\n", err)
 		}
 
@@ -277,11 +277,13 @@ func autoConnectBot(ctx context.Context, svcCtx *svc.ServiceContext, apiURL, bot
 	return svcCtx.PluginStore.UpdateSettings(ctx, plugin.ID, newSettings, secrets)
 }
 
-// storeNeboLoopProfile saves NeboLoop credentials to auth_profiles
-func storeNeboLoopProfile(ctx context.Context, store *db.Store, apiURL, ownerID, email, token string) error {
+// storeNeboLoopProfile saves NeboLoop credentials to auth_profiles.
+// refreshToken is stored in metadata for token renewal.
+func storeNeboLoopProfile(ctx context.Context, store *db.Store, apiURL, ownerID, email, token, refreshToken string) error {
 	metadata := map[string]string{
-		"owner_id": ownerID,
-		"email":    email,
+		"owner_id":      ownerID,
+		"email":         email,
+		"refresh_token": refreshToken,
 	}
 	metadataJSON, _ := json.Marshal(metadata)
 

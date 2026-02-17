@@ -796,6 +796,25 @@ export interface NeboLoopLoginResponse {
 	token: string
 }
 
+export interface NeboLoopOAuthStartResponse {
+	authorizeUrl: string
+	state: string
+}
+
+export interface NeboLoopOAuthStatusRequest {
+}
+
+export interface NeboLoopOAuthStatusRequestParams {
+	state: string
+}
+
+export interface NeboLoopOAuthStatusResponse {
+	status: string // pending | complete | error | expired
+	email?: string
+	displayName?: string
+	error?: string
+}
+
 export interface NeboLoopRegisterRequest {
 	email: string
 	displayName: string

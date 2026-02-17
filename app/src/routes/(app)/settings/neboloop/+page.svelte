@@ -14,20 +14,11 @@
 	let botId = $state('');
 	let botName = $state('');
 
-	// Auth form state
-	let tab = $state<'login' | 'signup'>('login');
+	// OAuth state
 	let formLoading = $state(false);
 	let formError = $state('');
-
-	// Login fields
-	let loginEmail = $state('');
-	let loginPassword = $state('');
-
-	// Signup fields
-	let signupName = $state('');
-	let signupEmail = $state('');
-	let signupPassword = $state('');
-	let signupConfirm = $state('');
+	let pendingState = $state('');
+	let pollTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
 	// Disconnect
 	let showDisconnectConfirm = $state(false);
@@ -52,52 +43,58 @@
 		}
 	}
 
-	async function handleLogin() {
-		if (!loginEmail || !loginPassword) {
-			formError = 'Please fill in all fields.';
-			return;
-		}
+	async function startOAuth() {
 		formError = '';
 		formLoading = true;
 		try {
-			await api.neboLoopLogin({ email: loginEmail, password: loginPassword });
-			loginEmail = '';
-			loginPassword = '';
-			await loadStatus();
+			const { state } = await api.neboLoopOAuthStart();
+			pendingState = state;
+
+			// Auto-timeout after 3 minutes
+			const timeout = setTimeout(() => {
+				if (formLoading) {
+					cleanup();
+					formError = 'Sign-in timed out. Please try again.';
+					formLoading = false;
+				}
+			}, 3 * 60 * 1000);
+
+			// Poll status until the OAuth flow completes in the browser
+			pollTimer = setInterval(async () => {
+				try {
+					const result = await api.neboLoopOAuthStatus({ state: pendingState });
+					if (result.status === 'complete') {
+						clearTimeout(timeout);
+						cleanup();
+						formLoading = false;
+						await loadStatus();
+					} else if (result.status === 'error') {
+						clearTimeout(timeout);
+						cleanup();
+						formError = result.error ?? 'Sign-in failed';
+						formLoading = false;
+					} else if (result.status === 'expired') {
+						clearTimeout(timeout);
+						cleanup();
+						formError = 'Sign-in expired. Please try again.';
+						formLoading = false;
+					}
+				} catch {
+					// polling error, keep trying
+				}
+			}, 2000);
 		} catch (e: any) {
-			formError = e?.message || 'Login failed. Please check your credentials.';
-		} finally {
+			formError = e?.message || 'Failed to start sign-in';
 			formLoading = false;
 		}
 	}
 
-	async function handleSignup() {
-		if (!signupName || !signupEmail || !signupPassword) {
-			formError = 'Please fill in all fields.';
-			return;
+	function cleanup() {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
 		}
-		if (signupPassword !== signupConfirm) {
-			formError = 'Passwords do not match.';
-			return;
-		}
-		formError = '';
-		formLoading = true;
-		try {
-			await api.neboLoopRegister({
-				email: signupEmail,
-				displayName: signupName,
-				password: signupPassword
-			});
-			signupName = '';
-			signupEmail = '';
-			signupPassword = '';
-			signupConfirm = '';
-			await loadStatus();
-		} catch (e: any) {
-			formError = e?.message || 'Registration failed. Please try again.';
-		} finally {
-			formLoading = false;
-		}
+		pendingState = '';
 	}
 
 	async function handleDisconnect() {
@@ -202,104 +199,38 @@
 	{:else}
 		<!-- Not Connected State -->
 		<Card>
-			<div class="flex flex-col items-center gap-2 mb-6">
+			<div class="flex flex-col items-center gap-4 py-4">
 				<XCircle class="w-8 h-8 text-base-content/30" />
-				<p class="text-sm text-base-content/60 text-center">
+				<p class="text-sm text-base-content/60 text-center max-w-sm">
 					Connect to NeboLoop for Janus AI, the app store, and cloud channels.
+					You can use Google, Apple, or email.
 				</p>
+
+				{#if formError}
+					<div class="alert alert-error w-full">
+						<span>{formError}</span>
+					</div>
+				{/if}
+
+				<Button type="primary" size="lg" onclick={startOAuth} disabled={formLoading}>
+					{#if formLoading}
+						<Loader2 class="w-5 h-5 mr-2 animate-spin" />
+						Waiting for sign-in...
+					{:else}
+						Continue with NeboLoop
+					{/if}
+				</Button>
+				{#if formLoading}
+					<p class="text-sm text-base-content/50">Complete sign-in in your browser</p>
+					<button
+						type="button"
+						class="text-sm text-base-content/50 hover:text-base-content underline"
+						onclick={() => { cleanup(); formLoading = false; }}
+					>
+						Cancel
+					</button>
+				{/if}
 			</div>
-
-			<!-- Tabs -->
-			<div role="tablist" class="tabs tabs-bordered mb-6">
-				<button
-					role="tab"
-					class="tab"
-					class:tab-active={tab === 'login'}
-					onclick={() => { tab = 'login'; formError = ''; }}
-				>
-					Log In
-				</button>
-				<button
-					role="tab"
-					class="tab"
-					class:tab-active={tab === 'signup'}
-					onclick={() => { tab = 'signup'; formError = ''; }}
-				>
-					Sign Up
-				</button>
-			</div>
-
-			{#if formError}
-				<div class="alert alert-error mb-4">
-					<span>{formError}</span>
-				</div>
-			{/if}
-
-			{#if tab === 'login'}
-				<form onsubmit={(e) => { e.preventDefault(); handleLogin(); }} class="space-y-3">
-					<input
-						type="email"
-						placeholder="Email"
-						class="input input-bordered w-full"
-						bind:value={loginEmail}
-						disabled={formLoading}
-					/>
-					<input
-						type="password"
-						placeholder="Password"
-						class="input input-bordered w-full"
-						bind:value={loginPassword}
-						disabled={formLoading}
-					/>
-					<Button type="primary" htmlType="submit" class="w-full" disabled={formLoading}>
-						{#if formLoading}
-							<Loader2 class="w-4 h-4 animate-spin mr-2" />
-							Logging in...
-						{:else}
-							Log In
-						{/if}
-					</Button>
-				</form>
-			{:else}
-				<form onsubmit={(e) => { e.preventDefault(); handleSignup(); }} class="space-y-3">
-					<input
-						type="text"
-						placeholder="Display Name"
-						class="input input-bordered w-full"
-						bind:value={signupName}
-						disabled={formLoading}
-					/>
-					<input
-						type="email"
-						placeholder="Email"
-						class="input input-bordered w-full"
-						bind:value={signupEmail}
-						disabled={formLoading}
-					/>
-					<input
-						type="password"
-						placeholder="Password"
-						class="input input-bordered w-full"
-						bind:value={signupPassword}
-						disabled={formLoading}
-					/>
-					<input
-						type="password"
-						placeholder="Confirm Password"
-						class="input input-bordered w-full"
-						bind:value={signupConfirm}
-						disabled={formLoading}
-					/>
-					<Button type="primary" htmlType="submit" class="w-full" disabled={formLoading}>
-						{#if formLoading}
-							<Loader2 class="w-4 h-4 animate-spin mr-2" />
-							Creating Account...
-						{:else}
-							Create Account
-						{/if}
-					</Button>
-				</form>
-			{/if}
 		</Card>
 	{/if}
 </div>

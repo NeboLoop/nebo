@@ -170,9 +170,10 @@ dev-setup: deps
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS = -ldflags "-s -w -X main.Version=$(VERSION)"
+LDFLAGS_WIN = -ldflags "-s -w -X main.Version=$(VERSION) -H windowsgui"
 
 # Build release binaries for all platforms
-release: clean release-darwin release-linux
+release: clean release-darwin release-linux release-windows
 	@echo ""
 	@echo "Release binaries built in dist/"
 	@ls -la dist/
@@ -186,6 +187,13 @@ release-darwin:
 	@cd app && pnpm build
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -tags desktop $(LDFLAGS) -o dist/nebo-darwin-amd64 .
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -tags desktop $(LDFLAGS) -o dist/nebo-darwin-arm64 .
+
+# Windows builds (GUI subsystem — no console window)
+release-windows:
+	@echo "Building for Windows..."
+	@mkdir -p dist
+	@cd app && pnpm build
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS_WIN) -o dist/nebo-windows-amd64.exe .
 
 # Linux builds (headless — no Wails/CGO needed)
 release-linux:

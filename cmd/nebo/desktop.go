@@ -341,6 +341,19 @@ func RunDesktop() {
 			})
 		})
 
+		// Install popup window creator for OAuth and similar flows
+		svcCtx.SetOpenPopup(func(url, title string, width, height int) {
+			wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+				Name:      "popup-" + fmt.Sprintf("%d", time.Now().UnixMilli()),
+				Title:     title,
+				Width:     width,
+				Height:    height,
+				MinWidth:  400,
+				MinHeight: 300,
+				URL:       url,
+			})
+		})
+
 		// Install native browser window creator for agent-controlled webview windows.
 		// Each call creates a new Wails webview window that the agent can control
 		// via ExecJS for DOM interaction — native WebKit/WebView2, not detectable as bot.
@@ -410,6 +423,7 @@ func RunDesktop() {
 		// Load agent config
 		agentCfg := loadAgentConfig()
 		SetSharedDB(svcCtx.DB.GetDB())
+		SetJanusURL(svcCtx.Config.NeboLoop.JanusURL)
 
 		// Start agent
 		go func() {

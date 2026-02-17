@@ -1,13 +1,13 @@
 <!--
   NeboLoop Onboarding Step
-  Sign up / Log in / Skip for NeboLoop marketplace connection
-  Uses DaisyUI tabs and form components
+  OAuth popup login via NeboLoop.com — supports Google, Apple, email/password
+  Uses DaisyUI components
 -->
 
 <script lang="ts">
 	import { StepCard, StepNavigation } from '$lib/components/setup';
-	import { neboLoopRegister, neboLoopLogin, neboLoopAccountStatus } from '$lib/api';
-	import { CircleCheck, Store } from 'lucide-svelte';
+	import { neboLoopOAuthStart, neboLoopOAuthStatus, neboLoopAccountStatus } from '$lib/api';
+	import { CircleCheck, ExternalLink, LoaderCircle, Store } from 'lucide-svelte';
 
 	let {
 		onback,
@@ -19,25 +19,23 @@
 		onskip?: () => void;
 	} = $props();
 
-	let activeTab = $state<'signup' | 'login'>('signup');
 	let loading = $state(false);
 	let error = $state('');
 	let connected = $state(false);
 	let connectedEmail = $state('');
-
-	// Sign up fields
-	let signupEmail = $state('');
-	let signupName = $state('');
-	let signupPassword = $state('');
-	let signupConfirm = $state('');
-
-	// Login fields
-	let loginEmail = $state('');
-	let loginPassword = $state('');
+	let pendingState = $state('');
+	let pollTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
 	// Check if already connected on mount
 	$effect(() => {
 		checkStatus();
+	});
+
+	// Clean up on unmount
+	$effect(() => {
+		return () => {
+			cleanup();
+		};
 	});
 
 	async function checkStatus() {
@@ -52,57 +50,59 @@
 		}
 	}
 
-	async function handleSignup() {
+	async function startOAuth() {
 		error = '';
-		if (!signupEmail || !signupName || !signupPassword) {
-			error = 'All fields are required';
-			return;
-		}
-		if (signupPassword !== signupConfirm) {
-			error = 'Passwords do not match';
-			return;
-		}
-		if (signupPassword.length < 8) {
-			error = 'Password must be at least 8 characters';
-			return;
-		}
-
 		loading = true;
 		try {
-			const resp = await neboLoopRegister({
-				email: signupEmail,
-				displayName: signupName,
-				password: signupPassword
-			});
-			connected = true;
-			connectedEmail = resp.email;
+			const { state } = await neboLoopOAuthStart();
+			pendingState = state;
+
+			// Auto-timeout after 3 minutes
+			const timeout = setTimeout(() => {
+				if (loading) {
+					cleanup();
+					error = 'Sign-in timed out. Please try again.';
+					loading = false;
+				}
+			}, 3 * 60 * 1000);
+
+			// Poll status until the OAuth flow completes in the browser
+			pollTimer = setInterval(async () => {
+				try {
+					const result = await neboLoopOAuthStatus({ state: pendingState });
+					if (result.status === 'complete') {
+						clearTimeout(timeout);
+						cleanup();
+						connected = true;
+						connectedEmail = result.email ?? '';
+						loading = false;
+					} else if (result.status === 'error') {
+						clearTimeout(timeout);
+						cleanup();
+						error = result.error ?? 'Sign-in failed';
+						loading = false;
+					} else if (result.status === 'expired') {
+						clearTimeout(timeout);
+						cleanup();
+						error = 'Sign-in expired. Please try again.';
+						loading = false;
+					}
+				} catch {
+					// polling error, keep trying
+				}
+			}, 2000);
 		} catch (e: any) {
-			error = e?.message || 'Registration failed. Please try again.';
-		} finally {
+			error = e?.message || 'Failed to start sign-in';
 			loading = false;
 		}
 	}
 
-	async function handleLogin() {
-		error = '';
-		if (!loginEmail || !loginPassword) {
-			error = 'Email and password are required';
-			return;
+	function cleanup() {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
 		}
-
-		loading = true;
-		try {
-			const resp = await neboLoopLogin({
-				email: loginEmail,
-				password: loginPassword
-			});
-			connected = true;
-			connectedEmail = resp.email;
-		} catch (e: any) {
-			error = e?.message || 'Login failed. Please check your credentials.';
-		} finally {
-			loading = false;
-		}
+		pendingState = '';
 	}
 </script>
 
@@ -118,117 +118,49 @@
 		</div>
 		<StepNavigation showBack onnext={onnext} onback={onback} nextLabel="Continue" />
 	{:else}
-		<div role="tablist" class="tabs tabs-bordered mb-6">
-			<button
-				role="tab"
-				class="tab"
-				class:tab-active={activeTab === 'signup'}
-				onclick={() => { activeTab = 'signup'; error = ''; }}
-			>
-				Sign Up
-			</button>
-			<button
-				role="tab"
-				class="tab"
-				class:tab-active={activeTab === 'login'}
-				onclick={() => { activeTab = 'login'; error = ''; }}
-			>
-				Log In
-			</button>
-		</div>
-
 		{#if error}
 			<div class="alert alert-error mb-4">
 				<span>{error}</span>
 			</div>
 		{/if}
 
-		{#if activeTab === 'signup'}
-			<form onsubmit={(e) => { e.preventDefault(); handleSignup(); }} class="flex flex-col gap-3">
-				<label class="floating-label">
-					<span>Display Name</span>
-					<input
-						type="text"
-						placeholder="Display Name"
-						class="input input-bordered w-full"
-						bind:value={signupName}
-						disabled={loading}
-					/>
-				</label>
-				<label class="floating-label">
-					<span>Email</span>
-					<input
-						type="email"
-						placeholder="Email"
-						class="input input-bordered w-full"
-						bind:value={signupEmail}
-						disabled={loading}
-					/>
-				</label>
-				<label class="floating-label">
-					<span>Password</span>
-					<input
-						type="password"
-						placeholder="Password"
-						class="input input-bordered w-full"
-						bind:value={signupPassword}
-						disabled={loading}
-					/>
-				</label>
-				<label class="floating-label">
-					<span>Confirm Password</span>
-					<input
-						type="password"
-						placeholder="Confirm Password"
-						class="input input-bordered w-full"
-						bind:value={signupConfirm}
-						disabled={loading}
-					/>
-				</label>
-				<StepNavigation
-					showBack
-					showSkip
-					onback={onback}
-					onskip={onskip}
-					onnext={handleSignup}
-					nextLabel="Create Account"
-					{loading}
-					class="mt-2"
-				/>
-			</form>
-		{:else}
-			<form onsubmit={(e) => { e.preventDefault(); handleLogin(); }} class="flex flex-col gap-3">
-				<label class="floating-label">
-					<span>Email</span>
-					<input
-						type="email"
-						placeholder="Email"
-						class="input input-bordered w-full"
-						bind:value={loginEmail}
-						disabled={loading}
-					/>
-				</label>
-				<label class="floating-label">
-					<span>Password</span>
-					<input
-						type="password"
-						placeholder="Password"
-						class="input input-bordered w-full"
-						bind:value={loginPassword}
-						disabled={loading}
-					/>
-				</label>
-				<StepNavigation
-					showBack
-					showSkip
-					onback={onback}
-					onskip={onskip}
-					onnext={handleLogin}
-					nextLabel="Log In"
-					{loading}
-					class="mt-2"
-				/>
-			</form>
-		{/if}
+		<div class="flex flex-col items-center gap-6 py-6">
+			<Store class="h-16 w-16 text-primary opacity-80" />
+			<p class="text-base-content/70 text-center text-sm max-w-sm">
+				Sign in or create a new account on NeboLoop.
+				You can use Google, Apple, or email.
+			</p>
+			<button
+				type="button"
+				class="btn btn-primary btn-lg gap-2"
+				onclick={startOAuth}
+				disabled={loading}
+			>
+				{#if loading}
+					<LoaderCircle class="h-5 w-5 animate-spin" />
+					Waiting for sign-in...
+				{:else}
+					<ExternalLink class="h-5 w-5" />
+					Continue with NeboLoop
+				{/if}
+			</button>
+			{#if loading}
+				<p class="text-sm text-base-content/50">Complete sign-in in your browser</p>
+				<button
+					type="button"
+					class="text-sm text-base-content/50 hover:text-base-content underline"
+					onclick={() => { cleanup(); loading = false; }}
+				>
+					Cancel
+				</button>
+			{/if}
+		</div>
+
+		<StepNavigation
+			showBack
+			showSkip
+			onback={onback}
+			onskip={onskip}
+		/>
 	{/if}
 </StepCard>

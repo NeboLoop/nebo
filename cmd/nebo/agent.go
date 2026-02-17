@@ -545,6 +545,10 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		SetSharedDB(sqlDB)
 	}
 
+	if opts.SvcCtx != nil {
+		SetJanusURL(opts.SvcCtx.Config.NeboLoop.JanusURL)
+	}
+
 	sessions, err = session.New(sqlDB)
 	if err != nil {
 		return fmt.Errorf("failed to initialize sessions: %w", err)
@@ -1882,6 +1886,9 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				go recoverPendingTasks(ctx, state, r, sessions)
 
 			case "settings_updated":
+				// Reload providers — a new NeboLoop profile may have been created via OAuth
+				r.ReloadProviders()
+
 				// Policy reads from the singleton live — no need to replace it.
 				// Handle comm plugin activation/deactivation.
 				p := eventFrame.Payload

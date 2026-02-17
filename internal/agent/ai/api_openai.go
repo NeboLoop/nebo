@@ -15,22 +15,37 @@ import (
 
 // OpenAIProvider implements the OpenAI API using the official SDK
 type OpenAIProvider struct {
-	client openai.Client
-	model  string
+	client     openai.Client
+	model      string
+	providerID string // custom ID override (e.g. "janus" for NeboLoop)
 }
 
-// NewOpenAIProvider creates a new OpenAI provider
+// NewOpenAIProvider creates a new OpenAI provider.
+// Optional baseURL overrides the API endpoint for OpenAI-compatible services.
 // Model should be provided from models.yaml config - do NOT hardcode model IDs
-func NewOpenAIProvider(apiKey, model string) *OpenAIProvider {
-	client := openai.NewClient(option.WithAPIKey(apiKey))
+func NewOpenAIProvider(apiKey, model string, baseURL ...string) *OpenAIProvider {
+	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	if len(baseURL) > 0 && baseURL[0] != "" {
+		opts = append(opts, option.WithBaseURL(baseURL[0]))
+	}
+	client := openai.NewClient(opts...)
 	return &OpenAIProvider{
 		client: client,
 		model:  model,
 	}
 }
 
+// SetProviderID overrides the provider ID (default "openai").
+// Used for OpenAI-compatible providers like Janus/NeboLoop.
+func (p *OpenAIProvider) SetProviderID(id string) {
+	p.providerID = id
+}
+
 // ID returns the provider identifier
 func (p *OpenAIProvider) ID() string {
+	if p.providerID != "" {
+		return p.providerID
+	}
 	return "openai"
 }
 

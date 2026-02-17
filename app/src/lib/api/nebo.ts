@@ -429,6 +429,13 @@ export function listExtensions() {
 }
 
 /**
+ * @description "Serve file"
+ */
+export function serveFile() {
+	return webapi.get<components.MessageResponse>(`/api/v1/files/*`)
+}
+
+/**
  * @description "List m c p integrations"
  */
 export function listMCPIntegrations() {
@@ -611,6 +618,21 @@ export function neboLoopConnect(req: components.NeboLoopConnectRequest) {
  */
 export function neboLoopLogin(req: components.NeboLoopLoginRequest) {
 	return webapi.post<components.NeboLoopLoginResponse>(`/api/v1/neboloop/login`, req)
+}
+
+/**
+ * @description "Nebo loop o auth start"
+ */
+export function neboLoopOAuthStart() {
+	return webapi.get<components.NeboLoopOAuthStartResponse>(`/api/v1/neboloop/oauth/start`)
+}
+
+/**
+ * @description "Nebo loop o auth status"
+ * @param req
+ */
+export function neboLoopOAuthStatus(params: components.NeboLoopOAuthStatusRequestParams) {
+	return webapi.get<components.NeboLoopOAuthStatusResponse>(`/api/v1/neboloop/oauth/status`, params)
 }
 
 /**
@@ -977,6 +999,13 @@ export function runTask(name: string) {
  */
 export function toggleTask(name: string) {
 	return webapi.post<components.ToggleTaskResponse>(`/api/v1/tasks/${name}/toggle`)
+}
+
+/**
+ * @description "Update check"
+ */
+export function updateCheck() {
+	return webapi.get<components.MessageResponse>(`/api/v1/update/check`)
 }
 
 /**

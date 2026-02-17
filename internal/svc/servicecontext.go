@@ -69,6 +69,9 @@ type ServiceContext struct {
 
 	openDevWindow   func() // Open dev window (desktop only)
 	openDevWindowMu sync.RWMutex
+
+	openPopup   func(url, title string, width, height int) // Open popup window (desktop only)
+	openPopupMu sync.RWMutex
 }
 
 // SetAppUIProvider installs the app UI provider (called from agent.go after registry init).
@@ -153,6 +156,20 @@ func (svc *ServiceContext) OpenDevWindow() func() {
 	svc.openDevWindowMu.RLock()
 	defer svc.openDevWindowMu.RUnlock()
 	return svc.openDevWindow
+}
+
+// SetOpenPopup installs the popup window opener callback (desktop mode only).
+func (svc *ServiceContext) SetOpenPopup(fn func(url, title string, width, height int)) {
+	svc.openPopupMu.Lock()
+	defer svc.openPopupMu.Unlock()
+	svc.openPopup = fn
+}
+
+// OpenPopup returns the popup window opener callback, or nil if not in desktop mode.
+func (svc *ServiceContext) OpenPopup() func(url, title string, width, height int) {
+	svc.openPopupMu.RLock()
+	defer svc.openPopupMu.RUnlock()
+	return svc.openPopup
 }
 
 // NewServiceContext creates a new service context. Pass a *db.Store to reuse

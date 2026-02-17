@@ -1268,6 +1268,24 @@ type NeboLoopDisconnectResponse struct {
 	Disconnected bool `json:"disconnected"`
 }
 
+// NeboLoop OAuth types
+
+type NeboLoopOAuthStartResponse struct {
+	AuthorizeURL string `json:"authorizeUrl"`
+	State        string `json:"state"`
+}
+
+type NeboLoopOAuthStatusRequest struct {
+	State string `form:"state"`
+}
+
+type NeboLoopOAuthStatusResponse struct {
+	Status      string `json:"status"` // pending | complete | error | expired
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
 // Tool Permissions types
 
 type ToolPermissions struct {

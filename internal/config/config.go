@@ -101,6 +101,9 @@ func applyDefaults(c *Config) {
 	if c.NeboLoop.ApiURL == "" {
 		c.NeboLoop.ApiURL = "https://api.neboloop.com"
 	}
+	if c.NeboLoop.JanusURL == "" {
+		c.NeboLoop.JanusURL = "https://janus.neboloop.com"
+	}
 }
 
 // parseBool parses a string as boolean with a default value.
@@ -174,8 +177,9 @@ type Config struct {
 		OAuthEnabled         string `yaml:"OAuthEnabled"`
 	} `yaml:"Features"`
 	NeboLoop struct {
-		Enabled string `yaml:"Enabled"`
-		ApiURL  string `yaml:"ApiURL"`
+		Enabled  string `yaml:"Enabled"`
+		ApiURL   string `yaml:"ApiURL"`
+		JanusURL string `yaml:"JanusURL"`
 	} `yaml:"NeboLoop"`
 	AppOAuth map[string]AppOAuthProviderConfig `yaml:"AppOAuth"`
 }

@@ -252,6 +252,10 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 		r.Handle("/agent/mcp/*", opts.AgentMCPHandler)
 	}
 
+	// NeboLoop OAuth callback — the redirect URI for the popup login flow.
+	// Must be top-level (not under /api/v1) because the browser navigates here directly.
+	r.Get("/auth/neboloop/callback", neboloop.NeboLoopOAuthCallbackHandler(svcCtx))
+
 	// Native webview callback — used by agent-controlled browser windows
 	// to send DOM interaction results back to Go via fetch().
 	// HandleFunc so both POST and OPTIONS (CORS preflight) reach the handler.
@@ -332,6 +336,10 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Post("/neboloop/login", neboloop.NeboLoopLoginHandler(svcCtx))
 	r.Get("/neboloop/account", neboloop.NeboLoopAccountStatusHandler(svcCtx))
 	r.Delete("/neboloop/account", neboloop.NeboLoopDisconnectHandler(svcCtx))
+
+	// NeboLoop OAuth flow (popup-based login via NeboLoop.com)
+	r.Get("/neboloop/oauth/start", neboloop.NeboLoopOAuthStartHandler(svcCtx))
+	r.Get("/neboloop/oauth/status", neboloop.NeboLoopOAuthStatusHandler(svcCtx))
 
 	// Agent routes
 	r.Get("/agent/sessions", agent.ListAgentSessionsHandler(svcCtx))

@@ -162,6 +162,7 @@ func RunAll() {
 	// Load agent config
 	agentCfg := loadAgentConfig()
 	SetSharedDB(svcCtx.DB.GetDB())
+	SetJanusURL(svcCtx.Config.NeboLoop.JanusURL)
 
 	// Heartbeat daemon - started when agent connects via lifecycle hook
 	var heartbeat *daemon.Heartbeat

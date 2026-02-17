@@ -20,7 +20,7 @@
 		ChevronDown
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
-	import { neboLoopRegister, neboLoopLogin, neboLoopAccountStatus } from '$lib/api';
+	import { neboLoopOAuthStart, neboLoopOAuthStatus, neboLoopAccountStatus } from '$lib/api';
 	import type * as components from '$lib/api/neboComponents';
 	import Button from '$lib/components/ui/Button.svelte';
 
@@ -62,17 +62,12 @@
 	let isSavingPermissions = $state(false);
 
 	// NeboLoop
-	let neboLoopTab = $state<'signup' | 'login'>('signup');
 	let neboLoopLoading = $state(false);
 	let neboLoopError = $state('');
 	let neboLoopConnected = $state(false);
 	let neboLoopEmail = $state('');
-	let signupEmail = $state('');
-	let signupName = $state('');
-	let signupPassword = $state('');
-	let signupConfirm = $state('');
-	let nlLoginEmail = $state('');
-	let nlLoginPassword = $state('');
+	let neboLoopPendingState = $state('');
+	let neboLoopPollTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
 	const capabilityGroups = [
 		{
@@ -305,57 +300,59 @@
 		}
 	}
 
-	async function handleNeboLoopSignup() {
+	async function startNeboLoopOAuth() {
 		neboLoopError = '';
-		if (!signupEmail || !signupName || !signupPassword) {
-			neboLoopError = 'All fields are required';
-			return;
-		}
-		if (signupPassword !== signupConfirm) {
-			neboLoopError = 'Passwords do not match';
-			return;
-		}
-		if (signupPassword.length < 8) {
-			neboLoopError = 'Password must be at least 8 characters';
-			return;
-		}
-
 		neboLoopLoading = true;
 		try {
-			const resp = await neboLoopRegister({
-				email: signupEmail,
-				displayName: signupName,
-				password: signupPassword
-			});
-			neboLoopConnected = true;
-			neboLoopEmail = resp.email;
+			const { state } = await neboLoopOAuthStart();
+			neboLoopPendingState = state;
+
+			// Auto-timeout after 3 minutes
+			const timeout = setTimeout(() => {
+				if (neboLoopLoading) {
+					cleanupNeboLoopOAuth();
+					neboLoopError = 'Sign-in timed out. Please try again.';
+					neboLoopLoading = false;
+				}
+			}, 3 * 60 * 1000);
+
+			// Poll status until the OAuth flow completes in the browser
+			neboLoopPollTimer = setInterval(async () => {
+				try {
+					const result = await neboLoopOAuthStatus({ state: neboLoopPendingState });
+					if (result.status === 'complete') {
+						clearTimeout(timeout);
+						cleanupNeboLoopOAuth();
+						neboLoopConnected = true;
+						neboLoopEmail = result.email ?? '';
+						neboLoopLoading = false;
+					} else if (result.status === 'error') {
+						clearTimeout(timeout);
+						cleanupNeboLoopOAuth();
+						neboLoopError = result.error ?? 'Sign-in failed';
+						neboLoopLoading = false;
+					} else if (result.status === 'expired') {
+						clearTimeout(timeout);
+						cleanupNeboLoopOAuth();
+						neboLoopError = 'Sign-in expired. Please try again.';
+						neboLoopLoading = false;
+					}
+				} catch {
+					// polling error, keep trying
+				}
+			}, 2000);
 		} catch (e: any) {
-			neboLoopError = e?.message || 'Registration failed. Please try again.';
-		} finally {
+			neboLoopError = e?.message || 'Failed to start sign-in';
 			neboLoopLoading = false;
 		}
 	}
 
-	async function handleNeboLoopLogin() {
-		neboLoopError = '';
-		if (!nlLoginEmail || !nlLoginPassword) {
-			neboLoopError = 'Email and password are required';
-			return;
+	function cleanupNeboLoopOAuth() {
+		if (neboLoopPollTimer) {
+			clearInterval(neboLoopPollTimer);
+			neboLoopPollTimer = null;
 		}
-
-		neboLoopLoading = true;
-		try {
-			const resp = await neboLoopLogin({
-				email: nlLoginEmail,
-				password: nlLoginPassword
-			});
-			neboLoopConnected = true;
-			neboLoopEmail = resp.email;
-		} catch (e: any) {
-			neboLoopError = e?.message || 'Login failed. Please check your credentials.';
-		} finally {
-			neboLoopLoading = false;
-		}
+		neboLoopPendingState = '';
 	}
 
 	async function completeOnboarding() {
@@ -427,7 +424,7 @@
 				</div>
 				<h1 class="text-3xl font-bold mb-3">Welcome to Nebo</h1>
 				<p class="text-base-content/70 mb-8 text-lg">
-					Your personal AI assistant. Let's get you set up in just a minute.
+					Your personal AI companion. Let's get you set up in just a minute.
 				</p>
 				<Button type="primary" size="lg" onclick={() => (currentStep = 'terms')}>
 					Get Started
@@ -874,11 +871,11 @@
 					<Store class="w-8 h-8 text-accent" />
 				</div>
 				<h2 class="text-2xl font-bold text-center mb-2">
-					{cameFromJanus ? 'Create Your Account' : 'NeboLoop'}
+					{cameFromJanus ? 'Connect to NeboLoop' : 'NeboLoop'}
 				</h2>
 				<p class="text-base-content/70 text-center mb-6">
 					{cameFromJanus
-						? 'Sign up or log in to NeboLoop to use Janus AI.'
+						? 'Sign in or create an account on NeboLoop to use Janus AI.'
 						: 'Connect to the NeboLoop marketplace to install apps, skills, and AI providers.'}
 				</p>
 
@@ -899,108 +896,41 @@
 						<ArrowRight class="w-5 h-5 ml-2" />
 					</Button>
 				{:else}
-					<div role="tablist" class="tabs tabs-bordered mb-6">
-						<button
-							role="tab"
-							class="tab"
-							class:tab-active={neboLoopTab === 'signup'}
-							onclick={() => { neboLoopTab = 'signup'; neboLoopError = ''; }}
-						>
-							Sign Up
-						</button>
-						<button
-							role="tab"
-							class="tab"
-							class:tab-active={neboLoopTab === 'login'}
-							onclick={() => { neboLoopTab = 'login'; neboLoopError = ''; }}
-						>
-							Log In
-						</button>
-					</div>
-
 					{#if neboLoopError}
 						<div class="alert alert-error mb-4">
 							<span>{neboLoopError}</span>
 						</div>
 					{/if}
 
-					{#if neboLoopTab === 'signup'}
-						<form onsubmit={(e) => { e.preventDefault(); handleNeboLoopSignup(); }} class="space-y-3">
-							<input
-								type="text"
-								placeholder="Display Name"
-								class="input input-bordered w-full"
-								bind:value={signupName}
-								disabled={neboLoopLoading}
-							/>
-							<input
-								type="email"
-								placeholder="Email"
-								class="input input-bordered w-full"
-								bind:value={signupEmail}
-								disabled={neboLoopLoading}
-							/>
-							<input
-								type="password"
-								placeholder="Password"
-								class="input input-bordered w-full"
-								bind:value={signupPassword}
-								disabled={neboLoopLoading}
-							/>
-							<input
-								type="password"
-								placeholder="Confirm Password"
-								class="input input-bordered w-full"
-								bind:value={signupConfirm}
-								disabled={neboLoopLoading}
-							/>
-							<Button
-								type="primary"
-								class="w-full"
-								onclick={handleNeboLoopSignup}
-								disabled={neboLoopLoading}
+					<div class="flex flex-col items-center gap-4 py-4">
+						<p class="text-base-content/70 text-center text-sm max-w-sm">
+							Sign in or create a new account on NeboLoop.
+							You can use Google, Apple, or email.
+						</p>
+						<Button
+							type="primary"
+							size="lg"
+							onclick={startNeboLoopOAuth}
+							disabled={neboLoopLoading}
+						>
+							{#if neboLoopLoading}
+								<Loader2 class="w-5 h-5 mr-2 animate-spin" />
+								Waiting for sign-in...
+							{:else}
+								Continue with NeboLoop
+							{/if}
+						</Button>
+						{#if neboLoopLoading}
+							<p class="text-sm text-base-content/50">Complete sign-in in your browser</p>
+							<button
+								type="button"
+								class="text-sm text-base-content/50 hover:text-base-content underline"
+								onclick={() => { cleanupNeboLoopOAuth(); neboLoopLoading = false; }}
 							>
-								{#if neboLoopLoading}
-									<Loader2 class="w-5 h-5 mr-2 animate-spin" />
-									Creating Account...
-								{:else}
-									Create Account
-									<ArrowRight class="w-5 h-5 ml-2" />
-								{/if}
-							</Button>
-						</form>
-					{:else}
-						<form onsubmit={(e) => { e.preventDefault(); handleNeboLoopLogin(); }} class="space-y-3">
-							<input
-								type="email"
-								placeholder="Email"
-								class="input input-bordered w-full"
-								bind:value={nlLoginEmail}
-								disabled={neboLoopLoading}
-							/>
-							<input
-								type="password"
-								placeholder="Password"
-								class="input input-bordered w-full"
-								bind:value={nlLoginPassword}
-								disabled={neboLoopLoading}
-							/>
-							<Button
-								type="primary"
-								class="w-full"
-								onclick={handleNeboLoopLogin}
-								disabled={neboLoopLoading}
-							>
-								{#if neboLoopLoading}
-									<Loader2 class="w-5 h-5 mr-2 animate-spin" />
-									Logging in...
-								{:else}
-									Log In
-									<ArrowRight class="w-5 h-5 ml-2" />
-								{/if}
-							</Button>
-						</form>
-					{/if}
+								Cancel
+							</button>
+						{/if}
+					</div>
 
 					<div class="flex justify-between mt-4">
 						<button
