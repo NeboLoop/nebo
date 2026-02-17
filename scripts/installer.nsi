@@ -27,7 +27,7 @@
 
 ;--- Installer attributes ----------------------------------------------------
 Name "Nebo ${VERSION}"
-OutFile "dist\Nebo-${VERSION}-setup.exe"
+OutFile "..\dist\Nebo-${VERSION}-setup.exe"
 InstallDir "$PROGRAMFILES64\Nebo"
 InstallDirRegKey HKLM "Software\Nebo" "InstallDir"
 RequestExecutionLevel admin
