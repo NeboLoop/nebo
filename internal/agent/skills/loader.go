@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +13,18 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/neboloop/nebo/internal/logging"
 )
+
+// currentPlatform maps runtime.GOOS to friendly platform names.
+var currentPlatform string
+
+func init() {
+	switch runtime.GOOS {
+	case "darwin":
+		currentPlatform = "macos"
+	default:
+		currentPlatform = runtime.GOOS // linux, windows
+	}
+}
 
 // SkillFileName is the expected filename for skill definitions
 const SkillFileName = "SKILL.md"
@@ -104,6 +117,21 @@ func (l *Loader) loadFile(path string) error {
 	// Validate
 	if err := skill.Validate(); err != nil {
 		return fmt.Errorf("invalid skill %s: %w", path, err)
+	}
+
+	// Skip skills that don't support the current platform
+	if len(skill.Platform) > 0 {
+		supported := false
+		for _, p := range skill.Platform {
+			if strings.EqualFold(p, currentPlatform) {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			logging.Debugf("[skills] Skipping %s (platform %v, current %s)", skill.Name, skill.Platform, currentPlatform)
+			return nil
+		}
 	}
 
 	l.skills[skill.Name] = skill

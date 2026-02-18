@@ -116,6 +116,11 @@ tags:                                 # For categorization and discovery
   - productivity
   - meetings
 
+platform:                             # Supported platforms (omit for cross-platform)
+  - macos
+  - linux
+  - windows
+
 metadata:                             # Arbitrary key-value data
   nebo:
     emoji: "📋"
@@ -140,6 +145,7 @@ Your markdown instructions go here...
 | `tools` | No | `[]` | List of tool names this skill expects to use. Currently informational — not enforced at runtime. Helps the agent understand what capabilities the skill needs. |
 | `dependencies` | No | `[]` | List of skill names that must be installed. Currently informational — not enforced at runtime. |
 | `tags` | No | `[]` | Categorization strings. Used in catalog display and future search/filtering. |
+| `platform` | No | `[]` | Supported platforms: `macos`, `linux`, `windows`. Empty means all platforms (cross-platform). Skills with a platform list are only loaded on matching OS. |
 | `metadata` | No | `{}` | Arbitrary YAML map. The `nebo.emoji` convention is used by the UI to display a skill icon. |
 
 ---

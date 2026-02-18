@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 
@@ -40,6 +41,7 @@ import (
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/local"
 	"github.com/neboloop/nebo/internal/apps/settings"
+	"github.com/neboloop/nebo/internal/notify"
 	"github.com/neboloop/nebo/internal/provider"
 	"github.com/neboloop/nebo/internal/server"
 	"github.com/neboloop/nebo/internal/svc"
@@ -82,6 +84,10 @@ type agentState struct {
 
 	// App registry for install listener activation on NeboLoop connect
 	appRegistry *apps.AppRegistry
+
+	// NeboLoop auth: stored for dynamic reconnection on settings_updated
+	sqlDB *sql.DB
+	botID string
 
 	// MCP bridge for external tool integrations
 	mcpBridge *mcpbridge.Bridge
@@ -283,6 +289,43 @@ func isLoopCode(prompt string) bool {
 	return true
 }
 
+// ensureBotID returns the bot_id from plugin settings, generating and persisting
+// a new UUID if one doesn't exist yet. The bot_id is immutable once created.
+func ensureBotID(ctx context.Context, pluginStore *settings.Store) string {
+	if pluginStore == nil {
+		return ""
+	}
+
+	neboloopSettings, err := pluginStore.GetSettingsByName(ctx, "neboloop")
+	if err == nil && neboloopSettings["bot_id"] != "" {
+		return neboloopSettings["bot_id"]
+	}
+
+	// Generate a new bot_id and persist it
+	botID := uuid.New().String()
+	p, err := pluginStore.GetPlugin(ctx, "neboloop")
+	if err != nil {
+		fmt.Printf("[NeboLoop] Warning: neboloop plugin not registered, cannot persist bot_id: %v\n", err)
+		return botID
+	}
+	if err := pluginStore.UpdateSettings(ctx, p.ID, map[string]string{"bot_id": botID}, nil); err != nil {
+		fmt.Printf("[NeboLoop] Warning: failed to persist bot_id: %v\n", err)
+	} else {
+		fmt.Printf("[NeboLoop] Generated bot_id: %s\n", botID)
+	}
+	return botID
+}
+
+// getNeboLoopJWT retrieves the owner's OAuth JWT from auth_profiles.
+func getNeboLoopJWT(ctx context.Context, sqlDB *sql.DB) string {
+	store := db.New(sqlDB)
+	profiles, err := store.ListActiveAuthProfilesByProvider(ctx, "neboloop")
+	if err != nil || len(profiles) == 0 {
+		return ""
+	}
+	return profiles[0].ApiKey // JWT is stored in api_key column
+}
+
 // handleNeboLoopCode processes a connection code and emits tool-use-style events.
 // Returns true if the prompt was a connection code (handled), false otherwise.
 // When state is provided, a successful connection also activates the neboloop comm plugin.
@@ -343,20 +386,16 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 		return true
 	}
 
-	// Step 2: Store credentials via PluginStore (triggers OnSettingsChanged → SDK auto-reconnect)
+	// Step 2: Store bot_id from redemption via PluginStore
 	if pluginStore != nil {
 		p, err := pluginStore.GetPlugin(ctx, "neboloop")
 		if err == nil {
 			newSettings := map[string]string{
 				"api_server": apiServer,
 				"bot_id":     redeemed.ID,
-				"api_key":    redeemed.ConnectionToken,
 			}
-			secrets := map[string]bool{
-				"api_key": true,
-			}
-			if err := pluginStore.UpdateSettings(ctx, p.ID, newSettings, secrets); err != nil {
-				fmt.Printf("[NeboLoop] Warning: failed to save credentials: %v\n", err)
+			if err := pluginStore.UpdateSettings(ctx, p.ID, newSettings, nil); err != nil {
+				fmt.Printf("[NeboLoop] Warning: failed to save bot_id: %v\n", err)
 			}
 		} else {
 			fmt.Printf("[NeboLoop] Warning: neboloop plugin not registered: %v\n", err)
@@ -365,20 +404,23 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 
 	// Step 3: Activate the neboloop comm plugin and persist via settings
 	if state != nil && state.commManager != nil {
+		state.botID = redeemed.ID // Update in-memory bot_id
 		if err := state.commManager.SetActive("neboloop"); err != nil {
 			fmt.Printf("[NeboLoop] Warning: failed to activate comm plugin: %v\n", err)
 		} else if active := state.commManager.GetActive(); active != nil {
-			commConfig := map[string]string{
+			commConfig := injectNeboLoopAuth(ctx, state.sqlDB, redeemed.ID, map[string]string{
 				"api_server": apiServer,
-				"bot_id":     redeemed.ID,
-				"api_key":    redeemed.ConnectionToken,
-			}
-			if err := active.Connect(ctx, commConfig); err != nil {
-				fmt.Printf("[NeboLoop] Warning: failed to connect comm plugin: %v\n", err)
+			})
+			if commConfig["token"] != "" {
+				if err := active.Connect(ctx, commConfig); err != nil {
+					fmt.Printf("[NeboLoop] Warning: failed to connect comm plugin: %v\n", err)
+				} else {
+					card := buildAgentCard(state.registry, state.skillLoader)
+					active.Register(ctx, state.commAgentID, card)
+					fmt.Printf("[NeboLoop] Comm plugin activated and connected (agent: %s)\n", state.commAgentID)
+				}
 			} else {
-				card := buildAgentCard(state.registry, state.skillLoader)
-				active.Register(ctx, state.commAgentID, card)
-				fmt.Printf("[NeboLoop] Comm plugin activated and connected (agent: %s)\n", state.commAgentID)
+				fmt.Println("[NeboLoop] Bot registered, but no JWT yet. Do OAuth login to connect.")
 			}
 		}
 
@@ -424,7 +466,7 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 // handleLoopCode processes a loop invite code and joins the bot to the loop.
 // Returns true if the prompt was a loop code (handled), false otherwise.
 // The bot must already be connected to NeboLoop (has credentials in plugin store).
-func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *settings.Store, send func(map[string]any)) bool {
+func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *settings.Store, state *agentState, send func(map[string]any)) bool {
 	if !isLoopCode(prompt) {
 		return false
 	}
@@ -453,7 +495,7 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 
 	neboloopSettings, err := pluginStore.GetSettingsByName(ctx, "neboloop")
 	if err != nil || neboloopSettings["bot_id"] == "" {
-		errMsg := "You need to connect to NeboLoop first. Paste a NEBO-XXXX-XXXX-XXXX connection code to get started."
+		errMsg := "You need to connect to NeboLoop first. Log in via OAuth to get started."
 		fmt.Printf("[NeboLoop] %s\n", errMsg)
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": errMsg}})
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": errMsg}})
@@ -461,7 +503,12 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 		return true
 	}
 
-	// Create NeboLoop API client from stored credentials
+	// Inject JWT from auth_profiles for API authentication
+	if state != nil && state.sqlDB != nil {
+		neboloopSettings = injectNeboLoopAuth(ctx, state.sqlDB, neboloopSettings["bot_id"], neboloopSettings)
+	}
+
+	// Create NeboLoop API client
 	client, err := neboloopapi.NewClient(neboloopSettings)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to create NeboLoop client: %s", err)
@@ -492,6 +539,33 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 	send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": successMsg}})
 	send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": successMsg}})
 	return true
+}
+
+// isSilentToolCall returns true for tool calls that should not be shown in the UI.
+// Memory operations (store, recall, search) happen silently — the user shouldn't see
+// a wall of "agent store Completed" cards when the model learns facts.
+func isSilentToolCall(tc *ai.ToolCall) bool {
+	if tc == nil || tc.Name != "agent" {
+		return false
+	}
+	var input struct {
+		Resource string `json:"resource"`
+		Action   string `json:"action"`
+	}
+	if err := json.Unmarshal(tc.Input, &input); err != nil {
+		return false
+	}
+	switch input.Action {
+	case "store", "recall", "search":
+		return true
+	}
+	if input.Resource == "memory" {
+		return true
+	}
+	if input.Resource == "profile" && input.Action == "get" {
+		return true
+	}
+	return false
 }
 
 // runAgent connects to the server and runs the agent loop.
@@ -637,7 +711,8 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			// Migrate stale embeddings then backfill (runs in background)
 			if embeddingService != nil && embeddingService.HasProvider() {
 				go func() {
-					bgCtx := context.Background()
+					bgCtx, bgCancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer bgCancel()
 					// First: clear embeddings from old models (e.g., nomic-embed-text → qwen3-embedding)
 					if stale, deleted, err := memoryTool.MigrateEmbeddings(bgCtx); err != nil {
 						fmt.Printf("[agent] Embedding migration error: %v\n", err)
@@ -793,37 +868,69 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
-	// Wire up cron agent task callback now that runner exists
+	// Wire up cron agent task callback now that runner exists.
+	// Reminders run on the events lane so they don't block user conversations on main.
 	if cronTool != nil {
-		cronTool.SetAgentCallback(func(ctx context.Context, name, message string, deliver *tools.DeliverConfig) error {
+		cronTool.SetAgentCallback(func(ctx context.Context, name, message, instructions string, deliver *tools.DeliverConfig) error {
+			sessionKey := fmt.Sprintf("reminder-%s", name)
+			fmt.Printf("[Reminders] Firing %q → enqueueing on events lane\n", name)
 
-			// Run the agent task
-			events, err := r.Run(ctx, &runner.RunRequest{
-				SessionKey: fmt.Sprintf("routine-%s", name),
-				Prompt:     message,
-				Origin:     tools.OriginSystem,
-			})
-			if err != nil {
-				return err
-			}
-
-			// Collect result
-			var result strings.Builder
-			for event := range events {
-				if event.Type == ai.EventTypeText {
-					result.WriteString(event.Text)
+			state.lanes.EnqueueAsync(ctx, agenthub.LaneEvents, func(taskCtx context.Context) error {
+				events, err := r.Run(taskCtx, &runner.RunRequest{
+					SessionKey: sessionKey,
+					Prompt:     message,
+					System:     instructions,
+					Origin:     tools.OriginSystem,
+				})
+				if err != nil {
+					fmt.Printf("[Reminders] %q failed: %v\n", name, err)
+					return err
 				}
-			}
 
-			// Optionally deliver result to channel via app registry
-			if deliver != nil && appRegistry != nil {
-				if err := appRegistry.SendToChannel(ctx, deliver.Channel, deliver.To, result.String()); err != nil {
-					fmt.Printf("[agent] Channel delivery failed: %v\n", err)
+				// Collect result
+				var result strings.Builder
+				for event := range events {
+					if event.Type == ai.EventTypeText {
+						result.WriteString(event.Text)
+					}
 				}
-			}
+
+				resultStr := result.String()
+				logStr := resultStr
+				if len(logStr) > 100 {
+					logStr = logStr[:100] + "..."
+				}
+				fmt.Printf("[Reminders] %q completed: %s\n", name, logStr)
+
+				// Always show a native OS notification
+				notify.Send("Nebo — Reminder", message)
+
+				// Push result to UI clients so it appears in the chat
+				state.sendFrame(map[string]any{
+					"type":   "event",
+					"method": "reminder_complete",
+					"payload": map[string]any{
+						"name":    name,
+						"message": message,
+						"result":  resultStr,
+					},
+				})
+
+				// Deliver result to channel if configured
+				if deliver != nil && appRegistry != nil {
+					if err := appRegistry.SendToChannel(taskCtx, deliver.Channel, deliver.To, resultStr); err != nil {
+						fmt.Printf("[Reminders] %q delivery failed: %v\n", name, err)
+					}
+				}
+
+				return nil
+			}, agenthub.WithDescription(fmt.Sprintf("Reminder: %s", name)))
 
 			return nil
 		})
+
+		// Fire any reminders that were missed while the process was down
+		cronTool.CatchUpMissedJobs()
 	}
 
 	// Initialize comm system for inter-agent communication
@@ -1148,6 +1255,11 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		defer mcpBridge.Close()
 	}
 
+	// Ensure bot_id exists (generated locally on first startup, immutable)
+	botID := ensureBotID(ctx, opts.PluginStore)
+	state.sqlDB = sqlDB
+	state.botID = botID
+
 	// Connect comm plugin: settings take priority, then config.yaml
 	// This allows the UI/NeboLoop code to persist comm activation via settings
 	commEnabled := cfg.Comm.Enabled
@@ -1171,24 +1283,29 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		if err := commManager.SetActive(commPlugin); err != nil {
 			fmt.Printf("[agent] Warning: failed to set active comm plugin: %v\n", err)
 		} else if active := commManager.GetActive(); active != nil {
-			// Load settings from DB with fallback to config.yaml
+			// Build comm config: start with DB settings, then inject JWT + bot_id
 			commConfig := cfg.Comm.Config
 			if opts.PluginStore != nil {
 				if dbSettings, err := opts.PluginStore.GetSettingsByName(ctx, commPlugin); err == nil && len(dbSettings) > 0 {
 					commConfig = dbSettings
-					fmt.Printf("[agent] Loaded %s settings from database (%d keys, broker=%s)\n", commPlugin, len(dbSettings), dbSettings["broker"])
 				}
 			}
-			if err := active.Connect(ctx, commConfig); err != nil {
-				fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", commPlugin, err)
-			} else {
-				card := buildAgentCard(registry, skillLoader)
-				active.Register(ctx, agentID, card)
-				fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", commPlugin, agentID)
 
-				// Install events and channel messages are handled by the SDK
-				// via neboloopPlugin.OnInstall and neboloopPlugin.OnChannelMessage
-				// which were wired above — no separate connections needed.
+			// For neboloop plugin: inject owner JWT from auth_profiles + bot_id
+			if commPlugin == "neboloop" {
+				commConfig = injectNeboLoopAuth(ctx, sqlDB, botID, commConfig)
+			}
+
+			if commConfig["token"] != "" || commPlugin != "neboloop" {
+				if err := active.Connect(ctx, commConfig); err != nil {
+					fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", commPlugin, err)
+				} else {
+					card := buildAgentCard(registry, skillLoader)
+					active.Register(ctx, agentID, card)
+					fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", commPlugin, agentID)
+				}
+			} else {
+				fmt.Println("[agent] NeboLoop comm: bot_id ready, waiting for OAuth login to connect")
 			}
 		}
 	}
@@ -1674,7 +1791,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			}
 
 			// Intercept loop invite codes before enqueueing to LLM
-			if handleLoopCode(ctx, prompt, requestID, pluginStore, func(f map[string]any) {
+			if handleLoopCode(ctx, prompt, requestID, pluginStore, state, func(f map[string]any) {
 				state.sendFrame(f)
 			}) {
 				break
@@ -1682,7 +1799,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 
 			// Determine which lane this request belongs to
 			isHeartbeat := strings.HasPrefix(sessionKey, "heartbeat-")
-			isCronJob := strings.HasPrefix(sessionKey, "routine-")
+			isCronJob := strings.HasPrefix(sessionKey, "reminder-") || strings.HasPrefix(sessionKey, "routine-")
 			isCommMsg := strings.HasPrefix(sessionKey, "comm-")
 			isDev := strings.HasPrefix(sessionKey, "dev-")
 			lane := agenthub.LaneMain
@@ -1761,15 +1878,18 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 
 					case ai.EventTypeToolCall:
 						fmt.Printf("[Agent-WS] Tool call: %s (id=%s)\n", event.ToolCall.Name, event.ToolCall.ID)
-						state.sendFrame(map[string]any{
-							"type": "stream",
-							"id":   requestID,
-							"payload": map[string]any{
-								"tool":    event.ToolCall.Name,
-								"tool_id": event.ToolCall.ID,
-								"input":   event.ToolCall.Input,
-							},
-						})
+						// Memory operations are silent — don't show tool cards in the UI
+						if !isSilentToolCall(event.ToolCall) {
+							state.sendFrame(map[string]any{
+								"type": "stream",
+								"id":   requestID,
+								"payload": map[string]any{
+									"tool":    event.ToolCall.Name,
+									"tool_id": event.ToolCall.ID,
+									"input":   event.ToolCall.Input,
+								},
+							})
+						}
 
 					case ai.EventTypeToolResult:
 						toolName := ""
@@ -1779,15 +1899,18 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 							toolID = event.ToolCall.ID
 						}
 						fmt.Printf("[Agent-WS] Tool result: %s (id=%s) len=%d\n", toolName, toolID, len(event.Text))
-						state.sendFrame(map[string]any{
-							"type": "stream",
-							"id":   requestID,
-							"payload": map[string]any{
-								"tool_result": event.Text,
-								"tool_name":   toolName,
-								"tool_id":     toolID,
-							},
-						})
+						// Memory operations are silent — don't show tool cards in the UI
+						if !isSilentToolCall(event.ToolCall) {
+							state.sendFrame(map[string]any{
+								"type": "stream",
+								"id":   requestID,
+								"payload": map[string]any{
+									"tool_result": event.Text,
+									"tool_name":   toolName,
+									"tool_id":     toolID,
+								},
+							})
+						}
 
 					case ai.EventTypeThinking:
 						// Send thinking/reasoning content to frontend
@@ -2174,6 +2297,22 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 	return service
 }
 
+// injectNeboLoopAuth merges the owner's OAuth JWT and bot_id into a comm config map.
+// Returns a new map (does not mutate the input).
+func injectNeboLoopAuth(ctx context.Context, sqlDB *sql.DB, botID string, base map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+2)
+	for k, v := range base {
+		out[k] = v
+	}
+	out["bot_id"] = botID
+
+	jwt := getNeboLoopJWT(ctx, sqlDB)
+	if jwt != "" {
+		out["token"] = jwt
+	}
+	return out
+}
+
 // handleCommSettingsUpdate activates or deactivates the comm plugin based on
 // a settings_updated event from the server.
 func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bool, pluginName string, pluginStore *settings.Store) {
@@ -2212,6 +2351,15 @@ func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bo
 		}
 	}
 
+	// For neboloop plugin: inject owner JWT from auth_profiles + bot_id
+	if pluginName == "neboloop" && state.sqlDB != nil {
+		commConfig = injectNeboLoopAuth(ctx, state.sqlDB, state.botID, commConfig)
+		if commConfig["token"] == "" {
+			fmt.Println("[Comm] NeboLoop: no JWT available yet, skipping connect")
+			return
+		}
+	}
+
 	if err := active.Connect(ctx, commConfig); err != nil {
 		fmt.Printf("[Comm] Warning: failed to connect %s: %v\n", pluginName, err)
 		return
@@ -2220,10 +2368,6 @@ func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bo
 	card := buildAgentCard(state.registry, state.skillLoader)
 	active.Register(ctx, state.commAgentID, card)
 	fmt.Printf("[Comm] Plugin %s activated and connected via settings update (agent: %s)\n", pluginName, state.commAgentID)
-
-	// Install events and channel messages are handled by the SDK
-	// via neboloopPlugin.OnInstall and neboloopPlugin.OnChannelMessage
-	// which were wired during agent startup — no separate connections needed.
 }
 
 // buildAgentCard collects tool and skill metadata into an A2A-spec-compliant

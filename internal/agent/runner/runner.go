@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/neboloop/nebo/internal/agent/afv"
@@ -65,6 +66,7 @@ type Runner struct {
 	quarantine      *afv.QuarantineStore // In-memory quarantine for failed fence verification
 	steering        *steering.Pipeline   // Mid-conversation steering message generator
 	fileTracker     *FileAccessTracker   // Tracks file reads for post-compaction re-injection
+	extractingMemory sync.Map            // sessionID → true: prevents overlapping extractions
 }
 
 // RunRequest contains parameters for a run
@@ -436,7 +438,11 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			if compactErr := r.sessions.Compact(sessionID, summary); compactErr == nil {
 				// Index compacted messages for semantic search
 				if r.memoryTool != nil {
-					go r.memoryTool.IndexSessionTranscript(context.WithoutCancel(ctx), sessionID, userID)
+					go func() {
+								indexCtx, indexCancel := context.WithTimeout(context.Background(), 60*time.Second)
+								defer indexCancel()
+								r.memoryTool.IndexSessionTranscript(indexCtx, sessionID, userID)
+							}()
 				}
 				// Reload messages after compaction
 				messages, err = r.sessions.GetMessages(sessionID, r.config.MaxContext)
@@ -658,7 +664,11 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 					if compactErr == nil {
 						// Index compacted messages for semantic search
 						if r.memoryTool != nil {
-							go r.memoryTool.IndexSessionTranscript(context.WithoutCancel(ctx), sessionID, userID)
+							go func() {
+								indexCtx, indexCancel := context.WithTimeout(context.Background(), 60*time.Second)
+								defer indexCancel()
+								r.memoryTool.IndexSessionTranscript(indexCtx, sessionID, userID)
+							}()
 						}
 						// File re-injection will happen on the next iteration
 						// when messages are reloaded from DB
@@ -1144,6 +1154,13 @@ func (r *Runner) Chat(ctx context.Context, prompt string) (string, error) {
 // userID is passed explicitly to avoid race conditions with concurrent requests
 // Fire-and-forget, fully non-blocking, with error recovery
 func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
+	// Prevent overlapping extractions for the same session
+	if _, running := r.extractingMemory.LoadOrStore(sessionID, true); running {
+		fmt.Printf("[runner] Memory extraction already in progress for session=%s, skipping\n", sessionID)
+		return
+	}
+	defer r.extractingMemory.Delete(sessionID)
+
 	// Capture start time for logging
 	startTime := time.Now()
 
@@ -1166,9 +1183,9 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 		return
 	}
 
-	// Use background context with reasonable timeout
-	// 60 seconds should be plenty for extraction - if it takes longer, something is wrong
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Use background context with generous timeout
+	// Small models on congested APIs can take a while for structured extraction
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	// Add a watchdog timer that logs if extraction is taking too long
@@ -1178,46 +1195,72 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 	})
 	defer watchdog.Stop()
 
-	// Get recent messages from session
-	messages, err := r.sessions.GetMessages(sessionID, 50) // Last 50 messages
+	// Only extract from the latest turn (last ~6 messages covers user + assistant + tool calls).
+	// Extraction runs after every turn, so older messages were already processed.
+	messages, err := r.sessions.GetMessages(sessionID, 6)
 	if err != nil || len(messages) < 2 {
 		return // Not enough conversation to extract from
 	}
 
-	// Use the cheapest available model for memory extraction
-	var extractionProvider ai.Provider
-	var extractionModel string
+	// Build a list of providers to try for extraction (cheapest first, then fallbacks)
+	type candidate struct {
+		provider ai.Provider
+		label    string
+	}
+	var candidates []candidate
+
 	if r.selector != nil {
 		cheapestModelID := r.selector.GetCheapestModel()
-		fmt.Printf("[runner] GetCheapestModel returned: %q\n", cheapestModelID)
 		if cheapestModelID != "" {
 			providerID, modelName := ai.ParseModelID(cheapestModelID)
 			if p, ok := r.providerMap[providerID]; ok {
-				// Create a provider wrapper that uses the specific model
-				extractionProvider = &modelOverrideProvider{
-					Provider: p,
-					model:    modelName,
-				}
-				extractionModel = cheapestModelID
-			} else {
-				fmt.Printf("[runner] Provider %q not in providerMap (available: %v)\n", providerID, r.getProviderIDs())
+				candidates = append(candidates, candidate{
+					provider: &modelOverrideProvider{Provider: p, model: modelName},
+					label:    cheapestModelID,
+				})
 			}
 		}
-	} else {
-		fmt.Printf("[runner] selector is nil\n")
 	}
-	// Fall back to first provider if we couldn't get the cheapest
-	if extractionProvider == nil {
-		extractionProvider = r.providers[0]
-		extractionModel = "fallback/" + r.providers[0].ID()
+	// Add remaining providers as fallbacks (skip duplicates)
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		seen[c.label] = true
 	}
-	fmt.Printf("[runner] Memory extraction using model: %s\n", extractionModel)
+	for _, p := range r.providers {
+		label := "fallback/" + p.ID()
+		if seen[label] {
+			continue
+		}
+		candidates = append(candidates, candidate{provider: p, label: label})
+		seen[label] = true
+	}
 
-	// Create extractor and extract facts
-	extractor := memory.NewExtractor(extractionProvider)
-	facts, err := extractor.Extract(ctx, messages)
-	if err != nil {
-		fmt.Printf("[runner] Memory extraction failed: %v\n", err)
+	if len(candidates) == 0 {
+		fmt.Printf("[runner] ERROR: Memory extraction - no providers available\n")
+		return
+	}
+
+	// Try each candidate until one succeeds
+	var facts *memory.ExtractedFacts
+	var successProvider ai.Provider
+	for _, c := range candidates {
+		fmt.Printf("[runner] Memory extraction trying: %s\n", c.label)
+		extractor := memory.NewExtractor(c.provider)
+		var err error
+		facts, err = extractor.Extract(ctx, messages)
+		if err == nil {
+			fmt.Printf("[runner] Memory extraction succeeded with: %s\n", c.label)
+			successProvider = c.provider
+			break
+		}
+		fmt.Printf("[runner] Memory extraction failed with %s: %v\n", c.label, err)
+		if ctx.Err() != nil {
+			fmt.Printf("[runner] Memory extraction context expired, giving up\n")
+			return
+		}
+	}
+	if facts == nil {
+		fmt.Printf("[runner] Memory extraction failed with all providers\n")
 		return
 	}
 
@@ -1258,7 +1301,7 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 	// If styles were extracted, attempt personality directive synthesis
 	if len(facts.Styles) > 0 && r.sessions != nil {
 		if db := r.sessions.GetDB(); db != nil {
-			directive, err := memory.SynthesizeDirective(ctx, db, extractionProvider, userID)
+			directive, err := memory.SynthesizeDirective(ctx, db, successProvider, userID)
 			if err != nil {
 				fmt.Printf("[runner] Personality synthesis failed: %v\n", err)
 			} else if directive != "" {
@@ -1336,7 +1379,7 @@ func (r *Runner) runMemoryFlush(ctx context.Context, provider ai.Provider, messa
 		}
 	}()
 
-	flushCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	flushCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
 	extractor := memory.NewExtractor(provider)

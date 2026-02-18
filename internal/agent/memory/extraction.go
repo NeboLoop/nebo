@@ -101,7 +101,7 @@ func NewExtractor(provider ai.Provider) *Extractor {
 // Extraction input limits
 const (
 	maxContentPerMessage = 500   // chars — truncate individual messages
-	maxConversationChars = 30000 // chars — cap total prompt size
+	maxConversationChars = 15000 // chars — cap total prompt size (~4k tokens)
 )
 
 // Extract extracts facts from a conversation

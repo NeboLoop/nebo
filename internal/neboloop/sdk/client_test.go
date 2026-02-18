@@ -140,7 +140,7 @@ func TestConnectAndAuth(t *testing.T) {
 	client, err := Connect(ctx, Config{
 		Gateway:  gw.url(),
 		BotID:    "bot-1",
-		APIKey:   "key-1",
+		Token:   "key-1",
 		DeviceID: "dev-1",
 	})
 	if err != nil {
@@ -167,7 +167,7 @@ func TestAuthFailure(t *testing.T) {
 	_, err := Connect(ctx, Config{
 		Gateway: gw.url(),
 		BotID:   "bot-bad",
-		APIKey:  "key-bad",
+		Token:  "key-bad",
 	})
 	if err == nil {
 		t.Fatal("expected error for auth failure")
@@ -184,7 +184,7 @@ func TestDeliveryDispatch(t *testing.T) {
 	client, err := Connect(ctx, Config{
 		Gateway: gw.url(),
 		BotID:   "bot-1",
-		APIKey:  "key-1",
+		Token:  "key-1",
 	})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -353,7 +353,7 @@ func TestAckTracking(t *testing.T) {
 	client, err := Connect(ctx, Config{
 		Gateway: gw.url(),
 		BotID:   "bot-1",
-		APIKey:  "key-1",
+		Token:  "key-1",
 	})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -424,7 +424,7 @@ func TestSendMessage(t *testing.T) {
 	client, err := Connect(ctx, Config{
 		Gateway: gw.url(),
 		BotID:   "bot-1",
-		APIKey:  "key-1",
+		Token:  "key-1",
 	})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -480,7 +480,7 @@ func TestJoinConversation(t *testing.T) {
 	client, err := Connect(ctx, Config{
 		Gateway: gw.url(),
 		BotID:   "bot-1",
-		APIKey:  "key-1",
+		Token:  "key-1",
 	})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -521,7 +521,7 @@ func TestHeartbeat(t *testing.T) {
 	client, err := Connect(ctx, Config{
 		Gateway: gw.url(),
 		BotID:   "bot-1",
-		APIKey:  "key-1",
+		Token:  "key-1",
 	})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -544,7 +544,7 @@ func TestSlowDownHandling(t *testing.T) {
 	client, err := Connect(ctx, Config{
 		Gateway: gw.url(),
 		BotID:   "bot-1",
-		APIKey:  "key-1",
+		Token:  "key-1",
 	})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)

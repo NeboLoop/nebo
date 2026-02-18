@@ -590,7 +590,7 @@ func NeboLoopConnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			apiServer = settings["api_server"]
 		}
 
-		// Step 1: Redeem code → get bot identity + one-time token
+		// Step 1: Redeem code → get bot identity
 		purpose := req.Purpose
 		if purpose == "" {
 			purpose = "AI assistant"
@@ -601,14 +601,7 @@ func NeboLoopConnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		// Step 2: Exchange token → get MQTT credentials
-		creds, err := neboloop.ExchangeToken(r.Context(), apiServer, redeemed.ConnectionToken)
-		if err != nil {
-			httputil.InternalError(w, "token exchange failed: "+err.Error())
-			return
-		}
-
-		// Step 3: Store credentials in neboloop plugin settings (triggers hot-reload → MQTT connect)
+		// Step 2: Store bot_id in neboloop plugin settings
 		plugin, err := svcCtx.PluginStore.GetPlugin(r.Context(), "neboloop")
 		if err != nil {
 			httputil.InternalError(w, "neboloop plugin not registered: "+err.Error())
@@ -616,17 +609,12 @@ func NeboLoopConnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		newSettings := map[string]string{
-			"api_server":    apiServer,
-			"bot_id":        redeemed.ID,
-			"mqtt_username": creds.MQTTUsername,
-			"mqtt_password": creds.MQTTPassword,
-		}
-		secrets := map[string]bool{
-			"mqtt_password": true,
+			"api_server": apiServer,
+			"bot_id":     redeemed.ID,
 		}
 
-		if err := svcCtx.PluginStore.UpdateSettings(r.Context(), plugin.ID, newSettings, secrets); err != nil {
-			httputil.InternalError(w, "failed to save credentials: "+err.Error())
+		if err := svcCtx.PluginStore.UpdateSettings(r.Context(), plugin.ID, newSettings, nil); err != nil {
+			httputil.InternalError(w, "failed to save bot_id: "+err.Error())
 			return
 		}
 
@@ -655,7 +643,7 @@ func NeboLoopStatusHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		botID := settings["bot_id"]
-		connected := botID != "" && settings["mqtt_password"] != ""
+		connected := botID != ""
 
 		resp := types.NeboLoopStatusResponse{
 			Connected: connected,

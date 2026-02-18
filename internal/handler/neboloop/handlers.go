@@ -16,7 +16,6 @@ import (
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/local"
-	neboloopapi "github.com/neboloop/nebo/internal/neboloop"
 	"github.com/neboloop/nebo/internal/svc"
 	"github.com/neboloop/nebo/internal/types"
 )
@@ -61,12 +60,10 @@ func NeboLoopRegisterHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		// Parse upstream response (uses snake_case from NeboLoop API)
 		var upstream struct {
-			ID              string `json:"id"`
-			Email           string `json:"email"`
-			DisplayName     string `json:"display_name"`
-			Token           string `json:"token"`
-			BotID           string `json:"bot_id"`
-			ConnectionToken string `json:"connection_token"`
+			ID          string `json:"id"`
+			Email       string `json:"email"`
+			DisplayName string `json:"display_name"`
+			Token       string `json:"token"`
 		}
 		if err := json.Unmarshal(respBody, &upstream); err != nil {
 			httputil.Error(w, fmt.Errorf("failed to parse NeboLoop response: %w", err))
@@ -78,15 +75,9 @@ func NeboLoopRegisterHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			fmt.Printf("[NeboLoop] Warning: failed to store profile: %v\n", err)
 		}
 
-		// Auto-connect the bot (exchange token → MQTT creds → store in plugin settings)
-		if upstream.ConnectionToken != "" {
-			if err := autoConnectBot(r.Context(), svcCtx, svcCtx.Config.NeboLoop.ApiURL, upstream.BotID, upstream.ConnectionToken); err != nil {
-				fmt.Printf("[NeboLoop] Warning: auto-connect failed: %v\n", err)
-			} else {
-				// Persist comm settings so the agent activates NeboLoop on restart
-				activateNeboLoopComm(svcCtx)
-			}
-		}
+		// Activate comm — bot_id is generated locally on first startup,
+		// so the agent will auto-connect using the JWT + existing bot_id.
+		activateNeboLoopComm(svcCtx)
 
 		httputil.OkJSON(w, types.NeboLoopRegisterResponse{
 			ID:          upstream.ID,
@@ -133,12 +124,10 @@ func NeboLoopLoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		// Parse upstream response
 		var upstream struct {
-			ID              string `json:"id"`
-			Email           string `json:"email"`
-			DisplayName     string `json:"display_name"`
-			Token           string `json:"token"`
-			BotID           string `json:"bot_id"`
-			ConnectionToken string `json:"connection_token"`
+			ID          string `json:"id"`
+			Email       string `json:"email"`
+			DisplayName string `json:"display_name"`
+			Token       string `json:"token"`
 		}
 		if err := json.Unmarshal(respBody, &upstream); err != nil {
 			httputil.Error(w, fmt.Errorf("failed to parse NeboLoop response: %w", err))
@@ -150,15 +139,9 @@ func NeboLoopLoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			fmt.Printf("[NeboLoop] Warning: failed to store profile: %v\n", err)
 		}
 
-		// Auto-connect the bot (exchange token → MQTT creds → store in plugin settings)
-		if upstream.ConnectionToken != "" {
-			if err := autoConnectBot(r.Context(), svcCtx, svcCtx.Config.NeboLoop.ApiURL, upstream.BotID, upstream.ConnectionToken); err != nil {
-				fmt.Printf("[NeboLoop] Warning: auto-connect failed: %v\n", err)
-			} else {
-				// Persist comm settings so the agent activates NeboLoop on restart
-				activateNeboLoopComm(svcCtx)
-			}
-		}
+		// Activate comm — bot_id is generated locally on first startup,
+		// so the agent will auto-connect using the JWT + existing bot_id.
+		activateNeboLoopComm(svcCtx)
 
 		httputil.OkJSON(w, types.NeboLoopLoginResponse{
 			ID:          upstream.ID,
@@ -220,61 +203,22 @@ func NeboLoopDisconnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			}
 		}
 
-		// Also clear bot MQTT credentials so the connection actually stops
+		// Clear token from plugin settings so the comms connection stops.
+		// bot_id is preserved — it's immutable and generated locally.
 		if svcCtx.PluginStore != nil {
 			plugin, err := svcCtx.PluginStore.GetPlugin(ctx, "neboloop")
 			if err == nil {
 				clearSettings := map[string]string{
-					"bot_id":        "",
-					"mqtt_username": "",
-					"mqtt_password": "",
+					"token": "",
 				}
 				if err := svcCtx.PluginStore.UpdateSettings(ctx, plugin.ID, clearSettings, nil); err != nil {
-					fmt.Printf("[NeboLoop] Warning: failed to clear MQTT settings: %v\n", err)
+					fmt.Printf("[NeboLoop] Warning: failed to clear token: %v\n", err)
 				}
 			}
 		}
 
 		httputil.OkJSON(w, types.NeboLoopDisconnectResponse{Disconnected: true})
 	}
-}
-
-// autoConnectBot exchanges a connection_token for MQTT creds and stores them
-// in the neboloop plugin settings (triggers comm plugin auto-reconnect).
-func autoConnectBot(ctx context.Context, svcCtx *svc.ServiceContext, apiURL, botID, connectionToken string) error {
-	if connectionToken == "" || svcCtx.PluginStore == nil {
-		return nil
-	}
-
-	// Exchange connection_token → MQTT credentials
-	creds, err := neboloopapi.ExchangeToken(ctx, apiURL, connectionToken)
-	if err != nil {
-		return fmt.Errorf("token exchange: %w", err)
-	}
-
-	broker := creds.MQTTBroker
-	if broker == "" {
-		return fmt.Errorf("server did not return mqtt_broker")
-	}
-
-	// Store in neboloop plugin settings (triggers OnSettingsChanged → MQTT connect)
-	plugin, err := svcCtx.PluginStore.GetPlugin(ctx, "neboloop")
-	if err != nil {
-		return fmt.Errorf("neboloop plugin not found: %w", err)
-	}
-
-	newSettings := map[string]string{
-		"api_server":    apiURL,
-		"bot_id":        botID,
-		"broker":        broker,
-		"mqtt_username": creds.MQTTUsername,
-		"mqtt_password": creds.MQTTPassword,
-	}
-	secrets := map[string]bool{
-		"mqtt_password": true,
-	}
-
-	return svcCtx.PluginStore.UpdateSettings(ctx, plugin.ID, newSettings, secrets)
 }
 
 // storeNeboLoopProfile saves NeboLoop credentials to auth_profiles.

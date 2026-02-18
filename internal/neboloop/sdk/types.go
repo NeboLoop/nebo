@@ -6,7 +6,7 @@ import "encoding/json"
 type Config struct {
 	Gateway  string // WebSocket URL, e.g. "wss://comms.neboloop.com"
 	BotID    string // Bot UUID
-	APIKey   string // Bot API key
+	Token    string // Owner OAuth JWT
 	DeviceID string // Optional device/session identifier
 }
 
@@ -14,8 +14,8 @@ type Config struct {
 
 // connectPayload is the CONNECT frame payload.
 type connectPayload struct {
+	Token    string `json:"token"`
 	BotID    string `json:"bot_id"`
-	APIKey   string `json:"api_key"`
 	DeviceID string `json:"device_id,omitempty"`
 }
 

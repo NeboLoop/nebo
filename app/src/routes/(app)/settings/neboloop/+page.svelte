@@ -158,9 +158,12 @@
 					<div class="flex-1">
 						<p class="font-medium">Bot Connection</p>
 						{#if botConnected}
-							<p class="text-sm text-base-content/60">{botName || botId}</p>
+							<p class="text-sm text-base-content/60">{botName || 'NeboLoop'}</p>
+							{#if botId}
+								<p class="text-xs text-base-content/40 font-mono">{botId}</p>
+							{/if}
 						{:else}
-							<p class="text-sm text-warning">Not connected — MQTT credentials missing</p>
+							<p class="text-sm text-warning">Waiting for NeboLoop connection</p>
 						{/if}
 					</div>
 					<span class="badge badge-sm {botConnected ? 'badge-success' : 'badge-warning'}">

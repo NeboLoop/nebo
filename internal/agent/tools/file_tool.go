@@ -2,14 +2,12 @@ package tools
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -535,13 +533,12 @@ func (t *FileTool) recursiveGlob(basePath, pattern string, limit int) ([]string,
 	return matches, err
 }
 
-// handleGrep searches for patterns in files
+// handleGrep delegates to GrepTool for all grep operations
 func (t *FileTool) handleGrep(ctx context.Context, in FileInput) (*ToolResult, error) {
 	if in.Regex == "" {
 		return &ToolResult{Content: "Error: regex is required", IsError: true}, nil
 	}
 
-	// Set defaults
 	path := in.Path
 	if path == "" {
 		path = "."
@@ -553,239 +550,17 @@ func (t *FileTool) handleGrep(ctx context.Context, in FileInput) (*ToolResult, e
 		limit = 100
 	}
 
-	// Block dangerous root paths
-	absPath, _ := filepath.Abs(path)
-	dangerousPaths := []string{"/", "/usr", "/var", "/etc", "/System", "/Library", "/Applications", "/bin", "/sbin", "/opt"}
-	for _, dangerous := range dangerousPaths {
-		if absPath == dangerous {
-			return &ToolResult{
-				Content: fmt.Sprintf("Error: Cannot search '%s' - path is too broad. Please specify a more specific directory.", path),
-				IsError: true,
-			}, nil
-		}
-	}
-
-	// Use ripgrep if available
-	if t.hasRipgrep {
-		return t.grepWithRipgrep(ctx, in, path, limit)
-	}
-
-	return t.grepWithGo(ctx, in, path, limit)
-}
-
-// grepWithRipgrep uses rg command for fast searching
-func (t *FileTool) grepWithRipgrep(ctx context.Context, in FileInput, path string, limit int) (*ToolResult, error) {
-	args := []string{
-		"--line-number",
-		"--no-heading",
-		"--color=never",
-		fmt.Sprintf("--max-count=%d", limit),
-	}
-
-	if in.CaseInsensitive {
-		args = append(args, "-i")
-	}
-
-	if in.Context > 0 {
-		args = append(args, fmt.Sprintf("-C%d", in.Context))
-	}
-
-	if in.Glob != "" {
-		args = append(args, "--glob", in.Glob)
-	}
-
-	args = append(args, in.Regex, path)
-
-	cmd := exec.CommandContext(ctx, "rg", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return &ToolResult{Content: fmt.Sprintf("No matches found for pattern: %s", in.Regex)}, nil
-		}
-		if ctx.Err() != nil {
-			return &ToolResult{Content: "Error: search timed out or was cancelled", IsError: true}, nil
-		}
-		if stderr.Len() > 0 {
-			return &ToolResult{Content: fmt.Sprintf("Error: %s", strings.TrimSpace(stderr.String())), IsError: true}, nil
-		}
-		return &ToolResult{Content: fmt.Sprintf("Error running search: %v", err), IsError: true}, nil
-	}
-
-	output := strings.TrimSpace(stdout.String())
-	if output == "" {
-		return &ToolResult{Content: fmt.Sprintf("No matches found for pattern: %s", in.Regex)}, nil
-	}
-
-	lines := strings.Split(output, "\n")
-	if len(lines) > limit {
-		output = strings.Join(lines[:limit], "\n")
-		output += fmt.Sprintf("\n... (showing first %d matches)", limit)
-	}
-
-	return &ToolResult{Content: output}, nil
-}
-
-// grepWithGo uses pure Go implementation as fallback
-func (t *FileTool) grepWithGo(ctx context.Context, in FileInput, path string, limit int) (*ToolResult, error) {
-	// Compile regex
-	flags := ""
-	if in.CaseInsensitive {
-		flags = "(?i)"
-	}
-	re, err := regexp.Compile(flags + in.Regex)
-	if err != nil {
-		return &ToolResult{Content: fmt.Sprintf("Invalid regex pattern: %v", err), IsError: true}, nil
-	}
-
-	// Get files to search
-	var files []string
-	info, err := os.Stat(path)
-	if err != nil {
-		return &ToolResult{Content: fmt.Sprintf("Error: %v", err), IsError: true}, nil
-	}
-
-	if info.IsDir() {
-		files, err = t.findFilesForGrep(ctx, path, in.Glob)
-		if err != nil {
-			if ctx.Err() != nil {
-				return &ToolResult{Content: "Error: search timed out or was cancelled", IsError: true}, nil
-			}
-			return &ToolResult{Content: fmt.Sprintf("Error finding files: %v", err), IsError: true}, nil
-		}
-	} else {
-		files = []string{path}
-	}
-
-	// Search files
-	type grepMatch struct {
-		file    string
-		line    int
-		content string
-	}
-	var matches []grepMatch
-	matchCount := 0
-
-	for _, file := range files {
-		if matchCount >= limit {
-			break
-		}
-
-		fileMatches, _ := t.searchFileForGrep(file, re, limit-matchCount)
-		for _, m := range fileMatches {
-			matches = append(matches, grepMatch{file: file, line: m.line, content: m.content})
-		}
-		matchCount += len(fileMatches)
-	}
-
-	if len(matches) == 0 {
-		return &ToolResult{Content: fmt.Sprintf("No matches found for pattern: %s", in.Regex)}, nil
-	}
-
-	var result strings.Builder
-	for _, m := range matches {
-		result.WriteString(fmt.Sprintf("%s:%d: %s\n", m.file, m.line, m.content))
-	}
-
-	if matchCount >= limit {
-		result.WriteString(fmt.Sprintf("\n... (showing first %d matches)", limit))
-	}
-
-	return &ToolResult{Content: strings.TrimSpace(result.String())}, nil
-}
-
-// findFilesForGrep finds all files matching the glob in the directory
-func (t *FileTool) findFilesForGrep(ctx context.Context, dir, glob string) ([]string, error) {
-	var files []string
-
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		if err != nil {
-			return nil
-		}
-
-		if info.IsDir() {
-			name := info.Name()
-			if strings.HasPrefix(name, ".") && name != "." {
-				return filepath.SkipDir
-			}
-			if name == "node_modules" || name == "vendor" || name == "__pycache__" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Skip binary files
-		ext := filepath.Ext(path)
-		binaryExts := map[string]bool{
-			".exe": true, ".bin": true, ".so": true, ".dylib": true,
-			".png": true, ".jpg": true, ".gif": true, ".ico": true,
-			".zip": true, ".tar": true, ".gz": true,
-		}
-		if binaryExts[ext] {
-			return nil
-		}
-
-		if glob != "" {
-			matched, _ := filepath.Match(glob, info.Name())
-			if !matched {
-				return nil
-			}
-		}
-
-		files = append(files, path)
-
-		if len(files) >= 10000 {
-			return filepath.SkipAll
-		}
-		return nil
+	grepInput, _ := json.Marshal(GrepInput{
+		Pattern:         in.Regex,
+		Path:            path,
+		Glob:            in.Glob,
+		CaseInsensitive: in.CaseInsensitive,
+		Context:         in.Context,
+		Limit:           limit,
 	})
 
-	return files, err
-}
-
-type grepLineMatch struct {
-	line    int
-	content string
-}
-
-// searchFileForGrep searches a single file for the pattern
-func (t *FileTool) searchFileForGrep(path string, re *regexp.Regexp, maxMatches int) ([]grepLineMatch, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var matches []grepLineMatch
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-
-	for scanner.Scan() {
-		lineNum++
-		if len(matches) >= maxMatches {
-			break
-		}
-
-		line := scanner.Text()
-		if re.MatchString(line) {
-			content := line
-			if len(content) > 500 {
-				content = content[:500] + "..."
-			}
-			matches = append(matches, grepLineMatch{line: lineNum, content: content})
-		}
-	}
-
-	return matches, scanner.Err()
+	grep := &GrepTool{hasRipgrep: t.hasRipgrep}
+	return grep.Execute(ctx, grepInput)
 }
 
 // sensitivePaths contains paths that the agent should never read or write.

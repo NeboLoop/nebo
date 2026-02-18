@@ -194,7 +194,8 @@
 			client.on('error', handleError),
 			client.on('approval_request', handleApprovalRequest),
 			client.on('stream_status', handleStreamStatus),
-			client.on('chat_cancelled', handleChatCancelled)
+			client.on('chat_cancelled', handleChatCancelled),
+			client.on('reminder_complete', handleReminderComplete)
 		);
 		log.debug('WebSocket event listeners registered');
 
@@ -838,6 +839,21 @@
 
 		// Process queued messages even after errors (don't leave orphaned user messages)
 		processQueue();
+	}
+
+	function handleReminderComplete(data: Record<string, unknown>) {
+		const name = (data?.name as string) || 'Reminder';
+		const result = (data?.result as string) || '';
+		if (!result) return;
+
+		const reminderMessage: Message = {
+			id: generateUUID(),
+			role: 'assistant',
+			content: `**Reminder — ${name}**\n\n${result}`,
+			timestamp: new Date()
+		};
+		messages = [...messages, reminderMessage];
+		scrollToBottom();
 	}
 
 	function handleApprovalRequest(data: Record<string, unknown>) {

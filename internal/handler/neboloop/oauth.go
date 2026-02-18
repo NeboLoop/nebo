@@ -211,26 +211,15 @@ func NeboLoopOAuthCallbackHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		// Ensure the owner has a bot, get connection token
-		botID, connectionToken, err := ensureBot(ctx, apiURL, tokenResp.AccessToken)
-		if err != nil {
-			fmt.Printf("[NeboLoop OAuth] Warning: bot setup failed: %v\n", err)
-			// Not fatal -- user is still authenticated, bot can be connected later
-		}
-
 		// Store owner profile (reuses existing helper)
 		if err := storeNeboLoopProfile(ctx, svcCtx.DB, apiURL, userInfo.ID, userInfo.Email, tokenResp.AccessToken, tokenResp.RefreshToken); err != nil {
 			fmt.Printf("[NeboLoop OAuth] Warning: failed to store profile: %v\n", err)
 		}
 
-		// Auto-connect bot (reuses existing helper)
-		if connectionToken != "" {
-			if err := autoConnectBot(ctx, svcCtx, apiURL, botID, connectionToken); err != nil {
-				fmt.Printf("[NeboLoop OAuth] Warning: auto-connect failed: %v\n", err)
-			} else {
-				activateNeboLoopComm(svcCtx)
-			}
-		}
+		// Activate comm and notify agent — bot_id is generated locally on first
+		// startup, so if it already exists the agent will auto-connect using
+		// the JWT we just stored + the existing bot_id.
+		activateNeboLoopComm(svcCtx)
 
 		// Mark flow as completed
 		flow.Email = userInfo.Email
@@ -357,72 +346,6 @@ func fetchUserInfo(ctx context.Context, apiURL, accessToken string) (*oauthUserI
 	return &result, nil
 }
 
-// ensureBot checks if the owner has a bot, creates one if not, and returns
-// the bot ID and a connection token for MQTT credential exchange.
-func ensureBot(ctx context.Context, apiURL, accessToken string) (botID, connectionToken string, err error) {
-	// List owner's bots
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL+"/api/v1/owners/me/bots", nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("list bots failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		var bots []struct {
-			ID              string `json:"id"`
-			Name            string `json:"name"`
-			ConnectionToken string `json:"connection_token,omitempty"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&bots); err == nil && len(bots) > 0 {
-			bot := bots[0]
-			if bot.ConnectionToken != "" {
-				return bot.ID, bot.ConnectionToken, nil
-			}
-			// Bot exists but no connection token -- need to create a new one
-			return bot.ID, "", nil
-		}
-	}
-
-	// No bots found -- create one
-	createBody, _ := json.Marshal(map[string]string{
-		"name":    "My Nebo",
-		"purpose": "Personal Desktop AI Companion",
-	})
-	createReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL+"/api/v1/bots",
-		strings.NewReader(string(createBody)))
-	if err != nil {
-		return "", "", err
-	}
-	createReq.Header.Set("Authorization", "Bearer "+accessToken)
-	createReq.Header.Set("Content-Type", "application/json")
-
-	createResp, err := http.DefaultClient.Do(createReq)
-	if err != nil {
-		return "", "", fmt.Errorf("create bot failed: %w", err)
-	}
-	defer createResp.Body.Close()
-
-	if createResp.StatusCode != http.StatusOK && createResp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(createResp.Body)
-		return "", "", fmt.Errorf("create bot returned %d: %s", createResp.StatusCode, string(body))
-	}
-
-	var created struct {
-		ID              string `json:"id"`
-		ConnectionToken string `json:"connection_token"`
-	}
-	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
-		return "", "", fmt.Errorf("decode create bot response: %w", err)
-	}
-
-	return created.ID, created.ConnectionToken, nil
-}
 
 // serveCallbackHTML renders a minimal HTML page that closes the browser
 // window/tab after the OAuth flow completes. The Nebo app detects completion

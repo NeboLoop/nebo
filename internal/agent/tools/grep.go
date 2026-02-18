@@ -10,8 +10,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // GrepTool searches for patterns in files
@@ -211,7 +214,7 @@ func (t *GrepTool) executeWithRipgrep(ctx context.Context, in *GrepInput) (*Tool
 	}, nil
 }
 
-// executeWithGo uses pure Go implementation as fallback
+// executeWithGo uses pure Go implementation with parallel workers as fallback
 func (t *GrepTool) executeWithGo(ctx context.Context, in *GrepInput) (*ToolResult, error) {
 	// Compile regex
 	flags := ""
@@ -254,37 +257,97 @@ func (t *GrepTool) executeWithGo(ctx context.Context, in *GrepInput) (*ToolResul
 		files = []string{in.Path}
 	}
 
-	// Search files
-	var matches []GrepMatch
-	matchCount := 0
-
-	for _, file := range files {
-		if matchCount >= in.Limit {
-			break
-		}
-
-		fileMatches, err := t.searchFile(file, re, in.Limit-matchCount)
-		if err != nil {
-			continue // Skip files we can't read
-		}
-
-		matches = append(matches, fileMatches...)
-		matchCount += len(fileMatches)
+	// Parallel search with worker pool
+	numWorkers := runtime.NumCPU()
+	if numWorkers > 8 {
+		numWorkers = 8
+	}
+	if len(files) < numWorkers {
+		numWorkers = len(files)
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
 	}
 
-	if len(matches) == 0 {
+	type indexedMatch struct {
+		GrepMatch
+		fileIdx int
+	}
+
+	var (
+		matchCount atomic.Int64
+		mu         sync.Mutex
+		allMatches []indexedMatch
+	)
+
+	type fileItem struct {
+		path string
+		idx  int
+	}
+	fileCh := make(chan fileItem, numWorkers*2)
+
+	var wg sync.WaitGroup
+	for range numWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range fileCh {
+				if matchCount.Load() >= int64(in.Limit) {
+					continue
+				}
+				remaining := in.Limit - int(matchCount.Load())
+				if remaining <= 0 {
+					continue
+				}
+				fileMatches, err := t.searchFile(item.path, re, remaining)
+				if err != nil || len(fileMatches) == 0 {
+					continue
+				}
+				batch := make([]indexedMatch, len(fileMatches))
+				for i, m := range fileMatches {
+					batch[i] = indexedMatch{GrepMatch: m, fileIdx: item.idx}
+				}
+				matchCount.Add(int64(len(batch)))
+				mu.Lock()
+				allMatches = append(allMatches, batch...)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for i, f := range files {
+		if ctx.Err() != nil || matchCount.Load() >= int64(in.Limit) {
+			break
+		}
+		fileCh <- fileItem{f, i}
+	}
+	close(fileCh)
+	wg.Wait()
+
+	if len(allMatches) == 0 {
 		return &ToolResult{
 			Content: fmt.Sprintf("No matches found for pattern: %s", in.Pattern),
 		}, nil
 	}
 
-	// Format output
+	// Sort by file discovery order then line number for stable output
+	sort.Slice(allMatches, func(i, j int) bool {
+		if allMatches[i].fileIdx != allMatches[j].fileIdx {
+			return allMatches[i].fileIdx < allMatches[j].fileIdx
+		}
+		return allMatches[i].Line < allMatches[j].Line
+	})
+
+	if len(allMatches) > in.Limit {
+		allMatches = allMatches[:in.Limit]
+	}
+
 	var result strings.Builder
-	for _, m := range matches {
+	for _, m := range allMatches {
 		result.WriteString(fmt.Sprintf("%s:%d: %s\n", m.File, m.Line, m.Content))
 	}
 
-	if matchCount >= in.Limit {
+	if len(allMatches) >= in.Limit {
 		result.WriteString(fmt.Sprintf("\n... (showing first %d matches)", in.Limit))
 	}
 
@@ -394,5 +457,3 @@ func (t *GrepTool) RequiresApproval() bool {
 	return false
 }
 
-// Ensure strconv is used (for potential future use)
-var _ = strconv.Itoa

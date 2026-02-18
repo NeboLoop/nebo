@@ -153,18 +153,19 @@ type CronHistory struct {
 }
 
 type CronJob struct {
-	ID        int64          `json:"id"`
-	Name      string         `json:"name"`
-	Schedule  string         `json:"schedule"`
-	Command   string         `json:"command"`
-	TaskType  string         `json:"task_type"`
-	Message   sql.NullString `json:"message"`
-	Deliver   sql.NullString `json:"deliver"`
-	Enabled   sql.NullInt64  `json:"enabled"`
-	LastRun   sql.NullTime   `json:"last_run"`
-	RunCount  sql.NullInt64  `json:"run_count"`
-	LastError sql.NullString `json:"last_error"`
-	CreatedAt sql.NullTime   `json:"created_at"`
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	Schedule     string         `json:"schedule"`
+	Command      string         `json:"command"`
+	TaskType     string         `json:"task_type"`
+	Message      sql.NullString `json:"message"`
+	Deliver      sql.NullString `json:"deliver"`
+	Enabled      sql.NullInt64  `json:"enabled"`
+	LastRun      sql.NullTime   `json:"last_run"`
+	RunCount     sql.NullInt64  `json:"run_count"`
+	LastError    sql.NullString `json:"last_error"`
+	CreatedAt    sql.NullTime   `json:"created_at"`
+	Instructions sql.NullString `json:"instructions"`
 }
 
 type DevSideloadedApp struct {

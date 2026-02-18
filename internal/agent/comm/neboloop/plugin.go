@@ -70,7 +70,7 @@ func (p *Plugin) Client() *sdk.Client {
 //   - gateway:     WebSocket URL (e.g. "wss://comms.neboloop.com")
 //   - api_server:  NeboLoop REST API URL (e.g. "http://localhost:8888")
 //   - bot_id:      Bot UUID for addressing
-//   - api_key:     Bot API key for authentication
+//   - token:       Owner OAuth JWT for authentication
 //   - device_id:   Optional device/session identifier
 func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 	p.mu.Lock()
@@ -92,19 +92,15 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 		return fmt.Errorf("neboloop: 'gateway' or 'api_server' config is required")
 	}
 
-	apiKey := config["api_key"]
-	// Backwards compat: accept mqtt_password as api_key during migration
-	if apiKey == "" {
-		apiKey = config["mqtt_password"]
-	}
-	if apiKey == "" {
-		return fmt.Errorf("neboloop: 'api_key' config is required")
+	token := config["token"]
+	if token == "" {
+		return fmt.Errorf("neboloop: 'token' (owner JWT) config is required")
 	}
 
 	client, err := sdk.Connect(ctx, sdk.Config{
 		Gateway:  p.gateway,
 		BotID:    p.botID,
-		APIKey:   apiKey,
+		Token:    token,
 		DeviceID: config["device_id"],
 	})
 	if err != nil {
@@ -388,7 +384,7 @@ func (p *Plugin) Manifest() settings.SettingsManifest {
 			},
 			{
 				Title:       "Authentication",
-				Description: "Bot credentials for NeboLoop network",
+				Description: "Owner JWT and bot identity for NeboLoop network",
 				Fields: []settings.SettingsField{
 					{
 						Key:         "bot_id",
@@ -397,11 +393,11 @@ func (p *Plugin) Manifest() settings.SettingsManifest {
 						Description: "Bot UUID assigned by NeboLoop",
 					},
 					{
-						Key:         "api_key",
-						Title:       "API Key",
+						Key:         "token",
+						Title:       "Token",
 						Type:        settings.FieldPassword,
 						Secret:      true,
-						Description: "Bot API key for authentication",
+						Description: "Owner OAuth JWT for authentication",
 					},
 				},
 			},

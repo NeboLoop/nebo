@@ -49,13 +49,14 @@ type Scheduler interface {
 
 // ScheduleItem represents a single scheduled task.
 type ScheduleItem struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name"`
-	Expression string            `json:"expression"`
-	TaskType   string            `json:"task_type"`
-	Command    string            `json:"command,omitempty"`
-	Message    string            `json:"message,omitempty"`
-	Deliver    string            `json:"deliver,omitempty"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Expression   string            `json:"expression"`
+	TaskType     string            `json:"task_type"`
+	Command      string            `json:"command,omitempty"`
+	Message      string            `json:"message,omitempty"`
+	Instructions string            `json:"instructions,omitempty"`
+	Deliver      string            `json:"deliver,omitempty"`
 	Enabled    bool              `json:"enabled"`
 	LastRun    time.Time         `json:"last_run,omitempty"`
 	NextRun    time.Time         `json:"next_run,omitempty"`
@@ -79,12 +80,13 @@ type ScheduleHistoryEntry struct {
 // ScheduleTriggerEvent is emitted when a schedule fires.
 // Contains enough info for Nebo to route to the correct lane.
 type ScheduleTriggerEvent struct {
-	ScheduleID string            `json:"schedule_id"`
-	Name       string            `json:"name"`
-	TaskType   string            `json:"task_type"`
-	Command    string            `json:"command,omitempty"`
-	Message    string            `json:"message,omitempty"`
-	Deliver    string            `json:"deliver,omitempty"`
-	FiredAt    time.Time         `json:"fired_at"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	ScheduleID   string            `json:"schedule_id"`
+	Name         string            `json:"name"`
+	TaskType     string            `json:"task_type"`
+	Command      string            `json:"command,omitempty"`
+	Message      string            `json:"message,omitempty"`
+	Instructions string            `json:"instructions,omitempty"`
+	Deliver      string            `json:"deliver,omitempty"`
+	FiredAt      time.Time         `json:"fired_at"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }

@@ -1,25 +1,25 @@
 -- Cron job queries
 
 -- name: ListCronJobs :many
-SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+SELECT id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
 ORDER BY created_at DESC
 LIMIT sqlc.arg(limit) OFFSET sqlc.arg(offset);
 
 -- name: GetCronJob :one
-SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+SELECT id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
 WHERE id = ?;
 
 -- name: GetCronJobByName :one
-SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+SELECT id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
 WHERE name = ?;
 
 -- name: CreateCronJob :one
-INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, enabled)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at;
+INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at;
 
 -- name: UpdateCronJob :exec
 UPDATE cron_jobs
@@ -55,7 +55,7 @@ WHERE id = sqlc.arg(id);
 SELECT COUNT(*) as total FROM cron_jobs;
 
 -- name: ListEnabledCronJobs :many
-SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+SELECT id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
 WHERE enabled = 1
 ORDER BY name;
@@ -119,11 +119,12 @@ SET last_run = CURRENT_TIMESTAMP,
 WHERE name = sqlc.arg(name);
 
 -- name: UpsertCronJob :exec
-INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, enabled)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
     schedule = excluded.schedule,
     command = excluded.command,
     task_type = excluded.task_type,
     message = excluded.message,
-    deliver = excluded.deliver;
+    deliver = excluded.deliver,
+    instructions = excluded.instructions;

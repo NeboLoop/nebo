@@ -41,7 +41,7 @@ type CommService interface {
 //
 // Resources:
 //   - task: Spawn and manage sub-agents for parallel work
-//   - routine: Schedule recurring tasks
+//   - reminder: Schedule recurring tasks (aliases: routine, schedule, job, cron, event)
 //   - memory: Persistent fact storage across sessions (3-tier system)
 //   - message: Send messages to connected channels (provided by installed apps)
 //   - session: Query and manage conversation sessions
@@ -70,7 +70,7 @@ type AgentDomainTool struct {
 // AgentDomainInput defines the input for the agent domain tool
 type AgentDomainInput struct {
 	// Required fields
-	Resource string `json:"resource"` // task, routine, memory, message, session
+	Resource string `json:"resource"` // task, reminder, memory, message, session
 	Action   string `json:"action"`   // varies by resource
 
 	// Task fields
@@ -81,9 +81,10 @@ type AgentDomainInput struct {
 	AgentType   string `json:"agent_type,omitempty"`  // explore, plan, general
 	AgentID     string `json:"agent_id,omitempty"`    // For status/cancel operations
 
-	// Routine (scheduling) fields
+	// Reminder (scheduling) fields
 	Name     string `json:"name,omitempty"`      // Job name
-	Schedule string `json:"schedule,omitempty"`  // Cron expression
+	At       string `json:"at,omitempty"`        // Human-friendly time: "in 3 minutes", "7:30pm"
+	Schedule string `json:"schedule,omitempty"`  // Cron expression (recurring only)
 	Command  string `json:"command,omitempty"`   // Shell command (for bash tasks)
 	TaskType string `json:"task_type,omitempty"` // bash or agent
 	Message  string `json:"message,omitempty"`   // Agent prompt (for agent tasks)
@@ -230,7 +231,7 @@ func (t *AgentDomainTool) Domain() string {
 
 // Resources returns available resources in this domain
 func (t *AgentDomainTool) Resources() []string {
-	return []string{"task", "routine", "memory", "message", "session", "comm", "profile"}
+	return []string{"task", "reminder", "memory", "message", "session", "comm", "profile"}
 }
 
 // ActionsFor returns available actions for a given resource
@@ -238,7 +239,7 @@ func (t *AgentDomainTool) ActionsFor(resource string) []string {
 	switch resource {
 	case "task":
 		return []string{"spawn", "status", "cancel", "list"}
-	case "routine":
+	case "reminder":
 		return []string{"create", "list", "delete", "pause", "resume", "run", "history"}
 	case "memory":
 		return []string{"store", "recall", "search", "list", "delete", "clear"}
@@ -257,7 +258,7 @@ func (t *AgentDomainTool) ActionsFor(resource string) []string {
 
 var agentResources = map[string]ResourceConfig{
 	"task":    {Name: "task", Actions: []string{"spawn", "status", "cancel", "list"}, Description: "Sub-agent management"},
-	"routine": {Name: "routine", Actions: []string{"create", "list", "delete", "pause", "resume", "run", "history"}, Description: "Scheduled tasks"},
+	"reminder": {Name: "reminder", Actions: []string{"create", "list", "delete", "pause", "resume", "run", "history"}, Description: "Scheduled reminders and recurring tasks"},
 	"memory":  {Name: "memory", Actions: []string{"store", "recall", "search", "list", "delete", "clear"}, Description: "Persistent storage"},
 	"message": {Name: "message", Actions: []string{"send", "list"}, Description: "Channel messaging"},
 	"session": {Name: "session", Actions: []string{"list", "history", "status", "clear"}, Description: "Conversation sessions"},
@@ -273,7 +274,7 @@ func (t *AgentDomainTool) Description() string {
 
 Resources:
 - task: Spawn sub-agents for parallel work (spawn, status, cancel, list)
-- routine: Schedule recurring tasks
+- reminder: Schedule reminders and recurring tasks (aliases: routine, schedule, job, cron, event, remind)
 - memory: Three-tier persistent storage (tacit/daily/entity layers)
 - message: Send messages to connected channels (provided by installed apps)
 - session: Manage conversation sessions
@@ -282,7 +283,8 @@ Resources:
 		Resources: agentResources,
 		Examples: []string{
 			`agent(resource: task, action: spawn, prompt: "Find all Go files with errors", agent_type: "explore")`,
-			`agent(resource: routine, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send me a summary")`,
+			`agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send me a summary")`,
+			`agent(resource: reminder, action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", message: "Remind user to call Kristi about haircuts")`,
 			`agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit")`,
 			`agent(resource: memory, action: search, query: "preferences", layer: "tacit")`,
 			`agent(resource: message, action: send, channel: "voice", to: "default", text: "Task complete!")`,
@@ -314,9 +316,11 @@ func (t *AgentDomainTool) Schema() json.RawMessage {
 			{Name: "agent_type", Type: "string", Description: "Agent type: explore, plan, general", Enum: []string{"explore", "plan", "general"}},
 			{Name: "agent_id", Type: "string", Description: "Agent ID for status/cancel operations"},
 
-			// Routine (scheduling) fields
-			{Name: "name", Type: "string", Description: "Unique job name/identifier"},
-			{Name: "schedule", Type: "string", Description: "Schedule expression: 'second minute hour day-of-month month day-of-week'"},
+			// Reminder (scheduling) fields
+			{Name: "name", Type: "string", Description: "Unique reminder name"},
+			{Name: "at", Type: "string", Description: "PREFERRED for one-time reminders: 'in 5 minutes', 'in 1 hour', '7:30pm', '19:30'"},
+			{Name: "schedule", Type: "string", Description: "For recurring schedules only: 'second minute hour day-of-month month day-of-week'"},
+			{Name: "instructions", Type: "string", Description: "How to accomplish the task: which tools, steps, constraints. Injected as context when the reminder fires."},
 			{Name: "command", Type: "string", Description: "Shell command (for bash tasks)"},
 			{Name: "task_type", Type: "string", Description: "Task type: bash or agent", Enum: []string{"bash", "agent"}},
 
@@ -352,6 +356,64 @@ func (t *AgentDomainTool) RequiresApproval() bool {
 	return false
 }
 
+// resourceAliases maps common synonyms to their canonical resource name.
+// The LLM echoes whatever word the user said ("remind me", "schedule a job", etc.)
+// so we normalize before routing.
+var resourceAliases = map[string]string{
+	"routine":   "reminder",
+	"routines":  "reminder",
+	"remind":    "reminder",
+	"reminders": "reminder",
+	"schedule":  "reminder",
+	"schedules": "reminder",
+	"job":       "reminder",
+	"jobs":      "reminder",
+	"cron":      "reminder",
+	"event":     "reminder",
+	"events":    "reminder",
+	"calendar":  "reminder",
+}
+
+// normalizeAgentResource maps synonym resource names to their canonical form.
+func normalizeAgentResource(resource string) string {
+	if canonical, ok := resourceAliases[strings.ToLower(resource)]; ok {
+		return canonical
+	}
+	return resource
+}
+
+// actionToResource maps actions that are unique to a single resource.
+// When the model omits "resource" but provides "action", we infer the resource.
+var actionToResource = map[string]string{
+	// memory-only
+	"store":  "memory",
+	"recall": "memory",
+	// task-only
+	"spawn": "task",
+	// reminder-only
+	"pause":  "reminder",
+	"resume": "reminder",
+	"run":    "reminder",
+	// comm-only
+	"subscribe":   "comm",
+	"unsubscribe": "comm",
+	"list_topics":  "comm",
+	// profile-only
+	"update": "profile",
+	"get":    "profile",
+}
+
+// inferResource fills in a missing resource field from the action when unambiguous.
+func inferResource(resource, action string) string {
+	if resource != "" {
+		return resource
+	}
+	if r, ok := actionToResource[action]; ok {
+		return r
+	}
+	return resource
+}
+
 // Execute runs the agent domain tool
 func (t *AgentDomainTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var in AgentDomainInput
@@ -361,6 +423,12 @@ func (t *AgentDomainTool) Execute(ctx context.Context, input json.RawMessage) (*
 			IsError: true,
 		}, nil
 	}
+
+	// Normalize resource synonyms — the LLM picks up whatever word the user used
+	in.Resource = normalizeAgentResource(in.Resource)
+
+	// Auto-infer resource from action when the model omits it
+	in.Resource = inferResource(in.Resource, in.Action)
 
 	// Validate resource and action
 	if err := ValidateResourceAction(in.Resource, in.Action, agentResources); err != nil {
@@ -374,7 +442,7 @@ func (t *AgentDomainTool) Execute(ctx context.Context, input json.RawMessage) (*
 	switch in.Resource {
 	case "task":
 		return t.handleTask(ctx, in)
-	case "routine":
+	case "reminder":
 		return t.handleCron(ctx, in)
 	case "memory":
 		return t.handleMemory(ctx, in)
@@ -677,7 +745,7 @@ func (t *AgentDomainTool) handleCron(ctx context.Context, in AgentDomainInput) (
 
 	default:
 		return &ToolResult{
-			Content: fmt.Sprintf("Unknown routine action: %s", in.Action),
+			Content: fmt.Sprintf("Unknown reminder action: %s", in.Action),
 			IsError: true,
 		}, nil
 	}

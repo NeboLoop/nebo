@@ -42,6 +42,10 @@ type Skill struct {
 	// Tags for categorization and discovery
 	Tags []string `yaml:"tags"`
 
+	// Platform lists supported platforms (macos, linux, windows).
+	// Empty means all platforms (cross-platform).
+	Platform []string `yaml:"platform"`
+
 	// Triggers are phrases that auto-activate this skill when matched in user messages
 	Triggers []string `yaml:"triggers"`
 

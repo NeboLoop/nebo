@@ -24,7 +24,7 @@ const (
 // 0 = unlimited
 var DefaultLaneConcurrency = map[string]int{
 	LaneMain:      1,
-	LaneEvents:    2,  // Scheduled/triggered tasks
+	LaneEvents:    0,  // Scheduled/triggered tasks (unlimited — each gets own session)
 	LaneSubagent:  0,  // Unlimited sub-agents
 	LaneNested:    3,
 	LaneHeartbeat: 1,  // Sequential heartbeat processing

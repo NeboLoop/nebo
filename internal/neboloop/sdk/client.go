@@ -213,8 +213,8 @@ func (c *Client) dial(ctx context.Context) error {
 
 	// Send CONNECT frame
 	cp, err := json.Marshal(connectPayload{
+		Token:    c.config.Token,
 		BotID:    c.config.BotID,
-		APIKey:   c.config.APIKey,
 		DeviceID: c.config.DeviceID,
 	})
 	if err != nil {

@@ -14,26 +14,23 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
-	"time"
 )
 
 // Client communicates with the NeboLoop REST API.
-// It caches the bot JWT and refreshes it automatically on expiry or 401.
+// It uses the owner's OAuth JWT directly for authentication.
 type Client struct {
-	apiServer    string
-	botID        string
-	mqttPassword string
+	apiServer string
+	botID     string
+	token     string // Owner OAuth JWT
 
-	token     string
-	expiresAt time.Time
-	mu        sync.RWMutex
+	mu sync.RWMutex
 }
 
 // APIServer returns the base API server URL.
 func (c *Client) APIServer() string { return c.apiServer }
 
 // NewClient creates a NeboLoop API client from plugin settings.
-// Required keys: api_server, bot_id, mqtt_password.
+// Required keys: api_server, bot_id, token (owner JWT).
 func NewClient(settings map[string]string) (*Client, error) {
 	apiServer := settings["api_server"]
 	if apiServer == "" {
@@ -43,17 +40,14 @@ func NewClient(settings map[string]string) (*Client, error) {
 	if botID == "" {
 		return nil, fmt.Errorf("bot_id not configured")
 	}
-	mqttPassword := settings["mqtt_password"]
-	if mqttPassword == "" {
-		mqttPassword = settings["api_key"] // Fallback: NEBO code handler stores as api_key
-	}
-	if mqttPassword == "" {
-		return nil, fmt.Errorf("mqtt_password or api_key not configured")
+	token := settings["token"]
+	if token == "" {
+		return nil, fmt.Errorf("token (owner JWT) not configured")
 	}
 	return &Client{
-		apiServer:    apiServer,
-		botID:        botID,
-		mqttPassword: mqttPassword,
+		apiServer: apiServer,
+		botID:     botID,
+		token:     token,
 	}, nil
 }
 
@@ -61,67 +55,8 @@ func NewClient(settings map[string]string) (*Client, error) {
 // Authentication
 // --------------------------------------------------------------------------
 
-type authRequest struct {
-	BotID        string `json:"bot_id"`
-	MQTTPassword string `json:"mqtt_password"`
-}
-
-type authResponse struct {
-	Token     string `json:"token"`
-	ExpiresIn int    `json:"expires_in"`
-}
-
-// Authenticate calls POST /api/v1/bots/auth and caches the JWT.
-func (c *Client) Authenticate(ctx context.Context) error {
-	body, _ := json.Marshal(authRequest{
-		BotID:        c.botID,
-		MQTTPassword: c.mqttPassword,
-	})
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiServer+"/api/v1/bots/auth", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("auth request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("auth returned %d: %s", resp.StatusCode, string(b))
-	}
-
-	var result authResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode auth response: %w", err)
-	}
-
-	c.mu.Lock()
-	c.token = result.Token
-	// Refresh 60s before actual expiry
-	c.expiresAt = time.Now().Add(time.Duration(result.ExpiresIn)*time.Second - 60*time.Second)
-	c.mu.Unlock()
-
-	return nil
-}
-
-// authedRequest creates an HTTP request with a valid Authorization header.
-// Auto-authenticates if the token is missing or expired.
+// authedRequest creates an HTTP request with the owner JWT as Authorization header.
 func (c *Client) authedRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	c.mu.RLock()
-	needsAuth := c.token == "" || time.Now().After(c.expiresAt)
-	c.mu.RUnlock()
-
-	if needsAuth {
-		if err := c.Authenticate(ctx); err != nil {
-			return nil, fmt.Errorf("auto-authenticate: %w", err)
-		}
-	}
-
 	req, err := http.NewRequestWithContext(ctx, method, c.apiServer+path, body)
 	if err != nil {
 		return nil, err
@@ -158,27 +93,6 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody any, d
 		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	// Re-auth on 401 and retry once
-	if resp.StatusCode == http.StatusUnauthorized {
-		if err := c.Authenticate(ctx); err != nil {
-			return fmt.Errorf("re-auth failed: %w", err)
-		}
-		// Rebuild request body if needed
-		if reqBody != nil {
-			b, _ := json.Marshal(reqBody)
-			body = bytes.NewReader(b)
-		}
-		req, err = c.authedRequest(ctx, method, path, body)
-		if err != nil {
-			return err
-		}
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return fmt.Errorf("retry request failed: %w", err)
-		}
-		defer resp.Body.Close()
-	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
@@ -327,18 +241,6 @@ func RedeemCode(ctx context.Context, apiServer, code, name, purpose string) (*Re
 		Code:    code,
 		Name:    name,
 		Purpose: purpose,
-	}, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-// ExchangeToken exchanges a one-time connection token for MQTT credentials.
-// This is an unauthenticated call used during initial setup.
-func ExchangeToken(ctx context.Context, apiServer, token string) (*ExchangeTokenResponse, error) {
-	var resp ExchangeTokenResponse
-	if err := postJSON(ctx, apiServer+"/api/v1/bots/exchange-token", ExchangeTokenRequest{
-		Token: token,
 	}, &resp); err != nil {
 		return nil, err
 	}

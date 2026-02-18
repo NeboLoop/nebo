@@ -360,10 +360,23 @@ func (t *MemoryTool) store(params memoryInput) (string, error) {
 // embedMemory creates a chunk and vector embedding for a memory.
 // This is the write-path that populates memory_chunks + memory_embeddings tables.
 // Non-fatal: logs errors but never fails the store operation.
+// Runs asynchronously so it doesn't block the store path — embedding API calls
+// with retries can take 10-30s per fact, which would serialize and block memory flushes.
 func (t *MemoryTool) embedMemory(namespace, key, value, userID string) {
 	if t.embedder == nil || !t.embedder.HasProvider() {
 		return // No embedding provider configured, skip silently
 	}
+
+	go t.embedMemorySync(namespace, key, value, userID)
+}
+
+// embedMemorySync is the synchronous implementation called from the goroutine.
+func (t *MemoryTool) embedMemorySync(namespace, key, value, userID string) {
+	defer func() {
+		if v := recover(); v != nil {
+			fmt.Printf("[Memory] Panic in embedMemory: %v\n", v)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

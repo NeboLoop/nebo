@@ -56,22 +56,39 @@ func (q *Queries) CreateCronHistory(ctx context.Context, jobID int64) (CronHisto
 }
 
 const createCronJob = `-- name: CreateCronJob :one
-INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, enabled)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 `
 
 type CreateCronJobParams struct {
-	Name     string         `json:"name"`
-	Schedule string         `json:"schedule"`
-	Command  string         `json:"command"`
-	TaskType string         `json:"task_type"`
-	Message  sql.NullString `json:"message"`
-	Deliver  sql.NullString `json:"deliver"`
-	Enabled  sql.NullInt64  `json:"enabled"`
+	Name         string         `json:"name"`
+	Schedule     string         `json:"schedule"`
+	Command      string         `json:"command"`
+	TaskType     string         `json:"task_type"`
+	Message      sql.NullString `json:"message"`
+	Deliver      sql.NullString `json:"deliver"`
+	Instructions sql.NullString `json:"instructions"`
+	Enabled      sql.NullInt64  `json:"enabled"`
 }
 
-func (q *Queries) CreateCronJob(ctx context.Context, arg CreateCronJobParams) (CronJob, error) {
+type CreateCronJobRow struct {
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	Schedule     string         `json:"schedule"`
+	Command      string         `json:"command"`
+	TaskType     string         `json:"task_type"`
+	Message      sql.NullString `json:"message"`
+	Deliver      sql.NullString `json:"deliver"`
+	Instructions sql.NullString `json:"instructions"`
+	Enabled      sql.NullInt64  `json:"enabled"`
+	LastRun      sql.NullTime   `json:"last_run"`
+	RunCount     sql.NullInt64  `json:"run_count"`
+	LastError    sql.NullString `json:"last_error"`
+	CreatedAt    sql.NullTime   `json:"created_at"`
+}
+
+func (q *Queries) CreateCronJob(ctx context.Context, arg CreateCronJobParams) (CreateCronJobRow, error) {
 	row := q.db.QueryRowContext(ctx, createCronJob,
 		arg.Name,
 		arg.Schedule,
@@ -79,9 +96,10 @@ func (q *Queries) CreateCronJob(ctx context.Context, arg CreateCronJobParams) (C
 		arg.TaskType,
 		arg.Message,
 		arg.Deliver,
+		arg.Instructions,
 		arg.Enabled,
 	)
-	var i CronJob
+	var i CreateCronJobRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -90,6 +108,7 @@ func (q *Queries) CreateCronJob(ctx context.Context, arg CreateCronJobParams) (C
 		&i.TaskType,
 		&i.Message,
 		&i.Deliver,
+		&i.Instructions,
 		&i.Enabled,
 		&i.LastRun,
 		&i.RunCount,
@@ -136,14 +155,30 @@ func (q *Queries) EnableCronJobByName(ctx context.Context, name string) error {
 }
 
 const getCronJob = `-- name: GetCronJob :one
-SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+SELECT id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
 WHERE id = ?
 `
 
-func (q *Queries) GetCronJob(ctx context.Context, id int64) (CronJob, error) {
+type GetCronJobRow struct {
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	Schedule     string         `json:"schedule"`
+	Command      string         `json:"command"`
+	TaskType     string         `json:"task_type"`
+	Message      sql.NullString `json:"message"`
+	Deliver      sql.NullString `json:"deliver"`
+	Instructions sql.NullString `json:"instructions"`
+	Enabled      sql.NullInt64  `json:"enabled"`
+	LastRun      sql.NullTime   `json:"last_run"`
+	RunCount     sql.NullInt64  `json:"run_count"`
+	LastError    sql.NullString `json:"last_error"`
+	CreatedAt    sql.NullTime   `json:"created_at"`
+}
+
+func (q *Queries) GetCronJob(ctx context.Context, id int64) (GetCronJobRow, error) {
 	row := q.db.QueryRowContext(ctx, getCronJob, id)
-	var i CronJob
+	var i GetCronJobRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -152,6 +187,7 @@ func (q *Queries) GetCronJob(ctx context.Context, id int64) (CronJob, error) {
 		&i.TaskType,
 		&i.Message,
 		&i.Deliver,
+		&i.Instructions,
 		&i.Enabled,
 		&i.LastRun,
 		&i.RunCount,
@@ -162,14 +198,30 @@ func (q *Queries) GetCronJob(ctx context.Context, id int64) (CronJob, error) {
 }
 
 const getCronJobByName = `-- name: GetCronJobByName :one
-SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+SELECT id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
 WHERE name = ?
 `
 
-func (q *Queries) GetCronJobByName(ctx context.Context, name string) (CronJob, error) {
+type GetCronJobByNameRow struct {
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	Schedule     string         `json:"schedule"`
+	Command      string         `json:"command"`
+	TaskType     string         `json:"task_type"`
+	Message      sql.NullString `json:"message"`
+	Deliver      sql.NullString `json:"deliver"`
+	Instructions sql.NullString `json:"instructions"`
+	Enabled      sql.NullInt64  `json:"enabled"`
+	LastRun      sql.NullTime   `json:"last_run"`
+	RunCount     sql.NullInt64  `json:"run_count"`
+	LastError    sql.NullString `json:"last_error"`
+	CreatedAt    sql.NullTime   `json:"created_at"`
+}
+
+func (q *Queries) GetCronJobByName(ctx context.Context, name string) (GetCronJobByNameRow, error) {
 	row := q.db.QueryRowContext(ctx, getCronJobByName, name)
-	var i CronJob
+	var i GetCronJobByNameRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
@@ -178,6 +230,7 @@ func (q *Queries) GetCronJobByName(ctx context.Context, name string) (CronJob, e
 		&i.TaskType,
 		&i.Message,
 		&i.Deliver,
+		&i.Instructions,
 		&i.Enabled,
 		&i.LastRun,
 		&i.RunCount,
@@ -313,7 +366,7 @@ func (q *Queries) ListCronHistory(ctx context.Context, arg ListCronHistoryParams
 
 const listCronJobs = `-- name: ListCronJobs :many
 
-SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+SELECT id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
 ORDER BY created_at DESC
 LIMIT ?2 OFFSET ?1
@@ -324,16 +377,32 @@ type ListCronJobsParams struct {
 	Limit  int64 `json:"limit"`
 }
 
+type ListCronJobsRow struct {
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	Schedule     string         `json:"schedule"`
+	Command      string         `json:"command"`
+	TaskType     string         `json:"task_type"`
+	Message      sql.NullString `json:"message"`
+	Deliver      sql.NullString `json:"deliver"`
+	Instructions sql.NullString `json:"instructions"`
+	Enabled      sql.NullInt64  `json:"enabled"`
+	LastRun      sql.NullTime   `json:"last_run"`
+	RunCount     sql.NullInt64  `json:"run_count"`
+	LastError    sql.NullString `json:"last_error"`
+	CreatedAt    sql.NullTime   `json:"created_at"`
+}
+
 // Cron job queries
-func (q *Queries) ListCronJobs(ctx context.Context, arg ListCronJobsParams) ([]CronJob, error) {
+func (q *Queries) ListCronJobs(ctx context.Context, arg ListCronJobsParams) ([]ListCronJobsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listCronJobs, arg.Offset, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []CronJob
+	var items []ListCronJobsRow
 	for rows.Next() {
-		var i CronJob
+		var i ListCronJobsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
@@ -342,6 +411,7 @@ func (q *Queries) ListCronJobs(ctx context.Context, arg ListCronJobsParams) ([]C
 			&i.TaskType,
 			&i.Message,
 			&i.Deliver,
+			&i.Instructions,
 			&i.Enabled,
 			&i.LastRun,
 			&i.RunCount,
@@ -362,21 +432,37 @@ func (q *Queries) ListCronJobs(ctx context.Context, arg ListCronJobsParams) ([]C
 }
 
 const listEnabledCronJobs = `-- name: ListEnabledCronJobs :many
-SELECT id, name, schedule, command, task_type, message, deliver, enabled, last_run, run_count, last_error, created_at
+SELECT id, name, schedule, command, task_type, message, deliver, instructions, enabled, last_run, run_count, last_error, created_at
 FROM cron_jobs
 WHERE enabled = 1
 ORDER BY name
 `
 
-func (q *Queries) ListEnabledCronJobs(ctx context.Context) ([]CronJob, error) {
+type ListEnabledCronJobsRow struct {
+	ID           int64          `json:"id"`
+	Name         string         `json:"name"`
+	Schedule     string         `json:"schedule"`
+	Command      string         `json:"command"`
+	TaskType     string         `json:"task_type"`
+	Message      sql.NullString `json:"message"`
+	Deliver      sql.NullString `json:"deliver"`
+	Instructions sql.NullString `json:"instructions"`
+	Enabled      sql.NullInt64  `json:"enabled"`
+	LastRun      sql.NullTime   `json:"last_run"`
+	RunCount     sql.NullInt64  `json:"run_count"`
+	LastError    sql.NullString `json:"last_error"`
+	CreatedAt    sql.NullTime   `json:"created_at"`
+}
+
+func (q *Queries) ListEnabledCronJobs(ctx context.Context) ([]ListEnabledCronJobsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listEnabledCronJobs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []CronJob
+	var items []ListEnabledCronJobsRow
 	for rows.Next() {
-		var i CronJob
+		var i ListEnabledCronJobsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
@@ -385,6 +471,7 @@ func (q *Queries) ListEnabledCronJobs(ctx context.Context) ([]CronJob, error) {
 			&i.TaskType,
 			&i.Message,
 			&i.Deliver,
+			&i.Instructions,
 			&i.Enabled,
 			&i.LastRun,
 			&i.RunCount,
@@ -528,24 +615,26 @@ func (q *Queries) UpdateCronJobLastRunByName(ctx context.Context, arg UpdateCron
 }
 
 const upsertCronJob = `-- name: UpsertCronJob :exec
-INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, enabled)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO cron_jobs (name, schedule, command, task_type, message, deliver, instructions, enabled)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
     schedule = excluded.schedule,
     command = excluded.command,
     task_type = excluded.task_type,
     message = excluded.message,
-    deliver = excluded.deliver
+    deliver = excluded.deliver,
+    instructions = excluded.instructions
 `
 
 type UpsertCronJobParams struct {
-	Name     string         `json:"name"`
-	Schedule string         `json:"schedule"`
-	Command  string         `json:"command"`
-	TaskType string         `json:"task_type"`
-	Message  sql.NullString `json:"message"`
-	Deliver  sql.NullString `json:"deliver"`
-	Enabled  sql.NullInt64  `json:"enabled"`
+	Name         string         `json:"name"`
+	Schedule     string         `json:"schedule"`
+	Command      string         `json:"command"`
+	TaskType     string         `json:"task_type"`
+	Message      sql.NullString `json:"message"`
+	Deliver      sql.NullString `json:"deliver"`
+	Instructions sql.NullString `json:"instructions"`
+	Enabled      sql.NullInt64  `json:"enabled"`
 }
 
 func (q *Queries) UpsertCronJob(ctx context.Context, arg UpsertCronJobParams) error {
@@ -556,6 +645,7 @@ func (q *Queries) UpsertCronJob(ctx context.Context, arg UpsertCronJobParams) er
 		arg.TaskType,
 		arg.Message,
 		arg.Deliver,
+		arg.Instructions,
 		arg.Enabled,
 	)
 	return err

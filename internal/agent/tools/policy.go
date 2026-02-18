@@ -193,6 +193,13 @@ func (p *Policy) isAllowed(cmd string) bool {
 
 // RequestApproval asks the user for approval
 func (p *Policy) RequestApproval(ctx context.Context, toolName string, input json.RawMessage) (bool, error) {
+	// System-origin tasks (reminders, heartbeat, recovery) auto-approve —
+	// there's nobody to ask and these are internally scheduled by the agent.
+	if GetOrigin(ctx) == OriginSystem {
+		fmt.Printf("[Policy] Auto-approving (system origin)\n")
+		return true, nil
+	}
+
 	// Live check: autonomous mode auto-approves everything
 	if p.IsAutonomous != nil && p.IsAutonomous() {
 		return true, nil

@@ -158,18 +158,6 @@ type RedeemCodeResponse struct {
 	ConnectionToken string `json:"connection_token"`
 }
 
-// ExchangeTokenRequest is sent to POST /api/v1/bots/exchange-token.
-type ExchangeTokenRequest struct {
-	Token string `json:"token"`
-}
-
-// ExchangeTokenResponse is returned by POST /api/v1/bots/exchange-token.
-type ExchangeTokenResponse struct {
-	MQTTUsername string `json:"mqtt_username"`
-	MQTTPassword string `json:"mqtt_password"`
-	MQTTBroker   string `json:"mqtt_broker,omitempty"`
-}
-
 // --------------------------------------------------------------------------
 // Loop Invite Types
 // --------------------------------------------------------------------------
