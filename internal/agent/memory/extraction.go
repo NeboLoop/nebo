@@ -98,22 +98,44 @@ func NewExtractor(provider ai.Provider) *Extractor {
 	return &Extractor{provider: provider}
 }
 
+// Extraction input limits
+const (
+	maxContentPerMessage = 500   // chars — truncate individual messages
+	maxConversationChars = 30000 // chars — cap total prompt size
+)
+
 // Extract extracts facts from a conversation
 func (e *Extractor) Extract(ctx context.Context, messages []session.Message) (*ExtractedFacts, error) {
 	if len(messages) == 0 {
 		return &ExtractedFacts{}, nil
 	}
 
-	// Build conversation text
+	// Build conversation text — skip tool results (they don't contain extractable
+	// facts) and truncate user/assistant content to avoid blowing context limits
 	var conv strings.Builder
 	for _, msg := range messages {
-		if msg.Content != "" {
-			conv.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, msg.Content))
+		if msg.Role == "tool" {
+			continue
 		}
+		content := msg.Content
+		if content == "" {
+			continue
+		}
+		if len(content) > maxContentPerMessage {
+			content = content[:maxContentPerMessage] + "..."
+		}
+		conv.WriteString(fmt.Sprintf("[%s]: %s\n\n", msg.Role, content))
+	}
+
+	// Cap total conversation text — if over budget, keep the tail (recent messages
+	// are more relevant for fact extraction than old ones)
+	convText := conv.String()
+	if len(convText) > maxConversationChars {
+		convText = convText[len(convText)-maxConversationChars:]
 	}
 
 	// Get AI to extract facts
-	prompt := fmt.Sprintf(ExtractFactsPrompt, conv.String())
+	prompt := fmt.Sprintf(ExtractFactsPrompt, convText)
 
 	events, err := e.provider.Stream(ctx, &ai.ChatRequest{
 		Messages: []session.Message{
@@ -203,6 +225,25 @@ func (e *Extractor) Extract(ctx context.Context, messages []session.Message) (*E
 	return &facts, nil
 }
 
+// NormalizeMemoryKey canonicalizes a memory key so the LLM can't create
+// duplicates via inconsistent naming (e.g. "Code_Style" vs "code-style").
+// Rules: lowercase, underscores→hyphens, collapse repeated slashes/hyphens, trim.
+func NormalizeMemoryKey(key string) string {
+	key = strings.TrimSpace(key)
+	key = strings.ToLower(key)
+	key = strings.ReplaceAll(key, "_", "-")
+	key = strings.ReplaceAll(key, " ", "-")
+	// Collapse repeated hyphens and slashes
+	for strings.Contains(key, "--") {
+		key = strings.ReplaceAll(key, "--", "-")
+	}
+	for strings.Contains(key, "//") {
+		key = strings.ReplaceAll(key, "//", "/")
+	}
+	key = strings.Trim(key, "-/")
+	return key
+}
+
 // FormatForStorage returns facts formatted for the memory tool
 func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 	var entries []MemoryEntry
@@ -212,7 +253,7 @@ func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 		entries = append(entries, MemoryEntry{
 			Layer:     "tacit",
 			Namespace: "preferences",
-			Key:       pref.Key,
+			Key:       NormalizeMemoryKey(pref.Key),
 			Value:     pref.Value,
 			Tags:      append(pref.Tags, "preference"),
 		})
@@ -222,7 +263,7 @@ func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 		entries = append(entries, MemoryEntry{
 			Layer:     "entity",
 			Namespace: "default",
-			Key:       entity.Key,
+			Key:       NormalizeMemoryKey(entity.Key),
 			Value:     entity.Value,
 			Tags:      append(entity.Tags, "entity"),
 		})
@@ -232,7 +273,7 @@ func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 		entries = append(entries, MemoryEntry{
 			Layer:     "daily",
 			Namespace: today,
-			Key:       decision.Key,
+			Key:       NormalizeMemoryKey(decision.Key),
 			Value:     decision.Value,
 			Tags:      append(decision.Tags, "decision"),
 		})
@@ -242,7 +283,7 @@ func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 		entries = append(entries, MemoryEntry{
 			Layer:     "tacit",
 			Namespace: "personality",
-			Key:       style.Key,
+			Key:       NormalizeMemoryKey(style.Key),
 			Value:     style.Value,
 			Tags:      append(style.Tags, "style"),
 			IsStyle:   true,
@@ -253,7 +294,7 @@ func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 		entries = append(entries, MemoryEntry{
 			Layer:     "tacit",
 			Namespace: "artifacts",
-			Key:       artifact.Key,
+			Key:       NormalizeMemoryKey(artifact.Key),
 			Value:     artifact.Value,
 			Tags:      append(artifact.Tags, "artifact"),
 		})

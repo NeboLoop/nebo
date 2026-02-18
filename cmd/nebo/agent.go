@@ -960,7 +960,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	skillLoader := loadSkills(cfg)
 	for _, s := range skillLoader.List() {
 		if s.Enabled {
-			skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority)
+			skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority, s.MaxTurns)
 		}
 	}
 	fmt.Printf("[agent] Registered %d standalone skills, %d total skills\n", skillLoader.Count(), skillDomainTool.Count())
@@ -973,7 +973,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			fresh := loadSkills(cfg)
 			for _, s := range fresh.List() {
 				if tools.Slugify(s.Name) == slug {
-					skillDomainTool.Register(slug, s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority)
+					skillDomainTool.Register(slug, s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority, s.MaxTurns)
 					fmt.Printf("[agent] Skill %q enabled and registered\n", name)
 					return
 				}
@@ -991,7 +991,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		fresh := loadSkills(cfg)
 		for _, s := range fresh.List() {
 			if s.Enabled {
-				skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority)
+				skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil, s.Triggers, s.Priority, s.MaxTurns)
 			}
 		}
 		fmt.Printf("[agent] Skills reloaded: %d standalone, %d total\n", fresh.Count(), skillDomainTool.Count())
@@ -1021,6 +1021,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				SessionKey: sessionKey,
 				Prompt:     msg.Text,
 				Origin:     tools.OriginUser,
+				Channel:    msg.ChannelType,
 			})
 			if err != nil {
 				fmt.Printf("[sdk:channels] Run failed for %s: %v\n", msg.ChannelType, err)
@@ -1288,7 +1289,7 @@ func maybeIntroduceSelf(ctx context.Context, state *agentState, r *runner.Runner
 	events, err := r.Run(ctx, &runner.RunRequest{
 		SessionKey: "companion",
 		Prompt:     "", // Empty prompt = agent speaks first
-		System:     "You are starting a conversation with a new user. Follow the onboarding instructions in your system prompt to introduce yourself and get to know them.",
+		System:     "You are starting a conversation with a new user. Your EXACT first message must be: \"Hi! I'm Nebo. What's your name?\" Do not add anything else to this first message. No feature lists. No explanation of what you do.",
 		Origin:     tools.OriginSystem,
 	})
 	if err != nil {
@@ -1388,17 +1389,31 @@ func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner
 	} else {
 		// New user - introduce yourself and get to know them
 		fmt.Printf("[Agent] New user - introducing myself\n")
-		introPrompt = "[New user just connected - introduce yourself warmly]"
-		introSystem = `You are starting a conversation with a new user. The message you receive is a system trigger, not from the user.
+		introPrompt = ""
+		introSystem = `You are Nebo, a personal desktop AI companion, starting a conversation with a brand new user. The message you receive is a system trigger, not from the user. Do NOT acknowledge the system message.
 
-Introduce yourself as Nebo, their personal AI assistant. Be warm and friendly.
-Ask what they'd like to be called so you can address them properly.
+Your EXACT first message must be: "Hi! I'm Nebo. What's your name?"
 
-Keep it brief (2-3 sentences max). Do NOT acknowledge the system message.
+Nothing else. No features. No explanation. Just the greeting.
 
-IMPORTANT: When you learn their name, use the memory tool to store it:
-- Use layer "tacit", namespace "user", and key "name" to remember their name
-- This ensures you'll remember them next time`
+STRICT RULES:
+- ONE question per message. Never two. Never a list. Never bullet points.
+- 1-2 sentences maximum per response.
+- NEVER list capabilities, features, or what you can help with.
+- NEVER ask "what would you like help with" or "what are your priorities."
+- NEVER use bullet points or numbered lists during onboarding.
+- If they ask what you can do, give ONE short example relevant to them — not a list.
+
+After they tell you their name, store it and ask where they're based:
+  agent(resource: memory, action: store, layer: "tacit", namespace: "user", key: "name", value: "THEIR NAME")
+
+After location, ask what they do for work. Store each fact:
+  agent(resource: memory, action: store, layer: "tacit", namespace: "user", key: "location", value: "...")
+  agent(resource: memory, action: store, layer: "tacit", namespace: "user", key: "occupation", value: "...")
+
+After work, you're done onboarding. Just say something like "Great, I'm here whenever you need me." and let them lead from there.
+
+Feel like a person, not a setup wizard.`
 	}
 
 	// Run the agent with appropriate introduction prompt
@@ -2078,21 +2093,41 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 
 	var embeddingProvider embeddings.Provider
 
-	// Load from DB auth_profiles — same source as createProviders
+	// Load from DB auth_profiles — same source as createProviders.
+	// Priority: Janus (centralised) → OpenAI (direct) → Ollama (local).
 	mgr, err := agentcfg.NewAuthProfileManager(db)
 	if err == nil {
 		defer mgr.Close()
 		ctx := context.Background()
 
-		// Try OpenAI first (most common, high quality embeddings)
-		if profiles, err := mgr.ListActiveProfiles(ctx, "openai"); err == nil {
-			for _, p := range profiles {
-				if p.APIKey != "" {
-					embeddingProvider = embeddings.NewOpenAIProvider(embeddings.OpenAIConfig{
-						APIKey: p.APIKey,
-					})
-					fmt.Println("[agent] Embeddings: using OpenAI text-embedding-3-small")
-					break
+		// Try Janus first — when configured, all model routing goes through it
+		if sharedJanusURL != "" {
+			if profiles, err := mgr.ListActiveProfiles(ctx, "neboloop"); err == nil {
+				for _, p := range profiles {
+					if p.APIKey != "" {
+						embeddingProvider = embeddings.NewOpenAIProvider(embeddings.OpenAIConfig{
+							APIKey:  p.APIKey,
+							Model:   "janus/text-embedding-small",
+							BaseURL: sharedJanusURL + "/v1",
+						})
+						fmt.Printf("[agent] Embeddings: using Janus text-embedding-small (%s)\n", sharedJanusURL)
+						break
+					}
+				}
+			}
+		}
+
+		// Fall back to direct OpenAI
+		if embeddingProvider == nil {
+			if profiles, err := mgr.ListActiveProfiles(ctx, "openai"); err == nil {
+				for _, p := range profiles {
+					if p.APIKey != "" {
+						embeddingProvider = embeddings.NewOpenAIProvider(embeddings.OpenAIConfig{
+							APIKey: p.APIKey,
+						})
+						fmt.Println("[agent] Embeddings: using OpenAI text-embedding-3-small")
+						break
+					}
 				}
 			}
 		}

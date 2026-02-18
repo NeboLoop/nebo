@@ -520,9 +520,9 @@ func TestContextTokenLimit(t *testing.T) {
 		r.selector = ai.NewModelSelector(modelsConfig)
 
 		limit := r.contextTokenLimit()
-		// (200000 - 20000) * 0.8 = 144000
-		if limit != 144000 {
-			t.Errorf("expected 144000 for 200k model, got %d", limit)
+		// effective = 200000 - 20000 = 180000 (AutoCompact tier)
+		if limit != 180000 {
+			t.Errorf("expected 180000 for 200k model, got %d", limit)
 		}
 	})
 
@@ -588,6 +588,150 @@ func TestContextTokenLimit(t *testing.T) {
 		limit := r.contextTokenLimit()
 		if limit != 500000 {
 			t.Errorf("expected 500000 cap for 1M model, got %d", limit)
+		}
+	})
+}
+
+func TestGraduatedThresholds(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	db := openTestDB(t)
+	defer db.Close()
+
+	sessions, err := session.New(db)
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+	defer sessions.Close()
+
+	t.Run("no selector returns defaults", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		th := r.contextThresholds()
+
+		if th.Warning != DefaultContextTokenLimit-WarningOffset {
+			t.Errorf("Warning: expected %d, got %d", DefaultContextTokenLimit-WarningOffset, th.Warning)
+		}
+		if th.Error != DefaultContextTokenLimit-ErrorOffset {
+			t.Errorf("Error: expected %d, got %d", DefaultContextTokenLimit-ErrorOffset, th.Error)
+		}
+		if th.AutoCompact != DefaultContextTokenLimit {
+			t.Errorf("AutoCompact: expected %d, got %d", DefaultContextTokenLimit, th.AutoCompact)
+		}
+		if th.Blocking != DefaultContextTokenLimit-DefaultMaxOutputTokens {
+			t.Errorf("Blocking: expected %d, got %d", DefaultContextTokenLimit-DefaultMaxOutputTokens, th.Blocking)
+		}
+	})
+
+	t.Run("200k model absolute offsets", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		modelsConfig := &provider.ModelsConfig{
+			Providers: map[string][]provider.ModelInfo{
+				"anthropic": {
+					{ID: "claude-sonnet-4-5", ContextWindow: 200000, Capabilities: []string{"general"}},
+				},
+			},
+			Credentials: map[string]provider.ProviderCredentials{
+				"anthropic": {APIKey: "test"},
+			},
+			Defaults: &provider.Defaults{Primary: "anthropic/claude-sonnet-4-5"},
+		}
+		r.selector = ai.NewModelSelector(modelsConfig)
+
+		th := r.contextThresholds()
+		// effective = 200000 - 20000 = 180000
+		if th.Warning != 160000 {
+			t.Errorf("Warning: expected 160000, got %d", th.Warning)
+		}
+		if th.Error != 170000 {
+			t.Errorf("Error: expected 170000, got %d", th.Error)
+		}
+		if th.AutoCompact != 180000 {
+			t.Errorf("AutoCompact: expected 180000, got %d", th.AutoCompact)
+		}
+		if th.Blocking != 164000 {
+			t.Errorf("Blocking: expected 164000, got %d", th.Blocking)
+		}
+	})
+
+	t.Run("small model uses floor values", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		modelsConfig := &provider.ModelsConfig{
+			Providers: map[string][]provider.ModelInfo{
+				"ollama": {
+					{ID: "tiny", ContextWindow: 8000},
+				},
+			},
+			Credentials: map[string]provider.ProviderCredentials{
+				"ollama": {BaseURL: "http://localhost:11434"},
+			},
+			Defaults: &provider.Defaults{Primary: "ollama/tiny"},
+		}
+		r.selector = ai.NewModelSelector(modelsConfig)
+
+		th := r.contextThresholds()
+		// effective floors at DefaultContextTokenLimit = 80000
+		if th.Warning < 40000 {
+			t.Errorf("Warning should be at least 40000, got %d", th.Warning)
+		}
+		if th.Error < 50000 {
+			t.Errorf("Error should be at least 50000, got %d", th.Error)
+		}
+		if th.AutoCompact != DefaultContextTokenLimit {
+			t.Errorf("AutoCompact: expected %d, got %d", DefaultContextTokenLimit, th.AutoCompact)
+		}
+	})
+
+	t.Run("1M model caps AutoCompact at 500k", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		modelsConfig := &provider.ModelsConfig{
+			Providers: map[string][]provider.ModelInfo{
+				"anthropic": {
+					{ID: "claude-opus-4-6", ContextWindow: 1000000},
+				},
+			},
+			Credentials: map[string]provider.ProviderCredentials{
+				"anthropic": {APIKey: "test"},
+			},
+			Defaults: &provider.Defaults{Primary: "anthropic/claude-opus-4-6"},
+		}
+		r.selector = ai.NewModelSelector(modelsConfig)
+
+		th := r.contextThresholds()
+		if th.AutoCompact != 500000 {
+			t.Errorf("AutoCompact: expected 500000 cap, got %d", th.AutoCompact)
+		}
+		// Warning and Error should NOT be capped (they use absolute offsets)
+		// effective = 1000000 - 20000 = 980000
+		if th.Warning != 960000 {
+			t.Errorf("Warning: expected 960000, got %d", th.Warning)
+		}
+		if th.Error != 970000 {
+			t.Errorf("Error: expected 970000, got %d", th.Error)
+		}
+	})
+
+	t.Run("thresholds ordering", func(t *testing.T) {
+		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
+		modelsConfig := &provider.ModelsConfig{
+			Providers: map[string][]provider.ModelInfo{
+				"anthropic": {
+					{ID: "claude-sonnet-4-5", ContextWindow: 200000, Capabilities: []string{"general"}},
+				},
+			},
+			Credentials: map[string]provider.ProviderCredentials{
+				"anthropic": {APIKey: "test"},
+			},
+			Defaults: &provider.Defaults{Primary: "anthropic/claude-sonnet-4-5"},
+		}
+		r.selector = ai.NewModelSelector(modelsConfig)
+
+		th := r.contextThresholds()
+		// Warning < Error < AutoCompact
+		if th.Warning >= th.Error {
+			t.Errorf("Warning (%d) should be < Error (%d)", th.Warning, th.Error)
+		}
+		if th.Error >= th.AutoCompact {
+			t.Errorf("Error (%d) should be < AutoCompact (%d)", th.Error, th.AutoCompact)
 		}
 	})
 }

@@ -12,8 +12,220 @@ import (
 // Token estimation constants
 const (
 	CharsPerTokenEstimate = 4
-	ImageCharEstimate     = 8000
+	ImageCharEstimate     = 8000 // chars — rough estimate for base64 images
 )
+
+// Micro-compact constants
+const (
+	MicroCompactMinSavings = 20000 // tokens — skip if total savings below this
+	MicroCompactKeepRecent = 3     // protect the N most recent individual tool results
+	ImageTokenEstimate     = 2000  // tokens per image block
+)
+
+// microCompactTools lists tools whose results are candidates for micro-compaction.
+// These tools produce the largest outputs (file reads, shell output, web content).
+var microCompactTools = map[string]bool{
+	"file":  true, // read, grep, glob, edit
+	"shell": true, // exec
+	"web":   true, // fetch, search
+}
+
+// microCompact silently trims old tool results in-place before every API call.
+// It also strips images from messages that have already been acknowledged by the model.
+//
+// Unlike pruneContext (which is threshold-gated), this runs every iteration but
+// protects the most recent 3 individual tool results to preserve working context.
+// Only activates when estimated tokens exceed warningThreshold and potential
+// savings exceed MicroCompactMinSavings.
+func microCompact(messages []session.Message, warningThreshold int) ([]session.Message, int) {
+	if len(messages) == 0 {
+		return messages, 0
+	}
+
+	estimatedTokens := 0
+	for i := range messages {
+		estimatedTokens += estimateMessageChars(&messages[i]) / CharsPerTokenEstimate
+	}
+
+	// Gate: only run if above the warning threshold
+	if estimatedTokens < warningThreshold {
+		return messages, 0
+	}
+
+	// Step 1: Find all tool_use/tool_result pairs for compactable tools.
+	// Track tool call IDs from assistant messages and their result sizes.
+	type candidate struct {
+		toolCallID  string
+		resultMsgIdx int
+		resultIdx    int // index within the ToolResults array
+		tokenSize    int
+		toolSummary  string // e.g., "file(action: read)"
+	}
+
+	var candidates []candidate
+	toolCallIndex := buildToolCallIndex(messages)
+
+	for i, msg := range messages {
+		if len(msg.ToolResults) == 0 {
+			continue
+		}
+		var results []session.ToolResult
+		if err := json.Unmarshal(msg.ToolResults, &results); err != nil {
+			continue
+		}
+		for j, tr := range results {
+			// Check if the originating tool call is from a compactable tool
+			summary, ok := toolCallIndex[tr.ToolCallID]
+			if !ok {
+				continue
+			}
+			toolName := strings.SplitN(summary, "(", 2)[0]
+			if !microCompactTools[toolName] {
+				continue
+			}
+			// Skip already-trimmed results
+			if strings.HasPrefix(tr.Content, "[trimmed:") {
+				continue
+			}
+			tokenSize := len(tr.Content) / CharsPerTokenEstimate
+			if tokenSize < 10 {
+				continue // tiny results aren't worth tracking
+			}
+			candidates = append(candidates, candidate{
+				toolCallID:   tr.ToolCallID,
+				resultMsgIdx: i,
+				resultIdx:    j,
+				tokenSize:    tokenSize,
+				toolSummary:  summary,
+			})
+		}
+	}
+
+	// Step 2: Protect the most recent N tool results and calculate savings
+	protectedIDs := make(map[string]bool)
+	toTrim := make(map[string]string) // toolCallID → summary
+	totalSavings := 0
+
+	if len(candidates) > 0 {
+		start := len(candidates) - MicroCompactKeepRecent
+		if start < 0 {
+			start = 0
+		}
+		for _, c := range candidates[start:] {
+			protectedIDs[c.toolCallID] = true
+		}
+
+		// Step 3: Calculate potential savings
+		for _, c := range candidates {
+			if protectedIDs[c.toolCallID] {
+				continue
+			}
+			toTrim[c.toolCallID] = c.toolSummary
+			totalSavings += c.tokenSize
+		}
+
+		if totalSavings < MicroCompactMinSavings {
+			toTrim = nil // not worth it
+			totalSavings = 0
+		}
+	}
+
+	// Step 4: Image stripping — find user messages with images that have been
+	// acknowledged (an assistant message followed them)
+	acknowledgedMsgIdx := make(map[int]bool)
+	imageTokensSaved := 0
+	{
+		var pendingUserIdxs []int
+		for i, msg := range messages {
+			if msg.Role == "user" {
+				pendingUserIdxs = append(pendingUserIdxs, i)
+			} else if msg.Role == "assistant" && len(pendingUserIdxs) > 0 {
+				for _, idx := range pendingUserIdxs {
+					acknowledgedMsgIdx[idx] = true
+				}
+				pendingUserIdxs = nil
+			}
+		}
+	}
+
+	// Step 5: Build result with trimmed content
+	result := make([]session.Message, len(messages))
+	copy(result, messages)
+
+	trimCount := 0
+
+	// Trim tool results
+	if len(toTrim) > 0 {
+		for i := range result {
+			if len(result[i].ToolResults) == 0 {
+				continue
+			}
+			var results []session.ToolResult
+			if err := json.Unmarshal(result[i].ToolResults, &results); err != nil {
+				continue
+			}
+			changed := false
+			for j := range results {
+				summary, ok := toTrim[results[j].ToolCallID]
+				if !ok {
+					continue
+				}
+				changed = true
+				trimCount++
+				results[j].Content = fmt.Sprintf("[trimmed: %s]", summary)
+			}
+			if changed {
+				if data, err := json.Marshal(results); err == nil {
+					result[i].ToolResults = data
+				}
+			}
+		}
+
+		// Also trim the tool_use inputs in assistant messages
+		for i := range result {
+			if result[i].Role != "assistant" || len(result[i].ToolCalls) == 0 {
+				continue
+			}
+			var calls []session.ToolCall
+			if err := json.Unmarshal(result[i].ToolCalls, &calls); err != nil {
+				continue
+			}
+			changed := false
+			for j := range calls {
+				if _, ok := toTrim[calls[j].ID]; ok {
+					changed = true
+					calls[j].Input = json.RawMessage(`{"trimmed":true}`)
+				}
+			}
+			if changed {
+				if data, err := json.Marshal(calls); err == nil {
+					result[i].ToolCalls = data
+				}
+			}
+		}
+	}
+
+	// Strip acknowledged images
+	for i := range result {
+		if result[i].Role != "user" || !acknowledgedMsgIdx[i] {
+			continue
+		}
+		// Check for base64 image content in the message
+		if strings.Contains(result[i].Content, "data:image/") {
+			oldLen := len(result[i].Content)
+			result[i].Content = "[image]"
+			imageTokensSaved += (oldLen - 7) / CharsPerTokenEstimate
+		}
+	}
+
+	saved := totalSavings + imageTokensSaved
+	if trimCount > 0 || imageTokensSaved > 0 {
+		fmt.Printf("[Runner] Micro-compacted: saved ~%d tokens (%d tool results trimmed, %d image tokens stripped)\n",
+			saved, trimCount, imageTokensSaved)
+	}
+
+	return result, saved
+}
 
 // pruneContext applies two-stage context pruning to reduce token usage while
 // preserving the most recent conversation turns in full.

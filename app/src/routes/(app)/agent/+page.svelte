@@ -3,7 +3,7 @@
 	import { browser } from '$app/environment';
 	import { Send, Bot, Loader2, Mic, MicOff, Wifi, WifiOff, ArrowDown, Copy, Check, History, Volume2, VolumeOff } from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
-	import { getCompanionChat, speakTTS } from '$lib/api';
+	import { getCompanionChat, speakTTS, getAgentProfile } from '$lib/api';
 	import { logger } from '$lib/monitoring/logger';
 
 	const log = logger.child({ component: 'Agent' });
@@ -55,6 +55,7 @@
 	let inputValue = $state('');
 	let isLoading = $state(false);
 	let wsConnected = $state(false);
+	let agentName = $state('Nebo');
 	let messagesContainer: HTMLDivElement;
 	let currentStreamingMessage = $state<Message | null>(null);
 	let chatLoaded = $state(false);
@@ -208,6 +209,12 @@
 
 		// Load companion chat
 		await loadCompanionChat();
+
+		// Load agent name for display
+		try {
+			const profile = await getAgentProfile();
+			if (profile.name) agentName = profile.name;
+		} catch {}
 	});
 
 	onDestroy(() => {
@@ -1707,6 +1714,7 @@
 				<MessageGroup
 					messages={group.messages}
 					role={group.role}
+					{agentName}
 					onCopy={copyMessage}
 					copiedId={copiedMessageId}
 					onViewToolOutput={openToolSidebar}

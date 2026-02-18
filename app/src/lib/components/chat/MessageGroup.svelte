@@ -53,6 +53,7 @@
 	interface Props {
 		messages: Message[];
 		role: 'user' | 'assistant';
+		agentName?: string;
 		onCopy?: (id: string, content: string) => void;
 		copiedId?: string | null;
 		onViewToolOutput?: (tool: ToolCall) => void;
@@ -62,6 +63,7 @@
 	let {
 		messages,
 		role,
+		agentName = 'Nebo',
 		onCopy,
 		copiedId = null,
 		onViewToolOutput,
@@ -146,13 +148,8 @@
 
 <!-- Chat group - user on right, assistant on left -->
 <div class="flex gap-3 mb-4 {role === 'user' ? 'flex-row-reverse' : ''}">
-	<!-- Avatar - 40x40, rounded corners, aligned to bottom -->
-	<div class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm {role === 'user' ? 'bg-primary/20 text-primary' : 'bg-base-300 text-base-content/60'}">
-		{role === 'user' ? 'U' : 'A'}
-	</div>
-
 	<!-- Messages container -->
-	<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] {role === 'user' ? 'items-end' : 'items-start'}">
+	<div class="flex flex-col gap-0.5 max-w-[min(900px,100%)] {role === 'user' ? 'items-end' : 'items-start'}">
 		<!-- Messages -->
 		{#each resolvedMessages as resolved (resolved.id)}
 			<div class="group w-full">
@@ -285,7 +282,7 @@
 
 		<!-- Footer: sender name + timestamp -->
 		<div class="flex gap-2 items-baseline mt-1.5 {role === 'user' ? 'flex-row-reverse' : ''}">
-			<span class="text-xs font-medium text-base-content/50">{role === 'user' ? 'You' : 'Assistant'}</span>
+			<span class="text-xs font-medium text-base-content/50">{role === 'user' ? 'You' : agentName}</span>
 			{#if groupTimestamp}
 				<span class="text-xs text-base-content/40">{formatTime(groupTimestamp)}</span>
 			{/if}

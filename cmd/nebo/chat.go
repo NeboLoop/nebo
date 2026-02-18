@@ -181,6 +181,7 @@ func runOnce(ctx context.Context, r *runner.Runner, prompt string) {
 		SessionKey: sessionKey,
 		Prompt:     prompt,
 		Origin:     tools.OriginUser,
+		Channel:    "cli",
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -224,6 +225,7 @@ func runInteractive(ctx context.Context, r *runner.Runner, sessions *session.Man
 			SessionKey: sessionKey,
 			Prompt:     line,
 			Origin:     tools.OriginUser,
+			Channel:    "cli",
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)

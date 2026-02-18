@@ -17,6 +17,7 @@ import (
 // FileTool provides file operations: read, write, edit, glob, grep
 type FileTool struct {
 	hasRipgrep bool
+	OnFileRead func(path string) // Called after a successful file read (for access tracking)
 }
 
 // FileInput represents the consolidated input for all file operations
@@ -283,6 +284,11 @@ func (t *FileTool) handleRead(ctx context.Context, in FileInput) (*ToolResult, e
 		} else {
 			content = "(file is empty)"
 		}
+	}
+
+	// Track file access for post-compaction re-injection
+	if t.OnFileRead != nil {
+		t.OnFileRead(path)
 	}
 
 	return &ToolResult{Content: content}, nil

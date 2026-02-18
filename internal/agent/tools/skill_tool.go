@@ -14,17 +14,50 @@ import (
 	"github.com/neboloop/nebo/internal/agent/skills"
 )
 
+const (
+	// DefaultSkillTTL is how many turns of inactivity before auto-matched skills expire.
+	DefaultSkillTTL = 4
+	// ManualSkillTTL is how many turns of inactivity before manually loaded skills expire.
+	ManualSkillTTL = 6
+	// MaxActiveSkills is the hard cap on concurrent active skills per session.
+	MaxActiveSkills = 4
+	// MaxSkillTokenBudget is the character budget for combined active skill content.
+	MaxSkillTokenBudget = 16000
+)
+
+// invokedSkillState tracks a skill that was actually invoked (called by the model) in a session.
+// Only invoked skills get their templates re-injected into subsequent system prompts.
+type invokedSkillState struct {
+	lastInvokedTurn int    // Turn when skill was last invoked/re-invoked
+	content         string // SKILL.md template (snapshot at invocation time)
+	name            string // Display name
+	maxTurns        int    // Per-skill TTL override (0 = use default)
+	manual          bool   // Loaded via explicit skill(action: "load")
+}
+
+// ttl returns the effective TTL for this invoked skill.
+func (s *invokedSkillState) ttl() int {
+	if s.maxTurns > 0 {
+		return s.maxTurns
+	}
+	if s.manual {
+		return ManualSkillTTL
+	}
+	return DefaultSkillTTL
+}
+
 // SkillDomainTool is the unified skill domain tool.
 // All installed apps and standalone skills are exposed through this single tool.
 // The LLM sees one catalog of capabilities and interacts through one interface.
 type SkillDomainTool struct {
-	mu           sync.RWMutex
-	entries      map[string]*skillEntry
-	activeSkills map[string]map[string]bool // sessionKey -> set of active skill slugs
-	dirty        bool                       // schema/description cache invalidation
-	skillsDir    string                     // user skills directory for create/update/delete
-	cachedSchema json.RawMessage
-	cachedDesc   string
+	mu            sync.RWMutex
+	entries       map[string]*skillEntry
+	invokedSkills map[string]map[string]*invokedSkillState // sessionKey -> slug -> invocation state
+	sessionTurns  map[string]int                           // sessionKey -> current turn number
+	dirty         bool                                     // schema/description cache invalidation
+	skillsDir     string                                   // user skills directory for create/update/delete
+	cachedSchema  json.RawMessage
+	cachedDesc    string
 }
 
 // skillEntry represents a registered skill — either app-backed or standalone.
@@ -36,6 +69,7 @@ type skillEntry struct {
 	adapter     Tool     // gRPC adapter for app-backed skills; nil for standalone
 	triggers    []string // Phrases that auto-activate this skill
 	priority    int      // Higher = matched first when multiple skills trigger
+	maxTurns    int      // Per-skill TTL override (0 = use default)
 }
 
 // SkillDomainInput is the input schema for the skill tool.
@@ -51,10 +85,11 @@ type SkillDomainInput struct {
 // The fsnotify watcher on this directory handles re-registration automatically.
 func NewSkillDomainTool(skillsDir string) *SkillDomainTool {
 	return &SkillDomainTool{
-		entries:      make(map[string]*skillEntry),
-		activeSkills: make(map[string]map[string]bool),
-		skillsDir:    skillsDir,
-		dirty:        true,
+		entries:       make(map[string]*skillEntry),
+		invokedSkills: make(map[string]map[string]*invokedSkillState),
+		sessionTurns:  make(map[string]int),
+		skillsDir:     skillsDir,
+		dirty:         true,
 	}
 }
 
@@ -132,6 +167,12 @@ func (t *SkillDomainTool) Execute(ctx context.Context, input json.RawMessage) (*
 		}, nil
 	}
 
+	// Record invocation — the model called this skill, so track it for re-injection
+	sessionKey := GetSessionKey(ctx)
+	if sessionKey != "" {
+		t.recordInvocation(sessionKey, in.Name, false)
+	}
+
 	// Empty action or "help" → return SKILL.md (progressive disclosure)
 	if in.Action == "" || in.Action == "help" {
 		if entry.skillMD != "" {
@@ -179,7 +220,8 @@ func (t *SkillDomainTool) ActionsFor(resource string) []string {
 // Register adds or updates a skill entry.
 // adapter is nil for standalone skills (SKILL.md only).
 // triggers are phrases that auto-activate this skill when matched in user messages.
-func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adapter Tool, triggers []string, priority int) {
+// maxTurns overrides the default TTL for auto-expiry (0 = use default).
+func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adapter Tool, triggers []string, priority, maxTurns int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -191,6 +233,7 @@ func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adap
 		adapter:     adapter,
 		triggers:    triggers,
 		priority:    priority,
+		maxTurns:    maxTurns,
 	}
 	t.dirty = true
 }
@@ -233,7 +276,7 @@ func (t *SkillDomainTool) Count() int {
 // --- Session-scoped load/unload ---
 
 // loadSkill activates a skill for the current session.
-// The skill's template is injected into the system prompt on subsequent runs.
+// Records the skill as invoked (manual=true) so its template is re-injected on subsequent turns.
 func (t *SkillDomainTool) loadSkill(ctx context.Context, in SkillDomainInput) (*ToolResult, error) {
 	if in.Name == "" {
 		return &ToolResult{Content: "Name is required for load.", IsError: true}, nil
@@ -244,34 +287,31 @@ func (t *SkillDomainTool) loadSkill(ctx context.Context, in SkillDomainInput) (*
 		return &ToolResult{Content: "No session context available.", IsError: true}, nil
 	}
 
-	t.mu.Lock()
+	t.mu.RLock()
 	entry, ok := t.entries[in.Name]
+	t.mu.RUnlock()
+
 	if !ok {
-		t.mu.Unlock()
 		return &ToolResult{
 			Content: fmt.Sprintf("Skill %q not found. Use skill(action: \"catalog\") to see available skills.", in.Name),
 			IsError: true,
 		}, nil
 	}
 
-	if t.activeSkills[sessionKey] == nil {
-		t.activeSkills[sessionKey] = make(map[string]bool)
-	}
-	t.activeSkills[sessionKey][in.Name] = true
-	content := entry.skillMD
-	name := entry.name
-	t.mu.Unlock()
+	// Record as manual invocation (stickier TTL)
+	t.recordInvocation(sessionKey, in.Name, true)
 
+	content := entry.skillMD
 	if content == "" {
-		content = fmt.Sprintf("# %s\n\n%s", name, entry.description)
+		content = fmt.Sprintf("# %s\n\n%s", entry.name, entry.description)
 	}
 
 	return &ToolResult{
-		Content: fmt.Sprintf("Skill %q loaded for this conversation. Follow the instructions below:\n\n%s", name, content),
+		Content: fmt.Sprintf("Skill %q loaded for this conversation. Follow the instructions below:\n\n%s", entry.name, content),
 	}, nil
 }
 
-// unloadSkill deactivates a skill for the current session.
+// unloadSkill removes a skill from the invoked set for the current session.
 func (t *SkillDomainTool) unloadSkill(ctx context.Context, in SkillDomainInput) (*ToolResult, error) {
 	if in.Name == "" {
 		return &ToolResult{Content: "Name is required for unload.", IsError: true}, nil
@@ -283,10 +323,10 @@ func (t *SkillDomainTool) unloadSkill(ctx context.Context, in SkillDomainInput) 
 	}
 
 	t.mu.Lock()
-	if active, ok := t.activeSkills[sessionKey]; ok {
-		delete(active, in.Name)
-		if len(active) == 0 {
-			delete(t.activeSkills, sessionKey)
+	if invoked, ok := t.invokedSkills[sessionKey]; ok {
+		delete(invoked, in.Name)
+		if len(invoked) == 0 {
+			delete(t.invokedSkills, sessionKey)
 		}
 	}
 	t.mu.Unlock()
@@ -296,99 +336,201 @@ func (t *SkillDomainTool) unloadSkill(ctx context.Context, in SkillDomainInput) 
 	}, nil
 }
 
-// ActiveSkillContent returns the concatenated templates of all skills
-// loaded for the given session. Used by the runner to inject into the system prompt.
+// ActiveSkillContent returns the concatenated templates of invoked skills
+// for the given session. Only skills the model actually called get re-injected.
+// Sorted by most recently invoked and capped by MaxSkillTokenBudget.
 func (t *SkillDomainTool) ActiveSkillContent(sessionKey string) string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	active, ok := t.activeSkills[sessionKey]
-	if !ok || len(active) == 0 {
+	invoked, ok := t.invokedSkills[sessionKey]
+	if !ok || len(invoked) == 0 {
 		return ""
 	}
 
-	var b strings.Builder
-	b.WriteString("\n\n## Active Skills\n\n")
-	b.WriteString("The following skills are loaded for this conversation. Follow their instructions.\n\n")
+	// Sort by most recently invoked (higher turn first)
+	type ranked struct {
+		slug            string
+		lastInvokedTurn int
+	}
+	var items []ranked
+	for slug, state := range invoked {
+		items = append(items, ranked{slug: slug, lastInvokedTurn: state.lastInvokedTurn})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].lastInvokedTurn > items[j].lastInvokedTurn
+	})
 
-	for slug := range active {
-		if entry, ok := t.entries[slug]; ok {
-			content := entry.skillMD
-			if content == "" {
-				content = fmt.Sprintf("# %s\n\n%s", entry.name, entry.description)
-			}
-			b.WriteString(content)
-			b.WriteString("\n\n---\n\n")
+	var b strings.Builder
+	b.WriteString("\n\n## Invoked Skills\n\n")
+	b.WriteString("The following skills were invoked in this session. Continue to follow their guidelines:\n\n")
+
+	budget := MaxSkillTokenBudget
+	for _, r := range items {
+		state := invoked[r.slug]
+		content := state.content
+		if content == "" {
+			content = fmt.Sprintf("# %s\n\n(no template)", state.name)
 		}
+		if len(content) > budget {
+			fmt.Printf("[skills] Skipping invoked skill %q (over budget: %d chars, %d remaining)\n", r.slug, len(content), budget)
+			continue
+		}
+		b.WriteString(fmt.Sprintf("### Skill: %s\n\n", state.name))
+		b.WriteString(content)
+		b.WriteString("\n\n---\n\n")
+		budget -= len(content)
 	}
 
 	return b.String()
 }
 
-// AutoMatchSkills checks the user message against skill triggers and auto-loads matching skills.
-// Skills are matched by case-insensitive substring. Higher-priority skills are loaded first.
-// Skills already active for the session are skipped.
-func (t *SkillDomainTool) AutoMatchSkills(sessionKey, message string) {
-	if message == "" || sessionKey == "" {
-		return
+// AutoMatchSkills ticks the session turn counter, expires stale invoked skills,
+// and returns brief hints about trigger-matched skills for the system prompt.
+// The model must call skill(name: "...") to actually invoke a skill.
+func (t *SkillDomainTool) AutoMatchSkills(sessionKey, message string) string {
+	if sessionKey == "" {
+		return ""
 	}
-
-	msgLower := strings.ToLower(message)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Collect matching entries sorted by priority (higher first)
+	// Phase 1: Increment session turn counter
+	t.sessionTurns[sessionKey]++
+	currentTurn := t.sessionTurns[sessionKey]
+
+	// Phase 2: Expire stale invoked skills
+	if invoked := t.invokedSkills[sessionKey]; invoked != nil {
+		for slug, state := range invoked {
+			if currentTurn-state.lastInvokedTurn > state.ttl() {
+				fmt.Printf("[skills] Expired invoked skill %q (inactive for %d turns, ttl=%d) session=%s\n",
+					slug, currentTurn-state.lastInvokedTurn, state.ttl(), sessionKey)
+				delete(invoked, slug)
+			}
+		}
+		if len(invoked) == 0 {
+			delete(t.invokedSkills, sessionKey)
+		}
+	}
+
+	// Phase 3: Refresh invoked skills whose triggers re-match (reset TTL)
+	if message != "" {
+		msgLower := strings.ToLower(message)
+		if invoked := t.invokedSkills[sessionKey]; invoked != nil {
+			for slug, state := range invoked {
+				entry, ok := t.entries[slug]
+				if !ok {
+					continue
+				}
+				for _, trigger := range entry.triggers {
+					if strings.Contains(msgLower, strings.ToLower(trigger)) {
+						state.lastInvokedTurn = currentTurn
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if message == "" {
+		return ""
+	}
+
+	// Phase 4: Match triggers and return brief hints (NOT full templates)
+	msgLower := strings.ToLower(message)
+
 	type match struct {
-		slug     string
-		priority int
+		slug        string
+		description string
+		priority    int
 	}
 	var matches []match
 
+	invoked := t.invokedSkills[sessionKey]
 	for slug, entry := range t.entries {
-		// Skip already active skills
-		if active, ok := t.activeSkills[sessionKey]; ok && active[slug] {
+		// Skip already-invoked skills (they're already in context via ActiveSkillContent)
+		if invoked != nil && invoked[slug] != nil {
 			continue
 		}
-		// Check triggers
 		for _, trigger := range entry.triggers {
 			if strings.Contains(msgLower, strings.ToLower(trigger)) {
-				matches = append(matches, match{slug: slug, priority: entry.priority})
+				matches = append(matches, match{slug: slug, description: entry.description, priority: entry.priority})
 				break
 			}
 		}
 	}
 
 	if len(matches) == 0 {
-		return
+		return ""
 	}
 
-	// Sort by priority descending
 	sort.Slice(matches, func(i, j int) bool {
 		return matches[i].priority > matches[j].priority
 	})
 
-	// Auto-load matched skills (limit to top 2 to avoid prompt bloat)
-	limit := 2
-	if len(matches) < limit {
-		limit = len(matches)
-	}
+	// Limit hints to top 3
+	limit := min(3, len(matches))
 
-	if t.activeSkills[sessionKey] == nil {
-		t.activeSkills[sessionKey] = make(map[string]bool)
-	}
-
+	var b strings.Builder
+	b.WriteString("\n\n## Skill Matches\n\n")
+	b.WriteString("These skills may be relevant to the user's message. Use `skill(name: \"...\")` to activate one:\n")
 	for _, m := range matches[:limit] {
-		t.activeSkills[sessionKey][m.slug] = true
-		fmt.Printf("[skills] Auto-matched skill %q for session %s\n", m.slug, sessionKey)
+		b.WriteString(fmt.Sprintf("- **%s** — %s\n", m.slug, m.description))
+		fmt.Printf("[skills] Hint: skill %q matched for session %s (turn %d)\n", m.slug, sessionKey, currentTurn)
 	}
+
+	return b.String()
 }
 
-// ClearSession removes all active skills for a session (called on session clear/end).
+// ClearSession removes all invoked skills and turn counter for a session (called on session clear/end).
 func (t *SkillDomainTool) ClearSession(sessionKey string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.activeSkills, sessionKey)
+	delete(t.invokedSkills, sessionKey)
+	delete(t.sessionTurns, sessionKey)
+}
+
+// recordInvocation tracks that a skill was invoked by the model.
+// Must NOT be called with t.mu held — acquires its own lock.
+func (t *SkillDomainTool) recordInvocation(sessionKey, slug string, manual bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	entry, ok := t.entries[slug]
+	if !ok {
+		return
+	}
+
+	if t.invokedSkills[sessionKey] == nil {
+		t.invokedSkills[sessionKey] = make(map[string]*invokedSkillState)
+	}
+
+	currentTurn := t.sessionTurns[sessionKey]
+
+	// Re-invocation — refresh the turn
+	if state := t.invokedSkills[sessionKey][slug]; state != nil {
+		state.lastInvokedTurn = currentTurn
+		if manual {
+			state.manual = true
+		}
+		fmt.Printf("[skills] Re-invoked skill %q (turn %d) session=%s\n", slug, currentTurn, sessionKey)
+		return
+	}
+
+	content := entry.skillMD
+	if content == "" {
+		content = fmt.Sprintf("# %s\n\n%s", entry.name, entry.description)
+	}
+
+	t.invokedSkills[sessionKey][slug] = &invokedSkillState{
+		lastInvokedTurn: currentTurn,
+		content:         content,
+		name:            entry.name,
+		maxTurns:        entry.maxTurns,
+		manual:          manual,
+	}
+	fmt.Printf("[skills] Recorded invocation: skill %q (turn %d, manual=%v) session=%s\n", slug, currentTurn, manual, sessionKey)
 }
 
 // --- Skill lifecycle ---
@@ -549,8 +691,8 @@ func (t *SkillDomainTool) rebuildCache() {
 
 	// Build description with catalog one-liners
 	var desc strings.Builder
-	desc.WriteString("Unified interface for skills and apps. Skills with triggers auto-activate when the user's message matches.\n")
-	desc.WriteString("LIFECYCLE: create → available in catalog. Auto-matched or manually loaded → active in THIS session (injected into system prompt). unload → removed from session.\n")
+	desc.WriteString("Unified interface for skills and apps. Call a skill by name to invoke it — invoked skills persist in context.\n")
+	desc.WriteString("LIFECYCLE: Available in catalog. Call skill(name: ...) to invoke → content returned + tracked for this session. unload → removed from session.\n")
 	desc.WriteString("Actions: catalog (browse), help (read instructions), load (activate for session), unload (deactivate), create/update/delete (manage on disk).\n\n")
 	desc.WriteString("Available skills:\n")
 

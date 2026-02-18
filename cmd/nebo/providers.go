@@ -275,9 +275,9 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 		fmt.Printf("[Providers] Found %d neboloop profiles\n", len(profiles))
 		for _, p := range profiles {
 			if p.APIKey != "" && sharedJanusURL != "" {
-				model := provider.GetDefaultModel("neboloop")
+				model := provider.GetDefaultModel("janus")
 				if model == "" {
-					model = "claude-sonnet-4-5-20250929"
+					model = "janus/janus"
 				}
 				baseProvider := ai.NewOpenAIProvider(p.APIKey, model, sharedJanusURL+"/v1")
 				baseProvider.SetProviderID("janus")

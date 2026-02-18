@@ -250,7 +250,7 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 			if ar.skillTool != nil {
 				slug := tools.Slugify(manifest.Name)
 				skillMD := loadSkillMD(appDir)
-				ar.skillTool.Register(slug, manifest.Name, manifest.Description, skillMD, adapter, nil, 0)
+				ar.skillTool.Register(slug, manifest.Name, manifest.Description, skillMD, adapter, nil, 0, 0)
 				fmt.Printf("[apps] Registered skill: %s (app-backed)\n", slug)
 			} else if ar.toolReg != nil {
 				// Fallback: register directly in tool registry (no skill tool wired)

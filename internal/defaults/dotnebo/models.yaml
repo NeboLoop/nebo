@@ -167,6 +167,13 @@ providers:
       capabilities: [reasoning, code]
       active: true
 
+  janus:
+    - id: janus/janus
+      displayName: Janus
+      contextWindow: 200000
+      capabilities: [vision, tools, streaming, code, reasoning]
+      active: true
+
   ollama:
     - id: qwen3:4b
       displayName: Qwen 3 4B

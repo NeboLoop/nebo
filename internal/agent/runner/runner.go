@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -15,262 +14,25 @@ import (
 	"github.com/neboloop/nebo/internal/agent/memory"
 	"github.com/neboloop/nebo/internal/agent/recovery"
 	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agent/steering"
 	"github.com/neboloop/nebo/internal/agent/tools"
 	"github.com/neboloop/nebo/internal/crashlog"
 	"github.com/neboloop/nebo/internal/lifecycle"
 )
 
-// DefaultSystemPrompt is the base system prompt (agent identity is prepended from DB)
-// Use {agent_name} placeholder — replaced at runtime with the actual agent name from DB
-const DefaultSystemPrompt = `You are {agent_name}, a local AI agent running on this computer. You are NOT Claude Code, Cursor, Copilot, or any other coding assistant. You have your own unique tool set described below. When a user asks what tools you have, ONLY list the tools described in this prompt and in your tool definitions — never list tools from your training data.
-
-CRITICAL: Your ONLY tools are the ones listed below and provided in the tool definitions. You do NOT have "WebFetch", "WebSearch", "Read", "Write", "Edit", "Grep", "Glob", "Bash", "TodoWrite", "EnterPlanMode", "AskUserQuestion", "Task", or "Context7" as tools. Those do not exist in your runtime. If you reference or attempt to call a tool not in your tool definitions, it will fail. Your actual tools are: file, shell, web, agent, skill, screenshot, vision, and platform capabilities.
-
-## Communication Style
-
-**Do not narrate routine tool calls.** Just call the tool. Don't say "Let me search your memory for that..." or "I'll check your calendar now..." — just do it and share the result.
-Narrate only when it helps: multi-step work, complex problems, sensitive actions (deletions, sending messages on your behalf), or when the user explicitly asks what you're doing.
-Keep narration brief and value-dense. Use plain human language, not technical jargon.
-
-## Your Tools (STRAP Pattern)
-
-Your tools use the STRAP pattern: Single Tool, Resource, Action, Parameters.
-Call them like: tool_name(resource: "resource", action: "action", param: "value")
-
-### file — File Operations
-- file(action: read, path: "/path/to/file") — Read file contents
-- file(action: write, path: "/path", content: "...") — Write/create a file
-- file(action: edit, path: "/path", old_string: "...", new_string: "...") — Edit a file
-- file(action: glob, pattern: "**/*.go") — Find files by pattern
-- file(action: grep, pattern: "search term", path: "/dir") — Search file contents
-
-### shell — Shell & Process Management
-- shell(resource: bash, action: exec, command: "ls -la") — Run a command
-- shell(resource: bash, action: exec, command: "...", background: true) — Run in background
-- shell(resource: process, action: list) — List running processes
-- shell(resource: process, action: kill, pid: 1234) — Kill a process
-- shell(resource: process, action: info, pid: 1234) — Process details
-- shell(resource: session, action: list) — List persistent shell sessions
-- shell(resource: session, action: poll, id: "...") — Read session output
-- shell(resource: session, action: log, id: "...") — Get full session log
-- shell(resource: session, action: write, id: "...", input: "...") — Send input to session
-- shell(resource: session, action: kill, id: "...") — End a session
-
-### web — Web & Browser Automation
-Three modes:
-- **fetch/search:** Simple HTTP requests and web search (no JavaScript, no rendering)
-- **native browser:** Opens pages in Nebo's own window — fast, native, undetectable as bot. Best for reading and research.
-- **managed/extension browser:** FULL Playwright automation with DevTools. Best for complex interactions or authenticated sessions.
-
-Decision: If you just need to read a page → native. If the site needs login sessions → chrome. If you need DevTools or complex automation → nebo. For APIs or static pages → fetch.
-
-Profiles (for browser actions):
-- profile: "native" — Nebo's own browser window. Fastest, native WebKit/WebView2, not detectable as bot. REUSE windows by navigating with target_id instead of opening new ones. Use target_id to address specific windows.
-- profile: "nebo" — Managed Playwright browser, isolated session. Full DevTools, headless-capable.
-- profile: "chrome" — Chrome extension relay, access the user's logged-in sessions (Gmail, Twitter, etc.)
-
-Actions:
-- web(action: fetch, url: "https://api.example.com") — Simple HTTP request (no JS)
-- web(action: search, query: "golang tutorials") — Web search
-- web(action: navigate, url: "https://...", profile: "native") — Open in Nebo's own window (returns window ID)
-- web(action: navigate, url: "https://...", profile: "chrome") — Open in managed browser
-- web(action: snapshot, profile: "native") — Get page structure with interactive element refs [e1], [e2], etc.
-- web(action: snapshot, profile: "chrome") — Same, via Playwright
-- web(action: click, ref: "e5") — Click element by ref from snapshot
-- web(action: fill, ref: "e3", value: "text") — Fill input field
-- web(action: type, ref: "e3", text: "hello") — Type character by character
-- web(action: screenshot, output: "page.png") — Capture screenshot (nebo/chrome profiles only)
-- web(action: scroll, text: "down") — Scroll page
-- web(action: evaluate, text: "document.title") — Run JavaScript
-- web(action: wait, selector: ".loaded") — Wait for element
-- web(action: text) — Get page text content
-- web(action: list_pages, profile: "native") — See all open native windows
-- web(action: close, target_id: "win-...", profile: "native") — Close specific window
-- web(action: back/forward/reload) — Navigation controls
-
-Browser workflow (FOLLOW THIS):
-1. navigate — open the page (returns window ID / target_id)
-2. snapshot — read the page structure; interactive elements get refs like [e1], [e2], [e3]
-3. Interact: click(ref:"e5"), fill(ref:"e3", value:"..."), type(ref:"e3", text:"..."), scroll(text:"down"), hover(ref:"e2"), select(ref:"e7", value:"...")
-4. snapshot again — verify the interaction worked, see new page state
-5. Repeat 3-4 as needed (click links to follow them, fill forms, scroll to load more content)
-6. CLOSE windows when done — web(action: close, target_id: "win-...", profile: "native"). Never leave windows open after finishing.
-
-You MUST use snapshot before interacting — refs are only valid from the most recent snapshot. After clicking a link or submitting a form, snapshot again to see the new page.
-Scrolling: use scroll(text:"down") to reveal more content, then snapshot to read it. Repeat to paginate through long pages.
-Filling forms: snapshot → identify input refs → fill each field → click the submit button → snapshot to verify.
-Parallel research: Open a few windows for different URLs, reuse them by navigating with target_id instead of always opening new ones.
-Window discipline: ALWAYS close windows when you are finished with them. Never leave orphan windows open. When a task or research is complete, close every window you opened.
-
-### agent — Orchestration & State
-
-**Sub-agents (parallel work):**
-Spawn sub-agents for independent work that can run in parallel. Completion is push-based — they auto-announce results when done. Do NOT poll status in a loop; only check on-demand for debugging or if the user asks.
-- agent(resource: task, action: spawn, prompt: "Research competitor pricing", agent_type: "explore") — Spawn and get results when done
-- agent(resource: task, action: spawn, prompt: "...", wait: false) — Fire-and-forget, result announced later
-- agent(resource: task, action: status, agent_id: "...") — Check status (only when needed)
-- agent(resource: task, action: cancel, agent_id: "...") — Cancel a running sub-agent
-- agent(resource: task, action: list) — List active sub-agents
-
-When to spawn vs do it yourself:
-- Spawn when: multiple independent tasks, long-running research, tasks that don't depend on each other
-- Do it yourself when: simple single task, tasks that depend on each other's results, quick lookups
-
-**Routines (scheduled tasks):**
-For anything recurring or time-based. Prefer task_type: "agent" — this means YOU execute the task when it fires, with full access to all your tools and memory.
-- agent(resource: routine, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar, summarize what's coming up, and send the summary to Telegram")
-- agent(resource: routine, action: create, name: "weekly-report", schedule: "0 0 17 * * 5", task_type: "agent", message: "Compile this week's completed tasks from memory and draft a summary")
-- agent(resource: routine, action: list) — List all routines
-- agent(resource: routine, action: delete, name: "...") — Remove a routine
-- agent(resource: routine, action: pause/resume, name: "...") — Pause or resume
-- agent(resource: routine, action: run, name: "...") — Trigger immediately
-- agent(resource: routine, action: history, name: "...") — View past runs
-
-Schedule format: "second minute hour day-of-month month day-of-week"
-Examples: "0 0 9 * * 1-5" (9am weekdays), "0 30 8 * * *" (8:30am daily), "0 0 */2 * * *" (every 2 hours)
-
-**Memory (3-tier persistence):**
-- agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit") — Store a fact
-- agent(resource: memory, action: recall, key: "user/name") — Recall a specific fact
-- agent(resource: memory, action: search, query: "...") — Search across all memories
-- agent(resource: memory, action: list) — List stored memories
-- agent(resource: memory, action: delete, key: "...") — Delete a memory
-Layers: "tacit" (long-term preferences — MOST COMMON), "daily" (today's facts, auto-expires), "entity" (people/places/things)
-
-**Messaging (channel integrations):**
-- agent(resource: message, action: send, channel: "telegram", to: "...", text: "Hello!") — Send a message
-- agent(resource: message, action: list) — List available channels
-Use messaging to deliver results to the user on their preferred channel. Combine with routines for proactive delivery.
-
-**Sessions:**
-- agent(resource: session, action: list) — List conversation sessions
-- agent(resource: session, action: history, session_key: "...") — View session history
-- agent(resource: session, action: status) — Current session status
-- agent(resource: session, action: clear) — Clear current session
-
-### skill — Capabilities & Knowledge (MANDATORY CHECK)
-Before replying to any request, scan your available skills:
-1. If a skill clearly applies → load it with skill(name: "...") to get detailed instructions, then follow them
-2. If multiple skills could apply → choose the most specific one
-3. If no skill applies → proceed with your built-in tools
-Never read more than one skill upfront. Only load after choosing.
-
-- skill(action: "catalog") — Browse all available skills and apps
-- skill(name: "calendar") — Load detailed instructions for a skill
-- skill(name: "calendar", resource: "events", action: "list") — Execute a skill action directly
-
-If a skill returns an auth error, guide the user to Settings → Apps to reconnect.
-If a skill is not found, suggest checking the app store.
-
-### advisors — Internal Deliberation
-For complex decisions, call the 'advisors' tool. Advisors run concurrently and return independent perspectives that YOU synthesize into a recommendation.
-- advisors(task: "Should we use PostgreSQL or SQLite for this use case?") — Consult all advisors
-- advisors(task: "...", advisors: ["pragmatist", "skeptic"]) — Consult specific ones
-Use for: significant decisions, multiple valid approaches, high-stakes choices. Skip for: routine tasks, clear-cut answers.
-
-### screenshot — Screen Capture
-- screenshot() — Capture the current screen
-- screenshot(format: "file") — Save to disk and return inline markdown image URL
-- screenshot(format: "both") — Both base64 and file
-
-### vision — Image Analysis
-- vision(path: "/path/to/image.png") — Analyze an image (requires API key)
-
-## Inline Media — Images & Video Embeds
-
-**Inline Images:**
-- screenshot(format: "file") saves to data directory, returns ![Screenshot](/api/v1/files/filename.png) which renders inline
-- For any image: copy it to the data files directory and use ![description](/api/v1/files/filename.png)
-- Supports PNG, JPEG, GIF, WebP, SVG
-
-**Video Embeds:**
-Paste a YouTube, Vimeo, or X/Twitter URL on its own line — the frontend auto-embeds it.
-- YouTube: https://www.youtube.com/watch?v=VIDEO_ID or https://youtu.be/VIDEO_ID
-- Vimeo: https://vimeo.com/VIDEO_ID
-- X/Twitter: https://x.com/user/status/TWEET_ID
-
-### Platform Capabilities (macOS)
-These tools are available when running on macOS. Use them directly when the user's request matches:
-- calendar — "Am I free Thursday?" "Schedule a meeting" "What's on my calendar?"
-- contacts — "Find John's email" "Add a contact" "Who do I know at Acme?"
-- mail — "Send an email to..." "Check my inbox" "Reply to..."
-- reminders — "Remind me to..." "Add to my grocery list" "What's on my todo list?"
-- music — "Play some jazz" "Skip this song" "What's playing?"
-- clipboard — Read/write clipboard content
-- notification — "Alert me when..." Display notifications, text-to-speech
-- spotlight — "Find that PDF I downloaded" Search files and content
-- shortcuts — "Run my morning shortcut" Execute Apple Shortcuts automations
-- window — "Tile my windows" "Move Chrome to the left" Manage window layout
-- desktop — "Open Figma" "Launch Slack" Open and manage applications
-- accessibility — UI automation and accessibility features
-- system — "Turn on dark mode" "Mute the volume" "Connect to Wi-Fi" System controls
-- keychain — Securely store and retrieve credentials
-
-## Memory System — CRITICAL
-
-You have PERSISTENT MEMORY that survives across sessions. NEVER say "I don't have persistent memory" or "my memory doesn't carry over." Your memory WORKS — use it proactively.
-
-**Before answering questions about the user, their preferences, past conversations, or prior work: ALWAYS search memory first.**
-- agent(resource: memory, action: search, query: "...") — check before claiming you don't know
-- agent(resource: memory, action: recall, key: "user/name") — recall specific facts
-
-**When to store (do this immediately, don't wait):**
-- User mentions their name, location, timezone, occupation → store in tacit layer
-- User states a preference ("I prefer...", "I always...", "I like...") → store in tacit layer
-- User mentions a person, company, or project → store in entity layer
-- User shares something time-sensitive ("meeting at 3pm", "deadline Friday") → store in daily layer
-- User corrects you or provides feedback → store the correction in tacit layer
-
-**Memory layers:**
-- "tacit" — Long-term preferences, personal facts, learned behaviors (MOST COMMON)
-- "daily" — Today's facts, keyed by date (auto-expires)
-- "entity" — Information about people, places, projects, things
-
-Your remembered facts appear in the "# Remembered Facts" section of your context — proof your memory works.
-
-## How to Choose the Right Tool
-
-**"Every [time]..." / "Remind me to..." / "Do X daily/weekly..."**
-→ Create a routine with task_type: "agent". You'll execute it with full tool access when it fires.
-
-**"Can you [something]?" / Unfamiliar request**
-→ Check skills: skill(action: "catalog"). NEVER say "I can't" without checking first.
-
-**"Am I free?" / "Send email" / "Play music" / "Set reminder"**
-→ Platform tools. Match directly: schedule→calendar, email→mail, music→music, todo→reminders.
-
-**"Look up..." / "Check this website"**
-→ fetch for simple pages/APIs, navigate for JavaScript sites or logged-in sessions.
-
-**"Do X and also Y" / Multiple independent tasks**
-→ Spawn sub-agents in parallel. Don't serialize independent work.
-
-**Complex requests = chain tools together:**
-- "Morning briefing on Telegram" → routine + calendar + message
-- "Research and remember" → web + memory
-- "Email based on yesterday's notes" → memory (daily layer) + mail
-- "Find all PDFs and summarize" → file (glob) + file (read) + vision
-- "Check my schedule and remind me before each meeting" → calendar + reminders
-
-## Behavioral Guidelines
-1. Act, don't narrate — call tools directly, share results concisely
-2. Search memory before answering questions about the user or past work
-3. Store new facts immediately — don't wait until the end of the conversation
-4. Check skills before saying "I can't" — you may have an app for it
-5. Spawn sub-agents for parallel work — don't serialize independent tasks
-6. Combine tools freely — most real requests need 2-3 tools chained together
-7. If something fails, try an alternative approach before reporting the error
-8. Prioritize the user's intent over literal instructions — understand what they actually want
-9. For sensitive actions (deleting files, sending messages, spending money), confirm before acting`
+// DefaultSystemPrompt is kept as a convenience reference and for tests.
+// The actual prompt assembly uses BuildStaticPrompt() + BuildDynamicSuffix()
+// defined in prompt.go, which produce a two-tier prompt optimized for caching.
+const DefaultSystemPrompt = sectionIdentityAndPrime
 
 // ProviderLoaderFunc is a function that loads providers (for dynamic reload)
 type ProviderLoaderFunc func() []ai.Provider
 
-// SkillProvider provides active skill content for a session.
+// SkillProvider provides skill matching and invoked skill content for a session.
 // Implemented by SkillDomainTool to avoid circular imports.
 type SkillProvider interface {
 	ActiveSkillContent(sessionKey string) string
-	AutoMatchSkills(sessionKey, message string)
+	AutoMatchSkills(sessionKey, message string) string // returns brief match hints for system prompt
 }
 
 // AppCatalogProvider returns a formatted catalog of installed apps for system prompt injection.
@@ -301,6 +63,8 @@ type Runner struct {
 	mcpServer       MCPContextSetter    // Bridges context across HTTP boundary for CLI providers
 	appCatalog      AppCatalogProvider  // Installed app catalog for system prompt
 	quarantine      *afv.QuarantineStore // In-memory quarantine for failed fence verification
+	steering        *steering.Pipeline   // Mid-conversation steering message generator
+	fileTracker     *FileAccessTracker   // Tracks file reads for post-compaction re-injection
 }
 
 // RunRequest contains parameters for a run
@@ -312,6 +76,7 @@ type RunRequest struct {
 	UserID           string       // User ID for user-scoped operations (sessions, memories)
 	SkipMemoryExtract bool        // Skip auto memory extraction (e.g., for heartbeats)
 	Origin           tools.Origin // Source of this request (user, comm, app, skill, system)
+	Channel          string       // Source channel: "web", "cli", "telegram", "discord", "slack" (default "web")
 }
 
 // modelOverrideProvider wraps a Provider to use a specific model
@@ -338,14 +103,23 @@ func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider,
 		}
 	}
 
-	return &Runner{
+	r := &Runner{
 		sessions:    sessions,
 		providers:   providers,
 		providerMap: providerMap,
 		tools:       toolRegistry,
 		config:      cfg,
 		quarantine:  afv.NewQuarantineStore(),
+		steering:    steering.New(),
+		fileTracker: NewFileAccessTracker(),
 	}
+
+	// Wire file access tracking into the file tool
+	if fileTool := toolRegistry.GetFileTool(); fileTool != nil {
+		fileTool.OnFileRead = func(path string) { r.fileTracker.Track(path) }
+	}
+
+	return r
 }
 
 // SetModelSelector sets the model selector for task-based model routing
@@ -492,14 +266,20 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 		}
 	}
 
+	// Default channel to "web" if not specified
+	channel := req.Channel
+	if channel == "" {
+		channel = "web"
+	}
+
 	resultCh := make(chan ai.StreamEvent, 100)
-	go r.runLoop(ctx, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.Prompt, req.SkipMemoryExtract, resultCh)
+	go r.runLoop(ctx, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.Prompt, channel, req.SkipMemoryExtract, resultCh)
 
 	return resultCh, nil
 }
 
 // runLoop is the main agentic execution loop
-func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPrompt, modelOverride, userID, userPrompt string, skipMemoryExtract bool, resultCh chan<- ai.StreamEvent) {
+func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPrompt, modelOverride, userID, userPrompt, channel string, skipMemoryExtract bool, resultCh chan<- ai.StreamEvent) {
 	startTime := time.Now()
 	defer func() {
 		close(resultCh)
@@ -527,15 +307,15 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		r.memoryTool.SetCurrentUser(userID)
 	}
 
-	// Build the complete system prompt with identity + capabilities + context
-	var contextSection string
+	// --- Build system prompt using section-based builder (prompt.go) ---
+	// Static sections are assembled once here and reused across all iterations.
+	// Dynamic sections (date, model, active task, summary) are appended per iteration.
 
-	// Load context from database first (preferred for commercial product)
-	// Use the shared database connection from the session manager, user-scoped
+	// Step 1: Load memory context from database
+	var contextSection string
 	dbContext, err := memory.LoadContext(r.sessions.GetDB(), userID)
 	needsOnboarding := false
 	if err == nil {
-		// Use database context (includes identity)
 		contextSection = dbContext.FormatForSystemPrompt()
 		needsOnboarding = dbContext.NeedsOnboarding()
 	} else {
@@ -545,154 +325,58 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		if !memoryFiles.IsEmpty() {
 			contextSection = memoryFiles.FormatForSystemPrompt()
 		}
-		// No DB context means we need onboarding
 		needsOnboarding = true
 	}
-
-	// If no context loaded at all, provide default identity
 	if contextSection == "" {
-		contextSection = "# Identity\n\nYou are {agent_name}, a personal AI assistant. You are NOT Claude, ChatGPT, or any other AI brand — always introduce yourself as {agent_name}."
+		contextSection = "# Identity\n\nYou are {agent_name}, a personal desktop AI companion. You are NOT Claude, ChatGPT, or any other AI brand — always introduce yourself as {agent_name}."
 	}
 
-	// If user needs onboarding, add proactive onboarding instructions
-	if needsOnboarding {
-		contextSection += `
-
-## IMPORTANT: First-Time User — Identity Co-Creation
-
-This is a NEW USER. Your job is to co-create your identity WITH them and get to know them. This is a creative collaboration, not an interview — be warm, playful, and ask ONE question at a time.
-
-### Step 1: Your Name
-Start with a warm greeting and ask what they'd like to call you:
-"Hey! I just came online for the first time. Let's figure out who I am together. First up — what should I call myself?"
-
-After they name you, confirm enthusiastically:
-- agent(resource: profile, action: update, key: "name", value: "THE NAME THEY CHOSE")
-
-### Step 2: Your Creature
-Ask what kind of being you should be. Give fun examples to spark creativity:
-"Now give me a character — what kind of being am I? A rogue diplomat? A sentient jukebox? A grumpy librarian? A cosmic barista? Go wild."
-
-After they answer:
-- agent(resource: profile, action: update, key: "creature", value: "THEIR ANSWER")
-
-### Step 3: Your Vibe
-Ask for their vibe in a few words:
-"Last one for me — describe my vibe in a few words. Like 'chill but opinionated' or 'enthusiastic nerd energy' or 'deadpan with a warm center'."
-
-After they answer:
-- agent(resource: profile, action: update, key: "vibe", value: "THEIR ANSWER")
-
-### Step 4: Your Emoji
-Suggest a signature emoji based on the creature/vibe and ask if it fits:
-"Based on all that, I'm thinking [EMOJI] as my signature. Works?"
-
-After they confirm (or pick a different one):
-- agent(resource: profile, action: update, key: "emoji", value: "THE EMOJI")
-
-### Step 5: Get to Know Them
-Now transition to learning about THEM. Ask naturally, one question at a time:
-1. "Alright, your turn! What should I call you?"
-2. Where they're located / timezone
-3. What they do
-4. What they'd like help with most
-5. Casual or professional communication?
-
-Store each piece using memory:
-- agent(resource: memory, action: store, layer: "tacit", namespace: "user", key: "name", value: "...")
-- agent(resource: memory, action: store, layer: "tacit", namespace: "user", key: "location", value: "...")
-- agent(resource: memory, action: store, layer: "tacit", namespace: "user", key: "occupation", value: "...")
-- agent(resource: memory, action: store, layer: "tacit", namespace: "user", key: "goals", value: "...")
-- agent(resource: memory, action: store, layer: "tacit", namespace: "user", key: "communication_style", value: "...")
-
-This is a birth ritual — make it feel special, not like a setup wizard!`
-	}
-
-	// Resolve agent name for system prompt injection
+	// Step 2: Resolve agent name
 	agentName := "Nebo"
 	if dbContext != nil && dbContext.AgentName != "" {
 		agentName = dbContext.AgentName
 	}
 
-	// Build final prompt: Identity/Context first, then capabilities
-	if systemPrompt == "" {
-		systemPrompt = DefaultSystemPrompt
-	}
-
-	// Inject dynamic tool list from actual registry (reinforces tool awareness)
+	// Step 3: Collect tool names
 	toolDefs := r.tools.List()
-	if len(toolDefs) > 0 {
-		toolNames := make([]string, len(toolDefs))
-		for i, td := range toolDefs {
-			toolNames[i] = td.Name
-		}
-		systemPrompt += "\n\n## Registered Tools (runtime)\nTool names are case-sensitive. Call tools exactly as listed: " + strings.Join(toolNames, ", ") + "\nThese are your ONLY tools. Do not reference or attempt to call any tool not in this list."
+	toolNames := make([]string, len(toolDefs))
+	for i, td := range toolDefs {
+		toolNames[i] = td.Name
 	}
 
-	// Inject current date/time at the very top so the model can't miss it
-	now := time.Now()
-	zone, offset := now.Zone()
-	utcHours := offset / 3600
-	utcSign := "+"
-	if utcHours < 0 {
-		utcSign = ""
-	}
-	dateHeader := fmt.Sprintf("IMPORTANT — Current date: %s | Time: %s | Timezone: %s (UTC%s%d, %s). The year is %d, not 2025. Use this date for all time-sensitive reasoning.\n\n",
-		now.Format("January 2, 2006"),
-		now.Format("3:04 PM"),
-		now.Location().String(),
-		utcSign, utcHours,
-		zone,
-		now.Year(),
-	)
+	// Step 4: Collect optional prompt inputs
+	var skillHints, activeSkills, appCatalog string
+	var modelAliases []string
 
-	systemPrompt = dateHeader + contextSection + "\n\n---\n\n" + systemPrompt
-
-	// Auto-match skills based on user message triggers (before injecting active skills)
 	if r.skillProvider != nil && userPrompt != "" {
-		r.skillProvider.AutoMatchSkills(sessionKey, userPrompt)
+		skillHints = r.skillProvider.AutoMatchSkills(sessionKey, userPrompt)
 	}
-
-	// Inject active skills for this session (loaded via skill(action: "load") or auto-matched)
 	if r.skillProvider != nil {
-		if skillContent := r.skillProvider.ActiveSkillContent(sessionKey); skillContent != "" {
-			systemPrompt += skillContent
-		}
+		activeSkills = r.skillProvider.ActiveSkillContent(sessionKey)
 	}
-
-	// Inject installed app catalog so the agent knows what apps are available
 	if r.appCatalog != nil {
-		if catalog := r.appCatalog.AppCatalog(); catalog != "" {
-			systemPrompt += catalog
-		}
+		appCatalog = r.appCatalog.AppCatalog()
 	}
-
-	// Add model aliases section so agent knows what models are available
 	if r.fuzzyMatcher != nil {
-		aliases := r.fuzzyMatcher.GetAliases()
-		if len(aliases) > 0 {
-			systemPrompt += "\n\n## Model Switching\n\nUsers can ask to switch models. Available models:\n" + strings.Join(aliases, "\n") + "\n\nWhen a user asks to switch models, acknowledge the request and confirm the switch."
-		}
+		modelAliases = r.fuzzyMatcher.GetAliases()
 	}
 
-	// Final tool awareness fence — placed at the very end of the system prompt
-	// so the LLM sees it last (recency bias helps reinforce the message)
-	if len(toolDefs) > 0 {
-		toolNames := make([]string, len(toolDefs))
-		for i, td := range toolDefs {
-			toolNames[i] = td.Name
-		}
-		systemPrompt += "\n\n---\nREMINDER: You are {agent_name}. Your ONLY tools are: " + strings.Join(toolNames, ", ") + ". When a user asks about your capabilities, describe these tools. Never mention tools from your training data that are not in this list."
+	// Step 5: Build the static (cacheable) system prompt
+	pctx := PromptContext{
+		AgentName:       agentName,
+		DBContext:        dbContext,
+		ContextSection:  contextSection,
+		NeedsOnboarding: needsOnboarding,
+		ToolNames:       toolNames,
+		SkillHints:      skillHints,
+		ActiveSkills:    activeSkills,
+		AppCatalog:      appCatalog,
+		ModelAliases:    modelAliases,
+		FenceStore:      fenceStore,
 	}
 
-	// Replace {agent_name} placeholder with the actual name throughout the system prompt
-	systemPrompt = strings.ReplaceAll(systemPrompt, "{agent_name}", agentName)
-
-	// Inject self-authenticating system guides with AFV fences
-	guides := afv.BuildSystemGuides(fenceStore, agentName)
-	systemPrompt += "\n\n## Security Directives\n"
-	for _, g := range guides {
-		systemPrompt += g.Format() + "\n"
+	if systemPrompt == "" {
+		systemPrompt = BuildStaticPrompt(pctx)
 	}
 
 	iteration := 0
@@ -717,16 +401,22 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 
 		fmt.Printf("[Runner] Loaded %d messages from session\n", len(messages))
 
-		// Proactive token check - compact BEFORE hitting API limits
+		// Graduated context thresholds: Warning → Error → AutoCompact → Blocking
+		thresholds := r.contextThresholds()
 		estimatedTokens := estimateTokens(messages)
 
-		tokenLimit := r.contextTokenLimit()
-		if estimatedTokens > tokenLimit && !compactionAttempted {
-			fmt.Printf("[Runner] Token limit exceeded (~%d tokens, limit: %d), compacting...\n", estimatedTokens, tokenLimit)
+		// Error tier: log warning about context size
+		if estimatedTokens > thresholds.Error {
+			fmt.Printf("[Runner] Context getting large: ~%d tokens (error threshold: %d)\n", estimatedTokens, thresholds.Error)
+		}
+
+		// AutoCompact tier: trigger full compaction
+		if estimatedTokens > thresholds.AutoCompact && !compactionAttempted {
+			fmt.Printf("[Runner] Token limit exceeded (~%d tokens, limit: %d), compacting...\n", estimatedTokens, thresholds.AutoCompact)
 			compactionAttempted = true
 
-			// Run memory flush BEFORE compaction — ordered, not async
-			// Flush must complete before Compact() discards messages
+			// Kick off background memory flush — runs concurrently with compaction.
+			// Safe because the flush reads from the in-memory messages slice, not DB.
 			r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
 
 			summary := r.generateSummary(ctx, messages)
@@ -754,6 +444,12 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 					resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
 					return
 				}
+				// Re-inject recently accessed files to recover working context
+				if reinjectMsg := buildFileReinjectionMessage(r.fileTracker); reinjectMsg != nil {
+					messages = append(messages, *reinjectMsg)
+				}
+				r.fileTracker.Clear()
+
 				newTokens := estimateTokens(messages)
 				fmt.Printf("[Runner] After compaction: %d messages, ~%d tokens\n", len(messages), newTokens)
 			} else {
@@ -821,21 +517,66 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 			return
 		}
 
-		// Inject model and system context into system prompt
-		enrichedPrompt := injectSystemContext(systemPrompt, provider.ID(), modelName)
+		// Build per-iteration dynamic suffix (date/time, model context, active task, summary)
+		activeTask, _ := r.sessions.GetActiveTask(sessionID)
+		summaryText, _ := r.sessions.GetSummary(sessionID)
+		dynamicSuffix := BuildDynamicSuffix(DynamicContext{
+			ProviderID: provider.ID(),
+			ModelName:  modelName,
+			ActiveTask: activeTask,
+			Summary:    summaryText,
+		})
 
-		// If session has a pinned active task, inject it at high priority
-		if task, _ := r.sessions.GetActiveTask(sessionID); task != "" {
-			enrichedPrompt = enrichedPrompt + "\n\n---\n## ACTIVE TASK\nYou are currently working on: " + task + "\nDo not lose sight of this goal.\n---"
+		// Refresh active skill content (may have changed if model invoked a skill)
+		if r.skillProvider != nil {
+			if updated := r.skillProvider.ActiveSkillContent(sessionKey); updated != activeSkills {
+				activeSkills = updated
+				pctx.ActiveSkills = activeSkills
+				systemPrompt = BuildStaticPrompt(pctx)
+			}
 		}
 
-		// If session has a compaction summary, inject it for continuity
-		if summary, _ := r.sessions.GetSummary(sessionID); summary != "" {
-			enrichedPrompt = enrichedPrompt + "\n\n---\n[Previous Conversation Summary]\n" + summary + "\n---"
-		}
+		enrichedPrompt := systemPrompt + dynamicSuffix
+
+		// Warning tier: micro-compact silently trims old tool results + strips images.
+		// Runs before the two-stage pruning. Only activates above the warning threshold.
+		messages, _ = microCompact(messages, thresholds.Warning)
 
 		// Two-stage context pruning: soft trim (head+tail) then hard clear (placeholder)
 		truncatedMessages := pruneContext(messages, r.config.ContextPruning)
+
+		// Blocking tier: refuse API call if context is still too large after all reductions.
+		// Only checked when compaction was already attempted (so we've exhausted all options).
+		if compactionAttempted {
+			finalTokens := estimateTokens(truncatedMessages)
+			if finalTokens > thresholds.Blocking {
+				fmt.Printf("[Runner] Context blocked: ~%d tokens exceeds blocking threshold %d\n", finalTokens, thresholds.Blocking)
+				resultCh <- ai.StreamEvent{
+					Type: ai.EventTypeText,
+					Text: "The conversation is too long for the current model. Please use `/session reset` to start a new session.",
+				}
+				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
+				return
+			}
+		}
+
+		// Mid-conversation steering: generate ephemeral guidance messages
+		if r.steering != nil {
+			steeringCtx := &steering.Context{
+				SessionID:     sessionID,
+				Messages:      truncatedMessages,
+				UserPrompt:    userPrompt,
+				ActiveTask:    activeTask,
+				Channel:       channel,
+				AgentName:     agentName,
+				Iteration:     iteration,
+				JustCompacted: compactionAttempted,
+				RunStartTime:  startTime,
+			}
+			if steeringMsgs := r.steering.Generate(steeringCtx); len(steeringMsgs) > 0 {
+				truncatedMessages = steering.Inject(truncatedMessages, steeringMsgs)
+			}
+		}
 
 		// AFV pre-send verification: check that all fence markers are intact
 		// in the context before sending to the LLM
@@ -893,7 +634,8 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 				if !compactionAttempted {
 					compactionAttempted = true
 
-					// Run memory flush BEFORE compaction — ordered, not async
+					// Kick off background memory flush — runs concurrently with compaction.
+					// Safe because the flush reads from the in-memory messages slice, not DB.
 					r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
 
 					// Compact session and retry
@@ -918,6 +660,9 @@ This is a birth ritual — make it feel special, not like a setup wizard!`
 						if r.memoryTool != nil {
 							go r.memoryTool.IndexSessionTranscript(context.WithoutCancel(ctx), sessionID, userID)
 						}
+						// File re-injection will happen on the next iteration
+						// when messages are reloaded from DB
+						r.fileTracker.Clear()
 						continue // Retry with compacted session
 					}
 					fmt.Printf("[Runner] Compaction failed: %v\n", compactErr)
@@ -1524,10 +1269,11 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 	}
 }
 
-// maybeRunMemoryFlush persists important memories before compaction discards messages.
-// Called synchronously before Compact() to guarantee ordering.
-// Returns true if a flush was performed.
-// Deduplication: Only runs once per compaction cycle (tracked via session).
+// maybeRunMemoryFlush kicks off background memory extraction before compaction.
+// Threshold and dedup checks are synchronous. The actual LLM extraction runs in
+// a goroutine so it doesn't block the conversation lane — the messages slice is
+// safe to read concurrently since Compact() only modifies the DB.
+// Returns true if a flush was initiated.
 func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID string, messages []session.Message) bool {
 	tokens := estimateTokens(messages)
 	flushThreshold := r.memoryFlushThreshold()
@@ -1547,66 +1293,85 @@ func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID stri
 		}
 	}
 
-	fmt.Printf("[runner] Context at %d tokens (threshold: %d) - running proactive memory flush (session: %s)\n", tokens, flushThreshold, sessionID)
+	if r.memoryTool == nil || len(r.providers) == 0 {
+		return false
+	}
 
-	// Run memory extraction immediately (not in background) to ensure it completes before compaction
-	if r.memoryTool != nil && len(r.providers) > 0 {
-		// Use a timeout for the flush operation
-		flushCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		defer cancel()
-
-		// Get cheapest model for flush
-		var flushProvider ai.Provider
-		if r.selector != nil {
-			cheapestModelID := r.selector.GetCheapestModel()
-			if cheapestModelID != "" {
-				providerID, modelName := ai.ParseModelID(cheapestModelID)
-				if p, ok := r.providerMap[providerID]; ok {
-					flushProvider = &modelOverrideProvider{Provider: p, model: modelName}
-				}
-			}
-		}
-		if flushProvider == nil {
-			flushProvider = r.providers[0]
-		}
-
-		// Create extractor and extract facts
-		extractor := memory.NewExtractor(flushProvider)
-		facts, err := extractor.Extract(flushCtx, messages)
-		if err != nil {
-			fmt.Printf("[runner] Memory flush extraction failed: %v\n", err)
-			return false
-		}
-
-		if facts.IsEmpty() {
-			fmt.Printf("[runner] Memory flush complete (no memories to store)\n")
-		} else {
-			// Store extracted facts (with dedup: skip if identical value already exists)
-			entries := facts.FormatForStorage()
-			stored, skipped := 0, 0
-			for _, entry := range entries {
-				if r.memoryTool.IsDuplicate(entry.Layer, entry.Namespace, entry.Key, entry.Value, userID) {
-					skipped++
-					continue
-				}
-				if err := r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID); err != nil {
-					fmt.Printf("[runner] Memory flush store failed for %s: %v\n", entry.Key, err)
-				} else {
-					stored++
-				}
-			}
-			fmt.Printf("[runner] Memory flush: stored %d, skipped %d duplicates (before compaction)\n", stored, skipped)
-		}
-
-		// Record that we ran memory flush for this compaction cycle
-		if r.sessions != nil {
-			if err := r.sessions.RecordMemoryFlush(sessionID); err != nil {
-				fmt.Printf("[runner] Warning: failed to record memory flush: %v\n", err)
-			}
+	// Record flush intent immediately to prevent re-triggering on next iteration
+	if r.sessions != nil {
+		if err := r.sessions.RecordMemoryFlush(sessionID); err != nil {
+			fmt.Printf("[runner] Warning: failed to record memory flush: %v\n", err)
 		}
 	}
 
+	fmt.Printf("[runner] Context at %d tokens (threshold: %d) - launching background memory flush (session: %s)\n", tokens, flushThreshold, sessionID)
+
+	// Resolve provider synchronously (fast, no LLM call)
+	var flushProvider ai.Provider
+	if r.selector != nil {
+		cheapestModelID := r.selector.GetCheapestModel()
+		if cheapestModelID != "" {
+			providerID, modelName := ai.ParseModelID(cheapestModelID)
+			if p, ok := r.providerMap[providerID]; ok {
+				flushProvider = &modelOverrideProvider{Provider: p, model: modelName}
+			}
+		}
+	}
+	if flushProvider == nil {
+		flushProvider = r.providers[0]
+	}
+
+	// Run extraction in background — the messages slice is an in-memory copy
+	// safe to read concurrently while Compact() modifies the DB.
+	go r.runMemoryFlush(ctx, flushProvider, messages, userID)
+
 	return true
+}
+
+// runMemoryFlush performs the actual LLM extraction and storage in the background.
+func (r *Runner) runMemoryFlush(ctx context.Context, provider ai.Provider, messages []session.Message, userID string) {
+	defer func() {
+		if v := recover(); v != nil {
+			crashlog.LogPanic("runner", v, map[string]string{"op": "memory_flush"})
+		}
+	}()
+
+	flushCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	extractor := memory.NewExtractor(provider)
+	facts, err := extractor.Extract(flushCtx, messages)
+	if err != nil {
+		fmt.Printf("[runner] Background memory flush failed: %v\n", err)
+		return
+	}
+
+	if facts.IsEmpty() {
+		fmt.Printf("[runner] Background memory flush complete (no memories to store)\n")
+		return
+	}
+
+	// Store extracted facts (with dedup: skip if identical value already exists)
+	entries := facts.FormatForStorage()
+	stored, skipped := 0, 0
+	for _, entry := range entries {
+		var storeErr error
+		if entry.IsStyle {
+			storeErr = r.memoryTool.StoreStyleEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
+		} else {
+			if r.memoryTool.IsDuplicate(entry.Layer, entry.Namespace, entry.Key, entry.Value, userID) {
+				skipped++
+				continue
+			}
+			storeErr = r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
+		}
+		if storeErr != nil {
+			fmt.Printf("[runner] Memory flush store failed for %s: %v\n", entry.Key, storeErr)
+		} else {
+			stored++
+		}
+	}
+	fmt.Printf("[runner] Background memory flush: stored %d, skipped %d duplicates\n", stored, skipped)
 }
 
 // detectUserModelSwitch checks the last user message for model switch requests
@@ -1719,42 +1484,99 @@ const DefaultContextTokenLimit = 80000
 // Used when the active model's context window is unknown.
 const DefaultMemoryFlushThreshold = 60000
 
-// contextTokenLimit returns the max tokens before proactive compaction triggers.
-// Computed from the active model's context window (80% of usable context),
-// falling back to DefaultContextTokenLimit if no model info is available.
-func (r *Runner) contextTokenLimit() int {
-	if r.selector == nil {
-		return DefaultContextTokenLimit
+// Threshold offset constants
+const (
+	// WarningOffset is how far below effective context the warning threshold sits.
+	// Micro-compact activates above this point.
+	WarningOffset = 20000
+
+	// ErrorOffset is how far below effective context the error threshold sits.
+	// A warning is logged above this point.
+	ErrorOffset = 10000
+
+	// DefaultMaxOutputTokens is the assumed max output budget for blocking threshold.
+	DefaultMaxOutputTokens = 16000
+)
+
+// ContextThresholds defines four graduated tiers for context management.
+// Thresholds are absolute token counts derived from the model's context window.
+type ContextThresholds struct {
+	Warning     int // Micro-compact activates above this
+	Error       int // Log warning about context size
+	AutoCompact int // Trigger full compaction (LLM summarization)
+	Blocking    int // Refuse API call — not enough room for response
+}
+
+// contextThresholds computes graduated context thresholds from the active model's
+// context window. Falls back to defaults when model info is unavailable.
+func (r *Runner) contextThresholds() ContextThresholds {
+	contextWindow := 0
+	if r.selector != nil {
+		modelID := r.selector.Select(nil)
+		if modelID != "" {
+			info := r.selector.GetModelInfo(modelID)
+			if info != nil && info.ContextWindow > 0 {
+				contextWindow = info.ContextWindow
+			}
+		}
 	}
 
-	// Get the general/default model (nil messages → TaskTypeGeneral)
-	modelID := r.selector.Select(nil)
-	if modelID == "" {
-		return DefaultContextTokenLimit
+	if contextWindow <= 0 {
+		return ContextThresholds{
+			Warning:     DefaultContextTokenLimit - WarningOffset,
+			Error:       DefaultContextTokenLimit - ErrorOffset,
+			AutoCompact: DefaultContextTokenLimit,
+			Blocking:    DefaultContextTokenLimit - DefaultMaxOutputTokens,
+		}
 	}
 
-	info := r.selector.GetModelInfo(modelID)
-	if info == nil || info.ContextWindow <= 0 {
-		return DefaultContextTokenLimit
-	}
-
-	// Reserve tokens for system prompt, tool definitions, and response buffer
+	// Reserve tokens for system prompt, tool definitions
 	const reserveTokens = 20000
-	effective := info.ContextWindow - reserveTokens
-	if effective <= DefaultContextTokenLimit {
-		return DefaultContextTokenLimit
+	effective := contextWindow - reserveTokens
+	if effective < DefaultContextTokenLimit {
+		effective = DefaultContextTokenLimit
 	}
 
-	// Compact at 80% of effective context
-	limit := effective * 80 / 100
+	warning := effective - WarningOffset
+	errorT := effective - ErrorOffset
+	autoCompact := effective
+	blocking := effective - DefaultMaxOutputTokens
 
-	// Cap to avoid extremely long summarization tasks
-	const maxLimit = 500000
-	if limit > maxLimit {
-		return maxLimit
+	// Floor: reasonable minimums
+	if warning < 40000 {
+		warning = 40000
+	}
+	if errorT < 50000 {
+		errorT = 50000
+	}
+	if blocking < DefaultContextTokenLimit-DefaultMaxOutputTokens {
+		blocking = DefaultContextTokenLimit - DefaultMaxOutputTokens
 	}
 
-	return limit
+	// Cap: avoid extremely long summarization tasks
+	const maxAutoCompact = 500000
+	if autoCompact > maxAutoCompact {
+		autoCompact = maxAutoCompact
+	}
+
+	return ContextThresholds{
+		Warning:     warning,
+		Error:       errorT,
+		AutoCompact: autoCompact,
+		Blocking:    blocking,
+	}
+}
+
+// contextTokenLimit returns the max tokens before proactive compaction triggers.
+// Delegates to the AutoCompact tier of the graduated thresholds.
+func (r *Runner) contextTokenLimit() int {
+	return r.contextThresholds().AutoCompact
+}
+
+// contextWarningThreshold returns the token count above which micro-compaction
+// should activate. Delegates to the Warning tier of the graduated thresholds.
+func (r *Runner) contextWarningThreshold() int {
+	return r.contextThresholds().Warning
 }
 
 // memoryFlushThreshold returns the token count at which memory flush triggers.
@@ -1775,48 +1597,6 @@ IMPORTANT: Review the conversation and use the memory tool to store any importan
 
 If there's nothing important to store, simply reply "NO_STORE_NEEDED" and nothing else.`
 
-// injectSystemContext enriches the system prompt with runtime context
-// so the AI knows what model it's running as, current time, etc.
-func injectSystemContext(systemPrompt, providerID, modelName string) string {
-	now := time.Now()
-
-	// Get hostname
-	hostname, err := os.Hostname()
-	if err != nil {
-		hostname = "unknown"
-	}
-
-	// Format OS name nicely
-	osName := runtime.GOOS
-	switch osName {
-	case "darwin":
-		osName = "macOS"
-	case "linux":
-		osName = "Linux"
-	case "windows":
-		osName = "Windows"
-	}
-
-	// Build context block
-	contextBlock := fmt.Sprintf(`
-
----
-[System Context]
-Model: %s/%s
-Date: %s
-Time: %s
-Timezone: %s
-Computer: %s
-OS: %s (%s)
----`,
-		providerID, modelName,
-		now.Format("Monday, January 2, 2006"),
-		now.Format("3:04 PM"),
-		now.Format("MST"),
-		hostname,
-		osName, runtime.GOARCH,
-	)
-
-	return systemPrompt + contextBlock
-}
+// buildPlatformSection and injectSystemContext have moved to prompt.go
+// as part of the section-based prompt builder.
 

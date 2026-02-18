@@ -138,9 +138,13 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 		result = append(result, openai.SystemMessage(req.System))
 	}
 
-	for _, msg := range req.Messages {
+	for i, msg := range req.Messages {
 		switch msg.Role {
 		case "user":
+			if msg.Content == "" {
+				fmt.Printf("[OpenAI] Skipping empty user message at index %d\n", i)
+				continue
+			}
 			result = append(result, openai.UserMessage(msg.Content))
 
 		case "assistant":
@@ -173,9 +177,15 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 				assistantMsg := openai.ChatCompletionAssistantMessageParam{
 					Role: "assistant",
 				}
-				if msg.Content != "" {
+				// Always set content — some gateways (e.g. Janus→Gemini) reject
+				// assistant messages with null content even when tool_calls are present
+				content := msg.Content
+				if content == "" && len(toolCalls) > 0 {
+					content = " "
+				}
+				if content != "" {
 					assistantMsg.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
-						OfString: openai.String(msg.Content),
+						OfString: openai.String(content),
 					}
 				}
 				if len(toolCalls) > 0 {
@@ -201,6 +211,10 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 			}
 
 		case "system":
+			if msg.Content == "" {
+				fmt.Printf("[OpenAI] Skipping empty system message at index %d\n", i)
+				continue
+			}
 			result = append(result, openai.SystemMessage(msg.Content))
 		}
 	}
@@ -213,13 +227,25 @@ func (p *OpenAIProvider) handleStream(stream *ssestream.Stream[openai.ChatComple
 	defer close(events)
 
 	acc := openai.ChatCompletionAccumulator{}
+	chunkCount := 0
+	textChunks := 0
+	emittedToolCalls := make(map[string]bool)
 
 	for stream.Next() {
 		chunk := stream.Current()
+		chunkCount++
 		acc.AddChunk(chunk)
 
-		// Check for finished tool calls
+		// Log first chunk for debugging (shows finish_reason, model echo, etc.)
+		if chunkCount == 1 {
+			if raw, err := json.Marshal(chunk); err == nil {
+				fmt.Printf("[OpenAI] First chunk: %s\n", string(raw))
+			}
+		}
+
+		// Check for finished tool calls (works when tool calls are streamed incrementally)
 		if tool, ok := acc.JustFinishedToolCall(); ok {
+			emittedToolCalls[tool.ID] = true
 			events <- StreamEvent{
 				Type: EventTypeToolCall,
 				ToolCall: &ToolCall{
@@ -232,10 +258,17 @@ func (p *OpenAIProvider) handleStream(stream *ssestream.Stream[openai.ChatComple
 
 		// Stream text content
 		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+			textChunks++
 			events <- StreamEvent{
 				Type: EventTypeText,
 				Text: chunk.Choices[0].Delta.Content,
 			}
+		}
+
+		// Log non-text chunks that have a finish reason (e.g. "stop", "length", "content_filter")
+		if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != "" {
+			fmt.Printf("[OpenAI] Stream finish_reason=%s (after %d text chunks)\n",
+				chunk.Choices[0].FinishReason, textChunks)
 		}
 	}
 
@@ -246,6 +279,31 @@ func (p *OpenAIProvider) handleStream(stream *ssestream.Stream[openai.ChatComple
 			Error: err,
 		}
 		return
+	}
+
+	// Fallback: emit any accumulated tool calls that JustFinishedToolCall() missed.
+	// This happens when a gateway (e.g. Janus) sends complete tool calls in a single
+	// chunk instead of streaming arguments incrementally.
+	if len(acc.Choices) > 0 {
+		for _, tc := range acc.Choices[0].Message.ToolCalls {
+			if !emittedToolCalls[tc.ID] && tc.Function.Name != "" {
+				fmt.Printf("[OpenAI] Fallback: emitting tool call %s (%s) from accumulator\n", tc.ID, tc.Function.Name)
+				events <- StreamEvent{
+					Type: EventTypeToolCall,
+					ToolCall: &ToolCall{
+						ID:    tc.ID,
+						Name:  tc.Function.Name,
+						Input: json.RawMessage(tc.Function.Arguments),
+					},
+				}
+			}
+		}
+	}
+
+	if chunkCount == 0 {
+		fmt.Printf("[OpenAI] Warning: stream completed with 0 chunks (empty response from %s)\n", p.ID())
+	} else if textChunks == 0 && len(emittedToolCalls) == 0 {
+		fmt.Printf("[OpenAI] Warning: stream had %d chunks but 0 text content and 0 tool calls (provider: %s)\n", chunkCount, p.ID())
 	}
 
 	events <- StreamEvent{Type: EventTypeDone}

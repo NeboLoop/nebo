@@ -51,6 +51,10 @@ type Skill struct {
 	// Priority determines precedence (higher = first)
 	Priority int `yaml:"priority"`
 
+	// MaxTurns is how many turns of inactivity before auto-expiring.
+	// 0 means use the system default.
+	MaxTurns int `yaml:"max_turns"`
+
 	// Metadata holds additional data
 	Metadata map[string]any `yaml:"metadata"`
 

@@ -1079,7 +1079,9 @@ func (t *MemoryTool) StoreStyleEntryForUser(layer, namespace, key, value string,
 }
 
 // IsDuplicate checks if a memory with the same namespace:key:user_id already exists
-// with an identical value. Returns true if the value is unchanged (skip storing).
+// with an identical value, OR if any memory in the same namespace already has the
+// same content under a different key. This prevents the LLM extraction from creating
+// duplicates like "preferences/code_style" and "preference/code-style" with identical values.
 func (t *MemoryTool) IsDuplicate(layer, namespace, key, value, userID string) bool {
 	if t.queries == nil {
 		return false
@@ -1091,15 +1093,29 @@ func (t *MemoryTool) IsDuplicate(layer, namespace, key, value, userID string) bo
 	if fullNamespace == "" {
 		fullNamespace = "default"
 	}
+
+	// Check 1: exact key match (existing behavior)
 	existing, err := t.queries.GetMemoryByKeyAndUser(context.Background(), db.GetMemoryByKeyAndUserParams{
 		Namespace: fullNamespace,
 		Key:       key,
 		UserID:    userID,
 	})
-	if err != nil {
-		return false // Not found or error — not a duplicate
+	if err == nil && existing.Value == value {
+		return true
 	}
-	return existing.Value == value
+
+	// Check 2: same content under any key in the same namespace
+	// This catches LLM extraction generating different keys for identical facts
+	var count int64
+	err = t.sqlDB.QueryRow(`
+		SELECT COUNT(*) FROM memories
+		WHERE namespace = ? AND user_id = ? AND value = ?
+	`, fullNamespace, userID, value).Scan(&count)
+	if err == nil && count > 0 {
+		return true
+	}
+
+	return false
 }
 
 // IndexSessionTranscript creates searchable chunks from session messages

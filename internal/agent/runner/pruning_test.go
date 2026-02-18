@@ -2,6 +2,7 @@ package runner
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -367,5 +368,300 @@ func TestPruneContext_ErrorResultPreservesIsError(t *testing.T) {
 	}
 	if !strings.Contains(results[0].Content, "failed") {
 		t.Fatal("error result should show 'failed' status")
+	}
+}
+
+// --- Micro-Compact Tests ---
+
+// buildMicroCompactMessages creates a message history with tool calls for testing.
+// Each call generates ~tokensPerResult tokens of tool result content.
+func buildMicroCompactMessages(numCalls int, tokensPerResult int) []session.Message {
+	messages := make([]session.Message, 0, numCalls*3+2)
+	messages = append(messages, session.Message{Role: "user", Content: "do something"})
+
+	for i := 0; i < numCalls; i++ {
+		tcID := "tc" + strings.Repeat("0", i+1)
+		messages = append(messages, session.Message{
+			Role: "assistant",
+			ToolCalls: makeToolCalls(session.ToolCall{
+				ID:    tcID,
+				Name:  "file",
+				Input: json.RawMessage(`{"action":"read","path":"/tmp/test.go"}`),
+			}),
+		})
+		messages = append(messages, session.Message{
+			Role: "tool",
+			ToolResults: makeToolResults(session.ToolResult{
+				ToolCallID: tcID,
+				Content:    strings.Repeat("x", tokensPerResult*CharsPerTokenEstimate),
+			}),
+		})
+	}
+
+	messages = append(messages, session.Message{Role: "assistant", Content: "done"})
+	return messages
+}
+
+func TestMicroCompact_ProtectsLast3Results(t *testing.T) {
+	// 6 tool calls with 10k tokens each = 60k tokens (above any threshold)
+	// The last 3 should be protected
+	msgs := buildMicroCompactMessages(6, 10000)
+	result, saved := microCompact(msgs, 1000) // very low threshold so it always fires
+
+	if saved == 0 {
+		t.Fatal("expected some savings")
+	}
+
+	// Count how many results are trimmed vs preserved
+	trimmed, preserved := 0, 0
+	for _, msg := range result {
+		if len(msg.ToolResults) == 0 {
+			continue
+		}
+		var results []session.ToolResult
+		json.Unmarshal(msg.ToolResults, &results)
+		for _, r := range results {
+			if strings.HasPrefix(r.Content, "[trimmed:") {
+				trimmed++
+			} else {
+				preserved++
+			}
+		}
+	}
+
+	if preserved != MicroCompactKeepRecent {
+		t.Fatalf("expected %d preserved results, got %d", MicroCompactKeepRecent, preserved)
+	}
+	if trimmed != 3 { // 6 total - 3 protected = 3 trimmed
+		t.Fatalf("expected 3 trimmed results, got %d", trimmed)
+	}
+}
+
+func TestMicroCompact_SkipsBelowWarningThreshold(t *testing.T) {
+	// Small messages that are well below the warning threshold
+	msgs := []session.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi"},
+	}
+
+	result, saved := microCompact(msgs, 100000) // high threshold
+	if saved != 0 {
+		t.Fatalf("expected 0 savings below threshold, got %d", saved)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+}
+
+func TestMicroCompact_RequiresMinSavings(t *testing.T) {
+	// 4 tool calls with 1000 tokens each = 4000 tokens total
+	// After protecting 3, only 1 would be trimmed (1000 tokens) < MicroCompactMinSavings (20000)
+	msgs := buildMicroCompactMessages(4, 1000)
+
+	_, saved := microCompact(msgs, 1) // threshold = 1 so it tries to run
+	if saved != 0 {
+		t.Fatalf("expected 0 savings when below min savings, got %d", saved)
+	}
+}
+
+func TestMicroCompact_TrimsToolUseAndResult(t *testing.T) {
+	msgs := buildMicroCompactMessages(6, 10000)
+	result, _ := microCompact(msgs, 1000)
+
+	// Check that trimmed tool results also have their tool_use inputs trimmed
+	for _, msg := range result {
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		var calls []session.ToolCall
+		json.Unmarshal(msg.ToolCalls, &calls)
+		for _, c := range calls {
+			// Find if this call's result was trimmed
+			for _, rmsg := range result {
+				if len(rmsg.ToolResults) == 0 {
+					continue
+				}
+				var results []session.ToolResult
+				json.Unmarshal(rmsg.ToolResults, &results)
+				for _, r := range results {
+					if r.ToolCallID == c.ID && strings.HasPrefix(r.Content, "[trimmed:") {
+						// The tool_use input should also be trimmed
+						if !strings.Contains(string(c.Input), "trimmed") {
+							t.Fatalf("tool_use input for %s should be trimmed when result is trimmed", c.ID)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestMicroCompact_StripAcknowledgedImages(t *testing.T) {
+	msgs := []session.Message{
+		{Role: "user", Content: "here is a screenshot data:image/png;base64,abc123..."},
+		{Role: "assistant", Content: "I can see the image shows a dashboard"},
+		{Role: "user", Content: "what about this one data:image/jpeg;base64,def456..."},
+		// No assistant response after this one — image is NOT acknowledged
+	}
+
+	// Low threshold to trigger, but there are no tool results to trim
+	result, saved := microCompact(msgs, 1)
+
+	// First user message should have image stripped (it was acknowledged)
+	if result[0].Content != "[image]" {
+		t.Fatalf("acknowledged image should be stripped, got: %s", result[0].Content)
+	}
+
+	// Second user message should be preserved (no assistant followed it)
+	if !strings.Contains(result[2].Content, "data:image/jpeg") {
+		t.Fatal("unacknowledged image should be preserved")
+	}
+
+	_ = saved // image savings
+}
+
+func TestMicroCompact_SkipsNonCompactableTools(t *testing.T) {
+	// Tool call from "agent" tool — should NOT be trimmed by micro-compact
+	// (agent is not in microCompactTools)
+	msgs := []session.Message{
+		{Role: "user", Content: "remember this"},
+		{
+			Role: "assistant",
+			ToolCalls: makeToolCalls(session.ToolCall{
+				ID:    "tc_agent",
+				Name:  "agent",
+				Input: json.RawMessage(`{"resource":"memory","action":"store"}`),
+			}),
+		},
+		{
+			Role: "tool",
+			ToolResults: makeToolResults(session.ToolResult{
+				ToolCallID: "tc_agent",
+				Content:    strings.Repeat("stored ok ", 10000),
+			}),
+		},
+		{Role: "assistant", Content: "done"},
+	}
+
+	result, saved := microCompact(msgs, 1)
+	if saved != 0 {
+		t.Fatalf("agent tool results should not be trimmed, saved %d tokens", saved)
+	}
+
+	var results []session.ToolResult
+	json.Unmarshal(result[2].ToolResults, &results)
+	if strings.HasPrefix(results[0].Content, "[trimmed:") {
+		t.Fatal("agent tool result should NOT be trimmed")
+	}
+}
+
+// --- FileAccessTracker tests ---
+
+func TestFileAccessTracker_TrackAndSnapshot(t *testing.T) {
+	tracker := NewFileAccessTracker()
+
+	tracker.Track("/tmp/a.go")
+	tracker.Track("/tmp/b.go")
+	tracker.Track("/tmp/a.go") // update timestamp
+
+	snap := tracker.Snapshot()
+	if len(snap) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(snap))
+	}
+	if _, ok := snap["/tmp/a.go"]; !ok {
+		t.Fatal("missing /tmp/a.go")
+	}
+	if _, ok := snap["/tmp/b.go"]; !ok {
+		t.Fatal("missing /tmp/b.go")
+	}
+}
+
+func TestFileAccessTracker_Clear(t *testing.T) {
+	tracker := NewFileAccessTracker()
+	tracker.Track("/tmp/a.go")
+	tracker.Clear()
+
+	snap := tracker.Snapshot()
+	if len(snap) != 0 {
+		t.Fatalf("expected 0 entries after clear, got %d", len(snap))
+	}
+}
+
+func TestBuildFileReinjectionMessage_EmptyTracker(t *testing.T) {
+	tracker := NewFileAccessTracker()
+	msg := buildFileReinjectionMessage(tracker)
+	if msg != nil {
+		t.Fatal("expected nil for empty tracker")
+	}
+}
+
+func TestBuildFileReinjectionMessage_NilTracker(t *testing.T) {
+	msg := buildFileReinjectionMessage(nil)
+	if msg != nil {
+		t.Fatal("expected nil for nil tracker")
+	}
+}
+
+func TestBuildFileReinjectionMessage_WithRealFiles(t *testing.T) {
+	// Create temp files
+	dir := t.TempDir()
+	for i := 0; i < 3; i++ {
+		path := dir + "/" + string(rune('a'+i)) + ".txt"
+		os.WriteFile(path, []byte("line 1\nline 2\nline 3\n"), 0644)
+	}
+
+	tracker := NewFileAccessTracker()
+	for i := 0; i < 3; i++ {
+		path := dir + "/" + string(rune('a'+i)) + ".txt"
+		tracker.Track(path)
+	}
+
+	msg := buildFileReinjectionMessage(tracker)
+	if msg == nil {
+		t.Fatal("expected non-nil message")
+	}
+	if msg.Role != "user" {
+		t.Errorf("expected role 'user', got %q", msg.Role)
+	}
+	if !strings.Contains(msg.Content, "[Context recovery") {
+		t.Error("missing context recovery header")
+	}
+	if !strings.Contains(msg.Content, "a.txt") {
+		t.Error("missing file a.txt in re-injection")
+	}
+}
+
+func TestBuildFileReinjectionMessage_MaxFiles(t *testing.T) {
+	// Create more files than MaxReinjectedFiles
+	dir := t.TempDir()
+	tracker := NewFileAccessTracker()
+
+	for i := 0; i < MaxReinjectedFiles+3; i++ {
+		path := dir + "/" + string(rune('a'+i)) + ".txt"
+		os.WriteFile(path, []byte("content\n"), 0644)
+		tracker.Track(path)
+	}
+
+	msg := buildFileReinjectionMessage(tracker)
+	if msg == nil {
+		t.Fatal("expected non-nil message")
+	}
+
+	// Count "===" markers (one per file)
+	count := strings.Count(msg.Content, "===")
+	// Each file has "=== path ===" so 2 per file
+	filesIncluded := count / 2
+	if filesIncluded > MaxReinjectedFiles {
+		t.Errorf("expected at most %d files, got %d", MaxReinjectedFiles, filesIncluded)
+	}
+}
+
+func TestBuildFileReinjectionMessage_MissingFileSkipped(t *testing.T) {
+	tracker := NewFileAccessTracker()
+	tracker.Track("/nonexistent/path/to/file.go")
+
+	msg := buildFileReinjectionMessage(tracker)
+	if msg != nil {
+		t.Fatal("expected nil when all files are unreadable")
 	}
 }
