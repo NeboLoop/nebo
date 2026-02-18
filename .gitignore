@@ -2,6 +2,7 @@
 bin/
 tmp/
 dist/
+*.pid
 
 # Database
 data/
