@@ -1,12 +1,12 @@
 Name: nebo
-Host: 0.0.0.0
+Host: 127.0.0.1
 Port: 27895
 Timeout: 60000 # 60 seconds for API testing
 
 # App settings (from .env)
 App:
-  BaseURL: ${APP_BASE_URL:-http://localhost:27895}
-  Domain: ${APP_DOMAIN:-localhost}
+  BaseURL: $APP_BASE_URL
+  Domain: $APP_DOMAIN
 
 # Logging - configurable via Level: debug, info, error, severe
 Log:
@@ -29,5 +29,7 @@ Database: {}
 # Enables: Loops (social trust circles), Marketplace, Gateway plugins
 NeboLoop:
   Enabled: true
-  ApiURL: ${NEBOLOOP_API_URL:-https://api.neboloop.com}  # Account/auth API
+  ApiURL: $NEBOLOOP_API_URL
+  JanusURL: $NEBOLOOP_JANUS_URL
+  CommsURL: $NEBOLOOP_COMMS_URL
   # Dev override: NEBOLOOP_API_URL=http://localhost:8888

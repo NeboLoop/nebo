@@ -28,11 +28,12 @@ const (
 // invokedSkillState tracks a skill that was actually invoked (called by the model) in a session.
 // Only invoked skills get their templates re-injected into subsequent system prompts.
 type invokedSkillState struct {
-	lastInvokedTurn int    // Turn when skill was last invoked/re-invoked
-	content         string // SKILL.md template (snapshot at invocation time)
-	name            string // Display name
-	maxTurns        int    // Per-skill TTL override (0 = use default)
-	manual          bool   // Loaded via explicit skill(action: "load")
+	lastInvokedTurn int      // Turn when skill was last invoked/re-invoked
+	content         string   // SKILL.md template (snapshot at invocation time)
+	name            string   // Display name
+	tools           []string // Tool restrictions from skill (empty = all tools)
+	maxTurns        int      // Per-skill TTL override (0 = use default)
+	manual          bool     // Loaded via explicit skill(action: "load")
 }
 
 // ttl returns the effective TTL for this invoked skill.
@@ -68,6 +69,7 @@ type skillEntry struct {
 	skillMD     string   // Full SKILL.md content
 	adapter     Tool     // gRPC adapter for app-backed skills; nil for standalone
 	triggers    []string // Phrases that auto-activate this skill
+	tools       []string // Tool restrictions (empty = all tools allowed)
 	priority    int      // Higher = matched first when multiple skills trigger
 	maxTurns    int      // Per-skill TTL override (0 = use default)
 }
@@ -220,8 +222,9 @@ func (t *SkillDomainTool) ActionsFor(resource string) []string {
 // Register adds or updates a skill entry.
 // adapter is nil for standalone skills (SKILL.md only).
 // triggers are phrases that auto-activate this skill when matched in user messages.
+// tools restricts which tools the model can use when this skill is active (empty = all).
 // maxTurns overrides the default TTL for auto-expiry (0 = use default).
-func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adapter Tool, triggers []string, priority, maxTurns int) {
+func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adapter Tool, triggers, tools []string, priority, maxTurns int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -232,6 +235,7 @@ func (t *SkillDomainTool) Register(slug, name, description, skillMD string, adap
 		skillMD:     skillMD,
 		adapter:     adapter,
 		triggers:    triggers,
+		tools:       tools,
 		priority:    priority,
 		maxTurns:    maxTurns,
 	}
@@ -483,6 +487,59 @@ func (t *SkillDomainTool) AutoMatchSkills(sessionKey, message string) string {
 	return b.String()
 }
 
+// ForceLoadSkill pre-loads a skill into the session without requiring a tool call.
+// Used for system-driven skill activation (e.g., onboarding on first run).
+// Returns true if the skill was found and loaded.
+func (t *SkillDomainTool) ForceLoadSkill(sessionKey, skillName string) bool {
+	if sessionKey == "" || skillName == "" {
+		return false
+	}
+
+	t.mu.RLock()
+	_, ok := t.entries[skillName]
+	t.mu.RUnlock()
+
+	if !ok {
+		return false
+	}
+
+	// Record as manual invocation (stickier TTL) — this loads it into ActiveSkillContent
+	t.recordInvocation(sessionKey, skillName, true)
+	return true
+}
+
+// ActiveSkillTools returns the union of tool restrictions from all active skills
+// for the given session. Returns nil if no active skills restrict tools (= all tools allowed).
+func (t *SkillDomainTool) ActiveSkillTools(sessionKey string) []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	invoked, ok := t.invokedSkills[sessionKey]
+	if !ok || len(invoked) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	anyRestriction := false
+	for _, state := range invoked {
+		if len(state.tools) > 0 {
+			anyRestriction = true
+			for _, tool := range state.tools {
+				seen[tool] = true
+			}
+		}
+	}
+	if !anyRestriction {
+		return nil
+	}
+
+	result := make([]string, 0, len(seen))
+	for tool := range seen {
+		result = append(result, tool)
+	}
+	return result
+}
+
 // ClearSession removes all invoked skills and turn counter for a session (called on session clear/end).
 func (t *SkillDomainTool) ClearSession(sessionKey string) {
 	t.mu.Lock()
@@ -527,6 +584,7 @@ func (t *SkillDomainTool) recordInvocation(sessionKey, slug string, manual bool)
 		lastInvokedTurn: currentTurn,
 		content:         content,
 		name:            entry.name,
+		tools:           entry.tools,
 		maxTurns:        entry.maxTurns,
 		manual:          manual,
 	}

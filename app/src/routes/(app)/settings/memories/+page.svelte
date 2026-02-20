@@ -2,7 +2,9 @@
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { Brain, Search, Trash2, Edit2, RefreshCw, X, Save, FolderTree, Tag, Clock, Eye } from 'lucide-svelte';
+	import Drawer from '$lib/components/ui/Drawer.svelte';
+	import SearchInput from '$lib/components/ui/SearchInput.svelte';
+	import { Brain, Trash2, Edit2, RefreshCw, X, Save, Tag, Eye } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { MemoryItem, MemoryStatsResponse } from '$lib/api/nebo';
 
@@ -17,6 +19,7 @@
 	let editTags = $state('');
 	let currentPage = $state(1);
 	let total = $state(0);
+	let drawerOpen = $state(false);
 	const pageSize = 50;
 
 	onMount(async () => {
@@ -75,12 +78,19 @@
 	async function selectMemory(memory: MemoryItem) {
 		selectedMemory = memory;
 		isEditing = false;
+		drawerOpen = true;
 		try {
 			const data = await api.getMemory(String(memory.id));
 			selectedMemory = data.memory;
 		} catch (error) {
 			console.error('Failed to get memory:', error);
 		}
+	}
+
+	function closeDrawer() {
+		drawerOpen = false;
+		selectedMemory = null;
+		isEditing = false;
 	}
 
 	function startEdit() {
@@ -109,7 +119,7 @@
 			await api.deleteMemory(String(memory.id));
 			memories = memories.filter(m => m.id !== memory.id);
 			if (selectedMemory?.id === memory.id) {
-				selectedMemory = null;
+				closeDrawer();
 			}
 			await loadStats();
 		} catch (error) {
@@ -149,12 +159,31 @@
 			searchMemoriesHandler();
 		}
 	}
+
+	function handleSearchClear() {
+		searchQuery = '';
+		currentPage = 1;
+		loadMemories();
+	}
 </script>
 
-<div class="mb-6 flex items-center justify-between">
+<!-- Header with inline stats -->
+<div class="mb-4 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Memories</h2>
-		<p class="text-sm text-base-content/60">Browse and manage what the agent remembers about you</p>
+		{#if stats}
+			<p class="text-sm text-base-content/60">
+				<span class="font-medium text-base-content/80">{stats.totalCount}</span> total
+				<span class="mx-1">&middot;</span>
+				<span class="text-primary font-medium">{stats.layerCounts?.tacit || 0}</span> tacit
+				<span class="mx-1">&middot;</span>
+				<span class="text-secondary font-medium">{stats.layerCounts?.daily || 0}</span> daily
+				<span class="mx-1">&middot;</span>
+				<span class="text-accent font-medium">{stats.layerCounts?.entity || 0}</span> entity
+			</p>
+		{:else}
+			<p class="text-sm text-base-content/60">Browse and manage what the agent remembers about you</p>
+		{/if}
 	</div>
 	<Button type="ghost" onclick={() => { loadMemories(); loadStats(); }}>
 		<RefreshCw class="w-4 h-4 mr-2" />
@@ -162,245 +191,192 @@
 	</Button>
 </div>
 
-<!-- Stats Cards -->
-{#if stats}
-<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-	<div class="bg-base-200 rounded-lg p-4">
-		<div class="text-2xl font-bold text-base-content">{stats.totalCount}</div>
-		<div class="text-sm text-base-content/60">Total Memories</div>
+<!-- Namespace filter pills -->
+{#if stats?.namespaces?.length}
+	<div class="flex flex-wrap gap-1.5 mb-4">
+		<button
+			class="btn btn-xs {selectedNamespace === '' ? 'btn-primary' : 'btn-ghost'}"
+			onclick={() => selectNamespaceFilter('')}
+		>
+			All
+		</button>
+		{#each stats.namespaces as ns}
+			<button
+				class="btn btn-xs {selectedNamespace === ns ? 'btn-primary' : 'btn-ghost'}"
+				onclick={() => selectNamespaceFilter(ns)}
+			>
+				{ns}
+			</button>
+		{/each}
 	</div>
-	<div class="bg-primary/10 rounded-lg p-4">
-		<div class="text-2xl font-bold text-primary">{stats.layerCounts?.tacit || 0}</div>
-		<div class="text-sm text-base-content/60">Tacit (Core)</div>
-	</div>
-	<div class="bg-secondary/10 rounded-lg p-4">
-		<div class="text-2xl font-bold text-secondary">{stats.layerCounts?.daily || 0}</div>
-		<div class="text-sm text-base-content/60">Daily (Context)</div>
-	</div>
-	<div class="bg-accent/10 rounded-lg p-4">
-		<div class="text-2xl font-bold text-accent">{stats.layerCounts?.entity || 0}</div>
-		<div class="text-sm text-base-content/60">Entity (References)</div>
-	</div>
-</div>
 {/if}
 
-<div class="grid lg:grid-cols-12 gap-6">
-	<!-- Namespace Tree -->
-	<div class="lg:col-span-2">
-		<Card>
-			<h2 class="font-display font-bold text-base-content mb-4 flex items-center gap-2">
-				<FolderTree class="w-4 h-4" />
-				Namespaces
-			</h2>
-			<div class="space-y-1">
-				<button
-					class="w-full text-left px-2 py-1 rounded text-sm transition-colors {selectedNamespace === '' ? 'bg-primary/20 text-primary' : 'hover:bg-base-200'}"
-					onclick={() => selectNamespaceFilter('')}
+<!-- Search + Memory List -->
+<Card>
+	<SearchInput
+		bind:value={searchQuery}
+		placeholder="Search memories..."
+		onkeydown={handleSearchKeydown}
+		onclear={handleSearchClear}
+		class="mb-4"
+	/>
+
+	{#if isLoading}
+		<div class="py-8 text-center text-base-content/60">Loading...</div>
+	{:else if memories.length === 0}
+		<div class="py-8 text-center text-base-content/60">
+			<Brain class="w-8 h-8 mx-auto mb-2 opacity-50" />
+			<p>No memories found</p>
+		</div>
+	{:else}
+		<div class="space-y-2 max-h-[60vh] overflow-y-auto">
+			{#each memories as memory}
+				<div
+					class="p-3 rounded-lg transition-colors cursor-pointer {selectedMemory?.id === memory.id ? 'bg-primary/10 border border-primary/30' : 'bg-base-200 hover:bg-base-300'}"
+					onclick={() => selectMemory(memory)}
+					onkeydown={(e) => e.key === 'Enter' && selectMemory(memory)}
+					role="button"
+					tabindex="0"
 				>
-					All
-				</button>
-				{#if stats?.namespaces}
-					{#each stats.namespaces as ns}
-						<button
-							class="w-full text-left px-2 py-1 rounded text-sm transition-colors truncate {selectedNamespace === ns ? 'bg-primary/20 text-primary' : 'hover:bg-base-200'}"
-							onclick={() => selectNamespaceFilter(ns)}
-							title={ns}
-						>
-							{ns}
-						</button>
-					{/each}
-				{/if}
-			</div>
-		</Card>
-	</div>
-
-	<!-- Memory List -->
-	<div class="lg:col-span-5">
-		<Card>
-			<!-- Search -->
-			<div class="flex gap-2 mb-4">
-				<div class="relative flex-1">
-					<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/40" />
-					<input
-						type="text"
-						placeholder="Search memories..."
-						class="input input-bordered w-full pl-10"
-						bind:value={searchQuery}
-						onkeydown={handleSearchKeydown}
-					/>
-				</div>
-				<Button type="primary" onclick={searchMemoriesHandler}>Search</Button>
-			</div>
-
-			<!-- Memory List -->
-			{#if isLoading}
-				<div class="py-8 text-center text-base-content/60">Loading...</div>
-			{:else if memories.length === 0}
-				<div class="py-8 text-center text-base-content/60">
-					<Brain class="w-8 h-8 mx-auto mb-2 opacity-50" />
-					<p>No memories found</p>
-				</div>
-			{:else}
-				<div class="space-y-2 max-h-[60vh] overflow-y-auto">
-					{#each memories as memory}
-						<div
-							class="p-3 rounded-lg transition-colors cursor-pointer {selectedMemory?.id === memory.id ? 'bg-primary/10 border border-primary/30' : 'bg-base-200 hover:bg-base-300'}"
-							onclick={() => selectMemory(memory)}
-							onkeydown={(e) => e.key === 'Enter' && selectMemory(memory)}
-							role="button"
-							tabindex="0"
-						>
-							<div class="flex items-start justify-between gap-2 mb-1">
-								<span class="font-medium text-sm truncate flex-1">{memory.key}</span>
-								<span class="badge badge-sm {getLayerColor(getLayerFromNamespace(memory.namespace))}">
-									{getLayerFromNamespace(memory.namespace)}
-								</span>
-							</div>
-							<p class="text-sm text-base-content/70 line-clamp-2 mb-2">{memory.value}</p>
-							<div class="flex items-center gap-3 text-xs text-base-content/50">
-								<span class="truncate">{memory.namespace}</span>
-								<span class="flex items-center gap-1">
-									<Eye class="w-3 h-3" />
-									{memory.accessCount}
-								</span>
-							</div>
-						</div>
-					{/each}
-				</div>
-
-				<!-- Pagination -->
-				{#if total > pageSize}
-					<div class="flex justify-center gap-2 mt-4 pt-4 border-t border-base-300">
-						<Button
-							type="ghost"
-							size="sm"
-							disabled={currentPage === 1}
-							onclick={() => { currentPage--; loadMemories(); }}
-						>
-							Previous
-						</Button>
-						<span class="text-sm text-base-content/60 py-2">
-							Page {currentPage} of {Math.ceil(total / pageSize)}
-						</span>
-						<Button
-							type="ghost"
-							size="sm"
-							disabled={currentPage >= Math.ceil(total / pageSize)}
-							onclick={() => { currentPage++; loadMemories(); }}
-						>
-							Next
-						</Button>
-					</div>
-				{/if}
-			{/if}
-		</Card>
-	</div>
-
-	<!-- Memory Detail -->
-	<div class="lg:col-span-5">
-		<Card class="h-[calc(100vh-320px)]">
-			{#if selectedMemory}
-				<div class="flex items-center justify-between mb-4">
-					<h2 class="font-display font-bold text-base-content truncate flex-1" title={selectedMemory.key}>
-						{selectedMemory.key}
-					</h2>
-					<div class="flex gap-2">
-						{#if isEditing}
-							<Button type="ghost" size="sm" onclick={() => isEditing = false}>
-								<X class="w-4 h-4" />
-							</Button>
-							<Button type="primary" size="sm" onclick={saveEdit}>
-								<Save class="w-4 h-4 mr-1" />
-								Save
-							</Button>
-						{:else}
-							<Button type="ghost" size="sm" onclick={startEdit}>
-								<Edit2 class="w-4 h-4" />
-							</Button>
-							<Button type="ghost" size="sm" onclick={() => deleteMemoryHandler(selectedMemory!)}>
-								<Trash2 class="w-4 h-4 text-error" />
-							</Button>
-						{/if}
-					</div>
-				</div>
-
-				<!-- Metadata -->
-				<div class="mb-4 space-y-2 text-sm">
-					<div class="flex items-center gap-2">
-						<span class="text-base-content/60 w-24">Namespace:</span>
-						<span class="badge badge-ghost">{selectedMemory.namespace}</span>
-					</div>
-					<div class="flex items-center gap-2">
-						<span class="text-base-content/60 w-24">Layer:</span>
-						<span class="badge {getLayerColor(getLayerFromNamespace(selectedMemory.namespace))}">
-							{getLayerFromNamespace(selectedMemory.namespace)}
+					<div class="flex items-start justify-between gap-2 mb-1">
+						<span class="font-medium text-sm truncate flex-1">{memory.key}</span>
+						<span class="badge badge-sm {getLayerColor(getLayerFromNamespace(memory.namespace))}">
+							{getLayerFromNamespace(memory.namespace)}
 						</span>
 					</div>
-					<div class="flex items-center gap-2">
-						<span class="text-base-content/60 w-24">Access Count:</span>
-						<span>{selectedMemory.accessCount}</span>
-					</div>
-					<div class="flex items-center gap-2">
-						<span class="text-base-content/60 w-24">Created:</span>
-						<span class="text-base-content/70">{formatDate(selectedMemory.createdAt)}</span>
-					</div>
-					<div class="flex items-center gap-2">
-						<span class="text-base-content/60 w-24">Updated:</span>
-						<span class="text-base-content/70">{formatDate(selectedMemory.updatedAt)}</span>
-					</div>
-					<div class="flex items-center gap-2">
-						<span class="text-base-content/60 w-24">Last Access:</span>
-						<span class="text-base-content/70">{selectedMemory.accessedAt ? formatDate(selectedMemory.accessedAt) : 'Never'}</span>
+					<p class="text-sm text-base-content/70 line-clamp-2 mb-2">{memory.value}</p>
+					<div class="flex items-center gap-3 text-xs text-base-content/50">
+						<span class="truncate">{memory.namespace}</span>
+						<span class="flex items-center gap-1">
+							<Eye class="w-3 h-3" />
+							{memory.accessCount}
+						</span>
 					</div>
 				</div>
+			{/each}
+		</div>
 
-				<!-- Tags -->
-				{#if isEditing}
-					<div class="mb-4">
-						<label class="text-sm text-base-content/60 mb-1 block">Tags (comma-separated)</label>
-						<input
-							type="text"
-							class="input input-bordered w-full"
-							bind:value={editTags}
-							placeholder="tag1, tag2, tag3"
-						/>
-					</div>
-				{:else if selectedMemory.tags?.length}
-					<div class="mb-4">
-						<label class="text-sm text-base-content/60 mb-1 block">Tags</label>
-						<div class="flex flex-wrap gap-1">
-							{#each selectedMemory.tags as tag}
-								<span class="badge badge-outline badge-sm">
-									<Tag class="w-3 h-3 mr-1" />
-									{tag}
-								</span>
-							{/each}
-						</div>
-					</div>
-				{/if}
+		<!-- Pagination -->
+		{#if total > pageSize}
+			<div class="flex justify-center gap-2 mt-4 pt-4 border-t border-base-300">
+				<Button
+					type="ghost"
+					size="sm"
+					disabled={currentPage === 1}
+					onclick={() => { currentPage--; loadMemories(); }}
+				>
+					Previous
+				</Button>
+				<span class="text-sm text-base-content/60 py-2">
+					Page {currentPage} of {Math.ceil(total / pageSize)}
+				</span>
+				<Button
+					type="ghost"
+					size="sm"
+					disabled={currentPage >= Math.ceil(total / pageSize)}
+					onclick={() => { currentPage++; loadMemories(); }}
+				>
+					Next
+				</Button>
+			</div>
+		{/if}
+	{/if}
+</Card>
 
-				<!-- Value -->
-				<div class="flex-1">
-					<label class="text-sm text-base-content/60 mb-1 block">Value</label>
-					{#if isEditing}
-						<textarea
-							class="textarea textarea-bordered w-full h-48"
-							bind:value={editValue}
-						></textarea>
-					{:else}
-						<div class="bg-base-200 rounded-lg p-4 whitespace-pre-wrap text-sm max-h-48 overflow-y-auto">
-							{selectedMemory.value}
-						</div>
-					{/if}
-				</div>
+<!-- Memory Detail Drawer -->
+<Drawer bind:open={drawerOpen} position="right" size="lg" title={selectedMemory?.key || 'Memory Detail'} onclose={closeDrawer}>
+	{#if selectedMemory}
+		<!-- Actions -->
+		<div class="flex gap-2 mb-6">
+			{#if isEditing}
+				<Button type="ghost" size="sm" onclick={() => isEditing = false}>
+					<X class="w-4 h-4 mr-1" />
+					Cancel
+				</Button>
+				<Button type="primary" size="sm" onclick={saveEdit}>
+					<Save class="w-4 h-4 mr-1" />
+					Save
+				</Button>
 			{:else}
-				<div class="h-full flex items-center justify-center text-center">
-					<div>
-						<Brain class="w-12 h-12 mx-auto mb-4 text-base-content/30" />
-						<p class="text-base-content/60">Select a memory to view details</p>
-					</div>
+				<Button type="ghost" size="sm" onclick={startEdit}>
+					<Edit2 class="w-4 h-4 mr-1" />
+					Edit
+				</Button>
+				<Button type="ghost" size="sm" onclick={() => deleteMemoryHandler(selectedMemory!)}>
+					<Trash2 class="w-4 h-4 mr-1 text-error" />
+					Delete
+				</Button>
+			{/if}
+		</div>
+
+		<!-- Metadata -->
+		<div class="mb-6 space-y-2 text-sm">
+			<div class="flex items-center gap-2">
+				<span class="text-base-content/60 w-28">Namespace:</span>
+				<span class="badge badge-ghost">{selectedMemory.namespace}</span>
+			</div>
+			<div class="flex items-center gap-2">
+				<span class="text-base-content/60 w-28">Layer:</span>
+				<span class="badge {getLayerColor(getLayerFromNamespace(selectedMemory.namespace))}">
+					{getLayerFromNamespace(selectedMemory.namespace)}
+				</span>
+			</div>
+			<div class="flex items-center gap-2">
+				<span class="text-base-content/60 w-28">Access Count:</span>
+				<span>{selectedMemory.accessCount}</span>
+			</div>
+			<div class="flex items-center gap-2">
+				<span class="text-base-content/60 w-28">Created:</span>
+				<span class="text-base-content/70">{formatDate(selectedMemory.createdAt)}</span>
+			</div>
+			<div class="flex items-center gap-2">
+				<span class="text-base-content/60 w-28">Updated:</span>
+				<span class="text-base-content/70">{formatDate(selectedMemory.updatedAt)}</span>
+			</div>
+			<div class="flex items-center gap-2">
+				<span class="text-base-content/60 w-28">Last Access:</span>
+				<span class="text-base-content/70">{selectedMemory.accessedAt ? formatDate(selectedMemory.accessedAt) : 'Never'}</span>
+			</div>
+		</div>
+
+		<!-- Tags -->
+		{#if isEditing}
+			<div class="mb-6">
+				<label class="text-sm text-base-content/60 mb-1 block">Tags (comma-separated)</label>
+				<input
+					type="text"
+					class="input input-bordered w-full"
+					bind:value={editTags}
+					placeholder="tag1, tag2, tag3"
+				/>
+			</div>
+		{:else if selectedMemory.tags?.length}
+			<div class="mb-6">
+				<label class="text-sm text-base-content/60 mb-1 block">Tags</label>
+				<div class="flex flex-wrap gap-1">
+					{#each selectedMemory.tags as tag}
+						<span class="badge badge-outline badge-sm">
+							<Tag class="w-3 h-3 mr-1" />
+							{tag}
+						</span>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		<!-- Value -->
+		<div>
+			<label class="text-sm text-base-content/60 mb-1 block">Value</label>
+			{#if isEditing}
+				<textarea
+					class="textarea textarea-bordered w-full h-48"
+					bind:value={editValue}
+				></textarea>
+			{:else}
+				<div class="bg-base-300 rounded-lg p-4 whitespace-pre-wrap text-sm max-h-64 overflow-y-auto">
+					{selectedMemory.value}
 				</div>
 			{/if}
-		</Card>
-	</div>
-</div>
+		</div>
+	{/if}
+</Drawer>

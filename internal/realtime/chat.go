@@ -121,6 +121,9 @@ func RegisterChatHandler(chatCtx *ChatContext) {
 	SetCancelHandler(func(c *Client, msg *Message) {
 		go handleCancel(c, msg, chatCtx)
 	})
+	SetSessionResetHandler(func(c *Client, msg *Message) {
+		handleSessionReset(c, msg, chatCtx)
+	})
 }
 
 // handleApprovalRequest forwards an approval request from agent to all connected clients
@@ -504,6 +507,43 @@ func handleCancel(c *Client, msg *Message, chatCtx *ChatContext) {
 	}
 	if chatCtx.clientHub != nil {
 		chatCtx.clientHub.Broadcast(cancelMsg)
+	}
+}
+
+// handleSessionReset clears session messages so the companion chat starts fresh.
+// The session ID stays the same (Single Bot Paradigm), but all messages are deleted.
+func handleSessionReset(c *Client, msg *Message, chatCtx *ChatContext) {
+	sessionID, _ := msg.Data["session_id"].(string)
+	logging.Infof("[Chat] Session reset requested for %s", sessionID)
+
+	if sessionID == "" || chatCtx.svcCtx == nil || chatCtx.svcCtx.DB == nil {
+		sendSessionResetResult(c, sessionID, false)
+		return
+	}
+
+	ctx := context.Background()
+	if err := chatCtx.svcCtx.DB.DeleteSessionMessages(ctx, sessionID); err != nil {
+		logging.Errorf("[Chat] Failed to delete session messages: %v", err)
+		sendSessionResetResult(c, sessionID, false)
+		return
+	}
+	if err := chatCtx.svcCtx.DB.ResetSession(ctx, sessionID); err != nil {
+		logging.Errorf("[Chat] Failed to reset session: %v", err)
+	}
+
+	sendSessionResetResult(c, sessionID, true)
+}
+
+func sendSessionResetResult(c *Client, sessionID string, ok bool) {
+	resp := &Message{
+		Type:      "session_reset",
+		Data:      map[string]interface{}{"session_id": sessionID, "ok": ok},
+		Timestamp: time.Now(),
+	}
+	data, _ := json.Marshal(resp)
+	select {
+	case c.send <- data:
+	default:
 	}
 }
 

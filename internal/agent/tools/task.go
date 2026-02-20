@@ -12,6 +12,7 @@ import (
 	"github.com/neboloop/nebo/internal/agent/orchestrator"
 	"github.com/neboloop/nebo/internal/agent/recovery"
 	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 // registryAdapter wraps Registry to implement orchestrator.ToolExecutor
@@ -185,13 +186,20 @@ func (t *TaskTool) Execute(ctx context.Context, input json.RawMessage) (*ToolRes
 	// Build system prompt based on agent type
 	systemPrompt := buildAgentSystemPrompt(params.AgentType, params.Prompt)
 
+	// Resolve subagent lane model override from config
+	var subagentModel string
+	if cfg := provider.GetModelsConfig(); cfg != nil && cfg.LaneRouting != nil && cfg.LaneRouting.Subagent != "" {
+		subagentModel = cfg.LaneRouting.Subagent
+	}
+
 	// Spawn the sub-agent
 	agent, err := t.orchestrator.Spawn(ctx, &orchestrator.SpawnRequest{
-		Task:         params.Prompt,
-		Description:  params.Description,
-		Wait:         wait,
-		Timeout:      time.Duration(timeout) * time.Second,
-		SystemPrompt: systemPrompt,
+		Task:          params.Prompt,
+		Description:   params.Description,
+		Wait:          wait,
+		Timeout:       time.Duration(timeout) * time.Second,
+		SystemPrompt:  systemPrompt,
+		ModelOverride: subagentModel,
 	})
 
 	if err != nil {

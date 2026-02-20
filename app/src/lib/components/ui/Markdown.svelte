@@ -1,7 +1,5 @@
 <script lang="ts">
-	import { marked } from 'marked';
-	import { embedExtension } from '$lib/utils/markdown-embeds';
-	import { onMount } from 'svelte';
+	import { parseMarkdown } from '$lib/utils/markdown-parser';
 
 	interface Props {
 		content: string;
@@ -10,29 +8,13 @@
 
 	let { content, class: className = '' }: Props = $props();
 
-	// Configure marked for safe rendering with embed support
-	marked.setOptions({
-		breaks: true,
-		gfm: true
-	});
-	marked.use(embedExtension());
-
-	// Open external links in system browser instead of navigating the webview
-	marked.use({
-		renderer: {
-			link(token) {
-				const href = token.href;
-				const text = this.parser.parseInline(token.tokens || []);
-				const title = token.title ? ` title="${token.title}"` : '';
-				if (href.startsWith('http://') || href.startsWith('https://')) {
-					return `<a href="${href}"${title} target="_blank" rel="noopener noreferrer">${text}</a>`;
-				}
-				return `<a href="${href}"${title}>${text}</a>`;
-			}
-		}
-	});
-
-	let html = $derived(marked.parse(content || '') as string);
+	const MAX_RENDER_LENGTH = 50_000;
+	let truncated = $derived(content?.length > MAX_RENDER_LENGTH);
+	let showFull = $state(false);
+	let displayContent = $derived(
+		truncated && !showFull ? content.slice(0, MAX_RENDER_LENGTH) + '\n\n---\n*Content truncated*' : content
+	);
+	let html = $derived(parseMarkdown(displayContent));
 	let container: HTMLDivElement;
 
 	// Load X/Twitter widget script once
@@ -88,4 +70,9 @@
 
 <div bind:this={container} class="prose prose-sm max-w-none dark:prose-invert {className}">
 	{@html html}
+	{#if truncated && !showFull}
+		<button type="button" class="btn btn-xs btn-ghost mt-2" onclick={() => showFull = true}>
+			Show full content ({Math.round(content.length / 1024)}KB)
+		</button>
+	{/if}
 </div>

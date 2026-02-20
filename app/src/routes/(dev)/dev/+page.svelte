@@ -2,7 +2,6 @@
 	import { onMount } from 'svelte';
 	import { Eye, Terminal, Wrench, Settings, Activity, Play, RotateCcw, FolderOpen, Loader2 } from 'lucide-svelte';
 	import DevChatPanel from '$lib/components/dev/DevChatPanel.svelte';
-	import AppPreviewChat from '$lib/components/dev/AppPreviewChat.svelte';
 	import AppLogs from '$lib/components/dev/AppLogs.svelte';
 	import ToolTester from '$lib/components/dev/ToolTester.svelte';
 	import AppSettings from '$lib/components/dev/AppSettings.svelte';
@@ -324,7 +323,18 @@
 			<!-- Tab Content -->
 			<div class="flex-1 min-h-0 overflow-hidden">
 				{#if activeTab === 'preview'}
-					<AppPreviewChat appId={selectedAppId} />
+					{#if selectedAppId}
+						<iframe
+							src="/api/v1/apps/{selectedAppId}/ui/"
+							class="w-full h-full border-0"
+							title="App UI Preview"
+							sandbox="allow-scripts allow-forms allow-same-origin"
+						></iframe>
+					{:else}
+						<div class="flex items-center justify-center h-full text-base-content/50 text-sm">
+							Select an app to preview its UI
+						</div>
+					{/if}
 				{:else if activeTab === 'logs'}
 					<AppLogs appId={selectedAppId} />
 				{:else if activeTab === 'grpc'}

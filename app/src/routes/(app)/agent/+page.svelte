@@ -1,7 +1,21 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
-	import { Send, Bot, Loader2, Mic, MicOff, Wifi, WifiOff, ArrowDown, Copy, Check, History, Volume2, VolumeOff } from 'lucide-svelte';
+	import {
+		Send,
+		Bot,
+		Loader2,
+		Mic,
+		MicOff,
+		Wifi,
+		WifiOff,
+		ArrowDown,
+		Copy,
+		Check,
+		History,
+		Volume2,
+		VolumeOff
+	} from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat, speakTTS, getAgentProfile } from '$lib/api';
 	import { logger } from '$lib/monitoring/logger';
@@ -12,7 +26,12 @@
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ApprovalModal from '$lib/components/ui/ApprovalModal.svelte';
 	import { generateUUID } from '$lib/utils';
-	import { MessageGroup, ToolOutputSidebar, ReadingIndicator, ChatInput } from '$lib/components/chat';
+	import {
+		MessageGroup,
+		ToolOutputSidebar,
+		ReadingIndicator,
+		ChatInput
+	} from '$lib/components/chat';
 
 	interface ApprovalRequest {
 		requestId: string;
@@ -43,9 +62,9 @@
 
 	interface ContentBlock {
 		type: 'text' | 'tool' | 'image';
-		text?: string;          // accumulated text for text blocks
+		text?: string; // accumulated text for text blocks
 		toolCallIndex?: number; // index into toolCalls for tool blocks
-		imageData?: string;     // base64 data for image blocks
+		imageData?: string; // base64 data for image blocks
 		imageMimeType?: string; // e.g. "image/png"
 	}
 
@@ -62,7 +81,7 @@
 	let copiedMessageId = $state<string | null>(null);
 	let showScrollButton = $state(false);
 	let autoScrollEnabled = $state(true);
-	let scrollingProgrammatically = $state(false);
+	let scrollingProgrammatically = false; // NOT $state — only read by handleScroll event handler
 	let draftInitialized = $state(false);
 
 	// Voice recording state
@@ -130,10 +149,11 @@
 	let dragCounter = 0; // Track enter/leave for nested elements
 	let loadingTimeoutId: ReturnType<typeof setTimeout> | null = null;
 	let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
+	let pendingScrollRAF: number | null = null;
 
-	// Safety: auto-reset isLoading after 5 minutes of no stream activity
+	// Safety: auto-reset isLoading after 30 seconds of no stream activity
 	// This prevents the UI from getting permanently stuck
-	const LOADING_TIMEOUT_MS = 5 * 60 * 1000;
+	const LOADING_TIMEOUT_MS = 30 * 1000;
 
 	$effect(() => {
 		if (isLoading) {
@@ -141,7 +161,11 @@
 			if (loadingTimeoutId) clearTimeout(loadingTimeoutId);
 			loadingTimeoutId = setTimeout(() => {
 				if (isLoading) {
-					log.warn('Loading timeout - force resetting state after ' + (LOADING_TIMEOUT_MS / 1000) + ' seconds');
+					log.warn(
+						'Loading timeout - force resetting state after ' +
+							LOADING_TIMEOUT_MS / 1000 +
+							' seconds'
+					);
 					if (currentStreamingMessage) {
 						currentStreamingMessage.streaming = false;
 						currentStreamingMessage.content += '\n\n*[Timed out]*';
@@ -182,8 +206,6 @@
 			})
 		);
 
-		// WebSocket event listeners
-		log.debug('Registering WebSocket event listeners');
 		unsubscribers.push(
 			client.on('chat_stream', handleChatStream),
 			client.on('chat_complete', handleChatComplete),
@@ -197,9 +219,7 @@
 			client.on('chat_cancelled', handleChatCancelled),
 			client.on('reminder_complete', handleReminderComplete)
 		);
-		log.debug('WebSocket event listeners registered');
 
-		// Load draft from localStorage
 		if (browser) {
 			const savedDraft = localStorage.getItem(DRAFT_STORAGE_KEY);
 			if (savedDraft) {
@@ -208,10 +228,8 @@
 			draftInitialized = true;
 		}
 
-		// Load companion chat
 		await loadCompanionChat();
 
-		// Load agent name for display
 		try {
 			const profile = await getAgentProfile();
 			if (profile.name) agentName = profile.name;
@@ -224,6 +242,11 @@
 		if (loadingTimeoutId) {
 			clearTimeout(loadingTimeoutId);
 			loadingTimeoutId = null;
+		}
+		// Clean up pending scroll animation
+		if (pendingScrollRAF) {
+			cancelAnimationFrame(pendingScrollRAF);
+			pendingScrollRAF = null;
 		}
 		// Clean up voice mode (kills stream, monitor, recorder, audio)
 		exitVoiceMode();
@@ -259,15 +282,17 @@
 			const result: ParsedMetadata = {};
 
 			if (parsed.toolCalls && Array.isArray(parsed.toolCalls)) {
-				result.toolCalls = parsed.toolCalls.map((tc: { name: string; input: string; output?: string; status?: string }) => ({
-					name: tc.name,
-					input: tc.input,
-					output: tc.output,
-					// When loading from persistence, any tool saved as "running" during a
-					// partial save is actually complete (the stream has finished by the time
-					// we load history). Only preserve explicit "error" status.
-					status: (tc.status === 'error' ? 'error' : 'complete') as 'complete' | 'error'
-				}));
+				result.toolCalls = parsed.toolCalls.map(
+					(tc: { name: string; input: string; output?: string; status?: string }) => ({
+						name: tc.name,
+						input: tc.input,
+						output: tc.output,
+						// When loading from persistence, any tool saved as "running" during a
+						// partial save is actually complete (the stream has finished by the time
+						// we load history). Only preserve explicit "error" status.
+						status: (tc.status === 'error' ? 'error' : 'complete') as 'complete' | 'error'
+					})
+				);
 			}
 
 			if (parsed.thinking && typeof parsed.thinking === 'string') {
@@ -321,8 +346,6 @@
 				const meta = parseMetadata((m as { metadata?: string }).metadata);
 				let content = m.content;
 				let contentBlocks = meta.contentBlocks;
-
-				// Detect multipart content (images) stored as JSON arrays
 				if (!contentBlocks?.length) {
 					const multipart = parseMultipartContent(content);
 					if (multipart) {
@@ -330,7 +353,6 @@
 						contentBlocks = multipart.blocks;
 					}
 				}
-
 				return {
 					id: m.id,
 					role: m.role as 'user' | 'assistant' | 'system',
@@ -345,8 +367,7 @@
 			chatLoaded = true;
 			log.debug('Messages loaded: ' + messages.length + ' total: ' + totalMessages);
 
-			// Scroll to bottom after loading history (handles race where $effect
-			// fires before messagesContainer is bound via bind:this)
+			// Scroll to bottom after loading history
 			if (messages.length > 0) {
 				tick().then(() => {
 					requestAnimationFrame(() => {
@@ -360,22 +381,27 @@
 				});
 			}
 
-			// Check if there's an active stream to resume
 			checkForActiveStream();
-
-			// If chat is empty, request introduction from the agent
-			if (messages.length === 0 && chatId) {
-				log.debug('Chat is empty, requesting introduction...');
-				requestIntroduction();
-			}
 		} catch (err) {
 			log.error('Failed to load companion chat', err);
-			chatLoaded = true; // Still mark as loaded, will show empty state
+			chatLoaded = true;
 		}
 	}
 
+	let streamCheckResponded = false;
+
 	function checkForActiveStream() {
+		streamCheckResponded = false;
 		const client = getWebSocketClient();
+
+		// Fallback: if stream_status never arrives within 5s, request intro for empty chats
+		setTimeout(() => {
+			if (!streamCheckResponded && messages.length === 0 && chatId && !isLoading) {
+				log.warn('Stream check timed out — requesting introduction');
+				requestIntroduction();
+			}
+		}, 5000);
+
 		if (!client.isConnected() || !chatId) {
 			// Wait for connection
 			const unsub = client.onStatus((status: ConnectionStatus) => {
@@ -475,10 +501,10 @@
 			// still marked "running" when text arrives has actually completed — we
 			// just missed (or haven't yet processed) its tool_result event.
 			if (currentStreamingMessage.toolCalls?.length) {
-				const hasRunning = currentStreamingMessage.toolCalls.some(tc => tc.status === 'running');
+				const hasRunning = currentStreamingMessage.toolCalls.some((tc) => tc.status === 'running');
 				if (hasRunning) {
 					log.debug('handleChatStream: text arrived with running tools — marking all complete');
-					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
 						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 					);
 				}
@@ -492,7 +518,10 @@
 			if (blocks.length === 0 || blocks[blocks.length - 1].type !== 'text') {
 				blocks.push({ type: 'text', text: chunk });
 			} else {
-				blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], text: (blocks[blocks.length - 1].text || '') + chunk };
+				blocks[blocks.length - 1] = {
+					...blocks[blocks.length - 1],
+					text: (blocks[blocks.length - 1].text || '') + chunk
+				};
 			}
 			currentStreamingMessage.contentBlocks = [...blocks];
 			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
@@ -531,10 +560,10 @@
 
 	// Cancel a single queued message by its ID
 	function cancelQueuedMessage(queuedId: string) {
-		const item = messageQueue.find(q => q.id === queuedId);
+		const item = messageQueue.find((q) => q.id === queuedId);
 		if (!item) return;
 
-		messageQueue = messageQueue.filter(q => q.id !== queuedId);
+		messageQueue = messageQueue.filter((q) => q.id !== queuedId);
 		log.debug('Cancelled queued message: ' + item.content.substring(0, 50));
 	}
 
@@ -548,7 +577,9 @@
 		});
 
 		if (chatId && data?.session_id !== chatId) {
-			log.debug('handleChatComplete: session mismatch, expected ' + chatId + ' got ' + data?.session_id);
+			log.debug(
+				'handleChatComplete: session mismatch, expected ' + chatId + ' got ' + data?.session_id
+			);
 			return;
 		}
 
@@ -565,12 +596,17 @@
 			// Safety net: mark any still-running tools as complete
 			// (tool_result may have been missed due to timing or frame drops)
 			if (currentStreamingMessage.toolCalls?.length) {
-				const beforeStatuses = currentStreamingMessage.toolCalls.map(t => t.status);
-				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+				const beforeStatuses = currentStreamingMessage.toolCalls.map((t) => t.status);
+				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
 					tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 				);
-				const afterStatuses = currentStreamingMessage.toolCalls.map(t => t.status);
-				log.debug('Safety net: tool statuses before: ' + beforeStatuses.join(',') + ' after: ' + afterStatuses.join(','));
+				const afterStatuses = currentStreamingMessage.toolCalls.map((t) => t.status);
+				log.debug(
+					'Safety net: tool statuses before: ' +
+						beforeStatuses.join(',') +
+						' after: ' +
+						afterStatuses.join(',')
+				);
 			}
 			const finalMsg = { ...currentStreamingMessage };
 			messages = [...messages.slice(0, -1), finalMsg];
@@ -579,12 +615,18 @@
 			log.debug('handleChatComplete: NO currentStreamingMessage!');
 			// Safety net for non-streaming: check last message in array
 			const lastIdx = messages.length - 1;
-			if (lastIdx >= 0 && messages[lastIdx].role === 'assistant' && messages[lastIdx].toolCalls?.length) {
+			if (
+				lastIdx >= 0 &&
+				messages[lastIdx].role === 'assistant' &&
+				messages[lastIdx].toolCalls?.length
+			) {
 				const lastMsg = messages[lastIdx];
-				const hasRunning = lastMsg.toolCalls!.some(tc => tc.status === 'running');
+				const hasRunning = lastMsg.toolCalls!.some((tc) => tc.status === 'running');
 				if (hasRunning) {
-					log.debug('Safety net (non-streaming): marking running tools as complete in last message');
-					const updatedTools = lastMsg.toolCalls!.map(tc =>
+					log.debug(
+						'Safety net (non-streaming): marking running tools as complete in last message'
+					);
+					const updatedTools = lastMsg.toolCalls!.map((tc) =>
 						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 					);
 					messages = [...messages.slice(0, lastIdx), { ...lastMsg, toolCalls: updatedTools }];
@@ -626,7 +668,7 @@
 						currentStreamingMessage.content = '*[Generation cancelled]*';
 					}
 					if (currentStreamingMessage.toolCalls?.length) {
-						currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+						currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
 							tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 						);
 					}
@@ -660,7 +702,7 @@
 			}
 			// Mark any running tools as complete
 			if (currentStreamingMessage.toolCalls?.length) {
-				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
 					tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 				);
 			}
@@ -699,7 +741,12 @@
 		const toolName = data?.tool as string;
 		const toolID = (data?.tool_id as string) || '';
 		const toolInput = (data?.input as string) || '';
-		const newToolCall: ToolCall = { id: toolID, name: toolName, input: toolInput, status: 'running' };
+		const newToolCall: ToolCall = {
+			id: toolID,
+			name: toolName,
+			input: toolInput,
+			status: 'running'
+		};
 
 		// Attach tool call to current streaming message OR create one
 		if (currentStreamingMessage) {
@@ -712,7 +759,10 @@
 			if (!currentStreamingMessage.contentBlocks) {
 				currentStreamingMessage.contentBlocks = [];
 			}
-			currentStreamingMessage.contentBlocks = [...currentStreamingMessage.contentBlocks, { type: 'tool' as const, toolCallIndex: toolIndex }];
+			currentStreamingMessage.contentBlocks = [
+				...currentStreamingMessage.contentBlocks,
+				{ type: 'tool' as const, toolCallIndex: toolIndex }
+			];
 			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
 		} else {
 			currentStreamingMessage = {
@@ -729,7 +779,7 @@
 	}
 
 	function handleToolResult(data: Record<string, unknown>) {
-		log.debug('handleToolResult: ' + (data?.tool_name as string || data?.tool_id as string));
+		log.debug('handleToolResult: ' + ((data?.tool_name as string) || (data?.tool_id as string)));
 
 		if (chatId && data?.session_id !== chatId) {
 			log.debug('handleToolResult: session mismatch');
@@ -739,14 +789,16 @@
 		const result = (data?.result as string) || '';
 		const toolID = (data?.tool_id as string) || '';
 		const toolName = (data?.tool_name as string) || '';
-		log.debug('Tool result received: ' + toolName + ' id: ' + toolID + ' result_length: ' + result?.length);
+		log.debug(
+			'Tool result received: ' + toolName + ' id: ' + toolID + ' result_length: ' + result?.length
+		);
 
 		// Helper to find and update tool by ID or fallback to first running
 		const findAndUpdateTool = (toolCalls: ToolCall[]): ToolCall[] | null => {
 			const updated = [...toolCalls];
 			// Try to find by ID first
 			if (toolID) {
-				const idx = updated.findIndex(tc => tc.id === toolID);
+				const idx = updated.findIndex((tc) => tc.id === toolID);
 				if (idx >= 0) {
 					log.debug('Found tool by ID at index ' + idx);
 					updated[idx] = { ...updated[idx], output: result, status: 'complete' };
@@ -754,7 +806,7 @@
 				}
 			}
 			// Fallback: find first running tool
-			const runningIdx = updated.findIndex(tc => tc.status === 'running');
+			const runningIdx = updated.findIndex((tc) => tc.status === 'running');
 			if (runningIdx >= 0) {
 				log.debug('Fallback: updating first running tool at index ' + runningIdx);
 				updated[runningIdx] = { ...updated[runningIdx], output: result, status: 'complete' };
@@ -781,7 +833,11 @@
 			if (msg.role === 'assistant' && msg.toolCalls?.length) {
 				const updatedToolCalls = findAndUpdateTool(msg.toolCalls);
 				if (updatedToolCalls) {
-					messages = [...messages.slice(0, i), { ...msg, toolCalls: updatedToolCalls }, ...messages.slice(i + 1)];
+					messages = [
+						...messages.slice(0, i),
+						{ ...msg, toolCalls: updatedToolCalls },
+						...messages.slice(i + 1)
+					];
 					log.debug('Fallback: updated tool in message at index ' + i);
 					return;
 				}
@@ -821,7 +877,7 @@
 
 		// Safety net: mark any running tools as complete before handling error
 		if (currentStreamingMessage?.toolCalls?.length) {
-			currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+			currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
 				tc.status === 'running' ? { ...tc, status: 'error' as const } : tc
 			);
 			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
@@ -872,8 +928,20 @@
 		const active = data?.active as boolean;
 		const content = (data?.content as string) || '';
 
-		if (!active || sessionId !== chatId) {
+		streamCheckResponded = true;
+
+		if (sessionId !== chatId) {
+			log.debug('Stream status for different session, ignoring');
+			return;
+		}
+
+		if (!active) {
 			log.debug('No active stream to resume');
+			// No active stream — if chat is empty, request introduction
+			if (messages.length === 0 && chatId) {
+				log.debug('Chat is empty, requesting introduction...');
+				requestIntroduction();
+			}
 			return;
 		}
 
@@ -951,7 +1019,7 @@
 			if (currentStreamingMessage) {
 				currentStreamingMessage.streaming = false;
 				if (currentStreamingMessage.toolCalls?.length) {
-					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map(tc =>
+					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
 						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
 					);
 				}
@@ -995,30 +1063,30 @@
 		sendMessage();
 	}
 
-	// Auto-scroll when new messages arrive or streaming content updates
+	// Auto-scroll when new messages arrive or streaming content updates.
+	// Uses a single pending rAF to coalesce rapid chunk updates and avoid
+	// accumulating hundreds of tick/rAF callbacks during streaming.
 	$effect(() => {
 		const messageCount = messages.length;
 		const streamingContent = currentStreamingMessage?.content;
 		const isStreaming = !!streamingContent;
 
 		if (messagesContainer && (messageCount > 0 || streamingContent) && autoScrollEnabled) {
-			// Suppress handleScroll from disabling auto-scroll during programmatic scroll
+			// Cancel any previously scheduled scroll — only the latest matters
+			if (pendingScrollRAF) {
+				cancelAnimationFrame(pendingScrollRAF);
+			}
 			scrollingProgrammatically = true;
-			// Wait for Svelte to update DOM, then wait for browser to paint
-			tick().then(() => {
-				requestAnimationFrame(() => {
-					if (messagesContainer && autoScrollEnabled) {
-						// Use instant scroll during streaming to keep up with content,
-						// smooth scroll when just adding new messages
-						messagesContainer.scrollTo({
-							top: messagesContainer.scrollHeight,
-							behavior: isStreaming ? 'instant' : 'smooth'
-						});
-					}
-					// Release the flag after scroll completes
-					requestAnimationFrame(() => {
-						scrollingProgrammatically = false;
+			pendingScrollRAF = requestAnimationFrame(() => {
+				pendingScrollRAF = null;
+				if (messagesContainer && autoScrollEnabled) {
+					messagesContainer.scrollTo({
+						top: messagesContainer.scrollHeight,
+						behavior: isStreaming ? 'instant' : 'smooth'
 					});
+				}
+				requestAnimationFrame(() => {
+					scrollingProgrammatically = false;
 				});
 			});
 		}
@@ -1080,7 +1148,11 @@
 	}
 
 	function resetChat() {
-		// Reset chat to start a new session
+		// Clear session messages on the backend, then reset UI
+		const client = getWebSocketClient();
+		if (chatId && client.isConnected()) {
+			client.send('session_reset', { session_id: chatId });
+		}
 		messages = [];
 		currentStreamingMessage = null;
 		inputValue = '';
@@ -1136,7 +1208,9 @@
 
 		// Check microphone permission
 		try {
-			const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+			const permissionStatus = await navigator.permissions.query({
+				name: 'microphone' as PermissionName
+			});
 			if (permissionStatus.state === 'denied') {
 				recordingError = 'Microphone permission denied. Allow in browser settings.';
 				return;
@@ -1173,7 +1247,6 @@
 
 			// Begin first listening turn
 			startListening();
-
 		} catch (err) {
 			voiceLog.error('Failed to enter voice mode', err);
 			if ((err as Error)?.name === 'NotAllowedError') {
@@ -1195,7 +1268,7 @@
 
 		// Kill persistent stream
 		if (voiceStream) {
-			voiceStream.getTracks().forEach(t => t.stop());
+			voiceStream.getTracks().forEach((t) => t.stop());
 			voiceStream = null;
 		}
 		if (audioContext) {
@@ -1356,7 +1429,9 @@
 				voiceMonitorStarting = true;
 				startListening();
 				// Clear guard after a tick so startListening has time to set isRecording
-				setTimeout(() => { voiceMonitorStarting = false; }, 200);
+				setTimeout(() => {
+					voiceMonitorStarting = false;
+				}, 200);
 			}
 		}, 100);
 	}
@@ -1419,7 +1494,8 @@
 			ttsSentenceBuffer = ttsSentenceBuffer.slice(match[0].length);
 
 			const clean = cleanTextForTTS(sentence);
-			if (clean.length > 2) { // Skip tiny fragments
+			if (clean.length > 2) {
+				// Skip tiny fragments
 				ttsQueue.push(clean);
 				playNextTTS(); // Kick the queue player
 			}
@@ -1552,8 +1628,12 @@
 			isSpeaking = false;
 			if ('speechSynthesis' in window) {
 				const utterance = new SpeechSynthesisUtterance(cleanText);
-				utterance.onend = () => { isSpeaking = false; };
-				utterance.onerror = () => { isSpeaking = false; };
+				utterance.onend = () => {
+					isSpeaking = false;
+				};
+				utterance.onerror = () => {
+					isSpeaking = false;
+				};
 				speechSynthesis.speak(utterance);
 			} else {
 				isSpeaking = false;
@@ -1588,7 +1668,10 @@
 			return;
 		}
 
-		if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') {
+		if (
+			document.activeElement?.tagName === 'INPUT' ||
+			document.activeElement?.tagName === 'TEXTAREA'
+		) {
 			return;
 		}
 		if (e.ctrlKey || e.metaKey || e.altKey || e.key.length > 1) {
@@ -1637,43 +1720,45 @@
 	<!-- Header -->
 	<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
 		<div class="max-w-4xl mx-auto flex items-center justify-between px-6 h-14">
-		<div class="flex flex-col justify-center">
-			<h1 class="text-lg font-semibold text-base-content leading-tight">Chat</h1>
-			<p class="text-xs text-base-content/50 leading-tight">Direct chat session with your AI companion.</p>
-		</div>
-		<div class="flex items-center gap-2 shrink-0">
-			<!-- Connection status -->
-			{#if wsConnected}
-				<div class="flex items-center gap-1.5 text-xs text-success px-2">
-					<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
-					<span class="hidden sm:inline">Connected</span>
-				</div>
-			{:else}
-				<div class="flex items-center gap-1.5 text-xs text-warning px-2">
-					<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
-					<span class="hidden sm:inline">Offline</span>
-				</div>
-			{/if}
-			<!-- Voice output toggle -->
-			<button
-				type="button"
-				onclick={toggleVoiceOutput}
-				class="btn btn-sm btn-ghost btn-square"
-				class:text-primary={voiceOutputEnabled}
-				title={voiceOutputEnabled ? 'Disable voice output' : 'Enable voice output'}
-			>
-				{#if voiceOutputEnabled}
-					<Volume2 class="w-4 h-4" />
+			<div class="flex flex-col justify-center">
+				<h1 class="text-lg font-semibold text-base-content leading-tight">Chat</h1>
+				<p class="text-xs text-base-content/50 leading-tight">
+					Direct chat session with your AI companion.
+				</p>
+			</div>
+			<div class="flex items-center gap-2 shrink-0">
+				<!-- Connection status -->
+				{#if wsConnected}
+					<div class="flex items-center gap-1.5 text-xs text-success px-2">
+						<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+						<span class="hidden sm:inline">Connected</span>
+					</div>
 				{:else}
-					<VolumeOff class="w-4 h-4" />
+					<div class="flex items-center gap-1.5 text-xs text-warning px-2">
+						<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+						<span class="hidden sm:inline">Offline</span>
+					</div>
 				{/if}
-			</button>
-			<!-- History link -->
-			<a href="/agent/history" class="btn btn-sm btn-ghost gap-1.5" title="View history">
-				<History class="w-4 h-4" />
-				<span class="hidden sm:inline">History</span>
-			</a>
-		</div>
+				<!-- Voice output toggle -->
+				<button
+					type="button"
+					onclick={toggleVoiceOutput}
+					class="btn btn-sm btn-ghost btn-square"
+					class:text-primary={voiceOutputEnabled}
+					title={voiceOutputEnabled ? 'Disable voice output' : 'Enable voice output'}
+				>
+					{#if voiceOutputEnabled}
+						<Volume2 class="w-4 h-4" />
+					{:else}
+						<VolumeOff class="w-4 h-4" />
+					{/if}
+				</button>
+				<!-- History link -->
+				<a href="/agent/history" class="btn btn-sm btn-ghost gap-1.5" title="View history">
+					<History class="w-4 h-4" />
+					<span class="hidden sm:inline">History</span>
+				</a>
+			</div>
 		</div>
 	</header>
 
@@ -1685,76 +1770,81 @@
 			class="h-full overflow-y-auto overscroll-contain scroll-pb-4"
 		>
 			<div class="max-w-4xl mx-auto p-6 space-y-6">
-		{#if hasMoreHistory}
-			<div class="flex justify-center">
-				<a
-					href="/agent/history"
-					class="flex items-center gap-2 px-4 py-2 rounded-lg bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
-				>
-					<History class="w-4 h-4" />
-					<span>View {totalMessages - messages.length} earlier messages in history</span>
-				</a>
-			</div>
-		{/if}
-		{#if !chatLoaded}
-			<div class="flex items-center justify-center h-full">
-				<Loader2 class="w-6 h-6 text-base-content/40 animate-spin" />
-			</div>
-		{:else if messages.length === 0}
-			<!-- Empty state with suggestions -->
-			<div class="flex flex-col items-center justify-center pt-12 text-center">
-				<div class="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
-					<Bot class="w-8 h-8 text-primary" />
-				</div>
-				<h2 class="font-display text-xl font-bold text-base-content mb-2">Your AI Companion</h2>
-				<p class="text-sm text-base-content/60 max-w-md mb-8">
-					I'm here to help with tasks like reading files, running commands, searching the web, and more.
-				</p>
-
-				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg w-full">
-					{#each suggestions as suggestion}
-						<button
-							type="button"
-							onclick={() => selectSuggestion(suggestion)}
-							class="text-left px-4 py-3 rounded-xl bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
-							disabled={isLoading}
+				{#if hasMoreHistory}
+					<div class="flex justify-center">
+						<a
+							href="/agent/history"
+							class="flex items-center gap-2 px-4 py-2 rounded-lg bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
 						>
-							{suggestion}
-						</button>
-					{/each}
-				</div>
-			</div>
-		{:else}
-			<!-- Grouped messages for Slack-style display -->
-			{#each groupedMessages as group, groupIndex (groupIndex)}
-				<MessageGroup
-					messages={group.messages}
-					role={group.role}
-					{agentName}
-					onCopy={copyMessage}
-					copiedId={copiedMessageId}
-					onViewToolOutput={openToolSidebar}
-					isStreaming={group.role === 'assistant' && isLoading && groupIndex === groupedMessages.length - 1}
-				/>
-			{/each}
+							<History class="w-4 h-4" />
+							<span>View {totalMessages - messages.length} earlier messages in history</span>
+						</a>
+					</div>
+				{/if}
+				{#if !chatLoaded}
+					<div class="flex items-center justify-center h-full">
+						<Loader2 class="w-6 h-6 text-base-content/40 animate-spin" />
+					</div>
+				{:else if messages.length === 0}
+					<!-- Empty state with suggestions -->
+					<div class="flex flex-col items-center justify-center pt-12 text-center">
+						<div class="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+							<Bot class="w-8 h-8 text-primary" />
+						</div>
+						<h2 class="font-display text-xl font-bold text-base-content mb-2">Your AI Companion</h2>
+						<p class="text-sm text-base-content/60 max-w-md mb-8">
+							I'm here to help with tasks like reading files, running commands, searching the web,
+							and more.
+						</p>
 
-			<!-- Loading indicator when waiting for response -->
-			{#if isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
-				<div class="flex gap-3 mb-4">
-					<div class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm bg-base-300 text-base-content/60">
-						A
-					</div>
-					<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] items-start">
-						<div class="rounded-xl px-3.5 py-2.5 bg-base-200 animate-pulse-border">
-							<ReadingIndicator />
+						<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg w-full">
+							{#each suggestions as suggestion}
+								<button
+									type="button"
+									onclick={() => selectSuggestion(suggestion)}
+									class="text-left px-4 py-3 rounded-xl bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
+									disabled={isLoading}
+								>
+									{suggestion}
+								</button>
+							{/each}
 						</div>
-						<div class="flex gap-2 items-baseline mt-1.5">
-							<span class="text-xs font-medium text-base-content/50">Assistant</span>
-						</div>
 					</div>
-				</div>
-			{/if}
-		{/if}
+				{:else}
+					<!-- Grouped messages for Slack-style display -->
+					{#each groupedMessages as group, groupIndex (groupIndex)}
+						<MessageGroup
+							messages={group.messages}
+							role={group.role}
+							{agentName}
+							onCopy={copyMessage}
+							copiedId={copiedMessageId}
+							onViewToolOutput={openToolSidebar}
+							isStreaming={group.role === 'assistant' &&
+								isLoading &&
+								groupIndex === groupedMessages.length - 1}
+						/>
+					{/each}
+
+					<!-- Loading indicator when waiting for response -->
+					{#if isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
+						<div class="flex gap-3 mb-4">
+							<div
+								class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm bg-base-300 text-base-content/60"
+							>
+								A
+							</div>
+							<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] items-start">
+								<div class="rounded-xl px-3.5 py-2.5 bg-base-200 animate-pulse-border">
+									<ReadingIndicator />
+								</div>
+								<div class="flex gap-2 items-baseline mt-1.5">
+									<span class="text-xs font-medium text-base-content/50">Assistant</span>
+								</div>
+							</div>
+						</div>
+					{/if}
+				{/if}
 			</div>
 		</div>
 

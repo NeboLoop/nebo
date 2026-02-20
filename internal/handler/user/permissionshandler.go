@@ -161,16 +161,18 @@ func AcceptTermsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
-// defaultPermissions returns the default tool permissions (only chat/agent enabled)
+// defaultPermissions returns the default tool permissions.
+// Sensible defaults: enable tools that let the agent actually do useful work out of the box.
+// Shell and contacts stay opt-in (security/privacy).
 func defaultPermissions() map[string]bool {
 	return map[string]bool{
 		"chat":     true,
-		"file":     false,
+		"file":     true,
 		"shell":    false,
-		"web":      false,
+		"web":      true,
 		"contacts": false,
-		"desktop":  false,
+		"desktop":  true,
 		"media":    false,
-		"system":   false,
+		"system":   true,
 	}
 }

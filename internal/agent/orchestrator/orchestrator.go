@@ -39,18 +39,19 @@ const (
 
 // SubAgent represents a spawned sub-agent
 type SubAgent struct {
-	ID          string
-	TaskID      string // recovery.PendingTask ID for persistence
-	Task        string
-	Description string
-	Lane        string // Lane this agent runs in (default: LaneSubagent)
-	Status      AgentStatus
-	Result      string
-	Error       error
-	StartedAt   time.Time
-	CompletedAt time.Time
-	Events      []ai.StreamEvent
-	cancel      context.CancelFunc
+	ID            string
+	TaskID        string // recovery.PendingTask ID for persistence
+	Task          string
+	Description   string
+	Lane          string // Lane this agent runs in (default: LaneSubagent)
+	ModelOverride string // Override model for this sub-agent
+	Status        AgentStatus
+	Result        string
+	Error         error
+	StartedAt     time.Time
+	CompletedAt   time.Time
+	Events        []ai.StreamEvent
+	cancel        context.CancelFunc
 }
 
 // Lane constants for task queue
@@ -132,7 +133,7 @@ func NewOrchestrator(cfg *config.Config, sessions *session.Manager, providers []
 		providers:     providers,
 		tools:         toolExecutor,
 		config:        cfg,
-		maxConcurrent: 0,  // 0 = unlimited sub-agents
+		maxConcurrent: 5,  // Max 5 concurrent sub-agents
 		maxPerParent:  0,  // 0 = unlimited per parent session
 		results:       make(chan AgentResult, 100),
 	}
@@ -147,6 +148,7 @@ type SpawnRequest struct {
 	Wait             bool   // Wait for completion before returning
 	Timeout          time.Duration
 	SystemPrompt     string // Optional custom system prompt
+	ModelOverride    string // Override model for this sub-agent (e.g., "anthropic/claude-haiku-4-5")
 }
 
 // Spawn creates and starts a new sub-agent
@@ -185,13 +187,14 @@ func (o *Orchestrator) Spawn(ctx context.Context, req *SpawnRequest) (*SubAgent,
 	sessionKey := fmt.Sprintf("subagent-%s", agentID)
 
 	agent := &SubAgent{
-		ID:          agentID,
-		Task:        req.Task,
-		Description: req.Description,
-		Lane:        lane,
-		Status:      StatusPending,
-		StartedAt:   time.Now(),
-		cancel:      cancel,
+		ID:            agentID,
+		Task:          req.Task,
+		Description:   req.Description,
+		Lane:          lane,
+		ModelOverride: req.ModelOverride,
+		Status:        StatusPending,
+		StartedAt:     time.Now(),
+		cancel:        cancel,
 	}
 
 	// Persist to database BEFORE spawning to survive restarts
@@ -339,7 +342,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, agent *SubAgent, req *Spawn
 	}
 
 	// Run the agentic loop
-	result, err := o.executeLoop(ctx, sess.ID, systemPrompt, agent)
+	result, err := o.executeLoop(ctx, sess.ID, systemPrompt, agent.ModelOverride, agent)
 	if err != nil {
 		agent.Error = err
 		return
@@ -349,7 +352,7 @@ func (o *Orchestrator) runAgent(ctx context.Context, agent *SubAgent, req *Spawn
 }
 
 // executeLoop runs the agentic loop for a sub-agent
-func (o *Orchestrator) executeLoop(ctx context.Context, sessionID, systemPrompt string, agent *SubAgent) (string, error) {
+func (o *Orchestrator) executeLoop(ctx context.Context, sessionID, systemPrompt, modelOverride string, agent *SubAgent) (string, error) {
 	if len(o.providers) == 0 {
 		return "", fmt.Errorf("no providers configured")
 	}
@@ -383,6 +386,7 @@ func (o *Orchestrator) executeLoop(ctx context.Context, sessionID, systemPrompt 
 			Messages: messages,
 			Tools:    o.tools.List(),
 			System:   systemPrompt,
+			Model:    modelOverride,
 		})
 
 		if err != nil {

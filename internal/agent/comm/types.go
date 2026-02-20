@@ -2,6 +2,8 @@
 // Messages flow through the comm lane and run the full agentic loop via Runner.Run().
 package comm
 
+import "context"
+
 // CommMessageType represents the type of comm message
 type CommMessageType string
 
@@ -11,9 +13,10 @@ const (
 	CommTypeProposal   CommMessageType = "proposal"    // Vote request
 	CommTypeCommand    CommMessageType = "command"     // Direct command (still goes through LLM)
 	CommTypeInfo       CommMessageType = "info"        // Informational, may not need response
-	CommTypeTask       CommMessageType = "task"        // Incoming A2A task request
-	CommTypeTaskResult CommMessageType = "task_result" // Completed A2A task result
-	CommTypeTaskStatus CommMessageType = "task_status" // Intermediate status update (working, failed)
+	CommTypeTask           CommMessageType = "task"         // Incoming A2A task request
+	CommTypeTaskResult     CommMessageType = "task_result"  // Completed A2A task result
+	CommTypeTaskStatus     CommMessageType = "task_status"  // Intermediate status update (working, failed)
+	CommTypeLoopChannel    CommMessageType = "loop_channel" // Loop channel message (bot-to-bot within a Loop)
 )
 
 // TaskStatus represents the lifecycle state of an A2A task.
@@ -91,6 +94,19 @@ type AgentCard struct {
 	Capabilities       map[string]any    `json:"capabilities,omitempty"`
 	Skills             []AgentCardSkill  `json:"skills,omitempty"`
 	Provider           *AgentCardProvider `json:"provider,omitempty"`
+}
+
+// LoopChannelInfo describes a loop channel the bot is a member of.
+type LoopChannelInfo struct {
+	ChannelID   string `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
+	LoopID      string `json:"loop_id"`
+	LoopName    string `json:"loop_name"`
+}
+
+// LoopChannelLister is an optional interface for plugins that support loop channel discovery.
+type LoopChannelLister interface {
+	ListLoopChannels(ctx context.Context) ([]LoopChannelInfo, error)
 }
 
 // ManagerStatus holds the status of the comm plugin manager

@@ -28,12 +28,13 @@ const (
 
 // oauthFlowState tracks a pending OAuth authorization code flow.
 type oauthFlowState struct {
-	CodeVerifier string
-	CreatedAt    time.Time
-	Completed    bool
-	Error        string
-	Email        string
-	DisplayName  string
+	CodeVerifier  string
+	CreatedAt     time.Time
+	Completed     bool
+	Error         string
+	Email         string
+	DisplayName   string
+	JanusProvider bool // user explicitly chose Janus as AI provider
 }
 
 var pendingFlows sync.Map // state string -> *oauthFlowState
@@ -127,10 +128,12 @@ func NeboLoopOAuthStartHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		state := generateState()
 		verifier := generateCodeVerifier()
 		challenge := computeCodeChallenge(verifier)
+		janusProvider := r.URL.Query().Get("janus") == "true"
 
 		pendingFlows.Store(state, &oauthFlowState{
-			CodeVerifier: verifier,
-			CreatedAt:    time.Now(),
+			CodeVerifier:  verifier,
+			CreatedAt:     time.Now(),
+			JanusProvider: janusProvider,
 		})
 
 		redirectURI := fmt.Sprintf("http://localhost:%d/auth/neboloop/callback", svcCtx.Config.Port)
@@ -212,7 +215,7 @@ func NeboLoopOAuthCallbackHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		// Store owner profile (reuses existing helper)
-		if err := storeNeboLoopProfile(ctx, svcCtx.DB, apiURL, userInfo.ID, userInfo.Email, tokenResp.AccessToken, tokenResp.RefreshToken); err != nil {
+		if err := storeNeboLoopProfile(ctx, svcCtx.DB, apiURL, userInfo.ID, userInfo.Email, tokenResp.AccessToken, tokenResp.RefreshToken, flow.JanusProvider); err != nil {
 			fmt.Printf("[NeboLoop OAuth] Warning: failed to store profile: %v\n", err)
 		}
 

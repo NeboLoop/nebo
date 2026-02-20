@@ -20,12 +20,29 @@ const (
 	LaneDev       = "dev"       // Developer assistant (independent of main lane)
 )
 
+// laneContextKey is an unexported type for the lane context key.
+type laneContextKey struct{}
+
+// WithLane returns a new context carrying the lane name.
+func WithLane(ctx context.Context, lane string) context.Context {
+	return context.WithValue(ctx, laneContextKey{}, lane)
+}
+
+// GetLane extracts the lane name from a context.
+// Returns empty string if no lane is set.
+func GetLane(ctx context.Context) string {
+	if lane, ok := ctx.Value(laneContextKey{}).(string); ok {
+		return lane
+	}
+	return ""
+}
+
 // DefaultLaneConcurrency defines default max concurrent tasks per lane
 // 0 = unlimited
 var DefaultLaneConcurrency = map[string]int{
 	LaneMain:      1,
 	LaneEvents:    0,  // Scheduled/triggered tasks (unlimited — each gets own session)
-	LaneSubagent:  0,  // Unlimited sub-agents
+	LaneSubagent:  5,  // Max 5 concurrent sub-agents (backpressure)
 	LaneNested:    3,
 	LaneHeartbeat: 1,  // Sequential heartbeat processing
 	LaneComm:      5,  // Concurrent comm message processing
@@ -35,7 +52,8 @@ var DefaultLaneConcurrency = map[string]int{
 // MaxLaneConcurrency defines hard limits that cannot be exceeded
 // Used to prevent runaway tool calls or resource exhaustion
 var MaxLaneConcurrency = map[string]int{
-	LaneNested: 3, // Hard cap on concurrent tool calls
+	LaneNested:   3,  // Hard cap on concurrent tool calls
+	LaneSubagent: 10, // Hard cap on concurrent sub-agents (prevents runaway spawning)
 }
 
 // LaneTask represents a task to be executed in a lane
@@ -152,7 +170,7 @@ func (m *LaneManager) Enqueue(ctx context.Context, lane string, task func(ctx co
 
 	state := m.getLaneState(lane)
 
-	taskCtx, cancel := context.WithCancel(ctx)
+	taskCtx, cancel := context.WithCancel(WithLane(ctx, lane))
 	entry := &laneEntry{
 		task: &LaneTask{
 			ID:          fmt.Sprintf("%s-%d", lane, time.Now().UnixNano()),

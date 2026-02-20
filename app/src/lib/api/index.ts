@@ -242,4 +242,14 @@ export function uninstallStoreSkill(id: string): Promise<{ message: string }> {
 	return webapi.delete<{ message: string }>(`/api/v1/store/skills/${id}/install`);
 }
 
+// NeboLoop OAuth with Janus opt-in
+import type * as components from './neboComponents';
+
+export function neboLoopOAuthStartWithJanus(janus: boolean) {
+	return webapi.get<components.NeboLoopOAuthStartResponse>(
+		'/api/v1/neboloop/oauth/start',
+		janus ? { janus: 'true' } : undefined
+	);
+}
+
 

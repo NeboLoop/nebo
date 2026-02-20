@@ -351,11 +351,13 @@ type CLIProviderInfo struct {
 	InstallHint  string   `json:"installHint"`
 	Models       []string `json:"models"`
 	DefaultModel string   `json:"defaultModel"`
+	Active       bool     `json:"active"`
 }
 
 type ListModelsResponse struct {
 	Models        map[string][]ModelInfo `json:"models"`
 	TaskRouting   *TaskRouting           `json:"taskRouting,omitempty"`
+	LaneRouting   map[string]string      `json:"laneRouting,omitempty"`
 	Aliases       []ModelAlias           `json:"aliases,omitempty"`
 	AvailableCLIs *CLIAvailability       `json:"availableCLIs,omitempty"`
 	CLIStatuses   *CLIStatusMap          `json:"cliStatuses,omitempty"`
@@ -597,18 +599,24 @@ type UpdateAgentSettingsRequest struct {
 }
 
 type UpdateAuthProfileRequest struct {
-	Id       string `path:"id"`
-	Name     string `json:"name,optional"`
-	ApiKey   string `json:"apiKey,optional"`
-	Model    string `json:"model,optional"`
-	BaseUrl  string `json:"baseUrl,optional"`
-	Priority int    `json:"priority,optional"`
-	IsActive bool   `json:"isActive,optional"`
+	Id       string            `path:"id"`
+	Name     string            `json:"name,optional"`
+	ApiKey   string            `json:"apiKey,optional"`
+	Model    string            `json:"model,optional"`
+	BaseUrl  string            `json:"baseUrl,optional"`
+	Priority int               `json:"priority,optional"`
+	IsActive *bool             `json:"isActive,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 type UpdateChatRequest struct {
 	Id    string `path:"id"`
 	Title string `json:"title"`
+}
+
+type UpdateCLIProviderRequest struct {
+	CliId  string `path:"cliId"`
+	Active *bool  `json:"active"`
 }
 
 type UpdateModelRequest struct {
@@ -636,13 +644,14 @@ type UpdatePreferencesRequest struct {
 }
 
 type UpdateTaskRoutingRequest struct {
-	Vision    string              `json:"vision,omitempty"`
-	Audio     string              `json:"audio,omitempty"`
-	Reasoning string              `json:"reasoning,omitempty"`
-	Code      string              `json:"code,omitempty"`
-	General   string              `json:"general,omitempty"`
-	Fallbacks map[string][]string `json:"fallbacks,omitempty"`
-	Aliases   []ModelAlias        `json:"aliases,omitempty"`
+	Vision      string              `json:"vision"`
+	Audio       string              `json:"audio"`
+	Reasoning   string              `json:"reasoning"`
+	Code        string              `json:"code"`
+	General     string              `json:"general"`
+	Fallbacks   map[string][]string `json:"fallbacks"`
+	Aliases     []ModelAlias        `json:"aliases"`
+	LaneRouting map[string]string   `json:"laneRouting,omitempty"`
 }
 
 type UpdateModelConfigRequest struct {
@@ -1258,14 +1267,26 @@ type NeboLoopLoginResponse struct {
 }
 
 type NeboLoopAccountStatusResponse struct {
-	Connected   bool   `json:"connected"`
-	OwnerID     string `json:"ownerId,omitempty"`
-	Email       string `json:"email,omitempty"`
-	DisplayName string `json:"displayName,omitempty"`
+	Connected     bool   `json:"connected"`
+	JanusProvider bool   `json:"janusProvider"`
+	ProfileID     string `json:"profileId,omitempty"`
+	OwnerID       string `json:"ownerId,omitempty"`
+	Email         string `json:"email,omitempty"`
+	DisplayName   string `json:"displayName,omitempty"`
 }
 
 type NeboLoopDisconnectResponse struct {
 	Disconnected bool `json:"disconnected"`
+}
+
+// NeboLoop Janus Usage types
+
+type NeboLoopJanusUsageResponse struct {
+	LimitTokens     int64  `json:"limitTokens"`
+	RemainingTokens int64  `json:"remainingTokens"`
+	UsedTokens      int64  `json:"usedTokens"`
+	PercentUsed     int    `json:"percentUsed"`
+	ResetAt         string `json:"resetAt,omitempty"`
 }
 
 // NeboLoop OAuth types
@@ -1433,33 +1454,7 @@ type ProjectContext struct {
 	RecentLogs  string   `json:"recentLogs,omitempty"`
 }
 
-// App UI types (structured template blocks)
-
-type UIBlock struct {
-	BlockID     string           `json:"block_id"`
-	Type        string           `json:"type"`
-	Text        string           `json:"text,omitempty"`
-	Value       string           `json:"value,omitempty"`
-	Placeholder string           `json:"placeholder,omitempty"`
-	Hint        string           `json:"hint,omitempty"`
-	Variant     string           `json:"variant,omitempty"`
-	Src         string           `json:"src,omitempty"`
-	Alt         string           `json:"alt,omitempty"`
-	Disabled    bool             `json:"disabled,omitempty"`
-	Options     []UISelectOption `json:"options,omitempty"`
-	Style       string           `json:"style,omitempty"`
-}
-
-type UISelectOption struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-}
-
-type UIView struct {
-	ViewID string    `json:"view_id"`
-	Title  string    `json:"title"`
-	Blocks []UIBlock `json:"blocks"`
-}
+// App UI types
 
 type UIAppInfo struct {
 	ID      string `json:"id"`
@@ -1471,15 +1466,7 @@ type ListUIAppsResponse struct {
 	Apps []UIAppInfo `json:"apps"`
 }
 
-type SendUIEventRequest struct {
-	ViewID  string `json:"view_id"`
-	BlockID string `json:"block_id"`
-	Action  string `json:"action"`
-	Value   string `json:"value"`
-}
-
-type SendUIEventResponse struct {
-	View  *UIView `json:"view,omitempty"`
-	Error string  `json:"error,omitempty"`
-	Toast string  `json:"toast,omitempty"`
+type OpenAppUIResponse struct {
+	Opened bool   `json:"opened"`
+	URL    string `json:"url,omitempty"`
 }

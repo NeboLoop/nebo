@@ -257,7 +257,10 @@ class ChildLogger {
 }
 
 // Create and export singleton logger instance
-export const logger = new Logger();
+// In production builds, suppress debug output; in dev, show everything
+export const logger = new Logger({
+	minLevel: import.meta.env.DEV ? 'debug' : 'info'
+});
 
 // Export Logger class for testing and custom instances
 export { Logger, ChildLogger };

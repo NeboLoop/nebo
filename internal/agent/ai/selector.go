@@ -31,20 +31,56 @@ type modelCooldownState struct {
 
 // ModelSelector selects the best model based on task type and available models
 type ModelSelector struct {
-	config     *provider.ModelsConfig
-	excludedMu sync.RWMutex
-	excluded   map[string]bool // Models that have failed and should be skipped
-	cooldownMu sync.RWMutex
-	cooldowns  map[string]*modelCooldownState // modelID -> cooldown state
+	config             *provider.ModelsConfig
+	excludedMu         sync.RWMutex
+	excluded           map[string]bool // Models that have failed and should be skipped
+	cooldownMu         sync.RWMutex
+	cooldowns          map[string]*modelCooldownState // modelID -> cooldown state
+	runtimeProvidersMu sync.RWMutex
+	runtimeProviders   map[string]bool // Provider IDs loaded at runtime (e.g. janus, gateway apps)
+	loadedProvidersMu  sync.RWMutex
+	loadedProviders    map[string]bool // ALL provider IDs that have actual loaded instances
 }
 
 // NewModelSelector creates a new model selector
 func NewModelSelector(config *provider.ModelsConfig) *ModelSelector {
 	return &ModelSelector{
-		config:    config,
-		excluded:  make(map[string]bool),
-		cooldowns: make(map[string]*modelCooldownState),
+		config:           config,
+		excluded:         make(map[string]bool),
+		cooldowns:        make(map[string]*modelCooldownState),
+		runtimeProviders: make(map[string]bool),
 	}
+}
+
+// SetRuntimeProviders registers provider IDs that are loaded at runtime
+// (e.g. Janus via NeboLoop auth, gateway app providers). These bypass
+// the credentials check in isModelAvailable since their auth is handled
+// outside of models.yaml.
+func (s *ModelSelector) SetRuntimeProviders(providerIDs []string) {
+	s.runtimeProvidersMu.Lock()
+	defer s.runtimeProvidersMu.Unlock()
+	s.runtimeProviders = make(map[string]bool, len(providerIDs))
+	for _, id := range providerIDs {
+		s.runtimeProviders[id] = true
+	}
+}
+
+// SetLoadedProviders tells the selector which providers actually have
+// loaded instances (from DB, CLI, or runtime). Only models from loaded
+// providers will be considered available. This prevents phantom matches
+// against credential placeholders (e.g. ${GOOGLE_API_KEY}) in models.yaml.
+func (s *ModelSelector) SetLoadedProviders(providerIDs []string) {
+	s.loadedProvidersMu.Lock()
+	defer s.loadedProvidersMu.Unlock()
+	s.loadedProviders = make(map[string]bool, len(providerIDs))
+	for _, id := range providerIDs {
+		s.loadedProviders[id] = true
+	}
+}
+
+// GetConfig returns the underlying models config
+func (s *ModelSelector) GetConfig() *provider.ModelsConfig {
+	return s.config
 }
 
 // Select returns the best model ID for the given messages
@@ -434,16 +470,9 @@ func (s *ModelSelector) selectForTaskWithExclusions(taskType TaskType, excludeMo
 		return routing.General
 	}
 
-	// Last resort: use defaults
-	return s.getDefaultModelFiltered(isUsable)
-}
-
-// getDefaultModel returns the default model, respecting exclusions (legacy)
-func (s *ModelSelector) getDefaultModel(excluded map[string]bool) string {
-	isUsable := func(modelID string) bool {
-		return !excluded[modelID] && s.isModelAvailable(modelID)
-	}
-	return s.getDefaultModelFiltered(isUsable)
+	// User configured task routing but nothing is available — return empty
+	// so the runner can show a clear error instead of silently using a different provider.
+	return ""
 }
 
 // getDefaultModelFiltered returns the default model using a custom filter function
@@ -478,9 +507,9 @@ func (s *ModelSelector) isModelAvailable(modelID string) bool {
 	modelName := parts[1]
 
 	// Handle CLI providers specially - they don't need credentials config
-	// They just need the CLI command to be available in PATH
+	// They just need to be active and the CLI command available in PATH
 	if cli := provider.GetCLIProviderByID(providerID); cli != nil {
-		if !cli.Installed {
+		if !cli.Active || !cli.Installed {
 			return false
 		}
 		// Check that the requested model is in the CLI's supported models
@@ -495,21 +524,47 @@ func (s *ModelSelector) isModelAvailable(modelID string) bool {
 		return true
 	}
 
-	// For API providers, check credentials
-	if s.config.Credentials != nil {
-		creds, ok := s.config.Credentials[providerID]
-		if !ok {
-			return false
-		}
-		// Provider needs API key, base URL (Ollama), or command (CLI)
-		if creds.APIKey == "" && creds.BaseURL == "" && creds.Command == "" {
-			return false
+	// Check if the provider has a loaded instance.
+	// This prevents phantom matches against credential placeholders
+	// (e.g. ${GOOGLE_API_KEY}) in models.yaml that look non-empty but
+	// don't correspond to actual provider instances.
+	s.loadedProvidersMu.RLock()
+	loadedInitialized := s.loadedProviders != nil // nil = pre-init, non-nil = authoritative
+	isLoaded := s.loadedProviders[providerID]
+	s.loadedProvidersMu.RUnlock()
+
+	// When loadedProviders has been initialized (normal operation), only consider
+	// providers that actually have loaded instances. An empty map means
+	// "loading ran, found zero providers" — reject everything.
+	if loadedInitialized && !isLoaded {
+		return false
+	}
+
+	// Fallback for when loadedProviders hasn't been initialized yet (tests, early init):
+	// check runtime providers and credentials as before
+	if !loadedInitialized {
+		s.runtimeProvidersMu.RLock()
+		isRuntime := s.runtimeProviders[providerID]
+		s.runtimeProvidersMu.RUnlock()
+
+		if !isRuntime {
+			if s.config.Credentials != nil {
+				creds, ok := s.config.Credentials[providerID]
+				if !ok {
+					return false
+				}
+				if creds.APIKey == "" && creds.BaseURL == "" && creds.Command == "" {
+					return false
+				}
+			}
 		}
 	}
 
 	models, ok := s.config.Providers[providerID]
 	if !ok {
-		return false
+		// Provider is loaded but has no model list in models.yaml —
+		// trust it (e.g. runtime providers like Janus, gateway apps)
+		return isLoaded
 	}
 
 	for _, m := range models {
@@ -543,6 +598,15 @@ func (s *ModelSelector) GetModelInfo(modelID string) *provider.ModelInfo {
 	}
 
 	return nil
+}
+
+// GetProviderModels returns all model info entries for a given provider ID.
+// Used by the runner to find the context window of the actual provider being used.
+func (s *ModelSelector) GetProviderModels(providerID string) []provider.ModelInfo {
+	if s.config == nil || s.config.Providers == nil {
+		return nil
+	}
+	return s.config.Providers[providerID]
 }
 
 // SupportsThinking returns true if the model supports extended thinking mode

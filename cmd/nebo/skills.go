@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/neboloop/nebo/extensions"
 	agentcfg "github.com/neboloop/nebo/internal/agent/config"
 	"github.com/neboloop/nebo/internal/agent/skills"
 )
@@ -57,7 +58,7 @@ func listSkills(cfg *agentcfg.Config) {
 	skillList := loader.List()
 	if len(skillList) == 0 {
 		fmt.Println("No skills loaded.")
-		fmt.Printf("\nSkills directory: %s\n", skillsDir(cfg))
+		fmt.Printf("\nSkills directory: %s\n", filepath.Join(cfg.DataDir, "skills"))
 		fmt.Println("Create subdirectories with SKILL.md files to define skills.")
 		return
 	}
@@ -134,14 +135,11 @@ func showSkill(cfg *agentcfg.Config, name string) {
 	}
 }
 
-func skillsDir(cfg *agentcfg.Config) string {
-	userDir := filepath.Join(cfg.DataDir, "skills")
-	if _, err := os.Stat(userDir); err == nil {
-		return userDir
-	}
-	return "extensions/skills"
-}
-
 func createSkillLoader(cfg *agentcfg.Config) *skills.Loader {
-	return skills.NewLoader(skillsDir(cfg))
+	loader := skills.NewLoader(filepath.Join(cfg.DataDir, "skills"))
+	// Load bundled skills from embedded binary
+	if err := loader.LoadFromEmbedFS(extensions.BundledSkills, "skills"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to load bundled skills: %v\n", err)
+	}
+	return loader
 }

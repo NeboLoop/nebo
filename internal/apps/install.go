@@ -2,79 +2,91 @@ package apps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"github.com/neboloop/nebo/internal/neboloop/sdk"
+	neboloopsdk "github.com/NeboLoop/neboloop-go-sdk"
 )
 
 // HandleInstallEvent processes an install event from the NeboLoop comms SDK.
 // Routes by event type to install, update, uninstall, or revoke handlers.
-func (ar *AppRegistry) HandleInstallEvent(ctx context.Context, evt sdk.InstallEvent) {
+func (ar *AppRegistry) HandleInstallEvent(ctx context.Context, evt neboloopsdk.InstallEvent) {
 	if evt.AppID == "" {
 		fmt.Printf("[apps:install] Event missing app_id, ignoring\n")
 		return
 	}
 
-	fmt.Printf("[apps:install] Event: %s app=%s version=%s\n", evt.Type, evt.AppID, evt.Version)
+	// Parse version and download URL from the Payload field
+	var details struct {
+		Version     string `json:"version"`
+		DownloadURL string `json:"download_url"`
+	}
+	if evt.Payload != nil {
+		json.Unmarshal(evt.Payload, &details)
+	}
 
-	switch evt.Type {
+	fmt.Printf("[apps:install] Event: %s app=%s version=%s\n", evt.Type, evt.AppID, details.Version)
+
+	// Normalize event type: published SDK uses "app_installed" prefix, strip "app_" for routing
+	evtType := strings.TrimPrefix(evt.Type, "app_")
+
+	switch evtType {
 	case "installed":
-		ar.handleInstall(ctx, evt)
+		ar.handleInstall(ctx, evt.AppID, details.Version, details.DownloadURL)
 	case "updated":
-		ar.handleUpdate(ctx, evt)
+		ar.handleUpdate(ctx, evt.AppID, details.Version, details.DownloadURL)
 	case "uninstalled":
-		ar.handleUninstall(evt)
+		ar.handleUninstall(evt.AppID)
 	case "revoked":
-		ar.handleRevoke(evt)
+		ar.handleRevoke(evt.AppID)
 	default:
 		fmt.Printf("[apps:install] Unknown event type: %s\n", evt.Type)
 	}
 }
 
 // handleInstall downloads and installs a new app.
-func (ar *AppRegistry) handleInstall(ctx context.Context, evt sdk.InstallEvent) {
-	downloadURL := evt.DownloadURL
+func (ar *AppRegistry) handleInstall(ctx context.Context, appID, version, downloadURL string) {
 	if downloadURL == "" {
-		fmt.Printf("[apps:install] No download URL for %s\n", evt.AppID)
+		fmt.Printf("[apps:install] No download URL for %s\n", appID)
 		return
 	}
 
-	appDir := filepath.Join(ar.appsDir, evt.AppID)
+	appDir := filepath.Join(ar.appsDir, appID)
 
 	// Check if already installed
 	if _, err := os.Stat(filepath.Join(appDir, "manifest.json")); err == nil {
-		fmt.Printf("[apps:install] App %s already installed, skipping\n", evt.AppID)
+		fmt.Printf("[apps:install] App %s already installed, skipping\n", appID)
 		return
 	}
 
 	if err := DownloadAndExtractNapp(downloadURL, appDir); err != nil {
-		fmt.Printf("[apps:install] Failed to install %s: %v\n", evt.AppID, err)
+		fmt.Printf("[apps:install] Failed to install %s: %v\n", appID, err)
 		os.RemoveAll(appDir)
 		return
 	}
 
 	if err := ar.launchAndRegister(ctx, appDir); err != nil {
-		fmt.Printf("[apps:install] Failed to launch %s: %v\n", evt.AppID, err)
+		fmt.Printf("[apps:install] Failed to launch %s: %v\n", appID, err)
 		return
 	}
 
-	fmt.Printf("[apps:install] Installed and launched %s v%s\n", evt.AppID, evt.Version)
+	fmt.Printf("[apps:install] Installed and launched %s v%s\n", appID, version)
 }
 
 // handleUpdate stops the running app, replaces the binary/manifest (preserving data), and relaunches.
 // If the new version adds permissions, the update is staged but not launched until user approves.
-func (ar *AppRegistry) handleUpdate(ctx context.Context, evt sdk.InstallEvent) {
-	downloadURL := evt.DownloadURL
+func (ar *AppRegistry) handleUpdate(ctx context.Context, appID, version, downloadURL string) {
 	if downloadURL == "" {
-		fmt.Printf("[apps:install] No download URL for %s\n", evt.AppID)
+		fmt.Printf("[apps:install] No download URL for %s\n", appID)
 		return
 	}
 
-	appDir := filepath.Join(ar.appsDir, evt.AppID)
+	appDir := filepath.Join(ar.appsDir, appID)
 
 	// Load the old manifest before stopping (for permission diff)
 	var oldPermissions []string
@@ -83,9 +95,9 @@ func (ar *AppRegistry) handleUpdate(ctx context.Context, evt sdk.InstallEvent) {
 	}
 
 	// Stop the running app if it exists
-	if _, ok := ar.runtime.Get(evt.AppID); ok {
-		if err := ar.runtime.Stop(evt.AppID); err != nil {
-			fmt.Printf("[apps:install] Warning: failed to stop %s for update: %v\n", evt.AppID, err)
+	if _, ok := ar.runtime.Get(appID); ok {
+		if err := ar.runtime.Stop(appID); err != nil {
+			fmt.Printf("[apps:install] Warning: failed to stop %s for update: %v\n", appID, err)
 		}
 	}
 
@@ -100,7 +112,7 @@ func (ar *AppRegistry) handleUpdate(ctx context.Context, evt sdk.InstallEvent) {
 	os.RemoveAll(tmpDir)
 
 	if err := DownloadAndExtractNapp(downloadURL, tmpDir); err != nil {
-		fmt.Printf("[apps:install] Failed to download update for %s: %v\n", evt.AppID, err)
+		fmt.Printf("[apps:install] Failed to download update for %s: %v\n", appID, err)
 		os.RemoveAll(tmpDir)
 		if _, err := os.Stat(filepath.Join(appDir, "manifest.json")); err == nil {
 			_ = ar.launchAndRegister(ctx, appDir)
@@ -111,7 +123,7 @@ func (ar *AppRegistry) handleUpdate(ctx context.Context, evt sdk.InstallEvent) {
 	// Permission diff: check if new version adds permissions
 	newManifest, err := LoadManifest(tmpDir)
 	if err != nil {
-		fmt.Printf("[apps:install] Failed to load new manifest for %s: %v\n", evt.AppID, err)
+		fmt.Printf("[apps:install] Failed to load new manifest for %s: %v\n", appID, err)
 		os.RemoveAll(tmpDir)
 		_ = ar.launchAndRegister(ctx, appDir)
 		return
@@ -119,7 +131,7 @@ func (ar *AppRegistry) handleUpdate(ctx context.Context, evt sdk.InstallEvent) {
 
 	added := permissionDiff(oldPermissions, newManifest.Permissions)
 	if len(added) > 0 {
-		fmt.Printf("[apps:install] Update for %s adds new permissions: %v — requires user approval\n", evt.AppID, added)
+		fmt.Printf("[apps:install] Update for %s adds new permissions: %v — requires user approval\n", appID, added)
 		pendingDir := appDir + ".pending"
 		os.RemoveAll(pendingDir)
 		os.Rename(tmpDir, pendingDir)
@@ -141,17 +153,17 @@ func (ar *AppRegistry) handleUpdate(ctx context.Context, evt sdk.InstallEvent) {
 
 	os.RemoveAll(appDir)
 	if err := os.Rename(tmpDir, appDir); err != nil {
-		fmt.Printf("[apps:install] Failed to swap directories for %s: %v\n", evt.AppID, err)
+		fmt.Printf("[apps:install] Failed to swap directories for %s: %v\n", appID, err)
 		os.RemoveAll(tmpDir)
 		return
 	}
 
 	if err := ar.launchAndRegister(ctx, appDir); err != nil {
-		fmt.Printf("[apps:install] Failed to relaunch %s after update: %v\n", evt.AppID, err)
+		fmt.Printf("[apps:install] Failed to relaunch %s after update: %v\n", appID, err)
 		return
 	}
 
-	fmt.Printf("[apps:install] Updated and relaunched %s v%s\n", evt.AppID, evt.Version)
+	fmt.Printf("[apps:install] Updated and relaunched %s v%s\n", appID, version)
 }
 
 // permissionDiff returns permissions present in newPerms but not in oldPerms.
@@ -170,26 +182,26 @@ func permissionDiff(oldPerms, newPerms []string) []string {
 }
 
 // handleUninstall stops and removes an app.
-func (ar *AppRegistry) handleUninstall(evt sdk.InstallEvent) {
-	if _, ok := ar.runtime.Get(evt.AppID); ok {
-		if err := ar.runtime.Stop(evt.AppID); err != nil {
-			fmt.Printf("[apps:install] Warning: failed to stop %s: %v\n", evt.AppID, err)
+func (ar *AppRegistry) handleUninstall(appID string) {
+	if _, ok := ar.runtime.Get(appID); ok {
+		if err := ar.runtime.Stop(appID); err != nil {
+			fmt.Printf("[apps:install] Warning: failed to stop %s: %v\n", appID, err)
 		}
 	}
 
-	appDir := filepath.Join(ar.appsDir, evt.AppID)
+	appDir := filepath.Join(ar.appsDir, appID)
 	if err := os.RemoveAll(appDir); err != nil {
-		fmt.Printf("[apps:install] Warning: failed to remove %s: %v\n", evt.AppID, err)
+		fmt.Printf("[apps:install] Warning: failed to remove %s: %v\n", appID, err)
 	}
 
-	fmt.Printf("[apps:install] Uninstalled %s\n", evt.AppID)
+	fmt.Printf("[apps:install] Uninstalled %s\n", appID)
 }
 
 // handleRevoke quarantines a revoked app — stops it immediately but preserves
 // data/ for forensic analysis.
-func (ar *AppRegistry) handleRevoke(evt sdk.InstallEvent) {
-	if err := ar.Quarantine(evt.AppID); err != nil {
-		fmt.Printf("[apps:install] Warning: quarantine failed for %s: %v\n", evt.AppID, err)
+func (ar *AppRegistry) handleRevoke(appID string) {
+	if err := ar.Quarantine(appID); err != nil {
+		fmt.Printf("[apps:install] Warning: quarantine failed for %s: %v\n", appID, err)
 	}
 }
 
@@ -239,4 +251,3 @@ func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
-

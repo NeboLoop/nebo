@@ -150,9 +150,7 @@ func (p *GeminiProvider) buildHistory(msgs []session.Message) ([]*genai.Content,
 				var toolCalls []session.ToolCall
 				if err := json.Unmarshal(msg.ToolCalls, &toolCalls); err == nil {
 					for _, tc := range toolCalls {
-						// Only include tool calls that have responses
 						if !respondedToolIDs[tc.ID] {
-							fmt.Printf("[Gemini] Skipping tool_call without response: %s\n", tc.ID)
 							continue
 						}
 

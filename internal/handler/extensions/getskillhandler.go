@@ -1,10 +1,10 @@
 package extensions
 
 import (
-	"fmt"
 	"net/http"
 	"path/filepath"
 
+	bundled "github.com/neboloop/nebo/extensions"
 	"github.com/neboloop/nebo/internal/agent/skills"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/logging"
@@ -34,13 +34,10 @@ func GetSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		if skill == nil {
-			bundledLoader := skills.NewLoader(filepath.Join("extensions", "skills"))
-			if err := bundledLoader.LoadAll(); err != nil {
-				logging.Errorf("Failed to load skills: %v", err)
-				httputil.Error(w, fmt.Errorf("failed to load skills: %w", err))
-				return
-			}
-			if s, ok := bundledLoader.Get(req.Name); ok {
+			bundledLoader := skills.NewLoader("")
+			if err := bundledLoader.LoadFromEmbedFS(bundled.BundledSkills, "skills"); err != nil {
+				logging.Errorf("Failed to load bundled skills: %v", err)
+			} else if s, ok := bundledLoader.Get(req.Name); ok {
 				skill = s
 				source = "bundled"
 			}

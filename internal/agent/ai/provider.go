@@ -77,6 +77,13 @@ type Provider interface {
 	Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error)
 }
 
+// RateLimitProvider is an optional interface implemented by providers
+// that expose rate-limit / quota information (e.g., Janus via X-RateLimit-* headers).
+// Consumers type-assert: if rlp, ok := provider.(ai.RateLimitProvider); ok { ... }
+type RateLimitProvider interface {
+	GetRateLimit() *RateLimitInfo
+}
+
 // ProfiledProvider wraps a Provider with auth profile tracking
 // This enables per-request profile ID tracking for cooldown and usage stats
 type ProfiledProvider struct {
@@ -110,6 +117,14 @@ func (p *ProfiledProvider) HandlesTools() bool {
 // Stream delegates to the underlying provider
 func (p *ProfiledProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan StreamEvent, error) {
 	return p.Provider.Stream(ctx, req)
+}
+
+// GetRateLimit delegates to the underlying provider if it implements RateLimitProvider.
+func (p *ProfiledProvider) GetRateLimit() *RateLimitInfo {
+	if rlp, ok := p.Provider.(RateLimitProvider); ok {
+		return rlp.GetRateLimit()
+	}
+	return nil
 }
 
 // ProfileTracker records usage and errors for auth profiles

@@ -2,8 +2,8 @@
 	import { page } from '$app/stores';
 	import {
 		User,
-		Settings,
 		Key,
+		Cpu,
 		Heart,
 		Sparkles,
 		Brain,
@@ -43,22 +43,32 @@
 		{
 			label: 'You',
 			tabs: [
-				{ id: 'profile', path: '/settings/profile', label: 'Profile', icon: User },
-				{ id: 'preferences', path: '/settings/preferences', label: 'Preferences', icon: Settings }
+				{ id: 'profile', path: '/settings/profile', label: 'Profile', icon: User }
 			]
 		},
 		{
-			label: 'Agent',
+			label: 'Character',
 			tabs: [
 				{ id: 'identity', path: '/settings/identity', label: 'Identity', icon: Fingerprint },
 				{ id: 'soul', path: '/settings/personality', label: 'Soul', icon: Sparkles },
 				{ id: 'rules', path: '/settings/rules', label: 'Rules', icon: ScrollText },
-				{ id: 'notes', path: '/settings/notes', label: 'Notes', icon: StickyNote },
+				{ id: 'notes', path: '/settings/notes', label: 'Notes', icon: StickyNote }
+			]
+		},
+		{
+			label: 'Mind',
+			tabs: [
+				{ id: 'routing', path: '/settings/routing', label: 'Routing', icon: Cpu },
 				{ id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key },
-				{ id: 'permissions', path: '/settings/permissions', label: 'Permissions', icon: Shield },
-				{ id: 'heartbeat', path: '/settings/heartbeat', label: 'Heartbeat', icon: Heart },
 				{ id: 'memories', path: '/settings/memories', label: 'Memories', icon: Brain },
 				{ id: 'advisors', path: '/settings/advisors', label: 'Advisors', icon: MessagesSquare }
+			]
+		},
+		{
+			label: 'Behavior',
+			tabs: [
+				{ id: 'heartbeat', path: '/settings/heartbeat', label: 'Heartbeat', icon: Heart },
+				{ id: 'permissions', path: '/settings/permissions', label: 'Permissions', icon: Shield }
 			]
 		},
 		{
@@ -106,10 +116,26 @@
 		>
 			<Menu class="w-5 h-5" />
 		</button>
-		<div>
+		<div class="flex-1">
 			<h1 class="font-display text-2xl font-bold text-base-content mb-1">Settings</h1>
 			<p class="text-sm text-base-content/60">Manage your account and preferences</p>
 		</div>
+		{#if $updateInfo}
+			<div class="flex items-center gap-2 shrink-0">
+				<span class="text-xs text-base-content/30">Nebo {$updateInfo.current_version}</span>
+				{#if $updateInfo.available}
+					<a
+						href={$updateInfo.release_url}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="flex items-center gap-1 text-xs text-info hover:text-info/80 transition-colors"
+					>
+						<ArrowUpCircle class="w-3.5 h-3.5" />
+						<span>{$updateInfo.latest_version}</span>
+					</a>
+				{/if}
+			</div>
+		{/if}
 	</div>
 
 	<div class="flex flex-row gap-6">
@@ -148,10 +174,10 @@
 {/if}
 
 {#snippet navItems()}
-	<ul class="flex flex-col gap-1">
+	<ul class="flex flex-col gap-0.5">
 		{#each groups as group, gi}
 			{#if gi > 0}
-				<li class="h-3"></li>
+				<li class="h-2"></li>
 			{/if}
 			<li>
 				<span class="px-3 text-xs font-semibold uppercase tracking-wider text-base-content/40">
@@ -163,10 +189,10 @@
 					<a
 						href={tab.path}
 						onclick={closeDrawer}
-						class="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-left transition-colors whitespace-nowrap
+						class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm text-left transition-colors whitespace-nowrap
 							{activeTab === tab.id
-								? 'bg-primary/10 text-primary border border-primary/20'
-								: 'text-base-content/70 hover:bg-base-200 hover:text-base-content border border-transparent'}"
+								? 'bg-primary/10 text-primary ring-1 ring-primary/20'
+								: 'text-base-content/70 hover:bg-base-200 hover:text-base-content'}"
 						aria-current={activeTab === tab.id ? 'page' : undefined}
 					>
 						<tab.icon class="w-4 h-4" />
@@ -176,23 +202,4 @@
 			{/each}
 		{/each}
 	</ul>
-	<!-- Version info -->
-	{#if $updateInfo}
-		<div class="mt-6 px-3">
-			<p class="text-xs text-base-content/40">
-				Nebo {$updateInfo.current_version}
-			</p>
-			{#if $updateInfo.available}
-				<a
-					href={$updateInfo.release_url}
-					target="_blank"
-					rel="noopener noreferrer"
-					class="flex items-center gap-1.5 mt-1 text-xs text-info hover:text-info/80 transition-colors"
-				>
-					<ArrowUpCircle class="w-3.5 h-3.5" />
-					<span>{$updateInfo.latest_version} available</span>
-				</a>
-			{/if}
-		</div>
-	{/if}
 {/snippet}

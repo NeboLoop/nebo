@@ -5,7 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/neboloop/nebo/internal/agent/ai"
@@ -14,11 +19,20 @@ import (
 	"github.com/neboloop/nebo/internal/agent/recovery"
 	"github.com/neboloop/nebo/internal/agent/session"
 	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 // CommService is the interface for inter-agent communication.
 // Implemented by comm.CommHandler — defined here to avoid import cycles
 // (tools → comm → runner → tools).
+// LoopChannelInfo describes a loop channel the bot is a member of.
+type LoopChannelInfo struct {
+	ChannelID   string `json:"channel_id"`
+	ChannelName string `json:"channel_name"`
+	LoopID      string `json:"loop_id"`
+	LoopName    string `json:"loop_name"`
+}
+
 type CommService interface {
 	// Send sends a message through the active comm plugin
 	Send(ctx context.Context, to, topic, content string, msgType string) error
@@ -36,6 +50,39 @@ type CommService interface {
 	CommAgentID() string
 }
 
+// LoopQuerier provides read access to loops, members, and channel history.
+// Implemented by the NeboLoop comm plugin — defined here to avoid import cycles.
+type LoopQuerier interface {
+	ListLoops(ctx context.Context) ([]LoopInfo, error)
+	GetLoop(ctx context.Context, loopID string) (*LoopInfo, error)
+	ListLoopMembers(ctx context.Context, loopID string) ([]MemberInfo, error)
+	ListChannelMembers(ctx context.Context, channelID string) ([]MemberInfo, error)
+	ListChannelMessages(ctx context.Context, channelID string, limit int) ([]MessageInfo, error)
+}
+
+// LoopInfo describes a loop the bot belongs to.
+type LoopInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MemberCount int    `json:"member_count,omitempty"`
+}
+
+// MemberInfo describes a bot member with online presence.
+type MemberInfo struct {
+	BotID    string `json:"bot_id"`
+	BotName  string `json:"bot_name,omitempty"`
+	IsOnline bool   `json:"is_online"`
+}
+
+// MessageInfo describes a message from channel history.
+type MessageInfo struct {
+	ID        string `json:"id"`
+	From      string `json:"from"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
+}
+
 // AgentDomainTool consolidates agent-related tools into a single domain tool
 // following the STRAP (Single Tool Resource Action Pattern).
 //
@@ -46,6 +93,15 @@ type CommService interface {
 //   - message: Send messages to connected channels (provided by installed apps)
 //   - session: Query and manage conversation sessions
 //   - comm: Inter-agent communication via comm lane plugins
+// WorkTask is an in-memory work tracking item created by the agent to track progress
+// on its current objective. Ephemeral — does not survive restart.
+type WorkTask struct {
+	ID        string    `json:"id"`
+	Subject   string    `json:"subject"`
+	Status    string    `json:"status"` // pending, in_progress, completed
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type AgentDomainTool struct {
 	// Task/orchestration
 	orchestrator *orchestrator.Orchestrator
@@ -60,11 +116,16 @@ type AgentDomainTool struct {
 	channelSender ChannelSender
 
 	// Inter-agent communication
-	commService CommService
+	commService       CommService
+	loopChannelLister func(ctx context.Context) ([]LoopChannelInfo, error)
+	loopQuerier       LoopQuerier
 
 	// Session management
 	sessions      *session.Manager
 	currentUserID string
+
+	// Work task tracking (in-memory, session-scoped)
+	workTasks sync.Map // sessionKey → []WorkTask
 }
 
 // AgentDomainInput defines the input for the agent domain tool
@@ -80,6 +141,9 @@ type AgentDomainInput struct {
 	Timeout     int    `json:"timeout,omitempty"`     // Timeout in seconds (default: 300)
 	AgentType   string `json:"agent_type,omitempty"`  // explore, plan, general
 	AgentID     string `json:"agent_id,omitempty"`    // For status/cancel operations
+	Subject     string `json:"subject,omitempty"`     // Work task subject (for create)
+	TaskID      string `json:"task_id,omitempty"`     // Work task ID (for update)
+	Status      string `json:"status,omitempty"`      // Work task status (for update)
 
 	// Reminder (scheduling) fields
 	Name     string `json:"name,omitempty"`      // Job name
@@ -114,8 +178,10 @@ type AgentDomainInput struct {
 	Limit      int    `json:"limit,omitempty"`       // Max messages to return
 
 	// Comm fields (reuses To, Topic, Text from message fields)
-	MsgType string `json:"msg_type,omitempty"` // message, mention, proposal, command, info
-	Topic   string `json:"topic,omitempty"`    // Comm topic/channel name
+	MsgType   string `json:"msg_type,omitempty"`    // message, mention, proposal, command, info
+	Topic     string `json:"topic,omitempty"`       // Comm topic/channel name
+	ChannelID string `json:"channel_id,omitempty"`  // Loop channel ID
+	LoopID    string `json:"loop_id,omitempty"`     // Loop ID (for loop queries)
 }
 
 // AgentDomainConfig configures the agent domain tool
@@ -172,6 +238,17 @@ func (t *AgentDomainTool) RecoverSubagents(ctx context.Context) (int, error) {
 // SetCommService sets the comm service for inter-agent communication
 func (t *AgentDomainTool) SetCommService(svc CommService) {
 	t.commService = svc
+}
+
+// SetLoopChannelLister sets the function for listing loop channels.
+// Injected from agent.go to avoid import cycles (tools → comm).
+func (t *AgentDomainTool) SetLoopChannelLister(fn func(ctx context.Context) ([]LoopChannelInfo, error)) {
+	t.loopChannelLister = fn
+}
+
+// SetLoopQuerier sets the loop query provider for loop/member/message lookups.
+func (t *AgentDomainTool) SetLoopQuerier(q LoopQuerier) {
+	t.loopQuerier = q
 }
 
 // SetChannelSender sets the channel sender for messaging
@@ -238,7 +315,7 @@ func (t *AgentDomainTool) Resources() []string {
 func (t *AgentDomainTool) ActionsFor(resource string) []string {
 	switch resource {
 	case "task":
-		return []string{"spawn", "status", "cancel", "list"}
+		return []string{"spawn", "status", "cancel", "list", "create", "update"}
 	case "reminder":
 		return []string{"create", "list", "delete", "pause", "resume", "run", "history"}
 	case "memory":
@@ -248,22 +325,22 @@ func (t *AgentDomainTool) ActionsFor(resource string) []string {
 	case "session":
 		return []string{"list", "history", "status", "clear"}
 	case "comm":
-		return []string{"send", "subscribe", "unsubscribe", "list_topics", "status"}
+		return []string{"send", "subscribe", "unsubscribe", "list_topics", "status", "send_loop", "list_channels", "list_loops", "get_loop", "loop_members", "channel_members", "channel_messages"}
 	case "profile":
-		return []string{"update"}
+		return []string{"get", "update", "open_billing"}
 	default:
 		return nil
 	}
 }
 
 var agentResources = map[string]ResourceConfig{
-	"task":    {Name: "task", Actions: []string{"spawn", "status", "cancel", "list"}, Description: "Sub-agent management"},
+	"task":    {Name: "task", Actions: []string{"spawn", "status", "cancel", "list", "create", "update"}, Description: "Sub-agent management + work tracking"},
 	"reminder": {Name: "reminder", Actions: []string{"create", "list", "delete", "pause", "resume", "run", "history"}, Description: "Scheduled reminders and recurring tasks"},
 	"memory":  {Name: "memory", Actions: []string{"store", "recall", "search", "list", "delete", "clear"}, Description: "Persistent storage"},
 	"message": {Name: "message", Actions: []string{"send", "list"}, Description: "Channel messaging"},
 	"session": {Name: "session", Actions: []string{"list", "history", "status", "clear"}, Description: "Conversation sessions"},
-	"comm":    {Name: "comm", Actions: []string{"send", "subscribe", "unsubscribe", "list_topics", "status"}, Description: "Inter-agent communication"},
-	"profile": {Name: "profile", Actions: []string{"get", "update"}, Description: "Read and update agent identity (name, emoji, creature, vibe, personality, quiet_hours_start/end as HH:MM)"},
+	"comm":    {Name: "comm", Actions: []string{"send", "subscribe", "unsubscribe", "list_topics", "status", "send_loop", "list_channels", "list_loops", "get_loop", "loop_members", "channel_members", "channel_messages"}, Description: "Inter-agent communication, loop channels, and loop queries"},
+	"profile": {Name: "profile", Actions: []string{"get", "update", "open_billing"}, Description: "Read and update agent identity, or open NeboLoop billing page"},
 }
 
 // Description returns the tool description
@@ -273,16 +350,21 @@ func (t *AgentDomainTool) Description() string {
 		Description: `Agent orchestration and state management.
 
 Resources:
-- task: Spawn sub-agents for parallel work (spawn, status, cancel, list)
+- task: Sub-agents (spawn, status, cancel) + work tracking (create, update, list)
 - reminder: Schedule reminders and recurring tasks (aliases: routine, schedule, job, cron, event, remind)
 - memory: Three-tier persistent storage (tacit/daily/entity layers)
 - message: Send messages to connected channels (provided by installed apps)
 - session: Manage conversation sessions
-- comm: Inter-agent communication via comm lane (send, subscribe, unsubscribe, list_topics, status)
+- comm: Inter-agent communication, loop channels, and loop queries
+  - Direct messaging: send (to agent by ID, requires topic), subscribe, unsubscribe, list_topics, status
+  - Loop channels: list_channels (discover channels), send_loop (send to a channel by channel_id)
+  - Loop queries: list_loops, get_loop (by loop_id), loop_members (by loop_id), channel_members (by channel_id), channel_messages (by channel_id, optional limit)
 - profile: Read and update your own identity (name, emoji, creature, vibe, personality)`,
 		Resources: agentResources,
 		Examples: []string{
 			`agent(resource: task, action: spawn, prompt: "Find all Go files with errors", agent_type: "explore")`,
+			`agent(resource: task, action: create, subject: "Read existing skill format")`,
+			`agent(resource: task, action: update, task_id: "1", status: "completed")`,
 			`agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send me a summary")`,
 			`agent(resource: reminder, action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", message: "Remind user to call Kristi about haircuts")`,
 			`agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit")`,
@@ -292,6 +374,13 @@ Resources:
 			`agent(resource: comm, action: send, to: "dev-bot", topic: "project-alpha", text: "Review this PR")`,
 			`agent(resource: comm, action: subscribe, topic: "announcements")`,
 			`agent(resource: comm, action: status)`,
+			`agent(resource: comm, action: send_loop, channel_id: "channel-uuid", text: "Hello from the loop!")`,
+			`agent(resource: comm, action: list_channels)`,
+			`agent(resource: comm, action: list_loops)`,
+			`agent(resource: comm, action: get_loop, loop_id: "loop-uuid")`,
+			`agent(resource: comm, action: loop_members, loop_id: "loop-uuid")`,
+			`agent(resource: comm, action: channel_members, channel_id: "channel-uuid")`,
+			`agent(resource: comm, action: channel_messages, channel_id: "channel-uuid", limit: 50)`,
 			`agent(resource: profile, action: get)`,
 			`agent(resource: profile, action: update, key: "name", value: "Jarvis")`,
 			`agent(resource: profile, action: update, key: "emoji", value: "🤖")`,
@@ -315,6 +404,9 @@ func (t *AgentDomainTool) Schema() json.RawMessage {
 			{Name: "timeout", Type: "integer", Description: "Timeout in seconds (default: 300)", Default: 300},
 			{Name: "agent_type", Type: "string", Description: "Agent type: explore, plan, general", Enum: []string{"explore", "plan", "general"}},
 			{Name: "agent_id", Type: "string", Description: "Agent ID for status/cancel operations"},
+			{Name: "subject", Type: "string", Description: "Work task subject (for task.create)"},
+			{Name: "task_id", Type: "string", Description: "Work task ID (for task.update)"},
+			{Name: "status", Type: "string", Description: "Work task status (for task.update)", Enum: []string{"in_progress", "completed"}},
 
 			// Reminder (scheduling) fields
 			{Name: "name", Type: "string", Description: "Unique reminder name"},
@@ -346,6 +438,8 @@ func (t *AgentDomainTool) Schema() json.RawMessage {
 			// Comm fields
 			{Name: "topic", Type: "string", Description: "Comm topic/channel name for subscribe/send"},
 			{Name: "msg_type", Type: "string", Description: "Comm message type", Enum: []string{"message", "mention", "proposal", "command", "info"}},
+			{Name: "channel_id", Type: "string", Description: "Loop channel ID (for send_loop, channel_members, channel_messages)"},
+			{Name: "loop_id", Type: "string", Description: "Loop ID (for get_loop, loop_members)"},
 		},
 	})
 }
@@ -395,9 +489,16 @@ var actionToResource = map[string]string{
 	"resume": "reminder",
 	"run":    "reminder",
 	// comm-only
-	"subscribe":   "comm",
-	"unsubscribe": "comm",
-	"list_topics":  "comm",
+	"subscribe":        "comm",
+	"unsubscribe":      "comm",
+	"list_topics":      "comm",
+	"send_loop":        "comm",
+	"list_channels":    "comm",
+	"list_loops":       "comm",
+	"get_loop":         "comm",
+	"loop_members":     "comm",
+	"channel_members":  "comm",
+	"channel_messages": "comm",
 	// profile-only
 	"update": "profile",
 	"get":    "profile",
@@ -467,6 +568,17 @@ func (t *AgentDomainTool) Execute(ctx context.Context, input json.RawMessage) (*
 // =============================================================================
 
 func (t *AgentDomainTool) handleTask(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	// Work tracking actions don't need the orchestrator
+	switch in.Action {
+	case "create":
+		return t.taskCreate(ctx, in)
+	case "update":
+		return t.taskUpdate(ctx, in)
+	case "list":
+		return t.taskList(ctx)
+	}
+
+	// Sub-agent actions require orchestrator
 	if t.orchestrator == nil {
 		return &ToolResult{
 			Content: "Error: Task orchestrator not configured",
@@ -481,8 +593,6 @@ func (t *AgentDomainTool) handleTask(ctx context.Context, in AgentDomainInput) (
 		return t.taskStatus(in)
 	case "cancel":
 		return t.taskCancel(in)
-	case "list":
-		return t.taskList()
 	default:
 		return &ToolResult{
 			Content: fmt.Sprintf("Unknown task action: %s", in.Action),
@@ -518,13 +628,20 @@ func (t *AgentDomainTool) taskSpawn(ctx context.Context, in AgentDomainInput) (*
 	// Build system prompt based on agent type
 	systemPrompt := buildAgentSystemPrompt(in.AgentType, in.Prompt)
 
+	// Resolve subagent lane model override from config
+	var subagentModel string
+	if cfg := provider.GetModelsConfig(); cfg != nil && cfg.LaneRouting != nil && cfg.LaneRouting.Subagent != "" {
+		subagentModel = cfg.LaneRouting.Subagent
+	}
+
 	// Spawn the sub-agent
 	agent, err := t.orchestrator.Spawn(ctx, &orchestrator.SpawnRequest{
-		Task:         in.Prompt,
-		Description:  in.Description,
-		Wait:         wait,
-		Timeout:      time.Duration(timeout) * time.Second,
-		SystemPrompt: systemPrompt,
+		Task:          in.Prompt,
+		Description:   in.Description,
+		Wait:          wait,
+		Timeout:       time.Duration(timeout) * time.Second,
+		SystemPrompt:  systemPrompt,
+		ModelOverride: subagentModel,
 	})
 
 	if err != nil {
@@ -618,26 +735,162 @@ func (t *AgentDomainTool) taskCancel(in AgentDomainInput) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Agent %s cancelled", in.AgentID)}, nil
 }
 
-func (t *AgentDomainTool) taskList() (*ToolResult, error) {
-	agents := t.orchestrator.ListAgents()
-	if len(agents) == 0 {
-		return &ToolResult{Content: "No sub-agents running"}, nil
+// workTaskCounter generates short numeric IDs for work tasks.
+var workTaskCounter atomic.Int64
+
+func (t *AgentDomainTool) taskCreate(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	if in.Subject == "" {
+		return &ToolResult{
+			Content: "Error: 'subject' is required for create action",
+			IsError: true,
+		}, nil
 	}
 
-	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Sub-agents (%d):\n\n", len(agents)))
-	for _, agent := range agents {
-		result.WriteString(fmt.Sprintf("ID: %s\n", agent.ID))
-		result.WriteString(fmt.Sprintf("  Description: %s\n", agent.Description))
-		result.WriteString(fmt.Sprintf("  Status: %s\n", agent.Status))
-		result.WriteString(fmt.Sprintf("  Started: %s\n", agent.StartedAt.Format(time.RFC3339)))
-		if !agent.CompletedAt.IsZero() {
-			result.WriteString(fmt.Sprintf("  Completed: %s\n", agent.CompletedAt.Format(time.RFC3339)))
+	sessionKey := GetSessionKey(ctx)
+	if sessionKey == "" {
+		sessionKey = "default"
+	}
+
+	id := strconv.FormatInt(workTaskCounter.Add(1), 10)
+	task := WorkTask{
+		ID:        id,
+		Subject:   in.Subject,
+		Status:    "pending",
+		CreatedAt: time.Now(),
+	}
+
+	// Append to session's work task list (stored as *[]WorkTask for comparability)
+	initial := []WorkTask{task}
+	for {
+		existing, loaded := t.workTasks.LoadOrStore(sessionKey, &initial)
+		if !loaded {
+			break // freshly stored
 		}
-		result.WriteString("\n")
+		ptr := existing.(*[]WorkTask)
+		updated := append(*ptr, task)
+		if t.workTasks.CompareAndSwap(sessionKey, ptr, &updated) {
+			break
+		}
+		// retry on race
+	}
+
+	return &ToolResult{Content: fmt.Sprintf("Task [%s] created: %s", id, in.Subject)}, nil
+}
+
+func (t *AgentDomainTool) taskUpdate(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	if in.TaskID == "" {
+		return &ToolResult{
+			Content: "Error: 'task_id' is required for update action",
+			IsError: true,
+		}, nil
+	}
+	if in.Status == "" {
+		return &ToolResult{
+			Content: "Error: 'status' is required for update action (in_progress, completed)",
+			IsError: true,
+		}, nil
+	}
+	if in.Status != "pending" && in.Status != "in_progress" && in.Status != "completed" {
+		return &ToolResult{
+			Content: fmt.Sprintf("Error: invalid status '%s' — must be pending, in_progress, or completed", in.Status),
+			IsError: true,
+		}, nil
+	}
+
+	sessionKey := GetSessionKey(ctx)
+	if sessionKey == "" {
+		sessionKey = "default"
+	}
+
+	val, ok := t.workTasks.Load(sessionKey)
+	if !ok {
+		return &ToolResult{
+			Content: fmt.Sprintf("Error: task %s not found", in.TaskID),
+			IsError: true,
+		}, nil
+	}
+
+	tasks := val.(*[]WorkTask)
+	for i := range *tasks {
+		if (*tasks)[i].ID == in.TaskID {
+			(*tasks)[i].Status = in.Status
+			return &ToolResult{Content: fmt.Sprintf("Task [%s] → %s", in.TaskID, in.Status)}, nil
+		}
+	}
+
+	return &ToolResult{
+		Content: fmt.Sprintf("Error: task %s not found", in.TaskID),
+		IsError: true,
+	}, nil
+}
+
+func (t *AgentDomainTool) taskList(ctx context.Context) (*ToolResult, error) {
+	var result strings.Builder
+	hasContent := false
+
+	// Work tasks
+	sessionKey := GetSessionKey(ctx)
+	if sessionKey == "" {
+		sessionKey = "default"
+	}
+	if val, ok := t.workTasks.Load(sessionKey); ok {
+		tasks := *val.(*[]WorkTask)
+		if len(tasks) > 0 {
+			result.WriteString(fmt.Sprintf("Work tasks (%d):\n", len(tasks)))
+			for _, wt := range tasks {
+				icon := "[ ]"
+				switch wt.Status {
+				case "in_progress":
+					icon = "[→]"
+				case "completed":
+					icon = "[✓]"
+				}
+				result.WriteString(fmt.Sprintf("  %s [%s] %s\n", icon, wt.ID, wt.Subject))
+			}
+			hasContent = true
+		}
+	}
+
+	// Sub-agents
+	if t.orchestrator != nil {
+		agents := t.orchestrator.ListAgents()
+		if len(agents) > 0 {
+			if hasContent {
+				result.WriteString("\n")
+			}
+			result.WriteString(fmt.Sprintf("Sub-agents (%d):\n\n", len(agents)))
+			for _, agent := range agents {
+				result.WriteString(fmt.Sprintf("ID: %s\n", agent.ID))
+				result.WriteString(fmt.Sprintf("  Description: %s\n", agent.Description))
+				result.WriteString(fmt.Sprintf("  Status: %s\n", agent.Status))
+				result.WriteString(fmt.Sprintf("  Started: %s\n", agent.StartedAt.Format(time.RFC3339)))
+				if !agent.CompletedAt.IsZero() {
+					result.WriteString(fmt.Sprintf("  Completed: %s\n", agent.CompletedAt.Format(time.RFC3339)))
+				}
+				result.WriteString("\n")
+			}
+			hasContent = true
+		}
+	}
+
+	if !hasContent {
+		return &ToolResult{Content: "No tasks or sub-agents"}, nil
 	}
 
 	return &ToolResult{Content: result.String()}, nil
+}
+
+// ListWorkTasks returns work tasks for a session (used by steering pipeline).
+func (t *AgentDomainTool) ListWorkTasks(sessionKey string) []WorkTask {
+	if val, ok := t.workTasks.Load(sessionKey); ok {
+		return *val.(*[]WorkTask)
+	}
+	return nil
+}
+
+// ClearWorkTasks removes all work tasks for a session (called when objective changes).
+func (t *AgentDomainTool) ClearWorkTasks(sessionKey string) {
+	t.workTasks.Delete(sessionKey)
 }
 
 // =============================================================================
@@ -1125,6 +1378,20 @@ func (t *AgentDomainTool) handleComm(ctx context.Context, in AgentDomainInput) (
 		return t.commListTopics()
 	case "status":
 		return t.commStatus()
+	case "send_loop":
+		return t.commSendLoop(ctx, in)
+	case "list_channels":
+		return t.commListChannels(ctx)
+	case "list_loops":
+		return t.commListLoops(ctx)
+	case "get_loop":
+		return t.commGetLoop(ctx, in)
+	case "loop_members":
+		return t.commLoopMembers(ctx, in)
+	case "channel_members":
+		return t.commChannelMembers(ctx, in)
+	case "channel_messages":
+		return t.commChannelMessages(ctx, in)
 	default:
 		return &ToolResult{
 			Content: fmt.Sprintf("Unknown comm action: %s", in.Action),
@@ -1248,6 +1515,212 @@ func (t *AgentDomainTool) commStatus() (*ToolResult, error) {
 	return &ToolResult{Content: sb.String()}, nil
 }
 
+func (t *AgentDomainTool) commSendLoop(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	channelID := in.ChannelID
+	if channelID == "" {
+		channelID = in.To
+	}
+	if channelID == "" {
+		return &ToolResult{
+			Content: "Error: 'channel_id' is required (loop channel ID)",
+			IsError: true,
+		}, nil
+	}
+	text := in.Text
+	if text == "" {
+		text = in.Message
+	}
+	if text == "" {
+		return &ToolResult{
+			Content: "Error: 'text' is required (message content)",
+			IsError: true,
+		}, nil
+	}
+
+	if err := t.commService.Send(ctx, channelID, "", text, "loop_channel"); err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Error sending loop channel message: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	return &ToolResult{
+		Content: fmt.Sprintf("Message sent to loop channel %s", channelID),
+	}, nil
+}
+
+func (t *AgentDomainTool) commListChannels(ctx context.Context) (*ToolResult, error) {
+	if t.loopChannelLister == nil {
+		return &ToolResult{
+			Content: "Loop channel listing not available (not connected to NeboLoop)",
+			IsError: true,
+		}, nil
+	}
+
+	channels, err := t.loopChannelLister(ctx)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Error listing loop channels: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	if len(channels) == 0 {
+		return &ToolResult{Content: "No loop channels found."}, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Loop channels (%d):\n", len(channels)))
+	for _, ch := range channels {
+		sb.WriteString(fmt.Sprintf("  - %s (channel: %s, loop: %s / %s)\n",
+			ch.ChannelName, ch.ChannelID, ch.LoopName, ch.LoopID))
+	}
+	return &ToolResult{Content: sb.String()}, nil
+}
+
+// =============================================================================
+// Loop query handlers (Bot Query System)
+// =============================================================================
+
+func (t *AgentDomainTool) commListLoops(ctx context.Context) (*ToolResult, error) {
+	if t.loopQuerier == nil {
+		return &ToolResult{Content: "Loop queries not available (not connected to NeboLoop)", IsError: true}, nil
+	}
+	loops, err := t.loopQuerier.ListLoops(ctx)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error listing loops: %v", err), IsError: true}, nil
+	}
+	if len(loops) == 0 {
+		return &ToolResult{Content: "No loops found."}, nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Loops (%d):\n", len(loops)))
+	for _, l := range loops {
+		sb.WriteString(fmt.Sprintf("  - %s (ID: %s)", l.Name, l.ID))
+		if l.MemberCount > 0 {
+			sb.WriteString(fmt.Sprintf(" [%d members]", l.MemberCount))
+		}
+		sb.WriteString("\n")
+		if l.Description != "" {
+			sb.WriteString(fmt.Sprintf("    %s\n", l.Description))
+		}
+	}
+	return &ToolResult{Content: sb.String()}, nil
+}
+
+func (t *AgentDomainTool) commGetLoop(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	loopID := in.LoopID
+	if loopID == "" {
+		return &ToolResult{Content: "Error: 'loop_id' is required", IsError: true}, nil
+	}
+	if t.loopQuerier == nil {
+		return &ToolResult{Content: "Loop queries not available (not connected to NeboLoop)", IsError: true}, nil
+	}
+	loop, err := t.loopQuerier.GetLoop(ctx, loopID)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error fetching loop: %v", err), IsError: true}, nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Loop: %s\n", loop.Name))
+	sb.WriteString(fmt.Sprintf("ID: %s\n", loop.ID))
+	if loop.Description != "" {
+		sb.WriteString(fmt.Sprintf("Description: %s\n", loop.Description))
+	}
+	if loop.MemberCount > 0 {
+		sb.WriteString(fmt.Sprintf("Members: %d\n", loop.MemberCount))
+	}
+	return &ToolResult{Content: sb.String()}, nil
+}
+
+func (t *AgentDomainTool) commLoopMembers(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	loopID := in.LoopID
+	if loopID == "" {
+		return &ToolResult{Content: "Error: 'loop_id' is required", IsError: true}, nil
+	}
+	if t.loopQuerier == nil {
+		return &ToolResult{Content: "Loop queries not available (not connected to NeboLoop)", IsError: true}, nil
+	}
+	members, err := t.loopQuerier.ListLoopMembers(ctx, loopID)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error listing loop members: %v", err), IsError: true}, nil
+	}
+	if len(members) == 0 {
+		return &ToolResult{Content: "No members in this loop."}, nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Loop Members (%d):\n", len(members)))
+	for _, m := range members {
+		status := "offline"
+		if m.IsOnline {
+			status = "online"
+		}
+		sb.WriteString(fmt.Sprintf("  - %s (%s) [%s]\n", m.BotName, m.BotID, status))
+	}
+	return &ToolResult{Content: sb.String()}, nil
+}
+
+func (t *AgentDomainTool) commChannelMembers(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	channelID := in.ChannelID
+	if channelID == "" {
+		return &ToolResult{Content: "Error: 'channel_id' is required", IsError: true}, nil
+	}
+	if t.loopQuerier == nil {
+		return &ToolResult{Content: "Loop queries not available (not connected to NeboLoop)", IsError: true}, nil
+	}
+	members, err := t.loopQuerier.ListChannelMembers(ctx, channelID)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error listing channel members: %v", err), IsError: true}, nil
+	}
+	if len(members) == 0 {
+		return &ToolResult{Content: "No members in this channel."}, nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Channel Members (%d):\n", len(members)))
+	for _, m := range members {
+		status := "offline"
+		if m.IsOnline {
+			status = "online"
+		}
+		sb.WriteString(fmt.Sprintf("  - %s (%s) [%s]\n", m.BotName, m.BotID, status))
+	}
+	return &ToolResult{Content: sb.String()}, nil
+}
+
+func (t *AgentDomainTool) commChannelMessages(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	channelID := in.ChannelID
+	if channelID == "" {
+		return &ToolResult{Content: "Error: 'channel_id' is required", IsError: true}, nil
+	}
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if t.loopQuerier == nil {
+		return &ToolResult{Content: "Loop queries not available (not connected to NeboLoop)", IsError: true}, nil
+	}
+	messages, err := t.loopQuerier.ListChannelMessages(ctx, channelID, limit)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Error fetching channel messages: %v", err), IsError: true}, nil
+	}
+	if len(messages) == 0 {
+		return &ToolResult{Content: "No messages in this channel."}, nil
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Recent Messages (%d):\n\n", len(messages)))
+	for i, msg := range messages {
+		sb.WriteString(fmt.Sprintf("%d. [%s] %s:\n", i+1, msg.CreatedAt, msg.From))
+		content := msg.Content
+		if len(content) > 300 {
+			content = content[:297] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("   %s\n\n", strings.ReplaceAll(content, "\n", "\n   ")))
+	}
+	return &ToolResult{Content: sb.String()}, nil
+}
+
 // =============================================================================
 // Profile management
 // =============================================================================
@@ -1259,8 +1732,10 @@ func (t *AgentDomainTool) handleProfile(ctx context.Context, in AgentDomainInput
 		return t.handleProfileGet(ctx)
 	case "update":
 		return t.handleProfileUpdate(ctx, in)
+	case "open_billing":
+		return t.handleProfileOpenBilling(ctx)
 	default:
-		return &ToolResult{Content: fmt.Sprintf("Unknown profile action: %s. Available: get, update", in.Action)}, nil
+		return &ToolResult{Content: fmt.Sprintf("Unknown profile action: %s. Available: get, update, open_billing", in.Action)}, nil
 	}
 }
 
@@ -1362,6 +1837,44 @@ func (t *AgentDomainTool) handleProfileUpdate(ctx context.Context, in AgentDomai
 		return &ToolResult{Content: fmt.Sprintf("Updated agent name to %q. I will now refer to myself as %s.", in.Value, in.Value)}, nil
 	}
 	return &ToolResult{Content: fmt.Sprintf("Updated agent %s to %q", in.Key, in.Value)}, nil
+}
+
+func (t *AgentDomainTool) handleProfileOpenBilling(ctx context.Context) (*ToolResult, error) {
+	if t.sessions == nil {
+		return &ToolResult{Content: "Billing page unavailable: no database connection"}, nil
+	}
+	rawDB := t.sessions.GetDB()
+	if rawDB == nil {
+		return &ToolResult{Content: "Billing page unavailable: no database connection"}, nil
+	}
+	queries := db.New(rawDB)
+	profiles, err := queries.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
+	if err != nil || len(profiles) == 0 {
+		return &ToolResult{Content: "No NeboLoop account connected. The user needs to connect via Settings > NeboLoop first."}, nil
+	}
+	token := profiles[0].ApiKey
+	billingURL := "https://app.neboloop.com/billing?token=" + token
+	openBrowserURL(billingURL)
+	return &ToolResult{Content: "Opened NeboLoop billing page in your browser."}, nil
+}
+
+// openBrowserURL opens a URL in the user's default system browser.
+func openBrowserURL(targetURL string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", targetURL)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", targetURL)
+	default:
+		cmd = exec.Command("xdg-open", targetURL)
+	}
+	cmd.Stdin = strings.NewReader("")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("[Agent] Failed to open browser: %v\n", err)
+	}
 }
 
 // =============================================================================

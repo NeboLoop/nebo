@@ -10,15 +10,23 @@
 		Briefcase,
 		Clock,
 		X,
-		Plus
+		Plus,
+		Sun,
+		Moon,
+		Monitor
 	} from 'lucide-svelte';
 	import { getUserProfile, updateUserProfile, type UserProfile } from '$lib/api/nebo';
+	import * as api from '$lib/api/nebo';
 
 	let isLoading = $state(true);
 	let isSaving = $state(false);
 	let saveMessage = $state('');
 	let saveError = $state(false);
 	let interestsInput = $state('');
+
+	type Theme = 'light' | 'dark' | 'system';
+	let theme = $state<Theme>('dark');
+	let themeError = $state('');
 
 	let displayName = $state('');
 	let location = $state('');
@@ -44,6 +52,12 @@
 		{ value: 'Australia/Sydney', label: 'Sydney (Australia)' }
 	];
 
+	const themeOptions = [
+		{ id: 'light' as Theme, label: 'Light', icon: Sun },
+		{ id: 'dark' as Theme, label: 'Dark', icon: Moon },
+		{ id: 'system' as Theme, label: 'System', icon: Monitor }
+	];
+
 	const communicationStyles = [
 		{ value: 'casual', label: 'Casual', description: 'Friendly and informal' },
 		{ value: 'professional', label: 'Professional', description: 'Structured and precise' },
@@ -52,8 +66,11 @@
 
 	onMount(async () => {
 		try {
-			const data = await getUserProfile();
-			const profile = data.profile;
+			const [profileData, prefsData] = await Promise.all([
+				getUserProfile(),
+				api.getPreferences()
+			]);
+			const profile = profileData.profile;
 			if (profile) {
 				displayName = profile.displayName || '';
 				location = profile.location || '';
@@ -64,12 +81,32 @@
 				goals = profile.goals || '';
 				context = profile.context || '';
 			}
+			theme = (prefsData.preferences?.theme as Theme) || 'dark';
 		} catch (error) {
 			console.error('Failed to load profile:', error);
 		} finally {
 			isLoading = false;
 		}
 	});
+
+	async function setTheme(newTheme: Theme) {
+		theme = newTheme;
+		themeError = '';
+		if (typeof document !== 'undefined') {
+			if (newTheme === 'system') {
+				const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+				document.documentElement.classList.toggle('dark', prefersDark);
+			} else {
+				document.documentElement.classList.toggle('dark', newTheme === 'dark');
+			}
+		}
+		try {
+			await api.updatePreferences({ theme: newTheme, emailNotifications: false, marketingEmails: false });
+		} catch (err: any) {
+			themeError = err?.message || 'Failed to save theme';
+			setTimeout(() => { themeError = ''; }, 4000);
+		}
+	}
 
 	async function saveProfile() {
 		isSaving = true;
@@ -137,6 +174,29 @@
 		}}
 	>
 		<Card>
+			<!-- Theme -->
+			<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider mb-3">Appearance</h3>
+			<div class="flex gap-2 mb-1" role="group">
+				{#each themeOptions as option}
+					<button
+						type="button"
+						onclick={() => setTheme(option.id)}
+						class="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-colors
+							{theme === option.id
+								? 'bg-primary/10 border-primary/30 text-primary'
+								: 'bg-base-200 border-transparent text-base-content/60 hover:border-base-content/15'}"
+					>
+						<option.icon class="w-4 h-4" />
+						<span class="text-sm font-medium">{option.label}</span>
+					</button>
+				{/each}
+			</div>
+			{#if themeError}
+				<p class="text-xs text-error mt-1">{themeError}</p>
+			{/if}
+
+			<div class="divider"></div>
+
 			<!-- About You -->
 			<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider mb-4">About You</h3>
 

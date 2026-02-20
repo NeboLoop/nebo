@@ -27,13 +27,13 @@
 	// Capability permissions
 	let permissions = $state<Record<string, boolean>>({
 		chat: true,
-		file: false,
+		file: true,
 		shell: false,
-		web: false,
+		web: true,
 		contacts: false,
-		desktop: false,
+		desktop: true,
 		media: false,
-		system: false
+		system: true
 	});
 
 	// Agent settings
@@ -181,9 +181,13 @@
 			autonomousMode = false;
 			showTermsModal = true;
 		} else {
-			// Turning OFF — reset everything to safe defaults
+			// Turning OFF — reset to sensible defaults
+			const defaults: Record<string, boolean> = {
+				chat: true, file: true, shell: false, web: true,
+				contacts: false, desktop: true, media: false, system: true
+			};
 			for (const key of Object.keys(permissions)) {
-				permissions[key] = key === 'chat'; // only chat stays on
+				permissions[key] = defaults[key] ?? false;
 			}
 			permissions = { ...permissions };
 			autoApproveRead = true;

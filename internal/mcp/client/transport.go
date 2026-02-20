@@ -47,7 +47,7 @@ var (
 )
 
 // getOrCreateSession returns a cached session or creates a new one.
-func (c *Client) getOrCreateSession(ctx context.Context, integrationID, serverURL string) (*mcp.ClientSession, error) {
+func (c *Client) getOrCreateSession(ctx context.Context, integrationID, serverURL, authType string) (*mcp.ClientSession, error) {
 	// Fast path: check cache
 	if entry, ok := sessions.Load(integrationID); ok {
 		return entry.(*sessionEntry).session, nil
@@ -61,14 +61,19 @@ func (c *Client) getOrCreateSession(ctx context.Context, integrationID, serverUR
 		return entry.(*sessionEntry).session, nil
 	}
 
-	// Create authenticated HTTP client
-	httpClient := &http.Client{
-		Timeout: 60 * time.Second,
-		Transport: &AuthenticatedTransport{
+	// Only wrap with auth transport when credentials are expected
+	var rt http.RoundTripper = http.DefaultTransport
+	if authType != "" && authType != "none" {
+		rt = &AuthenticatedTransport{
 			Base:          http.DefaultTransport,
 			MCPClient:     c,
 			IntegrationID: integrationID,
-		},
+		}
+	}
+
+	httpClient := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: rt,
 	}
 
 	transport := &mcp.StreamableClientTransport{
@@ -123,7 +128,7 @@ func (c *Client) ListTools(ctx context.Context, integrationID string) ([]*mcp.To
 		return nil, fmt.Errorf("no server URL configured")
 	}
 
-	session, err := c.getOrCreateSession(ctx, integrationID, serverURL)
+	session, err := c.getOrCreateSession(ctx, integrationID, serverURL, integration.AuthType)
 	if err != nil {
 		// Clear stale session on connect failure
 		c.CloseSession(integrationID)
@@ -134,7 +139,7 @@ func (c *Client) ListTools(ctx context.Context, integrationID string) ([]*mcp.To
 	if err != nil {
 		// Session may be stale — close and retry once
 		c.CloseSession(integrationID)
-		session, err = c.getOrCreateSession(ctx, integrationID, serverURL)
+		session, err = c.getOrCreateSession(ctx, integrationID, serverURL, integration.AuthType)
 		if err != nil {
 			return nil, err
 		}
@@ -159,7 +164,7 @@ func (c *Client) CallTool(ctx context.Context, integrationID, toolName string, i
 		return nil, fmt.Errorf("no server URL configured")
 	}
 
-	session, err := c.getOrCreateSession(ctx, integrationID, serverURL)
+	session, err := c.getOrCreateSession(ctx, integrationID, serverURL, integration.AuthType)
 	if err != nil {
 		return nil, err
 	}

@@ -250,7 +250,7 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 			if ar.skillTool != nil {
 				slug := tools.Slugify(manifest.Name)
 				skillMD := loadSkillMD(appDir)
-				ar.skillTool.Register(slug, manifest.Name, manifest.Description, skillMD, adapter, nil, 0, 0)
+				ar.skillTool.Register(slug, manifest.Name, manifest.Description, skillMD, adapter, nil, nil, 0, 0)
 				fmt.Printf("[apps] Registered skill: %s (app-backed)\n", slug)
 			} else if ar.toolReg != nil {
 				// Fallback: register directly in tool registry (no skill tool wired)
@@ -459,49 +459,27 @@ func (ar *AppRegistry) GetUIApp(appID string) (*AppProcess, bool) {
 
 // --- AppUIProvider interface implementation ---
 
-// GetUIView fetches the current view from a UI app via gRPC.
-func (ar *AppRegistry) GetUIView(ctx context.Context, appID string) (any, error) {
+// HandleRequest proxies an HTTP request to a UI app via gRPC.
+func (ar *AppRegistry) HandleRequest(ctx context.Context, appID string, req *svc.AppHTTPRequest) (*svc.AppHTTPResponse, error) {
 	proc, ok := ar.GetUIApp(appID)
 	if !ok {
 		return nil, fmt.Errorf("UI app not found: %s", appID)
 	}
-	view, err := proc.UIClient.GetView(ctx, &pb.GetViewRequest{})
-	if err != nil {
-		return nil, fmt.Errorf("get view: %w", err)
-	}
-	return uiViewToJSON(view), nil
-}
-
-// SendUIEvent sends a user interaction event to a UI app via gRPC.
-func (ar *AppRegistry) SendUIEvent(ctx context.Context, appID string, event any) (any, error) {
-	proc, ok := ar.GetUIApp(appID)
-	if !ok {
-		return nil, fmt.Errorf("UI app not found: %s", appID)
-	}
-	ev, ok := event.(*UIEventPayload)
-	if !ok {
-		return nil, fmt.Errorf("invalid event type")
-	}
-	resp, err := proc.UIClient.SendEvent(ctx, &pb.UIEvent{
-		ViewId:  ev.ViewID,
-		BlockId: ev.BlockID,
-		Action:  ev.Action,
-		Value:   ev.Value,
+	resp, err := proc.UIClient.HandleRequest(ctx, &pb.HttpRequest{
+		Method:  req.Method,
+		Path:    req.Path,
+		Query:   req.Query,
+		Headers: req.Headers,
+		Body:    req.Body,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("send event: %w", err)
+		return nil, fmt.Errorf("handle request: %w", err)
 	}
-	result := map[string]any{}
-	if resp.Error != "" {
-		result["error"] = resp.Error
-	}
-	if resp.Toast != "" {
-		result["toast"] = resp.Toast
-	}
-	if resp.View != nil {
-		result["view"] = uiViewToJSON(resp.View)
-	}
-	return result, nil
+	return &svc.AppHTTPResponse{
+		StatusCode: int(resp.StatusCode),
+		Headers:    resp.Headers,
+		Body:       resp.Body,
+	}, nil
 }
 
 // ListUIApps returns metadata about all apps that provide UI.
@@ -517,65 +495,6 @@ func (ar *AppRegistry) ListUIApps() []svc.AppUIInfo {
 		})
 	}
 	return infos
-}
-
-// UIEventPayload is the JSON payload for a UI event from the HTTP API.
-type UIEventPayload struct {
-	ViewID  string `json:"view_id"`
-	BlockID string `json:"block_id"`
-	Action  string `json:"action"`
-	Value   string `json:"value"`
-}
-
-// uiViewToJSON converts a proto UIView to a JSON-friendly map.
-func uiViewToJSON(view *pb.UIView) map[string]any {
-	blocks := make([]map[string]any, 0, len(view.Blocks))
-	for _, b := range view.Blocks {
-		block := map[string]any{
-			"block_id": b.BlockId,
-			"type":     b.Type,
-		}
-		if b.Text != "" {
-			block["text"] = b.Text
-		}
-		if b.Value != "" {
-			block["value"] = b.Value
-		}
-		if b.Placeholder != "" {
-			block["placeholder"] = b.Placeholder
-		}
-		if b.Hint != "" {
-			block["hint"] = b.Hint
-		}
-		if b.Variant != "" {
-			block["variant"] = b.Variant
-		}
-		if b.Src != "" {
-			block["src"] = b.Src
-		}
-		if b.Alt != "" {
-			block["alt"] = b.Alt
-		}
-		if b.Disabled {
-			block["disabled"] = true
-		}
-		if b.Style != "" {
-			block["style"] = b.Style
-		}
-		if len(b.Options) > 0 {
-			opts := make([]map[string]string, len(b.Options))
-			for i, o := range b.Options {
-				opts[i] = map[string]string{"label": o.Label, "value": o.Value}
-			}
-			block["options"] = opts
-		}
-		blocks = append(blocks, block)
-	}
-	return map[string]any{
-		"view_id": view.ViewId,
-		"title":   view.Title,
-		"blocks":  blocks,
-	}
 }
 
 
@@ -991,7 +910,7 @@ func (ar *AppRegistry) autoConfigureUserToken(ctx context.Context, appName strin
 	}
 
 	// Read NeboLoop JWT from auth_profiles
-	profiles, err := ar.queries.ListActiveAuthProfilesByProvider(ctx, "neboloop")
+	profiles, err := ar.queries.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
 	if err != nil || len(profiles) == 0 {
 		return nil // No NeboLoop profile — nothing to configure
 	}

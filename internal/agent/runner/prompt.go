@@ -15,16 +15,15 @@ import (
 // PromptContext holds all inputs needed to build the system prompt.
 // Populated once per Run() call and reused across iterations.
 type PromptContext struct {
-	AgentName     string
-	DBContext     *memory.DBContext
-	ContextSection string // Formatted DB context for system prompt
-	NeedsOnboarding bool
-	ToolNames     []string
-	SkillHints    string // From AutoMatchSkills (per-message, but stable within a run)
-	ActiveSkills  string // From ActiveSkillContent (can change mid-run)
-	AppCatalog    string
-	ModelAliases  []string
-	FenceStore    *afv.FenceStore
+	AgentName          string
+	DBContext          *memory.DBContext
+	ContextSection     string // Formatted DB context for system prompt
+	ToolNames  []string
+	SkillHints string // From AutoMatchSkills (per-message, but stable within a run)
+	ActiveSkills       string   // From ActiveSkillContent (can change mid-run)
+	AppCatalog         string
+	ModelAliases       []string
+	FenceStore         *afv.FenceStore
 }
 
 // DynamicContext holds per-iteration inputs that change between agentic loop iterations.
@@ -86,19 +85,22 @@ const sectionCommStyle = `## Communication Style
 Narrate only when it helps: multi-step work, complex problems, sensitive actions (deletions, sending messages on your behalf), or when the user explicitly asks what you're doing.
 Keep narration brief and value-dense. Use plain human language, not technical jargon.`
 
-const sectionSTRAP = `## Your Tools (STRAP Pattern)
+const sectionSTRAPHeader = `## Your Tools (STRAP Pattern)
 
 Your tools use the STRAP pattern: Single Tool, Resource, Action, Parameters.
-Call them like: tool_name(resource: "resource", action: "action", param: "value")
+Call them like: tool_name(resource: "resource", action: "action", param: "value")`
 
-### file — File Operations
+// strapToolDocs maps tool names to their STRAP documentation section.
+// Only sections for tools actually sent in the request are included in the prompt.
+var strapToolDocs = map[string]string{
+	"file": `### file — File Operations
 - file(action: read, path: "/path/to/file") — Read file contents
 - file(action: write, path: "/path", content: "...") — Write/create a file
 - file(action: edit, path: "/path", old_string: "...", new_string: "...") — Edit a file
 - file(action: glob, pattern: "**/*.go") — Find files by pattern
-- file(action: grep, pattern: "search term", path: "/dir") — Search file contents
+- file(action: grep, pattern: "search term", path: "/dir") — Search file contents`,
 
-### shell — Shell & Process Management
+	"shell": `### shell — Shell & Process Management
 - shell(resource: bash, action: exec, command: "ls -la") — Run a command
 - shell(resource: bash, action: exec, command: "...", background: true) — Run in background
 - shell(resource: process, action: list) — List running processes
@@ -108,9 +110,9 @@ Call them like: tool_name(resource: "resource", action: "action", param: "value"
 - shell(resource: session, action: poll, id: "...") — Read session output
 - shell(resource: session, action: log, id: "...") — Get full session log
 - shell(resource: session, action: write, id: "...", input: "...") — Send input to session
-- shell(resource: session, action: kill, id: "...") — End a session
+- shell(resource: session, action: kill, id: "...") — End a session`,
 
-### web — Web & Browser Automation
+	"web": `### web — Web & Browser Automation
 Three modes:
 - **fetch/search:** Simple HTTP requests and web search (no JavaScript, no rendering)
 - **native browser:** Opens pages in Nebo's own window — fast, native, undetectable as bot. Best for reading and research.
@@ -154,9 +156,9 @@ You MUST use snapshot before interacting — refs are only valid from the most r
 Scrolling: use scroll(text:"down") to reveal more content, then snapshot to read it. Repeat to paginate through long pages.
 Filling forms: snapshot → identify input refs → fill each field → click the submit button → snapshot to verify.
 Parallel research: Open a few windows for different URLs, reuse them by navigating with target_id instead of always opening new ones.
-Window discipline: ALWAYS close windows when you are finished with them. Never leave orphan windows open. When a task or research is complete, close every window you opened.
+Window discipline: ALWAYS close windows when you are finished with them. Never leave orphan windows open. When a task or research is complete, close every window you opened.`,
 
-### agent — Orchestration & State
+	"agent": `### agent — Orchestration & State
 
 **Sub-agents (parallel work):**
 Spawn sub-agents for independent work that can run in parallel. Completion is push-based — they auto-announce results when done. Do NOT poll status in a loop; only check on-demand for debugging or if the user asks.
@@ -208,9 +210,9 @@ Use messaging to deliver results to the user on their preferred channel. Combine
 - agent(resource: session, action: list) — List conversation sessions
 - agent(resource: session, action: history, session_key: "...") — View session history
 - agent(resource: session, action: status) — Current session status
-- agent(resource: session, action: clear) — Clear current session
+- agent(resource: session, action: clear) — Clear current session`,
 
-### skill — Capabilities & Knowledge (MANDATORY CHECK)
+	"skill": `### skill — Capabilities & Knowledge (MANDATORY CHECK)
 Before replying to any request, scan your available skills:
 1. If a skill clearly applies → load it with skill(name: "...") to get detailed instructions, then follow them
 2. If multiple skills could apply → choose the most specific one
@@ -222,21 +224,54 @@ Never read more than one skill upfront. Only load after choosing.
 - skill(name: "calendar", resource: "events", action: "list") — Execute a skill action directly
 
 If a skill returns an auth error, guide the user to Settings → Apps to reconnect.
-If a skill is not found, suggest checking the app store.
+If a skill is not found, suggest checking the app store.`,
 
-### advisors — Internal Deliberation
+	"advisors": `### advisors — Internal Deliberation
 For complex decisions, call the 'advisors' tool. Advisors run concurrently and return independent perspectives that YOU synthesize into a recommendation.
 - advisors(task: "Should we use PostgreSQL or SQLite for this use case?") — Consult all advisors
 - advisors(task: "...", advisors: ["pragmatist", "skeptic"]) — Consult specific ones
-Use for: significant decisions, multiple valid approaches, high-stakes choices. Skip for: routine tasks, clear-cut answers.
+Use for: significant decisions, multiple valid approaches, high-stakes choices. Skip for: routine tasks, clear-cut answers.`,
 
-### screenshot — Screen Capture
+	"screenshot": `### screenshot — Screen Capture
 - screenshot() — Capture the current screen
 - screenshot(format: "file") — Save to disk and return inline markdown image URL
-- screenshot(format: "both") — Both base64 and file
+- screenshot(format: "both") — Both base64 and file`,
 
-### vision — Image Analysis
-- vision(path: "/path/to/image.png") — Analyze an image (requires API key)`
+	"vision": `### vision — Image Analysis
+- vision(path: "/path/to/image.png") — Analyze an image (requires API key)`,
+}
+
+// buildSTRAPSection assembles the STRAP documentation for only the tools being sent.
+// When toolNames is nil or empty, includes all sections (normal operation).
+func buildSTRAPSection(toolNames []string) string {
+	var sb strings.Builder
+	sb.WriteString(sectionSTRAPHeader)
+
+	if len(toolNames) == 0 {
+		// No restriction — include all tool docs
+		for _, name := range []string{"file", "shell", "web", "agent", "skill", "advisors", "screenshot", "vision"} {
+			if doc, ok := strapToolDocs[name]; ok {
+				sb.WriteString("\n\n")
+				sb.WriteString(doc)
+			}
+		}
+	} else {
+		// Only include docs for tools being sent
+		seen := make(map[string]bool)
+		for _, name := range toolNames {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			if doc, ok := strapToolDocs[name]; ok {
+				sb.WriteString("\n\n")
+				sb.WriteString(doc)
+			}
+		}
+	}
+
+	return sb.String()
+}
 
 const sectionMedia = `## Inline Media — Images & Video Embeds
 
@@ -271,7 +306,9 @@ Only use explicit store when the user says "remember this" or "save this" — i.
 - "daily" — Today's facts, keyed by date
 - "entity" — Information about people, places, projects
 
-Your remembered facts appear in the "# Remembered Facts" section of your context.`
+Your remembered facts appear in the "# Remembered Facts" section of your context.
+
+NEVER describe your memory system's internals (layers, storage mechanisms, architecture) to users. From their perspective, you simply remember things — like a person would.`
 
 const sectionToolGuide = `## How to Choose the Right Tool
 
@@ -303,41 +340,21 @@ const sectionBehavior = `## Behavioral Guidelines
 9. If something fails, try an alternative approach before reporting the error
 10. Prioritize the user's intent over literal instructions — understand what they actually want
 11. For sensitive actions (deleting files, sending messages, spending money), confirm before acting
-12. NEVER propose multi-step plans, dry runs, or phased approaches for simple tasks. If the user asks you to clean up duplicates, just clean them up. If they ask you to fix something, just fix it. Save plans for genuinely complex, multi-day work — not routine maintenance.`
-
-const sectionOnboardingTemplate = `
-## IMPORTANT: First-Time User — Onboarding
-
-This is a NEW USER. You MUST initiate the conversation. Do NOT wait for them to speak first.
-
-Your EXACT first message must be:
-"Hi! I'm {agent_name}. What's your name?"
-
-That's it. Nothing else. No explanation of what you can do. No list of features. Just the greeting.
-
-STRICT RULES FOR THE ENTIRE ONBOARDING CONVERSATION:
-- Ask exactly ONE question per message. Never two. Never a list. Never bullet points.
-- Keep every response to 1-2 sentences maximum.
-- NEVER list your capabilities, features, or what you can help with.
-- NEVER ask "what would you like help with" or "what are your priorities" — that overwhelms new users.
-- NEVER use bullet points, numbered lists, or multiple questions in a single message.
-- Let the user discover what you can do naturally, through conversation.
-- If the user asks what you can do, give ONE short example relevant to what they just told you about themselves — not a list.
-- Do NOT call agent(action: store) — facts are extracted automatically from the conversation.
-
-After they tell you their name, ask where they're based.
-After location, ask what they do for work.
-After work, you're done — just say something like "Great, I'm here whenever you need me."`
+12. NEVER propose multi-step plans, dry runs, or phased approaches for simple tasks. If the user asks you to clean up duplicates, just clean them up. If they ask you to fix something, just fix it. Save plans for genuinely complex, multi-day work — not routine maintenance.
+13. For greetings and casual messages — be warm and natural. Never describe your architecture, tools, or internal systems unprompted. Just be a good conversationalist.
+14. NEVER explain how you work unless the user specifically asks. No one wants to hear about your memory layers, tool patterns, or system design. Just do the thing.`
 
 // staticSections defines the assembly order for the cacheable portion of the
 // system prompt. Content is joined with "\n\n" separators.
 // These sections do NOT change between agentic loop iterations.
+// Note: sectionSTRAP is NOT here — it's built dynamically via buildSTRAPSection()
+// to include only documentation for tools being sent.
 var staticSections = []string{
 	sectionIdentityAndPrime,
 	sectionCapabilities,
 	sectionToolsDeclaration,
 	sectionCommStyle,
-	sectionSTRAP,
+	// STRAP docs inserted dynamically by BuildStaticPrompt
 	sectionMedia,
 	// {platform_capabilities} placeholder is injected here
 	sectionMemoryDocs,
@@ -356,52 +373,50 @@ func BuildStaticPrompt(pctx PromptContext) string {
 		parts = append(parts, pctx.ContextSection)
 	}
 
-	// 2. Onboarding instructions (immediately after context, before capabilities)
-	if pctx.NeedsOnboarding {
-		parts = append(parts, sectionOnboardingTemplate)
-	}
-
-	// 3. Separator between context and capabilities
+	// 2. Separator between context and capabilities
 	parts = append(parts, "---")
 
-	// 4. Static prompt sections (capabilities, tools, behavior, etc.)
+	// 3. Static prompt sections (identity, media, memory, behavior)
 	for _, section := range staticSections {
 		parts = append(parts, section)
 	}
 
-	// 5. Platform capabilities (dynamic from registry, but stable within a run)
+	// 3b. STRAP tool documentation — always include all tools
+	parts = append(parts, buildSTRAPSection(nil))
+
+	// 4. Platform capabilities (dynamic from registry, but stable within a run)
 	if platformSection := buildPlatformSection(); platformSection != "" {
 		parts = append(parts, platformSection)
 	}
 
-	// 6. Registered tool list (reinforces tool awareness)
+	// 5. Registered tool list (reinforces tool awareness)
 	if len(pctx.ToolNames) > 0 {
 		toolList := strings.Join(pctx.ToolNames, ", ")
 		parts = append(parts, "## Registered Tools (runtime)\nTool names are case-sensitive. Call tools exactly as listed: "+toolList+"\nThese are your ONLY tools. Do not reference or attempt to call any tool not in this list.")
 	}
 
-	// 7. Skill hints (from trigger matching — stable for this user message)
+	// 6. Skill hints (from trigger matching — stable for this user message)
 	if pctx.SkillHints != "" {
 		parts = append(parts, pctx.SkillHints)
 	}
 
-	// 8. Active skill content (invoked skills — can grow mid-run, but
+	// 7. Active skill content (invoked skills — can grow mid-run, but
 	//    we rebuild the static prompt when skills are invoked via refreshStaticPrompt)
 	if pctx.ActiveSkills != "" {
 		parts = append(parts, pctx.ActiveSkills)
 	}
 
-	// 9. App catalog
+	// 8. App catalog
 	if pctx.AppCatalog != "" {
 		parts = append(parts, pctx.AppCatalog)
 	}
 
-	// 10. Model aliases
+	// 9. Model aliases
 	if len(pctx.ModelAliases) > 0 {
 		parts = append(parts, "## Model Switching\n\nUsers can ask to switch models. Available models:\n"+strings.Join(pctx.ModelAliases, "\n")+"\n\nWhen a user asks to switch models, acknowledge the request and confirm the switch.")
 	}
 
-	// 11. Tool awareness reminder (recency bias — placed near the end)
+	// 10. Tool awareness reminder (recency bias — placed near the end)
 	if len(pctx.ToolNames) > 0 {
 		toolList := strings.Join(pctx.ToolNames, ", ")
 		parts = append(parts, "---\nREMINDER: You are {agent_name}. Your ONLY tools are: "+toolList+". When a user asks about your capabilities, describe these tools. Never mention tools from your training data that are not in this list.")
@@ -478,7 +493,9 @@ func BuildDynamicSuffix(dctx DynamicContext) string {
 	if dctx.ActiveTask != "" {
 		sb.WriteString("\n\n---\n## ACTIVE TASK\nYou are currently working on: ")
 		sb.WriteString(dctx.ActiveTask)
-		sb.WriteString("\nDo not lose sight of this goal.\n---")
+		sb.WriteString("\nDo not lose sight of this goal. Every tool call should advance this objective.")
+		sb.WriteString("\nUse agent(resource: task, action: create) to break this into trackable steps if you haven't already.")
+		sb.WriteString("\n---")
 	}
 
 	// 4. Compaction summary

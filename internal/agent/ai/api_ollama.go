@@ -197,9 +197,7 @@ func (p *OllamaProvider) buildMessages(req *ChatRequest) []api.Message {
 				var toolCalls []session.ToolCall
 				if err := json.Unmarshal(msg.ToolCalls, &toolCalls); err == nil {
 					for _, tc := range toolCalls {
-						// Only include tool calls that have responses
 						if !respondedToolIDs[tc.ID] {
-							fmt.Printf("[Ollama] Skipping tool_call without response: %s\n", tc.ID)
 							continue
 						}
 

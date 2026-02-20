@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Cpu, Eye, Code, Brain, Sparkles, Terminal, Tag, Volume2, Star } from 'lucide-svelte';
+	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Terminal, Wifi, Zap } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type * as components from '$lib/api/neboComponents';
 	import Card from '$lib/components/ui/Card.svelte';
@@ -12,12 +12,15 @@
 	let isLoading = $state(true);
 	let providers = $state<components.AuthProfile[]>([]);
 	let models = $state<{ [key: string]: components.ModelInfo[] }>({});
-	let taskRouting = $state<components.TaskRouting | null>(null);
-	let aliases = $state<components.ModelAlias[]>([]);
 	let availableCLIs = $state<components.CLIAvailability | null>(null);
 	let error = $state('');
 	let testingId = $state<string | null>(null);
 	let testResult = $state<{ id: string; success: boolean; message: string } | null>(null);
+	let isTogglingJanus = $state(false);
+
+	// Janus / NeboLoop status
+	let janusStatus = $state<components.NeboLoopAccountStatusResponse | null>(null);
+	let janusUsage = $state<components.NeboLoopJanusUsageResponse | null>(null);
 
 	// New provider form
 	let showAddForm = $state(false);
@@ -30,41 +33,24 @@
 	let isAdding = $state(false);
 	let addError = $state('');
 
-	// Task routing editing
-	let showRoutingConfig = $state(false);
-	let routingForm = $state({
-		vision: '',
-		audio: '',
-		reasoning: '',
-		code: '',
-		general: ''
-	});
-	let isSavingRouting = $state(false);
+	// CLI providers from API
+	let cliProviders = $state<components.CLIProviderInfo[]>([]);
 
-	// Aliases editing
-	let showAliasesConfig = $state(false);
-	let aliasesForm = $state<{ alias: string; modelId: string }[]>([]);
-	let isSavingAliases = $state(false);
-
-	// CLI Provider modal
-	let showCLIModal = $state(false);
-	let selectedCLI = $state<{ id: string; name: string; command: string; installHint: string } | null>(null);
-
-	// CLI provider info loaded from models.yaml via API (no hardcoded model IDs)
-	let cliProviderInfo = $state<{ [key: string]: { id: string; name: string; command: string; installHint: string } }>({});
-
-	function openCLIModal(cliKey: string) {
-		selectedCLI = cliProviderInfo[cliKey];
-		showCLIModal = true;
+	function openAddModal(providerType?: string) {
+		if (providerType) {
+			const label = providerOptions.find(p => p.value === providerType)?.label || providerType;
+			newProvider = { name: `My ${label}`, provider: providerType, apiKey: '', baseUrl: '' };
+		} else {
+			newProvider = { name: '', provider: 'anthropic', apiKey: '', baseUrl: '' };
+		}
+		addError = '';
+		showAddForm = true;
 	}
 
-	function closeCLIModal() {
-		showCLIModal = false;
-		selectedCLI = null;
-	}
-
-	function getCLIModels(cliId: string): components.ModelInfo[] {
-		return models[cliId] || [];
+	function closeAddModal() {
+		showAddForm = false;
+		newProvider = { name: '', provider: 'anthropic', apiKey: '', baseUrl: '' };
+		addError = '';
 	}
 
 	const providerOptions = [
@@ -76,7 +62,7 @@
 	];
 
 	// Merge models.yaml catalog with auth_profiles to show all providers
-	// Shows which are configured (have API key) vs available
+	// Excludes CLI providers (shown separately) and Janus (shown separately)
 	let allProviders = $derived(() => {
 		const result: {
 			type: string;
@@ -86,17 +72,15 @@
 			models: components.ModelInfo[];
 		}[] = [];
 
-		// Get all provider types from models.yaml
 		const modelProviderTypes = Object.keys(models);
-
-		// Also include providers from providerOptions that may not have models yet
 		const allTypes = new Set([...modelProviderTypes, ...providerOptions.map(p => p.value)]);
 
-		// Skip CLI providers (they're shown separately) — derive IDs from loaded config
-		const cliProviders = Object.values(cliProviderInfo).map(p => p.id);
+		// Skip CLI providers and Janus (they're shown separately)
+		const cliProviderIds = cliProviders.map(p => p.id);
 
 		for (const providerType of allTypes) {
-			if (cliProviders.includes(providerType)) continue;
+			if (cliProviderIds.includes(providerType)) continue;
+			if (providerType === 'janus') continue;
 
 			const label = providerOptions.find(p => p.value === providerType)?.label || providerType;
 			const profile = providers.find(p => p.provider === providerType) || null;
@@ -111,16 +95,47 @@
 			});
 		}
 
-		// Sort: configured first, then alphabetically
 		return result.sort((a, b) => {
 			if (a.configured !== b.configured) return a.configured ? -1 : 1;
 			return a.label.localeCompare(b.label);
 		});
 	});
 
+	// Janus models (shown in their own section)
+	let janusModels = $derived(() => models['janus'] || []);
+
 	onMount(async () => {
-		await Promise.all([loadProviders(), loadModels()]);
+		await Promise.all([loadProviders(), loadModels(), loadJanusStatus(), loadJanusUsage()]);
 	});
+
+	async function loadJanusStatus() {
+		try {
+			janusStatus = await api.neboLoopAccountStatus();
+		} catch {
+			janusStatus = null;
+		}
+	}
+
+	async function loadJanusUsage() {
+		try {
+			janusUsage = await api.neboLoopJanusUsage();
+		} catch {
+			janusUsage = null;
+		}
+	}
+
+	async function toggleJanus(enabled: boolean) {
+		if (!janusStatus?.profileId) return;
+		isTogglingJanus = true;
+		try {
+			await api.updateAuthProfile({ metadata: { janus_provider: enabled ? 'true' : 'false' } }, janusStatus.profileId);
+			await loadJanusStatus();
+		} catch (err: any) {
+			error = err?.message || 'Failed to toggle Janus';
+		} finally {
+			isTogglingJanus = false;
+		}
+	}
 
 	async function loadProviders() {
 		isLoading = true;
@@ -139,109 +154,11 @@
 		try {
 			const response = await api.listModels();
 			models = response.models || {};
-			taskRouting = response.taskRouting || null;
-			aliases = response.aliases || [];
 			availableCLIs = response.availableCLIs || null;
-			// Initialize routing form with current values
-			if (taskRouting) {
-				routingForm = {
-					vision: taskRouting.vision || '',
-					audio: taskRouting.audio || '',
-					reasoning: taskRouting.reasoning || '',
-					code: taskRouting.code || '',
-					general: taskRouting.general || ''
-				};
-			}
-			// Initialize aliases form
-			aliasesForm = aliases.map((a) => ({ alias: a.alias, modelId: a.modelId }));
 
-			// Build CLI provider info from API response (from models.yaml)
-			if (response.cliProviders) {
-				const info: { [key: string]: { id: string; name: string; command: string; installHint: string } } = {};
-				for (const cp of response.cliProviders) {
-					info[cp.command] = {
-						id: cp.id,
-						name: cp.displayName,
-						command: cp.command,
-						installHint: cp.installHint
-					};
-				}
-				cliProviderInfo = info;
-			}
+			cliProviders = response.cliProviders || [];
 		} catch (err: any) {
 			console.error('Failed to load models:', err);
-		}
-	}
-
-	async function saveTaskRouting() {
-		isSavingRouting = true;
-		try {
-			await api.updateTaskRouting({
-				vision: routingForm.vision || undefined,
-				audio: routingForm.audio || undefined,
-				reasoning: routingForm.reasoning || undefined,
-				code: routingForm.code || undefined,
-				general: routingForm.general || undefined
-			});
-			await loadModels();
-			showRoutingConfig = false;
-		} catch (err: any) {
-			error = err?.message || 'Failed to save task routing';
-		} finally {
-			isSavingRouting = false;
-		}
-	}
-
-	async function saveAliases() {
-		isSavingAliases = true;
-		try {
-			// Filter out empty aliases
-			const validAliases = aliasesForm.filter((a) => a.alias.trim() && a.modelId);
-			await api.updateTaskRouting({
-				aliases: validAliases
-			});
-			await loadModels();
-			showAliasesConfig = false;
-		} catch (err: any) {
-			error = err?.message || 'Failed to save aliases';
-		} finally {
-			isSavingAliases = false;
-		}
-	}
-
-	function addAlias() {
-		aliasesForm = [...aliasesForm, { alias: '', modelId: '' }];
-	}
-
-	function removeAlias(index: number) {
-		aliasesForm = aliasesForm.filter((_, i) => i !== index);
-	}
-
-	// Get all available model options for dropdowns
-	function getAllModelOptions(): { value: string; label: string }[] {
-		const options: { value: string; label: string }[] = [];
-		for (const [providerType, modelList] of Object.entries(models)) {
-			for (const model of modelList) {
-				if (model.isActive) {
-					options.push({
-						value: `${providerType}/${model.id}`,
-						label: `${model.displayName} (${providerType})`
-					});
-				}
-			}
-		}
-		return options;
-	}
-
-	// Get capability badge color
-	function getCapabilityColor(cap: string): string {
-		switch (cap) {
-			case 'vision': return 'badge-info';
-			case 'reasoning': return 'badge-secondary';
-			case 'code': return 'badge-accent';
-			case 'tools': return 'badge-success';
-			case 'streaming': return 'badge-ghost';
-			default: return 'badge-neutral';
 		}
 	}
 
@@ -259,45 +176,35 @@
 	}
 
 	async function toggleProvider(provider: components.AuthProfile) {
+		const newActive = !provider.isActive;
+		provider.isActive = newActive;
 		try {
-			await api.updateAuthProfile({ isActive: !provider.isActive }, provider.id);
-			await loadProviders();
+			await api.updateAuthProfile({ isActive: newActive }, provider.id);
 		} catch (err: any) {
+			provider.isActive = !newActive;
 			error = err?.message || 'Failed to update provider';
 		}
 	}
 
 	async function toggleModel(providerType: string, model: components.ModelInfo) {
+		const newActive = !model.isActive;
+		model.isActive = newActive;
 		try {
-			await api.updateModel({ active: !model.isActive }, providerType, model.id);
-			await loadModels();
+			await api.updateModel({ active: newActive }, providerType, model.id);
 		} catch (err: any) {
+			model.isActive = !newActive;
 			error = err?.message || 'Failed to update model';
 		}
 	}
 
-	async function togglePreferred(providerType: string, model: components.ModelInfo) {
+	async function toggleCLI(cli: components.CLIProviderInfo) {
+		const newActive = !cli.active;
+		cli.active = newActive;
 		try {
-			await api.updateModel({ preferred: !model.preferred }, providerType, model.id);
-			await loadModels();
+			await api.updateCLIProvider({ active: newActive }, cli.id);
 		} catch (err: any) {
-			error = err?.message || 'Failed to update model';
-		}
-	}
-
-	// Available kind options
-	const kindOptions = ['fast', 'smart', 'code', 'cheap', 'reason', 'local', 'default'];
-
-	async function toggleKind(providerType: string, model: components.ModelInfo, kind: string) {
-		const currentKinds = model.kind || [];
-		const newKinds = currentKinds.includes(kind)
-			? currentKinds.filter((k) => k !== kind)
-			: [...currentKinds, kind];
-		try {
-			await api.updateModel({ kind: newKinds }, providerType, model.id);
-			await loadModels();
-		} catch (err: any) {
-			error = err?.message || 'Failed to update model';
+			cli.active = !newActive;
+			error = err?.message || 'Failed to update CLI provider';
 		}
 	}
 
@@ -327,21 +234,12 @@
 				baseUrl: newProvider.baseUrl || undefined
 			});
 			await loadProviders();
-			showAddForm = false;
-			newProvider = { name: '', provider: 'anthropic', apiKey: '', baseUrl: '' };
+			closeAddModal();
 		} catch (err: any) {
 			addError = err?.message || 'Failed to add provider';
 		} finally {
 			isAdding = false;
 		}
-	}
-
-	function getProviderLabel(providerType: string) {
-		return providerOptions.find((p) => p.value === providerType)?.label || providerType;
-	}
-
-	function getProviderModels(providerType: string) {
-		return models[providerType] || [];
 	}
 </script>
 
@@ -354,762 +252,229 @@
 			</div>
 		</Card>
 	{:else}
-		<!-- Header with Add Button -->
-		<div class="flex items-center justify-between">
-			<div class="flex items-center gap-3">
-				<div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-					<Key class="w-5 h-5 text-primary" />
-				</div>
-				<div>
-					<h2 class="text-lg font-semibold text-base-content">AI Providers</h2>
-					<p class="text-sm text-base-content/60">Manage API keys and available models</p>
-				</div>
-			</div>
-			<Button type="primary" onclick={() => (showAddForm = !showAddForm)}>
-				<Plus class="w-4 h-4" />
-				Add Provider
-			</Button>
-		</div>
-
 		{#if error}
 			<Alert type="error" title="Error">{error}</Alert>
 		{/if}
 
-		<!-- Add Provider Form -->
-		{#if showAddForm}
-			<Card>
-				<h3 class="text-lg font-semibold text-base-content mb-4">Add New Provider</h3>
-
-				<div class="space-y-4">
-					<div>
-						<label for="provider-type" class="block text-sm font-medium text-base-content mb-1">
-							Provider Type
-						</label>
-						<select
-							id="provider-type"
-							bind:value={newProvider.provider}
-							class="select select-bordered w-full"
-						>
-							{#each providerOptions as opt}
-								<option value={opt.value}>{opt.label}</option>
-							{/each}
-						</select>
-					</div>
-
-					<div>
-						<label for="provider-name" class="block text-sm font-medium text-base-content mb-1">
-							Name
-						</label>
-						<input
-							id="provider-name"
-							type="text"
-							bind:value={newProvider.name}
-							placeholder="My Anthropic Key"
-							class="input input-bordered w-full"
-						/>
-					</div>
-
-					<div>
-						<label for="api-key" class="block text-sm font-medium text-base-content mb-1">
-							API Key
-						</label>
-						<input
-							id="api-key"
-							type="password"
-							bind:value={newProvider.apiKey}
-							placeholder={newProvider.provider === 'ollama' ? 'Not required for Ollama' : 'sk-...'}
-							class="input input-bordered w-full"
-						/>
-					</div>
-
-					{#if newProvider.provider === 'ollama'}
-						<div>
-							<label for="base-url" class="block text-sm font-medium text-base-content mb-1">
-								Base URL (optional)
-							</label>
-							<input
-								id="base-url"
-								type="text"
-								bind:value={newProvider.baseUrl}
-								placeholder="http://localhost:11434"
-								class="input input-bordered w-full"
-							/>
-						</div>
+		<!-- Connection Status Banner -->
+		{#if janusStatus?.connected && janusStatus.janusProvider}
+			<div class="flex items-center gap-3 rounded-lg bg-success/10 px-4 py-3">
+				<Wifi class="w-5 h-5 text-success" />
+				<div class="flex-1">
+					<p class="text-sm font-medium text-success">Connected via NeboLoop</p>
+					{#if janusStatus.email}
+						<p class="text-xs text-base-content/60">{janusStatus.email}</p>
 					{/if}
-
-					{#if addError}
-						<Alert type="error" title="Error">{addError}</Alert>
-					{/if}
-
-					<div class="flex gap-2 justify-end">
-						<Button type="ghost" onclick={() => (showAddForm = false)}>Cancel</Button>
-						<Button type="primary" onclick={addProvider} disabled={isAdding}>
-							{#if isAdding}
-								<Spinner size={16} />
-								Adding...
-							{:else}
-								Add Provider
-							{/if}
-						</Button>
-					</div>
 				</div>
-			</Card>
+				<Toggle checked={true} disabled={isTogglingJanus} onchange={() => toggleJanus(false)} />
+			</div>
+		{:else if janusStatus?.connected && !janusStatus.janusProvider}
+			<div class="flex items-center gap-3 rounded-lg bg-base-200/50 px-4 py-3">
+				<Wifi class="w-5 h-5 text-base-content/40" />
+				<div class="flex-1">
+					<p class="text-sm font-medium text-base-content">NeboLoop Connected</p>
+					<p class="text-xs text-base-content/60">Enable Janus AI to use NeboLoop as your AI provider</p>
+				</div>
+				<Toggle checked={false} disabled={isTogglingJanus} onchange={() => toggleJanus(true)} />
+			</div>
+		{:else if !janusStatus?.connected && providers.length === 0 && !availableCLIs?.claude && !availableCLIs?.codex && !availableCLIs?.gemini}
+			<div class="flex items-center gap-3 rounded-lg bg-warning/10 px-4 py-3">
+				<XCircle class="w-5 h-5 text-warning" />
+				<p class="text-sm font-medium text-warning">No AI providers configured</p>
+			</div>
 		{/if}
 
-		<!-- Provider List - Shows ALL providers from models.yaml -->
-		<div class="space-y-4">
-			{#each allProviders() as prov (prov.type)}
-				<Card>
-					<!-- Provider Header -->
-					<div class="flex items-center justify-between">
-						<div class="flex items-center gap-4">
-							<div
-								class="w-10 h-10 rounded-lg flex items-center justify-center {prov.configured && prov.profile?.isActive
-									? 'bg-success/10'
-									: prov.configured
-										? 'bg-warning/10'
-										: 'bg-base-200'}"
-							>
-								{#if prov.configured && prov.profile?.isActive}
-									<CheckCircle class="w-5 h-5 text-success" />
-								{:else if prov.configured}
-									<XCircle class="w-5 h-5 text-warning" />
-								{:else}
-									<Key class="w-5 h-5 text-base-content/40" />
-								{/if}
-							</div>
-							<div>
-								<h4 class="font-medium text-base-content">
-									{prov.profile?.name || prov.label}
-								</h4>
-								<p class="text-sm text-base-content/60">
-									{prov.label}
-									{#if !prov.configured}
-										<span class="ml-2 text-xs text-base-content/40">• Not configured</span>
-									{/if}
-								</p>
-							</div>
+		<!-- Janus (NeboLoop AI Gateway) -->
+		{#if janusModels().length > 0}
+			<Card>
+				<div class="flex items-center gap-3 mb-3">
+					<Zap class="w-5 h-5 text-primary" />
+					<div>
+						<h4 class="font-medium text-base-content">Janus</h4>
+						<p class="text-xs text-base-content/60">NeboLoop AI Gateway — {janusModels().filter(m => m.isActive).length} active model{janusModels().filter(m => m.isActive).length !== 1 ? 's' : ''}</p>
+					</div>
+				</div>
+			{#if janusUsage && janusUsage.limitTokens > 0}
+				<div class="flex items-center gap-3 px-4 py-2 mb-3">
+					<div class="flex-1">
+						<div class="flex justify-between text-xs text-base-content/60 mb-1">
+							<span>{janusUsage.percentUsed}% used</span>
+							{#if janusUsage.resetAt}
+								<span>Resets {new Date(janusUsage.resetAt).toLocaleDateString()}</span>
+							{/if}
 						</div>
-
-						<div class="flex items-center gap-3">
-							{#if prov.configured && prov.profile}
-								{#if testResult?.id === prov.profile.id}
-									<span class="text-sm {testResult.success ? 'text-success' : 'text-error'}">
-										{testResult.message}
-									</span>
-								{/if}
-
-								<Button
-									type="ghost"
-									size="sm"
-									onclick={() => testProvider(prov.profile!.id)}
-									disabled={testingId === prov.profile.id}
-								>
-									{#if testingId === prov.profile.id}
-										<Spinner size={16} />
-									{:else}
-										<RefreshCw class="w-4 h-4" />
-									{/if}
-									Test
-								</Button>
-
+						<progress
+							class="progress w-full {janusUsage.percentUsed > 80 ? 'progress-warning' : 'progress-primary'}"
+							value={janusUsage.percentUsed}
+							max="100"
+						></progress>
+					</div>
+				</div>
+			{/if}
+				<div class="grid gap-2">
+					{#each janusModels() as model (model.id)}
+						<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
+							<div class="flex-1">
+								<p class="font-medium text-sm text-base-content">{model.displayName}</p>
+							</div>
+							<div class="flex items-center gap-3">
+								<p class="text-xs text-base-content/50 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} tokens</p>
 								<Toggle
-									checked={prov.profile.isActive}
-									onchange={() => toggleProvider(prov.profile!)}
+									checked={model.isActive}
+									onchange={() => toggleModel('janus', model)}
 								/>
-
-								<Button
-									type="ghost"
-									size="sm"
-									onclick={() => deleteProvider(prov.profile!.id)}
-								>
-									<Trash2 class="w-4 h-4 text-error" />
-								</Button>
-							{:else}
-								<Button
-									type="primary"
-									size="sm"
-									onclick={() => {
-										newProvider.provider = prov.type;
-										newProvider.name = `My ${prov.label}`;
-										showAddForm = true;
-									}}
-								>
-									<Plus class="w-4 h-4" />
-									Add API Key
-								</Button>
-							{/if}
-						</div>
-					</div>
-
-					<!-- Models for this provider - always visible -->
-					{#if prov.models.length > 0}
-						<div class="mt-4 pt-4 border-t border-base-200">
-							<div class="grid gap-2">
-								{#each prov.models as model (model.id)}
-									<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
-										<div class="flex-1">
-											<div class="flex items-center gap-2">
-												<button
-													type="button"
-													class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
-													onclick={() => togglePreferred(prov.type, model)}
-													title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
-												>
-													<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
-												</button>
-												<p class="font-medium text-sm text-base-content">{model.displayName}</p>
-											</div>
-											<div class="flex gap-2 flex-wrap mt-1">
-												{#each kindOptions as kind}
-													<label class="flex items-center gap-1 cursor-pointer">
-														<input
-															type="checkbox"
-															class="checkbox checkbox-xs checkbox-primary"
-															checked={(model.kind || []).includes(kind)}
-															onchange={() => toggleKind(prov.type, model, kind)}
-														/>
-														<span class="text-xs text-base-content/70">{kind}</span>
-													</label>
-												{/each}
-											</div>
-											<p class="text-xs text-base-content/50">
-												{model.contextWindow?.toLocaleString() || '?'} tokens
-											</p>
-										</div>
-										<Toggle
-											checked={model.isActive}
-											onchange={() => toggleModel(prov.type, model)}
-										/>
-									</div>
-								{/each}
 							</div>
-						</div>
-					{/if}
-				</Card>
-			{/each}
-		</div>
-
-		<!-- CLI Providers Section -->
-		{#if availableCLIs && (availableCLIs.claude || availableCLIs.codex || availableCLIs.gemini)}
-			<Card>
-				<div class="flex items-center gap-3 mb-4">
-					<div class="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-						<Terminal class="w-5 h-5 text-accent" />
-					</div>
-					<div>
-						<h3 class="text-lg font-semibold text-base-content">CLI Providers</h3>
-						<p class="text-sm text-base-content/60">AI coding assistants detected on your system</p>
-					</div>
-				</div>
-
-				<div class="space-y-3">
-					{#if availableCLIs.claude}
-						{@const cliModels = getCLIModels('claude-code')}
-						<div class="border border-base-300 rounded-lg overflow-hidden">
-							<button
-								type="button"
-								class="w-full flex items-center justify-between py-3 px-4 bg-base-200/30 hover:bg-base-200/50 transition-colors cursor-pointer"
-								onclick={() => openCLIModal('claude')}
-							>
-								<div class="flex items-center gap-3">
-									<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
-										<CheckCircle class="w-4 h-4 text-success" />
-									</div>
-									<div class="text-left">
-										<p class="font-medium text-base-content">Claude Agent</p>
-										<p class="text-xs text-base-content/60">Anthropic's agentic assistant</p>
-									</div>
-								</div>
-								<span class="badge badge-success badge-sm">Available</span>
-							</button>
-							{#if cliModels.length > 0}
-								<div class="divide-y divide-base-200">
-									{#each cliModels as model (model.id)}
-										<div class="flex items-center justify-between px-4 py-2 bg-base-100">
-											<div class="flex-1">
-												<div class="flex items-center gap-2">
-													<button
-														type="button"
-														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
-														onclick={() => togglePreferred('claude-code', model)}
-														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
-													>
-														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
-													</button>
-													<p class="font-medium text-sm text-base-content">{model.displayName}</p>
-												</div>
-												<div class="flex gap-2 flex-wrap mt-1">
-													{#each kindOptions as kind}
-														<label class="flex items-center gap-1 cursor-pointer">
-															<input
-																type="checkbox"
-																class="checkbox checkbox-xs checkbox-primary"
-																checked={(model.kind || []).includes(kind)}
-																onchange={() => toggleKind('claude-code', model, kind)}
-															/>
-															<span class="text-xs text-base-content/70">{kind}</span>
-														</label>
-													{/each}
-												</div>
-											</div>
-											<Toggle
-												checked={model.isActive}
-												onchange={() => toggleModel('claude-code', model)}
-											/>
-										</div>
-									{/each}
-								</div>
-							{/if}
-						</div>
-					{/if}
-
-					{#if availableCLIs.codex}
-						{@const cliModels = getCLIModels('codex-cli')}
-						<div class="border border-base-300 rounded-lg overflow-hidden">
-							<button
-								type="button"
-								class="w-full flex items-center justify-between py-3 px-4 bg-base-200/30 hover:bg-base-200/50 transition-colors cursor-pointer"
-								onclick={() => openCLIModal('codex')}
-							>
-								<div class="flex items-center gap-3">
-									<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
-										<CheckCircle class="w-4 h-4 text-success" />
-									</div>
-									<div class="text-left">
-										<p class="font-medium text-base-content">Codex CLI</p>
-										<p class="text-xs text-base-content/60">OpenAI's coding assistant</p>
-									</div>
-								</div>
-								<span class="badge badge-success badge-sm">Available</span>
-							</button>
-							{#if cliModels.length > 0}
-								<div class="divide-y divide-base-200">
-									{#each cliModels as model (model.id)}
-										<div class="flex items-center justify-between px-4 py-2 bg-base-100">
-											<div class="flex-1">
-												<div class="flex items-center gap-2">
-													<button
-														type="button"
-														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
-														onclick={() => togglePreferred('codex-cli', model)}
-														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
-													>
-														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
-													</button>
-													<p class="font-medium text-sm text-base-content">{model.displayName}</p>
-												</div>
-												<div class="flex gap-2 flex-wrap mt-1">
-													{#each kindOptions as kind}
-														<label class="flex items-center gap-1 cursor-pointer">
-															<input
-																type="checkbox"
-																class="checkbox checkbox-xs checkbox-primary"
-																checked={(model.kind || []).includes(kind)}
-																onchange={() => toggleKind('codex-cli', model, kind)}
-															/>
-															<span class="text-xs text-base-content/70">{kind}</span>
-														</label>
-													{/each}
-												</div>
-											</div>
-											<Toggle
-												checked={model.isActive}
-												onchange={() => toggleModel('codex-cli', model)}
-											/>
-										</div>
-									{/each}
-								</div>
-							{/if}
-						</div>
-					{/if}
-
-					{#if availableCLIs.gemini}
-						{@const cliModels = getCLIModels('gemini-cli')}
-						<div class="border border-base-300 rounded-lg overflow-hidden">
-							<button
-								type="button"
-								class="w-full flex items-center justify-between py-3 px-4 bg-base-200/30 hover:bg-base-200/50 transition-colors cursor-pointer"
-								onclick={() => openCLIModal('gemini')}
-							>
-								<div class="flex items-center gap-3">
-									<div class="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
-										<CheckCircle class="w-4 h-4 text-success" />
-									</div>
-									<div class="text-left">
-										<p class="font-medium text-base-content">Gemini CLI</p>
-										<p class="text-xs text-base-content/60">Google's coding assistant</p>
-									</div>
-								</div>
-								<span class="badge badge-success badge-sm">Available</span>
-							</button>
-							{#if cliModels.length > 0}
-								<div class="divide-y divide-base-200">
-									{#each cliModels as model (model.id)}
-										<div class="flex items-center justify-between px-4 py-2 bg-base-100">
-											<div class="flex-1">
-												<div class="flex items-center gap-2">
-													<button
-														type="button"
-														class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
-														onclick={() => togglePreferred('gemini-cli', model)}
-														title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
-													>
-														<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
-													</button>
-													<p class="font-medium text-sm text-base-content">{model.displayName}</p>
-												</div>
-												<div class="flex gap-2 flex-wrap mt-1">
-													{#each kindOptions as kind}
-														<label class="flex items-center gap-1 cursor-pointer">
-															<input
-																type="checkbox"
-																class="checkbox checkbox-xs checkbox-primary"
-																checked={(model.kind || []).includes(kind)}
-																onchange={() => toggleKind('gemini-cli', model, kind)}
-															/>
-															<span class="text-xs text-base-content/70">{kind}</span>
-														</label>
-													{/each}
-												</div>
-											</div>
-											<Toggle
-												checked={model.isActive}
-												onchange={() => toggleModel('gemini-cli', model)}
-											/>
-										</div>
-									{/each}
-								</div>
-							{/if}
-						</div>
-					{/if}
-				</div>
-
-				<div class="mt-4 p-3 bg-base-200/50 rounded-lg">
-					<p class="text-xs text-base-content/70">
-						CLI providers are automatically detected. Click on a provider to configure it.
-					</p>
-				</div>
-			</Card>
-		{/if}
-
-		<!-- Task Routing Configuration -->
-		<Card>
-			<div class="flex items-center justify-between mb-4">
-				<div class="flex items-center gap-3">
-					<div class="w-10 h-10 rounded-xl bg-secondary/10 flex items-center justify-center">
-						<Cpu class="w-5 h-5 text-secondary" />
-					</div>
-					<div>
-						<h3 class="text-lg font-semibold text-base-content">Task-Based Model Routing</h3>
-						<p class="text-sm text-base-content/60">Assign specific models to different task types</p>
-					</div>
-				</div>
-				<Button type="ghost" size="sm" onclick={() => (showRoutingConfig = !showRoutingConfig)}>
-					{showRoutingConfig ? 'Hide' : 'Configure'}
-				</Button>
-			</div>
-
-			{#if !showRoutingConfig && taskRouting}
-				<div class="grid grid-cols-2 md:grid-cols-5 gap-3">
-					<div class="bg-base-200/50 rounded-lg p-3">
-						<div class="flex items-center gap-2 mb-1">
-							<Eye class="w-4 h-4 text-info" />
-							<span class="text-xs font-medium text-base-content/70">Vision</span>
-						</div>
-						<p class="text-sm text-base-content truncate">{taskRouting.vision || 'Auto'}</p>
-					</div>
-					<div class="bg-base-200/50 rounded-lg p-3">
-						<div class="flex items-center gap-2 mb-1">
-							<Volume2 class="w-4 h-4 text-warning" />
-							<span class="text-xs font-medium text-base-content/70">Audio</span>
-						</div>
-						<p class="text-sm text-base-content truncate">{taskRouting.audio || 'Auto'}</p>
-					</div>
-					<div class="bg-base-200/50 rounded-lg p-3">
-						<div class="flex items-center gap-2 mb-1">
-							<Brain class="w-4 h-4 text-secondary" />
-							<span class="text-xs font-medium text-base-content/70">Reasoning</span>
-						</div>
-						<p class="text-sm text-base-content truncate">{taskRouting.reasoning || 'Auto'}</p>
-					</div>
-					<div class="bg-base-200/50 rounded-lg p-3">
-						<div class="flex items-center gap-2 mb-1">
-							<Code class="w-4 h-4 text-accent" />
-							<span class="text-xs font-medium text-base-content/70">Code</span>
-						</div>
-						<p class="text-sm text-base-content truncate">{taskRouting.code || 'Auto'}</p>
-					</div>
-					<div class="bg-base-200/50 rounded-lg p-3">
-						<div class="flex items-center gap-2 mb-1">
-							<Sparkles class="w-4 h-4 text-primary" />
-							<span class="text-xs font-medium text-base-content/70">General</span>
-						</div>
-						<p class="text-sm text-base-content truncate">{taskRouting.general || 'Auto'}</p>
-					</div>
-				</div>
-			{/if}
-
-			{#if showRoutingConfig}
-				{@const modelOptions = getAllModelOptions()}
-				<div class="space-y-4">
-					<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-						<div>
-							<label for="routing-vision" class="flex items-center gap-2 text-sm font-medium text-base-content mb-1">
-								<Eye class="w-4 h-4 text-info" />
-								Vision Tasks
-							</label>
-							<select id="routing-vision" bind:value={routingForm.vision} class="select select-bordered select-sm w-full">
-								<option value="">Auto (best available)</option>
-								{#each modelOptions as opt}
-									<option value={opt.value}>{opt.label}</option>
-								{/each}
-							</select>
-							<p class="text-xs text-base-content/50 mt-1">Images, screenshots, visual analysis</p>
-						</div>
-
-						<div>
-							<label for="routing-audio" class="flex items-center gap-2 text-sm font-medium text-base-content mb-1">
-								<Volume2 class="w-4 h-4 text-warning" />
-								Audio Tasks
-							</label>
-							<select id="routing-audio" bind:value={routingForm.audio} class="select select-bordered select-sm w-full">
-								<option value="">Auto (best available)</option>
-								{#each modelOptions as opt}
-									<option value={opt.value}>{opt.label}</option>
-								{/each}
-							</select>
-							<p class="text-xs text-base-content/50 mt-1">Voice, transcription, audio analysis</p>
-						</div>
-
-						<div>
-							<label for="routing-reasoning" class="flex items-center gap-2 text-sm font-medium text-base-content mb-1">
-								<Brain class="w-4 h-4 text-secondary" />
-								Reasoning Tasks
-							</label>
-							<select id="routing-reasoning" bind:value={routingForm.reasoning} class="select select-bordered select-sm w-full">
-								<option value="">Auto (best available)</option>
-								{#each modelOptions as opt}
-									<option value={opt.value}>{opt.label}</option>
-								{/each}
-							</select>
-							<p class="text-xs text-base-content/50 mt-1">Complex analysis, problem solving</p>
-						</div>
-
-						<div>
-							<label for="routing-code" class="flex items-center gap-2 text-sm font-medium text-base-content mb-1">
-								<Code class="w-4 h-4 text-accent" />
-								Code Tasks
-							</label>
-							<select id="routing-code" bind:value={routingForm.code} class="select select-bordered select-sm w-full">
-								<option value="">Auto (best available)</option>
-								{#each modelOptions as opt}
-									<option value={opt.value}>{opt.label}</option>
-								{/each}
-							</select>
-							<p class="text-xs text-base-content/50 mt-1">Writing, debugging, refactoring code</p>
-						</div>
-
-						<div>
-							<label for="routing-general" class="flex items-center gap-2 text-sm font-medium text-base-content mb-1">
-								<Sparkles class="w-4 h-4 text-primary" />
-								General Tasks
-							</label>
-							<select id="routing-general" bind:value={routingForm.general} class="select select-bordered select-sm w-full">
-								<option value="">Auto (best available)</option>
-								{#each modelOptions as opt}
-									<option value={opt.value}>{opt.label}</option>
-								{/each}
-							</select>
-							<p class="text-xs text-base-content/50 mt-1">Chat, Q&A, general conversation</p>
-						</div>
-					</div>
-
-					<div class="flex gap-2 justify-end pt-2">
-						<Button type="ghost" size="sm" onclick={() => (showRoutingConfig = false)}>Cancel</Button>
-						<Button type="primary" size="sm" onclick={saveTaskRouting} disabled={isSavingRouting}>
-							{#if isSavingRouting}
-								<Spinner size={16} />
-								Saving...
-							{:else}
-								Save Routing
-							{/if}
-						</Button>
-					</div>
-				</div>
-			{/if}
-		</Card>
-
-		<!-- Model Aliases Configuration -->
-		<Card>
-			<div class="flex items-center justify-between mb-4">
-				<div class="flex items-center gap-3">
-					<div class="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-						<Tag class="w-5 h-5 text-accent" />
-					</div>
-					<div>
-						<h3 class="text-lg font-semibold text-base-content">Model Aliases</h3>
-						<p class="text-sm text-base-content/60">Create shortcuts like "fast" → haiku, "smart" → opus</p>
-					</div>
-				</div>
-				<Button type="ghost" size="sm" onclick={() => (showAliasesConfig = !showAliasesConfig)}>
-					{showAliasesConfig ? 'Hide' : 'Configure'}
-				</Button>
-			</div>
-
-			{#if !showAliasesConfig && aliases.length > 0}
-				<div class="flex flex-wrap gap-2">
-					{#each aliases as alias}
-						<div class="badge badge-outline gap-1">
-							<span class="font-medium">{alias.alias}</span>
-							<span class="text-base-content/50">→</span>
-							<span class="text-xs">{alias.modelId.split('/').pop()}</span>
 						</div>
 					{/each}
 				</div>
-			{:else if !showAliasesConfig}
-				<p class="text-sm text-base-content/50">No custom aliases configured. Using defaults.</p>
-			{/if}
+			</Card>
+		{/if}
 
-			{#if showAliasesConfig}
-				{@const modelOptions = getAllModelOptions()}
-				<div class="space-y-4">
-					<p class="text-sm text-base-content/70">
-						Define shortcuts you can use when switching models. Say "use fast" to switch to your fast model.
-					</p>
-
-					<div class="space-y-2">
-						{#each aliasesForm as aliasEntry, index}
-							<div class="flex items-center gap-2">
-								<input
-									type="text"
-									placeholder="Alias (e.g., fast)"
-									bind:value={aliasEntry.alias}
-									class="input input-bordered input-sm w-32"
-								/>
-								<span class="text-base-content/50">→</span>
-								<select bind:value={aliasEntry.modelId} class="select select-bordered select-sm flex-1">
-									<option value="">Select model...</option>
-									{#each modelOptions as opt}
-										<option value={opt.value}>{opt.label}</option>
-									{/each}
-								</select>
-								<button
-									type="button"
-									class="btn btn-ghost btn-sm btn-square"
-									onclick={() => removeAlias(index)}
-								>
-									<Trash2 class="w-4 h-4" />
-								</button>
-							</div>
-						{/each}
-					</div>
-
-					<Button type="ghost" size="sm" onclick={addAlias}>
-						<Plus class="w-4 h-4" />
-						Add Alias
-					</Button>
-
-					<div class="flex gap-2 justify-end pt-2">
-						<Button type="ghost" size="sm" onclick={() => (showAliasesConfig = false)}>Cancel</Button>
-						<Button type="primary" size="sm" onclick={saveAliases} disabled={isSavingAliases}>
-							{#if isSavingAliases}
-								<Spinner size={16} />
-								Saving...
-							{:else}
-								Save Aliases
-							{/if}
-						</Button>
+		<!-- CLI Providers -->
+		{#if cliProviders.length > 0}
+			<Card>
+				<div class="flex items-center gap-3 mb-3">
+					<Terminal class="w-5 h-5 text-accent" />
+					<div>
+						<h4 class="font-medium text-base-content">CLI Providers</h4>
+						<p class="text-xs text-base-content/60">Locally installed AI tools — no API key needed</p>
 					</div>
 				</div>
-			{/if}
-		</Card>
+				<div class="grid gap-2">
+					{#each cliProviders as cli (cli.id)}
+						<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
+							<div>
+								<p class="font-medium text-sm text-base-content">{cli.displayName}</p>
+								<p class="text-xs text-base-content/60"><code>{cli.command}</code> — {cli.installHint}</p>
+							</div>
+							<Toggle checked={cli.active} onchange={() => toggleCLI(cli)} />
+						</div>
+					{/each}
+				</div>
+			</Card>
+		{/if}
 
-		<!-- Info Card -->
+		<!-- API Providers -->
 		<Card>
-			<div class="bg-base-200 rounded-lg p-4">
-				<h4 class="font-medium text-base-content mb-2">How it works</h4>
-				<ul class="text-sm text-base-content/70 space-y-1 list-disc list-inside">
-					<li>Toggle models on/off to control what Nebo can use</li>
-					<li>Use checkboxes to set <span class="badge badge-xs badge-primary badge-outline">kind</span> tags like fast, smart, code, cheap</li>
-					<li>Click <Star class="w-3 h-3 text-warning fill-warning inline" /> to mark your preferred model for each kind</li>
-					<li>Say "use fast" to switch to your preferred model with that kind</li>
-					<li>If one provider fails, Nebo falls back to other models with the same kind</li>
-				</ul>
+			<div class="flex items-center justify-between mb-4">
+				<div class="flex items-center gap-3">
+					<div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+						<Key class="w-5 h-5 text-primary" />
+					</div>
+					<div>
+						<h3 class="text-lg font-semibold text-base-content">API Keys</h3>
+						<p class="text-sm text-base-content/60">Manage provider connections and models</p>
+					</div>
+				</div>
+				<Button type="primary" size="sm" onclick={() => openAddModal()}>
+					<Plus class="w-4 h-4" />
+					Add Provider
+				</Button>
+			</div>
+
+			<div class="divide-y divide-base-200">
+				{#each allProviders() as prov, i (prov.type)}
+					<div class="py-4 first:pt-0 last:pb-0">
+						<div class="flex items-center justify-between">
+							<div class="flex items-center gap-4">
+								<div class="w-10 h-10 rounded-lg flex items-center justify-center {prov.configured && prov.profile?.isActive ? 'bg-success/10' : prov.configured ? 'bg-warning/10' : 'bg-base-200'}">
+									{#if prov.configured && prov.profile?.isActive}
+										<CheckCircle class="w-5 h-5 text-success" />
+									{:else if prov.configured}
+										<XCircle class="w-5 h-5 text-warning" />
+									{:else}
+										<Key class="w-5 h-5 text-base-content/40" />
+									{/if}
+								</div>
+								<div>
+									<h4 class="font-medium text-base-content">{prov.profile?.name || prov.label}</h4>
+									{#if prov.profile?.name && prov.profile.name !== prov.label}
+										<p class="text-sm text-base-content/60">{prov.label}</p>
+									{/if}
+								</div>
+							</div>
+							<div class="flex items-center gap-3">
+								{#if prov.configured && prov.profile}
+									{#if testResult?.id === prov.profile.id}
+										<span class="text-sm {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
+									{/if}
+									<Button type="ghost" size="sm" onclick={() => testProvider(prov.profile!.id)} disabled={testingId === prov.profile.id}>
+										{#if testingId === prov.profile.id}<Spinner size={16} />{:else}<RefreshCw class="w-4 h-4" />{/if} Test
+									</Button>
+									<Toggle checked={prov.profile.isActive} onchange={() => toggleProvider(prov.profile!)} />
+									<Button type="ghost" size="sm" onclick={() => deleteProvider(prov.profile!.id)}>
+										<Trash2 class="w-4 h-4 text-error" />
+									</Button>
+								{:else}
+									<button type="button" class="text-xs text-base-content/40 hover:text-primary transition-colors" onclick={() => openAddModal(prov.type)}>
+										Add key
+									</button>
+								{/if}
+							</div>
+						</div>
+						{#if prov.models.length > 0}
+							<div class="mt-3 grid gap-2">
+								{#each prov.models as model (model.id)}
+									<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
+										<div class="flex-1">
+											<p class="font-medium text-sm text-base-content">{model.displayName}</p>
+										</div>
+										<div class="flex items-center gap-3">
+											<p class="text-xs text-base-content/50 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} tokens</p>
+											<Toggle checked={model.isActive} onchange={() => toggleModel(prov.type, model)} />
+										</div>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{/each}
 			</div>
 		</Card>
+
 	{/if}
 </div>
 
-<!-- CLI Provider Configuration Modal -->
-{#if showCLIModal && selectedCLI}
-	{@const cli = selectedCLI}
-	{@const cliModels = getCLIModels(cli.id)}
+<!-- Add Provider Modal -->
+{#if showAddForm}
 	<div class="modal modal-open">
 		<div class="modal-box">
-			<h3 class="font-bold text-lg mb-4">{cli.name} Configuration</h3>
-
+			<h3 class="font-bold text-lg mb-4">Add Provider</h3>
 			<div class="space-y-4">
-				<div class="flex items-center gap-3 p-3 bg-base-200 rounded-lg">
-					<Terminal class="w-5 h-5 text-accent" />
-					<div>
-						<p class="font-medium text-sm">Command: <code class="text-accent">{cli.command}</code></p>
-						<p class="text-xs text-base-content/60">Install: {cli.installHint}</p>
-					</div>
+				<div>
+					<label for="provider-type" class="block text-sm font-medium text-base-content mb-1">Provider Type</label>
+					<select id="provider-type" bind:value={newProvider.provider} class="select select-bordered w-full">
+						{#each providerOptions as opt}
+							<option value={opt.value}>{opt.label}</option>
+						{/each}
+					</select>
 				</div>
-
-				{#if cliModels.length > 0}
+				<div>
+					<label for="provider-name" class="block text-sm font-medium text-base-content mb-1">Name</label>
+					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder="My Anthropic Key" class="input input-bordered w-full" />
+				</div>
+				<div>
+					<label for="api-key" class="block text-sm font-medium text-base-content mb-1">API Key</label>
+					<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={newProvider.provider === 'ollama' ? 'Not required for Ollama' : 'sk-...'} class="input input-bordered w-full" />
+				</div>
+				{#if newProvider.provider === 'ollama'}
 					<div>
-						<h4 class="font-medium text-sm mb-2">Available Models</h4>
-						<div class="space-y-2">
-							{#each cliModels as model (model.id)}
-								<div class="flex items-center justify-between p-3 bg-base-200/50 rounded-lg">
-									<div class="flex-1">
-										<div class="flex items-center gap-2">
-											<button
-												type="button"
-												class="btn btn-ghost btn-xs p-0 min-h-0 h-auto"
-												onclick={() => togglePreferred(cli.id, model)}
-												title={model.preferred ? 'Remove preferred' : 'Set as preferred'}
-											>
-												<Star class="w-4 h-4 {model.preferred ? 'text-warning fill-warning' : 'text-base-content/30'}" />
-											</button>
-											<span class="font-medium text-sm">{model.displayName}</span>
-										</div>
-										<div class="flex gap-2 flex-wrap mt-1">
-											{#each kindOptions as kind}
-												<label class="flex items-center gap-1 cursor-pointer">
-													<input
-														type="checkbox"
-														class="checkbox checkbox-xs checkbox-primary"
-														checked={(model.kind || []).includes(kind)}
-														onchange={() => toggleKind(cli.id, model, kind)}
-													/>
-													<span class="text-xs text-base-content/70">{kind}</span>
-												</label>
-											{/each}
-										</div>
-									</div>
-									<Toggle
-										checked={model.isActive}
-										onchange={() => toggleModel(cli.id, model)}
-									/>
-								</div>
-							{/each}
-						</div>
-					</div>
-				{:else}
-					<div class="text-center py-4">
-						<p class="text-sm text-base-content/60">No models configured for this CLI provider.</p>
-						<p class="text-xs text-base-content/50 mt-1">Models are defined in models.yaml</p>
+						<label for="base-url" class="block text-sm font-medium text-base-content mb-1">Base URL (optional)</label>
+						<input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder="http://localhost:11434" class="input input-bordered w-full" />
 					</div>
 				{/if}
+				{#if addError}
+					<Alert type="error" title="Error">{addError}</Alert>
+				{/if}
 			</div>
-
 			<div class="modal-action">
-				<Button type="ghost" onclick={closeCLIModal}>Close</Button>
+				<Button type="ghost" onclick={closeAddModal}>Cancel</Button>
+				<Button type="primary" onclick={addProvider} disabled={isAdding}>
+					{#if isAdding}<Spinner size={16} /> Adding...{:else}Add Provider{/if}
+				</Button>
 			</div>
 		</div>
-		<div class="modal-backdrop" onclick={closeCLIModal}></div>
+		<button type="button" class="modal-backdrop" onclick={closeAddModal}>close</button>
 	</div>
 {/if}
+

@@ -413,3 +413,4 @@ func (h *CommHandler) IsConnected() bool {
 func (h *CommHandler) CommAgentID() string {
 	return h.agentID
 }
+

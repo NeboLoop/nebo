@@ -165,6 +165,9 @@ var checkStreamHandler MessageHandler
 // cancelHandler is set to handle cancel requests
 var cancelHandler MessageHandler
 
+// sessionResetHandler is set to handle session reset requests
+var sessionResetHandler MessageHandler
+
 // SetRewriteHandler sets the handler for rewrite messages
 func SetRewriteHandler(handler MessageHandler) {
 	rewriteHandler = handler
@@ -195,6 +198,11 @@ func SetCancelHandler(handler MessageHandler) {
 	cancelHandler = handler
 }
 
+// SetSessionResetHandler sets the handler for session reset requests
+func SetSessionResetHandler(handler MessageHandler) {
+	sessionResetHandler = handler
+}
+
 // handleMessage processes incoming messages from the client
 func (c *Client) handleMessage(msg *Message) {
 	logging.Infof("[Client] Received message type=%s from client %s", msg.Type, c.ID)
@@ -213,6 +221,8 @@ func (c *Client) handleMessage(msg *Message) {
 		c.handleCheckStream(msg)
 	case "cancel":
 		c.handleCancel(msg)
+	case "session_reset":
+		c.handleSessionReset(msg)
 	default:
 		logging.Infof("Unknown message type: %s", msg.Type)
 	}
@@ -242,6 +252,15 @@ func (c *Client) handleApprovalResponse(msg *Message) {
 		approvalResponseHandler(c, msg)
 	} else {
 		logging.Error("Approval response handler not registered")
+	}
+}
+
+// handleSessionReset processes session reset requests
+func (c *Client) handleSessionReset(msg *Message) {
+	if sessionResetHandler != nil {
+		sessionResetHandler(c, msg)
+	} else {
+		logging.Error("Session reset handler not registered")
 	}
 }
 

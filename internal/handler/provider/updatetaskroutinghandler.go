@@ -25,34 +25,30 @@ func UpdateTaskRoutingHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			config.TaskRouting = &provider.TaskRouting{}
 		}
 
-		// Update routing configuration
-		if req.Vision != "" {
-			config.TaskRouting.Vision = req.Vision
-		}
-		if req.Audio != "" {
-			config.TaskRouting.Audio = req.Audio
-		}
-		if req.Reasoning != "" {
-			config.TaskRouting.Reasoning = req.Reasoning
-		}
-		if req.Code != "" {
-			config.TaskRouting.Code = req.Code
-		}
-		if req.General != "" {
-			config.TaskRouting.General = req.General
-		}
-		if req.Fallbacks != nil {
-			config.TaskRouting.Fallbacks = req.Fallbacks
+		// Update routing — always write all fields so clearing works
+		config.TaskRouting.Vision = req.Vision
+		config.TaskRouting.Audio = req.Audio
+		config.TaskRouting.Reasoning = req.Reasoning
+		config.TaskRouting.Code = req.Code
+		config.TaskRouting.General = req.General
+		config.TaskRouting.Fallbacks = req.Fallbacks
+
+		// Update lane routing
+		if req.LaneRouting != nil {
+			config.LaneRouting = &provider.LaneRouting{
+				Heartbeat: req.LaneRouting["heartbeat"],
+				Events:    req.LaneRouting["events"],
+				Comm:      req.LaneRouting["comm"],
+				Subagent:  req.LaneRouting["subagent"],
+			}
 		}
 
-		// Update aliases if provided
-		if req.Aliases != nil {
-			config.Aliases = make([]provider.ModelAlias, len(req.Aliases))
-			for i, a := range req.Aliases {
-				config.Aliases[i] = provider.ModelAlias{
-					Alias:   a.Alias,
-					ModelId: a.ModelId,
-				}
+		// Update aliases — always write so removals persist
+		config.Aliases = make([]provider.ModelAlias, len(req.Aliases))
+		for i, a := range req.Aliases {
+			config.Aliases[i] = provider.ModelAlias{
+				Alias:   a.Alias,
+				ModelId: a.ModelId,
 			}
 		}
 

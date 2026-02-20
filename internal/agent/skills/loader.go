@@ -3,6 +3,7 @@ package skills
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -93,6 +94,64 @@ func (l *Loader) LoadAll() error {
 
 	logging.Infof("[skills] Loaded %d skills from %s", len(l.skills), l.dir)
 	return nil
+}
+
+// LoadFromEmbedFS loads all skills from an embedded filesystem.
+// The fsys should contain paths like "skills/<name>/SKILL.md".
+// prefix is the root directory within the embed.FS (e.g., "skills").
+func (l *Loader) LoadFromEmbedFS(fsys fs.FS, prefix string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return fs.WalkDir(fsys, prefix, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.EqualFold(filepath.Base(path), SkillFileName) {
+			return nil
+		}
+
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			return fmt.Errorf("failed to read embedded %s: %w", path, err)
+		}
+
+		skill, err := ParseSkillMD(data)
+		if err != nil {
+			return fmt.Errorf("failed to parse embedded %s: %w", path, err)
+		}
+
+		if skill.Version == "" {
+			skill.Version = "1.0.0"
+		}
+		skill.Enabled = true
+		skill.FilePath = "embedded:" + path
+
+		if err := skill.Validate(); err != nil {
+			return fmt.Errorf("invalid embedded skill %s: %w", path, err)
+		}
+
+		// Skip skills that don't support the current platform
+		if len(skill.Platform) > 0 {
+			supported := false
+			for _, p := range skill.Platform {
+				if strings.EqualFold(p, currentPlatform) {
+					supported = true
+					break
+				}
+			}
+			if !supported {
+				return nil
+			}
+		}
+
+		l.skills[skill.Name] = skill
+		logging.Debugf("[skills] Loaded embedded skill: %s", skill.Name)
+		return nil
+	})
 }
 
 // loadFile loads a single SKILL.md file (must hold lock)

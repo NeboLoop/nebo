@@ -259,9 +259,13 @@ type Querier interface {
 	InsertDevSideloadedApp(ctx context.Context, arg InsertDevSideloadedAppParams) error
 	// Error log queries
 	InsertErrorLog(ctx context.Context, arg InsertErrorLogParams) error
+	// Returns active profiles NOT on cooldown - for request-level profile selection.
 	ListActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error)
 	ListActiveModels(ctx context.Context, profileID string) ([]ProviderModel, error)
 	ListAdvisors(ctx context.Context) ([]Advisor, error)
+	// Returns ALL active profiles regardless of cooldown - for provider loading.
+	// Cooldown affects request routing, not provider existence.
+	ListAllActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error)
 	ListAppOAuthGrants(ctx context.Context, appID string) ([]AppOauthGrant, error)
 	ListAuthProfiles(ctx context.Context) ([]AuthProfile, error)
 	ListChannelConfig(ctx context.Context, channelID string) ([]ChannelConfig, error)

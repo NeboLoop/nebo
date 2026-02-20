@@ -47,6 +47,31 @@ const tmplMemoryNudge = `If the user has shared personal facts, preferences, or 
 consider storing them using agent(resource: memory, action: store).
 Only store if genuinely useful.`
 
+// --- Objective Task Nudge ---
+
+const tmplObjectiveTaskNudge = `You have a clear objective but haven't broken it into steps.
+Use agent(resource: task, action: create, subject: "step description") to create 3-5 tasks.
+Then mark them in_progress/completed as you go. This keeps you on track.`
+
+// --- Pending Task Action ---
+
+const tmplPendingTaskAction = `You have pending tasks:
+%s
+Do NOT describe what you plan to do — take action NOW using your tools.
+Pick the next pending task and execute it immediately.`
+
+// --- Task Progress ---
+
+const tmplTaskProgress = `Current task progress:
+%s
+Focus on the next pending task. Mark tasks completed as you finish them.`
+
+// --- Janus Quota Warning ---
+
+const tmplJanusQuotaWarning = `Your NeboLoop Janus token budget is %d%% used (%d of %d tokens remaining this week).
+Warn the user that their AI usage quota is running low. Suggest shorter prompts or upgrading their plan.
+You can open the billing page with: agent(resource: profile, action: open_billing)`
+
 // Self-disclosure patterns that suggest the user is sharing storable information.
 var selfDisclosurePatterns = []string{
 	"i am", "i'm", "my name", "i work", "i live",

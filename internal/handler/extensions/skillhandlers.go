@@ -2,18 +2,27 @@ package extensions
 
 import (
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	bundled "github.com/neboloop/nebo/extensions"
 	"github.com/neboloop/nebo/internal/agent/skills"
 	"github.com/neboloop/nebo/internal/agent/tools"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/svc"
 	"github.com/neboloop/nebo/internal/types"
 )
+
+// isBundledSkill checks if a skill exists in the embedded bundle.
+func isBundledSkill(name string) bool {
+	path := filepath.Join("skills", name, "SKILL.md")
+	_, err := fs.Stat(bundled.BundledSkills, path)
+	return err == nil
+}
 
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 
@@ -116,8 +125,7 @@ func UpdateSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		userSkillPath := filepath.Join(svcCtx.NeboDir, "skills", req.Name, "SKILL.md")
 		if _, err := os.Stat(userSkillPath); os.IsNotExist(err) {
 			// Check if it's a bundled skill
-			bundledPath := filepath.Join("extensions", "skills", req.Name, "SKILL.md")
-			if _, berr := os.Stat(bundledPath); berr == nil {
+			if isBundledSkill(req.Name) {
 				httputil.ErrorWithCode(w, http.StatusForbidden, "cannot edit bundled skills")
 				return
 			}
@@ -161,8 +169,7 @@ func DeleteSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		// Only allow deleting user skills
 		userSkillDir := filepath.Join(svcCtx.NeboDir, "skills", req.Name)
 		if _, err := os.Stat(filepath.Join(userSkillDir, "SKILL.md")); os.IsNotExist(err) {
-			bundledPath := filepath.Join("extensions", "skills", req.Name, "SKILL.md")
-			if _, berr := os.Stat(bundledPath); berr == nil {
+			if isBundledSkill(req.Name) {
 				httputil.ErrorWithCode(w, http.StatusForbidden, "cannot delete bundled skills")
 				return
 			}
@@ -188,27 +195,24 @@ func GetSkillContentHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		// Check user skills first (higher priority), then bundled
+		// Check user skills first (higher priority), then bundled (embedded)
 		userPath := filepath.Join(svcCtx.NeboDir, "skills", req.Name, "SKILL.md")
-		bundledPath := filepath.Join("extensions", "skills", req.Name, "SKILL.md")
+		embeddedPath := filepath.Join("skills", req.Name, "SKILL.md")
 
-		var skillPath string
+		var content []byte
 		var editable bool
+		var err error
 
-		if _, err := os.Stat(userPath); err == nil {
-			skillPath = userPath
+		if _, statErr := os.Stat(userPath); statErr == nil {
+			content, err = os.ReadFile(userPath)
 			editable = true
-		} else if _, err := os.Stat(bundledPath); err == nil {
-			skillPath = bundledPath
-			editable = false
 		} else {
-			httputil.NotFound(w, "skill not found: "+req.Name)
-			return
+			content, err = fs.ReadFile(bundled.BundledSkills, embeddedPath)
+			editable = false
 		}
 
-		content, err := os.ReadFile(skillPath)
-		if err != nil {
-			httputil.InternalError(w, "failed to read skill file")
+		if err != nil || content == nil {
+			httputil.NotFound(w, "skill not found: "+req.Name)
 			return
 		}
 

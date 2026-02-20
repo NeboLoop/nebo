@@ -57,6 +57,7 @@
 	html {
 		font-smooth: always;
 		font-size: 18px;
+		overscroll-behavior: none;
 	}
 
 	body {
@@ -612,8 +613,12 @@
 	flex-shrink: 0;
 }
 
-.dev-grpc-req { color: oklch(var(--su)); }
-.dev-grpc-res { color: oklch(var(--in)); }
+.dev-grpc-req {
+	color: oklch(var(--su));
+}
+.dev-grpc-res {
+	color: oklch(var(--in));
+}
 
 .dev-grpc-badge {
 	font-size: 0.625rem;
@@ -623,10 +628,16 @@
 	flex-shrink: 0;
 }
 
-.dev-grpc-badge-unary { background: oklch(var(--p) / 0.15); color: oklch(var(--p)); }
+.dev-grpc-badge-unary {
+	background: oklch(var(--p) / 0.15);
+	color: oklch(var(--p));
+}
 .dev-grpc-badge-stream_recv,
 .dev-grpc-badge-stream_send,
-.dev-grpc-badge-stream_open { background: oklch(var(--a) / 0.15); color: oklch(var(--a)); }
+.dev-grpc-badge-stream_open {
+	background: oklch(var(--a) / 0.15);
+	color: oklch(var(--a));
+}
 
 .dev-grpc-method {
 	font-weight: 500;
@@ -640,7 +651,9 @@
 	flex-shrink: 0;
 }
 
-.dev-grpc-spacer { flex: 1; }
+.dev-grpc-spacer {
+	flex: 1;
+}
 
 .dev-grpc-err-badge {
 	font-size: 0.625rem;

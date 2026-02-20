@@ -2,7 +2,8 @@
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
-	import { Package, RefreshCw, Store, Download, Check, WifiOff, Star } from 'lucide-svelte';
+	import Tabs from '$lib/components/ui/Tabs.svelte';
+	import { Package, RefreshCw, Store, Download, Check, WifiOff, Star, ExternalLink } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { PluginItem, StoreApp } from '$lib/api/nebo';
 	import AppDetailModal from './AppDetailModal.svelte';
@@ -14,8 +15,17 @@
 	let isLoadingStore = $state(false);
 	let togglingPlugin = $state<string | null>(null);
 	let installingApp = $state<string | null>(null);
+	let openingApp = $state<string | null>(null);
 
-	// Modal state
+	// Tab state
+	let activeTab = $state('installed');
+
+	const mainTabs = $derived([
+		{ id: 'installed', label: 'Installed', icon: Package, badge: plugins.length || undefined },
+		{ id: 'store', label: 'App Store', icon: Store }
+	]);
+
+	// Modal state (store apps only)
 	let selectedPlugin = $state<PluginItem | null>(null);
 	let selectedStoreApp = $state<StoreApp | null>(null);
 	let showModal = $state(false);
@@ -69,6 +79,21 @@
 		}
 	}
 
+	async function handleOpenUI(event: Event, plugin: PluginItem) {
+		event.stopPropagation();
+		openingApp = plugin.id;
+		try {
+			const resp = await api.openAppUI(plugin.id);
+			if (!resp.opened && resp.url) {
+				window.open(resp.url, `nebo-app-${plugin.id}`);
+			}
+		} catch (error) {
+			console.error('Failed to open app UI:', error);
+		} finally {
+			openingApp = null;
+		}
+	}
+
 	async function handleInstall(app: StoreApp) {
 		installingApp = app.id;
 		try {
@@ -118,6 +143,10 @@
 		return (name || '?').charAt(0).toUpperCase();
 	}
 
+	function hasUI(plugin: PluginItem): boolean {
+		return plugin.capabilities?.includes('ui') ?? false;
+	}
+
 	const installedAppIds = $derived(new Set(plugins.map(p => p.name)));
 
 	function needsSetup(plugin: PluginItem): boolean {
@@ -154,169 +183,180 @@
 		</div>
 	</Card>
 {:else}
-	<!-- Installed Apps -->
-	<div class="mb-8">
-		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 mb-4">Installed Apps</h3>
+	<Tabs tabs={mainTabs} bind:activeTab variant="underline" />
 
-		{#if plugins.length > 0}
-			<div class="flex flex-col gap-3">
-				{#each plugins as plugin}
-					<Card>
-						<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-						<div
-							class="flex items-center gap-4 cursor-pointer"
-							onclick={() => openDetail(plugin)}
-						>
-							<!-- Icon -->
-							<div class="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
-								{#if plugin.icon}
-									<img src={plugin.icon} alt={plugin.displayName} class="w-8 h-8 rounded" />
-								{:else}
-									<span class="text-lg font-bold text-primary">{getInitial(plugin.displayName)}</span>
-								{/if}
-							</div>
-
-							<!-- Info -->
-							<div class="flex-1 min-w-0">
-								<div class="flex items-center gap-2 mb-0.5">
-									<h3 class="font-display font-bold text-base-content">{plugin.displayName || plugin.name}</h3>
-									<span class="badge badge-sm badge-outline">v{plugin.version}</span>
-									{#if needsSetup(plugin)}
-										<span class="badge badge-sm badge-warning">Needs Setup</span>
+	<div class="mt-4">
+		{#if activeTab === 'installed'}
+			{#if plugins.length > 0}
+				<div class="flex flex-col gap-3">
+					{#each plugins as plugin}
+						<Card>
+							<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+							<div
+								class="flex items-center gap-4 cursor-pointer"
+								onclick={() => openDetail(plugin)}
+							>
+								<!-- Icon -->
+								<div class="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+									{#if plugin.icon}
+										<img src={plugin.icon} alt={plugin.displayName} class="w-8 h-8 rounded" />
 									{:else}
-										<span class="badge badge-sm {getStatusBadgeClass(plugin.connectionStatus)}">
-											{plugin.connectionStatus}
-										</span>
+										<span class="text-lg font-bold text-primary">{getInitial(plugin.displayName)}</span>
 									{/if}
 								</div>
-								<p class="text-sm text-base-content/60 truncate">{plugin.description}</p>
-							</div>
 
-							<!-- Actions -->
-							<div class="flex items-center gap-2 shrink-0">
-								<input
-									type="checkbox"
-									class="toggle toggle-primary toggle-sm"
-									checked={plugin.isEnabled}
-									disabled={togglingPlugin === plugin.id}
-									onclick={(e) => e.stopPropagation()}
-									onchange={(e) => handleToggle(e, plugin)}
-								/>
-							</div>
-						</div>
-					</Card>
-				{/each}
-			</div>
-		{:else}
-			<Card>
-				<div class="py-12 text-center text-base-content/60">
-					<Package class="w-12 h-12 mx-auto mb-4 opacity-20" />
-					<p class="font-medium mb-2">No apps installed</p>
-					<p class="text-sm">Browse the App Store to get started.</p>
-				</div>
-			</Card>
-		{/if}
-	</div>
-
-	<!-- App Store -->
-	<div>
-		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 mb-4">App Store</h3>
-
-		{#if !neboLoopConnected}
-			<Card>
-				<div class="py-8 text-center text-base-content/60">
-					<WifiOff class="w-10 h-10 mx-auto mb-3 opacity-20" />
-					<p class="font-medium mb-2">Connect to NeboLoop to browse the App Store</p>
-					<a href="/settings/status" class="btn btn-sm btn-primary mt-2">
-						Go to Status
-					</a>
-				</div>
-			</Card>
-		{:else if isLoadingStore}
-			<Card>
-				<div class="py-8 text-center text-base-content/60">
-					<span class="loading loading-spinner loading-md"></span>
-					<p class="mt-2">Loading store...</p>
-				</div>
-			</Card>
-		{:else if storeApps.length > 0}
-			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-				{#each storeApps as app}
-					<Card class="hover:border-primary/30 transition-colors" onclick={() => openStoreDetail(app)}>
-						<div class="flex items-start gap-3">
-							<div class="w-10 h-10 rounded-xl bg-base-200 flex items-center justify-center shrink-0">
-								{#if app.icon}
-									<img src={app.icon} alt={app.name} class="w-8 h-8 rounded" />
-								{:else}
-									<Store class="w-5 h-5 text-base-content/40" />
-								{/if}
-							</div>
-							<div class="flex-1 min-w-0">
-								<h3 class="font-display font-bold text-base-content mb-0.5">{app.name}</h3>
-								<p class="text-xs text-base-content/50 mb-1">
-									by {app.author.name}
-									{#if app.author.verified}
-										<Check class="w-3 h-3 inline text-success" />
-									{/if}
-								</p>
-								<p class="text-sm text-base-content/60 mb-3 line-clamp-2">{app.description}</p>
-
-								<div class="flex items-center justify-between">
-									<div class="flex items-center gap-3 text-xs text-base-content/40">
-										{#if app.rating > 0}
-											<span class="flex items-center gap-1">
-												<Star class="w-3 h-3" />
-												{app.rating.toFixed(1)}
-											</span>
-										{/if}
-										{#if app.installCount > 0}
-											<span class="flex items-center gap-1">
-												<Download class="w-3 h-3" />
-												{app.installCount}
+								<!-- Info -->
+								<div class="flex-1 min-w-0">
+									<div class="flex items-center gap-2 mb-0.5">
+										<h3 class="font-display font-bold text-base-content">{plugin.displayName || plugin.name}</h3>
+										<span class="badge badge-sm badge-outline">v{plugin.version}</span>
+										{#if needsSetup(plugin)}
+											<span class="badge badge-sm badge-warning">Needs Setup</span>
+										{:else}
+											<span class="badge badge-sm {getStatusBadgeClass(plugin.connectionStatus)}">
+												{plugin.connectionStatus}
 											</span>
 										{/if}
 									</div>
+									<p class="text-sm text-base-content/60 truncate">{plugin.description}</p>
+								</div>
 
-									{#if app.isInstalled || installedAppIds.has(app.slug)}
-										<button
-											class="btn btn-xs btn-ghost text-success"
-											onclick={(e) => { e.stopPropagation(); handleUninstall(app); }}
-											disabled={installingApp === app.id}
-										>
-											{#if installingApp === app.id}
-												<span class="loading loading-spinner loading-xs"></span>
-											{:else}
-												<Check class="w-3 h-3" />
-												Installed
-											{/if}
-										</button>
-									{:else}
+								<!-- Actions -->
+								<div class="flex items-center gap-2 shrink-0">
+									{#if hasUI(plugin)}
 										<button
 											class="btn btn-xs btn-primary"
-											onclick={(e) => { e.stopPropagation(); handleInstall(app); }}
-											disabled={installingApp === app.id}
+											onclick={(e) => handleOpenUI(e, plugin)}
+											disabled={openingApp === plugin.id}
+											title="Open app"
 										>
-											{#if installingApp === app.id}
+											{#if openingApp === plugin.id}
 												<span class="loading loading-spinner loading-xs"></span>
 											{:else}
-												Install
+												<ExternalLink class="w-3.5 h-3.5" />
+												Open
 											{/if}
 										</button>
 									{/if}
+									<input
+										type="checkbox"
+										class="toggle toggle-primary toggle-sm"
+										checked={plugin.isEnabled}
+										disabled={togglingPlugin === plugin.id}
+										onclick={(e) => e.stopPropagation()}
+										onchange={(e) => handleToggle(e, plugin)}
+									/>
 								</div>
 							</div>
-						</div>
-					</Card>
-				{/each}
-			</div>
-		{:else}
-			<Card>
-				<div class="py-8 text-center text-base-content/60">
-					<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
-					<p class="font-medium mb-1">No apps available yet</p>
-					<p class="text-sm">Check back later for new apps.</p>
+						</Card>
+					{/each}
 				</div>
-			</Card>
+			{:else}
+				<Card>
+					<div class="py-12 text-center text-base-content/60">
+						<Package class="w-12 h-12 mx-auto mb-4 opacity-20" />
+						<p class="font-medium mb-2">No apps installed</p>
+						<p class="text-sm">Browse the App Store to get started.</p>
+					</div>
+				</Card>
+			{/if}
+		{:else if activeTab === 'store'}
+			{#if !neboLoopConnected}
+				<Card>
+					<div class="py-8 text-center text-base-content/60">
+						<WifiOff class="w-10 h-10 mx-auto mb-3 opacity-20" />
+						<p class="font-medium mb-2">Connect to NeboLoop to browse the App Store</p>
+						<a href="/settings/status" class="btn btn-sm btn-primary mt-2">
+							Go to Status
+						</a>
+					</div>
+				</Card>
+			{:else if isLoadingStore}
+				<Card>
+					<div class="py-8 text-center text-base-content/60">
+						<span class="loading loading-spinner loading-md"></span>
+						<p class="mt-2">Loading store...</p>
+					</div>
+				</Card>
+			{:else if storeApps.length > 0}
+				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+					{#each storeApps as app}
+						<Card class="hover:border-primary/30 transition-colors" onclick={() => openStoreDetail(app)}>
+							<div class="flex items-start gap-3">
+								<div class="w-10 h-10 rounded-xl bg-base-200 flex items-center justify-center shrink-0">
+									{#if app.icon}
+										<img src={app.icon} alt={app.name} class="w-8 h-8 rounded" />
+									{:else}
+										<Store class="w-5 h-5 text-base-content/40" />
+									{/if}
+								</div>
+								<div class="flex-1 min-w-0">
+									<h3 class="font-display font-bold text-base-content mb-0.5">{app.name}</h3>
+									<p class="text-xs text-base-content/50 mb-1">
+										by {app.author.name}
+										{#if app.author.verified}
+											<Check class="w-3 h-3 inline text-success" />
+										{/if}
+									</p>
+									<p class="text-sm text-base-content/60 mb-3 line-clamp-2">{app.description}</p>
+
+									<div class="flex items-center justify-between">
+										<div class="flex items-center gap-3 text-xs text-base-content/40">
+											{#if app.rating > 0}
+												<span class="flex items-center gap-1">
+													<Star class="w-3 h-3" />
+													{app.rating.toFixed(1)}
+												</span>
+											{/if}
+											{#if app.installCount > 0}
+												<span class="flex items-center gap-1">
+													<Download class="w-3 h-3" />
+													{app.installCount}
+												</span>
+											{/if}
+										</div>
+
+										{#if app.isInstalled || installedAppIds.has(app.slug)}
+											<button
+												class="btn btn-xs btn-ghost text-success"
+												onclick={(e) => { e.stopPropagation(); handleUninstall(app); }}
+												disabled={installingApp === app.id}
+											>
+												{#if installingApp === app.id}
+													<span class="loading loading-spinner loading-xs"></span>
+												{:else}
+													<Check class="w-3 h-3" />
+													Installed
+												{/if}
+											</button>
+										{:else}
+											<button
+												class="btn btn-xs btn-primary"
+												onclick={(e) => { e.stopPropagation(); handleInstall(app); }}
+												disabled={installingApp === app.id}
+											>
+												{#if installingApp === app.id}
+													<span class="loading loading-spinner loading-xs"></span>
+												{:else}
+													Install
+												{/if}
+											</button>
+										{/if}
+									</div>
+								</div>
+							</div>
+						</Card>
+					{/each}
+				</div>
+			{:else}
+				<Card>
+					<div class="py-8 text-center text-base-content/60">
+						<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
+						<p class="font-medium mb-1">No apps available yet</p>
+						<p class="text-sm">Check back later for new apps.</p>
+					</div>
+				</Card>
+			{/if}
 		{/if}
 	</div>
 {/if}

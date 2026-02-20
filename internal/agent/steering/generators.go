@@ -2,6 +2,8 @@ package steering
 
 import (
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -140,6 +142,139 @@ func (g *memoryNudge) Generate(ctx *Context) []Message {
 
 	return []Message{{
 		Content:  wrapSteering(g.Name(), tmplMemoryNudge),
+		Position: PositionEnd,
+	}}
+}
+
+// --- Generator 7: Objective Task Nudge ---
+// When an objective exists but the agent hasn't created work tasks yet,
+// nudge it to break the objective into trackable steps.
+
+type objectiveTaskNudge struct{}
+
+func (g *objectiveTaskNudge) Name() string { return "objective_task_nudge" }
+
+func (g *objectiveTaskNudge) Generate(ctx *Context) []Message {
+	if ctx.ActiveTask == "" {
+		return nil // no objective
+	}
+	if len(ctx.WorkTasks) > 0 {
+		return nil // already has tasks
+	}
+	if countAssistantTurns(ctx.Messages) < 2 {
+		return nil // too early
+	}
+	return []Message{{
+		Content:  wrapSteering(g.Name(), tmplObjectiveTaskNudge),
+		Position: PositionEnd,
+	}}
+}
+
+// --- Generator 8: Pending Task Action ---
+// When the model responds with text-only and there are pending tasks,
+// strongly nudge it to take action rather than narrate intent.
+
+type pendingTaskAction struct{}
+
+func (g *pendingTaskAction) Name() string { return "pending_task_action" }
+
+func (g *pendingTaskAction) Generate(ctx *Context) []Message {
+	if len(ctx.WorkTasks) == 0 {
+		return nil
+	}
+	// Count pending/in-progress tasks
+	pending := 0
+	for _, wt := range ctx.WorkTasks {
+		if wt.Status == "pending" || wt.Status == "in_progress" {
+			pending++
+		}
+	}
+	if pending == 0 {
+		return nil
+	}
+	// Only fire after the first iteration (text-only response despite pending tasks)
+	if ctx.Iteration < 2 {
+		return nil
+	}
+	// Don't fire if tools were used recently (model is actively working)
+	if countTurnsSinceAnyToolUse(ctx.Messages) == 0 {
+		return nil
+	}
+
+	list := formatTaskList(ctx.WorkTasks)
+	content := fmt.Sprintf(tmplPendingTaskAction, list)
+	return []Message{{
+		Content:  wrapSteering(g.Name(), content),
+		Position: PositionEnd,
+	}}
+}
+
+// --- Generator 9: Task Progress ---
+// Re-injects the work task list every 8 iterations to keep the agent on track.
+
+type taskProgress struct{}
+
+func (g *taskProgress) Name() string { return "task_progress" }
+
+func (g *taskProgress) Generate(ctx *Context) []Message {
+	if len(ctx.WorkTasks) == 0 {
+		return nil
+	}
+	if ctx.Iteration < 4 || ctx.Iteration%8 != 0 {
+		return nil
+	}
+	list := formatTaskList(ctx.WorkTasks)
+	content := fmt.Sprintf(tmplTaskProgress, list)
+	return []Message{{
+		Content:  wrapSteering(g.Name(), content),
+		Position: PositionEnd,
+	}}
+}
+
+// formatTaskList renders work tasks as a checklist.
+func formatTaskList(tasks []WorkTask) string {
+	var sb strings.Builder
+	for _, wt := range tasks {
+		icon := "[ ]"
+		switch wt.Status {
+		case "in_progress":
+			icon = "[→]"
+		case "completed":
+			icon = "[✓]"
+		}
+		sb.WriteString(fmt.Sprintf("  %s %s\n", icon, wt.Subject))
+	}
+	return sb.String()
+}
+
+// --- Generator 10: Janus Quota Warning ---
+// Warns the user when their NeboLoop Janus token budget is running low.
+
+// janusQuotaWarnedSessions tracks which sessions already received a warning.
+// Once per session — we don't want to nag every iteration.
+var janusQuotaWarnedSessions sync.Map
+
+type janusQuotaWarning struct{}
+
+func (g *janusQuotaWarning) Name() string { return "janus_quota_warning" }
+
+func (g *janusQuotaWarning) Generate(ctx *Context) []Message {
+	rl := ctx.JanusRateLimit
+	if rl == nil || rl.LimitTokens <= 0 {
+		return nil
+	}
+	ratio := float64(rl.RemainingTokens) / float64(rl.LimitTokens)
+	if ratio >= 0.20 {
+		return nil // Plenty of quota left
+	}
+	// Only warn once per session
+	if _, warned := janusQuotaWarnedSessions.LoadOrStore(ctx.SessionID, true); warned {
+		return nil
+	}
+	pctUsed := int(100 - ratio*100)
+	content := fmt.Sprintf(tmplJanusQuotaWarning, pctUsed, rl.RemainingTokens, rl.LimitTokens)
+	return []Message{{
+		Content:  wrapSteering(g.Name(), content),
 		Position: PositionEnd,
 	}}
 }

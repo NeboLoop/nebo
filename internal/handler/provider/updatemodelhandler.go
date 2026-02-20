@@ -9,6 +9,30 @@ import (
 	"github.com/neboloop/nebo/internal/types"
 )
 
+// Update CLI provider active status
+func UpdateCLIProviderHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req types.UpdateCLIProviderRequest
+		if err := httputil.Parse(r, &req); err != nil {
+			httputil.Error(w, err)
+			return
+		}
+		if req.Active == nil {
+			httputil.BadRequest(w, "active field is required")
+			return
+		}
+
+		if err := provider.SetCLIProviderActive(req.CliId, *req.Active); err != nil {
+			httputil.Error(w, err)
+			return
+		}
+
+		httputil.OkJSON(w, &types.MessageResponse{
+			Message: "CLI provider " + req.CliId + " updated",
+		})
+	}
+}
+
 // Update model settings (active, kind, preferred)
 func UpdateModelHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

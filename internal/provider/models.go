@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,6 +59,14 @@ type TaskRouting struct {
 	Fallbacks map[string][]string `yaml:"fallbacks,omitempty" json:"fallbacks,omitempty"`
 }
 
+// LaneRouting defines which models to use for background lanes
+type LaneRouting struct {
+	Heartbeat string `yaml:"heartbeat,omitempty" json:"heartbeat,omitempty"`
+	Events    string `yaml:"events,omitempty" json:"events,omitempty"`
+	Comm      string `yaml:"comm,omitempty" json:"comm,omitempty"`
+	Subagent  string `yaml:"subagent,omitempty" json:"subagent,omitempty"`
+}
+
 // Defaults defines default model selection
 type Defaults struct {
 	Primary   string   `yaml:"primary" json:"primary"`
@@ -78,6 +87,15 @@ type CLIProviderConfig struct {
 	InstallHint  string   `json:"installHint" yaml:"installHint"`
 	Models       []string `json:"models" yaml:"models"`
 	DefaultModel string   `json:"defaultModel" yaml:"defaultModel"`
+	Active       *bool    `json:"active,omitempty" yaml:"active,omitempty"` // nil = false (default off)
+}
+
+// IsActive returns whether the CLI provider is active (defaults to false)
+func (c *CLIProviderConfig) IsActive() bool {
+	if c.Active == nil {
+		return false
+	}
+	return *c.Active
 }
 
 // ModelsConfig is the YAML structure for storing provider models
@@ -88,6 +106,7 @@ type ModelsConfig struct {
 	Credentials  map[string]ProviderCredentials `yaml:"credentials,omitempty"`
 	Defaults     *Defaults                      `yaml:"defaults,omitempty"`
 	TaskRouting  *TaskRouting                   `yaml:"task_routing,omitempty"`
+	LaneRouting  *LaneRouting                   `yaml:"lane_routing,omitempty"`
 	Aliases      []ModelAlias                   `yaml:"aliases,omitempty"`
 	Providers    map[string][]ModelInfo         `yaml:"providers"`
 	CLIProviders []CLIProviderConfig            `yaml:"cli_providers,omitempty"`
@@ -251,14 +270,31 @@ func loadFromYAML() *ModelsConfig {
 		config.Providers = make(map[string][]ModelInfo)
 	}
 
-	// Merge cli_providers from embedded defaults if missing from user config.
-	// This ensures existing users who already have a models.yaml get the
-	// cli_providers section without needing to manually add it.
-	if len(config.CLIProviders) == 0 {
-		if defaultData, err := defaults.GetDefault("models.yaml"); err == nil {
-			var defaultConfig ModelsConfig
-			if err := yaml.Unmarshal(defaultData, &defaultConfig); err == nil && len(defaultConfig.CLIProviders) > 0 {
+	// Merge sections from embedded defaults if missing from user config.
+	// This ensures existing users who already have a models.yaml get new
+	// sections without needing to manually edit the file.
+	if defaultData, err := defaults.GetDefault("models.yaml"); err == nil {
+		var defaultConfig ModelsConfig
+		if err := yaml.Unmarshal(defaultData, &defaultConfig); err == nil {
+			if len(config.CLIProviders) == 0 && len(defaultConfig.CLIProviders) > 0 {
 				config.CLIProviders = defaultConfig.CLIProviders
+			}
+			// Merge janus provider models so existing users get the NeboLoop gateway
+			if _, hasJanus := config.Providers["janus"]; !hasJanus {
+				if janusModels, ok := defaultConfig.Providers["janus"]; ok {
+					config.Providers["janus"] = janusModels
+				}
+			}
+		}
+	}
+
+	// Migrate janus model IDs: strip "janus/" prefix from model IDs.
+	// Early versions of models.yaml incorrectly included the provider prefix
+	// in the ID field (e.g., "janus/janus" instead of "janus").
+	if janusModels, ok := config.Providers["janus"]; ok {
+		for i := range janusModels {
+			if after, ok := strings.CutPrefix(janusModels[i].ID, "janus/"); ok {
+				janusModels[i].ID = after
 			}
 		}
 	}
@@ -400,6 +436,25 @@ func UpdateModel(providerType, modelID string, update ModelUpdate) error {
 	return nil // Model not found, nothing to do
 }
 
+// SetCLIProviderActive sets the active status of a CLI provider
+func SetCLIProviderActive(cliID string, active bool) error {
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+
+	if modelsInstance == nil {
+		modelsInstance = loadFromYAML()
+	}
+
+	for i := range modelsInstance.CLIProviders {
+		if modelsInstance.CLIProviders[i].ID == cliID {
+			modelsInstance.CLIProviders[i].Active = &active
+			return SaveModels(modelsInstance)
+		}
+	}
+
+	return nil // CLI provider not found, nothing to do
+}
+
 // ============================================
 // CLI PROVIDER DETECTION
 // ============================================
@@ -414,6 +469,42 @@ type CLIProviderInfo struct {
 	InstallHint  string   `json:"installHint"`  // e.g., "brew install claude-code"
 	Models       []string `json:"models"`       // Available model aliases
 	DefaultModel string   `json:"defaultModel"` // Default model alias (e.g., "opus")
+	Active       bool     `json:"active"`       // Whether this CLI provider is enabled
+}
+
+// cliInstalledCache caches exec.LookPath results to avoid disk I/O on every
+// isModelAvailable() call. CLI installations don't change during a session.
+var (
+	cliInstalledCache   = make(map[string]cliInstalledEntry)
+	cliInstalledCacheMu sync.RWMutex
+	cliCacheTTL         = 5 * time.Minute
+)
+
+type cliInstalledEntry struct {
+	installed bool
+	path      string
+	checkedAt time.Time
+}
+
+// checkCLIInstalledCached returns cached exec.LookPath result, refreshing after TTL.
+func checkCLIInstalledCached(command string) (bool, string) {
+	cliInstalledCacheMu.RLock()
+	entry, ok := cliInstalledCache[command]
+	cliInstalledCacheMu.RUnlock()
+
+	if ok && time.Since(entry.checkedAt) < cliCacheTTL {
+		return entry.installed, entry.path
+	}
+
+	installed, path := CheckCLIInstalled(command)
+	cliInstalledCacheMu.Lock()
+	cliInstalledCache[command] = cliInstalledEntry{
+		installed: installed,
+		path:      path,
+		checkedAt: time.Now(),
+	}
+	cliInstalledCacheMu.Unlock()
+	return installed, path
 }
 
 // GetCLIProviders returns CLI providers from models.yaml config.
@@ -432,6 +523,7 @@ func GetCLIProviders() []CLIProviderInfo {
 			InstallHint:  c.InstallHint,
 			Models:       c.Models,
 			DefaultModel: c.DefaultModel,
+			Active:       c.IsActive(),
 		}
 	}
 	return result
@@ -440,7 +532,17 @@ func GetCLIProviders() []CLIProviderInfo {
 // KnownCLIProviders returns the hardcoded list of CLI providers Nebo supports.
 // These definitions are stable — new CLI providers are rare. The list is hardcoded
 // to avoid timing/config-loading issues that occur when reading from models.yaml.
+// Active status is read from models.yaml config if available.
 func KnownCLIProviders() []CLIProviderInfo {
+	// Build active status map from models.yaml config
+	activeMap := make(map[string]bool)
+	config := GetModelsConfig()
+	if config != nil {
+		for _, c := range config.CLIProviders {
+			activeMap[c.ID] = c.IsActive()
+		}
+	}
+
 	return []CLIProviderInfo{
 		{
 			ID:           "claude-code",
@@ -449,6 +551,7 @@ func KnownCLIProviders() []CLIProviderInfo {
 			InstallHint:  "brew install claude-code",
 			Models:       []string{"opus", "sonnet", "haiku"},
 			DefaultModel: "opus",
+			Active:       activeMap["claude-code"],
 		},
 		{
 			ID:           "codex-cli",
@@ -457,6 +560,7 @@ func KnownCLIProviders() []CLIProviderInfo {
 			InstallHint:  "npm i -g @openai/codex",
 			Models:       []string{"gpt-5.2", "o3", "o4-mini"},
 			DefaultModel: "gpt-5.2",
+			Active:       activeMap["codex-cli"],
 		},
 		{
 			ID:           "gemini-cli",
@@ -465,18 +569,22 @@ func KnownCLIProviders() []CLIProviderInfo {
 			InstallHint:  "npm i -g @google/gemini-cli",
 			Models:       []string{"gemini-3-flash", "gemini-3-pro"},
 			DefaultModel: "gemini-3-pro",
+			Active:       activeMap["gemini-cli"],
 		},
 	}
 }
 
+// knownCLIIDs is a static set of CLI provider IDs. Updated if new CLIs are added
+// to KnownCLIProviders(). Avoids rebuilding the list on every IsCLIProvider() call.
+var knownCLIIDs = map[string]bool{
+	"claude-code": true,
+	"codex-cli":   true,
+	"gemini-cli":  true,
+}
+
 // IsCLIProvider returns true if the provider ID is a CLI provider
 func IsCLIProvider(providerID string) bool {
-	for _, p := range KnownCLIProviders() {
-		if p.ID == providerID {
-			return true
-		}
-	}
-	return false
+	return knownCLIIDs[providerID]
 }
 
 // CheckCLIInstalled checks if a CLI command is available in PATH
@@ -494,7 +602,7 @@ func GetAvailableCLIProviders() []CLIProviderInfo {
 	result := make([]CLIProviderInfo, len(known))
 	for i, p := range known {
 		result[i] = p
-		result[i].Installed, result[i].Path = CheckCLIInstalled(p.Command)
+		result[i].Installed, result[i].Path = checkCLIInstalledCached(p.Command)
 	}
 	return result
 }
@@ -503,7 +611,7 @@ func GetAvailableCLIProviders() []CLIProviderInfo {
 func GetInstalledCLIProviders() []CLIProviderInfo {
 	var result []CLIProviderInfo
 	for _, p := range KnownCLIProviders() {
-		installed, path := CheckCLIInstalled(p.Command)
+		installed, path := checkCLIInstalledCached(p.Command)
 		if installed {
 			p.Installed = true
 			p.Path = path
@@ -517,7 +625,7 @@ func GetInstalledCLIProviders() []CLIProviderInfo {
 func GetCLIProviderByID(id string) *CLIProviderInfo {
 	for _, p := range KnownCLIProviders() {
 		if p.ID == id {
-			p.Installed, p.Path = CheckCLIInstalled(p.Command)
+			p.Installed, p.Path = checkCLIInstalledCached(p.Command)
 			return &p
 		}
 	}

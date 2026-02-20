@@ -481,7 +481,11 @@ func (h *Hub) readPump(agent *AgentConnection) {
 		// Parse frame
 		var frame Frame
 		if err := json.Unmarshal(message, &frame); err != nil {
-			fmt.Printf("[AgentHub] Invalid frame from %s: %v\n", agent.ID, err)
+			preview := string(message)
+			if len(preview) > 200 {
+				preview = preview[:200] + "..."
+			}
+			fmt.Printf("[AgentHub] Invalid frame from %s: %v (len=%d raw=%q)\n", agent.ID, err, len(message), preview)
 			continue
 		}
 

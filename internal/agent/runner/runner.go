@@ -19,6 +19,7 @@ import (
 	"github.com/neboloop/nebo/internal/agent/tools"
 	"github.com/neboloop/nebo/internal/crashlog"
 	"github.com/neboloop/nebo/internal/lifecycle"
+	"github.com/neboloop/nebo/internal/provider"
 )
 
 // DefaultSystemPrompt is kept as a convenience reference and for tests.
@@ -34,6 +35,7 @@ type ProviderLoaderFunc func() []ai.Provider
 type SkillProvider interface {
 	ActiveSkillContent(sessionKey string) string
 	AutoMatchSkills(sessionKey, message string) string // returns brief match hints for system prompt
+	ForceLoadSkill(sessionKey, skillName string) bool  // pre-load a skill into the session; returns true if found
 }
 
 // AppCatalogProvider returns a formatted catalog of installed apps for system prompt injection.
@@ -66,7 +68,11 @@ type Runner struct {
 	quarantine      *afv.QuarantineStore // In-memory quarantine for failed fence verification
 	steering        *steering.Pipeline   // Mid-conversation steering message generator
 	fileTracker     *FileAccessTracker   // Tracks file reads for post-compaction re-injection
-	extractingMemory sync.Map            // sessionID → true: prevents overlapping extractions
+	rateLimitStore      func(*ai.RateLimitInfo)  // Callback to publish latest rate-limit snapshot
+	extractingMemory    sync.Map          // sessionID → true: prevents overlapping extractions
+	detectingObjective  sync.Map          // sessionID → true: prevents overlapping detections
+	memoryTimers        sync.Map          // sessionID → *time.Timer: debounced extraction
+	cachedThresholds    *ContextThresholds // Cached per-run to avoid redundant model selection
 }
 
 // RunRequest contains parameters for a run
@@ -79,6 +85,7 @@ type RunRequest struct {
 	SkipMemoryExtract bool        // Skip auto memory extraction (e.g., for heartbeats)
 	Origin           tools.Origin // Source of this request (user, comm, app, skill, system)
 	Channel          string       // Source channel: "web", "cli", "telegram", "discord", "slack" (default "web")
+	ForceSkill       string       // Force-load a specific skill into the session (e.g., "introduction")
 }
 
 // modelOverrideProvider wraps a Provider to use a specific model
@@ -124,9 +131,18 @@ func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider,
 	return r
 }
 
-// SetModelSelector sets the model selector for task-based model routing
+// SetModelSelector sets the model selector for task-based model routing.
+// Also syncs loaded provider IDs to the selector so it only considers
+// models from providers that actually have loaded instances.
 func (r *Runner) SetModelSelector(selector *ai.ModelSelector) {
 	r.selector = selector
+	// Always sync loaded providers — even if empty. An empty-but-initialized
+	// map means "loading ran, found nothing" vs nil meaning "not initialized yet".
+	var allIDs []string
+	for id := range r.providerMap {
+		allIDs = append(allIDs, id)
+	}
+	selector.SetLoadedProviders(allIDs)
 }
 
 // SetFuzzyMatcher sets the fuzzy matcher for user model switch requests
@@ -192,13 +208,20 @@ func (r *Runner) SetAppCatalog(provider AppCatalogProvider) {
 	r.appCatalog = provider
 }
 
+// SetRateLimitStore sets a callback to publish rate-limit snapshots.
+// Called from agent.go to wire up svcCtx.JanusUsage.Store.
+func (r *Runner) SetRateLimitStore(fn func(*ai.RateLimitInfo)) {
+	r.rateLimitStore = fn
+}
+
 // SetProviderLoader sets the function to reload providers (for dynamic reload after onboarding)
 func (r *Runner) SetProviderLoader(loader ProviderLoaderFunc) {
 	r.providerLoader = loader
 }
 
 // ReloadProviders attempts to reload providers from the loader function.
-// Also rebuilds the providerMap so new providers (e.g., gateway apps) are routable.
+// Also rebuilds the providerMap so new providers (e.g., gateway apps) are routable,
+// and syncs runtime provider IDs to the model selector so routing honors them.
 func (r *Runner) ReloadProviders() {
 	if r.providerLoader != nil {
 		r.providers = r.providerLoader()
@@ -211,6 +234,30 @@ func (r *Runner) ReloadProviders() {
 			}
 		}
 		r.providerMap = providerMap
+
+		// Tell selector which providers are actually loaded so it only
+		// considers models from providers with real instances. This prevents
+		// phantom matches against credential placeholders in models.yaml.
+		if r.selector != nil {
+			var allIDs []string
+			var runtimeIDs []string
+			config := r.selector.GetConfig()
+			for id := range providerMap {
+				allIDs = append(allIDs, id)
+				// Runtime providers bypass credentials check (Janus, gateway apps)
+				if config != nil && config.Credentials != nil {
+					if _, hasCreds := config.Credentials[id]; hasCreds {
+						continue
+					}
+				}
+				if provider.IsCLIProvider(id) {
+					continue
+				}
+				runtimeIDs = append(runtimeIDs, id)
+			}
+			r.selector.SetLoadedProviders(allIDs)
+			r.selector.SetRuntimeProviders(runtimeIDs)
+		}
 	}
 }
 
@@ -223,9 +270,11 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 		ctx = tools.WithOrigin(ctx, req.Origin)
 	}
 
-	// If no providers, try to reload (user may have added API key via onboarding)
-	if len(r.providers) == 0 && r.providerLoader != nil {
-		r.providers = r.providerLoader()
+	// If no providers, try to reload (user may have added API key via onboarding).
+	// Must use ReloadProviders() to also rebuild providerMap and sync loadedProviders
+	// to the selector — otherwise model routing can't find the new provider.
+	if len(r.providers) == 0 {
+		r.ReloadProviders()
 	}
 	if len(r.providers) == 0 {
 		return nil, fmt.Errorf("no providers configured - please add an API key in Settings > Providers")
@@ -274,15 +323,22 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 		channel = "web"
 	}
 
+	// Background objective detection: classify user message to set/update/clear active task.
+	// Fires before runLoop so the objective is available by iteration 2+.
+	if req.Prompt != "" && len(req.Prompt) >= 20 && !req.SkipMemoryExtract {
+		go r.detectAndSetObjective(sess.ID, req.SessionKey, req.Prompt)
+	}
+
 	resultCh := make(chan ai.StreamEvent, 100)
-	go r.runLoop(ctx, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.Prompt, channel, req.SkipMemoryExtract, resultCh)
+	go r.runLoop(ctx, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.Prompt, channel, req.SkipMemoryExtract, req.ForceSkill, resultCh)
 
 	return resultCh, nil
 }
 
 // runLoop is the main agentic execution loop
-func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPrompt, modelOverride, userID, userPrompt, channel string, skipMemoryExtract bool, resultCh chan<- ai.StreamEvent) {
+func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPrompt, modelOverride, userID, userPrompt, channel string, skipMemoryExtract bool, forceSkill string, resultCh chan<- ai.StreamEvent) {
 	startTime := time.Now()
+	r.cachedThresholds = nil // Fresh thresholds for each run
 	defer func() {
 		close(resultCh)
 		// Trigger agent run complete event
@@ -350,6 +406,16 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 	var skillHints, activeSkills, appCatalog string
 	var modelAliases []string
 
+	// Force-load a skill if explicitly requested (e.g., introduction on first launch),
+	// or fall back to auto-loading introduction for users who haven't completed onboarding.
+	if r.skillProvider != nil {
+		if forceSkill != "" {
+			r.skillProvider.ForceLoadSkill(sessionKey, forceSkill)
+		} else if needsOnboarding {
+			r.skillProvider.ForceLoadSkill(sessionKey, "introduction")
+		}
+	}
+
 	if r.skillProvider != nil && userPrompt != "" {
 		skillHints = r.skillProvider.AutoMatchSkills(sessionKey, userPrompt)
 	}
@@ -365,16 +431,15 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 	// Step 5: Build the static (cacheable) system prompt
 	pctx := PromptContext{
-		AgentName:       agentName,
-		DBContext:        dbContext,
-		ContextSection:  contextSection,
-		NeedsOnboarding: needsOnboarding,
-		ToolNames:       toolNames,
-		SkillHints:      skillHints,
-		ActiveSkills:    activeSkills,
-		AppCatalog:      appCatalog,
-		ModelAliases:    modelAliases,
-		FenceStore:      fenceStore,
+		AgentName:      agentName,
+		DBContext:       dbContext,
+		ContextSection: contextSection,
+		ToolNames:      toolNames,
+		SkillHints:     skillHints,
+		ActiveSkills:   activeSkills,
+		AppCatalog:     appCatalog,
+		ModelAliases:   modelAliases,
+		FenceStore:     fenceStore,
 	}
 
 	if systemPrompt == "" {
@@ -403,7 +468,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 		fmt.Printf("[Runner] Loaded %d messages from session\n", len(messages))
 
-		// Graduated context thresholds: Warning → Error → AutoCompact → Blocking
+		// Graduated context thresholds: Warning → Error → AutoCompact
 		thresholds := r.contextThresholds()
 		estimatedTokens := estimateTokens(messages)
 
@@ -412,14 +477,18 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			fmt.Printf("[Runner] Context getting large: ~%d tokens (error threshold: %d)\n", estimatedTokens, thresholds.Error)
 		}
 
-		// AutoCompact tier: trigger full compaction
-		if estimatedTokens > thresholds.AutoCompact && !compactionAttempted {
+		// AutoCompact tier: trigger full compaction.
+		// Nebo has ONE eternal conversation — it must always be able to continue.
+		// If context exceeds the threshold, compact. If still too large after
+		// compaction, compact again more aggressively (fewer kept messages).
+		if estimatedTokens > thresholds.AutoCompact {
 			fmt.Printf("[Runner] Token limit exceeded (~%d tokens, limit: %d), compacting...\n", estimatedTokens, thresholds.AutoCompact)
-			compactionAttempted = true
 
-			// Kick off background memory flush — runs concurrently with compaction.
-			// Safe because the flush reads from the in-memory messages slice, not DB.
-			r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
+			// Only flush memory on the first compaction attempt per run
+			if !compactionAttempted {
+				r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
+			}
+			compactionAttempted = true
 
 			summary := r.generateSummary(ctx, messages)
 
@@ -439,10 +508,10 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 				// Index compacted messages for semantic search
 				if r.memoryTool != nil {
 					go func() {
-								indexCtx, indexCancel := context.WithTimeout(context.Background(), 60*time.Second)
-								defer indexCancel()
-								r.memoryTool.IndexSessionTranscript(indexCtx, sessionID, userID)
-							}()
+						indexCtx, indexCancel := context.WithTimeout(context.Background(), 60*time.Second)
+						defer indexCancel()
+						r.memoryTool.IndexSessionTranscript(indexCtx, sessionID, userID)
+					}()
 				}
 				// Reload messages after compaction
 				messages, err = r.sessions.GetMessages(sessionID, r.config.MaxContext)
@@ -458,6 +527,22 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 				newTokens := estimateTokens(messages)
 				fmt.Printf("[Runner] After compaction: %d messages, ~%d tokens\n", len(messages), newTokens)
+
+				// If STILL over threshold after standard compaction, do emergency compaction.
+				// Keep only the last 3 messages (minimum viable context).
+				if newTokens > thresholds.AutoCompact {
+					fmt.Printf("[Runner] Still over threshold after compaction (%d > %d), emergency compact...\n", newTokens, thresholds.AutoCompact)
+					if emergencyErr := r.sessions.EmergencyCompact(sessionID); emergencyErr == nil {
+						messages, err = r.sessions.GetMessages(sessionID, r.config.MaxContext)
+						if err != nil {
+							resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
+							return
+						}
+						fmt.Printf("[Runner] After emergency compaction: %d messages, ~%d tokens\n", len(messages), estimateTokens(messages))
+					} else {
+						fmt.Printf("[Runner] Emergency compaction failed: %v\n", emergencyErr)
+					}
+				}
 			} else {
 				fmt.Printf("[Runner] Compaction failed: %v\n", compactErr)
 			}
@@ -487,38 +572,40 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			if selectedModel != "" {
 				providerID, mn := ai.ParseModelID(selectedModel)
 				modelName = mn
-				// Look up provider from map
 				if p, ok := r.providerMap[providerID]; ok {
 					provider = p
-				} else {
-					// Provider not available - re-select excluding this model
-					fmt.Printf("[Runner] Provider %s not available, excluding %s and re-selecting\n", providerID, selectedModel)
-					selectedModel = r.selector.SelectWithExclusions(messages, []string{selectedModel})
-					if selectedModel != "" {
-						providerID, mn = ai.ParseModelID(selectedModel)
-						modelName = mn
-						if p, ok := r.providerMap[providerID]; ok {
-							provider = p
-						}
-					}
 				}
 			}
 		}
 
-		// Fall back to first provider if selector didn't find one
-		if provider == nil && len(r.providers) > 0 {
+		// Fall back to first provider when the selector returned nothing usable.
+		// This handles clean installs where only Janus is configured but
+		// default task routing points to anthropic/openai models.
+		if provider == nil && len(r.providers) > 0 && selectedModel == "" {
 			provider = r.providers[0]
-			modelName = "" // Use provider's default model
+			modelName = ""
 		}
 
 		if provider == nil {
-			// No API provider configured - send a friendly message to help the user
-			helpMessage := "I'm not fully set up yet! To start chatting, please configure an API key:\n\n" +
-				"1. Go to **Settings > Providers** in the web UI\n" +
-				"2. Add your API key (Anthropic, OpenAI, or Google)\n" +
-				"3. Come back here and say hello!\n\n" +
-				"Need an API key? Visit https://console.anthropic.com to create one."
-			resultCh <- ai.StreamEvent{Type: ai.EventTypeText, Text: helpMessage}
+			var errorMsg string
+			if selectedModel != "" {
+				providerID, _ := ai.ParseModelID(selectedModel)
+				fmt.Printf("[Runner] Provider %s selected but not loaded (available: %v)\n", providerID, r.getProviderIDs())
+				errorMsg = fmt.Sprintf("The model provider **%s** is configured but not available right now. "+
+					"Please check **Settings > Providers** to make sure it's connected.", providerID)
+			} else {
+				errorMsg = "I'm not fully set up yet! To start chatting, connect a provider:\n\n" +
+					"1. Go to **Settings > Providers**\n" +
+					"2. Activate a provider (Janus is the easiest — one click)\n" +
+					"3. Come back here and say hello!"
+			}
+			// Save error response to session so it survives page refresh/reload
+			_ = r.sessions.AppendMessage(sessionID, session.Message{
+				SessionID: sessionID,
+				Role:      "assistant",
+				Content:   errorMsg,
+			})
+			resultCh <- ai.StreamEvent{Type: ai.EventTypeText, Text: errorMsg}
 			resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 			return
 		}
@@ -559,7 +646,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 				fmt.Printf("[Runner] Context blocked: ~%d tokens exceeds blocking threshold %d\n", finalTokens, thresholds.Blocking)
 				resultCh <- ai.StreamEvent{
 					Type: ai.EventTypeText,
-					Text: "The conversation is too long for the current model. Please use `/session reset` to start a new session.",
+					Text: "This conversation has grown too long for the current model's context window. Please start a new session from **Settings > Sessions** or ask me to clear the current session.",
 				}
 				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 				return
@@ -568,16 +655,27 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 		// Mid-conversation steering: generate ephemeral guidance messages
 		if r.steering != nil {
+			// Gather work tasks from AgentDomainTool for steering context
+			var workTasks []steering.WorkTask
+			if agentTool := r.tools.GetAgentDomainTool(); agentTool != nil {
+				for _, wt := range agentTool.ListWorkTasks(sessionKey) {
+					workTasks = append(workTasks, steering.WorkTask{
+						ID: wt.ID, Subject: wt.Subject, Status: wt.Status,
+					})
+				}
+			}
 			steeringCtx := &steering.Context{
-				SessionID:     sessionID,
-				Messages:      truncatedMessages,
-				UserPrompt:    userPrompt,
-				ActiveTask:    activeTask,
-				Channel:       channel,
-				AgentName:     agentName,
-				Iteration:     iteration,
-				JustCompacted: compactionAttempted,
-				RunStartTime:  startTime,
+				SessionID:      sessionID,
+				Messages:       truncatedMessages,
+				UserPrompt:     userPrompt,
+				ActiveTask:     activeTask,
+				Channel:        channel,
+				AgentName:      agentName,
+				Iteration:      iteration,
+				JustCompacted:  compactionAttempted,
+				RunStartTime:   startTime,
+				WorkTasks:      workTasks,
+				JanusRateLimit: r.latestRateLimit(provider),
 			}
 			if steeringMsgs := r.steering.Generate(steeringCtx); len(steeringMsgs) > 0 {
 				truncatedMessages = steering.Inject(truncatedMessages, steeringMsgs)
@@ -616,10 +714,13 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			}
 		}
 
+		// Always send all registered tools — never filter by skill restrictions
+		chatTools := r.tools.List()
+
 		// Build chat request
 		chatReq := &ai.ChatRequest{
 			Messages: truncatedMessages,
-			Tools:    r.tools.List(),
+			Tools:    chatTools,
 			System:   enrichedPrompt,
 			Model:    modelName,
 		}
@@ -681,7 +782,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 				fmt.Printf("[Runner] Context overflow after compaction attempt\n")
 				resultCh <- ai.StreamEvent{
 					Type: ai.EventTypeText,
-					Text: "⚠️ Context overflow: prompt too large for this model. Try again with less input or use `/session reset` to start fresh.",
+					Text: "Context overflow — the prompt is too large for this model. Please start a new session from **Settings > Sessions** or ask me to clear the current session.",
 				}
 				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 				return
@@ -702,7 +803,9 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			}
 			// Record error for profile tracking - generic error case
 			r.recordProfileError(ctx, provider, err)
-			resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
+			errMsg := extractProviderErrorMessage(err)
+			resultCh <- ai.StreamEvent{Type: ai.EventTypeText, Text: errMsg}
+			resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 			return
 		}
 
@@ -733,14 +836,27 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 			case ai.EventTypeError:
 				fmt.Printf("[Runner] Error event received: %v\n", event.Error)
+				// Send user-visible error message so the chat doesn't just hang
+				errMsg := extractProviderErrorMessage(event.Error)
+				resultCh <- ai.StreamEvent{Type: ai.EventTypeText, Text: errMsg}
+				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 				return
 
 			case ai.EventTypeMessage:
 				// Save intermediate messages from CLI provider's internal agentic loop
 				// Only save if the message has actual content (not empty envelopes)
 				if event.Message != nil && (event.Message.Content != "" || len(event.Message.ToolCalls) > 0 || len(event.Message.ToolResults) > 0) {
-					event.Message.SessionID = sessionID
-					if err := r.sessions.AppendMessage(sessionID, *event.Message); err != nil {
+					msg := *event.Message
+					msg.SessionID = sessionID
+
+					// Normalize: Anthropic CLI wraps tool results in "user" messages,
+					// but the universal format uses "tool" role. Convert so sessions
+					// work correctly when replayed through any provider adapter.
+					if msg.Role == "user" && msg.Content == "" && len(msg.ToolResults) > 0 {
+						msg.Role = "tool"
+					}
+
+					if err := r.sessions.AppendMessage(sessionID, msg); err != nil {
 						fmt.Printf("[Runner] ERROR saving intermediate message: %v\n", err)
 					}
 					// NOTE: Do NOT accumulate into assistantContent here.
@@ -750,6 +866,9 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			}
 		}
 		fmt.Printf("[Runner] Stream complete: %d events, %d tool calls\n", eventCount, len(toolCalls))
+
+		// Capture rate-limit info from Janus responses (every iteration)
+		r.captureRateLimit(provider)
 
 		// Save assistant message (always save unless empty)
 		// Skip if provider handles tools — messages were already saved via EventTypeMessage
@@ -826,13 +945,15 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			// Fall through to done - provider already completed its agentic loop
 		}
 
-		// No tool calls (or text-only response) - task is complete
+		// No tool calls — task is complete
 		// Record successful usage for profile tracking
 		r.recordProfileUsage(ctx, provider)
 
-		// Run memory extraction in background (skip for heartbeats and other non-conversation sessions)
+		// Debounced memory extraction: wait for conversation to go idle before
+		// hitting the API. Each new message resets the timer so extraction never
+		// competes with chat requests for API bandwidth.
 		if !skipMemoryExtract {
-			go r.extractAndStoreMemories(sessionID, userID)
+			r.scheduleMemoryExtraction(sessionID, userID)
 		}
 		resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 		return
@@ -1033,6 +1154,23 @@ func truncateToolArgs(args string) string {
 
 // extractTaskFromSummary parses the "Current Task" line from a structured compaction summary.
 // The summary follows the compactionSummaryPrompt format where point #1 is "Current Task".
+// extractProviderErrorMessage turns a provider error into a user-visible message.
+// Parses known Janus/OpenAI error formats to extract a clean message.
+func extractProviderErrorMessage(err error) string {
+	msg := err.Error()
+
+	// Try to extract "message" from JSON error body
+	// e.g. {"code":"provider_error","message":"Usage limit exceeded: ...","type":"server_error"}
+	if idx := strings.Index(msg, `"message":"`); idx != -1 {
+		start := idx + len(`"message":"`)
+		if end := strings.Index(msg[start:], `"`); end != -1 {
+			msg = msg[start : start+end]
+		}
+	}
+
+	return fmt.Sprintf("Something went wrong: %s", msg)
+}
+
 func extractTaskFromSummary(summary string) string {
 	lines := strings.Split(summary, "\n")
 	inTaskSection := false
@@ -1148,6 +1286,171 @@ func (r *Runner) Chat(ctx context.Context, prompt string) (string, error) {
 	}
 
 	return result.String(), nil
+}
+
+// detectAndSetObjective runs in background to classify a user message and
+// set/update/clear the session's active_task. This keeps the agent anchored
+// to a working objective even after many tool calls push the original message
+// out of the context window.
+//
+// Same pattern as extractAndStoreMemories: sync.Map dedup, cheapest model,
+// panic recovery, generous timeout.
+func (r *Runner) detectAndSetObjective(sessionID, sessionKey, userPrompt string) {
+	// Prevent overlapping detections for the same session
+	if _, running := r.detectingObjective.LoadOrStore(sessionID, true); running {
+		return
+	}
+	defer r.detectingObjective.Delete(sessionID)
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			crashlog.LogPanic("runner", rec, map[string]string{"op": "objective_detection", "session": sessionID})
+		}
+	}()
+
+	if len(r.providers) == 0 {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Read current objective
+	currentObjective, _ := r.sessions.GetActiveTask(sessionID)
+
+	// Build classification prompt
+	objDisplay := currentObjective
+	if objDisplay == "" {
+		objDisplay = "none"
+	}
+	classifyPrompt := fmt.Sprintf(`Classify this user message relative to the current working objective.
+
+Current objective: %s
+User message: %s
+
+Respond with ONLY one JSON line, no markdown:
+{"action": "set", "objective": "concise 1-sentence objective"}
+OR {"action": "update", "objective": "refined objective"}
+OR {"action": "clear"}
+OR {"action": "keep"}
+
+Rules:
+- "set": User stated a new, distinct objective (e.g., "let's build X", "create Y", "fix Z")
+- "update": User is refining or adding to the current objective (e.g., "also add tests", "and make it async")
+- "clear": User is done or moving on without a new goal (e.g., "thanks", "looks good", "never mind")
+- "keep": No change needed (questions, feedback, corrections, short replies)
+- If the message is short (<15 words) and conversational, use "keep"
+- If unsure, use "keep"`, objDisplay, userPrompt)
+
+	// Get cheapest model
+	var provider ai.Provider
+	var modelName string
+	if r.selector != nil {
+		cheapest := r.selector.GetCheapestModel()
+		if cheapest != "" {
+			provID, mName := ai.ParseModelID(cheapest)
+			if p, ok := r.providerMap[provID]; ok {
+				provider = &modelOverrideProvider{Provider: p, model: mName}
+				modelName = mName
+			}
+		}
+	}
+	if provider == nil && len(r.providers) > 0 {
+		provider = r.providers[0]
+		modelName = "default"
+	}
+	if provider == nil {
+		return
+	}
+
+	// Make LLM call
+	streamCh, err := provider.Stream(ctx, &ai.ChatRequest{
+		Messages: []session.Message{{Role: "user", Content: classifyPrompt}},
+		Model:    modelName,
+	})
+	if err != nil {
+		fmt.Printf("[runner] Objective detection failed (stream): %v\n", err)
+		return
+	}
+
+	// Collect response
+	var resp strings.Builder
+	for event := range streamCh {
+		if event.Type == ai.EventTypeText {
+			resp.WriteString(event.Text)
+		}
+		if event.Type == ai.EventTypeError {
+			fmt.Printf("[runner] Objective detection failed (event): %v\n", event.Error)
+			return
+		}
+	}
+
+	// Parse JSON response
+	respText := strings.TrimSpace(resp.String())
+	// Strip markdown code fences if present
+	respText = strings.TrimPrefix(respText, "```json")
+	respText = strings.TrimPrefix(respText, "```")
+	respText = strings.TrimSuffix(respText, "```")
+	respText = strings.TrimSpace(respText)
+
+	var result struct {
+		Action    string `json:"action"`
+		Objective string `json:"objective"`
+	}
+	if err := json.Unmarshal([]byte(respText), &result); err != nil {
+		fmt.Printf("[runner] Objective detection failed (parse): %v response=%q\n", err, respText)
+		return
+	}
+
+	switch result.Action {
+	case "set":
+		if result.Objective != "" {
+			fmt.Printf("[runner] Objective detection: SET → %s\n", result.Objective)
+			if err := r.sessions.SetActiveTask(sessionID, result.Objective); err != nil {
+				fmt.Printf("[runner] Objective detection: SetActiveTask failed: %v\n", err)
+			}
+			// Clear work tasks — new objective means fresh task list
+			if agentTool := r.tools.GetAgentDomainTool(); agentTool != nil {
+				agentTool.ClearWorkTasks(sessionKey)
+			}
+		}
+	case "update":
+		if result.Objective != "" {
+			fmt.Printf("[runner] Objective detection: UPDATE → %s\n", result.Objective)
+			if err := r.sessions.SetActiveTask(sessionID, result.Objective); err != nil {
+				fmt.Printf("[runner] Objective detection: SetActiveTask failed: %v\n", err)
+			}
+		}
+	case "clear":
+		fmt.Printf("[runner] Objective detection: CLEAR\n")
+		_ = r.sessions.ClearActiveTask(sessionID)
+		if agentTool := r.tools.GetAgentDomainTool(); agentTool != nil {
+			agentTool.ClearWorkTasks(sessionKey)
+		}
+	case "keep":
+		// No change
+	default:
+		fmt.Printf("[runner] Objective detection: unknown action=%q\n", result.Action)
+	}
+}
+
+// scheduleMemoryExtraction debounces memory extraction for a session.
+// Each call resets the idle timer so extraction only runs when the
+// conversation pauses. This prevents background API calls from competing
+// with chat requests for provider bandwidth.
+func (r *Runner) scheduleMemoryExtraction(sessionID, userID string) {
+	const idleDelay = 5 * time.Second
+
+	// Cancel any pending timer for this session
+	if existing, ok := r.memoryTimers.Load(sessionID); ok {
+		existing.(*time.Timer).Stop()
+	}
+
+	timer := time.AfterFunc(idleDelay, func() {
+		r.memoryTimers.Delete(sessionID)
+		r.extractAndStoreMemories(sessionID, userID)
+	})
+	r.memoryTimers.Store(sessionID, timer)
 }
 
 // extractAndStoreMemories runs in background to extract facts from a completed conversation
@@ -1506,6 +1809,30 @@ func (r *Runner) recordProfileError(ctx context.Context, provider ai.Provider, e
 	}
 }
 
+// captureRateLimit checks if the provider implements RateLimitProvider and
+// stores the latest snapshot via the configured callback.
+func (r *Runner) captureRateLimit(provider ai.Provider) {
+	if r.rateLimitStore == nil {
+		return
+	}
+	// Unwrap ProfiledProvider if needed
+	rlp, ok := provider.(ai.RateLimitProvider)
+	if !ok {
+		return
+	}
+	if rl := rlp.GetRateLimit(); rl != nil {
+		r.rateLimitStore(rl)
+	}
+}
+
+// latestRateLimit returns the latest rate-limit info from the current provider, or nil.
+func (r *Runner) latestRateLimit(provider ai.Provider) *ai.RateLimitInfo {
+	if rlp, ok := provider.(ai.RateLimitProvider); ok {
+		return rlp.GetRateLimit()
+	}
+	return nil
+}
+
 // estimateTokens estimates the token count for a slice of messages.
 // Uses a simple heuristic: ~4 characters per token (works for most models).
 func estimateTokens(messages []session.Message) int {
@@ -1551,26 +1878,48 @@ type ContextThresholds struct {
 }
 
 // contextThresholds computes graduated context thresholds from the active model's
-// context window. Falls back to defaults when model info is unavailable.
+// context window. Caches the result for the duration of a run since the context
+// window doesn't change mid-conversation.
 func (r *Runner) contextThresholds() ContextThresholds {
+	if r.cachedThresholds != nil {
+		return *r.cachedThresholds
+	}
+
 	contextWindow := 0
 	if r.selector != nil {
-		modelID := r.selector.Select(nil)
-		if modelID != "" {
-			info := r.selector.GetModelInfo(modelID)
-			if info != nil && info.ContextWindow > 0 {
-				contextWindow = info.ContextWindow
+		// Try the actual provider being used first (not just the routing default).
+		// For Janus users, routing may point to anthropic/claude-* which isn't loaded,
+		// but the actual provider (janus/janus) has a known context window.
+		for _, p := range r.providers {
+			providerID := p.ID()
+			models := r.selector.GetProviderModels(providerID)
+			for _, m := range models {
+				if m.ContextWindow > contextWindow {
+					contextWindow = m.ContextWindow
+				}
+			}
+		}
+		// Fall back to selector's routing default if no provider models found
+		if contextWindow == 0 {
+			modelID := r.selector.Select(nil)
+			if modelID != "" {
+				info := r.selector.GetModelInfo(modelID)
+				if info != nil && info.ContextWindow > 0 {
+					contextWindow = info.ContextWindow
+				}
 			}
 		}
 	}
 
 	if contextWindow <= 0 {
-		return ContextThresholds{
+		result := ContextThresholds{
 			Warning:     DefaultContextTokenLimit - WarningOffset,
 			Error:       DefaultContextTokenLimit - ErrorOffset,
 			AutoCompact: DefaultContextTokenLimit,
 			Blocking:    DefaultContextTokenLimit - DefaultMaxOutputTokens,
 		}
+		r.cachedThresholds = &result
+		return result
 	}
 
 	// Reserve tokens for system prompt, tool definitions
@@ -1602,12 +1951,14 @@ func (r *Runner) contextThresholds() ContextThresholds {
 		autoCompact = maxAutoCompact
 	}
 
-	return ContextThresholds{
+	result := ContextThresholds{
 		Warning:     warning,
 		Error:       errorT,
 		AutoCompact: autoCompact,
 		Blocking:    blocking,
 	}
+	r.cachedThresholds = &result
+	return result
 }
 
 // contextTokenLimit returns the max tokens before proactive compaction triggers.

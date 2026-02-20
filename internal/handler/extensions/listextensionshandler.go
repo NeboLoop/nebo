@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	bundled "github.com/neboloop/nebo/extensions"
 	"github.com/neboloop/nebo/internal/agent/skills"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/logging"
@@ -44,11 +45,10 @@ func ListExtensionsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 		resp.Tools = append(resp.Tools, builtinTools...)
 
-		// Load bundled skills from extensions/skills
+		// Load bundled skills from embedded filesystem
 		skillsByName := make(map[string]types.ExtensionSkill)
-		skillsDir := filepath.Join(extensionsDir, "skills")
-		bundledLoader := skills.NewLoader(skillsDir)
-		if err := bundledLoader.LoadAll(); err != nil {
+		bundledLoader := skills.NewLoader("")
+		if err := bundledLoader.LoadFromEmbedFS(bundled.BundledSkills, "skills"); err != nil {
 			logging.Errorf("Failed to load bundled skills: %v", err)
 		} else {
 			for _, skill := range bundledLoader.List() {

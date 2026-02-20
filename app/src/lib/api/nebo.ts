@@ -180,18 +180,17 @@ export function getAppOAuthConnectUrl(appId: string, provider: string): string {
 }
 
 /**
- * @description "Get u i view"
+ * @description "App static"
  */
-export function getUIView(id: string) {
-	return webapi.get<components.UIView>(`/api/v1/apps/${id}/ui`)
+export function appStatic(id: string) {
+	return webapi.get<components.MessageResponse>(`/api/v1/apps/${id}/ui/*`)
 }
 
 /**
- * @description "Send u i event"
- * @param req
+ * @description "Open app u i"
  */
-export function sendUIEvent(req: components.SendUIEventRequest, id: string) {
-	return webapi.post<components.SendUIEventResponse>(`/api/v1/apps/${id}/ui/event`, req)
+export function openAppUI(id: string) {
+	return webapi.post<components.OpenAppUIResponse>(`/api/v1/apps/${id}/ui/open`)
 }
 
 /**
@@ -567,6 +566,14 @@ export function listModels() {
 }
 
 /**
+ * @description "Update c l i provider"
+ * @param req
+ */
+export function updateCLIProvider(req: components.UpdateCLIProviderRequest, cliId: string) {
+	return webapi.put<components.MessageResponse>(`/api/v1/models/cli/${cliId}`, req)
+}
+
+/**
  * @description "Update model config"
  * @param req
  */
@@ -610,6 +617,13 @@ export function neboLoopAccountStatus() {
  */
 export function neboLoopConnect(req: components.NeboLoopConnectRequest) {
 	return webapi.post<components.NeboLoopConnectResponse>(`/api/v1/neboloop/connect`, req)
+}
+
+/**
+ * @description "Nebo loop janus usage"
+ */
+export function neboLoopJanusUsage() {
+	return webapi.get<components.NeboLoopJanusUsageResponse>(`/api/v1/neboloop/janus/usage`)
 }
 
 /**

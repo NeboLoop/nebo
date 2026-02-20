@@ -104,6 +104,9 @@ func applyDefaults(c *Config) {
 	if c.NeboLoop.JanusURL == "" {
 		c.NeboLoop.JanusURL = "https://janus.neboloop.com"
 	}
+	if c.NeboLoop.CommsURL == "" {
+		c.NeboLoop.CommsURL = "wss://comms.neboloop.com/ws"
+	}
 }
 
 // parseBool parses a string as boolean with a default value.
@@ -180,6 +183,7 @@ type Config struct {
 		Enabled  string `yaml:"Enabled"`
 		ApiURL   string `yaml:"ApiURL"`
 		JanusURL string `yaml:"JanusURL"`
+		CommsURL string `yaml:"CommsURL"`
 	} `yaml:"NeboLoop"`
 	AppOAuth map[string]AppOAuthProviderConfig `yaml:"AppOAuth"`
 }

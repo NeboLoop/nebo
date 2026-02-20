@@ -36,8 +36,6 @@ defaults:
   # Fallback chain (tried in order if primary fails)
   fallbacks:
     - anthropic/claude-haiku-4-5-20251001
-    - claude-code/sonnet # Falls back to CLI if API fails
-    - gemini-cli # Free fallback with 1M context
 
 # Task-based model routing
 # Automatically selects the best model based on the task type
@@ -74,7 +72,7 @@ providers:
         input: 5.0
         output: 25.0
         cachedInput: 0.50
-      active: true
+      active: false
     - id: claude-sonnet-4-5-20250929
       displayName: Claude Sonnet 4.5
       contextWindow: 200000
@@ -83,7 +81,7 @@ providers:
         input: 3.0
         output: 15.0
         cachedInput: 0.30
-      active: true
+      active: false
     - id: claude-haiku-4-5-20251001
       displayName: Claude Haiku 4.5
       contextWindow: 200000
@@ -92,7 +90,7 @@ providers:
         input: 1.0
         output: 5.0
         cachedInput: 0.10
-      active: true
+      active: false
 
   openai:
     - id: gpt-5.3-codex
@@ -102,32 +100,32 @@ providers:
       pricing:
         input: 1.75
         output: 14.0
-      active: true
+      active: false
     - id: gpt-5.2
       displayName: GPT-5.2
       contextWindow: 400000
       capabilities: [vision, tools, streaming, code, reasoning]
-      active: true
+      active: false
     - id: gpt-5.2-pro
       displayName: GPT-5.2 Pro
       contextWindow: 400000
       capabilities: [vision, tools, streaming, code, reasoning]
-      active: true
+      active: false
     - id: gpt-5
       displayName: GPT-5
       contextWindow: 196000
       capabilities: [vision, tools, streaming, code, thinking]
-      active: true
+      active: false
     - id: gpt-5-nano
       displayName: GPT-5 Nano
       contextWindow: 128000
       capabilities: [vision, tools, streaming, code]
-      active: true
+      active: false
     - id: codex-mini-latest
       displayName: Codex
       contextWindow: 256000
       capabilities: [tools, streaming, code, reasoning]
-      active: true
+      active: false
 
   google:
     - id: gemini-3-flash
@@ -137,7 +135,7 @@ providers:
       pricing:
         input: 0.10
         output: 0.40
-      active: true
+      active: false
     - id: gemini-3-pro
       displayName: Gemini 3 Pro
       contextWindow: 1000000
@@ -145,7 +143,7 @@ providers:
       pricing:
         input: 1.25
         output: 5.00
-      active: true
+      active: false
     - id: gemini-3-deep-think
       displayName: Gemini 3 Deep Think
       contextWindow: 1000000
@@ -153,25 +151,35 @@ providers:
       pricing:
         input: 2.50
         output: 10.00
-      active: true
+      active: false
 
   deepseek:
     - id: deepseek-chat
       displayName: DeepSeek Chat
       contextWindow: 128000
       capabilities: [tools, streaming, code]
-      active: true
+      active: false
     - id: deepseek-reasoner
       displayName: DeepSeek Reasoner
       contextWindow: 128000
       capabilities: [reasoning, code]
-      active: true
+      active: false
 
   janus:
-    - id: janus/janus
+    - id: janus
       displayName: Janus
       contextWindow: 200000
       capabilities: [vision, tools, streaming, code, reasoning]
+      active: true
+    - id: text-embedding-small
+      displayName: Janus Embeddings (Small)
+      contextWindow: 8191
+      capabilities: [embeddings]
+      active: true
+    - id: text-embedding-large
+      displayName: Janus Embeddings (Large)
+      contextWindow: 8191
+      capabilities: [embeddings]
       active: true
 
   ollama:
@@ -179,27 +187,27 @@ providers:
       displayName: Qwen 3 4B
       contextWindow: 128000
       capabilities: [streaming, tools, code, reasoning]
-      active: true
+      active: false
     - id: qwen3
       displayName: Qwen 3
       contextWindow: 128000
       capabilities: [streaming, tools, code, reasoning]
-      active: true
+      active: false
     - id: qwen3:8b
       displayName: Qwen 3 8B
       contextWindow: 128000
       capabilities: [streaming, tools, code, reasoning]
-      active: true
+      active: false
     - id: mistral-small
       displayName: Mistral Small 3
       contextWindow: 128000
       capabilities: [streaming, tools, code]
-      active: true
+      active: false
     - id: deepseek-r1
       displayName: DeepSeek R1
       contextWindow: 128000
       capabilities: [streaming, reasoning, code]
-      active: true
+      active: false
 
 # ============================================
 # CLI PROVIDERS (no API key required)
@@ -215,15 +223,18 @@ cli_providers:
     installHint: brew install claude-code
     models: [opus, sonnet, haiku]
     defaultModel: opus
+    active: false
   - id: codex-cli
     displayName: OpenAI Codex CLI
     command: codex
     installHint: npm i -g @openai/codex
-    models: [gpt-5.2, o3, o4-mini]
-    defaultModel: gpt-5.2
+    models: [gpt-5.3-codex, gpt-5.2-codex, gpt-5.2]
+    defaultModel: gpt-5.3-codex
+    active: false
   - id: gemini-cli
     displayName: Gemini CLI
     command: gemini
     installHint: npm i -g @google/gemini-cli
     models: [gemini-3-flash, gemini-3-pro]
     defaultModel: gemini-3-pro
+    active: false

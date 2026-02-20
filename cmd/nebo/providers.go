@@ -24,8 +24,8 @@ func SetSharedDB(db *sql.DB) {
 	sharedDB = db
 }
 
-// Janus URL for NeboLoop provider (set from config, default for production)
-var sharedJanusURL = "https://janus.neboloop.com"
+// Janus URL for NeboLoop provider (set from config via SetJanusURL)
+var sharedJanusURL string
 
 // SetJanusURL overrides the Janus gateway URL (e.g. for local dev)
 func SetJanusURL(url string) {
@@ -126,33 +126,22 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 		}
 	}
 
-	// Add CLI providers when configured as primary in models.yaml
-	modelsConfig := provider.GetModelsConfig()
-	if modelsConfig != nil && modelsConfig.Defaults != nil {
-		primary := modelsConfig.Defaults.Primary
-		// Extract provider ID from "provider/model" format
-		providerID := primary
-		if idx := strings.Index(primary, "/"); idx >= 0 {
-			providerID = primary[:idx]
+	// Add active CLI providers
+	for _, cli := range provider.KnownCLIProviders() {
+		if !cli.Active || !cli.Installed {
+			continue
 		}
-		// Check if the primary is a CLI provider (defined in models.yaml cli_providers)
-		if cli := provider.GetCLIProviderByID(providerID); cli != nil {
-			if cli.Installed {
-				switch cli.Command {
-				case "claude":
-					providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns, 0))
-				case "codex":
-					providers = append(providers, ai.NewCodexCLIProvider())
-				case "gemini":
-					providers = append(providers, ai.NewGeminiCLIProvider())
-				default:
-					providers = append(providers, ai.NewCLIProvider(cli.ID, cli.Command, nil))
-				}
-				fmt.Printf("[Providers] Added %s CLI provider (primary: %s)\n", cli.DisplayName, primary)
-			} else {
-				fmt.Printf("[Providers] Warning: %s not found in PATH (primary: %s)\n", cli.Command, primary)
-			}
+		switch cli.Command {
+		case "claude":
+			providers = append(providers, ai.NewClaudeCodeProvider(cfg.MaxTurns, 0))
+		case "codex":
+			providers = append(providers, ai.NewCodexCLIProvider())
+		case "gemini":
+			providers = append(providers, ai.NewGeminiCLIProvider())
+		default:
+			providers = append(providers, ai.NewCLIProvider(cli.ID, cli.Command, nil))
 		}
+		fmt.Printf("[Providers] Added %s CLI provider\n", cli.DisplayName)
 	}
 
 	if len(providers) == 0 {
@@ -187,7 +176,7 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 	ctx := context.Background()
 
 	// Load anthropic profiles
-	if profiles, err := mgr.ListActiveProfiles(ctx, "anthropic"); err == nil {
+	if profiles, err := mgr.ListAllActiveProfiles(ctx, "anthropic"); err == nil {
 		fmt.Printf("[Providers] Found %d anthropic profiles\n", len(profiles))
 		for _, p := range profiles {
 			if p.APIKey != "" {
@@ -206,7 +195,7 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 	}
 
 	// Load openai profiles
-	if profiles, err := mgr.ListActiveProfiles(ctx, "openai"); err == nil {
+	if profiles, err := mgr.ListAllActiveProfiles(ctx, "openai"); err == nil {
 		fmt.Printf("[Providers] Found %d openai profiles\n", len(profiles))
 		for _, p := range profiles {
 			if p.APIKey != "" {
@@ -225,7 +214,7 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 	}
 
 	// Load google/gemini profiles
-	if profiles, err := mgr.ListActiveProfiles(ctx, "google"); err == nil {
+	if profiles, err := mgr.ListAllActiveProfiles(ctx, "google"); err == nil {
 		fmt.Printf("[Providers] Found %d google profiles\n", len(profiles))
 		for _, p := range profiles {
 			if p.APIKey != "" {
@@ -244,7 +233,7 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 	}
 
 	// Load ollama profiles
-	if profiles, err := mgr.ListActiveProfiles(ctx, "ollama"); err == nil {
+	if profiles, err := mgr.ListAllActiveProfiles(ctx, "ollama"); err == nil {
 		fmt.Printf("[Providers] Found %d ollama profiles\n", len(profiles))
 		for _, p := range profiles {
 			baseURL := p.BaseURL
@@ -270,20 +259,41 @@ func loadProvidersFromDB(db *sql.DB) []ai.Provider {
 		fmt.Printf("[Providers] Error loading ollama profiles: %v\n", err)
 	}
 
-	// Load neboloop/janus provider (direct to Janus OpenAI-compatible endpoint)
-	if profiles, err := mgr.ListActiveProfiles(ctx, "neboloop"); err == nil {
+	// Load neboloop/janus provider — only when the user explicitly opted in.
+	// A neboloop auth profile always exists for comms/app store, but it should
+	// only create a Janus AI provider when metadata has janus_provider=true.
+	if profiles, err := mgr.ListAllActiveProfiles(ctx, "neboloop"); err == nil {
 		fmt.Printf("[Providers] Found %d neboloop profiles\n", len(profiles))
+
+		// Read bot_id for X-Bot-ID header (required by Janus for per-bot billing)
+		var botID string
+		if db != nil {
+			_ = db.QueryRowContext(ctx,
+				`SELECT ps.setting_value FROM plugin_settings ps
+				 JOIN plugin_registry pr ON pr.id = ps.plugin_id
+				 WHERE pr.name = 'neboloop' AND ps.setting_key = 'bot_id'`,
+			).Scan(&botID)
+		}
+
 		for _, p := range profiles {
-			if p.APIKey != "" && sharedJanusURL != "" {
-				model := provider.GetDefaultModel("janus")
-				if model == "" {
-					model = "janus/janus"
-				}
-				baseProvider := ai.NewOpenAIProvider(p.APIKey, model, sharedJanusURL+"/v1")
-				baseProvider.SetProviderID("janus")
-				providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
-				fmt.Printf("[Providers] Loaded Janus provider: %s (model: %s, baseURL: %s, profileID: %s)\n", p.Name, model, sharedJanusURL, p.ID)
+			if p.APIKey == "" || sharedJanusURL == "" {
+				continue
 			}
+			if p.Metadata["janus_provider"] != "true" {
+				fmt.Printf("[Providers] Skipping Janus for neboloop profile %s (janus_provider not enabled)\n", p.Name)
+				continue
+			}
+			model := provider.GetDefaultModel("janus")
+			if model == "" {
+				model = "janus"
+			}
+			baseProvider := ai.NewOpenAIProvider(p.APIKey, model, sharedJanusURL+"/v1")
+			baseProvider.SetProviderID("janus")
+			if botID != "" {
+				baseProvider.SetBotID(botID)
+			}
+			providers = append(providers, ai.NewProfiledProvider(baseProvider, p.ID))
+			fmt.Printf("[Providers] Loaded Janus provider: %s (model: %s, baseURL: %s, botID: %s, profileID: %s)\n", p.Name, model, sharedJanusURL, botID, p.ID)
 		}
 	} else {
 		fmt.Printf("[Providers] Error loading neboloop profiles: %v\n", err)
@@ -333,6 +343,42 @@ func loadToolPermissions(sqlDB *sql.DB) map[string]bool {
 	// Empty map means no permissions set yet — register all tools
 	if len(permissions) == 0 {
 		return nil
+	}
+
+	// Migrate old defaults: if the only enabled permission is "chat" and all others
+	// are false, the user likely went through onboarding with the old restrictive
+	// defaults. Upgrade to the new sensible defaults.
+	onlyChat := true
+	for key, val := range permissions {
+		if key != "chat" && val {
+			onlyChat = false
+			break
+		}
+	}
+	if onlyChat && permissions["chat"] {
+		fmt.Println("[Permissions] Detected old defaults (only chat enabled) — upgrading to sensible defaults")
+		permissions["file"] = true
+		permissions["web"] = true
+		permissions["desktop"] = true
+		permissions["system"] = true
+		// Persist the upgrade so it doesn't run again
+		if data, err := json.Marshal(permissions); err == nil {
+			_ = queries.UpdateToolPermissions(context.Background(), db.UpdateToolPermissionsParams{
+				ToolPermissions: sql.NullString{String: string(data), Valid: true},
+				UserID:          "default-user",
+			})
+		}
+	}
+
+	// Backfill any missing keys from the current defaults (handles future additions)
+	defaults := map[string]bool{
+		"chat": true, "file": true, "shell": false, "web": true,
+		"contacts": false, "desktop": true, "media": false, "system": true,
+	}
+	for key, defVal := range defaults {
+		if _, exists := permissions[key]; !exists {
+			permissions[key] = defVal
+		}
 	}
 
 	fmt.Printf("[Permissions] Loaded tool permissions: %v\n", permissions)

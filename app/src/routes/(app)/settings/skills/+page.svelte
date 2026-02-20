@@ -2,8 +2,12 @@
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
 	import SkillEditorModal from '$lib/components/skills/SkillEditorModal.svelte';
-	import { Zap, RefreshCw, Power, Store, Download, Check, WifiOff, Star, Plus, Pencil, Trash2 } from 'lucide-svelte';
+	import {
+		Zap, RefreshCw, Power, Store, Download, Check, Star, Plus, Pencil, Trash2,
+		Wrench, Tag, FileText, Hash, FolderOpen, Loader2
+	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { ExtensionSkill, StoreSkill } from '$lib/api/nebo';
 
@@ -18,6 +22,9 @@
 
 	let showEditor = $state(false);
 	let editingSkill = $state<ExtensionSkill | null>(null);
+
+	let selectedSkill = $state<ExtensionSkill | null>(null);
+	let showDetail = $state(false);
 
 	onMount(async () => {
 		await loadAll();
@@ -60,6 +67,10 @@
 		try {
 			await api.toggleSkill(name);
 			await loadAll();
+			// Update the selected skill in the detail modal if open
+			if (selectedSkill?.name === name) {
+				selectedSkill = skills.find(s => s.name === name) || null;
+			}
 		} catch (error) {
 			console.error('Failed to toggle skill:', error);
 		} finally {
@@ -72,6 +83,8 @@
 		deletingSkill = skill.name;
 		try {
 			await api.deleteSkill(skill.name);
+			showDetail = false;
+			selectedSkill = null;
 			await loadAll();
 		} catch (error) {
 			console.error('Failed to delete skill:', error);
@@ -86,8 +99,14 @@
 	}
 
 	function openEdit(skill: ExtensionSkill) {
+		showDetail = false;
 		editingSkill = skill;
 		showEditor = true;
+	}
+
+	function openDetail(skill: ExtensionSkill) {
+		selectedSkill = skill;
+		showDetail = true;
 	}
 
 	async function handleInstall(skill: StoreSkill) {
@@ -140,84 +159,34 @@
 		</div>
 	</Card>
 {:else}
-	<!-- Local Skills -->
+	<!-- Installed Skills -->
 	<div class="mb-8">
 		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 mb-4">Installed Skills</h3>
 
 		{#if skills.length > 0}
-			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
 				{#each skills as skill}
-					<Card class="hover:border-primary/30 transition-colors">
-						<div class="flex items-start gap-3">
-							<div class="w-10 h-10 rounded-xl {skill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
-								<Zap class="w-5 h-5 {skill.enabled ? 'text-primary' : 'text-base-content/30'}" />
+					<button
+						type="button"
+						class="group text-left rounded-xl bg-base-100 p-4 shadow-sm ring-1 ring-base-content/5 transition-all hover:shadow-md hover:ring-primary/20 {!skill.enabled ? 'opacity-60' : ''}"
+						onclick={() => openDetail(skill)}
+					>
+						<div class="flex items-center gap-3 mb-2">
+							<div class="w-9 h-9 rounded-lg {skill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
+								<Zap class="w-4.5 h-4.5 {skill.enabled ? 'text-primary' : 'text-base-content/30'}" />
 							</div>
 							<div class="flex-1 min-w-0">
-								<div class="flex items-center justify-between gap-2 mb-1">
-									<div class="flex items-center gap-2">
-										<h3 class="font-display font-bold text-base-content">{skill.name}</h3>
-										<span class="badge badge-sm badge-outline">v{skill.version}</span>
-										{#if skill.source === 'bundled'}
-											<span class="badge badge-sm badge-ghost">Bundled</span>
-										{/if}
-									</div>
-									<div class="flex items-center gap-1">
-										{#if skill.editable}
-											<button
-												class="btn btn-xs btn-ghost text-base-content/40 hover:text-primary"
-												onclick={() => openEdit(skill)}
-												title="Edit skill"
-											>
-												<Pencil class="w-3.5 h-3.5" />
-											</button>
-											<button
-												class="btn btn-xs btn-ghost text-base-content/40 hover:text-error"
-												onclick={() => handleDelete(skill)}
-												disabled={deletingSkill === skill.name}
-												title="Delete skill"
-											>
-												{#if deletingSkill === skill.name}
-													<span class="loading loading-spinner loading-xs"></span>
-												{:else}
-													<Trash2 class="w-3.5 h-3.5" />
-												{/if}
-											</button>
-										{/if}
-										<button
-											class="btn btn-xs btn-ghost {skill.enabled ? 'text-success' : 'text-base-content/40'}"
-											onclick={() => handleToggle(skill.name)}
-											disabled={togglingSkill === skill.name}
-											title={skill.enabled ? 'Click to disable' : 'Click to enable'}
-										>
-											{#if togglingSkill === skill.name}
-												<span class="loading loading-spinner loading-xs"></span>
-											{:else}
-												<Power class="w-4 h-4" />
-											{/if}
-										</button>
-									</div>
+								<div class="flex items-center gap-2">
+									<span class="font-display font-bold text-sm text-base-content truncate">{skill.name}</span>
+									<span class="text-[10px] text-base-content/40 tabular-nums">v{skill.version}</span>
 								</div>
-								<p class="text-sm text-base-content/60 mb-2 {!skill.enabled ? 'opacity-50' : ''}">{skill.description}</p>
-
-								{#if skill.tags && skill.tags.length > 0}
-									<div class="flex flex-wrap gap-1 mb-2 {!skill.enabled ? 'opacity-50' : ''}">
-										{#each skill.tags.slice(0, 3) as tag}
-											<span class="badge badge-sm badge-outline">{tag}</span>
-										{/each}
-										{#if skill.tags.length > 3}
-											<span class="badge badge-sm badge-ghost">+{skill.tags.length - 3}</span>
-										{/if}
-									</div>
-								{/if}
-
-								{#if skill.tools && skill.tools.length > 0}
-									<div class="text-xs text-base-content/50 {!skill.enabled ? 'opacity-50' : ''}">
-										Uses: {skill.tools.join(', ')}
-									</div>
-								{/if}
 							</div>
+							{#if skill.source === 'bundled'}
+								<span class="text-[10px] font-medium uppercase tracking-wide text-base-content/30">Bundled</span>
+							{/if}
 						</div>
-					</Card>
+						<p class="text-xs text-base-content/50 line-clamp-2 leading-relaxed">{skill.description}</p>
+					</button>
 				{/each}
 			</div>
 		{:else}
@@ -244,73 +213,71 @@
 					</div>
 				</Card>
 			{:else if storeSkills.length > 0}
-				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
 					{#each storeSkills as skill}
-						<Card class="hover:border-primary/30 transition-colors">
-							<div class="flex items-start gap-3">
-								<div class="w-10 h-10 rounded-xl bg-base-200 flex items-center justify-center shrink-0">
+						<div class="rounded-xl bg-base-100 p-4 shadow-sm ring-1 ring-base-content/5 transition-all hover:shadow-md hover:ring-primary/20">
+							<div class="flex items-center gap-3 mb-2">
+								<div class="w-9 h-9 rounded-lg bg-base-200 flex items-center justify-center shrink-0 overflow-hidden">
 									{#if skill.icon}
-										<img src={skill.icon} alt={skill.name} class="w-8 h-8 rounded" />
+										<img src={skill.icon} alt={skill.name} class="w-9 h-9 rounded-lg object-cover" />
 									{:else}
-										<Store class="w-5 h-5 text-base-content/40" />
+										<Store class="w-4.5 h-4.5 text-base-content/40" />
 									{/if}
 								</div>
 								<div class="flex-1 min-w-0">
-									<h3 class="font-display font-bold text-base-content mb-0.5">{skill.name}</h3>
-									<p class="text-xs text-base-content/50 mb-1">
+									<span class="font-display font-bold text-sm text-base-content truncate block">{skill.name}</span>
+									<span class="text-[10px] text-base-content/40">
 										by {skill.author.name}
 										{#if skill.author.verified}
-											<Check class="w-3 h-3 inline text-success" />
+											<Check class="w-2.5 h-2.5 inline text-success" />
 										{/if}
-									</p>
-									<p class="text-sm text-base-content/60 mb-3 line-clamp-2">{skill.description}</p>
-
-									<div class="flex items-center justify-between">
-										<div class="flex items-center gap-3 text-xs text-base-content/40">
-											{#if skill.rating > 0}
-												<span class="flex items-center gap-1">
-													<Star class="w-3 h-3" />
-													{skill.rating.toFixed(1)}
-												</span>
-											{/if}
-											{#if skill.installCount > 0}
-												<span class="flex items-center gap-1">
-													<Download class="w-3 h-3" />
-													{skill.installCount}
-												</span>
-											{/if}
-										</div>
-
-										{#if skill.isInstalled}
-											<button
-												class="btn btn-xs btn-ghost text-success"
-												onclick={() => handleUninstall(skill)}
-												disabled={installingSkill === skill.id}
-											>
-												{#if installingSkill === skill.id}
-													<span class="loading loading-spinner loading-xs"></span>
-												{:else}
-													<Check class="w-3 h-3" />
-													Installed
-												{/if}
-											</button>
-										{:else}
-											<button
-												class="btn btn-xs btn-primary"
-												onclick={() => handleInstall(skill)}
-												disabled={installingSkill === skill.id}
-											>
-												{#if installingSkill === skill.id}
-													<span class="loading loading-spinner loading-xs"></span>
-												{:else}
-													Install
-												{/if}
-											</button>
-										{/if}
-									</div>
+									</span>
 								</div>
 							</div>
-						</Card>
+							<p class="text-xs text-base-content/50 line-clamp-2 leading-relaxed mb-3">{skill.description}</p>
+							<div class="flex items-center justify-between">
+								<div class="flex items-center gap-3 text-[10px] text-base-content/30">
+									{#if skill.rating > 0}
+										<span class="flex items-center gap-0.5">
+											<Star class="w-3 h-3" />
+											{skill.rating.toFixed(1)}
+										</span>
+									{/if}
+									{#if skill.installCount > 0}
+										<span class="flex items-center gap-0.5">
+											<Download class="w-3 h-3" />
+											{skill.installCount}
+										</span>
+									{/if}
+								</div>
+								{#if skill.isInstalled}
+									<button
+										class="btn btn-xs btn-ghost text-success gap-1"
+										onclick={() => handleUninstall(skill)}
+										disabled={installingSkill === skill.id}
+									>
+										{#if installingSkill === skill.id}
+											<span class="loading loading-spinner loading-xs"></span>
+										{:else}
+											<Check class="w-3 h-3" />
+											Installed
+										{/if}
+									</button>
+								{:else}
+									<button
+										class="btn btn-xs btn-primary gap-1"
+										onclick={() => handleInstall(skill)}
+										disabled={installingSkill === skill.id}
+									>
+										{#if installingSkill === skill.id}
+											<span class="loading loading-spinner loading-xs"></span>
+										{:else}
+											Install
+										{/if}
+									</button>
+								{/if}
+							</div>
+						</div>
 					{/each}
 				</div>
 			{:else}
@@ -324,6 +291,123 @@
 			{/if}
 		</div>
 	{/if}
+{/if}
+
+<!-- Skill Detail Modal -->
+{#if selectedSkill}
+	<Modal bind:show={showDetail} title={selectedSkill.name} size="md" onclose={() => { showDetail = false; }}>
+		<div class="flex flex-col gap-5">
+			<!-- Header with icon and status -->
+			<div class="flex items-center gap-4">
+				<div class="w-14 h-14 rounded-2xl {selectedSkill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
+					<Zap class="w-7 h-7 {selectedSkill.enabled ? 'text-primary' : 'text-base-content/30'}" />
+				</div>
+				<div class="flex-1 min-w-0">
+					<div class="flex items-center gap-2 mb-1">
+						<span class="text-xs text-base-content/40 tabular-nums">v{selectedSkill.version}</span>
+						{#if selectedSkill.source === 'bundled'}
+							<span class="badge badge-xs badge-ghost">Bundled</span>
+						{/if}
+						<span class="badge badge-xs {selectedSkill.enabled ? 'badge-success' : 'badge-ghost'}">
+							{selectedSkill.enabled ? 'Enabled' : 'Disabled'}
+						</span>
+					</div>
+					<p class="text-sm text-base-content/60 leading-relaxed">{selectedSkill.description}</p>
+				</div>
+			</div>
+
+			<!-- Metadata rows -->
+			<div class="divide-y divide-base-200 rounded-xl bg-base-200/30 overflow-hidden">
+				{#if selectedSkill.tools && selectedSkill.tools.length > 0}
+					<div class="flex items-center gap-3 px-4 py-3">
+						<Wrench class="w-4 h-4 text-base-content/40 shrink-0" />
+						<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Tools</span>
+						<div class="flex flex-wrap gap-1.5">
+							{#each selectedSkill.tools as tool}
+								<span class="badge badge-sm badge-outline">{tool}</span>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				{#if selectedSkill.tags && selectedSkill.tags.length > 0}
+					<div class="flex items-center gap-3 px-4 py-3">
+						<Tag class="w-4 h-4 text-base-content/40 shrink-0" />
+						<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Tags</span>
+						<div class="flex flex-wrap gap-1.5">
+							{#each selectedSkill.tags as tag}
+								<span class="badge badge-sm badge-ghost">{tag}</span>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				{#if selectedSkill.dependencies && selectedSkill.dependencies.length > 0}
+					<div class="flex items-center gap-3 px-4 py-3">
+						<FileText class="w-4 h-4 text-base-content/40 shrink-0" />
+						<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Deps</span>
+						<div class="flex flex-wrap gap-1.5">
+							{#each selectedSkill.dependencies as dep}
+								<span class="badge badge-sm badge-outline">{dep}</span>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<div class="flex items-center gap-3 px-4 py-3">
+					<Hash class="w-4 h-4 text-base-content/40 shrink-0" />
+					<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Priority</span>
+					<span class="text-sm text-base-content/70">{selectedSkill.priority}</span>
+				</div>
+
+				<div class="flex items-center gap-3 px-4 py-3">
+					<FolderOpen class="w-4 h-4 text-base-content/40 shrink-0" />
+					<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Source</span>
+					<span class="text-sm text-base-content/70 truncate">{selectedSkill.filePath || selectedSkill.source}</span>
+				</div>
+			</div>
+		</div>
+
+		{#snippet footer()}
+			<div class="flex items-center justify-between w-full">
+				<div class="flex items-center gap-2">
+					{#if selectedSkill.editable}
+						<button
+							class="btn btn-sm btn-ghost gap-1.5 text-base-content/60 hover:text-primary"
+							onclick={() => openEdit(selectedSkill)}
+						>
+							<Pencil class="w-3.5 h-3.5" />
+							Edit
+						</button>
+						<button
+							class="btn btn-sm btn-ghost gap-1.5 text-base-content/60 hover:text-error"
+							onclick={() => handleDelete(selectedSkill)}
+							disabled={deletingSkill === selectedSkill.name}
+						>
+							{#if deletingSkill === selectedSkill.name}
+								<Loader2 class="w-3.5 h-3.5 animate-spin" />
+							{:else}
+								<Trash2 class="w-3.5 h-3.5" />
+							{/if}
+							Delete
+						</button>
+					{/if}
+				</div>
+				<button
+					class="btn btn-sm {selectedSkill.enabled ? 'btn-outline btn-success' : 'btn-primary'} gap-1.5"
+					onclick={() => handleToggle(selectedSkill.name)}
+					disabled={togglingSkill === selectedSkill.name}
+				>
+					{#if togglingSkill === selectedSkill.name}
+						<Loader2 class="w-3.5 h-3.5 animate-spin" />
+					{:else}
+						<Power class="w-3.5 h-3.5" />
+					{/if}
+					{selectedSkill.enabled ? 'Enabled' : 'Enable'}
+				</button>
+			</div>
+		{/snippet}
+	</Modal>
 {/if}
 
 <SkillEditorModal

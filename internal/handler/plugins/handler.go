@@ -583,8 +583,8 @@ func NeboLoopConnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		// Resolve API server: existing setting → default
-		apiServer := neboloop.DefaultAPIServer
+		// Resolve API server: existing setting → config default
+		apiServer := svcCtx.Config.NeboLoop.ApiURL
 		settings, err := svcCtx.PluginStore.GetSettingsByName(r.Context(), "neboloop")
 		if err == nil && settings["api_server"] != "" {
 			apiServer = settings["api_server"]

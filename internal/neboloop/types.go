@@ -159,12 +159,85 @@ type RedeemCodeResponse struct {
 }
 
 // --------------------------------------------------------------------------
+// Loop Channel Types
+// --------------------------------------------------------------------------
+
+// LoopChannel describes a channel the bot belongs to within a Loop.
+type LoopChannel struct {
+	ChannelID      string `json:"channel_id"`
+	ChannelName    string `json:"channel_name"`
+	LoopID         string `json:"loop_id"`
+	LoopName       string `json:"loop_name"`
+	ConversationID string `json:"conversation_id"`
+}
+
+// LoopChannelsResponse is the wrapper returned by GET /api/v1/bots/{id}/channels.
+type LoopChannelsResponse struct {
+	Channels []LoopChannel `json:"channels"`
+}
+
+// --------------------------------------------------------------------------
+// Loop Query Types (Bot Query System)
+// --------------------------------------------------------------------------
+
+// Loop describes a loop the bot belongs to.
+type Loop struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MemberCount int    `json:"member_count,omitempty"`
+}
+
+// LoopsResponse is returned by GET /api/v1/bots/{id}/loops.
+type LoopsResponse struct {
+	Loops []Loop `json:"loops"`
+}
+
+// LoopMember describes a member in a loop with online presence.
+type LoopMember struct {
+	BotID    string `json:"bot_id"`
+	BotName  string `json:"bot_name,omitempty"`
+	IsOnline bool   `json:"is_online"`
+}
+
+// LoopMembersResponse is returned by GET /api/v1/bots/{id}/loops/{loopID}/members.
+type LoopMembersResponse struct {
+	Members []LoopMember `json:"members"`
+}
+
+// ChannelMember describes a member in a channel with online presence.
+type ChannelMember struct {
+	BotID    string `json:"bot_id"`
+	BotName  string `json:"bot_name,omitempty"`
+	IsOnline bool   `json:"is_online"`
+}
+
+// ChannelMembersResponse is returned by GET /api/v1/bots/{id}/channels/{channelID}/members.
+type ChannelMembersResponse struct {
+	Members []ChannelMember `json:"members"`
+}
+
+// ChannelMessageItem is a message from channel history (REST, not wire format).
+type ChannelMessageItem struct {
+	ID        string `json:"id"`
+	From      string `json:"from"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ChannelMessagesResponse is returned by GET /api/v1/bots/{id}/channels/{channelID}/messages.
+type ChannelMessagesResponse struct {
+	Messages []ChannelMessageItem `json:"messages"`
+}
+
+// --------------------------------------------------------------------------
 // Loop Invite Types
 // --------------------------------------------------------------------------
 
 // JoinLoopRequest is sent to POST /api/v1/loops/join.
 type JoinLoopRequest struct {
-	InviteCode string `json:"invite_code"`
+	Code  string `json:"code"`
+	BotID string `json:"bot_id"`
 }
 
 // JoinLoopResponse is returned by POST /api/v1/loops/join.

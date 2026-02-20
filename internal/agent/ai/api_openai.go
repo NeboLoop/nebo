@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -11,34 +15,94 @@ import (
 	"github.com/openai/openai-go/shared"
 
 	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/agenthub"
 )
+
+// RateLimitInfo holds parsed rate-limit headers from a provider response.
+type RateLimitInfo struct {
+	LimitTokens     int64
+	RemainingTokens int64
+	ResetAt         time.Time
+	UpdatedAt       time.Time
+}
 
 // OpenAIProvider implements the OpenAI API using the official SDK
 type OpenAIProvider struct {
 	client     openai.Client
 	model      string
 	providerID string // custom ID override (e.g. "janus" for NeboLoop)
+	botID      string // X-Bot-ID header for Janus per-bot billing
+
+	rateLimitMu sync.RWMutex
+	rateLimit   *RateLimitInfo
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
 // Optional baseURL overrides the API endpoint for OpenAI-compatible services.
 // Model should be provided from models.yaml config - do NOT hardcode model IDs
 func NewOpenAIProvider(apiKey, model string, baseURL ...string) *OpenAIProvider {
-	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	p := &OpenAIProvider{
+		model: model,
+	}
+	opts := []option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithMiddleware(p.captureRateLimitHeaders),
+	}
 	if len(baseURL) > 0 && baseURL[0] != "" {
 		opts = append(opts, option.WithBaseURL(baseURL[0]))
 	}
-	client := openai.NewClient(opts...)
-	return &OpenAIProvider{
-		client: client,
-		model:  model,
+	p.client = openai.NewClient(opts...)
+	return p
+}
+
+// captureRateLimitHeaders intercepts HTTP responses to extract X-RateLimit-* headers.
+func (p *OpenAIProvider) captureRateLimitHeaders(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+	resp, err := next(req)
+	if err != nil || resp == nil {
+		return resp, err
 	}
+	limitStr := resp.Header.Get("X-RateLimit-Limit-Tokens")
+	if limitStr == "" {
+		return resp, err
+	}
+	limit, _ := strconv.ParseInt(limitStr, 10, 64)
+	remaining, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Remaining-Tokens"), 10, 64)
+	var resetAt time.Time
+	if resetStr := resp.Header.Get("X-RateLimit-Reset"); resetStr != "" {
+		resetAt, _ = time.Parse(time.RFC3339, resetStr)
+	}
+	if limit > 0 {
+		info := &RateLimitInfo{
+			LimitTokens:     limit,
+			RemainingTokens: remaining,
+			ResetAt:         resetAt,
+			UpdatedAt:       time.Now(),
+		}
+		p.rateLimitMu.Lock()
+		p.rateLimit = info
+		p.rateLimitMu.Unlock()
+		fmt.Printf("[OpenAI] Rate limit: %d/%d tokens, reset %s\n", remaining, limit, resetAt.Format(time.RFC3339))
+	}
+	return resp, err
+}
+
+// GetRateLimit returns the latest rate-limit info, or nil if not yet received.
+func (p *OpenAIProvider) GetRateLimit() *RateLimitInfo {
+	p.rateLimitMu.RLock()
+	defer p.rateLimitMu.RUnlock()
+	return p.rateLimit
 }
 
 // SetProviderID overrides the provider ID (default "openai").
 // Used for OpenAI-compatible providers like Janus/NeboLoop.
 func (p *OpenAIProvider) SetProviderID(id string) {
 	p.providerID = id
+}
+
+// SetBotID sets the bot ID sent as X-Bot-ID header on every request.
+// Required for Janus per-bot billing.
+func (p *OpenAIProvider) SetBotID(botID string) {
+	p.botID = botID
 }
 
 // ID returns the provider identifier
@@ -107,8 +171,17 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 	fmt.Printf("[OpenAI] Sending request: model=%s messages=%d tools=%d\n",
 		model, len(messages), len(req.Tools))
 
-	// Create streaming request
-	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
+	// Create streaming request (with per-request options like X-Bot-ID for Janus)
+	var reqOpts []option.RequestOption
+	if p.botID != "" {
+		reqOpts = append(reqOpts, option.WithHeader("X-Bot-ID", p.botID))
+	}
+	if p.providerID == "janus" {
+		if lane := agenthub.GetLane(ctx); lane != "" {
+			reqOpts = append(reqOpts, option.WithHeader("X-Lane", lane))
+		}
+	}
+	stream := p.client.Chat.Completions.NewStreaming(ctx, params, reqOpts...)
 
 	events := make(chan StreamEvent, 100)
 	go p.handleStream(stream, events)
@@ -132,17 +205,19 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 	}
 
 	var result []openai.ChatCompletionMessageParamUnion
+	skippedOrphans := 0
+	skippedEmpty := 0
 
 	// Add system message if provided
 	if req.System != "" {
 		result = append(result, openai.SystemMessage(req.System))
 	}
 
-	for i, msg := range req.Messages {
+	for _, msg := range req.Messages {
 		switch msg.Role {
 		case "user":
 			if msg.Content == "" {
-				fmt.Printf("[OpenAI] Skipping empty user message at index %d\n", i)
+				skippedEmpty++
 				continue
 			}
 			result = append(result, openai.UserMessage(msg.Content))
@@ -155,9 +230,8 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 				var tcs []session.ToolCall
 				if err := json.Unmarshal(msg.ToolCalls, &tcs); err == nil {
 					for _, tc := range tcs {
-						// Only include tool calls that have responses
 						if !respondedToolIDs[tc.ID] {
-							fmt.Printf("[OpenAI] Skipping tool_call without response: %s\n", tc.ID)
+							skippedOrphans++
 							continue
 						}
 						toolCalls = append(toolCalls, openai.ChatCompletionMessageToolCallParam{
@@ -197,12 +271,10 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 			}
 
 		case "tool":
-			// Tool results
 			if len(msg.ToolResults) > 0 {
 				var results []session.ToolResult
 				if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
 					for _, r := range results {
-						// Only include results for tool calls we kept
 						if respondedToolIDs[r.ToolCallID] {
 							result = append(result, openai.ToolMessage(r.Content, r.ToolCallID))
 						}
@@ -212,11 +284,15 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 
 		case "system":
 			if msg.Content == "" {
-				fmt.Printf("[OpenAI] Skipping empty system message at index %d\n", i)
+				skippedEmpty++
 				continue
 			}
 			result = append(result, openai.SystemMessage(msg.Content))
 		}
+	}
+
+	if skippedOrphans > 0 || skippedEmpty > 0 {
+		fmt.Printf("[OpenAI] Cleaned history: stripped %d orphaned tool calls, %d empty messages\n", skippedOrphans, skippedEmpty)
 	}
 
 	return result, nil
@@ -225,15 +301,35 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 // handleStream processes the streaming response
 func (p *OpenAIProvider) handleStream(stream *ssestream.Stream[openai.ChatCompletionChunk], events chan<- StreamEvent) {
 	defer close(events)
+	defer stream.Close()
 
 	acc := openai.ChatCompletionAccumulator{}
 	chunkCount := 0
 	textChunks := 0
+	finishedClean := false // true when we saw finish_reason and broke early
 	emittedToolCalls := make(map[string]bool)
+	seenToolName := make(map[int64]bool) // track which tool indices already have a name
 
 	for stream.Next() {
 		chunk := stream.Current()
 		chunkCount++
+
+		// Prevent tool name duplication: some gateways (e.g. Janus) send the
+		// tool name in every chunk. The SDK accumulator concatenates names, so
+		// "agent" x4 becomes "agentagentagentagent". Clear repeated names.
+		if len(chunk.Choices) > 0 {
+			for i := range chunk.Choices[0].Delta.ToolCalls {
+				idx := chunk.Choices[0].Delta.ToolCalls[i].Index
+				if chunk.Choices[0].Delta.ToolCalls[i].Function.Name != "" {
+					if seenToolName[idx] {
+						chunk.Choices[0].Delta.ToolCalls[i].Function.Name = ""
+					} else {
+						seenToolName[idx] = true
+					}
+				}
+			}
+		}
+
 		acc.AddChunk(chunk)
 
 		// Log first chunk for debugging (shows finish_reason, model echo, etc.)
@@ -265,14 +361,18 @@ func (p *OpenAIProvider) handleStream(stream *ssestream.Stream[openai.ChatComple
 			}
 		}
 
-		// Log non-text chunks that have a finish reason (e.g. "stop", "length", "content_filter")
+		// Check for terminal finish reason — stop waiting for more chunks.
+		// Some gateways (e.g., Janus) don't send the SSE [DONE] sentinel after
+		// finish_reason, causing stream.Next() to block until TCP timeout (~120s).
 		if len(chunk.Choices) > 0 && chunk.Choices[0].FinishReason != "" {
 			fmt.Printf("[OpenAI] Stream finish_reason=%s (after %d text chunks)\n",
 				chunk.Choices[0].FinishReason, textChunks)
+			finishedClean = true
+			break
 		}
 	}
 
-	if err := stream.Err(); err != nil {
+	if err := stream.Err(); err != nil && !finishedClean {
 		fmt.Printf("[OpenAI] Stream error: %v\n", err)
 		events <- StreamEvent{
 			Type:  EventTypeError,

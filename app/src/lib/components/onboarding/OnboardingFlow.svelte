@@ -20,7 +20,7 @@
 		ChevronDown
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
-	import { neboLoopOAuthStart, neboLoopOAuthStatus, neboLoopAccountStatus } from '$lib/api';
+	import { neboLoopOAuthStartWithJanus, neboLoopOAuthStatus, neboLoopAccountStatus } from '$lib/api';
 	import type * as components from '$lib/api/neboComponents';
 	import Button from '$lib/components/ui/Button.svelte';
 
@@ -51,13 +51,13 @@
 	// Capabilities
 	let permissions = $state<Record<string, boolean>>({
 		chat: true,
-		file: false,
+		file: true,
 		shell: false,
-		web: false,
+		web: true,
 		contacts: false,
-		desktop: false,
+		desktop: true,
 		media: false,
-		system: false
+		system: true
 	});
 	let isSavingPermissions = $state(false);
 
@@ -304,7 +304,7 @@
 		neboLoopError = '';
 		neboLoopLoading = true;
 		try {
-			const { state } = await neboLoopOAuthStart();
+			const { state } = await neboLoopOAuthStartWithJanus(cameFromJanus);
 			neboLoopPendingState = state;
 
 			// Auto-timeout after 3 minutes

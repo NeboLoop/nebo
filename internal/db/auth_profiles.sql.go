@@ -199,8 +199,64 @@ ORDER BY
     error_count ASC
 `
 
+// Returns active profiles NOT on cooldown - for request-level profile selection.
 func (q *Queries) ListActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error) {
 	rows, err := q.db.QueryContext(ctx, listActiveAuthProfilesByProvider, provider)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuthProfile
+	for rows.Next() {
+		var i AuthProfile
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Provider,
+			&i.ApiKey,
+			&i.Model,
+			&i.BaseUrl,
+			&i.Priority,
+			&i.IsActive,
+			&i.CooldownUntil,
+			&i.LastUsedAt,
+			&i.UsageCount,
+			&i.ErrorCount,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AuthType,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllActiveAuthProfilesByProvider = `-- name: ListAllActiveAuthProfilesByProvider :many
+SELECT id, name, provider, api_key, model, base_url, priority, is_active, cooldown_until, last_used_at, usage_count, error_count, metadata, created_at, updated_at, auth_type FROM auth_profiles
+WHERE provider = ? AND is_active = 1
+ORDER BY
+    CASE COALESCE(auth_type, 'api_key')
+        WHEN 'oauth' THEN 0
+        WHEN 'token' THEN 1
+        WHEN 'api_key' THEN 2
+        ELSE 3
+    END ASC,
+    priority DESC
+`
+
+// Returns ALL active profiles regardless of cooldown - for provider loading.
+// Cooldown affects request routing, not provider existence.
+func (q *Queries) ListAllActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error) {
+	rows, err := q.db.QueryContext(ctx, listAllActiveAuthProfilesByProvider, provider)
 	if err != nil {
 		return nil, err
 	}

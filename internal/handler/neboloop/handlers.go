@@ -71,7 +71,7 @@ func NeboLoopRegisterHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		// Store the credentials in auth_profiles
-		if err := storeNeboLoopProfile(r.Context(), svcCtx.DB, svcCtx.Config.NeboLoop.ApiURL, upstream.ID, upstream.Email, upstream.Token, ""); err != nil {
+		if err := storeNeboLoopProfile(r.Context(), svcCtx.DB, svcCtx.Config.NeboLoop.ApiURL, upstream.ID, upstream.Email, upstream.Token, "", false); err != nil {
 			fmt.Printf("[NeboLoop] Warning: failed to store profile: %v\n", err)
 		}
 
@@ -135,7 +135,7 @@ func NeboLoopLoginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		// Store the credentials in auth_profiles
-		if err := storeNeboLoopProfile(r.Context(), svcCtx.DB, svcCtx.Config.NeboLoop.ApiURL, upstream.ID, upstream.Email, upstream.Token, ""); err != nil {
+		if err := storeNeboLoopProfile(r.Context(), svcCtx.DB, svcCtx.Config.NeboLoop.ApiURL, upstream.ID, upstream.Email, upstream.Token, "", false); err != nil {
 			fmt.Printf("[NeboLoop] Warning: failed to store profile: %v\n", err)
 		}
 
@@ -161,7 +161,7 @@ func NeboLoopAccountStatusHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
-		profiles, err := svcCtx.DB.ListActiveAuthProfilesByProvider(ctx, "neboloop")
+		profiles, err := svcCtx.DB.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
 		if err != nil || len(profiles) == 0 {
 			httputil.OkJSON(w, types.NeboLoopAccountStatusResponse{Connected: false})
 			return
@@ -175,10 +175,12 @@ func NeboLoopAccountStatusHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		httputil.OkJSON(w, types.NeboLoopAccountStatusResponse{
-			Connected:   true,
-			OwnerID:     metadata["owner_id"],
-			Email:       metadata["email"],
-			DisplayName: profile.Name,
+			Connected:     true,
+			JanusProvider: metadata["janus_provider"] == "true",
+			ProfileID:     profile.ID,
+			OwnerID:       metadata["owner_id"],
+			Email:         metadata["email"],
+			DisplayName:   profile.Name,
 		})
 	}
 }
@@ -188,7 +190,7 @@ func NeboLoopDisconnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		profiles, err := svcCtx.DB.ListActiveAuthProfilesByProvider(ctx, "neboloop")
+		profiles, err := svcCtx.DB.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
 		if err != nil {
 			httputil.Error(w, fmt.Errorf("failed to list profiles: %w", err))
 			return
@@ -221,18 +223,67 @@ func NeboLoopDisconnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
+// NeboLoopJanusUsageHandler returns the current Janus token usage from in-memory rate-limit data.
+func NeboLoopJanusUsageHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rl := svcCtx.JanusUsage.Load()
+		if rl == nil {
+			httputil.OkJSON(w, types.NeboLoopJanusUsageResponse{})
+			return
+		}
+		used := rl.LimitTokens - rl.RemainingTokens
+		pct := 0
+		if rl.LimitTokens > 0 {
+			pct = int(float64(used) / float64(rl.LimitTokens) * 100)
+		}
+		resetAt := ""
+		if !rl.ResetAt.IsZero() {
+			resetAt = rl.ResetAt.Format("2006-01-02T15:04:05Z07:00")
+		}
+		httputil.OkJSON(w, types.NeboLoopJanusUsageResponse{
+			LimitTokens:     rl.LimitTokens,
+			RemainingTokens: rl.RemainingTokens,
+			UsedTokens:      used,
+			PercentUsed:     pct,
+			ResetAt:         resetAt,
+		})
+	}
+}
+
 // storeNeboLoopProfile saves NeboLoop credentials to auth_profiles.
 // refreshToken is stored in metadata for token renewal.
-func storeNeboLoopProfile(ctx context.Context, store *db.Store, apiURL, ownerID, email, token, refreshToken string) error {
+// Carries forward janus_provider from existing profile on re-auth.
+func storeNeboLoopProfile(ctx context.Context, store *db.Store, apiURL, ownerID, email, token, refreshToken string, janusProvider bool) error {
+	// Carry forward janus_provider from existing profile if not explicitly set.
+	// This prevents re-authentication (settings page, token refresh) from
+	// losing the Janus provider flag that was set during onboarding.
+	if !janusProvider {
+		profiles, _ := store.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
+		for _, p := range profiles {
+			if p.Metadata.Valid {
+				var existingMeta map[string]string
+				if err := json.Unmarshal([]byte(p.Metadata.String), &existingMeta); err == nil {
+					if existingMeta["janus_provider"] == "true" {
+						janusProvider = true
+						break
+					}
+				}
+			}
+		}
+	}
+
 	metadata := map[string]string{
 		"owner_id":      ownerID,
 		"email":         email,
 		"refresh_token": refreshToken,
 	}
+	if janusProvider {
+		metadata["janus_provider"] = "true"
+	}
 	metadataJSON, _ := json.Marshal(metadata)
 
 	// Deactivate existing NeboLoop profiles first
-	profiles, _ := store.ListActiveAuthProfilesByProvider(ctx, "neboloop")
+	profiles, _ := store.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
 	for _, p := range profiles {
 		store.ToggleAuthProfile(ctx, db.ToggleAuthProfileParams{
 			ID:       p.ID,

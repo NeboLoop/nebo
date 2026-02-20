@@ -341,6 +341,9 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/neboloop/oauth/start", neboloop.NeboLoopOAuthStartHandler(svcCtx))
 	r.Get("/neboloop/oauth/status", neboloop.NeboLoopOAuthStatusHandler(svcCtx))
 
+	// NeboLoop Janus usage (in-memory rate-limit data)
+	r.Get("/neboloop/janus/usage", neboloop.NeboLoopJanusUsageHandler(svcCtx))
+
 	// Agent routes
 	r.Get("/agent/sessions", agent.ListAgentSessionsHandler(svcCtx))
 	r.Delete("/agent/sessions/{id}", agent.DeleteAgentSessionHandler(svcCtx))
@@ -421,10 +424,11 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Put("/plugins/{id}/settings", plugins.UpdatePluginSettingsHandler(svcCtx))
 	r.Put("/plugins/{id}/toggle", plugins.TogglePluginHandler(svcCtx))
 
-	// App UI routes (structured template rendering)
+	// App UI routes
 	r.Get("/apps/ui", appui.ListUIAppsHandler(svcCtx))
-	r.Get("/apps/{id}/ui", appui.GetUIViewHandler(svcCtx))
-	r.Post("/apps/{id}/ui/event", appui.SendUIEventHandler(svcCtx))
+	r.Post("/apps/{id}/ui/open", appui.OpenAppUIHandler(svcCtx))
+	r.Get("/apps/{id}/ui/*", appui.AppStaticHandler(svcCtx))
+	r.HandleFunc("/apps/{id}/api/*", appui.AppAPIProxyHandler(svcCtx))
 
 	// App OAuth broker routes
 	if svcCtx.OAuthBroker != nil {
@@ -452,6 +456,7 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/models", provider.ListModelsHandler(svcCtx))
 	r.Put("/models/config", provider.UpdateModelConfigHandler(svcCtx))
 	r.Put("/models/{provider}/{modelId}", provider.UpdateModelHandler(svcCtx))
+	r.Put("/models/cli/{cliId}", provider.UpdateCLIProviderHandler(svcCtx))
 	r.Put("/models/task-routing", provider.UpdateTaskRoutingHandler(svcCtx))
 	r.Get("/providers", provider.ListAuthProfilesHandler(svcCtx))
 	r.Post("/providers", provider.CreateAuthProfileHandler(svcCtx))
@@ -463,9 +468,11 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	// Agent files (screenshots, images, downloads)
 	r.Get("/files/*", files.ServeFileHandler(svcCtx))
 
-	// User profile routes (public for single-user personal assistant mode)
+	// User profile & preferences routes (public for single-user personal assistant mode)
 	r.Get("/user/me/profile", user.GetUserProfileHandler(svcCtx))
 	r.Put("/user/me/profile", user.UpdateUserProfileHandler(svcCtx))
+	r.Get("/user/me/preferences", user.GetPreferencesHandler(svcCtx))
+	r.Put("/user/me/preferences", user.UpdatePreferencesHandler(svcCtx))
 
 	// Tool permissions and terms (public for single-user mode)
 	r.Get("/user/me/permissions", user.GetToolPermissionsHandler(svcCtx))
@@ -480,8 +487,6 @@ func registerProtectedRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Put("/user/me", user.UpdateCurrentUserHandler(svcCtx))
 	r.Delete("/user/me", user.DeleteAccountHandler(svcCtx))
 	r.Post("/user/me/change-password", user.ChangePasswordHandler(svcCtx))
-	r.Get("/user/me/preferences", user.GetPreferencesHandler(svcCtx))
-	r.Put("/user/me/preferences", user.UpdatePreferencesHandler(svcCtx))
 
 	// Notifications
 	r.Get("/notifications", notification.ListNotificationsHandler(svcCtx))

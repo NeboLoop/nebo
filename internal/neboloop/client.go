@@ -216,10 +216,11 @@ func (c *Client) UninstallSkill(ctx context.Context, id string) error {
 // --------------------------------------------------------------------------
 
 // JoinLoop joins the bot to a loop using an invite code.
-func (c *Client) JoinLoop(ctx context.Context, inviteCode string) (*JoinLoopResponse, error) {
+func (c *Client) JoinLoop(ctx context.Context, code string) (*JoinLoopResponse, error) {
 	var resp JoinLoopResponse
 	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/loops/join", JoinLoopRequest{
-		InviteCode: inviteCode,
+		Code:  code,
+		BotID: c.botID,
 	}, &resp); err != nil {
 		return nil, err
 	}
@@ -227,11 +228,77 @@ func (c *Client) JoinLoop(ctx context.Context, inviteCode string) (*JoinLoopResp
 }
 
 // --------------------------------------------------------------------------
+// Loop Channels
+// --------------------------------------------------------------------------
+
+// ListBotChannels returns all loop channels this bot belongs to across all loops.
+func (c *Client) ListBotChannels(ctx context.Context) ([]LoopChannel, error) {
+	var resp LoopChannelsResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/bots/"+c.botID+"/channels", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Channels, nil
+}
+
+// --------------------------------------------------------------------------
+// Loop Queries (Bot Query System)
+// --------------------------------------------------------------------------
+
+// ListBotLoops returns all loops this bot belongs to.
+func (c *Client) ListBotLoops(ctx context.Context) ([]Loop, error) {
+	var resp LoopsResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/bots/"+c.botID+"/loops", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Loops, nil
+}
+
+// GetLoop fetches a single loop by ID.
+func (c *Client) GetLoop(ctx context.Context, loopID string) (*Loop, error) {
+	var resp Loop
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/bots/"+c.botID+"/loops/"+loopID, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ListLoopMembers returns members of a loop with online presence.
+func (c *Client) ListLoopMembers(ctx context.Context, loopID string) ([]LoopMember, error) {
+	var resp LoopMembersResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/bots/"+c.botID+"/loops/"+loopID+"/members", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Members, nil
+}
+
+// ListChannelMembers returns members of a channel with online presence.
+func (c *Client) ListChannelMembers(ctx context.Context, channelID string) ([]ChannelMember, error) {
+	var resp ChannelMembersResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/bots/"+c.botID+"/channels/"+channelID+"/members", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Members, nil
+}
+
+// ListChannelMessages fetches recent messages from a channel (oldest-first, max 200).
+func (c *Client) ListChannelMessages(ctx context.Context, channelID string, limit int) ([]ChannelMessageItem, error) {
+	path := "/api/v1/bots/" + c.botID + "/channels/" + channelID + "/messages"
+	if limit > 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
+	var resp ChannelMessagesResponse
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Messages, nil
+}
+
+// --------------------------------------------------------------------------
 // Connection Code (pre-auth, no client instance needed)
 // --------------------------------------------------------------------------
 
 // DefaultAPIServer is the production NeboLoop API server.
-const DefaultAPIServer = "https://neboloop.com"
+const DefaultAPIServer = "https://api.neboloop.com"
 
 // RedeemCode exchanges a connection code for a bot identity and one-time token.
 // This is an unauthenticated call used during initial setup.

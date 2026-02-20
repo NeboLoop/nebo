@@ -49,8 +49,8 @@ func TestPipelineNew(t *testing.T) {
 	if p == nil {
 		t.Fatal("New() returned nil")
 	}
-	if len(p.generators) != 6 {
-		t.Errorf("expected 6 generators, got %d", len(p.generators))
+	if len(p.generators) != 10 {
+		t.Errorf("expected 10 generators, got %d", len(p.generators))
 	}
 }
 

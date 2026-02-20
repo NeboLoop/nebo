@@ -305,45 +305,6 @@ func (r *Registry) registerDomainToolsWithPermissions(permissions map[string]boo
 	// The agent tool is always registered (it covers chat/memory which is always on)
 }
 
-// RegisterLegacyDefaults registers individual tools (non-domain) for backward compatibility
-// Deprecated: Use RegisterDefaults() with domain tools instead
-func (r *Registry) RegisterLegacyDefaults() {
-	// Core file tools
-	r.Register(NewBashTool(r.policy, r.processRegistry))
-	r.Register(NewReadTool())
-	r.Register(NewWriteTool())
-	r.Register(NewEditTool())
-	r.Register(NewGlobTool())
-	r.Register(NewGrepTool())
-
-	// Web tools
-	r.Register(NewWebTool())
-	r.Register(NewSearchTool())
-
-	// Browser automation (headless by default)
-	r.Register(NewBrowserTool(BrowserConfig{Headless: true}))
-
-	// Screenshot (desktop capture)
-	r.Register(NewScreenshotTool())
-
-	// Vision (image analysis) - requires ANTHROPIC_API_KEY
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		r.Register(NewVisionTool(VisionConfig{APIKey: apiKey}))
-	}
-
-	// Process management
-	r.Register(NewProcessTool())
-
-	// Bash session management for background processes
-	r.Register(NewBashSessionsTool(r.processRegistry))
-
-	// Task/sub-agent spawning
-	r.Register(NewTaskTool())
-
-	// Platform-specific capabilities
-	RegisterPlatformCapabilities(r)
-}
-
 // GetProcessRegistry returns the process registry for external access
 func (r *Registry) GetProcessRegistry() *ProcessRegistry {
 	return r.processRegistry
@@ -359,13 +320,6 @@ func (r *Registry) GetTaskTool() *TaskTool {
 		}
 	}
 	return nil
-}
-
-// RegisterMemoryTool registers the memory tool with the given database connection
-// This must be called separately from RegisterDefaults since it requires a DB
-// Deprecated: Use RegisterAgentDomainTool for STRAP pattern instead
-func (r *Registry) RegisterMemoryTool(memTool *MemoryTool) {
-	r.Register(memTool)
 }
 
 // RegisterAgentDomainTool registers the agent domain tool (task, cron, memory, message, session)

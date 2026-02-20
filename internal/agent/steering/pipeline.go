@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/neboloop/nebo/internal/agent/ai"
 	"github.com/neboloop/nebo/internal/agent/session"
 )
 
@@ -30,17 +31,26 @@ type Message struct {
 	Position Position
 }
 
+// WorkTask mirrors tools.WorkTask — kept here to avoid circular imports.
+type WorkTask struct {
+	ID      string `json:"id"`
+	Subject string `json:"subject"`
+	Status  string `json:"status"` // pending, in_progress, completed
+}
+
 // Context carries everything generators need to make decisions.
 type Context struct {
-	SessionID     string
-	Messages      []session.Message
-	UserPrompt    string    // Current user input (empty on tool-result turns)
-	ActiveTask    string    // Pinned active task (from session metadata)
-	Channel       string    // "web", "cli", "telegram", "discord", "slack"
-	AgentName     string    // User-configured agent name
-	Iteration     int       // Current agentic loop iteration (1-based)
-	JustCompacted bool      // True if compaction happened this iteration
-	RunStartTime  time.Time // When this Run() call started
+	SessionID      string
+	Messages       []session.Message
+	UserPrompt     string            // Current user input (empty on tool-result turns)
+	ActiveTask     string            // Pinned active task (from session metadata)
+	Channel        string            // "web", "cli", "telegram", "discord", "slack"
+	AgentName      string            // User-configured agent name
+	Iteration      int               // Current agentic loop iteration (1-based)
+	JustCompacted  bool              // True if compaction happened this iteration
+	RunStartTime   time.Time         // When this Run() call started
+	WorkTasks      []WorkTask        // In-memory work tracking tasks (from AgentDomainTool)
+	JanusRateLimit *ai.RateLimitInfo // Latest Janus rate-limit info (may be nil)
 }
 
 // Generator produces zero or more steering messages for the current turn.
@@ -64,6 +74,10 @@ func New() *Pipeline {
 			&compactionRecovery{},
 			&dateTimeRefresh{},
 			&memoryNudge{},
+			&objectiveTaskNudge{},
+			&pendingTaskAction{},
+			&taskProgress{},
+			&janusQuotaWarning{},
 		},
 	}
 }

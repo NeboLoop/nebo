@@ -122,6 +122,7 @@ export interface CLIProviderInfo {
 	installHint: string
 	models: Array<string>
 	defaultModel: string
+	active: boolean
 }
 
 export interface CLIStatus {
@@ -588,6 +589,7 @@ export interface ListMemoriesResponse {
 export interface ListModelsResponse {
 	models: { [key: string]: Array<ModelInfo> }
 	taskRouting?: TaskRouting
+	laneRouting?: { [key: string]: string }
 	aliases?: Array<ModelAlias>
 	availableCLIs?: CLIAvailability
 	cliStatuses?: CLIStatusMap
@@ -762,6 +764,8 @@ export interface ModelPricing {
 
 export interface NeboLoopAccountStatusResponse {
 	connected: boolean
+	janusProvider: boolean
+	profileId?: string
 	ownerId?: string
 	email?: string
 	displayName?: string
@@ -782,6 +786,14 @@ export interface NeboLoopConnectResponse {
 
 export interface NeboLoopDisconnectResponse {
 	disconnected: boolean
+}
+
+export interface NeboLoopJanusUsageResponse {
+	limitTokens: number
+	remainingTokens: number
+	usedTokens: number
+	percentUsed: number
+	resetAt?: string
 }
 
 export interface NeboLoopLoginRequest {
@@ -862,6 +874,11 @@ export interface OAuthProvider {
 	name: string
 	connected: boolean
 	email?: string
+}
+
+export interface OpenAppUIResponse {
+	opened: boolean
+	url?: string
 }
 
 export interface OpenDevWindowResponse {
@@ -983,19 +1000,6 @@ export interface SendMessageRequest {
 export interface SendMessageResponse {
 	message: ChatMessage
 	chatId: string
-}
-
-export interface SendUIEventRequest {
-	view_id: string
-	block_id: string
-	action: string
-	value: string
-}
-
-export interface SendUIEventResponse {
-	view?: UIView
-	error?: string
-	toast?: string
 }
 
 export interface SessionMessage {
@@ -1199,32 +1203,6 @@ export interface UIAppInfo {
 	version: string
 }
 
-export interface UIBlock {
-	block_id: string
-	type: string
-	text?: string
-	value?: string
-	placeholder?: string
-	hint?: string
-	variant?: string
-	src?: string
-	alt?: string
-	disabled?: boolean
-	options?: Array<UISelectOption>
-	style?: string
-}
-
-export interface UISelectOption {
-	label: string
-	value: string
-}
-
-export interface UIView {
-	view_id: string
-	title: string
-	blocks: Array<UIBlock>
-}
-
 export interface UpdateAdvisorRequest {
 	role?: string
 	description?: string
@@ -1271,6 +1249,11 @@ export interface UpdateAuthProfileRequest {
 	baseUrl?: string
 	priority?: number
 	isActive?: boolean
+	metadata?: { [key: string]: string }
+}
+
+export interface UpdateCLIProviderRequest {
+	active?: boolean
 }
 
 export interface UpdateChatRequest {
@@ -1360,13 +1343,14 @@ export interface UpdateTaskRequest {
 }
 
 export interface UpdateTaskRoutingRequest {
-	vision?: string
-	audio?: string
-	reasoning?: string
-	code?: string
-	general?: string
-	fallbacks?: { [key: string]: Array<string> }
-	aliases?: Array<ModelAlias>
+	vision: string
+	audio: string
+	reasoning: string
+	code: string
+	general: string
+	fallbacks: { [key: string]: Array<string> }
+	aliases: Array<ModelAlias>
+	laneRouting?: { [key: string]: string }
 }
 
 export interface UpdateToolPermissionsRequest {

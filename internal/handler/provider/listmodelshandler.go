@@ -62,6 +62,24 @@ func ListModelsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			})
 		}
 
+		// Include lane routing if configured
+		var laneRouting map[string]string
+		if config.LaneRouting != nil {
+			laneRouting = map[string]string{}
+			if config.LaneRouting.Heartbeat != "" {
+				laneRouting["heartbeat"] = config.LaneRouting.Heartbeat
+			}
+			if config.LaneRouting.Events != "" {
+				laneRouting["events"] = config.LaneRouting.Events
+			}
+			if config.LaneRouting.Comm != "" {
+				laneRouting["comm"] = config.LaneRouting.Comm
+			}
+			if config.LaneRouting.Subagent != "" {
+				laneRouting["subagent"] = config.LaneRouting.Subagent
+			}
+		}
+
 		// Detect available CLI tools (legacy - just installed check)
 		cliAvailability := &types.CLIAvailability{
 			Claude: ai.CheckCLIAvailable("claude"),
@@ -99,12 +117,14 @@ func ListModelsHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				InstallHint:  cp.InstallHint,
 				Models:       cp.Models,
 				DefaultModel: cp.DefaultModel,
+				Active:       cp.Active,
 			})
 		}
 
 		httputil.OkJSON(w, &types.ListModelsResponse{
 			Models:        result,
 			TaskRouting:   taskRouting,
+			LaneRouting:   laneRouting,
 			Aliases:       aliases,
 			AvailableCLIs: cliAvailability,
 			CLIStatuses:   cliStatuses,

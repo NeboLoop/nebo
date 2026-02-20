@@ -115,9 +115,26 @@ func (m *AuthProfileManager) GetBestProfile(ctx context.Context, provider string
 	return dbProfileToAuthProfile(p), nil
 }
 
-// ListActiveProfiles returns all active profiles for a provider
+// ListActiveProfiles returns active profiles for a provider that are NOT on cooldown.
+// Use this for request-level profile selection (round-robin, failover).
 func (m *AuthProfileManager) ListActiveProfiles(ctx context.Context, provider string) ([]AuthProfile, error) {
 	dbProfiles, err := m.queries.ListActiveAuthProfilesByProvider(ctx, provider)
+	if err != nil {
+		return nil, err
+	}
+
+	profiles := make([]AuthProfile, 0, len(dbProfiles))
+	for _, p := range dbProfiles {
+		profiles = append(profiles, *dbProfileToAuthProfile(p))
+	}
+
+	return profiles, nil
+}
+
+// ListAllActiveProfiles returns ALL active profiles for a provider, regardless of cooldown.
+// Use this for provider loading — cooldown affects request routing, not provider existence.
+func (m *AuthProfileManager) ListAllActiveProfiles(ctx context.Context, provider string) ([]AuthProfile, error) {
+	dbProfiles, err := m.queries.ListAllActiveAuthProfilesByProvider(ctx, provider)
 	if err != nil {
 		return nil, err
 	}

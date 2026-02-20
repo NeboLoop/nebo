@@ -2,6 +2,7 @@ package provider
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -62,6 +63,23 @@ func UpdateAuthProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			priority = existing.Priority.Int64
 		}
 
+		// Merge metadata: overlay new keys onto existing
+		metadataStr := existing.Metadata
+		if req.Metadata != nil {
+			var merged map[string]string
+			if existing.Metadata.Valid {
+				json.Unmarshal([]byte(existing.Metadata.String), &merged)
+			}
+			if merged == nil {
+				merged = make(map[string]string)
+			}
+			for k, v := range req.Metadata {
+				merged[k] = v
+			}
+			raw, _ := json.Marshal(merged)
+			metadataStr = sql.NullString{String: string(raw), Valid: true}
+		}
+
 		// Update profile
 		err = svcCtx.DB.UpdateAuthProfile(ctx, db.UpdateAuthProfileParams{
 			ID:       req.Id,
@@ -70,16 +88,18 @@ func UpdateAuthProfileHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			Model:    sql.NullString{String: model, Valid: model != ""},
 			BaseUrl:  sql.NullString{String: baseUrl, Valid: baseUrl != ""},
 			Priority: sql.NullInt64{Int64: priority, Valid: true},
+			AuthType: existing.AuthType,
+			Metadata: metadataStr,
 		})
 		if err != nil {
 			httputil.Error(w, err)
 			return
 		}
 
-		// Handle isActive toggle if needed
-		if req.IsActive != (existing.IsActive.Int64 == 1) {
+		// Handle isActive toggle only when explicitly provided
+		if req.IsActive != nil && *req.IsActive != (existing.IsActive.Int64 == 1) {
 			isActiveVal := int64(0)
-			if req.IsActive {
+			if *req.IsActive {
 				isActiveVal = 1
 			}
 			err = svcCtx.DB.ToggleAuthProfile(ctx, db.ToggleAuthProfileParams{

@@ -15,6 +15,7 @@ SELECT * FROM auth_profiles WHERE name = ?;
 SELECT * FROM auth_profiles ORDER BY provider, priority DESC;
 
 -- name: ListActiveAuthProfilesByProvider :many
+-- Returns active profiles NOT on cooldown - for request-level profile selection.
 SELECT * FROM auth_profiles
 WHERE provider = ? AND is_active = 1 AND (cooldown_until IS NULL OR cooldown_until < unixepoch())
 ORDER BY
@@ -27,6 +28,20 @@ ORDER BY
     priority DESC,
     COALESCE(last_used_at, 0) ASC,
     error_count ASC;
+
+-- name: ListAllActiveAuthProfilesByProvider :many
+-- Returns ALL active profiles regardless of cooldown - for provider loading.
+-- Cooldown affects request routing, not provider existence.
+SELECT * FROM auth_profiles
+WHERE provider = ? AND is_active = 1
+ORDER BY
+    CASE COALESCE(auth_type, 'api_key')
+        WHEN 'oauth' THEN 0
+        WHEN 'token' THEN 1
+        WHEN 'api_key' THEN 2
+        ELSE 3
+    END ASC,
+    priority DESC;
 
 -- name: GetBestAuthProfile :one
 -- Get the best available profile for a provider

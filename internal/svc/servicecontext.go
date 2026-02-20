@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
+	"github.com/neboloop/nebo/internal/agent/ai"
 	"github.com/neboloop/nebo/internal/agenthub"
 	"github.com/neboloop/nebo/internal/config"
 	"github.com/neboloop/nebo/internal/credential"
@@ -24,12 +26,28 @@ import (
 // AppUIProvider is the interface for accessing app UI capabilities.
 // Implemented by apps.AppRegistry — defined here to avoid circular imports.
 type AppUIProvider interface {
-	// GetUIView fetches the current view from a UI app.
-	GetUIView(ctx context.Context, appID string) (any, error)
-	// SendUIEvent sends a user interaction event to a UI app.
-	SendUIEvent(ctx context.Context, appID string, event any) (any, error)
+	// HandleRequest proxies an HTTP request to a UI app and returns the response.
+	HandleRequest(ctx context.Context, appID string, req *AppHTTPRequest) (*AppHTTPResponse, error)
 	// ListUIApps returns metadata about apps that provide UI.
 	ListUIApps() []AppUIInfo
+	// AppsDir returns the base directory where apps are installed.
+	AppsDir() string
+}
+
+// AppHTTPRequest represents an HTTP request to proxy to a UI app.
+type AppHTTPRequest struct {
+	Method  string
+	Path    string
+	Query   string
+	Headers map[string]string
+	Body    []byte
+}
+
+// AppHTTPResponse represents an HTTP response from a UI app.
+type AppHTTPResponse struct {
+	StatusCode int
+	Headers    map[string]string
+	Body       []byte
 }
 
 // AppUIInfo describes a UI-capable app (returned by ListUIApps).
@@ -63,6 +81,8 @@ type ServiceContext struct {
 	toolRegMu    sync.RWMutex
 	scheduler    any // tools.Scheduler (use any to avoid import cycle)
 	schedulerMu  sync.RWMutex
+
+	JanusUsage atomic.Pointer[ai.RateLimitInfo] // Latest Janus rate limit (in-memory, no DB)
 
 	browseDir   func() (string, error) // Native directory picker (desktop only)
 	browseDirMu sync.RWMutex

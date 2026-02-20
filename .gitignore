@@ -98,3 +98,6 @@ dev-debug.log
 .cursor/
 .discuss-session
 .claude/
+
+
+chat.txt
