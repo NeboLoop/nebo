@@ -970,6 +970,43 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	// Bridge MCP server context for CLI providers (claude-code, gemini-cli)
 	r.SetMCPServer(mcpSrv)
 
+	// Wire vision tool to use Nebo's provider system for image analysis
+	if visionTool := registry.GetVisionTool(); visionTool != nil {
+		visionTool.SetAnalyzeFunc(func(ctx context.Context, imageBase64, mediaType, prompt string) (string, error) {
+			if len(providers) == 0 {
+				return "", fmt.Errorf("no AI providers configured")
+			}
+			// Build a one-shot chat request with image content
+			content := fmt.Sprintf("[Image: data:%s;base64,%s]\n\n%s", mediaType, imageBase64, prompt)
+			req := &ai.ChatRequest{
+				Messages: []session.Message{
+					{Role: "user", Content: content},
+				},
+				MaxTokens: 2048,
+			}
+			// Use first available provider
+			events, err := providers[0].Stream(ctx, req)
+			if err != nil {
+				return "", err
+			}
+			var result strings.Builder
+			for event := range events {
+				switch event.Type {
+				case ai.EventTypeText:
+					result.WriteString(event.Text)
+				case ai.EventTypeError:
+					if event.Error != nil {
+						return "", fmt.Errorf("%s", event.Error.Error())
+					}
+					return "", fmt.Errorf("vision provider error")
+				case ai.EventTypeDone:
+					// Stream complete
+				}
+			}
+			return result.String(), nil
+		})
+	}
+
 	// Set up subagent persistence for surviving restarts
 	if state.recovery != nil {
 		r.SetupSubagentPersistence(state.recovery)

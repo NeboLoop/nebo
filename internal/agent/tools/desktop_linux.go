@@ -39,9 +39,9 @@ func (t *DesktopTool) Name() string { return "desktop" }
 func (t *DesktopTool) Description() string {
 	switch t.backend {
 	case "xdotool":
-		return "Control Desktop (using xdotool) - mouse clicks, keyboard input, window management for X11."
+		return "Control Desktop (using xdotool) - mouse clicks, keyboard input, window management for X11. Use element IDs from screenshot(action: see) for precise targeting."
 	case "ydotool":
-		return "Control Desktop (using ydotool) - mouse clicks, keyboard input for Wayland."
+		return "Control Desktop (using ydotool) - mouse clicks, keyboard input for Wayland. Use element IDs from screenshot(action: see) for precise targeting."
 	default:
 		return "Control Desktop - requires xdotool (X11) or ydotool (Wayland) to be installed."
 	}
@@ -53,7 +53,7 @@ func (t *DesktopTool) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["click", "double_click", "right_click", "type", "hotkey", "scroll", "move", "drag", "get_mouse_pos", "get_active_window"],
+				"enum": ["click", "double_click", "right_click", "type", "hotkey", "scroll", "move", "drag", "paste", "get_mouse_pos", "get_active_window"],
 				"description": "Action to perform"
 			},
 			"x": {"type": "integer", "description": "X coordinate"},
@@ -64,7 +64,9 @@ func (t *DesktopTool) Schema() json.RawMessage {
 			"amount": {"type": "integer", "description": "Scroll amount (default: 3)"},
 			"to_x": {"type": "integer", "description": "Destination X for drag"},
 			"to_y": {"type": "integer", "description": "Destination Y for drag"},
-			"delay": {"type": "integer", "description": "Delay between keystrokes in ms (default: 12)"}
+			"delay": {"type": "integer", "description": "Delay between keystrokes in ms (default: 12)"},
+			"element": {"type": "string", "description": "Element ID from screenshot see action (e.g., B3, T2). Replaces x/y."},
+			"snapshot_id": {"type": "string", "description": "Snapshot to look up element in. Default: most recent."}
 		},
 		"required": ["action"]
 	}`)
@@ -73,16 +75,18 @@ func (t *DesktopTool) Schema() json.RawMessage {
 func (t *DesktopTool) RequiresApproval() bool { return true }
 
 type desktopInputLinux struct {
-	Action    string `json:"action"`
-	X         int    `json:"x"`
-	Y         int    `json:"y"`
-	Text      string `json:"text"`
-	Keys      string `json:"keys"`
-	Direction string `json:"direction"`
-	Amount    int    `json:"amount"`
-	ToX       int    `json:"to_x"`
-	ToY       int    `json:"to_y"`
-	Delay     int    `json:"delay"`
+	Action     string `json:"action"`
+	X          int    `json:"x"`
+	Y          int    `json:"y"`
+	Text       string `json:"text"`
+	Keys       string `json:"keys"`
+	Direction  string `json:"direction"`
+	Amount     int    `json:"amount"`
+	ToX        int    `json:"to_x"`
+	ToY        int    `json:"to_y"`
+	Delay      int    `json:"delay"`
+	Element    string `json:"element"`
+	SnapshotID string `json:"snapshot_id"`
 }
 
 func (t *DesktopTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
@@ -99,6 +103,17 @@ func (t *DesktopTool) Execute(ctx context.Context, input json.RawMessage) (*Tool
 	var p desktopInputLinux
 	if err := json.Unmarshal(input, &p); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
+	}
+
+	// Resolve element ID to x/y coordinates
+	if p.Element != "" {
+		elem, _, err := GetSnapshotStore().LookupElement(p.Element, p.SnapshotID)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Element lookup failed: %v", err), IsError: true}, nil
+		}
+		cx, cy := elem.Bounds.Center()
+		p.X = cx
+		p.Y = cy
 	}
 
 	switch t.backend {
@@ -124,6 +139,11 @@ func (t *DesktopTool) executeXdotool(ctx context.Context, p desktopInputLinux) (
 	case "right_click":
 		return t.xdotoolRightClick(ctx, p.X, p.Y)
 	case "type":
+		if p.Element != "" {
+			if result, _ := t.xdotoolClick(ctx, p.X, p.Y, 1); result.IsError {
+				return result, nil
+			}
+		}
 		return t.xdotoolType(ctx, p.Text, p.Delay)
 	case "hotkey":
 		return t.xdotoolHotkey(ctx, p.Keys)
@@ -133,6 +153,8 @@ func (t *DesktopTool) executeXdotool(ctx context.Context, p desktopInputLinux) (
 		return t.xdotoolMove(ctx, p.X, p.Y)
 	case "drag":
 		return t.xdotoolDrag(ctx, p.X, p.Y, p.ToX, p.ToY)
+	case "paste":
+		return t.xdotoolPaste(ctx, p.Text, p.X, p.Y, p.Element != "")
 	case "get_mouse_pos":
 		return t.xdotoolGetMousePos(ctx)
 	case "get_active_window":
@@ -283,6 +305,11 @@ func (t *DesktopTool) executeYdotool(ctx context.Context, p desktopInputLinux) (
 	case "right_click":
 		return t.ydotoolRightClick(ctx, p.X, p.Y)
 	case "type":
+		if p.Element != "" {
+			if result, _ := t.ydotoolClick(ctx, p.X, p.Y, 1); result.IsError {
+				return result, nil
+			}
+		}
 		return t.ydotoolType(ctx, p.Text, p.Delay)
 	case "hotkey":
 		return t.ydotoolHotkey(ctx, p.Keys)
@@ -290,6 +317,8 @@ func (t *DesktopTool) executeYdotool(ctx context.Context, p desktopInputLinux) (
 		return t.ydotoolScroll(ctx, p.Direction, p.Amount)
 	case "move":
 		return t.ydotoolMove(ctx, p.X, p.Y)
+	case "paste":
+		return t.ydotoolPaste(ctx, p.Text, p.X, p.Y, p.Element != "")
 	case "drag":
 		return &ToolResult{Content: "Drag is not well supported in ydotool. Use xdotool with X11 instead.", IsError: true}, nil
 	case "get_mouse_pos", "get_active_window":
@@ -397,6 +426,59 @@ func (t *DesktopTool) ydotoolMove(ctx context.Context, x, y int) (*ToolResult, e
 		return &ToolResult{Content: fmt.Sprintf("Move failed: %v\nOutput: %s", err, string(out)), IsError: true}, nil
 	}
 	return &ToolResult{Content: fmt.Sprintf("Moved mouse to (%d, %d)", x, y)}, nil
+}
+
+func (t *DesktopTool) xdotoolPaste(ctx context.Context, text string, x, y int, hasElement bool) (*ToolResult, error) {
+	if text == "" {
+		return &ToolResult{Content: "Text is required for paste action", IsError: true}, nil
+	}
+
+	if hasElement {
+		if result, _ := t.xdotoolClick(ctx, x, y, 1); result.IsError {
+			return result, nil
+		}
+	}
+
+	// Use xclip to set clipboard and xdotool to paste
+	setCmd := exec.CommandContext(ctx, "xclip", "-selection", "clipboard")
+	setCmd.Stdin = strings.NewReader(text)
+	if err := setCmd.Run(); err != nil {
+		// Fallback: use xdotool type instead
+		return t.xdotoolType(ctx, text, 12)
+	}
+
+	// Ctrl+V to paste
+	cmd := exec.CommandContext(ctx, "xdotool", "key", "ctrl+v")
+	if _, err := cmd.CombinedOutput(); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Paste failed: %v", err), IsError: true}, nil
+	}
+	return &ToolResult{Content: fmt.Sprintf("Pasted text at (%d, %d)", x, y)}, nil
+}
+
+func (t *DesktopTool) ydotoolPaste(ctx context.Context, text string, x, y int, hasElement bool) (*ToolResult, error) {
+	if text == "" {
+		return &ToolResult{Content: "Text is required for paste action", IsError: true}, nil
+	}
+
+	if hasElement {
+		if result, _ := t.ydotoolClick(ctx, x, y, 1); result.IsError {
+			return result, nil
+		}
+	}
+
+	// Try wl-copy for Wayland clipboard
+	setCmd := exec.CommandContext(ctx, "wl-copy", text)
+	if err := setCmd.Run(); err != nil {
+		// Fallback: use ydotool type instead
+		return t.ydotoolType(ctx, text, 0)
+	}
+
+	// Ctrl+V to paste
+	cmd := exec.CommandContext(ctx, "ydotool", "key", "29:1", "47:1", "47:0", "29:0") // Ctrl+V keycodes
+	if _, err := cmd.CombinedOutput(); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Paste failed: %v", err), IsError: true}, nil
+	}
+	return &ToolResult{Content: fmt.Sprintf("Pasted text at (%d, %d)", x, y)}, nil
 }
 
 func init() {

@@ -1194,8 +1194,8 @@ Once your app works locally, you can publish it through NeboLoop for distributio
 
 ### Developer Account Setup
 
-1. Register a NeboLoop account at `POST /api/v1/auth/register` (email + password)
-2. Log in to get a JWT token: `POST /api/v1/auth/login`
+1. Register a NeboLoop account at `POST /api/v1/owners/register` (email + password)
+2. Log in to get a JWT token: `POST /api/v1/owners/login`
 3. Create a developer account: `POST /api/v1/developer/accounts`
 
 All subsequent API calls use the JWT as a Bearer token.

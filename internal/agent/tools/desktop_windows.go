@@ -20,7 +20,7 @@ func NewDesktopTool() *DesktopTool {
 func (t *DesktopTool) Name() string { return "desktop" }
 
 func (t *DesktopTool) Description() string {
-	return "Control Desktop (using PowerShell) - mouse clicks, keyboard input, scrolling, cursor movement."
+	return "Control Desktop (using PowerShell) - mouse clicks, keyboard input, scrolling, cursor movement. Use element IDs from screenshot(action: see) for precise targeting."
 }
 
 func (t *DesktopTool) Schema() json.RawMessage {
@@ -29,7 +29,7 @@ func (t *DesktopTool) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["click", "double_click", "right_click", "type", "hotkey", "scroll", "move", "drag", "get_mouse_pos", "get_active_window"],
+				"enum": ["click", "double_click", "right_click", "type", "hotkey", "scroll", "move", "drag", "paste", "get_mouse_pos", "get_active_window"],
 				"description": "Action to perform"
 			},
 			"x": {"type": "integer", "description": "X coordinate"},
@@ -40,7 +40,9 @@ func (t *DesktopTool) Schema() json.RawMessage {
 			"amount": {"type": "integer", "description": "Scroll amount (default: 3)"},
 			"to_x": {"type": "integer", "description": "Destination X for drag"},
 			"to_y": {"type": "integer", "description": "Destination Y for drag"},
-			"delay": {"type": "integer", "description": "Delay between keystrokes in ms"}
+			"delay": {"type": "integer", "description": "Delay between keystrokes in ms"},
+			"element": {"type": "string", "description": "Element ID from screenshot see action (e.g., B3, T2). Replaces x/y."},
+			"snapshot_id": {"type": "string", "description": "Snapshot to look up element in. Default: most recent."}
 		},
 		"required": ["action"]
 	}`)
@@ -49,22 +51,35 @@ func (t *DesktopTool) Schema() json.RawMessage {
 func (t *DesktopTool) RequiresApproval() bool { return true }
 
 type desktopInputWin struct {
-	Action    string `json:"action"`
-	X         int    `json:"x"`
-	Y         int    `json:"y"`
-	Text      string `json:"text"`
-	Keys      string `json:"keys"`
-	Direction string `json:"direction"`
-	Amount    int    `json:"amount"`
-	ToX       int    `json:"to_x"`
-	ToY       int    `json:"to_y"`
-	Delay     int    `json:"delay"`
+	Action     string `json:"action"`
+	X          int    `json:"x"`
+	Y          int    `json:"y"`
+	Text       string `json:"text"`
+	Keys       string `json:"keys"`
+	Direction  string `json:"direction"`
+	Amount     int    `json:"amount"`
+	ToX        int    `json:"to_x"`
+	ToY        int    `json:"to_y"`
+	Delay      int    `json:"delay"`
+	Element    string `json:"element"`
+	SnapshotID string `json:"snapshot_id"`
 }
 
 func (t *DesktopTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var p desktopInputWin
 	if err := json.Unmarshal(input, &p); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
+	}
+
+	// Resolve element ID to x/y coordinates
+	if p.Element != "" {
+		elem, _, err := GetSnapshotStore().LookupElement(p.Element, p.SnapshotID)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Element lookup failed: %v", err), IsError: true}, nil
+		}
+		cx, cy := elem.Bounds.Center()
+		p.X = cx
+		p.Y = cy
 	}
 
 	switch p.Action {
@@ -75,6 +90,11 @@ func (t *DesktopTool) Execute(ctx context.Context, input json.RawMessage) (*Tool
 	case "right_click":
 		return t.click(ctx, p.X, p.Y, true)
 	case "type":
+		if p.Element != "" {
+			if result, _ := t.click(ctx, p.X, p.Y, false); result.IsError {
+				return result, nil
+			}
+		}
 		return t.typeText(ctx, p.Text, p.Delay)
 	case "hotkey":
 		return t.hotkey(ctx, p.Keys)
@@ -84,6 +104,8 @@ func (t *DesktopTool) Execute(ctx context.Context, input json.RawMessage) (*Tool
 		return t.move(ctx, p.X, p.Y)
 	case "drag":
 		return t.drag(ctx, p.X, p.Y, p.ToX, p.ToY)
+	case "paste":
+		return t.paste(ctx, p.Text, p.X, p.Y, p.Element != "")
 	case "get_mouse_pos":
 		return t.getMousePos(ctx)
 	case "get_active_window":
@@ -345,6 +367,39 @@ Write-Output $title.ToString()
 		return &ToolResult{Content: fmt.Sprintf("Failed to get active window: %v", err), IsError: true}, nil
 	}
 	return &ToolResult{Content: fmt.Sprintf("Active window: %s", strings.TrimSpace(string(out)))}, nil
+}
+
+func (t *DesktopTool) paste(ctx context.Context, text string, x, y int, hasElement bool) (*ToolResult, error) {
+	if text == "" {
+		return &ToolResult{Content: "Text is required for paste action", IsError: true}, nil
+	}
+
+	// Click element first to focus if targeting an element
+	if hasElement {
+		if result, _ := t.click(ctx, x, y, false); result.IsError {
+			return result, nil
+		}
+	}
+
+	// Set clipboard and paste with Ctrl+V
+	escaped := strings.ReplaceAll(text, "'", "''")
+	script := fmt.Sprintf(`
+Add-Type -AssemblyName System.Windows.Forms
+$oldClip = [System.Windows.Forms.Clipboard]::GetText()
+[System.Windows.Forms.Clipboard]::SetText('%s')
+Start-Sleep -Milliseconds 50
+[System.Windows.Forms.SendKeys]::SendWait("^v")
+Start-Sleep -Milliseconds 100
+if ($oldClip) { [System.Windows.Forms.Clipboard]::SetText($oldClip) }
+Write-Output "Pasted"
+`, escaped)
+
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Paste failed: %v\nOutput: %s", err, string(out)), IsError: true}, nil
+	}
+	return &ToolResult{Content: fmt.Sprintf("Pasted text at (%d, %d)", x, y)}, nil
 }
 
 func escapeDesktopSendKeys(s string) string {

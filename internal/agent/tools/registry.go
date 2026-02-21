@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
@@ -294,10 +293,8 @@ func (r *Registry) registerDomainToolsWithPermissions(permissions map[string]boo
 	if allowed("media") {
 		r.Register(NewScreenshotTool())
 
-		// Vision (image analysis) - requires ANTHROPIC_API_KEY
-		if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-			r.Register(NewVisionTool(VisionConfig{APIKey: apiKey}))
-		}
+		// Vision (image analysis) — always registered, AnalyzeFunc wired after provider loading
+		r.Register(NewVisionTool(VisionConfig{}))
 	}
 
 	// Agent domain: task, cron, memory, message, session
@@ -372,6 +369,18 @@ func (r *Registry) GetWebDomainTool() *WebDomainTool {
 	if tool, ok := r.tools["web"]; ok {
 		if webTool, ok := tool.(*WebDomainTool); ok {
 			return webTool
+		}
+	}
+	return nil
+}
+
+// GetVisionTool returns the vision tool for external access (e.g., to set AnalyzeFunc)
+func (r *Registry) GetVisionTool() *VisionTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if tool, ok := r.tools["vision"]; ok {
+		if visionTool, ok := tool.(*VisionTool); ok {
+			return visionTool
 		}
 	}
 	return nil

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,13 +17,18 @@ import (
 	"github.com/neboloop/nebo/internal/defaults"
 )
 
-// ScreenshotTool captures screenshots of the screen or specific displays
+// ScreenshotTool captures screenshots of the screen or specific displays.
+// The "see" action adds annotated element overlays for the desktop automation workflow.
 type ScreenshotTool struct{}
 
 type screenshotInput struct {
-	Display  int    `json:"display"`  // Display number (0 = primary, -1 = all)
-	Output   string `json:"output"`   // Output path (optional, returns base64 if empty)
-	Format   string `json:"format"`   // Output format: "file", "base64", "both"
+	Action     string `json:"action"`      // "capture" (default) or "see"
+	Display    int    `json:"display"`      // Display number (0 = primary, -1 = all)
+	Output     string `json:"output"`       // Output path (optional, returns base64 if empty)
+	Format     string `json:"format"`       // Output format: "file", "base64", "both"
+	App        string `json:"app"`          // App name for window capture (see action)
+	Window     string `json:"window"`       // Window target: "frontmost" or index (see action)
+	SnapshotID string `json:"snapshot_id"`  // Retrieve a previous snapshot by ID
 }
 
 func NewScreenshotTool() *ScreenshotTool {
@@ -34,13 +40,21 @@ func (t *ScreenshotTool) Name() string {
 }
 
 func (t *ScreenshotTool) Description() string {
-	return "Capture a screenshot of the screen or a specific display. Returns the image as base64 or saves to file."
+	return `Capture screenshots or see annotated UI elements. Actions:
+- capture: Take a screenshot (default). Returns image as base64 or file.
+- see: Capture + annotate UI elements with IDs (B1, T2, L3...). Use desktop(action: "click", element: "B3") to interact with elements.`
 }
 
 func (t *ScreenshotTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
+			"action": {
+				"type": "string",
+				"enum": ["capture", "see"],
+				"description": "capture: take a screenshot. see: capture + annotate UI elements with IDs for interaction. Default: capture",
+				"default": "capture"
+			},
 			"display": {
 				"type": "integer",
 				"description": "Display number to capture (0 = primary display, -1 = all displays combined). Default: 0",
@@ -48,13 +62,26 @@ func (t *ScreenshotTool) Schema() json.RawMessage {
 			},
 			"output": {
 				"type": "string",
-				"description": "File path to save the screenshot. If empty, returns base64 encoded image."
+				"description": "File path to save the screenshot. If empty, saves to data dir."
 			},
 			"format": {
 				"type": "string",
 				"enum": ["file", "base64", "both"],
-				"description": "Output format: 'file' saves to disk, 'base64' returns encoded image, 'both' does both. Default: base64",
-				"default": "base64"
+				"description": "Output format: 'file' saves to disk, 'base64' returns encoded image, 'both' does both. Default: file",
+				"default": "file"
+			},
+			"app": {
+				"type": "string",
+				"description": "App name to capture (window-level). Omit for full screen. Used with 'see' action."
+			},
+			"window": {
+				"type": "string",
+				"description": "Window target: 'frontmost' (default) or a 1-based index. Used with 'see' action.",
+				"default": "frontmost"
+			},
+			"snapshot_id": {
+				"type": "string",
+				"description": "Retrieve a previous snapshot by ID instead of capturing a new one."
 			}
 		}
 	}`)
@@ -73,21 +100,33 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 		}, nil
 	}
 
-	// Defaults
-	if params.Format == "" {
-		params.Format = "base64"
+	if params.Action == "" {
+		params.Action = "capture"
 	}
 
-	// Get number of displays
-	numDisplays := screenshot.NumActiveDisplays()
-	if numDisplays == 0 {
+	switch params.Action {
+	case "capture":
+		return t.executeCapture(params)
+	case "see":
+		return t.executeSee(ctx, params)
+	default:
 		return &ToolResult{
-			Content: "No active displays found",
+			Content: fmt.Sprintf("Unknown action: %s. Use 'capture' or 'see'.", params.Action),
 			IsError: true,
 		}, nil
 	}
+}
 
-	// Determine which display to capture
+func (t *ScreenshotTool) executeCapture(params screenshotInput) (*ToolResult, error) {
+	if params.Format == "" {
+		params.Format = "file"
+	}
+
+	numDisplays := screenshot.NumActiveDisplays()
+	if numDisplays == 0 {
+		return &ToolResult{Content: "No active displays found", IsError: true}, nil
+	}
+
 	displayNum := params.Display
 	if displayNum < -1 || displayNum >= numDisplays {
 		return &ToolResult{
@@ -100,7 +139,6 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 	var err error
 
 	if displayNum == -1 {
-		// Capture all displays combined
 		bounds := screenshot.GetDisplayBounds(0)
 		for i := 1; i < numDisplays; i++ {
 			b := screenshot.GetDisplayBounds(i)
@@ -108,7 +146,6 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 		}
 		img, err = screenshot.CaptureRect(bounds)
 	} else {
-		// Capture specific display
 		bounds := screenshot.GetDisplayBounds(displayNum)
 		img, err = screenshot.CaptureRect(bounds)
 	}
@@ -120,13 +157,153 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 		}, nil
 	}
 
-	var result strings.Builder
-	result.WriteString(fmt.Sprintf("Screenshot captured: %dx%d pixels\n", img.Bounds().Dx(), img.Bounds().Dy()))
+	return t.formatOutput(img, params)
+}
 
-	// Handle output based on format
+func (t *ScreenshotTool) executeSee(ctx context.Context, params screenshotInput) (*ToolResult, error) {
+	// If retrieving a previous snapshot
+	if params.SnapshotID != "" {
+		snap := GetSnapshotStore().Get(params.SnapshotID)
+		if snap == nil {
+			return &ToolResult{
+				Content: fmt.Sprintf("Snapshot %q not found or expired.", params.SnapshotID),
+				IsError: true,
+			}, nil
+		}
+		return t.formatSnapshotResult(snap)
+	}
+
+	// Capture the screenshot
+	var capturedImg image.Image
+	var windowBounds Rect
+	var windowTitle string
+
+	if params.App != "" {
+		// Window-level capture
+		windowIndex := 1
+		if params.Window != "" && params.Window != "frontmost" {
+			if idx, err := parseInt(params.Window); err == nil && idx > 0 {
+				windowIndex = idx
+			}
+		}
+
+		img, bounds, err := CaptureAppWindow(params.App, windowIndex)
+		if err != nil {
+			return &ToolResult{
+				Content: fmt.Sprintf("Failed to capture %s window: %v", params.App, err),
+				IsError: true,
+			}, nil
+		}
+		capturedImg = img
+		windowBounds = bounds
+		windowTitle = params.App
+	} else {
+		// Full display capture
+		numDisplays := screenshot.NumActiveDisplays()
+		if numDisplays == 0 {
+			return &ToolResult{Content: "No active displays found", IsError: true}, nil
+		}
+		displayNum := params.Display
+		if displayNum < 0 {
+			displayNum = 0
+		}
+		bounds := screenshot.GetDisplayBounds(displayNum)
+		img, err := screenshot.CaptureRect(bounds)
+		if err != nil {
+			return &ToolResult{
+				Content: fmt.Sprintf("Failed to capture display: %v", err),
+				IsError: true,
+			}, nil
+		}
+		capturedImg = img
+		windowBounds = Rect{X: bounds.Min.X, Y: bounds.Min.Y, Width: bounds.Dx(), Height: bounds.Dy()}
+		windowTitle = fmt.Sprintf("Display %d", displayNum)
+	}
+
+	// Get UI tree with element bounds from accessibility
+	rawElements := getUITreeWithBounds(params.App, windowBounds)
+
+	// Assign element IDs
+	elements := AssignElementIDs(rawElements)
+
+	// Render annotations on the screenshot
+	annotatedImg, err := RenderAnnotations(capturedImg, elements)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Failed to render annotations: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	// Encode images
+	rawPNG := encodeImagePNG(capturedImg)
+	annotatedPNG := encodeImagePNG(annotatedImg)
+
+	// Build element map
+	elemMap := make(map[string]*Element, len(elements))
+	elemOrder := make([]string, len(elements))
+	for i, elem := range elements {
+		elemMap[elem.ID] = elem
+		elemOrder[i] = elem.ID
+	}
+
+	// Store snapshot
+	snapID := fmt.Sprintf("snap-%s", time.Now().Format("20060102-150405"))
+	snap := &Snapshot{
+		ID:           snapID,
+		CreatedAt:    time.Now(),
+		App:          params.App,
+		WindowTitle:  windowTitle,
+		RawPNG:       rawPNG,
+		AnnotatedPNG: annotatedPNG,
+		Elements:     elemMap,
+		ElementOrder: elemOrder,
+	}
+	GetSnapshotStore().Put(snap)
+
+	return t.formatSnapshotResult(snap)
+}
+
+func (t *ScreenshotTool) formatSnapshotResult(snap *Snapshot) (*ToolResult, error) {
+	// Save annotated image to files dir for web serving
+	dataDir, _ := defaults.DataDir()
+	filesDir := filepath.Join(dataDir, "files")
+	os.MkdirAll(filesDir, 0755)
+	fileName := fmt.Sprintf("screenshot_see_%s.png", time.Now().Format("20060102_150405"))
+	filePath := filepath.Join(filesDir, fileName)
+
+	if err := os.WriteFile(filePath, snap.AnnotatedPNG, 0644); err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Failed to save annotated screenshot: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	// Build element list
+	elements := make([]*Element, 0, len(snap.ElementOrder))
+	for _, id := range snap.ElementOrder {
+		if elem, ok := snap.Elements[id]; ok {
+			elements = append(elements, elem)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Snapshot %s captured for %s\n\n", snap.ID, snap.WindowTitle))
+	sb.WriteString(FormatElementList(elements))
+	sb.WriteString(fmt.Sprintf("\n![Annotated](/api/v1/files/%s)\n\n", fileName))
+	sb.WriteString("Use desktop(action: \"click\", element: \"B1\") to interact with elements.")
+
+	return &ToolResult{Content: sb.String()}, nil
+}
+
+func (t *ScreenshotTool) formatOutput(img image.Image, params screenshotInput) (*ToolResult, error) {
+	bounds := img.Bounds()
+	var result strings.Builder
+	result.WriteString(fmt.Sprintf("Screenshot captured: %dx%d pixels\n", bounds.Dx(), bounds.Dy()))
+
 	switch params.Format {
 	case "file":
-		filePath, fileName, err := t.saveToFile(img, params.Output)
+		filePath, fileName, err := t.saveImageToFile(img, params.Output)
 		if err != nil {
 			return &ToolResult{
 				Content: fmt.Sprintf("Failed to save screenshot: %v", err),
@@ -137,7 +314,7 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 		result.WriteString(fmt.Sprintf("![Screenshot](/api/v1/files/%s)", fileName))
 
 	case "base64":
-		b64, err := t.toBase64(img)
+		b64, err := imageToBase64(img)
 		if err != nil {
 			return &ToolResult{
 				Content: fmt.Sprintf("Failed to encode screenshot: %v", err),
@@ -147,14 +324,14 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 		result.WriteString(fmt.Sprintf("Base64 image (data:image/png;base64,%s)", b64))
 
 	case "both":
-		filePath, fileName, err := t.saveToFile(img, params.Output)
+		filePath, fileName, err := t.saveImageToFile(img, params.Output)
 		if err != nil {
 			return &ToolResult{
 				Content: fmt.Sprintf("Failed to save screenshot: %v", err),
 				IsError: true,
 			}, nil
 		}
-		b64, err := t.toBase64(img)
+		b64, err := imageToBase64(img)
 		if err != nil {
 			return &ToolResult{
 				Content: fmt.Sprintf("Failed to encode screenshot: %v", err),
@@ -166,18 +343,13 @@ func (t *ScreenshotTool) Execute(ctx context.Context, input json.RawMessage) (*T
 		result.WriteString(fmt.Sprintf("Base64 image (data:image/png;base64,%s)", b64))
 	}
 
-	return &ToolResult{
-		Content: result.String(),
-		IsError: false,
-	}, nil
+	return &ToolResult{Content: result.String()}, nil
 }
 
-// saveToFile saves the screenshot and returns (fullPath, fileName, error).
-// fileName is the relative name suitable for the /api/v1/files/ URL.
-func (t *ScreenshotTool) saveToFile(img *image.RGBA, outputPath string) (string, string, error) {
+// saveImageToFile saves any image.Image and returns (fullPath, fileName, error).
+func (t *ScreenshotTool) saveImageToFile(img image.Image, outputPath string) (string, string, error) {
 	var fileName string
 	if outputPath == "" {
-		// Save to <data_dir>/files/ so the file server can serve it
 		dataDir, _ := defaults.DataDir()
 		filesDir := filepath.Join(dataDir, "files")
 		os.MkdirAll(filesDir, 0755)
@@ -187,7 +359,6 @@ func (t *ScreenshotTool) saveToFile(img *image.RGBA, outputPath string) (string,
 		fileName = filepath.Base(outputPath)
 	}
 
-	// Ensure directory exists
 	dir := filepath.Dir(outputPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", "", fmt.Errorf("failed to create directory: %w", err)
@@ -206,14 +377,24 @@ func (t *ScreenshotTool) saveToFile(img *image.RGBA, outputPath string) (string,
 	return outputPath, fileName, nil
 }
 
-func (t *ScreenshotTool) toBase64(img *image.RGBA) (string, error) {
+func encodeImagePNG(img image.Image) []byte {
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+	return buf.Bytes()
+}
+
+func imageToBase64(img image.Image) (string, error) {
 	var buf strings.Builder
 	encoder := base64.NewEncoder(base64.StdEncoding, &buf)
-
 	if err := png.Encode(encoder, img); err != nil {
 		return "", fmt.Errorf("failed to encode PNG: %w", err)
 	}
 	encoder.Close()
-
 	return buf.String(), nil
+}
+
+func parseInt(s string) (int, error) {
+	var n int
+	_, err := fmt.Sscanf(s, "%d", &n)
+	return n, err
 }
