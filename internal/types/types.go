@@ -107,12 +107,13 @@ type Chat struct {
 }
 
 type ChatMessage struct {
-	Id        string `json:"id"`
-	ChatId    string `json:"chatId"`
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Metadata  string `json:"metadata,omitempty"`
-	CreatedAt string `json:"createdAt"`
+	Id          string `json:"id"`
+	ChatId      string `json:"chatId"`
+	Role        string `json:"role"`
+	Content     string `json:"content"`
+	ContentHtml string `json:"contentHtml,omitempty"`
+	Metadata    string `json:"metadata,omitempty"`
+	CreatedAt   string `json:"createdAt"`
 }
 
 type CompleteSetupResponse struct {

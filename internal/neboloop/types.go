@@ -146,6 +146,7 @@ type RedeemCodeRequest struct {
 	Code    string `json:"code"`
 	Name    string `json:"name"`
 	Purpose string `json:"purpose"`
+	BotID   string `json:"bot_id,omitempty"` // Nebo-generated, immutable — server uses this instead of generating one
 }
 
 // RedeemCodeResponse is returned by POST /api/v1/bots/connect/redeem.

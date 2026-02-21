@@ -504,7 +504,13 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			// Cumulative summaries: compress previous summary and prepend
 			summary = r.buildCumulativeSummary(sessionID, summary)
 
-			if compactErr := r.sessions.Compact(sessionID, summary); compactErr == nil {
+			// Progressive compaction: try keeping 10, then 3, then 1 message(s).
+			// Nebo has ONE eternal conversation — it must always continue.
+			for _, keep := range []int{10, 3, 1} {
+				if compactErr := r.sessions.Compact(sessionID, summary, keep); compactErr != nil {
+					fmt.Printf("[Runner] Compaction (keep=%d) failed: %v\n", keep, compactErr)
+					break
+				}
 				// Index compacted messages for semantic search
 				if r.memoryTool != nil {
 					go func() {
@@ -519,33 +525,19 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 					resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
 					return
 				}
-				// Re-inject recently accessed files to recover working context
-				if reinjectMsg := buildFileReinjectionMessage(r.fileTracker); reinjectMsg != nil {
-					messages = append(messages, *reinjectMsg)
-				}
-				r.fileTracker.Clear()
-
 				newTokens := estimateTokens(messages)
-				fmt.Printf("[Runner] After compaction: %d messages, ~%d tokens\n", len(messages), newTokens)
+				fmt.Printf("[Runner] After compaction (keep=%d): %d messages, ~%d tokens\n", keep, len(messages), newTokens)
 
-				// If STILL over threshold after standard compaction, do emergency compaction.
-				// Keep only the last 3 messages (minimum viable context).
-				if newTokens > thresholds.AutoCompact {
-					fmt.Printf("[Runner] Still over threshold after compaction (%d > %d), emergency compact...\n", newTokens, thresholds.AutoCompact)
-					if emergencyErr := r.sessions.EmergencyCompact(sessionID); emergencyErr == nil {
-						messages, err = r.sessions.GetMessages(sessionID, r.config.MaxContext)
-						if err != nil {
-							resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
-							return
-						}
-						fmt.Printf("[Runner] After emergency compaction: %d messages, ~%d tokens\n", len(messages), estimateTokens(messages))
-					} else {
-						fmt.Printf("[Runner] Emergency compaction failed: %v\n", emergencyErr)
+				if newTokens <= thresholds.AutoCompact {
+					// Re-inject recently accessed files to recover working context
+					if reinjectMsg := buildFileReinjectionMessage(r.fileTracker); reinjectMsg != nil {
+						messages = append(messages, *reinjectMsg)
 					}
+					r.fileTracker.Clear()
+					break
 				}
-			} else {
-				fmt.Printf("[Runner] Compaction failed: %v\n", compactErr)
 			}
+			// Never block — proceed with whatever context we have
 		}
 
 		// Check for user model switch request (e.g., "use claude", "switch to opus")
@@ -635,23 +627,11 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		// Runs before the two-stage pruning. Only activates above the warning threshold.
 		messages, _ = microCompact(messages, thresholds.Warning)
 
-		// Two-stage context pruning: soft trim (head+tail) then hard clear (placeholder)
-		truncatedMessages := pruneContext(messages, r.config.ContextPruning)
-
-		// Blocking tier: refuse API call if context is still too large after all reductions.
-		// Only checked when compaction was already attempted (so we've exhausted all options).
-		if compactionAttempted {
-			finalTokens := estimateTokens(truncatedMessages)
-			if finalTokens > thresholds.Blocking {
-				fmt.Printf("[Runner] Context blocked: ~%d tokens exceeds blocking threshold %d\n", finalTokens, thresholds.Blocking)
-				resultCh <- ai.StreamEvent{
-					Type: ai.EventTypeText,
-					Text: "This conversation has grown too long for the current model's context window. Please start a new session from **Settings > Sessions** or ask me to clear the current session.",
-				}
-				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
-				return
-			}
-		}
+		// Two-stage context pruning: soft trim (head+tail) then hard clear (placeholder).
+		// Override ContextTokens with the actual model-derived threshold.
+		pruningCfg := r.config.ContextPruning
+		pruningCfg.ContextTokens = thresholds.AutoCompact
+		truncatedMessages := pruneContext(messages, pruningCfg)
 
 		// Mid-conversation steering: generate ephemeral guidance messages
 		if r.steering != nil {
@@ -714,6 +694,13 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			}
 		}
 
+		// Strip fence markers from context before sending to LLM.
+		// Fences served their purpose (AFV verification passed above).
+		// Removing them prevents the model from seeing and echoing them.
+		if fenceStore.Count() > 0 {
+			stripFencesFromMessages(truncatedMessages)
+		}
+
 		// Always send all registered tools — never filter by skill restrictions
 		chatTools := r.tools.List()
 
@@ -738,54 +725,54 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 		if err != nil {
 			if ai.IsContextOverflow(err) {
+				fmt.Printf("[Runner] Context overflow - progressive compaction\n")
+
+				// Only flush memory on the first overflow per run
 				if !compactionAttempted {
-					compactionAttempted = true
-
-					// Kick off background memory flush — runs concurrently with compaction.
-					// Safe because the flush reads from the in-memory messages slice, not DB.
 					r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
-
-					// Compact session and retry
-					fmt.Printf("[Runner] Context overflow - attempting compaction\n")
-					summary := r.generateSummary(ctx, messages)
-
-					// Extract and pin the active task from the summary
-					if taskLine := extractTaskFromSummary(summary); taskLine != "" {
-						if err := r.sessions.SetActiveTask(sessionID, taskLine); err != nil {
-							fmt.Printf("[Runner] Warning: failed to set active task: %v\n", err)
-						} else {
-							fmt.Printf("[Runner] Pinned active task: %s\n", truncateForLog(taskLine, 100))
-						}
-					}
-
-					// Cumulative summaries: compress previous summary and prepend
-					summary = r.buildCumulativeSummary(sessionID, summary)
-
-					compactErr := r.sessions.Compact(sessionID, summary)
-					if compactErr == nil {
-						// Index compacted messages for semantic search
-						if r.memoryTool != nil {
-							go func() {
-								indexCtx, indexCancel := context.WithTimeout(context.Background(), 60*time.Second)
-								defer indexCancel()
-								r.memoryTool.IndexSessionTranscript(indexCtx, sessionID, userID)
-							}()
-						}
-						// File re-injection will happen on the next iteration
-						// when messages are reloaded from DB
-						r.fileTracker.Clear()
-						continue // Retry with compacted session
-					}
-					fmt.Printf("[Runner] Compaction failed: %v\n", compactErr)
 				}
-				// Compaction already attempted or failed - notify user (never auto-reset)
-				fmt.Printf("[Runner] Context overflow after compaction attempt\n")
-				resultCh <- ai.StreamEvent{
-					Type: ai.EventTypeText,
-					Text: "Context overflow — the prompt is too large for this model. Please start a new session from **Settings > Sessions** or ask me to clear the current session.",
+
+				// Determine starting keep count: skip 10 if we already compacted
+				keepCounts := []int{10, 3, 1}
+				if compactionAttempted {
+					keepCounts = []int{3, 1}
 				}
-				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
-				return
+				compactionAttempted = true
+
+				summary := r.generateSummary(ctx, messages)
+
+				// Extract and pin the active task from the summary
+				if taskLine := extractTaskFromSummary(summary); taskLine != "" {
+					if err := r.sessions.SetActiveTask(sessionID, taskLine); err != nil {
+						fmt.Printf("[Runner] Warning: failed to set active task: %v\n", err)
+					} else {
+						fmt.Printf("[Runner] Pinned active task: %s\n", truncateForLog(taskLine, 100))
+					}
+				}
+
+				// Cumulative summaries: compress previous summary and prepend
+				summary = r.buildCumulativeSummary(sessionID, summary)
+
+				for _, keep := range keepCounts {
+					if compactErr := r.sessions.Compact(sessionID, summary, keep); compactErr != nil {
+						fmt.Printf("[Runner] Overflow compaction (keep=%d) failed: %v\n", keep, compactErr)
+						break
+					}
+					// Index compacted messages for semantic search
+					if r.memoryTool != nil {
+						go func() {
+							indexCtx, indexCancel := context.WithTimeout(context.Background(), 60*time.Second)
+							defer indexCancel()
+							r.memoryTool.IndexSessionTranscript(indexCtx, sessionID, userID)
+						}()
+					}
+					fmt.Printf("[Runner] Overflow compaction (keep=%d) succeeded\n", keep)
+					break
+				}
+
+				// File re-injection will happen on the next iteration
+				r.fileTracker.Clear()
+				continue // ALWAYS retry — maxIterations is the natural bound
 			}
 			if ai.IsRateLimitOrAuth(err) {
 				// Record error for profile cooldown
@@ -881,7 +868,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			err := r.sessions.AppendMessage(sessionID, session.Message{
 				SessionID: sessionID,
 				Role:      "assistant",
-				Content:   assistantContent.String(),
+				Content:   afv.StripFenceMarkers(assistantContent.String()),
 				ToolCalls: toolCallsJSON,
 			})
 			if err != nil {
@@ -963,6 +950,34 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 	resultCh <- ai.StreamEvent{
 		Type:  ai.EventTypeError,
 		Error: fmt.Errorf("reached maximum iterations (%d)", maxIterations),
+	}
+}
+
+// stripFencesFromMessages removes AFV fence markers from message content and tool results.
+// Called after AFV verification so the LLM never sees or echoes fence markers.
+func stripFencesFromMessages(messages []session.Message) {
+	for i := range messages {
+		if messages[i].Content != "" {
+			messages[i].Content = afv.StripFenceMarkers(messages[i].Content)
+		}
+		if len(messages[i].ToolResults) > 0 {
+			var results []session.ToolResult
+			if err := json.Unmarshal(messages[i].ToolResults, &results); err == nil {
+				changed := false
+				for j := range results {
+					clean := afv.StripFenceMarkers(results[j].Content)
+					if clean != results[j].Content {
+						results[j].Content = clean
+						changed = true
+					}
+				}
+				if changed {
+					if updated, err := json.Marshal(results); err == nil {
+						messages[i].ToolResults = updated
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -1863,18 +1878,14 @@ const (
 	// ErrorOffset is how far below effective context the error threshold sits.
 	// A warning is logged above this point.
 	ErrorOffset = 10000
-
-	// DefaultMaxOutputTokens is the assumed max output budget for blocking threshold.
-	DefaultMaxOutputTokens = 16000
 )
 
-// ContextThresholds defines four graduated tiers for context management.
+// ContextThresholds defines graduated tiers for context management.
 // Thresholds are absolute token counts derived from the model's context window.
 type ContextThresholds struct {
 	Warning     int // Micro-compact activates above this
 	Error       int // Log warning about context size
 	AutoCompact int // Trigger full compaction (LLM summarization)
-	Blocking    int // Refuse API call — not enough room for response
 }
 
 // contextThresholds computes graduated context thresholds from the active model's
@@ -1916,7 +1927,6 @@ func (r *Runner) contextThresholds() ContextThresholds {
 			Warning:     DefaultContextTokenLimit - WarningOffset,
 			Error:       DefaultContextTokenLimit - ErrorOffset,
 			AutoCompact: DefaultContextTokenLimit,
-			Blocking:    DefaultContextTokenLimit - DefaultMaxOutputTokens,
 		}
 		r.cachedThresholds = &result
 		return result
@@ -1932,7 +1942,6 @@ func (r *Runner) contextThresholds() ContextThresholds {
 	warning := effective - WarningOffset
 	errorT := effective - ErrorOffset
 	autoCompact := effective
-	blocking := effective - DefaultMaxOutputTokens
 
 	// Floor: reasonable minimums
 	if warning < 40000 {
@@ -1940,9 +1949,6 @@ func (r *Runner) contextThresholds() ContextThresholds {
 	}
 	if errorT < 50000 {
 		errorT = 50000
-	}
-	if blocking < DefaultContextTokenLimit-DefaultMaxOutputTokens {
-		blocking = DefaultContextTokenLimit - DefaultMaxOutputTokens
 	}
 
 	// Cap: avoid extremely long summarization tasks
@@ -1955,7 +1961,6 @@ func (r *Runner) contextThresholds() ContextThresholds {
 		Warning:     warning,
 		Error:       errorT,
 		AutoCompact: autoCompact,
-		Blocking:    blocking,
 	}
 	r.cachedThresholds = &result
 	return result

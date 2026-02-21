@@ -107,12 +107,12 @@ jobs:
           # Code sign if identity is available
           if [ -n "$SIGN_IDENTITY" ]; then
             codesign --force --sign "$SIGN_IDENTITY" \
-              --identifier dev.nebolabs.nebo \
+              --identifier dev.neboloop.nebo \
               --entitlements assets/macos/nebo.entitlements \
               --options runtime \
               Nebo.app/Contents/MacOS/nebo
             codesign --force --sign "$SIGN_IDENTITY" \
-              --identifier dev.nebolabs.nebo \
+              --identifier dev.neboloop.nebo \
               --entitlements assets/macos/nebo.entitlements \
               --options runtime \
               Nebo.app

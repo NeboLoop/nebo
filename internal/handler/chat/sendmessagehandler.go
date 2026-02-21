@@ -10,6 +10,7 @@ import (
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/markdown"
 	"github.com/neboloop/nebo/internal/svc"
 	"github.com/neboloop/nebo/internal/types"
 
@@ -88,11 +89,12 @@ func SendMessageHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		httputil.OkJSON(w, &types.SendMessageResponse{
 			ChatId: chatID,
 			Message: types.ChatMessage{
-				Id:        msg.ID,
-				ChatId:    msg.ChatID,
-				Role:      msg.Role,
-				Content:   msg.Content,
-				CreatedAt: time.Unix(msg.CreatedAt, 0).Format(time.RFC3339),
+				Id:          msg.ID,
+				ChatId:      msg.ChatID,
+				Role:        msg.Role,
+				Content:     msg.Content,
+				ContentHtml: markdown.Render(msg.Content),
+				CreatedAt:   time.Unix(msg.CreatedAt, 0).Format(time.RFC3339),
 			},
 		})
 	}

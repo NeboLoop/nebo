@@ -315,7 +315,7 @@ func (t *AgentDomainTool) Resources() []string {
 func (t *AgentDomainTool) ActionsFor(resource string) []string {
 	switch resource {
 	case "task":
-		return []string{"spawn", "status", "cancel", "list", "create", "update"}
+		return []string{"spawn", "status", "cancel", "list", "create", "update", "delete"}
 	case "reminder":
 		return []string{"create", "list", "delete", "pause", "resume", "run", "history"}
 	case "memory":
@@ -334,7 +334,7 @@ func (t *AgentDomainTool) ActionsFor(resource string) []string {
 }
 
 var agentResources = map[string]ResourceConfig{
-	"task":    {Name: "task", Actions: []string{"spawn", "status", "cancel", "list", "create", "update"}, Description: "Sub-agent management + work tracking"},
+	"task":    {Name: "task", Actions: []string{"spawn", "status", "cancel", "list", "create", "update", "delete"}, Description: "Sub-agent management + work tracking"},
 	"reminder": {Name: "reminder", Actions: []string{"create", "list", "delete", "pause", "resume", "run", "history"}, Description: "Scheduled reminders and recurring tasks"},
 	"memory":  {Name: "memory", Actions: []string{"store", "recall", "search", "list", "delete", "clear"}, Description: "Persistent storage"},
 	"message": {Name: "message", Actions: []string{"send", "list"}, Description: "Channel messaging"},
@@ -350,7 +350,7 @@ func (t *AgentDomainTool) Description() string {
 		Description: `Agent orchestration and state management.
 
 Resources:
-- task: Sub-agents (spawn, status, cancel) + work tracking (create, update, list)
+- task: Sub-agents (spawn, status, cancel) + work tracking (create, update, delete, list)
 - reminder: Schedule reminders and recurring tasks (aliases: routine, schedule, job, cron, event, remind)
 - memory: Three-tier persistent storage (tacit/daily/entity layers)
 - message: Send messages to connected channels (provided by installed apps)
@@ -365,6 +365,7 @@ Resources:
 			`agent(resource: task, action: spawn, prompt: "Find all Go files with errors", agent_type: "explore")`,
 			`agent(resource: task, action: create, subject: "Read existing skill format")`,
 			`agent(resource: task, action: update, task_id: "1", status: "completed")`,
+			`agent(resource: task, action: delete, task_id: "1")`,
 			`agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send me a summary")`,
 			`agent(resource: reminder, action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", message: "Remind user to call Kristi about haircuts")`,
 			`agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit")`,
@@ -405,7 +406,7 @@ func (t *AgentDomainTool) Schema() json.RawMessage {
 			{Name: "agent_type", Type: "string", Description: "Agent type: explore, plan, general", Enum: []string{"explore", "plan", "general"}},
 			{Name: "agent_id", Type: "string", Description: "Agent ID for status/cancel operations"},
 			{Name: "subject", Type: "string", Description: "Work task subject (for task.create)"},
-			{Name: "task_id", Type: "string", Description: "Work task ID (for task.update)"},
+			{Name: "task_id", Type: "string", Description: "Work task ID (for task.update/delete)"},
 			{Name: "status", Type: "string", Description: "Work task status (for task.update)", Enum: []string{"in_progress", "completed"}},
 
 			// Reminder (scheduling) fields
@@ -574,6 +575,8 @@ func (t *AgentDomainTool) handleTask(ctx context.Context, in AgentDomainInput) (
 		return t.taskCreate(ctx, in)
 	case "update":
 		return t.taskUpdate(ctx, in)
+	case "delete":
+		return t.taskDelete(ctx, in)
 	case "list":
 		return t.taskList(ctx)
 	}
@@ -815,6 +818,43 @@ func (t *AgentDomainTool) taskUpdate(ctx context.Context, in AgentDomainInput) (
 		if (*tasks)[i].ID == in.TaskID {
 			(*tasks)[i].Status = in.Status
 			return &ToolResult{Content: fmt.Sprintf("Task [%s] → %s", in.TaskID, in.Status)}, nil
+		}
+	}
+
+	return &ToolResult{
+		Content: fmt.Sprintf("Error: task %s not found", in.TaskID),
+		IsError: true,
+	}, nil
+}
+
+func (t *AgentDomainTool) taskDelete(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	if in.TaskID == "" {
+		return &ToolResult{
+			Content: "Error: 'task_id' is required for delete action",
+			IsError: true,
+		}, nil
+	}
+
+	sessionKey := GetSessionKey(ctx)
+	if sessionKey == "" {
+		sessionKey = "default"
+	}
+
+	val, ok := t.workTasks.Load(sessionKey)
+	if !ok {
+		return &ToolResult{
+			Content: fmt.Sprintf("Error: task %s not found", in.TaskID),
+			IsError: true,
+		}, nil
+	}
+
+	ptr := val.(*[]WorkTask)
+	tasks := *ptr
+	for i, wt := range tasks {
+		if wt.ID == in.TaskID {
+			updated := append(tasks[:i], tasks[i+1:]...)
+			t.workTasks.Store(sessionKey, &updated)
+			return &ToolResult{Content: fmt.Sprintf("Task [%s] deleted: %s", wt.ID, wt.Subject)}, nil
 		}
 	}
 

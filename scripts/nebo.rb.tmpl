@@ -3,18 +3,18 @@ cask "nebo" do
   version "${PKG_VERSION}"
 
   on_arm do
-    url "https://github.com/nebolabs/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-arm64.dmg"
+    url "https://github.com/NeboLoop/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-arm64.dmg"
     sha256 "${SHA_DARWIN_ARM64}"
   end
 
   on_intel do
-    url "https://github.com/nebolabs/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-amd64.dmg"
+    url "https://github.com/NeboLoop/nebo/releases/download/${VERSION}/Nebo-${PKG_VERSION}-amd64.dmg"
     sha256 "${SHA_DARWIN_AMD64}"
   end
 
   name "Nebo"
   desc "AI agent with web UI - your personal AI companion"
-  homepage "https://github.com/nebolabs/nebo"
+  homepage "https://github.com/NeboLoop/nebo"
 
   app "Nebo.app"
 

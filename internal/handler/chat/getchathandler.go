@@ -8,6 +8,7 @@ import (
 
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/markdown"
 	"github.com/neboloop/nebo/internal/svc"
 	"github.com/neboloop/nebo/internal/types"
 )
@@ -50,12 +51,13 @@ func GetChatHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				metadata = m.Metadata.String
 			}
 			msgList[i] = types.ChatMessage{
-				Id:        m.ID,
-				ChatId:    m.ChatID,
-				Role:      m.Role,
-				Content:   m.Content,
-				Metadata:  metadata,
-				CreatedAt: time.Unix(m.CreatedAt, 0).Format(time.RFC3339),
+				Id:          m.ID,
+				ChatId:      m.ChatID,
+				Role:        m.Role,
+				Content:     m.Content,
+				ContentHtml: markdown.Render(m.Content),
+				Metadata:    metadata,
+				CreatedAt:   time.Unix(m.CreatedAt, 0).Format(time.RFC3339),
 			}
 		}
 

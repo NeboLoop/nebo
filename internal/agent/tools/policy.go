@@ -58,31 +58,20 @@ var SafeBins = []string{
 }
 
 // defaultOriginDenyList returns the default per-origin tool restrictions.
-// Non-user origins are denied access to dangerous tools by default.
-// User origin has no restrictions (governed by existing policy level/approval).
+// Currently disabled — all origins get full tool access. The existing policy
+// level/approval system governs what's allowed. Origin-based restrictions
+// can be re-enabled later when the permission model is more mature.
 func defaultOriginDenyList() map[Origin]map[string]bool {
-	// Tools denied for comm-origin (inter-agent messages)
-	commDeny := map[string]bool{
-		"shell": true, // No shell access from remote agents
-	}
-
-	// Tools denied for plugin-origin (external binaries)
-	appDeny := map[string]bool{
-		"shell": true, // No shell from apps
-	}
-
-	// Tools denied for skill-origin (matched skill templates)
-	skillDeny := map[string]bool{
-		"shell": true, // No shell from skill templates
-	}
-
-	return map[Origin]map[string]bool{
-		OriginComm:  commDeny,
-		OriginApp:   appDeny,
-		OriginSkill: skillDeny,
-		// OriginUser: no restrictions (existing policy governs)
-		// OriginSystem: no restrictions (internal operations need full access)
-	}
+	// TODO: Re-enable per-origin restrictions when ready:
+	// commDeny  := map[string]bool{"shell": true}  // No shell from remote agents
+	// appDeny   := map[string]bool{"shell": true}  // No shell from apps
+	// skillDeny := map[string]bool{"shell": true}  // No shell from skill templates
+	// return map[Origin]map[string]bool{
+	// 	OriginComm:  commDeny,
+	// 	OriginApp:   appDeny,
+	// 	OriginSkill: skillDeny,
+	// }
+	return nil
 }
 
 // NewPolicy creates a new policy with defaults

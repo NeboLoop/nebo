@@ -45,6 +45,7 @@
 		id: string;
 		role: 'user' | 'assistant' | 'system';
 		content: string;
+		contentHtml?: string;
 		timestamp: Date;
 		toolCalls?: ToolCall[];
 		streaming?: boolean;
@@ -151,6 +152,17 @@
 	let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
 	let pendingScrollRAF: number | null = null;
 
+	// Replace the streaming message in the messages array by its ID.
+	// IMPORTANT: Do NOT use messages.slice(0, -1) — DM events can insert
+	// user messages after the streaming message, making the last element
+	// something other than the streaming message.
+	function replaceMessageById(updatedMsg: Message): void {
+		const idx = messages.findIndex((m) => m.id === updatedMsg.id);
+		if (idx >= 0) {
+			messages = [...messages.slice(0, idx), updatedMsg, ...messages.slice(idx + 1)];
+		}
+	}
+
 	// Safety: auto-reset isLoading after 30 seconds of no stream activity
 	// This prevents the UI from getting permanently stuck
 	const LOADING_TIMEOUT_MS = 30 * 1000;
@@ -169,7 +181,7 @@
 					if (currentStreamingMessage) {
 						currentStreamingMessage.streaming = false;
 						currentStreamingMessage.content += '\n\n*[Timed out]*';
-						messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+						replaceMessageById({ ...currentStreamingMessage });
 						currentStreamingMessage = null;
 					}
 					isLoading = false;
@@ -217,7 +229,8 @@
 			client.on('approval_request', handleApprovalRequest),
 			client.on('stream_status', handleStreamStatus),
 			client.on('chat_cancelled', handleChatCancelled),
-			client.on('reminder_complete', handleReminderComplete)
+			client.on('reminder_complete', handleReminderComplete),
+			client.on('dm_user_message', handleDMUserMessage)
 		);
 
 		if (browser) {
@@ -357,6 +370,7 @@
 					id: m.id,
 					role: m.role as 'user' | 'assistant' | 'system',
 					content,
+					contentHtml: m.contentHtml || undefined,
 					timestamp: new Date(m.createdAt),
 					toolCalls: meta.toolCalls,
 					thinking: meta.thinking,
@@ -524,7 +538,7 @@
 				};
 			}
 			currentStreamingMessage.contentBlocks = [...blocks];
-			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+			replaceMessageById({ ...currentStreamingMessage });
 		} else {
 			currentStreamingMessage = {
 				id: generateUUID(),
@@ -609,7 +623,7 @@
 				);
 			}
 			const finalMsg = { ...currentStreamingMessage };
-			messages = [...messages.slice(0, -1), finalMsg];
+			replaceMessageById(finalMsg);
 			currentStreamingMessage = null;
 		} else {
 			log.debug('handleChatComplete: NO currentStreamingMessage!');
@@ -673,7 +687,7 @@
 						);
 					}
 					const finalMsg = { ...currentStreamingMessage };
-					messages = [...messages.slice(0, -1), finalMsg];
+					replaceMessageById(finalMsg);
 					currentStreamingMessage = null;
 				}
 				isLoading = false;
@@ -707,7 +721,7 @@
 				);
 			}
 			const finalMsg = { ...currentStreamingMessage };
-			messages = [...messages.slice(0, -1), finalMsg];
+			replaceMessageById(finalMsg);
 			currentStreamingMessage = null;
 		}
 		isLoading = false;
@@ -763,7 +777,7 @@
 				...currentStreamingMessage.contentBlocks,
 				{ type: 'tool' as const, toolCallIndex: toolIndex }
 			];
-			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+			replaceMessageById({ ...currentStreamingMessage });
 		} else {
 			currentStreamingMessage = {
 				id: generateUUID(),
@@ -820,7 +834,7 @@
 			const updatedToolCalls = findAndUpdateTool(currentStreamingMessage.toolCalls);
 			if (updatedToolCalls) {
 				currentStreamingMessage = { ...currentStreamingMessage, toolCalls: updatedToolCalls };
-				messages = [...messages.slice(0, -1), currentStreamingMessage];
+				replaceMessageById(currentStreamingMessage);
 				log.debug('Updated tool in streaming message');
 				return;
 			}
@@ -857,7 +871,7 @@
 		if (currentStreamingMessage) {
 			// Append to existing thinking content
 			currentStreamingMessage.thinking = (currentStreamingMessage.thinking || '') + thinkingContent;
-			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+			replaceMessageById({ ...currentStreamingMessage });
 		} else {
 			// Create new streaming message with thinking
 			currentStreamingMessage = {
@@ -880,7 +894,7 @@
 			currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
 				tc.status === 'running' ? { ...tc, status: 'error' as const } : tc
 			);
-			messages = [...messages.slice(0, -1), { ...currentStreamingMessage }];
+			replaceMessageById({ ...currentStreamingMessage });
 		}
 
 		const errorMessage: Message = {
@@ -909,6 +923,24 @@
 			timestamp: new Date()
 		};
 		messages = [...messages, reminderMessage];
+		scrollToBottom();
+	}
+
+	function handleDMUserMessage(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+		const content = (data?.content as string) || '';
+		if (!content) return;
+
+		const source = (data?.source as string) || 'dm';
+		const userMsg: Message = {
+			id: generateUUID(),
+			role: 'user',
+			content: content,
+			timestamp: new Date()
+		};
+		messages = [...messages, userMsg];
+		isLoading = true;
+		log.debug('DM user message from ' + source + ': ' + content.substring(0, 50));
 		scrollToBottom();
 	}
 
@@ -1024,7 +1056,7 @@
 					);
 				}
 				const finalMsg = { ...currentStreamingMessage };
-				messages = [...messages.slice(0, -1), finalMsg];
+				replaceMessageById(finalMsg);
 				currentStreamingMessage = null;
 			}
 			isLoading = false;

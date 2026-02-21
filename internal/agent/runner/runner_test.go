@@ -618,9 +618,6 @@ func TestGraduatedThresholds(t *testing.T) {
 		if th.AutoCompact != DefaultContextTokenLimit {
 			t.Errorf("AutoCompact: expected %d, got %d", DefaultContextTokenLimit, th.AutoCompact)
 		}
-		if th.Blocking != DefaultContextTokenLimit-DefaultMaxOutputTokens {
-			t.Errorf("Blocking: expected %d, got %d", DefaultContextTokenLimit-DefaultMaxOutputTokens, th.Blocking)
-		}
 	})
 
 	t.Run("200k model absolute offsets", func(t *testing.T) {
@@ -648,9 +645,6 @@ func TestGraduatedThresholds(t *testing.T) {
 		}
 		if th.AutoCompact != 180000 {
 			t.Errorf("AutoCompact: expected 180000, got %d", th.AutoCompact)
-		}
-		if th.Blocking != 164000 {
-			t.Errorf("Blocking: expected 164000, got %d", th.Blocking)
 		}
 	})
 

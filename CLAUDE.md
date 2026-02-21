@@ -78,6 +78,9 @@ make desktop          # Build desktop app (CGO_ENABLED=1, -tags desktop)
 make package          # Package installer (.dmg/.msi/.deb)
 make cli              # Build and install globally
 make release          # Build for all platforms (darwin/linux, amd64/arm64)
+make dev-desktop      # Backend + frontend with hot reload (desktop mode)
+make installer        # Windows NSIS installer
+make github-release   # Create GitHub release with all binaries
 
 # Before committing
 make build
@@ -273,12 +276,12 @@ Sandboxed app system. NeboLoop distributes apps, Nebo runs them.
 - Apps run in sandboxed UUID directories with gRPC over Unix sockets
 - Deny-by-default permissions; apps don't need permission for their own `data/` directory
 - ED25519 signing (raw bytes, not hashes); signatures.json is separate from manifest
-- MQTT-based install flow: NeboLoop publishes to `neboloop/bot/{botID}/installs`
+- SDK-based install flow via NeboLoop REST API
 - Structured template UI (Tier 1): app pushes JSON blocks, Nebo renders Svelte components
 - 8 block types: text, heading, input, button, select, toggle, divider, image
 - Proto definitions: `proto/apps/v0/` (ui.proto, tool.proto, channel.proto, comm.proto, gateway.proto, schedule.proto, common.proto)
 
-**Key files:** manifest.go (types/validation), runtime.go (process lifecycle), sandbox.go (env sanitization), signing.go (ED25519 verification), napp.go (secure extraction), registry.go (discovery/launch), adapter.go (gRPC bridges), install.go (MQTT listener), channels.go (MQTT channel bridge)
+**Key files:** manifest.go (types/validation), runtime.go (process lifecycle), sandbox.go (env sanitization), signing.go (ED25519 verification), napp.go (secure extraction), registry.go (discovery/launch), adapter.go (gRPC bridges), install.go (SDK-based), supervisor.go (process supervision)
 
 ---
 
@@ -315,6 +318,9 @@ nebo skills list  # List available skills
 nebo apps list    # List installed apps
 nebo doctor       # System diagnostics
 nebo session list # Session management
+nebo capabilities  # List platform capabilities
+nebo message send  # Send messages to channels
+nebo onboard       # Interactive setup wizard
 ```
 
 Web UI at `http://localhost:27895`
@@ -477,14 +483,71 @@ Use `WithOrigin(ctx, origin)` / `GetOrigin(ctx)` to propagate origin through con
 - `daily` - Day-specific facts (keyed by date)
 - `entity` - Information about people, places, things
 
-### Channel Integrations
+### NeboLoop Comms (WebSocket-based)
 
-Channels (Telegram, Discord, Slack) are bridged through NeboLoop via MQTT, not embedded directly in Nebo.
+All external communication (DMs, loop channels, Telegram/Discord/Slack bridges) flows through NeboLoop's WebSocket gateway, NOT MQTT.
 
-- **Inbound:** NeboLoop runs platform bridges, publishes messages to MQTT topic `neboloop/bot/{botID}/channels/{channelType}/inbound` (legacy: `chat/in`)
-- **Outbound:** Nebo publishes replies to `neboloop/bot/{botID}/channels/{channelType}/outbound` (legacy: `chat/out`)
-- **Implementation:** `internal/apps/channels.go` — ChannelBridge using autopaho MQTT client
-- **Wired in:** `cmd/nebo/agent.go` — starts on NeboLoop comm connect (startup + mid-session code redemption)
+- **Gateway:** `wss://comms.neboloop.com/ws` — WebSocket transport
+- **Auth:** `bot_id` + OAuth JWT → CONNECT frame → AUTH_OK
+- **Wire format:** 47-byte binary header + JSON payloads (see `docs/COMMS.md`)
+- **SDK:** `internal/neboloop/sdk/client.go` — WebSocket client with auto-reconnect
+- **Plugin:** `internal/agent/comm/neboloop/plugin.go` — wraps SDK, implements CommPlugin interface
+- **Bot ID:** Immutable UUID generated on first startup, stored in `plugin_settings` table
+- **Wired in:** `cmd/nebo/agent.go` — starts on NeboLoop connect (startup + mid-session code redemption)
+
+### DM Handling Flow (`cmd/nebo/agent.go`)
+
+Owner DMs (from the Nebo owner via NeboLoop):
+1. `OnDMMessage()` callback receives DM with `IsOwner=true`
+2. Route to **main lane** with `OriginUser` (same lane as web UI chat)
+3. Resolve companion chat session via `GetOrCreateCompanionChat("companion-default")`
+4. Save user message to `chat_messages` table
+5. Broadcast `dm_user_message` event to web UI via realtime hub
+6. Run through `runner.Run()` (same as web UI)
+7. Stream `chat_stream` events to web UI via realtime hub
+8. Send final response back via `SendDM()`
+
+External DMs (from other bots in a loop):
+1. `OnDMMessage()` with `IsOwner=false`
+2. Route to **comm lane** with `OriginComm`
+3. Session key = `dm-{ConversationID}`
+4. Response sent back via `SendDM()` (no web UI broadcasting)
+
+**Key insight:** Owner DMs share the companion chat session with the web UI — messages appear in both places in real-time.
+
+### Real-Time Event Pipeline
+
+Events flow from agent to web UI through a multi-hop chain:
+
+```
+Agent (cmd/nebo/agent.go)
+  → sendFrame(type: "event", method: "chat_stream", payload: {...})
+  → Agent Hub (internal/agenthub/hub.go) readPump
+    → eventHandler callback
+    → ChatContext.handleAgentEvent (internal/realtime/chat.go)
+      → clientHub.Broadcast (internal/realtime/hub.go)
+        → Client.send channel (buffered 256)
+          → writePump → WebSocket → Browser
+```
+
+**Two distinct hubs:**
+- **Agent Hub** (`internal/agenthub/`) — manages the ONE agent WebSocket connection, dispatches frames by type
+- **Client Hub** (`internal/realtime/`) — manages browser WebSocket connections, broadcasts events to all connected clients
+
+**Frame types (agent → hub):**
+- `"event"` → `eventHandler` → broadcast to ALL web clients (DM events, lane updates)
+- `"res"` / `"stream"` → `responseHandler` → sent to SPECIFIC requesting client (normal chat)
+- `"req"` → `handleRequest` → agent-initiated requests (approval prompts)
+
+### Steering Pipeline (`internal/agent/steering/`)
+
+Mid-conversation steering messages injected before sending to the LLM. Ephemeral — never persisted, never shown to user.
+
+```go
+Pipeline.Generate(ctx Context) → []SteeringMessage
+```
+
+10 default generators: `identityGuard`, `channelAdapter`, `toolNudge`, `compactionRecovery`, `dateTimeRefresh`, `memoryNudge`, `objectiveTaskNudge`, `pendingTaskAction`, `taskProgress`, `janusQuotaWarning`.
 
 ### Provider Loading (`cmd/nebo/providers.go`)
 

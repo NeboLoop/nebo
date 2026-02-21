@@ -590,18 +590,24 @@ func NeboLoopConnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			apiServer = settings["api_server"]
 		}
 
-		// Step 1: Redeem code → get bot identity
+		// Ensure we have an immutable bot_id before redeeming
+		botID := settings["bot_id"]
+		if botID == "" {
+			botID = uuid.New().String()
+		}
+
+		// Step 1: Redeem code (pass our immutable bot_id so the server registers it)
 		purpose := req.Purpose
 		if purpose == "" {
-			purpose = "AI assistant"
+			purpose = "AI companion"
 		}
-		redeemed, err := neboloop.RedeemCode(r.Context(), apiServer, req.Code, req.Name, purpose)
+		redeemed, err := neboloop.RedeemCode(r.Context(), apiServer, req.Code, req.Name, purpose, botID)
 		if err != nil {
 			httputil.BadRequest(w, "redeem failed: "+err.Error())
 			return
 		}
 
-		// Step 2: Store bot_id in neboloop plugin settings
+		// Step 2: Store connection settings (bot_id is our local immutable UUID)
 		plugin, err := svcCtx.PluginStore.GetPlugin(r.Context(), "neboloop")
 		if err != nil {
 			httputil.InternalError(w, "neboloop plugin not registered: "+err.Error())
@@ -610,7 +616,7 @@ func NeboLoopConnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		newSettings := map[string]string{
 			"api_server": apiServer,
-			"bot_id":     redeemed.ID,
+			"bot_id":     botID,
 		}
 
 		if err := svcCtx.PluginStore.UpdateSettings(r.Context(), plugin.ID, newSettings, nil); err != nil {
@@ -619,7 +625,7 @@ func NeboLoopConnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		httputil.OkJSON(w, types.NeboLoopConnectResponse{
-			BotID:   redeemed.ID,
+			BotID:   botID,
 			BotName: redeemed.Name,
 			BotSlug: redeemed.Slug,
 			Message: "Connected to NeboLoop",

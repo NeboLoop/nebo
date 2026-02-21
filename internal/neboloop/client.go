@@ -302,12 +302,15 @@ const DefaultAPIServer = "https://api.neboloop.com"
 
 // RedeemCode exchanges a connection code for a bot identity and one-time token.
 // This is an unauthenticated call used during initial setup.
-func RedeemCode(ctx context.Context, apiServer, code, name, purpose string) (*RedeemCodeResponse, error) {
+// botID is Nebo's locally-generated immutable UUID — the server registers
+// the bot with this ID instead of generating a new one.
+func RedeemCode(ctx context.Context, apiServer, code, name, purpose, botID string) (*RedeemCodeResponse, error) {
 	var resp RedeemCodeResponse
 	if err := postJSON(ctx, apiServer+"/api/v1/bots/connect/redeem", RedeemCodeRequest{
 		Code:    code,
 		Name:    name,
 		Purpose: purpose,
+		BotID:   botID,
 	}, &resp); err != nil {
 		return nil, err
 	}

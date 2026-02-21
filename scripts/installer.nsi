@@ -94,7 +94,7 @@ Section "Nebo" SecMain
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nebo" "Publisher" "Nebo Labs"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nebo" "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nebo" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nebo" "URLInfoAbout" "https://github.com/nebolabs/nebo"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nebo" "URLInfoAbout" "https://github.com/NeboLoop/nebo"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nebo" "NoModify" 1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Nebo" "NoRepair" 1
 

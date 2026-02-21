@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>Nebo</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.nebolabs.nebo</string>
+	<string>dev.neboloop.nebo</string>
 	<key>CFBundleVersion</key>
 	<string>__VERSION__</string>
 	<key>CFBundleShortVersionString</key>

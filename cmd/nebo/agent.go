@@ -408,8 +408,11 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 		botName = "Nebo"
 	}
 
-	// Step 1: Redeem code
-	redeemed, err := neboloopapi.RedeemCode(ctx, apiServer, code, botName, "AI assistant")
+	// Ensure we have a stable bot_id before redeeming
+	botID := ensureBotID(ctx, pluginStore)
+
+	// Step 1: Redeem code (pass our immutable bot_id so the server registers it)
+	redeemed, err := neboloopapi.RedeemCode(ctx, apiServer, code, botName, "AI companion", botID)
 	if err != nil {
 		fmt.Printf("[NeboLoop] Failed to redeem connection code: %s\n", err)
 		userMsg := friendlyNeboLoopError(err)
@@ -419,17 +422,16 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 		return true
 	}
 
-	// Step 2: Store bot_id from redemption via PluginStore
+	// Step 2: Store connection settings via PluginStore (bot_id is already persisted by ensureBotID)
 	if pluginStore != nil {
 		p, err := pluginStore.GetPlugin(ctx, "neboloop")
 		if err == nil {
 			newSettings := map[string]string{
 				"api_server": apiServer,
-				"bot_id":     redeemed.ID,
 				"token":      redeemed.ConnectionToken,
 			}
 			if err := pluginStore.UpdateSettings(ctx, p.ID, newSettings, nil); err != nil {
-				fmt.Printf("[NeboLoop] Warning: failed to save bot_id: %v\n", err)
+				fmt.Printf("[NeboLoop] Warning: failed to save connection settings: %v\n", err)
 			}
 		} else {
 			fmt.Printf("[NeboLoop] Warning: neboloop plugin not registered: %v\n", err)
@@ -438,11 +440,11 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 
 	// Step 3: Activate the neboloop comm plugin and persist via settings
 	if state != nil && state.commManager != nil {
-		state.botID = redeemed.ID // Update in-memory bot_id
+		state.botID = botID // Use our immutable local bot_id
 		if err := state.commManager.SetActive("neboloop"); err != nil {
 			fmt.Printf("[NeboLoop] Warning: failed to activate comm plugin: %v\n", err)
 		} else if active := state.commManager.GetActive(); active != nil {
-			commConfig := injectNeboLoopAuth(ctx, state.sqlDB, redeemed.ID, map[string]string{
+			commConfig := injectNeboLoopAuth(ctx, state.sqlDB, botID, map[string]string{
 				"api_server": apiServer,
 				"token":      redeemed.ConnectionToken,
 			})
@@ -476,7 +478,7 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 	}
 
 	// Emit success tool result
-	resultText := fmt.Sprintf("Connected as %s (ID: %s)", redeemed.Name, redeemed.ID)
+	resultText := fmt.Sprintf("Connected as %s (ID: %s)", redeemed.Name, botID)
 	fmt.Printf("[NeboLoop] %s\n", resultText)
 	send(map[string]any{
 		"type": "stream",
@@ -1239,6 +1241,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				SessionKey: sessionKey,
 				Prompt:     msg.Text,
 				Origin:     tools.OriginUser,
+				UserID:     "default-user",
 				Channel:    msg.ChannelType,
 			})
 			if err != nil {
@@ -1286,12 +1289,20 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		fmt.Printf("[sdk:loop-channel] Processing message from %s in channel %s (session %s)\n",
 			msg.SenderName, msg.ChannelName, sessionKey)
 
+		// Resolve comm lane model override
+		var commModelOverride string
+		if cfg := provider.GetModelsConfig(); cfg != nil && cfg.LaneRouting != nil && cfg.LaneRouting.Comm != "" {
+			commModelOverride = cfg.LaneRouting.Comm
+		}
+
 		state.lanes.EnqueueAsync(ctx, agenthub.LaneComm, func(taskCtx context.Context) error {
 			events, err := r.Run(taskCtx, &runner.RunRequest{
 				SessionKey: sessionKey,
-				Prompt: fmt.Sprintf("[Loop Channel: %s | From: %s]\n\n%s",
+				Prompt: fmt.Sprintf("[Loop Channel: %s | From: %s]\nYour text response will be sent to the channel automatically. Do not use tools to reply.\n\n%s",
 					msg.ChannelName, msg.SenderName, msg.Text),
-				Origin: tools.OriginComm,
+				Origin:        tools.OriginComm,
+				UserID:        "default-user",
+				ModelOverride: commModelOverride,
 			})
 			if err != nil {
 				fmt.Printf("[sdk:loop-channel] Run failed: %v\n", err)
@@ -1331,6 +1342,272 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}, agenthub.WithDescription(fmt.Sprintf("Loop channel: %s from %s", msg.ChannelName, msg.SenderName)))
 	})
 
+	// Wire SDK DM messages → owner gets main lane, external gets comm lane
+	neboloopPlugin.OnDMMessage(func(msg neboloop.DMMessage) {
+		var lane string
+		var sessionKey string
+		var origin tools.Origin
+		var prompt string
+		var laneModelOverride string
+
+		if msg.IsOwner {
+			lane = agenthub.LaneMain
+			origin = tools.OriginUser
+			prompt = msg.Text
+
+			// Resolve the companion chat session so DMs share context with the web UI.
+			// Must use "companion-default" to match the frontend API's fallback user ID.
+			sessionKey = "main" // fallback
+			if state.sqlDB != nil {
+				queries := db.New(state.sqlDB)
+				chat, err := queries.GetOrCreateCompanionChat(context.Background(), db.GetOrCreateCompanionChatParams{
+					ID:     uuid.New().String(),
+					UserID: sql.NullString{String: "companion-default", Valid: true},
+				})
+				if err == nil {
+					sessionKey = chat.ID
+				} else {
+					fmt.Printf("[sdk:dm] Could not resolve companion chat, using fallback: %v\n", err)
+				}
+			}
+		} else {
+			lane = agenthub.LaneComm
+			sessionKey = fmt.Sprintf("dm-%s", msg.ConversationID)
+			origin = tools.OriginComm
+			prompt = fmt.Sprintf("[DM from %s]\nYour text response will be sent back as a DM automatically. Do not use tools to reply.\n\n%s", msg.SenderID, msg.Text)
+			// Resolve comm lane model override for external DMs
+			if cfg := provider.GetModelsConfig(); cfg != nil && cfg.LaneRouting != nil && cfg.LaneRouting.Comm != "" {
+				laneModelOverride = cfg.LaneRouting.Comm
+			}
+		}
+
+		fmt.Printf("[sdk:dm] Dispatching DM: is_owner=%v lane=%s session=%s\n", msg.IsOwner, lane, sessionKey)
+
+		state.lanes.EnqueueAsync(ctx, lane, func(taskCtx context.Context) error {
+			fmt.Printf("[sdk:dm] Lane task started: session=%s\n", sessionKey)
+
+			// Show typing indicator while processing
+			neboloopPlugin.SendTyping(taskCtx, msg.ConversationID, true)
+
+			// For owner DMs, save user message to chat_messages and broadcast
+			// to the web UI so the companion chat updates live.
+			if msg.IsOwner && state.sqlDB != nil {
+				queries := db.New(state.sqlDB)
+				msgID := uuid.New().String()
+				if _, err := queries.CreateChatMessageWithDay(taskCtx, db.CreateChatMessageWithDayParams{
+					ID:      msgID,
+					ChatID:  sessionKey,
+					Role:    "user",
+					Content: prompt,
+				}); err != nil {
+					fmt.Printf("[sdk:dm] Failed to save user message to chat_messages: %v\n", err)
+				} else {
+					fmt.Printf("[sdk:dm] Saved user message %s to chat %s\n", msgID, sessionKey)
+				}
+				// Notify web UI of the new user message (DM-originated)
+				if err := state.sendFrame(map[string]any{
+					"type":   "event",
+					"method": "dm_user_message",
+					"payload": map[string]any{
+						"session_id": sessionKey,
+						"content":    prompt,
+						"source":     "neboloop_dm",
+					},
+				}); err != nil {
+					fmt.Printf("[sdk:dm] sendFrame dm_user_message error: %v\n", err)
+				} else {
+					fmt.Printf("[sdk:dm] sendFrame dm_user_message ok: session=%s\n", sessionKey)
+				}
+			}
+
+			events, err := r.Run(taskCtx, &runner.RunRequest{
+				SessionKey:    sessionKey,
+				Prompt:        prompt,
+				Origin:        origin,
+				UserID:        "default-user",
+				ModelOverride: laneModelOverride,
+			})
+			if err != nil {
+				fmt.Printf("[sdk:dm] Run failed: %v\n", err)
+				_ = neboloopPlugin.SendDM(taskCtx, msg.ConversationID, err.Error())
+				return err
+			}
+
+			var result strings.Builder
+			eventCount := 0
+			for event := range events {
+				eventCount++
+				switch event.Type {
+				case ai.EventTypeText:
+					if event.Text != "" {
+						result.WriteString(event.Text)
+						// Stream to web UI via hub event handler → broadcasts to all chat clients
+						if msg.IsOwner {
+							if err := state.sendFrame(map[string]any{
+								"type":   "event",
+								"method": "chat_stream",
+								"payload": map[string]any{
+									"session_id": sessionKey,
+									"content":    event.Text,
+								},
+							}); err != nil {
+								fmt.Printf("[sdk:dm] sendFrame chat_stream error: %v\n", err)
+							} else {
+								fmt.Printf("[sdk:dm] sendFrame chat_stream ok: session=%s len=%d\n", sessionKey, len(event.Text))
+							}
+						}
+					}
+				case ai.EventTypeToolCall:
+					if msg.IsOwner && event.ToolCall != nil {
+						state.sendFrame(map[string]any{
+							"type":   "event",
+							"method": "tool_start",
+							"payload": map[string]any{
+								"session_id": sessionKey,
+								"tool":       event.ToolCall.Name,
+								"tool_id":    event.ToolCall.ID,
+								"input":      event.ToolCall.Input,
+							},
+						})
+					}
+				case ai.EventTypeToolResult:
+					if msg.IsOwner {
+						toolName, toolID := "", ""
+						if event.ToolCall != nil {
+							toolName = event.ToolCall.Name
+							toolID = event.ToolCall.ID
+						}
+						state.sendFrame(map[string]any{
+							"type":   "event",
+							"method": "tool_result",
+							"payload": map[string]any{
+								"session_id": sessionKey,
+								"result":     event.Text,
+								"tool_name":  toolName,
+								"tool_id":    toolID,
+							},
+						})
+					}
+				case ai.EventTypeMessage:
+					if event.Message != nil && event.Message.Content != "" {
+						result.WriteString(event.Message.Content)
+						if msg.IsOwner {
+							state.sendFrame(map[string]any{
+								"type":   "event",
+								"method": "chat_stream",
+								"payload": map[string]any{
+									"session_id": sessionKey,
+									"content":    event.Message.Content,
+								},
+							})
+						}
+					}
+				case ai.EventTypeThinking:
+					if msg.IsOwner && event.Text != "" {
+						state.sendFrame(map[string]any{
+							"type":   "event",
+							"method": "thinking",
+							"payload": map[string]any{
+								"session_id": sessionKey,
+								"content":    event.Text,
+							},
+						})
+					}
+				case ai.EventTypeError:
+					fmt.Printf("[sdk:dm] Error event: %v\n", event.Error)
+				}
+			}
+
+			// Log tail of response to diagnose mid-sentence cutoffs
+			tail := result.String()
+			if len(tail) > 100 {
+				tail = tail[len(tail)-100:]
+			}
+			fmt.Printf("[sdk:dm] Run complete: session=%s result_len=%d events=%d tail=%q\n", sessionKey, result.Len(), eventCount, tail)
+
+			// Save assistant response and notify web UI
+			if msg.IsOwner {
+				if state.sqlDB != nil && result.Len() > 0 {
+					queries := db.New(state.sqlDB)
+					msgID := uuid.New().String()
+					if _, err := queries.CreateChatMessageWithDay(taskCtx, db.CreateChatMessageWithDayParams{
+						ID:      msgID,
+						ChatID:  sessionKey,
+						Role:    "assistant",
+						Content: result.String(),
+					}); err != nil {
+						fmt.Printf("[sdk:dm] Failed to save assistant message to chat_messages: %v\n", err)
+					} else {
+						fmt.Printf("[sdk:dm] Saved assistant message %s to chat %s (len=%d)\n", msgID, sessionKey, result.Len())
+					}
+				}
+				state.sendFrame(map[string]any{
+					"type":   "event",
+					"method": "chat_complete",
+					"payload": map[string]any{
+						"session_id": sessionKey,
+					},
+				})
+			}
+
+			// Clear typing indicator before sending response
+			neboloopPlugin.SendTyping(taskCtx, msg.ConversationID, false)
+
+			if result.Len() > 0 {
+				if err := neboloopPlugin.SendDM(taskCtx, msg.ConversationID, result.String()); err != nil {
+					fmt.Printf("[sdk:dm] SendDM failed: %v\n", err)
+				}
+			} else {
+				fmt.Printf("[sdk:dm] No response text produced for session=%s\n", sessionKey)
+			}
+			return nil
+		}, agenthub.WithDescription(fmt.Sprintf("DM from %s (owner=%v)", msg.SenderID, msg.IsOwner)))
+	})
+
+	// Wire SDK history requests → return recent companion chat messages.
+	// NeboLoop sends stream=history when the owner opens the P2P DM chat.
+	neboloopPlugin.OnHistoryRequest(func(req neboloop.HistoryRequest) []neboloop.HistoryMessage {
+		if state.sqlDB == nil {
+			return nil
+		}
+		queries := db.New(state.sqlDB)
+
+		// Resolve the companion chat (same session used by web UI and owner DMs)
+		chat, err := queries.GetOrCreateCompanionChat(context.Background(), db.GetOrCreateCompanionChatParams{
+			ID:     uuid.New().String(),
+			UserID: sql.NullString{String: "companion-default", Valid: true},
+		})
+		if err != nil {
+			fmt.Printf("[sdk:history] Could not resolve companion chat: %v\n", err)
+			return nil
+		}
+
+		limit := req.Limit
+		if limit <= 0 || limit > 50 {
+			limit = 20
+		}
+
+		rows, err := queries.GetRecentChatMessages(context.Background(), db.GetRecentChatMessagesParams{
+			ChatID: chat.ID,
+			Limit:  int64(limit),
+		})
+		if err != nil {
+			fmt.Printf("[sdk:history] Failed to load messages: %v\n", err)
+			return nil
+		}
+
+		out := make([]neboloop.HistoryMessage, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, neboloop.HistoryMessage{
+				Role:      row.Role,
+				Content:   row.Content,
+				Timestamp: row.CreatedAt,
+			})
+		}
+		fmt.Printf("[sdk:history] Returning %d messages for chat %s\n", len(out), chat.ID)
+		return out
+	})
+
 	// Wire SDK install events → app registry
 	neboloopPlugin.OnInstall(func(evt neboloopsdk.InstallEvent) {
 		appRegistry.HandleInstallEvent(ctx, evt)
@@ -1349,6 +1626,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				SessionKey: sessionKey,
 				Prompt:     text,
 				Origin:     tools.OriginUser,
+				UserID:     "default-user",
 			})
 			if err != nil {
 				fmt.Printf("[apps:local-channel] Run failed for %s/%s: %v\n", channelType, channelID, err)
@@ -2114,8 +2392,9 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 							continue
 						}
 
-						// Forward text content (CLI provider may send text only in the assistant envelope)
-						if event.Message.Content != "" && result.Len() == 0 {
+						// Forward text content (CLI provider may send text in the assistant envelope
+						// after tool-use rounds — always forward, don't gate on result.Len())
+						if event.Message.Content != "" {
 							result.WriteString(event.Message.Content)
 							state.sendFrame(map[string]any{
 								"type": "stream",

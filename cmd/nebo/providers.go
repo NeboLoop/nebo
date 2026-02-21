@@ -127,7 +127,7 @@ func createProviders(cfg *agentcfg.Config) []ai.Provider {
 	}
 
 	// Add active CLI providers
-	for _, cli := range provider.KnownCLIProviders() {
+	for _, cli := range provider.GetAvailableCLIProviders() {
 		if !cli.Active || !cli.Installed {
 			continue
 		}

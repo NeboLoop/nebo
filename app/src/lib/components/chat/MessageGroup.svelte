@@ -35,6 +35,7 @@
 		id: string;
 		role: 'user' | 'assistant' | 'system';
 		content: string;
+		contentHtml?: string;
 		timestamp: Date;
 		toolCalls?: ToolCall[];
 		streaming?: boolean;
@@ -245,7 +246,7 @@
 								<ReadingIndicator />
 							{:else}
 								<div class="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
-									<Markdown content={resolved.cleanContent} />
+									<Markdown content={resolved.cleanContent} preRenderedHtml={resolved.message.contentHtml} />
 								</div>
 								{#if resolved.message.streaming}
 									<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>

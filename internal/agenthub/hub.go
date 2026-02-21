@@ -572,11 +572,14 @@ func (h *Hub) handleFrame(agent *AgentConnection, frame *Frame) {
 			}
 		}
 	case "event":
+		fmt.Printf("[AgentHub] Event frame from %s: method=%s\n", agent.ID, frame.Method)
 		h.eventHandlerMu.RLock()
 		handler := h.eventHandler
 		h.eventHandlerMu.RUnlock()
 		if handler != nil {
 			handler(agent.ID, frame)
+		} else {
+			fmt.Printf("[AgentHub] WARNING: no event handler registered!\n")
 		}
 	case "req":
 		// Request from agent - handle and respond

@@ -3,10 +3,11 @@
 
 	interface Props {
 		content: string;
+		preRenderedHtml?: string;
 		class?: string;
 	}
 
-	let { content, class: className = '' }: Props = $props();
+	let { content, preRenderedHtml, class: className = '' }: Props = $props();
 
 	const MAX_RENDER_LENGTH = 50_000;
 	let truncated = $derived(content?.length > MAX_RENDER_LENGTH);
@@ -14,7 +15,7 @@
 	let displayContent = $derived(
 		truncated && !showFull ? content.slice(0, MAX_RENDER_LENGTH) + '\n\n---\n*Content truncated*' : content
 	);
-	let html = $derived(parseMarkdown(displayContent));
+	let html = $derived(preRenderedHtml || parseMarkdown(displayContent));
 	let container: HTMLDivElement;
 
 	// Load X/Twitter widget script once

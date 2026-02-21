@@ -214,9 +214,15 @@ func (m *SessionManager) AppendMessage(sessionID string, msg AgentMessage) error
 	return m.queries.IncrementSessionMessageCount(ctx, sessionID)
 }
 
-// Compact summarizes old messages to reduce context size
-func (m *SessionManager) Compact(sessionID string, summaryContent string) error {
+// Compact summarizes old messages to reduce context size.
+// keepCount controls how many recent messages to preserve (floor: 1).
+func (m *SessionManager) Compact(sessionID string, summaryContent string, keepCount int) error {
 	ctx := context.Background()
+
+	if keepCount < 1 {
+		keepCount = 1
+	}
+	keepCount64 := int64(keepCount)
 
 	// Get message count
 	count, err := m.queries.CountSessionMessages(ctx, sessionID)
@@ -224,16 +230,14 @@ func (m *SessionManager) Compact(sessionID string, summaryContent string) error 
 		return err
 	}
 
-	// Keep the last 10 messages, summarize the rest
-	keepCount := int64(10)
-	if count <= keepCount {
+	if count <= keepCount64 {
 		return nil // Nothing to compact
 	}
 
 	// Get the min ID of messages to keep
 	minIDResult, err := m.queries.GetMaxMessageIDToKeep(ctx, GetMaxMessageIDToKeepParams{
 		SessionID: sessionID,
-		Limit:     keepCount,
+		Limit:     keepCount64,
 	})
 	if err != nil {
 		return err

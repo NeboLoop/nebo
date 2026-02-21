@@ -227,12 +227,12 @@ app-bundle: desktop
 	@cp assets/icons/nebo.icns dist/Nebo.app/Contents/Resources/nebo.icns
 	@echo "Signing Nebo.app with Developer ID..."
 	@codesign --force --sign "$(SIGN_IDENTITY)" \
-		--identifier dev.nebolabs.nebo \
+		--identifier dev.neboloop.nebo \
 		--entitlements assets/macos/nebo.entitlements \
 		--options runtime \
 		dist/Nebo.app/Contents/MacOS/nebo
 	@codesign --force --sign "$(SIGN_IDENTITY)" \
-		--identifier dev.nebolabs.nebo \
+		--identifier dev.neboloop.nebo \
 		--entitlements assets/macos/nebo.entitlements \
 		--options runtime \
 		dist/Nebo.app

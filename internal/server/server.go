@@ -308,7 +308,6 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 // registerAuthRoutes registers auth routes with stricter rate limiting
 func registerAuthRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/auth/config", auth.GetAuthConfigHandler(svcCtx))
-	r.Get("/auth/dev-login", auth.DevLoginHandler(svcCtx))
 	r.Post("/auth/forgot-password", auth.ForgotPasswordHandler(svcCtx))
 	r.Post("/auth/login", auth.LoginHandler(svcCtx))
 	r.Post("/auth/refresh", auth.RefreshTokenHandler(svcCtx))

@@ -201,13 +201,6 @@ export function getAuthConfig() {
 }
 
 /**
- * @description "Dev login"
- */
-export function devLogin() {
-	return webapi.get<components.MessageResponse>(`/api/v1/auth/dev-login`)
-}
-
-/**
  * @description "Forgot password"
  * @param req
  */

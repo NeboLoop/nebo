@@ -189,6 +189,23 @@ func (t *WebDomainTool) Execute(ctx context.Context, input json.RawMessage) (*To
 		return nil, fmt.Errorf("invalid input: %w", err)
 	}
 
+	// Normalize: infer resource from action when resource is omitted.
+	// The system prompt teaches shorthand like web(action: "search", query: "...")
+	// which omits the resource field. Map action→resource automatically.
+	if in.Resource == "" {
+		switch in.Action {
+		case "search", "query":
+			in.Resource = "search"
+			in.Action = "query"
+		case "fetch":
+			in.Resource = "http"
+		case "navigate", "snapshot", "click", "fill", "type", "screenshot",
+			"text", "evaluate", "wait", "scroll", "back", "forward", "reload",
+			"hover", "select", "list_pages", "close", "launch", "status":
+			in.Resource = "browser"
+		}
+	}
+
 	switch in.Resource {
 	case "http":
 		return t.executeHTTP(ctx, in)
@@ -312,7 +329,12 @@ func (t *WebDomainTool) handleSearch(ctx context.Context, in WebDomainInput) (*T
 			}, nil
 		}
 	default:
-		results, err = t.searchDuckDuckGo(ctx, in.Query, in.Limit)
+		// Try native browser first (renders JavaScript, always up-to-date)
+		results, err = t.searchViaNativeBrowser(ctx, in.Query, in.Limit)
+		if err != nil {
+			// Fall back to HTTP scraper
+			results, err = t.searchDuckDuckGo(ctx, in.Query, in.Limit)
+		}
 	}
 
 	if err != nil {
@@ -995,6 +1017,83 @@ func (t *WebDomainTool) searchDuckDuckGo(ctx context.Context, query string, limi
 	}
 
 	return parseWebDuckDuckGoHTML(string(body), limit), nil
+}
+
+func (t *WebDomainTool) searchViaNativeBrowser(ctx context.Context, query string, limit int) ([]webSearchResult, error) {
+	mgr := webview.GetManager()
+	if !mgr.IsAvailable() {
+		return nil, fmt.Errorf("native browser not available")
+	}
+
+	searchURL := fmt.Sprintf("https://duckduckgo.com/?q=%s", url.QueryEscape(query))
+
+	win, err := mgr.CreateWindow(searchURL, "Nebo Search")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create search window: %w", err)
+	}
+	defer mgr.CloseWindow(win.ID)
+
+	// Wait for search results to render
+	waitTimeout := 10 * time.Second
+	_, _ = webview.Wait(ctx, mgr, win.ID, "article[data-testid='result']", waitTimeout)
+
+	// Extract results via JavaScript
+	js := `(function() {
+		var results = [];
+		var items = document.querySelectorAll('article[data-testid="result"]');
+		if (items.length === 0) items = document.querySelectorAll('.result.results_links');
+		if (items.length === 0) items = document.querySelectorAll('.nrn-react-div .result');
+		items.forEach(function(item) {
+			var titleEl = item.querySelector('a[data-testid="result-title-a"]') || item.querySelector('h2 a') || item.querySelector('a');
+			var snippetEl = item.querySelector('[data-testid="result-snippet"]') || item.querySelector('.snippet, .result__snippet');
+			if (titleEl && titleEl.href) {
+				results.push({
+					title: titleEl.textContent.trim(),
+					url: titleEl.href,
+					snippet: snippetEl ? snippetEl.textContent.trim() : ''
+				});
+			}
+		});
+		return JSON.stringify(results);
+	})()`
+
+	evalTimeout := 15 * time.Second
+	resultJSON, err := webview.Evaluate(ctx, mgr, win.ID, js, evalTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract results: %w", err)
+	}
+
+	// Evaluate returns JSON — the JS returns a JSON.stringify'd string,
+	// so resultJSON is a quoted JSON string that needs double-unmarshal.
+	var rawStr string
+	if err := json.Unmarshal(resultJSON, &rawStr); err != nil {
+		rawStr = string(resultJSON)
+	}
+
+	var jsResults []struct {
+		Title   string `json:"title"`
+		URL     string `json:"url"`
+		Snippet string `json:"snippet"`
+	}
+	if err := json.Unmarshal([]byte(rawStr), &jsResults); err != nil {
+		return nil, fmt.Errorf("failed to parse search results: %w", err)
+	}
+
+	results := make([]webSearchResult, 0, len(jsResults))
+	for _, r := range jsResults {
+		if len(results) >= limit {
+			break
+		}
+		if r.Title != "" && r.URL != "" {
+			results = append(results, webSearchResult{
+				Title:   r.Title,
+				URL:     r.URL,
+				Snippet: r.Snippet,
+			})
+		}
+	}
+
+	return results, nil
 }
 
 func parseWebDuckDuckGoHTML(html string, limit int) []webSearchResult {

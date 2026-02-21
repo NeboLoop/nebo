@@ -2,9 +2,9 @@
 
 ## What Nebo Is
 
-Nebo is a personal operating system — an always-running AI agent that manages your digital life. Think of Nebo the way you think of an iPhone: a powerful platform that becomes transformative through its apps.
+Nebo is a personal desktop AI companion — an always-running agent that manages your digital life. Think of Nebo the way you think of a smartphone: a powerful platform that becomes transformative through its apps.
 
-On its own, Nebo is a capable agent with memory, scheduling, web browsing, file management, and shell access. But the real unlock is Apps. Just as the iPhone's power comes from the App Store ecosystem, Nebo's power comes from the apps that extend what it can do.
+On its own, Nebo is a capable agent with memory, scheduling, web browsing, file management, and shell access. But the real unlock is Apps. Just as a smartphone's power comes from its app ecosystem, Nebo's power comes from the apps that extend what it can do.
 
 ## What Apps Are
 
@@ -14,7 +14,7 @@ Nebo Apps are self-contained, precompiled units of incredible functionality. Eac
 
 **The interface is 100% conversational.** Users don't interact with apps through separate screens or dashboards. They talk to Nebo, and Nebo uses the app's tools to get things done. "What's on my calendar tomorrow?" — Nebo calls the calendar app. "Create a meeting with Sarah at 3pm" — Nebo calls the calendar app. The user never leaves the conversation.
 
-Apps can optionally provide a **UI panel** — a supplementary, glanceable dashboard that shows status at a glance (today's schedule, connection status, a quick summary). But the UI is never the primary interface. It's a complement to the conversation, not a replacement for it.
+Apps can optionally provide a **settings UI** — a configuration panel that opens in Nebo's built-in browser window. This is where users enter API keys, toggle features, and configure the app. The settings UI is driven by the `settings` array in the manifest (Nebo renders the form automatically), or the app can provide its own full custom UI via the `ui` capability.
 
 **Apps replace and extend Nebo's built-in capabilities.** Nebo ships with basic platform tools (local calendar access, screenshots, etc.). When you install a calendar app, it replaces the built-in calendar tool and becomes a superset — local + cloud + aggregation + availability checking. The agent seamlessly uses whichever tool is registered, whether built-in or app-provided.
 
@@ -41,7 +41,7 @@ binary is a script (shebang #! detected) — only compiled native binaries are a
 
 ## How Apps Work
 
-Apps communicate over gRPC via Unix sockets, run in a sandboxed environment, and support rich capabilities including tools, channels, gateways, UI panels, and inter-agent communication.
+Apps communicate over gRPC via Unix sockets, run in a sandboxed environment, and support rich capabilities including tools, channels, gateways, UI panels, scheduling, and inter-agent communication.
 
 ---
 
@@ -77,15 +77,17 @@ Apps live in the `apps/` subdirectory of your Nebo data directory:
 ```
 ~/Library/Application Support/Nebo/apps/   # macOS
 ~/.config/nebo/apps/                        # Linux
+%AppData%\Nebo\apps\                        # Windows
 
 apps/
   com.example.myapp/
     manifest.json       # Required: app metadata
     binary              # Required: executable (or named "app")
     signatures.json     # Required for NeboLoop distribution, optional in dev
+    SKILL.md            # Required: skill definition for the agent
     data/               # Auto-created: app's sandboxed storage
     logs/               # Auto-created: stdout.log, stderr.log
-    ui/                 # Optional: static UI assets
+    ui/                 # Optional: static UI assets (HTML/CSS/JS)
 ```
 
 ---
@@ -135,6 +137,7 @@ Every app requires a `manifest.json`:
 | `permissions` | `[]` | What the app needs access to |
 | `description` | `""` | Shown in the UI |
 | `settings` | `[]` | Configurable settings (rendered in Settings UI) |
+| `oauth` | `[]` | OAuth provider requirements (see OAuth section) |
 
 ---
 
@@ -148,7 +151,7 @@ Declare what your app provides:
 | `tool:<name>` | `ToolService` | A named tool for the agent |
 | `channel:<name>` | `ChannelService` | A messaging channel |
 | `comm` | `CommService` | Inter-agent communication |
-| `ui` | `UIService` | Structured UI panels |
+| `ui` | `UIService` | Custom UI with HTTP proxy |
 | `schedule` | `ScheduleService` | Custom scheduling (replaces built-in cron) |
 | `vision` | `ToolService` | Vision processing (uses ToolService) |
 | `browser` | `ToolService` | Browser automation (uses ToolService) |
@@ -167,17 +170,54 @@ Permissions control what the app can access. Deny by default — if not declared
 | `filesystem:` | `filesystem:read`, `filesystem:write` | File system access |
 | `memory:` | `memory:read`, `memory:write` | Agent memory access |
 | `session:` | `session:read` | Conversation sessions |
+| `context:` | `context:read` | Agent context access |
 | `tool:` | `tool:shell`, `tool:file` | Use other tools |
 | `shell:` | `shell:exec` | Shell command execution |
+| `subagent:` | `subagent:spawn` | Sub-agent operations |
+| `lane:` | `lane:enqueue` | Lane operations |
 | `channel:` | `channel:send`, `channel:*` | Channel operations |
 | `comm:` | `comm:send`, `comm:*` | Inter-agent comm |
+| `notification:` | `notification:send` | Push notifications |
+| `embedding:` | `embedding:search` | Vector embedding access |
+| `skill:` | `skill:invoke` | Skill invocation |
+| `advisor:` | `advisor:consult` | Advisor system access |
 | `model:` | `model:chat` | AI model access |
-| `user:` | `user:token` | Receive user JWT in requests |
-| `schedule:` | `schedule:create` | Cron job management |
+| `mcp:` | `mcp:connect` | MCP server access |
 | `database:` | `database:query` | Database access |
 | `storage:` | `storage:read`, `storage:write` | Persistent storage |
+| `schedule:` | `schedule:create` | Cron job management |
+| `voice:` | `voice:record` | Voice/audio access |
+| `browser:` | `browser:navigate` | Browser automation |
+| `oauth:` | `oauth:google`, `oauth:*` | OAuth token access |
+| `user:` | `user:token` | Receive user JWT in requests |
+| `settings:` | `settings:read` | Settings access |
+| `capability:` | `capability:register` | Capability registration |
 
 Wildcard permissions are supported: `network:*` matches any `network:` permission check.
+
+---
+
+## OAuth Requirements
+
+Apps can declare OAuth provider requirements. Nebo's OAuth broker handles the entire flow — apps receive tokens automatically via the `Configure` RPC.
+
+```json
+{
+    "oauth": [
+        {
+            "provider": "google",
+            "scopes": ["https://www.googleapis.com/auth/calendar"]
+        }
+    ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `provider` | OAuth provider: `"google"`, `"microsoft"`, `"github"` |
+| `scopes` | Array of OAuth scopes the app needs |
+
+When the user installs the app, Nebo prompts them to authorize the required OAuth scopes. The app receives refreshed tokens via the `Configure` RPC without handling the OAuth flow itself.
 
 ---
 
@@ -212,6 +252,62 @@ Settings appear in the Nebo UI under the app's settings panel. Nebo stores them 
     ]
 }
 ```
+
+### How Settings Are Stored and Delivered
+
+Settings values are stored in the `plugin_settings` database table as key-value pairs. Secret fields (marked with `"secret": true`) are encrypted at rest using Nebo's credential encryption.
+
+When a user updates settings via the UI:
+
+1. Values are persisted to the database (secrets encrypted)
+2. Nebo calls the `Configure` gRPC RPC on your app, passing all current settings as a `SettingsMap`
+3. A `plugin_settings_updated` event is broadcast to all connected web clients
+
+Your app receives settings via `Configure` both on startup and whenever the user changes them — no polling needed.
+
+---
+
+## Settings UI Flow
+
+Nebo provides two ways for users to configure apps:
+
+### Automatic Settings Form (most apps)
+
+For apps that only declare a `settings` array in their manifest, Nebo renders the settings form automatically in the web UI:
+
+1. User navigates to **Settings > Apps** in the web UI
+2. Clicks an app card to open the detail modal
+3. The modal shows tabs: **Info** (capabilities, permissions, version), **Settings** (auto-rendered form), and **Connections** (OAuth grants)
+4. If the app has required settings that aren't filled in, the Settings tab auto-activates
+5. The form renders each field from `settingsManifest.groups[].fields[]` using the appropriate input type
+6. On save, `PUT /api/v1/plugins/{id}/settings` persists values and triggers the `Configure` RPC to the app
+
+### Custom App UI (apps with `ui` capability)
+
+Apps that need a richer configuration interface can provide their own full web UI. Declare `"provides": ["ui"]` in the manifest and ship a `ui/` directory with your app containing HTML/CSS/JS (typically a SPA with an `index.html`).
+
+When the user clicks "Open" on a UI-capable app:
+
+1. Frontend calls `POST /api/v1/apps/{id}/ui/open`
+2. **Desktop mode:** Nebo creates a native browser window (via Wails WebView) pointing to the app's UI URL. The window is 1200x800 with the app's name as the title.
+3. **Headless mode:** The endpoint returns a URL; the frontend opens it in a new browser tab via `window.open()`
+
+The app's UI has two mechanisms for serving content:
+
+- **Static files** — `GET /api/v1/apps/{id}/ui/*` serves files directly from the app's `ui/` directory on disk (SPA fallback to `index.html`)
+- **API proxy** — `ANY /api/v1/apps/{id}/api/*` proxies HTTP requests to the app via gRPC `UIService.HandleRequest()`. This is how the app's frontend communicates with its backend.
+
+**The proxy flow:**
+
+```
+Browser: POST /api/v1/apps/my-app/api/settings
+  → AppAPIProxyHandler extracts path="/settings", copies headers/body
+  → AppRegistry.HandleRequest() → gRPC UIService.HandleRequest()
+  → App's internal http.ServeMux dispatches to the registered handler
+  → pb.HttpResponse flows back as HTTP to the browser
+```
+
+The `HandleRequest` RPC receives an `HttpRequest` (method, path, query, headers, body) and returns an `HttpResponse` (status code, headers, body). The SDK wraps a standard `net/http.ServeMux` so you write normal Go HTTP handlers — the SDK does the gRPC bridging automatically.
 
 ---
 
@@ -408,12 +504,12 @@ Channel apps bridge external messaging platforms (Telegram, Discord, Slack, etc.
 2. Nebo calls `Connect()` with config from your app's settings (API tokens, bot tokens, etc.)
 3. Nebo opens a `Receive()` stream — your app sends inbound messages whenever a user messages the bot
 4. Inbound messages are routed to the agent's main conversation lane
-5. When the agent (or cron jobs) want to send a message, Nebo calls `Send()` with the v1 message envelope
+5. When the agent (or cron jobs) want to send a message, Nebo calls `Send()` with the message envelope
 6. On shutdown, Nebo calls `Disconnect()`
 
-### v1 Message Envelope
+### Message Envelope
 
-All channel messages — inbound and outbound — use the common message envelope. This is the shared contract between Nebo, NeboLoop, and every channel plugin.
+All channel messages — inbound and outbound — use a common message envelope:
 
 ```json
 {
@@ -443,18 +539,13 @@ All channel messages — inbound and outbound — use the common message envelop
 
 **Two-layer design:** The common fields (text, attachments, reply_to, actions) cover 90% of agent-initiated messaging. Platform-specific features go in `platform_data` — your plugin maps them to/from the native platform format. This means you can build a basic channel plugin using only the common fields, and add rich platform features incrementally.
 
-**Sender identity:** The `sender` block contains the bot's name and role (relationship dynamic — e.g., "Friend", "COO", "Mentor"). The NeboLoop broker enriches outbound messages with sender identity from its cached bot record. Your channel plugin uses this to format the display name however the platform expects ("Alex/COO" in Slack, "Alex — COO" in Discord embeds, etc.).
+**Sender identity:** The `sender` block contains the bot's name and role (relationship dynamic — e.g., "Friend", "COO", "Son", "Mentor"). The NeboLoop broker enriches outbound messages with sender identity from its cached bot record. Your channel plugin uses this to format the display name however the platform expects ("Alex/COO" in Slack, "Alex — COO" in Discord embeds, etc.).
 
-### MQTT Topics
+### Message Routing
 
-Channel messages are routed over per-channel MQTT subtopics for isolation:
+Channel messages are routed via NeboLoop's WebSocket gateway. Nebo maintains a persistent WebSocket connection to `wss://comms.neboloop.com/ws` with binary framing and JSON payloads. Each channel app communicates with Nebo over gRPC (Unix socket), and Nebo handles the upstream routing to/from NeboLoop.
 
-```
-neboloop/bot/{botID}/channels/{channelType}/inbound    # messages from users → agent
-neboloop/bot/{botID}/channels/{channelType}/outbound   # messages from agent → channel
-```
-
-Each channel type gets its own queue, so a slow consumer on one channel (e.g., rate-limited WhatsApp API) can't back up another. Nebo subscribes with wildcards — backward-compatible with legacy topics.
+Inbound messages from `Receive()` are delivered to the agent's main lane. The agent can reply using the `message` tool, or cron jobs can deliver results to channels automatically.
 
 ### Go Example — Telegram Channel
 
@@ -648,7 +739,9 @@ Declare `"provides": ["comm"]` and `"permissions": ["comm:*"]`.
 **Key behaviors:**
 
 - `Register` announces this agent on the network with its capabilities
+- `Deregister` removes the agent from the network
 - `Subscribe/Unsubscribe` manage topic subscriptions
+- `IsConnected` checks connection status
 - `Receive` streams inbound messages (server-streaming, same as channels)
 - Only one comm app can be active at a time
 
@@ -676,75 +769,100 @@ The `model` field in each event tells Nebo which model actually handled the requ
 
 ## UI App
 
-A UI app renders structured panels in the Nebo web interface. Declare `"provides": ["ui"]`.
+A UI app provides a custom configuration interface that opens in Nebo's built-in browser window. Declare `"provides": ["ui"]`.
 
-**UIView** contains an ordered list of **UIBlocks**. These are pre-built components rendered by Nebo (no custom HTML/CSS/JS):
+Unlike the automatic settings form (which Nebo renders from your `settings` manifest), a UI app serves its own full HTML/CSS/JS frontend. This is useful for apps that need rich configuration beyond simple form fields — dashboards, visual editors, interactive setup wizards, etc.
 
-| Block Type | Fields Used | Description |
-|------------|-------------|-------------|
-| `text` | `text` | Body text paragraph |
-| `heading` | `text`, `variant` (h1/h2/h3) | Section heading |
-| `input` | `value`, `placeholder`, `hint`, `disabled` | Text input field |
-| `button` | `text`, `variant` (primary/secondary/ghost/error), `disabled` | Clickable button |
-| `select` | `value`, `options[]`, `disabled` | Dropdown selector |
-| `toggle` | `value` ("true"/"false"), `text`, `disabled` | On/off toggle switch |
-| `divider` | — | Horizontal separator |
-| `image` | `src`, `alt` | Image display |
+### How It Works
 
-**StreamUpdates** is a server-streaming RPC that pushes new views whenever your app's state changes. Use this for live-updating dashboards.
+Your app ships a `ui/` directory containing static web assets (HTML, CSS, JS — typically a SPA with `index.html`). Nebo serves these files directly and proxies API calls to your app via gRPC.
 
-### Go Example — Counter UI
+**Two serving mechanisms:**
+
+| Path | Mechanism | Purpose |
+|------|-----------|---------|
+| `GET /api/v1/apps/{id}/ui/*` | Static file server | Serves files from your `ui/` directory (SPA fallback to `index.html`) |
+| `ANY /api/v1/apps/{id}/api/*` | gRPC proxy | Proxies HTTP requests to your app's `UIService.HandleRequest()` |
+
+**UIService proto:**
+
+```protobuf
+service UIService {
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc Configure(SettingsMap) returns (Empty);
+  rpc HandleRequest(HttpRequest) returns (HttpResponse);
+}
+
+message HttpRequest {
+  string method = 1;
+  string path = 2;
+  string query = 3;
+  map<string, string> headers = 4;
+  bytes body = 5;
+}
+
+message HttpResponse {
+  int32 status_code = 1;
+  map<string, string> headers = 2;
+  bytes body = 3;
+}
+```
+
+The SDK wraps a standard `net/http.ServeMux` so you write normal Go HTTP handlers — the SDK handles the gRPC bridging automatically using `httptest.NewRecorder`.
+
+### Opening the UI
+
+When the user clicks "Open" on a UI-capable app in the Settings page:
+
+- **Desktop mode:** Nebo creates a native browser window (Wails WebView, 1200x800) pointing to the app's UI URL
+- **Headless mode:** Returns the URL; the frontend opens it in a new browser tab
+
+### Go Example — Dashboard UI
 
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
+    "encoding/json"
     "log"
-    "sync/atomic"
+    "net/http"
 
     nebo "github.com/neboloop/nebo-sdk-go"
 )
 
-type Counter struct {
-    count atomic.Int64
+type Dashboard struct {
+    mux *http.ServeMux
 }
 
-func (c *Counter) GetView(_ context.Context, _ string) (*nebo.View, error) {
-    return nebo.NewView("counter-main", "Counter").
-        Heading("count", fmt.Sprintf("Count: %d", c.count.Load()), "h1").
-        Button("increment", "Increment", "primary").
-        Button("decrement", "Decrement", "secondary").
-        Button("reset", "Reset", "ghost").
-        Build(), nil
+func NewDashboard() *Dashboard {
+    d := &Dashboard{mux: http.NewServeMux()}
+
+    d.mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
+        json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+    })
+
+    d.mux.HandleFunc("POST /action", func(w http.ResponseWriter, r *http.Request) {
+        var req map[string]string
+        json.NewDecoder(r.Body).Decode(&req)
+        json.NewEncoder(w).Encode(map[string]string{"result": "done"})
+    })
+
+    return d
 }
 
-func (c *Counter) OnEvent(_ context.Context, event nebo.UIEvent) (*nebo.UIEventResult, error) {
-    switch event.BlockID {
-    case "increment":
-        c.count.Add(1)
-    case "decrement":
-        c.count.Add(-1)
-    case "reset":
-        c.count.Store(0)
-    }
-    view, _ := c.GetView(context.Background(), "")
-    return &nebo.UIEventResult{
-        View:  view,
-        Toast: fmt.Sprintf("Count is now %d", c.count.Load()),
-    }, nil
-}
+func (d *Dashboard) Handler() *http.ServeMux { return d.mux }
 
 func main() {
     app, err := nebo.New()
     if err != nil {
         log.Fatal(err)
     }
-    app.RegisterUI(&Counter{})
+    app.RegisterUI(NewDashboard())
     log.Fatal(app.Run())
 }
 ```
+
+Your `ui/index.html` would make fetch calls to `/api/v1/apps/com.example.dashboard/api/status`, which get proxied through to your `mux` handler.
 
 ---
 
@@ -912,7 +1030,7 @@ For distribution through NeboLoop, package your app as a `.napp` file (a tar.gz 
 
 ```bash
 cd com.example.myapp/
-tar -czf myapp-1.0.0.napp manifest.json binary signatures.json
+tar -czf myapp-1.0.0.napp manifest.json binary signatures.json SKILL.md
 ```
 
 **Required files in the archive:**
@@ -922,6 +1040,7 @@ tar -czf myapp-1.0.0.napp manifest.json binary signatures.json
 | `manifest.json` | 1 MB | App metadata |
 | `binary` or `app` | 500 MB | Executable |
 | `signatures.json` | 1 MB | Ed25519 signatures |
+| `SKILL.md` | 1 MB | Skill definition for the agent |
 
 **Optional files:**
 
@@ -935,6 +1054,10 @@ tar -czf myapp-1.0.0.napp manifest.json binary signatures.json
 - No absolute paths (rejected)
 - Only allowlisted filenames accepted
 
+### SKILL.md
+
+Every app must include a `SKILL.md` file that defines how the agent should use the app's tools. This is a markdown file that describes the skill — its purpose, when to use it, example invocations, and any constraints. Nebo loads this file and uses it to guide the agent's tool selection and usage.
+
 ### Signatures (NeboLoop-distributed apps)
 
 NeboLoop signs apps with Ed25519. The `signatures.json` format:
@@ -942,9 +1065,10 @@ NeboLoop signs apps with Ed25519. The `signatures.json` format:
 ```json
 {
     "key_id": "a1b2c3d4",
-    "manifest_sig": "<base64 signature of raw manifest.json bytes>",
+    "algorithm": "ed25519",
+    "manifest_signature": "<base64 signature of raw manifest.json bytes>",
     "binary_sha256": "<hex SHA256 of binary>",
-    "binary_sig": "<base64 signature of raw binary bytes>"
+    "binary_signature": "<base64 signature of raw binary bytes>"
 }
 ```
 
@@ -961,7 +1085,7 @@ In dev mode (no NeboLoop URL configured), signature verification is skipped enti
    mkdir -p ~/Library/Application\ Support/Nebo/apps/com.example.myapp
    ```
 
-2. Write your `manifest.json` and code
+2. Write your `manifest.json`, `SKILL.md`, and code
 
 3. Build your binary:
    ```bash
@@ -1000,7 +1124,7 @@ Use the `data/` directory (also available as `NEBO_APP_DATA` env var) for any fi
 # List installed apps
 nebo apps list
 
-# Check running apps (via Settings > Status page in the web UI)
+# Check running apps (via Settings > Apps in the web UI)
 # Or check the apps directory for running sockets
 ls ~/Library/Application\ Support/Nebo/apps/*/app.sock
 ```
@@ -1015,23 +1139,23 @@ nebo apps uninstall com.example.myapp
 
 ## Proto File Reference
 
-Proto files live in `proto/apps/`. Channel proto is v1; others are v0. The SDKs ship with pre-generated code, so you don't need protoc for normal development.
+Proto files live in `proto/apps/v0/`. The SDKs ship with pre-generated code, so you don't need protoc for normal development.
 
 | File | Service | Key RPCs |
 |------|---------|----------|
 | `v0/common.proto` | (messages only) | HealthCheckRequest/Response, SettingsMap, UserContext, Empty |
 | `v0/tool.proto` | `ToolService` | Name, Description, Schema, Execute, RequiresApproval, Configure |
-| `v1/channel.proto` | `ChannelService` | ID, Connect, Disconnect, Send, Receive (stream), Configure |
-| `v0/comm.proto` | `CommService` | Name, Version, Connect, Disconnect, Send, Subscribe, Register, Receive (stream), Configure |
+| `v0/channel.proto` | `ChannelService` | ID, Connect, Disconnect, Send, Receive (stream), Configure |
+| `v0/comm.proto` | `CommService` | Name, Version, Connect, Disconnect, IsConnected, Send, Subscribe, Unsubscribe, Register, Deregister, Receive (stream), Configure |
 | `v0/gateway.proto` | `GatewayService` | HealthCheck, Stream (stream), Poll, Cancel, Configure |
-| `v0/ui.proto` | `UIService` | HealthCheck, GetView, SendEvent, StreamUpdates (stream), Configure |
+| `v0/ui.proto` | `UIService` | HealthCheck, HandleRequest, Configure |
 | `v0/schedule.proto` | `ScheduleService` | HealthCheck, Create, Get, List, Update, Delete, Enable, Disable, Trigger, History, Triggers (stream), Configure |
 
 Every service includes `HealthCheck` and `Configure` RPCs. The SDK handles both automatically.
 
-### v1 Channel Proto Types
+### Channel Proto Types
 
-The v1 channel proto adds rich messaging support:
+The channel proto includes rich messaging support:
 
 | Message Type | Fields | Description |
 |--------------|--------|-------------|
@@ -1161,9 +1285,10 @@ Screenshots, changelogs, and pricing are planned but not yet available.
 ## Minimal App Checklist
 
 1. Create `manifest.json` with `id`, `name`, `version`, `provides`
-2. Install the SDK (`go get github.com/neboloop/nebo-sdk-go`)
-3. Implement the handler interface for your capability (`ToolHandler`, `ChannelHandler`, etc.)
-4. Register the handler and call `app.Run()`
-5. Build a native binary (`go build -o binary .`)
-6. Place binary + manifest.json in `apps/<your-app-id>/` directory
-7. Nebo auto-discovers and launches it
+2. Write `SKILL.md` describing how the agent should use your app
+3. Install the SDK (`go get github.com/neboloop/nebo-sdk-go`)
+4. Implement the handler interface for your capability (`ToolHandler`, `ChannelHandler`, etc.)
+5. Register the handler and call `app.Run()`
+6. Build a native binary (`go build -o binary .`)
+7. Place binary + manifest.json + SKILL.md in `apps/<your-app-id>/` directory
+8. Nebo auto-discovers and launches it

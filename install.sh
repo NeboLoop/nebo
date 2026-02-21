@@ -2,7 +2,7 @@
 set -e
 
 # Nebo installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/nebolabs/nebo/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/NeboLoop/nebo/main/install.sh | sh
 #
 # Environment variables:
 #   NEBO_VERSION      - Version to install (default: latest)
@@ -10,7 +10,7 @@ set -e
 
 VERSION="${NEBO_VERSION:-latest}"
 INSTALL_DIR="${NEBO_INSTALL_DIR:-/usr/local/bin}"
-GITHUB_REPO="nebolabs/nebo"
+GITHUB_REPO="NeboLoop/nebo"
 
 # Colors for output
 RED='\033[0;31m'

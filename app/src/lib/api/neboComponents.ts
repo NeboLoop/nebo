@@ -154,6 +154,7 @@ export interface ChatMessage {
 	chatId: string
 	role: string
 	content: string
+	contentHtml?: string
 	metadata?: string
 	createdAt: string
 }

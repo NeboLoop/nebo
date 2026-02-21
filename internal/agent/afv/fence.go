@@ -87,23 +87,22 @@ func StripFenceMarkers(text string) string {
 	return fenceMarkerRe.ReplaceAllString(text, "")
 }
 
-// userFencedTools are tool names that get fenced even for OriginUser.
+// userFencedTools are tool names that get fenced for OriginUser.
+// Only tools that bring in external data need fencing.
 var userFencedTools = map[string]bool{
-	"web":   true,
-	"file":  true,
-	"shell": true,
-	"skill": true,
+	"web": true, // Fetches from the internet
 }
 
 // ShouldFence determines whether a tool result should be wrapped in fences
-// based on the origin and tool name.
+// based on the origin and tool name. Only tools that bring in external data
+// are fenced — local tools (file, shell, skill) are trusted.
 func ShouldFence(origin tools.Origin, toolName string) bool {
 	switch origin {
-	case tools.OriginComm, tools.OriginApp, tools.OriginSkill:
-		return true
+	case tools.OriginComm, tools.OriginApp:
+		return true // External data by definition
 	case tools.OriginUser:
 		return userFencedTools[toolName]
-	case tools.OriginSystem:
+	case tools.OriginSkill, tools.OriginSystem:
 		return false
 	default:
 		return true // Unknown origins get fenced

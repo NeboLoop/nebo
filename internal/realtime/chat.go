@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/neboloop/nebo/internal/agent/afv"
 	"github.com/neboloop/nebo/internal/agenthub"
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/svc"
@@ -64,6 +65,7 @@ type pendingRequest struct {
 	thinking         string
 	contentBlocks    []contentBlock
 	messageID        string // DB message ID for partial saves
+	cleanSentLen     int    // length of fence-cleaned content already sent to client
 }
 
 // NewChatContext creates a new chat context with service context for DB access
@@ -91,17 +93,22 @@ func (c *ChatContext) SetHub(hub *agenthub.Hub) {
 // handleAgentEvent forwards agent events (lane updates, etc.) to all UI clients
 func (c *ChatContext) handleAgentEvent(agentID string, frame *agenthub.Frame) {
 	if c.clientHub == nil {
+		fmt.Printf("[Chat] handleAgentEvent: clientHub is nil, dropping event method=%s\n", frame.Method)
 		return
 	}
 	data := make(map[string]interface{})
 	if payload, ok := frame.Payload.(map[string]any); ok {
 		data = payload
 	}
-	c.clientHub.Broadcast(&Message{
+	clientCount := c.clientHub.GetClientCount()
+	fmt.Printf("[Chat] handleAgentEvent: broadcasting method=%s to %d clients\n", frame.Method, clientCount)
+	if err := c.clientHub.Broadcast(&Message{
 		Type:      frame.Method,
 		Data:      data,
 		Timestamp: time.Now(),
-	})
+	}); err != nil {
+		fmt.Printf("[Chat] handleAgentEvent: broadcast error: %v\n", err)
+	}
 }
 
 // RegisterChatHandler sets up the chat handler
@@ -204,17 +211,38 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 
 		// Handle text chunks
 		if chunk, ok := payload["chunk"].(string); ok {
-			// Accumulate for persistence
+			// Accumulate raw content (may contain partial fence markers split across chunks)
 			req.streamedContent += chunk
-			// Track in content blocks: append to last text block or create new one
-			if len(req.contentBlocks) == 0 || req.contentBlocks[len(req.contentBlocks)-1].Type != "text" {
-				req.contentBlocks = append(req.contentBlocks, contentBlock{Type: "text", Text: chunk})
-			} else {
-				req.contentBlocks[len(req.contentBlocks)-1].Text += chunk
+
+			// Strip complete fence markers from full accumulated content
+			clean := afv.StripFenceMarkers(req.streamedContent)
+
+			// Hold back last 20 chars — a fence marker ($$FENCE_X_XXXXX$$) is 18 chars,
+			// so partial markers split across chunks can't leak to the UI.
+			// Remaining chars flush on stream completion.
+			safeLen := len(clean) - 20
+			if safeLen < 0 {
+				safeLen = 0
+			}
+
+			delta := ""
+			if safeLen > req.cleanSentLen {
+				delta = clean[req.cleanSentLen:safeLen]
+				req.cleanSentLen = safeLen
+			}
+
+			if delta != "" {
+				if len(req.contentBlocks) == 0 || req.contentBlocks[len(req.contentBlocks)-1].Type != "text" {
+					req.contentBlocks = append(req.contentBlocks, contentBlock{Type: "text", Text: delta})
+				} else {
+					req.contentBlocks[len(req.contentBlocks)-1].Text += delta
+				}
 			}
 			c.pendingMu.Unlock()
-			logging.Infof("[Chat] Streaming %d bytes to client for session %s", len(chunk), req.sessionID)
-			sendChatStream(req.client, req.sessionID, chunk)
+			if delta != "" {
+				logging.Infof("[Chat] Streaming %d bytes to client for session %s", len(delta), req.sessionID)
+				sendChatStream(req.client, req.sessionID, delta)
+			}
 		} else {
 			c.pendingMu.Unlock()
 		}
@@ -316,6 +344,22 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 	c.activeSessionsMu.Unlock()
 
 	logging.Infof("[Chat] Received final response for request %s from agent %s", frame.ID, agentID)
+
+	// Flush remaining buffered content and clean fence markers for persistence.
+	// During streaming, we hold back 20 chars to catch partial markers split across chunks.
+	clean := afv.StripFenceMarkers(req.streamedContent)
+	if len(clean) > req.cleanSentLen {
+		remaining := clean[req.cleanSentLen:]
+		if len(req.contentBlocks) == 0 || req.contentBlocks[len(req.contentBlocks)-1].Type != "text" {
+			req.contentBlocks = append(req.contentBlocks, contentBlock{Type: "text", Text: remaining})
+		} else {
+			req.contentBlocks[len(req.contentBlocks)-1].Text += remaining
+		}
+		if req.client != nil {
+			sendChatStream(req.client, req.sessionID, remaining)
+		}
+	}
+	req.streamedContent = clean
 
 	if !frame.OK {
 		if req.client != nil {
