@@ -8,7 +8,16 @@
 	import OnboardingFlow from '$lib/components/onboarding/OnboardingFlow.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import UpdateBanner from '$lib/components/UpdateBanner.svelte';
-	import { checkForUpdate, updateInfo, type UpdateInfo } from '$lib/stores/update';
+	import {
+		checkForUpdate,
+		resetUpdateState,
+		updateInfo,
+		downloadProgress,
+		updateReady,
+		updateError,
+		type DownloadProgress
+	} from '$lib/stores/update';
+	import type { UpdateCheckResponse } from '$lib/api/neboComponents';
 	import { auth } from '$lib/stores/auth';
 	import * as api from '$lib/api/nebo';
 
@@ -46,14 +55,45 @@
 		});
 
 		// Listen for background update_available events pushed by the server
-		const unsubUpdate = wsClient.on<UpdateInfo>('update_available', (data) => {
+		const unsubUpdate = wsClient.on<UpdateCheckResponse>('update_available', (data) => {
 			if (data) {
+				updateError.set(null);
 				updateInfo.set({ ...data, available: true });
 			}
 		});
 
-		// Check for updates (non-blocking)
-		checkForUpdate();
+		// Listen for download progress events
+		const unsubProgress = wsClient.on<DownloadProgress>('update_progress', (data) => {
+			if (data) {
+				downloadProgress.set(data);
+			}
+		});
+
+		// Listen for update ready events (download complete, verified)
+		const unsubReady = wsClient.on<{ version: string }>('update_ready', (data) => {
+			if (data) {
+				downloadProgress.set(null);
+				updateReady.set(data.version);
+			}
+		});
+
+		// Listen for update error events
+		const unsubError = wsClient.on<{ error: string }>('update_error', (data) => {
+			if (data) {
+				downloadProgress.set(null);
+				updateError.set(data.error);
+			}
+		});
+
+		// On connect (initial + reconnect after restart): reset stale update
+		// state and re-check. onStatus fires immediately with current status,
+		// so this also covers the initial check.
+		const unsubStatus = wsClient.onStatus((status) => {
+			if (status === 'connected') {
+				resetUpdateState();
+				checkForUpdate();
+			}
+		});
 
 		// Check if user needs onboarding
 		try {
@@ -69,6 +109,10 @@
 		return () => {
 			unsubQuarantine();
 			unsubUpdate();
+			unsubProgress();
+			unsubReady();
+			unsubError();
+			unsubStatus();
 		};
 	});
 

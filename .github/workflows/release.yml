@@ -119,6 +119,14 @@ jobs:
             echo "Nebo.app signed with Developer ID"
           fi
 
+      - name: Export signed binary for auto-update
+        run: cp Nebo.app/Contents/MacOS/nebo nebo-darwin-${{ matrix.goarch }}-signed
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-darwin-${{ matrix.goarch }}-binary
+          path: nebo-darwin-${{ matrix.goarch }}-signed
+
       - name: Create .dmg installer
         env:
           VERSION: ${{ github.ref_name }}
@@ -391,11 +399,67 @@ jobs:
           pattern: nebo-*
           merge-multiple: true
 
+      - name: Download signed macOS binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: signed-binaries
+          pattern: nebo-*-binary
+          merge-multiple: true
+
+      - name: Stage signed binaries for release
+        run: |
+          # Rename signed binaries to release names (strip -signed suffix)
+          for f in signed-binaries/nebo-*-signed; do
+            [ -f "$f" ] || continue
+            dest="artifacts/$(basename "$f" | sed 's/-signed$//')"
+            cp "$f" "$dest"
+          done
+
       - name: List artifacts
         run: ls -la artifacts/
 
       - name: Make binaries executable
         run: chmod +x artifacts/nebo-* 2>/dev/null || true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum nebo-darwin-arm64 nebo-darwin-amd64 \
+            nebo-linux-amd64 nebo-linux-arm64 \
+            nebo-linux-amd64-headless nebo-linux-arm64-headless \
+            nebo-windows-amd64.exe 2>/dev/null | tee checksums.txt
+          echo "Generated checksums:"
+          cat checksums.txt
+
+      - name: Upload release assets to CDN
+        if: env.DO_SPACES_ACCESS_KEY != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
+          S3_ENDPOINT: https://nyc3.digitaloceanspaces.com
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Upload version manifest (latest pointer)
+          cat > version.json << 'EOFJ'
+          {
+            "version": "TAG_PLACEHOLDER",
+            "release_url": "https://github.com/NeboLoop/nebo/releases/tag/TAG_PLACEHOLDER",
+            "published_at": "TS_PLACEHOLDER"
+          }
+          EOFJ
+          sed -i "s|TAG_PLACEHOLDER|${TAG}|g; s|TS_PLACEHOLDER|$(date -u +%Y-%m-%dT%H:%M:%SZ)|g" version.json
+          sed -i 's/^          //' version.json
+          aws s3 cp version.json s3://neboloop/releases/version.json \
+            --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
+
+          # Upload binaries + checksums under releases/{tag}/
+          for f in artifacts/nebo-* artifacts/checksums.txt; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            aws s3 cp "$f" "s3://neboloop/releases/${TAG}/${name}" \
+              --endpoint-url "$S3_ENDPOINT" --acl public-read
+          done
+          echo "Uploaded release assets to CDN: releases/${TAG}/"
 
       - name: Create release
         uses: softprops/action-gh-release@v2

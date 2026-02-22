@@ -961,9 +961,11 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	}
 
 	// Store Janus rate-limit snapshots on ServiceContext for the usage API
+	// and persist to janus_usage.json so usage data survives restarts
 	if opts.SvcCtx != nil {
 		r.SetRateLimitStore(func(rl *ai.RateLimitInfo) {
 			opts.SvcCtx.JanusUsage.Store(rl)
+			opts.SvcCtx.SaveJanusUsage()
 		})
 	}
 
@@ -1094,17 +1096,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	neboloopPlugin := neboloop.New()
 	commManager.Register(neboloopPlugin)
 
-	// Register Configurable plugins so their manifests are persisted
-	// and settings changes trigger hot-reload via OnSettingsChanged
+	// Register Configurable plugins so settings changes trigger hot-reload
 	if opts.PluginStore != nil {
-		configurables := map[string]settings.Configurable{
-			"neboloop": neboloopPlugin,
-		}
-		for name, c := range configurables {
-			if err := opts.PluginStore.RegisterConfigurable(ctx, name, c); err != nil {
-				fmt.Printf("[agent] Warning: failed to register %s configurable: %v\n", name, err)
-			}
-		}
+		opts.PluginStore.RegisterConfigurable("neboloop", neboloopPlugin)
 	}
 
 	// Resolve NeboLoop API URL from server config for signature verification
@@ -1514,15 +1508,19 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 							toolName = event.ToolCall.Name
 							toolID = event.ToolCall.ID
 						}
+						dmPayload := map[string]any{
+							"session_id": sessionKey,
+							"result":     event.Text,
+							"tool_name":  toolName,
+							"tool_id":    toolID,
+						}
+						if event.ImageURL != "" {
+							dmPayload["image_url"] = event.ImageURL
+						}
 						state.sendFrame(map[string]any{
-							"type":   "event",
-							"method": "tool_result",
-							"payload": map[string]any{
-								"session_id": sessionKey,
-								"result":     event.Text,
-								"tool_name":  toolName,
-								"tool_id":    toolID,
-							},
+							"type":    "event",
+							"method":  "tool_result",
+							"payload": dmPayload,
 						})
 					}
 				case ai.EventTypeMessage:
@@ -1822,7 +1820,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	}
 
 	// Background update checker: checks every 6 hours, notifies frontend once per new version.
+	// Auto-downloads the update binary for direct installs.
 	if opts.SvcCtx != nil && opts.SvcCtx.Version != "" && opts.SvcCtx.Version != "dev" {
+		installMethod := updater.DetectInstallMethod()
 		checker := updater.NewBackgroundChecker(opts.SvcCtx.Version, 6*time.Hour, func(result *updater.Result) {
 			state.sendFrame(map[string]any{
 				"type":   "event",
@@ -1831,9 +1831,62 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 					"current_version": result.CurrentVersion,
 					"latest_version":  result.LatestVersion,
 					"release_url":     result.ReleaseURL,
-					"release_notes":   result.ReleaseNotes,
+					"install_method":  installMethod,
+					"can_auto_update": installMethod == "direct",
 				},
 			})
+
+			// Auto-download for direct installs
+			if installMethod == "direct" {
+				go func() {
+					tmpPath, err := updater.Download(ctx, result.LatestVersion, func(dl, total int64) {
+						pct := int64(0)
+						if total > 0 {
+							pct = dl * 100 / total
+						}
+						state.sendFrame(map[string]any{
+							"type":   "event",
+							"method": "update_progress",
+							"payload": map[string]any{
+								"downloaded": dl,
+								"total":      total,
+								"percent":    pct,
+							},
+						})
+					})
+					if err != nil {
+						state.sendFrame(map[string]any{
+							"type":   "event",
+							"method": "update_error",
+							"payload": map[string]any{
+								"error": err.Error(),
+							},
+						})
+						return
+					}
+					if err := updater.VerifyChecksum(ctx, tmpPath, result.LatestVersion); err != nil {
+						os.Remove(tmpPath)
+						state.sendFrame(map[string]any{
+							"type":   "event",
+							"method": "update_error",
+							"payload": map[string]any{
+								"error": "checksum verification failed: " + err.Error(),
+							},
+						})
+						return
+					}
+					if um := opts.SvcCtx.UpdateManager(); um != nil {
+						um.SetPending(tmpPath, result.LatestVersion)
+					}
+					state.sendFrame(map[string]any{
+						"type":   "event",
+						"method": "update_ready",
+						"payload": map[string]any{
+							"version": result.LatestVersion,
+						},
+					})
+				}()
+			}
 		})
 		go checker.Run(ctx)
 	}
@@ -2403,14 +2456,18 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 						fmt.Printf("[Agent-WS] Tool result: %s (id=%s) len=%d\n", toolName, toolID, len(event.Text))
 						// Memory operations are silent — don't show tool cards in the UI
 						if !isSilentToolCall(event.ToolCall) {
+							payload := map[string]any{
+								"tool_result": event.Text,
+								"tool_name":   toolName,
+								"tool_id":     toolID,
+							}
+							if event.ImageURL != "" {
+								payload["image_url"] = event.ImageURL
+							}
 							state.sendFrame(map[string]any{
-								"type": "stream",
-								"id":   requestID,
-								"payload": map[string]any{
-									"tool_result": event.Text,
-									"tool_name":   toolName,
-									"tool_id":     toolID,
-								},
+								"type":    "stream",
+								"id":      requestID,
+								"payload": payload,
 							})
 						}
 

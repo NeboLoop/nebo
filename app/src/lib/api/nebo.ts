@@ -428,6 +428,13 @@ export function serveFile() {
 }
 
 /**
+ * @description "Browse files"
+ */
+export function browseFiles() {
+	return webapi.post<components.BrowseFilesResponse>(`/api/v1/files/browse`)
+}
+
+/**
  * @description "List m c p integrations"
  */
 export function listMCPIntegrations() {
@@ -1009,10 +1016,17 @@ export function toggleTask(name: string) {
 }
 
 /**
+ * @description "Update apply"
+ */
+export function updateApply() {
+	return webapi.post<components.UpdateApplyResponse>(`/api/v1/update/apply`)
+}
+
+/**
  * @description "Update check"
  */
 export function updateCheck() {
-	return webapi.get<components.MessageResponse>(`/api/v1/update/check`)
+	return webapi.get<components.UpdateCheckResponse>(`/api/v1/update/check`)
 }
 
 /**

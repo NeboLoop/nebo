@@ -108,6 +108,10 @@ export interface BrowseDirectoryResponse {
 	path: string
 }
 
+export interface BrowseFilesResponse {
+	paths: Array<string>
+}
+
 export interface CLIAvailability {
 	claude: boolean
 	codex: boolean
@@ -790,6 +794,11 @@ export interface NeboLoopDisconnectResponse {
 }
 
 export interface NeboLoopJanusUsageResponse {
+	session: NeboLoopJanusWindowUsage
+	weekly: NeboLoopJanusWindowUsage
+}
+
+export interface NeboLoopJanusWindowUsage {
 	limitTokens: number
 	remainingTokens: number
 	usedTokens: number
@@ -905,7 +914,6 @@ export interface PluginItem {
 	version: string
 	isEnabled: boolean
 	isInstalled: boolean
-	settingsManifest: any
 	connectionStatus: string
 	lastConnectedAt?: string
 	lastError?: string
@@ -1243,6 +1251,11 @@ export interface UpdateAgentSettingsRequest {
 	developerMode: boolean
 }
 
+export interface UpdateApplyResponse {
+	status: string
+	message?: string
+}
+
 export interface UpdateAuthProfileRequest {
 	name?: string
 	apiKey?: string
@@ -1259,6 +1272,16 @@ export interface UpdateCLIProviderRequest {
 
 export interface UpdateChatRequest {
 	title: string
+}
+
+export interface UpdateCheckResponse {
+	available: boolean
+	current_version: string
+	latest_version?: string
+	release_url?: string
+	published_at?: string
+	install_method: string
+	can_auto_update: boolean
 }
 
 export interface UpdateHeartbeatRequest {

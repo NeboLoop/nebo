@@ -121,6 +121,7 @@ func RunDesktop() {
 	// Initialize shared ServiceContext ONCE — single owner of the database connection
 	svcCtx := svc.NewServiceContext(*c)
 	svcCtx.Version = AppVersion
+	svcCtx.SetUpdateManager(&svc.UpdateMgr{})
 	defer svcCtx.Close()
 
 	if svcCtx.DB == nil {
@@ -261,6 +262,43 @@ func RunDesktop() {
 
 	updateItem := trayMenu.Add("Check for Updates")
 	updateItem.OnClick(func(_ *application.Context) {
+		installMethod := updater.DetectInstallMethod()
+
+		// Package manager installs: show hint, no download
+		if installMethod == "homebrew" {
+			updateItem.SetLabel("Managed by Homebrew")
+			time.AfterFunc(3*time.Second, func() {
+				updateItem.SetLabel("Check for Updates")
+			})
+			return
+		}
+		if installMethod == "package_manager" {
+			updateItem.SetLabel("Use apt upgrade")
+			time.AfterFunc(3*time.Second, func() {
+				updateItem.SetLabel("Check for Updates")
+			})
+			return
+		}
+
+		// Check if there's already a pending update ready to apply
+		if um := svcCtx.UpdateManager(); um != nil {
+			if pending := um.PendingPath(); pending != "" {
+				updateItem.SetLabel("Restarting...")
+				updateItem.SetEnabled(false)
+				go func() {
+					if err := updater.Apply(pending); err != nil {
+						fmt.Printf("[updater] apply failed: %v\n", err)
+						updateItem.SetLabel("Update Failed")
+						time.AfterFunc(3*time.Second, func() {
+							updateItem.SetLabel("Check for Updates")
+							updateItem.SetEnabled(true)
+						})
+					}
+				}()
+				return
+			}
+		}
+
 		updateItem.SetLabel("Checking...")
 		updateItem.SetEnabled(false)
 		go func() {
@@ -271,15 +309,60 @@ func RunDesktop() {
 				updateItem.SetLabel("Check for Updates")
 				return
 			}
-			if result.Available {
-				updateItem.SetLabel("Update: " + result.LatestVersion + " Available")
-				openURL(result.ReleaseURL)
-			} else {
+			if !result.Available {
 				updateItem.SetLabel("Up to Date (" + result.CurrentVersion + ")")
 				time.AfterFunc(5*time.Second, func() {
 					updateItem.SetLabel("Check for Updates")
 				})
+				return
 			}
+
+			// Download the update
+			updateItem.SetLabel("Downloading...")
+			tmpPath, err := updater.Download(context.Background(), result.LatestVersion, func(dl, total int64) {
+				if total > 0 {
+					pct := dl * 100 / total
+					updateItem.SetLabel(fmt.Sprintf("Downloading %d%%...", pct))
+				}
+			})
+			if err != nil {
+				updateItem.SetLabel("Download Failed")
+				time.AfterFunc(3*time.Second, func() {
+					updateItem.SetLabel("Check for Updates")
+				})
+				return
+			}
+
+			// Verify checksum
+			updateItem.SetLabel("Verifying...")
+			if err := updater.VerifyChecksum(context.Background(), tmpPath, result.LatestVersion); err != nil {
+				os.Remove(tmpPath)
+				updateItem.SetLabel("Verification Failed")
+				time.AfterFunc(3*time.Second, func() {
+					updateItem.SetLabel("Check for Updates")
+				})
+				return
+			}
+
+			// Store pending and update label
+			if um := svcCtx.UpdateManager(); um != nil {
+				um.SetPending(tmpPath, result.LatestVersion)
+			}
+			updateItem.SetLabel("Restart to Update (" + result.LatestVersion + ")")
+			updateItem.OnClick(func(_ *application.Context) {
+				updateItem.SetLabel("Restarting...")
+				updateItem.SetEnabled(false)
+				go func() {
+					if err := updater.Apply(tmpPath); err != nil {
+						fmt.Printf("[updater] apply failed: %v\n", err)
+						updateItem.SetLabel("Update Failed")
+						time.AfterFunc(3*time.Second, func() {
+							updateItem.SetLabel("Check for Updates")
+							updateItem.SetEnabled(true)
+						})
+					}
+				}()
+			})
 		}()
 	})
 
@@ -321,6 +404,13 @@ func RunDesktop() {
 				CanChooseFiles(false).
 				SetTitle("Select App Directory").
 				PromptForSingleSelection()
+		})
+		svcCtx.SetBrowseFiles(func() ([]string, error) {
+			return wailsApp.Dialog.OpenFile().
+				CanChooseFiles(true).
+				CanChooseDirectories(false).
+				SetTitle("Select Files").
+				PromptForMultipleSelection()
 		})
 
 		// Install dev window opener — creates or focuses the dev window

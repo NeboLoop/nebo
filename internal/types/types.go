@@ -302,6 +302,21 @@ type HealthResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type UpdateCheckResponse struct {
+	Available      bool   `json:"available"`
+	CurrentVersion string `json:"current_version"`
+	LatestVersion  string `json:"latest_version,omitempty"`
+	ReleaseURL     string `json:"release_url,omitempty"`
+	PublishedAt    string `json:"published_at,omitempty"`
+	InstallMethod  string `json:"install_method"`
+	CanAutoUpdate  bool   `json:"can_auto_update"`
+}
+
+type UpdateApplyResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
 type ListAgentSessionsResponse struct {
 	Sessions []AgentSession `json:"sessions"`
 	Total    int            `json:"total"`
@@ -1076,7 +1091,6 @@ type PluginItem struct {
 	Version          string            `json:"version"`
 	IsEnabled        bool              `json:"isEnabled"`
 	IsInstalled      bool              `json:"isInstalled"`
-	SettingsManifest json.RawMessage   `json:"settingsManifest"`
 	ConnectionStatus string            `json:"connectionStatus"`
 	LastConnectedAt  string            `json:"lastConnectedAt,omitempty"`
 	LastError        string            `json:"lastError,omitempty"`
@@ -1282,12 +1296,17 @@ type NeboLoopDisconnectResponse struct {
 
 // NeboLoop Janus Usage types
 
-type NeboLoopJanusUsageResponse struct {
+type NeboLoopJanusWindowUsage struct {
 	LimitTokens     int64  `json:"limitTokens"`
 	RemainingTokens int64  `json:"remainingTokens"`
 	UsedTokens      int64  `json:"usedTokens"`
 	PercentUsed     int    `json:"percentUsed"`
 	ResetAt         string `json:"resetAt,omitempty"`
+}
+
+type NeboLoopJanusUsageResponse struct {
+	Session NeboLoopJanusWindowUsage `json:"session"`
+	Weekly  NeboLoopJanusWindowUsage `json:"weekly"`
 }
 
 // NeboLoop OAuth types
@@ -1435,6 +1454,10 @@ type ListToolsResponse struct {
 
 type BrowseDirectoryResponse struct {
 	Path string `json:"path"`
+}
+
+type BrowseFilesResponse struct {
+	Paths []string `json:"paths"`
 }
 
 type OpenDevWindowResponse struct {
