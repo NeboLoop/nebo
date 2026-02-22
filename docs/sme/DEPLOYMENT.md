@@ -176,7 +176,9 @@ Trusted Signing (if `AZURE_SIGNING_ENABLED == 'true'`). Signs both installer and
 Templates `nfpm.yaml.tmpl` → `nfpm.yaml` (version/arch substitution). Builds `.deb`.
 
 **release:** Downloads ALL artifacts. Renames signed macOS binaries (strips `-signed` suffix).
-Generates `checksums.txt` with SHA256 of all binaries. Creates GitHub Release via
+Generates `checksums.txt` with SHA256 of all binaries. **Uploads all release assets to
+DigitalOcean Spaces CDN** (`s3://neboloop/releases/{tag}/` + `version.json` manifest) —
+gated on `DO_SPACES_ACCESS_KEY` secret. Creates GitHub Release via
 `softprops/action-gh-release@v2` with auto-generated release notes.
 
 **update-homebrew:** Gated on `vars.HAS_TAP_TOKEN == 'true'`. Computes SHA256 of both DMGs.
@@ -345,15 +347,12 @@ xcrun notarytool store-credentials "nebo-notarize"
 │    .Clear()                                                     │
 │                                                                 │
 │  updater package:                                               │
-│    Check()          → GitHub API /repos/neboloop/nebo/releases  │
-│    Download()       → Streams binary to temp file               │
-│    VerifyChecksum() → SHA256 against checksums.txt              │
+│    Check()          → CDN version.json manifest                 │
+│    Download()       → Streams binary from CDN to temp file      │
+│    VerifyChecksum() → SHA256 against checksums.txt from CDN     │
 │    Apply()          → Platform-specific binary replacement      │
 │    DetectInstallMethod() → "direct" | "homebrew" | "package_m.."│
-│    BackgroundChecker     → 6h poll, auto-download for direct    │
-│                                                                 │
-│  agent.go wires BackgroundChecker + sends 4 WebSocket events:   │
-│    update_available → update_progress → update_ready/error      │
+│    BackgroundChecker     → Periodic poll (NOT currently active)  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -366,26 +365,54 @@ xcrun notarytool store-credentials "nebo-notarize"
    - `dpkg -S` succeeds (Linux) → `"package_manager"`
    - Everything else → `"direct"` (can auto-update)
 3. Calls `updater.Check(ctx, svcCtx.Version)`:
-   - `GET https://api.github.com/repos/neboloop/nebo/releases/latest` (5s timeout)
-   - Parses `tag_name`, `html_url`, `body` (truncated to 500 chars), `published_at`
+   - `GET https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/version.json` (5s timeout)
+   - Parses `versionManifest`: `version`, `release_url`, `published_at`
    - Normalizes versions (strips "v"), compares semver (major.minor.patch)
    - "dev" builds always return `available: false`
+   - **No release notes in response** — CDN manifest doesn't carry body, UI links to GitHub instead
 4. Returns `UpdateCheckResponse` with `can_auto_update` flag
 
 ### Download Flow (desktop tray or future frontend trigger)
 
 1. `updater.Download(ctx, tagName, progressFn)`:
    - Asset name: `nebo-{GOOS}-{GOARCH}[.exe]`
-   - URL: `https://github.com/NeboLoop/nebo/releases/download/{tag}/{asset}`
+   - URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/{tag}/{asset}`
    - Streams to temp file in 32KB chunks with progress callbacks
    - 10-minute timeout
    - Sets chmod 0755 on Unix
 2. `updater.VerifyChecksum(ctx, binaryPath, tagName)`:
-   - Downloads `checksums.txt` from same release (30s timeout)
+   - Downloads `checksums.txt` from CDN: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/{tag}/checksums.txt` (30s timeout)
    - 404 = skip verification (graceful for old releases)
    - Parses `{sha256}  {filename}` format
    - Computes SHA256 of downloaded binary, case-insensitive compare
 3. On success: `svcCtx.UpdateManager().SetPending(path, version)`
+
+### CDN Layout (DigitalOcean Spaces)
+
+```
+s3://neboloop/releases/
+  version.json                    ← latest version pointer (updated each release)
+  v1.2.3/
+    nebo-darwin-arm64
+    nebo-darwin-amd64
+    nebo-linux-amd64
+    nebo-linux-arm64
+    nebo-linux-amd64-headless
+    nebo-linux-arm64-headless
+    nebo-windows-amd64.exe
+    checksums.txt
+```
+
+CDN URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/`
+
+`version.json` format:
+```json
+{
+  "version": "v1.2.3",
+  "release_url": "https://github.com/NeboLoop/nebo/releases/tag/v1.2.3",
+  "published_at": "2026-02-22T12:00:00Z"
+}
+```
 
 ### Apply Flow
 
@@ -393,19 +420,24 @@ xcrun notarytool store-credentials "nebo-notarize"
 - Checks `UpdateManager().PendingPath()` is set
 - Responds `{"status": "restarting"}` immediately
 - Spawns goroutine with 500ms delay, then calls `updater.Apply(pendingPath)`
+- **Errors are logged** (`[updater] apply failed: ...`) — not swallowed
+
+**Shared helpers (`apply.go` — no build tags):**
+- `healthCheck(binaryPath)` — runs `{binary} --version` with 5s timeout, kills on timeout
+- `copyFile(src, dst)` — copies file preserving permissions
 
 **Unix (`apply_unix.go`):**
-1. Health check: `{newBinary} version` (5s timeout, kills on timeout)
+1. Health check via shared `healthCheck()` (`--version`, not `version`)
 2. Backup: `copyFile(currentExe, currentExe+".old")`
 3. Replace: `copyFile(newBinary, currentExe)` — rollback to `.old` on failure
 4. Cleanup temp file
 5. `syscall.Exec(currentExe, os.Args, os.Environ())` — replaces process in-place (same PID)
 
 **Windows (`apply_windows.go`):**
-1. Health check: `{newBinary} version` (5s timeout)
+1. Health check via shared `healthCheck()` (`--version`, not `version`)
 2. Rename running exe: `os.Rename(currentExe, currentExe+".old")` — Windows allows renaming
-3. Move new: `os.Rename(newBinary, currentExe)` — rollback on failure
-4. Spawn: `exec.Command(currentExe, os.Args[1:]...)` with stdout/stderr
+3. Copy new: `copyFile(newBinary, currentExe)` — uses copy not rename (avoids cross-filesystem failure)
+4. Cleanup temp file, spawn `exec.Command(currentExe, os.Args[1:]...)` with stdout/stderr
 5. `os.Exit(0)` — old process exits, new one takes over
 
 ### Frontend Update UI
@@ -422,34 +454,23 @@ xcrun notarytool store-credentials "nebo-notarize"
 - States: notification-only (package manager) → downloading (progress bar) → ready ("Restart to Update" button) → error
 - Package manager installs show: `brew upgrade nebo` or `sudo apt upgrade nebo`
 
-### BackgroundChecker (active — `agent.go:1820-1891`)
+### BackgroundChecker (defined but NOT currently active)
 
-Wired in `runAgent()` when `version != "dev"`:
+The `BackgroundChecker` type exists in `updater.go` but is **not instantiated** anywhere in the
+current codebase. Updates are triggered manually via:
+- Desktop system tray "Check for Updates" button
+- Frontend calling `GET /api/v1/update/check`
 
 ```go
-checker := updater.NewBackgroundChecker(version, 6*time.Hour, func(result *updater.Result) {
-    // 1. Send "update_available" WebSocket event to all frontends
-    // 2. If installMethod == "direct": auto-download in goroutine
-    //    - Sends "update_progress" events during download
-    //    - VerifyChecksum → SetPending → sends "update_ready"
-    //    - On failure: sends "update_error"
-})
+// Available for future use:
+checker := updater.NewBackgroundChecker(version, 6*time.Hour, notifyFn)
 go checker.Run(ctx)
-// Initial check: 30s after boot. Then every 6h. Deduplicates per version.
+// Initial check: 30s after boot. Then every interval. Deduplicates per version.
 ```
 
-**WebSocket events sent by background checker:**
-
-| Event | Payload | When |
-|-------|---------|------|
-| `update_available` | version info, install_method, can_auto_update | New version detected |
-| `update_progress` | downloaded, total, percent | During binary download (direct installs) |
-| `update_ready` | version | Binary downloaded + checksum verified |
-| `update_error` | error message | Download or checksum failure |
-
 ### Known Limitations
-- **In-memory state everywhere** — `UpdateMgr` pending path AND `BackgroundChecker.lastNotified` both lost on restart
-- **Orphaned temp files** — if process restarts after download but before apply, temp binary stays on disk
+- **No background checking active** — updates are manual only
+- **In-memory pending state** — `UpdateMgr` pending path lost on restart
 - **No delta updates** — always downloads full binary
 - **No staged rollout** — all releases immediately available
 - **Single `.old` backup** — no versioned rollback chain
@@ -460,13 +481,22 @@ go checker.Run(ctx)
 
 ## Distribution Channels
 
-### 1. GitHub Releases (primary)
+### 1. DigitalOcean Spaces CDN (primary for auto-update)
+
+- URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/`
+- Contains: `version.json` manifest + all binaries + checksums per tag
+- Used by in-app updater for both version checks and binary downloads
+- No rate limits (unlike GitHub API's 60 req/hr unauthenticated)
+- Populated by CI `release` job via `aws s3 cp --endpoint-url`
+
+### 2. GitHub Releases (source of truth for humans)
 
 - URL: `https://github.com/NeboLoop/nebo/releases`
 - Artifacts: raw binaries, DMGs, NSIS installer, .deb packages, checksums.txt
 - Auto-generated release notes from commits
+- `release_url` in CDN manifest points here for "Release notes" link in UI
 
-### 2. Homebrew (macOS)
+### 3. Homebrew (macOS)
 
 ```bash
 brew install neboloop/tap/nebo
@@ -477,7 +507,7 @@ brew install neboloop/tap/nebo
 - Installs Nebo.app + `nebo` CLI symlink
 - SHA256 per-arch (arm64 + amd64)
 
-### 3. APT (Linux)
+### 4. APT (Linux)
 
 ```bash
 # Add repo
@@ -491,7 +521,7 @@ sudo apt install nebo
 - Supports amd64 + arm64
 - Optional GPG signing
 
-### 4. Direct Download
+### 5. Direct Download
 
 - Users download binary from GitHub Releases
 - macOS: DMG with drag-to-Applications
@@ -563,9 +593,10 @@ make docker-run     # docker run -p 27895:27895 --env-file .env nebo
 
 | File | Purpose |
 |------|---------|
-| `internal/updater/updater.go` | Check, Download, VerifyChecksum, BackgroundChecker, DetectInstallMethod, AssetName |
-| `internal/updater/apply_unix.go` | Unix Apply: health check → backup → copy → syscall.Exec |
-| `internal/updater/apply_windows.go` | Windows Apply: health check → rename → move → spawn → exit |
+| `internal/updater/updater.go` | Check (CDN), Download, VerifyChecksum, BackgroundChecker, DetectInstallMethod, AssetName |
+| `internal/updater/apply.go` | Shared helpers: `healthCheck()` (`--version`) + `copyFile()` (no build tags) |
+| `internal/updater/apply_unix.go` | Unix Apply: backup → copy → syscall.Exec |
+| `internal/updater/apply_windows.go` | Windows Apply: rename → copyFile → spawn → exit |
 | `internal/handler/updatecheckhandler.go` | `GET /api/v1/update/check` handler |
 | `internal/handler/updateapplyhandler.go` | `POST /api/v1/update/apply` handler |
 | `app/src/lib/stores/update.ts` | Frontend update state (Svelte writable stores) |
@@ -601,6 +632,8 @@ make docker-run     # docker run -p 27895:27895 --env-file .env nebo
 | `AZURE_CLIENT_SECRET` | Azure service principal secret | Windows signing |
 | `TAP_GITHUB_TOKEN` | Fine-grained PAT for homebrew-tap + apt repos | Homebrew/APT |
 | `APT_GPG_PRIVATE_KEY` | GPG private key for APT signing | APT (optional) |
+| `DO_SPACES_ACCESS_KEY` | DigitalOcean Spaces access key for CDN uploads | CDN (required for auto-update) |
+| `DO_SPACES_SECRET_KEY` | DigitalOcean Spaces secret key for CDN uploads | CDN (required for auto-update) |
 
 ### GitHub Actions Variables
 
@@ -637,7 +670,7 @@ git push origin v1.2.3
 
 # 3. Monitor
 # https://github.com/NeboLoop/nebo/actions
-# Pipeline: frontend → builds (parallel) → packages → release → homebrew + apt
+# Pipeline: frontend → builds (parallel) → packages → release (+ CDN upload) → homebrew + apt
 ```
 
 ### Local macOS Install (dev)
@@ -674,6 +707,7 @@ See `docs/RELEASE_SETUP.md` for:
 1. Creating `TAP_GITHUB_TOKEN` (fine-grained PAT)
 2. Enabling GitHub Pages on `neboloop/apt`
 3. Creating `APT_GPG_PRIVATE_KEY` (optional)
+4. Setting up DigitalOcean Spaces CDN (see "First-Time CDN Setup" above)
 
 ### Debug Update Issues
 
@@ -685,11 +719,30 @@ curl http://localhost:27895/api/v1/update/check | jq .
 # install_method: "direct" → auto-update works
 # install_method: "homebrew" or "package_manager" → shows manual instructions
 
-# Check GitHub API directly:
-curl -s https://api.github.com/repos/neboloop/nebo/releases/latest | jq '{tag_name, published_at}'
+# Check CDN version manifest directly:
+curl -s https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/version.json | jq .
 
-# Check checksums:
-curl -sL https://github.com/NeboLoop/nebo/releases/download/v1.2.3/checksums.txt
+# Check checksums on CDN:
+curl -sL https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/v1.2.3/checksums.txt
+
+# Fallback: check GitHub API directly:
+curl -s https://api.github.com/repos/neboloop/nebo/releases/latest | jq '{tag_name, published_at}'
+```
+
+### First-Time CDN Setup (DigitalOcean Spaces)
+
+```bash
+# 1. Create the Space + CDN
+doctl spaces create neboloop --region nyc3
+doctl compute cdn create neboloop.nyc3.digitaloceanspaces.com --ttl 3600
+doctl spaces keys create --name nebo-ci
+
+# 2. Add GitHub repo secrets
+gh secret set DO_SPACES_ACCESS_KEY    # paste access key
+gh secret set DO_SPACES_SECRET_KEY    # paste secret key
+
+# 3. Verify after first release
+curl https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/version.json
 ```
 
 ### Rollback a Bad Release
