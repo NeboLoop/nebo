@@ -229,8 +229,12 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 		_ = cmd.Wait()
 	}()
 
-	// Wait for socket to appear (exponential backoff, max 10s)
-	if err := waitForSocket(sockPath, 10*time.Second); err != nil {
+	// Wait for socket to appear (exponential backoff, configurable via manifest)
+	startupTimeout := 10 * time.Second
+	if manifest.StartupTimeout > 0 {
+		startupTimeout = time.Duration(manifest.StartupTimeout) * time.Second
+	}
+	if err := waitForSocket(sockPath, startupTimeout); err != nil {
 		killProcGroup(cmd)
 		logCleanup()
 		return nil, fmt.Errorf("app did not create socket: %w", err)

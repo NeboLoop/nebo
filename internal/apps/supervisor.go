@@ -163,8 +163,16 @@ func (s *Supervisor) restart(ctx context.Context, appID, appDir string) {
 	s.mu.Unlock()
 
 	if count > maxRestartsPerHour {
-		fmt.Printf("[apps:supervisor] App %s exceeded restart limit (%d/%d in window), giving up until Nebo restarts\n",
-			appID, count, maxRestartsPerHour)
+		// Deregister capabilities so the agent stops routing to dead gRPC connections
+		manifest, _ := LoadManifest(appDir)
+		if manifest != nil {
+			s.registry.deregisterCapabilities(manifest)
+			fmt.Printf("[apps:supervisor] App %s exceeded restart limit — deregistered capabilities: %v\n",
+				appID, manifest.Provides)
+		} else {
+			fmt.Printf("[apps:supervisor] App %s exceeded restart limit (%d/%d in window), giving up until Nebo restarts\n",
+				appID, count, maxRestartsPerHour)
+		}
 		return
 	}
 

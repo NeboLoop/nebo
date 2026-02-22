@@ -3,7 +3,6 @@ package settings
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -45,39 +44,18 @@ func (s *Store) OnChange(fn ChangeHandler) {
 }
 
 // RegisterConfigurable registers a Configurable app implementation.
-// The manifest is persisted to the plugin_registry row so the UI can render it.
-func (s *Store) RegisterConfigurable(ctx context.Context, appName string, c Configurable) error {
+// When settings change, OnSettingsChanged is called for hot-reload.
+func (s *Store) RegisterConfigurable(appName string, c Configurable) {
 	s.mu.Lock()
 	s.configurables[appName] = c
 	s.mu.Unlock()
+}
 
-	// Persist manifest to plugin_registry
-	manifest := c.Manifest()
-	manifestJSON, err := json.Marshal(manifest)
-	if err != nil {
-		return fmt.Errorf("marshal manifest for %s: %w", appName, err)
-	}
-
-	row, err := s.queries.GetPluginByName(ctx, appName)
-	if err != nil {
-		return fmt.Errorf("get app %s: %w", appName, err)
-	}
-
-	err = s.queries.UpdatePlugin(ctx, db.UpdatePluginParams{
-		DisplayName:      row.DisplayName,
-		Description:      row.Description,
-		Icon:             row.Icon,
-		Version:          row.Version,
-		IsEnabled:        row.IsEnabled,
-		SettingsManifest: string(manifestJSON),
-		Metadata:         row.Metadata,
-		ID:               row.ID,
-	})
-	if err != nil {
-		return fmt.Errorf("update manifest for %s: %w", appName, err)
-	}
-
-	return nil
+// DeregisterConfigurable removes a Configurable app implementation.
+func (s *Store) DeregisterConfigurable(appName string) {
+	s.mu.Lock()
+	delete(s.configurables, appName)
+	s.mu.Unlock()
 }
 
 // GetPlugin returns an app registry entry by name.

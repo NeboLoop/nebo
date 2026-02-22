@@ -19,7 +19,7 @@ func TestLoadManifest(t *testing.T) {
 		Provides: []string{"gateway"},
 		Permissions: []string{
 			"network:api.example.com:443",
-			"settings:endpoint",
+			"settings:read",
 		},
 	}
 
@@ -116,6 +116,28 @@ func TestValidateManifest(t *testing.T) {
 			name:   "empty runtime is valid",
 			modify: func(m *AppManifest) { m.Runtime = "" },
 		},
+		{
+			name:   "startup_timeout zero is valid (default)",
+			modify: func(m *AppManifest) { m.StartupTimeout = 0 },
+		},
+		{
+			name:   "startup_timeout 60 is valid",
+			modify: func(m *AppManifest) { m.StartupTimeout = 60 },
+		},
+		{
+			name:   "startup_timeout 120 is valid (max)",
+			modify: func(m *AppManifest) { m.StartupTimeout = 120 },
+		},
+		{
+			name:    "startup_timeout too high",
+			modify:  func(m *AppManifest) { m.StartupTimeout = 200 },
+			wantErr: "startup_timeout must be between 0 and 120",
+		},
+		{
+			name:    "startup_timeout negative",
+			modify:  func(m *AppManifest) { m.StartupTimeout = -1 },
+			wantErr: "startup_timeout must be between 0 and 120",
+		},
 	}
 
 	for _, tt := range tests {
@@ -177,7 +199,7 @@ func TestCheckPermission(t *testing.T) {
 	m := &AppManifest{
 		Permissions: []string{
 			"network:api.example.com:443",
-			"settings:endpoint",
+			"settings:read",
 			"user:*",
 		},
 	}
@@ -186,7 +208,7 @@ func TestCheckPermission(t *testing.T) {
 	if !CheckPermission(m, "network:api.example.com:443") {
 		t.Error("should match exact permission")
 	}
-	if !CheckPermission(m, "settings:endpoint") {
+	if !CheckPermission(m, "settings:read") {
 		t.Error("should match exact permission")
 	}
 
@@ -211,7 +233,7 @@ func TestHasPermissionPrefix(t *testing.T) {
 	m := &AppManifest{
 		Permissions: []string{
 			"network:api.example.com:443",
-			"settings:endpoint",
+			"settings:read",
 			"comm:send",
 		},
 	}
@@ -246,17 +268,20 @@ func TestIsValidCapability(t *testing.T) {
 func TestIsValidPermission(t *testing.T) {
 	valid := []string{
 		"network:example.com:443",
-		"settings:endpoint",
+		"network:*",
+		"network:outbound",
+		"settings:read",
 		"memory:read",
 		"session:create",
-		"tool:exec",
-		"shell:bash",
-		"channel:discord",
+		"tool:shell",
+		"shell:exec",
+		"channel:send",
 		"comm:send",
-		"model:select",
+		"model:chat",
 		"user:token",
 		"database:read",
-		"schedule:cron",
+		"schedule:create",
+		"oauth:google",
 	}
 	for _, perm := range valid {
 		if !isValidPermission(perm) {
@@ -264,57 +289,20 @@ func TestIsValidPermission(t *testing.T) {
 		}
 	}
 
-	invalid := []string{"bogus:foo", "admin:root", "", "noprefixhere"}
+	invalid := []string{
+		"bogus:foo",
+		"admin:root",
+		"",
+		"noprefixhere",
+		"memory:banana",
+		"shell:rm",
+		"network:",
+		"settings:",
+	}
 	for _, perm := range invalid {
 		if isValidPermission(perm) {
 			t.Errorf("isValidPermission(%q) = true, want false", perm)
 		}
-	}
-}
-
-func TestToSettingsManifest(t *testing.T) {
-	m := &AppManifest{
-		Name: "Test App",
-		Settings: []SettingsField{
-			{
-				Key:         "endpoint",
-				Title:       "API Endpoint",
-				Type:        "url",
-				Required:    true,
-				Placeholder: "https://api.example.com",
-			},
-			{
-				Key:    "token",
-				Title:  "API Token",
-				Type:   "password",
-				Secret: true,
-			},
-		},
-	}
-
-	sm := m.ToSettingsManifest()
-	if len(sm.Groups) != 1 {
-		t.Fatalf("expected 1 group, got %d", len(sm.Groups))
-	}
-	if sm.Groups[0].Title != "Test App Settings" {
-		t.Errorf("group title = %q, want %q", sm.Groups[0].Title, "Test App Settings")
-	}
-	if len(sm.Groups[0].Fields) != 2 {
-		t.Fatalf("expected 2 fields, got %d", len(sm.Groups[0].Fields))
-	}
-	if sm.Groups[0].Fields[0].Key != "endpoint" {
-		t.Errorf("first field key = %q, want %q", sm.Groups[0].Fields[0].Key, "endpoint")
-	}
-	if !sm.Groups[0].Fields[1].Secret {
-		t.Error("second field should be secret")
-	}
-}
-
-func TestToSettingsManifest_NoSettings(t *testing.T) {
-	m := &AppManifest{Name: "Bare App"}
-	sm := m.ToSettingsManifest()
-	if len(sm.Groups) != 0 {
-		t.Errorf("expected 0 groups for app with no settings, got %d", len(sm.Groups))
 	}
 }
 

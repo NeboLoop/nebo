@@ -61,6 +61,7 @@ type AppRegistry struct {
 	uiApps          map[string]*AppProcess            // apps that provide UI
 	channelAdapters map[string]*AppChannelAdapter      // registered channel apps
 	scheduleAdapter *AppScheduleAdapter               // app-provided scheduler (replaces built-in)
+	commNames       map[string]string                  // appID -> comm plugin name (for deregistration)
 	mu              sync.RWMutex
 }
 
@@ -271,6 +272,12 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 			}
 			if ar.commMgr != nil {
 				ar.commMgr.Register(adapter)
+				ar.mu.Lock()
+				if ar.commNames == nil {
+					ar.commNames = make(map[string]string)
+				}
+				ar.commNames[manifest.ID] = adapter.Name()
+				ar.mu.Unlock()
 				fmt.Printf("[apps] Registered comm plugin: %s\n", adapter.Name())
 			}
 
@@ -313,15 +320,9 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 		}
 	}
 
-	// Register as configurable if the app has settings
-	if ar.pluginStore != nil && len(manifest.Settings) > 0 {
-		configurable := &appConfigurable{
-			manifest: manifest,
-			proc:     proc,
-		}
-		if err := ar.pluginStore.RegisterConfigurable(ctx, manifest.Name, configurable); err != nil {
-			fmt.Printf("[apps] Warning: settings registration failed for %s: %v\n", manifest.ID, err)
-		}
+	// Register as configurable so settings changes trigger hot-reload via gRPC Configure
+	if ar.pluginStore != nil {
+		ar.pluginStore.RegisterConfigurable(manifest.Name, &appConfigurable{proc: proc})
 	}
 
 	// Update connection_status to "connected" now that the app is running
@@ -338,6 +339,69 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 	return nil
 }
 
+// deregisterCapabilities removes all capability registrations for an app.
+// Called when an app is uninstalled, quarantined, unsideloaded, or exhausts
+// its restart budget. Without this, the agent keeps routing to dead gRPC connections.
+func (ar *AppRegistry) deregisterCapabilities(manifest *AppManifest) {
+	for _, cap := range manifest.Provides {
+		switch {
+		case cap == CapGateway:
+			ar.mu.Lock()
+			filtered := ar.providers[:0]
+			for _, p := range ar.providers {
+				if gpa, ok := p.(*GatewayProviderAdapter); ok && gpa.manifest.ID == manifest.ID {
+					continue
+				}
+				filtered = append(filtered, p)
+			}
+			ar.providers = filtered
+			ar.mu.Unlock()
+
+		case cap == CapVision || cap == CapBrowser || hasPrefix(cap, CapPrefixTool):
+			slug := tools.Slugify(manifest.Name)
+			if ar.skillTool != nil {
+				ar.skillTool.Unregister(slug)
+			} else if ar.toolReg != nil {
+				ar.toolReg.Unregister(slug)
+			}
+
+		case cap == CapComm:
+			if ar.commMgr != nil {
+				ar.mu.RLock()
+				commName := ar.commNames[manifest.ID]
+				ar.mu.RUnlock()
+				if commName != "" {
+					ar.commMgr.Unregister(commName)
+					ar.mu.Lock()
+					delete(ar.commNames, manifest.ID)
+					ar.mu.Unlock()
+				}
+			}
+
+		case hasPrefix(cap, CapPrefixChannel):
+			channelName := cap[len(CapPrefixChannel):]
+			ar.mu.Lock()
+			delete(ar.channelAdapters, channelName)
+			ar.mu.Unlock()
+
+		case cap == CapSchedule:
+			ar.mu.Lock()
+			ar.scheduleAdapter = nil
+			ar.mu.Unlock()
+
+		case cap == CapUI:
+			ar.mu.Lock()
+			delete(ar.uiApps, manifest.ID)
+			ar.mu.Unlock()
+		}
+	}
+
+	// Deregister from plugin settings (hot-reload configurable)
+	if ar.pluginStore != nil {
+		ar.pluginStore.DeregisterConfigurable(manifest.Name)
+	}
+}
+
 // registerInDB ensures the app has a plugin_registry row.
 func (ar *AppRegistry) registerInDB(ctx context.Context, manifest *AppManifest) error {
 	if ar.queries == nil {
@@ -350,7 +414,6 @@ func (ar *AppRegistry) registerInDB(ctx context.Context, manifest *AppManifest) 
 		return nil // Already exists
 	}
 
-	manifestJSON, _ := json.Marshal(manifest.ToSettingsManifest())
 	metadataJSON, _ := json.Marshal(map[string]any{
 		"app_id":      manifest.ID,
 		"provides":    manifest.Provides,
@@ -367,66 +430,10 @@ func (ar *AppRegistry) registerInDB(ctx context.Context, manifest *AppManifest) 
 		Version:          manifest.Version,
 		IsEnabled:        1,
 		IsInstalled:      1,
-		SettingsManifest: string(manifestJSON),
+		SettingsManifest: "{}",
 		Metadata:         string(metadataJSON),
 	})
 	return err
-}
-
-// PersistEventSettingsSchema persists a settings schema from an MQTT install event
-// to the plugin_registry row. This supplements the manifest — if the DB row's
-// settings_manifest is empty (manifest had no settings), the event schema is used.
-// If the manifest already declared settings, the event schema is ignored (manifest wins).
-func (ar *AppRegistry) PersistEventSettingsSchema(ctx context.Context, appName string, schemaJSON json.RawMessage) error {
-	if ar.queries == nil || appName == "" {
-		return nil
-	}
-
-	row, err := ar.queries.GetPluginByName(ctx, appName)
-	if err != nil {
-		return fmt.Errorf("app %q not found in DB: %w", appName, err)
-	}
-
-	// If the manifest already declared settings, don't override
-	if row.SettingsManifest != "" && row.SettingsManifest != "{}" {
-		var existing settings.SettingsManifest
-		if json.Unmarshal([]byte(row.SettingsManifest), &existing) == nil && len(existing.Groups) > 0 {
-			return nil // manifest settings take precedence
-		}
-	}
-
-	// Parse the event schema (array of settings fields) into a SettingsManifest
-	var fields []settings.SettingsField
-	if err := json.Unmarshal(schemaJSON, &fields); err != nil {
-		return fmt.Errorf("parse settings_schema: %w", err)
-	}
-	if len(fields) == 0 {
-		return nil
-	}
-
-	manifest := settings.SettingsManifest{
-		Groups: []settings.SettingsGroup{
-			{
-				Title:  appName + " Settings",
-				Fields: fields,
-			},
-		},
-	}
-	manifestJSON, err := json.Marshal(manifest)
-	if err != nil {
-		return fmt.Errorf("marshal settings manifest: %w", err)
-	}
-
-	return ar.queries.UpdatePlugin(ctx, db.UpdatePluginParams{
-		DisplayName:      row.DisplayName,
-		Description:      row.Description,
-		Icon:             row.Icon,
-		Version:          row.Version,
-		IsEnabled:        row.IsEnabled,
-		SettingsManifest: string(manifestJSON),
-		Metadata:         row.Metadata,
-		ID:               row.ID,
-	})
 }
 
 // GatewayProviders returns all registered gateway provider adapters.
@@ -614,6 +621,12 @@ func (ar *AppRegistry) Uninstall(appID string) error {
 		return fmt.Errorf("app not found: %s", appID)
 	}
 
+	// Deregister all capabilities before stopping
+	manifest, _ := LoadManifest(appDir)
+	if manifest != nil {
+		ar.deregisterCapabilities(manifest)
+	}
+
 	// Stop the app if running
 	if _, ok := ar.runtime.Get(appID); ok {
 		if err := ar.runtime.Stop(appID); err != nil {
@@ -621,18 +634,10 @@ func (ar *AppRegistry) Uninstall(appID string) error {
 		}
 	}
 
-	// Remove UI registration
-	ar.mu.Lock()
-	delete(ar.uiApps, appID)
-	ar.mu.Unlock()
-
 	// Remove DB registration
-	if ar.queries != nil {
-		manifest, err := LoadManifest(appDir)
-		if err == nil {
-			if plugin, err := ar.queries.GetPluginByName(context.Background(), manifest.Name); err == nil {
-				_ = ar.queries.DeletePlugin(context.Background(), plugin.ID)
-			}
+	if ar.queries != nil && manifest != nil {
+		if plugin, err := ar.queries.GetPluginByName(context.Background(), manifest.Name); err == nil {
+			_ = ar.queries.DeletePlugin(context.Background(), plugin.ID)
 		}
 	}
 
@@ -654,17 +659,18 @@ func (ar *AppRegistry) Uninstall(appID string) error {
 func (ar *AppRegistry) Quarantine(appID string) error {
 	appDir := filepath.Join(ar.appsDir, appID)
 
+	// Deregister all capabilities before stopping
+	manifest, _ := LoadManifest(appDir)
+	if manifest != nil {
+		ar.deregisterCapabilities(manifest)
+	}
+
 	// Stop the app if running
 	if _, ok := ar.runtime.Get(appID); ok {
 		if err := ar.runtime.Stop(appID); err != nil {
 			fmt.Printf("[apps] Warning: failed to stop %s during quarantine: %v\n", appID, err)
 		}
 	}
-
-	// Remove UI registration
-	ar.mu.Lock()
-	delete(ar.uiApps, appID)
-	ar.mu.Unlock()
 
 	// Remove the binary so it can never re-launch, but preserve data/ and logs/
 	os.Remove(filepath.Join(appDir, "binary"))
@@ -683,7 +689,7 @@ func (ar *AppRegistry) Quarantine(appID string) error {
 	ar.mu.RUnlock()
 	if cb != nil {
 		appName := appID
-		if manifest, err := LoadManifest(appDir); err == nil {
+		if manifest != nil {
 			appName = manifest.Name
 		}
 		cb(QuarantineEvent{
@@ -783,17 +789,18 @@ func (ar *AppRegistry) Unsideload(appID string) error {
 		return fmt.Errorf("app %s is not sideloaded (not a symlink)", appID)
 	}
 
+	// Deregister all capabilities before stopping
+	manifest, _ := LoadManifest(symlinkPath)
+	if manifest != nil {
+		ar.deregisterCapabilities(manifest)
+	}
+
 	// Stop the app if running
 	if _, ok := ar.runtime.Get(appID); ok {
 		if err := ar.runtime.Stop(appID); err != nil {
 			fmt.Printf("[apps] Warning: failed to stop %s during unsideload: %v\n", appID, err)
 		}
 	}
-
-	// Remove UI registration
-	ar.mu.Lock()
-	delete(ar.uiApps, appID)
-	ar.mu.Unlock()
 
 	// Remove the symlink
 	if err := os.Remove(symlinkPath); err != nil {
@@ -850,14 +857,9 @@ func (ar *AppRegistry) AppsDir() string {
 	return ar.appsDir
 }
 
-// appConfigurable implements plugin.Configurable for apps with settings.
+// appConfigurable implements settings.Configurable for apps.
 type appConfigurable struct {
-	manifest *AppManifest
-	proc     *AppProcess
-}
-
-func (ac *appConfigurable) Manifest() settings.SettingsManifest {
-	return ac.manifest.ToSettingsManifest()
+	proc *AppProcess
 }
 
 func (ac *appConfigurable) OnSettingsChanged(settings map[string]string) error {

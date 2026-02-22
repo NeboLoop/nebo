@@ -14,7 +14,7 @@ Nebo Apps are self-contained, precompiled units of incredible functionality. Eac
 
 **The interface is 100% conversational.** Users don't interact with apps through separate screens or dashboards. They talk to Nebo, and Nebo uses the app's tools to get things done. "What's on my calendar tomorrow?" — Nebo calls the calendar app. "Create a meeting with Sarah at 3pm" — Nebo calls the calendar app. The user never leaves the conversation.
 
-Apps can optionally provide a **settings UI** — a configuration panel that opens in Nebo's built-in browser window. This is where users enter API keys, toggle features, and configure the app. The settings UI is driven by the `settings` array in the manifest (Nebo renders the form automatically), or the app can provide its own full custom UI via the `ui` capability.
+Apps can optionally provide a **settings UI** — a configuration panel that opens in Nebo's built-in browser window. This is where users enter API keys, toggle features, and configure the app. Apps serve their own settings UI via the `ui` capability and the `HandleRequest` gRPC proxy.
 
 **Apps replace and extend Nebo's built-in capabilities.** Nebo ships with basic platform tools (local calendar access, screenshots, etc.). When you install a calendar app, it replaces the built-in calendar tool and becomes a superset — local + cloud + aggregation + availability checking. The agent seamlessly uses whichever tool is registered, whether built-in or app-provided.
 
@@ -105,17 +105,7 @@ Every app requires a `manifest.json`:
     "runtime": "local",
     "protocol": "grpc",
     "provides": ["tool:my_tool"],
-    "permissions": ["network:outbound"],
-    "settings": [
-        {
-            "key": "api_key",
-            "title": "API Key",
-            "type": "password",
-            "required": true,
-            "description": "Your API key for the service",
-            "secret": true
-        }
-    ]
+    "permissions": ["network:outbound"]
 }
 ```
 
@@ -136,8 +126,9 @@ Every app requires a `manifest.json`:
 | `protocol` | `"grpc"` | Only `"grpc"` is supported |
 | `permissions` | `[]` | What the app needs access to |
 | `description` | `""` | Shown in the UI |
-| `settings` | `[]` | Configurable settings (rendered in Settings UI) |
 | `oauth` | `[]` | OAuth provider requirements (see OAuth section) |
+| `startup_timeout` | `10` | Seconds to wait for gRPC socket (max 120) |
+| `signature` | `{}` | Code signing metadata (NeboLoop distribution only, optional in dev) |
 
 ---
 
@@ -195,6 +186,8 @@ Permissions control what the app can access. Deny by default — if not declared
 
 Wildcard permissions are supported: `network:*` matches any `network:` permission check.
 
+**Suffix validation:** For most permissions, only the documented suffixes above are accepted (e.g., `memory:read` and `memory:write` are the only valid `memory:` permissions). `network:` and `oauth:` accept any valid identifier (hostnames, provider names). The wildcard `*` is valid for all prefixes.
+
 ---
 
 ## OAuth Requirements
@@ -221,72 +214,13 @@ When the user installs the app, Nebo prompts them to authorize the required OAut
 
 ---
 
-## Settings Fields
-
-Settings appear in the Nebo UI under the app's settings panel. Nebo stores them in the database and sends them to your app via the `Configure` RPC when they change.
-
-**Store integration:** Your settings schema is included in the NeboLoop app store listing and in the install notification payload. This means:
-- The store shows "Requires configuration" pre-install if you have required settings
-- After install, Nebo immediately prompts the user with your settings form
-- Apps with unconfigured required settings show a "Needs Setup" badge in the UI
-
-| Type | Description |
-|------|-------------|
-| `text` | Single-line text input |
-| `password` | Masked text input |
-| `toggle` | Boolean on/off switch |
-| `select` | Dropdown with predefined options |
-| `number` | Numeric input |
-| `url` | URL input with validation |
-
-```json
-{
-    "key": "region",
-    "title": "Region",
-    "type": "select",
-    "required": true,
-    "default": "us-east-1",
-    "options": [
-        {"label": "US East", "value": "us-east-1"},
-        {"label": "EU West", "value": "eu-west-1"}
-    ]
-}
-```
-
-### How Settings Are Stored and Delivered
-
-Settings values are stored in the `plugin_settings` database table as key-value pairs. Secret fields (marked with `"secret": true`) are encrypted at rest using Nebo's credential encryption.
-
-When a user updates settings via the UI:
-
-1. Values are persisted to the database (secrets encrypted)
-2. Nebo calls the `Configure` gRPC RPC on your app, passing all current settings as a `SettingsMap`
-3. A `plugin_settings_updated` event is broadcast to all connected web clients
-
-Your app receives settings via `Configure` both on startup and whenever the user changes them — no polling needed.
-
----
-
 ## Settings UI Flow
 
-Nebo provides two ways for users to configure apps:
+Apps that need a configuration interface provide their own web UI via the `ui` capability. Declare `"provides": ["ui"]` in the manifest and ship a `ui/` directory with your app containing HTML/CSS/JS (typically a SPA with an `index.html`).
 
-### Automatic Settings Form (most apps)
+Settings values are stored in the `plugin_settings` database table as key-value pairs. When settings change, Nebo calls the `Configure` gRPC RPC on your app, passing all current settings as a `SettingsMap`. Your app receives settings via `Configure` both on startup and whenever values change — no polling needed.
 
-For apps that only declare a `settings` array in their manifest, Nebo renders the settings form automatically in the web UI:
-
-1. User navigates to **Settings > Apps** in the web UI
-2. Clicks an app card to open the detail modal
-3. The modal shows tabs: **Info** (capabilities, permissions, version), **Settings** (auto-rendered form), and **Connections** (OAuth grants)
-4. If the app has required settings that aren't filled in, the Settings tab auto-activates
-5. The form renders each field from `settingsManifest.groups[].fields[]` using the appropriate input type
-6. On save, `PUT /api/v1/plugins/{id}/settings` persists values and triggers the `Configure` RPC to the app
-
-### Custom App UI (apps with `ui` capability)
-
-Apps that need a richer configuration interface can provide their own full web UI. Declare `"provides": ["ui"]` in the manifest and ship a `ui/` directory with your app containing HTML/CSS/JS (typically a SPA with an `index.html`).
-
-When the user clicks "Open" on a UI-capable app:
+When the user clicks "Configure" on a UI-capable app:
 
 1. Frontend calls `POST /api/v1/apps/{id}/ui/open`
 2. **Desktop mode:** Nebo creates a native browser window (via Wails WebView) pointing to the app's UI URL. The window is 1200x800 with the app's name as the title.
@@ -326,8 +260,11 @@ Your app process receives a sanitized environment. All secrets are stripped. You
 | `PATH` | System PATH (passthrough) |
 | `HOME` | User home directory (passthrough) |
 | `TMPDIR` | Temp directory (passthrough) |
+| `LANG` | Locale setting (passthrough) |
+| `LC_ALL` | Locale override (passthrough) |
+| `TZ` | Timezone (passthrough) |
 
-**Critical:** Your binary must create a gRPC server listening on the Unix socket at `NEBO_APP_SOCK`. Nebo waits up to 10 seconds for this socket to appear.
+**Critical:** Your binary must create a gRPC server listening on the Unix socket at `NEBO_APP_SOCK`. Nebo waits up to 10 seconds for this socket to appear (configurable via `startup_timeout` in `manifest.json`, max 120 seconds).
 
 ---
 
@@ -343,11 +280,36 @@ Your app process receives a sanitized environment. All secrets are stripped. You
 8. Creates `data/` directory for sandboxed storage
 9. Sets up per-app log files (`logs/stdout.log`, `logs/stderr.log`)
 10. Starts binary with sanitized environment and process group isolation
-11. Waits for Unix socket to appear (exponential backoff, max 10 seconds)
+11. Waits for Unix socket to appear (exponential backoff, default 10 seconds)
 12. Connects via gRPC over the Unix socket
 13. Creates capability-specific gRPC clients based on `provides`
 14. Runs health check
 15. Registers capabilities with the agent (tools, gateway, comm, etc.)
+
+**Startup timeout:** Apps that need more than 10 seconds to initialize (connecting to external APIs, loading large models) can set `"startup_timeout": 60` in their manifest. Maximum: 120 seconds.
+
+**Note:** Gateway apps **must** declare at least one `network:` permission. If missing, the gateway capability is silently skipped with a warning log. This is enforced at registration time, not at manifest validation.
+
+---
+
+## Supervisor & Restarts
+
+Nebo supervises all running apps with automatic health checks and restart behavior.
+
+**Health checks:** Every 15 seconds, the supervisor checks each app:
+1. Is the process still alive? (OS-level check)
+2. Does the gRPC health check respond? (application-level check)
+
+If either check fails, the app is restarted.
+
+**Restart behavior:**
+- **Exponential backoff:** 10s, 20s, 40s, 80s, 160s (capped at 5 minutes)
+- **Rate limit:** Max 5 restarts per hour per app. After 5 restarts, the app is marked as unhealthy and left stopped until the next hour window.
+- **Watcher suppression:** When the supervisor restarts an app, the file watcher is suppressed for 30 seconds to prevent double-restart.
+
+**Capability cleanup:** When an app exhausts its restart budget (5 failures in one hour), its capabilities are automatically deregistered from the agent. Tools become unavailable, gateway providers are removed, and schedule apps fall back to the built-in cron engine. The app's capabilities are re-registered if it is successfully restarted on the next Nebo launch.
+
+**What this means for developers:** Your app should be designed to start cleanly and respond to health checks promptly. If your app crashes repeatedly (>5 times/hour), it will stop being restarted automatically. Check `logs/stderr.log` for crash details.
 
 ---
 
@@ -702,17 +664,7 @@ func main() {
     "runtime": "local",
     "protocol": "grpc",
     "provides": ["channel:telegram"],
-    "permissions": ["channel:send", "network:outbound"],
-    "settings": [
-        {
-            "key": "bot_token",
-            "title": "Bot Token",
-            "type": "password",
-            "required": true,
-            "description": "Telegram bot token from @BotFather",
-            "secret": true
-        }
-    ]
+    "permissions": ["channel:send", "network:outbound"]
 }
 ```
 
@@ -735,6 +687,11 @@ Declare `"provides": ["comm"]` and `"permissions": ["comm:*"]`.
 | `topic` | Message topic/channel |
 | `type` | `"message"`, `"mention"`, `"proposal"`, `"command"`, `"info"`, `"task"` |
 | `content` | Message body |
+| `conversation_id` | Conversation thread ID |
+| `metadata` | Key-value metadata map |
+| `timestamp` | RFC3339 timestamp |
+| `human_injected` | Whether this message was injected by a human operator |
+| `human_id` | ID of the human who injected the message (if applicable) |
 
 **Key behaviors:**
 
@@ -750,6 +707,8 @@ Declare `"provides": ["comm"]` and `"permissions": ["comm:*"]`.
 ## Gateway App
 
 A gateway app routes LLM requests to models. This is how Janus (Nebo's cloud AI gateway) works. Declare `"provides": ["gateway"]` and `"permissions": ["network:outbound", "user:token"]`.
+
+**Required:** At least one `network:` permission must be declared. Without it, the gateway capability is silently skipped at registration time. Additionally, if the `user:token` permission is granted, Nebo automatically injects the NeboLoop JWT into the app's settings — your app receives it via the `Configure` RPC without any manual setup.
 
 **GatewayRequest** contains messages, tools, system prompt, max tokens, temperature, and a `UserContext` (JWT token if `user:token` permission is granted).
 
@@ -771,7 +730,7 @@ The `model` field in each event tells Nebo which model actually handled the requ
 
 A UI app provides a custom configuration interface that opens in Nebo's built-in browser window. Declare `"provides": ["ui"]`.
 
-Unlike the automatic settings form (which Nebo renders from your `settings` manifest), a UI app serves its own full HTML/CSS/JS frontend. This is useful for apps that need rich configuration beyond simple form fields — dashboards, visual editors, interactive setup wizards, etc.
+A UI app serves its own HTML/CSS/JS frontend. This is how apps provide configuration interfaces — dashboards, visual editors, interactive setup wizards, settings forms, etc.
 
 ### How It Works
 
@@ -1092,9 +1051,9 @@ In dev mode (no NeboLoop URL configured), signature verification is skipped enti
    go build -o ~/Library/Application\ Support/Nebo/apps/com.example.myapp/binary .
    ```
 
-4. Nebo auto-detects the new directory (or restart Nebo)
+4. Nebo auto-detects the new directory within ~500ms (the watcher delays briefly to allow the directory to finish writing). If auto-detection doesn't trigger, restart Nebo.
 
-5. After code changes, rebuild the binary — the file watcher will restart the app
+5. After code changes, rebuild the binary — the file watcher detects the change and restarts the app (with 500ms debounce to coalesce multiple write events during a build)
 
 ### Viewing logs
 
@@ -1114,7 +1073,7 @@ Use the `data/` directory (also available as `NEBO_APP_DATA` env var) for any fi
 - If your app doesn't start, check `logs/stderr.log` for errors
 - Make sure the binary is executable (`chmod +x binary`)
 - Make sure you're listening on the Unix socket path from `NEBO_APP_SOCK`
-- The socket must be ready within 10 seconds of launch
+- The socket must be ready within the startup timeout (default 10 seconds, configurable in manifest)
 - Use `NEBO_APP_DATA` for storage, not hardcoded paths
 - Print to stderr for debug logging (captured in `logs/stderr.log`)
 
@@ -1143,7 +1102,7 @@ Proto files live in `proto/apps/v0/`. The SDKs ship with pre-generated code, so 
 
 | File | Service | Key RPCs |
 |------|---------|----------|
-| `v0/common.proto` | (messages only) | HealthCheckRequest/Response, SettingsMap, UserContext, Empty |
+| `v0/common.proto` | (messages only) | HealthCheckRequest/Response, SettingsMap, UserContext, ErrorResponse, Empty |
 | `v0/tool.proto` | `ToolService` | Name, Description, Schema, Execute, RequiresApproval, Configure |
 | `v0/channel.proto` | `ChannelService` | ID, Connect, Disconnect, Send, Receive (stream), Configure |
 | `v0/comm.proto` | `CommService` | Name, Version, Connect, Disconnect, IsConnected, Send, Subscribe, Unsubscribe, Register, Deregister, Receive (stream), Configure |
@@ -1166,7 +1125,7 @@ The channel proto includes rich messaging support:
 | `Attachment` | `type`, `url`, `filename`, `size` | File/image/audio attachment |
 | `MessageAction` | `label`, `callback_id` | Interactive button/keyboard action |
 
-Proto3 additive — existing apps that only use `channel_id` + `text` still work without changes.
+The rich envelope fields (attachments, reply_to, actions, platform_data, sender) are **optional** — apps that only use `channel_id` + `text` work without changes. Proto3 additive compatibility means you can adopt these features incrementally.
 
 ---
 

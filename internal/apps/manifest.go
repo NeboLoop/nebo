@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/neboloop/nebo/internal/apps/settings"
 )
 
 // Known capability types that apps can provide.
@@ -80,10 +78,10 @@ type AppManifest struct {
 	Description string            `json:"description,omitempty"`
 	Runtime     string            `json:"runtime"`  // "local" or "remote"
 	Protocol    string            `json:"protocol"` // "grpc"
-	Signature   ManifestSignature `json:"signature,omitempty"`
-	Provides    []string          `json:"provides"`
+	Signature      ManifestSignature `json:"signature,omitempty"`
+	StartupTimeout int               `json:"startup_timeout,omitempty"` // seconds, 0 = default (10s)
+	Provides       []string          `json:"provides"`
 	Permissions []string          `json:"permissions"`
-	Settings    []SettingsField   `json:"settings,omitempty"`
 	OAuth       []OAuthRequirement `json:"oauth,omitempty"`
 }
 
@@ -102,25 +100,6 @@ type ManifestSignature struct {
 	BinarySig string `json:"binary_sig,omitempty"` // Base64 signature of binary
 }
 
-// SettingsField describes a configurable setting for the app UI.
-// Mirrors plugin.SettingsField for compatibility.
-type SettingsField struct {
-	Key         string   `json:"key"`
-	Title       string   `json:"title"`
-	Type        string   `json:"type"` // text, password, toggle, select, number, url
-	Required    bool     `json:"required,omitempty"`
-	Default     string   `json:"default,omitempty"`
-	Placeholder string   `json:"placeholder,omitempty"`
-	Options     []Option `json:"options,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Secret      bool     `json:"secret,omitempty"`
-}
-
-// Option is a choice for select-type settings fields.
-type Option struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-}
 
 // LoadManifest reads and validates a manifest.json from an app directory.
 func LoadManifest(dir string) (*AppManifest, error) {
@@ -161,6 +140,9 @@ func ValidateManifest(m *AppManifest) error {
 	}
 	if m.Runtime != "" && m.Runtime != "local" && m.Runtime != "remote" {
 		return fmt.Errorf("unsupported runtime: %s (must be local or remote)", m.Runtime)
+	}
+	if m.StartupTimeout < 0 || m.StartupTimeout > 120 {
+		return fmt.Errorf("startup_timeout must be between 0 and 120 seconds (got %d)", m.StartupTimeout)
 	}
 
 	for _, cap := range m.Provides {
@@ -233,42 +215,6 @@ func CheckPermission(m *AppManifest, perm string) bool {
 	return false
 }
 
-// ToSettingsManifest converts the app's settings fields to the plugin.SettingsManifest
-// format for compatibility with the existing plugin settings UI.
-func (m *AppManifest) ToSettingsManifest() settings.SettingsManifest {
-	if len(m.Settings) == 0 {
-		return settings.SettingsManifest{}
-	}
-
-	fields := make([]settings.SettingsField, len(m.Settings))
-	for i, f := range m.Settings {
-		var opts []settings.Option
-		for _, o := range f.Options {
-			opts = append(opts, settings.Option{Label: o.Label, Value: o.Value})
-		}
-		fields[i] = settings.SettingsField{
-			Key:         f.Key,
-			Title:       f.Title,
-			Type:        f.Type,
-			Required:    f.Required,
-			Default:     f.Default,
-			Placeholder: f.Placeholder,
-			Options:     opts,
-			Description: f.Description,
-			Secret:      f.Secret,
-		}
-	}
-
-	return settings.SettingsManifest{
-		Groups: []settings.SettingsGroup{
-			{
-				Title:  m.Name + " Settings",
-				Fields: fields,
-			},
-		},
-	}
-}
-
 func isValidCapability(cap string) bool {
 	switch cap {
 	case CapGateway, CapVision, CapBrowser, CapComm, CapUI, CapSchedule:
@@ -293,11 +239,87 @@ var validPermissionPrefixes = []string{
 	PermPrefixSchedule, PermPrefixVoice, PermPrefixBrowser, PermPrefixOAuth, PermPrefixUser,
 }
 
+// validPermissionSuffixes maps each prefix to its allowed suffixes.
+// nil means the prefix accepts flexible identifier-style suffixes (hostnames, provider names).
+var validPermissionSuffixes = map[string][]string{
+	// Storage & Config
+	PermPrefixNetwork:    nil, // flexible: "outbound", host:port patterns, "*"
+	PermPrefixFilesystem: {"read", "write"},
+	PermPrefixSettings:   {"read", "write"},
+	PermPrefixCapability: {"register"},
+
+	// Agent Core
+	PermPrefixMemory:  {"read", "write"},
+	PermPrefixSession: {"read", "write", "create"},
+	PermPrefixContext: {"read"},
+
+	// Execution
+	PermPrefixTool:     {"file", "shell", "web", "agent", "skill"},
+	PermPrefixShell:    {"exec"},
+	PermPrefixSubagent: {"spawn"},
+	PermPrefixLane:     {"enqueue"},
+
+	// Communication
+	PermPrefixChannel:      {"send", "receive"},
+	PermPrefixComm:         {"send", "receive"},
+	PermPrefixNotification: {"send"},
+
+	// Knowledge
+	PermPrefixEmbedding: {"search", "store"},
+	PermPrefixSkill:     {"invoke"},
+	PermPrefixAdvisor:   {"consult"},
+
+	// AI
+	PermPrefixModel: {"chat", "embed"},
+	PermPrefixMCP:   {"connect"},
+
+	// Storage
+	PermPrefixDatabase: {"query", "read", "write"},
+	PermPrefixStorage:  {"read", "write"},
+
+	// System
+	PermPrefixSchedule: {"create", "delete", "list"},
+	PermPrefixVoice:    {"record"},
+	PermPrefixBrowser:  {"navigate"},
+	PermPrefixOAuth:    nil, // flexible: provider names ("google", "microsoft", etc.)
+	PermPrefixUser:     {"token", "id"},
+}
+
 func isValidPermission(perm string) bool {
 	for _, prefix := range validPermissionPrefixes {
-		if strings.HasPrefix(perm, prefix) {
-			return true
+		if !strings.HasPrefix(perm, prefix) {
+			continue
 		}
+		suffix := perm[len(prefix):]
+		if suffix == "" {
+			return false // bare prefix with no value
+		}
+		if suffix == "*" {
+			return true // wildcard always valid
+		}
+		allowed := validPermissionSuffixes[prefix]
+		if allowed == nil {
+			// Flexible prefix — validate format only
+			return isValidPermissionIdentifier(suffix)
+		}
+		for _, v := range allowed {
+			if suffix == v {
+				return true
+			}
+		}
+		return false
 	}
 	return false
+}
+
+// isValidPermissionIdentifier checks that a flexible suffix contains only
+// lowercase alphanumeric characters, dots, hyphens, colons, and underscores.
+// This covers hostnames (api.example.com), ports (host:443), and provider names (google).
+func isValidPermissionIdentifier(s string) bool {
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == ':' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
