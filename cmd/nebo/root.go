@@ -114,6 +114,7 @@ func RunAll() {
 	svcCtx := svc.NewServiceContext(*c)
 	svcCtx.Version = AppVersion
 	svcCtx.SetUpdateManager(&svc.UpdateMgr{})
+	startBackgroundUpdater(ctx, svcCtx)
 	defer svcCtx.Close()
 
 	if svcCtx.DB == nil {

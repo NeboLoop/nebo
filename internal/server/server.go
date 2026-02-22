@@ -186,6 +186,7 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 
 	// WebSocket routes
 	hub := realtime.NewHub()
+	svcCtx.SetClientHub(hub)
 	go hub.Run(ctx)
 	go svcCtx.AgentHub.Run(ctx)
 

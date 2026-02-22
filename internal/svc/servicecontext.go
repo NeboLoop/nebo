@@ -99,6 +99,9 @@ type ServiceContext struct {
 
 	updateMgr   *UpdateMgr
 	updateMgrMu sync.RWMutex
+
+	clientHub   any // realtime.Hub (use any to avoid import cycle)
+	clientHubMu sync.RWMutex
 }
 
 // UpdateMgr tracks a pending auto-update binary path (in-memory only).
@@ -248,6 +251,20 @@ func (svc *ServiceContext) UpdateManager() *UpdateMgr {
 	svc.updateMgrMu.RLock()
 	defer svc.updateMgrMu.RUnlock()
 	return svc.updateMgr
+}
+
+// SetClientHub installs the browser WebSocket hub (called from server.go after hub init).
+func (svc *ServiceContext) SetClientHub(h any) {
+	svc.clientHubMu.Lock()
+	defer svc.clientHubMu.Unlock()
+	svc.clientHub = h
+}
+
+// ClientHub returns the browser WebSocket hub (may be nil before server starts).
+func (svc *ServiceContext) ClientHub() any {
+	svc.clientHubMu.RLock()
+	defer svc.clientHubMu.RUnlock()
+	return svc.clientHub
 }
 
 // SetOpenPopup installs the popup window opener callback (desktop mode only).

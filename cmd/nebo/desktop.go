@@ -378,6 +378,8 @@ func RunDesktop() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	startBackgroundUpdater(ctx, svcCtx)
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
 
