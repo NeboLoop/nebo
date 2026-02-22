@@ -122,14 +122,9 @@ Write tasks in plain language - the agent will interpret and act on them.
 <div class="flex flex-col h-full min-h-0">
 	<!-- Header -->
 	<div class="shrink-0 mb-4">
-		<div class="flex items-center gap-3 mb-4">
-			<div class="w-10 h-10 rounded-xl bg-error/10 flex items-center justify-center">
-				<Heart class="w-5 h-5 text-error" />
-			</div>
-			<div>
-				<h2 class="text-lg font-semibold text-base-content">Heartbeat Tasks</h2>
-				<p class="text-sm text-base-content/60">Proactive tasks the agent checks periodically</p>
-			</div>
+		<div class="mb-4">
+			<h2 class="font-display text-xl font-bold text-base-content mb-1">Heartbeat</h2>
+			<p class="text-sm text-base-content/60">Proactive tasks the agent checks periodically</p>
 		</div>
 
 		<div class="bg-base-200 rounded-lg p-4">

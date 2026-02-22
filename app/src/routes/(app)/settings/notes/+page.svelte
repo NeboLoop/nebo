@@ -131,12 +131,9 @@
 
 <div class="flex flex-col h-full min-h-0">
 	<div class="shrink-0 mb-4">
-		<div class="flex items-center gap-3 mb-2">
-			<div class="w-10 h-10 rounded-xl bg-warning/10 flex items-center justify-center">
-				<StickyNote class="w-5 h-5 text-warning" />
-			</div>
-			<div class="flex-1">
-				<h2 class="text-lg font-semibold text-base-content">Tool Notes</h2>
+		<div class="flex items-center justify-between mb-2">
+			<div>
+				<h2 class="font-display text-xl font-bold text-base-content mb-1">Notes</h2>
 				<p class="text-sm text-base-content/60">Environment context for your agent's tools</p>
 			</div>
 			{#if saveStatus === 'saving'}

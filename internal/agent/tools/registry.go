@@ -12,8 +12,9 @@ import (
 
 // ToolResult represents the result of a tool execution
 type ToolResult struct {
-	Content string `json:"content"`
-	IsError bool   `json:"is_error,omitempty"`
+	Content  string `json:"content"`
+	IsError  bool   `json:"is_error,omitempty"`
+	ImageURL string `json:"image_url,omitempty"` // URL of an image produced by the tool (e.g., screenshot)
 }
 
 // Tool interface that all tools must implement
@@ -78,6 +79,10 @@ func (r *Registry) notifyListeners(added, removed []string) {
 // Register adds a tool to the registry
 func (r *Registry) Register(tool Tool) {
 	r.mu.Lock()
+	if existing, ok := r.tools[tool.Name()]; ok {
+		fmt.Printf("[Registry] WARNING: tool %q already registered (%T), overwritten by %T\n",
+			tool.Name(), existing, tool)
+	}
 	r.tools[tool.Name()] = tool
 	r.mu.Unlock()
 
@@ -424,6 +429,8 @@ func toolCorrection(name string) string {
 		return "INSTEAD USE: file(action: \"glob\", pattern: \"**/*.go\")"
 	case "bash":
 		return "INSTEAD USE: shell(resource: \"bash\", action: \"exec\", command: \"...\")"
+	case "apps", "application", "applications":
+		return "INSTEAD USE: app(action: \"list\") or app(action: \"launch\", name: \"AppName\")"
 	default:
 		return "Check your available tools and use the correct name."
 	}

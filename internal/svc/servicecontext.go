@@ -2,7 +2,9 @@ package svc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -82,16 +84,58 @@ type ServiceContext struct {
 	scheduler    any // tools.Scheduler (use any to avoid import cycle)
 	schedulerMu  sync.RWMutex
 
-	JanusUsage atomic.Pointer[ai.RateLimitInfo] // Latest Janus rate limit (in-memory, no DB)
+	JanusUsage atomic.Pointer[ai.RateLimitInfo] // Latest Janus rate limit (also persisted to janus_usage.json)
 
-	browseDir   func() (string, error) // Native directory picker (desktop only)
+	browseDir   func() (string, error)   // Native directory picker (desktop only)
 	browseDirMu sync.RWMutex
+	browseFiles func() ([]string, error) // Native file picker (desktop only)
+	browseFilesMu sync.RWMutex
 
 	openDevWindow   func() // Open dev window (desktop only)
 	openDevWindowMu sync.RWMutex
 
 	openPopup   func(url, title string, width, height int) // Open popup window (desktop only)
 	openPopupMu sync.RWMutex
+
+	updateMgr   *UpdateMgr
+	updateMgrMu sync.RWMutex
+}
+
+// UpdateMgr tracks a pending auto-update binary path (in-memory only).
+type UpdateMgr struct {
+	mu          sync.Mutex
+	pendingPath string
+	version     string
+}
+
+// SetPending records a verified binary ready for installation.
+func (u *UpdateMgr) SetPending(path, version string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.pendingPath = path
+	u.version = version
+}
+
+// PendingPath returns the path to the pending binary, or "" if none.
+func (u *UpdateMgr) PendingPath() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.pendingPath
+}
+
+// PendingVersion returns the version of the pending update, or "" if none.
+func (u *UpdateMgr) PendingVersion() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.version
+}
+
+// Clear removes the pending update.
+func (u *UpdateMgr) Clear() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.pendingPath = ""
+	u.version = ""
 }
 
 // SetAppUIProvider installs the app UI provider (called from agent.go after registry init).
@@ -164,6 +208,20 @@ func (svc *ServiceContext) BrowseDirectory() func() (string, error) {
 	return svc.browseDir
 }
 
+// SetBrowseFiles installs the native file picker callback (desktop mode only).
+func (svc *ServiceContext) SetBrowseFiles(fn func() ([]string, error)) {
+	svc.browseFilesMu.Lock()
+	defer svc.browseFilesMu.Unlock()
+	svc.browseFiles = fn
+}
+
+// BrowseFiles returns the native file picker callback, or nil if not in desktop mode.
+func (svc *ServiceContext) BrowseFiles() func() ([]string, error) {
+	svc.browseFilesMu.RLock()
+	defer svc.browseFilesMu.RUnlock()
+	return svc.browseFiles
+}
+
 // SetOpenDevWindow installs the dev window opener callback (desktop mode only).
 func (svc *ServiceContext) SetOpenDevWindow(fn func()) {
 	svc.openDevWindowMu.Lock()
@@ -176,6 +234,20 @@ func (svc *ServiceContext) OpenDevWindow() func() {
 	svc.openDevWindowMu.RLock()
 	defer svc.openDevWindowMu.RUnlock()
 	return svc.openDevWindow
+}
+
+// SetUpdateManager installs the update manager.
+func (svc *ServiceContext) SetUpdateManager(m *UpdateMgr) {
+	svc.updateMgrMu.Lock()
+	defer svc.updateMgrMu.Unlock()
+	svc.updateMgr = m
+}
+
+// UpdateManager returns the current update manager (may be nil).
+func (svc *ServiceContext) UpdateManager() *UpdateMgr {
+	svc.updateMgrMu.RLock()
+	defer svc.updateMgrMu.RUnlock()
+	return svc.updateMgr
 }
 
 // SetOpenPopup installs the popup window opener callback (desktop mode only).
@@ -313,6 +385,9 @@ func newServiceContext(c config.Config, database *db.Store) *ServiceContext {
 		logging.Info("App OAuth broker initialized")
 	}
 
+	// Restore Janus rate-limit data from previous session
+	svc.LoadJanusUsage()
+
 	return svc
 }
 
@@ -326,4 +401,41 @@ func (svc *ServiceContext) Close() {
 
 func (svc *ServiceContext) UseLocal() bool {
 	return svc.DB != nil
+}
+
+// janusUsagePath returns the path to janus_usage.json inside the data directory.
+func (svc *ServiceContext) janusUsagePath() string {
+	return filepath.Join(svc.NeboDir, "janus_usage.json")
+}
+
+// SaveJanusUsage persists the current in-memory rate-limit snapshot to disk.
+func (svc *ServiceContext) SaveJanusUsage() {
+	rl := svc.JanusUsage.Load()
+	if rl == nil {
+		return
+	}
+	data, err := json.Marshal(rl)
+	if err != nil {
+		logging.Errorf("Failed to marshal Janus usage: %v", err)
+		return
+	}
+	if err := os.WriteFile(svc.janusUsagePath(), data, 0600); err != nil {
+		logging.Errorf("Failed to save Janus usage: %v", err)
+	}
+}
+
+// LoadJanusUsage restores Janus rate-limit data from disk into the in-memory pointer.
+func (svc *ServiceContext) LoadJanusUsage() {
+	data, err := os.ReadFile(svc.janusUsagePath())
+	if err != nil {
+		return // File doesn't exist yet — normal on first run
+	}
+	var rl ai.RateLimitInfo
+	if err := json.Unmarshal(data, &rl); err != nil {
+		logging.Errorf("Failed to parse janus_usage.json: %v", err)
+		return
+	}
+	svc.JanusUsage.Store(&rl)
+	logging.Infof("Loaded Janus usage from disk (weekly %d/%d tokens)",
+		rl.WeeklyRemainingTokens, rl.WeeklyLimitTokens)
 }

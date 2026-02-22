@@ -78,9 +78,9 @@ type SkillItem struct {
 	Category     string  `json:"category"`
 	Version      string  `json:"version"`
 	Author       Author  `json:"author"`
-	InstallCount int     `json:"installCount"`
-	Rating       float64 `json:"rating"`
-	ReviewCount  int     `json:"reviewCount"`
+	InstallCount int     `json:"install_count"`
+	Rating       float64 `json:"rating_avg"`
+	ReviewCount  int     `json:"rating_count"`
 	IsInstalled  bool    `json:"isInstalled"`
 	Status       string  `json:"status"`
 }
@@ -88,7 +88,7 @@ type SkillItem struct {
 // SkillDetail extends SkillItem with manifest (returned by GET /skills/{id}).
 type SkillDetail struct {
 	SkillItem
-	ManifestURL string          `json:"manifestUrl,omitempty"`
+	ManifestURL string          `json:"manifest_url,omitempty"`
 	Manifest    json.RawMessage `json:"manifest,omitempty"`
 }
 

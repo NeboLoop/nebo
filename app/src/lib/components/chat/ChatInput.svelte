@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Mic, MicOff, ArrowUp, Square, Plus, RotateCcw, X, Clock, FileText } from 'lucide-svelte';
+	import * as api from '$lib/api/nebo';
 
 	interface QueuedMessage {
 		id: string;
@@ -70,31 +71,42 @@
 
 	/**
 	 * Extract file paths from dropped files or file input.
-	 * In Wails/Electron, File objects may have a `path` property.
-	 * In a standard browser, we fall back to the file:// URI from dataTransfer,
-	 * or just the filename as a last resort.
+	 * Priority: File.path (Wails) > file:// URIs (Finder drag) > text/plain > filename fallback.
 	 */
 	function extractFilePaths(dataTransfer: DataTransfer | null, files?: FileList | null): string[] {
 		const paths: string[] = [];
 
-		// Try to get file:// URIs from drag data (works when dragging from Finder/Explorer)
-		if (dataTransfer) {
+		// Primary method: Use File objects if available (works in Wails/Electron)
+		// Do this first since File.path is the most reliable in Wails
+		const fileList = files || dataTransfer?.files;
+		if (fileList && fileList.length > 0) {
+			for (const file of fileList) {
+				// In Wails/Electron, File objects have a `path` property with the full path
+				const filePath = (file as File & { path?: string }).path;
+				if (filePath) {
+					paths.push(filePath);
+				}
+			}
+		}
+
+		// Secondary method: Try to get file:// URIs from drag data
+		if (paths.length === 0 && dataTransfer) {
 			const uriList = dataTransfer.getData('text/uri-list');
 			if (uriList) {
 				for (const uri of uriList.split('\n')) {
 					const trimmed = uri.trim();
-					if (trimmed && !trimmed.startsWith('#')) {
-						if (trimmed.startsWith('file://')) {
-							// Decode the file URI to a local path
+					if (trimmed && !trimmed.startsWith('#') && trimmed.startsWith('file://')) {
+						try {
+							const url = new URL(trimmed);
+							paths.push(decodeURIComponent(url.pathname));
+						} catch {
 							paths.push(decodeURIComponent(trimmed.replace('file://', '')));
-						} else {
-							paths.push(trimmed);
 						}
 					}
 				}
 			}
 
-			// Also check text/plain for paths
+			// Tertiary method: Check text/plain for paths
 			if (paths.length === 0) {
 				const plainText = dataTransfer.getData('text/plain');
 				if (plainText && (plainText.startsWith('/') || plainText.match(/^[A-Z]:\\/))) {
@@ -103,18 +115,10 @@
 			}
 		}
 
-		// Fall back to File objects
-		const fileList = files || dataTransfer?.files;
+		// Last resort fallback: Use filenames if we still have no paths
 		if (paths.length === 0 && fileList) {
 			for (const file of fileList) {
-				// Wails/Electron expose a `path` property on File objects
-				const filePath = (file as File & { path?: string }).path;
-				if (filePath) {
-					paths.push(filePath);
-				} else {
-					// Last resort: just use the filename
-					paths.push(file.name);
-				}
+				paths.push(file.name);
 			}
 		}
 
@@ -127,6 +131,19 @@
 		const prefix = value.trim() ? value.trimEnd() + ' ' : '';
 		value = prefix + paths.join(' ');
 		textareaElement?.focus();
+	}
+
+	async function handleBrowseFiles() {
+		try {
+			const res = await api.browseFiles();
+			if (res.paths && res.paths.length > 0) {
+				insertFilePaths(res.paths);
+				return;
+			}
+		} catch {
+			// Native dialog not available (headless mode) — fall back to HTML input
+			fileInputElement?.click();
+		}
 	}
 
 	function handleFileInput(e: Event) {
@@ -220,7 +237,7 @@
 					<!-- Attach file button -->
 					<button
 						type="button"
-						onclick={() => fileInputElement?.click()}
+						onclick={handleBrowseFiles}
 						class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/50 hover:text-base-content"
 						title="Attach file (inserts path)"
 					>

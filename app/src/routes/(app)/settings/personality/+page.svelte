@@ -175,6 +175,11 @@
 	}
 </script>
 
+<div class="mb-6">
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">Soul</h2>
+	<p class="text-sm text-base-content/60">The core personality and values that define your agent</p>
+</div>
+
 {#if isLoading}
 	<Card>
 		<div class="flex items-center justify-center gap-3 py-8">

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Terminal, Wifi, Zap } from 'lucide-svelte';
+	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Terminal, Wifi, Zap, ExternalLink } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type * as components from '$lib/api/neboComponents';
 	import Card from '$lib/components/ui/Card.svelte';
@@ -243,6 +243,11 @@
 	}
 </script>
 
+<div class="mb-6">
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">Providers</h2>
+	<p class="text-sm text-base-content/60">AI model providers and API keys</p>
+</div>
+
 <div class="space-y-6">
 	{#if isLoading}
 		<Card>
@@ -289,26 +294,52 @@
 			<Card>
 				<div class="flex items-center gap-3 mb-3">
 					<Zap class="w-5 h-5 text-primary" />
-					<div>
+					<div class="flex-1">
 						<h4 class="font-medium text-base-content">Janus</h4>
 						<p class="text-xs text-base-content/60">NeboLoop AI Gateway — {janusModels().filter(m => m.isActive).length} active model{janusModels().filter(m => m.isActive).length !== 1 ? 's' : ''}</p>
 					</div>
+					<a href="https://neboloop.com" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-xs gap-1 text-base-content/50">
+						Upgrade
+						<ExternalLink class="w-3 h-3" />
+					</a>
 				</div>
-			{#if janusUsage && janusUsage.limitTokens > 0}
-				<div class="flex items-center gap-3 px-4 py-2 mb-3">
-					<div class="flex-1">
-						<div class="flex justify-between text-xs text-base-content/60 mb-1">
-							<span>{janusUsage.percentUsed}% used</span>
-							{#if janusUsage.resetAt}
-								<span>Resets {new Date(janusUsage.resetAt).toLocaleDateString()}</span>
-							{/if}
+			{#if janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
+				<div class="flex flex-col gap-2 px-4 py-2 mb-3">
+					{#if janusUsage.session.limitTokens > 0}
+						<div>
+							<div class="flex justify-between text-xs text-base-content/60 mb-1">
+								<span>Session: {janusUsage.session.percentUsed}% used</span>
+								{#if janusUsage.session.resetAt}
+									{@const reset = new Date(janusUsage.session.resetAt)}
+									{@const now = new Date()}
+									{@const diffMs = reset.getTime() - now.getTime()}
+									{@const diffH = Math.floor(diffMs / 3600000)}
+									{@const diffM = Math.floor((diffMs % 3600000) / 60000)}
+									<span>Resets in {diffH}h {diffM}m</span>
+								{/if}
+							</div>
+							<progress
+								class="progress w-full {janusUsage.session.percentUsed > 80 ? 'progress-warning' : 'progress-primary'}"
+								value={janusUsage.session.percentUsed}
+								max="100"
+							></progress>
 						</div>
-						<progress
-							class="progress w-full {janusUsage.percentUsed > 80 ? 'progress-warning' : 'progress-primary'}"
-							value={janusUsage.percentUsed}
-							max="100"
-						></progress>
-					</div>
+					{/if}
+					{#if janusUsage.weekly.limitTokens > 0}
+						<div>
+							<div class="flex justify-between text-xs text-base-content/60 mb-1">
+								<span>Weekly: {janusUsage.weekly.percentUsed}% used</span>
+								{#if janusUsage.weekly.resetAt}
+									<span>Resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+								{/if}
+							</div>
+							<progress
+								class="progress w-full {janusUsage.weekly.percentUsed > 80 ? 'progress-warning' : 'progress-primary'}"
+								value={janusUsage.weekly.percentUsed}
+								max="100"
+							></progress>
+						</div>
+					{/if}
 				</div>
 			{/if}
 				<div class="grid gap-2">

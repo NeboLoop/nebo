@@ -76,6 +76,9 @@ func NewServer(registry *tools.Registry, opts ...Option) *Server {
 	// Register tools from registry
 	s.registerTools()
 
+	// Register STRAP guide resource for external LLMs connecting via MCP
+	s.registerToolGuide()
+
 	// Register advisors tool if loader and provider are available
 	if s.advisorLoader != nil && s.advisorProvider != nil {
 		s.registerAdvisorsTool()
@@ -422,6 +425,96 @@ func (s *Server) advisorsHandler() mcp.ToolHandler {
 			Content: []mcp.Content{&mcp.TextContent{Text: sb.String()}},
 		}, nil
 	}
+}
+
+// registerToolGuide adds a nebo://tools/guide resource that explains the STRAP
+// pattern and lists all available tools. External LLMs connecting via MCP can
+// read this resource to understand how to use Nebo's tools.
+func (s *Server) registerToolGuide() {
+	s.server.AddResource(&mcp.Resource{
+		URI:         "nebo://tools/guide",
+		Name:        "Nebo Tool Guide",
+		Description: "How to use Nebo's tools — the STRAP pattern and available capabilities",
+		MIMEType:    "text/markdown",
+	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		guide := s.buildToolGuide()
+		return &mcp.ReadResourceResult{
+			Contents: []*mcp.ResourceContents{
+				{
+					URI:      "nebo://tools/guide",
+					MIMEType: "text/markdown",
+					Text:     guide,
+				},
+			},
+		}, nil
+	})
+}
+
+// buildToolGuide dynamically generates a markdown guide from the registry.
+func (s *Server) buildToolGuide() string {
+	toolDefs := s.registry.List()
+
+	// Classify tools
+	type toolInfo struct {
+		name string
+		desc string
+	}
+	var domain, standalone []toolInfo
+	domainNames := map[string]bool{"file": true, "shell": true, "web": true, "agent": true}
+
+	for _, def := range toolDefs {
+		firstLine := def.Description
+		if idx := strings.IndexByte(firstLine, '\n'); idx > 0 {
+			firstLine = firstLine[:idx]
+		}
+		info := toolInfo{name: def.Name, desc: firstLine}
+		if domainNames[def.Name] {
+			domain = append(domain, info)
+		} else {
+			standalone = append(standalone, info)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# Nebo Tool Guide\n\n")
+	sb.WriteString("Nebo uses the **STRAP** (Single Tool Resource Action Pattern) convention.\n")
+	sb.WriteString("Instead of dozens of small tools, related actions are grouped into domain tools.\n\n")
+
+	sb.WriteString("## Calling Convention\n\n")
+	sb.WriteString("**Domain tools** (file, shell, web, agent) use resource + action:\n")
+	sb.WriteString("```\ntool(resource: \"x\", action: \"y\", ...params)\n```\n\n")
+	sb.WriteString("**Standalone tools** use action only:\n")
+	sb.WriteString("```\ntool(action: \"y\", ...params)\n```\n\n")
+
+	sb.WriteString("## Examples\n\n")
+	sb.WriteString("```\n")
+	sb.WriteString("file(action: \"read\", path: \"/tmp/test.txt\")\n")
+	sb.WriteString("shell(resource: \"bash\", action: \"exec\", command: \"ls -la\")\n")
+	sb.WriteString("web(action: \"search\", query: \"golang tutorials\")\n")
+	sb.WriteString("agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\", layer: \"tacit\")\n")
+	sb.WriteString("screenshot(action: \"see\", app: \"Safari\")\n")
+	sb.WriteString("```\n\n")
+
+	if len(domain) > 0 {
+		sb.WriteString("## Domain Tools\n\n")
+		for _, t := range domain {
+			sb.WriteString(fmt.Sprintf("- **%s** — %s\n", t.name, t.desc))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(standalone) > 0 {
+		sb.WriteString("## Standalone Tools\n\n")
+		for _, t := range standalone {
+			sb.WriteString(fmt.Sprintf("- **%s** — %s\n", t.name, t.desc))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("---\n")
+	sb.WriteString("Each tool's JSON schema (visible in the tool list) documents its full parameters.\n")
+
+	return sb.String()
 }
 
 func truncate(s string, maxLen int) string {

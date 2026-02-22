@@ -116,6 +116,11 @@
 	}
 </script>
 
+<div class="mb-6">
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">Developer</h2>
+	<p class="text-sm text-base-content/60">App development tools and settings</p>
+</div>
+
 <div class="space-y-6">
 	{#if isLoading}
 		<Card>
@@ -128,11 +133,8 @@
 		<!-- Developer Mode Toggle -->
 		<Card>
 			<div class="flex items-center gap-3 mb-6">
-				<div class="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-					<Code class="w-5 h-5 text-accent" />
-				</div>
 				<div>
-					<h2 class="text-lg font-semibold text-base-content">Developer Mode</h2>
+					<h3 class="text-lg font-semibold text-base-content">Developer Mode</h3>
 					<p class="text-sm text-base-content/60">Enable app development features</p>
 				</div>
 			</div>

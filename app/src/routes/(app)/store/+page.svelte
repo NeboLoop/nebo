@@ -219,7 +219,7 @@
 <div class="max-w-5xl mx-auto px-4 py-6">
 	<div class="mb-6 flex items-center justify-between">
 		<div>
-			<h1 class="font-display text-2xl font-bold text-base-content mb-1">App Store</h1>
+			<h1 class="font-display text-2xl font-bold text-base-content mb-1">Marketplace</h1>
 			<p class="text-sm text-base-content/60">
 				Browse and install apps and skills for your agent.
 			</p>

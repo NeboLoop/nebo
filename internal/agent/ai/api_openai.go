@@ -19,11 +19,16 @@ import (
 )
 
 // RateLimitInfo holds parsed rate-limit headers from a provider response.
+// Janus sends two windows: session (per-conversation) and weekly (billing cycle).
+// Persisted to <data_dir>/janus_usage.json so usage survives restarts.
 type RateLimitInfo struct {
-	LimitTokens     int64
-	RemainingTokens int64
-	ResetAt         time.Time
-	UpdatedAt       time.Time
+	SessionLimitTokens     int64     `json:"session_limit_tokens"`
+	SessionRemainingTokens int64     `json:"session_remaining_tokens"`
+	SessionResetAt         time.Time `json:"session_reset_at"`
+	WeeklyLimitTokens      int64     `json:"weekly_limit_tokens"`
+	WeeklyRemainingTokens  int64     `json:"weekly_remaining_tokens"`
+	WeeklyResetAt          time.Time `json:"weekly_reset_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 }
 
 // OpenAIProvider implements the OpenAI API using the official SDK
@@ -56,32 +61,44 @@ func NewOpenAIProvider(apiKey, model string, baseURL ...string) *OpenAIProvider 
 }
 
 // captureRateLimitHeaders intercepts HTTP responses to extract X-RateLimit-* headers.
+// Janus sends 6 headers: Session-Limit-Tokens, Session-Remaining-Tokens, Session-Reset,
+// Weekly-Limit-Tokens, Weekly-Remaining-Tokens, Weekly-Reset.
 func (p *OpenAIProvider) captureRateLimitHeaders(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
 	resp, err := next(req)
 	if err != nil || resp == nil {
 		return resp, err
 	}
-	limitStr := resp.Header.Get("X-RateLimit-Limit-Tokens")
-	if limitStr == "" {
+	sessionLimitStr := resp.Header.Get("X-RateLimit-Session-Limit-Tokens")
+	if sessionLimitStr == "" {
 		return resp, err
 	}
-	limit, _ := strconv.ParseInt(limitStr, 10, 64)
-	remaining, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Remaining-Tokens"), 10, 64)
-	var resetAt time.Time
-	if resetStr := resp.Header.Get("X-RateLimit-Reset"); resetStr != "" {
-		resetAt, _ = time.Parse(time.RFC3339, resetStr)
+	sessionLimit, _ := strconv.ParseInt(sessionLimitStr, 10, 64)
+	sessionRemaining, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Session-Remaining-Tokens"), 10, 64)
+	var sessionReset time.Time
+	if s := resp.Header.Get("X-RateLimit-Session-Reset"); s != "" {
+		sessionReset, _ = time.Parse(time.RFC3339, s)
 	}
-	if limit > 0 {
+	weeklyLimit, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Weekly-Limit-Tokens"), 10, 64)
+	weeklyRemaining, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Weekly-Remaining-Tokens"), 10, 64)
+	var weeklyReset time.Time
+	if s := resp.Header.Get("X-RateLimit-Weekly-Reset"); s != "" {
+		weeklyReset, _ = time.Parse(time.RFC3339, s)
+	}
+	if sessionLimit > 0 || weeklyLimit > 0 {
 		info := &RateLimitInfo{
-			LimitTokens:     limit,
-			RemainingTokens: remaining,
-			ResetAt:         resetAt,
-			UpdatedAt:       time.Now(),
+			SessionLimitTokens:     sessionLimit,
+			SessionRemainingTokens: sessionRemaining,
+			SessionResetAt:         sessionReset,
+			WeeklyLimitTokens:      weeklyLimit,
+			WeeklyRemainingTokens:  weeklyRemaining,
+			WeeklyResetAt:          weeklyReset,
+			UpdatedAt:              time.Now(),
 		}
 		p.rateLimitMu.Lock()
 		p.rateLimit = info
 		p.rateLimitMu.Unlock()
-		fmt.Printf("[OpenAI] Rate limit: %d/%d tokens, reset %s\n", remaining, limit, resetAt.Format(time.RFC3339))
+		fmt.Printf("[OpenAI] Rate limit: session %d/%d, weekly %d/%d tokens\n",
+			sessionRemaining, sessionLimit, weeklyRemaining, weeklyLimit)
 	}
 	return resp, err
 }
@@ -191,14 +208,32 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 
 // buildMessages converts session messages to OpenAI format
 func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletionMessageParamUnion, error) {
-	// First pass: collect all tool_call_ids that have responses
+	// Build two indexes for history sanitisation:
+	// 1. respondedToolIDs — tool_call_ids that have a matching tool-result message
+	// 2. issuedToolIDs    — tool_call_ids that appear in an assistant tool_calls field
+	//
+	// A tool call is only included if it has BOTH a result AND was issued.
+	// A tool result is only included if its tool_call_id was issued.
+	// This handles:
+	//   - Orphaned tool calls (issued but no result) → stripped via respondedToolIDs
+	//   - Orphaned tool results (result exists but tool_calls were corrupted/empty) → stripped via issuedToolIDs
 	respondedToolIDs := make(map[string]bool)
+	issuedToolIDs := make(map[string]bool)
+
 	for _, msg := range req.Messages {
 		if msg.Role == "tool" && len(msg.ToolResults) > 0 {
 			var results []session.ToolResult
 			if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
 				for _, r := range results {
 					respondedToolIDs[r.ToolCallID] = true
+				}
+			}
+		}
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			var tcs []session.ToolCall
+			if err := json.Unmarshal(msg.ToolCalls, &tcs); err == nil {
+				for _, tc := range tcs {
+					issuedToolIDs[tc.ID] = true
 				}
 			}
 		}
@@ -275,7 +310,7 @@ func (p *OpenAIProvider) buildMessages(req *ChatRequest) ([]openai.ChatCompletio
 				var results []session.ToolResult
 				if err := json.Unmarshal(msg.ToolResults, &results); err == nil {
 					for _, r := range results {
-						if respondedToolIDs[r.ToolCallID] {
+						if issuedToolIDs[r.ToolCallID] && respondedToolIDs[r.ToolCallID] {
 							result = append(result, openai.ToolMessage(r.Content, r.ToolCallID))
 						}
 					}
@@ -309,14 +344,16 @@ func (p *OpenAIProvider) handleStream(stream *ssestream.Stream[openai.ChatComple
 	finishedClean := false // true when we saw finish_reason and broke early
 	emittedToolCalls := make(map[string]bool)
 	seenToolName := make(map[int64]bool) // track which tool indices already have a name
+	seenToolArgs := make(map[int64]bool) // track which tool indices already have complete arguments
 
 	for stream.Next() {
 		chunk := stream.Current()
 		chunkCount++
 
-		// Prevent tool name duplication: some gateways (e.g. Janus) send the
-		// tool name in every chunk. The SDK accumulator concatenates names, so
-		// "agent" x4 becomes "agentagentagentagent". Clear repeated names.
+		// Prevent tool name/argument duplication: some gateways (e.g. Janus)
+		// send the tool name AND complete arguments in every chunk. The SDK
+		// accumulator concatenates, producing "agentagent..." for names and
+		// "{...}{...}" for arguments. Clear repeated values.
 		if len(chunk.Choices) > 0 {
 			for i := range chunk.Choices[0].Delta.ToolCalls {
 				idx := chunk.Choices[0].Delta.ToolCalls[i].Index
@@ -325,6 +362,15 @@ func (p *OpenAIProvider) handleStream(stream *ssestream.Stream[openai.ChatComple
 						chunk.Choices[0].Delta.ToolCalls[i].Function.Name = ""
 					} else {
 						seenToolName[idx] = true
+					}
+				}
+				if args := chunk.Choices[0].Delta.ToolCalls[i].Function.Arguments; args != "" {
+					if seenToolArgs[idx] {
+						// Already received complete args — clear duplicate
+						chunk.Choices[0].Delta.ToolCalls[i].Function.Arguments = ""
+					} else if json.Valid([]byte(args)) {
+						// Complete JSON in one chunk (Janus style) — mark as seen
+						seenToolArgs[idx] = true
 					}
 				}
 			}

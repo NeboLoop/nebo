@@ -22,7 +22,7 @@
 
 	const mainTabs = $derived([
 		{ id: 'installed', label: 'Installed', icon: Package, badge: plugins.length || undefined },
-		{ id: 'store', label: 'App Store', icon: Store }
+		{ id: 'store', label: 'Marketplace', icon: Store }
 	]);
 
 	// Modal state (store apps only)
@@ -149,25 +149,12 @@
 
 	const installedAppIds = $derived(new Set(plugins.map(p => p.name)));
 
-	function needsSetup(plugin: PluginItem): boolean {
-		const manifest = plugin.settingsManifest;
-		if (!manifest?.groups?.length) return false;
-		const requiredKeys: string[] = [];
-		for (const group of manifest.groups) {
-			for (const field of group.fields) {
-				if (field.required) requiredKeys.push(field.key);
-			}
-		}
-		if (requiredKeys.length === 0) return false;
-		const settings = plugin.settings || {};
-		return requiredKeys.some((key: string) => !settings[key] || settings[key] === '••••••••');
-	}
 </script>
 
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Apps</h2>
-		<p class="text-sm text-base-content/60">Installed apps and the app store</p>
+		<p class="text-sm text-base-content/60">Installed apps and the marketplace</p>
 	</div>
 	<Button type="ghost" onclick={loadAll}>
 		<RefreshCw class="w-4 h-4 mr-2" />
@@ -210,13 +197,9 @@
 									<div class="flex items-center gap-2 mb-0.5">
 										<h3 class="font-display font-bold text-base-content">{plugin.displayName || plugin.name}</h3>
 										<span class="badge badge-sm badge-outline">v{plugin.version}</span>
-										{#if needsSetup(plugin)}
-											<span class="badge badge-sm badge-warning">Needs Setup</span>
-										{:else}
-											<span class="badge badge-sm {getStatusBadgeClass(plugin.connectionStatus)}">
-												{plugin.connectionStatus}
-											</span>
-										{/if}
+										<span class="badge badge-sm {getStatusBadgeClass(plugin.connectionStatus)}">
+											{plugin.connectionStatus}
+										</span>
 									</div>
 									<p class="text-sm text-base-content/60 truncate">{plugin.description}</p>
 								</div>
@@ -256,7 +239,7 @@
 					<div class="py-12 text-center text-base-content/60">
 						<Package class="w-12 h-12 mx-auto mb-4 opacity-20" />
 						<p class="font-medium mb-2">No apps installed</p>
-						<p class="text-sm">Browse the App Store to get started.</p>
+						<p class="text-sm">Browse the Marketplace to get started.</p>
 					</div>
 				</Card>
 			{/if}
@@ -265,7 +248,7 @@
 				<Card>
 					<div class="py-8 text-center text-base-content/60">
 						<WifiOff class="w-10 h-10 mx-auto mb-3 opacity-20" />
-						<p class="font-medium mb-2">Connect to NeboLoop to browse the App Store</p>
+						<p class="font-medium mb-2">Connect to NeboLoop to browse the Marketplace</p>
 						<a href="/settings/status" class="btn btn-sm btn-primary mt-2">
 							Go to Status
 						</a>

@@ -17,7 +17,17 @@ func NewAccessibilityTool() *AccessibilityTool { return &AccessibilityTool{} }
 func (t *AccessibilityTool) Name() string { return "accessibility" }
 
 func (t *AccessibilityTool) Description() string {
-	return "Access UI elements via Accessibility APIs: list UI tree, find/click elements. Requires Accessibility permissions."
+	return `Inspect and interact with application UI elements via macOS Accessibility APIs.
+
+Actions:
+- tree: Get the UI element hierarchy for an app (buttons, text fields, menus, etc.)
+- find: Search for elements by role and/or label
+- click: Click a specific element by role+label match
+- get_value/set_value: Read or change element values (text fields, checkboxes)
+- list_apps: List all running apps with accessibility access
+
+Requires Accessibility permissions in System Settings > Privacy & Security.
+For visual element targeting, use screenshot(action: "see") instead.`
 }
 
 func (t *AccessibilityTool) Schema() json.RawMessage {

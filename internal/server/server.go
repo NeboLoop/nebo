@@ -140,6 +140,7 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 	// Health check at root
 	r.Get("/health", handler.HealthCheckHandler(svcCtx))
 	r.Get("/api/v1/update/check", handler.UpdateCheckHandler(svcCtx))
+	r.Post("/api/v1/update/apply", handler.UpdateApplyHandler(svcCtx))
 
 	// Rate limiters
 	authLimiter := middleware.NewRateLimiter(middleware.AuthRateLimitConfig())
@@ -465,6 +466,7 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Post("/providers/{id}/test", provider.TestAuthProfileHandler(svcCtx))
 
 	// Agent files (screenshots, images, downloads)
+	r.Post("/files/browse", files.BrowseFilesHandler(svcCtx))
 	r.Get("/files/*", files.ServeFileHandler(svcCtx))
 
 	// User profile & preferences routes (public for single-user personal assistant mode)

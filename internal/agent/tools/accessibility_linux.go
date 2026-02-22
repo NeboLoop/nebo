@@ -37,13 +37,24 @@ func (t *AccessibilityTool) detectBackend() string {
 func (t *AccessibilityTool) Name() string { return "accessibility" }
 
 func (t *AccessibilityTool) Description() string {
+	base := `Inspect and interact with application UI elements via Linux accessibility APIs.
+
+Actions:
+- tree: Get the UI element hierarchy for an app (buttons, text fields, menus, etc.)
+- find: Search for elements by role and/or label
+- click: Click a specific element by role+label match
+- get_value/set_value: Read or change element values (text fields, checkboxes)
+- list_apps: List all running apps with accessibility access
+
+For visual element targeting, use screenshot(action: "see") instead.`
+
 	switch t.backend {
 	case "python-atspi":
-		return "Access UI Elements (using AT-SPI) - inspect UI trees, find elements, interact with applications via accessibility APIs."
+		return base + "\nBackend: AT-SPI (full support)."
 	case "xdotool":
-		return "Access UI Elements (using xdotool) - basic window management and element interaction."
+		return base + "\nBackend: xdotool (basic window operations only; install python3-gi for full support)."
 	default:
-		return "Access UI Elements - requires python3-gi (PyGObject) with AT-SPI bindings."
+		return base + "\nNo backend available. Install python3-gi and gir1.2-atspi-2.0, or xdotool."
 	}
 }
 

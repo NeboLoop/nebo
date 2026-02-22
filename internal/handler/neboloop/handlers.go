@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/neboloop/nebo/internal/agenthub"
@@ -231,22 +232,29 @@ func NeboLoopJanusUsageHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			httputil.OkJSON(w, types.NeboLoopJanusUsageResponse{})
 			return
 		}
-		used := rl.LimitTokens - rl.RemainingTokens
-		pct := 0
-		if rl.LimitTokens > 0 {
-			pct = int(float64(used) / float64(rl.LimitTokens) * 100)
-		}
-		resetAt := ""
-		if !rl.ResetAt.IsZero() {
-			resetAt = rl.ResetAt.Format("2006-01-02T15:04:05Z07:00")
-		}
 		httputil.OkJSON(w, types.NeboLoopJanusUsageResponse{
-			LimitTokens:     rl.LimitTokens,
-			RemainingTokens: rl.RemainingTokens,
-			UsedTokens:      used,
-			PercentUsed:     pct,
-			ResetAt:         resetAt,
+			Session: buildWindowUsage(rl.SessionLimitTokens, rl.SessionRemainingTokens, rl.SessionResetAt),
+			Weekly:  buildWindowUsage(rl.WeeklyLimitTokens, rl.WeeklyRemainingTokens, rl.WeeklyResetAt),
 		})
+	}
+}
+
+func buildWindowUsage(limit, remaining int64, resetAt time.Time) types.NeboLoopJanusWindowUsage {
+	used := limit - remaining
+	pct := 0
+	if limit > 0 {
+		pct = int(float64(used) / float64(limit) * 100)
+	}
+	resetStr := ""
+	if !resetAt.IsZero() {
+		resetStr = resetAt.Format(time.RFC3339)
+	}
+	return types.NeboLoopJanusWindowUsage{
+		LimitTokens:     limit,
+		RemainingTokens: remaining,
+		UsedTokens:      used,
+		PercentUsed:     pct,
+		ResetAt:         resetStr,
 	}
 }
 

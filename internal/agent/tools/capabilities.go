@@ -10,6 +10,7 @@
 package tools
 
 import (
+	"fmt"
 	"runtime"
 	"sync"
 )
@@ -84,6 +85,10 @@ func (r *CapabilityRegistry) Register(cap *Capability) bool {
 	defer r.mu.Unlock()
 
 	name := cap.Tool.Name()
+	if existing, ok := r.capabilities[name]; ok {
+		fmt.Printf("[Capabilities] WARNING: capability %q already registered (%T), overwritten by %T\n",
+			name, existing.Tool, cap.Tool)
+	}
 	r.capabilities[name] = cap
 	return true
 }

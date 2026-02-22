@@ -159,6 +159,11 @@
 	}
 </script>
 
+<div class="mb-6">
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">Profile</h2>
+	<p class="text-sm text-base-content/60">Your preferences and personal information</p>
+</div>
+
 {#if isLoading}
 	<Card>
 		<div class="flex items-center justify-center gap-3 py-8">

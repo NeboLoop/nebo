@@ -40,9 +40,16 @@ func (t *ScreenshotTool) Name() string {
 }
 
 func (t *ScreenshotTool) Description() string {
-	return `Capture screenshots or see annotated UI elements. Actions:
-- capture: Take a screenshot (default). Returns image as base64 or file.
-- see: Capture + annotate UI elements with IDs (B1, T2, L3...). Use desktop(action: "click", element: "B3") to interact with elements.`
+	return `Capture screenshots or see annotated UI elements for desktop automation.
+
+Actions:
+- capture: Take a full-screen or window screenshot. Returns base64 or file path.
+- see: Capture a window + overlay numbered element IDs on interactive UI elements.
+  Returns annotated image + element list (e.g., B1=button "Save", T2=textfield "Search").
+  Use desktop(action: "click", element: "B1") to interact with elements by ID.
+
+Use "see" when you need to find and interact with specific UI elements.
+Use "capture" when you just need a visual of the screen.`
 }
 
 func (t *ScreenshotTool) Schema() json.RawMessage {
@@ -288,12 +295,15 @@ func (t *ScreenshotTool) formatSnapshotResult(snap *Snapshot) (*ToolResult, erro
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Snapshot %s captured for %s\n\n", snap.ID, snap.WindowTitle))
+	sb.WriteString(fmt.Sprintf("Snapshot %s captured for %s\n", snap.ID, snap.WindowTitle))
+	sb.WriteString(fmt.Sprintf("Saved to: %s\n\n", filePath))
 	sb.WriteString(FormatElementList(elements))
-	sb.WriteString(fmt.Sprintf("\n![Annotated](/api/v1/files/%s)\n\n", fileName))
-	sb.WriteString("Use desktop(action: \"click\", element: \"B1\") to interact with elements.")
+	sb.WriteString("\nUse desktop(action: \"click\", element: \"B1\") to interact with elements.")
 
-	return &ToolResult{Content: sb.String()}, nil
+	return &ToolResult{
+		Content:  sb.String(),
+		ImageURL: fmt.Sprintf("/api/v1/files/%s", fileName),
+	}, nil
 }
 
 func (t *ScreenshotTool) formatOutput(img image.Image, params screenshotInput) (*ToolResult, error) {
@@ -301,19 +311,20 @@ func (t *ScreenshotTool) formatOutput(img image.Image, params screenshotInput) (
 	var result strings.Builder
 	result.WriteString(fmt.Sprintf("Screenshot captured: %dx%d pixels\n", bounds.Dx(), bounds.Dy()))
 
-	switch params.Format {
-	case "file":
-		filePath, fileName, err := t.saveImageToFile(img, params.Output)
-		if err != nil {
-			return &ToolResult{
-				Content: fmt.Sprintf("Failed to save screenshot: %v", err),
-				IsError: true,
-			}, nil
-		}
-		result.WriteString(fmt.Sprintf("Saved to: %s\n", filePath))
-		result.WriteString(fmt.Sprintf("![Screenshot](/api/v1/files/%s)", fileName))
+	// Always save to file so the web UI can display it via ImageURL.
+	// The Content field stays text-only — no markdown image links.
+	filePath, fileName, err := t.saveImageToFile(img, params.Output)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Failed to save screenshot: %v", err),
+			IsError: true,
+		}, nil
+	}
+	result.WriteString(fmt.Sprintf("Saved to: %s\n", filePath))
+	imageURL := fmt.Sprintf("/api/v1/files/%s", fileName)
 
-	case "base64":
+	// For base64/both formats, also include the encoded data for programmatic use
+	if params.Format == "base64" || params.Format == "both" {
 		b64, err := imageToBase64(img)
 		if err != nil {
 			return &ToolResult{
@@ -321,29 +332,11 @@ func (t *ScreenshotTool) formatOutput(img image.Image, params screenshotInput) (
 				IsError: true,
 			}, nil
 		}
-		result.WriteString(fmt.Sprintf("Base64 image (data:image/png;base64,%s)", b64))
-
-	case "both":
-		filePath, fileName, err := t.saveImageToFile(img, params.Output)
-		if err != nil {
-			return &ToolResult{
-				Content: fmt.Sprintf("Failed to save screenshot: %v", err),
-				IsError: true,
-			}, nil
-		}
-		b64, err := imageToBase64(img)
-		if err != nil {
-			return &ToolResult{
-				Content: fmt.Sprintf("Failed to encode screenshot: %v", err),
-				IsError: true,
-			}, nil
-		}
-		result.WriteString(fmt.Sprintf("Saved to: %s\n", filePath))
-		result.WriteString(fmt.Sprintf("![Screenshot](/api/v1/files/%s)\n", fileName))
-		result.WriteString(fmt.Sprintf("Base64 image (data:image/png;base64,%s)", b64))
+		result.WriteString(fmt.Sprintf("Base64 length: %d chars\n", len(b64)))
+		result.WriteString(fmt.Sprintf("data:image/png;base64,%s", b64))
 	}
 
-	return &ToolResult{Content: result.String()}, nil
+	return &ToolResult{Content: result.String(), ImageURL: imageURL}, nil
 }
 
 // saveImageToFile saves any image.Image and returns (fullPath, fileName, error).

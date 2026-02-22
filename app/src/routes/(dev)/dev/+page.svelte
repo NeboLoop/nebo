@@ -1,10 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Eye, Terminal, Wrench, Settings, Activity, Play, RotateCcw, FolderOpen, Loader2 } from 'lucide-svelte';
+	import { Eye, Terminal, Wrench, Activity, Play, RotateCcw, FolderOpen, Loader2 } from 'lucide-svelte';
 	import DevChatPanel from '$lib/components/dev/DevChatPanel.svelte';
 	import AppLogs from '$lib/components/dev/AppLogs.svelte';
 	import ToolTester from '$lib/components/dev/ToolTester.svelte';
-	import AppSettings from '$lib/components/dev/AppSettings.svelte';
 	import GrpcInspector from '$lib/components/dev/GrpcInspector.svelte';
 	import Tabs from '$lib/components/ui/Tabs.svelte';
 	import { DEV_ASSISTANT_PROMPT } from '$lib/components/dev/devPrompt';
@@ -15,8 +14,7 @@
 		{ id: 'preview', label: 'Preview', icon: Eye },
 		{ id: 'logs', label: 'Logs', icon: Terminal },
 		{ id: 'grpc', label: 'gRPC', icon: Activity },
-		{ id: 'tester', label: 'Tools', icon: Wrench },
-		{ id: 'settings', label: 'Settings', icon: Settings }
+		{ id: 'tester', label: 'Tools', icon: Wrench }
 	];
 
 	let activeTab = $state('preview');
@@ -341,8 +339,6 @@
 					<GrpcInspector appId={selectedAppId} />
 				{:else if activeTab === 'tester'}
 					<ToolTester appId={selectedAppId} />
-				{:else if activeTab === 'settings'}
-					<AppSettings appId={selectedAppId} appName={selectedApp?.name ?? ''} />
 				{/if}
 			</div>
 		</div>

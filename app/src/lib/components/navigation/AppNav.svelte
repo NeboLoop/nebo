@@ -54,7 +54,10 @@
 			<!-- Logo -->
 			<a href="/" class="flex items-center gap-2 no-underline">
 				<NeboIcon class="w-12 h-12" />
-				<span class="font-display text-xl font-bold text-base-content tracking-tight">Nebo</span>
+				<div class="flex flex-col leading-none">
+					<span class="font-display text-xl font-bold text-base-content tracking-tight">Nebo</span>
+					<span class="text-[10px] font-semibold uppercase tracking-widest text-base-content/40">alpha</span>
+				</div>
 			</a>
 
 			<!-- Desktop Navigation -->

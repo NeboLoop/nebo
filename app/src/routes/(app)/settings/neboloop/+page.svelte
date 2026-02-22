@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Cloud, CheckCircle, XCircle, Loader2, LogOut, Bot } from 'lucide-svelte';
+	import { Cloud, CheckCircle, XCircle, Loader2, LogOut, Bot, ExternalLink, Zap } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
+	import type * as components from '$lib/api/neboComponents';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -20,6 +21,9 @@
 	let pendingState = $state('');
 	let pollTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
+	// Janus usage
+	let janusUsage = $state<components.NeboLoopJanusUsageResponse | null>(null);
+
 	// Disconnect
 	let showDisconnectConfirm = $state(false);
 	let disconnecting = $state(false);
@@ -36,6 +40,14 @@
 			botConnected = bot.connected;
 			botId = bot.botId || '';
 			botName = bot.botName || '';
+
+			if (account.connected) {
+				try {
+					janusUsage = await api.neboLoopJanusUsage();
+				} catch {
+					janusUsage = null;
+				}
+			}
 		} catch (e) {
 			console.error('Failed to load NeboLoop status:', e);
 		} finally {
@@ -117,14 +129,15 @@
 
 <div class="max-w-2xl">
 	<!-- Header -->
-	<div class="flex items-center gap-3 mb-6">
-		<div class="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-			<Cloud class="w-5 h-5 text-accent" />
-		</div>
+	<div class="flex items-center justify-between mb-6">
 		<div>
-			<h2 class="text-lg font-semibold">NeboLoop</h2>
-			<p class="text-sm text-base-content/60">Janus AI, app store, and cloud channels</p>
+			<h2 class="font-display text-xl font-bold text-base-content mb-1">NeboLoop</h2>
+			<p class="text-sm text-base-content/60">Janus AI, marketplace, and cloud channels</p>
 		</div>
+		<a href="https://neboloop.com" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm gap-1 text-base-content/60">
+			neboloop.com
+			<ExternalLink class="w-3.5 h-3.5" />
+		</a>
 	</div>
 
 	{#if isLoading}
@@ -172,12 +185,65 @@
 				</div>
 			</Card>
 
+			<!-- Janus Usage -->
+			{#if janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
+				<Card>
+					<div class="flex items-center gap-3 mb-3">
+						<Zap class="w-5 h-5 text-primary" />
+						<div class="flex-1">
+							<p class="font-medium">Janus AI Usage</p>
+						</div>
+						<a href="https://neboloop.com" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-xs gap-1 text-base-content/50">
+							Upgrade
+							<ExternalLink class="w-3 h-3" />
+						</a>
+					</div>
+					<div class="flex flex-col gap-2">
+						{#if janusUsage.session.limitTokens > 0}
+							<div>
+								<div class="flex justify-between text-xs text-base-content/60 mb-1">
+									<span>Session: {janusUsage.session.percentUsed}% used</span>
+									{#if janusUsage.session.resetAt}
+										{@const reset = new Date(janusUsage.session.resetAt)}
+										{@const now = new Date()}
+										{@const diffMs = reset.getTime() - now.getTime()}
+										{@const diffH = Math.floor(diffMs / 3600000)}
+										{@const diffM = Math.floor((diffMs % 3600000) / 60000)}
+										<span>Resets in {diffH}h {diffM}m</span>
+									{/if}
+								</div>
+								<progress
+									class="progress w-full {janusUsage.session.percentUsed > 80 ? 'progress-warning' : 'progress-primary'}"
+									value={janusUsage.session.percentUsed}
+									max="100"
+								></progress>
+							</div>
+						{/if}
+						{#if janusUsage.weekly.limitTokens > 0}
+							<div>
+								<div class="flex justify-between text-xs text-base-content/60 mb-1">
+									<span>Weekly: {janusUsage.weekly.percentUsed}% used</span>
+									{#if janusUsage.weekly.resetAt}
+										<span>Resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+									{/if}
+								</div>
+								<progress
+									class="progress w-full {janusUsage.weekly.percentUsed > 80 ? 'progress-warning' : 'progress-primary'}"
+									value={janusUsage.weekly.percentUsed}
+									max="100"
+								></progress>
+							</div>
+						{/if}
+					</div>
+				</Card>
+			{/if}
+
 			<!-- Disconnect -->
 			<div class="pt-2">
 				{#if showDisconnectConfirm}
 					<Card>
 						<p class="text-sm text-base-content/70 mb-3">
-							This will disconnect your NeboLoop account and stop all cloud services (Janus AI, app store, channels).
+							This will disconnect your NeboLoop account and stop all cloud services (Janus AI, marketplace, channels).
 						</p>
 						<div class="flex gap-2">
 							<Button type="danger" size="sm" onclick={handleDisconnect} disabled={disconnecting}>
@@ -205,7 +271,7 @@
 			<div class="flex flex-col items-center gap-4 py-4">
 				<XCircle class="w-8 h-8 text-base-content/30" />
 				<p class="text-sm text-base-content/60 text-center max-w-sm">
-					Connect to NeboLoop for Janus AI, the app store, and cloud channels.
+					Connect to NeboLoop for Janus AI, the marketplace, and cloud channels.
 					You can use Google, Apple, or email.
 				</p>
 

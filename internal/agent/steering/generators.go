@@ -260,19 +260,35 @@ func (g *janusQuotaWarning) Name() string { return "janus_quota_warning" }
 
 func (g *janusQuotaWarning) Generate(ctx *Context) []Message {
 	rl := ctx.JanusRateLimit
-	if rl == nil || rl.LimitTokens <= 0 {
+	if rl == nil || (rl.SessionLimitTokens <= 0 && rl.WeeklyLimitTokens <= 0) {
 		return nil
 	}
-	ratio := float64(rl.RemainingTokens) / float64(rl.LimitTokens)
-	if ratio >= 0.20 {
-		return nil // Plenty of quota left
+	sessionRatio := 1.0
+	if rl.SessionLimitTokens > 0 {
+		sessionRatio = float64(rl.SessionRemainingTokens) / float64(rl.SessionLimitTokens)
+	}
+	weeklyRatio := 1.0
+	if rl.WeeklyLimitTokens > 0 {
+		weeklyRatio = float64(rl.WeeklyRemainingTokens) / float64(rl.WeeklyLimitTokens)
+	}
+	if sessionRatio >= 0.20 && weeklyRatio >= 0.20 {
+		return nil // Plenty of quota left in both windows
 	}
 	// Only warn once per session
 	if _, warned := janusQuotaWarnedSessions.LoadOrStore(ctx.SessionID, true); warned {
 		return nil
 	}
+	window := "weekly"
+	ratio := weeklyRatio
+	if sessionRatio < weeklyRatio {
+		window = "session"
+		ratio = sessionRatio
+	}
+	if sessionRatio < 0.20 && weeklyRatio < 0.20 {
+		window = "both session and weekly"
+	}
 	pctUsed := int(100 - ratio*100)
-	content := fmt.Sprintf(tmplJanusQuotaWarning, pctUsed, rl.RemainingTokens, rl.LimitTokens)
+	content := fmt.Sprintf(tmplJanusQuotaWarning, pctUsed, window)
 	return []Message{{
 		Content:  wrapSteering(g.Name(), content),
 		Position: PositionEnd,

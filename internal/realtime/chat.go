@@ -48,9 +48,10 @@ type toolCallInfo struct {
 }
 
 type contentBlock struct {
-	Type          string `json:"type"`                    // "text" or "tool"
+	Type          string `json:"type"`                    // "text", "tool", or "image"
 	Text          string `json:"text,omitempty"`          // accumulated text for text blocks
 	ToolCallIndex *int   `json:"toolCallIndex,omitempty"` // index into toolCalls for tool blocks
+	ImageURL      string `json:"imageURL,omitempty"`      // URL for image blocks
 }
 
 type pendingRequest struct {
@@ -302,8 +303,21 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 					}
 				}
 			}
+			// If the tool produced an image, append an image content block
+			if imageURL, ok := payload["image_url"].(string); ok && imageURL != "" {
+				if req, ok := c.pending[frame.ID]; ok {
+					req.contentBlocks = append(req.contentBlocks, contentBlock{
+						Type:     "image",
+						ImageURL: imageURL,
+					})
+				}
+			}
 			c.pendingMu.Unlock()
 			sendToolResult(req.client, req.sessionID, toolName, toolID, toolResult)
+			// Send image event if the tool produced one
+			if imageURL, ok := payload["image_url"].(string); ok && imageURL != "" {
+				sendImage(req.client, req.sessionID, imageURL)
+			}
 		} else if payload["tool_result"] != nil {
 			fmt.Printf("[Chat] WARNING: tool_result not a string, type=%T\n", payload["tool_result"])
 		}
@@ -895,6 +909,18 @@ func sendToolResult(c *Client, sessionID, toolName, toolID, result string) {
 			"result":     result,
 			"tool_name":  toolName,
 			"tool_id":    toolID,
+		},
+		Timestamp: time.Now(),
+	}
+	sendToClient(c, msg)
+}
+
+func sendImage(c *Client, sessionID, imageURL string) {
+	msg := &Message{
+		Type: "image",
+		Data: map[string]interface{}{
+			"session_id": sessionID,
+			"image_url":  imageURL,
 		},
 		Timestamp: time.Now(),
 	}

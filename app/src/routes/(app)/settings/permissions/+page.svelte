@@ -234,10 +234,7 @@
 <div class="space-y-6">
 	<!-- Header -->
 	<div>
-		<div class="flex items-center gap-3 mb-1">
-			<Shield class="w-5 h-5 text-primary" />
-			<h2 class="text-xl font-bold">Agent Permissions</h2>
-		</div>
+		<h2 class="font-display text-xl font-bold text-base-content mb-1">Permissions</h2>
 		<p class="text-sm text-base-content/60">
 			Control what capabilities your agent has access to and how it handles approvals.
 		</p>

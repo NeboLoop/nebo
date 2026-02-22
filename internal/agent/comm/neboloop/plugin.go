@@ -787,54 +787,6 @@ func (p *Plugin) SetMessageHandler(handler func(msg comm.CommMessage)) {
 // Configurable interface
 // ---------------------------------------------------------------------------
 
-// Manifest returns the settings schema for the NeboLoop plugin.
-func (p *Plugin) Manifest() settings.SettingsManifest {
-	return settings.SettingsManifest{
-		Groups: []settings.SettingsGroup{
-			{
-				Title:       "Connection",
-				Description: "NeboLoop gateway connection settings",
-				Fields: []settings.SettingsField{
-					{
-						Key:         "gateway",
-						Title:       "Gateway URL",
-						Type:        settings.FieldURL,
-						Placeholder: "wss://comms.neboloop.com",
-						Description: "WebSocket URL for the NeboLoop comms gateway",
-					},
-					{
-						Key:         "api_server",
-						Title:       "API Server",
-						Type:        settings.FieldURL,
-						Required:    true,
-						Placeholder: "http://localhost:8888",
-						Description: "NeboLoop REST API base URL",
-					},
-				},
-			},
-			{
-				Title:       "Authentication",
-				Description: "Owner JWT and bot identity for NeboLoop network",
-				Fields: []settings.SettingsField{
-					{
-						Key:         "bot_id",
-						Title:       "Bot ID",
-						Type:        settings.FieldText,
-						Description: "Bot UUID assigned by NeboLoop",
-					},
-					{
-						Key:         "token",
-						Title:       "Token",
-						Type:        settings.FieldPassword,
-						Secret:      true,
-						Description: "Owner OAuth JWT for authentication",
-					},
-				},
-			},
-		},
-	}
-}
-
 // OnSettingsChanged applies new settings without requiring a restart.
 func (p *Plugin) OnSettingsChanged(newSettings map[string]string) error {
 	p.mu.RLock()

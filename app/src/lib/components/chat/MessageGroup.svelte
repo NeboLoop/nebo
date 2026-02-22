@@ -18,6 +18,7 @@
 		toolCallIndex?: number;
 		imageData?: string;
 		imageMimeType?: string;
+		imageURL?: string;
 	}
 
 	// A resolved content block with tool data pre-resolved (no indirect lookup)
@@ -28,6 +29,7 @@
 		tool?: ToolCall;
 		imageData?: string;
 		imageMimeType?: string;
+		imageURL?: string;
 		isLastBlock: boolean;
 	}
 
@@ -94,12 +96,13 @@
 							tool: { ...tc },
 							isLastBlock: isLast
 						});
-					} else if (block.type === 'image' && block.imageData) {
+					} else if (block.type === 'image' && (block.imageData || block.imageURL)) {
 						blocks.push({
 							type: 'image',
 							key: `image-${i}`,
 							imageData: block.imageData,
 							imageMimeType: block.imageMimeType,
+							imageURL: block.imageURL,
 							isLastBlock: isLast
 						});
 					} else if (block.type === 'text' && block.text) {
@@ -178,10 +181,12 @@
 									onclick={() => handleViewToolOutput(block.tool!)}
 								/>
 							</div>
-						{:else if block.type === 'image' && block.imageData}
+						{:else if block.type === 'image' && (block.imageData || block.imageURL)}
 							<div class="rounded-xl overflow-hidden mb-1 max-w-sm">
 								<img
-									src="data:{block.imageMimeType || 'image/png'};base64,{block.imageData}"
+									src={block.imageData
+										? `data:${block.imageMimeType || 'image/png'};base64,${block.imageData}`
+										: block.imageURL}
 									alt="Shared content"
 									class="max-w-full h-auto rounded-xl"
 								/>

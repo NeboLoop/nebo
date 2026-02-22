@@ -67,6 +67,7 @@
 		toolCallIndex?: number; // index into toolCalls for tool blocks
 		imageData?: string; // base64 data for image blocks
 		imageMimeType?: string; // e.g. "image/png"
+		imageURL?: string; // URL for server-hosted images (e.g., screenshots)
 	}
 
 	let chatId = $state<string | null>(null);
@@ -224,6 +225,7 @@
 			client.on('chat_response', handleChatResponse),
 			client.on('tool_start', handleToolStart),
 			client.on('tool_result', handleToolResult),
+			client.on('image', handleImage),
 			client.on('thinking', handleThinking),
 			client.on('error', handleError),
 			client.on('approval_request', handleApprovalRequest),
@@ -803,6 +805,7 @@
 		const result = (data?.result as string) || '';
 		const toolID = (data?.tool_id as string) || '';
 		const toolName = (data?.tool_name as string) || '';
+		const imageURL = (data?.image_url as string) || '';
 		log.debug(
 			'Tool result received: ' + toolName + ' id: ' + toolID + ' result_length: ' + result?.length
 		);
@@ -829,12 +832,20 @@
 			return null;
 		};
 
+		// Helper to append image block to a message
+		const appendImageBlock = (msg: Message) => {
+			if (!imageURL) return;
+			if (!msg.contentBlocks) msg.contentBlocks = [];
+			msg.contentBlocks = [...msg.contentBlocks, { type: 'image' as const, imageURL }];
+		};
+
 		// Try to update in current streaming message first
 		if (currentStreamingMessage?.toolCalls?.length) {
 			const updatedToolCalls = findAndUpdateTool(currentStreamingMessage.toolCalls);
 			if (updatedToolCalls) {
 				currentStreamingMessage = { ...currentStreamingMessage, toolCalls: updatedToolCalls };
-				replaceMessageById(currentStreamingMessage);
+				appendImageBlock(currentStreamingMessage);
+				replaceMessageById({ ...currentStreamingMessage });
 				log.debug('Updated tool in streaming message');
 				return;
 			}
@@ -847,9 +858,11 @@
 			if (msg.role === 'assistant' && msg.toolCalls?.length) {
 				const updatedToolCalls = findAndUpdateTool(msg.toolCalls);
 				if (updatedToolCalls) {
+					const updatedMsg = { ...msg, toolCalls: updatedToolCalls };
+					appendImageBlock(updatedMsg);
 					messages = [
 						...messages.slice(0, i),
-						{ ...msg, toolCalls: updatedToolCalls },
+						updatedMsg,
 						...messages.slice(i + 1)
 					];
 					log.debug('Fallback: updated tool in message at index ' + i);
@@ -859,6 +872,24 @@
 		}
 
 		log.warn('handleToolResult: SKIP - no suitable tool to update (tool_id: ' + toolID + ')');
+	}
+
+	function handleImage(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+
+		const imageURL = (data?.image_url as string) || '';
+		if (!imageURL) return;
+
+		if (currentStreamingMessage) {
+			if (!currentStreamingMessage.contentBlocks) {
+				currentStreamingMessage.contentBlocks = [];
+			}
+			currentStreamingMessage.contentBlocks = [
+				...currentStreamingMessage.contentBlocks,
+				{ type: 'image' as const, imageURL }
+			];
+			replaceMessageById({ ...currentStreamingMessage });
+		}
 	}
 
 	function handleThinking(data: Record<string, unknown>) {

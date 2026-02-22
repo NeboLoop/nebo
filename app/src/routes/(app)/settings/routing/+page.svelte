@@ -260,6 +260,11 @@
 	}
 </script>
 
+<div class="mb-6">
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">Routing</h2>
+	<p class="text-sm text-base-content/60">Which model handles each type of task</p>
+</div>
+
 <div class="space-y-6">
 	{#if isLoading}
 		<Card>
@@ -276,15 +281,7 @@
 		<!-- Task Routing -->
 		<Card>
 			<div class="flex items-center justify-between mb-4">
-				<div class="flex items-center gap-3">
-					<div class="w-10 h-10 rounded-xl bg-secondary/10 flex items-center justify-center">
-						<Cpu class="w-5 h-5 text-secondary" />
-					</div>
-					<div>
-						<h3 class="text-lg font-semibold text-base-content">Task Routing</h3>
-						<p class="text-sm text-base-content/60">Which model handles each type of task</p>
-					</div>
-				</div>
+				<h3 class="text-lg font-semibold text-base-content">Task Routing</h3>
 				<Button type="primary" size="sm" onclick={saveAll} disabled={isSaving}>
 					{#if isSaving}
 						<Spinner size={16} />

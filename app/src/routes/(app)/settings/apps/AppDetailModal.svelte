@@ -1,6 +1,5 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
 	import { Shield, Link2, Info, Unplug, ExternalLink, Star, Download, Globe, Lock, ChevronRight, Check, Clock, User, Layers, Monitor, Smartphone, ChevronDown, ChevronUp, MessageSquare, ThumbsUp } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { PluginItem, AppOAuthGrant, StoreApp, StoreAppDetail, StoreReview, GetStoreAppReviewsResponse } from '$lib/api/nebo';
@@ -23,9 +22,7 @@
 	let installing = $state(false);
 
 	// Installed app state
-	let activeTab = $state<'settings' | 'connections' | 'info'>('settings');
-	let savingSettings = $state(false);
-	let settingsValues = $state<Record<string, string>>({});
+	let activeTab = $state<'connections' | 'info'>('info');
 	let oauthGrants = $state<AppOAuthGrant[]>([]);
 	let loadingGrants = $state(false);
 	let disconnectingProvider = $state<string | null>(null);
@@ -54,9 +51,7 @@
 			loadReviews(storeApp.id);
 		}
 		if (show && plugin) {
-			settingsValues = plugin.settings ? { ...plugin.settings } : {};
-			// Auto-open Settings tab if app needs setup, otherwise show Info
-			activeTab = pluginNeedsSetup() ? 'settings' : 'info';
+			activeTab = 'info';
 			loadOAuthGrants();
 		}
 		if (!show) {
@@ -122,57 +117,6 @@
 		}
 	}
 
-	// --- Settings (for installed apps) ---
-
-	interface SettingsField {
-		key: string;
-		title: string;
-		type: string;
-		description?: string;
-		required?: boolean;
-		secret?: boolean;
-		placeholder?: string;
-		options?: Array<{ label: string; value: string }>;
-		default?: string;
-	}
-
-	interface SettingsGroup {
-		title: string;
-		description?: string;
-		fields: SettingsField[];
-	}
-
-	function parseSettingsGroups(manifest: any): SettingsGroup[] {
-		if (!manifest) return [];
-		if (manifest.groups && Array.isArray(manifest.groups)) return manifest.groups;
-		return [];
-	}
-
-	function hasSettings(manifest: any): boolean {
-		return parseSettingsGroups(manifest).some(g => g.fields?.length > 0);
-	}
-
-	async function saveSettings() {
-		if (!plugin) return;
-		savingSettings = true;
-		try {
-			const secrets: Record<string, boolean> = {};
-			for (const group of parseSettingsGroups(plugin.settingsManifest)) {
-				for (const field of group.fields) {
-					if (field.secret || field.type === 'password') {
-						secrets[field.key] = true;
-					}
-				}
-			}
-			await api.updatePluginSettings({ settings: settingsValues, secrets }, plugin.id);
-			onupdated();
-		} catch (error) {
-			console.error('Failed to save settings:', error);
-		} finally {
-			savingSettings = false;
-		}
-	}
-
 	// --- OAuth ---
 
 	async function loadOAuthGrants() {
@@ -231,15 +175,6 @@
 		return '★'.repeat(full) + (half ? '½' : '') + '☆'.repeat(empty);
 	}
 
-	const groups = $derived(plugin ? parseSettingsGroups(plugin.settingsManifest) : []);
-	const showSettings = $derived(groups.some(g => g.fields?.length > 0));
-	const pluginNeedsSetup = $derived(() => {
-		if (!plugin || !showSettings) return false;
-		const required = groups.flatMap(g => g.fields).filter(f => f.required).map(f => f.key);
-		if (required.length === 0) return false;
-		const settings = plugin.settings || {};
-		return required.some(key => !settings[key] || settings[key] === '••••••••');
-	});
 	const latestChangelog = $derived(appDetail?.changelog?.[0] || null);
 	const displayedReviews = $derived(
 		showAllReviews
@@ -323,13 +258,9 @@
 				{#if plugin}
 					<div class="flex items-center gap-2 mt-2">
 						<span class="badge badge-sm badge-outline">v{plugin.version}</span>
-						{#if pluginNeedsSetup()}
-							<span class="badge badge-sm badge-warning">Needs Setup</span>
-						{:else}
-							<span class="badge badge-sm {plugin.connectionStatus === 'connected' ? 'badge-success' : plugin.connectionStatus === 'error' ? 'badge-error' : 'badge-ghost'}">
-								{plugin.connectionStatus}
-							</span>
-						{/if}
+						<span class="badge badge-sm {plugin.connectionStatus === 'connected' ? 'badge-success' : plugin.connectionStatus === 'error' ? 'badge-error' : 'badge-ghost'}">
+							{plugin.connectionStatus}
+						</span>
 					</div>
 				{/if}
 			</div>
@@ -596,16 +527,6 @@
 					>
 						Info
 					</button>
-					{#if showSettings}
-						<button
-							role="tab"
-							class="tab"
-							class:tab-active={activeTab === 'settings'}
-							onclick={() => activeTab = 'settings'}
-						>
-							Settings
-						</button>
-					{/if}
 					<button
 						role="tab"
 						class="tab"
@@ -617,74 +538,7 @@
 				</div>
 
 				<!-- Tab content -->
-				{#if activeTab === 'settings' && showSettings}
-					<div class="space-y-4">
-						{#each groups as group}
-							{#if group.title}
-								<h4 class="font-medium text-sm text-base-content">{group.title}</h4>
-							{/if}
-							{#if group.description}
-								<p class="text-xs text-base-content/50">{group.description}</p>
-							{/if}
-							{#each group.fields as field}
-								<div class="form-control">
-									<label class="label" for="modal-setting-{field.key}">
-										<span class="label-text font-medium">{field.title}</span>
-										{#if field.required}
-											<span class="label-text-alt text-error">Required</span>
-										{/if}
-									</label>
-									{#if field.description}
-										<p class="text-xs text-base-content/50 mb-1">{field.description}</p>
-									{/if}
-									{#if field.type === 'toggle'}
-										<input
-											id="modal-setting-{field.key}"
-											type="checkbox"
-											class="toggle toggle-primary toggle-sm"
-											checked={settingsValues[field.key] === 'true'}
-											onchange={(e) => {
-												settingsValues[field.key] = (e.target as HTMLInputElement).checked ? 'true' : 'false';
-											}}
-										/>
-									{:else if field.type === 'select' && field.options}
-										<select
-											id="modal-setting-{field.key}"
-											class="select select-bordered select-sm w-full"
-											value={settingsValues[field.key] || field.default || ''}
-											onchange={(e) => {
-												settingsValues[field.key] = (e.target as HTMLSelectElement).value;
-											}}
-										>
-											{#each field.options as opt}
-												<option value={opt.value}>{opt.label}</option>
-											{/each}
-										</select>
-									{:else}
-										<input
-											id="modal-setting-{field.key}"
-											type={field.type === 'password' || field.secret ? 'password' : field.type === 'number' ? 'number' : field.type === 'url' ? 'url' : 'text'}
-											class="input input-bordered input-sm w-full"
-											placeholder={field.placeholder || ''}
-											value={settingsValues[field.key] || ''}
-											oninput={(e) => {
-												settingsValues[field.key] = (e.target as HTMLInputElement).value;
-											}}
-										/>
-									{/if}
-								</div>
-							{/each}
-						{/each}
-						<div class="flex justify-end pt-2">
-							<Button type="primary" size="sm" onclick={saveSettings} disabled={savingSettings}>
-								{#if savingSettings}
-									<span class="loading loading-spinner loading-xs"></span>
-								{/if}
-								Save Settings
-							</Button>
-						</div>
-					</div>
-				{:else if activeTab === 'connections'}
+				{#if activeTab === 'connections'}
 					<div class="space-y-3">
 						{#if loadingGrants}
 							<div class="py-6 text-center text-base-content/60">

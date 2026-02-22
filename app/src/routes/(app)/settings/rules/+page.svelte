@@ -203,12 +203,9 @@
 
 <div class="flex flex-col h-full min-h-0">
 	<div class="shrink-0 mb-4">
-		<div class="flex items-center gap-3 mb-2">
-			<div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-				<ScrollText class="w-5 h-5 text-primary" />
-			</div>
-			<div class="flex-1">
-				<h2 class="text-lg font-semibold text-base-content">Agent Rules</h2>
+		<div class="flex items-center justify-between mb-2">
+			<div>
+				<h2 class="font-display text-xl font-bold text-base-content mb-1">Rules</h2>
 				<p class="text-sm text-base-content/60">Define how your agent should behave</p>
 			</div>
 			<div class="flex items-center gap-2">

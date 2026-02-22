@@ -9,7 +9,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/neboloop/nebo/internal/defaults"
+	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/svc"
+	"github.com/neboloop/nebo/internal/types"
 )
 
 // filesDir returns the agent files directory under the Nebo data dir.
@@ -86,6 +88,30 @@ func ServeFileHandler(_ *svc.ServiceContext) http.HandlerFunc {
 
 		// Serve the file
 		http.ServeFile(w, r, fullPath)
+	}
+}
+
+// BrowseFilesHandler opens a native file picker and returns the selected paths.
+// Route: POST /api/v1/files/browse
+func BrowseFilesHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fn := svcCtx.BrowseFiles()
+		if fn == nil {
+			httputil.ErrorWithCode(w, http.StatusNotImplemented, "file browser not available")
+			return
+		}
+
+		paths, err := fn()
+		if err != nil {
+			httputil.ErrorWithCode(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		if paths == nil {
+			paths = []string{}
+		}
+
+		httputil.OkJSON(w, &types.BrowseFilesResponse{Paths: paths})
 	}
 }
 

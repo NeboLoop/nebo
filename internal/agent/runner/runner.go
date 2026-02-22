@@ -814,6 +814,12 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 				assistantContent.WriteString(event.Text)
 
 			case ai.EventTypeToolCall:
+				// Validate tool call input JSON before accepting — corrupted input
+				// (e.g., concatenated chunks like "{...}{...}") would poison the session.
+				if event.ToolCall.Input != nil && !json.Valid(event.ToolCall.Input) {
+					fmt.Printf("[Runner] WARNING: tool call %q has invalid JSON input, skipping to prevent session poisoning\n", event.ToolCall.Name)
+					continue
+				}
 				hasToolCalls = true
 				toolCalls = append(toolCalls, session.ToolCall{
 					ID:    event.ToolCall.ID,
@@ -862,7 +868,19 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		if !providerHandlesTools && (assistantContent.Len() > 0 || len(toolCalls) > 0) {
 			var toolCallsJSON json.RawMessage
 			if len(toolCalls) > 0 {
-				toolCallsJSON, _ = json.Marshal(toolCalls)
+				data, err := json.Marshal(toolCalls)
+				if err != nil {
+					fmt.Printf("[Runner] ERROR marshaling tool calls (dropping to prevent session poisoning): %v\n", err)
+					// Still save the assistant text, just without tool calls
+				} else {
+					// Validate round-trip: unmarshal back to catch subtle corruption
+					var check []session.ToolCall
+					if err := json.Unmarshal(data, &check); err != nil {
+						fmt.Printf("[Runner] ERROR tool calls JSON validation failed (dropping): %v\n", err)
+					} else {
+						toolCallsJSON = data
+					}
+				}
 			}
 
 			err := r.sessions.AppendMessage(sessionID, session.Message{
@@ -906,6 +924,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 						Name:  tc.Name,
 						Input: tc.Input,
 					},
+					ImageURL: result.ImageURL,
 				}
 
 				toolResults = append(toolResults, session.ToolResult{
@@ -930,6 +949,25 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		} else if hasToolCalls && providerHandlesTools {
 			fmt.Printf("[Runner] Skipping tool execution - provider already handled %d tools via MCP\n", len(toolCalls))
 			// Fall through to done - provider already completed its agentic loop
+		}
+
+		// Guard: if the model returned absolutely nothing (0 text, 0 tool calls),
+		// something is wrong — poisoned history, provider glitch, etc. Instead of
+		// silently completing (user sees nothing), send a visible error and retry
+		// once. The retry will benefit from buildMessages stripping any corrupt
+		// history on the next pass.
+		if assistantContent.Len() == 0 && !hasToolCalls && !providerHandlesTools {
+			if iteration == 1 {
+				fmt.Printf("[Runner] WARNING: empty model response on iteration 1, retrying\n")
+				continue
+			}
+			fmt.Printf("[Runner] WARNING: empty model response on iteration %d, giving up\n", iteration)
+			resultCh <- ai.StreamEvent{
+				Type: ai.EventTypeText,
+				Text: "I'm having trouble generating a response right now. Please try again.",
+			}
+			resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
+			return
 		}
 
 		// No tool calls — task is complete

@@ -15,7 +15,7 @@ type AppTool struct{}
 
 func NewAppTool() *AppTool { return &AppTool{} }
 
-func (t *AppTool) Name() string { return "desktop" }
+func (t *AppTool) Name() string { return "app" }
 
 func (t *AppTool) Description() string {
 	return "Control applications: list running apps, launch, quit, activate, and get app info."

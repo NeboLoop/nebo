@@ -68,7 +68,7 @@ Focus on the next pending task. Mark tasks completed as you finish them.`
 
 // --- Janus Quota Warning ---
 
-const tmplJanusQuotaWarning = `Your NeboLoop Janus token budget is %d%% used (%d of %d tokens remaining this week).
+const tmplJanusQuotaWarning = `Your NeboLoop Janus token budget is %d%% used (%s window running low).
 Warn the user that their AI usage quota is running low. Suggest shorter prompts or upgrading their plan.
 You can open the billing page with: agent(resource: profile, action: open_billing)`
 

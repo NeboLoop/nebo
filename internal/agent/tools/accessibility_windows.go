@@ -20,7 +20,16 @@ func NewAccessibilityTool() *AccessibilityTool {
 func (t *AccessibilityTool) Name() string { return "accessibility" }
 
 func (t *AccessibilityTool) Description() string {
-	return "Access UI Elements (using UI Automation) - inspect UI trees, find elements, click buttons, and interact with Windows applications."
+	return `Inspect and interact with application UI elements via Windows UI Automation APIs.
+
+Actions:
+- tree: Get the UI element hierarchy for an app (buttons, text fields, menus, etc.)
+- find: Search for elements by role and/or label
+- click: Click a specific element by role+label match
+- get_value/set_value: Read or change element values (text fields, checkboxes)
+- list_apps: List all windows with UI Automation access
+
+For visual element targeting, use screenshot(action: "see") instead.`
 }
 
 func (t *AccessibilityTool) Schema() json.RawMessage {

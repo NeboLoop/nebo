@@ -27,6 +27,7 @@ type StreamEvent struct {
 	ToolCall *ToolCall        `json:"tool_call,omitempty"`
 	Error    error            `json:"error,omitempty"`
 	Message  *session.Message `json:"message,omitempty"` // For CLI provider intermediate messages
+	ImageURL string           `json:"image_url,omitempty"` // URL of an image produced by a tool result
 }
 
 // ToolCall represents a tool invocation from the AI

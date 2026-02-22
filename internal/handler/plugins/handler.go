@@ -3,10 +3,15 @@ package plugins
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -197,14 +202,6 @@ func TogglePluginHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 }
 
 func toPluginItem(p db.PluginRegistry) types.PluginItem {
-	// Parse settings_manifest JSON, fallback to empty object
-	var manifest json.RawMessage
-	if p.SettingsManifest != "" && p.SettingsManifest != "{}" {
-		manifest = json.RawMessage(p.SettingsManifest)
-	} else {
-		manifest = json.RawMessage(`{}`)
-	}
-
 	// Extract capabilities and permissions from metadata (stored by AppRegistry)
 	var capabilities, permissions []string
 	if p.Metadata != "" {
@@ -228,7 +225,6 @@ func toPluginItem(p db.PluginRegistry) types.PluginItem {
 		Version:          p.Version,
 		IsEnabled:        p.IsEnabled != 0,
 		IsInstalled:      p.IsInstalled != 0,
-		SettingsManifest: manifest,
 		ConnectionStatus: p.ConnectionStatus,
 		LastConnectedAt:  nullTimeString(p.LastConnectedAt),
 		LastError:        nullString(p.LastError),
@@ -511,13 +507,53 @@ func InstallStoreSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
-		result, err := client.InstallSkill(r.Context(), id)
-		if err != nil {
-			httputil.InternalError(w, "install failed: "+err.Error())
+		// Register install with NeboLoop (409 = already installed, continue)
+		result, installErr := client.InstallSkill(r.Context(), id)
+		if installErr != nil && !strings.Contains(installErr.Error(), "409") {
+			httputil.InternalError(w, "install failed: "+installErr.Error())
 			return
 		}
 
-		pluginID, err := createLocalPlugin(r.Context(), svcCtx, result, "skill")
+		// Fetch skill detail to get the SKILL.md content
+		detail, err := client.GetSkill(r.Context(), id)
+		if err != nil {
+			httputil.InternalError(w, "failed to fetch skill detail: "+err.Error())
+			return
+		}
+
+		// Extract SKILL.md content from detail.
+		// NeboLoop returns manifest as a base64-encoded JSON string.
+		skillContent, err := extractSkillContent(detail)
+		if err != nil {
+			httputil.InternalError(w, err.Error())
+			return
+		}
+
+		// Determine slug for the skill directory
+		slug := detail.Slug
+		if slug == "" {
+			slug = slugify(detail.Name)
+		}
+
+		// Write SKILL.md to disk — fsnotify will hot-reload it
+		skillDir := filepath.Join(svcCtx.NeboDir, "skills", slug)
+		if err := os.MkdirAll(skillDir, 0755); err != nil {
+			httputil.InternalError(w, "failed to create skill directory: "+err.Error())
+			return
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+			httputil.InternalError(w, "failed to write skill file: "+err.Error())
+			return
+		}
+
+		// Create local DB tracking row
+		var pluginID string
+		if result != nil {
+			pluginID, err = createLocalPlugin(r.Context(), svcCtx, result, "skill")
+		} else {
+			// 409 — build from detail instead
+			pluginID, err = createLocalPluginFromDetail(r.Context(), svcCtx, id, detail.SkillItem)
+		}
 		if err != nil {
 			httputil.InternalError(w, "failed to register locally: "+err.Error())
 			return
@@ -545,9 +581,17 @@ func UninstallStoreSkillHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			return
 		}
 
+		// Find the slug before removing the DB row so we can delete from disk
+		slug := findPluginSlugByStoreID(r.Context(), svcCtx, id)
+
 		if err := client.UninstallSkill(r.Context(), id); err != nil {
 			httputil.InternalError(w, "uninstall failed: "+err.Error())
 			return
+		}
+
+		// Remove skill directory from disk
+		if slug != "" {
+			_ = os.RemoveAll(filepath.Join(svcCtx.NeboDir, "skills", slug))
 		}
 
 		removeLocalPluginByStoreID(r.Context(), svcCtx, id)
@@ -684,10 +728,6 @@ func createLocalPlugin(ctx context.Context, svcCtx *svc.ServiceContext, result *
 	}
 
 	pluginID := uuid.New().String()
-	manifestStr := "{}"
-	if len(item.Manifest) > 0 {
-		manifestStr = string(item.Manifest)
-	}
 
 	// Store NeboLoop IDs in metadata for uninstall matching and reconciliation
 	meta, _ := json.Marshal(map[string]string{
@@ -705,7 +745,32 @@ func createLocalPlugin(ctx context.Context, svcCtx *svc.ServiceContext, result *
 		Version:          item.Version,
 		IsEnabled:        1,
 		IsInstalled:      1,
-		SettingsManifest: manifestStr,
+		SettingsManifest: "{}",
+		Metadata:         string(meta),
+	})
+	if err != nil {
+		return "", err
+	}
+	return pluginID, nil
+}
+
+// createLocalPluginFromDetail creates a local plugin_registry row from a SkillItem (used on 409 re-install).
+func createLocalPluginFromDetail(ctx context.Context, svcCtx *svc.ServiceContext, storeID string, item neboloop.SkillItem) (string, error) {
+	pluginID := uuid.New().String()
+	meta, _ := json.Marshal(map[string]string{
+		"store_app_id": storeID,
+	})
+	_, err := svcCtx.DB.CreatePlugin(ctx, db.CreatePluginParams{
+		ID:               pluginID,
+		Name:             item.Slug,
+		PluginType:       "skill",
+		DisplayName:      item.Name,
+		Description:      item.Description,
+		Icon:             item.Icon,
+		Version:          item.Version,
+		IsEnabled:        1,
+		IsInstalled:      1,
+		SettingsManifest: "{}",
 		Metadata:         string(meta),
 	})
 	if err != nil {
@@ -729,6 +794,67 @@ func removeLocalPluginByStoreID(ctx context.Context, svcCtx *svc.ServiceContext,
 			}
 		}
 	}
+}
+
+// findPluginSlugByStoreID looks up the plugin name (slug) matching a NeboLoop store app ID.
+func findPluginSlugByStoreID(ctx context.Context, svcCtx *svc.ServiceContext, storeID string) string {
+	rows, err := svcCtx.DB.ListPlugins(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, p := range rows {
+		var meta map[string]string
+		if err := json.Unmarshal([]byte(p.Metadata), &meta); err == nil {
+			if meta["store_app_id"] == storeID || meta["store_install_id"] == storeID {
+				return p.Name
+			}
+		}
+	}
+	return ""
+}
+
+// extractSkillContent decodes the SKILL.md content from a NeboLoop SkillDetail.
+// NeboLoop stores it as base64(JSON-string), so we: base64 decode → JSON unmarshal → raw markdown.
+func extractSkillContent(detail *neboloop.SkillDetail) (string, error) {
+	if len(detail.Manifest) == 0 {
+		return "", fmt.Errorf("skill has no content")
+	}
+
+	// Manifest arrives as a JSON string (e.g. "Ii0tLVxu...")
+	var b64 string
+	if err := json.Unmarshal(detail.Manifest, &b64); err != nil {
+		// Not a JSON string — try using raw bytes directly
+		b64 = string(detail.Manifest)
+	}
+
+	// Base64 decode
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		// Not base64 — might be plain text already
+		return strings.TrimSpace(b64), nil
+	}
+
+	// The decoded bytes may be a JSON-encoded string (with quotes and escapes)
+	var content string
+	if err := json.Unmarshal(decoded, &content); err != nil {
+		// Not a JSON string — use decoded bytes directly
+		return strings.TrimSpace(string(decoded)), nil
+	}
+	return strings.TrimSpace(content), nil
+}
+
+var slugRe = regexp.MustCompile(`[^a-z0-9-]`)
+
+// slugify converts a name into a URL-safe slug.
+func slugify(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = strings.ReplaceAll(s, " ", "-")
+	s = strings.ReplaceAll(s, "_", "-")
+	s = slugRe.ReplaceAllString(s, "")
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	return strings.Trim(s, "-")
 }
 
 // installedPluginNames returns a set of locally installed plugin names.

@@ -65,8 +65,9 @@ func (c *Client) authedRequest(ctx context.Context, method, path string, body io
 	c.mu.RLock()
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	c.mu.RUnlock()
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	return req, nil
 }
@@ -200,7 +201,9 @@ func (c *Client) GetSkill(ctx context.Context, id string) (*SkillDetail, error) 
 // InstallSkill installs a skill for this bot.
 func (c *Client) InstallSkill(ctx context.Context, id string) (*InstallResponse, error) {
 	var resp InstallResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/skills/"+id+"/install", nil, &resp); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/skills/"+id+"/install", map[string]string{
+		"bot_id": c.botID,
+	}, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -208,7 +211,30 @@ func (c *Client) InstallSkill(ctx context.Context, id string) (*InstallResponse,
 
 // UninstallSkill uninstalls a skill for this bot.
 func (c *Client) UninstallSkill(ctx context.Context, id string) error {
-	return c.doJSON(ctx, http.MethodDelete, "/api/v1/skills/"+id+"/install", nil, nil)
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/skills/"+id+"/install/"+c.botID, nil, nil)
+}
+
+// FetchRaw downloads raw content from a URL using the client's auth header.
+func (c *Client) FetchRaw(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.RLock()
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.mu.RUnlock()
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("NeboLoop returned %d: %s", resp.StatusCode, string(b))
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // --------------------------------------------------------------------------

@@ -65,34 +65,7 @@ export async function transcribeAudio(audioBlob: Blob): Promise<TranscribeRespon
 	return response.json();
 }
 
-// Plugin Settings API (iPhone model)
-export interface SettingsFieldOption {
-	label: string;
-	value: string;
-}
-
-export interface SettingsField {
-	key: string;
-	title: string;
-	description?: string;
-	type: 'text' | 'password' | 'toggle' | 'select' | 'number' | 'url';
-	default?: string;
-	required?: boolean;
-	options?: SettingsFieldOption[];
-	placeholder?: string;
-	secret?: boolean;
-}
-
-export interface SettingsGroup {
-	title: string;
-	description?: string;
-	fields: SettingsField[];
-}
-
-export interface SettingsManifest {
-	groups: SettingsGroup[];
-}
-
+// Plugin Settings API
 export interface PluginItem {
 	id: string;
 	name: string;
@@ -103,7 +76,6 @@ export interface PluginItem {
 	version: string;
 	isEnabled: boolean;
 	isInstalled: boolean;
-	settingsManifest: SettingsManifest;
 	connectionStatus: string;
 	lastConnectedAt: string;
 	lastError: string;
@@ -149,7 +121,7 @@ export function togglePlugin(id: string, req: TogglePluginRequest): Promise<GetP
 	return webapi.put<GetPluginResponse>(`/api/v1/plugins/${id}/toggle`, req);
 }
 
-// NeboLoop App Store
+// NeboLoop Marketplace
 
 export interface StoreAuthor {
 	id: string;
