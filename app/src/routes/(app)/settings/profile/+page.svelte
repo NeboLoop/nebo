@@ -179,7 +179,7 @@
 		}}
 	>
 		<Card>
-			<!-- Theme -->
+			<!-- TODO: Re-enable Appearance when theme switching works
 			<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider mb-3">Appearance</h3>
 			<div class="flex gap-2 mb-1" role="group">
 				{#each themeOptions as option}
@@ -201,6 +201,7 @@
 			{/if}
 
 			<div class="divider"></div>
+			-->
 
 			<!-- About You -->
 			<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider mb-4">About You</h3>
