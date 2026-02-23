@@ -12,7 +12,7 @@ Nebo runs an AI agent with access to your computer's file system, shell, and net
 ┌──────────────────────────────────────────────────────┐
 │  Hard Safeguard (unconditional, no bypass possible)  │  ← System paths, sudo, disk formatting
 ├──────────────────────────────────────────────────────┤
-│  Origin-Based Restrictions (per request source)      │  ← Apps/skills can't use shell
+│  Origin-Based Restrictions (per request source)      │  ← Infrastructure ready, deny list pending
 ├──────────────────────────────────────────────────────┤
 │  Tool Policy & Approval (user-configurable)          │  ← Allowlist, approval prompts
 ├──────────────────────────────────────────────────────┤
@@ -96,19 +96,19 @@ The safeguard error messages tell the user to perform the operation manually in 
 
 ## 2. Origin-Based Tool Restrictions
 
-**File:** `internal/agent/tools/origin.go`
+**File:** `internal/agent/tools/origin.go`, `internal/agent/tools/policy.go`
 
-Every request is tagged with an origin that tracks where it came from. Non-user origins have hard restrictions:
+Every request is tagged with an origin that tracks where it came from. The infrastructure for per-origin restrictions is fully implemented — `WithOrigin(ctx, origin)` / `GetOrigin(ctx)` propagate origin types through the entire execution chain, and `Policy.IsDeniedForOrigin()` is checked in the registry before any approval logic.
 
-| Origin | Source | Restrictions |
-|--------|--------|-------------|
+| Origin | Source | Intended Restrictions |
+|--------|--------|----------------------|
 | `user` | Direct interaction (web UI, CLI) | None (governed by policy) |
 | `system` | Internal tasks (heartbeat, cron, recovery) | None |
 | `comm` | Inter-agent communication | **Shell denied** |
 | `app` | External app binary | **Shell denied** |
 | `skill` | Matched skill template | **Shell denied** |
 
-These are **hard denies** — no approval prompt, no override. A remote agent or app cannot execute shell commands on your machine.
+> **Current status:** The origin deny list (`defaultOriginDenyList()` in `policy.go`) returns `nil` — restrictions are **not yet enforced**. The infrastructure is wired and tested, but the deny rules are disabled pending a review of which specific tool actions each origin should be denied. Re-enabling is a one-function change. Until then, the safeguard layer (Section 1) and tool policy layer (Section 3) remain the active defense for non-user origins.
 
 ---
 
@@ -417,9 +417,11 @@ The two-tier architecture (NeboLoop deep scan + Nebo fast verify) follows the sa
 ### SQL Injection Prevention
 All database queries use **sqlc-generated parameterized queries** (prepared statements). No raw string concatenation in SQL.
 
-### Encryption
+### Encryption at Rest
+- **All credentials** encrypted with AES-256-GCM: API keys, OAuth tokens, plugin settings (`internal/credential/credential.go`)
 - **MCP tokens**: AES-256-GCM with random nonces (`internal/mcp/client/crypto.go`)
 - Key derivation from `MCP_ENCRYPTION_KEY`, `JWT_SECRET`, or persistent key file (`0600` permissions)
+- Idempotent migration encrypts unencrypted values on startup (single transaction, rollback on failure)
 
 ---
 
@@ -516,29 +518,35 @@ Without origin tagging, there was no way to distinguish a user typing a command 
 ---
 
 #### Default-Deny for Dangerous Tools on Non-User Origins
-**Status:** CLOSED | **Files:** `internal/agent/tools/policy.go`
+**Status:** INFRASTRUCTURE READY, DENY LIST PENDING | **Files:** `internal/agent/tools/policy.go`
 
-Without default restrictions, comm/app/skill origins had full access to shell, file writes, memory, cron, and sub-agent spawning.
+Without default restrictions, comm/app/skill origins have full access to shell, file writes, memory, cron, and sub-agent spawning.
 
-**Hardening:** Set secure defaults that block high-risk tools for non-user origins:
+**What's done:** `Policy.IsDeniedForOrigin()` is checked in `registry.Execute()` before any approval logic. The deny list is configurable per origin per tool via `config.yaml`. The infrastructure is fully wired and tested.
+
+**What's pending:** `defaultOriginDenyList()` currently returns `nil` — no deny rules are active. The intended defaults:
 - **comm/channel origins:** Shell (all actions) denied — neutralizes NeboLoop as a remote shell vector
 - **app origins:** Shell (all actions) denied — app outputs re-entering the loop cannot escalate
 - **skill origins:** Shell (all actions) denied — malicious skill templates cannot trigger dangerous tools
 
-Users can override via `config.yaml` for specific trusted integrations. This single change neutralizes three attack vectors: (1) NeboLoop as remote shell, (2) app injection escalation, (3) skill supply chain attacks.
+Re-enabling is a one-function change. Blocked on a review of which specific actions each origin should be denied to avoid breaking legitimate use cases.
 
 ---
 
 ### Critical Severity — Open
 
-#### Credential Storage — Partial Encryption
-**Priority:** Critical | **Files:** `internal/db/migrations/0010_auth_profiles.sql`, `internal/handler/provider/`, `internal/mcp/client/crypto.go`
+#### Credential Storage — File-Based Encryption Key
+**Priority:** High | **Files:** `internal/credential/credential.go`, `internal/credential/migrate.go`, `internal/mcp/client/crypto.go`
 
-`models.yaml` does NOT store API keys (uses `${ENV_VAR}` placeholders only). However, the `auth_profiles` table stores LLM provider API keys (Anthropic, OpenAI, Google, etc.) and NeboLoop tokens in **plaintext**. The `channel_credentials` table also stores bot tokens in plaintext.
+All credentials are **encrypted at rest** using AES-256-GCM:
+- `auth_profiles` — LLM provider API keys (Anthropic, OpenAI, Google, NeboLoop)
+- `mcp_integration_credentials` — MCP OAuth tokens
+- `app_oauth_grants` — app OAuth tokens
+- `plugin_settings` — plugin credentials (e.g., NeboLoop token)
 
-MCP OAuth tokens ARE encrypted (AES-256-GCM via `crypto.go`), but the encryption key sits on disk in `~/.config/nebo/.mcp-key` — if an attacker can read the database, they can read the key file too.
+Encryption is applied via `migrateAuthProfiles()` which runs on startup and idempotently encrypts any unencrypted values (detected by absence of `"enc:"` prefix). Migration runs in a single database transaction with rollback on failure.
 
-**The real fix is OS Keychain integration** (macOS Keychain, Windows DPAPI, Linux libsecret). File-based encryption keys provide no meaningful protection against a local attacker with filesystem access. This is the only approach that ties credential access to the user's login session.
+**Remaining concern:** The encryption key sits on disk at `~/.config/nebo/.mcp-key` (permissions `0600`). If an attacker has filesystem access, they can read both the database and the key file. **The proper fix is OS Keychain integration** (macOS Keychain, Windows DPAPI, Linux libsecret), which ties credential access to the user's login session.
 
 #### Secure Chrome Extension Relay CDP Endpoint
 **Priority:** Critical | **Files:** `internal/browser/relay.go`

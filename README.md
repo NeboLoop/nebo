@@ -127,6 +127,18 @@ Channel apps are distributed through NeboLoop. All channels route to the same ag
 
 Nebo works fully offline without NeboLoop if you have a local LLM (e.g., Ollama). The cloud layer is opt-in.
 
+## Security
+
+Seven layers of defense, each enforced in code — not by prompts. See [SECURITY.md](SECURITY.md) for the full architecture and audit trail.
+
+- Hard safeguards block destructive operations unconditionally (sudo, disk formatting, system paths)
+- Origin tagging tracks every request source (user, comm, app, skill, system)
+- Configurable tool policies with allowlists and approval flows
+- App sandboxing with process isolation and ED25519 signature verification
+- Compiled-only binary policy — no interpreted languages in the app platform
+- All credentials encrypted at rest (AES-256-GCM)
+- Network security: JWT auth, CSRF protection, rate limiting, security headers
+
 ## System Requirements
 
 | Platform | Requirements |
