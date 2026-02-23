@@ -49,28 +49,24 @@ Only store if genuinely useful.`
 
 // --- Objective Task Nudge ---
 
-const tmplObjectiveTaskNudge = `You have a clear objective but haven't broken it into steps.
-Use agent(resource: task, action: create, subject: "step description") to create 3-5 tasks.
-Then mark them in_progress/completed as you go. This keeps you on track.`
+const tmplObjectiveTaskNudge = `You have a clear objective. Start working on it immediately using your tools.
+Do NOT create a task list or checklist. Just take the first concrete action toward the goal.`
 
 // --- Pending Task Action ---
 
-const tmplPendingTaskAction = `You have pending tasks:
-%s
-Do NOT describe what you plan to do — take action NOW using your tools.
-Pick the next pending task and execute it immediately.`
+const tmplPendingTaskAction = `You still have work to do. Take action NOW using your tools.
+Do NOT narrate intent or create more tasks — just execute the next step toward your objective.`
 
 // --- Task Progress ---
 
-const tmplTaskProgress = `Current task progress:
-%s
-Focus on the next pending task. Mark tasks completed as you finish them.`
+const tmplTaskProgress = `You are still working toward your objective. Keep going — use your tools to make progress.
+If you've finished, tell the user what you accomplished.`
 
 // --- Janus Quota Warning ---
 
-const tmplJanusQuotaWarning = `Your NeboLoop Janus token budget is %d%% used (%s window running low).
-Warn the user that their AI usage quota is running low. Suggest shorter prompts or upgrading their plan.
-You can open the billing page with: agent(resource: profile, action: open_billing)`
+const tmplJanusQuotaWarning = `Your AI token budget is %d%% used (%s window running low).
+Let the user know — casually, not dramatically. Something like: "Heads up — I'm running low on AI tokens for the week. We've used about %d%% of the budget. It resets automatically, but if you need more now, you can upgrade in Settings > NeboLoop."
+Keep it brief and matter-of-fact. One short paragraph. Don't be alarming. Don't repeat this warning — once is enough.`
 
 // Self-disclosure patterns that suggest the user is sharing storable information.
 var selfDisclosurePatterns = []string{

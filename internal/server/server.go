@@ -342,8 +342,9 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Get("/neboloop/oauth/start", neboloop.NeboLoopOAuthStartHandler(svcCtx))
 	r.Get("/neboloop/oauth/status", neboloop.NeboLoopOAuthStatusHandler(svcCtx))
 
-	// NeboLoop Janus usage (in-memory rate-limit data)
+	// NeboLoop Janus usage and external links
 	r.Get("/neboloop/janus/usage", neboloop.NeboLoopJanusUsageHandler(svcCtx))
+	r.Get("/neboloop/open", neboloop.NeboLoopOpenHandler(svcCtx))
 
 	// Agent routes
 	r.Get("/agent/sessions", agent.ListAgentSessionsHandler(svcCtx))

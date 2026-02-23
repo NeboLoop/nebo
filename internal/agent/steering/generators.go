@@ -2,7 +2,6 @@ package steering
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 )
@@ -179,20 +178,12 @@ type pendingTaskAction struct{}
 func (g *pendingTaskAction) Name() string { return "pending_task_action" }
 
 func (g *pendingTaskAction) Generate(ctx *Context) []Message {
-	if len(ctx.WorkTasks) == 0 {
+	// Fire when the model has an active objective but gave a text-only response
+	// instead of using tools. Don't require WorkTasks — the objective itself is enough.
+	if ctx.ActiveTask == "" {
 		return nil
 	}
-	// Count pending/in-progress tasks
-	pending := 0
-	for _, wt := range ctx.WorkTasks {
-		if wt.Status == "pending" || wt.Status == "in_progress" {
-			pending++
-		}
-	}
-	if pending == 0 {
-		return nil
-	}
-	// Only fire after the first iteration (text-only response despite pending tasks)
+	// Only fire after the first iteration (text-only response despite active objective)
 	if ctx.Iteration < 2 {
 		return nil
 	}
@@ -201,10 +192,8 @@ func (g *pendingTaskAction) Generate(ctx *Context) []Message {
 		return nil
 	}
 
-	list := formatTaskList(ctx.WorkTasks)
-	content := fmt.Sprintf(tmplPendingTaskAction, list)
 	return []Message{{
-		Content:  wrapSteering(g.Name(), content),
+		Content:  wrapSteering(g.Name(), tmplPendingTaskAction),
 		Position: PositionEnd,
 	}}
 }
@@ -217,34 +206,16 @@ type taskProgress struct{}
 func (g *taskProgress) Name() string { return "task_progress" }
 
 func (g *taskProgress) Generate(ctx *Context) []Message {
-	if len(ctx.WorkTasks) == 0 {
+	if ctx.ActiveTask == "" {
 		return nil
 	}
 	if ctx.Iteration < 4 || ctx.Iteration%8 != 0 {
 		return nil
 	}
-	list := formatTaskList(ctx.WorkTasks)
-	content := fmt.Sprintf(tmplTaskProgress, list)
 	return []Message{{
-		Content:  wrapSteering(g.Name(), content),
+		Content:  wrapSteering(g.Name(), tmplTaskProgress),
 		Position: PositionEnd,
 	}}
-}
-
-// formatTaskList renders work tasks as a checklist.
-func formatTaskList(tasks []WorkTask) string {
-	var sb strings.Builder
-	for _, wt := range tasks {
-		icon := "[ ]"
-		switch wt.Status {
-		case "in_progress":
-			icon = "[→]"
-		case "completed":
-			icon = "[✓]"
-		}
-		sb.WriteString(fmt.Sprintf("  %s %s\n", icon, wt.Subject))
-	}
-	return sb.String()
 }
 
 // --- Generator 10: Janus Quota Warning ---
@@ -288,7 +259,7 @@ func (g *janusQuotaWarning) Generate(ctx *Context) []Message {
 		window = "both session and weekly"
 	}
 	pctUsed := int(100 - ratio*100)
-	content := fmt.Sprintf(tmplJanusQuotaWarning, pctUsed, window)
+	content := fmt.Sprintf(tmplJanusQuotaWarning, pctUsed, window, pctUsed)
 	return []Message{{
 		Content:  wrapSteering(g.Name(), content),
 		Position: PositionEnd,

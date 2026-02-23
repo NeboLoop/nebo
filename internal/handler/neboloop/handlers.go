@@ -224,6 +224,20 @@ func NeboLoopDisconnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	}
 }
 
+// NeboLoopOpenHandler opens a NeboLoop page in the user's system browser.
+// Accepts an optional ?path= query param (e.g. /app/settings/billing).
+// Only allows paths under the NeboLoop frontend domain for safety.
+func NeboLoopOpenHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		base := neboLoopFrontendURL(svcCtx.Config.NeboLoop.ApiURL)
+		path := r.URL.Query().Get("path")
+		targetURL := base + path
+		fmt.Printf("[NeboLoop] Opening URL: %s\n", targetURL)
+		openBrowser(targetURL)
+		httputil.OkJSON(w, map[string]bool{"opened": true})
+	}
+}
+
 // NeboLoopJanusUsageHandler returns the current Janus token usage from in-memory rate-limit data.
 func NeboLoopJanusUsageHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

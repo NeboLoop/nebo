@@ -14,7 +14,9 @@ parser.setOptions({
 
 parser.use(embedExtension());
 
-// Open external links in system browser instead of navigating the webview
+// Open external links in system browser instead of navigating the webview.
+// NeboLoop links get a data attribute so the Markdown component can intercept
+// clicks and route them through the local API (same as Settings buttons).
 parser.use({
 	renderer: {
 		link(token) {
@@ -22,6 +24,16 @@ parser.use({
 			const text = this.parser.parseInline(token.tokens || []);
 			const title = token.title ? ` title="${token.title}"` : '';
 			if (href.startsWith('http://') || href.startsWith('https://')) {
+				// NeboLoop links → open via backend API (Wails webview can't
+				// open external URLs directly with target="_blank")
+				try {
+					const url = new URL(href);
+					if (url.hostname === 'neboloop.com' || url.hostname.endsWith('.neboloop.com')) {
+						return `<a href="#" data-neboloop-path="${url.pathname}" class="link link-primary cursor-pointer">${text}</a>`;
+					}
+				} catch {
+					// invalid URL — fall through to default
+				}
 				return `<a href="${href}"${title} target="_blank" rel="noopener noreferrer">${text}</a>`;
 			}
 			return `<a href="${href}"${title}>${text}</a>`;

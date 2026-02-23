@@ -340,34 +340,50 @@ func (t *ScreenshotTool) formatOutput(img image.Image, params screenshotInput) (
 }
 
 // saveImageToFile saves any image.Image and returns (fullPath, fileName, error).
+// The file is always saved to <data_dir>/files/ so the web UI can serve it via
+// /api/v1/files/<name>. If a custom outputPath is provided, a copy is also
+// written there for the agent's use.
 func (t *ScreenshotTool) saveImageToFile(img image.Image, outputPath string) (string, string, error) {
+	dataDir, _ := defaults.DataDir()
+	filesDir := filepath.Join(dataDir, "files")
+	os.MkdirAll(filesDir, 0755)
+
 	var fileName string
-	if outputPath == "" {
-		dataDir, _ := defaults.DataDir()
-		filesDir := filepath.Join(dataDir, "files")
-		os.MkdirAll(filesDir, 0755)
-		fileName = fmt.Sprintf("screenshot_%s.png", time.Now().Format("20060102_150405"))
-		outputPath = filepath.Join(filesDir, fileName)
-	} else {
+	if outputPath != "" {
 		fileName = filepath.Base(outputPath)
+	} else {
+		fileName = fmt.Sprintf("screenshot_%s.png", time.Now().Format("20060102_150405"))
 	}
 
-	dir := filepath.Dir(outputPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", "", fmt.Errorf("failed to create directory: %w", err)
+	// Always write to <data_dir>/files/ so ImageURL resolves correctly.
+	servePath := filepath.Join(filesDir, fileName)
+	if err := writeImagePNG(servePath, img); err != nil {
+		return "", "", err
 	}
 
-	file, err := os.Create(outputPath)
+	// If the caller requested a different location, write a copy there too.
+	if outputPath != "" && filepath.Clean(outputPath) != filepath.Clean(servePath) {
+		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+			return "", "", fmt.Errorf("failed to create directory: %w", err)
+		}
+		if err := writeImagePNG(outputPath, img); err != nil {
+			return "", "", err
+		}
+	}
+
+	return servePath, fileName, nil
+}
+
+func writeImagePNG(path string, img image.Image) error {
+	f, err := os.Create(path)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create file: %w", err)
+		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer file.Close()
-
-	if err := png.Encode(file, img); err != nil {
-		return "", "", fmt.Errorf("failed to encode PNG: %w", err)
+	defer f.Close()
+	if err := png.Encode(f, img); err != nil {
+		return fmt.Errorf("failed to encode PNG: %w", err)
 	}
-
-	return outputPath, fileName, nil
+	return nil
 }
 
 func encodeImagePNG(img image.Image) []byte {

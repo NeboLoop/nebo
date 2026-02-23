@@ -1209,8 +1209,15 @@ func truncateToolArgs(args string) string {
 // The summary follows the compactionSummaryPrompt format where point #1 is "Current Task".
 // extractProviderErrorMessage turns a provider error into a user-visible message.
 // Parses known Janus/OpenAI error formats to extract a clean message.
+// Janus quota exhaustion gets a friendly message instead of the raw error code.
 func extractProviderErrorMessage(err error) string {
 	msg := err.Error()
+	lower := strings.ToLower(msg)
+
+	// Janus quota exhaustion — friendly message with upgrade path
+	if strings.Contains(lower, "limit_exceeded") || strings.Contains(lower, "quota") || strings.Contains(lower, "usage limit") {
+		return "You've used all your AI tokens for this week. Your quota resets automatically — check **Settings > NeboLoop** to see when.\n\nNeed more right now? [Upgrade your plan](https://neboloop.com/app/settings/billing) for a higher weekly limit."
+	}
 
 	// Try to extract "message" from JSON error body
 	// e.g. {"code":"provider_error","message":"Usage limit exceeded: ...","type":"server_error"}

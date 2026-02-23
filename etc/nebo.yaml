@@ -19,8 +19,8 @@ Log:
 # These are just placeholders to satisfy the config parser
 Auth:
   AccessSecret: placeholder-replaced-at-runtime
-  AccessExpire: 2592000
-  RefreshTokenExpire: 2592000
+  AccessExpire: 31536000
+  RefreshTokenExpire: 31536000
 
 # Database uses ~/.nebo/data/nebo.db by default (shared with agent)
 Database: {}

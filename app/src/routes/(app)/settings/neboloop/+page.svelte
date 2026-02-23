@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { Cloud, CheckCircle, XCircle, Loader2, LogOut, Bot, ExternalLink, Zap } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
+	import webapi from '$lib/api/gocliRequest';
 	import type * as components from '$lib/api/neboComponents';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
@@ -134,10 +135,10 @@
 			<h2 class="font-display text-xl font-bold text-base-content mb-1">NeboLoop</h2>
 			<p class="text-sm text-base-content/60">Janus AI, marketplace, and cloud channels</p>
 		</div>
-		<a href="https://neboloop.com" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm gap-1 text-base-content/60">
-			neboloop.com
+		<button class="btn btn-ghost btn-sm gap-1 text-base-content/60" onclick={() => webapi.get('/api/v1/neboloop/open')}>
+			NeboLoop.com
 			<ExternalLink class="w-3.5 h-3.5" />
-		</a>
+		</button>
 	</div>
 
 	{#if isLoading}
@@ -193,10 +194,10 @@
 						<div class="flex-1">
 							<p class="font-medium">Janus AI Usage</p>
 						</div>
-						<a href="https://neboloop.com" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-xs gap-1 text-base-content/50">
+						<button class="btn btn-ghost btn-xs gap-1 text-base-content/50" onclick={() => webapi.get('/api/v1/neboloop/open', { path: '/app/settings/billing' })}>
 							Upgrade
 							<ExternalLink class="w-3 h-3" />
-						</a>
+						</button>
 					</div>
 					<div class="flex flex-col gap-2">
 						{#if janusUsage.session.limitTokens > 0}

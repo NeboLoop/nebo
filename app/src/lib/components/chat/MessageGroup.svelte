@@ -182,15 +182,16 @@
 								/>
 							</div>
 						{:else if block.type === 'image' && (block.imageData || block.imageURL)}
-							<div class="rounded-xl overflow-hidden mb-1 max-w-sm">
+							{@const imgSrc = block.imageData
+								? `data:${block.imageMimeType || 'image/png'};base64,${block.imageData}`
+								: block.imageURL ?? ''}
+							<a href={imgSrc} target="_blank" rel="noopener" class="block rounded-xl overflow-hidden mb-1 max-w-sm cursor-zoom-in">
 								<img
-									src={block.imageData
-										? `data:${block.imageMimeType || 'image/png'};base64,${block.imageData}`
-										: block.imageURL}
+									src={imgSrc}
 									alt="Shared content"
 									class="max-w-full h-auto rounded-xl"
 								/>
-							</div>
+							</a>
 						{:else if block.type === 'text' && block.text}
 							<div
 								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''}"

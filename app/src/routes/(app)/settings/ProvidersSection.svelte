@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Terminal, Wifi, Zap, ExternalLink } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
+	import webapi from '$lib/api/gocliRequest';
 	import type * as components from '$lib/api/neboComponents';
 	import Card from '$lib/components/ui/Card.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
@@ -298,10 +299,10 @@
 						<h4 class="font-medium text-base-content">Janus</h4>
 						<p class="text-xs text-base-content/60">NeboLoop AI Gateway — {janusModels().filter(m => m.isActive).length} active model{janusModels().filter(m => m.isActive).length !== 1 ? 's' : ''}</p>
 					</div>
-					<a href="https://neboloop.com" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-xs gap-1 text-base-content/50">
+					<button class="btn btn-ghost btn-xs gap-1 text-base-content/50" onclick={() => webapi.get('/api/v1/neboloop/open', { path: '/app/settings/billing' })}>
 						Upgrade
 						<ExternalLink class="w-3 h-3" />
-					</a>
+					</button>
 				</div>
 			{#if janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
 				<div class="flex flex-col gap-2 px-4 py-2 mb-3">

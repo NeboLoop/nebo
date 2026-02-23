@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { parseMarkdown } from '$lib/utils/markdown-parser';
+	import webapi from '$lib/api/gocliRequest';
 
 	interface Props {
 		content: string;
@@ -67,9 +68,19 @@
 			}, 0);
 		}
 	});
+
+	// Intercept clicks on NeboLoop links and open via the local API
+	// (same mechanism as Settings > NeboLoop > Upgrade button)
+	function handleClick(e: MouseEvent) {
+		const anchor = (e.target as HTMLElement).closest('a[data-neboloop-path]') as HTMLAnchorElement | null;
+		if (!anchor) return;
+		e.preventDefault();
+		const path = anchor.dataset.neboloopPath || '';
+		webapi.get('/api/v1/neboloop/open', { path });
+	}
 </script>
 
-<div bind:this={container} class="prose prose-sm max-w-none dark:prose-invert {className}">
+<div bind:this={container} class="prose prose-sm max-w-none dark:prose-invert {className}" onclick={handleClick}>
 	{@html html}
 	{#if truncated && !showFull}
 		<button type="button" class="btn btn-xs btn-ghost mt-2" onclick={() => showFull = true}>

@@ -494,7 +494,7 @@ func BuildDynamicSuffix(dctx DynamicContext) string {
 		sb.WriteString("\n\n---\n## ACTIVE TASK\nYou are currently working on: ")
 		sb.WriteString(dctx.ActiveTask)
 		sb.WriteString("\nDo not lose sight of this goal. Every tool call should advance this objective.")
-		sb.WriteString("\nUse agent(resource: task, action: create) to break this into trackable steps if you haven't already.")
+		sb.WriteString("\nDo the work directly — do NOT create task lists or checklists. Just execute.")
 		sb.WriteString("\n---")
 	}
 

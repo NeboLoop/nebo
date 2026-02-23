@@ -21,8 +21,8 @@ type Settings struct {
 // DefaultSettings returns sensible defaults
 func DefaultSettings() Settings {
 	return Settings{
-		AccessExpire:       2592000, // 30 days
-		RefreshTokenExpire: 2592000, // 30 days
+		AccessExpire:       31536000, // 1 year
+		RefreshTokenExpire: 31536000, // 1 year
 	}
 }
 
