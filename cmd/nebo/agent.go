@@ -1610,7 +1610,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 						})
 					}
 				case ai.EventTypeMessage:
-					if event.Message != nil && event.Message.Content != "" {
+					// Fallback: only use EventTypeMessage text if no EventTypeText arrived
+					// (prevents duplicate streaming for CLI providers that emit both)
+					if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
 						result.WriteString(event.Message.Content)
 						if msg.IsOwner {
 							state.sendFrame(map[string]any{
@@ -2572,9 +2574,11 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 							continue
 						}
 
-						// Forward text content (CLI provider may send text in the assistant envelope
-						// after tool-use rounds — always forward, don't gate on result.Len())
-						if event.Message.Content != "" {
+						// DON'T send text as chunk — already streamed via EventTypeText.
+						// DON'T accumulate into result — already accumulated from EventTypeText.
+						// EventTypeMessage is for session persistence (handled by runner).
+						// Fallback: if no text events arrived (non-streaming provider), accumulate.
+						if event.Message.Content != "" && result.Len() == 0 {
 							result.WriteString(event.Message.Content)
 							state.sendFrame(map[string]any{
 								"type": "stream",

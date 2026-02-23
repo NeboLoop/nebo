@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/neboloop/nebo/internal/agent/afv"
 	"github.com/neboloop/nebo/internal/agenthub"
@@ -225,6 +226,10 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 			if safeLen < 0 {
 				safeLen = 0
 			}
+			// Back up to a valid UTF-8 rune boundary so we don't split multi-byte chars (emojis, CJK, etc.)
+			for safeLen > req.cleanSentLen && safeLen < len(clean) && !utf8.RuneStart(clean[safeLen]) {
+				safeLen--
+			}
 
 			delta := ""
 			if safeLen > req.cleanSentLen {
@@ -253,6 +258,24 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 			input := extractStringOrJSON(payload["input"])
 			toolID, _ := payload["tool_id"].(string)
 			fmt.Printf("[Chat] Tool start: %s (id=%s) input_len=%d\n", tool, toolID, len(input))
+			// Flush held-back text buffer before inserting tool card so text isn't split mid-word
+			c.pendingMu.Lock()
+			if req, ok := c.pending[frame.ID]; ok {
+				clean := afv.StripFenceMarkers(req.streamedContent)
+				if len(clean) > req.cleanSentLen {
+					flush := clean[req.cleanSentLen:]
+					if len(req.contentBlocks) == 0 || req.contentBlocks[len(req.contentBlocks)-1].Type != "text" {
+						req.contentBlocks = append(req.contentBlocks, contentBlock{Type: "text", Text: flush})
+					} else {
+						req.contentBlocks[len(req.contentBlocks)-1].Text += flush
+					}
+					req.cleanSentLen = len(clean)
+					if req.client != nil {
+						sendChatStream(req.client, req.sessionID, flush)
+					}
+				}
+			}
+			c.pendingMu.Unlock()
 			// Track tool call and content block
 			c.pendingMu.Lock()
 			if req, ok := c.pending[frame.ID]; ok {
