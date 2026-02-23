@@ -42,6 +42,9 @@ func Apply(newBinaryPath string) error {
 	// Clean up temp file
 	os.Remove(newBinaryPath)
 
+	// Release resources (lock files, connections) before exec
+	runPreApply()
+
 	// Exec into the new binary — replaces this process in-place
 	return syscall.Exec(realPath, os.Args, os.Environ())
 }

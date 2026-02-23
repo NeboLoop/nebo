@@ -5,8 +5,32 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 )
+
+// preApplyFunc is called right before the process restarts. Use this to release
+// resources (lock files, open connections) that would block the new process.
+var (
+	preApplyFunc func()
+	preApplyMu   sync.Mutex
+)
+
+// SetPreApplyHook registers a function to run before the binary restarts.
+func SetPreApplyHook(fn func()) {
+	preApplyMu.Lock()
+	defer preApplyMu.Unlock()
+	preApplyFunc = fn
+}
+
+func runPreApply() {
+	preApplyMu.Lock()
+	fn := preApplyFunc
+	preApplyMu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
 
 // healthCheck runs "nebo --version" on the new binary with a timeout.
 func healthCheck(binaryPath string) error {

@@ -25,11 +25,13 @@ export async function checkForUpdate() {
 	}
 }
 
-export async function applyUpdate() {
+export async function applyUpdate(): Promise<string> {
 	try {
-		await api.updateApply();
+		const resp = await api.updateApply();
+		return resp?.status ?? 'unknown';
 	} catch {
 		// Server may have already restarted
+		return 'restarting';
 	}
 }
 

@@ -116,6 +116,9 @@ func RunDesktop() {
 	}
 	defer releaseLock(lockFile)
 
+	// Release lock before binary restart so the new process can acquire it
+	updater.SetPreApplyHook(func() { releaseLock(lockFile) })
+
 	c := ServerConfig
 
 	// Initialize shared ServiceContext ONCE — single owner of the database connection

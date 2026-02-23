@@ -120,6 +120,10 @@ type Plugin struct {
 
 	// Loop channel tracking: channelID → conversationID (populated from messages)
 	channelConvs map[string]string
+
+	// tokenRefresher is called on auth failure during reconnect to obtain a fresh JWT.
+	// Returns the new access token or an error if refresh is not possible.
+	tokenRefresher func(ctx context.Context) (string, error)
 }
 
 // New creates a new NeboLoop plugin.
@@ -167,6 +171,15 @@ func (p *Plugin) OnHistoryRequest(fn func(HistoryRequest) []HistoryMessage) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onHistoryRequest = fn
+}
+
+// SetTokenRefresher registers a callback that obtains a fresh JWT when
+// the current token is rejected during reconnect. This prevents the plugin
+// from permanently dying (authDead) when the access token expires.
+func (p *Plugin) SetTokenRefresher(fn func(ctx context.Context) (string, error)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tokenRefresher = fn
 }
 
 // OwnerID returns the owner's user ID extracted from the JWT sub claim.
@@ -889,10 +902,30 @@ func (p *Plugin) reconnect() {
 
 		if err != nil {
 			if strings.Contains(err.Error(), "auth failed") {
+				// Try to refresh the token before giving up
+				p.mu.RLock()
+				refresher := p.tokenRefresher
+				p.mu.RUnlock()
+
+				if refresher != nil {
+					commLog.Info("[Comm:neboloop] auth failed, attempting token refresh")
+					freshToken, refreshErr := refresher(context.Background())
+					if refreshErr == nil && freshToken != "" {
+						p.mu.Lock()
+						p.token = freshToken
+						p.ownerID = jwtSubClaim(freshToken)
+						p.mu.Unlock()
+						token = freshToken
+						commLog.Info("[Comm:neboloop] token refreshed, retrying connection")
+						continue // retry the reconnect loop with fresh token
+					}
+					commLog.Error("[Comm:neboloop] token refresh failed", "error", refreshErr)
+				}
+
 				p.mu.Lock()
 				p.authDead = true
 				p.mu.Unlock()
-				commLog.Error("[Comm:neboloop] auth dead during reconnect, giving up")
+				commLog.Error("[Comm:neboloop] auth dead during reconnect, giving up (re-authenticate via Settings)")
 				return
 			}
 			commLog.Warn("[Comm:neboloop] reconnect failed", "error", err, "attempt", attempt)

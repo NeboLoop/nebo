@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/neboloop/nebo/internal/logging"
+	"github.com/neboloop/nebo/internal/updater"
 
 	"github.com/neboloop/nebo/app"
 	"github.com/neboloop/nebo/internal/agenthub"
@@ -95,6 +96,9 @@ func RunAll() {
 		os.Exit(1)
 	}
 	defer releaseLock(lockFile)
+
+	// Release lock before binary restart so the new process can acquire it
+	updater.SetPreApplyHook(func() { releaseLock(lockFile) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

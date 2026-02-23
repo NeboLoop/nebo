@@ -349,6 +349,48 @@ func fetchUserInfo(ctx context.Context, apiURL, accessToken string) (*oauthUserI
 	return &result, nil
 }
 
+// TokenRefreshResult holds the tokens returned from a refresh_token grant.
+type TokenRefreshResult struct {
+	AccessToken  string
+	RefreshToken string
+}
+
+// RefreshNeboLoopToken exchanges a refresh token for a new access token
+// via the NeboLoop /oauth/token endpoint with grant_type=refresh_token.
+func RefreshNeboLoopToken(ctx context.Context, apiURL, refreshToken string) (*TokenRefreshResult, error) {
+	body, _ := json.Marshal(map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
+		"client_id":     neboLoopOAuthClientID,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL+"/oauth/token",
+		strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token refresh request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("token refresh returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result oauthTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode refresh response: %w", err)
+	}
+	return &TokenRefreshResult{
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+	}, nil
+}
 
 // serveCallbackHTML renders a minimal HTML page that closes the browser
 // window/tab after the OAuth flow completes. The Nebo app detects completion

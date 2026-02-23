@@ -22,6 +22,7 @@ import (
 	"github.com/neboloop/nebo/internal/agent/ai"
 	"github.com/neboloop/nebo/internal/agent/comm"
 	"github.com/neboloop/nebo/internal/agent/comm/neboloop"
+	neboloophandler "github.com/neboloop/nebo/internal/handler/neboloop"
 	neboloopapi "github.com/neboloop/nebo/internal/neboloop"
 	agentcfg "github.com/neboloop/nebo/internal/agent/config"
 	"github.com/neboloop/nebo/internal/agent/embeddings"
@@ -366,6 +367,26 @@ func getNeboLoopJWT(ctx context.Context, sqlDB *sql.DB) string {
 		return ""
 	}
 	return profiles[0].ApiKey // JWT is stored in api_key column
+}
+
+// getNeboLoopRefreshToken reads the refresh_token and API URL from the
+// NeboLoop auth profile in the database.
+func getNeboLoopRefreshToken(ctx context.Context, sqlDB *sql.DB) (refreshToken, apiURL string) {
+	store := db.New(sqlDB)
+	profiles, err := store.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
+	if err != nil || len(profiles) == 0 {
+		return "", ""
+	}
+	p := profiles[0]
+	apiURL = p.BaseUrl.String
+	if !p.Metadata.Valid {
+		return "", apiURL
+	}
+	var meta map[string]string
+	if err := json.Unmarshal([]byte(p.Metadata.String), &meta); err != nil {
+		return "", apiURL
+	}
+	return meta["refresh_token"], apiURL
 }
 
 // handleNeboLoopCode processes a connection code and emits tool-use-style events.
@@ -1100,6 +1121,71 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	if opts.PluginStore != nil {
 		opts.PluginStore.RegisterConfigurable("neboloop", neboloopPlugin)
 	}
+
+	// Wire token refresher so the plugin can obtain a fresh JWT on auth failure
+	// instead of permanently dying. The callback reads the refresh_token from DB,
+	// exchanges it at NeboLoop's /oauth/token endpoint, and stores the new tokens.
+	neboloopPlugin.SetTokenRefresher(func(ctx context.Context) (string, error) {
+		refreshToken, apiURL := getNeboLoopRefreshToken(ctx, sqlDB)
+		if refreshToken == "" {
+			return "", fmt.Errorf("no refresh token available, re-authenticate via Settings")
+		}
+		tokenResp, err := neboloophandler.RefreshNeboLoopToken(ctx, apiURL, refreshToken)
+		if err != nil {
+			return "", fmt.Errorf("refresh failed: %w", err)
+		}
+
+		// Preserve existing metadata (owner_id, email, janus_provider) from current profile
+		store := db.New(sqlDB)
+		profiles, _ := store.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
+		var ownerID, email string
+		var janusProvider bool
+		if len(profiles) > 0 && profiles[0].Metadata.Valid {
+			var meta map[string]string
+			if json.Unmarshal([]byte(profiles[0].Metadata.String), &meta) == nil {
+				ownerID = meta["owner_id"]
+				email = meta["email"]
+				janusProvider = meta["janus_provider"] == "true"
+			}
+		}
+
+		// Build metadata with new refresh token
+		metadata := map[string]string{
+			"owner_id":      ownerID,
+			"email":         email,
+			"refresh_token": tokenResp.RefreshToken,
+		}
+		if janusProvider {
+			metadata["janus_provider"] = "true"
+		}
+		metadataJSON, _ := json.Marshal(metadata)
+
+		// Deactivate existing profiles
+		for _, p := range profiles {
+			store.ToggleAuthProfile(ctx, db.ToggleAuthProfileParams{
+				ID:       p.ID,
+				IsActive: sql.NullInt64{Int64: 0, Valid: true},
+			})
+		}
+
+		// Create new profile with fresh tokens
+		_, err = store.CreateAuthProfile(ctx, db.CreateAuthProfileParams{
+			ID:       uuid.New().String(),
+			Name:     email,
+			Provider: "neboloop",
+			ApiKey:   tokenResp.AccessToken,
+			BaseUrl:  sql.NullString{String: apiURL, Valid: true},
+			AuthType: sql.NullString{String: "oauth", Valid: true},
+			IsActive: sql.NullInt64{Int64: 1, Valid: true},
+			Metadata: sql.NullString{String: string(metadataJSON), Valid: true},
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to store refreshed token: %w", err)
+		}
+
+		fmt.Printf("[Comm:neboloop] Token refreshed successfully\n")
+		return tokenResp.AccessToken, nil
+	})
 
 	// Resolve NeboLoop API URL from server config for signature verification
 	var neboLoopURL string

@@ -28,6 +28,9 @@ func startBackgroundUpdater(ctx context.Context, svcCtx *svc.ServiceContext) {
 		})
 	}
 
+	installMethod := updater.DetectInstallMethod()
+	canAutoUpdate := installMethod == "direct"
+
 	checker := updater.NewBackgroundChecker(svcCtx.Version, 6*time.Hour, func(result *updater.Result) {
 		// Notify frontend that an update is available
 		broadcast("update_available", map[string]any{
@@ -36,19 +39,25 @@ func startBackgroundUpdater(ctx context.Context, svcCtx *svc.ServiceContext) {
 			"latest_version":  result.LatestVersion,
 			"release_url":     result.ReleaseURL,
 			"published_at":    result.PublishedAt,
+			"install_method":  installMethod,
+			"can_auto_update": canAutoUpdate,
 		})
 
 		// Only auto-download for direct installs
-		installMethod := updater.DetectInstallMethod()
-		if installMethod != "direct" {
+		if !canAutoUpdate {
 			return
 		}
 
 		// Download with progress reporting
 		tmpPath, err := updater.Download(ctx, result.LatestVersion, func(downloaded, total int64) {
+			pct := int64(0)
+			if total > 0 {
+				pct = downloaded * 100 / total
+			}
 			broadcast("update_progress", map[string]any{
 				"downloaded": downloaded,
 				"total":      total,
+				"percent":    pct,
 			})
 		})
 		if err != nil {

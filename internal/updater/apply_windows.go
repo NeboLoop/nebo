@@ -37,6 +37,9 @@ func Apply(newBinaryPath string) error {
 	}
 	os.Remove(newBinaryPath)
 
+	// Release resources (lock files, connections) before spawning
+	runPreApply()
+
 	// Spawn new process and exit
 	newCmd := exec.Command(currentExe, os.Args[1:]...)
 	newCmd.Stdout = os.Stdout
