@@ -67,6 +67,7 @@ plan/
 nebo-cli
 nebo-*
 app/nebo
+/nebo
 
 # Plugin binaries (source is in extensions/tools/)
 extensions/plugins/tools/*
