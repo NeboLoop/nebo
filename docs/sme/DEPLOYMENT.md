@@ -404,19 +404,17 @@ s3://neboloop/releases/
     nebo-linux-arm64-headless     ← headless binary (no system deps)
     nebo-windows-amd64.exe        ← bare binary
     checksums.txt                 ← SHA256 of bare binaries only
-    Nebo-1.2.3-arm64.dmg          ← (manual upload only — CI doesn't push DMGs to CDN)
-    Nebo-1.2.3-amd64.dmg          ← (manual upload only)
-    Nebo-1.2.3-setup.exe          ← (manual upload only)
-    nebo_1.2.3_amd64.deb          ← (manual upload only)
-    nebo_1.2.3_arm64.deb          ← (manual upload only)
-    version.json                  ← (manual upload only — per-tag manifest)
+    Nebo-1.2.3-arm64.dmg          ← macOS installer (Apple Silicon, signed + notarized)
+    Nebo-1.2.3-amd64.dmg          ← macOS installer (Intel, signed + notarized)
+    Nebo-1.2.3-setup.exe          ← Windows NSIS installer (Authenticode signed)
+    nebo_1.2.3_amd64.deb          ← Linux .deb package
+    nebo_1.2.3_arm64.deb          ← Linux .deb package
+    version.json                  ← per-tag manifest (same format as root)
 ```
 
-**CI CDN upload scope:** The `release` job's CDN upload step only pushes files matching
-`artifacts/nebo-*` (bare binaries) + `checksums.txt`. DMGs (`Nebo-*`), installers, and .debs
-are uploaded to GitHub Releases but NOT to CDN by CI. These were manually uploaded for v0.1.9
-and need a CI fix to upload automatically (the glob `artifacts/nebo-*` doesn't match `Nebo-*.dmg`,
-`Nebo-*-setup.exe`, or `nebo_*.deb`).
+**CI CDN upload:** The `release` job uploads all artifacts matching `nebo-*` (bare binaries),
+`nebo_*` (.deb packages), `Nebo-*` (DMGs + installer), `checksums.txt`, and a per-tag
+`version.json` to CDN. All artifacts go to both CDN and GitHub Releases.
 
 CDN URLs (both resolve to the same bucket):
 - `https://cdn.neboloop.com/releases/` ← public CNAME (used by neboloop.com download links)

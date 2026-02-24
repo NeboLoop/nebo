@@ -452,13 +452,18 @@ jobs:
           aws s3 cp version.json s3://neboloop/releases/version.json \
             --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
 
-          # Upload binaries + checksums under releases/{tag}/
-          for f in artifacts/nebo-* artifacts/checksums.txt; do
+          # Upload all release assets under releases/{tag}/
+          # nebo-*: bare binaries, Nebo-*: DMGs + installer, nebo_*: .deb packages
+          for f in artifacts/nebo-* artifacts/nebo_* artifacts/Nebo-* artifacts/checksums.txt; do
             [ -f "$f" ] || continue
             name=$(basename "$f")
             aws s3 cp "$f" "s3://neboloop/releases/${TAG}/${name}" \
               --endpoint-url "$S3_ENDPOINT" --acl public-read
           done
+
+          # Upload per-tag version.json
+          aws s3 cp version.json "s3://neboloop/releases/${TAG}/version.json" \
+            --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
           echo "Uploaded release assets to CDN: releases/${TAG}/"
 
       - name: Create release
