@@ -495,6 +495,8 @@ Guidelines:
 4. When the task is complete, provide a clear summary of what was done
 5. Do not ask for clarification - make reasonable assumptions
 6. Do not engage in conversation - just complete the task
+7. When writing code, edit existing files instead of creating new ones. Never leave dead code behind.
+8. Never create summary documents, report files, or documentation unless the task specifically requires it
 
 When you have completed the task, provide your final response summarizing what was accomplished.`, task)
 }

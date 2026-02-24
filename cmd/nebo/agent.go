@@ -1919,11 +1919,33 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	if opts.SvcCtx != nil && opts.SvcCtx.MCPClient != nil {
 		mcpBridge := mcpbridge.New(registry, db.New(sqlDB), opts.SvcCtx.MCPClient)
 		state.mcpBridge = mcpBridge
+		
+		// Start health checker to detect and reconnect to stale MCP sessions
+		opts.SvcCtx.MCPClient.StartHealthChecker(ctx)
+		
+		// Initial sync
 		go func() {
 			if err := mcpBridge.SyncAll(ctx); err != nil {
 				devlog.Printf("[agent] MCP bridge sync: %v\n", err)
 			}
 		}()
+		
+		// Periodic re-sync every 15 minutes to handle any reconnection needs
+		go func() {
+			ticker := time.NewTicker(15 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := mcpBridge.SyncAll(ctx); err != nil {
+						devlog.Printf("[agent] MCP bridge periodic sync: %v\n", err)
+					}
+				}
+			}
+		}()
+		
 		defer mcpBridge.Close()
 	}
 

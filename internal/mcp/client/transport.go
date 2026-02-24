@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"sync"
 	"time"
@@ -37,7 +38,9 @@ func (t *AuthenticatedTransport) RoundTrip(req *http.Request) (*http.Response, e
 
 // sessionEntry holds a cached MCP client session for an integration.
 type sessionEntry struct {
-	session *mcp.ClientSession
+	session       *mcp.ClientSession
+	createdAt     time.Time
+	lastHeartbeat time.Time
 }
 
 // sessions caches live MCP client sessions per integration ID.
@@ -46,11 +49,44 @@ var (
 	sessionsMu sync.Mutex
 )
 
+// healthCheckInterval defines how often we verify session health
+const healthCheckInterval = 5 * time.Minute
+
+// maxSessionAge defines the maximum lifetime of a session before forcing reconnect
+const maxSessionAge = 30 * time.Minute
+
+// isSessionHealthy checks if a cached session is still alive and valid.
+// Returns true if the session should be reused, false if it needs reconnection.
+func isSessionHealthy(entry *sessionEntry) bool {
+	if entry == nil || entry.session == nil {
+		return false
+	}
+	
+	// Close session if it exceeded max age
+	if time.Since(entry.createdAt) > maxSessionAge {
+		return false
+	}
+	
+	// Close session if it hasn't been used in 10 minutes (server may have dropped it)
+	if time.Since(entry.lastHeartbeat) > 10*time.Minute {
+		return false
+	}
+	
+	return true
+}
+
 // getOrCreateSession returns a cached session or creates a new one.
 func (c *Client) getOrCreateSession(ctx context.Context, integrationID, serverURL, authType string) (*mcp.ClientSession, error) {
-	// Fast path: check cache
+	// Fast path: check cache and health
 	if entry, ok := sessions.Load(integrationID); ok {
-		return entry.(*sessionEntry).session, nil
+		se := entry.(*sessionEntry)
+		if isSessionHealthy(se) {
+			se.lastHeartbeat = time.Now()
+			return se.session, nil
+		}
+		// Session is stale, close and remove it
+		se.session.Close()
+		sessions.Delete(integrationID)
 	}
 
 	sessionsMu.Lock()
@@ -91,7 +127,12 @@ func (c *Client) getOrCreateSession(ctx context.Context, integrationID, serverUR
 		return nil, fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
-	sessions.Store(integrationID, &sessionEntry{session: session})
+	now := time.Now()
+	sessions.Store(integrationID, &sessionEntry{
+		session:       session,
+		createdAt:     now,
+		lastHeartbeat: now,
+	})
 	logging.Infof("MCP session established for integration %s at %s", integrationID, serverURL)
 
 	return session, nil
@@ -116,7 +157,66 @@ func (c *Client) CloseAllSessions() {
 	})
 }
 
+// StartHealthChecker starts a background goroutine that periodically validates
+// and reconnects MCP sessions. It checks every healthCheckInterval.
+// This helps detect stale connections and reconnect before they fail user operations.
+func (c *Client) StartHealthChecker(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(healthCheckInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.performHealthCheck(ctx)
+			}
+		}
+	}()
+	logging.Infof("MCP health checker started (interval: %v)", healthCheckInterval)
+}
+
+// performHealthCheck validates all cached sessions and reconnects stale ones.
+func (c *Client) performHealthCheck(ctx context.Context) {
+	sessions.Range(func(key, value any) bool {
+		integrationID := key.(string)
+		entry := value.(*sessionEntry)
+
+		// Skip if session is still healthy
+		if isSessionHealthy(entry) {
+			return true
+		}
+
+		// Close the stale session
+		entry.session.Close()
+		sessions.Delete(integrationID)
+
+		// Try to reconnect
+		integration, err := c.db.GetMCPIntegration(ctx, integrationID)
+		if err != nil {
+			logging.Warnf("Health check: failed to get integration %s: %v", integrationID, err)
+			return true
+		}
+
+		if !integration.ServerUrl.Valid || integration.ServerUrl.String == "" {
+			return true
+		}
+
+		// Attempt reconnect
+		_, err = c.getOrCreateSession(ctx, integrationID, integration.ServerUrl.String, integration.AuthType)
+		if err != nil {
+			logging.Warnf("Health check: failed to reconnect %s (%s): %v", integration.Name, integrationID, err)
+		} else {
+			logging.Infof("Health check: successfully reconnected %s (%s)", integration.Name, integrationID)
+		}
+
+		return true
+	})
+}
+
 // ListTools fetches available tools from an external MCP server via the SDK.
+// It implements automatic reconnection on failure.
 func (c *Client) ListTools(ctx context.Context, integrationID string) ([]*mcp.Tool, error) {
 	integration, err := c.db.GetMCPIntegration(ctx, integrationID)
 	if err != nil {
@@ -132,20 +232,24 @@ func (c *Client) ListTools(ctx context.Context, integrationID string) ([]*mcp.To
 	if err != nil {
 		// Clear stale session on connect failure
 		c.CloseSession(integrationID)
-		return nil, err
+		return nil, fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
 	result, err := session.ListTools(ctx, nil)
 	if err != nil {
-		// Session may be stale — close and retry once
+		// Session may be stale or broken — close and retry once
+		logging.Warnf("ListTools failed for %s, attempting reconnect: %v", integrationID, err)
 		c.CloseSession(integrationID)
+		
 		session, err = c.getOrCreateSession(ctx, integrationID, serverURL, integration.AuthType)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to reconnect to MCP server: %w", err)
 		}
+		
 		result, err = session.ListTools(ctx, nil)
 		if err != nil {
-			return nil, fmt.Errorf("failed to list tools: %w", err)
+			// Second attempt failed, mark as error
+			return nil, fmt.Errorf("failed to list tools after reconnect: %w", err)
 		}
 	}
 
@@ -153,6 +257,7 @@ func (c *Client) ListTools(ctx context.Context, integrationID string) ([]*mcp.To
 }
 
 // CallTool executes a tool on an external MCP server via the SDK.
+// It implements automatic reconnection on failure.
 func (c *Client) CallTool(ctx context.Context, integrationID, toolName string, input json.RawMessage) (*mcp.CallToolResult, error) {
 	integration, err := c.db.GetMCPIntegration(ctx, integrationID)
 	if err != nil {
@@ -164,12 +269,7 @@ func (c *Client) CallTool(ctx context.Context, integrationID, toolName string, i
 		return nil, fmt.Errorf("no server URL configured")
 	}
 
-	session, err := c.getOrCreateSession(ctx, integrationID, serverURL, integration.AuthType)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert json.RawMessage to map[string]any for the SDK
+	// Convert json.RawMessage to map[string]any for the SDK once
 	var args map[string]any
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &args); err != nil {
@@ -179,13 +279,51 @@ func (c *Client) CallTool(ctx context.Context, integrationID, toolName string, i
 
 	logging.Infof("Calling MCP tool %s on %s", toolName, serverURL)
 
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      toolName,
-		Arguments: args,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to call tool %s: %w", toolName, err)
-	}
+	// Retry with exponential backoff: never give up on transient errors
+	// Only stop on context cancellation or if explicitly disabled
+	base := 100 * time.Millisecond
+	maxDelay := 60 * time.Second
+	attempt := 0
 
-	return result, nil
+	for {
+		session, err := c.getOrCreateSession(ctx, integrationID, serverURL, integration.AuthType)
+		if err != nil {
+			// Connection error — close session and retry
+			c.CloseSession(integrationID)
+			logging.Warnf("Failed to get MCP session for %s, will retry: %v", integrationID, err)
+		} else {
+			// Got a session, try calling the tool
+			result, err := session.CallTool(ctx, &mcp.CallToolParams{
+				Name:      toolName,
+				Arguments: args,
+			})
+			if err == nil {
+				// Success
+				return result, nil
+			}
+			// Tool call failed — session may be stale, close it and retry
+			c.CloseSession(integrationID)
+			logging.Warnf("CallTool failed for %s on %s, will retry: %v", toolName, integrationID, err)
+		}
+
+		// Calculate next retry delay with exponential backoff
+		attempt++
+		delay := base * time.Duration(1<<uint(min(attempt, 9))) // 2^9 = 512, max ~50s before cap
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+		// Add jitter: ±25% of delay
+		jitter := time.Duration(rand.Int64N(int64(delay) / 2))
+		delay = delay - delay/4 + jitter
+
+		logging.Infof("Retrying CallTool for %s, attempt %d, delay %v", toolName, attempt, delay)
+
+		// Wait before retrying, respecting context cancellation
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("context cancelled while retrying tool call: %w", ctx.Err())
+		case <-time.After(delay):
+			// Continue to next attempt
+		}
+	}
 }

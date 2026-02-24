@@ -124,6 +124,10 @@ type Plugin struct {
 	// tokenRefresher is called on auth failure during reconnect to obtain a fresh JWT.
 	// Returns the new access token or an error if refresh is not possible.
 	tokenRefresher func(ctx context.Context) (string, error)
+
+	// Health tracking: lastMessageTime, lastPingSuccess
+	lastMessageTime time.Time
+	lastPingSuccess time.Time
 }
 
 // New creates a new NeboLoop plugin.
@@ -291,6 +295,8 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 	p.client = client
 	p.connected = true
 	p.authDead = false
+	p.lastMessageTime = time.Now()
+	p.lastPingSuccess = time.Now()
 
 	// Reset done channel for reconnect goroutine
 	select {
@@ -303,6 +309,10 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 	// The SDK closes its internal done channel on read errors (EOF, etc.)
 	// which makes Send() return "client closed". We poll for this.
 	go p.watchConnection(client)
+
+	// Start health checker to proactively detect and reconnect stale connections.
+	// This catches silent disconnects that the watchdog might miss.
+	go p.startHealthChecker()
 
 	// Wire install event handler (uses SDK's chain pattern)
 	client.OnInstall(func(evt neboloopsdk.InstallEvent) {
@@ -411,6 +421,11 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 // It dispatches A2A messages (tasks, task results, direct messages) to the comm handler,
 // and channel messages to the channel handler.
 func (p *Plugin) handleMessage(msg neboloopsdk.Message) {
+	// Update last message time for health checker
+	p.mu.Lock()
+	p.lastMessageTime = time.Now()
+	p.mu.Unlock()
+
 	commLog.Debug("[Comm:neboloop] ← RECV",
 		"stream", msg.Stream,
 		"msg_id", msg.MsgID,
@@ -838,6 +853,9 @@ func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 			cancel()
 
 			if err == nil {
+				p.mu.Lock()
+				p.lastPingSuccess = time.Now()
+				p.mu.Unlock()
 				continue // Send succeeded (or was queued) — connection alive
 			}
 
@@ -856,8 +874,65 @@ func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 	}
 }
 
+// startHealthChecker runs a background goroutine that periodically validates
+// the WebSocket connection and detects stale subscriptions. This is independent
+// of the watchdog and catches silent disconnects that happen between pings.
+// Checks every 30 seconds for: (1) no messages in 2 minutes, (2) no successful pings in 1 minute.
+func (p *Plugin) startHealthChecker() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	const (
+		messageTimeout = 2 * time.Minute  // No messages = reconnect
+		pingTimeout    = 1 * time.Minute  // No successful pings = reconnect
+	)
+
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			p.mu.RLock()
+			connected := p.connected
+			lastMsg := p.lastMessageTime
+			lastPing := p.lastPingSuccess
+			client := p.client
+			p.mu.RUnlock()
+
+			if !connected || client == nil {
+				continue // Not connected, skip health check
+			}
+
+			now := time.Now()
+
+			// Check for stale ping (last successful ping was too long ago)
+			if now.Sub(lastPing) > pingTimeout {
+				commLog.Warn("[Comm:neboloop] health check: no successful pings in 1 minute, marking stale")
+				p.mu.Lock()
+				p.connected = false
+				p.client = nil
+				p.mu.Unlock()
+				p.reconnect()
+				return
+			}
+
+			// Check for stale message activity (no inbound messages in 2 minutes)
+			if now.Sub(lastMsg) > messageTimeout {
+				commLog.Warn("[Comm:neboloop] health check: no messages in 2 minutes, marking stale")
+				p.mu.Lock()
+				p.connected = false
+				p.client = nil
+				p.mu.Unlock()
+				p.reconnect()
+				return
+			}
+		}
+	}
+}
+
 // reconnect attempts to re-establish the connection with exponential backoff.
 // Called when the watchdog detects a disconnect.
+// Never stops retrying unless credentials are permanently rejected or p.done closes.
 func (p *Plugin) reconnect() {
 	p.mu.RLock()
 	dead := p.authDead
@@ -872,8 +947,9 @@ func (p *Plugin) reconnect() {
 		return
 	}
 
+	// Exponential backoff: 100ms base, cap at 60s, never stop retrying
 	base := 100 * time.Millisecond
-	cap_ := 10 * time.Second
+	maxDelay := 60 * time.Second
 	attempt := 0
 
 	for {
@@ -883,7 +959,12 @@ func (p *Plugin) reconnect() {
 		default:
 		}
 
-		delay := min(base*time.Duration(1<<attempt), cap_)
+		// Calculate delay with exponential backoff capped at maxDelay
+		delay := base * time.Duration(1<<uint(min(attempt, 9))) // 2^9 = 512, so max ~50s before cap
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+		// Add jitter: ±25% of delay
 		jitter := time.Duration(rand.Int64N(int64(delay) / 2))
 		delay = delay - delay/4 + jitter
 		attempt++
@@ -929,12 +1010,14 @@ func (p *Plugin) reconnect() {
 				return
 			}
 			commLog.Warn("[Comm:neboloop] reconnect failed", "error", err, "attempt", attempt)
-			continue
+			continue // Always continue on transient errors, never give up
 		}
 
 		p.mu.Lock()
 		p.client = client
 		p.connected = true
+		p.lastMessageTime = time.Now()
+		p.lastPingSuccess = time.Now()
 		p.mu.Unlock()
 
 		fmt.Printf("[Comm:neboloop] Reconnected to %s\n", gateway)
@@ -999,8 +1082,30 @@ func (p *Plugin) reconnect() {
 			p.Register(context.Background(), agentID, card)
 		}
 
+		// Re-sync loop channel subscriptions after reconnect
+		// This ensures we're still subscribed to all channels we were in before
+		go func() {
+			time.Sleep(2 * time.Second)
+			metas := client.ChannelMetas()
+			channels := client.Channels()
+			commLog.Info("[Comm:neboloop] Channel subscriptions after reconnect",
+				"channel_metas_count", len(metas),
+				"channel_convs_count", len(channels),
+			)
+			for chID, meta := range metas {
+				commLog.Debug("[Comm:neboloop] Subscription verified after reconnect",
+					"channel_id", chID,
+					"channel_name", meta.ChannelName,
+					"loop_id", meta.LoopID,
+				)
+			}
+		}()
+
 		// Start new watchdog for the fresh connection
 		go p.watchConnection(client)
+
+		// Start new health checker for the fresh connection
+		go p.startHealthChecker()
 		return
 	}
 }
