@@ -3,6 +3,7 @@ package handler
 import (
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/neboloop/nebo/internal/httputil"
@@ -11,8 +12,10 @@ import (
 	"github.com/neboloop/nebo/internal/updater"
 )
 
-// UpdateApplyHandler triggers a pending auto-update. No client-supplied paths —
-// the pending binary path is tracked server-side in UpdateManager.
+// UpdateApplyHandler triggers an auto-update. If a binary is already staged,
+// it applies immediately. Otherwise it checks for an available update,
+// downloads, verifies, stages, and applies — so "Update Now" always works
+// regardless of whether the background downloader has finished.
 func UpdateApplyHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		um := svcCtx.UpdateManager()
@@ -25,12 +28,40 @@ func UpdateApplyHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 		}
 
 		pendingPath := um.PendingPath()
+
+		// No staged binary — try to download one now
 		if pendingPath == "" {
-			httputil.OkJSON(w, &types.UpdateApplyResponse{
-				Status:  "no_update",
-				Message: "no pending update",
-			})
-			return
+			result, err := updater.Check(r.Context(), svcCtx.Version)
+			if err != nil || result == nil || !result.Available {
+				httputil.OkJSON(w, &types.UpdateApplyResponse{
+					Status:  "no_update",
+					Message: "no update available",
+				})
+				return
+			}
+
+			tmpPath, err := updater.Download(r.Context(), result.LatestVersion, nil)
+			if err != nil {
+				log.Printf("[updater] on-demand download failed: %v", err)
+				httputil.OkJSON(w, &types.UpdateApplyResponse{
+					Status:  "error",
+					Message: "download failed",
+				})
+				return
+			}
+
+			if err := updater.VerifyChecksum(r.Context(), tmpPath, result.LatestVersion); err != nil {
+				os.Remove(tmpPath)
+				log.Printf("[updater] on-demand checksum failed: %v", err)
+				httputil.OkJSON(w, &types.UpdateApplyResponse{
+					Status:  "error",
+					Message: "verification failed",
+				})
+				return
+			}
+
+			um.SetPending(tmpPath, result.LatestVersion)
+			pendingPath = tmpPath
 		}
 
 		// Respond before restarting so the frontend gets the response

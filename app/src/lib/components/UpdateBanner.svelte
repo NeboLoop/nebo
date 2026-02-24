@@ -16,10 +16,20 @@
 
 	let isApplying = $state(false);
 
-	// Auto-apply as soon as the update is ready (downloaded + verified)
+	// Auto-apply as soon as the update is ready (downloaded + verified).
+	// No isApplying guard — if the user already clicked "Update Now" before
+	// the download finished, we need to re-trigger applyUpdate once the
+	// binary is actually staged.
 	$effect(() => {
-		if ($updateReady && !isApplying) {
+		if ($updateReady) {
 			handleApply();
+		}
+	});
+
+	// Reset applying state when an error arrives so the error UI is visible
+	$effect(() => {
+		if ($updateError) {
+			isApplying = false;
 		}
 	});
 
@@ -29,12 +39,7 @@
 
 	async function handleApply() {
 		isApplying = true;
-		const status = await applyUpdate();
-		// If no pending binary yet (download still in progress), stay in
-		// "applying" state — the $effect will auto-apply when updateReady fires.
-		if (status === 'no_update') {
-			return;
-		}
+		await applyUpdate();
 	}
 
 	function handleRetry() {
@@ -45,14 +50,8 @@
 
 {#if show}
 	<div class="alert alert-info shadow-lg mx-4 mt-2 mb-0 flex items-center gap-3 py-2 px-4 text-sm">
-		{#if isApplying}
-			<!-- Applying update / restarting -->
-			<span class="loading loading-spinner loading-sm shrink-0"></span>
-			<div class="flex-1 min-w-0">
-				Updating Nebo — this will only take a moment...
-			</div>
-		{:else if $downloadProgress}
-			<!-- Download in progress -->
+		{#if $downloadProgress}
+			<!-- Download in progress — always visible even if user clicked Update Now -->
 			<Download class="w-5 h-5 shrink-0 animate-pulse" />
 			<div class="flex-1 min-w-0 flex items-center gap-3">
 				<span>Downloading update...</span>
@@ -60,7 +59,7 @@
 				<span class="text-info-content/60 tabular-nums">{$downloadProgress.percent}%</span>
 			</div>
 		{:else if $updateError}
-			<!-- Download or verification failed -->
+			<!-- Download or verification failed — always visible -->
 			<ArrowUpCircle class="w-5 h-5 shrink-0" />
 			<div class="flex-1 min-w-0">
 				<span class="font-semibold">Update failed</span>
@@ -69,6 +68,12 @@
 			<button class="btn btn-sm btn-primary" onclick={handleRetry}>
 				Retry
 			</button>
+		{:else if isApplying}
+			<!-- Binary staged, applying + restarting -->
+			<span class="loading loading-spinner loading-sm shrink-0"></span>
+			<div class="flex-1 min-w-0">
+				Updating Nebo — this will only take a moment...
+			</div>
 		{:else if $updateInfo?.available}
 			<!-- Update available -->
 			<ArrowUpCircle class="w-5 h-5 shrink-0" />

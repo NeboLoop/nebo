@@ -368,7 +368,7 @@ xcrun notarytool store-credentials "nebo-notarize"
    - `dpkg -S` succeeds (Linux) → `"package_manager"`
    - Everything else → `"direct"` (can auto-update)
 3. Calls `updater.Check(ctx, svcCtx.Version)`:
-   - `GET https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/version.json` (5s timeout)
+   - `GET https://cdn.neboloop.com/releases/version.json` (5s timeout)
    - Parses `versionManifest`: `version`, `release_url`, `published_at`
    - Normalizes versions (strips "v"), compares semver (major.minor.patch)
    - "dev" builds always return `available: false`
@@ -379,12 +379,12 @@ xcrun notarytool store-credentials "nebo-notarize"
 
 1. `updater.Download(ctx, tagName, progressFn)`:
    - Asset name: `nebo-{GOOS}-{GOARCH}[.exe]`
-   - URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/{tag}/{asset}`
+   - URL: `https://cdn.neboloop.com/releases/{tag}/{asset}`
    - Streams to temp file in 32KB chunks with progress callbacks
    - 10-minute timeout
    - Sets chmod 0755 on Unix
 2. `updater.VerifyChecksum(ctx, binaryPath, tagName)`:
-   - Downloads `checksums.txt` from CDN: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/{tag}/checksums.txt` (30s timeout)
+   - Downloads `checksums.txt` from CDN: `https://cdn.neboloop.com/releases/{tag}/checksums.txt` (30s timeout)
    - 404 = skip verification (graceful for old releases)
    - Parses `{sha256}  {filename}` format
    - Computes SHA256 of downloaded binary, case-insensitive compare
@@ -416,9 +416,8 @@ s3://neboloop/releases/
 `nebo_*` (.deb packages), `Nebo-*` (DMGs + installer), `checksums.txt`, and a per-tag
 `version.json` to CDN. All artifacts go to both CDN and GitHub Releases.
 
-CDN URLs (both resolve to the same bucket):
-- `https://cdn.neboloop.com/releases/` ← public CNAME (used by neboloop.com download links)
-- `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/` ← raw DO Spaces CDN (used by in-app updater)
+CDN URL:
+- `https://cdn.neboloop.com/releases/` ← CNAME → `neboloop.nyc3.cdn.digitaloceanspaces.com` (used by website + in-app updater)
 
 `version.json` format:
 ```json
@@ -505,7 +504,7 @@ startBackgroundUpdater(ctx, svcCtx)
 ### 1. DigitalOcean Spaces CDN (primary for auto-update + downloads)
 
 - Public URL: `https://cdn.neboloop.com/releases/` (CNAME → DO Spaces CDN)
-- Raw URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/`
+- Raw URL: `https://cdn.neboloop.com/releases/`
 - Contains: `version.json` manifest + all binaries + DMGs + installers + .debs + checksums per tag
 - Used by: in-app updater (version checks + binary downloads) AND neboloop.com download links
 - No rate limits (unlike GitHub API's 60 req/hr unauthenticated)

@@ -21,7 +21,7 @@ import (
 
 const (
 	// CDN-hosted version manifest URL
-	releaseURL = "https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/version.json"
+	releaseURL = "https://cdn.neboloop.com/releases/version.json"
 	// HTTP timeout for the update check
 	timeout = 5 * time.Second
 )
@@ -183,7 +183,7 @@ func (b *BackgroundChecker) check(ctx context.Context) {
 }
 
 // releaseDownloadURL is the base URL for downloading release assets from the CDN.
-const releaseDownloadURL = "https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases"
+const releaseDownloadURL = "https://cdn.neboloop.com/releases"
 
 // DetectInstallMethod returns how Nebo was installed: "direct", "homebrew", or "package_manager".
 func DetectInstallMethod() string {
