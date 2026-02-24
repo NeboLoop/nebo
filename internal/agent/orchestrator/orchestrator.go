@@ -223,8 +223,11 @@ func (o *Orchestrator) Spawn(ctx context.Context, req *SpawnRequest) (*SubAgent,
 	go o.runAgent(agentCtx, agent, req, sessionKey)
 
 	// If wait requested, block until completion
+	// NOTE: Use Background context, not parent context. This decouples the wait from
+	// parent cancellation — we want to wait for the agent to finish even if the parent
+	// context is cancelled (e.g., user switches conversations, closes UI, etc.)
 	if req.Wait {
-		return o.waitForAgent(ctx, agentID)
+		return o.waitForAgent(context.Background(), agentID)
 	}
 
 	return agent, nil
