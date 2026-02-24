@@ -194,6 +194,48 @@ func Reload(_ context.Context, m *Manager, windowID string) error {
 	return nil
 }
 
+// Screenshot captures a screenshot of the native browser window.
+// Returns base64-encoded PNG data.
+func Screenshot(ctx context.Context, m *Manager, windowID string) (string, error) {
+	win, err := m.GetWindow(windowID)
+	if err != nil {
+		return "", err
+	}
+
+	// Use evaluate to capture screenshot via HTML5 Canvas API
+	reqID := newRequestID()
+	cbURL := m.CallbackURL()
+	js := screenshotJS(reqID, cbURL)
+
+	ch := collector.Register(reqID)
+	win.Handle.ExecJS(js)
+
+	timeout := 30 * time.Second
+	select {
+	case result := <-ch:
+		collector.Cleanup(reqID)
+		if result.Error != "" {
+			return "", fmt.Errorf("screenshot error: %s", result.Error)
+		}
+		
+		// Extract base64 data from result
+		var response struct {
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(result.Data, &response); err != nil {
+			return "", fmt.Errorf("failed to parse screenshot data: %v", err)
+		}
+		
+		return response.Data, nil
+	case <-time.After(timeout):
+		collector.Cleanup(reqID)
+		return "", fmt.Errorf("screenshot timeout")
+	case <-ctx.Done():
+		collector.Cleanup(reqID)
+		return "", ctx.Err()
+	}
+}
+
 // execJS is the core pattern: get window, generate JS with request ID, register callback, exec, wait.
 func execJS(ctx context.Context, m *Manager, windowID string, jsGen func(reqID, cbURL string) string, timeout time.Duration) (json.RawMessage, error) {
 	win, err := m.GetWindow(windowID)

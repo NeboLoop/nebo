@@ -33,10 +33,10 @@ func (m *mockHandle) Reload()                     {}
 func (m *mockHandle) Name() string                { return m.name }
 
 func TestManagerCreateWindow(t *testing.T) {
-	m := &Manager{windows: make(map[string]*Window)}
+	m := &Manager{windows: make(map[string]*Window), owners: make(map[string]map[string]bool)}
 
 	// No creator → error
-	_, err := m.CreateWindow("https://example.com", "Test")
+	_, err := m.CreateWindow("https://example.com", "Test", "")
 	if err == nil {
 		t.Fatal("expected error when creator is nil")
 	}
@@ -47,7 +47,7 @@ func TestManagerCreateWindow(t *testing.T) {
 	})
 
 	// Create window
-	win, err := m.CreateWindow("https://example.com", "Test Window")
+	win, err := m.CreateWindow("https://example.com", "Test Window", "")
 	if err != nil {
 		t.Fatalf("CreateWindow failed: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestManagerCreateWindow(t *testing.T) {
 }
 
 func TestManagerGetWindow(t *testing.T) {
-	m := &Manager{windows: make(map[string]*Window)}
+	m := &Manager{windows: make(map[string]*Window), owners: make(map[string]map[string]bool)}
 	m.SetCreator(func(opts WindowCreatorOptions) WindowHandle {
 		return newMockHandle(opts.Name)
 	})
@@ -78,8 +78,8 @@ func TestManagerGetWindow(t *testing.T) {
 	}
 
 	// Create two windows
-	win1, _ := m.CreateWindow("https://one.com", "One")
-	win2, _ := m.CreateWindow("https://two.com", "Two")
+	win1, _ := m.CreateWindow("https://one.com", "One", "")
+	win2, _ := m.CreateWindow("https://two.com", "Two", "")
 
 	// Get by ID
 	got, err := m.GetWindow(win1.ID)
@@ -107,13 +107,13 @@ func TestManagerGetWindow(t *testing.T) {
 }
 
 func TestManagerListAndClose(t *testing.T) {
-	m := &Manager{windows: make(map[string]*Window)}
+	m := &Manager{windows: make(map[string]*Window), owners: make(map[string]map[string]bool)}
 	m.SetCreator(func(opts WindowCreatorOptions) WindowHandle {
 		return newMockHandle(opts.Name)
 	})
 
-	win1, _ := m.CreateWindow("https://one.com", "One")
-	m.CreateWindow("https://two.com", "Two")
+	win1, _ := m.CreateWindow("https://one.com", "One", "")
+	m.CreateWindow("https://two.com", "Two", "")
 
 	if m.WindowCount() != 2 {
 		t.Fatalf("expected 2 windows, got %d", m.WindowCount())
@@ -151,7 +151,7 @@ func TestManagerListAndClose(t *testing.T) {
 }
 
 func TestManagerIsAvailable(t *testing.T) {
-	m := &Manager{windows: make(map[string]*Window)}
+	m := &Manager{windows: make(map[string]*Window), owners: make(map[string]map[string]bool)}
 
 	if m.IsAvailable() {
 		t.Error("expected not available when no creator")
@@ -166,13 +166,64 @@ func TestManagerIsAvailable(t *testing.T) {
 	}
 }
 
-func TestManagerDefaultTitle(t *testing.T) {
-	m := &Manager{windows: make(map[string]*Window)}
+func TestManagerCloseWindowsByOwner(t *testing.T) {
+	m := &Manager{windows: make(map[string]*Window), owners: make(map[string]map[string]bool)}
 	m.SetCreator(func(opts WindowCreatorOptions) WindowHandle {
 		return newMockHandle(opts.Name)
 	})
 
-	win, err := m.CreateWindow("https://example.com", "")
+	// Create windows with different owners
+	w1, _ := m.CreateWindow("https://one.com", "One", "session-a")
+	w2, _ := m.CreateWindow("https://two.com", "Two", "session-a")
+	w3, _ := m.CreateWindow("https://three.com", "Three", "session-b")
+	m.CreateWindow("https://four.com", "Four", "") // no owner
+
+	if m.WindowCount() != 4 {
+		t.Fatalf("expected 4 windows, got %d", m.WindowCount())
+	}
+
+	// Close session-a windows
+	closed := m.CloseWindowsByOwner("session-a")
+	if closed != 2 {
+		t.Fatalf("expected 2 closed, got %d", closed)
+	}
+	if m.WindowCount() != 2 {
+		t.Fatalf("expected 2 remaining, got %d", m.WindowCount())
+	}
+
+	// Verify handles were closed
+	if !w1.Handle.(*mockHandle).closed {
+		t.Error("w1 handle should be closed")
+	}
+	if !w2.Handle.(*mockHandle).closed {
+		t.Error("w2 handle should be closed")
+	}
+	if w3.Handle.(*mockHandle).closed {
+		t.Error("w3 handle should NOT be closed")
+	}
+
+	// Close nonexistent owner → 0
+	if m.CloseWindowsByOwner("nonexistent") != 0 {
+		t.Error("expected 0 for nonexistent owner")
+	}
+
+	// Close session-b
+	closed = m.CloseWindowsByOwner("session-b")
+	if closed != 1 {
+		t.Fatalf("expected 1 closed, got %d", closed)
+	}
+	if m.WindowCount() != 1 {
+		t.Fatalf("expected 1 remaining (unowned), got %d", m.WindowCount())
+	}
+}
+
+func TestManagerDefaultTitle(t *testing.T) {
+	m := &Manager{windows: make(map[string]*Window), owners: make(map[string]map[string]bool)}
+	m.SetCreator(func(opts WindowCreatorOptions) WindowHandle {
+		return newMockHandle(opts.Name)
+	})
+
+	win, err := m.CreateWindow("https://example.com", "", "")
 	if err != nil {
 		t.Fatalf("CreateWindow failed: %v", err)
 	}

@@ -795,7 +795,7 @@ func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInp
 		if url == "" {
 			url = "about:blank"
 		}
-		win, err := mgr.CreateWindow(url, "Nebo Browser")
+		win, err := mgr.CreateWindow(url, "Nebo Browser", GetSessionKey(ctx))
 		if err != nil {
 			return &ToolResult{Content: fmt.Sprintf("Failed to create window: %v", err), IsError: true}, nil
 		}
@@ -965,9 +965,27 @@ func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInp
 		return &ToolResult{Content: "Page reloaded"}, nil
 
 	case "screenshot":
-		return &ToolResult{
-			Content: "Screenshot not yet supported for native browser windows. Use snapshot to read the page structure, or evaluate to extract specific data.",
-		}, nil
+		base64Data, err := webview.Screenshot(ctx, mgr, in.TargetID)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Screenshot failed: %v", err), IsError: true}, nil
+		}
+		
+		// Save to file if output path provided, otherwise return base64
+		if in.Output != "" {
+			// Decode base64 and save
+			data := strings.TrimPrefix(base64Data, "data:image/png;base64,")
+			decoded, err := base64.StdEncoding.DecodeString(data)
+			if err != nil {
+				return &ToolResult{Content: fmt.Sprintf("Failed to decode screenshot: %v", err), IsError: true}, nil
+			}
+			if err := os.WriteFile(in.Output, decoded, 0644); err != nil {
+				return &ToolResult{Content: fmt.Sprintf("Failed to save screenshot: %v", err), IsError: true}, nil
+			}
+			return &ToolResult{Content: fmt.Sprintf("Screenshot saved to %s", in.Output)}, nil
+		}
+		
+		// Return base64 data
+		return &ToolResult{Content: base64Data}, nil
 
 	default:
 		return &ToolResult{
@@ -1364,7 +1382,7 @@ func (t *WebDomainTool) searchViaNativeBrowser(ctx context.Context, query string
 
 	searchURL := fmt.Sprintf("https://duckduckgo.com/?q=%s", url.QueryEscape(query))
 
-	win, err := mgr.CreateWindow(searchURL, "Nebo Search")
+	win, err := mgr.CreateWindow(searchURL, "Nebo Search", GetSessionKey(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create search window: %w", err)
 	}

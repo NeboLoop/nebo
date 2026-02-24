@@ -11,6 +11,7 @@ import (
 func TestNavigateCreatesWindowAndSetsURL(t *testing.T) {
 	m := &Manager{
 		windows:     make(map[string]*Window),
+		owners:      make(map[string]map[string]bool),
 		callbackURL: "http://localhost:27895/internal/webview/callback",
 	}
 
@@ -22,7 +23,7 @@ func TestNavigateCreatesWindowAndSetsURL(t *testing.T) {
 	})
 
 	// Create a window first
-	win, err := m.CreateWindow("about:blank", "Test")
+	win, err := m.CreateWindow("about:blank", "Test", "")
 	if err != nil {
 		t.Fatalf("CreateWindow failed: %v", err)
 	}
@@ -64,6 +65,7 @@ func TestNavigateCreatesWindowAndSetsURL(t *testing.T) {
 func TestSnapshotExecJSAndCallback(t *testing.T) {
 	m := &Manager{
 		windows:     make(map[string]*Window),
+		owners:      make(map[string]map[string]bool),
 		callbackURL: "http://localhost:27895/internal/webview/callback",
 	}
 
@@ -74,7 +76,7 @@ func TestSnapshotExecJSAndCallback(t *testing.T) {
 		return h
 	})
 
-	win, _ := m.CreateWindow("https://example.com", "Test")
+	win, _ := m.CreateWindow("https://example.com", "Test", "")
 
 	// Deliver result when ExecJS is called with the snapshot (not fingerprint)
 	go func() {
@@ -121,6 +123,7 @@ func TestSnapshotExecJSAndCallback(t *testing.T) {
 func TestActionsErrorOnNoWindows(t *testing.T) {
 	m := &Manager{
 		windows:     make(map[string]*Window),
+		owners:      make(map[string]map[string]bool),
 		callbackURL: "http://localhost:27895/internal/webview/callback",
 	}
 
@@ -143,12 +146,12 @@ func TestActionsErrorOnNoWindows(t *testing.T) {
 }
 
 func TestReloadCallsHandle(t *testing.T) {
-	m := &Manager{windows: make(map[string]*Window)}
+	m := &Manager{windows: make(map[string]*Window), owners: make(map[string]map[string]bool)}
 	m.SetCreator(func(opts WindowCreatorOptions) WindowHandle {
 		return newMockHandle(opts.Name)
 	})
 
-	win, _ := m.CreateWindow("https://example.com", "Test")
+	win, _ := m.CreateWindow("https://example.com", "Test", "")
 
 	err := Reload(context.Background(), m, win.ID)
 	if err != nil {

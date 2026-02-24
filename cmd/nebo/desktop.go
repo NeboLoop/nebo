@@ -665,12 +665,12 @@ const neboBootstrapJS = `
   window.__nebo_cb = function(d) {
     var m = "nebo:cb:" + JSON.stringify(d);
     try {
-      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.external) {
+      if (window._wails && window._wails.invoke) {
+        window._wails.invoke(m);
+      } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.external) {
         window.webkit.messageHandlers.external.postMessage(m);
       } else if (window.chrome && window.chrome.webview) {
         window.chrome.webview.postMessage(m);
-      } else if (window._wails && window._wails.invoke) {
-        window._wails.invoke(m);
       }
     } catch(e) {}
   };
@@ -679,7 +679,9 @@ const neboBootstrapJS = `
   // Use a short delay to let the Wails runtime attempt its own initialization first.
   setTimeout(function() {
     try {
-      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.external) {
+      if (window._wails && window._wails.invoke) {
+        window._wails.invoke("wails:runtime:ready");
+      } else if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.external) {
         window.webkit.messageHandlers.external.postMessage("wails:runtime:ready");
       } else if (window.chrome && window.chrome.webview) {
         window.chrome.webview.postMessage("wails:runtime:ready");

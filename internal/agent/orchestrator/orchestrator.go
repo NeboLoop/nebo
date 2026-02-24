@@ -12,6 +12,7 @@ import (
 	"github.com/neboloop/nebo/internal/agent/config"
 	"github.com/neboloop/nebo/internal/agent/recovery"
 	"github.com/neboloop/nebo/internal/agent/session"
+	"github.com/neboloop/nebo/internal/webview"
 )
 
 // ToolExecutor is an interface for executing tools (avoids circular import)
@@ -276,6 +277,11 @@ func (o *Orchestrator) runAgent(ctx context.Context, agent *SubAgent, req *Spawn
 	}
 
 	defer func() {
+		// Close any native browser windows opened by this sub-agent
+		if closed := webview.GetManager().CloseWindowsByOwner(sessionKey); closed > 0 {
+			fmt.Printf("[Orchestrator] Cleaned up %d browser window(s) for sub-agent %s\n", closed, agent.ID)
+		}
+
 		o.mu.Lock()
 		agent.CompletedAt = time.Now()
 		if agent.Status == StatusRunning {
@@ -758,3 +764,4 @@ func (o *Orchestrator) RecoverAgents(ctx context.Context) (int, error) {
 	fmt.Printf("[Recovery] Recovered %d sub-agents out of %d candidates\n", recovered, len(tasks))
 	return recovered, nil
 }
+

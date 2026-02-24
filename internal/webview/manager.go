@@ -35,6 +35,7 @@ type Window struct {
 	ID          string
 	Title       string
 	URL         string
+	Owner       string // Session key that created this window (for cleanup)
 	CreatedAt   time.Time
 	Handle      WindowHandle
 	Fingerprint *Fingerprint
@@ -46,6 +47,7 @@ type Manager struct {
 
 	creator     func(opts WindowCreatorOptions) WindowHandle
 	windows     map[string]*Window
+	owners      map[string]map[string]bool // owner -> set of window IDs
 	callbackURL string // e.g. "http://localhost:27895/internal/webview/callback"
 }
 
@@ -59,6 +61,7 @@ func GetManager() *Manager {
 	managerOnce.Do(func() {
 		mgr = &Manager{
 			windows: make(map[string]*Window),
+			owners:  make(map[string]map[string]bool),
 		}
 	})
 	return mgr
@@ -93,7 +96,9 @@ func (m *Manager) IsAvailable() bool {
 }
 
 // CreateWindow creates a new native browser window.
-func (m *Manager) CreateWindow(url, title string) (*Window, error) {
+// The owner parameter associates this window with a session key for cleanup.
+// Pass empty string if no ownership tracking is needed.
+func (m *Manager) CreateWindow(url, title, owner string) (*Window, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -128,12 +133,22 @@ func (m *Manager) CreateWindow(url, title string) (*Window, error) {
 		ID:          id,
 		Title:       title,
 		URL:         url,
+		Owner:       owner,
 		CreatedAt:   time.Now(),
 		Handle:      handle,
 		Fingerprint: fp,
 	}
 
 	m.windows[id] = win
+
+	// Track ownership for cleanup
+	if owner != "" {
+		if m.owners[owner] == nil {
+			m.owners[owner] = make(map[string]bool)
+		}
+		m.owners[owner][id] = true
+	}
+
 	return win, nil
 }
 
@@ -187,7 +202,41 @@ func (m *Manager) CloseWindow(id string) error {
 
 	win.Handle.Close()
 	delete(m.windows, id)
+
+	// Clean up ownership tracking
+	if win.Owner != "" {
+		if ownerSet, ok := m.owners[win.Owner]; ok {
+			delete(ownerSet, id)
+			if len(ownerSet) == 0 {
+				delete(m.owners, win.Owner)
+			}
+		}
+	}
+
 	return nil
+}
+
+// CloseWindowsByOwner closes all windows belonging to a specific owner (session key).
+// Returns the number of windows closed.
+func (m *Manager) CloseWindowsByOwner(owner string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	windowIDs, ok := m.owners[owner]
+	if !ok {
+		return 0
+	}
+
+	closed := 0
+	for id := range windowIDs {
+		if win, ok := m.windows[id]; ok {
+			win.Handle.Close()
+			delete(m.windows, id)
+			closed++
+		}
+	}
+	delete(m.owners, owner)
+	return closed
 }
 
 // CloseAll closes all open windows.

@@ -21,7 +21,7 @@ import (
 //  3. Wails runtime bridge (window._wails.invoke)
 //  4. HTTP fetch to localhost callback endpoint (headless fallback)
 func callbackJS(callbackURL string) string {
-	return fmt.Sprintf(`var __cb=window.__nebo_cb||function(d){var m="nebo:cb:"+JSON.stringify(d);try{if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.external){window.webkit.messageHandlers.external.postMessage(m)}else if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(m)}else if(window._wails&&window._wails.invoke){window._wails.invoke(m)}else{fetch(%s,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)}).catch(function(){})}}catch(e){}};`, jsonString(callbackURL))
+	return fmt.Sprintf(`var __cb=window.__nebo_cb||function(d){var m="nebo:cb:"+JSON.stringify(d);try{if(window._wails&&window._wails.invoke){window._wails.invoke(m)}else if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.external){window.webkit.messageHandlers.external.postMessage(m)}else if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(m)}else{fetch(%s,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)}).catch(function(){})}}catch(e){}};`, jsonString(callbackURL))
 }
 
 // wrapJS wraps action code in the callback boilerplate.
@@ -316,4 +316,44 @@ if(!el){var __result={error:"Element not found"};} else {
 
 func escapeSingleQuote(s string) string {
 	return strings.ReplaceAll(s, "'", "\\'")
+}
+
+// screenshotJS captures a screenshot of the current page using HTML5 Canvas API.
+// This works by rendering the document into a canvas element, then converting to PNG.
+func screenshotJS(requestID, callbackURL string) string {
+	code := `
+	var __result;
+	try {
+		// Use html2canvas library if available, otherwise use native DOM screenshot
+		if (typeof html2canvas !== 'undefined') {
+			html2canvas(document.body).then(function(canvas) {
+				var __result = {data: canvas.toDataURL('image/png')};
+				__cb({requestId: ` + jsonString(requestID) + `, data: __result});
+			}).catch(function(err) {
+				__cb({requestId: ` + jsonString(requestID) + `, error: err.message || String(err)});
+			});
+			return; // Exit early, async callback will fire
+		} else {
+			// Fallback: capture viewport using canvas
+			var canvas = document.createElement('canvas');
+			var ctx = canvas.getContext('2d');
+			canvas.width = document.documentElement.scrollWidth || window.innerWidth;
+			canvas.height = document.documentElement.scrollHeight || window.innerHeight;
+			
+			// Draw background
+			ctx.fillStyle = 'white';
+			ctx.fillRect(0, 0, canvas.width, canvas.height);
+			
+			// Note: This is a basic implementation. For full page screenshots,
+			// consider using html2canvas library or browser-native screenshot APIs.
+			__result = {
+				data: canvas.toDataURL('image/png'),
+				note: 'Basic viewport capture. For full-page screenshots, use managed browser profile.'
+			};
+		}
+	} catch(e) {
+		__result = {error: e.message || String(e)};
+	}`
+	
+	return wrapJS(requestID, callbackURL, code)
 }

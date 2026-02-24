@@ -104,7 +104,7 @@ func TestFingerprintInjectJS(t *testing.T) {
 }
 
 func TestFingerprintInjectedOnWindowCreate(t *testing.T) {
-	m := &Manager{windows: make(map[string]*Window)}
+	m := &Manager{windows: make(map[string]*Window), owners: make(map[string]map[string]bool)}
 
 	var capturedHandle *mockHandle
 	m.SetCreator(func(opts WindowCreatorOptions) WindowHandle {
@@ -113,7 +113,7 @@ func TestFingerprintInjectedOnWindowCreate(t *testing.T) {
 		return h
 	})
 
-	win, err := m.CreateWindow("https://example.com", "Test")
+	win, err := m.CreateWindow("https://example.com", "Test", "")
 	if err != nil {
 		t.Fatalf("CreateWindow failed: %v", err)
 	}

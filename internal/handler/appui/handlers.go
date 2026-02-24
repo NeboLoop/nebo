@@ -158,7 +158,7 @@ func OpenAppUIHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			}
 
 			absURL := fmt.Sprintf("http://localhost:%d%s", svcCtx.Config.Port, uiURL)
-			_, err := mgr.CreateWindow(absURL, title)
+			_, err := mgr.CreateWindow(absURL, title, "")
 			if err != nil {
 				httputil.ErrorWithCode(w, http.StatusInternalServerError, err.Error())
 				return

@@ -219,17 +219,27 @@ func (t *MenubarTool) listStatusItems() (string, error) {
 	script := `
 		tell application "System Events"
 			set statusItems to ""
-			set menuExtras to menu bar items of menu bar 2 of process "SystemUIServer"
+			
+			-- Try Control Center process first (modern macOS)
+			set menuExtras to {}
+			try
+				set menuExtras to menu bar items of menu bar 1 of process "ControlCenter"
+			on error
+				-- Fallback to SystemUIServer for older macOS versions
+				try
+					set menuExtras to menu bar items of menu bar 2 of process "SystemUIServer"
+				end try
+			end try
 
 			set idx to 1
-			repeat with item in menuExtras
+			repeat with barItem in menuExtras
 				set itemName to ""
 				try
-					set itemName to description of item
+					set itemName to description of barItem
 				end try
 				if itemName is "" then
 					try
-						set itemName to title of item
+						set itemName to title of barItem
 					end try
 				end if
 				if itemName is "" then
@@ -261,7 +271,16 @@ func (t *MenubarTool) clickStatusItem(index int) (string, error) {
 
 	script := fmt.Sprintf(`
 		tell application "System Events"
-			set menuExtras to menu bar items of menu bar 2 of process "SystemUIServer"
+			-- Try Control Center process first (modern macOS)
+			set menuExtras to {}
+			try
+				set menuExtras to menu bar items of menu bar 1 of process "ControlCenter"
+			on error
+				-- Fallback to SystemUIServer for older macOS versions
+				try
+					set menuExtras to menu bar items of menu bar 2 of process "SystemUIServer"
+				end try
+			end try
 
 			if %d > (count of menuExtras) then
 				return "Index %d out of range (only " & (count of menuExtras) & " status items)"

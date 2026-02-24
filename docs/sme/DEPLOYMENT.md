@@ -303,10 +303,13 @@ xcrun notarytool store-credentials "nebo-notarize"
 
 ### Windows
 
-**Authenticode via Azure Trusted Signing:**
+**Authenticode via Azure Trusted Signing (CONFIGURED):**
 - Uses `azure/trusted-signing-action@v1` in CI
-- Requires: tenant ID, client ID, client secret, endpoint, account, profile
-- Signs ALL `.exe` files in workspace (depth 2): both raw binary and installer
+- **Signing account:** `nebosigning` (East US region)
+- **Certificate profile:** `neboloop-public` (Public Trust, linked to NeboLoop LLC identity, expires 5/22/2028)
+- **Endpoint:** `https://eus.codesigning.azure.net/`
+- **Service principal:** `neboloop-ci-signing` (App Registration with "Artifact Signing Certificate Profile Signer" role)
+- Signs ALL `.exe` files in workspace (depth 2): both raw binary and NSIS installer
 - Digest: SHA256, RFC3161 timestamp: `http://timestamp.acs.microsoft.com`
 - Gated on: `vars.AZURE_SIGNING_ENABLED == 'true'`
 
@@ -352,7 +355,7 @@ xcrun notarytool store-credentials "nebo-notarize"
 │    VerifyChecksum() → SHA256 against checksums.txt from CDN     │
 │    Apply()          → Platform-specific binary replacement      │
 │    DetectInstallMethod() → "direct" | "homebrew" | "package_m.."│
-│    BackgroundChecker     → Periodic poll (NOT currently active)  │
+│    BackgroundChecker     → 6h periodic poll (ACTIVE)             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -393,17 +396,31 @@ xcrun notarytool store-credentials "nebo-notarize"
 s3://neboloop/releases/
   version.json                    ← latest version pointer (updated each release)
   v1.2.3/
-    nebo-darwin-arm64
-    nebo-darwin-amd64
-    nebo-linux-amd64
-    nebo-linux-arm64
-    nebo-linux-amd64-headless
-    nebo-linux-arm64-headless
-    nebo-windows-amd64.exe
-    checksums.txt
+    nebo-darwin-arm64             ← bare binary (macOS Apple Silicon)
+    nebo-darwin-amd64             ← bare binary (macOS Intel)
+    nebo-linux-amd64              ← desktop binary (requires GTK/WebKit)
+    nebo-linux-arm64              ← desktop binary (requires GTK/WebKit)
+    nebo-linux-amd64-headless     ← headless binary (no system deps)
+    nebo-linux-arm64-headless     ← headless binary (no system deps)
+    nebo-windows-amd64.exe        ← bare binary
+    checksums.txt                 ← SHA256 of bare binaries only
+    Nebo-1.2.3-arm64.dmg          ← (manual upload only — CI doesn't push DMGs to CDN)
+    Nebo-1.2.3-amd64.dmg          ← (manual upload only)
+    Nebo-1.2.3-setup.exe          ← (manual upload only)
+    nebo_1.2.3_amd64.deb          ← (manual upload only)
+    nebo_1.2.3_arm64.deb          ← (manual upload only)
+    version.json                  ← (manual upload only — per-tag manifest)
 ```
 
-CDN URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/`
+**CI CDN upload scope:** The `release` job's CDN upload step only pushes files matching
+`artifacts/nebo-*` (bare binaries) + `checksums.txt`. DMGs (`Nebo-*`), installers, and .debs
+are uploaded to GitHub Releases but NOT to CDN by CI. These were manually uploaded for v0.1.9
+and need a CI fix to upload automatically (the glob `artifacts/nebo-*` doesn't match `Nebo-*.dmg`,
+`Nebo-*-setup.exe`, or `nebo_*.deb`).
+
+CDN URLs (both resolve to the same bucket):
+- `https://cdn.neboloop.com/releases/` ← public CNAME (used by neboloop.com download links)
+- `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/` ← raw DO Spaces CDN (used by in-app updater)
 
 `version.json` format:
 ```json
@@ -454,22 +471,28 @@ CDN URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/`
 - States: notification-only (package manager) → downloading (progress bar) → ready ("Restart to Update" button) → error
 - Package manager installs show: `brew upgrade nebo` or `sudo apt upgrade nebo`
 
-### BackgroundChecker (defined but NOT currently active)
+### BackgroundChecker (ACTIVE)
 
-The `BackgroundChecker` type exists in `updater.go` but is **not instantiated** anywhere in the
-current codebase. Updates are triggered manually via:
-- Desktop system tray "Check for Updates" button
-- Frontend calling `GET /api/v1/update/check`
+The `BackgroundChecker` is wired in `cmd/nebo/updates.go` and started from both `root.go`
+(headless) and `desktop.go` (desktop). It runs a 6-hour poll with a 30-second initial delay.
+
+**Flow:**
+1. `startBackgroundUpdater(ctx, svcCtx)` creates a broadcast function that type-asserts
+   `svcCtx.ClientHub()` to `*realtime.Hub` and sends WebSocket events to all browser clients.
+2. On update found: broadcasts `update_available` event.
+3. For `"direct"` installs only: auto-downloads with `update_progress` events, verifies
+   checksum, stages via `UpdateMgr.SetPending()`, broadcasts `update_ready`.
+4. For homebrew/package_manager: only sends `update_available` (no auto-download).
+5. On any error: broadcasts `update_error`.
+
+The frontend already handles all 4 events via `+layout.svelte` → `update.ts` stores → `UpdateBanner.svelte`.
 
 ```go
-// Available for future use:
-checker := updater.NewBackgroundChecker(version, 6*time.Hour, notifyFn)
-go checker.Run(ctx)
-// Initial check: 30s after boot. Then every interval. Deduplicates per version.
+// Wired in cmd/nebo/updates.go, called from root.go and desktop.go:
+startBackgroundUpdater(ctx, svcCtx)
 ```
 
 ### Known Limitations
-- **No background checking active** — updates are manual only
 - **In-memory pending state** — `UpdateMgr` pending path lost on restart
 - **No delta updates** — always downloads full binary
 - **No staged rollout** — all releases immediately available
@@ -481,11 +504,12 @@ go checker.Run(ctx)
 
 ## Distribution Channels
 
-### 1. DigitalOcean Spaces CDN (primary for auto-update)
+### 1. DigitalOcean Spaces CDN (primary for auto-update + downloads)
 
-- URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/`
-- Contains: `version.json` manifest + all binaries + checksums per tag
-- Used by in-app updater for both version checks and binary downloads
+- Public URL: `https://cdn.neboloop.com/releases/` (CNAME → DO Spaces CDN)
+- Raw URL: `https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/`
+- Contains: `version.json` manifest + all binaries + DMGs + installers + .debs + checksums per tag
+- Used by: in-app updater (version checks + binary downloads) AND neboloop.com download links
 - No rate limits (unlike GitHub API's 60 req/hr unauthenticated)
 - Populated by CI `release` job via `aws s3 cp --endpoint-url`
 
@@ -610,6 +634,7 @@ make docker-run     # docker run -p 27895:27895 --env-file .env nebo
 | `cmd/nebo/root.go` | Cobra root command, server + agent startup, lock system |
 | `cmd/nebo/desktop.go` | Wails v3 desktop mode (build tag: desktop) |
 | `cmd/nebo/desktop_stub.go` | Headless fallback (build tag: !desktop) |
+| `cmd/nebo/updates.go` | BackgroundChecker wiring, broadcast helper |
 | `cmd/nebo/agent.go` | Agent startup, lane wiring, comm plugin |
 | `cmd/nebo/vars.go` | `AppVersion` variable |
 
@@ -640,10 +665,10 @@ make docker-run     # docker run -p 27895:27895 --env-file .env nebo
 | Variable | Purpose | Values |
 |----------|---------|--------|
 | `HAS_TAP_TOKEN` | Gate Homebrew/APT update jobs | `"true"` to enable |
-| `AZURE_SIGNING_ENABLED` | Gate Windows code signing | `"true"` to enable |
-| `AZURE_SIGNING_ENDPOINT` | Azure Trusted Signing endpoint URL | URL |
-| `AZURE_SIGNING_ACCOUNT` | Azure signing account name | string |
-| `AZURE_SIGNING_PROFILE` | Code signing certificate profile | string |
+| `AZURE_SIGNING_ENABLED` | Gate Windows code signing | `"true"` (enabled) |
+| `AZURE_SIGNING_ENDPOINT` | Azure Trusted Signing endpoint URL | `https://eus.codesigning.azure.net/` |
+| `AZURE_SIGNING_ACCOUNT` | Azure signing account name | `nebosigning` |
+| `AZURE_SIGNING_PROFILE` | Code signing certificate profile | `neboloop-public` |
 
 ### Local Makefile Variables
 
@@ -720,10 +745,10 @@ curl http://localhost:27895/api/v1/update/check | jq .
 # install_method: "homebrew" or "package_manager" → shows manual instructions
 
 # Check CDN version manifest directly:
-curl -s https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/version.json | jq .
+curl -s https://cdn.neboloop.com/releases/version.json | jq .
 
 # Check checksums on CDN:
-curl -sL https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/v1.2.3/checksums.txt
+curl -sL https://cdn.neboloop.com/releases/v1.2.3/checksums.txt
 
 # Fallback: check GitHub API directly:
 curl -s https://api.github.com/repos/neboloop/nebo/releases/latest | jq '{tag_name, published_at}'
@@ -737,12 +762,16 @@ doctl spaces create neboloop --region nyc3
 doctl compute cdn create neboloop.nyc3.digitaloceanspaces.com --ttl 3600
 doctl spaces keys create --name nebo-ci
 
-# 2. Add GitHub repo secrets
+# 2. Configure CNAME for cdn.neboloop.com
+# In DNS: cdn.neboloop.com → CNAME → neboloop.nyc3.cdn.digitaloceanspaces.com
+# In DO Spaces CDN settings: add cdn.neboloop.com as custom domain + enable Let's Encrypt SSL
+
+# 3. Add GitHub repo secrets
 gh secret set DO_SPACES_ACCESS_KEY    # paste access key
 gh secret set DO_SPACES_SECRET_KEY    # paste secret key
 
-# 3. Verify after first release
-curl https://neboloop.nyc3.cdn.digitaloceanspaces.com/releases/version.json
+# 4. Verify after first release
+curl https://cdn.neboloop.com/releases/version.json
 ```
 
 ### Rollback a Bad Release
