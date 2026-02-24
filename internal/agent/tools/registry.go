@@ -431,6 +431,8 @@ func toolCorrection(name string) string {
 		return "INSTEAD USE: shell(resource: \"bash\", action: \"exec\", command: \"...\")"
 	case "apps", "application", "applications":
 		return "INSTEAD USE: app(action: \"list\") or app(action: \"launch\", name: \"AppName\")"
+	case "devtools", "dev_tools", "browser_devtools":
+		return "INSTEAD USE: web(resource: \"devtools\", action: \"console\") or web(resource: \"devtools\", action: \"source\")"
 	default:
 		return "Check your available tools and use the correct name."
 	}

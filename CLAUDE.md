@@ -489,7 +489,7 @@ All external communication (DMs, loop channels, Telegram/Discord/Slack bridges) 
 
 - **Gateway:** `wss://comms.neboloop.com/ws` — WebSocket transport
 - **Auth:** `bot_id` + OAuth JWT → CONNECT frame → AUTH_OK
-- **Wire format:** 47-byte binary header + JSON payloads (see `docs/COMMS.md`)
+- **Wire format:** 47-byte binary header + JSON payloads (see `docs/sme/COMMS.md`)
 - **SDK:** `internal/neboloop/sdk/client.go` — WebSocket client with auto-reconnect
 - **Plugin:** `internal/agent/comm/neboloop/plugin.go` — wraps SDK, implements CommPlugin interface
 - **Bot ID:** Immutable UUID generated on first startup, stored in `plugin_settings` table

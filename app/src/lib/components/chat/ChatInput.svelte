@@ -19,6 +19,7 @@
 		onSend: () => void;
 		onCancel?: () => void;
 		onCancelQueued?: (id: string) => void;
+		onRecallQueue?: () => string | null;
 		onNewSession?: () => void;
 		onToggleVoice?: () => void;
 	}
@@ -35,6 +36,7 @@
 		onSend,
 		onCancel,
 		onCancelQueued,
+		onRecallQueue,
 		onNewSession,
 		onToggleVoice
 	}: Props = $props();
@@ -47,6 +49,16 @@
 			e.preventDefault();
 			if (value.trim()) {
 				onSend();
+			}
+		}
+		// Up arrow at cursor position 0: recall last queued message for editing
+		if (e.key === 'ArrowUp' && !e.shiftKey && onRecallQueue) {
+			if (textareaElement && textareaElement.selectionStart === 0) {
+				const recalled = onRecallQueue();
+				if (recalled != null) {
+					e.preventDefault();
+					value = recalled;
+				}
 			}
 		}
 	}

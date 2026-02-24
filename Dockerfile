@@ -72,6 +72,7 @@ RUN go mod download
 COPY *.go ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY extensions/ ./extensions/
 COPY app/ ./app/
 COPY etc/ ./etc/
 

@@ -170,6 +170,18 @@ func LaunchChrome(config *ResolvedConfig, profile *ResolvedProfile) (*RunningChr
 
 	cmd := exec.Command(exe.Path, args...)
 	cmd.Env = append(os.Environ(), "HOME="+os.Getenv("HOME"))
+	
+	// Capture Chrome output for debugging
+	stderrPath := filepath.Join(os.TempDir(), fmt.Sprintf("chrome-stderr-%d.log", time.Now().UnixNano()))
+	stderrFile, err := os.Create(stderrPath)
+	if err == nil {
+		defer stderrFile.Close()
+		cmd.Stderr = stderrFile
+		fmt.Fprintf(os.Stderr, "Chrome stderr redirected to %s\n", stderrPath)
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: could not open stderr file: %v\n", err)
+	}
+	
 	setChromeProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
@@ -192,15 +204,22 @@ func LaunchChrome(config *ResolvedConfig, profile *ResolvedProfile) (*RunningChr
 	// Wait for CDP to be ready
 	cdpURL := fmt.Sprintf("http://127.0.0.1:%d", cdpPort)
 	deadline := time.Now().Add(15 * time.Second)
+	attempts := 0
 	for time.Now().Before(deadline) {
+		attempts++
 		if IsChromeReachable(cdpURL, 500*time.Millisecond) {
+			fmt.Fprintf(os.Stderr, "Chrome CDP ready on port %d after %d attempts\n", cdpPort, attempts)
 			return running, nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 
+	// Check if process is still alive
+	alive := cmd.ProcessState == nil || !cmd.ProcessState.Exited()
+	fmt.Fprintf(os.Stderr, "Chrome CDP timeout on port %d, process alive: %v\n", cdpPort, alive)
+	
 	_ = cmd.Process.Kill()
-	return nil, fmt.Errorf("Chrome CDP did not start on port %d within 15s", cdpPort)
+	return nil, fmt.Errorf("Chrome CDP did not start on port %d within 15s (process alive: %v)", cdpPort, alive)
 }
 
 // StopChrome stops a running Chrome instance and all its child processes.
@@ -236,6 +255,7 @@ func buildChromeArgs(userDataDir string, cdpPort int, config *ResolvedConfig) []
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-sync",
+		"--disable-breakpad",
 		"--disable-background-networking",
 		"--disable-component-update",
 		"--disable-features=Translate,MediaRouter",

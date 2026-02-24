@@ -55,6 +55,12 @@ type WebDomainInput struct {
 	Timeout  int    `json:"timeout,omitempty"`  // Action timeout in seconds
 	Ref      string `json:"ref,omitempty"`      // Element ref from snapshot (e.g., "e1", "e5")
 	TargetID string `json:"target_id,omitempty"` // Page/tab ID for multi-tab control
+
+	// Devtools fields
+	Level       string `json:"level,omitempty"`        // Console message level filter (log, warn, error, info, debug)
+	Clear       bool   `json:"clear,omitempty"`        // Clear data after reading
+	Key         string `json:"key,omitempty"`          // Storage key for targeted lookup
+	StorageType string `json:"storage_type,omitempty"` // "local", "session", or "cookies"
 }
 
 // WebDomainConfig configures the web domain tool.
@@ -89,7 +95,7 @@ func (t *WebDomainTool) Name() string   { return "web" }
 func (t *WebDomainTool) Domain() string { return "web" }
 
 func (t *WebDomainTool) Resources() []string {
-	return []string{"http", "search", "browser"}
+	return []string{"http", "search", "browser", "devtools"}
 }
 
 func (t *WebDomainTool) ActionsFor(resource string) []string {
@@ -105,6 +111,8 @@ func (t *WebDomainTool) ActionsFor(resource string) []string {
 			"hover", "select", "back", "forward", "reload",
 			"status", "launch", "close", "list_pages",
 		}
+	case "devtools":
+		return []string{"console", "source", "storage", "dom", "cookies", "performance"}
 	default:
 		return nil
 	}
@@ -143,6 +151,11 @@ func (t *WebDomainTool) schemaConfig() DomainSchemaConfig {
 				},
 				Description: "Full browser automation with lifecycle control",
 			},
+			"devtools": {
+				Name:        "devtools",
+				Actions:     []string{"console", "source", "storage", "dom", "cookies", "performance"},
+				Description: "Browser devtools introspection: console output, page source, storage, DOM inspection, cookies, and performance metrics",
+			},
 		},
 		Fields: []FieldConfig{
 			{Name: "url", Type: "string", Description: "URL for fetch or navigate"},
@@ -161,6 +174,10 @@ func (t *WebDomainTool) schemaConfig() DomainSchemaConfig {
 			{Name: "timeout", Type: "integer", Description: "Action timeout in seconds (default: 30)"},
 			{Name: "target_id", Type: "string", Description: "Page/tab ID for multi-tab control (use list_pages to see available)"},
 			{Name: "offset", Type: "integer", Description: "Chunk offset (0-based) for paginating large fetch/text responses"},
+			{Name: "level", Type: "string", Description: "Console message level filter (for devtools/console)", Enum: []string{"log", "warn", "error", "info", "debug"}},
+			{Name: "clear", Type: "boolean", Description: "Clear data after reading (for devtools/console, devtools/storage, devtools/cookies)"},
+			{Name: "key", Type: "string", Description: "Storage key for targeted lookup (for devtools/storage)"},
+			{Name: "storage_type", Type: "string", Description: "Storage type (for devtools/storage)", Enum: []string{"local", "session", "cookies"}},
 		},
 		Examples: []string{
 			`web(resource: http, action: fetch, url: "https://api.example.com/data")`,
@@ -174,6 +191,12 @@ func (t *WebDomainTool) schemaConfig() DomainSchemaConfig {
 			`web(resource: browser, action: fill, ref: "e3", value: "search query")`,
 			`web(resource: browser, action: list_pages, profile: "native")`,
 			`web(resource: browser, action: close, target_id: "win-12345", profile: "native")`,
+			`web(resource: devtools, action: console)`,
+			`web(resource: devtools, action: console, level: "error", clear: true)`,
+			`web(resource: devtools, action: source)`,
+			`web(resource: devtools, action: storage, storage_type: "local")`,
+			`web(resource: devtools, action: cookies)`,
+			`web(resource: devtools, action: performance)`,
 		},
 	}
 }
@@ -203,6 +226,8 @@ func (t *WebDomainTool) Execute(ctx context.Context, input json.RawMessage) (*To
 			"text", "evaluate", "wait", "scroll", "back", "forward", "reload",
 			"hover", "select", "list_pages", "close", "launch", "status":
 			in.Resource = "browser"
+		case "console", "source", "storage", "dom", "cookies", "performance":
+			in.Resource = "devtools"
 		}
 	}
 
@@ -213,9 +238,11 @@ func (t *WebDomainTool) Execute(ctx context.Context, input json.RawMessage) (*To
 		return t.executeSearch(ctx, in)
 	case "browser":
 		return t.executeBrowser(ctx, in)
+	case "devtools":
+		return t.executeDevtools(ctx, in)
 	default:
 		return &ToolResult{
-			Content: fmt.Sprintf("Unknown resource: %q (valid: http, search, browser)", in.Resource),
+			Content: fmt.Sprintf("Unknown resource: %q (valid: http, search, browser, devtools)", in.Resource),
 			IsError: true,
 		}, nil
 	}
@@ -948,6 +975,316 @@ func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInp
 			IsError: true,
 		}, nil
 	}
+}
+
+// --- Devtools Resource ---
+
+func (t *WebDomainTool) executeDevtools(ctx context.Context, in WebDomainInput) (*ToolResult, error) {
+	// Native webview doesn't support CDP-based devtools introspection
+	if in.Profile == "native" {
+		return &ToolResult{
+			Content: "Devtools requires a managed browser profile (\"nebo\" or \"chrome\"). The native webview does not support CDP-based introspection.\n\nUse: web(resource: \"browser\", action: \"launch\") to start a managed browser, then retry.",
+			IsError: true,
+		}, nil
+	}
+
+	mgr := browser.GetManager()
+
+	profile := in.Profile
+	if profile == "" {
+		profile = browser.DefaultProfileName
+	}
+
+	// Get session (creates browser if needed for managed profiles)
+	session, err := mgr.GetSession(ctx, profile)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Browser not available for profile %q: %v\n\nUse web(resource: browser, action: launch) to start a browser first.", profile, err),
+			IsError: true,
+		}, nil
+	}
+
+	// Get page
+	page, err := session.GetPage(in.TargetID)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Failed to get page: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	// Set timeout
+	timeout := 30 * time.Second
+	if in.Timeout > 0 {
+		timeout = time.Duration(in.Timeout) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	switch in.Action {
+	case "console":
+		return t.handleDevtoolsConsole(ctx, in, page)
+	case "source":
+		return t.handleDevtoolsSource(ctx, in, page)
+	case "storage":
+		return t.handleDevtoolsStorage(ctx, in, page)
+	case "dom":
+		return t.handleDevtoolsDom(ctx, in, page)
+	case "cookies":
+		return t.handleDevtoolsCookies(ctx, in, page)
+	case "performance":
+		return t.handleDevtoolsPerformance(ctx, in, page)
+	default:
+		return &ToolResult{
+			Content: fmt.Sprintf("Unknown action %q for resource 'devtools' (valid: console, source, storage, dom, cookies, performance)", in.Action),
+			IsError: true,
+		}, nil
+	}
+}
+
+func (t *WebDomainTool) handleDevtoolsConsole(ctx context.Context, in WebDomainInput, page *browser.Page) (*ToolResult, error) {
+	result, err := page.GetConsoleMessages(ctx, in.Level, in.Clear)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Get console messages failed: %v", err), IsError: true}, nil
+	}
+
+	if len(result.Messages) == 0 && len(result.Errors) == 0 {
+		return &ToolResult{Content: "No console messages or errors captured"}, nil
+	}
+
+	data, _ := json.MarshalIndent(result, "", "  ")
+	content := string(data)
+
+	chunk, totalChunks := ChunkText(content, defaultChunkSize, in.Offset)
+	if totalChunks > 1 {
+		chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
+	}
+	return &ToolResult{Content: chunk}, nil
+}
+
+func (t *WebDomainTool) handleDevtoolsSource(ctx context.Context, in WebDomainInput, page *browser.Page) (*ToolResult, error) {
+	source, err := page.GetSource(ctx)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Get source failed: %v", err), IsError: true}, nil
+	}
+
+	if source == "" {
+		return &ToolResult{Content: "Page has no source content"}, nil
+	}
+
+	chunk, totalChunks := ChunkText(source, defaultChunkSize, in.Offset)
+	if totalChunks > 1 {
+		chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
+	}
+	return &ToolResult{Content: chunk}, nil
+}
+
+func (t *WebDomainTool) handleDevtoolsStorage(ctx context.Context, in WebDomainInput, page *browser.Page) (*ToolResult, error) {
+	storageType := in.StorageType
+	if storageType == "" {
+		storageType = "local"
+	}
+
+	kind := browser.StorageLocal
+	if storageType == "session" {
+		kind = browser.StorageSession
+	}
+
+	values, err := page.GetStorage(ctx, kind, in.Key)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Get storage failed: %v", err), IsError: true}, nil
+	}
+
+	if in.Clear {
+		if clearErr := page.ClearStorage(ctx, kind); clearErr != nil {
+			return &ToolResult{Content: fmt.Sprintf("Get storage succeeded but clear failed: %v", clearErr), IsError: true}, nil
+		}
+	}
+
+	if len(values) == 0 {
+		msg := fmt.Sprintf("No %sStorage entries", storageType)
+		if in.Key != "" {
+			msg = fmt.Sprintf("Key %q not found in %sStorage", in.Key, storageType)
+		}
+		return &ToolResult{Content: msg}, nil
+	}
+
+	data, _ := json.MarshalIndent(map[string]any{
+		"storage_type": storageType,
+		"entries":      values,
+		"count":        len(values),
+	}, "", "  ")
+
+	content := string(data)
+	chunk, totalChunks := ChunkText(content, defaultChunkSize, in.Offset)
+	if totalChunks > 1 {
+		chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
+	}
+	return &ToolResult{Content: chunk}, nil
+}
+
+func (t *WebDomainTool) handleDevtoolsDom(ctx context.Context, in WebDomainInput, page *browser.Page) (*ToolResult, error) {
+	if in.Selector == "" && in.Text == "" {
+		return &ToolResult{Content: "Error: selector (CSS selector to inspect) or text (JavaScript to evaluate) is required for dom action", IsError: true}, nil
+	}
+
+	// If text is provided, use it as raw JavaScript evaluation
+	if in.Text != "" {
+		result, err := page.Evaluate(ctx, in.Text)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("DOM evaluate failed: %v", err), IsError: true}, nil
+		}
+		switch v := result.(type) {
+		case string:
+			chunk, totalChunks := ChunkText(v, defaultChunkSize, in.Offset)
+			if totalChunks > 1 {
+				chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
+			}
+			return &ToolResult{Content: chunk}, nil
+		case nil:
+			return &ToolResult{Content: "undefined"}, nil
+		default:
+			jsonResult, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return &ToolResult{Content: fmt.Sprintf("(non-serializable %T)", result)}, nil
+			}
+			content := string(jsonResult)
+			chunk, totalChunks := ChunkText(content, defaultChunkSize, in.Offset)
+			if totalChunks > 1 {
+				chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
+			}
+			return &ToolResult{Content: chunk}, nil
+		}
+	}
+
+	// Use selector to extract structured element info
+	script := fmt.Sprintf(`(() => {
+		const els = document.querySelectorAll(%q);
+		return Array.from(els).slice(0, 50).map((el, i) => ({
+			tag: el.tagName.toLowerCase(),
+			id: el.id || undefined,
+			classes: el.className ? el.className.split(' ').filter(Boolean) : undefined,
+			text: el.textContent ? el.textContent.trim().substring(0, 200) : undefined,
+			attributes: Object.fromEntries(
+				Array.from(el.attributes)
+					.filter(a => !['class','id','style'].includes(a.name))
+					.map(a => [a.name, a.value])
+			),
+			childCount: el.children.length,
+			visible: el.offsetParent !== null || el.tagName === 'BODY',
+		}));
+	})()`, in.Selector)
+
+	result, err := page.Evaluate(ctx, script)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("DOM query failed: %v", err), IsError: true}, nil
+	}
+
+	data, _ := json.MarshalIndent(map[string]any{
+		"selector": in.Selector,
+		"elements": result,
+	}, "", "  ")
+
+	content := string(data)
+	chunk, totalChunks := ChunkText(content, defaultChunkSize, in.Offset)
+	if totalChunks > 1 {
+		chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
+	}
+	return &ToolResult{Content: chunk}, nil
+}
+
+func (t *WebDomainTool) handleDevtoolsCookies(ctx context.Context, in WebDomainInput, page *browser.Page) (*ToolResult, error) {
+	cookies, err := page.GetCookies(ctx)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Get cookies failed: %v", err), IsError: true}, nil
+	}
+
+	if in.Clear {
+		if clearErr := page.ClearCookies(ctx); clearErr != nil {
+			return &ToolResult{Content: fmt.Sprintf("Get cookies succeeded but clear failed: %v", clearErr), IsError: true}, nil
+		}
+	}
+
+	if len(cookies) == 0 {
+		return &ToolResult{Content: "No cookies found"}, nil
+	}
+
+	data, _ := json.MarshalIndent(map[string]any{
+		"cookies": cookies,
+		"count":   len(cookies),
+	}, "", "  ")
+
+	content := string(data)
+	chunk, totalChunks := ChunkText(content, defaultChunkSize, in.Offset)
+	if totalChunks > 1 {
+		chunk = fmt.Sprintf("Chunk: %d/%d (use offset parameter to read more)\n\n%s", in.Offset+1, totalChunks, chunk)
+	}
+	return &ToolResult{Content: chunk}, nil
+}
+
+func (t *WebDomainTool) handleDevtoolsPerformance(ctx context.Context, in WebDomainInput, page *browser.Page) (*ToolResult, error) {
+	script := `(() => {
+		const perf = {};
+
+		// Navigation timing
+		if (window.performance && window.performance.timing) {
+			const t = window.performance.timing;
+			perf.navigation = {
+				dns_ms: t.domainLookupEnd - t.domainLookupStart,
+				connect_ms: t.connectEnd - t.connectStart,
+				ttfb_ms: t.responseStart - t.requestStart,
+				response_ms: t.responseEnd - t.responseStart,
+				dom_interactive_ms: t.domInteractive - t.navigationStart,
+				dom_complete_ms: t.domComplete - t.navigationStart,
+				load_ms: t.loadEventEnd - t.navigationStart,
+			};
+		}
+
+		// Paint timing
+		if (window.performance && window.performance.getEntriesByType) {
+			const paints = window.performance.getEntriesByType('paint');
+			if (paints.length > 0) {
+				perf.paint = {};
+				paints.forEach(p => {
+					perf.paint[p.name] = Math.round(p.startTime) + 'ms';
+				});
+			}
+		}
+
+		// Resource summary
+		if (window.performance && window.performance.getEntriesByType) {
+			const resources = window.performance.getEntriesByType('resource');
+			const summary = {};
+			resources.forEach(r => {
+				const type = r.initiatorType || 'other';
+				if (!summary[type]) summary[type] = { count: 0, total_bytes: 0, total_ms: 0 };
+				summary[type].count++;
+				summary[type].total_bytes += r.transferSize || 0;
+				summary[type].total_ms += Math.round(r.duration);
+			});
+			perf.resources = { total: resources.length, by_type: summary };
+		}
+
+		// Memory (Chrome only)
+		if (window.performance && window.performance.memory) {
+			const m = window.performance.memory;
+			perf.memory = {
+				used_mb: Math.round(m.usedJSHeapSize / 1048576 * 100) / 100,
+				total_mb: Math.round(m.totalJSHeapSize / 1048576 * 100) / 100,
+				limit_mb: Math.round(m.jsHeapSizeLimit / 1048576 * 100) / 100,
+			};
+		}
+
+		return perf;
+	})()`
+
+	result, err := page.Evaluate(ctx, script)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Performance metrics failed: %v", err), IsError: true}, nil
+	}
+
+	data, _ := json.MarshalIndent(result, "", "  ")
+	return &ToolResult{Content: string(data)}, nil
 }
 
 // formatJSONResult formats a JSON result with a prefix message.

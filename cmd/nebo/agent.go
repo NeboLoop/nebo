@@ -38,6 +38,7 @@ import (
 	"github.com/neboloop/nebo/internal/agenthub"
 	"github.com/neboloop/nebo/internal/apps"
 	"github.com/neboloop/nebo/internal/crashlog"
+	"github.com/neboloop/nebo/internal/devlog"
 	"github.com/neboloop/nebo/internal/daemon"
 	"github.com/neboloop/nebo/internal/browser"
 	"github.com/neboloop/nebo/internal/db"
@@ -106,11 +107,11 @@ func (s *agentState) sendFrame(frame map[string]any) error {
 	defer s.connMu.Unlock()
 	data, err := json.Marshal(frame)
 	if err != nil {
-		fmt.Printf("[Agent-WS] ERROR marshaling frame: %v (type=%v)\n", err, frame["type"])
+		devlog.Printf("[Agent-WS] ERROR marshaling frame: %v (type=%v)\n", err, frame["type"])
 		return err
 	}
 	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		fmt.Printf("[Agent-WS] ERROR sending frame: %v\n", err)
+		devlog.Printf("[Agent-WS] ERROR sending frame: %v\n", err)
 		return err
 	}
 	return nil
@@ -150,12 +151,12 @@ func (s *agentState) requestApproval(ctx context.Context, requestID, toolName st
 		// If "always" was selected, add the command to the allowlist
 		if resp.Approved && resp.Always && s.policy != nil {
 			var inputStr string
-			if toolName == "bash" {
-				var bashInput struct {
+			if toolName == "bash" || toolName == "shell" {
+				var shellInput struct {
 					Command string `json:"command"`
 				}
-				if err := json.Unmarshal(input, &bashInput); err == nil {
-					inputStr = bashInput.Command
+				if err := json.Unmarshal(input, &shellInput); err == nil {
+					inputStr = shellInput.Command
 				}
 			}
 			if inputStr != "" {
@@ -348,13 +349,13 @@ func ensureBotID(ctx context.Context, pluginStore *settings.Store) string {
 	botID := uuid.New().String()
 	p, err := pluginStore.GetPlugin(ctx, "neboloop")
 	if err != nil {
-		fmt.Printf("[NeboLoop] Warning: neboloop plugin not registered, cannot persist bot_id: %v\n", err)
+		devlog.Printf("[NeboLoop] Warning: neboloop plugin not registered, cannot persist bot_id: %v\n", err)
 		return botID
 	}
 	if err := pluginStore.UpdateSettings(ctx, p.ID, map[string]string{"bot_id": botID}, nil); err != nil {
-		fmt.Printf("[NeboLoop] Warning: failed to persist bot_id: %v\n", err)
+		devlog.Printf("[NeboLoop] Warning: failed to persist bot_id: %v\n", err)
 	} else {
-		fmt.Printf("[NeboLoop] Generated bot_id: %s\n", botID)
+		devlog.Printf("[NeboLoop] Generated bot_id: %s\n", botID)
 	}
 	return botID
 }
@@ -389,6 +390,74 @@ func getNeboLoopRefreshToken(ctx context.Context, sqlDB *sql.DB) (refreshToken, 
 	return meta["refresh_token"], apiURL
 }
 
+// tryRefreshNeboLoopToken attempts to refresh the NeboLoop JWT using the stored
+// refresh_token. Returns the fresh access token on success, empty string on failure.
+// Persists the new tokens to auth_profiles so subsequent connects use the fresh JWT.
+func tryRefreshNeboLoopToken(ctx context.Context, sqlDB *sql.DB) string {
+	refreshToken, apiURL := getNeboLoopRefreshToken(ctx, sqlDB)
+	if refreshToken == "" {
+		fmt.Println("[Comm:neboloop] No refresh token available, re-authenticate via Settings")
+		return ""
+	}
+	tokenResp, err := neboloophandler.RefreshNeboLoopToken(ctx, apiURL, refreshToken)
+	if err != nil {
+		devlog.Printf("[Comm:neboloop] Token refresh failed: %v\n", err)
+		return ""
+	}
+
+	// Preserve existing metadata from current profile
+	store := db.New(sqlDB)
+	profiles, _ := store.ListAllActiveAuthProfilesByProvider(ctx, "neboloop")
+	var ownerID, email string
+	var janusProvider bool
+	if len(profiles) > 0 && profiles[0].Metadata.Valid {
+		var meta map[string]string
+		if json.Unmarshal([]byte(profiles[0].Metadata.String), &meta) == nil {
+			ownerID = meta["owner_id"]
+			email = meta["email"]
+			janusProvider = meta["janus_provider"] == "true"
+		}
+	}
+
+	// Build metadata with new refresh token
+	metadata := map[string]string{
+		"owner_id":      ownerID,
+		"email":         email,
+		"refresh_token": tokenResp.RefreshToken,
+	}
+	if janusProvider {
+		metadata["janus_provider"] = "true"
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+
+	// Deactivate existing profiles
+	for _, p := range profiles {
+		store.ToggleAuthProfile(ctx, db.ToggleAuthProfileParams{
+			ID:       p.ID,
+			IsActive: sql.NullInt64{Int64: 0, Valid: true},
+		})
+	}
+
+	// Create new profile with fresh tokens
+	_, err = store.CreateAuthProfile(ctx, db.CreateAuthProfileParams{
+		ID:       uuid.New().String(),
+		Name:     email,
+		Provider: "neboloop",
+		ApiKey:   tokenResp.AccessToken,
+		BaseUrl:  sql.NullString{String: apiURL, Valid: true},
+		AuthType: sql.NullString{String: "oauth", Valid: true},
+		IsActive: sql.NullInt64{Int64: 1, Valid: true},
+		Metadata: sql.NullString{String: string(metadataJSON), Valid: true},
+	})
+	if err != nil {
+		devlog.Printf("[Comm:neboloop] Failed to store refreshed token: %v\n", err)
+		return ""
+	}
+
+	fmt.Println("[Comm:neboloop] Token refreshed successfully")
+	return tokenResp.AccessToken
+}
+
 // handleNeboLoopCode processes a connection code and emits tool-use-style events.
 // Returns true if the prompt was a connection code (handled), false otherwise.
 // When state is provided, a successful connection also activates the neboloop comm plugin.
@@ -398,7 +467,7 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 	}
 
 	code := strings.TrimSpace(prompt)
-	fmt.Printf("[NeboLoop] Connection code detected: %s\n", code)
+	devlog.Printf("[NeboLoop] Connection code detected: %s\n", code)
 
 	// Emit tool call event
 	send(map[string]any{
@@ -435,7 +504,7 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 	// Step 1: Redeem code (pass our immutable bot_id so the server registers it)
 	redeemed, err := neboloopapi.RedeemCode(ctx, apiServer, code, botName, "AI companion", botID)
 	if err != nil {
-		fmt.Printf("[NeboLoop] Failed to redeem connection code: %s\n", err)
+		devlog.Printf("[NeboLoop] Failed to redeem connection code: %s\n", err)
 		userMsg := friendlyNeboLoopError(err)
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": userMsg}})
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": userMsg}})
@@ -452,10 +521,10 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 				"token":      redeemed.ConnectionToken,
 			}
 			if err := pluginStore.UpdateSettings(ctx, p.ID, newSettings, nil); err != nil {
-				fmt.Printf("[NeboLoop] Warning: failed to save connection settings: %v\n", err)
+				devlog.Printf("[NeboLoop] Warning: failed to save connection settings: %v\n", err)
 			}
 		} else {
-			fmt.Printf("[NeboLoop] Warning: neboloop plugin not registered: %v\n", err)
+			devlog.Printf("[NeboLoop] Warning: neboloop plugin not registered: %v\n", err)
 		}
 	}
 
@@ -463,7 +532,7 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 	if state != nil && state.commManager != nil {
 		state.botID = botID // Use our immutable local bot_id
 		if err := state.commManager.SetActive("neboloop"); err != nil {
-			fmt.Printf("[NeboLoop] Warning: failed to activate comm plugin: %v\n", err)
+			devlog.Printf("[NeboLoop] Warning: failed to activate comm plugin: %v\n", err)
 		} else if active := state.commManager.GetActive(); active != nil {
 			commConfig := injectNeboLoopAuth(ctx, state.sqlDB, botID, map[string]string{
 				"api_server": apiServer,
@@ -474,11 +543,11 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 			}
 			if commConfig["token"] != "" {
 				if err := active.Connect(ctx, commConfig); err != nil {
-					fmt.Printf("[NeboLoop] Warning: failed to connect comm plugin: %v\n", err)
+					devlog.Printf("[NeboLoop] Warning: failed to connect comm plugin: %v\n", err)
 				} else {
 					card := buildAgentCard(state.registry, state.skillLoader)
 					active.Register(ctx, state.commAgentID, card)
-					fmt.Printf("[NeboLoop] Comm plugin activated and connected (agent: %s)\n", state.commAgentID)
+					devlog.Printf("[NeboLoop] Comm plugin activated and connected (agent: %s)\n", state.commAgentID)
 				}
 			} else {
 				fmt.Println("[NeboLoop] Bot registered, but no JWT yet. Do OAuth login to connect.")
@@ -491,7 +560,7 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 			s.CommEnabled = true
 			s.CommPlugin = "neboloop"
 			if err := store.Update(s); err != nil {
-				fmt.Printf("[NeboLoop] Warning: failed to persist comm settings: %v\n", err)
+				devlog.Printf("[NeboLoop] Warning: failed to persist comm settings: %v\n", err)
 			} else {
 				fmt.Println("[NeboLoop] Comm settings persisted (commEnabled=true, commPlugin=neboloop)")
 			}
@@ -500,7 +569,7 @@ func handleNeboLoopCode(ctx context.Context, prompt, requestID string, pluginSto
 
 	// Emit success tool result
 	resultText := fmt.Sprintf("Connected as %s (ID: %s)", redeemed.Name, botID)
-	fmt.Printf("[NeboLoop] %s\n", resultText)
+	devlog.Printf("[NeboLoop] %s\n", resultText)
 	send(map[string]any{
 		"type": "stream",
 		"id":   requestID,
@@ -533,7 +602,7 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 	}
 
 	code := strings.TrimSpace(prompt)
-	fmt.Printf("[NeboLoop] Loop invite code detected: %s\n", code)
+	devlog.Printf("[NeboLoop] Loop invite code detected: %s\n", code)
 
 	// Emit tool call event
 	send(map[string]any{
@@ -557,7 +626,7 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 	neboloopSettings, err := pluginStore.GetSettingsByName(ctx, "neboloop")
 	if err != nil || neboloopSettings["bot_id"] == "" {
 		errMsg := "You need to connect to NeboLoop first. Log in via OAuth to get started."
-		fmt.Printf("[NeboLoop] %s\n", errMsg)
+		devlog.Printf("[NeboLoop] %s\n", errMsg)
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": errMsg}})
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": errMsg}})
 		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": errMsg}})
@@ -583,7 +652,7 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 	// Create NeboLoop API client
 	client, err := neboloopapi.NewClient(neboloopSettings)
 	if err != nil {
-		fmt.Printf("[NeboLoop] Failed to create client: %s\n", err)
+		devlog.Printf("[NeboLoop] Failed to create client: %s\n", err)
 		userMsg := "Couldn't connect to NeboLoop. Please check your connection settings."
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": userMsg}})
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": userMsg}})
@@ -594,7 +663,7 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 	// Join the loop
 	result, err := client.JoinLoop(ctx, code)
 	if err != nil {
-		fmt.Printf("[NeboLoop] Failed to join loop: %s\n", err)
+		devlog.Printf("[NeboLoop] Failed to join loop: %s\n", err)
 		userMsg := friendlyNeboLoopError(err)
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": userMsg}})
 		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": userMsg}})
@@ -608,7 +677,7 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 		loopName = result.ID
 	}
 	resultText := fmt.Sprintf("Joined loop: %s (ID: %s)", loopName, result.ID)
-	fmt.Printf("[NeboLoop] %s\n", resultText)
+	devlog.Printf("[NeboLoop] %s\n", resultText)
 	send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": resultText}})
 
 	successMsg := fmt.Sprintf("You've joined the **%s** loop! You can now communicate with other agents in this loop.", loopName)
@@ -651,7 +720,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	logPath := filepath.Join(cfg.DataDir, "agent.log")
 	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if logErr != nil {
-		fmt.Printf("[agent] Warning: could not open log file %s: %v\n", logPath, logErr)
+		devlog.Printf("[agent] Warning: could not open log file %s: %v\n", logPath, logErr)
 	} else {
 		defer logFile.Close()
 		// Tee stdout to both terminal and log file
@@ -675,7 +744,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			pw.Close()
 			os.Stdout = origStdout
 		}()
-		fmt.Printf("[agent] Logging to %s\n", logPath)
+		devlog.Printf("[agent] Logging to %s\n", logPath)
 	}
 
 	wsURL := strings.Replace(serverURL, "http://", "ws://", 1)
@@ -803,14 +872,16 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	registry.RegisterDefaultsWithPermissions(loadToolPermissions(sqlDB))
 
 	// Start browser manager for web automation
+	devlog.Printf("[agent] Starting browser manager...\n")
+	browserT0 := time.Now()
 	browserMgr := browser.GetManager()
 	if err := browserMgr.Start(browser.Config{
 		Enabled:  true,
 		Headless: true, // Default to headless for managed browser
 	}); err != nil {
-		fmt.Printf("[agent] Warning: failed to start browser manager: %v\n", err)
+		devlog.Printf("[agent] Warning: failed to start browser manager (%s): %v\n", time.Since(browserT0), err)
 	} else {
-		fmt.Println("[agent] Browser manager started")
+		devlog.Printf("[agent] Browser manager started (%s)\n", time.Since(browserT0))
 		defer browserMgr.Stop()
 	}
 
@@ -842,16 +913,16 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				defer bgCancel()
 					// First: clear embeddings from old models (e.g., nomic-embed-text → qwen3-embedding)
 					if stale, deleted, err := memoryTool.MigrateEmbeddings(bgCtx); err != nil {
-						fmt.Printf("[agent] Embedding migration error: %v\n", err)
+						devlog.Printf("[agent] Embedding migration error: %v\n", err)
 					} else if stale > 0 {
-						fmt.Printf("[agent] Migrated embeddings: %d stale → %d deleted\n", stale, deleted)
+						devlog.Printf("[agent] Migrated embeddings: %d stale → %d deleted\n", stale, deleted)
 					}
 					// Then: backfill any memories without embeddings
 					n, err := memoryTool.BackfillEmbeddings(bgCtx)
 					if err != nil {
-						fmt.Printf("[agent] Embedding backfill error: %v\n", err)
+						devlog.Printf("[agent] Embedding backfill error: %v\n", err)
 					} else if n > 0 {
-						fmt.Printf("[agent] Backfilled embeddings for %d memories\n", n)
+						devlog.Printf("[agent] Backfilled embeddings for %d memories\n", n)
 					}
 				}()
 			}
@@ -862,9 +933,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	// Advisors are enabled/disabled via config and invoked by the agent when needed
 	advisorLoader := advisors.NewLoader(cfg.AdvisorsDir())
 	if err := advisorLoader.LoadAll(); err != nil {
-		fmt.Printf("[agent] Warning: failed to load advisors: %v\n", err)
+		devlog.Printf("[agent] Warning: failed to load advisors: %v\n", err)
 	} else if advisorLoader.Count() > 0 {
-		fmt.Printf("[agent] Loaded %d advisors from %s\n", advisorLoader.Count(), cfg.AdvisorsDir())
+		devlog.Printf("[agent] Loaded %d advisors from %s\n", advisorLoader.Count(), cfg.AdvisorsDir())
 	}
 	// Load DB-backed advisors (override file-based ones with same name)
 	if opts.Database != nil {
@@ -915,6 +986,20 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	agentStatusTool.SetOrchestrator(taskTool.GetOrchestrator())
 	registry.Register(agentStatusTool)
 
+	// Register NeboLoop store tool for browsing/installing apps and uploading binaries
+	storeTool := tools.NewNeboLoopTool(func(ctx context.Context) (*neboloopapi.Client, error) {
+		if opts.PluginStore == nil {
+			return nil, fmt.Errorf("plugin store not available")
+		}
+		settings, err := opts.PluginStore.GetSettingsByName(ctx, "neboloop")
+		if err != nil {
+			return nil, fmt.Errorf("NeboLoop not configured: %w", err)
+		}
+		settings = injectNeboLoopAuth(ctx, sqlDB, ensureBotID(ctx, opts.PluginStore), settings)
+		return neboloopapi.NewClient(settings)
+	})
+	registry.Register(storeTool)
+
 	// Create agent MCP server for CLI provider loopback (exposes all tools via MCP)
 	mcpSrv := agentmcp.NewServer(registry)
 	if opts.AgentMCPProxy != nil {
@@ -942,7 +1027,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 	// Start config file watcher for hot-reload of models.yaml
 	if err := provider.StartConfigWatcher(cfg.DataDir); err != nil {
-		fmt.Printf("[agent] Warning: could not start config watcher: %v\n", err)
+		devlog.Printf("[agent] Warning: could not start config watcher: %v\n", err)
 	}
 
 	// Register callback to update selector/matcher/providers when models.yaml changes
@@ -963,7 +1048,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			r.SetFuzzyMatcher(newFuzzyMatcher)
 			// Reload providers in case credentials changed
 			r.ReloadProviders()
-			fmt.Printf("[agent] Config reloaded: model selector, fuzzy matcher, and providers updated\n")
+			devlog.Printf("[agent] Config reloaded: model selector, fuzzy matcher, and providers updated\n")
 		}
 	})
 
@@ -1035,9 +1120,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		r.SetupSubagentPersistence(state.recovery)
 		// Recover any pending subagent tasks from previous run
 		if recovered, err := r.RecoverSubagents(ctx); err != nil {
-			fmt.Printf("[agent] Warning: failed to recover subagents: %v\n", err)
+			devlog.Printf("[agent] Warning: failed to recover subagents: %v\n", err)
 		} else if recovered > 0 {
-			fmt.Printf("[agent] Recovered %d subagent task(s)\n", recovered)
+			devlog.Printf("[agent] Recovered %d subagent task(s)\n", recovered)
 		}
 	}
 
@@ -1183,7 +1268,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			return "", fmt.Errorf("failed to store refreshed token: %w", err)
 		}
 
-		fmt.Printf("[Comm:neboloop] Token refreshed successfully\n")
+		devlog.Printf("[Comm:neboloop] Token refreshed successfully\n")
 		return tokenResp.AccessToken, nil
 	})
 
@@ -1211,7 +1296,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		CommMgr:     commManager,
 	})
 	if err := appRegistry.DiscoverAndLaunch(ctx); err != nil {
-		fmt.Printf("[agent] Warning: failed to discover apps: %v\n", err)
+		devlog.Printf("[agent] Warning: failed to discover apps: %v\n", err)
 	}
 	appRegistry.StartSupervisor(ctx)
 	defer appRegistry.Stop()
@@ -1232,7 +1317,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	appRegistry.StartRevocationSweep(ctx)
 	go func() {
 		if err := appRegistry.Watch(ctx); err != nil {
-			fmt.Printf("[agent] Warning: app watcher failed: %v\n", err)
+			devlog.Printf("[agent] Warning: app watcher failed: %v\n", err)
 		}
 	}()
 
@@ -1267,7 +1352,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			parts := strings.Split(providerID, ".")
 			shortName := parts[len(parts)-1]
 			fuzzyMatcher.AddAlias(shortName, providerID+"/default")
-			fmt.Printf("[agent] Registered gateway alias: %s -> %s\n", shortName, providerID)
+			devlog.Printf("[agent] Registered gateway alias: %s -> %s\n", shortName, providerID)
 		}
 		r.SetFuzzyMatcher(fuzzyMatcher)
 	}
@@ -1300,7 +1385,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil, s.Triggers, s.Tools, s.Priority, s.MaxTurns)
 		}
 	}
-	fmt.Printf("[agent] Registered %d standalone skills, %d total skills\n", skillLoader.Count(), skillDomainTool.Count())
+	devlog.Printf("[agent] Registered %d standalone skills, %d total skills\n", skillLoader.Count(), skillDomainTool.Count())
 
 	// Re-register skills when enabled/disabled state changes via the UI toggle
 	opts.SvcCtx.SkillSettings.OnChange(func(name string, enabled bool) {
@@ -1311,13 +1396,13 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			for _, s := range fresh.List() {
 				if tools.Slugify(s.Name) == slug {
 					skillDomainTool.Register(slug, s.Name, s.Description, s.Template, nil, s.Triggers, s.Tools, s.Priority, s.MaxTurns)
-					fmt.Printf("[agent] Skill %q enabled and registered\n", name)
+					devlog.Printf("[agent] Skill %q enabled and registered\n", name)
 					return
 				}
 			}
 		} else {
 			skillDomainTool.Unregister(slug)
-			fmt.Printf("[agent] Skill %q disabled and unregistered\n", name)
+			devlog.Printf("[agent] Skill %q disabled and unregistered\n", name)
 		}
 	})
 
@@ -1331,10 +1416,10 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				skillDomainTool.Register(tools.Slugify(s.Name), s.Name, s.Description, s.Template, nil, s.Triggers, s.Tools, s.Priority, s.MaxTurns)
 			}
 		}
-		fmt.Printf("[agent] Skills reloaded: %d standalone, %d total\n", fresh.Count(), skillDomainTool.Count())
+		devlog.Printf("[agent] Skills reloaded: %d standalone, %d total\n", fresh.Count(), skillDomainTool.Count())
 	})
 	if err := userSkillWatcher.Watch(ctx); err != nil {
-		fmt.Printf("[agent] Warning: failed to watch user skills dir: %v\n", err)
+		devlog.Printf("[agent] Warning: failed to watch user skills dir: %v\n", err)
 	}
 	defer userSkillWatcher.Stop()
 
@@ -1836,7 +1921,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		state.mcpBridge = mcpBridge
 		go func() {
 			if err := mcpBridge.SyncAll(ctx); err != nil {
-				fmt.Printf("[agent] MCP bridge sync: %v\n", err)
+				devlog.Printf("[agent] MCP bridge sync: %v\n", err)
 			}
 		}()
 		defer mcpBridge.Close()
@@ -1867,7 +1952,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
-	fmt.Printf("[agent] Comm startup: enabled=%v plugin=%q (config: enabled=%v plugin=%q)\n",
+	devlog.Printf("[agent] Comm startup: enabled=%v plugin=%q (config: enabled=%v plugin=%q)\n",
 		commEnabled, commPlugin, cfg.Comm.Enabled, cfg.Comm.Plugin)
 
 	if commEnabled {
@@ -1875,7 +1960,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			commPlugin = "loopback"
 		}
 		if err := commManager.SetActive(commPlugin); err != nil {
-			fmt.Printf("[agent] Warning: failed to set active comm plugin: %v\n", err)
+			devlog.Printf("[agent] Warning: failed to set active comm plugin: %v\n", err)
 		} else if active := commManager.GetActive(); active != nil {
 			// Build comm config: start with DB settings, then inject JWT + bot_id
 			commConfig := cfg.Comm.Config
@@ -1894,12 +1979,27 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			}
 
 			if commConfig["token"] != "" || commPlugin != "neboloop" {
+				devlog.Printf("[agent] Connecting comm plugin %s...\n", commPlugin)
+				connectT0 := time.Now()
 				if err := active.Connect(ctx, commConfig); err != nil {
-					fmt.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", commPlugin, err)
+					devlog.Printf("[agent] Comm connect failed (%s): %v\n", time.Since(connectT0), err)
+					// On auth failure for neboloop, try refreshing the expired token
+					if commPlugin == "neboloop" && strings.Contains(err.Error(), "auth failed") {
+						if freshToken := tryRefreshNeboLoopToken(ctx, sqlDB); freshToken != "" {
+							commConfig["token"] = freshToken
+							err = active.Connect(ctx, commConfig)
+						}
+					}
+					if err != nil {
+						devlog.Printf("[agent] Warning: failed to connect comm plugin %s: %v\n", commPlugin, err)
+					}
 				} else {
+					devlog.Printf("[agent] Comm connected (%s)\n", time.Since(connectT0))
+				}
+				if active.IsConnected() {
 					card := buildAgentCard(registry, skillLoader)
 					active.Register(ctx, agentID, card)
-					fmt.Printf("[agent] Comm plugin %s connected (agent: %s)\n", commPlugin, agentID)
+					devlog.Printf("[agent] Comm plugin %s registered (agent: %s)\n", commPlugin, agentID)
 				}
 			} else {
 				fmt.Println("[agent] NeboLoop comm: bot_id ready, waiting for OAuth login to connect")
@@ -2317,7 +2417,7 @@ func maybeIntroduceToUser(ctx context.Context, state *agentState, r *runner.Runn
 
 // handleAgentMessageWithState processes a message from the server (with approval support)
 func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runner.Runner, sessions *session.Manager, pluginStore *settings.Store, message []byte) {
-	fmt.Printf("[Agent-WS] Received message: %s\n", string(message))
+	devlog.Printf("[Agent-WS] Received message: %s\n", string(message))
 
 	var frame struct {
 		Type    string `json:"type"`
@@ -2340,7 +2440,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 		return
 	}
 
-	fmt.Printf("[Agent-WS] Parsed frame: type=%s method=%s id=%s\n", frame.Type, frame.Method, frame.ID)
+	devlog.Printf("[Agent-WS] Parsed frame: type=%s method=%s id=%s\n", frame.Type, frame.Method, frame.ID)
 
 	switch frame.Type {
 	case "approval_response":
@@ -2365,7 +2465,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			userID := frame.Params.UserID
 			requestID := frame.ID
 
-			fmt.Printf("[Agent-WS] Enqueueing introduce request: session=%s user=%s\n", sessionKey, userID)
+			devlog.Printf("[Agent-WS] Enqueueing introduce request: session=%s user=%s\n", sessionKey, userID)
 
 			// SUPERVISOR PATTERN: Enqueue to main lane, don't block
 			state.lanes.EnqueueAsync(ctx, agenthub.LaneMain, func(taskCtx context.Context) error {
@@ -2391,7 +2491,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			// (line ~1043), a new run frame can be enqueued before ClearLane runs,
 			// causing the next queued message to be silently dropped.
 			cancelled := state.lanes.CancelActive(agenthub.LaneMain)
-			fmt.Printf("[Agent-WS] Cancel: cancelled %d active\n", cancelled)
+			devlog.Printf("[Agent-WS] Cancel: cancelled %d active\n", cancelled)
 			state.sendFrame(map[string]any{
 				"type": "res",
 				"id":   frame.ID,
@@ -2455,7 +2555,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				taskDesc = fmt.Sprintf("Dev: %s", sessionKey)
 			}
 
-			fmt.Printf("[Agent-WS] Enqueueing %s request: session=%s user=%s lane=%s prompt=%q\n",
+			devlog.Printf("[Agent-WS] Enqueueing %s request: session=%s user=%s lane=%s prompt=%q\n",
 				method, sessionKey, userID, lane, prompt)
 
 			// Resolve lane model override from config
@@ -2520,7 +2620,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 						})
 
 					case ai.EventTypeToolCall:
-						fmt.Printf("[Agent-WS] Tool call: %s (id=%s)\n", event.ToolCall.Name, event.ToolCall.ID)
+						devlog.Printf("[Agent-WS] Tool call: %s (id=%s)\n", event.ToolCall.Name, event.ToolCall.ID)
 						// Memory operations are silent — don't show tool cards in the UI
 						if !isSilentToolCall(event.ToolCall) {
 							state.sendFrame(map[string]any{
@@ -2541,7 +2641,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 							toolName = event.ToolCall.Name
 							toolID = event.ToolCall.ID
 						}
-						fmt.Printf("[Agent-WS] Tool result: %s (id=%s) len=%d\n", toolName, toolID, len(event.Text))
+						devlog.Printf("[Agent-WS] Tool result: %s (id=%s) len=%d\n", toolName, toolID, len(event.Text))
 						// Memory operations are silent — don't show tool cards in the UI
 						if !isSilentToolCall(event.ToolCall) {
 							payload := map[string]any{
@@ -2598,7 +2698,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 							var toolResults []session.ToolResult
 							if err := json.Unmarshal(event.Message.ToolResults, &toolResults); err == nil {
 								for _, tr := range toolResults {
-									fmt.Printf("[Agent-WS] Tool result (from message): id=%s len=%d\n", tr.ToolCallID, len(tr.Content))
+									devlog.Printf("[Agent-WS] Tool result (from message): id=%s len=%d\n", tr.ToolCallID, len(tr.Content))
 									state.sendFrame(map[string]any{
 										"type": "stream",
 										"id":   requestID,
@@ -2612,7 +2712,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 						}
 
 					case ai.EventTypeError:
-						fmt.Printf("[Agent-WS] Error event: %v\n", event.Error)
+						devlog.Printf("[Agent-WS] Error event: %v\n", event.Error)
 					}
 				}
 
@@ -2638,7 +2738,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 						"result": result.String(),
 					},
 				})
-				fmt.Printf("[Agent-WS] Completed request %s\n", requestID)
+				devlog.Printf("[Agent-WS] Completed request %s\n", requestID)
 				return nil
 			}, agenthub.WithDescription(taskDesc))
 
@@ -2689,7 +2789,7 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				if state.mcpBridge != nil {
 					go func() {
 						if err := state.mcpBridge.SyncAll(ctx); err != nil {
-							fmt.Printf("[agent] MCP bridge re-sync: %v\n", err)
+							devlog.Printf("[agent] MCP bridge re-sync: %v\n", err)
 						}
 					}()
 				}
@@ -2883,7 +2983,7 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 							Model:   "janus/text-embedding-small",
 							BaseURL: sharedJanusURL + "/v1",
 						})
-						fmt.Printf("[agent] Embeddings: using Janus text-embedding-small (%s)\n", sharedJanusURL)
+						devlog.Printf("[agent] Embeddings: using Janus text-embedding-small (%s)\n", sharedJanusURL)
 						break
 					}
 				}
@@ -2916,7 +3016,7 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 					// Auto-pull the embedding model if not present
 					embModel := "qwen3-embedding"
 					if err := ai.EnsureOllamaModel(baseURL, embModel); err != nil {
-						fmt.Printf("[agent] Warning: could not ensure embedding model %s: %v\n", embModel, err)
+						devlog.Printf("[agent] Warning: could not ensure embedding model %s: %v\n", embModel, err)
 					}
 					embeddingProvider = embeddings.NewOllamaProvider(embeddings.OllamaConfig{
 						BaseURL: baseURL,
@@ -2940,7 +3040,7 @@ func createEmbeddingService(db *sql.DB) *embeddings.Service {
 		Provider: embeddingProvider,
 	})
 	if err != nil {
-		fmt.Printf("[agent] Warning: failed to create embedding service: %v\n", err)
+		devlog.Printf("[agent] Warning: failed to create embedding service: %v\n", err)
 		return nil
 	}
 
@@ -2973,7 +3073,7 @@ func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bo
 		// Deactivate: disconnect the current plugin
 		if active := state.commManager.GetActive(); active != nil {
 			if err := active.Disconnect(ctx); err != nil {
-				fmt.Printf("[Comm] Warning: failed to disconnect comm plugin: %v\n", err)
+				devlog.Printf("[Comm] Warning: failed to disconnect comm plugin: %v\n", err)
 			}
 			fmt.Println("[Comm] Comm plugin disconnected via settings update")
 		}
@@ -2986,7 +3086,7 @@ func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bo
 
 	// Activate the requested plugin
 	if err := state.commManager.SetActive(pluginName); err != nil {
-		fmt.Printf("[Comm] Warning: failed to activate %s: %v\n", pluginName, err)
+		devlog.Printf("[Comm] Warning: failed to activate %s: %v\n", pluginName, err)
 		return
 	}
 
@@ -3000,7 +3100,7 @@ func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bo
 	if pluginStore != nil {
 		if dbSettings, err := pluginStore.GetSettingsByName(ctx, pluginName); err == nil && len(dbSettings) > 0 {
 			commConfig = dbSettings
-			fmt.Printf("[Comm] Loaded %s settings from database (%d keys)\n", pluginName, len(dbSettings))
+			devlog.Printf("[Comm] Loaded %s settings from database (%d keys)\n", pluginName, len(dbSettings))
 		}
 	}
 
@@ -3017,13 +3117,22 @@ func handleCommSettingsUpdate(ctx context.Context, state *agentState, enabled bo
 	}
 
 	if err := active.Connect(ctx, commConfig); err != nil {
-		fmt.Printf("[Comm] Warning: failed to connect %s: %v\n", pluginName, err)
-		return
+		// On auth failure for neboloop, try refreshing the expired token
+		if pluginName == "neboloop" && state.sqlDB != nil && strings.Contains(err.Error(), "auth failed") {
+			if freshToken := tryRefreshNeboLoopToken(ctx, state.sqlDB); freshToken != "" {
+				commConfig["token"] = freshToken
+				err = active.Connect(ctx, commConfig)
+			}
+		}
+		if err != nil {
+			devlog.Printf("[Comm] Warning: failed to connect %s: %v\n", pluginName, err)
+			return
+		}
 	}
 
 	card := buildAgentCard(state.registry, state.skillLoader)
 	active.Register(ctx, state.commAgentID, card)
-	fmt.Printf("[Comm] Plugin %s activated and connected via settings update (agent: %s)\n", pluginName, state.commAgentID)
+	devlog.Printf("[Comm] Plugin %s activated and connected via settings update (agent: %s)\n", pluginName, state.commAgentID)
 }
 
 // loopQuerierAdapter wraps the NeboLoop comm plugin to implement tools.LoopQuerier.
@@ -3125,7 +3234,7 @@ func loadSkills(cfg *agentcfg.Config) *skills.Loader {
 
 	// Load bundled skills from the embedded filesystem (always available regardless of cwd)
 	if err := loader.LoadFromEmbedFS(extensions.BundledSkills, "skills"); err != nil {
-		fmt.Printf("[agent] Warning: failed to load bundled skills: %v\n", err)
+		devlog.Printf("[agent] Warning: failed to load bundled skills: %v\n", err)
 	}
 
 	// Merge user skills from data directory (user skills override bundled by name)

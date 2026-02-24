@@ -31,6 +31,7 @@ import (
 	"github.com/neboloop/nebo/internal/server"
 	"github.com/neboloop/nebo/internal/svc"
 	"github.com/neboloop/nebo/internal/updater"
+	"github.com/neboloop/nebo/internal/devlog"
 	"github.com/neboloop/nebo/internal/webview"
 
 	neboapp "github.com/neboloop/nebo/app"
@@ -158,6 +159,7 @@ func RunDesktop() {
 		// to the webview callback collector. JS sends "nebo:cb:{json}" via
 		// window._wails.invoke() which bypasses CORS and mixed content blocking.
 		RawMessageHandler: func(_ application.Window, message string, _ *application.OriginInfo) {
+			t := time.Now()
 			const prefix = "nebo:cb:"
 			if !strings.HasPrefix(message, prefix) {
 				return
@@ -167,6 +169,7 @@ func RunDesktop() {
 			if err := json.Unmarshal([]byte(jsonStr), &result); err != nil || result.RequestID == "" {
 				return
 			}
+			devlog.Printf("[Desktop] RawMessageHandler: delivering callback reqID=%s (%s)\n", result.RequestID, time.Since(t))
 			webview.GetCollector().Deliver(result)
 		},
 		OnShutdown: func() {
@@ -454,6 +457,8 @@ func RunDesktop() {
 		// via ExecJS for DOM interaction — native WebKit/WebView2, not detectable as bot.
 		wvm := webview.GetManager()
 		wvm.SetCreator(func(opts webview.WindowCreatorOptions) webview.WindowHandle {
+			devlog.Printf("[Desktop] Window creator called: name=%s url=%s\n", opts.Name, opts.URL)
+			creatorT0 := time.Now()
 			name := opts.Name
 			if existing, ok := wailsApp.Window.Get(name); ok {
 				if ww, ok := existing.(*application.WebviewWindow); ok {
@@ -487,12 +492,14 @@ func RunDesktop() {
 				// Wails runtime to be "ready" and pre-defines the callback function.
 				JS: neboBootstrapJS,
 			})
+			devlog.Printf("[Desktop] Window created (%s)\n", time.Since(creatorT0))
 			return wailsWindowHandle{win: w}
 		})
 		wvm.SetCallbackURL(fmt.Sprintf("http://localhost:%d/internal/webview/callback", c.Port))
 
 		agentMCPProxy := server.NewAgentMCPProxy()
 
+		devlog.Printf("[Desktop] Starting HTTP server...\n")
 		go func() {
 			defer wg.Done()
 			opts := server.ServerOptions{
@@ -502,12 +509,13 @@ func RunDesktop() {
 				AgentMCPHandler: agentMCPProxy,
 			}
 			if err := server.Run(ctx, *c, opts); err != nil {
-				fmt.Printf("[Server] Error: %v\n", err)
+				devlog.Printf("[Server] Error: %v\n", err)
 				errCh <- fmt.Errorf("server error: %w", err)
 			}
 		}()
 
 		// Wait for server to be ready
+		devlog.Printf("[Desktop] Waiting for server readiness...\n")
 		if !waitForServer(healthURL, 10*time.Second) {
 			fmt.Println("\033[31mError: Server failed to start\033[0m")
 			errCh <- fmt.Errorf("server failed to start")
@@ -515,12 +523,14 @@ func RunDesktop() {
 			return
 		}
 
+		devlog.Printf("[Desktop] Server ready, loading agent config...\n")
 		// Load agent config
 		agentCfg := loadAgentConfig()
 		SetSharedDB(svcCtx.DB.GetDB())
 		SetJanusURL(svcCtx.Config.NeboLoop.JanusURL)
 
 		// Start agent
+		devlog.Printf("[Desktop] Starting agent...\n")
 		go func() {
 			defer wg.Done()
 			agentOpts := AgentOptions{
@@ -684,8 +694,22 @@ type wailsWindowHandle struct {
 	win *application.WebviewWindow
 }
 
-func (w wailsWindowHandle) SetURL(url string)       { w.win.SetURL(url) }
-func (w wailsWindowHandle) ExecJS(js string)         { w.win.ExecJS(js) }
+func (w wailsWindowHandle) SetURL(url string) {
+	devlog.Printf("[Desktop] SetURL(%s) dispatching...\n", url)
+	t := time.Now()
+	w.win.SetURL(url)
+	devlog.Printf("[Desktop] SetURL returned (%s)\n", time.Since(t))
+}
+func (w wailsWindowHandle) ExecJS(js string) {
+	preview := js
+	if len(preview) > 80 {
+		preview = preview[:80] + "..."
+	}
+	devlog.Printf("[Desktop] ExecJS(%s) dispatching...\n", preview)
+	t := time.Now()
+	w.win.ExecJS(js)
+	devlog.Printf("[Desktop] ExecJS returned (%s)\n", time.Since(t))
+}
 func (w wailsWindowHandle) SetTitle(title string)    { w.win.SetTitle(title) }
 func (w wailsWindowHandle) Show()                    { w.win.Show() }
 func (w wailsWindowHandle) Hide()                    { w.win.Hide() }

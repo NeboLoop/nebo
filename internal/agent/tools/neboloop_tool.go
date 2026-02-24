@@ -65,8 +65,6 @@ Resources:
 - skills: Browse, install, and manage skills (list, get, install, uninstall)`,
 	Resources: neboloopResources,
 	Fields: []FieldConfig{
-		{Name: "resource", Type: "string", Description: "Resource type: apps, skills", Required: true, Enum: []string{"apps", "skills"}},
-		{Name: "action", Type: "string", Description: "Action to perform", Required: true},
 		{Name: "id", Type: "string", Description: "App or skill ID (required for get, install, uninstall, reviews)"},
 		{Name: "query", Type: "string", Description: "Search query (for list)"},
 		{Name: "category", Type: "string", Description: "Filter by category (for list)"},

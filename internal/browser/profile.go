@@ -139,6 +139,18 @@ func EnsureCleanExit(userDataDir string) {
 	setNestedValue(prefs, []string{"exited_cleanly"}, true)
 
 	_ = safeWriteJSON(prefsPath, prefs)
+
+	// Remove stale lock files that prevent Chrome from starting.
+	// Chrome uses these files to prevent multiple instances from accessing the same user-data-dir.
+	// If Chrome crashed, these files can persist and cause "allocator multiple times" errors.
+	lockFiles := []string{
+		filepath.Join(userDataDir, "SingletonLock"),
+		filepath.Join(userDataDir, "SingletonSocket"),
+		filepath.Join(userDataDir, "SingletonCookie"),
+	}
+	for _, lockFile := range lockFiles {
+		_ = os.Remove(lockFile)
+	}
 }
 
 // parseHexToSignedARGB converts a hex color to Chrome's signed 32-bit ARGB int.

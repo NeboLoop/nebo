@@ -164,31 +164,48 @@
 		}
 	}
 
-	// Safety: auto-reset isLoading after 30 seconds of no stream activity
-	// This prevents the UI from getting permanently stuck
+	// Activity-based inactivity timeout — resets on every agent event.
+	// Only fires if the agent goes completely silent for 30s AND no tools are running.
 	const LOADING_TIMEOUT_MS = 30 * 1000;
+
+	function hasRunningTools(): boolean {
+		return !!currentStreamingMessage?.toolCalls?.some((tc) => tc.status === 'running');
+	}
+
+	function resetLoadingTimeout() {
+		if (loadingTimeoutId) clearTimeout(loadingTimeoutId);
+		if (!isLoading) return;
+
+		// Don't arm the timer while tools are actively running — they can take minutes
+		if (hasRunningTools()) return;
+
+		loadingTimeoutId = setTimeout(() => {
+			if (!isLoading) return;
+			// Re-check: a tool may have started since the timer was armed
+			if (hasRunningTools()) {
+				resetLoadingTimeout();
+				return;
+			}
+			log.warn(
+				'Inactivity timeout - force resetting state after ' +
+					LOADING_TIMEOUT_MS / 1000 +
+					' seconds of silence'
+			);
+			if (currentStreamingMessage) {
+				currentStreamingMessage.streaming = false;
+				currentStreamingMessage.content += '\n\n*[Timed out]*';
+				replaceMessageById({ ...currentStreamingMessage });
+				currentStreamingMessage = null;
+			}
+			isLoading = false;
+			// Don't clear messageQueue — queued messages should still be processed
+			processQueue();
+		}, LOADING_TIMEOUT_MS);
+	}
 
 	$effect(() => {
 		if (isLoading) {
-			// Clear previous timeout
-			if (loadingTimeoutId) clearTimeout(loadingTimeoutId);
-			loadingTimeoutId = setTimeout(() => {
-				if (isLoading) {
-					log.warn(
-						'Loading timeout - force resetting state after ' +
-							LOADING_TIMEOUT_MS / 1000 +
-							' seconds'
-					);
-					if (currentStreamingMessage) {
-						currentStreamingMessage.streaming = false;
-						currentStreamingMessage.content += '\n\n*[Timed out]*';
-						replaceMessageById({ ...currentStreamingMessage });
-						currentStreamingMessage = null;
-					}
-					isLoading = false;
-					messageQueue = [];
-				}
-			}, LOADING_TIMEOUT_MS);
+			resetLoadingTimeout();
 		} else {
 			if (loadingTimeoutId) {
 				clearTimeout(loadingTimeoutId);
@@ -498,6 +515,13 @@
 			chatId = data.session_id as string;
 		}
 
+		// Stream re-arm: if a chunk arrives after an inactivity timeout, re-arm loading
+		if (!isLoading) {
+			log.debug('handleChatStream: re-arming isLoading (stream resumed after timeout)');
+			isLoading = true;
+		}
+		resetLoadingTimeout();
+
 		const chunk = (data?.content as string) || '';
 
 		// Feed chunk to streaming TTS (speaks sentences as they complete)
@@ -572,6 +596,14 @@
 
 			handleSendPrompt(next.content);
 		}
+	}
+
+	// Pop the last queued message back into the input for editing
+	function recallFromQueue(): string | null {
+		if (messageQueue.length === 0) return null;
+		const last = messageQueue[messageQueue.length - 1];
+		messageQueue = messageQueue.slice(0, -1);
+		return last.content;
 	}
 
 	// Cancel a single queued message by its ID
@@ -754,6 +786,9 @@
 			return;
 		}
 
+		// Tool started — suppress inactivity timeout (tools can run for minutes)
+		resetLoadingTimeout();
+
 		const toolName = data?.tool as string;
 		const toolID = (data?.tool_id as string) || '';
 		const toolInput = (data?.input as string) || '';
@@ -801,6 +836,9 @@
 			log.debug('handleToolResult: session mismatch');
 			return;
 		}
+
+		// Tool completed — restart inactivity timer (may still have other running tools)
+		resetLoadingTimeout();
 
 		const result = (data?.result as string) || '';
 		const toolID = (data?.tool_id as string) || '';
@@ -876,6 +914,7 @@
 
 	function handleImage(data: Record<string, unknown>) {
 		if (chatId && data?.session_id !== chatId) return;
+		resetLoadingTimeout();
 
 		const imageURL = (data?.image_url as string) || '';
 		if (!imageURL) return;
@@ -895,6 +934,7 @@
 	function handleThinking(data: Record<string, unknown>) {
 		log.debug('handleThinking');
 		if (chatId && data?.session_id !== chatId) return;
+		resetLoadingTimeout();
 
 		const thinkingContent = (data?.content as string) || '';
 
@@ -1066,36 +1106,11 @@
 		inputValue = '';
 		clearDraft();
 
-		// Barge-in: if agent is responding, cancel and send the new message immediately
+		// Queue: if agent is busy, queue the message instead of interrupting
 		if (isLoading) {
-			log.debug('Barge-in: cancelling current response and sending: ' + prompt.substring(0, 50));
-
-			// Stop any TTS playback
-			stopSpeaking();
-			stopTTSQueue();
-
-			// Cancel the active response on the backend
-			const client = getWebSocketClient();
-			client.send('cancel', { session_id: chatId || '' });
-
-			// Mark the current streaming message as interrupted
-			if (currentStreamingMessage) {
-				currentStreamingMessage.streaming = false;
-				if (currentStreamingMessage.toolCalls?.length) {
-					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
-						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
-					);
-				}
-				const finalMsg = { ...currentStreamingMessage };
-				replaceMessageById(finalMsg);
-				currentStreamingMessage = null;
-			}
-			isLoading = false;
-
-			// Clear any queued messages — new message supersedes them
-			messageQueue = [];
-
-			// Fall through to send the new message immediately
+			log.debug('Queuing message: ' + prompt.substring(0, 50));
+			messageQueue = [...messageQueue, { id: generateUUID(), content: prompt }];
+			return;
 		}
 
 		// Show user message immediately and send
@@ -1724,10 +1739,15 @@
 
 	// Auto-focus textarea when user starts typing anywhere
 	function handleGlobalKeydown(e: KeyboardEvent) {
-		// Escape exits voice mode
+		// Escape cancels generation (unless in voice mode, where it exits voice mode)
 		if (e.key === 'Escape' && voiceMode) {
 			e.preventDefault();
 			exitVoiceMode();
+			return;
+		}
+		if (e.key === 'Escape' && isLoading) {
+			e.preventDefault();
+			cancelMessage();
 			return;
 		}
 
@@ -1938,6 +1958,7 @@
 		onSend={sendMessage}
 		onCancel={cancelMessage}
 		onCancelQueued={cancelQueuedMessage}
+		onRecallQueue={recallFromQueue}
 		onNewSession={resetChat}
 		onToggleVoice={toggleRecording}
 	/>

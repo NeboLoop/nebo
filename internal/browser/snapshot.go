@@ -269,3 +269,62 @@ func (p *Page) Evaluate(ctx context.Context, script string) (any, error) {
 
 	return result, nil
 }
+
+// GetSource returns the full page HTML source.
+func (p *Page) GetSource(ctx context.Context) (string, error) {
+	if p.closed {
+		return "", fmt.Errorf("page is closed")
+	}
+
+	content, err := p.page.Content()
+	if err != nil {
+		return "", fmt.Errorf("get source failed: %w", err)
+	}
+
+	return content, nil
+}
+
+// ConsoleResult holds console messages and page errors returned by GetConsoleMessages.
+type ConsoleResult struct {
+	Messages []ConsoleMessage `json:"messages,omitempty"`
+	Errors   []PageError      `json:"errors,omitempty"`
+}
+
+// GetConsoleMessages returns captured console messages and page errors.
+// If level is non-empty, only messages matching that level are returned.
+// If clear is true, the captured messages and errors are cleared after reading.
+func (p *Page) GetConsoleMessages(ctx context.Context, level string, clear bool) (*ConsoleResult, error) {
+	if p.closed {
+		return nil, fmt.Errorf("page is closed")
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Copy messages with optional level filter
+	var messages []ConsoleMessage
+	for _, msg := range p.state.ConsoleMessages {
+		if level == "" || strings.EqualFold(msg.Type, level) {
+			messages = append(messages, ConsoleMessage{
+				Type:      msg.Type,
+				Text:      msg.Text,
+				Timestamp: msg.Timestamp,
+			})
+		}
+	}
+
+	// Copy errors
+	errors := make([]PageError, len(p.state.Errors))
+	copy(errors, p.state.Errors)
+
+	// Clear after read if requested
+	if clear {
+		p.state.ConsoleMessages = nil
+		p.state.Errors = nil
+	}
+
+	return &ConsoleResult{
+		Messages: messages,
+		Errors:   errors,
+	}, nil
+}
