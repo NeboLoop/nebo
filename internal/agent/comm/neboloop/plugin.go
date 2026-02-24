@@ -947,9 +947,11 @@ func (p *Plugin) reconnect() {
 		return
 	}
 
-	// Exponential backoff: 100ms base, cap at 60s, never stop retrying
+	// Exponential backoff: 100ms base, cap at 10min, never stop retrying
+	// At scale (1M+ users), 60s would create thundering herd.
+	// 10min allows graceful stagger across all clients.
 	base := 100 * time.Millisecond
-	maxDelay := 60 * time.Second
+	maxDelay := 10 * time.Minute
 	attempt := 0
 
 	for {

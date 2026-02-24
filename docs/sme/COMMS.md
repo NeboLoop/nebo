@@ -228,10 +228,11 @@ Connect(ctx, config)
 
 ### Reconnection
 
-- Exponential backoff with jitter: 100ms base, 10s cap
+- Exponential backoff with jitter: 100ms base, 600s (10min) cap
 - Auth failures (401) set `authDead = true`, stop retrying
 - Network errors: keep retrying indefinitely
 - On reconnect success: re-wire handlers, re-publish agent card
+- **Rationale for 600s ceiling:** At 10M+ concurrent agents, 60s backoff creates unacceptable reconnect storms. 600s spreads the retry window broadly, reducing peak load. Jitter (±25%) prevents synchronized storms. 9 exponential attempts reach ceiling in ~10min, still fast feedback for real outages.
 
 ### Message Routing (inbound)
 

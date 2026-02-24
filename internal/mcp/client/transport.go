@@ -281,8 +281,10 @@ func (c *Client) CallTool(ctx context.Context, integrationID, toolName string, i
 
 	// Retry with exponential backoff: never give up on transient errors
 	// Only stop on context cancellation or if explicitly disabled
+	// At scale (1M+ users), 60s would create thundering herd.
+	// 10min allows graceful stagger across all clients.
 	base := 100 * time.Millisecond
-	maxDelay := 60 * time.Second
+	maxDelay := 10 * time.Minute
 	attempt := 0
 
 	for {
