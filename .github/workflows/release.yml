@@ -432,7 +432,7 @@ jobs:
           cat checksums.txt
 
       - name: Upload release assets to CDN
-        if: env.DO_SPACES_ACCESS_KEY != ''
+        if: ${{ secrets.DO_SPACES_ACCESS_KEY != '' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
@@ -563,8 +563,8 @@ jobs:
 
           dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-amd64/Packages
           dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-arm64/Packages
-          gzip -k dists/stable/main/binary-amd64/Packages
-          gzip -k dists/stable/main/binary-arm64/Packages
+          gzip -kf dists/stable/main/binary-amd64/Packages
+          gzip -kf dists/stable/main/binary-arm64/Packages
 
           # Generate Release file
           cat > dists/stable/Release << 'EOF'
