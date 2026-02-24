@@ -24,20 +24,44 @@ func (p *Page) Snapshot(ctx context.Context, opts SnapshotOptions) (string, erro
 	// Clear old refs before generating new snapshot
 	p.refs.Clear()
 
-	// Use Playwright's ariaSnapshot
-	snapshot, err := p.page.Locator("body").AriaSnapshot()
-	if err != nil {
-		return "", fmt.Errorf("aria snapshot failed: %w", err)
+	// Ensure page has finished loading before snapshot
+	// This prevents hangs on pages with heavy JavaScript
+	if err := p.page.WaitForLoadState(); err != nil {
+		// Page might not load completely, but we should still try to snapshot
+		// Log and continue rather than fail
+		fmt.Printf("[Browser] Page load state wait failed: %v\n", err)
 	}
 
-	if !opts.IncludeRefs {
-		return maybeTrauncate(snapshot, opts.MaxChars), nil
+	// Use Playwright's ariaSnapshot with context timeout
+	// Wrap in goroutine with hard timeout to prevent hanging
+	type snapshotResult struct {
+		snapshot string
+		err      error
 	}
+	resultCh := make(chan snapshotResult, 1)
 
-	// Parse snapshot and add refs
-	annotated := p.annotateSnapshot(snapshot)
+	go func() {
+		snapshot, err := p.page.Locator("body").AriaSnapshot()
+		resultCh <- snapshotResult{snapshot, err}
+	}()
 
-	return maybeTrauncate(annotated, opts.MaxChars), nil
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			return "", fmt.Errorf("aria snapshot failed: %w", result.err)
+		}
+
+		if !opts.IncludeRefs {
+			return maybeTrauncate(result.snapshot, opts.MaxChars), nil
+		}
+
+		// Parse snapshot and add refs
+		annotated := p.annotateSnapshot(result.snapshot)
+
+		return maybeTrauncate(annotated, opts.MaxChars), nil
+	case <-ctx.Done():
+		return "", fmt.Errorf("snapshot timeout or cancelled")
+	}
 }
 
 // annotateSnapshot adds element refs (e1, e2, etc.) to the snapshot.
