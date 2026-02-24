@@ -70,8 +70,9 @@ func (b *Bridge) SyncAll(ctx context.Context) error {
 		if !ig.ServerUrl.Valid || ig.ServerUrl.String == "" {
 			continue
 		}
-		// Skip OAuth integrations that haven't completed authentication yet
-		if ig.AuthType == "oauth" && (!ig.ConnectionStatus.Valid || ig.ConnectionStatus.String != "connected") {
+		// Skip OAuth integrations that haven't completed authentication yet (status is NULL).
+		// Allow "disconnected" and "error" states through for reconnection.
+		if ig.AuthType == "oauth" && !ig.ConnectionStatus.Valid {
 			continue
 		}
 		if err := b.Connect(ctx, ig.ID, ig.ServerType); err != nil {
@@ -133,10 +134,16 @@ func (b *Bridge) Connect(ctx context.Context, integrationID, serverType string) 
 	b.connections[integrationID] = conn
 	b.mu.Unlock()
 
-	// Update tool count in DB
+	// Update tool count and connection status in DB
 	b.queries.UpdateMCPIntegrationToolCount(ctx, db.UpdateMCPIntegrationToolCountParams{
 		ToolCount: sql.NullInt64{Int64: int64(len(mcpTools)), Valid: true},
 		ID:        integrationID,
+	})
+	b.queries.UpdateMCPIntegrationConnectionStatus(ctx, db.UpdateMCPIntegrationConnectionStatusParams{
+		ConnectionStatus: sql.NullString{String: "connected", Valid: true},
+		Column2:          "connected",
+		LastError:        sql.NullString{Valid: false},
+		ID:               integrationID,
 	})
 
 	fmt.Printf("[MCP Bridge] Connected %s: %d tools registered\n", serverType, len(mcpTools))

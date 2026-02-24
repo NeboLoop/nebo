@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/logging"
 )
 
@@ -38,9 +40,8 @@ func (t *AuthenticatedTransport) RoundTrip(req *http.Request) (*http.Response, e
 
 // sessionEntry holds a cached MCP client session for an integration.
 type sessionEntry struct {
-	session       *mcp.ClientSession
-	createdAt     time.Time
-	lastHeartbeat time.Time
+	session   *mcp.ClientSession
+	createdAt time.Time
 }
 
 // sessions caches live MCP client sessions per integration ID.
@@ -49,30 +50,17 @@ var (
 	sessionsMu sync.Mutex
 )
 
-// healthCheckInterval defines how often we verify session health
-const healthCheckInterval = 5 * time.Minute
-
-// maxSessionAge defines the maximum lifetime of a session before forcing reconnect
+// maxSessionAge defines the maximum lifetime of a session before forcing reconnect.
+// Ensures periodic credential rotation for OAuth integrations.
 const maxSessionAge = 30 * time.Minute
 
 // isSessionHealthy checks if a cached session is still alive and valid.
-// Returns true if the session should be reused, false if it needs reconnection.
+// SDK keepalive handles liveness detection; this only enforces max age for credential rotation.
 func isSessionHealthy(entry *sessionEntry) bool {
 	if entry == nil || entry.session == nil {
 		return false
 	}
-	
-	// Close session if it exceeded max age
-	if time.Since(entry.createdAt) > maxSessionAge {
-		return false
-	}
-	
-	// Close session if it hasn't been used in 10 minutes (server may have dropped it)
-	if time.Since(entry.lastHeartbeat) > 10*time.Minute {
-		return false
-	}
-	
-	return true
+	return time.Since(entry.createdAt) <= maxSessionAge
 }
 
 // getOrCreateSession returns a cached session or creates a new one.
@@ -81,7 +69,6 @@ func (c *Client) getOrCreateSession(ctx context.Context, integrationID, serverUR
 	if entry, ok := sessions.Load(integrationID); ok {
 		se := entry.(*sessionEntry)
 		if isSessionHealthy(se) {
-			se.lastHeartbeat = time.Now()
 			return se.session, nil
 		}
 		// Session is stale, close and remove it
@@ -120,20 +107,35 @@ func (c *Client) getOrCreateSession(ctx context.Context, integrationID, serverUR
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "nebo",
 		Version: "1.0.0",
-	}, nil)
+	}, &mcp.ClientOptions{
+		KeepAlive: 30 * time.Second,
+	})
 
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MCP server: %w", err)
 	}
 
-	now := time.Now()
 	sessions.Store(integrationID, &sessionEntry{
-		session:       session,
-		createdAt:     now,
-		lastHeartbeat: now,
+		session:   session,
+		createdAt: time.Now(),
 	})
 	logging.Infof("MCP session established for integration %s at %s", integrationID, serverURL)
+
+	// Watch for session closure (SDK keepalive or server-side disconnect).
+	// When the session dies, clean up cache and update DB status.
+	go func() {
+		_ = session.Wait()
+		sessions.Delete(integrationID)
+		logging.Infof("MCP session closed for integration %s (detected by watcher)", integrationID)
+		// Update DB connection_status to "disconnected" (best-effort, background context)
+		c.db.UpdateMCPIntegrationConnectionStatus(context.Background(), db.UpdateMCPIntegrationConnectionStatusParams{
+			ConnectionStatus: sql.NullString{String: "disconnected", Valid: true},
+			Column2:          "disconnected",
+			LastError:        sql.NullString{String: "session closed", Valid: true},
+			ID:               integrationID,
+		})
+	}()
 
 	return session, nil
 }
@@ -157,12 +159,13 @@ func (c *Client) CloseAllSessions() {
 	})
 }
 
-// StartHealthChecker starts a background goroutine that periodically validates
-// and reconnects MCP sessions. It checks every healthCheckInterval.
-// This helps detect stale connections and reconnect before they fail user operations.
+// StartHealthChecker starts a background goroutine that periodically closes
+// sessions that exceeded maxSessionAge. SDK keepalive handles liveness detection;
+// the periodic SyncAll in agent.go handles reconnection.
 func (c *Client) StartHealthChecker(ctx context.Context) {
+	interval := maxSessionAge / 3 // 10 min — only checks age-based expiry
 	go func() {
-		ticker := time.NewTicker(healthCheckInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		for {
@@ -170,47 +173,27 @@ func (c *Client) StartHealthChecker(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				c.performHealthCheck(ctx)
+				c.performHealthCheck()
 			}
 		}
 	}()
-	logging.Infof("MCP health checker started (interval: %v)", healthCheckInterval)
+	logging.Infof("MCP health checker started (interval: %v)", interval)
 }
 
-// performHealthCheck validates all cached sessions and reconnects stale ones.
-func (c *Client) performHealthCheck(ctx context.Context) {
+// performHealthCheck closes sessions that exceeded maxSessionAge.
+// The session watcher goroutine handles cache/DB cleanup when Close() fires.
+func (c *Client) performHealthCheck() {
 	sessions.Range(func(key, value any) bool {
 		integrationID := key.(string)
 		entry := value.(*sessionEntry)
 
-		// Skip if session is still healthy
 		if isSessionHealthy(entry) {
 			return true
 		}
 
-		// Close the stale session
+		// Session exceeded max age — close it (watcher goroutine handles cleanup)
+		logging.Infof("Health check: closing aged session for %s", integrationID)
 		entry.session.Close()
-		sessions.Delete(integrationID)
-
-		// Try to reconnect
-		integration, err := c.db.GetMCPIntegration(ctx, integrationID)
-		if err != nil {
-			logging.Warnf("Health check: failed to get integration %s: %v", integrationID, err)
-			return true
-		}
-
-		if !integration.ServerUrl.Valid || integration.ServerUrl.String == "" {
-			return true
-		}
-
-		// Attempt reconnect
-		_, err = c.getOrCreateSession(ctx, integrationID, integration.ServerUrl.String, integration.AuthType)
-		if err != nil {
-			logging.Warnf("Health check: failed to reconnect %s (%s): %v", integration.Name, integrationID, err)
-		} else {
-			logging.Infof("Health check: successfully reconnected %s (%s)", integration.Name, integrationID)
-		}
-
 		return true
 	})
 }
