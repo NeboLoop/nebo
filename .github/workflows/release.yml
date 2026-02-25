@@ -50,6 +50,9 @@ jobs:
           - runner: macos-latest    # Cross-compile for Intel
             goarch: amd64
     runs-on: ${{ matrix.runner }}
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
+      HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,7 +80,7 @@ jobs:
             -o nebo-darwin-${{ matrix.goarch }} .
 
       - name: Import signing certificate
-        if: env.APPLE_CERTIFICATE_P12 != ''
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -139,7 +142,7 @@ jobs:
           ./scripts/create-dmg.sh "$VERSION" "${{ matrix.goarch }}"
 
       - name: Notarize .dmg
-        if: env.APPLE_ID != ''
+        if: ${{ env.HAS_NOTARIZE_CREDS == 'true' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -328,11 +331,15 @@ jobs:
           name: nebo-windows-installer
           path: dist/Nebo-*-setup.exe
 
+      - name: Export signed binary for auto-update
+        if: vars.AZURE_SIGNING_ENABLED == 'true'
+        run: cp nebo-windows-amd64.exe nebo-windows-amd64-signed.exe
+
       - uses: actions/upload-artifact@v4
         if: vars.AZURE_SIGNING_ENABLED == 'true'
         with:
-          name: nebo-windows-amd64-signed
-          path: nebo-windows-amd64.exe
+          name: nebo-windows-amd64-binary
+          path: nebo-windows-amd64-signed.exe
 
   # ─── Build .deb packages ──────────────────────────────────────────────
   package-deb:
@@ -411,9 +418,11 @@ jobs:
       - name: Stage signed binaries for release
         run: |
           # Rename signed binaries to release names (strip -signed suffix)
-          for f in signed-binaries/nebo-*-signed; do
+          # Handles: nebo-darwin-arm64-signed → nebo-darwin-arm64
+          #          nebo-windows-amd64-signed.exe → nebo-windows-amd64.exe
+          for f in signed-binaries/nebo-*-signed*; do
             [ -f "$f" ] || continue
-            dest="artifacts/$(basename "$f" | sed 's/-signed$//')"
+            dest="artifacts/$(basename "$f" | sed 's/-signed//')"
             cp "$f" "$dest"
           done
 
@@ -534,6 +543,8 @@ jobs:
     if: ${{ vars.HAS_TAP_TOKEN == 'true' }}
     needs: package-deb
     runs-on: ubuntu-latest
+    env:
+      HAS_GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
     steps:
       - name: Download .deb packages
         uses: actions/download-artifact@v4
@@ -584,7 +595,7 @@ jobs:
           apt-ftparchive release dists/stable >> dists/stable/Release
 
       - name: Sign APT repository
-        if: env.GPG_KEY != ''
+        if: ${{ env.HAS_GPG_KEY == 'true' }}
         env:
           GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
         run: |
