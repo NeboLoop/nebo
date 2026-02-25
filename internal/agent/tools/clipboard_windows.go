@@ -85,13 +85,13 @@ func (t *ClipboardTool) Execute(ctx context.Context, input json.RawMessage) (*To
 
 	switch in.Action {
 	case "get":
-		result, err = t.getClipboard()
+		result, err = t.getClipboard(ctx)
 	case "set":
-		result, err = t.setClipboard(in.Content)
+		result, err = t.setClipboard(ctx, in.Content)
 	case "clear":
-		result, err = t.clearClipboard()
+		result, err = t.clearClipboard(ctx)
 	case "type":
-		result, err = t.getClipboardType()
+		result, err = t.getClipboardType(ctx)
 	case "history":
 		limit := in.Limit
 		if limit <= 0 {
@@ -109,9 +109,9 @@ func (t *ClipboardTool) Execute(ctx context.Context, input json.RawMessage) (*To
 	return &ToolResult{Content: result, IsError: false}, nil
 }
 
-func (t *ClipboardTool) getClipboard() (string, error) {
+func (t *ClipboardTool) getClipboard(ctx context.Context) (string, error) {
 	// Use PowerShell to get clipboard content
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", "Get-Clipboard").Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", "Get-Clipboard").Output()
 	if err != nil {
 		return "", fmt.Errorf("Get-Clipboard failed: %v", err)
 	}
@@ -142,7 +142,7 @@ func (t *ClipboardTool) getClipboard() (string, error) {
 	return content, nil
 }
 
-func (t *ClipboardTool) setClipboard(content string) (string, error) {
+func (t *ClipboardTool) setClipboard(ctx context.Context, content string) (string, error) {
 	if content == "" {
 		return "", fmt.Errorf("content is required")
 	}
@@ -152,7 +152,7 @@ func (t *ClipboardTool) setClipboard(content string) (string, error) {
 	escaped = strings.ReplaceAll(escaped, "$", "`$")
 	escaped = strings.ReplaceAll(escaped, "\"", "`\"")
 
-	cmd := exec.Command("powershell", "-NoProfile", "-Command",
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
 		fmt.Sprintf("Set-Clipboard -Value \"%s\"", escaped))
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("Set-Clipboard failed: %v", err)
@@ -177,16 +177,16 @@ func (t *ClipboardTool) setClipboard(content string) (string, error) {
 	return fmt.Sprintf("Clipboard set to: %q", preview), nil
 }
 
-func (t *ClipboardTool) clearClipboard() (string, error) {
+func (t *ClipboardTool) clearClipboard(ctx context.Context) (string, error) {
 	// Clear by setting to empty
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Set-Clipboard -Value $null")
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", "Set-Clipboard -Value $null")
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("failed to clear clipboard: %v", err)
 	}
 	return "Clipboard cleared", nil
 }
 
-func (t *ClipboardTool) getClipboardType() (string, error) {
+func (t *ClipboardTool) getClipboardType(ctx context.Context) (string, error) {
 	// PowerShell script to detect clipboard content type
 	script := `
 $formats = @()
@@ -199,7 +199,7 @@ if ($data) {
     'Empty'
 }
 `
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get clipboard type: %v", err)
 	}
@@ -254,12 +254,4 @@ func (t *ClipboardTool) getHistory(limit int) (string, error) {
 	}
 
 	return sb.String(), nil
-}
-
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewClipboardTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "system",
-	})
 }

@@ -630,10 +630,3 @@ func escapeAtspyPy(s string) string {
 	return s
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewAccessibilityTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "automation",
-	})
-}

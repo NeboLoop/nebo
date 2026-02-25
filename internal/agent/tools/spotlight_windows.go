@@ -243,11 +243,3 @@ func escapeSpotlightPS(s string) string {
 	s = strings.ReplaceAll(s, "$", "`$")
 	return s
 }
-
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewSpotlightTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "search",
-	})
-}

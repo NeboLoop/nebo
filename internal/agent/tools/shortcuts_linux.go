@@ -385,10 +385,3 @@ func (t *ShortcutsTool) deleteAutomation(ctx context.Context, name string) (*Too
 	return &ToolResult{Content: fmt.Sprintf("Deleted: %s", strings.Join(deleted, ", "))}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewShortcutsTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "automation",
-	})
-}

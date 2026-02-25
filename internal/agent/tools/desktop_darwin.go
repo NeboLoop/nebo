@@ -273,10 +273,3 @@ end try
 	return &ToolResult{Content: fmt.Sprintf("Pasted text into element at (%d, %d)", x, y)}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewDesktopTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "automation",
-	})
-}

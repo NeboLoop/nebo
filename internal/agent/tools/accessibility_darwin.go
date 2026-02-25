@@ -301,10 +301,3 @@ func (t *AccessibilityTool) mapRole(role string) string {
 	return role
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewAccessibilityTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "automation",
-	})
-}

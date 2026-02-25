@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/png"
@@ -15,9 +16,9 @@ import (
 
 // CaptureAppWindow captures a specific app's window screenshot on macOS.
 // Uses screencapture -l <windowID> for high-fidelity capture.
-func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
+func CaptureAppWindow(ctx context.Context, app string, windowIndex int) (image.Image, Rect, error) {
 	// Get window ID and bounds via AppleScript
-	windowID, bounds, err := getWindowInfo(app, windowIndex)
+	windowID, bounds, err := getWindowInfo(ctx, app, windowIndex)
 	if err != nil {
 		return nil, Rect{}, fmt.Errorf("failed to get window info for %s: %w", app, err)
 	}
@@ -26,7 +27,7 @@ func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("nebo_capture_%d.png", windowID))
 	defer os.Remove(tmpFile)
 
-	cmd := exec.Command("screencapture", "-l", strconv.Itoa(windowID), "-x", tmpFile)
+	cmd := exec.CommandContext(ctx, "screencapture", "-l", strconv.Itoa(windowID), "-x", tmpFile)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, Rect{}, fmt.Errorf("screencapture failed: %v (%s)", err, string(out))
 	}
@@ -46,7 +47,7 @@ func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
 }
 
 // getWindowInfo retrieves the CGWindowID and bounds for an app window.
-func getWindowInfo(app string, windowIndex int) (int, Rect, error) {
+func getWindowInfo(ctx context.Context, app string, windowIndex int) (int, Rect, error) {
 	// AppleScript to get window ID and position/size
 	script := fmt.Sprintf(`
 tell application "System Events"
@@ -68,7 +69,7 @@ tell application "System Events"
 	end tell
 end tell`, app, app, windowIndex)
 
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return 0, Rect{}, fmt.Errorf("AppleScript failed: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -85,7 +86,7 @@ end tell`, app, app, windowIndex)
 	bounds := Rect{X: x, Y: y, Width: w, Height: h}
 
 	// Get the CGWindowID using the window list
-	windowID, err := getCGWindowID(app, bounds)
+	windowID, err := getCGWindowID(ctx, app, bounds)
 	if err != nil {
 		return 0, bounds, err
 	}
@@ -94,7 +95,7 @@ end tell`, app, app, windowIndex)
 }
 
 // getCGWindowID gets the CGWindowID for a specific app window using Python/CoreGraphics.
-func getCGWindowID(app string, bounds Rect) (int, error) {
+func getCGWindowID(ctx context.Context, app string, bounds Rect) (int, error) {
 	script := fmt.Sprintf(`
 import Quartz
 import sys
@@ -130,7 +131,7 @@ for w in windows:
 print(-1)
 `, app, bounds.X, bounds.Y)
 
-	cmd := exec.Command("python3", "-c", script)
+	cmd := exec.CommandContext(ctx, "python3", "-c", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get CGWindowID: %v (%s)", err, string(out))
@@ -145,7 +146,7 @@ print(-1)
 }
 
 // ListAppWindows returns info about all windows for an app.
-func ListAppWindows(app string) ([]string, error) {
+func ListAppWindows(ctx context.Context, app string) ([]string, error) {
 	script := fmt.Sprintf(`tell application "System Events"
 	tell process "%s"
 		set winList to ""
@@ -156,7 +157,7 @@ func ListAppWindows(app string) ([]string, error) {
 	end tell
 end tell`, app)
 
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list windows: %v", err)
 	}

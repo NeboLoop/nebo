@@ -86,11 +86,3 @@ Write-Output "%s"
 
 	return &ToolResult{Content: strings.TrimSpace(string(out))}, nil
 }
-
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewMusicTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "media",
-	})
-}

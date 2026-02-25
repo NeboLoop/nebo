@@ -335,10 +335,3 @@ func (t *MusicTool) mpcShuffle(ctx context.Context, enable *bool) (*ToolResult, 
 	return &ToolResult{Content: "Shuffle: OFF"}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewMusicTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "media",
-	})
-}

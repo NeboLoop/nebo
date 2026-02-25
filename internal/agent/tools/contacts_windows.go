@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // ContactsTool provides Windows contacts integration via Outlook COM.
@@ -22,8 +23,11 @@ func NewContactsTool() *ContactsTool {
 }
 
 func (t *ContactsTool) checkOutlook() bool {
+	// Check if Outlook COM is available (with timeout to prevent init() hang)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	script := `try { $null = New-Object -ComObject Outlook.Application; Write-Output "true" } catch { Write-Output "false" }`
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -270,10 +274,3 @@ func escapePSContactsQuery(s string) string {
 	return s
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewContactsTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "productivity",
-	})
-}

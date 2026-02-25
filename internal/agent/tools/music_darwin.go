@@ -250,10 +250,3 @@ func (t *MusicTool) setShuffle(enabled bool) (*ToolResult, error) {
 	return &ToolResult{Content: out}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewMusicTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "media",
-	})
-}

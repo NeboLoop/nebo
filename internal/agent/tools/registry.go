@@ -429,8 +429,40 @@ func toolCorrection(name string) string {
 		return "INSTEAD USE: file(action: \"glob\", pattern: \"**/*.go\")"
 	case "bash":
 		return "INSTEAD USE: shell(resource: \"bash\", action: \"exec\", command: \"...\")"
-	case "apps", "application", "applications":
-		return "INSTEAD USE: app(action: \"list\") or app(action: \"launch\", name: \"AppName\")"
+	case "apps", "application", "applications", "app":
+		return "INSTEAD USE: system(resource: \"app\", action: \"list\") or system(resource: \"app\", action: \"launch\", name: \"AppName\")"
+	case "mail", "email":
+		return "INSTEAD USE: pim(resource: \"mail\", action: \"unread\") or pim(resource: \"mail\", action: \"send\", ...)"
+	case "contacts":
+		return "INSTEAD USE: pim(resource: \"contacts\", action: \"search\", query: \"...\")"
+	case "calendar":
+		return "INSTEAD USE: pim(resource: \"calendar\", action: \"today\") or pim(resource: \"calendar\", action: \"create\", ...)"
+	case "reminders":
+		return "INSTEAD USE: pim(resource: \"reminders\", action: \"list\") or pim(resource: \"reminders\", action: \"create\", ...)"
+	case "clipboard":
+		return "INSTEAD USE: system(resource: \"clipboard\", action: \"get\") or system(resource: \"clipboard\", action: \"set\", content: \"...\")"
+	case "notification", "notify":
+		return "INSTEAD USE: system(resource: \"notify\", action: \"send\", title: \"...\", text: \"...\")"
+	case "music":
+		return "INSTEAD USE: system(resource: \"music\", action: \"play\") or system(resource: \"music\", action: \"status\")"
+	case "spotlight", "search":
+		return "INSTEAD USE: system(resource: \"search\", action: \"query\", query: \"...\")"
+	case "keychain":
+		return "INSTEAD USE: system(resource: \"keychain\", action: \"get\", service: \"...\", account: \"...\")"
+	case "window":
+		return "INSTEAD USE: desktop(resource: \"window\", action: \"list\") or desktop(resource: \"window\", action: \"focus\", name: \"...\")"
+	case "accessibility":
+		return "INSTEAD USE: desktop(resource: \"ui\", action: \"tree\", app: \"...\") or desktop(resource: \"ui\", action: \"find\", ...)"
+	case "menubar":
+		return "INSTEAD USE: desktop(resource: \"menu\", action: \"list\", app: \"...\") or desktop(resource: \"menu\", action: \"click\", ...)"
+	case "dialog":
+		return "INSTEAD USE: desktop(resource: \"dialog\", action: \"detect\") or desktop(resource: \"dialog\", action: \"click\", ...)"
+	case "spaces":
+		return "INSTEAD USE: desktop(resource: \"space\", action: \"list\") or desktop(resource: \"space\", action: \"switch\", space: 2)"
+	case "shortcuts":
+		return "INSTEAD USE: desktop(resource: \"shortcut\", action: \"list\") or desktop(resource: \"shortcut\", action: \"run\", name: \"...\")"
+	case "dock":
+		return "INSTEAD USE: system(resource: \"app\", action: \"list\") — dock tool has been consolidated"
 	case "devtools", "dev_tools", "browser_devtools":
 		return "INSTEAD USE: web(resource: \"devtools\", action: \"console\") or web(resource: \"devtools\", action: \"source\")"
 	default:

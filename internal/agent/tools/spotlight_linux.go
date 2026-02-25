@@ -334,10 +334,3 @@ func (t *SpotlightTool) launchApp(ctx context.Context, name string) (*ToolResult
 	return &ToolResult{Content: fmt.Sprintf("Could not launch application: %s", name), IsError: true}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewSpotlightTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "search",
-	})
-}

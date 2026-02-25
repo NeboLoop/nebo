@@ -18,7 +18,7 @@ type RawElement struct {
 	Children    []RawElement
 }
 
-// rolePrefixMap maps accessibility role names to short prefixes (matching Peekaboo convention).
+// rolePrefixMap maps accessibility role names to short prefixes (role-based prefixes).
 var rolePrefixMap = map[string]string{
 	"button":      "B",
 	"textfield":   "T",

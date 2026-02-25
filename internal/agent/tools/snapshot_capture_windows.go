@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/png"
@@ -15,7 +16,7 @@ import (
 
 // CaptureAppWindow captures a specific app's window screenshot on Windows.
 // Uses PowerShell with .NET PrintWindow for window-level capture.
-func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
+func CaptureAppWindow(ctx context.Context, app string, windowIndex int) (image.Image, Rect, error) {
 	tmpFile := filepath.Join(os.TempDir(), "nebo_capture.png")
 	defer os.Remove(tmpFile)
 
@@ -66,7 +67,7 @@ $bmp.Dispose()
 Write-Output "$($rect.Left),$($rect.Top),$width,$height"
 `, app, app, app, strings.ReplaceAll(tmpFile, `\`, `\\`))
 
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, Rect{}, fmt.Errorf("capture failed: %v (%s)", err, string(out))
@@ -98,11 +99,11 @@ Write-Output "$($rect.Left),$($rect.Top),$width,$height"
 }
 
 // ListAppWindows returns window titles for an app.
-func ListAppWindows(app string) ([]string, error) {
+func ListAppWindows(ctx context.Context, app string) ([]string, error) {
 	script := fmt.Sprintf(`
 Get-Process | Where-Object { $_.ProcessName -like "*%s*" -and $_.MainWindowTitle -ne "" } | ForEach-Object { $_.MainWindowTitle }
 `, app)
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list windows: %v", err)

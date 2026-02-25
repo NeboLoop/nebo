@@ -194,7 +194,7 @@ func (t *ScreenshotTool) executeSee(ctx context.Context, params screenshotInput)
 			}
 		}
 
-		img, bounds, err := CaptureAppWindow(params.App, windowIndex)
+		img, bounds, err := CaptureAppWindow(ctx, params.App, windowIndex)
 		if err != nil {
 			return &ToolResult{
 				Content: fmt.Sprintf("Failed to capture %s window: %v", params.App, err),
@@ -228,7 +228,7 @@ func (t *ScreenshotTool) executeSee(ctx context.Context, params screenshotInput)
 	}
 
 	// Get UI tree with element bounds from accessibility
-	rawElements := getUITreeWithBounds(params.App, windowBounds)
+	rawElements := getUITreeWithBounds(ctx, params.App, windowBounds)
 
 	// Assign element IDs
 	elements := AssignElementIDs(rawElements)

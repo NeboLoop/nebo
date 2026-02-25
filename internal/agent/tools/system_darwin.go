@@ -262,10 +262,3 @@ func runOsascript(script string) (string, error) {
 	return strings.TrimSpace(string(output)), err
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewSystemTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "system",
-	})
-}

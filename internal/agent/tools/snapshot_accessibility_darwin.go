@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 
 // getUITreeWithBounds retrieves the accessibility tree for an app with element positions.
 // Returns RawElement slice suitable for AssignElementIDs.
-func getUITreeWithBounds(app string, windowBounds Rect) []RawElement {
+func getUITreeWithBounds(ctx context.Context, app string, windowBounds Rect) []RawElement {
 	if app == "" {
 		return nil
 	}
@@ -81,7 +82,7 @@ tell application "System Events"
 	end tell
 end tell`, app)
 
-	out, err := exec.Command("osascript", "-e", script).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "osascript", "-e", script).CombinedOutput()
 	if err != nil {
 		fmt.Printf("[screenshot:see] AppleScript accessibility error: %v\n", err)
 		return nil

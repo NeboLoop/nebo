@@ -224,10 +224,3 @@ func escapeAppleScriptString(s string) string {
 	return s
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewNotificationTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "system",
-	})
-}

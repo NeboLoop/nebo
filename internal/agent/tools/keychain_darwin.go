@@ -180,10 +180,3 @@ func (t *KeychainTool) deletePassword(p keychainInput) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Password deleted for '%s'", p.Service)}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewKeychainTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "security",
-	})
-}

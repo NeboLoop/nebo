@@ -292,11 +292,3 @@ func escapeCredPS(s string) string {
 	s = strings.ReplaceAll(s, "$", "`$")
 	return s
 }
-
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewKeychainTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "security",
-	})
-}

@@ -285,10 +285,3 @@ func (t *NotificationTool) getDNDStatus() (string, error) {
 	return "Do Not Disturb: Unknown (could not detect desktop environment)", nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewNotificationTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "system",
-	})
-}

@@ -501,10 +501,3 @@ func escapeUIAutoPS(s string) string {
 	return s
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewAccessibilityTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "automation",
-	})
-}

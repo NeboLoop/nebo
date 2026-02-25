@@ -96,10 +96,3 @@ func (t *ShortcutsTool) runShortcut(name, input string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Shortcut '%s' output:\n%s", name, result)}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewShortcutsTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "automation",
-	})
-}

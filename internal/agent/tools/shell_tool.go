@@ -78,6 +78,22 @@ func (t *ShellTool) ActionsFor(resource string) []string {
 
 // Description returns the tool description
 func (t *ShellTool) Description() string {
+	if runtime.GOOS == "windows" {
+		return `Shell and process operations. Commands run in PowerShell.
+
+Resources:
+- bash: Execute PowerShell commands (exec)
+- process: Manage system processes (list, kill, info)
+- session: Manage background shell sessions (list, poll, log, write, kill)
+
+Examples:
+  shell(resource: bash, action: exec, command: "Get-ChildItem")
+  shell(resource: bash, action: exec, command: "npm run build", background: true)
+  shell(resource: process, action: list, filter: "node")
+  shell(resource: process, action: kill, pid: 12345)
+  shell(resource: session, action: list)
+  shell(resource: session, action: poll, session_id: "abc123")`
+	}
 	return `Shell and process operations.
 
 Resources:

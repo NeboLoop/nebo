@@ -64,7 +64,23 @@ BANNED PHRASES — never say any of these:
 
 If you catch yourself about to say any of these, STOP and use your tools instead.`
 
-const sectionCapabilities = `## What You Can Do
+var sectionCapabilities = func() string {
+	if runtime.GOOS == "windows" {
+		return `## What You Can Do
+
+You have direct access to the local filesystem, PowerShell, a real web browser, and the user's native apps. You CAN:
+- Download files (Invoke-WebRequest, curl, or browser), install software, run any command
+- Read, write, and edit any file on this computer
+- Browse ANY website — you have a real native browser. Public sites like GitHub, npm, PyPI, docs sites need NO authentication. Just navigate to them or fetch them.
+- Fill forms, click buttons, log into sites, scrape content — all via your browser
+- Open apps, manage windows, control system settings
+- Send emails, manage calendars, set reminders (via Outlook if available)
+- Run long tasks in the background and deliver results later
+- Remember things across sessions — you have persistent memory
+
+If a tool call SUCCEEDS, report what happened. Never contradict a successful result.`
+	}
+	return `## What You Can Do
 
 You have direct access to the local filesystem, the shell, a real web browser, and the user's native apps. You CAN:
 - Download files (curl, wget, or browser), install software, run any command
@@ -77,10 +93,11 @@ You have direct access to the local filesystem, the shell, a real web browser, a
 - Remember things across sessions — you have persistent memory
 
 If a tool call SUCCEEDS, report what happened. Never contradict a successful result.`
+}()
 
 const sectionToolsDeclaration = `## Your Tools
 
-Your ONLY tools are the ones listed below and provided in the tool definitions. You do NOT have "WebFetch", "WebSearch", "Read", "Write", "Edit", "Grep", "Glob", "Bash", "TodoWrite", "EnterPlanMode", "AskUserQuestion", "Task", or "Context7" as tools. Those do not exist in your runtime. Your actual tools are: file, shell, web, agent, skill, screenshot, vision, and platform capabilities. When a user asks what tools you have, ONLY list these — never list tools from your training data.`
+Your ONLY tools are the ones listed below and provided in the tool definitions. You do NOT have "WebFetch", "WebSearch", "Read", "Write", "Edit", "Grep", "Glob", "Bash", "TodoWrite", "EnterPlanMode", "AskUserQuestion", "Task", or "Context7" as tools. Those do not exist in your runtime. Your actual tools are: file, shell, web, agent, skill, desktop, pim, system, screenshot, and vision. When a user asks what tools you have, ONLY list these — never list tools from your training data.`
 
 const sectionCommStyle = `## Communication Style
 
@@ -104,17 +121,7 @@ var strapToolDocs = map[string]string{
 - file(action: glob, pattern: "**/*.go") — Find files by pattern
 - file(action: grep, pattern: "search term", path: "/dir") — Search file contents`,
 
-	"shell": `### shell — Shell & Process Management
-- shell(resource: bash, action: exec, command: "ls -la") — Run a command
-- shell(resource: bash, action: exec, command: "...", background: true) — Run in background
-- shell(resource: process, action: list) — List running processes
-- shell(resource: process, action: kill, pid: 1234) — Kill a process
-- shell(resource: process, action: info, pid: 1234) — Process details
-- shell(resource: session, action: list) — List persistent shell sessions
-- shell(resource: session, action: poll, id: "...") — Read session output
-- shell(resource: session, action: log, id: "...") — Get full session log
-- shell(resource: session, action: write, id: "...", input: "...") — Send input to session
-- shell(resource: session, action: kill, id: "...") — End a session`,
+	"shell": shellSTRAPDoc(),
 
 	"web": `### web — Web & Browser Automation
 Three modes:
@@ -182,7 +189,7 @@ Use "instructions" to tell your future self HOW to accomplish the task — which
 
 One-time reminders — use "at" (we compute the schedule automatically):
 - agent(resource: reminder, action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", message: "Remind user to call Kristi")
-- agent(resource: reminder, action: create, name: "send-sms", at: "in 5 minutes", task_type: "agent", message: "Send 'Go outside' to Kristi via text", instructions: "Use AppleScript with Messages.app to send an iMessage. The recipient phone number is stored in memory under contacts/kristi.")
+- agent(resource: reminder, action: create, name: "send-sms", at: "in 5 minutes", task_type: "agent", message: "Send 'Go outside' to Kristi via text", instructions: "Send the message via the user's preferred messaging channel. The recipient phone number is stored in memory under contacts/kristi.")
 
 Recurring reminders — use "schedule" (cron expression):
 - agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send a summary to Telegram", instructions: "Use the web tool to check the calendar, then deliver the summary via the telegram channel.")
@@ -236,6 +243,29 @@ For complex decisions, call the 'advisors' tool. Advisors run concurrently and r
 - advisors(task: "...", advisors: ["pragmatist", "skeptic"]) — Consult specific ones
 Use for: significant decisions, multiple valid approaches, high-stakes choices. Skip for: routine tasks, clear-cut answers.`,
 
+	"desktop": desktopSTRAPDoc(),
+
+	"pim": `### pim — Personal Information Management
+- pim(resource: "mail", action: "unread") — Check unread email count
+- pim(resource: "mail", action: "read", count: 5) — Read recent emails
+- pim(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!") — Send email
+- pim(resource: "mail", action: "search", query: "invoice") — Search emails
+- pim(resource: "mail", action: "accounts") — List email accounts
+- pim(resource: "contacts", action: "search", query: "Alice") — Search contacts
+- pim(resource: "contacts", action: "get", name: "Alice Smith") — Get contact details
+- pim(resource: "contacts", action: "create", name: "Bob", email: "bob@example.com") — Create contact
+- pim(resource: "contacts", action: "groups") — List contact groups
+- pim(resource: "calendar", action: "today") — Today's events
+- pim(resource: "calendar", action: "upcoming", days: 7) — Upcoming events
+- pim(resource: "calendar", action: "create", title: "Meeting", date: "2024-01-15", time: "14:00") — Create event
+- pim(resource: "calendar", action: "calendars") — List calendars
+- pim(resource: "reminders", action: "list") — List reminders
+- pim(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal") — Create reminder
+- pim(resource: "reminders", action: "complete", reminder_id: "...") — Complete reminder
+- pim(resource: "reminders", action: "lists") — List reminder lists`,
+
+	"system": systemSTRAPDoc(),
+
 	"screenshot": `### screenshot — Screen Capture
 - screenshot() — Capture the current screen
 - screenshot(format: "file") — Save to disk and return inline markdown image URL
@@ -243,6 +273,117 @@ Use for: significant decisions, multiple valid approaches, high-stakes choices. 
 
 	"vision": `### vision — Image Analysis
 - vision(path: "/path/to/image.png") — Analyze an image (requires API key)`,
+}
+
+// shellSTRAPDoc returns the shell STRAP documentation for the current platform.
+func shellSTRAPDoc() string {
+	if runtime.GOOS == "windows" {
+		return `### shell — Shell & Process Management (PowerShell)
+- shell(resource: bash, action: exec, command: "Get-ChildItem") — Run a PowerShell command
+- shell(resource: bash, action: exec, command: "...", background: true) — Run in background
+- shell(resource: process, action: list) — List running processes
+- shell(resource: process, action: kill, pid: 1234) — Kill a process
+- shell(resource: process, action: info, pid: 1234) — Process details
+- shell(resource: session, action: list) — List persistent shell sessions
+- shell(resource: session, action: poll, id: "...") — Read session output
+- shell(resource: session, action: log, id: "...") — Get full session log
+- shell(resource: session, action: write, id: "...", input: "...") — Send input to session
+- shell(resource: session, action: kill, id: "...") — End a session
+
+Note: Commands run in PowerShell. Use PowerShell cmdlets (Get-Process, Get-ChildItem, Invoke-WebRequest, etc.) not Unix commands.`
+	}
+	return `### shell — Shell & Process Management
+- shell(resource: bash, action: exec, command: "ls -la") — Run a command
+- shell(resource: bash, action: exec, command: "...", background: true) — Run in background
+- shell(resource: process, action: list) — List running processes
+- shell(resource: process, action: kill, pid: 1234) — Kill a process
+- shell(resource: process, action: info, pid: 1234) — Process details
+- shell(resource: session, action: list) — List persistent shell sessions
+- shell(resource: session, action: poll, id: "...") — Read session output
+- shell(resource: session, action: log, id: "...") — Get full session log
+- shell(resource: session, action: write, id: "...", input: "...") — Send input to session
+- shell(resource: session, action: kill, id: "...") — End a session`
+}
+
+// desktopSTRAPDoc returns the desktop STRAP documentation for the current platform.
+func desktopSTRAPDoc() string {
+	base := `### desktop — Desktop Automation
+- desktop(resource: "input", action: "click", x: 100, y: 200) — Click at coordinates
+- desktop(resource: "input", action: "click", element: "B3") — Click element from screenshot see
+- desktop(resource: "input", action: "double_click", x: 100, y: 200) — Double-click
+- desktop(resource: "input", action: "right_click", x: 100, y: 200) — Right-click
+- desktop(resource: "input", action: "type", text: "hello") — Type text
+- desktop(resource: "input", action: "hotkey", keys: "cmd+c") — Keyboard shortcut
+- desktop(resource: "input", action: "scroll", direction: "down", amount: 3) — Scroll
+- desktop(resource: "input", action: "move", x: 100, y: 200) — Move cursor
+- desktop(resource: "input", action: "drag", x: 10, y: 10, to_x: 200, to_y: 200) — Drag
+- desktop(resource: "input", action: "paste", text: "content") — Paste via clipboard
+- desktop(resource: "ui", action: "tree", app: "Safari") — Get UI element hierarchy
+- desktop(resource: "ui", action: "find", app: "Safari", role: "button", label: "Submit") — Find elements
+- desktop(resource: "ui", action: "click", app: "Safari", role: "button", label: "Submit") — Click element
+- desktop(resource: "ui", action: "get_value", app: "Safari", role: "textfield", label: "Search") — Read value
+- desktop(resource: "ui", action: "set_value", app: "Safari", role: "textfield", label: "Search", value: "query") — Set value
+- desktop(resource: "ui", action: "list_apps") — List apps with accessibility access
+- desktop(resource: "window", action: "list") — List all windows
+- desktop(resource: "window", action: "focus", name: "Safari") — Focus window
+- desktop(resource: "window", action: "move", name: "Safari", x: 0, y: 0) — Move window
+- desktop(resource: "window", action: "resize", name: "Safari", width: 800, height: 600) — Resize
+- desktop(resource: "window", action: "minimize", name: "Safari") — Minimize
+- desktop(resource: "window", action: "close", name: "Safari") — Close window
+- desktop(resource: "shortcut", action: "list") — List available shortcuts
+- desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut`
+
+	if runtime.GOOS == "darwin" {
+		base += `
+- desktop(resource: "menu", action: "list", app: "Safari") — List menu bar items
+- desktop(resource: "menu", action: "menus", app: "Safari", menu: "File") — List menu items
+- desktop(resource: "menu", action: "click", app: "Safari", menu: "File", item: "New Window") — Click menu item
+- desktop(resource: "menu", action: "status") — List status bar items
+- desktop(resource: "dialog", action: "detect") — Detect system dialogs
+- desktop(resource: "dialog", action: "list") — List dialog elements
+- desktop(resource: "dialog", action: "click", button_label: "OK") — Click dialog button
+- desktop(resource: "dialog", action: "dismiss") — Dismiss dialog
+- desktop(resource: "space", action: "list") — List virtual desktops
+- desktop(resource: "space", action: "switch", space: 2) — Switch desktop
+- desktop(resource: "space", action: "move_window", name: "Safari", space: 2) — Move window to desktop`
+	}
+
+	return base
+}
+
+// systemSTRAPDoc returns the system STRAP documentation for the current platform.
+func systemSTRAPDoc() string {
+	return `### system — System Control
+- system(resource: "app", action: "list") — List running applications
+- system(resource: "app", action: "launch", name: "Safari") — Launch app
+- system(resource: "app", action: "quit", name: "Safari") — Quit app
+- system(resource: "app", action: "quit_all") — Quit all apps (except Finder)
+- system(resource: "app", action: "activate", name: "Safari") — Bring app to front
+- system(resource: "app", action: "hide", name: "Safari") — Hide app
+- system(resource: "app", action: "info", name: "Safari") — Get app details
+- system(resource: "app", action: "frontmost") — Get frontmost app
+- system(resource: "notify", action: "send", title: "Done!", text: "Task completed") — Send notification
+- system(resource: "notify", action: "alert", title: "Warning", text: "...") — Show alert dialog
+- system(resource: "notify", action: "speak", text: "Hello") — Text-to-speech
+- system(resource: "clipboard", action: "get") — Read clipboard
+- system(resource: "clipboard", action: "set", content: "text") — Set clipboard
+- system(resource: "clipboard", action: "clear") — Clear clipboard
+- system(resource: "settings", action: "volume", level: 50) — Set volume (0-100)
+- system(resource: "settings", action: "mute") — Mute audio
+- system(resource: "settings", action: "unmute") — Unmute audio
+- system(resource: "settings", action: "brightness", level: 70) — Set brightness
+- system(resource: "settings", action: "darkmode") — Toggle dark mode
+- system(resource: "settings", action: "info") — System information
+- system(resource: "music", action: "play") — Play/resume music
+- system(resource: "music", action: "pause") — Pause music
+- system(resource: "music", action: "next") — Next track
+- system(resource: "music", action: "previous") — Previous track
+- system(resource: "music", action: "status") — Current track info
+- system(resource: "search", action: "query", query: "project files") — Search files/apps
+- system(resource: "keychain", action: "get", service: "github", account: "user") — Get password
+- system(resource: "keychain", action: "add", service: "github", account: "user", password: "...") — Store password
+- system(resource: "keychain", action: "find", service: "github") — Find keychain entries
+- system(resource: "keychain", action: "delete", service: "github", account: "user") — Delete entry`
 }
 
 // buildSTRAPSection assembles the STRAP documentation for only the tools being sent.
@@ -253,7 +394,7 @@ func buildSTRAPSection(toolNames []string) string {
 
 	if len(toolNames) == 0 {
 		// No restriction — include all tool docs
-		for _, name := range []string{"file", "shell", "web", "agent", "skill", "advisors", "screenshot", "vision"} {
+		for _, name := range []string{"file", "shell", "web", "agent", "skill", "desktop", "pim", "system", "advisors", "screenshot", "vision"} {
 			if doc, ok := strapToolDocs[name]; ok {
 				sb.WriteString("\n\n")
 				sb.WriteString(doc)
@@ -335,7 +476,7 @@ const sectionToolGuide = `## How to Choose the Right Tool
 const sectionBehavior = `## Behavioral Guidelines
 1. DO THE WORK — when the user asks you to do something, DO IT. Do not write a script and hand it to them. Do not explain how to do it. Do not ask if they want you to do it. Just do it. You have the tools. Use them.
 2. Act, don't narrate — call tools directly, share results concisely
-3. NEVER claim you cannot do something that your tools support. You can download files (curl/wget via shell), install software (shell), browse the web (web tool), read/write files (file tool), and control this computer. If a tool call succeeds, report the result — do not say "I can't" after succeeding.
+3. NEVER claim you cannot do something that your tools support. You can download files (via shell or browser), install software (shell), browse the web (web tool), read/write files (file tool), and control this computer. If a tool call succeeds, report the result — do not say "I can't" after succeeding.
 4. Search memory before answering questions about the user or past work
 5. Do NOT explicitly store facts — the memory extraction system handles this automatically after each turn
 6. Check skills before saying "I can't" — you may have an app for it

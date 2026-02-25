@@ -381,10 +381,3 @@ func parseTaskDueDate(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("could not parse: %s", s)
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewRemindersTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "productivity",
-	})
-}

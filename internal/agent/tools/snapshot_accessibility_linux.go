@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -10,13 +11,13 @@ import (
 )
 
 // getUITreeWithBounds retrieves the accessibility tree for an app with element positions via AT-SPI.
-func getUITreeWithBounds(app string, windowBounds Rect) []RawElement {
+func getUITreeWithBounds(ctx context.Context, app string, windowBounds Rect) []RawElement {
 	if app == "" {
 		return nil
 	}
 
 	// Check for AT-SPI availability
-	checkCmd := exec.Command("python3", "-c", "import gi; gi.require_version('Atspi', '2.0')")
+	checkCmd := exec.CommandContext(ctx, "python3", "-c", "import gi; gi.require_version('Atspi', '2.0')")
 	if checkCmd.Run() != nil {
 		fmt.Println("[screenshot:see] AT-SPI not available, skipping accessibility tree")
 		return nil
@@ -89,7 +90,7 @@ for i in range(desktop.get_child_count()):
         break
 `, escapeAtspyPy(app))
 
-	cmd := exec.Command("python3", "-c", script)
+	cmd := exec.CommandContext(ctx, "python3", "-c", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("[screenshot:see] AT-SPI error: %v\n", err)

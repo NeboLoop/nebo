@@ -281,10 +281,3 @@ func escapeShortcutPS(s string) string {
 	return s
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewShortcutsTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "automation",
-	})
-}

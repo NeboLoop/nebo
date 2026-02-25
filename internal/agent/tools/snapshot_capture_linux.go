@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/png"
@@ -15,15 +16,15 @@ import (
 
 // CaptureAppWindow captures a specific app's window screenshot on Linux.
 // Uses xdotool to find the window ID, then import (ImageMagick) for capture.
-func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
+func CaptureAppWindow(ctx context.Context, app string, windowIndex int) (image.Image, Rect, error) {
 	// Find window ID
-	windowID, err := findWindowID(app, windowIndex)
+	windowID, err := findWindowID(ctx, app, windowIndex)
 	if err != nil {
 		return nil, Rect{}, err
 	}
 
 	// Get window geometry
-	bounds, err := getWindowGeometry(windowID)
+	bounds, err := getWindowGeometry(ctx, windowID)
 	if err != nil {
 		return nil, Rect{}, err
 	}
@@ -36,7 +37,7 @@ func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
 
 	// Method 1: ImageMagick import
 	if _, err := exec.LookPath("import"); err == nil {
-		cmd := exec.Command("import", "-window", windowID, tmpFile)
+		cmd := exec.CommandContext(ctx, "import", "-window", windowID, tmpFile)
 		if _, err := cmd.CombinedOutput(); err == nil {
 			captured = true
 		}
@@ -46,8 +47,8 @@ func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
 	if !captured {
 		if _, err := exec.LookPath("scrot"); err == nil {
 			// Focus the window first
-			exec.Command("xdotool", "windowactivate", "--sync", windowID).Run()
-			cmd := exec.Command("scrot", "-u", tmpFile)
+			exec.CommandContext(ctx, "xdotool", "windowactivate", "--sync", windowID).Run()
+			cmd := exec.CommandContext(ctx, "scrot", "-u", tmpFile)
 			if _, err := cmd.CombinedOutput(); err == nil {
 				captured = true
 			}
@@ -57,8 +58,8 @@ func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
 	// Method 3: gnome-screenshot
 	if !captured {
 		if _, err := exec.LookPath("gnome-screenshot"); err == nil {
-			exec.Command("xdotool", "windowactivate", "--sync", windowID).Run()
-			cmd := exec.Command("gnome-screenshot", "-w", "-f", tmpFile)
+			exec.CommandContext(ctx, "xdotool", "windowactivate", "--sync", windowID).Run()
+			cmd := exec.CommandContext(ctx, "gnome-screenshot", "-w", "-f", tmpFile)
 			if _, err := cmd.CombinedOutput(); err == nil {
 				captured = true
 			}
@@ -83,8 +84,8 @@ func CaptureAppWindow(app string, windowIndex int) (image.Image, Rect, error) {
 	return img, bounds, nil
 }
 
-func findWindowID(app string, windowIndex int) (string, error) {
-	cmd := exec.Command("xdotool", "search", "--name", app)
+func findWindowID(ctx context.Context, app string, windowIndex int) (string, error) {
+	cmd := exec.CommandContext(ctx, "xdotool", "search", "--name", app)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("no window found for %s", app)
@@ -106,8 +107,8 @@ func findWindowID(app string, windowIndex int) (string, error) {
 	return ids[idx], nil
 }
 
-func getWindowGeometry(windowID string) (Rect, error) {
-	cmd := exec.Command("xdotool", "getwindowgeometry", "--shell", windowID)
+func getWindowGeometry(ctx context.Context, windowID string) (Rect, error) {
+	cmd := exec.CommandContext(ctx, "xdotool", "getwindowgeometry", "--shell", windowID)
 	out, err := cmd.Output()
 	if err != nil {
 		return Rect{}, fmt.Errorf("failed to get geometry: %v", err)
@@ -136,8 +137,8 @@ func getWindowGeometry(windowID string) (Rect, error) {
 }
 
 // ListAppWindows returns window titles for an app.
-func ListAppWindows(app string) ([]string, error) {
-	cmd := exec.Command("xdotool", "search", "--name", app)
+func ListAppWindows(ctx context.Context, app string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "xdotool", "search", "--name", app)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("no windows found for %s", app)
@@ -148,7 +149,7 @@ func ListAppWindows(app string) ([]string, error) {
 		if id == "" {
 			continue
 		}
-		nameCmd := exec.Command("xdotool", "getwindowname", id)
+		nameCmd := exec.CommandContext(ctx, "xdotool", "getwindowname", id)
 		nameOut, _ := nameCmd.Output()
 		name := strings.TrimSpace(string(nameOut))
 		if name != "" {

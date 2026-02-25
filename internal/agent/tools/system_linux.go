@@ -384,10 +384,3 @@ func (t *SystemTool) getSystemInfo() (*ToolResult, error) {
 	return &ToolResult{Content: sb.String(), IsError: false}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewSystemTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "system",
-	})
-}

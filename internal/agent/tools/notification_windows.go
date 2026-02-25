@@ -75,11 +75,11 @@ func (t *NotificationTool) Execute(ctx context.Context, input json.RawMessage) (
 
 	switch in.Action {
 	case "send":
-		result, err = t.sendNotification(in)
+		result, err = t.sendNotification(ctx, in)
 	case "alert":
-		result, err = t.showAlert(in)
+		result, err = t.showAlert(ctx, in)
 	case "speak":
-		result, err = t.speak(in)
+		result, err = t.speak(ctx, in)
 	default:
 		return &ToolResult{Content: fmt.Sprintf("Unknown action: %s", in.Action), IsError: true}, nil
 	}
@@ -91,7 +91,7 @@ func (t *NotificationTool) Execute(ctx context.Context, input json.RawMessage) (
 	return &ToolResult{Content: result, IsError: false}, nil
 }
 
-func (t *NotificationTool) sendNotification(in notificationInput) (string, error) {
+func (t *NotificationTool) sendNotification(ctx context.Context, in notificationInput) (string, error) {
 	if in.Message == "" {
 		return "", fmt.Errorf("message is required")
 	}
@@ -123,12 +123,12 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Nebo").Show($toast)
 `, escapePS(title), escapePS(in.Message))
 
-	_, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	_, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		// Fallback to BurntToast if available
 		fallback := fmt.Sprintf(`New-BurntToastNotification -Text '%s', '%s'`,
 			escapePS(title), escapePS(in.Message))
-		if _, err2 := exec.Command("powershell", "-NoProfile", "-Command", fallback).Output(); err2 != nil {
+		if _, err2 := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", fallback).Output(); err2 != nil {
 			return "", fmt.Errorf("failed to send notification: %v", err)
 		}
 	}
@@ -136,7 +136,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 	return fmt.Sprintf("Notification sent: %s - %s", title, in.Message), nil
 }
 
-func (t *NotificationTool) showAlert(in notificationInput) (string, error) {
+func (t *NotificationTool) showAlert(ctx context.Context, in notificationInput) (string, error) {
 	if in.Message == "" {
 		return "", fmt.Errorf("message is required")
 	}
@@ -152,7 +152,7 @@ Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.MessageBox]::Show('%s', '%s', 'OK', 'Information')
 `, escapePS(in.Message), escapePS(title))
 
-	_, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	_, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to show alert: %v", err)
 	}
@@ -160,7 +160,7 @@ Add-Type -AssemblyName System.Windows.Forms
 	return fmt.Sprintf("Alert shown: %s", title), nil
 }
 
-func (t *NotificationTool) speak(in notificationInput) (string, error) {
+func (t *NotificationTool) speak(ctx context.Context, in notificationInput) (string, error) {
 	// Handle list voices request
 	if in.Voice == "list" {
 		script := `
@@ -168,7 +168,7 @@ Add-Type -AssemblyName System.Speech
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $synth.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }
 `
-		out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+		out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 		if err != nil {
 			return "", fmt.Errorf("failed to list voices: %v", err)
 		}
@@ -195,7 +195,7 @@ $synth.Speak('%s')
 `, escapePS(in.Message))
 	}
 
-	if err := exec.Command("powershell", "-NoProfile", "-Command", script).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Run(); err != nil {
 		return "", fmt.Errorf("failed to speak: %v", err)
 	}
 
@@ -209,12 +209,4 @@ $synth.Speak('%s')
 func escapePS(s string) string {
 	s = strings.ReplaceAll(s, "'", "''")
 	return s
-}
-
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewNotificationTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "system",
-	})
 }

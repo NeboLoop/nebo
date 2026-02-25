@@ -270,10 +270,3 @@ func (t *WindowTool) closeWindow(app, title string) (*ToolResult, error) {
 	return &ToolResult{Content: "Closed window"}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewWindowTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "system",
-	})
-}

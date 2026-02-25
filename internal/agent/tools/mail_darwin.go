@@ -212,10 +212,3 @@ func (t *MailTool) searchEmails(query string, count int) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Search results for '%s':\n%s", query, out)}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewMailTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "productivity",
-	})
-}

@@ -309,10 +309,3 @@ func (t *MenubarTool) clickStatusItem(index int) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewMenubarTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "automation",
-	})
-}

@@ -18,7 +18,7 @@ func NewAppTool() *AppTool { return &AppTool{} }
 func (t *AppTool) Name() string { return "app" }
 
 func (t *AppTool) Description() string {
-	return "Control applications: list running apps, launch, quit, activate, hide, get info, and interact with menus."
+	return "Control applications: list running apps, launch, quit, activate, hide, get info."
 }
 
 func (t *AppTool) Schema() json.RawMessage {
@@ -27,12 +27,11 @@ func (t *AppTool) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["list", "launch", "quit", "quit_all", "activate", "hide", "info", "menu", "frontmost"],
+				"enum": ["list", "launch", "quit", "quit_all", "activate", "hide", "info", "frontmost"],
 				"description": "Action to perform"
 			},
 			"name": {"type": "string", "description": "Application name (e.g., 'Safari', 'Terminal')"},
 			"path": {"type": "string", "description": "Application path for launch (optional if name provided)"},
-			"menu_path": {"type": "string", "description": "Menu path for menu action (e.g., 'File > New Window')"},
 			"force": {"type": "boolean", "description": "Force quit without saving"}
 		},
 		"required": ["action"]
@@ -70,8 +69,6 @@ func (t *AppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 		return t.hideApp(p.Name)
 	case "info":
 		return t.getAppInfo(p.Name)
-	case "menu":
-		return t.clickMenu(p.Name, p.MenuPath)
 	case "frontmost":
 		return t.getFrontmostApp()
 	default:

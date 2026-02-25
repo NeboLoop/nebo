@@ -481,10 +481,3 @@ func (t *DesktopTool) ydotoolPaste(ctx context.Context, text string, x, y int, h
 	return &ToolResult{Content: fmt.Sprintf("Pasted text at (%d, %d)", x, y)}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewDesktopTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "automation",
-	})
-}

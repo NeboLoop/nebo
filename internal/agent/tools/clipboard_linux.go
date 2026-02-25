@@ -298,10 +298,3 @@ func (t *ClipboardTool) getHistory(limit int) (string, error) {
 	return sb.String(), nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewClipboardTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "system",
-	})
-}

@@ -475,10 +475,3 @@ func convertToSendKeys(keys string) string {
 	return result.String()
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewDesktopTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "automation",
-	})
-}

@@ -207,10 +207,3 @@ func (t *DockTool) listRunning() (string, error) {
 	return sb.String(), nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewDockTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "automation",
-	})
-}

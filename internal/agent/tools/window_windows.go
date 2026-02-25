@@ -61,25 +61,25 @@ func (t *WindowTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 
 	switch p.Action {
 	case "list":
-		return t.listWindows()
+		return t.listWindows(ctx)
 	case "focus":
-		return t.focusWindow(p.App, p.Title)
+		return t.focusWindow(ctx, p.App, p.Title)
 	case "move":
-		return t.moveWindow(p.App, p.X, p.Y)
+		return t.moveWindow(ctx, p.App, p.X, p.Y)
 	case "resize":
-		return t.resizeWindow(p.App, p.Width, p.Height)
+		return t.resizeWindow(ctx, p.App, p.Width, p.Height)
 	case "minimize":
-		return t.minimizeWindow(p.App)
+		return t.minimizeWindow(ctx, p.App)
 	case "maximize":
-		return t.maximizeWindow(p.App)
+		return t.maximizeWindow(ctx, p.App)
 	case "close":
-		return t.closeWindow(p.App)
+		return t.closeWindow(ctx, p.App)
 	default:
 		return &ToolResult{Content: fmt.Sprintf("Unknown action: %s", p.Action), IsError: true}, nil
 	}
 }
 
-func (t *WindowTool) listWindows() (*ToolResult, error) {
+func (t *WindowTool) listWindows(ctx context.Context) (*ToolResult, error) {
 	script := `
 Add-Type @"
 using System;
@@ -99,7 +99,7 @@ Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object {
     "$($_.ProcessName)|||$($_.MainWindowTitle)|||$($rect.Left)|||$($rect.Top)|||$w|||$h"
 }
 `
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
@@ -124,7 +124,7 @@ Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object {
 	return &ToolResult{Content: fmt.Sprintf("Found %d windows:\n\n%s", count, sb.String())}, nil
 }
 
-func (t *WindowTool) focusWindow(app, title string) (*ToolResult, error) {
+func (t *WindowTool) focusWindow(ctx context.Context, app, title string) (*ToolResult, error) {
 	if app == "" {
 		return &ToolResult{Content: "App name is required", IsError: true}, nil
 	}
@@ -150,7 +150,7 @@ if ($proc) {
 }
 `, app)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
@@ -160,7 +160,7 @@ if ($proc) {
 	return &ToolResult{Content: fmt.Sprintf("Focused %s", app)}, nil
 }
 
-func (t *WindowTool) moveWindow(app string, x, y int) (*ToolResult, error) {
+func (t *WindowTool) moveWindow(ctx context.Context, app string, x, y int) (*ToolResult, error) {
 	if app == "" {
 		return &ToolResult{Content: "App name is required", IsError: true}, nil
 	}
@@ -183,14 +183,14 @@ if ($proc) {
 }
 `, app, x, y)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
 		return &ToolResult{Content: "Window not found", IsError: true}, nil
 	}
 	return &ToolResult{Content: fmt.Sprintf("Moved window to (%d, %d)", x, y)}, nil
 }
 
-func (t *WindowTool) resizeWindow(app string, width, height int) (*ToolResult, error) {
+func (t *WindowTool) resizeWindow(ctx context.Context, app string, width, height int) (*ToolResult, error) {
 	if app == "" {
 		return &ToolResult{Content: "App name is required", IsError: true}, nil
 	}
@@ -221,14 +221,14 @@ if ($proc) {
 }
 `, app, width, height)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
 		return &ToolResult{Content: "Window not found", IsError: true}, nil
 	}
 	return &ToolResult{Content: fmt.Sprintf("Resized window to %dx%d", width, height)}, nil
 }
 
-func (t *WindowTool) minimizeWindow(app string) (*ToolResult, error) {
+func (t *WindowTool) minimizeWindow(ctx context.Context, app string) (*ToolResult, error) {
 	if app == "" {
 		return &ToolResult{Content: "App name is required", IsError: true}, nil
 	}
@@ -251,14 +251,14 @@ if ($proc) {
 }
 `, app)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
 		return &ToolResult{Content: "Window not found", IsError: true}, nil
 	}
 	return &ToolResult{Content: "Minimized window"}, nil
 }
 
-func (t *WindowTool) maximizeWindow(app string) (*ToolResult, error) {
+func (t *WindowTool) maximizeWindow(ctx context.Context, app string) (*ToolResult, error) {
 	if app == "" {
 		return &ToolResult{Content: "App name is required", IsError: true}, nil
 	}
@@ -281,14 +281,14 @@ if ($proc) {
 }
 `, app)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
 		return &ToolResult{Content: "Window not found", IsError: true}, nil
 	}
 	return &ToolResult{Content: "Maximized window"}, nil
 }
 
-func (t *WindowTool) closeWindow(app string) (*ToolResult, error) {
+func (t *WindowTool) closeWindow(ctx context.Context, app string) (*ToolResult, error) {
 	if app == "" {
 		return &ToolResult{Content: "App name is required", IsError: true}, nil
 	}
@@ -303,17 +303,10 @@ if ($proc) {
 }
 `, app)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
 		return &ToolResult{Content: "Window not found", IsError: true}, nil
 	}
 	return &ToolResult{Content: "Closed window"}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewWindowTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "system",
-	})
-}

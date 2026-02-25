@@ -243,10 +243,3 @@ func execAppleScript(script string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewCalendarTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "productivity",
-	})
-}

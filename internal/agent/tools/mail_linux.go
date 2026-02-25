@@ -430,10 +430,3 @@ func (t *MailTool) listAccounts(ctx context.Context) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Configured accounts:\n%s", strings.Join(accounts, "\n"))}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewMailTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "productivity",
-	})
-}

@@ -244,10 +244,3 @@ func (t *AppTool) getFrontmostApp() (*ToolResult, error) {
 	return &ToolResult{Content: result}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewAppTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "system",
-	})
-}

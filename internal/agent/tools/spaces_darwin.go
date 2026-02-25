@@ -247,10 +247,3 @@ func (t *SpacesTool) moveWindow(space int) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewSpacesTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "automation",
-	})
-}

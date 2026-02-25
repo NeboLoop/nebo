@@ -256,10 +256,3 @@ func (t *ContactsTool) abookSearch(ctx context.Context, query string) (*ToolResu
 	return &ToolResult{Content: fmt.Sprintf("Contacts matching '%s':\n%s", query, output)}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewContactsTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "productivity",
-	})
-}

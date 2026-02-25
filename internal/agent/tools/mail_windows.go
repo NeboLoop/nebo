@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MailTool provides Windows email integration via Outlook COM automation.
@@ -23,9 +24,11 @@ func NewMailTool() *MailTool {
 }
 
 func (t *MailTool) checkOutlook() bool {
-	// Check if Outlook COM is available
+	// Check if Outlook COM is available (with timeout to prevent init() hang)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	script := `try { $null = New-Object -ComObject Outlook.Application; Write-Output "true" } catch { Write-Output "false" }`
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -324,10 +327,3 @@ func escapeMailPS(s string) string {
 	return s
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewMailTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "productivity",
-	})
-}

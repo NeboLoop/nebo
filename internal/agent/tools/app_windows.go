@@ -55,29 +55,29 @@ func (t *AppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 
 	switch p.Action {
 	case "list":
-		return t.listApps()
+		return t.listApps(ctx)
 	case "launch":
-		return t.launchApp(p.Name, p.Path)
+		return t.launchApp(ctx, p.Name, p.Path)
 	case "quit":
-		return t.quitApp(p.Name, p.Force)
+		return t.quitApp(ctx, p.Name, p.Force)
 	case "activate":
-		return t.activateApp(p.Name)
+		return t.activateApp(ctx, p.Name)
 	case "info":
-		return t.getAppInfo(p.Name)
+		return t.getAppInfo(ctx, p.Name)
 	case "frontmost":
-		return t.getFrontmostApp()
+		return t.getFrontmostApp(ctx)
 	default:
 		return &ToolResult{Content: fmt.Sprintf("Unknown action: %s", p.Action), IsError: true}, nil
 	}
 }
 
-func (t *AppTool) listApps() (*ToolResult, error) {
+func (t *AppTool) listApps(ctx context.Context) (*ToolResult, error) {
 	script := `
 Get-Process | Where-Object { $_.MainWindowTitle -ne '' } |
     Select-Object ProcessName, Id, MainWindowTitle, @{N='Memory';E={[math]::Round($_.WorkingSet64/1MB,1)}} |
     ForEach-Object { "$($_.ProcessName) (PID: $($_.Id)) - $($_.MainWindowTitle) [$($_.Memory) MB]" }
 `
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
@@ -92,17 +92,17 @@ Get-Process | Where-Object { $_.MainWindowTitle -ne '' } |
 	return &ToolResult{Content: sb.String()}, nil
 }
 
-func (t *AppTool) launchApp(name, path string) (*ToolResult, error) {
+func (t *AppTool) launchApp(ctx context.Context, name, path string) (*ToolResult, error) {
 	if name == "" && path == "" {
 		return &ToolResult{Content: "Name or path is required", IsError: true}, nil
 	}
 
 	var cmd *exec.Cmd
 	if path != "" {
-		cmd = exec.Command("cmd", "/C", "start", "", path)
+		cmd = exec.CommandContext(ctx, "cmd", "/C", "start", "", path)
 	} else {
 		// Try to find and launch by name
-		cmd = exec.Command("cmd", "/C", "start", "", name)
+		cmd = exec.CommandContext(ctx, "cmd", "/C", "start", "", name)
 	}
 
 	if err := cmd.Run(); err != nil {
@@ -116,24 +116,24 @@ func (t *AppTool) launchApp(name, path string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Launched %s", appName)}, nil
 }
 
-func (t *AppTool) quitApp(name string, force bool) (*ToolResult, error) {
+func (t *AppTool) quitApp(ctx context.Context, name string, force bool) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
 
 	var cmd *exec.Cmd
 	if force {
-		cmd = exec.Command("taskkill", "/F", "/IM", name+"*")
+		cmd = exec.CommandContext(ctx, "taskkill", "/F", "/IM", name+"*")
 	} else {
-		cmd = exec.Command("taskkill", "/IM", name+"*")
+		cmd = exec.CommandContext(ctx, "taskkill", "/IM", name+"*")
 	}
 
 	if err := cmd.Run(); err != nil {
 		// Try with process name without wildcard
 		if force {
-			cmd = exec.Command("taskkill", "/F", "/IM", name+".exe")
+			cmd = exec.CommandContext(ctx, "taskkill", "/F", "/IM", name+".exe")
 		} else {
-			cmd = exec.Command("taskkill", "/IM", name+".exe")
+			cmd = exec.CommandContext(ctx, "taskkill", "/IM", name+".exe")
 		}
 		if err2 := cmd.Run(); err2 != nil {
 			return &ToolResult{Content: fmt.Sprintf("Failed to quit: %v", err), IsError: true}, nil
@@ -146,7 +146,7 @@ func (t *AppTool) quitApp(name string, force bool) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Quit %s", name)}, nil
 }
 
-func (t *AppTool) activateApp(name string) (*ToolResult, error) {
+func (t *AppTool) activateApp(ctx context.Context, name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -172,7 +172,7 @@ if ($proc) {
 }
 `, name)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
@@ -183,7 +183,7 @@ if ($proc) {
 	return &ToolResult{Content: fmt.Sprintf("Activated %s", name)}, nil
 }
 
-func (t *AppTool) getAppInfo(name string) (*ToolResult, error) {
+func (t *AppTool) getAppInfo(ctx context.Context, name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -204,7 +204,7 @@ if ($proc) {
 }
 `, name)
 
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
@@ -215,7 +215,7 @@ if ($proc) {
 	return &ToolResult{Content: fmt.Sprintf("Application Info:\n\n%s", result)}, nil
 }
 
-func (t *AppTool) getFrontmostApp() (*ToolResult, error) {
+func (t *AppTool) getFrontmostApp(ctx context.Context) (*ToolResult, error) {
 	script := `
 Add-Type @"
 using System;
@@ -238,7 +238,7 @@ $processId = 0
 $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
 "$($proc.ProcessName)|||$($title.ToString())"
 `
-	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
@@ -248,12 +248,4 @@ $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
 		result += fmt.Sprintf("\nActive window: %s", parts[1])
 	}
 	return &ToolResult{Content: result}, nil
-}
-
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewAppTool(),
-		Platforms: []string{PlatformWindows},
-		Category:  "system",
-	})
 }

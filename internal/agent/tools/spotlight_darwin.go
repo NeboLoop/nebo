@@ -109,10 +109,3 @@ func (t *SpotlightTool) search(p spotlightInput) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Search results for '%s':\n%s", p.Query, strings.Join(lines, "\n"))}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewSpotlightTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "search",
-	})
-}

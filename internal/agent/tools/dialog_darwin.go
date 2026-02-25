@@ -370,10 +370,3 @@ func (t *DialogTool) appRef(app string) string {
 	return fmt.Sprintf("process %q", app)
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewDialogTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "automation",
-	})
-}

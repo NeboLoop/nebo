@@ -203,10 +203,3 @@ func (t *ContactsTool) listGroups() (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Contact groups:\n%s", out)}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewContactsTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "productivity",
-	})
-}

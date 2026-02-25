@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -10,7 +11,7 @@ import (
 )
 
 // getUITreeWithBounds retrieves the accessibility tree for an app with element positions.
-func getUITreeWithBounds(app string, windowBounds Rect) []RawElement {
+func getUITreeWithBounds(ctx context.Context, app string, windowBounds Rect) []RawElement {
 	if app == "" {
 		return nil
 	}
@@ -75,7 +76,7 @@ if ($window) {
 }
 `, escapeUIAutoPS(app))
 
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", script)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		fmt.Printf("[screenshot:see] UIAutomation error: %v\n", err)

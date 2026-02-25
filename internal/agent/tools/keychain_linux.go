@@ -402,10 +402,3 @@ func (t *KeychainTool) passDelete(ctx context.Context, p keychainInputLinux) (*T
 	return &ToolResult{Content: fmt.Sprintf("Password deleted at '%s'", path)}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewKeychainTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "security",
-	})
-}

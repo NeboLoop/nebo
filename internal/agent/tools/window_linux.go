@@ -377,10 +377,3 @@ func (t *WindowTool) closeWindow(app, title string) (*ToolResult, error) {
 	return &ToolResult{Content: "Window management unavailable (install wmctrl or xdotool)", IsError: true}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewWindowTool(),
-		Platforms: []string{PlatformLinux},
-		Category:  "system",
-	})
-}
