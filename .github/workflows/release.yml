@@ -465,9 +465,11 @@ jobs:
 
           # Upload all release assets under releases/{tag}/
           # nebo-*: bare binaries, Nebo-*: DMGs + installer, nebo_*: .deb packages
+          # Skip intermediate -signed variants (already staged as clean names)
           for f in artifacts/nebo-* artifacts/nebo_* artifacts/Nebo-* artifacts/checksums.txt; do
             [ -f "$f" ] || continue
             name=$(basename "$f")
+            case "$name" in *-signed*) continue ;; esac
             aws s3 cp "$f" "s3://neboloop/releases/${TAG}/${name}" \
               --endpoint-url "$S3_ENDPOINT" --acl public-read
           done
@@ -476,6 +478,9 @@ jobs:
           aws s3 cp version.json "s3://neboloop/releases/${TAG}/version.json" \
             --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
           echo "Uploaded release assets to CDN: releases/${TAG}/"
+
+      - name: Remove intermediate signed binaries
+        run: rm -f artifacts/*-signed*
 
       - name: Create release
         uses: softprops/action-gh-release@v2
