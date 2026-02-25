@@ -193,7 +193,9 @@ release-windows:
 	@echo "Building for Windows..."
 	@mkdir -p dist
 	@cd app && pnpm build
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS_WIN) -o dist/nebo-windows-amd64.exe .
+	go run github.com/tc-hib/go-winres@latest make --product-version "$(VERSION).0" --file-version "$(VERSION).0"
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath $(LDFLAGS_WIN) -o dist/nebo-windows-amd64.exe .
+	@rm -f rsrc_windows_*.syso
 
 # Linux builds (headless — no Wails/CGO needed)
 release-linux:

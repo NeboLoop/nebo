@@ -268,14 +268,22 @@ jobs:
           name: frontend-build
           path: app/build/
 
+      - name: Embed Windows resources (version info, manifest, icon)
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          go install github.com/tc-hib/go-winres@latest
+          $WinVer = "$env:VERSION" -replace '^v',''
+          go-winres make --product-version "${WinVer}.0" --file-version "${WinVer}.0"
+
       - name: Build desktop binary
         env:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: "1"
         run: |
-          go build -tags desktop `
-            -ldflags="-w -s -X main.Version=${{ github.ref_name }}" `
+          go build -tags desktop -trimpath `
+            -ldflags="-w -s -X main.Version=${{ github.ref_name }} -H windowsgui" `
             -o nebo-windows-amd64.exe .
 
       - uses: actions/upload-artifact@v4
