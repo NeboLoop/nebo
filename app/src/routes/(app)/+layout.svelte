@@ -85,6 +85,13 @@
 			}
 		});
 
+		// Listen for plan change events (NeboLoop billing upgrade)
+		const unsubPlan = wsClient.on<{ plan: string }>('plan_changed', (data) => {
+			if (data) {
+				window.dispatchEvent(new CustomEvent('nebo:plan_changed', { detail: data }));
+			}
+		});
+
 		// On connect (initial + reconnect after restart): reset stale update
 		// state and re-check. onStatus fires immediately with current status,
 		// so this also covers the initial check.
@@ -112,6 +119,7 @@
 			unsubProgress();
 			unsubReady();
 			unsubError();
+			unsubPlan();
 			unsubStatus();
 		};
 	});

@@ -107,6 +107,9 @@
 
 	onMount(async () => {
 		await Promise.all([loadProviders(), loadModels(), loadJanusStatus(), loadJanusUsage()]);
+		const h = () => { loadJanusStatus(); loadJanusUsage(); };
+		window.addEventListener('nebo:plan_changed', h);
+		return () => window.removeEventListener('nebo:plan_changed', h);
 	});
 
 	async function loadJanusStatus() {

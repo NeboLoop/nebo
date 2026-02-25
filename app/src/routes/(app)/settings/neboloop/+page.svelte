@@ -125,6 +125,9 @@
 
 	onMount(() => {
 		loadStatus();
+		const h = () => loadStatus();
+		window.addEventListener('nebo:plan_changed', h);
+		return () => window.removeEventListener('nebo:plan_changed', h);
 	});
 </script>
 

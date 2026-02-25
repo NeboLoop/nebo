@@ -1821,6 +1821,37 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		appRegistry.HandleInstallEvent(ctx, evt)
 	})
 
+	// Wire account events (plan changes) → token refresh + provider reload + frontend notification
+	neboloopPlugin.OnAccountEvent(func(evt neboloop.AccountEvent) {
+		if evt.Type == "plan_changed" {
+			devlog.Printf("[Comm:neboloop] Plan changed, refreshing token\n")
+			fresh := tryRefreshNeboLoopToken(ctx, sqlDB)
+			if fresh == "" {
+				devlog.Printf("[Comm:neboloop] Token refresh failed after plan change\n")
+				return
+			}
+			r.ReloadProviders()
+			var payload struct {
+				Plan string `json:"plan"`
+			}
+			_ = json.Unmarshal(evt.Payload, &payload)
+			state.sendFrame(map[string]any{
+				"type":   "event",
+				"method": "plan_changed",
+				"payload": map[string]any{"plan": payload.Plan},
+			})
+			devlog.Printf("[Comm:neboloop] Providers reloaded with plan=%s\n", payload.Plan)
+		}
+	})
+
+	// Wire post-connect hook → background token refresh so Janus sees latest plan
+	neboloopPlugin.OnConnected(func() {
+		if fresh := tryRefreshNeboLoopToken(ctx, sqlDB); fresh != "" {
+			r.ReloadProviders()
+			devlog.Printf("[Comm:neboloop] Post-connect token refresh, providers reloaded\n")
+		}
+	})
+
 	// Wire local channel apps (e.g., voice) so their inbound messages are processed
 	// through the agentic loop. Responses are sent back via SendToChannel.
 	appRegistry.SetChannelHandler(func(channelType, channelID, userID, text, metadata string) {

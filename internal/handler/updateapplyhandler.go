@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -29,9 +30,14 @@ func UpdateApplyHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 		pendingPath := um.PendingPath()
 
-		// No staged binary — try to download one now
+		// No staged binary — try to download one now.
+		// Use a detached context so the download survives if the browser
+		// disconnects during the 10-30s fetch (tab close, network blip).
 		if pendingPath == "" {
-			result, err := updater.Check(r.Context(), svcCtx.Version)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+
+			result, err := updater.Check(ctx, svcCtx.Version)
 			if err != nil || result == nil || !result.Available {
 				httputil.OkJSON(w, &types.UpdateApplyResponse{
 					Status:  "no_update",
@@ -40,7 +46,7 @@ func UpdateApplyHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				return
 			}
 
-			tmpPath, err := updater.Download(r.Context(), result.LatestVersion, nil)
+			tmpPath, err := updater.Download(ctx, result.LatestVersion, nil)
 			if err != nil {
 				log.Printf("[updater] on-demand download failed: %v", err)
 				httputil.OkJSON(w, &types.UpdateApplyResponse{
@@ -50,7 +56,7 @@ func UpdateApplyHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 				return
 			}
 
-			if err := updater.VerifyChecksum(r.Context(), tmpPath, result.LatestVersion); err != nil {
+			if err := updater.VerifyChecksum(ctx, tmpPath, result.LatestVersion); err != nil {
 				os.Remove(tmpPath)
 				log.Printf("[updater] on-demand checksum failed: %v", err)
 				httputil.OkJSON(w, &types.UpdateApplyResponse{

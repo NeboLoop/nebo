@@ -92,6 +92,13 @@ type HistoryMessage struct {
 	Timestamp int64  `json:"timestamp"` // unix seconds
 }
 
+// AccountEvent represents an inbound account-level event (stream=account).
+// NeboLoop sends these when the user's billing plan changes (e.g., "plan_changed").
+type AccountEvent struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
 // Plugin implements comm.CommPlugin for NeboLoop comms SDK transport.
 type Plugin struct {
 	client  *neboloopsdk.Client
@@ -124,6 +131,12 @@ type Plugin struct {
 	// tokenRefresher is called on auth failure during reconnect to obtain a fresh JWT.
 	// Returns the new access token or an error if refresh is not possible.
 	tokenRefresher func(ctx context.Context) (string, error)
+
+	// onAccountEvent is called when an account-level event arrives (stream=account).
+	onAccountEvent func(AccountEvent)
+
+	// onConnected is fired after a successful connect or reconnect.
+	onConnected func()
 
 	// Health tracking: lastMessageTime, lastPingSuccess
 	lastMessageTime time.Time
@@ -184,6 +197,20 @@ func (p *Plugin) SetTokenRefresher(fn func(ctx context.Context) (string, error))
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.tokenRefresher = fn
+}
+
+// OnAccountEvent registers a handler for account-level events (stream=account).
+func (p *Plugin) OnAccountEvent(fn func(AccountEvent)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onAccountEvent = fn
+}
+
+// OnConnected registers a handler that fires after a successful connect or reconnect.
+func (p *Plugin) OnConnected(fn func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onConnected = fn
 }
 
 // OwnerID returns the owner's user ID extracted from the JWT sub claim.
@@ -414,6 +441,12 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 	}()
 
 	fmt.Printf("[Comm:neboloop] Connected to %s\n", p.gateway)
+
+	// Fire onConnected callback in a goroutine (deferred mu.Unlock runs first)
+	if onConn := p.onConnected; onConn != nil {
+		go onConn()
+	}
+
 	return nil
 }
 
@@ -507,6 +540,23 @@ func (p *Plugin) handleMessage(msg neboloopsdk.Message) {
 	// History request: NeboLoop asks for recent conversation history
 	if msg.Stream == "history" {
 		p.handleHistoryRequest(msg)
+		return
+	}
+
+	// Account events (plan changes, etc.)
+	if msg.Stream == "account" {
+		var evt AccountEvent
+		if err := json.Unmarshal(msg.Content, &evt); err != nil {
+			commLog.Error("[Comm:neboloop] failed to parse account event", "error", err)
+			return
+		}
+		commLog.Info("[Comm:neboloop] <- ACCOUNT event", "type", evt.Type)
+		p.mu.RLock()
+		handler := p.onAccountEvent
+		p.mu.RUnlock()
+		if handler != nil {
+			handler(evt)
+		}
 		return
 	}
 
@@ -1108,6 +1158,15 @@ func (p *Plugin) reconnect() {
 
 		// Start new health checker for the fresh connection
 		go p.startHealthChecker()
+
+		// Fire onConnected callback
+		p.mu.RLock()
+		onConn := p.onConnected
+		p.mu.RUnlock()
+		if onConn != nil {
+			go onConn()
+		}
+
 		return
 	}
 }
