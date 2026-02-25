@@ -389,6 +389,8 @@ jobs:
     needs: [build-macos, build-linux, build-linux-headless, build-windows, package-deb, package-windows]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    env:
+      DO_SPACES_KEY_SET: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -432,7 +434,7 @@ jobs:
           cat checksums.txt
 
       - name: Upload release assets to CDN
-        if: ${{ secrets.DO_SPACES_ACCESS_KEY != '' }}
+        if: ${{ env.DO_SPACES_KEY_SET == 'true' }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
