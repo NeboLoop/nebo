@@ -113,10 +113,11 @@ type Plugin struct {
 
 	card *comm.AgentCard // Stored for re-publish on reconnect
 
-	connected bool
-	authDead  bool // credentials rejected, stop reconnecting
-	done      chan struct{}
-	mu        sync.RWMutex
+	connected    bool
+	authDead     bool // credentials rejected, stop reconnecting
+	reconnecting bool // guard against concurrent reconnect calls
+	done         chan struct{}
+	mu           sync.RWMutex
 
 	// Handlers for install events and channel messages (set by agent.go)
 	onInstall            func(neboloopsdk.InstallEvent)
@@ -984,13 +985,25 @@ func (p *Plugin) startHealthChecker() {
 // Called when the watchdog detects a disconnect.
 // Never stops retrying unless credentials are permanently rejected or p.done closes.
 func (p *Plugin) reconnect() {
-	p.mu.RLock()
+	p.mu.Lock()
+	if p.reconnecting {
+		p.mu.Unlock()
+		commLog.Debug("[Comm:neboloop] reconnect already in progress, skipping")
+		return
+	}
+	p.reconnecting = true
 	dead := p.authDead
 	gateway := p.gateway
 	apiServer := p.apiServer
 	botID := p.botID
 	token := p.token
-	p.mu.RUnlock()
+	p.mu.Unlock()
+
+	defer func() {
+		p.mu.Lock()
+		p.reconnecting = false
+		p.mu.Unlock()
+	}()
 
 	if dead {
 		commLog.Error("[Comm:neboloop] credentials rejected, not reconnecting")

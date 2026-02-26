@@ -445,6 +445,10 @@ func findChromeWindows() *BrowserExecutable {
 			kind BrowserKind
 			path string
 		}{BrowserEdge, filepath.Join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe")},
+		struct {
+			kind BrowserKind
+			path string
+		}{BrowserEdge, filepath.Join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe")},
 	)
 
 	for _, c := range candidates {
@@ -452,7 +456,41 @@ func findChromeWindows() *BrowserExecutable {
 			return &BrowserExecutable{Kind: c.kind, Path: c.path}
 		}
 	}
+
+	// Registry-based fallback for Edge — works regardless of install location
+	if path := findBrowserViaRegistry("msedge.exe"); path != "" {
+		return &BrowserExecutable{Kind: BrowserEdge, Path: path}
+	}
+	if path := findBrowserViaRegistry("chrome.exe"); path != "" {
+		return &BrowserExecutable{Kind: BrowserChrome, Path: path}
+	}
+
 	return nil
+}
+
+// findBrowserViaRegistry queries the Windows registry App Paths for a browser executable.
+func findBrowserViaRegistry(exeName string) string {
+	regKey := fmt.Sprintf(`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\%s`, exeName)
+	cmd := exec.Command("reg", "query", regKey, "/ve")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// Parse the (Default) value from reg query output
+	// Output looks like: "    (Default)    REG_SZ    C:\Program Files...\msedge.exe"
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "REG_SZ") {
+			parts := strings.SplitN(line, "REG_SZ", 2)
+			if len(parts) == 2 {
+				path := strings.TrimSpace(parts[1])
+				if fileExists(path) {
+					return path
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // detectDefaultChromium tries to detect the system's default Chromium browser.

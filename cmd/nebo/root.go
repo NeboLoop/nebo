@@ -39,15 +39,27 @@ func ensureUserPath() {
 	home, _ := os.UserHomeDir()
 
 	// Directories where CLI tools are commonly installed
-	extra := []string{
-		"/opt/homebrew/bin",      // Homebrew (Apple Silicon)
-		"/usr/local/bin",         // Homebrew (Intel) / manual installs
-		filepath.Join(home, ".local/bin"),      // pipx, user installs
-		filepath.Join(home, "go/bin"),          // Go binaries
-		filepath.Join(home, ".cargo/bin"),      // Rust/cargo
-		filepath.Join(home, ".nvm/current/bin"), // nvm-managed node
+	var extra []string
+	if runtime.GOOS == "windows" {
+		extra = []string{
+			filepath.Join(home, "go", "bin"),                    // Go binaries
+			filepath.Join(home, ".cargo", "bin"),                // Rust/cargo
+			filepath.Join(home, "scoop", "shims"),               // Scoop package manager
+			filepath.Join(home, "AppData", "Roaming", "npm"),    // npm global
+			filepath.Join(home, ".local", "bin"),                 // user installs
+		}
+	} else {
+		extra = []string{
+			"/opt/homebrew/bin",                    // Homebrew (Apple Silicon)
+			"/usr/local/bin",                       // Homebrew (Intel) / manual installs
+			filepath.Join(home, ".local/bin"),       // pipx, user installs
+			filepath.Join(home, "go/bin"),           // Go binaries
+			filepath.Join(home, ".cargo/bin"),       // Rust/cargo
+			filepath.Join(home, ".nvm/current/bin"), // nvm-managed node
+		}
 	}
 
+	sep := string(os.PathListSeparator)
 	var added []string
 	for _, dir := range extra {
 		if dir == "" {
@@ -64,7 +76,7 @@ func ensureUserPath() {
 	}
 
 	if len(added) > 0 {
-		os.Setenv("PATH", current+":"+strings.Join(added, ":"))
+		os.Setenv("PATH", current+sep+strings.Join(added, sep))
 	}
 }
 

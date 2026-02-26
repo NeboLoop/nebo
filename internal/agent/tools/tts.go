@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 )
 
 // TTSTool provides text-to-speech using the system's native TTS.
@@ -62,8 +63,9 @@ func (t *TTSTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 	case "linux":
 		cmd = exec.CommandContext(ctx, "espeak", params.Text)
 	case "windows":
-		ps := fmt.Sprintf(`Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('%s')`, params.Text)
-		cmd = exec.CommandContext(ctx, "powershell", "-Command", ps)
+		escaped := strings.ReplaceAll(params.Text, "'", "''")
+		ps := fmt.Sprintf(`Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('%s')`, escaped)
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", ps)
 	default:
 		return &ToolResult{Content: fmt.Sprintf("TTS not supported on %s", runtime.GOOS), IsError: true}, nil
 	}

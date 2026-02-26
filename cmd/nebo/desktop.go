@@ -479,19 +479,44 @@ func RunDesktop() {
 			if title == "" {
 				title = "Nebo Browser"
 			}
-			w := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-				Name:      name,
-				Title:     title,
-				Width:     width,
-				Height:    height,
-				MinWidth:  400,
-				MinHeight: 300,
-				URL:       opts.URL,
-				// Bootstrap JS runs via impl-level execJS after EVERY navigation,
-				// bypassing the runtimeLoaded gate on public ExecJS. Forces the
-				// Wails runtime to be "ready" and pre-defines the callback function.
-				JS: neboBootstrapJS,
-			})
+			var w *application.WebviewWindow
+			if goruntime.GOOS == "windows" {
+				// Wails v3 Windows bug: WebviewWindowOptions.JS is only applied for
+				// HTML-mode windows, not URL-mode. On macOS/Linux, JS is injected
+				// via a NavigationCompleted event handler, but Windows skips it.
+				//
+				// Workaround: Create with a blank HTML page to trigger chromium.Init()
+				// which registers neboBootstrapJS via AddScriptToExecuteOnDocumentCreated.
+				// This persists across ALL future navigations. Then immediately navigate
+				// to the target URL.
+				w = wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+					Name:      name,
+					Title:     title,
+					Width:     width,
+					Height:    height,
+					MinWidth:  400,
+					MinHeight: 300,
+					HTML:      " ", // Non-empty to trigger chromium.Init() with JS
+					JS:        neboBootstrapJS,
+				})
+				if opts.URL != "" && opts.URL != "about:blank" {
+					w.SetURL(opts.URL)
+				}
+			} else {
+				w = wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+					Name:      name,
+					Title:     title,
+					Width:     width,
+					Height:    height,
+					MinWidth:  400,
+					MinHeight: 300,
+					URL:       opts.URL,
+					// Bootstrap JS runs via impl-level execJS after EVERY navigation,
+					// bypassing the runtimeLoaded gate on public ExecJS. Forces the
+					// Wails runtime to be "ready" and pre-defines the callback function.
+					JS: neboBootstrapJS,
+				})
+			}
 			devlog.Printf("[Desktop] Window created (%s)\n", time.Since(creatorT0))
 			return wailsWindowHandle{win: w}
 		})
