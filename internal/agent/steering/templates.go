@@ -54,8 +54,9 @@ Do NOT create a task list or checklist. Just take the first concrete action towa
 
 // --- Pending Task Action ---
 
-const tmplPendingTaskAction = `You still have work to do. Take action NOW using your tools.
-Do NOT narrate intent or create more tasks — just execute the next step toward your objective.`
+const tmplPendingTaskAction = `You still have work to do — your last response was text-only but the task is NOT complete.
+Call a tool RIGHT NOW to continue. Do NOT respond with text explaining what you plan to do.
+Do NOT narrate intent, summarize progress, or create task lists. Just make the next tool call.`
 
 // --- Task Progress ---
 

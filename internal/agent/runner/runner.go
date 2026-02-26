@@ -453,6 +453,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 	}
 
 	compactionAttempted := false
+	nudgeAttempted := false // One steering nudge per run when model stops mid-task
 
 	// MAIN LOOP: Model selection + agentic execution
 	for iteration < maxIterations {
@@ -1011,6 +1012,18 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			}
 			resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 			return
+		}
+
+		// Text-only response: model didn't use tools.
+		// If there's an active objective, give the steering system one more
+		// iteration so the pendingTaskAction generator can nudge the model
+		// back into action. Without this, the loop exits before steering fires.
+		// Allow one nudge attempt per run to avoid infinite loops.
+		activeTask, _ = r.sessions.GetActiveTask(sessionID)
+		if activeTask != "" && !nudgeAttempted {
+			nudgeAttempted = true
+			fmt.Printf("[Runner] Text-only response with active task — re-entering loop for steering nudge (iteration %d)\n", iteration)
+			continue
 		}
 
 		// No tool calls — task is complete
