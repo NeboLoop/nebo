@@ -44,6 +44,7 @@ const tmplDateTimeRefresh = `Time update: Current time is now %s. Use this for a
 // --- Memory Nudge ---
 
 const tmplMemoryNudge = `If the user has shared personal facts, preferences, or important information recently,
+and behavioral directives (e.g., "from now on always...", "don't ever..."),
 consider storing them using agent(resource: memory, action: store).
 Only store if genuinely useful.`
 
@@ -77,4 +78,20 @@ var selfDisclosurePatterns = []string{
 	"my wife", "my husband", "my partner",
 	"my email", "my phone", "my address",
 	"call me", "i go by",
+}
+
+// behavioralPatterns catches behavioral directives the user wants remembered.
+var behavioralPatterns = []string{
+	"can you always",
+	"from now on",
+	"don't ever",
+	"stop using",
+	"start using",
+	"going forward",
+	"every time",
+	"when i ask",
+	"please remember",
+	"keep in mind",
+	"for future",
+	"note that i",
 }

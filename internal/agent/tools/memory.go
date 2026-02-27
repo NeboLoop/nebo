@@ -1016,13 +1016,14 @@ func (t *MemoryTool) clear(params memoryInput) (string, error) {
 // StoreEntry stores a memory entry directly (for programmatic use, e.g., auto-extraction)
 // Uses the current user ID for user-scoped storage
 func (t *MemoryTool) StoreEntry(layer, namespace, key, value string, tags []string) error {
-	return t.StoreEntryForUser(layer, namespace, key, value, tags, t.GetCurrentUser())
+	return t.StoreEntryForUser(layer, namespace, key, value, tags, t.GetCurrentUser(), 0.75)
 }
 
 // StoreStyleEntryForUser stores a style observation with reinforcement tracking.
 // If the style already exists, increments the reinforcement count in metadata
-// instead of overwriting the value. This lets frequently-observed traits become stronger signals.
-func (t *MemoryTool) StoreStyleEntryForUser(layer, namespace, key, value string, tags []string, userID string) error {
+// and boosts confidence asymptotically instead of overwriting the value.
+// This lets frequently-observed traits become stronger signals.
+func (t *MemoryTool) StoreStyleEntryForUser(layer, namespace, key, value string, tags []string, userID string, confidence float64) error {
 	// Build the full namespace the same way StoreEntryForUser does
 	fullNamespace := namespace
 	if layer != "" {
@@ -1053,6 +1054,13 @@ func (t *MemoryTool) StoreStyleEntryForUser(layer, namespace, key, value string,
 		meta["reinforced_count"] = count + 1
 		meta["last_reinforced"] = time.Now().Format(time.RFC3339)
 
+		// Boost confidence asymptotically: oldConf + (1.0 - oldConf) * 0.2
+		oldConf := 0.75
+		if v, ok := meta["confidence"].(float64); ok {
+			oldConf = v
+		}
+		meta["confidence"] = oldConf + (1.0-oldConf)*0.2
+
 		metaJSON, _ := json.Marshal(meta)
 		metaStr := string(metaJSON)
 
@@ -1063,8 +1071,9 @@ func (t *MemoryTool) StoreStyleEntryForUser(layer, namespace, key, value string,
 		})
 	}
 
-	// New style observation — store with initial reinforcement metadata
+	// New style observation — store with initial reinforcement metadata and confidence
 	meta := map[string]interface{}{
+		"confidence":       confidence,
 		"reinforced_count": float64(1),
 		"first_observed":   time.Now().Format(time.RFC3339),
 		"last_reinforced":  time.Now().Format(time.RFC3339),
@@ -1261,8 +1270,9 @@ func (t *MemoryTool) IndexSessionTranscript(ctx context.Context, sessionID, user
 	return chunksCreated, nil
 }
 
-// StoreEntryForUser stores a memory entry for a specific user (thread-safe for background operations)
-func (t *MemoryTool) StoreEntryForUser(layer, namespace, key, value string, tags []string, userID string) error {
+// StoreEntryForUser stores a memory entry for a specific user (thread-safe for background operations).
+// confidence is the extraction confidence (0.0-1.0); pass 0.75 when no confidence is available.
+func (t *MemoryTool) StoreEntryForUser(layer, namespace, key, value string, tags []string, userID string, confidence float64) error {
 	// Sanitize key and value (when enabled)
 	if t.sanitize {
 		sanitizedKey, keyErr := sanitizeMemoryKey(key)
@@ -1288,13 +1298,21 @@ func (t *MemoryTool) StoreEntryForUser(layer, namespace, key, value string, tags
 
 	tagsJSON, _ := json.Marshal(tags)
 
+	// Build metadata with confidence tracking
+	metadata := map[string]interface{}{
+		"confidence":       confidence,
+		"reinforced_count": 0,
+		"last_reinforced":  time.Now().UTC().Format(time.RFC3339),
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+
 	// Use sqlc for user-scoped storage
 	err := t.queries.UpsertMemory(context.Background(), db.UpsertMemoryParams{
 		Namespace: fullNamespace,
 		Key:       key,
 		Value:     value,
 		Tags:      sql.NullString{String: string(tagsJSON), Valid: len(tagsJSON) > 0},
-		Metadata:  sql.NullString{}, // No metadata for this method
+		Metadata:  sql.NullString{String: string(metadataJSON), Valid: true},
 		UserID:    userID,
 	})
 	if err != nil {
@@ -1312,4 +1330,77 @@ func (t *MemoryTool) StoreEntryForUser(layer, namespace, key, value string, tags
 	}
 
 	return nil
+}
+
+// ReinforceMemory boosts confidence for an existing memory entry.
+// Increments reinforced_count and applies asymptotic confidence boost.
+func (t *MemoryTool) ReinforceMemory(layer, namespace, key, userID string) error {
+	// Build the full namespace the same way StoreEntryForUser does
+	fullNamespace := namespace
+	if layer != "" {
+		fullNamespace = layer + "/" + namespace
+	}
+	if fullNamespace == "" {
+		fullNamespace = "default"
+	}
+
+	// Read current metadata
+	var metadataStr sql.NullString
+	err := t.sqlDB.QueryRow(`
+		SELECT metadata FROM memories
+		WHERE namespace = ? AND key = ? AND user_id = ?
+		LIMIT 1
+	`, fullNamespace, key, userID).Scan(&metadataStr)
+	if err != nil {
+		return err
+	}
+
+	meta := map[string]interface{}{}
+	if metadataStr.Valid && metadataStr.String != "" {
+		json.Unmarshal([]byte(metadataStr.String), &meta)
+	}
+
+	// Increment reinforcement count
+	count := 0
+	if v, ok := meta["reinforced_count"].(float64); ok {
+		count = int(v)
+	}
+	count++
+	meta["reinforced_count"] = count
+	meta["last_reinforced"] = time.Now().UTC().Format(time.RFC3339)
+
+	// Boost confidence: oldConf + (1.0 - oldConf) * 0.2 (asymptotic toward 1.0)
+	oldConf := 0.75
+	if v, ok := meta["confidence"].(float64); ok {
+		oldConf = v
+	}
+	boosted := oldConf + (1.0-oldConf)*0.2
+	meta["confidence"] = boosted
+
+	metadataJSON, _ := json.Marshal(meta)
+
+	_, err = t.sqlDB.Exec(`
+		UPDATE memories SET metadata = ?, accessed_at = CURRENT_TIMESTAMP
+		WHERE namespace = ? AND key = ? AND user_id = ?
+	`, string(metadataJSON), fullNamespace, key, userID)
+	return err
+}
+
+// CleanProvisionalMemories deletes low-confidence memories that were never reinforced
+// and are older than 30 days. These are inferred facts (confidence < 0.65) that were
+// never confirmed by re-extraction. Safe to run on startup.
+func (t *MemoryTool) CleanProvisionalMemories() (int64, error) {
+	result, err := t.sqlDB.Exec(`
+		DELETE FROM memories
+		WHERE metadata IS NOT NULL
+		AND json_extract(metadata, '$.confidence') IS NOT NULL
+		AND json_extract(metadata, '$.confidence') < 0.65
+		AND (json_extract(metadata, '$.reinforced_count') IS NULL
+		     OR json_extract(metadata, '$.reinforced_count') <= 1)
+		AND created_at < datetime('now', '-30 days')
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

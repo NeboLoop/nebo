@@ -209,6 +209,19 @@ func (c *Client) InstallSkill(ctx context.Context, id string) (*InstallResponse,
 	return &resp, nil
 }
 
+// RedeemSkillCode installs a skill using a SKILL-XXXX-XXXX-XXXX install code.
+// Follows the same pattern as JoinLoop for LOOP codes and RedeemCode for NEBO codes.
+func (c *Client) RedeemSkillCode(ctx context.Context, code string) (*InstallResponse, error) {
+	var resp InstallResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/skills/redeem", RedeemSkillCodeRequest{
+		Code:  code,
+		BotID: c.botID,
+	}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // UninstallSkill uninstalls a skill for this bot.
 func (c *Client) UninstallSkill(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, "/api/v1/skills/"+id+"/install/"+c.botID, nil, nil)

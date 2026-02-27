@@ -4,6 +4,8 @@
 	import ToolCard from './ToolCard.svelte';
 	import ThinkingBlock from './ThinkingBlock.svelte';
 	import ReadingIndicator from './ReadingIndicator.svelte';
+	import AskWidget from './AskWidget.svelte';
+	import type { AskWidgetDef } from './AskWidget.svelte';
 
 	interface ToolCall {
 		name: string;
@@ -13,23 +15,31 @@
 	}
 
 	interface ContentBlock {
-		type: 'text' | 'tool' | 'image';
+		type: 'text' | 'tool' | 'image' | 'ask';
 		text?: string;
 		toolCallIndex?: number;
 		imageData?: string;
 		imageMimeType?: string;
 		imageURL?: string;
+		askRequestId?: string;
+		askPrompt?: string;
+		askWidgets?: AskWidgetDef[];
+		askResponse?: string;
 	}
 
 	// A resolved content block with tool data pre-resolved (no indirect lookup)
 	interface ResolvedBlock {
-		type: 'text' | 'tool' | 'image';
+		type: 'text' | 'tool' | 'image' | 'ask';
 		key: string;
 		text?: string;
 		tool?: ToolCall;
 		imageData?: string;
 		imageMimeType?: string;
 		imageURL?: string;
+		askRequestId?: string;
+		askPrompt?: string;
+		askWidgets?: AskWidgetDef[];
+		askResponse?: string;
 		isLastBlock: boolean;
 	}
 
@@ -61,6 +71,7 @@
 		copiedId?: string | null;
 		onViewToolOutput?: (tool: ToolCall) => void;
 		isStreaming?: boolean;
+		onAskSubmit?: (requestId: string, value: string) => void;
 	}
 
 	let {
@@ -70,7 +81,8 @@
 		onCopy,
 		copiedId = null,
 		onViewToolOutput,
-		isStreaming = false
+		isStreaming = false,
+		onAskSubmit
 	}: Props = $props();
 
 	const groupTimestamp = $derived(messages[messages.length - 1]?.timestamp || messages[0]?.timestamp);
@@ -110,6 +122,16 @@
 							type: 'text',
 							key: `text-${i}`,
 							text: block.text,
+							isLastBlock: isLast
+						});
+					} else if (block.type === 'ask' && block.askRequestId) {
+						blocks.push({
+							type: 'ask',
+							key: `ask-${i}-${block.askRequestId}`,
+							askRequestId: block.askRequestId,
+							askPrompt: block.askPrompt,
+							askWidgets: block.askWidgets,
+							askResponse: block.askResponse,
 							isLastBlock: isLast
 						});
 					}
@@ -192,6 +214,14 @@
 									class="max-w-full h-auto rounded-xl"
 								/>
 							</a>
+						{:else if block.type === 'ask' && block.askRequestId}
+							<AskWidget
+								requestId={block.askRequestId}
+								prompt={block.askPrompt ?? ''}
+								widgets={block.askWidgets ?? []}
+								response={block.askResponse}
+								onSubmit={(id, val) => onAskSubmit?.(id, val)}
+							/>
 						{:else if block.type === 'text' && block.text}
 							<div
 								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''}"

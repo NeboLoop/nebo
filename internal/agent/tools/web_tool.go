@@ -969,7 +969,7 @@ func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInp
 		if err != nil {
 			return &ToolResult{Content: fmt.Sprintf("Screenshot failed: %v", err), IsError: true}, nil
 		}
-		
+
 		// Save to file if output path provided, otherwise return base64
 		if in.Output != "" {
 			// Decode base64 and save
@@ -983,7 +983,7 @@ func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInp
 			}
 			return &ToolResult{Content: fmt.Sprintf("Screenshot saved to %s", in.Output)}, nil
 		}
-		
+
 		// Return base64 data
 		return &ToolResult{Content: base64Data}, nil
 
@@ -1358,7 +1358,9 @@ func (t *WebDomainTool) searchDuckDuckGo(ctx context.Context, query string, limi
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Nebo/1.0)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 
 	resp, err := t.client.Do(req)
 	if err != nil {
@@ -1371,7 +1373,16 @@ func (t *WebDomainTool) searchDuckDuckGo(ctx context.Context, query string, limi
 		return nil, err
 	}
 
-	return parseWebDuckDuckGoHTML(string(body), limit), nil
+	html := string(body)
+
+	// Detect bot protection (CAPTCHA, challenge pages)
+	if strings.Contains(html, "please click") && strings.Contains(html, "bot") ||
+		strings.Contains(html, "challenge") && strings.Contains(html, "captcha") ||
+		strings.Contains(html, "Select all squares") {
+		return nil, fmt.Errorf("search blocked by bot protection (CAPTCHA)")
+	}
+
+	return parseWebDuckDuckGoHTML(html, limit), nil
 }
 
 func (t *WebDomainTool) searchViaNativeBrowser(ctx context.Context, query string, limit int) ([]webSearchResult, error) {

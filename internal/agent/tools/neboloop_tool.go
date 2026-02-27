@@ -65,7 +65,7 @@ Resources:
 - skills: Browse, install, and manage skills (list, get, install, uninstall)`,
 	Resources: neboloopResources,
 	Fields: []FieldConfig{
-		{Name: "id", Type: "string", Description: "App or skill ID (required for get, install, uninstall, reviews)"},
+		{Name: "id", Type: "string", Description: "App or skill ID, or SKILL-XXXX-XXXX-XXXX install code (required for get, install, uninstall, reviews)"},
 		{Name: "query", Type: "string", Description: "Search query (for list)"},
 		{Name: "category", Type: "string", Description: "Filter by category (for list)"},
 		{Name: "page", Type: "integer", Description: "Page number (default: 1)"},
@@ -80,6 +80,7 @@ Resources:
 		`store(resource: "skills", action: "list")`,
 		`store(resource: "skills", action: "get", id: "skill-uuid")`,
 		`store(resource: "skills", action: "install", id: "skill-uuid")`,
+		`store(resource: "skills", action: "install", id: "SKILL-XXXX-XXXX-XXXX")`,
 	},
 }
 
@@ -269,11 +270,38 @@ func (t *NeboLoopTool) installSkill(ctx context.Context, client *neboloop.Client
 	if params.ID == "" {
 		return &ToolResult{Content: "id is required for install action", IsError: true}, nil
 	}
+	// SKILL-XXXX-XXXX-XXXX install codes go through the redeem endpoint
+	if isSkillInstallCode(params.ID) {
+		resp, err := client.RedeemSkillCode(ctx, params.ID)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Failed to install skill from code: %v", err), IsError: true}, nil
+		}
+		return t.formatResult(resp)
+	}
 	resp, err := client.InstallSkill(ctx, params.ID)
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to install skill: %v", err), IsError: true}, nil
 	}
 	return t.formatResult(resp)
+}
+
+// isSkillInstallCode checks if the ID matches the SKILL-XXXX-XXXX-XXXX format.
+// SKILL is 5 chars (vs 4 for NEBO/LOOP), so total length is 20.
+func isSkillInstallCode(id string) bool {
+	id = strings.TrimSpace(id)
+	if len(id) != 20 {
+		return false
+	}
+	// Pattern: SKILL-XXXX-XXXX-XXXX (uppercase alphanumeric)
+	if id[:6] != "SKILL-" || id[10] != '-' || id[15] != '-' {
+		return false
+	}
+	for _, c := range id[6:10] + id[11:15] + id[16:] {
+		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (t *NeboLoopTool) uninstallSkill(ctx context.Context, client *neboloop.Client, params neboloopInput) (*ToolResult, error) {

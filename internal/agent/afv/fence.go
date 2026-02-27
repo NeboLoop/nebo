@@ -68,6 +68,13 @@ func (s *FenceStore) Count() int {
 	return len(s.fences)
 }
 
+// Remove deletes a fence pair by label.
+func (s *FenceStore) Remove(label string) {
+	s.mu.Lock()
+	delete(s.fences, label)
+	s.mu.Unlock()
+}
+
 // All returns a snapshot of all fence pairs.
 func (s *FenceStore) All() []*FencePair {
 	s.mu.RLock()

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/neboloop/nebo/internal/agent/afv"
+
 	"github.com/neboloop/nebo/internal/agent/ai"
 	"github.com/neboloop/nebo/internal/agent/config"
 	"github.com/neboloop/nebo/internal/agent/memory"
@@ -65,7 +65,6 @@ type Runner struct {
 	profileTracker  ai.ProfileTracker   // For recording usage/errors per auth profile
 	mcpServer       MCPContextSetter    // Bridges context across HTTP boundary for CLI providers
 	appCatalog      AppCatalogProvider  // Installed app catalog for system prompt
-	quarantine      *afv.QuarantineStore // In-memory quarantine for failed fence verification
 	steering        *steering.Pipeline   // Mid-conversation steering message generator
 	fileTracker     *FileAccessTracker   // Tracks file reads for post-compaction re-injection
 	rateLimitStore      func(*ai.RateLimitInfo)  // Callback to publish latest rate-limit snapshot
@@ -73,6 +72,8 @@ type Runner struct {
 	detectingObjective  sync.Map          // sessionID → true: prevents overlapping detections
 	memoryTimers        sync.Map          // sessionID → *time.Timer: debounced extraction
 	cachedThresholds    *ContextThresholds // Cached per-run to avoid redundant model selection
+	promptOverhead      int               // Measured token overhead (system prompt + tool schemas + buffer)
+	lastInputTokens     int               // Ground truth token count from last API response
 }
 
 // RunRequest contains parameters for a run
@@ -118,7 +119,6 @@ func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider,
 		providerMap: providerMap,
 		tools:       toolRegistry,
 		config:      cfg,
-		quarantine:  afv.NewQuarantineStore(),
 		steering:    steering.New(),
 		fileTracker: NewFileAccessTracker(),
 	}
@@ -196,6 +196,19 @@ func (r *Runner) SetPolicy(policy *tools.Policy) {
 // Memory extraction is ALWAYS enabled when memoryTool is set - it cannot be disabled
 func (r *Runner) SetMemoryTool(mt *tools.MemoryTool) {
 	r.memoryTool = mt
+
+	// Clean up provisional memories on startup — inferred facts that were never
+	// reinforced and are older than 30 days get deleted.
+	if mt != nil {
+		go func() {
+			deleted, err := mt.CleanProvisionalMemories()
+			if err != nil {
+				fmt.Printf("[runner] Provisional memory cleanup error: %v\n", err)
+			} else if deleted > 0 {
+				fmt.Printf("[runner] Cleaned %d provisional memories (low confidence, >30 days old)\n", deleted)
+			}
+		}()
+	}
 }
 
 // SetSkillProvider sets the skill provider for per-session active skill injection.
@@ -264,6 +277,11 @@ func (r *Runner) ReloadProviders() {
 // Run executes the agentic loop
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEvent, error) {
 	fmt.Printf("[Runner] Run: session=%s origin=%s\n", req.SessionKey, req.Origin)
+
+	// Reset per-run state so stale values from previous sessions don't
+	// affect threshold decisions on the first turn of a new session.
+	r.lastInputTokens = 0
+	r.cachedThresholds = nil
 
 	// Inject origin into context so tools can check it via GetOrigin(ctx)
 	if req.Origin != "" {
@@ -356,10 +374,6 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		ModelOverride: modelOverride,
 	})
 
-	// Create per-run fence store for arithmetic fence verification (AFV).
-	// Volatile — discarded when run ends. Checksums never persist.
-	fenceStore := afv.NewFenceStore()
-
 	// Set user ID on memory tool for user-scoped operations
 	if r.memoryTool != nil && userID != "" {
 		r.memoryTool.SetCurrentUser(userID)
@@ -439,7 +453,6 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		ActiveSkills:   activeSkills,
 		AppCatalog:     appCatalog,
 		ModelAliases:   modelAliases,
-		FenceStore:     fenceStore,
 	}
 
 	if systemPrompt == "" {
@@ -453,24 +466,134 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 	}
 
 	compactionAttempted := false
+	var runStartMessageID int64 // Captured on iteration 1; messages with ID >= this are protected from window eviction
 
 	// MAIN LOOP: Model selection + agentic execution
 	for iteration < maxIterations {
 		iteration++
 		fmt.Printf("[Runner] === Iteration %d ===\n", iteration)
 
-		// Get session messages
-		messages, err := r.sessions.GetMessages(sessionID, r.config.MaxContext)
+		// Check for cancellation before starting work
+		select {
+		case <-ctx.Done():
+			fmt.Printf("[Runner] Context cancelled, exiting\n")
+			resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
+			return
+		default:
+		}
+
+		// Load all non-compacted messages for windowing
+		allMessages, err := r.sessions.GetMessages(sessionID, r.config.MaxContext)
 		if err != nil {
 			resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
 			return
 		}
+		fmt.Printf("[Runner] Loaded %d messages from session\n", len(allMessages))
 
-		fmt.Printf("[Runner] Loaded %d messages from session\n", len(messages))
+		// On the first iteration, capture the ID of the user message that
+		// triggered this run. The sliding window must never evict messages
+		// with ID >= this — doing so loses the user's original request and
+		// the agent forgets what it's doing.
+		// We use message IDs (not array indices) because GetMessages returns
+		// the most recent N, so array positions shift as new messages are added.
+		if iteration == 1 && len(allMessages) > 0 {
+			// The triggering user message is the last one loaded on iteration 1
+			// (it was just appended before Run() was called)
+			runStartMessageID = allMessages[len(allMessages)-1].ID
+		}
+
+		// Check for cancellation after loading messages (before expensive prompt building)
+		select {
+		case <-ctx.Done():
+			fmt.Printf("[Runner] Context cancelled after loading messages, exiting\n")
+			resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
+			return
+		default:
+		}
+
+		// Sliding window: keep only recent messages bounded by count and tokens.
+		// Everything older gets summarized into a rolling context block.
+		// CRITICAL: Never evict messages from the current run. The window only
+		// trims messages from PREVIOUS runs/turns. This ensures the user's
+		// original request and all tool results from this run stay in context.
+		const windowMaxMessages = 20
+		const windowMaxTokens = 40000
+
+		// Find the index in allMessages where the current run starts.
+		// Messages with ID >= runStartMessageID are from this run and must
+		// never be evicted. We scan to find the boundary.
+		currentRunStart := len(allMessages) // default: no protection (shouldn't happen)
+		for i, msg := range allMessages {
+			if msg.ID >= runStartMessageID {
+				currentRunStart = i
+				break
+			}
+		}
+
+		windowStart := len(allMessages)
+		windowTokens := 0
+		for i := len(allMessages) - 1; i >= 0; i-- {
+			msgTokens := estimateMessageChars(&allMessages[i]) / CharsPerTokenEstimate
+			// Stop growing the window if we've hit the caps, BUT only if we've
+			// already included all current-run messages (i < currentRunStart)
+			if i < currentRunStart &&
+				(windowTokens+msgTokens > windowMaxTokens || (len(allMessages)-i) > windowMaxMessages) {
+				break
+			}
+			windowTokens += msgTokens
+			windowStart = i
+		}
+
+		// Tool pair boundary check: don't split tool_use from its tool_result
+		for windowStart > 0 && len(allMessages[windowStart].ToolResults) > 0 && allMessages[windowStart].Role == "tool" {
+			windowStart--
+		}
+
+		messages := allMessages[windowStart:]
+		outsideWindow := allMessages[:windowStart]
+
+		currentRunMsgs := len(allMessages) - currentRunStart
+		if len(outsideWindow) > 0 || currentRunMsgs > windowMaxMessages {
+			fmt.Printf("[Runner] Window: %d/%d messages in context (current run: %d, evicted: %d, tokens: ~%d)\n",
+				len(messages), len(allMessages), currentRunMsgs, len(outsideWindow), windowTokens)
+		}
+
+
+		// Build rolling summary for evicted messages
+		var rollingSummary string
+		if len(outsideWindow) > 0 {
+			rollingSummary = r.buildRollingSummary(sessionID, outsideWindow, userID)
+		}
+
+		// Inject rolling summary as synthetic context message at the start of the window
+		if rollingSummary != "" {
+			summaryMsg := session.Message{
+				Role:    "user",
+				Content: "[Conversation context from earlier in this session]\n\n" + rollingSummary,
+			}
+			messages = append([]session.Message{summaryMsg}, messages...)
+		}
+
+		// Compute prompt overhead once per run for accurate threshold calculations.
+		// Uses the static system prompt + tool schemas to measure actual overhead
+		// rather than relying on a fixed constant.
+		if iteration == 1 {
+			promptTokens := len(systemPrompt) / CharsPerTokenEstimate
+			toolDefs := r.tools.List()
+			toolSchemaTokens := 0
+			for _, td := range toolDefs {
+				toolSchemaTokens += (len(td.Description) + len(string(td.InputSchema))) / CharsPerTokenEstimate
+			}
+			dynamicBuffer := 4000 // Buffer for dynamic suffix, steering, active task
+			r.promptOverhead = promptTokens + toolSchemaTokens + dynamicBuffer
+			r.cachedThresholds = nil // Force recalculation with real overhead
+			fmt.Printf("[Runner] Computed prompt overhead: %d tokens (prompt=%d, tools=%d, buffer=%d)\n",
+				r.promptOverhead, promptTokens, toolSchemaTokens, dynamicBuffer)
+		}
 
 		// Graduated context thresholds: Warning → Error → AutoCompact
 		thresholds := r.contextThresholds()
-		estimatedTokens := estimateTokens(messages)
+		estimatedTokens := r.currentTokenEstimate(messages)
 
 		// Error tier: log warning about context size
 		if estimatedTokens > thresholds.Error {
@@ -525,7 +648,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 					resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
 					return
 				}
-				newTokens := estimateTokens(messages)
+				newTokens := r.currentTokenEstimate(messages)
 				fmt.Printf("[Runner] After compaction (keep=%d): %d messages, ~%d tokens\n", keep, len(messages), newTokens)
 
 				if newTokens <= thresholds.AutoCompact {
@@ -662,61 +785,39 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			}
 		}
 
-		// AFV pre-send verification: check that all fence markers are intact
-		// in the context before sending to the LLM
-		if fenceStore.Count() > 0 {
-			contextRecord := buildContextRecord(enrichedPrompt, truncatedMessages)
-			vr := afv.Verify(fenceStore, contextRecord)
-			if !vr.OK {
-				fmt.Printf("[Runner] AFV VIOLATION: %d/%d fences failed\n", vr.Failed, vr.Total)
-				for _, v := range vr.Violations {
-					fmt.Printf("[Runner]   - %s: %s\n", v.FenceID, v.Reason)
-				}
-				// Quarantine: do not send to LLM, do not persist, do not extract memory
-				r.quarantine.Add(afv.QuarantinedResponse{
-					SessionID:    sessionID,
-					Content:      contextRecord,
-					Timestamp:     time.Now(),
-					VerifyResult: vr,
-				})
-				// Persist sanitized placeholder
-				_ = r.sessions.AppendMessage(sessionID, session.Message{
-					SessionID: sessionID,
-					Role:      "assistant",
-					Content:   "[Response quarantined: integrity check failed]",
-				})
-				resultCh <- ai.StreamEvent{
-					Type: ai.EventTypeText,
-					Text: "I detected a potential prompt injection in the tool output and blocked it for safety. The response has been quarantined.",
-				}
-				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
-				return
-			}
-		}
 
-		// Strip fence markers from context before sending to LLM.
-		// Fences served their purpose (AFV verification passed above).
-		// Removing them prevents the model from seeing and echoing them.
-		if fenceStore.Count() > 0 {
-			stripFencesFromMessages(truncatedMessages)
-		}
 
-		// Always send all registered tools — never filter by skill restrictions
-		chatTools := r.tools.List()
+		// Filter tools based on conversation context — core tools always sent,
+		// contextual tools (screenshot, desktop, pim, etc.) only when relevant.
+		allTools := r.tools.List()
+		calledTools := buildCalledToolSet(messages)
+		chatTools := FilterTools(allTools, messages, calledTools)
+		if len(chatTools) < len(allTools) {
+			fmt.Printf("[Runner] Tool filtering: %d/%d tools included\n", len(chatTools), len(allTools))
+		}
 
 		// Build chat request
+		// StaticSystem carries the stable portion for provider prompt caching.
+		// System carries the full enriched prompt (static + dynamic suffix).
+		// Providers that support caching split them; others use System only.
 		chatReq := &ai.ChatRequest{
-			Messages: truncatedMessages,
-			Tools:    chatTools,
-			System:   enrichedPrompt,
-			Model:    modelName,
+			Messages:     truncatedMessages,
+			Tools:        chatTools,
+			StaticSystem: systemPrompt,
+			System:       enrichedPrompt,
+			Model:        modelName,
 		}
 
-		// Auto-enable thinking mode for reasoning tasks when model supports it
-		if r.selector != nil && selectedModel != "" {
+		// Auto-enable thinking mode for reasoning tasks.
+		// CLI providers (HandlesTools=true) always think internally — this flag
+		// just controls whether thinking is surfaced in the UI.
+		// API providers also need the model to support extended thinking.
+		if r.selector != nil {
 			taskType := r.selector.ClassifyTask(messages)
-			if taskType == ai.TaskTypeReasoning && r.selector.SupportsThinking(selectedModel) {
-				chatReq.EnableThinking = true
+			if taskType == ai.TaskTypeReasoning {
+				if provider.HandlesTools() || (selectedModel != "" && r.selector.SupportsThinking(selectedModel)) {
+					chatReq.EnableThinking = true
+				}
 			}
 		}
 
@@ -803,59 +904,76 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		var toolCalls []session.ToolCall
 		eventCount := 0
 
-		for event := range events {
-			eventCount++
-
-			// Forward ALL events to caller for display
-			resultCh <- event
-
-			switch event.Type {
-			case ai.EventTypeText:
-				assistantContent.WriteString(event.Text)
-
-			case ai.EventTypeToolCall:
-				// Validate tool call input JSON before accepting — corrupted input
-				// (e.g., concatenated chunks like "{...}{...}") would poison the session.
-				if event.ToolCall.Input != nil && !json.Valid(event.ToolCall.Input) {
-					fmt.Printf("[Runner] WARNING: tool call %q has invalid JSON input, skipping to prevent session poisoning\n", event.ToolCall.Name)
-					continue
+	streamLoop:
+		for {
+			select {
+			case event, ok := <-events:
+				if !ok {
+					break streamLoop
 				}
-				hasToolCalls = true
-				toolCalls = append(toolCalls, session.ToolCall{
-					ID:    event.ToolCall.ID,
-					Name:  event.ToolCall.Name,
-					Input: event.ToolCall.Input,
-				})
+				eventCount++
 
-			case ai.EventTypeError:
-				fmt.Printf("[Runner] Error event received: %v\n", event.Error)
-				// Send user-visible error message so the chat doesn't just hang
-				errMsg := extractProviderErrorMessage(event.Error)
-				resultCh <- ai.StreamEvent{Type: ai.EventTypeText, Text: errMsg}
+				// Forward ALL events to caller for display
+				resultCh <- event
+
+				switch event.Type {
+				case ai.EventTypeText:
+					assistantContent.WriteString(event.Text)
+
+				case ai.EventTypeToolCall:
+					// Validate tool call input JSON before accepting — corrupted input
+					// (e.g., concatenated chunks like "{...}{...}") would poison the session.
+					if event.ToolCall.Input != nil && !json.Valid(event.ToolCall.Input) {
+						fmt.Printf("[Runner] WARNING: tool call %q has invalid JSON input, skipping to prevent session poisoning\n", event.ToolCall.Name)
+						continue
+					}
+					hasToolCalls = true
+					toolCalls = append(toolCalls, session.ToolCall{
+						ID:    event.ToolCall.ID,
+						Name:  event.ToolCall.Name,
+						Input: event.ToolCall.Input,
+					})
+
+				case ai.EventTypeError:
+					fmt.Printf("[Runner] Error event received: %v\n", event.Error)
+					// Send user-visible error message so the chat doesn't just hang
+					errMsg := extractProviderErrorMessage(event.Error)
+					resultCh <- ai.StreamEvent{Type: ai.EventTypeText, Text: errMsg}
+					resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
+					return
+
+				case ai.EventTypeMessage:
+					// Save intermediate messages from CLI provider's internal agentic loop
+					// Only save if the message has actual content (not empty envelopes)
+					if event.Message != nil && (event.Message.Content != "" || len(event.Message.ToolCalls) > 0 || len(event.Message.ToolResults) > 0) {
+						msg := *event.Message
+						msg.SessionID = sessionID
+
+						// Normalize: Anthropic CLI wraps tool results in "user" messages,
+						// but the universal format uses "tool" role. Convert so sessions
+						// work correctly when replayed through any provider adapter.
+						if msg.Role == "user" && msg.Content == "" && len(msg.ToolResults) > 0 {
+							msg.Role = "tool"
+						}
+
+						if err := r.sessions.AppendMessage(sessionID, msg); err != nil {
+							fmt.Printf("[Runner] ERROR saving intermediate message: %v\n", err)
+						}
+						// NOTE: Do NOT accumulate into assistantContent here.
+						// Messages are already saved above individually. Accumulating would
+						// cause double-saving when the final save runs at the end of iteration.
+					}
+
+				case ai.EventTypeUsage:
+					if event.Usage != nil && event.Usage.InputTokens > 0 {
+						r.lastInputTokens = event.Usage.InputTokens
+					}
+				}
+
+			case <-ctx.Done():
+				fmt.Printf("[Runner] Context cancelled during streaming\n")
 				resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 				return
-
-			case ai.EventTypeMessage:
-				// Save intermediate messages from CLI provider's internal agentic loop
-				// Only save if the message has actual content (not empty envelopes)
-				if event.Message != nil && (event.Message.Content != "" || len(event.Message.ToolCalls) > 0 || len(event.Message.ToolResults) > 0) {
-					msg := *event.Message
-					msg.SessionID = sessionID
-
-					// Normalize: Anthropic CLI wraps tool results in "user" messages,
-					// but the universal format uses "tool" role. Convert so sessions
-					// work correctly when replayed through any provider adapter.
-					if msg.Role == "user" && msg.Content == "" && len(msg.ToolResults) > 0 {
-						msg.Role = "tool"
-					}
-
-					if err := r.sessions.AppendMessage(sessionID, msg); err != nil {
-						fmt.Printf("[Runner] ERROR saving intermediate message: %v\n", err)
-					}
-					// NOTE: Do NOT accumulate into assistantContent here.
-					// Messages are already saved above individually. Accumulating would
-					// cause double-saving when the final save runs at the end of iteration.
-				}
 			}
 		}
 		fmt.Printf("[Runner] Stream complete: %d events, %d tool calls\n", eventCount, len(toolCalls))
@@ -886,7 +1004,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			err := r.sessions.AppendMessage(sessionID, session.Message{
 				SessionID: sessionID,
 				Role:      "assistant",
-				Content:   afv.StripFenceMarkers(assistantContent.String()),
+				Content:   assistantContent.String(),
 				ToolCalls: toolCallsJSON,
 			})
 			if err != nil {
@@ -900,20 +1018,23 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			var toolResults []session.ToolResult
 
 			for _, tc := range toolCalls {
+				// Check cancellation before each tool
+				select {
+				case <-ctx.Done():
+					fmt.Printf("[Runner] Context cancelled before tool %s\n", tc.Name)
+					resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
+					return
+				default:
+				}
+
 				fmt.Printf("[Runner] Executing tool: %s\n", tc.Name)
-				result := r.tools.Execute(ctx, &ai.ToolCall{
+				toolCtx, toolCancel := context.WithTimeout(ctx, 5*time.Minute)
+				result := r.tools.Execute(toolCtx, &ai.ToolCall{
 					ID:    tc.ID,
 					Name:  tc.Name,
 					Input: tc.Input,
 				})
-
-				// Wrap tool result in AFV fences if origin/tool requires it
-				fencedContent := result.Content
-				if afv.ShouldFence(tools.GetOrigin(ctx), tc.Name) {
-					contentFence := fenceStore.Generate("tool_" + tc.Name + "_" + tc.ID)
-					guide := afv.BuildToolResultGuide(fenceStore, tc.Name)
-					fencedContent = guide.Format() + "\n" + contentFence.Wrap(fencedContent)
-				}
+				toolCancel()
 
 				// Send tool result event with tool info for correlation
 				resultCh <- ai.StreamEvent{
@@ -929,7 +1050,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 				toolResults = append(toolResults, session.ToolResult{
 					ToolCallID: tc.ID,
-					Content:    fencedContent,
+					Content:    result.Content,
 					IsError:    result.IsError,
 				})
 			}
@@ -991,52 +1112,8 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 	}
 }
 
-// stripFencesFromMessages removes AFV fence markers from message content and tool results.
-// Called after AFV verification so the LLM never sees or echoes fence markers.
-func stripFencesFromMessages(messages []session.Message) {
-	for i := range messages {
-		if messages[i].Content != "" {
-			messages[i].Content = afv.StripFenceMarkers(messages[i].Content)
-		}
-		if len(messages[i].ToolResults) > 0 {
-			var results []session.ToolResult
-			if err := json.Unmarshal(messages[i].ToolResults, &results); err == nil {
-				changed := false
-				for j := range results {
-					clean := afv.StripFenceMarkers(results[j].Content)
-					if clean != results[j].Content {
-						results[j].Content = clean
-						changed = true
-					}
-				}
-				if changed {
-					if updated, err := json.Marshal(results); err == nil {
-						messages[i].ToolResults = updated
-					}
-				}
-			}
-		}
-	}
-}
 
-// buildContextRecord concatenates the system prompt and all message contents
-// into a single string for AFV fence verification.
-func buildContextRecord(systemPrompt string, messages []session.Message) string {
-	var b strings.Builder
-	b.WriteString(systemPrompt)
-	for _, m := range messages {
-		b.WriteString(m.Content)
-		if len(m.ToolResults) > 0 {
-			b.Write(m.ToolResults)
-		}
-	}
-	return b.String()
-}
 
-// compactionSummaryPrompt is the prompt used to generate an intelligent working-state
-// summary of the conversation before compaction. The LLM produces a structured summary
-// that preserves task context, progress, and next steps so the agent can continue
-// seamlessly after context is compacted.
 const compactionSummaryPrompt = `You are summarizing a conversation for context continuity. The conversation will be compacted and this summary is all the agent will have to continue working.
 
 Produce a structured summary covering:
@@ -1270,31 +1347,321 @@ func extractTaskFromSummary(summary string) string {
 	return ""
 }
 
-// buildCumulativeSummary compresses the previous summary and prepends it to the new one.
-// This prevents summary-of-summary dilution by preserving compressed history.
-// The cumulative summary is capped at 4000 chars to bound growth.
+// Tiered summary compression constants.
+// After 3-4 compaction cycles, flat 800-char compression makes summaries
+// too abstract. Three tiers preserve fidelity where it matters most.
+const (
+	tierEarlierMarker = "[Earlier context]"
+	tierRecentMarker  = "[Recent context]"
+	tierEarlierBudget = 600
+	tierRecentBudget  = 1500
+	maxCumulativeLen  = 6000
+)
+
+// parseSummaryTiers splits a cumulative summary into its tier components.
+// Backward compatible: legacy summaries (no markers) are treated as current tier.
+func parseSummaryTiers(summary string) (earlier, recent, current string) {
+	if summary == "" {
+		return "", "", ""
+	}
+
+	earlierIdx := strings.Index(summary, tierEarlierMarker)
+	recentIdx := strings.Index(summary, tierRecentMarker)
+
+	// Legacy format: no markers, everything is current
+	if earlierIdx == -1 && recentIdx == -1 {
+		return "", "", summary
+	}
+
+	// Parse each section
+	if earlierIdx != -1 && recentIdx != -1 {
+		// Both markers present
+		if earlierIdx < recentIdx {
+			earlierContent := summary[earlierIdx+len(tierEarlierMarker) : recentIdx]
+			earlier = strings.TrimSpace(earlierContent)
+
+			// Find where recent ends (at next section or end)
+			remaining := summary[recentIdx+len(tierRecentMarker):]
+			// The "---" separator marks the boundary between recent and current
+			if sepIdx := strings.Index(remaining, "\n\n---\n\n"); sepIdx != -1 {
+				recent = strings.TrimSpace(remaining[:sepIdx])
+				current = strings.TrimSpace(remaining[sepIdx+7:])
+			} else {
+				recent = strings.TrimSpace(remaining)
+			}
+		}
+	} else if earlierIdx != -1 {
+		// Only earlier marker
+		remaining := summary[earlierIdx+len(tierEarlierMarker):]
+		if sepIdx := strings.Index(remaining, "\n\n---\n\n"); sepIdx != -1 {
+			earlier = strings.TrimSpace(remaining[:sepIdx])
+			current = strings.TrimSpace(remaining[sepIdx+7:])
+		} else {
+			earlier = strings.TrimSpace(remaining)
+		}
+	} else if recentIdx != -1 {
+		// Only recent marker — happens on first tiered compaction of legacy summary
+		remaining := summary[recentIdx+len(tierRecentMarker):]
+		if sepIdx := strings.Index(remaining, "\n\n---\n\n"); sepIdx != -1 {
+			recent = strings.TrimSpace(remaining[:sepIdx])
+			current = strings.TrimSpace(remaining[sepIdx+7:])
+		} else {
+			recent = strings.TrimSpace(remaining)
+		}
+	}
+
+	return earlier, recent, current
+}
+
+// buildCumulativeSummary uses tiered compression to preserve summary fidelity
+// across multiple compaction cycles. Each compaction promotes tiers:
+//
+//	Earlier = compress(old_Earlier + old_Recent, 600)
+//	Recent  = compress(old_Current, 1500)
+//	Current = newSummary (full fidelity)
 func (r *Runner) buildCumulativeSummary(sessionID, newSummary string) string {
 	prevSummary, err := r.sessions.GetSummary(sessionID)
 	if err != nil || prevSummary == "" {
 		return newSummary
 	}
 
-	// Compress previous summary to ~800 chars
-	compressed := compressSummary(prevSummary, 800)
+	// Parse previous summary into tiers
+	oldEarlier, oldRecent, oldCurrent := parseSummaryTiers(prevSummary)
 
-	cumulative := "[Earlier context]\n" + compressed + "\n\n---\n\n" + newSummary
+	// Promote per state machine:
+	// Earlier = compress(old_Earlier + old_Recent, 600)
+	// Recent  = compress(old_Current, 1500)
+	// Current = newSummary (full fidelity)
 
-	// Hard cap at 4000 chars — drop oldest context if exceeded
-	const maxCumulativeLen = 4000
+	var newEarlier string
+	combinedOld := oldEarlier
+	if oldRecent != "" {
+		if combinedOld != "" {
+			combinedOld += "\n\n" + oldRecent
+		} else {
+			combinedOld = oldRecent
+		}
+	}
+	if combinedOld != "" {
+		newEarlier = compressSummary(combinedOld, tierEarlierBudget)
+	}
+
+	newRecent := ""
+	if oldCurrent != "" {
+		newRecent = compressSummary(oldCurrent, tierRecentBudget)
+	}
+
+	// Assemble
+	var b strings.Builder
+	if newEarlier != "" {
+		b.WriteString(tierEarlierMarker)
+		b.WriteString("\n")
+		b.WriteString(newEarlier)
+		b.WriteString("\n\n")
+	}
+	if newRecent != "" {
+		b.WriteString(tierRecentMarker)
+		b.WriteString("\n")
+		b.WriteString(newRecent)
+		b.WriteString("\n\n---\n\n")
+	}
+	b.WriteString(newSummary)
+
+	cumulative := b.String()
+
+	// Hard cap — drop oldest context if exceeded
 	if len(cumulative) > maxCumulativeLen {
 		cumulative = cumulative[len(cumulative)-maxCumulativeLen:]
-		// Find the first newline to avoid starting mid-line
 		if idx := strings.Index(cumulative, "\n"); idx >= 0 {
 			cumulative = "..." + cumulative[idx:]
 		}
 	}
 
 	return cumulative
+}
+
+// buildQuickFallbackSummary creates an instant plaintext summary from evicted
+// messages without any LLM call. Used on the first eviction when no async
+// summary is available yet. Extracts user requests and tool call names so the
+// agent knows what was discussed and what tools were already used.
+func buildQuickFallbackSummary(messages []session.Message) string {
+	var b strings.Builder
+	b.WriteString("Earlier in this conversation:\n")
+
+	toolCalls := 0
+	var toolNames []string
+	seenTools := make(map[string]bool)
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case "user":
+			if msg.Content != "" {
+				content := msg.Content
+				if len(content) > 300 {
+					content = content[:300] + "..."
+				}
+				b.WriteString("- User: ")
+				b.WriteString(content)
+				b.WriteString("\n")
+			}
+		case "assistant":
+			if msg.Content != "" {
+				content := msg.Content
+				if len(content) > 200 {
+					content = content[:200] + "..."
+				}
+				b.WriteString("- Assistant: ")
+				b.WriteString(content)
+				b.WriteString("\n")
+			}
+			// Extract tool call names
+			if len(msg.ToolCalls) > 0 {
+				var calls []session.ToolCall
+				if err := json.Unmarshal(msg.ToolCalls, &calls); err == nil {
+					for _, tc := range calls {
+						toolCalls++
+						if !seenTools[tc.Name] {
+							seenTools[tc.Name] = true
+							toolNames = append(toolNames, tc.Name)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if toolCalls > 0 {
+		b.WriteString(fmt.Sprintf("- Tools used (%d calls): %s\n", toolCalls, strings.Join(toolNames, ", ")))
+	}
+
+	result := b.String()
+	if len(result) > 1500 {
+		result = result[:1500] + "\n..."
+	}
+	return result
+}
+
+// buildRollingSummary returns a rolling summary for messages that fell outside the sliding window.
+// Async: uses the existing summary for THIS turn (one-turn stale), updates in background for next turn.
+func (r *Runner) buildRollingSummary(sessionID string, outsideWindow []session.Message, userID string) string {
+	existingSummary, _ := r.sessions.GetSummary(sessionID)
+	lastSummarizedCount, _ := r.sessions.GetLastSummarizedCount(sessionID)
+
+	// Nothing new fell off — reuse cached summary
+	if lastSummarizedCount >= len(outsideWindow) {
+		return existingSummary
+	}
+
+	// Use existing summary for THIS turn (one-turn stale is acceptable —
+	// the evicted message was the oldest visible message anyway).
+	// If no summary exists yet (first eviction), build a quick plaintext
+	// fallback so the agent has SOMETHING instead of nothing.
+	rollingSummary := existingSummary
+	if rollingSummary == "" && len(outsideWindow) > 0 {
+		rollingSummary = buildQuickFallbackSummary(outsideWindow)
+		if rollingSummary != "" {
+			fmt.Printf("[Runner] Quick fallback summary for first eviction (%d chars)\n", len(rollingSummary))
+		}
+	}
+
+	// Update summary in background for NEXT turn
+	newlyOutside := outsideWindow[lastSummarizedCount:]
+	summaryKey := "summary:" + sessionID
+	if _, loaded := r.extractingMemory.LoadOrStore(summaryKey, true); !loaded {
+		go func() {
+			defer r.extractingMemory.Delete(summaryKey)
+
+			bgCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+
+			// Extract memories from evicted messages first
+			if r.memoryTool != nil && len(newlyOutside) > 0 {
+				r.extractFromEvictedMessages(bgCtx, newlyOutside, userID)
+			}
+
+			// Summarize the newly-evicted messages
+			newSummary := r.generateSummary(bgCtx, newlyOutside)
+			if newSummary == "" {
+				return
+			}
+
+			// Chain with existing summary using tiered compression
+			combined := r.buildCumulativeSummary(sessionID, newSummary)
+			_ = r.sessions.UpdateSummary(sessionID, combined)
+			_ = r.sessions.SetLastSummarizedCount(sessionID, len(outsideWindow))
+		}()
+	}
+
+	return rollingSummary
+}
+
+// extractFromEvictedMessages extracts memories from messages that fell outside the sliding window.
+// Unlike the idle extraction (which looks at last 6 messages), this targets specific evicted messages.
+func (r *Runner) extractFromEvictedMessages(ctx context.Context, messages []session.Message, userID string) {
+	if len(messages) == 0 || r.memoryTool == nil || len(r.providers) == 0 {
+		return
+	}
+
+	defer func() {
+		if v := recover(); v != nil {
+			crashlog.LogPanic("runner", v, map[string]string{"op": "eviction_extraction"})
+		}
+	}()
+
+	// Reuse the same extraction pattern as runMemoryFlush
+	var provider ai.Provider
+	if r.selector != nil {
+		cheapestModelID := r.selector.GetCheapestModel()
+		if cheapestModelID != "" {
+			providerID, modelName := ai.ParseModelID(cheapestModelID)
+			if p, ok := r.providerMap[providerID]; ok {
+				provider = &modelOverrideProvider{Provider: p, model: modelName}
+			}
+		}
+	}
+	if provider == nil && len(r.providers) > 0 {
+		provider = r.providers[0]
+	}
+	if provider == nil {
+		return
+	}
+
+	extractor := memory.NewExtractor(provider)
+	facts, err := extractor.Extract(ctx, messages)
+	if err != nil || facts == nil || facts.IsEmpty() {
+		return
+	}
+
+	entries := facts.FormatForStorage()
+	stored := 0
+	for _, entry := range entries {
+		var storeErr error
+		if entry.IsStyle {
+			storeErr = r.memoryTool.StoreStyleEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID, entry.Confidence)
+		} else {
+			if r.memoryTool.IsDuplicate(entry.Layer, entry.Namespace, entry.Key, entry.Value, userID) {
+				// Reinforce confidence on duplicate — inferred facts graduate
+				// from 0.6 → 0.68+ and enter the system prompt
+				_ = r.memoryTool.ReinforceMemory(entry.Layer, entry.Namespace, entry.Key, userID)
+				continue
+			}
+			storeErr = r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID, entry.Confidence)
+		}
+		if storeErr == nil {
+			stored++
+		}
+	}
+
+	if stored > 0 {
+		fmt.Printf("[runner] Extracted %d memories from %d evicted messages\n", stored, len(messages))
+	}
+
+	// Synthesize personality directive if style observations were found
+	if len(facts.Styles) > 0 && r.sessions != nil {
+		if db := r.sessions.GetDB(); db != nil {
+			memory.SynthesizeDirective(ctx, db, provider, userID)
+		}
+	}
 }
 
 // compressSummary truncates a summary to approximately maxLen characters,
@@ -1638,14 +2005,15 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 		var storeErr error
 		if entry.IsStyle {
 			// Style observations use reinforcement tracking — increment count on duplicates
-			storeErr = r.memoryTool.StoreStyleEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
+			storeErr = r.memoryTool.StoreStyleEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID, entry.Confidence)
 		} else {
-			// Skip if identical value already stored (dedup)
+			// Skip if identical value already stored (dedup), but reinforce confidence
 			if r.memoryTool.IsDuplicate(entry.Layer, entry.Namespace, entry.Key, entry.Value, userID) {
+				_ = r.memoryTool.ReinforceMemory(entry.Layer, entry.Namespace, entry.Key, userID)
 				skipped++
 				continue
 			}
-			storeErr = r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
+			storeErr = r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID, entry.Confidence)
 		}
 		if storeErr != nil {
 			fmt.Printf("[runner] Failed to store memory %s: %v\n", entry.Key, storeErr)
@@ -1727,9 +2095,13 @@ func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID stri
 		flushProvider = r.providers[0]
 	}
 
-	// Run extraction in background — the messages slice is an in-memory copy
-	// safe to read concurrently while Compact() modifies the DB.
-	go r.runMemoryFlush(ctx, flushProvider, messages, userID)
+	// Run extraction in background with overlap guard — prevents concurrent
+	// extraction for the same session (idle extraction would be wasted work).
+	r.extractingMemory.Store(sessionID, true)
+	go func() {
+		defer r.extractingMemory.Delete(sessionID)
+		r.runMemoryFlush(ctx, flushProvider, messages, userID)
+	}()
 
 	return true
 }
@@ -1763,13 +2135,14 @@ func (r *Runner) runMemoryFlush(ctx context.Context, provider ai.Provider, messa
 	for _, entry := range entries {
 		var storeErr error
 		if entry.IsStyle {
-			storeErr = r.memoryTool.StoreStyleEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
+			storeErr = r.memoryTool.StoreStyleEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID, entry.Confidence)
 		} else {
 			if r.memoryTool.IsDuplicate(entry.Layer, entry.Namespace, entry.Key, entry.Value, userID) {
+				_ = r.memoryTool.ReinforceMemory(entry.Layer, entry.Namespace, entry.Key, userID)
 				skipped++
 				continue
 			}
-			storeErr = r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID)
+			storeErr = r.memoryTool.StoreEntryForUser(entry.Layer, entry.Namespace, entry.Key, entry.Value, entry.Tags, userID, entry.Confidence)
 		}
 		if storeErr != nil {
 			fmt.Printf("[runner] Memory flush store failed for %s: %v\n", entry.Key, storeErr)
@@ -1906,6 +2279,15 @@ func estimateTokens(messages []session.Message) int {
 	return totalChars / 4
 }
 
+// currentTokenEstimate returns the best available token count for context.
+// Prefers ground truth from the last API response when available.
+func (r *Runner) currentTokenEstimate(messages []session.Message) int {
+	if r.lastInputTokens > 0 {
+		return r.lastInputTokens
+	}
+	return estimateTokens(messages)
+}
+
 // DefaultContextTokenLimit is the fallback max tokens before proactive compaction.
 // Used when the active model's context window is unknown.
 const DefaultContextTokenLimit = 80000
@@ -1977,8 +2359,12 @@ func (r *Runner) contextThresholds() ContextThresholds {
 		return result
 	}
 
-	// Reserve tokens for system prompt, tool definitions
-	const reserveTokens = 20000
+	// Reserve tokens for system prompt, tool definitions.
+	// Use measured overhead when available, with a floor of the old default.
+	reserveTokens := r.promptOverhead
+	if reserveTokens < 20000 {
+		reserveTokens = 20000 // Floor: never below old default
+	}
 	effective := contextWindow - reserveTokens
 	if effective < DefaultContextTokenLimit {
 		effective = DefaultContextTokenLimit
@@ -2040,6 +2426,24 @@ IMPORTANT: Review the conversation and use the memory tool to store any importan
 - Content you produced for the user — copy, headlines, plans, strategies, emails, code architecture (layer: "tacit", namespace: "artifacts"). Store the VERBATIM text, not a summary. The user will reference this later.
 
 If there's nothing important to store, simply reply "NO_STORE_NEEDED" and nothing else.`
+
+// buildCalledToolSet extracts the set of tool names called in the current session messages.
+func buildCalledToolSet(messages []session.Message) map[string]bool {
+	called := make(map[string]bool)
+	for _, msg := range messages {
+		if len(msg.ToolCalls) == 0 {
+			continue
+		}
+		var calls []session.ToolCall
+		if err := json.Unmarshal(msg.ToolCalls, &calls); err != nil {
+			continue
+		}
+		for _, tc := range calls {
+			called[tc.Name] = true
+		}
+	}
+	return called
+}
 
 // buildPlatformSection and injectSystemContext have moved to prompt.go
 // as part of the section-based prompt builder.
