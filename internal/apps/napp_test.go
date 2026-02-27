@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -59,8 +60,7 @@ func TestMaxSizeForFile(t *testing.T) {
 }
 
 func TestExtractNapp_Valid(t *testing.T) {
-	// Use Mach-O 64-bit magic bytes so binary format validation passes
-	fakeBinary := string([]byte{0xcf, 0xfa, 0xed, 0xfe}) + string(make([]byte, 100))
+	fakeBinary := string(fakeNativeBinaryHeader()) + string(make([]byte, 100))
 	nappPath := createTestNapp(t, map[string]testEntry{
 		"manifest.json":   {content: `{"id":"test","name":"Test","version":"1.0.0","provides":["gateway"]}`},
 		"binary":          {content: fakeBinary, mode: 0755},
@@ -81,15 +81,17 @@ func TestExtractNapp_Valid(t *testing.T) {
 		}
 	}
 
-	// Verify binary is executable
-	info, _ := os.Stat(filepath.Join(destDir, "binary"))
-	if info.Mode().Perm()&0100 == 0 {
-		t.Error("binary should be executable")
+	// Verify binary is executable (Unix only — Windows has no executable bit)
+	if runtime.GOOS != "windows" {
+		info, _ := os.Stat(filepath.Join(destDir, "binary"))
+		if info.Mode().Perm()&0100 == 0 {
+			t.Error("binary should be executable")
+		}
 	}
 }
 
 func TestExtractNapp_WithUIFiles(t *testing.T) {
-	fakeBinary := string([]byte{0xcf, 0xfa, 0xed, 0xfe}) + string(make([]byte, 100))
+	fakeBinary := string(fakeNativeBinaryHeader()) + string(make([]byte, 100))
 	nappPath := createTestNapp(t, map[string]testEntry{
 		"manifest.json":   {content: `{"id":"test"}`},
 		"binary":          {content: fakeBinary, mode: 0755},
@@ -270,4 +272,15 @@ func createTestNappWithSymlink(t *testing.T) string {
 	}
 
 	return nappPath
+}
+
+// fakeNativeBinaryHeader returns magic bytes for the current platform's binary format.
+func fakeNativeBinaryHeader() []byte {
+	if runtime.GOOS == "windows" {
+		return []byte{0x4d, 0x5a, 0x00, 0x00} // PE (MZ header)
+	}
+	if runtime.GOOS == "darwin" {
+		return []byte{0xcf, 0xfa, 0xed, 0xfe} // Mach-O 64-bit
+	}
+	return []byte{0x7f, 'E', 'L', 'F'} // ELF (Linux)
 }

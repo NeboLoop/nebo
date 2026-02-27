@@ -198,7 +198,7 @@ One-time reminders — use "at" (we compute the schedule automatically):
 - agent(resource: reminder, action: create, name: "send-sms", at: "in 5 minutes", task_type: "agent", message: "Send 'Go outside' to Kristi via text", instructions: "Send the message via the user's preferred messaging channel. The recipient phone number is stored in memory under contacts/kristi.")
 
 Recurring reminders — use "schedule" (cron expression):
-- agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send a summary to Telegram", instructions: "Use the web tool to check the calendar, then deliver the summary via the telegram channel.")
+- agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send a summary to the owner", instructions: "Use the web tool to check the calendar, then deliver the summary via DM.")
 - agent(resource: reminder, action: create, name: "weekly-report", schedule: "0 0 17 * * 5", task_type: "agent", message: "Compile this week's completed tasks and draft a summary")
 
 Management:
@@ -218,10 +218,10 @@ Examples: "0 0 9 * * 1-5" (9am weekdays), "0 30 8 * * *" (8:30am daily), "0 0 */
 - agent(resource: memory, action: delete, key: "...") — Delete a memory
 Layers: "tacit" (long-term preferences — MOST COMMON), "daily" (today's facts, auto-expires), "entity" (people/places/things)
 
-**Messaging (channel integrations):**
-- agent(resource: message, action: send, channel: "telegram", to: "...", text: "Hello!") — Send a message
+**Messaging (via NeboLoop):**
+- agent(resource: message, action: send, to: "...", text: "Hello!") — Send a DM
 - agent(resource: message, action: list) — List available channels
-Use messaging to deliver results to the user on their preferred channel. Combine with reminders for proactive delivery.
+Use messaging to deliver results to the user via DM. Combine with reminders for proactive delivery.
 
 **Sessions:**
 - agent(resource: session, action: list) — List conversation sessions

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -42,8 +43,13 @@ func TestCLIProviderID(t *testing.T) {
 }
 
 func TestCLIProviderStreamWithEcho(t *testing.T) {
-	// Test with echo command which is always available
-	p := NewCLIProvider("echo-test", "echo", []string{})
+	// On Windows, echo is a shell builtin (not a standalone binary), so use cmd /c echo.
+	var p *CLIProvider
+	if runtime.GOOS == "windows" {
+		p = NewCLIProvider("echo-test", "cmd", []string{"/c", "echo"})
+	} else {
+		p = NewCLIProvider("echo-test", "echo", []string{})
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -182,9 +188,15 @@ func TestBuildPromptFromMessages(t *testing.T) {
 }
 
 func TestCheckCLIAvailable(t *testing.T) {
-	// echo should be available on all systems
-	if !CheckCLIAvailable("echo") {
-		t.Error("echo should be available")
+	// On Windows, echo is a shell builtin not found by exec.LookPath, so test with cmd.
+	if runtime.GOOS == "windows" {
+		if !CheckCLIAvailable("cmd") {
+			t.Error("cmd should be available on Windows")
+		}
+	} else {
+		if !CheckCLIAvailable("echo") {
+			t.Error("echo should be available")
+		}
 	}
 
 	// nonexistent command should not be available

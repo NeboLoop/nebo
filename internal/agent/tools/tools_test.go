@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -184,7 +185,8 @@ func TestBashTool(t *testing.T) {
 		t.Errorf("unexpected error: %s", result.Content)
 	}
 
-	if result.Content != "hello\n" && result.Content != "hello" {
+	got := strings.TrimSpace(result.Content)
+	if got != "hello" {
 		t.Errorf("expected 'hello', got %q", result.Content)
 	}
 }
@@ -274,6 +276,7 @@ func TestIsBlockedIP(t *testing.T) {
 
 func TestValidateFilePath(t *testing.T) {
 	home, _ := os.UserHomeDir()
+	tmpDir := t.TempDir()
 
 	tests := []struct {
 		name    string
@@ -281,17 +284,43 @@ func TestValidateFilePath(t *testing.T) {
 		action  string
 		wantErr bool
 	}{
-		{"safe read temp file", "/tmp/test.txt", "read", false},
-		{"safe write temp file", "/tmp/output.txt", "write", false},
+		{"safe read temp file", filepath.Join(tmpDir, "test.txt"), "read", false},
+		{"safe write temp file", filepath.Join(tmpDir, "output.txt"), "write", false},
 		{"blocked ssh dir", filepath.Join(home, ".ssh", "id_rsa"), "read", true},
 		{"blocked ssh config", filepath.Join(home, ".ssh", "config"), "read", true},
 		{"blocked aws dir", filepath.Join(home, ".aws", "credentials"), "read", true},
 		{"blocked gnupg", filepath.Join(home, ".gnupg", "secring.gpg"), "read", true},
-		{"blocked bashrc write", filepath.Join(home, ".bashrc"), "write", true},
-		{"blocked zshrc edit", filepath.Join(home, ".zshrc"), "edit", true},
-		{"blocked etc shadow", "/etc/shadow", "read", true},
-		{"blocked etc passwd", "/etc/passwd", "read", true},
 		{"blocked npmrc", filepath.Join(home, ".npmrc"), "read", true},
+	}
+
+	// Platform-specific test cases
+	if runtime.GOOS != "windows" {
+		tests = append(tests,
+			struct {
+				name    string
+				path    string
+				action  string
+				wantErr bool
+			}{"blocked bashrc write", filepath.Join(home, ".bashrc"), "write", true},
+			struct {
+				name    string
+				path    string
+				action  string
+				wantErr bool
+			}{"blocked zshrc edit", filepath.Join(home, ".zshrc"), "edit", true},
+			struct {
+				name    string
+				path    string
+				action  string
+				wantErr bool
+			}{"blocked etc shadow", "/etc/shadow", "read", true},
+			struct {
+				name    string
+				path    string
+				action  string
+				wantErr bool
+			}{"blocked etc passwd", "/etc/passwd", "read", true},
+		)
 	}
 
 	for _, tt := range tests {
@@ -396,10 +425,28 @@ func TestSanitizedEnv(t *testing.T) {
 		}
 	}
 
-	// Safe vars should still be present
-	safeVars := []string{"HOME", "USER", "PATH"}
+	// Safe vars should still be present (use platform-appropriate vars)
+	safeVars := []string{"PATH"}
+	if runtime.GOOS == "windows" {
+		safeVars = append(safeVars, "USERPROFILE", "SystemRoot")
+	} else {
+		safeVars = append(safeVars, "HOME", "USER")
+	}
 	for _, sv := range safeVars {
-		if os.Getenv(sv) != "" && !keys[sv] {
+		if os.Getenv(sv) == "" {
+			continue
+		}
+		found := keys[sv]
+		if !found && runtime.GOOS == "windows" {
+			// Windows env vars are case-insensitive but map keys are not.
+			for k := range keys {
+				if strings.EqualFold(k, sv) {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
 			t.Errorf("sanitizedEnv() should preserve %s but it was missing", sv)
 		}
 	}
@@ -448,11 +495,18 @@ func TestShellToolUseSanitizedEnv(t *testing.T) {
 	os.Setenv("LD_PRELOAD", "/tmp/evil.so")
 	defer os.Unsetenv("LD_PRELOAD")
 
+	// Use platform-appropriate command to list environment variables.
+	// PowerShell's "set" is Set-Variable (not env listing), so use "cmd /c set".
+	envCmd := "env"
+	if runtime.GOOS == "windows" {
+		envCmd = "cmd /c set"
+	}
+
 	tool := NewShellTool(NewPolicy(), nil)
 	input, _ := json.Marshal(ShellInput{
 		Resource: "bash",
 		Action:   "exec",
-		Command:  "env",
+		Command:  envCmd,
 	})
 	result, err := tool.Execute(context.Background(), input)
 	if err != nil {
@@ -463,7 +517,7 @@ func TestShellToolUseSanitizedEnv(t *testing.T) {
 		t.Errorf("unexpected error: %s", result.Content)
 	}
 
-	// The output of 'env' should NOT contain LD_PRELOAD
+	// The output should NOT contain LD_PRELOAD
 	if strings.Contains(result.Content, "LD_PRELOAD") {
 		t.Error("shell command should not see LD_PRELOAD in its environment")
 	}
@@ -543,11 +597,8 @@ func TestRegistryBlocksToolForOrigin(t *testing.T) {
 		Name:  "shell",
 		Input: json.RawMessage(`{"resource":"bash","action":"exec","command":"echo hi"}`),
 	})
-	if !result.IsError {
+	if !result.IsError || !strings.Contains(result.Content, "not permitted") {
 		t.Error("expected shell to be denied for comm origin")
-	}
-	if !strings.Contains(result.Content, "not permitted") {
-		t.Errorf("expected 'not permitted' in error, got: %s", result.Content)
 	}
 
 	// User-origin context should succeed
@@ -580,9 +631,11 @@ func TestRegistryBlocksShellForAppOrigin(t *testing.T) {
 	}
 
 	// App should still be able to use file tool
+	tmpFile := filepath.Join(t.TempDir(), "test.txt")
+	os.WriteFile(tmpFile, []byte("hello"), 0644)
 	result = registry.Execute(ctx, &ai.ToolCall{
 		Name:  "file",
-		Input: json.RawMessage(`{"action":"read","path":"/dev/null"}`),
+		Input: json.RawMessage(fmt.Sprintf(`{"action":"read","path":"%s"}`, strings.ReplaceAll(tmpFile, `\`, `\\`))),
 	})
 	if result.IsError && strings.Contains(result.Content, "not permitted") {
 		t.Error("expected file tool to be allowed for app origin")
@@ -608,9 +661,11 @@ func TestRegistryBlocksShellForSkillOrigin(t *testing.T) {
 	}
 
 	// Skill should still be able to use file tool
+	tmpFile := filepath.Join(t.TempDir(), "test.txt")
+	os.WriteFile(tmpFile, []byte("hello"), 0644)
 	result = registry.Execute(ctx, &ai.ToolCall{
 		Name:  "file",
-		Input: json.RawMessage(`{"action":"read","path":"/dev/null"}`),
+		Input: json.RawMessage(fmt.Sprintf(`{"action":"read","path":"%s"}`, strings.ReplaceAll(tmpFile, `\`, `\\`))),
 	})
 	if result.IsError && strings.Contains(result.Content, "not permitted") {
 		t.Error("expected file tool to be allowed for skill origin")
@@ -775,15 +830,18 @@ func TestRegistryAllowsFileForAllOrigins(t *testing.T) {
 	os.WriteFile(testFile, []byte("hello"), 0644)
 
 	// All origins should be able to use file(action: read)
+	pathJSON, _ := json.Marshal(testFile)
 	origins := []Origin{OriginUser, OriginComm, OriginApp, OriginSkill, OriginSystem}
 	for _, origin := range origins {
 		ctx := WithOrigin(context.Background(), origin)
 		result := registry.Execute(ctx, &ai.ToolCall{
 			Name:  "file",
-			Input: json.RawMessage(fmt.Sprintf(`{"action":"read","path":"%s"}`, testFile)),
+			Input: json.RawMessage(fmt.Sprintf(`{"action":"read","path":%s}`, pathJSON)),
 		})
 		if result.IsError {
 			t.Errorf("file read denied for origin=%s: %s", origin, result.Content)
 		}
 	}
 }
+
+

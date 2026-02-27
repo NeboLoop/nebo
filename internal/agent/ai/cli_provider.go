@@ -128,10 +128,10 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 			args = append(args, "--model", req.Model)
 		}
 
-		// Pass system prompt if provided (claude CLI supports --system-prompt)
-		if req.System != "" && p.command == "claude" {
-			args = append(args, "--system-prompt", req.System)
-		}
+		// System prompt is prepended to the stdin content (below) instead of
+		// passed as --system-prompt flag to avoid Windows command-line length
+		// limits (8191 chars). The prompt built from messages already uses
+		// [System]/[User]/[Assistant] sections so this integrates naturally.
 
 		// Control thinking effort: low for casual chat, high for reasoning tasks.
 		// Low effort tells Claude CLI to minimize thinking tokens (saves cost).
@@ -153,7 +153,13 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 		// Pass the prompt via stdin instead of as a positional argument.
 		// This avoids EINVAL from fork/exec when conversation history
 		// produces a prompt too large or with content unsuitable for argv.
-		cmd.Stdin = strings.NewReader(prompt)
+		// System prompt is also included via stdin to avoid Windows 8191-char
+		// command-line limit that --system-prompt flag would hit.
+		stdinContent := prompt
+		if req.System != "" && p.command == "claude" {
+			stdinContent = "[System]\n" + req.System + "\n\n" + prompt
+		}
+		cmd.Stdin = strings.NewReader(stdinContent)
 
 		// Get stdout pipe for streaming
 		stdout, err := cmd.StdoutPipe()

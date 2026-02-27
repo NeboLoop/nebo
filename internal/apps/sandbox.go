@@ -85,7 +85,8 @@ func validateBinary(path string, cfg SandboxConfig) error {
 		return fmt.Errorf("binary is not a regular file")
 	}
 
-	if info.Mode().Perm()&0111 == 0 {
+	// Windows has no executable permission bit — skip this check there.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
 		return fmt.Errorf("binary is not executable")
 	}
 

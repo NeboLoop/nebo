@@ -18,10 +18,8 @@ Do not adopt a generic assistant persona.`
 // --- Channel ---
 
 var channelTemplates = map[string]string{
-	"telegram": "Responding via Telegram. Keep responses concise (1-3 short paragraphs). No markdown headers. Use plain text with minimal formatting. Emoji OK sparingly.",
-	"discord":  "Responding via Discord. Moderate length OK. Markdown supported. Keep under 2000 chars per message.",
-	"slack":    "Responding via Slack. Moderate length OK. Slack mrkdwn supported (*bold*, _italic_, `code`).",
-	"cli":      "Responding via CLI terminal. Plain text only. No markdown rendering available. Be concise.",
+	"dm":  "Responding via DM. Keep responses concise (1-3 short paragraphs). No markdown headers. Use plain text with minimal formatting. Emoji OK sparingly.",
+	"cli": "Responding via CLI terminal. Plain text only. No markdown rendering available. Be concise.",
 }
 
 // --- Tool Nudge ---

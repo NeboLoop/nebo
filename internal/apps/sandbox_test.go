@@ -3,6 +3,7 @@ package apps
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -97,8 +98,7 @@ func TestValidateBinary(t *testing.T) {
 	t.Run("valid binary", func(t *testing.T) {
 		dir := t.TempDir()
 		binPath := filepath.Join(dir, "binary")
-		// Write a fake Mach-O 64-bit header (magic bytes + padding)
-		fakeNative := append([]byte{0xcf, 0xfa, 0xed, 0xfe}, make([]byte, 100)...)
+		fakeNative := append(platformMagicBytes(), make([]byte, 100)...)
 		os.WriteFile(binPath, fakeNative, 0755)
 
 		if err := validateBinary(binPath, cfg); err != nil {
@@ -107,6 +107,10 @@ func TestValidateBinary(t *testing.T) {
 	})
 
 	t.Run("non-executable", func(t *testing.T) {
+		// Windows has no executable permission bit — skip this test there
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows has no executable permission bit")
+		}
 		dir := t.TempDir()
 		binPath := filepath.Join(dir, "binary")
 		os.WriteFile(binPath, []byte("data"), 0644)
@@ -123,11 +127,13 @@ func TestValidateBinary(t *testing.T) {
 	t.Run("symlink rejected", func(t *testing.T) {
 		dir := t.TempDir()
 		realBin := filepath.Join(dir, "real")
-		fakeNative := append([]byte{0xcf, 0xfa, 0xed, 0xfe}, make([]byte, 100)...)
+		fakeNative := append(platformMagicBytes(), make([]byte, 100)...)
 		os.WriteFile(realBin, fakeNative, 0755)
 
 		linkBin := filepath.Join(dir, "link")
-		os.Symlink(realBin, linkBin)
+		if err := os.Symlink(realBin, linkBin); err != nil {
+			t.Skip("cannot create symlinks (requires elevated privileges on Windows)")
+		}
 
 		err := validateBinary(linkBin, cfg)
 		if err == nil {
@@ -157,9 +163,8 @@ func TestValidateBinary(t *testing.T) {
 	t.Run("no size limit", func(t *testing.T) {
 		dir := t.TempDir()
 		binPath := filepath.Join(dir, "binary")
-		// Start with Mach-O magic so format validation passes
 		data := make([]byte, 2*1024*1024)
-		copy(data, []byte{0xcf, 0xfa, 0xed, 0xfe})
+		copy(data, platformMagicBytes())
 		os.WriteFile(binPath, data, 0755)
 
 		// MaxBinarySizeMB = 0 means no limit
@@ -169,11 +174,24 @@ func TestValidateBinary(t *testing.T) {
 	})
 
 	t.Run("missing binary", func(t *testing.T) {
-		err := validateBinary("/nonexistent/binary", cfg)
+		missingPath := filepath.Join(t.TempDir(), "nonexistent", "binary")
+		err := validateBinary(missingPath, cfg)
 		if err == nil {
 			t.Fatal("expected error for missing binary")
 		}
 	})
+}
+
+// platformMagicBytes returns the magic bytes for the current platform's native binary format.
+func platformMagicBytes() []byte {
+	switch runtime.GOOS {
+	case "windows":
+		return []byte{0x4d, 0x5a, 0x00, 0x00} // PE (MZ header)
+	case "darwin":
+		return []byte{0xcf, 0xfa, 0xed, 0xfe} // Mach-O 64-bit
+	default:
+		return []byte{0x7f, 'E', 'L', 'F'} // ELF (Linux)
+	}
 }
 
 func TestAppLogWriter_NoLog(t *testing.T) {

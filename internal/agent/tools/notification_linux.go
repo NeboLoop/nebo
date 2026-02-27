@@ -78,6 +78,13 @@ type notificationInput struct {
 	Urgency  string `json:"urgency"`
 	Icon     string `json:"icon"`
 	Voice    string `json:"voice"`
+	Text     string `json:"text"` // alias for message (system domain schema uses "text")
+
+func (in *notificationInput) normalize() {
+	if in.Message == "" && in.Text != "" {
+		in.Message = in.Text
+	}
+}
 }
 
 func (t *NotificationTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
@@ -85,6 +92,7 @@ func (t *NotificationTool) Execute(ctx context.Context, input json.RawMessage) (
 	if err := json.Unmarshal(input, &in); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
 	}
+	in.normalize()
 
 	var result string
 	var err error
