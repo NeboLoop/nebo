@@ -9,6 +9,7 @@ func init() {
 			NewContactsTool(),
 			NewCalendarTool(),
 			NewRemindersTool(),
+			NewMessagesTool(),
 		),
 		Platforms: []string{PlatformDarwin},
 		Category:  "productivity",

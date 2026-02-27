@@ -9,6 +9,7 @@ func init() {
 			NewContactsTool(),
 			NewCalendarTool(),
 			NewRemindersTool(),
+			nil,
 		),
 		Platforms: []string{PlatformWindows},
 		Category:  "productivity",
