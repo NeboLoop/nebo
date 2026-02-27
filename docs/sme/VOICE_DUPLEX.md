@@ -318,14 +318,14 @@ Desktop builds get Opus (CGO is already enabled for desktop via `-tags desktop`)
 
 ## 5. Audio Input Pipeline: Noise Gate → VAD → Suppression
 
-Three distinct layers in the server-side audio input pipeline. Each has a clear responsibility and ships in a different phase.
+Three distinct layers in the server-side audio input pipeline. Each has a clear responsibility.
 
 ```
 inAudio ──→ [Layer 1: Noise Gate] ──→ [Layer 2: VAD] ──→ ASR Buffer
-              Phase 1 (pure Go)        Phase 1: RMS        accumulate on
-              Discard sub-floor         Phase 2: Silero     speech start,
-              frames (fan, hum)         Speech/non-speech   finalize on
-                                        per chunk           speech end
+              Phase 1 (pure Go)        Build-tagged:       accumulate on
+              Discard sub-floor         Desktop → Silero    speech start,
+              frames (fan, hum)         Headless → RMS      finalize on
+                                                            speech end
 ```
 
 ### Layer 1 — Noise Gate (Phase 1, pure Go, zero deps)
@@ -353,28 +353,75 @@ func (ng *NoiseGate) Process(frame []int16) bool {
 }
 ```
 
-### Layer 2a — RMS VAD (Phase 1, pure Go, zero deps)
+### Layer 2 — VAD (build-tagged, both ship Phase 1)
 
-**Purpose:** Detect speech onset/offset using simple energy thresholding. The 80% solution — handles silence, fan hum, and obvious speech boundaries.
+Both implementations satisfy the same interface. Selected at init time based on build environment:
+
+```go
+// VAD interface — in vad.go
+type VAD interface {
+    ProcessFrame(frame []int16) bool
+    Reset()
+}
+```
+
+**File layout:**
+
+| File | Build tag | Available when | Implementation |
+|------|-----------|----------------|----------------|
+| `vad.go` | none | always | VAD interface, NoiseGate, `rms()` utility |
+| `vad_rms.go` | `!silero` | headless, CI, Docker, ARM, no CGO | RMS energy + hangover |
+| `vad_silero.go` | `cgo && silero` | desktop builds with ONNX Runtime | Silero ONNX model |
+
+**Selection at init:**
+
+```go
+// vad_rms.go
+//go:build !silero
+
+func NewDefaultVAD() VAD {
+    return NewRMSVAD(0.06, 300)
+}
+```
+
+```go
+// vad_silero.go
+//go:build cgo && silero
+
+func NewDefaultVAD() VAD {
+    vad, err := NewSileroVAD("silero_vad.onnx")
+    if err != nil {
+        // Fall back to RMS if model fails to load
+        return NewRMSVAD(0.06, 300)
+    }
+    return vad
+}
+```
+
+Desktop builds: `go build -tags "desktop silero"` → Silero VAD.
+Headless builds: `go build` → RMS VAD. No CGO required.
+
+#### RMS VAD (`vad_rms.go` — permanent fallback, not throwaway)
+
+Pure Go, zero deps. The fallback for any environment without ONNX Runtime.
 
 **Handles well:** Quiet room, clear speech starts/stops, long pauses.
-**Fails on:** Keyboard typing (similar energy to speech), background music, TV/radio, coughing.
+**Fails on:** Keyboard typing (similar energy to speech), background music, TV/radio.
 
 ```go
 type RMSVAD struct {
-    threshold   float64       // RMS level to trigger speech
-    hangoverMs  int           // Hold speech state after energy drops (default 300ms)
+    threshold   float64
+    hangoverMs  int
     speaking    bool
     silentSince time.Time
 }
 
-// ProcessFrame returns true if the frame contains speech
 func (v *RMSVAD) ProcessFrame(frame []int16) bool {
     level := rms(frame)
 
     if level > v.threshold {
         v.speaking = true
-        v.silentSince = time.Time{} // reset
+        v.silentSince = time.Time{}
         return true
     }
 
@@ -382,7 +429,6 @@ func (v *RMSVAD) ProcessFrame(frame []int16) bool {
         if v.silentSince.IsZero() {
             v.silentSince = time.Now()
         }
-        // Hangover: keep reporting speech for 300ms after energy drops
         if time.Since(v.silentSince) < time.Duration(v.hangoverMs)*time.Millisecond {
             return true
         }
@@ -392,9 +438,7 @@ func (v *RMSVAD) ProcessFrame(frame []int16) bool {
 }
 ```
 
-**Deliberately minimal.** Phase 1 failures (keyboard triggers, background TV) are instructive — they show exactly where Silero VAD needs to help in Phase 2.
-
-### Layer 2b — Silero VAD (Phase 2, ships with Opus — one CGO jump)
+#### Silero VAD (`vad_silero.go` — desktop default)
 
 **Model:** `silero_vad.onnx` (~900KB, MIT license)
 - 30ms chunks (480 samples @16kHz, resample from 48kHz)
@@ -403,9 +447,7 @@ func (v *RMSVAD) ProcessFrame(frame []int16) bool {
 
 **Go ONNX runtime:** `github.com/yalue/onnxruntime_go` (CGO, bundles ONNX Runtime shared lib)
 
-**Replaces RMS VAD** — same interface (`ProcessFrame([]int16) bool`), swap implementation. Handles all the edge cases RMS can't: keyboard typing, background music, non-speech vocalizations.
-
-**Bundled with Opus** — both are CGO dependencies, both land in Phase 2. One build system change, not two.
+Handles all the edge cases RMS can't: keyboard typing, background music, non-speech vocalizations. Falls back to RMS VAD if the ONNX model fails to load.
 
 ### Layer 3 — Noise Suppression (Phase 3, deferred)
 
@@ -708,7 +750,7 @@ for len(vc.outAudio) > 0 { <-vc.outAudio }
 7. **Server starts accumulating new speech** from `inAudio` → VAD → ASR
 8. **Leaked echo** during 20-40ms window → Silero VAD may false-positive, but real speech resets the state naturally
 
-**Phase 1 reality:** The user will hear a brief tail (~50ms) of the previous response during barge-in. This is acceptable for a desktop companion. Phase 2 Silero VAD + Phase 3 NLMS AEC make this seamless.
+**Phase 1 reality:** The user will hear a brief tail (~50ms) of the previous response during barge-in. This is acceptable for a desktop companion. Desktop builds get Silero VAD for reliable speech detection during playback; headless builds use RMS VAD which may false-trigger on echo. Phase 3 NLMS AEC makes this seamless everywhere.
 
 ---
 
@@ -786,8 +828,8 @@ ElevenLabs and cloud ASR are quality upgrades, not requirements. The fallback ch
 | VoiceSession (browser) | 500-line state machine in +page.svelte | **CREATE** `VoiceSession.ts` | Medium | Binary WS client, WorkletNode wiring |
 | WS Binary Transport | None | **CREATE** `voice/duplex.go` | High | readPump/writePump (reuse pattern from `realtime/client.go`), frame routing |
 | Noise Gate | None | **CREATE** `voice/vad.go` | Low | Pure Go, RMS threshold + calibration |
-| RMS VAD (Phase 1) | Browser-side (`+page.svelte:1583-1640`) | **CREATE** `voice/vad.go` | Low | Move to server, same logic |
-| Silero VAD (Phase 2) | None | **CREATE** `voice/vad.go` (build tagged) | Medium | ONNX runtime integration, CGO |
+| VAD (RMS fallback) | Browser-side (`+page.svelte:1583-1640`) | **CREATE** `voice/vad_rms.go` | Low | Permanent fallback for headless/no-CGO. Build tag: `!silero` |
+| VAD (Silero desktop) | None | **CREATE** `voice/vad_silero.go` | Medium | ONNX runtime, `//go:build cgo && silero`. Desktop default. |
 | Server ASR pipeline | `transcribeLocal()` + `convertToWav()` | **REUSE** from `transcribe.go:212,258` | Low | Call existing functions, add WAV writer |
 | Server TTS pipeline | `serveElevenLabsTTS()` + `serveMacTTS()` | **REUSE** logic from `transcribe.go:119,75` | Low | Extract to callable functions |
 | Sentence splitting | `feedTTSStream()` at `+page.svelte:1686-1706` | **MOVE** to Go, then **REMOVE** frontend | Low | Same regex, Go version |
@@ -808,7 +850,9 @@ ElevenLabs and cloud ASR are quality upgrades, not requirements. The fallback ch
 
 **Create:**
 - `internal/voice/duplex.go` — VoiceConn struct, readPump/writePump, channel architecture
-- `internal/voice/vad.go` — NoiseGate + RMSVAD (pure Go, zero external deps)
+- `internal/voice/vad.go` — NoiseGate, VAD interface, `rms()` utility
+- `internal/voice/vad_rms.go` — RMS VAD (pure Go, `//go:build !silero`, headless fallback)
+- `internal/voice/vad_silero.go` — Silero ONNX VAD (`//go:build cgo && silero`, desktop default)
 - `app/src/lib/voice/capture-processor.ts` — AudioWorklet Float32→Int16LE
 - `app/src/lib/voice/playback-processor.ts` — AudioWorklet ring buffer playback
 - `app/src/lib/voice/VoiceSession.ts` — Binary WS client, WorkletNode lifecycle
@@ -838,26 +882,22 @@ This is walkie-talkie, not phone call. Acceptable for a desktop companion that d
 
 **Works fully offline** with whisper-cli + macOS `say` + Ollama.
 
-### Phase 2: Streaming ASR + Opus + Silero VAD — one CGO jump
+### Phase 2: Streaming ASR + Opus — reduces latency by ~1s
 
-**Goal:** Reduce latency by ~1s. Streaming ASR overlaps with speech (text arrives during speech, not after). Better VAD eliminates false triggers.
+**Goal:** Reduce latency by ~1s. Streaming ASR overlaps with speech (text arrives during speech, not after). Opus codec cuts bandwidth 32x.
 
-**Two CGO deps land together:**
+**One CGO dep lands:**
 - `github.com/hraban/opus` — Opus codec, 32x bandwidth reduction
-- `github.com/yalue/onnxruntime_go` — Silero VAD (~900KB ONNX model)
-
-One build system change: add CGO deps with `//go:build opus` tag.
 
 **Create:**
-- `internal/voice/opus.go` — Encoder/decoder (build tagged)
-- Silero VAD implementation in `vad.go` (build tagged, replaces RMS VAD)
+- `internal/voice/opus.go` — Encoder/decoder (build tagged `//go:build opus`)
 
 **Edit:**
 - `duplex.go` — add Opus encode/decode in pipeline, codec negotiation
 - Streaming ASR integration (Deepgram or Google Speech-to-Text WebSocket)
 
 **Remove:**
-- RMS VAD (replaced by Silero within same file, gated by build tag)
+- Nothing — RMS VAD stays as permanent headless fallback
 
 ### Phase 3: Streaming TTS + Low Latency — gets to <1s
 
@@ -963,7 +1003,7 @@ func NewVoiceConn(conn *websocket.Conn, r *runner.Runner, lanes *agenthub.LaneMa
         outAudio:   make(chan []byte, 50),
         controlOut: make(chan []byte, 20),
         noiseGate:  NewNoiseGate(),
-        vad:        NewRMSVAD(0.06, 300), // Phase 1 defaults
+        vad:        NewDefaultVAD(), // Silero on desktop, RMS on headless (build-tagged)
         state:      StateIdle,
         sampleRate: 48000,
         codec:      "pcm",
@@ -1117,8 +1157,8 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 |---------|-------|-----|-------------------|---------|
 | `github.com/gorilla/websocket` | 1 | No | **Yes** | WS binary transport |
 | `whisper-cli` (external binary) | 1 | N/A | **Yes** (called via exec) | Batch ASR |
+| `github.com/yalue/onnxruntime_go` | 1 | **Yes** (desktop only) | No | Silero VAD inference. Build tag: `cgo && silero` |
 | `github.com/hraban/opus` | 2 | **Yes** | No | Opus encode/decode |
-| `github.com/yalue/onnxruntime_go` | 2 | **Yes** | No | Silero VAD inference |
 | Deepgram Go SDK | 2 | No | No | Streaming ASR |
 | ElevenLabs WS API | 3 | No | No | Streaming TTS |
 
@@ -1163,7 +1203,9 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 | File | Purpose | Phase |
 |------|---------|-------|
 | `internal/voice/duplex.go` | VoiceConn, readPump/writePump, DuplexHandler, channel architecture | 1 |
-| `internal/voice/vad.go` | NoiseGate, RMSVAD, VAD interface, RMS utility | 1 |
+| `internal/voice/vad.go` | VAD interface, NoiseGate, `rms()` utility | 1 |
+| `internal/voice/vad_rms.go` | RMS VAD (`//go:build !silero`). Permanent fallback for headless/no-CGO. | 1 |
+| `internal/voice/vad_silero.go` | Silero ONNX VAD (`//go:build cgo && silero`). Desktop default. | 1 |
 | `internal/voice/opus.go` | Opus encoder/decoder (build tagged `//go:build opus`) | 2 |
 | `app/src/lib/voice/capture-processor.ts` | AudioWorklet: Float32→Int16LE, postMessage | 1 |
 | `app/src/lib/voice/playback-processor.ts` | AudioWorklet: ring buffer playback, zero-fill | 1 |
