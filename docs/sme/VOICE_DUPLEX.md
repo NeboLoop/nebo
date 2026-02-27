@@ -19,7 +19,7 @@ Browser                           Server
                                   ←── 7. {text: "..."}
 8. Send text via WebSocket chat   ──→ 9. runner.Run() (agentic loop)
                                   ←── 10. chat_stream events (text)
-11. POST /api/v1/voice/tts        ──→ 12. ElevenLabs / macOS say
+11. POST /api/v1/voice/tts        ──→ 12. Piper / macOS say / ElevenLabs
                                   ←── 13. audio/mpeg blob
 14. new Audio(blob).play()
 15. onended → goto 2
@@ -622,7 +622,12 @@ func (vc *VoiceConn) extractSentences(buf *strings.Builder) {
 }
 ```
 
-**ttsLoop** — Receives sentences, generates audio. Phase 1 **reuses** existing `serveElevenLabsTTS()` logic from `transcribe.go:119` (extracted to a callable function) with macOS `say` fallback.
+**ttsLoop** — Receives sentences, generates audio. Phase 1 uses **bundled Piper TTS** as the default (offline, good quality, ~100ms/sentence on M-series Mac). Falls back to macOS `say` if Piper fails. ElevenLabs is an optional cloud upgrade if an API key is configured.
+
+Phase 1 TTS fallback chain:
+1. **Piper** (bundled binary + voice model in Nebo.app, default, offline)
+2. **macOS `say`** (built-in, fallback if Piper fails)
+3. **ElevenLabs** (optional cloud upgrade, best quality, requires API key)
 
 ```go
 func (vc *VoiceConn) ttsLoop(ctx context.Context) {
@@ -633,8 +638,8 @@ func (vc *VoiceConn) ttsLoop(ctx context.Context) {
         case sentence := <-vc.ttsText:
             vc.sendControl("state_change", map[string]any{"state": "speaking"})
 
-            // Phase 1: REUSE existing TTS backends from transcribe.go
-            audioData, contentType, err := synthesizeSpeech(sentence)
+            // Phase 1: Piper (bundled) → macOS say → ElevenLabs (if configured)
+            audioData, err := synthesizeSpeech(sentence)
             if err != nil { continue }
 
             // Send audio frames to browser
@@ -644,7 +649,7 @@ func (vc *VoiceConn) ttsLoop(ctx context.Context) {
 }
 ```
 
-Phase 3 upgrades to ElevenLabs streaming WebSocket API — first audio byte arrives during LLM generation.
+Phase 3 upgrades to streaming TTS — either ElevenLabs streaming WebSocket API or direct ONNX Runtime inference on Piper models (sharing the runtime already linked for Silero VAD). First audio byte arrives during LLM generation.
 
 **speakerLoop** — Drains `outAudio` and writes binary frames to the WebSocket. Part of `writePump`.
 
@@ -810,10 +815,10 @@ Phase 1 voice works fully offline:
 | Component | Offline Provider | Reference |
 |-----------|-----------------|-----------|
 | ASR | `whisper-cli` (already primary) | `transcribe.go:212` — `transcribeLocal()` |
-| TTS | macOS `say` / espeak / SAPI | `transcribe.go:66-71` (fallback chain), `tts.go:59-69` |
+| TTS | **Piper** (bundled binary + voice model) → macOS `say` fallback | Bundled in Nebo.app, ~40MB for one voice |
 | LLM | Ollama (already supported) | Provider system handles routing |
 
-ElevenLabs and cloud ASR are quality upgrades, not requirements. The fallback chain mirrors the existing pattern in `transcribe.go`: try cloud → fall back to local.
+ElevenLabs is an optional cloud upgrade for TTS quality, not a requirement. The fallback chain: Piper → macOS `say` → ElevenLabs (if configured).
 
 **Phase 1 voice works on an airplane.**
 
@@ -831,7 +836,7 @@ ElevenLabs and cloud ASR are quality upgrades, not requirements. The fallback ch
 | VAD (RMS fallback) | Browser-side (`+page.svelte:1583-1640`) | **CREATE** `voice/vad_rms.go` | Low | Permanent fallback for headless/no-CGO. Build tag: `!silero` |
 | VAD (Silero desktop) | None | **CREATE** `voice/vad_silero.go` | Medium | ONNX runtime, `//go:build cgo && silero`. Desktop default. |
 | Server ASR pipeline | `transcribeLocal()` + `convertToWav()` | **REUSE** from `transcribe.go:212,258` | Low | Call existing functions, add WAV writer |
-| Server TTS pipeline | `serveElevenLabsTTS()` + `serveMacTTS()` | **REUSE** logic from `transcribe.go:119,75` | Low | Extract to callable functions |
+| Server TTS pipeline | `serveElevenLabsTTS()` + `serveMacTTS()` | **CREATE** Piper integration, **REUSE** macOS `say` + ElevenLabs as fallbacks | Medium | Bundle piper binary + voice model in app. Shell out like whisper-cli. |
 | Sentence splitting | `feedTTSStream()` at `+page.svelte:1686-1706` | **MOVE** to Go, then **REMOVE** frontend | Low | Same regex, Go version |
 | LLM integration | `runner.Run()` | **REUSE** unchanged | Zero | Already returns `<-chan StreamEvent` |
 | Steering template | `channelTemplates` in `templates.go:20-25` | **EDIT** (add one entry) | Zero | Add `"voice"` key |
@@ -858,23 +863,28 @@ ElevenLabs and cloud ASR are quality upgrades, not requirements. The fallback ch
 - `app/src/lib/voice/VoiceSession.ts` — Binary WS client, WorkletNode lifecycle
 
 **Reuse (edit):**
-- `transcribe.go` — extract `transcribeLocal()` and ElevenLabs/macOS TTS logic for pipeline use
+- `transcribe.go` — extract `transcribeLocal()` for ASR pipeline use; macOS `say` and ElevenLabs become fallbacks behind Piper
 - `server.go` — add `/ws/voice` route alongside existing voice routes
 - `steering/templates.go` — add `"voice"` entry to `channelTemplates` map
+
+**Bundle in Nebo.app:**
+- `piper` binary (~5MB) + one voice model e.g. `en_US-amy-medium.onnx` (~40MB)
+- Ships inside `Contents/Resources/voice/` — same pattern as bundling whisper-cli
+- User downloads Nebo, voice works. No install step.
 
 **Remove:**
 - Nothing yet in Phase 1. Browser half-duplex code stays until Phase 1 is stable.
 
-**Latency reality: 1500-3000ms from end-of-speech to first audio.**
+**Latency reality: 1100-2800ms from end-of-speech to first audio.**
 
 | Stage | Duration | Notes |
 |-------|----------|-------|
 | Speech accumulation + silence hangover | 300-800ms | VAD hangover before finalizing |
 | whisper-cli batch transcription | 500-2000ms | Depends on utterance length, model size |
 | LLM TTFT (Janus/local) | 200-1000ms | First token from provider |
-| TTS generation (ElevenLabs/say) | 300-800ms | Per-sentence, non-streaming |
+| TTS generation (Piper bundled / say fallback) | 100-400ms | Per-sentence, non-streaming |
 | WS frame + playback start | ~20ms | Negligible |
-| **Total** | **~1.5-3s** | |
+| **Total** | **~1.1-2.8s** | |
 
 This is walkie-talkie, not phone call. Acceptable for a desktop companion that does real work (writes emails, searches files, schedules meetings).
 
@@ -904,7 +914,7 @@ This is walkie-talkie, not phone call. Acceptable for a desktop companion that d
 **Goal:** First audio byte arrives during LLM generation, not after.
 
 **Create/Edit:**
-- ElevenLabs streaming WebSocket API integration in ttsLoop
+- Streaming TTS: either ElevenLabs WebSocket API (cloud) or direct ONNX inference on Piper models via shared onnxruntime (eliminates subprocess overhead)
 - Server-side NLMS echo cancellation (reference signal subtraction)
 - Move `feedTTSStream()` sentence splitting fully to server (it's already there from Phase 1), **remove** the frontend version when browser half-duplex code is deleted
 
@@ -1157,10 +1167,11 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 |---------|-------|-----|-------------------|---------|
 | `github.com/gorilla/websocket` | 1 | No | **Yes** | WS binary transport |
 | `whisper-cli` (external binary) | 1 | N/A | **Yes** (called via exec) | Batch ASR |
+| `piper` (bundled binary) | 1 | N/A | No (bundled in app) | Default TTS. ~5MB binary + ~40MB voice model. |
 | `github.com/yalue/onnxruntime_go` | 1 | **Yes** (desktop only) | No | Silero VAD inference. Build tag: `cgo && silero` |
 | `github.com/hraban/opus` | 2 | **Yes** | No | Opus encode/decode |
 | Deepgram Go SDK | 2 | No | No | Streaming ASR |
-| ElevenLabs WS API | 3 | No | No | Streaming TTS |
+| ElevenLabs WS API | 3 | No | No | Streaming TTS (optional cloud upgrade) |
 
 ### Phase 1 Latency Budget (honest)
 
@@ -1169,9 +1180,9 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 | Speech accumulation + silence hangover | 300ms | 800ms | RMS VAD, 300ms hangover |
 | whisper-cli batch transcription | 500ms | 2000ms | ~3s utterance on base.en model |
 | LLM TTFT (Janus or Ollama) | 200ms | 1000ms | Depends on provider, prompt length |
-| TTS generation (ElevenLabs or say) | 300ms | 800ms | Per-sentence, non-streaming |
+| TTS generation (Piper bundled or say) | 100ms | 400ms | Per-sentence, non-streaming |
 | WS frame + AudioWorklet playback | ~20ms | ~20ms | Negligible |
-| **Total** | **~1.5s** | **~3s** | |
+| **Total** | **~1.1s** | **~2.8s** | |
 
 **Phase 1 UX:** Show ASR text immediately via `transcript` message, then LLM streaming text via `llm_text` messages. Audio is the third layer — not the only feedback channel. The user sees their words confirmed, then sees Nebo thinking, then hears the response.
 
@@ -1180,7 +1191,7 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 | Optimization | Savings |
 |-------------|---------|
 | Streaming ASR (Deepgram) — text during speech | −500-1500ms (overlaps with speech) |
-| Streaming TTS (ElevenLabs WS) — audio during LLM | −300-800ms (overlaps with LLM generation) |
+| Streaming TTS (Piper ONNX direct or ElevenLabs WS) — audio during LLM | −100-400ms (overlaps with LLM generation) |
 | Silero VAD — faster speech endpoint detection | −100-200ms (tighter hangover) |
 | Opus — smaller frames, less WS overhead | −10-50ms |
 | **Net result** | **<1000ms end-of-speech to first audio** |
@@ -1193,7 +1204,7 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 | File | What to edit | Phase |
 |------|-------------|-------|
-| `internal/voice/transcribe.go` | Extract `transcribeLocal()` (L212) and `serveElevenLabsTTS()` (L119) into callable functions for pipeline use. HTTP handlers stay intact. | 1 |
+| `internal/voice/transcribe.go` | Extract `transcribeLocal()` (L212) for ASR pipeline. macOS `say` + ElevenLabs become fallbacks behind Piper. HTTP handlers stay intact. | 1 |
 | `internal/server/server.go` | Add `r.Get("/ws/voice", voice.DuplexHandler(svcCtx))` near L204-205 | 1 |
 | `internal/agent/steering/templates.go` | Add `"voice"` entry to `channelTemplates` map at L20-25 | 1 |
 | `app/src/routes/(app)/agent/+page.svelte` | Wire VoiceSession into existing voice toggle button (replace enterVoiceMode/exitVoiceMode) | 1 |
