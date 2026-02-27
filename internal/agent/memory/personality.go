@@ -19,8 +19,9 @@ const PersonalityDirectiveKey = "directive"
 // PersonalityDirectiveNamespace is the full namespace for personality directives
 const PersonalityDirectiveNamespace = "tacit/personality"
 
-// MinStyleObservations is the minimum number of style observations needed before synthesizing
-const MinStyleObservations = 3
+// MinStyleObservations is the minimum number of style observations needed before synthesizing.
+// Set to 5 to prevent premature personality directives from weak/noisy signals.
+const MinStyleObservations = 5
 
 // DecayThresholdDays is how many days a style with reinforced_count==1 survives before decay
 const DecayThresholdDays = 14
