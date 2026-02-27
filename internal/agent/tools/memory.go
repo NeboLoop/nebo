@@ -1102,8 +1102,10 @@ func (t *MemoryTool) StoreStyleEntryForUser(layer, namespace, key, value string,
 
 // IsDuplicate checks if a memory with the same namespace:key:user_id already exists
 // with an identical value, OR if any memory in the same namespace already has the
-// same content under a different key. This prevents the LLM extraction from creating
-// duplicates like "preferences/code_style" and "preference/code-style" with identical values.
+// same content under a different key, OR if a semantically similar memory exists
+// (>0.85 similarity via hybrid search). This prevents the LLM extraction from creating
+// duplicates like "preferences/code_style" and "preference/code-style" with identical values,
+// and also catches semantic duplicates like "Alma lives in Utah" vs "Location: Utah".
 func (t *MemoryTool) IsDuplicate(layer, namespace, key, value, userID string) bool {
 	if t.queries == nil {
 		return false
@@ -1135,6 +1137,23 @@ func (t *MemoryTool) IsDuplicate(layer, namespace, key, value, userID string) bo
 	`, fullNamespace, userID, value).Scan(&count)
 	if err == nil && count > 0 {
 		return true
+	}
+
+	// Check 3: semantic similarity via hybrid search
+	// Catches "Alma lives in Utah" vs "User is based in Provo, Utah" vs "Location: Utah"
+	// which eat multiple prompt slots for the same fact.
+	if t.searcher != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		results, searchErr := t.searcher.Search(ctx, key+": "+value, embeddings.SearchOptions{
+			Namespace: fullNamespace,
+			Limit:     3,
+			MinScore:  0.85,
+			UserID:    userID,
+		})
+		if searchErr == nil && len(results) > 0 {
+			return true
+		}
 	}
 
 	return false

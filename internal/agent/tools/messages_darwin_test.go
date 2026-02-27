@@ -272,6 +272,22 @@ func testOpenChatDB(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+// newTestMessagesTool creates a MessagesTool pre-wired to a test chat.db
+// so Execute() tests go through the real code path without touching ~/Library.
+func newTestMessagesTool(t *testing.T) *MessagesTool {
+	t.Helper()
+	dbPath := createTestChatDB(t)
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=query_only(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	tool := &MessagesTool{db: db}
+	// Mark sync.Once as done so chatDB() returns our test DB.
+	tool.dbOnce.Do(func() {})
+	return tool
+}
+
 func TestMessagesListConversationsWithTestDB(t *testing.T) {
 	dbPath := createTestChatDB(t)
 
@@ -486,6 +502,32 @@ func TestMessagesReadOnlyDB(t *testing.T) {
 }
 
 // =============================================================================
+// isFDAError tests
+// =============================================================================
+
+func TestIsFDAError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"operation not permitted", fmt.Errorf("operation not permitted"), true},
+		{"unable to open database file", fmt.Errorf("unable to open database file: out of memory (14)"), true},
+		{"cantopen", fmt.Errorf("sqlite: CANTOPEN"), true},
+		{"authorization denied", fmt.Errorf("authorization denied"), true},
+		{"unrelated error", fmt.Errorf("table not found"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isFDAError(tt.err); got != tt.want {
+				t.Errorf("isFDAError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
 // PIM domain integration tests
 // =============================================================================
 
@@ -574,6 +616,79 @@ func TestPIMDomainMessagesInferredRouting(t *testing.T) {
 	// about missing resource.
 	if result.IsError && strings.Contains(result.Content, "Resource is required") {
 		t.Error("conversations should infer messages resource, but got 'Resource is required'")
+	}
+}
+
+// =============================================================================
+// Execute integration tests (pre-wired test DB)
+// =============================================================================
+
+func TestMessagesExecuteConversationsWithTestDB(t *testing.T) {
+	tool := newTestMessagesTool(t)
+	input, _ := json.Marshal(map[string]string{"action": "conversations"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "+15551234567") {
+		t.Errorf("expected +15551234567 in output, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "Alice") {
+		t.Errorf("expected Alice in output, got: %s", result.Content)
+	}
+}
+
+func TestMessagesExecuteReadWithTestDB(t *testing.T) {
+	tool := newTestMessagesTool(t)
+	input, _ := json.Marshal(map[string]string{"action": "read", "chat_id": "+15551234567"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "lunch") {
+		t.Errorf("expected 'lunch' in output, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "Me:") {
+		t.Errorf("expected 'Me:' for is_from_me messages, got: %s", result.Content)
+	}
+}
+
+func TestMessagesExecuteSearchWithTestDB(t *testing.T) {
+	tool := newTestMessagesTool(t)
+	input, _ := json.Marshal(map[string]string{"action": "search", "query": "Meeting"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "Meeting at 3pm") {
+		t.Errorf("expected 'Meeting at 3pm' in output, got: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "alice@example.com") {
+		t.Errorf("expected alice@example.com chat ID in output, got: %s", result.Content)
+	}
+}
+
+func TestMessagesExecuteSearchNoResultsWithTestDB(t *testing.T) {
+	tool := newTestMessagesTool(t)
+	input, _ := json.Marshal(map[string]string{"action": "search", "query": "nonexistent_xyz_999"})
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatal("search with no results should not be an error")
+	}
+	if !strings.Contains(result.Content, "No messages found") {
+		t.Errorf("expected 'No messages found' in output, got: %s", result.Content)
 	}
 }
 

@@ -2397,10 +2397,19 @@ func maybeIntroduceSelf(ctx context.Context, state *agentState, r *runner.Runner
 	// No messages yet - this is a new user! Introduce ourselves.
 	fmt.Println("[Agent] New user detected! Introducing myself...")
 
+	// Resolve the first user ID so memories are stored under the correct user
+	// (not "anonymous"). Without this, the introduction stores memories under
+	// an anonymous user ID, invisible to the real user's subsequent sessions.
+	var userID string
+	if row := sessions.GetDB().QueryRow("SELECT id FROM users LIMIT 1"); row != nil {
+		row.Scan(&userID)
+	}
+
 	// Run the agent with a special introduction request
 	// Empty prompt signals the runner to not save a user message, just trigger the agent
 	events, err := r.Run(ctx, &runner.RunRequest{
 		SessionKey: "companion",
+		UserID:     userID,
 		Prompt:     "", // Empty prompt = agent speaks first
 		System:     "You are starting a conversation with a new user. Your EXACT first message must be: \"Hi! I'm Nebo. What's your name?\" Do not add anything else to this first message. No feature lists. No explanation of what you do.",
 		Origin:     tools.OriginSystem,

@@ -426,7 +426,14 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		if forceSkill != "" {
 			r.skillProvider.ForceLoadSkill(sessionKey, forceSkill)
 		} else if needsOnboarding {
-			r.skillProvider.ForceLoadSkill(sessionKey, "introduction")
+			// Only force introduction if this session has no conversation history.
+			// If messages exist, the agent has already met the user — don't re-introduce.
+			// This prevents the introduction skill from looping on every Run() when
+			// onboarding_completed was never set (e.g., LLM didn't call the store tool).
+			existingMsgs, _ := r.sessions.GetMessages(sessionID, 1)
+			if len(existingMsgs) == 0 {
+				r.skillProvider.ForceLoadSkill(sessionKey, "introduction")
+			}
 		}
 	}
 
@@ -1160,6 +1167,20 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		if !skipMemoryExtract {
 			r.scheduleMemoryExtraction(sessionID, userID)
 		}
+
+		// Belt-and-suspenders: if this run started with needsOnboarding=true and the
+		// session now has enough messages, mark onboarding complete programmatically.
+		// This ensures we don't loop the introduction skill forever if the LLM failed
+		// to call agent(resource: memory, action: store, key: "user/name").
+		if needsOnboarding && userID != "" {
+			if msgs, err := r.sessions.GetMessages(sessionID, 0); err == nil && len(msgs) >= 4 {
+				r.sessions.GetDB().Exec(
+					"UPDATE user_profiles SET onboarding_completed = 1, updated_at = ? WHERE user_id = ?",
+					time.Now().Unix(), userID,
+				)
+			}
+		}
+
 		resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 		return
 	}

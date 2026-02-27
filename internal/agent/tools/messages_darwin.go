@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -19,14 +20,22 @@ import (
 // and Apple's Cocoa epoch (2001-01-01).
 const cocoaEpochOffset = 978307200
 
+// fdaError is the standard error returned when Full Disk Access is needed.
+const fdaError = "Cannot read Messages database. Grant Full Disk Access to Nebo (or Terminal, if running via CLI) in System Settings > Privacy & Security > Full Disk Access."
+
 // MessagesTool provides macOS Messages/iMessage integration.
-// Send uses AppleScript; read operations use SQLite on ~/Library/Messages/chat.db.
-type MessagesTool struct{}
+// Send uses AppleScript; read operations use a single persistent read-only
+// SQLite connection to ~/Library/Messages/chat.db opened on first use.
+type MessagesTool struct {
+	dbOnce sync.Once
+	db     *sql.DB
+	dbErr  error
+}
 
 func NewMessagesTool() *MessagesTool { return &MessagesTool{} }
 
-func (t *MessagesTool) Name() string        { return "messages" }
-func (t *MessagesTool) RequiresApproval() bool { return true }
+func (t *MessagesTool) Name() string           { return "messages" }
+func (t *MessagesTool) RequiresApproval() bool  { return true }
 
 func (t *MessagesTool) Description() string {
 	return "Send and read iMessages — send texts, list conversations, read chat history, search messages."
@@ -130,23 +139,57 @@ return "Message sent successfully"`, escapeAS(to), escapeAS(p.Body))
 	return &ToolResult{Content: fmt.Sprintf("Message sent to %s", to)}, nil
 }
 
-// openChatDB opens ~/Library/Messages/chat.db in read-only mode.
-func openChatDB() (*sql.DB, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("cannot determine home directory: %w", err)
+// isFDAError checks if an error indicates a macOS Full Disk Access denial.
+// The SQLite driver surfaces this in various ways depending on the driver and OS version.
+func isFDAError(err error) bool {
+	if err == nil {
+		return false
 	}
-	dbPath := filepath.Join(home, "Library", "Messages", "chat.db")
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "operation not permitted") ||
+		strings.Contains(s, "authorization denied") ||
+		strings.Contains(s, "unable to open database file") ||
+		strings.Contains(s, "cantopen")
+}
 
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("chat.db not found at %s — Messages may not be set up", dbPath)
-	}
+// chatDB returns the persistent read-only connection to ~/Library/Messages/chat.db,
+// opening it lazily on first call. The connection lives for the process lifetime.
+func (t *MessagesTool) chatDB() (*sql.DB, error) {
+	t.dbOnce.Do(func() {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.dbErr = fmt.Errorf("cannot determine home directory: %w", err)
+			return
+		}
+		dbPath := filepath.Join(home, "Library", "Messages", "chat.db")
 
-	db, err := sql.Open("sqlite", dbPath+"?_pragma=query_only(1)")
-	if err != nil {
-		return nil, fmt.Errorf("cannot open chat.db: %w", err)
-	}
-	return db, nil
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			t.dbErr = fmt.Errorf("chat.db not found at %s — Messages may not be set up", dbPath)
+			return
+		}
+
+		db, err := sql.Open("sqlite", dbPath+"?_pragma=query_only(1)")
+		if err != nil {
+			t.dbErr = fmt.Errorf("cannot open chat.db: %w", err)
+			return
+		}
+
+		// sql.Open is lazy — ping to verify we can actually read the file.
+		if err := db.Ping(); err != nil {
+			db.Close()
+			if isFDAError(err) {
+				t.dbErr = fmt.Errorf("%s", fdaError)
+			} else {
+				t.dbErr = fmt.Errorf("cannot access chat.db: %w", err)
+			}
+			return
+		}
+
+		// Single connection — no pool needed for a read-only external DB.
+		db.SetMaxOpenConns(1)
+		t.db = db
+	})
+	return t.db, t.dbErr
 }
 
 // cocoaToTime converts Apple's CoreData timestamp (nanoseconds since 2001-01-01) to time.Time.
@@ -161,17 +204,10 @@ func (t *MessagesTool) listConversations(count int) (*ToolResult, error) {
 		count = 20
 	}
 
-	db, err := openChatDB()
+	db, err := t.chatDB()
 	if err != nil {
-		if strings.Contains(err.Error(), "operation not permitted") || strings.Contains(err.Error(), "authorization denied") {
-			return &ToolResult{
-				Content: "Cannot read Messages database. Grant Full Disk Access to Nebo in System Settings > Privacy & Security > Full Disk Access.",
-				IsError: true,
-			}, nil
-		}
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
-	defer db.Close()
 
 	rows, err := db.Query(`
 		SELECT
@@ -187,12 +223,6 @@ func (t *MessagesTool) listConversations(count int) (*ToolResult, error) {
 		LIMIT ?
 	`, count)
 	if err != nil {
-		if strings.Contains(err.Error(), "operation not permitted") {
-			return &ToolResult{
-				Content: "Cannot read Messages database. Grant Full Disk Access to Nebo in System Settings > Privacy & Security > Full Disk Access.",
-				IsError: true,
-			}, nil
-		}
 		return &ToolResult{Content: fmt.Sprintf("Failed to query conversations: %v", err), IsError: true}, nil
 	}
 	defer rows.Close()
@@ -233,11 +263,10 @@ func (t *MessagesTool) readMessages(chatID string, count int) (*ToolResult, erro
 		count = 20
 	}
 
-	db, err := openChatDB()
+	db, err := t.chatDB()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
-	defer db.Close()
 
 	rows, err := db.Query(`
 		SELECT
@@ -286,7 +315,6 @@ func (t *MessagesTool) readMessages(chatID string, count int) (*ToolResult, erro
 		return &ToolResult{Content: fmt.Sprintf("No messages found for chat %s", chatID)}, nil
 	}
 
-	// Reverse so oldest is first (we queried DESC for LIMIT)
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Messages with %s (newest first):\n\n", chatID))
 	for _, m := range msgs {
@@ -304,11 +332,10 @@ func (t *MessagesTool) searchMessages(query string, count int) (*ToolResult, err
 		count = 20
 	}
 
-	db, err := openChatDB()
+	db, err := t.chatDB()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
-	defer db.Close()
 
 	rows, err := db.Query(`
 		SELECT

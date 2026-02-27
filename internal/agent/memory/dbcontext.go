@@ -50,6 +50,7 @@ type DBMemoryItem struct {
 
 	accessCount int       // for decay scoring
 	accessedAt  time.Time // for decay scoring
+	confidence  float64   // for quality-weighted ranking (0.0 = no metadata, treated as 1.0)
 }
 
 // decayScore calculates a time-decayed relevance score.
@@ -248,15 +249,17 @@ func loadTacitSlice(ctx context.Context, db *sql.DB, result *DBContext, userID, 
 	var rows *sql.Rows
 	var err error
 
-	// Filter out low-confidence inferred facts (< 0.65) from system prompt injection.
-	// They can still be found via hybrid search.
+	// Filter out low-confidence facts from system prompt injection.
+	// Threshold 0.80: inferred facts (0.6) need 2 reinforcements to cross.
+	// Explicit facts (0.9) get in immediately. They can still be found via hybrid search.
 	confidenceFilter := `AND (metadata IS NULL
 		OR json_extract(metadata, '$.confidence') IS NULL
-		OR json_extract(metadata, '$.confidence') >= 0.65)`
+		OR json_extract(metadata, '$.confidence') >= 0.80)`
 
 	if userID != "" {
 		rows, err = db.QueryContext(ctx, `
-			SELECT namespace, key, value, tags, access_count, accessed_at
+			SELECT namespace, key, value, tags, access_count, accessed_at,
+			       json_extract(metadata, '$.confidence') as confidence
 			FROM memories
 			WHERE namespace = ? AND user_id = ?
 			`+confidenceFilter+`
@@ -265,7 +268,8 @@ func loadTacitSlice(ctx context.Context, db *sql.DB, result *DBContext, userID, 
 		`, namespace, userID, overfetch)
 	} else {
 		rows, err = db.QueryContext(ctx, `
-			SELECT namespace, key, value, tags, access_count, accessed_at
+			SELECT namespace, key, value, tags, access_count, accessed_at,
+			       json_extract(metadata, '$.confidence') as confidence
 			FROM memories
 			WHERE namespace = ?
 			`+confidenceFilter+`
@@ -287,10 +291,11 @@ func loadTacitSlice(ctx context.Context, db *sql.DB, result *DBContext, userID, 
 		candidates = append(candidates, entry)
 	}
 
-	// Re-rank by decay score
+	// Re-rank by confidence × decay score so high-confidence memories outrank
+	// frequently-accessed but low-confidence ones.
 	sort.Slice(candidates, func(i, j int) bool {
-		si := decayScore(candidates[i].accessCount, &candidates[i].accessedAt)
-		sj := decayScore(candidates[j].accessCount, &candidates[j].accessedAt)
+		si := candidates[i].confidence * decayScore(candidates[i].accessCount, &candidates[i].accessedAt)
+		sj := candidates[j].confidence * decayScore(candidates[j].accessCount, &candidates[j].accessedAt)
 		return si > sj
 	})
 
@@ -315,15 +320,17 @@ func loadTacitNonPersonality(ctx context.Context, db *sql.DB, result *DBContext,
 	var rows *sql.Rows
 	var err error
 
-	// Filter out low-confidence inferred facts (< 0.65) from system prompt injection.
-	// They can still be found via hybrid search.
+	// Filter out low-confidence facts from system prompt injection.
+	// Threshold 0.80: inferred facts (0.6) need 2 reinforcements to cross.
+	// Explicit facts (0.9) get in immediately. They can still be found via hybrid search.
 	confidenceFilter := `AND (metadata IS NULL
 		OR json_extract(metadata, '$.confidence') IS NULL
-		OR json_extract(metadata, '$.confidence') >= 0.65)`
+		OR json_extract(metadata, '$.confidence') >= 0.80)`
 
 	if userID != "" {
 		rows, err = db.QueryContext(ctx, `
-			SELECT namespace, key, value, tags, access_count, accessed_at
+			SELECT namespace, key, value, tags, access_count, accessed_at,
+			       json_extract(metadata, '$.confidence') as confidence
 			FROM memories
 			WHERE (namespace = 'tacit' OR namespace LIKE 'tacit/%') AND namespace != 'tacit/personality' AND user_id = ?
 			`+confidenceFilter+`
@@ -332,7 +339,8 @@ func loadTacitNonPersonality(ctx context.Context, db *sql.DB, result *DBContext,
 		`, userID, overfetch)
 	} else {
 		rows, err = db.QueryContext(ctx, `
-			SELECT namespace, key, value, tags, access_count, accessed_at
+			SELECT namespace, key, value, tags, access_count, accessed_at,
+			       json_extract(metadata, '$.confidence') as confidence
 			FROM memories
 			WHERE (namespace = 'tacit' OR namespace LIKE 'tacit/%') AND namespace != 'tacit/personality'
 			`+confidenceFilter+`
@@ -354,10 +362,11 @@ func loadTacitNonPersonality(ctx context.Context, db *sql.DB, result *DBContext,
 		candidates = append(candidates, entry)
 	}
 
-	// Re-rank by decay score
+	// Re-rank by confidence × decay score so high-confidence memories outrank
+	// frequently-accessed but low-confidence ones.
 	sort.Slice(candidates, func(i, j int) bool {
-		si := decayScore(candidates[i].accessCount, &candidates[i].accessedAt)
-		sj := decayScore(candidates[j].accessCount, &candidates[j].accessedAt)
+		si := candidates[i].confidence * decayScore(candidates[i].accessCount, &candidates[i].accessedAt)
+		sj := candidates[j].confidence * decayScore(candidates[j].accessCount, &candidates[j].accessedAt)
 		return si > sj
 	})
 
@@ -371,21 +380,23 @@ func loadTacitNonPersonality(ctx context.Context, db *sql.DB, result *DBContext,
 }
 
 // scanMemoryRow scans a single memory row into a DBMemoryItem.
-// Expects columns: namespace, key, value, tags, access_count, accessed_at.
+// Expects columns: namespace, key, value, tags, access_count, accessed_at, confidence.
 func scanMemoryRow(rows *sql.Rows) (DBMemoryItem, error) {
 	var namespace, key, value string
 	var tagsJSON sql.NullString
 	var accessCount sql.NullInt64
 	var accessedAt sql.NullTime
+	var confidence sql.NullFloat64
 
-	if err := rows.Scan(&namespace, &key, &value, &tagsJSON, &accessCount, &accessedAt); err != nil {
+	if err := rows.Scan(&namespace, &key, &value, &tagsJSON, &accessCount, &accessedAt, &confidence); err != nil {
 		return DBMemoryItem{}, err
 	}
 
 	entry := DBMemoryItem{
-		Namespace: namespace,
-		Key:       key,
-		Value:     value,
+		Namespace:  namespace,
+		Key:        key,
+		Value:      value,
+		confidence: 1.0, // Default: no metadata = full trust (legacy memories)
 	}
 
 	if accessCount.Valid {
@@ -393,6 +404,9 @@ func scanMemoryRow(rows *sql.Rows) (DBMemoryItem, error) {
 	}
 	if accessedAt.Valid {
 		entry.accessedAt = accessedAt.Time
+	}
+	if confidence.Valid {
+		entry.confidence = confidence.Float64
 	}
 
 	if tagsJSON.Valid && tagsJSON.String != "" {
