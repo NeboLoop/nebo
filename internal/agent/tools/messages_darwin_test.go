@@ -486,6 +486,32 @@ func TestMessagesReadOnlyDB(t *testing.T) {
 }
 
 // =============================================================================
+// isFDAError tests
+// =============================================================================
+
+func TestIsFDAError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"operation not permitted", fmt.Errorf("operation not permitted"), true},
+		{"unable to open database file", fmt.Errorf("unable to open database file: out of memory (14)"), true},
+		{"cantopen", fmt.Errorf("sqlite: CANTOPEN"), true},
+		{"authorization denied", fmt.Errorf("authorization denied"), true},
+		{"unrelated error", fmt.Errorf("table not found"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isFDAError(tt.err); got != tt.want {
+				t.Errorf("isFDAError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// =============================================================================
 // PIM domain integration tests
 // =============================================================================
 

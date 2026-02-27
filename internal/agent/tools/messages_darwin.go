@@ -130,6 +130,22 @@ return "Message sent successfully"`, escapeAS(to), escapeAS(p.Body))
 	return &ToolResult{Content: fmt.Sprintf("Message sent to %s", to)}, nil
 }
 
+// fdaError is the standard error returned when Full Disk Access is needed.
+const fdaError = "Cannot read Messages database. Grant Full Disk Access to Nebo (or Terminal, if running via CLI) in System Settings > Privacy & Security > Full Disk Access."
+
+// isFDAError checks if an error indicates a macOS Full Disk Access denial.
+// The SQLite driver surfaces this in various ways depending on the driver and OS version.
+func isFDAError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "operation not permitted") ||
+		strings.Contains(s, "authorization denied") ||
+		strings.Contains(s, "unable to open database file") ||
+		strings.Contains(s, "cantopen")
+}
+
 // openChatDB opens ~/Library/Messages/chat.db in read-only mode.
 func openChatDB() (*sql.DB, error) {
 	home, err := os.UserHomeDir()
@@ -146,6 +162,16 @@ func openChatDB() (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot open chat.db: %w", err)
 	}
+
+	// sql.Open is lazy — ping to verify we can actually read the file.
+	if err := db.Ping(); err != nil {
+		db.Close()
+		if isFDAError(err) {
+			return nil, fmt.Errorf(fdaError)
+		}
+		return nil, fmt.Errorf("cannot access chat.db: %w", err)
+	}
+
 	return db, nil
 }
 
@@ -163,12 +189,6 @@ func (t *MessagesTool) listConversations(count int) (*ToolResult, error) {
 
 	db, err := openChatDB()
 	if err != nil {
-		if strings.Contains(err.Error(), "operation not permitted") || strings.Contains(err.Error(), "authorization denied") {
-			return &ToolResult{
-				Content: "Cannot read Messages database. Grant Full Disk Access to Nebo in System Settings > Privacy & Security > Full Disk Access.",
-				IsError: true,
-			}, nil
-		}
 		return &ToolResult{Content: fmt.Sprintf("Failed: %v", err), IsError: true}, nil
 	}
 	defer db.Close()
@@ -187,12 +207,6 @@ func (t *MessagesTool) listConversations(count int) (*ToolResult, error) {
 		LIMIT ?
 	`, count)
 	if err != nil {
-		if strings.Contains(err.Error(), "operation not permitted") {
-			return &ToolResult{
-				Content: "Cannot read Messages database. Grant Full Disk Access to Nebo in System Settings > Privacy & Security > Full Disk Access.",
-				IsError: true,
-			}, nil
-		}
 		return &ToolResult{Content: fmt.Sprintf("Failed to query conversations: %v", err), IsError: true}, nil
 	}
 	defer rows.Close()
