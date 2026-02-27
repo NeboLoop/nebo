@@ -168,6 +168,9 @@ var cancelHandler MessageHandler
 // sessionResetHandler is set to handle session reset requests
 var sessionResetHandler MessageHandler
 
+// askResponseHandler is set to handle ask responses (interactive user prompts)
+var askResponseHandler MessageHandler
+
 // SetRewriteHandler sets the handler for rewrite messages
 func SetRewriteHandler(handler MessageHandler) {
 	rewriteHandler = handler
@@ -203,6 +206,11 @@ func SetSessionResetHandler(handler MessageHandler) {
 	sessionResetHandler = handler
 }
 
+// SetAskResponseHandler sets the handler for ask responses
+func SetAskResponseHandler(handler MessageHandler) {
+	askResponseHandler = handler
+}
+
 // handleMessage processes incoming messages from the client
 func (c *Client) handleMessage(msg *Message) {
 	logging.Infof("[Client] Received message type=%s from client %s", msg.Type, c.ID)
@@ -223,6 +231,8 @@ func (c *Client) handleMessage(msg *Message) {
 		c.handleCancel(msg)
 	case "session_reset":
 		c.handleSessionReset(msg)
+	case "ask_response":
+		c.handleAskResponse(msg)
 	default:
 		logging.Infof("Unknown message type: %s", msg.Type)
 	}
@@ -291,6 +301,15 @@ func (c *Client) handleRewrite(msg *Message) {
 		rewriteHandler(c, msg)
 	} else {
 		logging.Error("Rewrite handler not registered")
+	}
+}
+
+// handleAskResponse processes ask responses from the client
+func (c *Client) handleAskResponse(msg *Message) {
+	if askResponseHandler != nil {
+		askResponseHandler(c, msg)
+	} else {
+		logging.Error("Ask response handler not registered")
 	}
 }
 

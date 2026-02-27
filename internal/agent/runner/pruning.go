@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/neboloop/nebo/internal/agent/config"
@@ -17,7 +18,7 @@ const (
 
 // Micro-compact constants
 const (
-	MicroCompactMinSavings = 20000 // tokens — skip if total savings below this
+	MicroCompactMinSavings = 5000 // tokens — skip if total savings below this
 	MicroCompactKeepRecent = 3     // protect the N most recent individual tool results
 	ImageTokenEstimate     = 2000  // tokens per image block
 )
@@ -30,13 +31,31 @@ var microCompactTools = map[string]bool{
 	"web":   true, // fetch, search
 }
 
+// trimPriority returns a priority value for a tool type (lower = trim first).
+func trimPriority(toolSummary string) int {
+	if strings.HasPrefix(toolSummary, "file(action: read") {
+		return 0 // File reads produce the largest output
+	}
+	if strings.HasPrefix(toolSummary, "shell(") {
+		return 1 // Shell output is often large
+	}
+	if strings.HasPrefix(toolSummary, "web(") {
+		return 2 // Web content is moderate
+	}
+	return 3 // Other tools
+}
+
 // microCompact silently trims old tool results in-place before every API call.
 // It also strips images from messages that have already been acknowledged by the model.
 //
 // Unlike pruneContext (which is threshold-gated), this runs every iteration but
 // protects the most recent 3 individual tool results to preserve working context.
-// Only activates when estimated tokens exceed warningThreshold and potential
-// savings exceed MicroCompactMinSavings.
+//
+// Two modes:
+//   - Above warning threshold: trims all eligible candidates (original behavior).
+//   - Below warning threshold: proactively trims only old candidates (>8 messages
+//     from the end) with a lower savings floor, so the first compaction-under-pressure
+//     is faster.
 func microCompact(messages []session.Message, warningThreshold int) ([]session.Message, int) {
 	if len(messages) == 0 {
 		return messages, 0
@@ -47,10 +66,7 @@ func microCompact(messages []session.Message, warningThreshold int) ([]session.M
 		estimatedTokens += estimateMessageChars(&messages[i]) / CharsPerTokenEstimate
 	}
 
-	// Gate: only run if above the warning threshold
-	if estimatedTokens < warningThreshold {
-		return messages, 0
-	}
+	aboveWarning := estimatedTokens >= warningThreshold
 
 	// Step 1: Find all tool_use/tool_result pairs for compactable tools.
 	// Track tool call IDs from assistant messages and their result sizes.
@@ -101,6 +117,27 @@ func microCompact(messages []session.Message, warningThreshold int) ([]session.M
 		}
 	}
 
+	// Below warning: only trim candidates older than 8 messages from the end
+	if !aboveWarning {
+		const proactiveTrimAge = 8
+		var oldCandidates []candidate
+		for _, c := range candidates {
+			if len(messages)-c.resultMsgIdx > proactiveTrimAge {
+				oldCandidates = append(oldCandidates, c)
+			}
+		}
+		candidates = oldCandidates
+	}
+
+	// Sort candidates by trim priority (largest output producers first), then age
+	sort.Slice(candidates, func(i, j int) bool {
+		pi, pj := trimPriority(candidates[i].toolSummary), trimPriority(candidates[j].toolSummary)
+		if pi != pj {
+			return pi < pj // Lower priority number = trim first
+		}
+		return candidates[i].resultMsgIdx < candidates[j].resultMsgIdx // Older first
+	})
+
 	// Step 2: Protect the most recent N tool results and calculate savings
 	protectedIDs := make(map[string]bool)
 	toTrim := make(map[string]string) // toolCallID → summary
@@ -124,7 +161,11 @@ func microCompact(messages []session.Message, warningThreshold int) ([]session.M
 			totalSavings += c.tokenSize
 		}
 
-		if totalSavings < MicroCompactMinSavings {
+		minSavings := MicroCompactMinSavings
+		if !aboveWarning {
+			minSavings = 2000 // Lower floor for proactive trimming
+		}
+		if totalSavings < minSavings {
 			toTrim = nil // not worth it
 			totalSavings = 0
 		}

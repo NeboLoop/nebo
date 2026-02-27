@@ -258,6 +258,19 @@ func (m *LaneManager) pump(state *LaneState) {
 			e.task.StartedAt = startTime
 			m.emit(LaneEvent{Type: "task_started", Lane: state.Lane, Task: entryToInfo(e)})
 
+			// Watchdog: force-cancel tasks that exceed max duration.
+			// Safety net — if all other cancellation mechanisms fail,
+			// the task is killed after this timeout and the lane resumes.
+			maxDuration := 15 * time.Minute
+			if state.Lane == LaneHeartbeat {
+				maxDuration = 2 * time.Minute
+			}
+			watchdog := time.AfterFunc(maxDuration, func() {
+				fmt.Printf("[LaneManager] WATCHDOG: force-cancelling task in lane=%s after %v\n",
+					state.Lane, maxDuration)
+				e.cancel()
+			})
+
 			var err error
 			func() {
 				defer func() {
@@ -268,6 +281,7 @@ func (m *LaneManager) pump(state *LaneState) {
 				}()
 				err = e.task.Task(e.ctx)
 			}()
+			watchdog.Stop()
 
 			e.task.CompletedAt = time.Now()
 			e.task.Error = err

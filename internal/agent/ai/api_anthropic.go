@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -63,6 +64,16 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 		return nil, fmt.Errorf("failed to build messages: %w", err)
 	}
 
+	// Cache breakpoints on the last 3 messages for conversation context caching
+	for i := len(messages) - 1; i >= 0 && i >= len(messages)-3; i-- {
+		if len(messages[i].Content) > 0 {
+			cc := messages[i].Content[len(messages[i].Content)-1].GetCacheControl()
+			if cc != nil {
+				*cc = anthropic.NewCacheControlEphemeralParam()
+			}
+		}
+	}
+
 	// Use request model override if provided, otherwise use provider default
 	model := p.model
 	if req.Model != "" {
@@ -80,9 +91,30 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 		params.MaxTokens = int64(req.MaxTokens)
 	}
 
-	if req.System != "" {
+	// System prompt caching — split static (cacheable) and dynamic portions.
+	// When StaticSystem is provided, it's the stable part of the system prompt
+	// and System is the full prompt (static + dynamic). We derive the dynamic
+	// suffix by stripping the static prefix, then send as two blocks so the
+	// static part gets cached by the provider.
+	if req.StaticSystem != "" && req.System != "" {
+		dynamicSuffix := strings.TrimPrefix(req.System, req.StaticSystem)
 		params.System = []anthropic.TextBlockParam{
-			{Text: req.System},
+			{
+				Text:         req.StaticSystem,
+				CacheControl: anthropic.NewCacheControlEphemeralParam(),
+			},
+		}
+		if dynamicSuffix != "" {
+			params.System = append(params.System, anthropic.TextBlockParam{
+				Text: dynamicSuffix,
+			})
+		}
+	} else if req.System != "" {
+		params.System = []anthropic.TextBlockParam{
+			{
+				Text:         req.System,
+				CacheControl: anthropic.NewCacheControlEphemeralParam(),
+			},
 		}
 	}
 
@@ -115,6 +147,13 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 			}
 
 			tools = append(tools, anthropic.ToolUnionParam{OfTool: &toolParam})
+		}
+		// Mark the last tool with cache_control for tool definition caching
+		if len(tools) > 0 {
+			cc := tools[len(tools)-1].GetCacheControl()
+			if cc != nil {
+				*cc = anthropic.NewCacheControlEphemeralParam()
+			}
 		}
 		params.Tools = tools
 	}
@@ -268,6 +307,32 @@ func (p *AnthropicProvider) handleStream(stream *ssestream.Stream[anthropic.Mess
 		event := stream.Current()
 
 		switch event.Type {
+		case "message_start":
+			// Extract initial usage info (includes cache stats)
+			ms := event.AsMessageStart()
+			events <- StreamEvent{
+				Type: EventTypeUsage,
+				Usage: &UsageInfo{
+					InputTokens:              int(ms.Message.Usage.InputTokens),
+					OutputTokens:             int(ms.Message.Usage.OutputTokens),
+					CacheCreationInputTokens: int(ms.Message.Usage.CacheCreationInputTokens),
+					CacheReadInputTokens:     int(ms.Message.Usage.CacheReadInputTokens),
+				},
+			}
+
+		case "message_delta":
+			// Extract cumulative usage from message_delta (final token counts)
+			md := event.AsMessageDelta()
+			events <- StreamEvent{
+				Type: EventTypeUsage,
+				Usage: &UsageInfo{
+					InputTokens:              int(md.Usage.InputTokens),
+					OutputTokens:             int(md.Usage.OutputTokens),
+					CacheCreationInputTokens: int(md.Usage.CacheCreationInputTokens),
+					CacheReadInputTokens:     int(md.Usage.CacheReadInputTokens),
+				},
+			}
+
 		case "content_block_start":
 			cb := event.AsContentBlockStart()
 			block := cb.ContentBlock.AsAny()

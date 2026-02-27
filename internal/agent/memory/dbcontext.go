@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -45,6 +47,20 @@ type DBMemoryItem struct {
 	Key       string
 	Value     string
 	Tags      []string
+
+	accessCount int       // for decay scoring
+	accessedAt  time.Time // for decay scoring
+}
+
+// decayScore calculates a time-decayed relevance score.
+// Formula: access_count * 0.7^(days_since_last_access / 30.0)
+// NULL accessedAt falls back to raw access_count.
+func decayScore(accessCount int, accessedAt *time.Time) float64 {
+	if accessedAt == nil || accessedAt.IsZero() {
+		return float64(accessCount)
+	}
+	days := time.Since(*accessedAt).Hours() / 24.0
+	return float64(accessCount) * math.Pow(0.7, days/30.0)
 }
 
 // LoadContext loads agent and user context from the SQLite database
@@ -221,89 +237,148 @@ func loadTacitMemories(ctx context.Context, db *sql.DB, result *DBContext, userI
 }
 
 // loadTacitSlice loads memories from a specific namespace with a limit.
+// Overfetches by 3x (min 30 rows) and re-ranks by time-decayed score so that
+// recently-relevant memories surface above stale high-count entries.
 func loadTacitSlice(ctx context.Context, db *sql.DB, result *DBContext, userID, namespace string, limit int) (int, error) {
+	overfetch := limit * 3
+	if overfetch < 30 {
+		overfetch = 30
+	}
+
 	var rows *sql.Rows
 	var err error
 
+	// Filter out low-confidence inferred facts (< 0.65) from system prompt injection.
+	// They can still be found via hybrid search.
+	confidenceFilter := `AND (metadata IS NULL
+		OR json_extract(metadata, '$.confidence') IS NULL
+		OR json_extract(metadata, '$.confidence') >= 0.65)`
+
 	if userID != "" {
 		rows, err = db.QueryContext(ctx, `
-			SELECT namespace, key, value, tags
+			SELECT namespace, key, value, tags, access_count, accessed_at
 			FROM memories
 			WHERE namespace = ? AND user_id = ?
+			`+confidenceFilter+`
 			ORDER BY access_count DESC
 			LIMIT ?
-		`, namespace, userID, limit)
+		`, namespace, userID, overfetch)
 	} else {
 		rows, err = db.QueryContext(ctx, `
-			SELECT namespace, key, value, tags
+			SELECT namespace, key, value, tags, access_count, accessed_at
 			FROM memories
 			WHERE namespace = ?
+			`+confidenceFilter+`
 			ORDER BY access_count DESC
 			LIMIT ?
-		`, namespace, limit)
+		`, namespace, overfetch)
 	}
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 
-	count := 0
+	var candidates []DBMemoryItem
 	for rows.Next() {
 		entry, scanErr := scanMemoryRow(rows)
 		if scanErr != nil {
 			continue
 		}
-		result.TacitMemories = append(result.TacitMemories, entry)
-		count++
+		candidates = append(candidates, entry)
 	}
-	return count, nil
+
+	// Re-rank by decay score
+	sort.Slice(candidates, func(i, j int) bool {
+		si := decayScore(candidates[i].accessCount, &candidates[i].accessedAt)
+		sj := decayScore(candidates[j].accessCount, &candidates[j].accessedAt)
+		return si > sj
+	})
+
+	// Take top N
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+
+	result.TacitMemories = append(result.TacitMemories, candidates...)
+	return len(candidates), nil
 }
 
 // loadTacitNonPersonality loads memories from all tacit/* namespaces EXCEPT tacit/personality.
+// Overfetches by 3x (min 30 rows) and re-ranks by time-decayed score so that
+// recently-relevant memories surface above stale high-count entries.
 func loadTacitNonPersonality(ctx context.Context, db *sql.DB, result *DBContext, userID string, limit int) (int, error) {
+	overfetch := limit * 3
+	if overfetch < 30 {
+		overfetch = 30
+	}
+
 	var rows *sql.Rows
 	var err error
 
+	// Filter out low-confidence inferred facts (< 0.65) from system prompt injection.
+	// They can still be found via hybrid search.
+	confidenceFilter := `AND (metadata IS NULL
+		OR json_extract(metadata, '$.confidence') IS NULL
+		OR json_extract(metadata, '$.confidence') >= 0.65)`
+
 	if userID != "" {
 		rows, err = db.QueryContext(ctx, `
-			SELECT namespace, key, value, tags
+			SELECT namespace, key, value, tags, access_count, accessed_at
 			FROM memories
 			WHERE (namespace = 'tacit' OR namespace LIKE 'tacit/%') AND namespace != 'tacit/personality' AND user_id = ?
+			`+confidenceFilter+`
 			ORDER BY access_count DESC
 			LIMIT ?
-		`, userID, limit)
+		`, userID, overfetch)
 	} else {
 		rows, err = db.QueryContext(ctx, `
-			SELECT namespace, key, value, tags
+			SELECT namespace, key, value, tags, access_count, accessed_at
 			FROM memories
 			WHERE (namespace = 'tacit' OR namespace LIKE 'tacit/%') AND namespace != 'tacit/personality'
+			`+confidenceFilter+`
 			ORDER BY access_count DESC
 			LIMIT ?
-		`, limit)
+		`, overfetch)
 	}
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
 
-	count := 0
+	var candidates []DBMemoryItem
 	for rows.Next() {
 		entry, scanErr := scanMemoryRow(rows)
 		if scanErr != nil {
 			continue
 		}
-		result.TacitMemories = append(result.TacitMemories, entry)
-		count++
+		candidates = append(candidates, entry)
 	}
-	return count, nil
+
+	// Re-rank by decay score
+	sort.Slice(candidates, func(i, j int) bool {
+		si := decayScore(candidates[i].accessCount, &candidates[i].accessedAt)
+		sj := decayScore(candidates[j].accessCount, &candidates[j].accessedAt)
+		return si > sj
+	})
+
+	// Take top N
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+
+	result.TacitMemories = append(result.TacitMemories, candidates...)
+	return len(candidates), nil
 }
 
 // scanMemoryRow scans a single memory row into a DBMemoryItem.
+// Expects columns: namespace, key, value, tags, access_count, accessed_at.
 func scanMemoryRow(rows *sql.Rows) (DBMemoryItem, error) {
 	var namespace, key, value string
 	var tagsJSON sql.NullString
+	var accessCount sql.NullInt64
+	var accessedAt sql.NullTime
 
-	if err := rows.Scan(&namespace, &key, &value, &tagsJSON); err != nil {
+	if err := rows.Scan(&namespace, &key, &value, &tagsJSON, &accessCount, &accessedAt); err != nil {
 		return DBMemoryItem{}, err
 	}
 
@@ -311,6 +386,13 @@ func scanMemoryRow(rows *sql.Rows) (DBMemoryItem, error) {
 		Namespace: namespace,
 		Key:       key,
 		Value:     value,
+	}
+
+	if accessCount.Valid {
+		entry.accessCount = int(accessCount.Int64)
+	}
+	if accessedAt.Valid {
+		entry.accessedAt = accessedAt.Time
 	}
 
 	if tagsJSON.Valid && tagsJSON.String != "" {

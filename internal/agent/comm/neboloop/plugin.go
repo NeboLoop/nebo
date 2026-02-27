@@ -925,17 +925,14 @@ func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 }
 
 // startHealthChecker runs a background goroutine that periodically validates
-// the WebSocket connection and detects stale subscriptions. This is independent
-// of the watchdog and catches silent disconnects that happen between pings.
-// Checks every 30 seconds for: (1) no messages in 2 minutes, (2) no successful pings in 1 minute.
+// the WebSocket connection by checking ping success. This is independent of
+// the watchdog and catches silent disconnects that happen between pings.
+// Only uses ping timeout — absence of inbound messages is normal for idle bots.
 func (p *Plugin) startHealthChecker() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	const (
-		messageTimeout = 2 * time.Minute  // No messages = reconnect
-		pingTimeout    = 1 * time.Minute  // No successful pings = reconnect
-	)
+	const pingTimeout = 1 * time.Minute // No successful pings = reconnect
 
 	for {
 		select {
@@ -944,7 +941,6 @@ func (p *Plugin) startHealthChecker() {
 		case <-ticker.C:
 			p.mu.RLock()
 			connected := p.connected
-			lastMsg := p.lastMessageTime
 			lastPing := p.lastPingSuccess
 			client := p.client
 			p.mu.RUnlock()
@@ -953,22 +949,9 @@ func (p *Plugin) startHealthChecker() {
 				continue // Not connected, skip health check
 			}
 
-			now := time.Now()
-
 			// Check for stale ping (last successful ping was too long ago)
-			if now.Sub(lastPing) > pingTimeout {
+			if time.Since(lastPing) > pingTimeout {
 				commLog.Warn("[Comm:neboloop] health check: no successful pings in 1 minute, marking stale")
-				p.mu.Lock()
-				p.connected = false
-				p.client = nil
-				p.mu.Unlock()
-				p.reconnect()
-				return
-			}
-
-			// Check for stale message activity (no inbound messages in 2 minutes)
-			if now.Sub(lastMsg) > messageTimeout {
-				commLog.Warn("[Comm:neboloop] health check: no messages in 2 minutes, marking stale")
 				p.mu.Lock()
 				p.connected = false
 				p.client = nil

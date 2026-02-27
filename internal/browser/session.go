@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/playwright-community/playwright-go"
 )
 
@@ -407,10 +408,10 @@ func (p *Page) Refs() *RefCache {
 
 // Helper functions
 
-func getTargetID(page playwright.Page) string {
-	// Playwright pages don't expose targetId directly in Go bindings
-	// Use URL + creation time as a unique identifier
-	return fmt.Sprintf("%s-%d", page.URL(), time.Now().UnixNano())
+func getTargetID(_ playwright.Page) string {
+	// Use a stable UUID — URL-based IDs broke after navigation because
+	// the URL changes but the page stays indexed under the old key.
+	return fmt.Sprintf("page-%s", uuid.New().String()[:8])
 }
 
 func newRefCache() *RefCache {

@@ -6,3 +6,4 @@ export { default as ThinkingBlock } from './ThinkingBlock.svelte';
 export { default as ReadingIndicator } from './ReadingIndicator.svelte';
 export { default as ToolOutputSidebar } from './ToolOutputSidebar.svelte';
 export { default as ChatInput } from './ChatInput.svelte';
+export { default as AskWidget } from './AskWidget.svelte';

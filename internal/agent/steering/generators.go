@@ -2,6 +2,7 @@ package steering
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -134,8 +135,9 @@ func (g *memoryNudge) Generate(ctx *Context) []Message {
 		return nil
 	}
 
-	// Check if recent user messages contain self-disclosure patterns
-	if !lastNUserMessagesContain(ctx.Messages, 10, selfDisclosurePatterns) {
+	// Check if recent user messages contain self-disclosure or behavioral patterns
+	if !lastNUserMessagesContain(ctx.Messages, 10, selfDisclosurePatterns) &&
+		!lastNUserMessagesContain(ctx.Messages, 10, behavioralPatterns) {
 		return nil
 	}
 
@@ -212,8 +214,30 @@ func (g *taskProgress) Generate(ctx *Context) []Message {
 	if ctx.Iteration < 4 || ctx.Iteration%8 != 0 {
 		return nil
 	}
+
+	// Build a concrete task list if work tasks exist
+	content := tmplTaskProgress
+	if len(ctx.WorkTasks) > 0 {
+		var sb strings.Builder
+		sb.WriteString("Your objective: ")
+		sb.WriteString(ctx.ActiveTask)
+		sb.WriteString("\n\nTask checklist:\n")
+		for _, wt := range ctx.WorkTasks {
+			icon := "[ ]"
+			switch wt.Status {
+			case "in_progress":
+				icon = "[→]"
+			case "completed":
+				icon = "[✓]"
+			}
+			sb.WriteString(fmt.Sprintf("  %s [%s] %s\n", icon, wt.ID, wt.Subject))
+		}
+		sb.WriteString("\nContinue working on the next incomplete task. Do NOT repeat already-completed tasks.")
+		content = sb.String()
+	}
+
 	return []Message{{
-		Content:  wrapSteering(g.Name(), tmplTaskProgress),
+		Content:  wrapSteering(g.Name(), content),
 		Position: PositionEnd,
 	}}
 }

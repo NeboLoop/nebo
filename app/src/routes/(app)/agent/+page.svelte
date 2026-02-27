@@ -62,12 +62,21 @@
 	}
 
 	interface ContentBlock {
-		type: 'text' | 'tool' | 'image';
+		type: 'text' | 'tool' | 'image' | 'ask';
 		text?: string; // accumulated text for text blocks
 		toolCallIndex?: number; // index into toolCalls for tool blocks
 		imageData?: string; // base64 data for image blocks
 		imageMimeType?: string; // e.g. "image/png"
 		imageURL?: string; // URL for server-hosted images (e.g., screenshots)
+		askRequestId?: string; // ask request ID
+		askPrompt?: string; // ask prompt text
+		askWidgets?: Array<{
+			type: 'buttons' | 'select' | 'text_input' | 'confirm' | 'radio' | 'checkbox';
+			label?: string;
+			options?: string[];
+			default?: string;
+		}>;
+		askResponse?: string; // user response (filled when answered)
 	}
 
 	let chatId = $state<string | null>(null);
@@ -152,6 +161,16 @@
 	let loadingTimeoutId: ReturnType<typeof setTimeout> | null = null;
 	let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
 	let pendingScrollRAF: number | null = null;
+	let staleCheckIntervalId: ReturnType<typeof setInterval> | null = null;
+
+	// Stream staleness detection — shows "force stop" if no events for 60s
+	let lastEventTime = $state(Date.now());
+	let staleWarning = $state(false);
+
+	function markActivity() {
+		lastEventTime = Date.now();
+		staleWarning = false;
+	}
 
 	// Replace the streaming message in the messages array by its ID.
 	// IMPORTANT: Do NOT use messages.slice(0, -1) — DM events can insert
@@ -174,6 +193,7 @@
 
 	function resetLoadingTimeout() {
 		if (loadingTimeoutId) clearTimeout(loadingTimeoutId);
+		markActivity();
 		if (!isLoading) return;
 
 		// Don't arm the timer while tools are actively running — they can take minutes
@@ -214,6 +234,29 @@
 		}
 	});
 
+	// Stream staleness check: if loading and no events for 60s, show force stop
+	$effect(() => {
+		if (!isLoading) {
+			staleWarning = false;
+			if (staleCheckIntervalId) {
+				clearInterval(staleCheckIntervalId);
+				staleCheckIntervalId = null;
+			}
+			return;
+		}
+		staleCheckIntervalId = setInterval(() => {
+			if (Date.now() - lastEventTime > 60_000) {
+				staleWarning = true;
+			}
+		}, 5000);
+		return () => {
+			if (staleCheckIntervalId) {
+				clearInterval(staleCheckIntervalId);
+				staleCheckIntervalId = null;
+			}
+		};
+	});
+
 	// Approval request queue — multiple lanes can request approval concurrently
 	let approvalQueue = $state<ApprovalRequest[]>([]);
 	const pendingApproval = $derived(approvalQueue.length > 0 ? approvalQueue[0] : null);
@@ -249,7 +292,8 @@
 			client.on('stream_status', handleStreamStatus),
 			client.on('chat_cancelled', handleChatCancelled),
 			client.on('reminder_complete', handleReminderComplete),
-			client.on('dm_user_message', handleDMUserMessage)
+			client.on('dm_user_message', handleDMUserMessage),
+			client.on('ask_request', handleAskRequest)
 		);
 
 		if (browser) {
@@ -279,6 +323,11 @@
 		if (pendingScrollRAF) {
 			cancelAnimationFrame(pendingScrollRAF);
 			pendingScrollRAF = null;
+		}
+		// Clean up stale check interval
+		if (staleCheckIntervalId) {
+			clearInterval(staleCheckIntervalId);
+			staleCheckIntervalId = null;
 		}
 		// Clean up voice mode (kills stream, monitor, recorder, audio)
 		exitVoiceMode();
@@ -516,7 +565,9 @@
 		}
 
 		// Stream re-arm: if a chunk arrives after an inactivity timeout, re-arm loading
-		if (!isLoading) {
+		// But don't re-arm for DM-sourced events — DM activity shouldn't block the web UI
+		const isDMStream = data?.source === 'dm';
+		if (!isLoading && !isDMStream) {
 			log.debug('handleChatStream: re-arming isLoading (stream resumed after timeout)');
 			isLoading = true;
 		}
@@ -628,6 +679,24 @@
 			log.debug(
 				'handleChatComplete: session mismatch, expected ' + chatId + ' got ' + data?.session_id
 			);
+			return;
+		}
+
+		const isDMComplete = data?.source === 'dm';
+
+		// For DM completions, finalize the streaming message but don't touch isLoading.
+		// DM activity shouldn't interfere with a pending web UI request.
+		if (isDMComplete) {
+			if (currentStreamingMessage) {
+				currentStreamingMessage.streaming = false;
+				if (currentStreamingMessage.toolCalls?.length) {
+					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					);
+				}
+				replaceMessageById({ ...currentStreamingMessage });
+				currentStreamingMessage = null;
+			}
 			return;
 		}
 
@@ -1010,9 +1079,70 @@
 			timestamp: new Date()
 		};
 		messages = [...messages, userMsg];
-		isLoading = true;
 		log.debug('DM user message from ' + source + ': ' + content.substring(0, 50));
 		scrollToBottom();
+	}
+
+	function handleAskRequest(data: Record<string, unknown>) {
+		const requestId = data?.request_id as string;
+		const prompt = data?.prompt as string;
+		const widgets = data?.widgets as ContentBlock['askWidgets'];
+
+		if (requestId && currentStreamingMessage) {
+			const updatedBlocks = [
+				...(currentStreamingMessage.contentBlocks ?? []),
+				{
+					type: 'ask' as const,
+					askRequestId: requestId,
+					askPrompt: prompt,
+					askWidgets: widgets ?? [{ type: 'confirm', options: ['Yes', 'No'] }]
+				}
+			];
+			currentStreamingMessage = {
+				...currentStreamingMessage,
+				contentBlocks: updatedBlocks
+			};
+			replaceMessageById(currentStreamingMessage);
+		}
+	}
+
+	function handleAskSubmit(requestId: string, value: string) {
+		const client = getWebSocketClient();
+		client.send('ask_response', {
+			request_id: requestId,
+			value
+		});
+
+		// Update the ask block's response for completed state rendering
+		if (currentStreamingMessage?.contentBlocks) {
+			const updatedBlocks = currentStreamingMessage.contentBlocks.map((block) => {
+				if (block.type === 'ask' && block.askRequestId === requestId) {
+					return { ...block, askResponse: value };
+				}
+				return block;
+			});
+			currentStreamingMessage = {
+				...currentStreamingMessage,
+				contentBlocks: updatedBlocks
+			};
+			replaceMessageById(currentStreamingMessage);
+		}
+
+		// Also update in messages array (for non-streaming/completed messages)
+		messages = messages.map((msg) => {
+			if (msg.contentBlocks?.some((b) => b.askRequestId === requestId)) {
+				return {
+					...msg,
+					contentBlocks: msg.contentBlocks!.map((block) => {
+						if (block.type === 'ask' && block.askRequestId === requestId) {
+							return { ...block, askResponse: value };
+						}
+						return block;
+					})
+				};
+			}
+			return msg;
+		});
 	}
 
 	function handleApprovalRequest(data: Record<string, unknown>) {
@@ -1906,6 +2036,7 @@
 							isStreaming={group.role === 'assistant' &&
 								isLoading &&
 								groupIndex === groupedMessages.length - 1}
+							onAskSubmit={handleAskSubmit}
 						/>
 					{/each}
 
@@ -1945,6 +2076,16 @@
 			</div>
 		{/if}
 	</div>
+
+	<!-- Stale warning: no activity for 60s while loading -->
+	{#if staleWarning}
+		<div class="max-w-4xl mx-auto px-6 pb-2">
+			<div class="alert alert-warning text-sm py-2">
+				<span>No activity for 60s — the agent may be stuck.</span>
+				<button class="btn btn-sm btn-ghost" onclick={cancelMessage}>Force stop</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Input Area -->
 	<ChatInput

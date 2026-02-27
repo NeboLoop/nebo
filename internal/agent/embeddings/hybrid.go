@@ -73,8 +73,7 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts SearchOp
 		opts.Limit = 10
 	}
 	if opts.VectorWeight == 0 && opts.TextWeight == 0 {
-		opts.VectorWeight = 0.7
-		opts.TextWeight = 0.3
+		opts.VectorWeight, opts.TextWeight = adaptiveWeights(query)
 	}
 	if opts.MinScore == 0 {
 		opts.MinScore = 0.3
@@ -91,6 +90,14 @@ func (h *HybridSearcher) Search(ctx context.Context, query string, opts SearchOp
 		if err != nil {
 			return nil, fmt.Errorf("text search failed: %w", err)
 		}
+	}
+
+	// Search session transcript chunks in FTS (non-fatal)
+	sessionResults, err := h.searchChunksFTS(query, opts.Namespace, opts.UserID, candidates)
+	if err != nil {
+		fmt.Printf("[HybridSearch] Session chunk FTS search failed: %v\n", err)
+	} else {
+		ftsResults = append(ftsResults, sessionResults...)
 	}
 
 	// Get vector results if embedder is available (user-scoped)
@@ -326,6 +333,82 @@ func (h *HybridSearcher) mergeResults(ftsResults, vectorResults []SearchResult, 
 	})
 
 	return results
+}
+
+// adaptiveWeights returns vector/FTS weights based on query characteristics.
+// Short specific queries favor FTS; long conceptual queries favor vector search.
+func adaptiveWeights(query string) (vectorWeight, textWeight float64) {
+	words := strings.Fields(query)
+	wordCount := len(words)
+
+	if wordCount == 0 {
+		return 0.70, 0.30
+	}
+
+	// Count proper nouns (uppercase-starting words, excluding first word)
+	properNouns := 0
+	for i := 1; i < len(words); i++ {
+		if len(words[i]) > 0 && words[i][0] >= 'A' && words[i][0] <= 'Z' {
+			properNouns++
+		}
+	}
+	properNounRatio := float64(properNouns) / float64(wordCount)
+
+	switch {
+	case wordCount <= 3 && properNounRatio > 0.30:
+		return 0.35, 0.65
+	case wordCount <= 3:
+		return 0.45, 0.55
+	case wordCount <= 5:
+		return 0.70, 0.30
+	default:
+		return 0.80, 0.20
+	}
+}
+
+// searchChunksFTS searches session transcript chunks in the FTS5 index.
+// Returns results with a dampened score since session chunks are less precise than memories.
+func (h *HybridSearcher) searchChunksFTS(query, namespace, userID string, limit int) ([]SearchResult, error) {
+	const sessionBoostFactor = 0.6
+
+	ftsQuery := buildFTSQuery(query)
+	if ftsQuery == "" {
+		return nil, nil
+	}
+
+	rows, err := h.db.Query(`
+		SELECT c.path, c.text, bm25(memory_chunks_fts) as rank
+		FROM memory_chunks_fts
+		JOIN memory_chunks c ON c.rowid = memory_chunks_fts.rowid
+		WHERE memory_chunks_fts MATCH ?
+		AND c.source = 'session'
+		AND c.namespace = ?
+		AND c.user_id = ?
+		ORDER BY rank
+		LIMIT ?
+	`, ftsQuery, namespace, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var path, text string
+		var rank float64
+		if err := rows.Scan(&path, &text, &rank); err != nil {
+			continue
+		}
+		// BM25 rank is negative (lower = better), normalize to positive score
+		score := -rank * sessionBoostFactor
+		results = append(results, SearchResult{
+			Key:    "session:" + path,
+			Value:  text,
+			Score:  score,
+			Source: "fts_session",
+		})
+	}
+	return results, nil
 }
 
 // buildFTSQuery creates an FTS5 query from natural language
