@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -969,7 +970,7 @@ func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInp
 		if err != nil {
 			return &ToolResult{Content: fmt.Sprintf("Screenshot failed: %v", err), IsError: true}, nil
 		}
-		
+
 		// Save to file if output path provided, otherwise return base64
 		if in.Output != "" {
 			// Decode base64 and save
@@ -983,7 +984,7 @@ func (t *WebDomainTool) handleNativeBrowser(ctx context.Context, in WebDomainInp
 			}
 			return &ToolResult{Content: fmt.Sprintf("Screenshot saved to %s", in.Output)}, nil
 		}
-		
+
 		// Return base64 data
 		return &ToolResult{Content: base64Data}, nil
 
@@ -1345,6 +1346,19 @@ func (t *WebDomainTool) HandleVision(ctx context.Context, imagePath, imageBase64
 
 // --- Search implementations ---
 
+// browserUserAgent returns a realistic browser user-agent string matching the
+// current platform so that search engines don't flag us as a bot.
+func browserUserAgent() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	case "linux":
+		return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	default: // windows
+		return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	}
+}
+
 type webSearchResult struct {
 	Title   string
 	URL     string
@@ -1358,8 +1372,7 @@ func (t *WebDomainTool) searchDuckDuckGo(ctx context.Context, query string, limi
 	if err != nil {
 		return nil, err
 	}
-	// Use a realistic browser user-agent — DuckDuckGo may block bot-like agents
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", browserUserAgent())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 
@@ -1374,7 +1387,16 @@ func (t *WebDomainTool) searchDuckDuckGo(ctx context.Context, query string, limi
 		return nil, err
 	}
 
-	return parseWebDuckDuckGoHTML(string(body), limit), nil
+	html := string(body)
+
+	// Detect bot protection (CAPTCHA, challenge pages)
+	if strings.Contains(html, "please click") && strings.Contains(html, "bot") ||
+		strings.Contains(html, "challenge") && strings.Contains(html, "captcha") ||
+		strings.Contains(html, "Select all squares") {
+		return nil, fmt.Errorf("search blocked by bot protection (CAPTCHA)")
+	}
+
+	return parseWebDuckDuckGoHTML(html, limit), nil
 }
 
 func (t *WebDomainTool) searchViaNativeBrowser(ctx context.Context, query string, limit int) ([]webSearchResult, error) {

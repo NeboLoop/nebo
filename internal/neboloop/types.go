@@ -160,6 +160,16 @@ type RedeemCodeResponse struct {
 }
 
 // --------------------------------------------------------------------------
+// Skill Install Code Types
+// --------------------------------------------------------------------------
+
+// RedeemSkillCodeRequest is sent to POST /api/v1/skills/redeem.
+type RedeemSkillCodeRequest struct {
+	Code  string `json:"code"`
+	BotID string `json:"bot_id"`
+}
+
+// --------------------------------------------------------------------------
 // Loop Channel Types
 // --------------------------------------------------------------------------
 

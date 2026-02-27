@@ -463,6 +463,8 @@ func toolCorrection(name string) string {
 		return "INSTEAD USE: desktop(resource: \"shortcut\", action: \"list\") or desktop(resource: \"shortcut\", action: \"run\", name: \"...\")"
 	case "dock":
 		return "INSTEAD USE: system(resource: \"app\", action: \"list\") — dock tool has been consolidated"
+	case "messages", "imessage", "sms", "text", "message":
+		return "INSTEAD USE: pim(resource: \"messages\", action: \"send\", to: \"+15551234567\", body: \"Hello!\") or pim(resource: \"messages\", action: \"conversations\")"
 	case "devtools", "dev_tools", "browser_devtools":
 		return "INSTEAD USE: web(resource: \"devtools\", action: \"console\") or web(resource: \"devtools\", action: \"source\")"
 	default:

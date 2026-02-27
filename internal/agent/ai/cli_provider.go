@@ -133,14 +133,27 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 			args = append(args, "--system-prompt", req.System)
 		}
 
-		// Use "--" to separate flags from the positional prompt argument.
-		args = append(args, "--", prompt)
+		// Control thinking effort: low for casual chat, high for reasoning tasks.
+		// Low effort tells Claude CLI to minimize thinking tokens (saves cost).
+		if p.command == "claude" {
+			if req.EnableThinking {
+				args = append(args, "--effort", "high")
+			} else {
+				args = append(args, "--effort", "low")
+			}
+		}
 
-		// Log command start (not individual stream lines)
-		fmt.Printf("[CLIProvider] Running: %s (prompt_len=%d)\n", p.command, len(prompt))
+		// Log command start
+		fmt.Printf("[CLIProvider] Running: %s (prompt_len=%d, system_len=%d, thinking=%v)\n",
+			p.command, len(prompt), len(req.System), req.EnableThinking)
 
-		// Create command
 		cmd := exec.CommandContext(ctx, p.command, args...)
+		cmd.SysProcAttr = cliSysProcAttr()
+
+		// Pass the prompt via stdin instead of as a positional argument.
+		// This avoids EINVAL from fork/exec when conversation history
+		// produces a prompt too large or with content unsuitable for argv.
+		cmd.Stdin = strings.NewReader(prompt)
 
 		// Get stdout pipe for streaming
 		stdout, err := cmd.StdoutPipe()
@@ -228,23 +241,31 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 					switch eventType {
 					case "content_block_start":
 						if block, ok := rawEvent["content_block"].(map[string]any); ok {
-							if blockType, _ := block["type"].(string); blockType == "tool_use" {
+							blockType, _ := block["type"].(string)
+							if blockType == "tool_use" {
 								name, _ := block["name"].(string)
 								id, _ := block["id"].(string)
 								pendingTool = &pendingToolInfo{ID: id, Name: name}
 								continue // Don't emit yet — wait for full input
 							}
+							if blockType == "thinking" && !req.EnableThinking {
+								continue // Drop thinking unless runner classified this as a reasoning task
+							}
 						}
 
 					case "content_block_delta":
 						if delta, ok := rawEvent["delta"].(map[string]any); ok {
-							if deltaType, _ := delta["type"].(string); deltaType == "input_json_delta" {
+							deltaType, _ := delta["type"].(string)
+							if deltaType == "input_json_delta" {
 								if pendingTool != nil {
 									if partial, ok := delta["partial_json"].(string); ok {
 										pendingTool.Input.WriteString(partial)
 									}
 								}
 								continue // Accumulated, don't emit
+							}
+							if deltaType == "thinking_delta" && !req.EnableThinking {
+								continue // Drop thinking unless runner classified this as a reasoning task
 							}
 						}
 
@@ -648,41 +669,14 @@ func CheckCLIStatus(command string) CLIStatus {
 	}
 	status.Installed = true
 
-	// Check authentication based on CLI type
-	switch command {
-	case "claude":
-		// Claude CLI: run `claude --version` - returns version if authenticated
-		// If not authenticated, it will prompt for login (which we catch via timeout)
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "claude", "--version")
-		output, err := cmd.Output()
-		if err == nil {
-			status.Authenticated = true
-			status.Version = strings.TrimSpace(string(output))
-		}
-
-	case "gemini":
-		// Gemini CLI: check for auth by running --version or checking config
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "gemini", "--version")
-		output, err := cmd.Output()
-		if err == nil {
-			status.Authenticated = true
-			status.Version = strings.TrimSpace(string(output))
-		}
-
-	case "codex":
-		// Codex CLI: check for auth by running --version
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "codex", "--version")
-		output, err := cmd.Output()
-		if err == nil {
-			status.Authenticated = true
-			status.Version = strings.TrimSpace(string(output))
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, command, "--version")
+	cmd.SysProcAttr = cliSysProcAttr()
+	output, err := cmd.Output()
+	if err == nil {
+		status.Authenticated = true
+		status.Version = strings.TrimSpace(string(output))
 	}
 
 	return status

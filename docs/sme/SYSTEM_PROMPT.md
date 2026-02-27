@@ -73,13 +73,13 @@ This is placed in `ChatRequest.System`. Each provider maps it to their API forma
 
 ## Static Prompt Assembly Order
 
-`BuildStaticPrompt(pctx PromptContext)` in `prompt.go` (line ~368):
+`BuildStaticPrompt(pctx PromptContext)` in `prompt.go` (line ~515):
 
 ### 1. DB Context / Identity (FIRST — highest priority position)
 
 Source: `memory.LoadContext()` → `DBContext.FormatForSystemPrompt()`
 
-The `FormatForSystemPrompt()` method (dbcontext.go:324) builds in this order:
+The `FormatForSystemPrompt()` method (dbcontext.go:~406) builds in this order:
 
 1. **Soul Document (Personality Prompt)** — Selected preset from `personality_presets` table or custom. Uses `{name}` placeholder replaced with actual agent name. The 5 presets are rich multi-section documents with: Identity, Being Helpful, Being Honest, Boundaries, Relationship, Communication.
 2. **Character** — creature, role, vibe, emoji (the "business card"). Example: "You are a fox. Your relationship to the user: executive assistant. Your vibe: calm and focused."
@@ -102,12 +102,12 @@ The `FormatForSystemPrompt()` method (dbcontext.go:324) builds in this order:
 
 ### 3. Static Sections (constants in prompt.go)
 
-These are hardcoded constant strings joined in order:
+These are hardcoded constant strings joined in order. There are 8 sections in the `staticSections` array (a 9th constant, `sectionSTRAPHeader`, exists but is used separately by `buildSTRAPSection()`):
 
 | Section | Variable | Content |
 |---------|----------|---------|
 | Identity & Prime | `sectionIdentityAndPrime` | "You are {agent_name}..." + PRIME DIRECTIVE ("JUST DO IT") + BANNED PHRASES list (10 phrases to never say) |
-| Capabilities | `sectionCapabilities` | "What You Can Do" — filesystem, shell, browser, apps, email, memory |
+| Capabilities | `sectionCapabilities` | "What You Can Do" — platform-aware (different text for Windows vs Unix), filesystem, shell, browser, apps, email, memory |
 | Tools Declaration | `sectionToolsDeclaration` | Declares ONLY tools are file/shell/web/agent/skill/screenshot/vision. Explicitly denies training-data tools (WebFetch, WebSearch, Read, etc.) |
 | Comm Style | `sectionCommStyle` | "Do not narrate routine tool calls" — when to narrate vs. when to just do |
 | Media | `sectionMedia` | Inline images (screenshot format: "file") and video embeds (YouTube, Vimeo, X) |
@@ -115,7 +115,7 @@ These are hardcoded constant strings joined in order:
 | Tool Guide | `sectionToolGuide` | "How to Choose the Right Tool" — decision tree for common request patterns |
 | Behavior | `sectionBehavior` | 14 behavioral guidelines — DO THE WORK, act don't narrate, search memory first, spawn sub-agents, never explain architecture, etc. |
 
-Assembly order defined in `staticSections` array (prompt.go:352).
+Assembly order defined in `staticSections` array (prompt.go:~499).
 
 ### 4. STRAP Tool Documentation
 
@@ -189,7 +189,7 @@ Fence markers are generated per-run by `afv.FenceStore` (volatile, never persist
 
 ## Dynamic Suffix (per-iteration)
 
-`BuildDynamicSuffix(dctx DynamicContext)` in `prompt.go` (line ~448):
+`BuildDynamicSuffix(dctx DynamicContext)` in `prompt.go` (line ~595):
 
 Appended after the static prompt every iteration. By keeping this AFTER the static prompt, Anthropic's prompt caching reuses the static prefix (up to 5 min TTL).
 
@@ -250,8 +250,10 @@ The steering pipeline (`steering.Pipeline`) generates messages that are:
 | 9 | `taskProgress` | Every 8 iterations when work tasks exist | Re-injects task checklist with current status. | End |
 | 10 | `janusQuotaWarning` | Janus rate limit >80% used (once per session) | "Token budget is X% used. Warn user about quota." | End |
 
-### Self-Disclosure Patterns (for memoryNudge)
-Detects when user is sharing storable info: "i am", "i'm", "my name", "i work", "i live", "i prefer", "i like", "my wife", "my email", "call me", etc.
+### Self-Disclosure & Behavioral Patterns (for memoryNudge)
+Detects when user is sharing storable info via two pattern lists (29 total):
+- **Self-disclosure** (17): "i am", "i'm", "my name", "i work", "i live", "i prefer", "i like", "i don't like", "i hate", "i always", "i never", "i usually", "my job", "my company", "my team", "my wife/husband/partner", "my email/phone/address", "call me", "i go by"
+- **Behavioral** (12): "can you always", "from now on", "don't ever", "stop using", "start using", "going forward", "every time", "when i ask", "please remember", "keep in mind", "for future", "note that i"
 
 ### Injection Positions
 - `PositionEnd` — appended after all messages (most generators)
@@ -321,36 +323,36 @@ For CLI providers (claude-code, gemini-cli), the full enriched prompt is passed 
 User sends message (web UI / CLI / channel)
   │
   ▼
-Runner.Run(ctx, req)                              [runner.go:265]
+Runner.Run(ctx, req)                              [runner.go]
   │ Inject origin into context
   │ Get or create session
   │ Append user message to session
   │ Background: detectAndSetObjective()
   │
   ▼
-runLoop() starts                                  [runner.go:339]
+runLoop() starts                                  [runner.go:~341]
   │
-  ├─ Step 1: Load memory context from DB          [runner.go:374]
+  ├─ Step 1: Load memory context from DB          [runner.go:~376]
   │    memory.LoadContext(db, userID)
   │    → DBContext.FormatForSystemPrompt()
   │    Fallback: file-based (AGENTS.md, MEMORY.md, SOUL.md)
   │    Fallback: minimal identity string
   │
-  ├─ Step 2: Resolve agent name                   [runner.go:393]
+  ├─ Step 2: Resolve agent name
   │    Default: "Nebo"
   │
-  ├─ Step 3: Collect tool names from registry     [runner.go:399]
+  ├─ Step 3: Collect tool names from registry
   │
-  ├─ Step 4: Collect optional inputs              [runner.go:406]
+  ├─ Step 4: Collect optional inputs
   │    ForceLoadSkill (introduction on first run)
   │    AutoMatchSkills (trigger matching)
   │    ActiveSkillContent (invoked skills)
   │    AppCatalog, ModelAliases
   │
-  ├─ Step 5: BuildStaticPrompt(pctx)              [runner.go:446]
+  ├─ Step 5: BuildStaticPrompt(pctx)
   │
   ▼
-  MAIN LOOP (iteration 1..100)                    [runner.go:458]
+  MAIN LOOP (iteration 1..100)                    [runner.go:~460]
     │
     ├─ Load session messages
     ├─ Estimate tokens, check graduated thresholds
@@ -363,7 +365,7 @@ runLoop() starts                                  [runner.go:339]
     ├─ Detect user model switch request
     ├─ Select provider + model (override → selector → fallback)
     │
-    ├─ BuildDynamicSuffix(dctx)                    [runner.go:608]
+    ├─ BuildDynamicSuffix(dctx)                    [runner.go:~665]
     │    Date/time, model context, active task, summary
     │
     ├─ Refresh active skills (rebuild static prompt if changed)
@@ -373,16 +375,16 @@ runLoop() starts                                  [runner.go:339]
     ├─ microCompact (trim old tool results)
     ├─ pruneContext (soft trim + hard clear)
     │
-    ├─ Steering pipeline generates messages         [runner.go:637]
+    ├─ Steering pipeline generates messages         [runner.go:~718]
     │    Inject into message array
     │
-    ├─ AFV pre-send verification                    [runner.go:667]
+    ├─ AFV pre-send verification                    [runner.go:~726]
     │    Check all fence markers intact
     │    Quarantine if violated
     │
-    ├─ Strip fence markers from messages            [runner.go:700]
+    ├─ Strip fence markers from messages
     │
-    ├─ Build ChatRequest:                           [runner.go:708]
+    ├─ Build ChatRequest:                           [runner.go:~774]
     │    System: enrichedPrompt
     │    Messages: truncatedMessages
     │    Tools: chatTools

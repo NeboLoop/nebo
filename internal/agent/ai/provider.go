@@ -18,7 +18,17 @@ const (
 	EventTypeDone       StreamEventType = "done"
 	EventTypeThinking   StreamEventType = "thinking"
 	EventTypeMessage    StreamEventType = "message" // Full message from CLI provider's internal loop
+	EventTypeUsage      StreamEventType = "usage"   // Token usage info (including cache stats)
 )
+
+// UsageInfo contains token usage statistics from a streaming response,
+// including prompt caching metrics when supported by the provider.
+type UsageInfo struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
 
 // StreamEvent represents a streaming response event
 type StreamEvent struct {
@@ -26,8 +36,9 @@ type StreamEvent struct {
 	Text     string           `json:"text,omitempty"`
 	ToolCall *ToolCall        `json:"tool_call,omitempty"`
 	Error    error            `json:"error,omitempty"`
-	Message  *session.Message `json:"message,omitempty"` // For CLI provider intermediate messages
+	Message  *session.Message `json:"message,omitempty"`   // For CLI provider intermediate messages
 	ImageURL string           `json:"image_url,omitempty"` // URL of an image produced by a tool result
+	Usage    *UsageInfo       `json:"usage,omitempty"`     // Token usage with cache stats
 }
 
 // ToolCall represents a tool invocation from the AI
@@ -51,6 +62,7 @@ type ChatRequest struct {
 	MaxTokens      int               `json:"max_tokens,omitempty"`
 	Temperature    float64           `json:"temperature,omitempty"`
 	System         string            `json:"system,omitempty"`
+	StaticSystem   string            `json:"static_system,omitempty"`  // Static (cacheable) portion of system prompt
 	Model          string            `json:"model,omitempty"`           // Model override (e.g., "haiku", "sonnet", "opus")
 	EnableThinking bool              `json:"enable_thinking,omitempty"` // Enable extended thinking mode for reasoning
 

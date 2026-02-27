@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/neboloop/nebo/internal/agent/ai"
 	"github.com/neboloop/nebo/internal/agent/config"
 	"github.com/neboloop/nebo/internal/agent/orchestrator"
@@ -93,6 +94,18 @@ type MessageInfo struct {
 //   - message: Send messages to connected channels (provided by installed apps)
 //   - session: Query and manage conversation sessions
 //   - comm: Inter-agent communication via comm lane plugins
+// AskWidget defines an interactive widget for inline user prompts.
+type AskWidget struct {
+	Type    string   `json:"type"`              // "buttons", "select", "text_input", "confirm", "radio", "checkbox"
+	Label   string   `json:"label,omitempty"`
+	Options []string `json:"options,omitempty"` // for buttons/select
+	Default string   `json:"default,omitempty"` // pre-filled value
+}
+
+// AskCallback blocks until the user responds to an inline prompt.
+// Mirrors ApprovalCallback (policy.go:30-32).
+type AskCallback func(ctx context.Context, requestID string, prompt string, widgets []AskWidget) (string, error)
+
 // WorkTask is an in-memory work tracking item created by the agent to track progress
 // on its current objective. Ephemeral — does not survive restart.
 type WorkTask struct {
@@ -123,6 +136,9 @@ type AgentDomainTool struct {
 	// Session management
 	sessions      *session.Manager
 	currentUserID string
+
+	// Interactive user prompts
+	askCallback AskCallback
 
 	// Work task tracking (in-memory, session-scoped)
 	workTasks sync.Map // sessionKey → []WorkTask
@@ -167,11 +183,12 @@ type AgentDomainInput struct {
 	Metadata  map[string]string `json:"metadata,omitempty"`  // Additional metadata
 
 	// Message fields
-	Channel  string `json:"channel,omitempty"`   // Channel type (from installed apps)
-	To       string `json:"to,omitempty"`        // Destination chat/channel ID
-	Text     string `json:"text,omitempty"`      // Message text
-	ReplyTo  string `json:"reply_to,omitempty"`  // Message ID to reply to
-	ThreadID string `json:"thread_id,omitempty"` // Thread ID for threaded messages
+	Channel  string      `json:"channel,omitempty"`   // Channel type (from installed apps)
+	To       string      `json:"to,omitempty"`        // Destination chat/channel ID
+	Text     string      `json:"text,omitempty"`      // Message text
+	ReplyTo  string      `json:"reply_to,omitempty"`  // Message ID to reply to
+	ThreadID string      `json:"thread_id,omitempty"` // Thread ID for threaded messages
+	Widgets  []AskWidget `json:"widgets,omitempty"`   // Interactive widgets for ask action
 
 	// Session fields
 	SessionKey string `json:"session_key,omitempty"` // Session key
@@ -256,6 +273,11 @@ func (t *AgentDomainTool) SetChannelSender(sender ChannelSender) {
 	t.channelSender = sender
 }
 
+// SetAskCallback sets the callback for interactive user prompts.
+func (t *AgentDomainTool) SetAskCallback(fn AskCallback) {
+	t.askCallback = fn
+}
+
 // SetAgentCallback sets the callback for agent task execution in cron.
 // Only works when the underlying scheduler is the built-in CronTool (via CronScheduler or SchedulerManager).
 func (t *AgentDomainTool) SetAgentCallback(cb AgentTaskCallback) {
@@ -321,7 +343,7 @@ func (t *AgentDomainTool) ActionsFor(resource string) []string {
 	case "memory":
 		return []string{"store", "recall", "search", "list", "delete", "clear"}
 	case "message":
-		return []string{"send", "list"}
+		return []string{"send", "list", "ask"}
 	case "session":
 		return []string{"list", "history", "status", "clear"}
 	case "comm":
@@ -337,7 +359,7 @@ var agentResources = map[string]ResourceConfig{
 	"task":    {Name: "task", Actions: []string{"spawn", "status", "cancel", "list", "create", "update", "delete"}, Description: "Sub-agent management + work tracking"},
 	"reminder": {Name: "reminder", Actions: []string{"create", "list", "delete", "pause", "resume", "run", "history"}, Description: "Scheduled reminders and recurring tasks"},
 	"memory":  {Name: "memory", Actions: []string{"store", "recall", "search", "list", "delete", "clear"}, Description: "Persistent storage"},
-	"message": {Name: "message", Actions: []string{"send", "list"}, Description: "Channel messaging"},
+	"message": {Name: "message", Actions: []string{"send", "list", "ask"}, Description: "Channel messaging and interactive user prompts"},
 	"session": {Name: "session", Actions: []string{"list", "history", "status", "clear"}, Description: "Conversation sessions"},
 	"comm":    {Name: "comm", Actions: []string{"send", "subscribe", "unsubscribe", "list_topics", "status", "send_loop", "list_channels", "list_loops", "get_loop", "loop_members", "channel_members", "channel_messages"}, Description: "Inter-agent communication, loop channels, and loop queries"},
 	"profile": {Name: "profile", Actions: []string{"get", "update", "open_billing"}, Description: "Read and update agent identity, or open NeboLoop billing page"},
@@ -353,7 +375,7 @@ Resources:
 - task: Sub-agents (spawn, status, cancel) + work tracking (create, update, delete, list)
 - reminder: Schedule reminders and recurring tasks (aliases: routine, schedule, job, cron, event, remind)
 - memory: Three-tier persistent storage (tacit/daily/entity layers)
-- message: Send messages to connected channels (provided by installed apps)
+- message: Send messages to connected channels, or ask the user interactive questions inline (ask action)
 - session: Manage conversation sessions
 - comm: Inter-agent communication, loop channels, and loop queries
   - Direct messaging: send (to agent by ID, requires topic), subscribe, unsubscribe, list_topics, status
@@ -371,6 +393,8 @@ Resources:
 			`agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit")`,
 			`agent(resource: memory, action: search, query: "preferences", layer: "tacit")`,
 			`agent(resource: message, action: send, channel: "voice", to: "default", text: "Task complete!")`,
+			`agent(resource: message, action: ask, prompt: "Which framework?", widgets: [{type: "buttons", options: ["React", "Svelte", "Vue"]}])`,
+			`agent(resource: message, action: ask, prompt: "Pick any that sound useful:", widgets: [{type: "checkbox", options: ["Research Assistant", "Email Drafter", "Calendar Manager"]}])`,
 			`agent(resource: session, action: list)`,
 			`agent(resource: comm, action: send, to: "dev-bot", topic: "project-alpha", text: "Review this PR")`,
 			`agent(resource: comm, action: subscribe, topic: "announcements")`,
@@ -431,6 +455,7 @@ func (t *AgentDomainTool) Schema() json.RawMessage {
 			{Name: "text", Type: "string", Description: "Message text to send"},
 			{Name: "reply_to", Type: "string", Description: "Message ID to reply to"},
 			{Name: "thread_id", Type: "string", Description: "Thread ID for threaded messages"},
+			{Name: "widgets", Type: "array", Description: "Interactive widgets for ask action: [{type, label, options, default}]. Types: buttons, select, text_input, confirm, radio, checkbox"},
 
 			// Session fields
 			{Name: "session_key", Type: "string", Description: "Session key identifier"},
@@ -500,6 +525,8 @@ var actionToResource = map[string]string{
 	"loop_members":     "comm",
 	"channel_members":  "comm",
 	"channel_messages": "comm",
+	// message-only
+	"ask": "message",
 	// profile-only
 	"update": "profile",
 	"get":    "profile",
@@ -1090,6 +1117,11 @@ func (t *AgentDomainTool) handleMemory(ctx context.Context, in AgentDomainInput)
 // =============================================================================
 
 func (t *AgentDomainTool) handleMessage(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	// Ask doesn't need channelSender — it goes through the web UI
+	if in.Action == "ask" {
+		return t.messageAsk(ctx, in)
+	}
+
 	if t.channelSender == nil {
 		return &ToolResult{
 			Content: "Error: No channels configured. Install channel apps first.",
@@ -1154,6 +1186,49 @@ func (t *AgentDomainTool) messageSend(ctx context.Context, in AgentDomainInput) 
 
 	return &ToolResult{
 		Content: fmt.Sprintf("Message sent to %s:%s", in.Channel, in.To),
+	}, nil
+}
+
+func (t *AgentDomainTool) messageAsk(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
+	if t.askCallback == nil {
+		return &ToolResult{
+			Content: "Error: Interactive prompts require the web UI",
+			IsError: true,
+		}, nil
+	}
+
+	// Prompt can come from the prompt or text field
+	prompt := in.Prompt
+	if prompt == "" {
+		prompt = in.Text
+	}
+	if prompt == "" {
+		return &ToolResult{
+			Content: "Error: 'prompt' (or 'text') is required for ask action",
+			IsError: true,
+		}, nil
+	}
+
+	// Default to confirm (yes/no) when no widgets specified
+	widgets := in.Widgets
+	if len(widgets) == 0 {
+		widgets = []AskWidget{{
+			Type:    "confirm",
+			Options: []string{"Yes", "No"},
+		}}
+	}
+
+	requestID := uuid.New().String()
+	response, err := t.askCallback(ctx, requestID, prompt, widgets)
+	if err != nil {
+		return &ToolResult{
+			Content: fmt.Sprintf("Error waiting for user response: %v", err),
+			IsError: true,
+		}, nil
+	}
+
+	return &ToolResult{
+		Content: response,
 	}, nil
 }
 
@@ -1930,11 +2005,11 @@ func (t *AgentDomainTool) StoreEntry(layer, namespace, key, value string, tags [
 }
 
 // StoreEntryForUser stores a memory entry for a specific user
-func (t *AgentDomainTool) StoreEntryForUser(layer, namespace, key, value string, tags []string, userID string) error {
+func (t *AgentDomainTool) StoreEntryForUser(layer, namespace, key, value string, tags []string, userID string, confidence float64) error {
 	if t.memory == nil {
 		return fmt.Errorf("memory storage not configured")
 	}
-	return t.memory.StoreEntryForUser(layer, namespace, key, value, tags, userID)
+	return t.memory.StoreEntryForUser(layer, namespace, key, value, tags, userID, confidence)
 }
 
 // GetMemoryTool returns the underlying memory tool for direct access

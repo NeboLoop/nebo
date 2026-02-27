@@ -22,10 +22,11 @@ type ExtractedFacts struct {
 
 // Fact represents a single extracted fact
 type Fact struct {
-	Key      string   `json:"key"`      // Unique key for storage
-	Value    string   `json:"value"`    // The fact content
-	Category string   `json:"category"` // Category (preference, entity, decision)
-	Tags     []string `json:"tags"`     // Additional tags
+	Key        string   `json:"key"`      // Unique key for storage
+	Value      string   `json:"value"`    // The fact content
+	Category   string   `json:"category"` // Category (preference, entity, decision)
+	Tags       []string `json:"tags"`     // Additional tags
+	Confidence float64  `json:"-"`        // Set via UnmarshalJSON, not from LLM directly
 }
 
 // UnmarshalJSON handles both string and non-string values for flexible LLM parsing
@@ -36,6 +37,7 @@ func (f *Fact) UnmarshalJSON(data []byte) error {
 		Value    json.RawMessage `json:"value"`
 		Category string          `json:"category"`
 		Tags     []string        `json:"tags"`
+		Explicit *bool           `json:"explicit,omitempty"` // true = user stated directly, false = inferred
 	}
 
 	var alias FactAlias
@@ -46,6 +48,15 @@ func (f *Fact) UnmarshalJSON(data []byte) error {
 	f.Key = alias.Key
 	f.Category = alias.Category
 	f.Tags = alias.Tags
+
+	// Map explicit flag to confidence: direct statement = 0.9, inferred = 0.6
+	if alias.Explicit != nil && *alias.Explicit {
+		f.Confidence = 0.9
+	} else if alias.Explicit != nil {
+		f.Confidence = 0.6
+	} else {
+		f.Confidence = 0.75 // No explicit flag provided (backward compat)
+	}
 
 	// Try to unmarshal Value as string first
 	var strVal string
@@ -74,6 +85,7 @@ Each fact should have:
 - "value": The actual information to remember
 - "category": One of "preference", "entity", "decision", "style", "artifact"
 - "tags": Relevant tags for searching
+- "explicit": boolean — true if the user directly stated this fact, false if inferred from context/behavior
 
 Skip:
 - Greetings and casual chat
@@ -251,52 +263,57 @@ func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 
 	for _, pref := range f.Preferences {
 		entries = append(entries, MemoryEntry{
-			Layer:     "tacit",
-			Namespace: "preferences",
-			Key:       NormalizeMemoryKey(pref.Key),
-			Value:     pref.Value,
-			Tags:      append(pref.Tags, "preference"),
+			Layer:      "tacit",
+			Namespace:  "preferences",
+			Key:        NormalizeMemoryKey(pref.Key),
+			Value:      pref.Value,
+			Tags:       append(pref.Tags, "preference"),
+			Confidence: pref.Confidence,
 		})
 	}
 
 	for _, entity := range f.Entities {
 		entries = append(entries, MemoryEntry{
-			Layer:     "entity",
-			Namespace: "default",
-			Key:       NormalizeMemoryKey(entity.Key),
-			Value:     entity.Value,
-			Tags:      append(entity.Tags, "entity"),
+			Layer:      "entity",
+			Namespace:  "default",
+			Key:        NormalizeMemoryKey(entity.Key),
+			Value:      entity.Value,
+			Tags:       append(entity.Tags, "entity"),
+			Confidence: entity.Confidence,
 		})
 	}
 
 	for _, decision := range f.Decisions {
 		entries = append(entries, MemoryEntry{
-			Layer:     "daily",
-			Namespace: today,
-			Key:       NormalizeMemoryKey(decision.Key),
-			Value:     decision.Value,
-			Tags:      append(decision.Tags, "decision"),
+			Layer:      "daily",
+			Namespace:  today,
+			Key:        NormalizeMemoryKey(decision.Key),
+			Value:      decision.Value,
+			Tags:       append(decision.Tags, "decision"),
+			Confidence: decision.Confidence,
 		})
 	}
 
 	for _, style := range f.Styles {
 		entries = append(entries, MemoryEntry{
-			Layer:     "tacit",
-			Namespace: "personality",
-			Key:       NormalizeMemoryKey(style.Key),
-			Value:     style.Value,
-			Tags:      append(style.Tags, "style"),
-			IsStyle:   true,
+			Layer:      "tacit",
+			Namespace:  "personality",
+			Key:        NormalizeMemoryKey(style.Key),
+			Value:      style.Value,
+			Tags:       append(style.Tags, "style"),
+			IsStyle:    true,
+			Confidence: style.Confidence,
 		})
 	}
 
 	for _, artifact := range f.Artifacts {
 		entries = append(entries, MemoryEntry{
-			Layer:     "tacit",
-			Namespace: "artifacts",
-			Key:       NormalizeMemoryKey(artifact.Key),
-			Value:     artifact.Value,
-			Tags:      append(artifact.Tags, "artifact"),
+			Layer:      "tacit",
+			Namespace:  "artifacts",
+			Key:        NormalizeMemoryKey(artifact.Key),
+			Value:      artifact.Value,
+			Tags:       append(artifact.Tags, "artifact"),
+			Confidence: artifact.Confidence,
 		})
 	}
 
@@ -305,12 +322,13 @@ func (f *ExtractedFacts) FormatForStorage() []MemoryEntry {
 
 // MemoryEntry represents an entry ready for storage
 type MemoryEntry struct {
-	Layer     string
-	Namespace string
-	Key       string
-	Value     string
-	Tags      []string
-	IsStyle   bool // Style observations use reinforcement tracking instead of overwrite
+	Layer      string
+	Namespace  string
+	Key        string
+	Value      string
+	Tags       []string
+	IsStyle    bool    // Style observations use reinforcement tracking instead of overwrite
+	Confidence float64 // Extraction confidence (0.0-1.0)
 }
 
 // IsEmpty returns true if no facts were extracted

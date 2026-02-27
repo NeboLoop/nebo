@@ -70,6 +70,8 @@ type agentState struct {
 	connMu          sync.Mutex
 	pendingApproval map[string]*pendingApprovalInfo
 	approvalMu      sync.RWMutex
+	pendingAsk      map[string]chan string
+	pendingAskMu    sync.RWMutex
 	quiet           bool // Suppress console output for clean CLI
 	policy          *tools.Policy
 
@@ -180,6 +182,53 @@ func (s *agentState) handleApprovalResponse(requestID string, approved, always b
 	if ok && info != nil {
 		select {
 		case info.RespCh <- approvalResponse{Approved: approved, Always: always}:
+		default:
+		}
+	}
+}
+
+// requestAsk sends an interactive prompt to the UI and blocks until the user responds
+func (s *agentState) requestAsk(ctx context.Context, requestID, prompt string, widgets []tools.AskWidget) (string, error) {
+	respCh := make(chan string, 1)
+	s.pendingAskMu.Lock()
+	s.pendingAsk[requestID] = respCh
+	s.pendingAskMu.Unlock()
+
+	defer func() {
+		s.pendingAskMu.Lock()
+		delete(s.pendingAsk, requestID)
+		s.pendingAskMu.Unlock()
+	}()
+
+	widgetsJSON, _ := json.Marshal(widgets)
+	frame := map[string]any{
+		"type": "ask_request",
+		"id":   requestID,
+		"payload": map[string]any{
+			"prompt":  prompt,
+			"widgets": json.RawMessage(widgetsJSON),
+		},
+	}
+	if err := s.sendFrame(frame); err != nil {
+		return "", err
+	}
+
+	select {
+	case value := <-respCh:
+		return value, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// handleAskResponse processes an ask response from the server
+func (s *agentState) handleAskResponse(requestID, value string) {
+	s.pendingAskMu.RLock()
+	ch, ok := s.pendingAsk[requestID]
+	s.pendingAskMu.RUnlock()
+	if ok && ch != nil {
+		select {
+		case ch <- value:
 		default:
 		}
 	}
@@ -326,6 +375,25 @@ func isLoopCode(prompt string) bool {
 		return false
 	}
 	for _, c := range prompt[5:9] + prompt[10:14] + prompt[15:] {
+		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// isSkillCode checks if a prompt is a SKILL-XXXX-XXXX-XXXX install code.
+// SKILL is 5 chars (vs 4 for NEBO/LOOP), so total length is 20.
+func isSkillCode(prompt string) bool {
+	prompt = strings.TrimSpace(prompt)
+	if len(prompt) != 20 {
+		return false
+	}
+	// Pattern: SKILL-XXXX-XXXX-XXXX (uppercase alphanumeric)
+	if prompt[:6] != "SKILL-" || prompt[10] != '-' || prompt[15] != '-' {
+		return false
+	}
+	for _, c := range prompt[6:10] + prompt[11:15] + prompt[16:] {
 		if !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
 			return false
 		}
@@ -686,6 +754,102 @@ func handleLoopCode(ctx context.Context, prompt, requestID string, pluginStore *
 	return true
 }
 
+// handleSkillCode processes a SKILL-XXXX-XXXX-XXXX install code and installs the skill.
+// Returns true if the prompt was a skill code (handled), false otherwise.
+// The bot must already be connected to NeboLoop (has credentials in plugin store).
+func handleSkillCode(ctx context.Context, prompt, requestID string, pluginStore *settings.Store, state *agentState, send func(map[string]any)) bool {
+	if !isSkillCode(prompt) {
+		return false
+	}
+
+	code := strings.TrimSpace(prompt)
+	devlog.Printf("[NeboLoop] Skill install code detected: %s\n", code)
+
+	// Emit tool call event
+	send(map[string]any{
+		"type": "stream",
+		"id":   requestID,
+		"payload": map[string]any{
+			"tool":  "skill_install",
+			"input": map[string]string{"code": code},
+		},
+	})
+
+	// Get NeboLoop credentials from plugin store (bot must already be connected)
+	if pluginStore == nil {
+		errMsg := "Cannot install skill: settings not available"
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": errMsg}})
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": errMsg}})
+		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": errMsg}})
+		return true
+	}
+
+	neboloopSettings, err := pluginStore.GetSettingsByName(ctx, "neboloop")
+	if err != nil || neboloopSettings["bot_id"] == "" {
+		errMsg := "You need to connect to NeboLoop first. Log in via OAuth to get started."
+		devlog.Printf("[NeboLoop] %s\n", errMsg)
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": errMsg}})
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": errMsg}})
+		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": errMsg}})
+		return true
+	}
+
+	// Resolve API server
+	if neboloopSettings["api_server"] == "" {
+		if env := os.Getenv("NEBOLOOP_API_SERVER"); env != "" {
+			neboloopSettings["api_server"] = env
+		} else if state != nil && state.apiURL != "" {
+			neboloopSettings["api_server"] = state.apiURL
+		} else {
+			neboloopSettings["api_server"] = neboloopapi.DefaultAPIServer
+		}
+	}
+
+	// Inject JWT from auth_profiles for API authentication
+	if state != nil && state.sqlDB != nil {
+		neboloopSettings = injectNeboLoopAuth(ctx, state.sqlDB, neboloopSettings["bot_id"], neboloopSettings)
+	}
+
+	// Create NeboLoop API client
+	client, err := neboloopapi.NewClient(neboloopSettings)
+	if err != nil {
+		devlog.Printf("[NeboLoop] Failed to create client: %s\n", err)
+		userMsg := "Couldn't connect to NeboLoop. Please check your connection settings."
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": userMsg}})
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": userMsg}})
+		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": userMsg}})
+		return true
+	}
+
+	// Redeem the skill install code
+	result, err := client.RedeemSkillCode(ctx, code)
+	if err != nil {
+		devlog.Printf("[NeboLoop] Failed to install skill: %s\n", err)
+		userMsg := friendlyNeboLoopError(err)
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": userMsg}})
+		send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": userMsg}})
+		send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": userMsg}})
+		return true
+	}
+
+	// Emit success
+	skillName := ""
+	if result.Skill != nil {
+		skillName = result.Skill.Name
+	}
+	if skillName == "" {
+		skillName = result.ID
+	}
+	resultText := fmt.Sprintf("Installed skill: %s (ID: %s)", skillName, result.ID)
+	devlog.Printf("[NeboLoop] %s\n", resultText)
+	send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"tool_result": resultText}})
+
+	successMsg := fmt.Sprintf("Installed **%s**! It'll activate automatically when you need it.", skillName)
+	send(map[string]any{"type": "stream", "id": requestID, "payload": map[string]any{"chunk": successMsg}})
+	send(map[string]any{"type": "res", "id": requestID, "ok": true, "payload": map[string]any{"result": successMsg}})
+	return true
+}
+
 // isSilentToolCall returns true for tool calls that should not be shown in the UI.
 // Memory operations (store, recall, search) happen silently — the user shouldn't see
 // a wall of "agent store Completed" cards when the model learns facts.
@@ -760,6 +924,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	state := &agentState{
 		conn:            conn,
 		pendingApproval: make(map[string]*pendingApprovalInfo),
+		pendingAsk:      make(map[string]chan string),
 		quiet:           opts.Quiet,
 		lanes:           agenthub.NewLaneManager(),
 		heartbeat:       opts.Heartbeat,
@@ -822,6 +987,11 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	sessions, err = session.New(sqlDB)
 	if err != nil {
 		return fmt.Errorf("failed to initialize sessions: %w", err)
+	}
+
+	// Purge ghost messages from failed runs on startup
+	if purged, err := sessions.PurgeEmptyMessages(); err == nil && purged > 0 {
+		fmt.Printf("[agent] Purged %d empty ghost messages on startup\n", purged)
 	}
 
 	// Initialize crash logger for persistent error tracking
@@ -1651,6 +1821,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 								"payload": map[string]any{
 									"session_id": sessionKey,
 									"content":    event.Text,
+									"source":     "dm",
 								},
 							}); err != nil {
 								fmt.Printf("[sdk:dm] sendFrame chat_stream error: %v\n", err)
@@ -1669,6 +1840,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 								"tool":       event.ToolCall.Name,
 								"tool_id":    event.ToolCall.ID,
 								"input":      event.ToolCall.Input,
+								"source":     "dm",
 							},
 						})
 					}
@@ -1684,6 +1856,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 							"result":     event.Text,
 							"tool_name":  toolName,
 							"tool_id":    toolID,
+							"source":     "dm",
 						}
 						if event.ImageURL != "" {
 							dmPayload["image_url"] = event.ImageURL
@@ -1706,6 +1879,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 								"payload": map[string]any{
 									"session_id": sessionKey,
 									"content":    event.Message.Content,
+									"source":     "dm",
 								},
 							})
 						}
@@ -1718,6 +1892,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 							"payload": map[string]any{
 								"session_id": sessionKey,
 								"content":    event.Text,
+								"source":     "dm",
 							},
 						})
 					}
@@ -1754,6 +1929,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 					"method": "chat_complete",
 					"payload": map[string]any{
 						"session_id": sessionKey,
+						"source":     "dm",
 					},
 				})
 			}
@@ -1844,8 +2020,19 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	})
 
-	// Wire post-connect hook → background token refresh so Janus sees latest plan
+	// Wire post-connect hook → background token refresh so Janus sees latest plan.
+	// Cooldown prevents creating new DB profiles on every reconnect cycle.
+	var lastTokenRefresh time.Time
+	var lastTokenRefreshMu sync.Mutex
 	neboloopPlugin.OnConnected(func() {
+		lastTokenRefreshMu.Lock()
+		if time.Since(lastTokenRefresh) < 10*time.Minute {
+			lastTokenRefreshMu.Unlock()
+			return
+		}
+		lastTokenRefresh = time.Now()
+		lastTokenRefreshMu.Unlock()
+
 		if fresh := tryRefreshNeboLoopToken(ctx, sqlDB); fresh != "" {
 			r.ReloadProviders()
 			devlog.Printf("[Comm:neboloop] Post-connect token refresh, providers reloaded\n")
@@ -1940,6 +2127,10 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		agentTool.SetLoopQuerier(&loopQuerierAdapter{plugin: neboloopPlugin})
 		// Share the orchestrator from taskTool so agent(resource:task) can spawn sub-agents
 		agentTool.SetOrchestrator(taskTool.GetOrchestrator())
+		// Wire interactive ask callback: blocks until user responds in the web UI
+		agentTool.SetAskCallback(func(ctx context.Context, reqID, prompt string, widgets []tools.AskWidget) (string, error) {
+			return state.requestAsk(ctx, reqID, prompt, widgets)
+		})
 		registry.RegisterAgentDomainTool(agentTool)
 	}
 
@@ -2265,10 +2456,29 @@ func maybeIntroduceSelf(ctx context.Context, state *agentState, r *runner.Runner
 	fmt.Printf("[Agent] Introduction complete (%d chars)\n", result.Len())
 }
 
+// introductionInProgress tracks which sessions have an introduction running to prevent duplicates.
+var introductionInProgress sync.Map
+
 // handleIntroduction handles an explicit introduction request from the server
 // This is called when a user loads an empty companion chat
 func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner, sessions *session.Manager, requestID, sessionKey, userID string) {
 	fmt.Printf("[Agent] Handling introduction request: id=%s session=%s user=%s\n", requestID, sessionKey, userID)
+
+	// Deduplicate: only one introduction per session at a time
+	if _, running := introductionInProgress.LoadOrStore(sessionKey, true); running {
+		fmt.Printf("[Agent] Introduction already in progress for session %s, skipping duplicate\n", sessionKey)
+		state.sendFrame(map[string]any{
+			"type": "res",
+			"id":   requestID,
+			"ok":   true,
+			"payload": map[string]any{
+				"result":  "",
+				"skipped": true,
+			},
+		})
+		return
+	}
+	defer introductionInProgress.Delete(sessionKey)
 
 	// Get or create the user's companion session
 	sess, err := sessions.GetOrCreate(sessionKey, userID)
@@ -2283,10 +2493,24 @@ func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner
 		return
 	}
 
-	// Check if this user already has messages (skip introduction if so)
-	messages, _ := sessions.GetMessages(sess.ID, 1)
-	if len(messages) > 0 {
-		fmt.Printf("[Agent] User already has messages, skipping introduction\n")
+	// Check if this user already has a real conversation (skip introduction if so).
+	// We look for user messages with actual content — empty/ghost messages from
+	// failed runs or heartbeats don't count.
+	messages, _ := sessions.GetMessages(sess.ID, 10)
+	hasRealUserMessage := false
+	for _, m := range messages {
+		if m.Role == "user" && len(strings.TrimSpace(m.Content)) > 0 {
+			// Skip system-origin messages (heartbeats, triggers)
+			if !strings.HasPrefix(m.Content, "You are running a scheduled") &&
+				!strings.HasPrefix(m.Content, "[New user just opened") &&
+				!strings.HasPrefix(m.Content, "[User ") {
+				hasRealUserMessage = true
+				break
+			}
+		}
+	}
+	if hasRealUserMessage {
+		fmt.Printf("[Agent] User already has real messages (%d total), skipping introduction\n", len(messages))
 		state.sendFrame(map[string]any{
 			"type": "res",
 			"id":   requestID,
@@ -2318,6 +2542,8 @@ func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner
 		// No System override so BuildStaticPrompt runs and injects the skill content.
 		fmt.Printf("[Agent] New user - loading introduction skill\n")
 		req.ForceSkill = "introduction"
+		req.Prompt = "[New user just opened Nebo for the first time. Follow the Introduction skill instructions exactly — start with Part 1.]"
+		req.Origin = tools.OriginSystem
 	}
 
 	// Run the agent with appropriate introduction prompt
@@ -2477,8 +2703,10 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 		ID      string `json:"id"`
 		Method  string `json:"method"`
 		Payload struct {
-			Approved bool `json:"approved"`
-			Always   bool `json:"always"`
+			Approved  bool   `json:"approved"`
+			Always    bool   `json:"always"`
+			Value     string `json:"value"`
+			RequestID string `json:"request_id"`
 		} `json:"payload"`
 		Params struct {
 			Prompt     string `json:"prompt"`
@@ -2498,6 +2726,14 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 	switch frame.Type {
 	case "approval_response":
 		state.handleApprovalResponse(frame.ID, frame.Payload.Approved, frame.Payload.Always)
+
+	case "ask_response":
+		// The request_id comes in the payload (routed through hub/chat)
+		reqID := frame.Payload.RequestID
+		if reqID == "" {
+			reqID = frame.ID // fallback
+		}
+		state.handleAskResponse(reqID, frame.Payload.Value)
 
 	case "req":
 		switch frame.Method {
@@ -2573,6 +2809,13 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 
 			// Intercept loop invite codes before enqueueing to LLM
 			if handleLoopCode(ctx, prompt, requestID, pluginStore, state, func(f map[string]any) {
+				state.sendFrame(f)
+			}) {
+				break
+			}
+
+			// Intercept skill install codes before enqueueing to LLM
+			if handleSkillCode(ctx, prompt, requestID, pluginStore, state, func(f map[string]any) {
 				state.sendFrame(f)
 			}) {
 				break

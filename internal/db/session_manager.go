@@ -70,6 +70,22 @@ func (m *SessionManager) GetDB() *sql.DB {
 	return m.rawDB
 }
 
+// PurgeEmptyMessages removes session messages that have no content, no tool calls,
+// and no tool results. These ghost records accumulate from failed runs and confuse
+// onboarding/introduction logic.
+func (m *SessionManager) PurgeEmptyMessages() (int64, error) {
+	result, err := m.rawDB.Exec(`
+		DELETE FROM session_messages 
+		WHERE (content IS NULL OR content = '') 
+		  AND (tool_calls IS NULL OR tool_calls = '') 
+		  AND (tool_results IS NULL OR tool_results = '')
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // GetOrCreate returns an existing session or creates a new one
 // If userID is provided, session is scoped to that user; otherwise uses agent scope
 func (m *SessionManager) GetOrCreate(sessionKey, userID string) (*AgentSession, error) {
@@ -188,6 +204,12 @@ func (m *SessionManager) GetMessages(sessionID string, limit int) ([]AgentMessag
 
 // AppendMessage adds a message to a session
 func (m *SessionManager) AppendMessage(sessionID string, msg AgentMessage) error {
+	// Guard against saving truly empty messages (no content, no tool data).
+	// These create ghost records that confuse introduction/onboarding checks.
+	if msg.Content == "" && len(msg.ToolCalls) == 0 && len(msg.ToolResults) == 0 {
+		return nil // silently skip
+	}
+
 	ctx := context.Background()
 
 	var toolCalls, toolResults sql.NullString
@@ -404,6 +426,44 @@ func (m *SessionManager) DeleteSession(sessionID string) error {
 // Close is a no-op since the database connection is shared
 func (m *SessionManager) Close() error {
 	return nil
+}
+
+// GetLastSummarizedCount returns how many messages have been incorporated into the rolling summary.
+// Returns (0, nil) for sessions that predate the migration.
+func (m *SessionManager) GetLastSummarizedCount(sessionID string) (int, error) {
+	ctx := context.Background()
+	var count sql.NullInt64
+	err := m.rawDB.QueryRowContext(ctx,
+		`SELECT last_summarized_count FROM sessions WHERE id = ?`, sessionID,
+	).Scan(&count)
+	if err != nil {
+		return 0, nil // Graceful fallback for pre-migration sessions
+	}
+	if count.Valid {
+		return int(count.Int64), nil
+	}
+	return 0, nil
+}
+
+// SetLastSummarizedCount records how many messages have been incorporated into the rolling summary.
+func (m *SessionManager) SetLastSummarizedCount(sessionID string, count int) error {
+	ctx := context.Background()
+	_, err := m.rawDB.ExecContext(ctx,
+		`UPDATE sessions SET last_summarized_count = ? WHERE id = ?`,
+		count, sessionID,
+	)
+	return err
+}
+
+// UpdateSummary updates the session's summary without compacting messages.
+// Used by the sliding window to persist rolling summaries independently of compaction.
+func (m *SessionManager) UpdateSummary(sessionID, summary string) error {
+	ctx := context.Background()
+	_, err := m.rawDB.ExecContext(ctx,
+		`UPDATE sessions SET summary = ? WHERE id = ?`,
+		summary, sessionID,
+	)
+	return err
 }
 
 // sanitizeAgentMessages removes orphaned tool_results that have no matching tool_calls

@@ -10,7 +10,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/neboloop/nebo/internal/agent/afv"
 	"github.com/neboloop/nebo/internal/agenthub"
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/svc"
@@ -36,6 +35,10 @@ type ChatContext struct {
 	pendingApprovals   map[string]string
 	pendingApprovalsMu sync.RWMutex
 
+	// Pending ask requests: requestID -> agentID
+	pendingAsks   map[string]string
+	pendingAsksMu sync.RWMutex
+
 	// Client hub for broadcasting
 	clientHub *Hub
 }
@@ -49,10 +52,14 @@ type toolCallInfo struct {
 }
 
 type contentBlock struct {
-	Type          string `json:"type"`                    // "text", "tool", or "image"
-	Text          string `json:"text,omitempty"`          // accumulated text for text blocks
-	ToolCallIndex *int   `json:"toolCallIndex,omitempty"` // index into toolCalls for tool blocks
-	ImageURL      string `json:"imageURL,omitempty"`      // URL for image blocks
+	Type          string          `json:"type"`                    // "text", "tool", "image", or "ask"
+	Text          string          `json:"text,omitempty"`          // accumulated text for text blocks
+	ToolCallIndex *int            `json:"toolCallIndex,omitempty"` // index into toolCalls for tool blocks
+	ImageURL      string          `json:"imageURL,omitempty"`      // URL for image blocks
+	AskRequestID  string          `json:"askRequestId,omitempty"`  // ask request ID
+	AskPrompt     string          `json:"askPrompt,omitempty"`     // ask prompt text
+	AskWidgets    json.RawMessage `json:"askWidgets,omitempty"`    // ask widget definitions
+	AskResponse   string          `json:"askResponse,omitempty"`   // user response (filled when answered)
 }
 
 type pendingRequest struct {
@@ -77,6 +84,7 @@ func NewChatContext(svcCtx *svc.ServiceContext, clientHub *Hub) (*ChatContext, e
 		pending:          make(map[string]*pendingRequest),
 		activeSessions:   make(map[string]string),
 		pendingApprovals: make(map[string]string),
+		pendingAsks:      make(map[string]string),
 		clientHub:        clientHub,
 	}, nil
 }
@@ -88,6 +96,8 @@ func (c *ChatContext) SetHub(hub *agenthub.Hub) {
 	hub.SetResponseHandler(c.handleAgentResponse)
 	// Register to receive approval requests
 	hub.SetApprovalHandler(c.handleApprovalRequest)
+	// Register to receive ask requests (interactive user prompts)
+	hub.SetAskHandler(c.handleAskRequest)
 	// Register to receive agent events (lane updates, etc.)
 	hub.SetEventHandler(c.handleAgentEvent)
 }
@@ -132,6 +142,9 @@ func RegisterChatHandler(chatCtx *ChatContext) {
 	})
 	SetSessionResetHandler(func(c *Client, msg *Message) {
 		handleSessionReset(c, msg, chatCtx)
+	})
+	SetAskResponseHandler(func(c *Client, msg *Message) {
+		go chatCtx.handleAskResponse(msg)
 	})
 }
 
@@ -188,6 +201,83 @@ func (c *ChatContext) handleApprovalResponse(msg *Message) {
 	}
 }
 
+// handleAskRequest forwards an ask request from agent to all connected clients
+func (c *ChatContext) handleAskRequest(agentID string, requestID string, prompt string, widgets json.RawMessage) {
+	logging.Infof("[Chat] Ask request from agent %s: id=%s prompt=%q", agentID, requestID, prompt)
+
+	// Track the pending ask
+	c.pendingAsksMu.Lock()
+	c.pendingAsks[requestID] = agentID
+	c.pendingAsksMu.Unlock()
+
+	// Append an ask content block to the active pending request (if one is streaming)
+	c.pendingMu.Lock()
+	for _, req := range c.pending {
+		req.contentBlocks = append(req.contentBlocks, contentBlock{
+			Type:         "ask",
+			AskRequestID: requestID,
+			AskPrompt:    prompt,
+			AskWidgets:   widgets,
+		})
+		break // only one active request expected
+	}
+	c.pendingMu.Unlock()
+
+	// Broadcast to all connected clients
+	if c.clientHub != nil {
+		msg := &Message{
+			Type: "ask_request",
+			Data: map[string]interface{}{
+				"request_id": requestID,
+				"prompt":     prompt,
+				"widgets":    json.RawMessage(widgets),
+			},
+			Timestamp: time.Now(),
+		}
+		c.clientHub.Broadcast(msg)
+	}
+}
+
+// handleAskResponse processes an ask response from a client
+func (c *ChatContext) handleAskResponse(msg *Message) {
+	requestID, _ := msg.Data["request_id"].(string)
+	value, _ := msg.Data["value"].(string)
+
+	logging.Infof("[Chat] Ask response: id=%s value=%q", requestID, value)
+
+	// Find the agent that requested this ask
+	c.pendingAsksMu.Lock()
+	agentID, ok := c.pendingAsks[requestID]
+	if ok {
+		delete(c.pendingAsks, requestID)
+	}
+	c.pendingAsksMu.Unlock()
+
+	if !ok {
+		logging.Infof("[Chat] No pending ask for id=%s", requestID)
+		return
+	}
+
+	// Update the ask content block with the response
+	c.pendingMu.Lock()
+	for _, req := range c.pending {
+		for i := range req.contentBlocks {
+			if req.contentBlocks[i].AskRequestID == requestID {
+				req.contentBlocks[i].AskResponse = value
+				break
+			}
+		}
+	}
+	c.pendingMu.Unlock()
+
+	// Send response back to agent via hub
+	if c.hub != nil {
+		if err := c.hub.SendAskResponse(agentID, requestID, value); err != nil {
+			logging.Errorf("[Chat] Failed to send ask response: %v", err)
+		}
+	}
+}
+
 // handleAgentResponse processes responses and stream chunks from agents
 func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame) {
 	logging.Infof("[Chat] handleAgentResponse: type=%s id=%s payload=%+v", frame.Type, frame.ID, frame.Payload)
@@ -213,27 +303,19 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 
 		// Handle text chunks
 		if chunk, ok := payload["chunk"].(string); ok {
-			// Accumulate raw content (may contain partial fence markers split across chunks)
+			// Accumulate content
 			req.streamedContent += chunk
 
-			// Strip complete fence markers from full accumulated content
-			clean := afv.StripFenceMarkers(req.streamedContent)
-
-			// Hold back last 20 chars — a fence marker ($$FENCE_X_XXXXX$$) is 18 chars,
-			// so partial markers split across chunks can't leak to the UI.
-			// Remaining chars flush on stream completion.
-			safeLen := len(clean) - 20
-			if safeLen < 0 {
-				safeLen = 0
-			}
+			// Stream all accumulated content that hasn't been sent yet.
 			// Back up to a valid UTF-8 rune boundary so we don't split multi-byte chars (emojis, CJK, etc.)
-			for safeLen > req.cleanSentLen && safeLen < len(clean) && !utf8.RuneStart(clean[safeLen]) {
+			safeLen := len(req.streamedContent)
+			for safeLen > req.cleanSentLen && safeLen < len(req.streamedContent) && !utf8.RuneStart(req.streamedContent[safeLen]) {
 				safeLen--
 			}
 
 			delta := ""
 			if safeLen > req.cleanSentLen {
-				delta = clean[req.cleanSentLen:safeLen]
+				delta = req.streamedContent[req.cleanSentLen:safeLen]
 				req.cleanSentLen = safeLen
 			}
 
@@ -258,18 +340,17 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 			input := extractStringOrJSON(payload["input"])
 			toolID, _ := payload["tool_id"].(string)
 			fmt.Printf("[Chat] Tool start: %s (id=%s) input_len=%d\n", tool, toolID, len(input))
-			// Flush held-back text buffer before inserting tool card so text isn't split mid-word
+			// Flush buffered text before inserting tool card so text isn't split mid-word
 			c.pendingMu.Lock()
 			if req, ok := c.pending[frame.ID]; ok {
-				clean := afv.StripFenceMarkers(req.streamedContent)
-				if len(clean) > req.cleanSentLen {
-					flush := clean[req.cleanSentLen:]
+				if len(req.streamedContent) > req.cleanSentLen {
+					flush := req.streamedContent[req.cleanSentLen:]
 					if len(req.contentBlocks) == 0 || req.contentBlocks[len(req.contentBlocks)-1].Type != "text" {
 						req.contentBlocks = append(req.contentBlocks, contentBlock{Type: "text", Text: flush})
 					} else {
 						req.contentBlocks[len(req.contentBlocks)-1].Text += flush
 					}
-					req.cleanSentLen = len(clean)
+					req.cleanSentLen = len(req.streamedContent)
 					if req.client != nil {
 						sendChatStream(req.client, req.sessionID, flush)
 					}
@@ -382,11 +463,9 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 
 	logging.Infof("[Chat] Received final response for request %s from agent %s", frame.ID, agentID)
 
-	// Flush remaining buffered content and clean fence markers for persistence.
-	// During streaming, we hold back 20 chars to catch partial markers split across chunks.
-	clean := afv.StripFenceMarkers(req.streamedContent)
-	if len(clean) > req.cleanSentLen {
-		remaining := clean[req.cleanSentLen:]
+	// Flush remaining buffered content for persistence.
+	if len(req.streamedContent) > req.cleanSentLen {
+		remaining := req.streamedContent[req.cleanSentLen:]
 		if len(req.contentBlocks) == 0 || req.contentBlocks[len(req.contentBlocks)-1].Type != "text" {
 			req.contentBlocks = append(req.contentBlocks, contentBlock{Type: "text", Text: remaining})
 		} else {
@@ -396,7 +475,6 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 			sendChatStream(req.client, req.sessionID, remaining)
 		}
 	}
-	req.streamedContent = clean
 
 	if !frame.OK {
 		if req.client != nil {

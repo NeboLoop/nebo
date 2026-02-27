@@ -43,6 +43,9 @@ type ResponseHandler func(agentID string, frame *Frame)
 // ApprovalRequestHandler is called when an agent requests approval
 type ApprovalRequestHandler func(agentID string, requestID string, toolName string, input json.RawMessage)
 
+// AskRequestHandler is called when an agent sends an interactive prompt
+type AskRequestHandler func(agentID string, requestID string, prompt string, widgets json.RawMessage)
+
 // Hub manages agent connections (multi-agent paradigm)
 type Hub struct {
 	// Multi-agent: map of agent name -> connection
@@ -62,6 +65,10 @@ type Hub struct {
 	// Approval request handler
 	approvalHandler   ApprovalRequestHandler
 	approvalHandlerMu sync.RWMutex
+
+	// Ask request handler (interactive user prompts)
+	askHandler   AskRequestHandler
+	askHandlerMu sync.RWMutex
 
 	// Event handler for agent events (lane updates, etc.)
 	eventHandler   func(agentID string, frame *Frame)
@@ -374,6 +381,13 @@ func (h *Hub) SetApprovalHandler(handler ApprovalRequestHandler) {
 	h.approvalHandler = handler
 }
 
+// SetAskHandler sets the handler for ask requests (interactive user prompts)
+func (h *Hub) SetAskHandler(handler AskRequestHandler) {
+	h.askHandlerMu.Lock()
+	defer h.askHandlerMu.Unlock()
+	h.askHandler = handler
+}
+
 // SetEventHandler sets the handler for agent events (lane updates, etc.)
 func (h *Hub) SetEventHandler(handler func(agentID string, frame *Frame)) {
 	h.eventHandlerMu.Lock()
@@ -392,6 +406,16 @@ func (h *Hub) SendApprovalResponseWithAlways(agentID, requestID string, approved
 		Type:    "approval_response",
 		ID:      requestID,
 		Payload: map[string]any{"approved": approved, "always": always},
+	}
+	return h.Send(frame)
+}
+
+// SendAskResponse sends an ask response back to the agent
+func (h *Hub) SendAskResponse(agentID, requestID, value string) error {
+	frame := &Frame{
+		Type:    "ask_response",
+		ID:      requestID,
+		Payload: map[string]any{"request_id": requestID, "value": value},
 	}
 	return h.Send(frame)
 }
@@ -569,6 +593,22 @@ func (h *Hub) handleFrame(agent *AgentConnection, frame *Frame) {
 					inputRaw, _ = json.Marshal(input)
 				}
 				handler(agent.ID, frame.ID, toolName, inputRaw)
+			}
+		}
+	case "ask_request":
+		// Interactive prompt from agent — forward to UI
+		h.askHandlerMu.RLock()
+		handler := h.askHandler
+		h.askHandlerMu.RUnlock()
+
+		if handler != nil {
+			if payload, ok := frame.Payload.(map[string]any); ok {
+				prompt, _ := payload["prompt"].(string)
+				var widgetsRaw json.RawMessage
+				if w, ok := payload["widgets"]; ok {
+					widgetsRaw, _ = json.Marshal(w)
+				}
+				handler(agent.ID, frame.ID, prompt, widgetsRaw)
 			}
 		}
 	case "event":

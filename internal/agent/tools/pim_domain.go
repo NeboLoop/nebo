@@ -15,7 +15,7 @@ type PIMDomainTool struct {
 
 // NewPIMDomainTool creates a PIM domain tool with the given sub-tools.
 // Pass nil for resources not available on this platform.
-func NewPIMDomainTool(mail, contacts, calendar, reminders Tool) *PIMDomainTool {
+func NewPIMDomainTool(mail, contacts, calendar, reminders, messages Tool) *PIMDomainTool {
 	t := &PIMDomainTool{
 		subTools: make(map[string]Tool),
 	}
@@ -30,6 +30,9 @@ func NewPIMDomainTool(mail, contacts, calendar, reminders Tool) *PIMDomainTool {
 	}
 	if reminders != nil {
 		t.subTools["reminders"] = reminders
+	}
+	if messages != nil {
+		t.subTools["messages"] = messages
 	}
 	return t
 }
@@ -56,6 +59,8 @@ func (t *PIMDomainTool) ActionsFor(resource string) []string {
 		return []string{"calendars", "today", "upcoming", "create", "list"}
 	case "reminders":
 		return []string{"lists", "list", "create", "complete", "delete"}
+	case "messages":
+		return []string{"send", "conversations", "read", "search"}
 	default:
 		return nil
 	}
@@ -80,10 +85,10 @@ func (t *PIMDomainTool) schemaConfig() DomainSchemaConfig {
 
 	return DomainSchemaConfig{
 		Domain:      "pim",
-		Description: "Personal information management: mail, contacts, calendar, reminders.",
+		Description: "Personal information management: mail, contacts, calendar, reminders, messages/iMessage.",
 		Resources:   resources,
 		Fields: []FieldConfig{
-			{Name: "to", Type: "array", Description: "Recipients (for mail send)", Items: "string"},
+			{Name: "to", Type: "array", Description: "Recipients (for mail send) or single-element array (for messages send)", Items: "string"},
 			{Name: "cc", Type: "array", Description: "CC recipients (for mail send)", Items: "string"},
 			{Name: "subject", Type: "string", Description: "Email subject (for mail send)"},
 			{Name: "body", Type: "string", Description: "Email body (for mail send)"},
@@ -105,6 +110,7 @@ func (t *PIMDomainTool) schemaConfig() DomainSchemaConfig {
 			{Name: "due_date", Type: "string", Description: "Due date for reminder"},
 			{Name: "priority", Type: "integer", Description: "Priority (0=none, 1=high, 5=medium, 9=low)"},
 			{Name: "days", Type: "integer", Description: "Number of days to look ahead"},
+			{Name: "chat_id", Type: "string", Description: "Chat identifier for messages read (phone number, email, or chat ID)"},
 		},
 		Examples: []string{
 			`pim(resource: "mail", action: "unread")`,
@@ -112,6 +118,9 @@ func (t *PIMDomainTool) schemaConfig() DomainSchemaConfig {
 			`pim(resource: "contacts", action: "search", query: "Alice")`,
 			`pim(resource: "calendar", action: "today")`,
 			`pim(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal")`,
+			`pim(resource: "messages", action: "conversations")`,
+			`pim(resource: "messages", action: "send", to: "+15551234567", body: "On my way!")`,
+			`pim(resource: "messages", action: "read", chat_id: "+15551234567")`,
 		},
 	}
 }
@@ -127,6 +136,8 @@ func (t *PIMDomainTool) inferResource(action string) string {
 		return "calendar"
 	case "lists", "complete":
 		return "reminders"
+	case "conversations":
+		return "messages"
 	default:
 		return "" // ambiguous — require explicit resource
 	}
