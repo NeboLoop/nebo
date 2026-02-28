@@ -76,7 +76,8 @@ type LaneState struct {
 	Queue         []*laneEntry
 	active        []*laneEntry
 	MaxConcurrent int
-	draining      bool
+	notify        chan struct{} // buffered(1) — wakeup signal for pump goroutine
+	stopCh        chan struct{} // close to stop pump goroutine
 	mu            sync.Mutex
 }
 
@@ -130,8 +131,11 @@ func (m *LaneManager) getLaneState(lane string) *LaneState {
 		Lane:          lane,
 		Queue:         make([]*laneEntry, 0),
 		MaxConcurrent: maxConcurrent,
+		notify:        make(chan struct{}, 1),
+		stopCh:        make(chan struct{}),
 	}
 	m.lanes[lane] = state
+	go state.run(m)
 	return state
 }
 
@@ -152,7 +156,10 @@ func (m *LaneManager) SetConcurrency(lane string, maxConcurrent int) {
 	}
 	state.MaxConcurrent = maxConcurrent
 	state.mu.Unlock()
-	m.drain(lane)
+	select {
+	case state.notify <- struct{}{}:
+	default:
+	}
 }
 
 // Enqueue adds a task to a lane and returns when it completes
@@ -189,11 +196,15 @@ func (m *LaneManager) Enqueue(ctx context.Context, lane string, task func(ctx co
 	state.mu.Lock()
 	state.Queue = append(state.Queue, entry)
 	queueSize := len(state.Queue) + len(state.active)
+	info := entryToInfo(entry)
 	state.mu.Unlock()
 
 	fmt.Printf("[LaneManager] Enqueued task in lane=%s queueSize=%d\n", lane, queueSize)
-	m.emit(LaneEvent{Type: "task_enqueued", Lane: lane, Task: entryToInfo(entry)})
-	m.drain(lane)
+	m.emit(LaneEvent{Type: "task_enqueued", Lane: lane, Task: info})
+	select {
+	case state.notify <- struct{}{}:
+	default:
+	}
 
 	select {
 	case err := <-entry.resolve:
@@ -206,68 +217,107 @@ func (m *LaneManager) Enqueue(ctx context.Context, lane string, task func(ctx co
 
 // EnqueueAsync adds a task to a lane without waiting for completion
 func (m *LaneManager) EnqueueAsync(ctx context.Context, lane string, task func(ctx context.Context) error, opts ...EnqueueOption) {
-	go func() {
-		_ = m.Enqueue(ctx, lane, task, opts...)
-	}()
-}
+	if lane == "" {
+		lane = LaneMain
+	}
 
-// drain processes tasks in a lane
-func (m *LaneManager) drain(lane string) {
+	cfg := &enqueueConfig{
+		warnAfterMs: 2000,
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
 	state := m.getLaneState(lane)
 
-	state.mu.Lock()
-	if state.draining {
-		state.mu.Unlock()
-		return
+	taskCtx, cancel := context.WithCancel(WithLane(ctx, lane))
+	entry := &laneEntry{
+		task: &LaneTask{
+			ID:          fmt.Sprintf("%s-%d", lane, time.Now().UnixNano()),
+			Lane:        lane,
+			Description: cfg.description,
+			Task:        task,
+			EnqueuedAt:  time.Now(),
+			OnWait:      cfg.onWait,
+			WarnAfterMs: cfg.warnAfterMs,
+		},
+		resolve: make(chan error, 1),
+		ctx:     taskCtx,
+		cancel:  cancel,
 	}
-	state.draining = true
+
+	state.mu.Lock()
+	state.Queue = append(state.Queue, entry)
+	queueSize := len(state.Queue) + len(state.active)
+	info := entryToInfo(entry)
 	state.mu.Unlock()
 
-	m.pump(state)
+	fmt.Printf("[LaneManager] EnqueueAsync task in lane=%s queueSize=%d\n", lane, queueSize)
+	m.emit(LaneEvent{Type: "task_enqueued", Lane: lane, Task: info})
+	select {
+	case state.notify <- struct{}{}:
+	default:
+	}
 }
 
-func (m *LaneManager) pump(state *LaneState) {
+// run is the pump goroutine for a lane. It waits for wakeup signals
+// on the notify channel and processes available tasks.
+func (s *LaneState) run(mgr *LaneManager) {
 	for {
-		state.mu.Lock()
+		select {
+		case <-s.notify:
+			s.processAvailable(mgr)
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+// processAvailable dequeues and starts all runnable tasks (up to capacity).
+func (s *LaneState) processAvailable(mgr *LaneManager) {
+	for {
+		s.mu.Lock()
 		// MaxConcurrent of 0 means unlimited
-		atCapacity := state.MaxConcurrent > 0 && len(state.active) >= state.MaxConcurrent
-		if atCapacity || len(state.Queue) == 0 {
-			state.draining = false
-			state.mu.Unlock()
+		atCapacity := s.MaxConcurrent > 0 && len(s.active) >= s.MaxConcurrent
+		if atCapacity || len(s.Queue) == 0 {
+			s.mu.Unlock()
 			return
 		}
 
-		entry := state.Queue[0]
-		state.Queue = state.Queue[1:]
+		entry := s.Queue[0]
+		s.Queue = s.Queue[1:]
 		waitedMs := time.Since(entry.task.EnqueuedAt).Milliseconds()
 
 		if waitedMs >= entry.task.WarnAfterMs && entry.task.OnWait != nil {
-			entry.task.OnWait(waitedMs, len(state.Queue))
+			entry.task.OnWait(waitedMs, len(s.Queue))
 			fmt.Printf("[LaneManager] Lane wait exceeded: lane=%s waitedMs=%d queueAhead=%d\n",
-				state.Lane, waitedMs, len(state.Queue))
+				s.Lane, waitedMs, len(s.Queue))
 		}
 
-		state.active = append(state.active, entry)
-		state.mu.Unlock()
+		s.active = append(s.active, entry)
+		entry.task.StartedAt = time.Now()
+		startedInfo := entryToInfo(entry)
+		activeCount := len(s.active)
+		queuedCount := len(s.Queue)
+		s.mu.Unlock()
 
 		fmt.Printf("[LaneManager] Dequeued task in lane=%s waitedMs=%d active=%d queued=%d\n",
-			state.Lane, waitedMs, len(state.active), len(state.Queue))
+			s.Lane, waitedMs, activeCount, queuedCount)
 
-		go func(e *laneEntry) {
-			startTime := time.Now()
-			e.task.StartedAt = startTime
-			m.emit(LaneEvent{Type: "task_started", Lane: state.Lane, Task: entryToInfo(e)})
+		go func(e *laneEntry, startInfo LaneTaskInfo) {
+			startTime := e.task.StartedAt
+			mgr.emit(LaneEvent{Type: "task_started", Lane: s.Lane, Task: startInfo})
 
 			// Watchdog: force-cancel tasks that exceed max duration.
 			// Safety net — if all other cancellation mechanisms fail,
 			// the task is killed after this timeout and the lane resumes.
 			maxDuration := 15 * time.Minute
-			if state.Lane == LaneHeartbeat {
+			if s.Lane == LaneHeartbeat {
 				maxDuration = 2 * time.Minute
 			}
 			watchdog := time.AfterFunc(maxDuration, func() {
 				fmt.Printf("[LaneManager] WATCHDOG: force-cancelling task in lane=%s after %v\n",
-					state.Lane, maxDuration)
+					s.Lane, maxDuration)
 				e.cancel()
 			})
 
@@ -275,7 +325,7 @@ func (m *LaneManager) pump(state *LaneState) {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						crashlog.LogPanic("lane", r, map[string]string{"lane": string(state.Lane)})
+						crashlog.LogPanic("lane", r, map[string]string{"lane": string(s.Lane)})
 						err = fmt.Errorf("panic in lane task: %v", r)
 					}
 				}()
@@ -283,36 +333,40 @@ func (m *LaneManager) pump(state *LaneState) {
 			}()
 			watchdog.Stop()
 
+			s.mu.Lock()
 			e.task.CompletedAt = time.Now()
 			e.task.Error = err
-
-			state.mu.Lock()
 			// Remove this entry from the active slice
-			for i, a := range state.active {
+			for i, a := range s.active {
 				if a == e {
-					state.active = append(state.active[:i], state.active[i+1:]...)
+					s.active = append(s.active[:i], s.active[i+1:]...)
 					break
 				}
 			}
 			durationMs := time.Since(startTime).Milliseconds()
-			activeAfter := len(state.active)
-			queuedAfter := len(state.Queue)
-			state.mu.Unlock()
+			activeAfter := len(s.active)
+			queuedAfter := len(s.Queue)
+			completedInfo := entryToInfo(e)
+			s.mu.Unlock()
 
 			if err != nil {
 				fmt.Printf("[LaneManager] Lane task error: lane=%s durationMs=%d error=%q\n",
-					state.Lane, durationMs, err.Error())
+					s.Lane, durationMs, err.Error())
 			} else {
 				fmt.Printf("[LaneManager] Lane task done: lane=%s durationMs=%d active=%d queued=%d\n",
-					state.Lane, durationMs, activeAfter, queuedAfter)
+					s.Lane, durationMs, activeAfter, queuedAfter)
 			}
-			m.emit(LaneEvent{Type: "task_completed", Lane: state.Lane, Task: entryToInfo(e)})
+			mgr.emit(LaneEvent{Type: "task_completed", Lane: s.Lane, Task: completedInfo})
 
 			e.resolve <- err
 			close(e.resolve)
 
-			m.pump(state)
-		}(entry)
+			// Signal pump that capacity freed up
+			select {
+			case s.notify <- struct{}{}:
+			default:
+			}
+		}(entry, startedInfo)
 	}
 }
 
@@ -456,6 +510,20 @@ func (m *LaneManager) CancelActive(lane string) int {
 	state.mu.Unlock()
 
 	return cancelled
+}
+
+// Shutdown stops all pump goroutines. Call on application shutdown.
+func (m *LaneManager) Shutdown() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, state := range m.lanes {
+		select {
+		case <-state.stopCh:
+			// already closed
+		default:
+			close(state.stopCh)
+		}
+	}
 }
 
 // EnqueueOption configures enqueue behavior
