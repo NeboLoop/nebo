@@ -139,13 +139,16 @@ type Chat struct {
 }
 
 type ChatMessage struct {
-	ID        string         `json:"id"`
-	ChatID    string         `json:"chat_id"`
-	Role      string         `json:"role"`
-	Content   string         `json:"content"`
-	Metadata  sql.NullString `json:"metadata"`
-	CreatedAt int64          `json:"created_at"`
-	DayMarker sql.NullString `json:"day_marker"`
+	ID            string         `json:"id"`
+	ChatID        string         `json:"chat_id"`
+	Role          string         `json:"role"`
+	Content       string         `json:"content"`
+	Metadata      sql.NullString `json:"metadata"`
+	CreatedAt     int64          `json:"created_at"`
+	DayMarker     sql.NullString `json:"day_marker"`
+	ToolCalls     sql.NullString `json:"tool_calls"`
+	ToolResults   sql.NullString `json:"tool_results"`
+	TokenEstimate sql.NullInt64  `json:"token_estimate"`
 }
 
 type CronHistory struct {
@@ -490,18 +493,6 @@ type Session struct {
 	LastEmbeddedMessageID      sql.NullInt64  `json:"last_embedded_message_id"`
 	ActiveTask                 sql.NullString `json:"active_task"`
 	LastSummarizedCount        sql.NullInt64  `json:"last_summarized_count"`
-}
-
-type SessionMessage struct {
-	ID            int64          `json:"id"`
-	SessionID     string         `json:"session_id"`
-	Role          string         `json:"role"`
-	Content       sql.NullString `json:"content"`
-	ToolCalls     sql.NullString `json:"tool_calls"`
-	ToolResults   sql.NullString `json:"tool_results"`
-	TokenEstimate sql.NullInt64  `json:"token_estimate"`
-	IsCompacted   sql.NullInt64  `json:"is_compacted"`
-	CreatedAt     int64          `json:"created_at"`
 }
 
 type Setting struct {

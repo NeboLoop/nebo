@@ -47,7 +47,6 @@ type Context struct {
 	Channel        string            // "web", "cli", "telegram", "discord", "slack"
 	AgentName      string            // User-configured agent name
 	Iteration      int               // Current agentic loop iteration (1-based)
-	JustCompacted  bool              // True if compaction happened this iteration
 	RunStartTime   time.Time         // When this Run() call started
 	WorkTasks      []WorkTask        // In-memory work tracking tasks (from AgentDomainTool)
 	JanusRateLimit *ai.RateLimitInfo // Latest Janus rate-limit info (may be nil)
@@ -71,7 +70,6 @@ func New() *Pipeline {
 			&identityGuard{},
 			&channelAdapter{},
 			&toolNudge{},
-			&compactionRecovery{},
 			&dateTimeRefresh{},
 			&memoryNudge{},
 			&objectiveTaskNudge{},

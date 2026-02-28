@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-// AgentMessage represents a conversation message for the agent (wrapper around sqlc SessionMessage)
+// AgentMessage represents a conversation message for the agent.
+// Now backed by the chat_messages table (unified storage).
 type AgentMessage struct {
 	ID          int64           `json:"id,omitempty"`
 	SessionID   string          `json:"session_id"`
@@ -43,10 +45,16 @@ type AgentSession struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// SessionManager handles session persistence using sqlc-generated queries
+// SessionManager handles session persistence using sqlc-generated queries.
+// Messages are stored in chat_messages (unified storage).
+// Sessions table holds metadata only (active_task, model_override, scope).
 type SessionManager struct {
 	queries *Queries
 	rawDB   *sql.DB
+	// sessionKeys caches sessionID → sessionKey mappings.
+	// The runner calls AppendMessage(sessionID, ...) but chat_messages
+	// uses sessionKey as chat_id. This cache avoids a DB lookup per write.
+	sessionKeys sync.Map // map[string]string
 }
 
 // NewSessionManager creates a session manager from a Store
@@ -70,14 +78,14 @@ func (m *SessionManager) GetDB() *sql.DB {
 	return m.rawDB
 }
 
-// PurgeEmptyMessages removes session messages that have no content, no tool calls,
+// PurgeEmptyMessages removes chat messages that have no content, no tool calls,
 // and no tool results. These ghost records accumulate from failed runs and confuse
 // onboarding/introduction logic.
 func (m *SessionManager) PurgeEmptyMessages() (int64, error) {
 	result, err := m.rawDB.Exec(`
-		DELETE FROM session_messages 
-		WHERE (content IS NULL OR content = '') 
-		  AND (tool_calls IS NULL OR tool_calls = '') 
+		DELETE FROM chat_messages
+		WHERE (content IS NULL OR content = '')
+		  AND (tool_calls IS NULL OR tool_calls = '')
 		  AND (tool_results IS NULL OR tool_results = '')
 	`)
 	if err != nil {
@@ -86,8 +94,35 @@ func (m *SessionManager) PurgeEmptyMessages() (int64, error) {
 	return result.RowsAffected()
 }
 
-// GetOrCreate returns an existing session or creates a new one
-// If userID is provided, session is scoped to that user; otherwise uses agent scope
+// resolveSessionKey looks up the sessionKey for a given sessionID.
+// Uses the in-memory cache first, then falls back to a DB query.
+func (m *SessionManager) resolveSessionKey(sessionID string) (string, error) {
+	if key, ok := m.sessionKeys.Load(sessionID); ok {
+		return key.(string), nil
+	}
+	ctx := context.Background()
+	sess, err := m.queries.GetSession(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve session key for %s: %w", sessionID, err)
+	}
+	key := sess.Name.String
+	m.sessionKeys.Store(sessionID, key)
+	return key, nil
+}
+
+// ensureChatExists creates a chats row for a sessionKey if one doesn't exist.
+// This ensures chat_messages foreign key constraints are satisfied.
+func (m *SessionManager) ensureChatExists(ctx context.Context, sessionKey string) {
+	// INSERT OR IGNORE — no error if it already exists
+	_, _ = m.rawDB.ExecContext(ctx,
+		`INSERT OR IGNORE INTO chats (id, title, created_at, updated_at) VALUES (?, ?, unixepoch(), unixepoch())`,
+		sessionKey, "Session: "+sessionKey,
+	)
+}
+
+// GetOrCreate returns an existing session or creates a new one.
+// If userID is provided, session is scoped to that user; otherwise uses agent scope.
+// Also ensures a matching chats row exists for unified message storage.
 func (m *SessionManager) GetOrCreate(sessionKey, userID string) (*AgentSession, error) {
 	ctx := context.Background()
 	scope := "agent"
@@ -115,6 +150,9 @@ func (m *SessionManager) GetOrCreate(sessionKey, userID string) (*AgentSession, 
 	}
 
 	if err == nil {
+		m.sessionKeys.Store(dbSession.ID, sessionKey)
+		// Ensure chats row exists for message storage
+		m.ensureChatExists(ctx, sessionKey)
 		return &AgentSession{
 			ID:         dbSession.ID,
 			SessionKey: dbSession.Name.String,
@@ -139,6 +177,10 @@ func (m *SessionManager) GetOrCreate(sessionKey, userID string) (*AgentSession, 
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
+	m.sessionKeys.Store(id, sessionKey)
+	// Ensure chats row exists for message storage
+	m.ensureChatExists(ctx, sessionKey)
+
 	return &AgentSession{
 		ID:         dbSession.ID,
 		SessionKey: dbSession.Name.String,
@@ -147,7 +189,7 @@ func (m *SessionManager) GetOrCreate(sessionKey, userID string) (*AgentSession, 
 	}, nil
 }
 
-// GetSummary retrieves the compaction summary for a session (if any)
+// GetSummary retrieves the rolling summary for a session (if any).
 func (m *SessionManager) GetSummary(sessionID string) (string, error) {
 	ctx := context.Background()
 	dbSession, err := m.queries.GetSession(ctx, sessionID)
@@ -160,21 +202,24 @@ func (m *SessionManager) GetSummary(sessionID string) (string, error) {
 	return "", nil
 }
 
-// GetMessages retrieves messages for a session with an optional limit
-// Orders by id (auto-increment) to preserve insertion order
+// GetMessages retrieves messages for a session with an optional limit.
+// Reads from chat_messages using sessionKey as chat_id.
 func (m *SessionManager) GetMessages(sessionID string, limit int) ([]AgentMessage, error) {
 	ctx := context.Background()
 
-	var dbMessages []SessionMessage
-	var err error
+	sessionKey, err := m.resolveSessionKey(sessionID)
+	if err != nil {
+		return nil, err
+	}
 
+	var dbMessages []ChatMessage
 	if limit > 0 {
-		dbMessages, err = m.queries.GetRecentNonCompactedMessages(ctx, GetRecentNonCompactedMessagesParams{
-			SessionID: sessionID,
-			Limit:     int64(limit),
+		dbMessages, err = m.queries.GetRecentChatMessagesWithTools(ctx, GetRecentChatMessagesWithToolsParams{
+			ChatID: sessionKey,
+			Limit:  int64(limit),
 		})
 	} else {
-		dbMessages, err = m.queries.GetNonCompactedMessages(ctx, sessionID)
+		dbMessages, err = m.queries.GetChatMessages(ctx, sessionKey)
 	}
 	if err != nil {
 		return nil, err
@@ -183,10 +228,10 @@ func (m *SessionManager) GetMessages(sessionID string, limit int) ([]AgentMessag
 	messages := make([]AgentMessage, 0, len(dbMessages))
 	for _, dbMsg := range dbMessages {
 		msg := AgentMessage{
-			ID:        dbMsg.ID,
-			SessionID: dbMsg.SessionID,
+			ID:        dbMsg.CreatedAt, // Use created_at as ordering key (chat_messages.id is TEXT UUID)
+			SessionID: sessionID,
 			Role:      dbMsg.Role,
-			Content:   dbMsg.Content.String,
+			Content:   dbMsg.Content,
 			CreatedAt: time.Unix(dbMsg.CreatedAt, 0),
 		}
 		if dbMsg.ToolCalls.Valid && dbMsg.ToolCalls.String != "" {
@@ -202,7 +247,8 @@ func (m *SessionManager) GetMessages(sessionID string, limit int) ([]AgentMessag
 	return sanitizeAgentMessages(messages), nil
 }
 
-// AppendMessage adds a message to a session
+// AppendMessage adds a message to a session.
+// Writes to chat_messages using sessionKey as chat_id.
 func (m *SessionManager) AppendMessage(sessionID string, msg AgentMessage) error {
 	// Guard against saving truly empty messages (no content, no tool data).
 	// These create ghost records that confuse introduction/onboarding checks.
@@ -212,6 +258,11 @@ func (m *SessionManager) AppendMessage(sessionID string, msg AgentMessage) error
 
 	ctx := context.Background()
 
+	sessionKey, err := m.resolveSessionKey(sessionID)
+	if err != nil {
+		return err
+	}
+
 	var toolCalls, toolResults sql.NullString
 	if len(msg.ToolCalls) > 0 {
 		toolCalls = sql.NullString{String: string(msg.ToolCalls), Valid: true}
@@ -220,13 +271,14 @@ func (m *SessionManager) AppendMessage(sessionID string, msg AgentMessage) error
 		toolResults = sql.NullString{String: string(msg.ToolResults), Valid: true}
 	}
 
-	_, err := m.queries.CreateSessionMessage(ctx, CreateSessionMessageParams{
-		SessionID:     sessionID,
-		Role:          msg.Role,
-		Content:       sql.NullString{String: msg.Content, Valid: msg.Content != ""},
-		ToolCalls:     toolCalls,
-		ToolResults:   toolResults,
-		TokenEstimate: sql.NullInt64{},
+	msgID := uuid.New().String()
+	_, err = m.queries.CreateChatMessageForRunner(ctx, CreateChatMessageForRunnerParams{
+		ID:          msgID,
+		ChatID:      sessionKey,
+		Role:        msg.Role,
+		Content:     msg.Content,
+		ToolCalls:   toolCalls,
+		ToolResults: toolResults,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to append message: %w", err)
@@ -236,119 +288,7 @@ func (m *SessionManager) AppendMessage(sessionID string, msg AgentMessage) error
 	return m.queries.IncrementSessionMessageCount(ctx, sessionID)
 }
 
-// Compact summarizes old messages to reduce context size.
-// keepCount controls how many recent messages to preserve (floor: 1).
-func (m *SessionManager) Compact(sessionID string, summaryContent string, keepCount int) error {
-	ctx := context.Background()
-
-	if keepCount < 1 {
-		keepCount = 1
-	}
-	keepCount64 := int64(keepCount)
-
-	// Get message count
-	count, err := m.queries.CountSessionMessages(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-
-	if count <= keepCount64 {
-		return nil // Nothing to compact
-	}
-
-	// Get the min ID of messages to keep
-	minIDResult, err := m.queries.GetMaxMessageIDToKeep(ctx, GetMaxMessageIDToKeepParams{
-		SessionID: sessionID,
-		Limit:     keepCount64,
-	})
-	if err != nil {
-		return err
-	}
-
-	// Handle type assertion for COALESCE result
-	var minIDToKeep int64
-	switch v := minIDResult.(type) {
-	case int64:
-		minIDToKeep = v
-	case int:
-		minIDToKeep = int64(v)
-	case float64:
-		minIDToKeep = int64(v)
-	}
-
-	// Mark messages before that ID as compacted
-	if minIDToKeep > 0 {
-		err = m.queries.MarkMessagesCompactedBeforeID(ctx, MarkMessagesCompactedBeforeIDParams{
-			SessionID: sessionID,
-			ID:        minIDToKeep,
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	// Update session with summary and increment compaction count
-	return m.queries.CompactSession(ctx, CompactSessionParams{
-		Summary: sql.NullString{String: summaryContent, Valid: true},
-		ID:      sessionID,
-	})
-}
-
-// GetCompactionCount returns the number of times this session has been compacted
-func (m *SessionManager) GetCompactionCount(sessionID string) (int, error) {
-	ctx := context.Background()
-	dbSession, err := m.queries.GetSession(ctx, sessionID)
-	if err != nil {
-		return 0, err
-	}
-	if dbSession.CompactionCount.Valid {
-		return int(dbSession.CompactionCount.Int64), nil
-	}
-	return 0, nil
-}
-
-// GetMemoryFlushCompactionCount returns the compaction count at which memory flush last ran
-func (m *SessionManager) GetMemoryFlushCompactionCount(sessionID string) (int, error) {
-	ctx := context.Background()
-	dbSession, err := m.queries.GetSession(ctx, sessionID)
-	if err != nil {
-		return -1, err
-	}
-	if dbSession.MemoryFlushCompactionCount.Valid {
-		return int(dbSession.MemoryFlushCompactionCount.Int64), nil
-	}
-	return -1, nil // Never flushed
-}
-
-// RecordMemoryFlush marks that memory flush ran at the current compaction cycle
-func (m *SessionManager) RecordMemoryFlush(sessionID string) error {
-	ctx := context.Background()
-	return m.queries.RecordMemoryFlush(ctx, sessionID)
-}
-
-// ShouldRunMemoryFlush checks if memory flush should run based on compaction cycle
-func (m *SessionManager) ShouldRunMemoryFlush(sessionID string) (bool, error) {
-	ctx := context.Background()
-	dbSession, err := m.queries.GetSession(ctx, sessionID)
-	if err != nil {
-		return true, err // Default to true on error
-	}
-
-	// If no compaction has happened yet, allow flush
-	if !dbSession.CompactionCount.Valid || dbSession.CompactionCount.Int64 == 0 {
-		return true, nil
-	}
-
-	// If never flushed, should flush
-	if !dbSession.MemoryFlushCompactionCount.Valid {
-		return true, nil
-	}
-
-	// Only flush if compaction count has changed since last flush
-	return dbSession.CompactionCount.Int64 != dbSession.MemoryFlushCompactionCount.Int64, nil
-}
-
-// GetActiveTask returns the pinned active task for a session (survives compaction)
+// GetActiveTask returns the pinned active task for a session
 func (m *SessionManager) GetActiveTask(sessionID string) (string, error) {
 	ctx := context.Background()
 	task, err := m.queries.GetSessionActiveTask(ctx, sessionID)
@@ -358,7 +298,7 @@ func (m *SessionManager) GetActiveTask(sessionID string) (string, error) {
 	return task, nil
 }
 
-// SetActiveTask pins a task description to the session (survives compaction)
+// SetActiveTask pins a task description to the session
 func (m *SessionManager) SetActiveTask(sessionID, task string) error {
 	ctx := context.Background()
 	return m.queries.SetSessionActiveTask(ctx, SetSessionActiveTaskParams{
@@ -373,12 +313,20 @@ func (m *SessionManager) ClearActiveTask(sessionID string) error {
 	return m.queries.ClearSessionActiveTask(ctx, sessionID)
 }
 
-// Reset clears all messages from a session
+// Reset clears all messages from a session.
+// Deletes from chat_messages using sessionKey as chat_id.
 func (m *SessionManager) Reset(sessionID string) error {
 	ctx := context.Background()
 
-	// Delete messages
-	if err := m.queries.DeleteSessionMessages(ctx, sessionID); err != nil {
+	sessionKey, err := m.resolveSessionKey(sessionID)
+	if err != nil {
+		// Fallback: try to delete anyway with session ID
+		// (shouldn't happen, but be defensive)
+		return m.queries.ResetSession(ctx, sessionID)
+	}
+
+	// Delete messages from chat_messages
+	if err := m.queries.DeleteChatMessagesByChatId(ctx, sessionKey); err != nil {
 		return err
 	}
 
@@ -420,6 +368,10 @@ func (m *SessionManager) ListSessions(userID string) ([]AgentSession, error) {
 // DeleteSession removes a session and all its messages
 func (m *SessionManager) DeleteSession(sessionID string) error {
 	ctx := context.Background()
+	// Also clean up chat_messages
+	if sessionKey, err := m.resolveSessionKey(sessionID); err == nil {
+		_ = m.queries.DeleteChatMessagesByChatId(ctx, sessionKey)
+	}
 	return m.queries.DeleteSession(ctx, sessionID)
 }
 
@@ -456,7 +408,7 @@ func (m *SessionManager) SetLastSummarizedCount(sessionID string, count int) err
 }
 
 // UpdateSummary updates the session's summary without compacting messages.
-// Used by the sliding window to persist rolling summaries independently of compaction.
+// Used by the sliding window to persist rolling summaries independently.
 func (m *SessionManager) UpdateSummary(sessionID, summary string) error {
 	ctx := context.Background()
 	_, err := m.rawDB.ExecContext(ctx,

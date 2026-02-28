@@ -1159,24 +1159,25 @@ func (t *MemoryTool) IsDuplicate(layer, namespace, key, value, userID string) bo
 	return false
 }
 
-// IndexSessionTranscript creates searchable chunks from session messages
-// that haven't been embedded yet. Called after compaction to make compacted
-// messages discoverable via semantic search.
-func (t *MemoryTool) IndexSessionTranscript(ctx context.Context, sessionID, userID string) (int, error) {
+// IndexSessionTranscript creates searchable chunks from chat messages
+// that haven't been embedded yet. Makes conversation history discoverable
+// via semantic search.
+// sessionID is the session UUID; chatID is the sessionKey used as chat_messages.chat_id.
+func (t *MemoryTool) IndexSessionTranscript(ctx context.Context, sessionID, chatID, userID string) (int, error) {
 	if t.embedder == nil || !t.embedder.HasProvider() {
 		return 0, nil
 	}
 
-	// Get the high-water mark for this session
-	lastID, err := t.queries.GetSessionLastEmbeddedMessageID(ctx, sessionID)
+	// Get the high-water mark for this session (stores last embedded created_at timestamp)
+	lastTS, err := t.queries.GetSessionLastEmbeddedMessageID(ctx, sessionID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get last embedded message ID: %w", err)
+		return 0, fmt.Errorf("failed to get last embedded timestamp: %w", err)
 	}
 
-	// Fetch new messages since last embedding
-	msgs, err := t.queries.GetMessagesAfterID(ctx, db.GetMessagesAfterIDParams{
-		SessionID: sessionID,
-		ID:        lastID,
+	// Fetch new messages since last embedding from chat_messages
+	msgs, err := t.queries.GetChatMessagesAfterTimestamp(ctx, db.GetChatMessagesAfterTimestampParams{
+		ChatID:    chatID,
+		CreatedAt: lastTS,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("failed to get messages: %w", err)
@@ -1189,7 +1190,7 @@ func (t *MemoryTool) IndexSessionTranscript(ctx context.Context, sessionID, user
 	const blockSize = 5
 	model := t.embedder.Model()
 	chunksCreated := 0
-	var maxMsgID int64
+	var maxTS int64
 
 	for i := 0; i < len(msgs); i += blockSize {
 		end := i + blockSize
@@ -1201,16 +1202,12 @@ func (t *MemoryTool) IndexSessionTranscript(ctx context.Context, sessionID, user
 		// Build block text with role prefixes
 		var buf strings.Builder
 		for _, m := range block {
-			content := ""
-			if m.Content.Valid {
-				content = m.Content.String
-			}
 			buf.WriteString(m.Role)
 			buf.WriteString(": ")
-			buf.WriteString(content)
+			buf.WriteString(m.Content)
 			buf.WriteString("\n\n")
-			if m.ID > maxMsgID {
-				maxMsgID = m.ID
+			if m.CreatedAt > maxTS {
+				maxTS = m.CreatedAt
 			}
 		}
 		blockText := strings.TrimSpace(buf.String())
@@ -1248,7 +1245,7 @@ func (t *MemoryTool) IndexSessionTranscript(ctx context.Context, sessionID, user
 				ChunkIndex: int64(c.Index),
 				Text:       c.Text,
 				Source:     sql.NullString{String: "session", Valid: true},
-				Path:       sql.NullString{String: sessionID, Valid: true},
+				Path:       sql.NullString{String: chatID, Valid: true},
 				StartChar:  sql.NullInt64{Int64: int64(c.StartChar), Valid: true},
 				EndChar:    sql.NullInt64{Int64: int64(c.EndChar), Valid: true},
 				Model:      sql.NullString{String: model, Valid: true},
@@ -1274,10 +1271,10 @@ func (t *MemoryTool) IndexSessionTranscript(ctx context.Context, sessionID, user
 		}
 	}
 
-	// Update the high-water mark
-	if maxMsgID > 0 {
+	// Update the high-water mark (stores created_at timestamp)
+	if maxTS > 0 {
 		_ = t.queries.UpdateSessionLastEmbeddedMessageID(ctx, db.UpdateSessionLastEmbeddedMessageIDParams{
-			LastEmbeddedMessageID: sql.NullInt64{Int64: maxMsgID, Valid: true},
+			LastEmbeddedMessageID: sql.NullInt64{Int64: maxTS, Valid: true},
 			ID:                    sessionID,
 		})
 	}

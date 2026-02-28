@@ -172,6 +172,8 @@ func handleRequestIntroduction(c *Client, msg *Message, chatCtx *ChatContext) {
 
 ```go
 func handleIntroduction(ctx, state, runner, sessions, requestID, sessionKey, userID) {
+    // 0. Early exit: check onboarding_completed via memory.LoadContext
+    //    If already onboarded → skip entirely (prevents re-introduction on page reload)
     // 1. Dedup via sync.Map — one introduction per session at a time
     // 2. Check for real user messages (skip if conversation exists)
     //    Filters out system-origin messages: heartbeats, triggers, "[User ..." prefixes

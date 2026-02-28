@@ -21,8 +21,8 @@ type Querier interface {
 	ClearOldErrorLogs(ctx context.Context, dollar_1 interface{}) error
 	ClearSessionActiveTask(ctx context.Context, id string) error
 	ClearSessionOverrides(ctx context.Context, id string) error
-	CompactSession(ctx context.Context, arg CompactSessionParams) error
 	CountChatMessages(ctx context.Context, chatID string) (int64, error)
+	CountChatMessagesByChatId(ctx context.Context, chatID string) (int64, error)
 	CountChats(ctx context.Context) (int64, error)
 	CountCronHistory(ctx context.Context, jobID int64) (int64, error)
 	CountCronJobs(ctx context.Context) (int64, error)
@@ -31,7 +31,6 @@ type Querier interface {
 	CountMemories(ctx context.Context) (int64, error)
 	CountMemoriesByNamespace(ctx context.Context, namespacePrefix sql.NullString) (int64, error)
 	CountMemoryEmbeddings(ctx context.Context, model string) (int64, error)
-	CountSessionMessages(ctx context.Context, sessionID string) (int64, error)
 	CountTasksByStatus(ctx context.Context) (CountTasksByStatusRow, error)
 	CountUnreadNotifications(ctx context.Context, userID string) (int64, error)
 	// Admin queries
@@ -46,6 +45,8 @@ type Querier interface {
 	CreateChat(ctx context.Context, arg CreateChatParams) (Chat, error)
 	// Chat message queries
 	CreateChatMessage(ctx context.Context, arg CreateChatMessageParams) (ChatMessage, error)
+	// Insert a message with tool_calls, tool_results, and token_estimate (used by runner/SessionManager)
+	CreateChatMessageForRunner(ctx context.Context, arg CreateChatMessageForRunnerParams) (ChatMessage, error)
 	CreateChatMessageWithDay(ctx context.Context, arg CreateChatMessageWithDayParams) (ChatMessage, error)
 	// Cron history queries
 	CreateCronHistory(ctx context.Context, jobID int64) (CronHistory, error)
@@ -80,8 +81,6 @@ type Querier interface {
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (RefreshToken, error)
 	// Session queries for conversation persistence
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
-	// Session messages
-	CreateSessionMessage(ctx context.Context, arg CreateSessionMessageParams) (SessionMessage, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	CreateUserFromOAuth(ctx context.Context, arg CreateUserFromOAuthParams) (User, error)
 	CreateUserPreferences(ctx context.Context, userID string) (CreateUserPreferencesRow, error)
@@ -98,7 +97,7 @@ type Querier interface {
 	DeleteChat(ctx context.Context, id string) error
 	DeleteChatMessage(ctx context.Context, id string) error
 	DeleteChatMessagesAfter(ctx context.Context, arg DeleteChatMessagesAfterParams) error
-	DeleteCompactedMessages(ctx context.Context, sessionID string) error
+	DeleteChatMessagesByChatId(ctx context.Context, chatID string) error
 	// Clean up old completed tasks (keep last 7 days)
 	DeleteCompletedTasks(ctx context.Context) error
 	DeleteCronJob(ctx context.Context, id int64) error
@@ -131,7 +130,6 @@ type Querier interface {
 	DeleteRefreshToken(ctx context.Context, tokenHash string) error
 	DeleteRefreshTokensByUserID(ctx context.Context, userID string) error
 	DeleteSession(ctx context.Context, id string) error
-	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	DeleteUser(ctx context.Context, id string) error
 	DeleteUserPreferences(ctx context.Context, userID string) error
 	DeleteUserProfile(ctx context.Context, userID string) error
@@ -159,6 +157,8 @@ type Querier interface {
 	GetChat(ctx context.Context, id string) (Chat, error)
 	GetChatMessage(ctx context.Context, id string) (ChatMessage, error)
 	GetChatMessages(ctx context.Context, chatID string) ([]ChatMessage, error)
+	// Get messages after a given timestamp for embedding extraction (user and assistant only)
+	GetChatMessagesAfterTimestamp(ctx context.Context, arg GetChatMessagesAfterTimestampParams) ([]GetChatMessagesAfterTimestampRow, error)
 	GetChatWithMessages(ctx context.Context, id string) ([]GetChatWithMessagesRow, error)
 	GetChildTasks(ctx context.Context, parentTaskID sql.NullString) ([]PendingTask, error)
 	GetCompanionChatByUser(ctx context.Context, userID sql.NullString) (Chat, error)
@@ -188,8 +188,6 @@ type Querier interface {
 	GetMCPSession(ctx context.Context, sessionID string) (McpSession, error)
 	// Get most recent session for a user
 	GetMCPSessionByUser(ctx context.Context, userID string) (McpSession, error)
-	// Get the minimum ID of the N most recent messages to keep
-	GetMaxMessageIDToKeep(ctx context.Context, arg GetMaxMessageIDToKeepParams) (interface{}, error)
 	GetMemory(ctx context.Context, id int64) (GetMemoryRow, error)
 	GetMemoryByKey(ctx context.Context, arg GetMemoryByKeyParams) (GetMemoryByKeyRow, error)
 	GetMemoryByKeyAndUser(ctx context.Context, arg GetMemoryByKeyAndUserParams) (GetMemoryByKeyAndUserRow, error)
@@ -197,10 +195,7 @@ type Querier interface {
 	GetMemoryChunk(ctx context.Context, id int64) (GetMemoryChunkRow, error)
 	GetMemoryEmbedding(ctx context.Context, arg GetMemoryEmbeddingParams) (MemoryEmbedding, error)
 	GetMemoryStats(ctx context.Context) ([]GetMemoryStatsRow, error)
-	// Get messages after a given ID for embedding (user and assistant only)
-	GetMessagesAfterID(ctx context.Context, arg GetMessagesAfterIDParams) ([]GetMessagesAfterIDRow, error)
 	GetMessagesByDay(ctx context.Context, arg GetMessagesByDayParams) ([]ChatMessage, error)
-	GetNonCompactedMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
 	GetNotification(ctx context.Context, arg GetNotificationParams) (Notification, error)
 	GetOAuthConnectionByProvider(ctx context.Context, arg GetOAuthConnectionByProviderParams) (OauthConnection, error)
 	GetOAuthConnectionByUserAndProvider(ctx context.Context, arg GetOAuthConnectionByUserAndProviderParams) (OauthConnection, error)
@@ -218,12 +213,10 @@ type Querier interface {
 	GetProviderModelByModelId(ctx context.Context, arg GetProviderModelByModelIdParams) (ProviderModel, error)
 	// Get last N messages for context window (most recent first, reversed for display)
 	GetRecentChatMessages(ctx context.Context, arg GetRecentChatMessagesParams) ([]ChatMessage, error)
+	// Get last N messages with tool data for runner context window
+	GetRecentChatMessagesWithTools(ctx context.Context, arg GetRecentChatMessagesWithToolsParams) ([]ChatMessage, error)
 	GetRecentCronHistory(ctx context.Context, jobID int64) ([]CronHistory, error)
 	GetRecentCronHistoryByJobName(ctx context.Context, name string) ([]CronHistory, error)
-	// Get last N non-compacted messages, ordered by id (insertion order)
-	GetRecentNonCompactedMessages(ctx context.Context, arg GetRecentNonCompactedMessagesParams) ([]SessionMessage, error)
-	// Get last N messages for context window
-	GetRecentSessionMessages(ctx context.Context, arg GetRecentSessionMessagesParams) ([]SessionMessage, error)
 	// Get tasks that were running or pending when agent shut down
 	GetRecoverableTasks(ctx context.Context) ([]PendingTask, error)
 	GetRefreshTokenByHash(ctx context.Context, tokenHash string) (RefreshToken, error)
@@ -236,8 +229,6 @@ type Querier interface {
 	GetSessionByScope(ctx context.Context, arg GetSessionByScopeParams) (Session, error)
 	// Session transcript embedding tracking
 	GetSessionLastEmbeddedMessageID(ctx context.Context, id string) (int64, error)
-	GetSessionMessageStats(ctx context.Context, sessionID string) (GetSessionMessageStatsRow, error)
-	GetSessionMessages(ctx context.Context, sessionID string) ([]SessionMessage, error)
 	// Session policy queries
 	GetSessionPolicy(ctx context.Context, id string) (GetSessionPolicyRow, error)
 	GetSettings(ctx context.Context) (GetSettingsRow, error)
@@ -316,11 +307,7 @@ type Querier interface {
 	ListUsersPaginated(ctx context.Context, arg ListUsersPaginatedParams) ([]ListUsersPaginatedRow, error)
 	MarkAllNotificationsRead(ctx context.Context, userID string) error
 	MarkMCPOAuthCodeUsed(ctx context.Context, id string) error
-	MarkMessagesCompacted(ctx context.Context, arg MarkMessagesCompactedParams) error
-	// Mark all messages with ID less than the given threshold as compacted
-	MarkMessagesCompactedBeforeID(ctx context.Context, arg MarkMessagesCompactedBeforeIDParams) error
 	MarkNotificationRead(ctx context.Context, arg MarkNotificationReadParams) error
-	RecordMemoryFlush(ctx context.Context, id string) error
 	// Reset error count if cooldown has expired and last update was > 24h ago
 	ResetAuthProfileErrorCountIfStale(ctx context.Context, arg ResetAuthProfileErrorCountIfStaleParams) error
 	ResetSession(ctx context.Context, id string) error

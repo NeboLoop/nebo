@@ -74,23 +74,6 @@ func (g *toolNudge) Generate(ctx *Context) []Message {
 	}}
 }
 
-// --- Generator 4: Compaction Recovery ---
-// Prevents the agent from asking "what were we doing?" after context compaction.
-
-type compactionRecovery struct{}
-
-func (g *compactionRecovery) Name() string { return "compaction_recovery" }
-
-func (g *compactionRecovery) Generate(ctx *Context) []Message {
-	if !ctx.JustCompacted {
-		return nil
-	}
-	return []Message{{
-		Content:  wrapSteering(g.Name(), tmplCompactionRecovery),
-		Position: PositionEnd,
-	}}
-}
-
 // --- Generator 5: DateTime Refresh ---
 // Refreshes stale date/time in long-running sessions.
 

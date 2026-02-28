@@ -53,6 +53,7 @@ func openTestDB(t *testing.T) *sql.DB {
 			custom_label TEXT,
 			last_embedded_message_id INTEGER DEFAULT 0,
 			active_task TEXT,
+			last_summarized_count INTEGER DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)
@@ -61,22 +62,36 @@ func openTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("failed to create sessions table: %v", err)
 	}
 
-	// Create session_messages table
+	// Create chats table
 	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS session_messages (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-			role TEXT NOT NULL,
-			content TEXT,
-			tool_calls TEXT,
-			tool_results TEXT,
-			token_estimate INTEGER DEFAULT 0,
-			is_compacted INTEGER DEFAULT 0,
-			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		CREATE TABLE IF NOT EXISTS chats (
+			id TEXT PRIMARY KEY,
+			title TEXT,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+			updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 		)
 	`)
 	if err != nil {
-		t.Fatalf("failed to create session_messages table: %v", err)
+		t.Fatalf("failed to create chats table: %v", err)
+	}
+
+	// Create chat_messages table (unified message storage)
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS chat_messages (
+			id TEXT PRIMARY KEY,
+			chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			metadata TEXT,
+			tool_calls TEXT,
+			tool_results TEXT,
+			token_estimate INTEGER,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+			day_marker TEXT
+		)
+	`)
+	if err != nil {
+		t.Fatalf("failed to create chat_messages table: %v", err)
 	}
 
 	return db

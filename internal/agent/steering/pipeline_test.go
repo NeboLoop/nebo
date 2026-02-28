@@ -49,8 +49,8 @@ func TestPipelineNew(t *testing.T) {
 	if p == nil {
 		t.Fatal("New() returned nil")
 	}
-	if len(p.generators) != 10 {
-		t.Errorf("expected 10 generators, got %d", len(p.generators))
+	if len(p.generators) != 9 {
+		t.Errorf("expected 9 generators, got %d", len(p.generators))
 	}
 }
 
@@ -272,22 +272,6 @@ func TestToolNudge_NoToolUseWithTask(t *testing.T) {
 	}
 	if result := g.Generate(ctx); len(result) == 0 {
 		t.Error("should nudge after 5+ turns without tools and active task")
-	}
-}
-
-func TestCompactionRecovery_Fires(t *testing.T) {
-	g := &compactionRecovery{}
-	ctx := &Context{JustCompacted: true}
-	if msgs := g.Generate(ctx); len(msgs) == 0 {
-		t.Error("should fire when just compacted")
-	}
-}
-
-func TestCompactionRecovery_Skips(t *testing.T) {
-	g := &compactionRecovery{}
-	ctx := &Context{JustCompacted: false}
-	if msgs := g.Generate(ctx); len(msgs) != 0 {
-		t.Error("should skip when not compacted")
 	}
 }
 

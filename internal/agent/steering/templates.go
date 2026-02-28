@@ -30,12 +30,6 @@ If the active task requires action (file operations, web searches, shell command
 consider using your tools rather than just discussing the task.
 This is a gentle nudge — ignore if conversation-only is appropriate.`
 
-// --- Compaction Recovery ---
-
-const tmplCompactionRecovery = `Context was just compacted. A conversation summary is available in the system prompt.
-Continue naturally from where you left off. Do NOT ask the user to repeat themselves
-or summarize what you were doing — you have all the context you need.`
-
 // --- DateTime Refresh ---
 
 const tmplDateTimeRefresh = `Time update: Current time is now %s. Use this for any time-sensitive reasoning.`
@@ -44,7 +38,7 @@ const tmplDateTimeRefresh = `Time update: Current time is now %s. Use this for a
 
 const tmplMemoryNudge = `If the user has shared personal facts, preferences, or important information recently,
 and behavioral directives (e.g., "from now on always...", "don't ever..."),
-consider storing them using agent(resource: memory, action: store).
+consider storing them using bot(resource: memory, action: store).
 Only store if genuinely useful.`
 
 // --- Objective Task Nudge ---

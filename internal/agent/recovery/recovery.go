@@ -189,16 +189,15 @@ func (m *Manager) CheckTaskCompletion(ctx context.Context, task *PendingTask) (b
 	err := m.db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*) as total,
-			SUM(CASE WHEN sm.role = 'assistant' THEN 1 ELSE 0 END) as assistant_count,
-			SUM(CASE WHEN sm.tool_calls IS NOT NULL AND sm.tool_calls != '' AND sm.tool_calls != 'null' THEN 1 ELSE 0 END) as tool_count
-		FROM session_messages sm
-		JOIN sessions s ON sm.session_id = s.id
-		WHERE s.name = ?
+			SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END) as assistant_count,
+			SUM(CASE WHEN tool_calls IS NOT NULL AND tool_calls != '' AND tool_calls != 'null' THEN 1 ELSE 0 END) as tool_count
+		FROM chat_messages
+		WHERE chat_id = ?
 	`, task.SessionKey).Scan(&totalCount, &assistantCount, &toolCallCount)
 
 	if err == sql.ErrNoRows || totalCount == 0 {
 		// No messages at all — task never started
-		fmt.Printf("[Recovery] Task %s: no session messages found\n", task.ID[:8])
+		fmt.Printf("[Recovery] Task %s: no chat messages found\n", task.ID[:8])
 		return false, nil
 	}
 	if err != nil {
@@ -223,11 +222,10 @@ func (m *Manager) CheckTaskCompletion(ctx context.Context, task *PendingTask) (b
 	// Check the last message — if it's from assistant with real content, it's done
 	var lastRole, lastContent sql.NullString
 	err = m.db.QueryRowContext(ctx, `
-		SELECT sm.role, sm.content
-		FROM session_messages sm
-		JOIN sessions s ON sm.session_id = s.id
-		WHERE s.name = ?
-		ORDER BY sm.created_at DESC
+		SELECT role, content
+		FROM chat_messages
+		WHERE chat_id = ?
+		ORDER BY created_at DESC
 		LIMIT 1
 	`, task.SessionKey).Scan(&lastRole, &lastContent)
 

@@ -189,7 +189,6 @@ These are NOT mutually exclusive — a single frame can carry multiple keys.
 2. **Tool start:** Flush held-back text buffer first (so text appears before tool card), then:
    - Track tool call info in `req.toolCalls[]`
    - Append tool content block
-   - Save partial message to DB (mid-stream persistence)
    - Send `tool_start` event to frontend
 
 3. **Tool result:** Update matching tool call (by ID or first running), then:
@@ -201,7 +200,7 @@ These are NOT mutually exclusive — a single frame can carry multiple keys.
 **For `"res"` frames (final):**
 1. Remove from `pending` and `activeSessions`
 2. Flush remaining buffered content (the held-back 20 chars)
-3. Save/update assistant message in DB with metadata (tool calls, thinking, content blocks)
+3. Update chat timestamp; message persistence is handled by the runner (single write path)
 4. For new chats: trigger title generation
 5. Send `chat_complete` event to frontend
 

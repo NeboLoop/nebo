@@ -53,8 +53,8 @@ Nebo's memory system has **four interconnected subsystems** that work together t
 │  memories_fts:       FTS5 virtual table (key, value, tags)              │
 │  embedding_cache:    SHA256 content hash → embedding (dedup)            │
 │                                                                         │
-│  session_messages:   role/content/tool_calls/tool_results/is_compacted  │
-│  sessions:           summary/token_count/compaction_count               │
+│  chat_messages:      role/content/tool_calls/tool_results/token_estimate│
+│  sessions:           summary/token_count/last_summarized_count          │
 └─────────────────────────────────────────────────────────────────────────┘
          ↑ stored by                               ↑ searched by
 ┌──────────────────────────┐    ┌──────────────────────────────────────────┐
@@ -513,62 +513,48 @@ File: `internal/db/session_manager.go`
 
 ```
 GetOrCreate(sessionKey, userID) → session with unique(name, scope, scope_id)
-  → AppendMessage(sessionID, msg) — inserts to session_messages
-  → GetMessages(sessionID, limit) — returns non-compacted messages (is_compacted=0)
-  → Compact(sessionID, summary, keepCount) — marks old messages as compacted
+  → AppendMessage(sessionID, msg) — inserts to chat_messages (via sessionKey as chat_id)
+  → GetMessages(sessionID, limit) — returns last N messages from chat_messages
+  → Reset(sessionID) — deletes chat_messages for sessionKey, resets session metadata
 ```
 
-### Compaction Strategy
+### Context Window Management
 
-File: `internal/agent/runner/runner.go` (graduated threshold compaction at ~line 541, overflow retry at ~line 814)
+File: `internal/agent/runner/runner.go`
 
-**Progressive compaction** — when tokens exceed autoCompact threshold:
+**Read-time windowing** — when tokens exceed the autoCompact threshold, the runner reduces the context window rather than mutating stored messages:
 
-1. Try `keep=10` (keep last 10 messages)
-2. If still over threshold → try `keep=3`
-3. If still over threshold → try `keep=1`
+1. Load last N messages from `chat_messages` (via `GetRecentChatMessagesWithTools`)
+2. Estimate token count
+3. If over budget: reduce N and reload from a later start position
+4. Apply in-memory optimizations (micro-compact strips old tool results, two-stage pruning)
+5. Messages in the DB are never modified — they remain immutable and append-only
 
-Each compaction:
-- Marks all but last N messages as `is_compacted=1`
-- Stores LLM-generated summary in `sessions.summary`
-- Increments `compaction_count`
-- **Cumulative summaries:** Previous summary is compressed and prepended to new summary
+**Rolling summaries** are still generated and stored in `sessions.summary` for long conversations. These provide context for messages that fall outside the current window.
 
-### After Compaction
+### Memory Extraction Trigger
 
-1. **File re-injection:** Recently accessed files are re-injected as a user message to recover working context
-2. **Session transcript indexing:** Compacted messages are chunked and embedded for semantic search (async)
-
-### Memory Flush Guard
-
-```
-ShouldRunMemoryFlush(sessionID)
-  → compaction_count > memory_flush_compaction_count
-  → Only flush once per compaction cycle
-
-RecordMemoryFlush(sessionID)
-  → memory_flush_compaction_count = compaction_count
-```
+Memory extraction (`maybeRunMemoryFlush`) runs when token count exceeds the autoCompact threshold, guarded by an overlap check to prevent concurrent extraction on the same session.
 
 ### Active Task Pin
 
-The active task survives compaction — stored in `sessions.active_task` column, injected into the dynamic suffix on every iteration.
+The active task is stored in `sessions.active_task` column, injected into the dynamic suffix on every iteration.
 
 ---
 
 ## Session Transcript Indexing
 
-File: `internal/agent/tools/memory.go:~1143-1271`
+File: `internal/agent/tools/memory.go`
 
-After compaction, `IndexSessionTranscript()` converts conversation history into searchable embeddings:
+`IndexSessionTranscript()` converts conversation history into searchable embeddings:
 
-1. Load all messages after `last_embedded_message_id`
+1. Load messages from `chat_messages` after `last_embedded_message_id` (stores a timestamp watermark)
 2. Group into blocks of 5 messages
 3. For each block:
    - Concatenate as `[role]: content\n\n`
-   - Create chunk with `source="session"`, `memory_id=NULL`, `path=sessionID`
+   - Create chunk with `source="session"`, `memory_id=NULL`, `path=chatID`
    - Embed and store in `memory_chunks` + `memory_embeddings`
-4. Update `last_embedded_message_id`
+4. Update `last_embedded_message_id` with the latest `created_at` timestamp
 
 These session chunks participate in vector search alongside memory chunks (via the LEFT JOIN in `searchVector`).
 
@@ -738,21 +724,24 @@ CREATE TABLE sessions (
 -- Unique: (name, scope, scope_id)
 ```
 
-### session_messages
+### chat_messages (unified message storage)
 
 ```sql
-CREATE TABLE session_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+CREATE TABLE chat_messages (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
-    content TEXT,
-    tool_calls TEXT,      -- JSON
-    tool_results TEXT,     -- JSON
-    token_estimate INTEGER DEFAULT 0,
-    is_compacted INTEGER DEFAULT 0,
-    created_at INTEGER NOT NULL
+    content TEXT NOT NULL DEFAULT '',
+    metadata TEXT,
+    tool_calls TEXT,        -- JSON
+    tool_results TEXT,       -- JSON
+    token_estimate INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    day_marker TEXT
 );
 ```
+
+Messages are immutable and append-only. The runner writes via `CreateChatMessageForRunner`, reads via `GetRecentChatMessagesWithTools`. The `chat_id` is the session's `name` (sessionKey).
 
 ---
 
@@ -773,8 +762,8 @@ CREATE TABLE session_messages (
 | `internal/agent/runner/runner.go` | ~2050 | Agentic loop (memory extraction in ~1796-1978 range) |
 | `internal/agent/session/session.go` | ~28 | Session type aliases (thin wrapper) |
 | `internal/agent/session/keyparser.go` | ~206 | Hierarchical session key parsing |
-| `internal/db/session_manager.go` | ~600 | Session CRUD, compaction, message storage |
-| `internal/agent/steering/generators.go` | ~270 | All 10 steering generators (memoryNudge at ~120-146) |
+| `internal/db/session_manager.go` | ~400 | Session CRUD, message storage (reads/writes chat_messages) |
+| `internal/agent/steering/generators.go` | ~250 | All 9 steering generators (memoryNudge at ~120-146) |
 
 ### Migration Files
 

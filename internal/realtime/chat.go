@@ -507,43 +507,11 @@ func (c *ChatContext) handleAgentResponse(agentID string, frame *agenthub.Frame)
 		return
 	}
 
-	// Save assistant message to DB with day marker
+	// Assistant message persistence is handled by the runner (single write path).
+	// Only update the chat timestamp and generate title for new chats.
 	if req.streamedContent != "" && c.svcCtx != nil && c.svcCtx.DB != nil {
-		ctx := context.Background()
-		metadata := c.buildMetadata(req)
+		_ = c.svcCtx.DB.UpdateChatTimestamp(context.Background(), req.sessionID)
 
-		if req.messageID != "" {
-			// Partial save exists — update the existing message
-			err := c.svcCtx.DB.UpdateChatMessageContent(ctx, db.UpdateChatMessageContentParams{
-				ID:       req.messageID,
-				Content:  req.streamedContent,
-				Metadata: metadata,
-			})
-			if err != nil {
-				logging.Errorf("[Chat] Failed to update assistant message: %v", err)
-			} else {
-				logging.Infof("[Chat] Updated assistant message %s in chat %s (len=%d)", req.messageID, req.sessionID, len(req.streamedContent))
-				_ = c.svcCtx.DB.UpdateChatTimestamp(ctx, req.sessionID)
-			}
-		} else {
-			// No partial save — create new message
-			msgID := uuid.New().String()
-			_, err := c.svcCtx.DB.CreateChatMessageWithDay(ctx, db.CreateChatMessageWithDayParams{
-				ID:       msgID,
-				ChatID:   req.sessionID,
-				Role:     "assistant",
-				Content:  req.streamedContent,
-				Metadata: metadata,
-			})
-			if err != nil {
-				logging.Errorf("[Chat] Failed to save assistant message: %v", err)
-			} else {
-				logging.Infof("[Chat] Saved assistant message %s to chat %s (len=%d)", msgID, req.sessionID, len(req.streamedContent))
-				_ = c.svcCtx.DB.UpdateChatTimestamp(ctx, req.sessionID)
-			}
-		}
-
-		// Generate title for new chats
 		if req.isNewChat {
 			go c.requestTitleGeneration(agentID, req.sessionID, req.prompt, req.streamedContent)
 		}
@@ -671,26 +639,35 @@ func handleCancel(c *Client, msg *Message, chatCtx *ChatContext) {
 
 // handleSessionReset clears session messages so the companion chat starts fresh.
 // The session ID stays the same (Single Bot Paradigm), but all messages are deleted.
+// The chatID from the frontend is the sessionKey (e.g., "companion-default"),
+// which is used as both the chats.id and chat_messages.chat_id.
 func handleSessionReset(c *Client, msg *Message, chatCtx *ChatContext) {
-	sessionID, _ := msg.Data["session_id"].(string)
-	logging.Infof("[Chat] Session reset requested for %s", sessionID)
+	chatID, _ := msg.Data["session_id"].(string)
+	logging.Infof("[Chat] Session reset requested for %s", chatID)
 
-	if sessionID == "" || chatCtx.svcCtx == nil || chatCtx.svcCtx.DB == nil {
-		sendSessionResetResult(c, sessionID, false)
+	if chatID == "" || chatCtx.svcCtx == nil || chatCtx.svcCtx.DB == nil {
+		sendSessionResetResult(c, chatID, false)
 		return
 	}
 
 	ctx := context.Background()
-	if err := chatCtx.svcCtx.DB.DeleteSessionMessages(ctx, sessionID); err != nil {
-		logging.Errorf("[Chat] Failed to delete session messages: %v", err)
-		sendSessionResetResult(c, sessionID, false)
+
+	// Delete messages from chat_messages using chatID (= sessionKey)
+	if err := chatCtx.svcCtx.DB.DeleteChatMessagesByChatId(ctx, chatID); err != nil {
+		logging.Errorf("[Chat] Failed to delete chat messages: %v", err)
+		sendSessionResetResult(c, chatID, false)
 		return
 	}
-	if err := chatCtx.svcCtx.DB.ResetSession(ctx, sessionID); err != nil {
-		logging.Errorf("[Chat] Failed to reset session: %v", err)
+
+	// Reset session metadata via session name resolution
+	sess, err := chatCtx.svcCtx.DB.GetSessionByName(ctx, sql.NullString{String: chatID, Valid: true})
+	if err == nil {
+		if err := chatCtx.svcCtx.DB.ResetSession(ctx, sess.ID); err != nil {
+			logging.Errorf("[Chat] Failed to reset session: %v", err)
+		}
 	}
 
-	sendSessionResetResult(c, sessionID, true)
+	sendSessionResetResult(c, chatID, true)
 }
 
 func sendSessionResetResult(c *Client, sessionID string, ok bool) {
@@ -781,24 +758,7 @@ func handleChatMessage(c *Client, msg *Message, chatCtx *ChatContext) {
 		}
 	}
 
-	// Save user message to DB with day marker
-	if chatCtx.svcCtx != nil && chatCtx.svcCtx.DB != nil {
-		msgID := uuid.New().String()
-		_, err := chatCtx.svcCtx.DB.CreateChatMessageWithDay(ctx, db.CreateChatMessageWithDayParams{
-			ID:       msgID,
-			ChatID:   sessionID,
-			Role:     "user",
-			Content:  prompt,
-			Metadata: sql.NullString{},
-		})
-		if err != nil {
-			logging.Errorf("[Chat] Failed to save user message: %v", err)
-		} else {
-			logging.Infof("[Chat] Saved user message %s to chat %s", msgID, sessionID)
-		}
-	} else {
-		logging.Errorf("[Chat] Cannot save message - svcCtx=%v DB=%v", chatCtx.svcCtx != nil, chatCtx.svcCtx != nil && chatCtx.svcCtx.DB != nil)
-	}
+	// User message persistence is handled by the runner (single write path).
 
 	// Create request and track it
 	requestID := fmt.Sprintf("chat-%d", time.Now().UnixNano())
@@ -1112,64 +1072,9 @@ func (c *ChatContext) buildMetadata(req *pendingRequest) sql.NullString {
 	return sql.NullString{String: string(metaJSON), Valid: true}
 }
 
-// savePartialMessage creates or updates the DB message for a pending request.
-// Called when the AI pauses (e.g. to execute a tool) so content is persisted mid-stream.
-func (c *ChatContext) savePartialMessage(requestID string) {
-	if c.svcCtx == nil || c.svcCtx.DB == nil {
-		return
-	}
-
-	c.pendingMu.RLock()
-	req, ok := c.pending[requestID]
-	if !ok || req.streamedContent == "" {
-		c.pendingMu.RUnlock()
-		return
-	}
-	content := req.streamedContent
-	messageID := req.messageID
-	sessionID := req.sessionID
-	c.pendingMu.RUnlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	metadata := c.buildMetadata(req)
-
-	if messageID != "" {
-		// Update existing partial message
-		err := c.svcCtx.DB.UpdateChatMessageContent(ctx, db.UpdateChatMessageContentParams{
-			ID:       messageID,
-			Content:  content,
-			Metadata: metadata,
-		})
-		if err != nil {
-			logging.Errorf("[Chat] Failed to update partial message: %v", err)
-		} else {
-			logging.Infof("[Chat] Updated partial message %s (len=%d)", messageID, len(content))
-		}
-	} else {
-		// Create new partial message
-		msgID := uuid.New().String()
-		_, err := c.svcCtx.DB.CreateChatMessageWithDay(ctx, db.CreateChatMessageWithDayParams{
-			ID:       msgID,
-			ChatID:   sessionID,
-			Role:     "assistant",
-			Content:  content,
-			Metadata: metadata,
-		})
-		if err != nil {
-			logging.Errorf("[Chat] Failed to save partial message: %v", err)
-		} else {
-			logging.Infof("[Chat] Saved partial message %s to chat %s (len=%d)", msgID, sessionID, len(content))
-			// Track the message ID for future updates
-			c.pendingMu.Lock()
-			if req, ok := c.pending[requestID]; ok {
-				req.messageID = msgID
-			}
-			c.pendingMu.Unlock()
-		}
-	}
-}
+// savePartialMessage is a no-op. Message persistence is handled by the runner
+// (single write path). Kept as a stub since it's called from handleAgentEvent.
+func (c *ChatContext) savePartialMessage(requestID string) {}
 
 func intPtr(i int) *int {
 	return &i

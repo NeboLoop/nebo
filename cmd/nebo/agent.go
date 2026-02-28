@@ -1164,7 +1164,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	registry.Register(agentStatusTool)
 
 	// Register NeboLoop store tool for browsing/installing apps and uploading binaries
-	storeTool := tools.NewNeboLoopTool(func(ctx context.Context) (*neboloopapi.Client, error) {
+	neboloopClientProvider := func(ctx context.Context) (*neboloopapi.Client, error) {
 		if opts.PluginStore == nil {
 			return nil, fmt.Errorf("plugin store not available")
 		}
@@ -1174,8 +1174,39 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 		settings = injectNeboLoopAuth(ctx, sqlDB, ensureBotID(ctx, opts.PluginStore), settings)
 		return neboloopapi.NewClient(settings)
-	})
+	}
+	storeTool := tools.NewNeboLoopTool(neboloopClientProvider)
 	registry.Register(storeTool)
+
+	// --- New STRAP tools (coexist with old tools during migration) ---
+
+	// Bot domain: task, memory, session, profile, context, advisors, vision, ask
+	botTool := tools.NewBotTool(tools.BotToolConfig{
+		Sessions:   sessions,
+		MemoryTool: memoryTool,
+	})
+	botTool.SetOrchestrator(taskTool.GetOrchestrator())
+	botTool.SetVisionTool(tools.NewVisionTool(tools.VisionConfig{}))
+	botTool.SetAdvisorsTool(advisorsTool)
+	botTool.SetAskCallback(func(ctx context.Context, reqID, prompt string, widgets []tools.AskWidget) (string, error) {
+		return state.requestAsk(ctx, reqID, prompt, widgets)
+	})
+	registry.RegisterBotTool(botTool)
+
+	// Event domain: cron/reminders (flat)
+	if schedulerMgr != nil {
+		eventTool := tools.NewEventTool(schedulerMgr)
+		registry.RegisterEventTool(eventTool)
+	}
+
+	// App domain: list, launch, stop, browse, install
+	appTool := tools.NewAppTool(neboloopClientProvider)
+	registry.RegisterAppTool(appTool)
+
+	// Wire skill tool with NeboLoop client provider for browse/install
+	if skillTool := registry.GetSkillTool(); skillTool != nil {
+		skillTool.SetClientProvider(neboloopClientProvider)
+	}
 
 	// Create agent MCP server for CLI provider loopback (exposes all tools via MCP)
 	mcpSrv := agentmcp.NewServer(registry)
@@ -1296,41 +1327,41 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	// Bridge MCP server context for CLI providers (claude-code, gemini-cli)
 	r.SetMCPServer(mcpSrv)
 
-	// Wire vision tool to use Nebo's provider system for image analysis
-	if visionTool := registry.GetVisionTool(); visionTool != nil {
-		visionTool.SetAnalyzeFunc(func(ctx context.Context, imageBase64, mediaType, prompt string) (string, error) {
-			if len(providers) == 0 {
-				return "", fmt.Errorf("no AI providers configured")
-			}
-			// Build a one-shot chat request with image content
-			content := fmt.Sprintf("[Image: data:%s;base64,%s]\n\n%s", mediaType, imageBase64, prompt)
-			req := &ai.ChatRequest{
-				Messages: []session.Message{
-					{Role: "user", Content: content},
-				},
-				MaxTokens: 2048,
-			}
-			// Use first available provider
-			events, err := providers[0].Stream(ctx, req)
-			if err != nil {
-				return "", err
-			}
-			var result strings.Builder
-			for event := range events {
-				switch event.Type {
-				case ai.EventTypeText:
-					result.WriteString(event.Text)
-				case ai.EventTypeError:
-					if event.Error != nil {
-						return "", fmt.Errorf("%s", event.Error.Error())
-					}
-					return "", fmt.Errorf("vision provider error")
-				case ai.EventTypeDone:
-					// Stream complete
+	// Wire bot tool's embedded vision tool with AnalyzeFunc
+	if bt := registry.GetBotTool(); bt != nil {
+		if bv := bt.GetVisionTool(); bv != nil {
+			bv.SetAnalyzeFunc(func(ctx context.Context, imageBase64, mediaType, prompt string) (string, error) {
+				if len(providers) == 0 {
+					return "", fmt.Errorf("no AI providers configured")
 				}
-			}
-			return result.String(), nil
-		})
+				content := fmt.Sprintf("[Image: data:%s;base64,%s]\n\n%s", mediaType, imageBase64, prompt)
+				req := &ai.ChatRequest{
+					Messages: []session.Message{
+						{Role: "user", Content: content},
+					},
+					MaxTokens: 2048,
+				}
+				events, err := providers[0].Stream(ctx, req)
+				if err != nil {
+					return "", err
+				}
+				var result strings.Builder
+				for event := range events {
+					switch event.Type {
+					case ai.EventTypeText:
+						result.WriteString(event.Text)
+					case ai.EventTypeError:
+						if event.Error != nil {
+							return "", fmt.Errorf("%s", event.Error.Error())
+						}
+						return "", fmt.Errorf("vision provider error")
+					case ai.EventTypeDone:
+						// Stream complete
+					}
+				}
+				return result.String(), nil
+			})
+		}
 	}
 
 	// Set up subagent persistence for surviving restarts
@@ -1777,22 +1808,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			// Show typing indicator while processing
 			neboloopPlugin.SendTyping(taskCtx, msg.ConversationID, true)
 
-			// For owner DMs, save user message to chat_messages and broadcast
-			// to the web UI so the companion chat updates live.
-			if msg.IsOwner && state.sqlDB != nil {
-				queries := db.New(state.sqlDB)
-				msgID := uuid.New().String()
-				if _, err := queries.CreateChatMessageWithDay(taskCtx, db.CreateChatMessageWithDayParams{
-					ID:      msgID,
-					ChatID:  sessionKey,
-					Role:    "user",
-					Content: prompt,
-				}); err != nil {
-					fmt.Printf("[sdk:dm] Failed to save user message to chat_messages: %v\n", err)
-				} else {
-					fmt.Printf("[sdk:dm] Saved user message %s to chat %s\n", msgID, sessionKey)
-				}
-				// Notify web UI of the new user message (DM-originated)
+			// For owner DMs, broadcast to web UI so companion chat updates live.
+			// Message persistence is handled by the runner (single write path).
+			if msg.IsOwner {
 				if err := state.sendFrame(map[string]any{
 					"type":   "event",
 					"method": "dm_user_message",
@@ -1924,22 +1942,8 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			}
 			fmt.Printf("[sdk:dm] Run complete: session=%s result_len=%d events=%d tail=%q\n", sessionKey, result.Len(), eventCount, tail)
 
-			// Save assistant response and notify web UI
+			// Notify web UI of completion (message persistence handled by runner)
 			if msg.IsOwner {
-				if state.sqlDB != nil && result.Len() > 0 {
-					queries := db.New(state.sqlDB)
-					msgID := uuid.New().String()
-					if _, err := queries.CreateChatMessageWithDay(taskCtx, db.CreateChatMessageWithDayParams{
-						ID:      msgID,
-						ChatID:  sessionKey,
-						Role:    "assistant",
-						Content: result.String(),
-					}); err != nil {
-						fmt.Printf("[sdk:dm] Failed to save assistant message to chat_messages: %v\n", err)
-					} else {
-						fmt.Printf("[sdk:dm] Saved assistant message %s to chat %s (len=%d)\n", msgID, sessionKey, result.Len())
-					}
-				}
 				state.sendFrame(map[string]any{
 					"type":   "event",
 					"method": "chat_complete",
@@ -2250,27 +2254,62 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	// Wire channel sender to message tool (now that appRegistry is available)
 	messageTool.SetChannelSender(appRegistry)
 
-	// Wire notify_owner: append to companion session + send WS frame to web UI
-	if notifyTool := registry.GetNotifyOwnerTool(); notifyTool != nil {
-		notifyTool.AppendToSession = func(content string) error {
-			sess, err := sessions.GetOrCreate("companion", "")
+	// --- Wire new STRAP tools ---
+
+	// Wire loop tool: comm service + channel lister + querier
+	if loopTool := registry.GetLoopTool(); loopTool != nil {
+		loopTool.SetCommService(commHandler)
+		loopTool.SetLoopChannelLister(func(ctx context.Context) ([]tools.LoopChannelInfo, error) {
+			channels, err := neboloopPlugin.ListLoopChannels(ctx)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			return sessions.AppendMessage(sess.ID, session.Message{
-				Role:    "assistant",
-				Content: content,
-			})
-		}
-		notifyTool.SendFrame = func(frame map[string]any) error {
-			return state.sendFrame(frame)
-		}
+			result := make([]tools.LoopChannelInfo, len(channels))
+			for i, ch := range channels {
+				result[i] = tools.LoopChannelInfo{
+					ChannelID:   ch.ChannelID,
+					ChannelName: ch.ChannelName,
+					LoopID:      ch.LoopID,
+					LoopName:    ch.LoopName,
+				}
+			}
+			return result, nil
+		})
+		loopTool.SetLoopQuerier(&loopQuerierAdapter{plugin: neboloopPlugin})
 	}
 
-	// Wire query_sessions: adapter converts SessionManager types → tool types
-	if qsTool := registry.GetQuerySessionsTool(); qsTool != nil {
-		qsTool.SetQuerier(&sessionQuerierAdapter{mgr: sessions})
+	// Wire bot tool: identity syncer + session querier + current user
+	if bt := registry.GetBotTool(); bt != nil {
+		bt.SetIdentitySyncer(func(ctx context.Context, name, role string) {
+			_ = neboloopPlugin.UpdateBotIdentity(ctx, name, role)
+		})
+		bt.SetSessionQuerier(&sessionQuerierAdapter{mgr: sessions})
+		bt.SetCurrentUser("default-user")
 	}
+
+	// Wire message tool: owner callbacks (append to companion session + send WS frame)
+	if msgTool := registry.GetMsgTool(); msgTool != nil {
+		msgTool.SetOwnerCallbacks(
+			func(content string) error {
+				sess, err := sessions.GetOrCreate("companion", "")
+				if err != nil {
+					return err
+				}
+				return sessions.AppendMessage(sess.ID, session.Message{
+					Role:    "assistant",
+					Content: content,
+				})
+			},
+			func(frame map[string]any) error {
+				return state.sendFrame(frame)
+			},
+		)
+	}
+
+	// Wire app tool: app manager (after AppRegistry gains ListInstalled/LaunchApp/StopApp)
+	// TODO: Wire at.SetAppManager(appRegistry) once AppRegistry implements AppManager
+
+	// notify_owner and query_sessions are now wired via MsgTool and BotTool above
 
 	// Wire desktop queue: route desktop tools through LaneDesktop for serialization
 	registry.SetDesktopQueue(func(ctx context.Context, execute func(ctx context.Context) *tools.ToolResult) *tools.ToolResult {
@@ -2517,102 +2556,6 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	}
 }
 
-// maybeIntroduceSelf checks if a user needs onboarding and proactively introduces the agent
-// This is called on agent startup and checks the global companion session (legacy)
-// For per-user introduction, see maybeIntroduceToUser
-func maybeIntroduceSelf(ctx context.Context, state *agentState, r *runner.Runner, sessions *session.Manager) {
-	// Legacy: Check global companion session for backwards compatibility
-	// New multi-user onboarding is handled per-user in maybeIntroduceToUser
-	companionSession, err := sessions.GetOrCreate("companion", "")
-	if err != nil {
-		fmt.Printf("[Agent] Could not check companion session: %v\n", err)
-		return
-	}
-
-	// Get messages for this session
-	messages, err := sessions.GetMessages(companionSession.ID, 10)
-	if err != nil {
-		fmt.Printf("[Agent] Could not get companion messages: %v\n", err)
-		return
-	}
-
-	// If there are already messages, no need to introduce
-	if len(messages) > 0 {
-		fmt.Printf("[Agent] Companion session already has %d messages, skipping introduction\n", len(messages))
-		return
-	}
-
-	// No messages yet - this is a new user! Introduce ourselves.
-	fmt.Println("[Agent] New user detected! Introducing myself...")
-
-	// Resolve the first user ID so memories are stored under the correct user
-	// (not "anonymous"). Without this, the introduction stores memories under
-	// an anonymous user ID, invisible to the real user's subsequent sessions.
-	var userID string
-	if row := sessions.GetDB().QueryRow("SELECT id FROM users LIMIT 1"); row != nil {
-		row.Scan(&userID)
-	}
-
-	// Run the agent with a special introduction request
-	// Empty prompt signals the runner to not save a user message, just trigger the agent
-	events, err := r.Run(ctx, &runner.RunRequest{
-		SessionKey: "companion",
-		UserID:     userID,
-		Prompt:     "", // Empty prompt = agent speaks first
-		System:     "You are starting a conversation with a new user. Your EXACT first message must be: \"Hi! I'm Nebo. What's your name?\" Do not add anything else to this first message. No feature lists. No explanation of what you do.",
-		Origin:     tools.OriginSystem,
-	})
-	if err != nil {
-		fmt.Printf("[Agent] Introduction failed: %v\n", err)
-		return
-	}
-
-	// Stream the introduction response back to any connected clients
-	var result strings.Builder
-	for event := range events {
-		switch event.Type {
-		case ai.EventTypeText:
-			result.WriteString(event.Text)
-			state.sendFrame(map[string]any{
-				"type": "stream",
-				"id":   "introduction",
-				"payload": map[string]any{
-					"chunk":      event.Text,
-					"session_id": companionSession.ID,
-				},
-			})
-		case ai.EventTypeMessage:
-			// CLI provider may send text only in the assistant envelope
-			if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
-				result.WriteString(event.Message.Content)
-				state.sendFrame(map[string]any{
-					"type": "stream",
-					"id":   "introduction",
-					"payload": map[string]any{
-						"chunk":      event.Message.Content,
-						"session_id": companionSession.ID,
-					},
-				})
-			}
-		case ai.EventTypeError:
-			fmt.Printf("[Agent] Introduction error: %v\n", event.Error)
-		}
-	}
-
-	// Send completion
-	state.sendFrame(map[string]any{
-		"type": "res",
-		"id":   "introduction",
-		"ok":   true,
-		"payload": map[string]any{
-			"result":     result.String(),
-			"session_id": companionSession.ID,
-		},
-	})
-
-	fmt.Printf("[Agent] Introduction complete (%d chars)\n", result.Len())
-}
-
 // introductionInProgress tracks which sessions have an introduction running to prevent duplicates.
 var introductionInProgress sync.Map
 
@@ -2636,6 +2579,22 @@ func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner
 		return
 	}
 	defer introductionInProgress.Delete(sessionKey)
+
+	// Check if user has already completed onboarding — skip introduction if so
+	dbContext, _ := memory.LoadContext(sessions.GetDB(), userID)
+	if dbContext != nil && !dbContext.NeedsOnboarding() {
+		fmt.Printf("[Agent] User already onboarded, skipping introduction\n")
+		state.sendFrame(map[string]any{
+			"type": "res",
+			"id":   requestID,
+			"ok":   true,
+			"payload": map[string]any{
+				"result":  "",
+				"skipped": true,
+			},
+		})
+		return
+	}
 
 	// Get or create the user's companion session
 	sess, err := sessions.GetOrCreate(sessionKey, userID)
@@ -2687,8 +2646,8 @@ func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner
 	req.UserID = userID
 	req.Origin = tools.OriginSystem
 
-	dbContext, err := memory.LoadContext(sessions.GetDB(), userID)
-	if err == nil && dbContext.UserDisplayName != "" {
+	dbContext, _ = memory.LoadContext(sessions.GetDB(), userID)
+	if dbContext != nil && dbContext.UserDisplayName != "" {
 		// Known user — greet them warmly by name
 		fmt.Printf("[Agent] Known user, name=%s - greeting by name\n", dbContext.UserDisplayName)
 		req.Prompt = fmt.Sprintf("[User %s just connected - greet them warmly by name and offer to help]", dbContext.UserDisplayName)

@@ -21,6 +21,17 @@ func (q *Queries) CountChatMessages(ctx context.Context, chatID string) (int64, 
 	return count, err
 }
 
+const countChatMessagesByChatId = `-- name: CountChatMessagesByChatId :one
+SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?
+`
+
+func (q *Queries) CountChatMessagesByChatId(ctx context.Context, chatID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countChatMessagesByChatId, chatID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countChats = `-- name: CountChats :one
 SELECT COUNT(*) FROM chats
 `
@@ -62,7 +73,7 @@ const createChatMessage = `-- name: CreateChatMessage :one
 
 INSERT INTO chat_messages (id, chat_id, role, content, metadata, created_at)
 VALUES (?, ?, ?, ?, ?, unixepoch())
-RETURNING id, chat_id, role, content, metadata, created_at, day_marker
+RETURNING id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate
 `
 
 type CreateChatMessageParams struct {
@@ -91,6 +102,52 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.DayMarker,
+		&i.ToolCalls,
+		&i.ToolResults,
+		&i.TokenEstimate,
+	)
+	return i, err
+}
+
+const createChatMessageForRunner = `-- name: CreateChatMessageForRunner :one
+INSERT INTO chat_messages (id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate, day_marker, created_at)
+VALUES (?, ?, ?, ?, NULL, ?, ?, ?, date('now', 'localtime'), unixepoch())
+RETURNING id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate
+`
+
+type CreateChatMessageForRunnerParams struct {
+	ID            string         `json:"id"`
+	ChatID        string         `json:"chat_id"`
+	Role          string         `json:"role"`
+	Content       string         `json:"content"`
+	ToolCalls     sql.NullString `json:"tool_calls"`
+	ToolResults   sql.NullString `json:"tool_results"`
+	TokenEstimate sql.NullInt64  `json:"token_estimate"`
+}
+
+// Insert a message with tool_calls, tool_results, and token_estimate (used by runner/SessionManager)
+func (q *Queries) CreateChatMessageForRunner(ctx context.Context, arg CreateChatMessageForRunnerParams) (ChatMessage, error) {
+	row := q.db.QueryRowContext(ctx, createChatMessageForRunner,
+		arg.ID,
+		arg.ChatID,
+		arg.Role,
+		arg.Content,
+		arg.ToolCalls,
+		arg.ToolResults,
+		arg.TokenEstimate,
+	)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatID,
+		&i.Role,
+		&i.Content,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.DayMarker,
+		&i.ToolCalls,
+		&i.ToolResults,
+		&i.TokenEstimate,
 	)
 	return i, err
 }
@@ -98,7 +155,7 @@ func (q *Queries) CreateChatMessage(ctx context.Context, arg CreateChatMessagePa
 const createChatMessageWithDay = `-- name: CreateChatMessageWithDay :one
 INSERT INTO chat_messages (id, chat_id, role, content, metadata, day_marker, created_at)
 VALUES (?, ?, ?, ?, ?, date('now', 'localtime'), unixepoch())
-RETURNING id, chat_id, role, content, metadata, created_at, day_marker
+RETURNING id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate
 `
 
 type CreateChatMessageWithDayParams struct {
@@ -126,6 +183,9 @@ func (q *Queries) CreateChatMessageWithDay(ctx context.Context, arg CreateChatMe
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.DayMarker,
+		&i.ToolCalls,
+		&i.ToolResults,
+		&i.TokenEstimate,
 	)
 	return i, err
 }
@@ -163,6 +223,15 @@ func (q *Queries) DeleteChatMessagesAfter(ctx context.Context, arg DeleteChatMes
 	return err
 }
 
+const deleteChatMessagesByChatId = `-- name: DeleteChatMessagesByChatId :exec
+DELETE FROM chat_messages WHERE chat_id = ?
+`
+
+func (q *Queries) DeleteChatMessagesByChatId(ctx context.Context, chatID string) error {
+	_, err := q.db.ExecContext(ctx, deleteChatMessagesByChatId, chatID)
+	return err
+}
+
 const getChat = `-- name: GetChat :one
 SELECT id, title, created_at, updated_at, user_id FROM chats WHERE id = ?
 `
@@ -181,7 +250,7 @@ func (q *Queries) GetChat(ctx context.Context, id string) (Chat, error) {
 }
 
 const getChatMessage = `-- name: GetChatMessage :one
-SELECT id, chat_id, role, content, metadata, created_at, day_marker FROM chat_messages WHERE id = ?
+SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM chat_messages WHERE id = ?
 `
 
 func (q *Queries) GetChatMessage(ctx context.Context, id string) (ChatMessage, error) {
@@ -195,12 +264,15 @@ func (q *Queries) GetChatMessage(ctx context.Context, id string) (ChatMessage, e
 		&i.Metadata,
 		&i.CreatedAt,
 		&i.DayMarker,
+		&i.ToolCalls,
+		&i.ToolResults,
+		&i.TokenEstimate,
 	)
 	return i, err
 }
 
 const getChatMessages = `-- name: GetChatMessages :many
-SELECT id, chat_id, role, content, metadata, created_at, day_marker FROM chat_messages
+SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM chat_messages
 WHERE chat_id = ?
 ORDER BY created_at ASC
 `
@@ -222,6 +294,59 @@ func (q *Queries) GetChatMessages(ctx context.Context, chatID string) ([]ChatMes
 			&i.Metadata,
 			&i.CreatedAt,
 			&i.DayMarker,
+			&i.ToolCalls,
+			&i.ToolResults,
+			&i.TokenEstimate,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getChatMessagesAfterTimestamp = `-- name: GetChatMessagesAfterTimestamp :many
+SELECT id, chat_id, role, content, created_at
+FROM chat_messages
+WHERE chat_id = ? AND created_at > ? AND role IN ('user', 'assistant')
+ORDER BY created_at ASC
+`
+
+type GetChatMessagesAfterTimestampParams struct {
+	ChatID    string `json:"chat_id"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+type GetChatMessagesAfterTimestampRow struct {
+	ID        string `json:"id"`
+	ChatID    string `json:"chat_id"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// Get messages after a given timestamp for embedding extraction (user and assistant only)
+func (q *Queries) GetChatMessagesAfterTimestamp(ctx context.Context, arg GetChatMessagesAfterTimestampParams) ([]GetChatMessagesAfterTimestampRow, error) {
+	rows, err := q.db.QueryContext(ctx, getChatMessagesAfterTimestamp, arg.ChatID, arg.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetChatMessagesAfterTimestampRow
+	for rows.Next() {
+		var i GetChatMessagesAfterTimestampRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatID,
+			&i.Role,
+			&i.Content,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -359,7 +484,7 @@ func (q *Queries) GetDaysWithMessages(ctx context.Context, arg GetDaysWithMessag
 }
 
 const getMessagesByDay = `-- name: GetMessagesByDay :many
-SELECT id, chat_id, role, content, metadata, created_at, day_marker FROM chat_messages
+SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM chat_messages
 WHERE chat_id = ? AND day_marker = ?
 ORDER BY created_at ASC
 `
@@ -386,6 +511,9 @@ func (q *Queries) GetMessagesByDay(ctx context.Context, arg GetMessagesByDayPara
 			&i.Metadata,
 			&i.CreatedAt,
 			&i.DayMarker,
+			&i.ToolCalls,
+			&i.ToolResults,
+			&i.TokenEstimate,
 		); err != nil {
 			return nil, err
 		}
@@ -428,8 +556,8 @@ func (q *Queries) GetOrCreateCompanionChat(ctx context.Context, arg GetOrCreateC
 }
 
 const getRecentChatMessages = `-- name: GetRecentChatMessages :many
-SELECT id, chat_id, role, content, metadata, created_at, day_marker FROM (
-    SELECT id, chat_id, role, content, metadata, created_at, day_marker FROM chat_messages
+SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM (
+    SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM chat_messages
     WHERE chat_id = ?
     ORDER BY created_at DESC
     LIMIT ?
@@ -459,6 +587,58 @@ func (q *Queries) GetRecentChatMessages(ctx context.Context, arg GetRecentChatMe
 			&i.Metadata,
 			&i.CreatedAt,
 			&i.DayMarker,
+			&i.ToolCalls,
+			&i.ToolResults,
+			&i.TokenEstimate,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getRecentChatMessagesWithTools = `-- name: GetRecentChatMessagesWithTools :many
+SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM (
+    SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM chat_messages
+    WHERE chat_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+) sub ORDER BY created_at ASC
+`
+
+type GetRecentChatMessagesWithToolsParams struct {
+	ChatID string `json:"chat_id"`
+	Limit  int64  `json:"limit"`
+}
+
+// Get last N messages with tool data for runner context window
+func (q *Queries) GetRecentChatMessagesWithTools(ctx context.Context, arg GetRecentChatMessagesWithToolsParams) ([]ChatMessage, error) {
+	rows, err := q.db.QueryContext(ctx, getRecentChatMessagesWithTools, arg.ChatID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ChatMessage
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatID,
+			&i.Role,
+			&i.Content,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.DayMarker,
+			&i.ToolCalls,
+			&i.ToolResults,
+			&i.TokenEstimate,
 		); err != nil {
 			return nil, err
 		}
@@ -514,7 +694,7 @@ func (q *Queries) ListChats(ctx context.Context, arg ListChatsParams) ([]Chat, e
 }
 
 const searchChatMessages = `-- name: SearchChatMessages :many
-SELECT id, chat_id, role, content, metadata, created_at, day_marker FROM chat_messages
+SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM chat_messages
 WHERE chat_id = ? AND content LIKE '%' || ? || '%'
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?
@@ -549,6 +729,9 @@ func (q *Queries) SearchChatMessages(ctx context.Context, arg SearchChatMessages
 			&i.Metadata,
 			&i.CreatedAt,
 			&i.DayMarker,
+			&i.ToolCalls,
+			&i.ToolResults,
+			&i.TokenEstimate,
 		); err != nil {
 			return nil, err
 		}

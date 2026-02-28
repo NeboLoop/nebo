@@ -81,7 +81,6 @@ type Runner struct {
 	extractingMemory    sync.Map          // sessionID → true: prevents overlapping extractions
 	detectingObjective  sync.Map          // sessionID → true: prevents overlapping detections
 	memoryTimers        sync.Map          // sessionID → *time.Timer: debounced extraction
-	sessionLocks        sync.Map          // sessionID → *sync.Mutex: guards compaction per session
 }
 
 // RunRequest contains parameters for a run
@@ -137,13 +136,6 @@ func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider,
 	}
 
 	return r
-}
-
-// getSessionLock returns a per-session mutex for guarding compaction.
-// Uses sync.Map for lock-free reads on the common (no-compaction) path.
-func (r *Runner) getSessionLock(sessionID string) *sync.Mutex {
-	v, _ := r.sessionLocks.LoadOrStore(sessionID, &sync.Mutex{})
-	return v.(*sync.Mutex)
 }
 
 // SetModelSelector sets the model selector for task-based model routing.
@@ -487,7 +479,6 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 		maxIterations = 100
 	}
 
-	compactionAttempted := false
 	nudgeAttempted := false     // One steering nudge per run when model stops mid-task
 	var runStartMessageID int64 // Captured on iteration 1; messages with ID >= this are protected from window eviction
 
@@ -623,74 +614,22 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 			fmt.Printf("[Runner] Context getting large: ~%d tokens (error threshold: %d)\n", estimatedTokens, thresholds.Error)
 		}
 
-		// AutoCompact tier: trigger full compaction.
-		// Nebo has ONE eternal conversation — it must always be able to continue.
-		// If context exceeds the threshold, compact. If still too large after
-		// compaction, compact again more aggressively (fewer kept messages).
+		// AutoCompact tier: context too large. Instead of mutating the DB
+		// (old compaction), simply reload with a smaller window. Messages
+		// stay in the DB forever; context is a read-time decision.
 		if estimatedTokens > thresholds.AutoCompact {
-			fmt.Printf("[Runner] Token limit exceeded (~%d tokens, limit: %d), compacting...\n", estimatedTokens, thresholds.AutoCompact)
+			fmt.Printf("[Runner] Token limit exceeded (~%d tokens, limit: %d), reducing window...\n", estimatedTokens, thresholds.AutoCompact)
 
-			// Per-session lock prevents two concurrent runs from compacting
-			// the same session simultaneously (read-then-write race).
-			sessLock := r.getSessionLock(sessionID)
-			sessLock.Lock()
+			// Trigger memory extraction for messages that are about to leave the window
+			r.maybeRunMemoryFlush(context.WithoutCancel(ctx), rs, sessionID, userID, messages)
 
-			// Only flush memory on the first compaction attempt per run
-			if !compactionAttempted {
-				r.maybeRunMemoryFlush(context.WithoutCancel(ctx), rs, sessionID, userID, messages)
+			// Reduce window: keep only messages from the current run + a few prior
+			if currentRunStart < len(allMessages) {
+				messages = allMessages[currentRunStart:]
+			} else if len(allMessages) > 5 {
+				messages = allMessages[len(allMessages)-5:]
 			}
-			compactionAttempted = true
-
-			summary := r.generateSummary(ctx, messages)
-
-			// Extract and pin the active task from the summary
-			if taskLine := extractTaskFromSummary(summary); taskLine != "" {
-				if err := r.sessions.SetActiveTask(sessionID, taskLine); err != nil {
-					fmt.Printf("[Runner] Warning: failed to set active task: %v\n", err)
-				} else {
-					fmt.Printf("[Runner] Pinned active task: %s\n", truncateForLog(taskLine, 100))
-				}
-			}
-
-			// Cumulative summaries: compress previous summary and prepend
-			summary = r.buildCumulativeSummary(sessionID, summary)
-
-			// Progressive compaction: try keeping 10, then 3, then 1 message(s).
-			// Nebo has ONE eternal conversation — it must always continue.
-			for _, keep := range []int{10, 3, 1} {
-				if compactErr := r.sessions.Compact(sessionID, summary, keep); compactErr != nil {
-					fmt.Printf("[Runner] Compaction (keep=%d) failed: %v\n", keep, compactErr)
-					break
-				}
-				// Index compacted messages for semantic search
-				if r.memoryTool != nil {
-					go func() {
-						indexCtx, indexCancel := context.WithTimeout(context.Background(), 60*time.Second)
-						defer indexCancel()
-						r.memoryTool.IndexSessionTranscript(indexCtx, sessionID, userID)
-					}()
-				}
-				// Reload messages after compaction
-				messages, err = r.sessions.GetMessages(sessionID, r.config.MaxContext)
-				if err != nil {
-					sessLock.Unlock()
-					resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
-					return
-				}
-				newTokens := r.currentTokenEstimate(rs, messages)
-				fmt.Printf("[Runner] After compaction (keep=%d): %d messages, ~%d tokens\n", keep, len(messages), newTokens)
-
-				if newTokens <= thresholds.AutoCompact {
-					// Re-inject recently accessed files to recover working context
-					if reinjectMsg := buildFileReinjectionMessage(r.fileTracker); reinjectMsg != nil {
-						messages = append(messages, *reinjectMsg)
-					}
-					r.fileTracker.Clear()
-					break
-				}
-			}
-			sessLock.Unlock()
-			// Never block — proceed with whatever context we have
+			fmt.Printf("[Runner] Reduced window to %d messages\n", len(messages))
 		}
 
 		// Check for user model switch request (e.g., "use claude", "switch to opus")
@@ -805,7 +744,6 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 				Channel:        channel,
 				AgentName:      agentName,
 				Iteration:      iteration,
-				JustCompacted:  compactionAttempted,
 				RunStartTime:   startTime,
 				WorkTasks:      workTasks,
 				JanusRateLimit: r.latestRateLimit(provider),
@@ -856,59 +794,21 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 
 		if err != nil {
 			if ai.IsContextOverflow(err) {
-				fmt.Printf("[Runner] Context overflow - progressive compaction\n")
+				fmt.Printf("[Runner] Context overflow — reducing window and retrying\n")
 
-				sessLock := r.getSessionLock(sessionID)
-				sessLock.Lock()
+				// Extract memories from messages about to leave the window
+				r.maybeRunMemoryFlush(context.WithoutCancel(ctx), rs, sessionID, userID, messages)
 
-				// Only flush memory on the first overflow per run
-				if !compactionAttempted {
-					r.maybeRunMemoryFlush(context.WithoutCancel(ctx), rs, sessionID, userID, messages)
+				// Aggressively reduce window: keep only current-run messages
+				if currentRunStart < len(allMessages) {
+					messages = allMessages[currentRunStart:]
+				} else if len(allMessages) > 3 {
+					messages = allMessages[len(allMessages)-3:]
 				}
+				fmt.Printf("[Runner] Reduced to %d messages after overflow\n", len(messages))
 
-				// Determine starting keep count: skip 10 if we already compacted
-				keepCounts := []int{10, 3, 1}
-				if compactionAttempted {
-					keepCounts = []int{3, 1}
-				}
-				compactionAttempted = true
-
-				summary := r.generateSummary(ctx, messages)
-
-				// Extract and pin the active task from the summary
-				if taskLine := extractTaskFromSummary(summary); taskLine != "" {
-					if err := r.sessions.SetActiveTask(sessionID, taskLine); err != nil {
-						fmt.Printf("[Runner] Warning: failed to set active task: %v\n", err)
-					} else {
-						fmt.Printf("[Runner] Pinned active task: %s\n", truncateForLog(taskLine, 100))
-					}
-				}
-
-				// Cumulative summaries: compress previous summary and prepend
-				summary = r.buildCumulativeSummary(sessionID, summary)
-
-				for _, keep := range keepCounts {
-					if compactErr := r.sessions.Compact(sessionID, summary, keep); compactErr != nil {
-						fmt.Printf("[Runner] Overflow compaction (keep=%d) failed: %v\n", keep, compactErr)
-						break
-					}
-					// Index compacted messages for semantic search
-					if r.memoryTool != nil {
-						go func() {
-							indexCtx, indexCancel := context.WithTimeout(context.Background(), 60*time.Second)
-							defer indexCancel()
-							r.memoryTool.IndexSessionTranscript(indexCtx, sessionID, userID)
-						}()
-					}
-					fmt.Printf("[Runner] Overflow compaction (keep=%d) succeeded\n", keep)
-					break
-				}
-
-				sessLock.Unlock()
-
-				// File re-injection will happen on the next iteration
 				r.fileTracker.Clear()
-				continue // ALWAYS retry — maxIterations is the natural bound
+				continue // Retry with smaller context
 			}
 			if ai.IsRateLimitOrAuth(err) {
 				// Record error for profile cooldown
@@ -1389,8 +1289,6 @@ func truncateToolArgs(args string) string {
 	return args[:100] + "..."
 }
 
-// extractTaskFromSummary parses the "Current Task" line from a structured compaction summary.
-// The summary follows the compactionSummaryPrompt format where point #1 is "Current Task".
 // extractProviderErrorMessage turns a provider error into a user-visible message.
 // Parses known Janus/OpenAI error formats to extract a clean message.
 // Janus quota exhaustion gets a friendly message instead of the raw error code.
@@ -1415,44 +1313,6 @@ func extractProviderErrorMessage(err error) string {
 	return fmt.Sprintf("Something went wrong: %s", msg)
 }
 
-func extractTaskFromSummary(summary string) string {
-	lines := strings.Split(summary, "\n")
-	inTaskSection := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// Detect the "Current Task" heading (markdown bold or numbered)
-		if strings.Contains(trimmed, "Current Task") {
-			inTaskSection = true
-			// If the task is on the same line after a colon, grab it
-			if idx := strings.Index(trimmed, ":"); idx >= 0 {
-				task := strings.TrimSpace(trimmed[idx+1:])
-				if task != "" {
-					return task
-				}
-			}
-			continue
-		}
-
-		// Grab the first non-empty line after the heading
-		if inTaskSection && trimmed != "" {
-			// Strip leading markdown list markers
-			task := strings.TrimLeft(trimmed, "- *•")
-			task = strings.TrimSpace(task)
-			if task != "" {
-				return task
-			}
-		}
-
-		// Stop at the next section heading
-		if inTaskSection && (strings.HasPrefix(trimmed, "2.") || strings.HasPrefix(trimmed, "**Progress") || strings.HasPrefix(trimmed, "## ")) {
-			break
-		}
-	}
-
-	return ""
-}
 
 // Tiered summary compression constants.
 // After 3-4 compaction cycles, flat 800-char compression makes summaries
@@ -2150,10 +2010,9 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 	}
 }
 
-// maybeRunMemoryFlush kicks off background memory extraction before compaction.
-// Threshold and dedup checks are synchronous. The actual LLM extraction runs in
-// a goroutine so it doesn't block the conversation lane — the messages slice is
-// safe to read concurrently since Compact() only modifies the DB.
+// maybeRunMemoryFlush kicks off background memory extraction when messages are
+// about to leave the context window. Uses an overlap guard to prevent concurrent
+// extractions for the same session.
 // Returns true if a flush was initiated.
 func (r *Runner) maybeRunMemoryFlush(ctx context.Context, rs *runState, sessionID, userID string, messages []session.Message) bool {
 	tokens := estimateTokens(messages)
@@ -2162,27 +2021,13 @@ func (r *Runner) maybeRunMemoryFlush(ctx context.Context, rs *runState, sessionI
 		return false
 	}
 
-	// Check if we should run flush for this compaction cycle
-	// This prevents running flush multiple times for the same compaction
-	if r.sessions != nil {
-		shouldFlush, err := r.sessions.ShouldRunMemoryFlush(sessionID)
-		if err != nil {
-			fmt.Printf("[runner] Warning: failed to check memory flush status: %v\n", err)
-		} else if !shouldFlush {
-			fmt.Printf("[runner] Skipping memory flush (already ran for this compaction cycle)\n")
-			return false
-		}
-	}
-
 	if r.memoryTool == nil || len(r.providers) == 0 {
 		return false
 	}
 
-	// Record flush intent immediately to prevent re-triggering on next iteration
-	if r.sessions != nil {
-		if err := r.sessions.RecordMemoryFlush(sessionID); err != nil {
-			fmt.Printf("[runner] Warning: failed to record memory flush: %v\n", err)
-		}
+	// Overlap guard — only one flush per session at a time
+	if _, running := r.extractingMemory.Load(sessionID); running {
+		return false
 	}
 
 	fmt.Printf("[runner] Context at %d tokens (threshold: %d) - launching background memory flush (session: %s)\n", tokens, flushThreshold, sessionID)

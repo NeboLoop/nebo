@@ -114,3 +114,31 @@ UPDATE chat_messages SET content = ?, metadata = ? WHERE id = ?;
 
 -- name: CountChatMessages :one
 SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?;
+
+-- name: DeleteChatMessagesByChatId :exec
+DELETE FROM chat_messages WHERE chat_id = ?;
+
+-- name: GetRecentChatMessagesWithTools :many
+-- Get last N messages with tool data for runner context window
+SELECT * FROM (
+    SELECT * FROM chat_messages
+    WHERE chat_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+) sub ORDER BY created_at ASC;
+
+-- name: CountChatMessagesByChatId :one
+SELECT COUNT(*) FROM chat_messages WHERE chat_id = ?;
+
+-- name: GetChatMessagesAfterTimestamp :many
+-- Get messages after a given timestamp for embedding extraction (user and assistant only)
+SELECT id, chat_id, role, content, created_at
+FROM chat_messages
+WHERE chat_id = ? AND created_at > ? AND role IN ('user', 'assistant')
+ORDER BY created_at ASC;
+
+-- name: CreateChatMessageForRunner :one
+-- Insert a message with tool_calls, tool_results, and token_estimate (used by runner/SessionManager)
+INSERT INTO chat_messages (id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate, day_marker, created_at)
+VALUES (?, ?, ?, ?, NULL, ?, ?, ?, date('now', 'localtime'), unixepoch())
+RETURNING *;
