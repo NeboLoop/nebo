@@ -11,13 +11,14 @@ import (
 
 // Lane types for command queue
 const (
-	LaneMain      = "main"      // Primary user interactions
+	LaneMain      = "main"      // Primary user interactions (phone + desktop + voice)
 	LaneEvents    = "events"    // Scheduled/triggered tasks (renamed from cron)
 	LaneSubagent  = "subagent"  // Sub-agent operations
 	LaneNested    = "nested"    // Nested tool calls
 	LaneHeartbeat = "heartbeat" // Proactive heartbeat ticks
 	LaneComm      = "comm"      // Inter-agent communication messages
 	LaneDev       = "dev"       // Developer assistant (independent of main lane)
+	LaneDesktop   = "desktop"   // Serialized desktop automation (one screen, one mouse)
 )
 
 // laneContextKey is an unexported type for the lane context key.
@@ -40,13 +41,14 @@ func GetLane(ctx context.Context) string {
 // DefaultLaneConcurrency defines default max concurrent tasks per lane
 // 0 = unlimited
 var DefaultLaneConcurrency = map[string]int{
-	LaneMain:      1,
+	LaneMain:      2,  // Concurrent phone + desktop + voice input on same session
 	LaneEvents:    0,  // Scheduled/triggered tasks (unlimited — each gets own session)
 	LaneSubagent:  5,  // Max 5 concurrent sub-agents (backpressure)
 	LaneNested:    3,
 	LaneHeartbeat: 1,  // Sequential heartbeat processing
 	LaneComm:      5,  // Concurrent comm message processing
 	LaneDev:       1,  // Developer assistant (serialized per project)
+	LaneDesktop:   1,  // One screen, one mouse, one keyboard — strictly serialized
 }
 
 // MaxLaneConcurrency defines hard limits that cannot be exceeded
@@ -308,19 +310,6 @@ func (s *LaneState) processAvailable(mgr *LaneManager) {
 			startTime := e.task.StartedAt
 			mgr.emit(LaneEvent{Type: "task_started", Lane: s.Lane, Task: startInfo})
 
-			// Watchdog: force-cancel tasks that exceed max duration.
-			// Safety net — if all other cancellation mechanisms fail,
-			// the task is killed after this timeout and the lane resumes.
-			maxDuration := 15 * time.Minute
-			if s.Lane == LaneHeartbeat {
-				maxDuration = 2 * time.Minute
-			}
-			watchdog := time.AfterFunc(maxDuration, func() {
-				fmt.Printf("[LaneManager] WATCHDOG: force-cancelling task in lane=%s after %v\n",
-					s.Lane, maxDuration)
-				e.cancel()
-			})
-
 			var err error
 			func() {
 				defer func() {
@@ -331,7 +320,6 @@ func (s *LaneState) processAvailable(mgr *LaneManager) {
 				}()
 				err = e.task.Task(e.ctx)
 			}()
-			watchdog.Stop()
 
 			s.mu.Lock()
 			e.task.CompletedAt = time.Now()
