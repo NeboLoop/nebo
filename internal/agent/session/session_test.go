@@ -43,7 +43,9 @@ func openTestDB(t *testing.T) *sql.DB {
 			verbose_level TEXT,
 			custom_label TEXT,
 			last_embedded_message_id INTEGER DEFAULT 0,
-			created_at INTEGER NOT NULL,
+				active_task TEXT,
+				last_summarized_count INTEGER DEFAULT 0,
+				created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)
 	`)
@@ -191,3 +193,5 @@ func TestListSessions(t *testing.T) {
 		t.Errorf("expected 3 sessions, got %d", len(sessions))
 	}
 }
+
+

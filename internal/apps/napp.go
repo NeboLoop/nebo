@@ -173,7 +173,10 @@ func extractFile(r io.Reader, target string, perm os.FileMode, maxSize int64) er
 }
 
 // isAllowedNappFile returns true if the file path is expected in a .napp package.
+// Normalizes to forward slashes since tar entries use forward slashes but
+// filepath.Clean produces backslashes on Windows.
 func isAllowedNappFile(path string) bool {
+	path = filepath.ToSlash(path)
 	switch path {
 	case "manifest.json", "binary", "app", "signatures.json", "SKILL.md", "skill.md":
 		return true
@@ -186,6 +189,7 @@ func isAllowedNappFile(path string) bool {
 
 // maxSizeForFile returns the maximum allowed size for a file in a .napp package.
 func maxSizeForFile(path string) int64 {
+	path = filepath.ToSlash(path)
 	switch path {
 	case "binary", "app":
 		return maxNappBinarySize

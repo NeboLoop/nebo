@@ -62,11 +62,32 @@ func (t *MenubarTool) RequiresApproval() bool {
 }
 
 type menubarInput struct {
-	Action string `json:"action"`
-	App    string `json:"app"`
-	Menu   string `json:"menu"`
-	Item   string `json:"item"`
-	Index  int    `json:"index"`
+	Action   string `json:"action"`
+	App      string `json:"app"`
+	Menu     string `json:"menu"`
+	Item     string `json:"item"`
+	MenuPath string `json:"menu_path"` // Domain schema field: "File > Save"
+	Name     string `json:"name"`      // Domain schema field: alternative to item
+	Index    int    `json:"index"`
+}
+
+// resolveMenuFields fills Menu/Item from MenuPath/Name when the direct fields are empty.
+// The domain schema exposes menu_path ("File > Save") and name, while the sub-tool
+// methods use separate menu and item parameters.
+func (in *menubarInput) resolveMenuFields() {
+	if in.Menu == "" && in.MenuPath != "" {
+		if parts := strings.SplitN(in.MenuPath, " > ", 2); len(parts) == 2 {
+			in.Menu = parts[0]
+			if in.Item == "" {
+				in.Item = parts[1]
+			}
+		} else {
+			in.Menu = in.MenuPath
+		}
+	}
+	if in.Item == "" && in.Name != "" {
+		in.Item = in.Name
+	}
 }
 
 func (t *MenubarTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
@@ -74,6 +95,7 @@ func (t *MenubarTool) Execute(ctx context.Context, input json.RawMessage) (*Tool
 	if err := json.Unmarshal(input, &in); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
 	}
+	in.resolveMenuFields()
 
 	var result string
 	var err error

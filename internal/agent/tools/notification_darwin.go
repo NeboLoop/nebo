@@ -69,9 +69,16 @@ type notificationInput struct {
 	Action   string `json:"action"`
 	Title    string `json:"title"`
 	Message  string `json:"message"`
+	Text     string `json:"text"`
 	Subtitle string `json:"subtitle"`
 	Sound    string `json:"sound"`
 	Voice    string `json:"voice"`
+}
+
+func (in *notificationInput) normalize() {
+	if in.Message == "" && in.Text != "" {
+		in.Message = in.Text
+	}
 }
 
 func (t *NotificationTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
@@ -79,6 +86,8 @@ func (t *NotificationTool) Execute(ctx context.Context, input json.RawMessage) (
 	if err := json.Unmarshal(input, &in); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
 	}
+	in.normalize()
+
 
 	var result string
 	var err error

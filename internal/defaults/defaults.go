@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -88,8 +89,10 @@ func copyDefaults(dir string, overwrite bool) error {
 			return nil
 		}
 
-		// Get relative path (strip "dotnebo/" prefix)
-		relPath, _ := filepath.Rel("dotnebo", path)
+		// Get relative path (strip "dotnebo/" prefix).
+		// Use TrimPrefix instead of filepath.Rel because embed.FS always
+		// uses forward slashes, but filepath.Rel produces backslashes on Windows.
+		relPath := strings.TrimPrefix(path, "dotnebo/")
 		destPath := filepath.Join(dir, relPath)
 
 		if d.IsDir() {
@@ -121,7 +124,7 @@ func copyDefaults(dir string, overwrite bool) error {
 // GetDefault returns the content of a default file by name.
 // Example: GetDefault("config.yaml")
 func GetDefault(name string) ([]byte, error) {
-	return defaultFiles.ReadFile(filepath.Join("dotnebo", name))
+	return defaultFiles.ReadFile("dotnebo/" + name)
 }
 
 // ListDefaults returns the names of all default files.
@@ -132,7 +135,8 @@ func ListDefaults() ([]string, error) {
 			return err
 		}
 		if !d.IsDir() && path != "dotnebo" {
-			relPath, _ := filepath.Rel("dotnebo", path)
+			// Use TrimPrefix to keep forward slashes (embed.FS convention).
+			relPath := strings.TrimPrefix(path, "dotnebo/")
 			files = append(files, relPath)
 		}
 		return nil

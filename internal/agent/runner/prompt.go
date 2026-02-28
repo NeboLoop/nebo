@@ -198,7 +198,7 @@ One-time reminders — use "at" (we compute the schedule automatically):
 - agent(resource: reminder, action: create, name: "send-sms", at: "in 5 minutes", task_type: "agent", message: "Send 'Go outside' to Kristi via text", instructions: "Send the message via the user's preferred messaging channel. The recipient phone number is stored in memory under contacts/kristi.")
 
 Recurring reminders — use "schedule" (cron expression):
-- agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send a summary to Telegram", instructions: "Use the web tool to check the calendar, then deliver the summary via the telegram channel.")
+- agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send a summary to the owner", instructions: "Use the web tool to check the calendar, then deliver the summary via DM.")
 - agent(resource: reminder, action: create, name: "weekly-report", schedule: "0 0 17 * * 5", task_type: "agent", message: "Compile this week's completed tasks and draft a summary")
 
 Management:
@@ -218,10 +218,10 @@ Examples: "0 0 9 * * 1-5" (9am weekdays), "0 30 8 * * *" (8:30am daily), "0 0 */
 - agent(resource: memory, action: delete, key: "...") — Delete a memory
 Layers: "tacit" (long-term preferences — MOST COMMON), "daily" (today's facts, auto-expires), "entity" (people/places/things)
 
-**Messaging (channel integrations):**
-- agent(resource: message, action: send, channel: "telegram", to: "...", text: "Hello!") — Send a message
+**Messaging (via NeboLoop):**
+- agent(resource: message, action: send, to: "...", text: "Hello!") — Send a DM
 - agent(resource: message, action: list) — List available channels
-Use messaging to deliver results to the user on their preferred channel. Combine with reminders for proactive delivery.
+Use messaging to deliver results to the user via DM. Combine with reminders for proactive delivery.
 
 **Sessions:**
 - agent(resource: session, action: list) — List conversation sessions
@@ -313,9 +313,77 @@ Note: Commands run in PowerShell. Use PowerShell cmdlets (Get-Process, Get-Child
 
 // desktopSTRAPDoc returns the desktop STRAP documentation for the current platform.
 func desktopSTRAPDoc() string {
-	base := `### desktop — Desktop Automation
+	switch runtime.GOOS {
+	case "windows":
+		return `### desktop — Desktop Automation
 - desktop(resource: "input", action: "click", x: 100, y: 200) — Click at coordinates
-- desktop(resource: "input", action: "click", element: "B3") — Click element from screenshot see
+- desktop(resource: "input", action: "click", element: "B3") — Click element from screenshot
+- desktop(resource: "input", action: "double_click", x: 100, y: 200) — Double-click
+- desktop(resource: "input", action: "right_click", x: 100, y: 200) — Right-click
+- desktop(resource: "input", action: "type", text: "hello") — Type text
+- desktop(resource: "input", action: "hotkey", keys: "ctrl+c") — Keyboard shortcut
+- desktop(resource: "input", action: "scroll", direction: "down", amount: 3) — Scroll
+- desktop(resource: "input", action: "move", x: 100, y: 200) — Move cursor
+- desktop(resource: "input", action: "drag", x: 10, y: 10, to_x: 200, to_y: 200) — Drag
+- desktop(resource: "input", action: "paste", text: "content") — Paste via clipboard
+- desktop(resource: "ui", action: "tree", app: "Notepad") — Get UI element hierarchy
+- desktop(resource: "ui", action: "find", app: "Notepad", role: "button", label: "Submit") — Find elements
+- desktop(resource: "ui", action: "click", app: "Notepad", role: "button", label: "Submit") — Click element
+- desktop(resource: "ui", action: "get_value", app: "Notepad", role: "textfield", label: "Search") — Read value
+- desktop(resource: "ui", action: "set_value", app: "Notepad", role: "textfield", label: "Search", value: "query") — Set value
+- desktop(resource: "ui", action: "list_apps") — List apps with UI Automation access
+- desktop(resource: "window", action: "list") — List all windows
+- desktop(resource: "window", action: "focus", app: "Notepad") — Focus window
+- desktop(resource: "window", action: "move", app: "Notepad", x: 0, y: 0) — Move window
+- desktop(resource: "window", action: "resize", app: "Notepad", width: 800, height: 600) — Resize
+- desktop(resource: "window", action: "minimize", app: "Notepad") — Minimize
+- desktop(resource: "window", action: "close", app: "Notepad") — Close window
+- desktop(resource: "shortcut", action: "list") — List available shortcuts
+- desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut
+- desktop(resource: "menu", action: "list", app: "Notepad") — List menu bar items
+- desktop(resource: "menu", action: "menus", app: "Notepad", menu: "File") — List menu items
+- desktop(resource: "menu", action: "click", app: "Notepad", menu: "File", item: "New Window") — Click menu item
+- desktop(resource: "menu", action: "status") — List system tray icons
+- desktop(resource: "dialog", action: "detect", app: "Notepad") — Detect open dialogs/modals
+- desktop(resource: "dialog", action: "list", app: "Notepad") — List dialog elements
+- desktop(resource: "dialog", action: "click", app: "Notepad", button_label: "OK") — Click dialog button
+- desktop(resource: "dialog", action: "dismiss", app: "Notepad") — Dismiss dialog
+- desktop(resource: "space", action: "list") — List virtual desktops
+- desktop(resource: "space", action: "switch", direction: "right") — Switch virtual desktop
+- desktop(resource: "space", action: "move_window", direction: "right") — Move window to adjacent desktop
+Note: Menu bar automation works best with classic Win32 apps (Notepad, WordPad, Office). UWP and Electron apps may have limited menu access.`
+
+	case "linux":
+		return `### desktop — Desktop Automation
+- desktop(resource: "input", action: "click", x: 100, y: 200) — Click at coordinates
+- desktop(resource: "input", action: "click", element: "B3") — Click element from screenshot
+- desktop(resource: "input", action: "double_click", x: 100, y: 200) — Double-click
+- desktop(resource: "input", action: "right_click", x: 100, y: 200) — Right-click
+- desktop(resource: "input", action: "type", text: "hello") — Type text
+- desktop(resource: "input", action: "hotkey", keys: "ctrl+c") — Keyboard shortcut
+- desktop(resource: "input", action: "scroll", direction: "down", amount: 3) — Scroll
+- desktop(resource: "input", action: "move", x: 100, y: 200) — Move cursor
+- desktop(resource: "input", action: "drag", x: 10, y: 10, to_x: 200, to_y: 200) — Drag
+- desktop(resource: "input", action: "paste", text: "content") — Paste via clipboard
+- desktop(resource: "ui", action: "tree", app: "Firefox") — Get UI element hierarchy
+- desktop(resource: "ui", action: "find", app: "Firefox", role: "button", label: "Submit") — Find elements
+- desktop(resource: "ui", action: "click", app: "Firefox", role: "button", label: "Submit") — Click element
+- desktop(resource: "ui", action: "get_value", app: "Firefox", role: "textfield", label: "Search") — Read value
+- desktop(resource: "ui", action: "set_value", app: "Firefox", role: "textfield", label: "Search", value: "query") — Set value
+- desktop(resource: "ui", action: "list_apps") — List apps with accessibility access
+- desktop(resource: "window", action: "list") — List all windows
+- desktop(resource: "window", action: "focus", app: "Firefox") — Focus window
+- desktop(resource: "window", action: "move", app: "Firefox", x: 0, y: 0) — Move window
+- desktop(resource: "window", action: "resize", app: "Firefox", width: 800, height: 600) — Resize
+- desktop(resource: "window", action: "minimize", app: "Firefox") — Minimize
+- desktop(resource: "window", action: "close", app: "Firefox") — Close window
+- desktop(resource: "shortcut", action: "list") — List available shortcuts
+- desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut`
+
+	default: // darwin
+		return `### desktop — Desktop Automation
+- desktop(resource: "input", action: "click", x: 100, y: 200) — Click at coordinates
+- desktop(resource: "input", action: "click", element: "B3") — Click element from screenshot
 - desktop(resource: "input", action: "double_click", x: 100, y: 200) — Double-click
 - desktop(resource: "input", action: "right_click", x: 100, y: 200) — Right-click
 - desktop(resource: "input", action: "type", text: "hello") — Type text
@@ -331,16 +399,13 @@ func desktopSTRAPDoc() string {
 - desktop(resource: "ui", action: "set_value", app: "Safari", role: "textfield", label: "Search", value: "query") — Set value
 - desktop(resource: "ui", action: "list_apps") — List apps with accessibility access
 - desktop(resource: "window", action: "list") — List all windows
-- desktop(resource: "window", action: "focus", name: "Safari") — Focus window
-- desktop(resource: "window", action: "move", name: "Safari", x: 0, y: 0) — Move window
-- desktop(resource: "window", action: "resize", name: "Safari", width: 800, height: 600) — Resize
-- desktop(resource: "window", action: "minimize", name: "Safari") — Minimize
-- desktop(resource: "window", action: "close", name: "Safari") — Close window
+- desktop(resource: "window", action: "focus", app: "Safari") — Focus window
+- desktop(resource: "window", action: "move", app: "Safari", x: 0, y: 0) — Move window
+- desktop(resource: "window", action: "resize", app: "Safari", width: 800, height: 600) — Resize
+- desktop(resource: "window", action: "minimize", app: "Safari") — Minimize
+- desktop(resource: "window", action: "close", app: "Safari") — Close window
 - desktop(resource: "shortcut", action: "list") — List available shortcuts
-- desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut`
-
-	if runtime.GOOS == "darwin" {
-		base += `
+- desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut
 - desktop(resource: "menu", action: "list", app: "Safari") — List menu bar items
 - desktop(resource: "menu", action: "menus", app: "Safari", menu: "File") — List menu items
 - desktop(resource: "menu", action: "click", app: "Safari", menu: "File", item: "New Window") — Click menu item
@@ -351,15 +416,79 @@ func desktopSTRAPDoc() string {
 - desktop(resource: "dialog", action: "dismiss") — Dismiss dialog
 - desktop(resource: "space", action: "list") — List virtual desktops
 - desktop(resource: "space", action: "switch", space: 2) — Switch desktop
-- desktop(resource: "space", action: "move_window", name: "Safari", space: 2) — Move window to desktop`
+- desktop(resource: "space", action: "move_window", app: "Safari", space: 2) — Move window to desktop`
 	}
-
-	return base
 }
 
 // systemSTRAPDoc returns the system STRAP documentation for the current platform.
 func systemSTRAPDoc() string {
-	return `### system — System Control
+	switch runtime.GOOS {
+	case "windows":
+		return `### system — System Control
+- system(resource: "app", action: "list") — List running applications
+- system(resource: "app", action: "launch", name: "Notepad") — Launch app
+- system(resource: "app", action: "quit", name: "Notepad") — Quit app
+- system(resource: "app", action: "activate", name: "Notepad") — Bring app to front
+- system(resource: "app", action: "info", name: "Notepad") — Get app details
+- system(resource: "app", action: "frontmost") — Get frontmost app
+- system(resource: "notify", action: "send", title: "Done!", text: "Task completed") — Send notification
+- system(resource: "notify", action: "alert", title: "Warning", text: "...") — Show alert dialog
+- system(resource: "notify", action: "speak", text: "Hello") — Text-to-speech
+- system(resource: "clipboard", action: "get") — Read clipboard
+- system(resource: "clipboard", action: "set", content: "text") — Set clipboard
+- system(resource: "clipboard", action: "clear") — Clear clipboard
+- system(resource: "settings", action: "volume", level: 50) — Set volume (0-100)
+- system(resource: "settings", action: "mute") — Mute audio
+- system(resource: "settings", action: "unmute") — Unmute audio
+- system(resource: "settings", action: "brightness", level: 70) — Set brightness (laptops only)
+- system(resource: "settings", action: "darkmode") — Check dark mode status
+- system(resource: "settings", action: "darkmode", enable: true) — Enable/disable dark mode
+- system(resource: "settings", action: "info") — System information
+- system(resource: "music", action: "play") — Play/resume music
+- system(resource: "music", action: "pause") — Pause music
+- system(resource: "music", action: "next") — Next track
+- system(resource: "music", action: "previous") — Previous track
+- system(resource: "music", action: "status") — Current track info
+- system(resource: "search", action: "query", query: "project files") — Search files (uses Everything or Windows Search)
+- system(resource: "keychain", action: "get", service: "github", account: "user") — Get credential
+- system(resource: "keychain", action: "add", service: "github", account: "user", password: "...") — Store credential
+- system(resource: "keychain", action: "find", service: "github") — Find credentials
+- system(resource: "keychain", action: "delete", service: "github", account: "user") — Delete credential`
+
+	case "linux":
+		return `### system — System Control
+- system(resource: "app", action: "list") — List running applications
+- system(resource: "app", action: "launch", name: "Firefox") — Launch app
+- system(resource: "app", action: "quit", name: "Firefox") — Quit app
+- system(resource: "app", action: "activate", name: "Firefox") — Bring app to front
+- system(resource: "app", action: "info", name: "Firefox") — Get app details
+- system(resource: "app", action: "frontmost") — Get frontmost app
+- system(resource: "notify", action: "send", title: "Done!", text: "Task completed") — Send notification
+- system(resource: "notify", action: "alert", title: "Warning", text: "...") — Show alert dialog
+- system(resource: "notify", action: "speak", text: "Hello") — Text-to-speech
+- system(resource: "clipboard", action: "get") — Read clipboard
+- system(resource: "clipboard", action: "set", content: "text") — Set clipboard
+- system(resource: "clipboard", action: "clear") — Clear clipboard
+- system(resource: "settings", action: "volume", level: 50) — Set volume (0-100)
+- system(resource: "settings", action: "mute") — Mute audio
+- system(resource: "settings", action: "unmute") — Unmute audio
+- system(resource: "settings", action: "brightness", level: 70) — Set brightness
+- system(resource: "settings", action: "darkmode") — Check dark mode status
+- system(resource: "settings", action: "darkmode", enable: true) — Enable/disable dark mode
+- system(resource: "settings", action: "info") — System information
+- system(resource: "music", action: "play") — Play/resume music
+- system(resource: "music", action: "pause") — Pause music
+- system(resource: "music", action: "next") — Next track
+- system(resource: "music", action: "previous") — Previous track
+- system(resource: "music", action: "status") — Current track info
+- system(resource: "search", action: "query", query: "project files") — Search files (uses locate/find)
+- system(resource: "keychain", action: "get", service: "github", account: "user") — Get credential
+- system(resource: "keychain", action: "add", service: "github", account: "user", password: "...") — Store credential
+- system(resource: "keychain", action: "find", service: "github") — Find credentials
+- system(resource: "keychain", action: "delete", service: "github", account: "user") — Delete credential`
+
+	default: // darwin
+		return `### system — System Control
 - system(resource: "app", action: "list") — List running applications
 - system(resource: "app", action: "launch", name: "Safari") — Launch app
 - system(resource: "app", action: "quit", name: "Safari") — Quit app
@@ -385,11 +514,12 @@ func systemSTRAPDoc() string {
 - system(resource: "music", action: "next") — Next track
 - system(resource: "music", action: "previous") — Previous track
 - system(resource: "music", action: "status") — Current track info
-- system(resource: "search", action: "query", query: "project files") — Search files/apps
+- system(resource: "search", action: "query", query: "project files") — Search files/apps via Spotlight
 - system(resource: "keychain", action: "get", service: "github", account: "user") — Get password
 - system(resource: "keychain", action: "add", service: "github", account: "user", password: "...") — Store password
 - system(resource: "keychain", action: "find", service: "github") — Find keychain entries
 - system(resource: "keychain", action: "delete", service: "github", account: "user") — Delete entry`
+	}
 }
 
 // buildSTRAPSection assembles the STRAP documentation for only the tools being sent.
@@ -479,6 +609,7 @@ const sectionToolGuide = `## How to Choose the Right Tool
 - "Research and remember" → web + memory
 - "Find all PDFs and summarize" → file (glob) + file (read) + vision`
 
+
 const sectionBehavior = `## Behavioral Guidelines
 1. DO THE WORK — when the user asks you to do something, DO IT. Do not write a script and hand it to them. Do not explain how to do it. Do not ask if they want you to do it. Just do it. You have the tools. Use them.
 2. Act, don't narrate — call tools directly, share results concisely
@@ -489,14 +620,28 @@ const sectionBehavior = `## Behavioral Guidelines
 7. Check skills before saying "I can't" — you may have an app for it
 8. Spawn sub-agents for parallel work — don't serialize independent tasks
 9. Combine tools freely — most real requests need 2-3 tools chained together
-10. If something fails, try an alternative approach before reporting the error
-11. Prioritize the user's intent over literal instructions — understand what they actually want
-12. For sensitive actions (deleting files, sending messages, spending money), confirm before acting
-13. NEVER propose multi-step plans, dry runs, or phased approaches for simple tasks. If the user asks you to clean up duplicates, just clean them up. If they ask you to fix something, just fix it. Save plans for genuinely complex, multi-day work — not routine maintenance.
-14. For greetings and casual messages — be warm and natural. Never describe your architecture, tools, or internal systems unprompted. Just be a good conversationalist.
-15. NEVER explain how you work unless the user specifically asks. No one wants to hear about your memory layers, tool patterns, or system design. Just do the thing.
-16. NEVER create summary documents, report files, or recap markdown files unless the user explicitly asks for one. When you finish a task, just say you're done. Do not write files to the Desktop or anywhere else "for reference." The user did not ask for documentation — they asked for the work.
-17. When writing code: (a) REUSE and EDIT existing code whenever possible — read the codebase first, find what already exists, and modify it. (b) Only CREATE new files or functions when nothing suitable exists. (c) NEVER leave dead code — if you replace something, delete the old version. No commented-out blocks, no unused functions, no orphaned files.`
+10. COMPLETE MULTI-STEP TASKS IN ONE GO — when the user asks you to do several things (e.g., "test 5 capabilities", "fix these 3 bugs", "check all of these"), do ALL of them before responding. Call tools back-to-back without pausing to narrate between steps. Only respond with text after ALL steps are done.
+11. If something fails, try an alternative approach before reporting the error
+12. Prioritize the user's intent over literal instructions — understand what they actually want
+13. For sensitive actions (deleting files, sending messages, spending money), confirm before acting
+14. NEVER propose multi-step plans, dry runs, or phased approaches for simple tasks. If the user asks you to clean up duplicates, just clean them up. If they ask you to fix something, just fix it. Save plans for genuinely complex, multi-day work — not routine maintenance.
+15. For greetings and casual messages — be warm and natural. Never describe your architecture, tools, or internal systems unprompted. Just be a good conversationalist.
+16. NEVER explain how you work unless the user specifically asks. No one wants to hear about your memory layers, tool patterns, or system design. Just do the thing.
+17. NEVER create summary documents, report files, or recap markdown files unless the user explicitly asks for one. When you finish a task, just say you're done. Do not write files to the Desktop or anywhere else "for reference." The user did not ask for documentation — they asked for the work.
+18. When writing code: (a) REUSE and EDIT existing code whenever possible — read the codebase first, find what already exists, and modify it. (b) Only CREATE new files or functions when nothing suitable exists. (c) NEVER leave dead code — if you replace something, delete the old version. No commented-out blocks, no unused functions, no orphaned files.`
+
+const sectionSystemEtiquette = `## Shared Computer Etiquette
+
+You share this computer with a real person. Be a courteous roommate:
+
+1. **Clean up after yourself.** Close every browser window, app, or file you opened when you're done. Never leave orphan windows, temp files, or test apps open.
+2. **Don't steal focus.** If the user is working in another app, prefer background operations (shell commands, fetch) over launching visible windows. If you must open a window, minimize disruption.
+3. **Restore focus.** After desktop automation that takes focus, return focus to whatever app the user was in before.
+4. **Don't touch system settings** (volume, brightness, dark mode, Wi-Fi) unless the user explicitly asked.
+5. **Don't pollute the clipboard.** If you use paste-via-clipboard, restore the previous clipboard contents afterward.
+6. **Don't kill processes you didn't start.** If something needs to be killed, confirm with the user first.
+7. **Prefer invisible work.** Use shell commands and HTTP fetches over GUI automation when both achieve the same result. The user shouldn't notice you working unless they asked to watch.
+8. **Never open apps just to test.** Only open apps, create files, or modify the desktop when the user's request requires it.`
 
 // staticSections defines the assembly order for the cacheable portion of the
 // system prompt. Content is joined with "\n\n" separators.
@@ -514,6 +659,7 @@ var staticSections = []string{
 	sectionMemoryDocs,
 	sectionToolGuide,
 	sectionBehavior,
+	sectionSystemEtiquette,
 }
 
 // BuildStaticPrompt assembles the cacheable portion of the system prompt.

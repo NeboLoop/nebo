@@ -72,8 +72,12 @@ func loadWindowState(dataDir string) *windowState {
 
 // saveWindowState persists the current window position and size to disk.
 func saveWindowState(dataDir string, window *application.WebviewWindow) {
-	x, y := window.Position()
 	w, h := window.Size()
+	// Don't save zero/invalid dimensions (can happen if window is minimized or not yet visible)
+	if w < 400 || h < 300 {
+		return
+	}
+	x, y := window.Position()
 	state := windowState{X: x, Y: y, Width: w, Height: h}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -212,9 +216,14 @@ func RunDesktop() {
 	var quitting atomic.Bool
 
 	// Restore position after a short delay to ensure the window is fully initialized.
+	// Windows (WebView2) needs a longer delay than macOS (WebKit).
+	restoreDelay := 200 * time.Millisecond
+	if goruntime.GOOS == "windows" {
+		restoreDelay = 500 * time.Millisecond
+	}
 	if saved != nil {
 		go func() {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(restoreDelay)
 			window.SetPosition(saved.X, saved.Y)
 			stateRestored.Store(true)
 		}()
@@ -222,28 +231,41 @@ func RunDesktop() {
 		stateRestored.Store(true)
 	}
 
-	// Auto-save window state on move/resize (only after initial restore, skip during quit)
-	window.RegisterHook(events.Common.WindowDidMove, func(event *application.WindowEvent) {
+	// Auto-save window state on move/resize (only after initial restore, skip during quit).
+	//
+	// On Windows, Wails v3 emits events.Windows.WindowDidMove (ID 1205) and
+	// events.Windows.WindowDidResize (ID 1206). There IS a mapping from
+	// Windows→Common events via setupEventMapping, but it goes through an
+	// async goroutine chain (listener → emit → channel → goroutine) which can
+	// be unreliable in the alpha framework. We hook both the platform-specific
+	// events and Common events directly for maximum reliability.
+	saveMoveResize := func(event *application.WindowEvent) {
 		if stateRestored.Load() && !quitting.Load() {
 			saveWindowState(dataDir, window)
 		}
-	})
-	window.RegisterHook(events.Common.WindowDidResize, func(event *application.WindowEvent) {
-		if stateRestored.Load() && !quitting.Load() {
-			saveWindowState(dataDir, window)
-		}
-	})
+	}
+	window.RegisterHook(events.Common.WindowDidMove, saveMoveResize)
+	window.RegisterHook(events.Common.WindowDidResize, saveMoveResize)
+	if goruntime.GOOS == "windows" {
+		window.RegisterHook(events.Windows.WindowDidMove, saveMoveResize)
+		window.RegisterHook(events.Windows.WindowDidResize, saveMoveResize)
+	}
 
 	// Hide window on close instead of destroying it (minimize to tray).
 	// When quitting, let the close proceed so the app can exit.
-	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
+	// Same platform-specific hook pattern as above for reliability.
+	closeHandler := func(event *application.WindowEvent) {
 		if quitting.Load() {
 			return
 		}
 		saveWindowState(dataDir, window)
 		window.Hide()
 		event.Cancel()
-	})
+	}
+	window.RegisterHook(events.Common.WindowClosing, closeHandler)
+	if goruntime.GOOS == "windows" {
+		window.RegisterHook(events.Windows.WindowClosing, closeHandler)
+	}
 
 	// Create system tray
 	systray := wailsApp.SystemTray.New()
@@ -373,10 +395,10 @@ func RunDesktop() {
 	})
 
 	trayMenu.AddSeparator()
-	trayMenu.Add("Quit Nebo").OnClick(func(ctx *application.Context) {
+	trayMenu.Add("Quit Nebo").OnClick(func(_ *application.Context) {
 		saveWindowState(dataDir, window)
 		quitting.Store(true)
-		wailsApp.Quit()
+		safeQuit(wailsApp)
 	})
 	systray.SetMenu(trayMenu)
 
@@ -479,19 +501,44 @@ func RunDesktop() {
 			if title == "" {
 				title = "Nebo Browser"
 			}
-			w := wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
-				Name:      name,
-				Title:     title,
-				Width:     width,
-				Height:    height,
-				MinWidth:  400,
-				MinHeight: 300,
-				URL:       opts.URL,
-				// Bootstrap JS runs via impl-level execJS after EVERY navigation,
-				// bypassing the runtimeLoaded gate on public ExecJS. Forces the
-				// Wails runtime to be "ready" and pre-defines the callback function.
-				JS: neboBootstrapJS,
-			})
+			var w *application.WebviewWindow
+			if goruntime.GOOS == "windows" {
+				// Wails v3 Windows bug: WebviewWindowOptions.JS is only applied for
+				// HTML-mode windows, not URL-mode. On macOS/Linux, JS is injected
+				// via a NavigationCompleted event handler, but Windows skips it.
+				//
+				// Workaround: Create with a blank HTML page to trigger chromium.Init()
+				// which registers neboBootstrapJS via AddScriptToExecuteOnDocumentCreated.
+				// This persists across ALL future navigations. Then immediately navigate
+				// to the target URL.
+				w = wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+					Name:      name,
+					Title:     title,
+					Width:     width,
+					Height:    height,
+					MinWidth:  400,
+					MinHeight: 300,
+					HTML:      " ", // Non-empty to trigger chromium.Init() with JS
+					JS:        neboBootstrapJS,
+				})
+				if opts.URL != "" && opts.URL != "about:blank" {
+					w.SetURL(opts.URL)
+				}
+			} else {
+				w = wailsApp.Window.NewWithOptions(application.WebviewWindowOptions{
+					Name:      name,
+					Title:     title,
+					Width:     width,
+					Height:    height,
+					MinWidth:  400,
+					MinHeight: 300,
+					URL:       opts.URL,
+					// Bootstrap JS runs via impl-level execJS after EVERY navigation,
+					// bypassing the runtimeLoaded gate on public ExecJS. Forces the
+					// Wails runtime to be "ready" and pre-defines the callback function.
+					JS: neboBootstrapJS,
+				})
+			}
 			devlog.Printf("[Desktop] Window created (%s)\n", time.Since(creatorT0))
 			return wailsWindowHandle{win: w}
 		})
@@ -531,7 +578,8 @@ func RunDesktop() {
 		SetSharedDB(svcCtx.DB.GetDB())
 		SetJanusURL(svcCtx.Config.NeboLoop.JanusURL)
 
-		// Start agent
+		// Start agent with auto-reconnect on connection errors.
+		// The agent goroutine retries with backoff until the context is cancelled.
 		devlog.Printf("[Desktop] Starting agent...\n")
 		go func() {
 			defer wg.Done()
@@ -545,9 +593,26 @@ func RunDesktop() {
 				VoiceDuplexProxy: voiceDuplexProxy,
 				Heartbeat:        &heartbeat,
 			}
-			if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {
-				if ctx.Err() == nil {
-					errCh <- fmt.Errorf("agent error: %w", err)
+			backoff := time.Second
+			maxBackoff := 30 * time.Second
+			for {
+				err := runAgent(ctx, agentCfg, serverURL, agentOpts)
+				if ctx.Err() != nil {
+					return // App is shutting down
+				}
+				if err == nil {
+					return // Clean exit
+				}
+				devlog.Printf("[Desktop] Agent disconnected: %v — reconnecting in %s\n", err, backoff)
+				statusItem.SetLabel("Status: Reconnecting...")
+				select {
+				case <-time.After(backoff):
+					backoff *= 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
+				case <-ctx.Done():
+					return
 				}
 			}
 		}()
@@ -627,14 +692,30 @@ func RunDesktop() {
 		fmt.Println()
 	}()
 
-	// Handle errors from goroutines — quit the Wails app
+	// Handle errors from goroutines.
+	// Only fatal errors (server startup failure) quit the Wails app.
+	// Agent connection drops are recoverable — the agent will reconnect.
 	go func() {
-		select {
-		case err := <-errCh:
-			fmt.Fprintf(os.Stderr, "\033[31mError: %v\033[0m\n", err)
-			cancel()
-			wailsApp.Quit()
-		case <-ctx.Done():
+		for {
+			select {
+			case err := <-errCh:
+				errStr := err.Error()
+				isFatal := strings.Contains(errStr, "server error") ||
+					strings.Contains(errStr, "server failed to start")
+
+				if isFatal {
+					fmt.Fprintf(os.Stderr, "\033[31mFatal: %v\033[0m\n", err)
+					cancel()
+					safeQuit(wailsApp)
+					return
+				}
+
+				// Non-fatal (agent disconnect, etc.) — log and keep running
+				fmt.Fprintf(os.Stderr, "\033[33mWarning: %v (will reconnect)\033[0m\n", err)
+				statusItem.SetLabel("Status: Reconnecting...")
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -648,6 +729,19 @@ func RunDesktop() {
 	// Cancel context to stop all goroutines
 	cancel()
 	wg.Wait()
+}
+
+// safeQuit calls App.Quit() with recovery from Wails v3 alpha panics.
+// Wails alpha.67 has a known issue where windowsSystemTray.destroy() can panic
+// with a nil pointer dereference on globalApplication during cleanup.
+func safeQuit(app *application.App) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[Desktop] Recovered from quit panic: %v\n", r)
+			os.Exit(0)
+		}
+	}()
+	app.Quit()
 }
 
 // neboBootstrapJS is injected into every browser window via WebviewWindowOptions.JS.

@@ -58,13 +58,16 @@ var SafeBins = []string{
 }
 
 // defaultOriginDenyList returns the default per-origin tool restrictions.
-// Comm/app/skill origins cannot run shell commands — everything else is allowed.
+// Comm, App, and Skill origins are denied shell access — only direct user
+// and system origins can execute shell commands.
 func defaultOriginDenyList() map[Origin]map[string]bool {
-	shellDeny := map[string]bool{"shell": true}
+	commDeny := map[string]bool{"shell": true}  // No shell from remote agents
+	appDeny := map[string]bool{"shell": true}   // No shell from apps
+	skillDeny := map[string]bool{"shell": true} // No shell from skill templates
 	return map[Origin]map[string]bool{
-		OriginComm:  shellDeny, // No shell from remote agents / loop channels
-		OriginApp:   shellDeny, // No shell from apps
-		OriginSkill: shellDeny, // No shell from skill templates
+		OriginComm:  commDeny,
+		OriginApp:   appDeny,
+		OriginSkill: skillDeny,
 	}
 }
 

@@ -18,11 +18,9 @@ Do not adopt a generic assistant persona.`
 // --- Channel ---
 
 var channelTemplates = map[string]string{
-	"telegram": "Responding via Telegram. Keep responses concise (1-3 short paragraphs). No markdown headers. Use plain text with minimal formatting. Emoji OK sparingly.",
-	"discord":  "Responding via Discord. Moderate length OK. Markdown supported. Keep under 2000 chars per message.",
-	"slack":    "Responding via Slack. Moderate length OK. Slack mrkdwn supported (*bold*, _italic_, `code`).",
-	"cli":      "Responding via CLI terminal. Plain text only. No markdown rendering available. Be concise.",
-	"voice":    "Responding via live voice. Keep responses to 1-2 short sentences. No markdown, lists, code blocks, or URLs. Speak naturally as in a phone call.",
+	"dm":    "Responding via DM. Keep responses concise (1-3 short paragraphs). No markdown headers. Use plain text with minimal formatting. Emoji OK sparingly.",
+	"cli":   "Responding via CLI terminal. Plain text only. No markdown rendering available. Be concise.",
+	"voice": "Responding via live voice. Keep responses to 1-2 short sentences. No markdown, lists, code blocks, or URLs. Speak naturally as in a phone call.",
 }
 
 // --- Tool Nudge ---
@@ -56,8 +54,9 @@ Do NOT create a task list or checklist. Just take the first concrete action towa
 
 // --- Pending Task Action ---
 
-const tmplPendingTaskAction = `You still have work to do. Take action NOW using your tools.
-Do NOT narrate intent or create more tasks — just execute the next step toward your objective.`
+const tmplPendingTaskAction = `You still have work to do — your last response was text-only but the task is NOT complete.
+Call a tool RIGHT NOW to continue. Do NOT respond with text explaining what you plan to do.
+Do NOT narrate intent, summarize progress, or create task lists. Just make the next tool call.`
 
 // --- Task Progress ---
 

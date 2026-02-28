@@ -1254,6 +1254,14 @@ func (t *AgentDomainTool) handleSession(ctx context.Context, in AgentDomainInput
 		}, nil
 	}
 
+	// Default session_key to current session from context
+	if in.SessionKey == "" {
+		in.SessionKey = GetSessionKey(ctx)
+		if in.SessionKey == "" {
+			in.SessionKey = "default"
+		}
+	}
+
 	switch in.Action {
 	case "list":
 		return t.sessionList()
@@ -1299,13 +1307,6 @@ func (t *AgentDomainTool) sessionList() (*ToolResult, error) {
 }
 
 func (t *AgentDomainTool) sessionHistory(in AgentDomainInput) (*ToolResult, error) {
-	if in.SessionKey == "" {
-		return &ToolResult{
-			Content: "Error: 'session_key' is required for history action",
-			IsError: true,
-		}, nil
-	}
-
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 20
@@ -1392,13 +1393,6 @@ func (t *AgentDomainTool) sessionHistory(in AgentDomainInput) (*ToolResult, erro
 }
 
 func (t *AgentDomainTool) sessionStatus(in AgentDomainInput) (*ToolResult, error) {
-	if in.SessionKey == "" {
-		return &ToolResult{
-			Content: "Error: 'session_key' is required for status action",
-			IsError: true,
-		}, nil
-	}
-
 	sess, err := t.sessions.GetOrCreate(in.SessionKey, t.currentUserID)
 	if err != nil {
 		return &ToolResult{
@@ -1455,13 +1449,6 @@ func (t *AgentDomainTool) sessionStatus(in AgentDomainInput) (*ToolResult, error
 }
 
 func (t *AgentDomainTool) sessionClear(in AgentDomainInput) (*ToolResult, error) {
-	if in.SessionKey == "" {
-		return &ToolResult{
-			Content: "Error: 'session_key' is required for clear action",
-			IsError: true,
-		}, nil
-	}
-
 	sess, err := t.sessions.GetOrCreate(in.SessionKey, t.currentUserID)
 	if err != nil {
 		return &ToolResult{

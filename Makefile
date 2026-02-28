@@ -7,9 +7,18 @@ endif
 
 # Nebo Makefile
 EXECUTABLE=nebo
-export MACOSX_DEPLOYMENT_TARGET ?= 15.0
-export CGO_CFLAGS += -mmacosx-version-min=15.0
-export CGO_LDFLAGS += -mmacosx-version-min=15.0
+
+# Platform detection — same dev experience on macOS, Linux, and Windows
+ifeq ($(OS),Windows_NT)
+    EXE_EXT = .exe
+    AIR_CONFIG = -c .air-windows.toml
+else
+    EXE_EXT =
+    AIR_CONFIG =
+    export MACOSX_DEPLOYMENT_TARGET ?= 15.0
+    export CGO_CFLAGS += -mmacosx-version-min=15.0
+    export CGO_LDFLAGS += -mmacosx-version-min=15.0
+endif
 
 # macOS code signing — override with your own Developer ID for forks
 SIGN_IDENTITY ?= Developer ID Application: Alma Tuck (7Y2D3KQ2UM)
@@ -78,7 +87,7 @@ dev:
 build: whisper-lib
 	@echo "Building $(EXECUTABLE)..."
 	@cd app && pnpm build
-	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/$(EXECUTABLE) .
+	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/$(EXECUTABLE)$(EXE_EXT) .
 
 # Build CLI only (for backward compatibility, same as build)
 build-cli: build
@@ -92,12 +101,13 @@ cli: build
 # Run the application
 run: build
 	@echo "Starting $(EXECUTABLE)..."
-	./bin/$(EXECUTABLE)
+	./bin/$(EXECUTABLE)$(EXE_EXT)
 
 # Run with air (hot reload, desktop mode with dev routes)
+# On Windows, uses .air-windows.toml (PowerShell-compatible build commands)
 air:
 	@echo "Starting with hot reload (desktop)..."
-	air
+	air $(AIR_CONFIG)
 
 # Desktop dev mode with hot reload (Air)
 # Rebuilds Go binary + restarts desktop app on *.go changes
@@ -222,7 +232,7 @@ whisper-lib:
 desktop: whisper-lib
 	@echo "Building $(EXECUTABLE) (desktop)..."
 	@cd app && pnpm build
-	CGO_ENABLED=1 go build -tags desktop $(LDFLAGS) -o bin/$(EXECUTABLE) .
+	go build -tags desktop $(LDFLAGS) -o bin/$(EXECUTABLE)$(EXE_EXT) .
 
 # Assemble Nebo.app bundle from the built binary
 # Creates a proper macOS .app that Spotlight can index

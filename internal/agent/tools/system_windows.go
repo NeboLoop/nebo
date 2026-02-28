@@ -33,7 +33,7 @@ func (t *SystemTool) Schema() json.RawMessage {
 		"properties": {
 			"action": {
 				"type": "string",
-				"enum": ["volume", "brightness", "sleep", "lock", "wifi", "info", "mute", "unmute"],
+				"enum": ["volume", "brightness", "sleep", "lock", "wifi", "darkmode", "info", "mute", "unmute"],
 				"description": "System action to perform"
 			},
 			"value": {
@@ -83,6 +83,11 @@ func (t *SystemTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 			return t.setWifi(ctx, *params.Enable)
 		}
 		return t.getWifiStatus(ctx)
+	case "darkmode":
+		if params.Enable != nil {
+			return t.setDarkMode(ctx, *params.Enable)
+		}
+		return t.getDarkModeStatus(ctx)
 	case "info":
 		return t.getSystemInfo(ctx)
 	default:
@@ -210,4 +215,37 @@ $uptime = (Get-Date) - (Get-CimInstance -ClassName Win32_OperatingSystem).LastBo
 		return &ToolResult{Content: fmt.Sprintf("Failed to get system info: %v", err), IsError: true}, nil
 	}
 	return &ToolResult{Content: strings.TrimSpace(string(out)), IsError: false}, nil
+}
+
+func (t *SystemTool) getDarkModeStatus(ctx context.Context) (*ToolResult, error) {
+	script := `Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme -ErrorAction SilentlyContinue | Select-Object -ExpandProperty AppsUseLightTheme`
+	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to get dark mode status: %v", err), IsError: true}, nil
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "0" {
+		return &ToolResult{Content: "Dark mode: ON"}, nil
+	}
+	return &ToolResult{Content: "Dark mode: OFF"}, nil
+}
+
+func (t *SystemTool) setDarkMode(ctx context.Context, enable bool) (*ToolResult, error) {
+	value := 1
+	if enable {
+		value = 0
+	}
+	script := fmt.Sprintf(`
+Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme -Value %d -Force
+Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -Value %d -Force
+`, value, value)
+	_, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to set dark mode: %v", err), IsError: true}, nil
+	}
+	status := "enabled"
+	if !enable {
+		status = "disabled"
+	}
+	return &ToolResult{Content: fmt.Sprintf("Dark mode %s", status)}, nil
 }

@@ -1002,6 +1002,7 @@ func (p *Plugin) reconnect() {
 	p.mu.Lock()
 	if p.reconnecting {
 		p.mu.Unlock()
+		commLog.Debug("[Comm:neboloop] reconnect already in progress, skipping")
 		return // another goroutine is already reconnecting
 	}
 	p.reconnecting = true

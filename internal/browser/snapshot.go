@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	playwright "github.com/playwright-community/playwright-go"
 )
 
 // SnapshotOptions configures aria snapshot generation.
@@ -24,12 +26,25 @@ func (p *Page) Snapshot(ctx context.Context, opts SnapshotOptions) (string, erro
 	// Clear old refs before generating new snapshot
 	p.refs.Clear()
 
-	// Ensure page has finished loading before snapshot
-	// This prevents hangs on pages with heavy JavaScript
-	if err := p.page.WaitForLoadState(); err != nil {
-		// Page might not load completely, but we should still try to snapshot
-		// Log and continue rather than fail
-		fmt.Printf("[Browser] Page load state wait failed: %v\n", err)
+	// Ensure page has finished loading before snapshot.
+	// Use domcontentloaded (not load) with a short timeout to avoid blocking
+	// on pages with persistent network activity — especially on Windows where
+	// CDP over IPC can be slower than Unix sockets.
+	loadDone := make(chan error, 1)
+	go func() {
+		timeout := 5000.0 // 5 seconds max
+		loadDone <- p.page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State:   playwright.LoadStateDomcontentloaded,
+			Timeout: &timeout,
+		})
+	}()
+	select {
+	case err := <-loadDone:
+		if err != nil {
+			fmt.Printf("[Browser] Page load state wait failed: %v\n", err)
+		}
+	case <-ctx.Done():
+		fmt.Printf("[Browser] Page load state wait cancelled by context\n")
 	}
 
 	// Use Playwright's ariaSnapshot with context timeout
