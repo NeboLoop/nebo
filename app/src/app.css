@@ -371,6 +371,104 @@
 		-webkit-backdrop-filter: blur(12px);
 	}
 
+	/* ===== Sidebar ===== */
+	.sidebar-container {
+		@apply flex flex-col border-r border-base-300 bg-base-100 overflow-y-auto;
+		width: 240px;
+		min-width: 240px;
+	}
+
+	.sidebar-nav {
+		@apply flex flex-col py-2 gap-0.5;
+	}
+
+	.sidebar-item {
+		@apply flex items-center gap-2 px-3 py-2 mx-2 rounded-lg text-sm cursor-pointer;
+		@apply text-base-content/70 hover:bg-base-200 hover:text-base-content;
+		@apply transition-colors duration-150;
+		border: none;
+		background: none;
+		text-align: left;
+		width: calc(100% - 1rem);
+	}
+
+	.sidebar-item-active {
+		@apply bg-primary/10 text-primary font-medium;
+	}
+
+	.sidebar-my-chat {
+		@apply font-medium;
+	}
+
+	.sidebar-icon {
+		width: 18px;
+		height: 18px;
+		flex-shrink: 0;
+	}
+
+	.sidebar-icon-sm {
+		width: 14px;
+		height: 14px;
+		flex-shrink: 0;
+	}
+
+	.sidebar-label {
+		@apply truncate;
+		flex: 1;
+	}
+
+	.sidebar-label-sm {
+		@apply text-xs truncate text-base-content/50;
+		flex: 1;
+	}
+
+	.sidebar-badge {
+		@apply text-xs font-medium px-1.5 py-0.5 rounded-full bg-primary text-primary-content;
+		min-width: 20px;
+		text-align: center;
+	}
+
+	.sidebar-section-label {
+		@apply text-xs font-semibold uppercase tracking-wider text-base-content/40 px-4 pt-4 pb-1;
+	}
+
+	.sidebar-loop-header {
+		@apply font-medium text-base-content/60;
+	}
+
+	.sidebar-chevron {
+		transition: transform 150ms ease;
+	}
+
+	.sidebar-chevron-open {
+		transform: rotate(90deg);
+	}
+
+	.sidebar-channel {
+		@apply pl-8;
+	}
+
+	.sidebar-channel-hash {
+		@apply text-base-content/30 font-medium;
+		flex-shrink: 0;
+	}
+
+	.sidebar-activity-item {
+		@apply flex items-center gap-2 mx-2 px-3 py-1.5 rounded-lg text-xs;
+		@apply text-base-content/50;
+	}
+
+	.sidebar-activity-idle {
+		@apply opacity-40;
+	}
+
+	.sidebar-pulse {
+		@apply rounded-full bg-success;
+		width: 6px;
+		height: 6px;
+		animation: pulse-border 1.5s ease-in-out infinite;
+	}
+
 	/* ===== Form Helpers ===== */
 	.form-label {
 		@apply block text-sm font-medium mb-1 text-base-content;
@@ -507,6 +605,37 @@
 
 	.prose-custom :where(pre) {
 		@apply rounded-xl bg-base-200 border border-base-300;
+	}
+
+	/* ===== Channel Chat ===== */
+	.channel-chat-container {
+		@apply flex flex-col h-full bg-base-100;
+	}
+
+	.channel-chat-header {
+		@apply flex items-center gap-1.5 px-6 border-b border-base-300 text-sm font-medium;
+		height: 52px;
+		min-height: 52px;
+	}
+
+	.channel-chat-hash {
+		@apply text-base-content/40 font-semibold text-base;
+	}
+
+	.channel-chat-name {
+		@apply text-base-content;
+	}
+
+	.channel-chat-separator {
+		@apply text-base-content/30 mx-1;
+	}
+
+	.channel-chat-loop {
+		@apply text-base-content/50;
+	}
+
+	.channel-chat-input-area {
+		@apply sticky bottom-0 px-6 pb-4 pt-2;
 	}
 }
 
