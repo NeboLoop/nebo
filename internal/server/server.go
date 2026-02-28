@@ -40,16 +40,18 @@ import (
 	"github.com/neboloop/nebo/internal/realtime"
 	"github.com/neboloop/nebo/internal/svc"
 	"github.com/neboloop/nebo/internal/voice"
+	voicehandler "github.com/neboloop/nebo/internal/handler/voice"
 	"github.com/neboloop/nebo/internal/webview"
 	"github.com/neboloop/nebo/internal/websocket"
 )
 
 // ServerOptions holds optional dependencies for the server
 type ServerOptions struct {
-	SvcCtx          *svc.ServiceContext // Pre-initialized service context (single binary mode)
-	Quiet           bool                // Suppress startup messages for clean CLI output
-	AgentMCPHandler *AgentMCPProxy      // Lazy handler for agent MCP tools at /agent/mcp
-	DevMode         bool                // Enable developer routes (desktop mode only)
+	SvcCtx             *svc.ServiceContext // Pre-initialized service context (single binary mode)
+	Quiet              bool                // Suppress startup messages for clean CLI output
+	AgentMCPHandler    *AgentMCPProxy      // Lazy handler for agent MCP tools at /agent/mcp
+	VoiceDuplexHandler *VoiceDuplexProxy   // Lazy handler for full-duplex voice at /ws/voice
+	DevMode            bool                // Enable developer routes (desktop mode only)
 }
 
 // AgentMCPProxy is a lazy http.Handler that serves 503 until the real handler is set.
@@ -78,6 +80,37 @@ func (p *AgentMCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.RUnlock()
 	if h == nil {
 		http.Error(w, "Agent MCP server not ready", http.StatusServiceUnavailable)
+		return
+	}
+	h.ServeHTTP(w, r)
+}
+
+// VoiceDuplexProxy is a lazy http.Handler for the full-duplex voice WebSocket.
+// Serves 503 until the real handler is set by the agent after runner init.
+type VoiceDuplexProxy struct {
+	mu      sync.RWMutex
+	handler http.Handler
+}
+
+// NewVoiceDuplexProxy creates a new lazy proxy for the voice duplex handler.
+func NewVoiceDuplexProxy() *VoiceDuplexProxy {
+	return &VoiceDuplexProxy{}
+}
+
+// Set installs the real voice handler once the agent is initialized.
+func (p *VoiceDuplexProxy) Set(h http.Handler) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.handler = h
+}
+
+// ServeHTTP delegates to the real handler, or returns 503 if not yet set.
+func (p *VoiceDuplexProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.mu.RLock()
+	h := p.handler
+	p.mu.RUnlock()
+	if h == nil {
+		http.Error(w, "Voice duplex not ready", http.StatusServiceUnavailable)
 		return
 	}
 	h.ServeHTTP(w, r)
@@ -162,6 +195,8 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 		r.Post("/voice/transcribe", voice.TranscribeHandler)
 		r.Post("/voice/tts", voice.TTSHandler)
 		r.Get("/voice/voices", voice.VoicesHandler)
+		r.Get("/voice/models/status", voicehandler.ModelsStatusHandler())
+		r.Post("/voice/models/download", voicehandler.ModelsDownloadHandler())
 
 		// Auth routes with stricter rate limiting
 		r.Group(func(r chi.Router) {
@@ -203,6 +238,14 @@ func run(ctx context.Context, c config.Config, opts ServerOptions) error {
 
 	r.Get("/ws", websocket.Handler(hub))
 	r.Get("/api/v1/agent/ws", agentWebSocketHandler(svcCtx))
+
+	// Full-duplex voice WebSocket — binary audio pipe between browser and agent
+	if opts.VoiceDuplexHandler != nil {
+		r.Get("/ws/voice", opts.VoiceDuplexHandler.ServeHTTP)
+	}
+
+	// Wake word listener — lightweight WebSocket for "Hey Nebo" detection
+	r.Get("/ws/voice/wake", voice.WakeWordHandler())
 
 	// Browser relay for Chrome extension
 	relayBaseURL := fmt.Sprintf("http://%s:%d/relay", c.App.Domain, serverPort)
@@ -361,6 +404,9 @@ func registerPublicRoutes(r chi.Router, svcCtx *svc.ServiceContext) {
 	r.Delete("/agent/advisors/{name}", agent.DeleteAdvisorHandler(svcCtx))
 	r.Get("/agent/status", agent.GetSimpleAgentStatusHandler(svcCtx))
 	r.Get("/agent/lanes", agent.GetLanesHandler(svcCtx))
+	r.Get("/agent/loops", agent.GetLoopsHandler(svcCtx))
+	r.Get("/agent/channels/{channelId}/messages", agent.GetChannelMessagesHandler(svcCtx))
+	r.Post("/agent/channels/{channelId}/send", agent.SendChannelMessageHandler(svcCtx))
 	r.Get("/agent/profile", agent.GetAgentProfileHandler(svcCtx))
 	r.Put("/agent/profile", agent.UpdateAgentProfileHandler(svcCtx))
 	r.Get("/agent/system-info", agent.GetSystemInfoHandler(svcCtx))

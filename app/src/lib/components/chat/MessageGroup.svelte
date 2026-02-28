@@ -220,6 +220,7 @@
 								prompt={block.askPrompt ?? ''}
 								widgets={block.askWidgets ?? []}
 								response={block.askResponse}
+								disabled={!resolved.message.streaming}
 								onSubmit={(id, val) => onAskSubmit?.(id, val)}
 							/>
 						{:else if block.type === 'text' && block.text}

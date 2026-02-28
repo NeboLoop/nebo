@@ -424,3 +424,124 @@ nebo skills show [name]   # Full details + markdown body
 - Agent sees unified `skill` domain tool regardless of backend
 - App uninstall → skill entry unregistered
 - Store skill install: fetch SKILL.md from NeboLoop → write to `<data_dir>/skills/{slug}/SKILL.md` → fsnotify auto-reloads
+
+---
+
+## Lane Integration (from Lane Routing Refactor)
+
+Skills and apps now participate in the lane system with origin-based security, desktop serialization, and cross-lane communication.
+
+### Channel Skill Bindings
+
+Skills can be bound to loop channels. When a message arrives in a bound channel, the skill is force-loaded via `ForceSkill` on the `RunRequest`.
+
+**Storage:** `channel_skills` table in SQLite (migration 0044):
+```sql
+channel_skills (
+    channel_id TEXT NOT NULL,     -- Loop channel UUID
+    skill_name TEXT NOT NULL,     -- Skill slug
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, skill_name)
+)
+```
+
+**Flow:**
+1. Owner says in Main Chat: "When a lead comes into #new-leads, qualify them"
+2. Nebo creates a skill (writes SKILL.md to disk) and binds it via `CreateChannelSkill(channelID, skillName)`
+3. Loop channel message arrives → handler calls `ListChannelSkills(channelID)`
+4. First binding's skill name set as `ForceSkill` on `RunRequest`
+5. Runner calls `ForceLoadSkill(sessionKey, skillName)` → skill template injected into system prompt
+6. Skill runs with full tool access (minus origin-restricted tools)
+
+**Queries:** `internal/db/queries/channel_skills.sql` — `ListChannelSkills`, `CreateChannelSkill`, `DeleteChannelSkill`, `DeleteChannelSkills`, `ListAllChannelSkills`
+
+### Origin Policy Enforcement
+
+Skills and apps run under origin-based tool restrictions. The origin is set on the context when the run is enqueued, and `Registry.Execute()` checks `Policy.IsDeniedForOrigin()` before execution.
+
+| Origin | Set When | Default Deny List |
+|--------|----------|-------------------|
+| `OriginUser` | Web UI, CLI, phone DM, voice | Nothing denied |
+| `OriginComm` | Loop channel messages, bot DMs | `shell` |
+| `OriginApp` | App-backed tool execution | `shell` |
+| `OriginSkill` | Skill template-driven execution | `shell` |
+| `OriginSystem` | Heartbeat, cron, crash recovery | Nothing denied |
+
+A loop channel skill can use `notify_owner`, `query_sessions`, `message_send`, `web`, `file`, `memory`, `calendar`, `contacts`, desktop tools (via LaneDesktop) — everything except `shell`.
+
+### Desktop Queuing for Tools
+
+Any tool in the `"desktop"` category — whether from a standalone skill, an app, or Main Chat — is routed through `LaneDesktop` (concurrency 1). This prevents multiple workflows from fighting over the screen.
+
+**Desktop tools:** `desktop`, `accessibility`, `screenshot`, `app`, `browser`, `window`, `menubar`, `dialog`, `shortcuts`
+
+**How it works:** `Registry.executeWithDesktopQueue()` checks `IsDesktopTool(name)`. If true and a `DesktopQueueFunc` is configured, the execution is enqueued to `LaneDesktop`. The calling lane's run blocks until the desktop task completes and returns the result.
+
+This means:
+- Main Chat using browser → enqueues to LaneDesktop, streams result to user
+- Loop channel skill using browser → enqueues to LaneDesktop, waits behind Main Chat if it's using desktop
+- Two channel skills both need Excel → they queue, no collision
+
+### Cross-Lane Tools Available to Skills
+
+Three new tools are available to skills running on any lane:
+
+| Tool | Purpose | Example |
+|------|---------|---------|
+| `notify_owner` | Post a message to the owner's Main Chat from any lane | Skill qualifies a lead, notifies owner: "New qualified lead — Sarah, $450K budget" |
+| `query_sessions` | Read messages from other sessions (DB read, no lane communication) | Skill checks what happened in #follow-ups before drafting a response |
+| `message_send` (extended) | Send to loop channels via `loop:{channelID}` format | Event fires weekly, posts grocery list to #groceries channel |
+
+These tools are registered globally and available to all origins (not in any deny list).
+
+### Skill CRUD via agent tool
+
+Skills can be created, updated, and deleted from conversation using the `skill` domain tool:
+
+```
+skill(action: "create", name: "lead-qualifier", content: "---\nname: lead-qualifier\n...")
+```
+
+Combined with channel bindings, this enables the workflow creation story: owner describes automation in Main Chat → Nebo creates the skill → binds it to a channel trigger → next message in that channel fires the skill.
+
+---
+
+## Key Files (Updated)
+
+| File | Purpose |
+|------|---------|
+| **Apps** | |
+| `internal/apps/manifest.go` | AppManifest types, validation, capability/permission constants |
+| `internal/apps/registry.go` | Central hub: discovery, launch, capability registration, DB |
+| `internal/apps/runtime.go` | Process lifecycle, socket wait, health check |
+| `internal/apps/adapter.go` | 5 adapters: Gateway, Tool, Comm, Channel, Schedule |
+| `internal/apps/sandbox.go` | Env sanitization, binary validation, log management |
+| `internal/apps/signing.go` | ED25519 verification, signing key provider, revocation |
+| `internal/apps/napp.go` | Secure .napp extraction |
+| `internal/apps/supervisor.go` | Auto-restart with backoff + rate limiting |
+| `internal/apps/watcher.go` | fsnotify binary changes → restart (500ms debounce) |
+| `internal/apps/install.go` | NeboLoop event routing: install/update/uninstall/revoke |
+| `internal/apps/settings/store.go` | DB-backed settings with hot-reload |
+| `internal/apps/inspector/` | gRPC traffic inspector |
+| `internal/handler/plugins/handler.go` | Plugin management + NeboLoop store integration |
+| `internal/handler/appui/handlers.go` | App UI proxy, static files, window management |
+| `internal/handler/appoauth/handler.go` | OAuth flow coordination |
+| `proto/apps/v0/*.proto` | gRPC service definitions (7 services) |
+| **Skills** | |
+| `internal/agent/skills/skill.go` | Skill struct, YAML parsing, validation |
+| `internal/agent/skills/loader.go` | Loader, hot-watch, filesystem monitoring |
+| `internal/agent/tools/skill_tool.go` | Unified domain tool, execution, invocation tracking, trigger matching |
+| `cmd/nebo/skills.go` | CLI commands (list, show) |
+| `internal/handler/extensions/skillhandlers.go` | HTTP CRUD handlers |
+| `internal/local/skillsettings.go` | Persistent enabled/disabled state |
+| `extensions/bundled.go` | embed.FS for bundled skills |
+| `extensions/skills/introduction/SKILL.md` | First-meeting skill |
+| `extensions/skills/store-setup/SKILL.md` | Store discovery skill |
+| **Lane Integration (new)** | |
+| `internal/db/migrations/0044_channel_skills.sql` | Channel skill bindings table |
+| `internal/db/queries/channel_skills.sql` | CRUD queries for channel bindings |
+| `internal/agent/tools/desktop_queue.go` | Desktop tool serialization wrapper |
+| `internal/agent/tools/notify_owner.go` | Cross-lane owner notification tool |
+| `internal/agent/tools/query_sessions.go` | Cross-session read tool |
+| `internal/agent/tools/channel_send.go` | Extended with `loop:{channelID}` support |
+| `internal/agent/tools/policy.go` | Origin deny list (enabled with defaults) |

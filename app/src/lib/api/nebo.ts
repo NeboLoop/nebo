@@ -42,6 +42,22 @@ export function updateAdvisor(req: components.UpdateAdvisorRequest, name: string
 }
 
 /**
+ * @description "Get channel messages"
+ * @param req
+ */
+export function getChannelMessages(params: components.GetChannelMessagesRequestParams, channelId: string) {
+	return webapi.get<components.MessageResponse>(`/api/v1/agent/channels/${channelId}/messages`, params)
+}
+
+/**
+ * @description "Send channel message"
+ * @param req
+ */
+export function sendChannelMessage(req: components.SendChannelMessageRequest, channelId: string) {
+	return webapi.post<components.MessageResponse>(`/api/v1/agent/channels/${channelId}/send`, req)
+}
+
+/**
  * @description "Get heartbeat"
  */
 export function getHeartbeat() {
@@ -61,6 +77,13 @@ export function updateHeartbeat(req: components.UpdateHeartbeatRequest) {
  */
 export function getLanes() {
 	return webapi.get<components.MessageResponse>(`/api/v1/agent/lanes`)
+}
+
+/**
+ * @description "Get loops"
+ */
+export function getLoops() {
+	return webapi.get<components.MessageResponse>(`/api/v1/agent/loops`)
 }
 
 /**
@@ -647,6 +670,13 @@ export function neboLoopOAuthStart() {
  */
 export function neboLoopOAuthStatus(params: components.NeboLoopOAuthStatusRequestParams) {
 	return webapi.get<components.NeboLoopOAuthStatusResponse>(`/api/v1/neboloop/oauth/status`, params)
+}
+
+/**
+ * @description "Nebo loop open"
+ */
+export function neboLoopOpen() {
+	return webapi.get<components.MessageResponse>(`/api/v1/neboloop/open`)
 }
 
 /**

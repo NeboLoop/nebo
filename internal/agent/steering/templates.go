@@ -22,6 +22,7 @@ var channelTemplates = map[string]string{
 	"discord":  "Responding via Discord. Moderate length OK. Markdown supported. Keep under 2000 chars per message.",
 	"slack":    "Responding via Slack. Moderate length OK. Slack mrkdwn supported (*bold*, _italic_, `code`).",
 	"cli":      "Responding via CLI terminal. Plain text only. No markdown rendering available. Be concise.",
+	"voice":    "Responding via live voice. Keep responses to 1-2 short sentences. No markdown, lists, code blocks, or URLs. Speak naturally as in a phone call.",
 }
 
 // --- Tool Nudge ---

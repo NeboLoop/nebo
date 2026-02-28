@@ -109,6 +109,49 @@ type LoopChannelLister interface {
 	ListLoopChannels(ctx context.Context) ([]LoopChannelInfo, error)
 }
 
+// LoopInfo describes a loop the bot is a member of.
+type LoopInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// LoopLister is an optional interface for plugins that can list loops.
+type LoopLister interface {
+	ListLoops(ctx context.Context) ([]LoopInfo, error)
+}
+
+// LoopGetter is an optional interface for plugins that can fetch a single loop by ID.
+type LoopGetter interface {
+	GetLoopInfo(ctx context.Context, loopID string) (*LoopInfo, error)
+}
+
+// ChannelMessageItem describes a single message from a loop channel.
+type ChannelMessageItem struct {
+	ID        string `json:"id"`
+	From      string `json:"from"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ChannelMessageLister is an optional interface for plugins that can fetch channel messages.
+type ChannelMessageLister interface {
+	ListChannelMessages(ctx context.Context, channelID string, limit int) ([]ChannelMessageItem, error)
+}
+
+// ChannelMemberLister is an optional interface for plugins that can fetch channel members.
+type ChannelMemberLister interface {
+	ListChannelMembers(ctx context.Context, channelID string) ([]ChannelMemberItem, error)
+}
+
+// ChannelMemberItem describes a bot that is a member of a channel.
+type ChannelMemberItem struct {
+	BotID    string `json:"bot_id"`
+	BotName  string `json:"bot_name"`
+	Role     string `json:"role,omitempty"`
+	IsOnline bool   `json:"is_online"`
+}
+
 // ManagerStatus holds the status of the comm plugin manager
 type ManagerStatus struct {
 	PluginName string   `json:"plugin_name"`

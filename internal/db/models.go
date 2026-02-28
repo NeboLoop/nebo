@@ -124,6 +124,12 @@ type ChannelRegistry struct {
 	CreatedAt           int64          `json:"created_at"`
 }
 
+type ChannelSkill struct {
+	ChannelID string `json:"channel_id"`
+	SkillName string `json:"skill_name"`
+	CreatedAt int64  `json:"created_at"`
+}
+
 type Chat struct {
 	ID        string         `json:"id"`
 	Title     string         `json:"title"`
@@ -483,6 +489,7 @@ type Session struct {
 	CustomLabel                sql.NullString `json:"custom_label"`
 	LastEmbeddedMessageID      sql.NullInt64  `json:"last_embedded_message_id"`
 	ActiveTask                 sql.NullString `json:"active_task"`
+	LastSummarizedCount        sql.NullInt64  `json:"last_summarized_count"`
 }
 
 type SessionMessage struct {

@@ -208,6 +208,7 @@ type LoopsResponse struct {
 type LoopMember struct {
 	BotID    string `json:"bot_id"`
 	BotName  string `json:"bot_name,omitempty"`
+	Role     string `json:"role,omitempty"`
 	IsOnline bool   `json:"is_online"`
 }
 
@@ -220,6 +221,7 @@ type LoopMembersResponse struct {
 type ChannelMember struct {
 	BotID    string `json:"bot_id"`
 	BotName  string `json:"bot_name,omitempty"`
+	Role     string `json:"role,omitempty"`
 	IsOnline bool   `json:"is_online"`
 }
 
@@ -228,7 +230,25 @@ type ChannelMembersResponse struct {
 	Members []ChannelMember `json:"members"`
 }
 
-// ChannelMessageItem is a message from channel history (REST, not wire format).
+// channelMessageRaw is the raw wire format from the NeboLoop channel messages API.
+type channelMessageRaw struct {
+	MsgID     string `json:"msg_id"`
+	SenderID  string `json:"sender_id"`
+	Payload   string `json:"payload"` // JSON string containing sender_id, stream, content.text
+	CreatedAt string `json:"created_at"`
+	Seq       int    `json:"seq"`
+	Stream    string `json:"stream"`
+}
+
+// channelPayload is the nested JSON inside channelMessageRaw.Payload.
+type channelPayload struct {
+	SenderID string `json:"sender_id"`
+	Content  struct {
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// ChannelMessageItem is a normalized message from channel history.
 type ChannelMessageItem struct {
 	ID        string `json:"id"`
 	From      string `json:"from"`
@@ -238,7 +258,26 @@ type ChannelMessageItem struct {
 
 // ChannelMessagesResponse is returned by GET /api/v1/bots/{id}/channels/{channelID}/messages.
 type ChannelMessagesResponse struct {
-	Messages []ChannelMessageItem `json:"messages"`
+	Messages []channelMessageRaw `json:"messages"`
+}
+
+// Normalize converts raw API messages into clean ChannelMessageItems.
+func (r *ChannelMessagesResponse) Normalize() []ChannelMessageItem {
+	result := make([]ChannelMessageItem, len(r.Messages))
+	for i, raw := range r.Messages {
+		item := ChannelMessageItem{
+			ID:        raw.MsgID,
+			From:      raw.SenderID,
+			CreatedAt: raw.CreatedAt,
+		}
+		// Extract text from the nested payload JSON
+		var p channelPayload
+		if json.Unmarshal([]byte(raw.Payload), &p) == nil {
+			item.Content = p.Content.Text
+		}
+		result[i] = item
+	}
+	return result
 }
 
 // --------------------------------------------------------------------------

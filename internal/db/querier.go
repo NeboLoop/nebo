@@ -41,6 +41,7 @@ type Querier interface {
 	// Auth profiles queries
 	CreateAuthProfile(ctx context.Context, arg CreateAuthProfileParams) (AuthProfile, error)
 	CreateChannel(ctx context.Context, arg CreateChannelParams) (Channel, error)
+	CreateChannelSkill(ctx context.Context, arg CreateChannelSkillParams) error
 	// Chat queries
 	CreateChat(ctx context.Context, arg CreateChatParams) (Chat, error)
 	// Chat message queries
@@ -92,6 +93,8 @@ type Querier interface {
 	DeleteChannelConfig(ctx context.Context, arg DeleteChannelConfigParams) error
 	DeleteChannelCredential(ctx context.Context, arg DeleteChannelCredentialParams) error
 	DeleteChannelCredentials(ctx context.Context, channelID string) error
+	DeleteChannelSkill(ctx context.Context, arg DeleteChannelSkillParams) error
+	DeleteChannelSkills(ctx context.Context, channelID string) error
 	DeleteChat(ctx context.Context, id string) error
 	DeleteChatMessage(ctx context.Context, id string) error
 	DeleteChatMessagesAfter(ctx context.Context, arg DeleteChatMessagesAfterParams) error
@@ -152,6 +155,7 @@ type Querier interface {
 	GetChannelConfig(ctx context.Context, arg GetChannelConfigParams) (ChannelConfig, error)
 	GetChannelCredential(ctx context.Context, arg GetChannelCredentialParams) (ChannelCredential, error)
 	GetChannelRegistry(ctx context.Context, id string) (ChannelRegistry, error)
+	GetChannelSkill(ctx context.Context, arg GetChannelSkillParams) (ChannelSkill, error)
 	GetChat(ctx context.Context, id string) (Chat, error)
 	GetChatMessage(ctx context.Context, id string) (ChatMessage, error)
 	GetChatMessages(ctx context.Context, chatID string) ([]ChatMessage, error)
@@ -266,11 +270,13 @@ type Querier interface {
 	// Returns ALL active profiles regardless of cooldown - for provider loading.
 	// Cooldown affects request routing, not provider existence.
 	ListAllActiveAuthProfilesByProvider(ctx context.Context, provider string) ([]AuthProfile, error)
+	ListAllChannelSkills(ctx context.Context) ([]ChannelSkill, error)
 	ListAppOAuthGrants(ctx context.Context, appID string) ([]AppOauthGrant, error)
 	ListAuthProfiles(ctx context.Context) ([]AuthProfile, error)
 	ListChannelConfig(ctx context.Context, channelID string) ([]ChannelConfig, error)
 	ListChannelCredentials(ctx context.Context, channelID string) ([]ChannelCredential, error)
 	ListChannelRegistry(ctx context.Context) ([]ChannelRegistry, error)
+	ListChannelSkills(ctx context.Context, channelID string) ([]ChannelSkill, error)
 	ListChannels(ctx context.Context) ([]Channel, error)
 	ListChats(ctx context.Context, arg ListChatsParams) ([]Chat, error)
 	ListCronHistory(ctx context.Context, arg ListCronHistoryParams) ([]CronHistory, error)

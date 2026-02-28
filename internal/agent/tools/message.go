@@ -7,6 +7,13 @@ import (
 	"sync"
 )
 
+// ChannelSender is the interface for sending messages to channel apps.
+// Implemented by apps.AppRegistry — defined here to avoid import cycles.
+type ChannelSender interface {
+	SendToChannel(ctx context.Context, channelType, channelID, text string) error
+	ListChannels() []string
+}
+
 // MessageTool allows the agent to send messages to connected channels
 type MessageTool struct {
 	mu     sync.RWMutex

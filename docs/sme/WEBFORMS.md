@@ -25,14 +25,13 @@ Both use the same pattern: Go channel blocks the agent goroutine, WebSocket deli
 
 ## Widget Types
 
-Four widget types defined in `AskWidget` (`internal/agent/tools/agent_tool.go:98-103`):
+Five widget types defined in `AskWidget` (`internal/agent/tools/agent_tool.go:98-103`):
 
 | Type | Renders As | Options Field | Default Behavior |
 |------|-----------|---------------|------------------|
 | `buttons` | Row of outlined buttons | Required — each option is a button | N/A |
 | `confirm` | Row of buttons (like `buttons`) | Optional — defaults to `["Yes", "No"]` | Yes/No buttons |
 | `select` | Dropdown + OK button | Required — each option is a `<option>` | Disabled OK until selection |
-| `text_input` | Text field + Send button | N/A | Enter key submits, disabled until non-empty |
 | `radio` | Vertical radio list + Submit button | Required — each option is a radio input | Disabled Submit until one selected |
 | `checkbox` | Vertical checkbox list + Submit button | Required — each option is a checkbox | Disabled Submit until ≥1 checked; submits comma-separated string |
 
@@ -40,7 +39,7 @@ Go struct:
 ```go
 // internal/agent/tools/agent_tool.go:98-103
 type AskWidget struct {
-    Type    string   `json:"type"`              // "buttons", "select", "text_input", "confirm", "radio", "checkbox"
+    Type    string   `json:"type"`              // "buttons", "select", "confirm", "radio", "checkbox"
     Label   string   `json:"label,omitempty"`
     Options []string `json:"options,omitempty"` // for buttons/select
     Default string   `json:"default,omitempty"` // pre-filled value
@@ -51,7 +50,7 @@ TypeScript interface:
 ```typescript
 // app/src/lib/components/chat/AskWidget.svelte:2-7
 export interface AskWidgetDef {
-    type: 'buttons' | 'select' | 'text_input' | 'confirm' | 'radio' | 'checkbox';
+    type: 'buttons' | 'select' | 'confirm' | 'radio' | 'checkbox';
     label?: string;
     options?: string[];
     default?: string;

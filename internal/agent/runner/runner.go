@@ -51,6 +51,15 @@ type MCPContextSetter interface {
 	SetContext(sessionKey string, origin tools.Origin)
 }
 
+// runState holds per-run mutable state that must not be shared across concurrent
+// Run() calls. Each Run() allocates its own runState, eliminating data races
+// when LaneMain concurrency > 1.
+type runState struct {
+	cachedThresholds *ContextThresholds // Cached per-run to avoid redundant model selection
+	promptOverhead   int               // Measured token overhead (system prompt + tool schemas + buffer)
+	lastInputTokens  int               // Ground truth token count from last API response
+}
+
 type Runner struct {
 	sessions        *session.Manager
 	providers       []ai.Provider
@@ -64,6 +73,7 @@ type Runner struct {
 	fuzzyMatcher    *ai.FuzzyMatcher    // For user model switch requests
 	profileTracker  ai.ProfileTracker   // For recording usage/errors per auth profile
 	mcpServer       MCPContextSetter    // Bridges context across HTTP boundary for CLI providers
+	mcpMu           sync.Mutex          // Guards mcpServer.SetContext() from concurrent thrashing
 	appCatalog      AppCatalogProvider  // Installed app catalog for system prompt
 	steering        *steering.Pipeline   // Mid-conversation steering message generator
 	fileTracker     *FileAccessTracker   // Tracks file reads for post-compaction re-injection
@@ -71,9 +81,7 @@ type Runner struct {
 	extractingMemory    sync.Map          // sessionID → true: prevents overlapping extractions
 	detectingObjective  sync.Map          // sessionID → true: prevents overlapping detections
 	memoryTimers        sync.Map          // sessionID → *time.Timer: debounced extraction
-	cachedThresholds    *ContextThresholds // Cached per-run to avoid redundant model selection
-	promptOverhead      int               // Measured token overhead (system prompt + tool schemas + buffer)
-	lastInputTokens     int               // Ground truth token count from last API response
+	sessionLocks        sync.Map          // sessionID → *sync.Mutex: guards compaction per session
 }
 
 // RunRequest contains parameters for a run
@@ -129,6 +137,13 @@ func New(cfg *config.Config, sessions *session.Manager, providers []ai.Provider,
 	}
 
 	return r
+}
+
+// getSessionLock returns a per-session mutex for guarding compaction.
+// Uses sync.Map for lock-free reads on the common (no-compaction) path.
+func (r *Runner) getSessionLock(sessionID string) *sync.Mutex {
+	v, _ := r.sessionLocks.LoadOrStore(sessionID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // SetModelSelector sets the model selector for task-based model routing.
@@ -278,10 +293,8 @@ func (r *Runner) ReloadProviders() {
 func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEvent, error) {
 	fmt.Printf("[Runner] Run: session=%s origin=%s\n", req.SessionKey, req.Origin)
 
-	// Reset per-run state so stale values from previous sessions don't
-	// affect threshold decisions on the first turn of a new session.
-	r.lastInputTokens = 0
-	r.cachedThresholds = nil
+	// Per-run state: allocated fresh each call, no shared mutable state
+	rs := &runState{}
 
 	// Inject origin into context so tools can check it via GetOrigin(ctx)
 	if req.Origin != "" {
@@ -305,9 +318,12 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 	// Inject session key into context so tools can scope per-session state
 	ctx = tools.WithSessionKey(ctx, req.SessionKey)
 
-	// Bridge context to MCP server for CLI providers that cross an HTTP boundary
+	// Bridge context to MCP server for CLI providers that cross an HTTP boundary.
+	// Guarded by mutex to prevent concurrent runs from thrashing the context.
 	if r.mcpServer != nil {
+		r.mcpMu.Lock()
 		r.mcpServer.SetContext(req.SessionKey, req.Origin)
+		r.mcpMu.Unlock()
 	}
 
 	// Get or create session (user-scoped if UserID provided)
@@ -348,15 +364,14 @@ func (r *Runner) Run(ctx context.Context, req *RunRequest) (<-chan ai.StreamEven
 	}
 
 	resultCh := make(chan ai.StreamEvent, 100)
-	go r.runLoop(ctx, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.Prompt, channel, req.SkipMemoryExtract, req.ForceSkill, resultCh)
+	go r.runLoop(ctx, rs, sess.ID, req.SessionKey, req.System, req.ModelOverride, req.UserID, req.Prompt, channel, req.SkipMemoryExtract, req.ForceSkill, resultCh)
 
 	return resultCh, nil
 }
 
 // runLoop is the main agentic execution loop
-func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPrompt, modelOverride, userID, userPrompt, channel string, skipMemoryExtract bool, forceSkill string, resultCh chan<- ai.StreamEvent) {
+func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKey, systemPrompt, modelOverride, userID, userPrompt, channel string, skipMemoryExtract bool, forceSkill string, resultCh chan<- ai.StreamEvent) {
 	startTime := time.Now()
-	r.cachedThresholds = nil // Fresh thresholds for each run
 	defer func() {
 		close(resultCh)
 		// Trigger agent run complete event
@@ -592,15 +607,15 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 				toolSchemaTokens += (len(td.Description) + len(string(td.InputSchema))) / CharsPerTokenEstimate
 			}
 			dynamicBuffer := 4000 // Buffer for dynamic suffix, steering, active task
-			r.promptOverhead = promptTokens + toolSchemaTokens + dynamicBuffer
-			r.cachedThresholds = nil // Force recalculation with real overhead
+			rs.promptOverhead = promptTokens + toolSchemaTokens + dynamicBuffer
+			rs.cachedThresholds = nil // Force recalculation with real overhead
 			fmt.Printf("[Runner] Computed prompt overhead: %d tokens (prompt=%d, tools=%d, buffer=%d)\n",
-				r.promptOverhead, promptTokens, toolSchemaTokens, dynamicBuffer)
+				rs.promptOverhead, promptTokens, toolSchemaTokens, dynamicBuffer)
 		}
 
 		// Graduated context thresholds: Warning → Error → AutoCompact
-		thresholds := r.contextThresholds()
-		estimatedTokens := r.currentTokenEstimate(messages)
+		thresholds := r.contextThresholds(rs)
+		estimatedTokens := r.currentTokenEstimate(rs, messages)
 
 		// Error tier: log warning about context size
 		if estimatedTokens > thresholds.Error {
@@ -614,9 +629,14 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		if estimatedTokens > thresholds.AutoCompact {
 			fmt.Printf("[Runner] Token limit exceeded (~%d tokens, limit: %d), compacting...\n", estimatedTokens, thresholds.AutoCompact)
 
+			// Per-session lock prevents two concurrent runs from compacting
+			// the same session simultaneously (read-then-write race).
+			sessLock := r.getSessionLock(sessionID)
+			sessLock.Lock()
+
 			// Only flush memory on the first compaction attempt per run
 			if !compactionAttempted {
-				r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
+				r.maybeRunMemoryFlush(context.WithoutCancel(ctx), rs, sessionID, userID, messages)
 			}
 			compactionAttempted = true
 
@@ -652,10 +672,11 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 				// Reload messages after compaction
 				messages, err = r.sessions.GetMessages(sessionID, r.config.MaxContext)
 				if err != nil {
+					sessLock.Unlock()
 					resultCh <- ai.StreamEvent{Type: ai.EventTypeError, Error: err}
 					return
 				}
-				newTokens := r.currentTokenEstimate(messages)
+				newTokens := r.currentTokenEstimate(rs, messages)
 				fmt.Printf("[Runner] After compaction (keep=%d): %d messages, ~%d tokens\n", keep, len(messages), newTokens)
 
 				if newTokens <= thresholds.AutoCompact {
@@ -667,6 +688,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 					break
 				}
 			}
+			sessLock.Unlock()
 			// Never block — proceed with whatever context we have
 		}
 
@@ -835,9 +857,12 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			if ai.IsContextOverflow(err) {
 				fmt.Printf("[Runner] Context overflow - progressive compaction\n")
 
+				sessLock := r.getSessionLock(sessionID)
+				sessLock.Lock()
+
 				// Only flush memory on the first overflow per run
 				if !compactionAttempted {
-					r.maybeRunMemoryFlush(context.WithoutCancel(ctx), sessionID, userID, messages)
+					r.maybeRunMemoryFlush(context.WithoutCancel(ctx), rs, sessionID, userID, messages)
 				}
 
 				// Determine starting keep count: skip 10 if we already compacted
@@ -877,6 +902,8 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 					fmt.Printf("[Runner] Overflow compaction (keep=%d) succeeded\n", keep)
 					break
 				}
+
+				sessLock.Unlock()
 
 				// File re-injection will happen on the next iteration
 				r.fileTracker.Clear()
@@ -973,7 +1000,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 				case ai.EventTypeUsage:
 					if event.Usage != nil && event.Usage.InputTokens > 0 {
-						r.lastInputTokens = event.Usage.InputTokens
+						rs.lastInputTokens = event.Usage.InputTokens
 					}
 				}
 
@@ -2069,9 +2096,9 @@ func (r *Runner) extractAndStoreMemories(sessionID, userID string) {
 // a goroutine so it doesn't block the conversation lane — the messages slice is
 // safe to read concurrently since Compact() only modifies the DB.
 // Returns true if a flush was initiated.
-func (r *Runner) maybeRunMemoryFlush(ctx context.Context, sessionID, userID string, messages []session.Message) bool {
+func (r *Runner) maybeRunMemoryFlush(ctx context.Context, rs *runState, sessionID, userID string, messages []session.Message) bool {
 	tokens := estimateTokens(messages)
-	flushThreshold := r.memoryFlushThreshold()
+	flushThreshold := r.memoryFlushThreshold(rs)
 	if tokens < flushThreshold {
 		return false
 	}
@@ -2302,9 +2329,9 @@ func estimateTokens(messages []session.Message) int {
 
 // currentTokenEstimate returns the best available token count for context.
 // Prefers ground truth from the last API response when available.
-func (r *Runner) currentTokenEstimate(messages []session.Message) int {
-	if r.lastInputTokens > 0 {
-		return r.lastInputTokens
+func (r *Runner) currentTokenEstimate(rs *runState, messages []session.Message) int {
+	if rs.lastInputTokens > 0 {
+		return rs.lastInputTokens
 	}
 	return estimateTokens(messages)
 }
@@ -2337,11 +2364,11 @@ type ContextThresholds struct {
 }
 
 // contextThresholds computes graduated context thresholds from the active model's
-// context window. Caches the result for the duration of a run since the context
-// window doesn't change mid-conversation.
-func (r *Runner) contextThresholds() ContextThresholds {
-	if r.cachedThresholds != nil {
-		return *r.cachedThresholds
+// context window. Caches the result on the runState for the duration of a run
+// since the context window doesn't change mid-conversation.
+func (r *Runner) contextThresholds(rs *runState) ContextThresholds {
+	if rs.cachedThresholds != nil {
+		return *rs.cachedThresholds
 	}
 
 	contextWindow := 0
@@ -2376,13 +2403,13 @@ func (r *Runner) contextThresholds() ContextThresholds {
 			Error:       DefaultContextTokenLimit - ErrorOffset,
 			AutoCompact: DefaultContextTokenLimit,
 		}
-		r.cachedThresholds = &result
+		rs.cachedThresholds = &result
 		return result
 	}
 
 	// Reserve tokens for system prompt, tool definitions.
 	// Use measured overhead when available, with a floor of the old default.
-	reserveTokens := r.promptOverhead
+	reserveTokens := rs.promptOverhead
 	if reserveTokens < 20000 {
 		reserveTokens = 20000 // Floor: never below old default
 	}
@@ -2414,26 +2441,26 @@ func (r *Runner) contextThresholds() ContextThresholds {
 		Error:       errorT,
 		AutoCompact: autoCompact,
 	}
-	r.cachedThresholds = &result
+	rs.cachedThresholds = &result
 	return result
 }
 
 // contextTokenLimit returns the max tokens before proactive compaction triggers.
 // Delegates to the AutoCompact tier of the graduated thresholds.
-func (r *Runner) contextTokenLimit() int {
-	return r.contextThresholds().AutoCompact
+func (r *Runner) contextTokenLimit(rs *runState) int {
+	return r.contextThresholds(rs).AutoCompact
 }
 
 // contextWarningThreshold returns the token count above which micro-compaction
 // should activate. Delegates to the Warning tier of the graduated thresholds.
-func (r *Runner) contextWarningThreshold() int {
-	return r.contextThresholds().Warning
+func (r *Runner) contextWarningThreshold(rs *runState) int {
+	return r.contextThresholds(rs).Warning
 }
 
 // memoryFlushThreshold returns the token count at which memory flush triggers.
 // Set to 75% of the compaction limit so flush runs before compaction discards messages.
-func (r *Runner) memoryFlushThreshold() int {
-	return r.contextTokenLimit() * 75 / 100
+func (r *Runner) memoryFlushThreshold(rs *runState) int {
+	return r.contextTokenLimit(rs) * 75 / 100
 }
 
 // MemoryFlushPrompt is the prompt sent to trigger a memory flush before compaction

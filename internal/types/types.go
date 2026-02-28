@@ -1494,3 +1494,13 @@ type OpenAppUIResponse struct {
 	Opened bool   `json:"opened"`
 	URL    string `json:"url,omitempty"`
 }
+
+type GetChannelMessagesRequest struct {
+	ChannelId string `path:"channelId"`
+	Limit     int    `form:"limit,optional"`
+}
+
+type SendChannelMessageRequest struct {
+	ChannelId string `path:"channelId"`
+	Text      string `json:"text"`
+}

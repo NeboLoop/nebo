@@ -43,12 +43,14 @@ import (
 	"github.com/neboloop/nebo/internal/browser"
 	"github.com/neboloop/nebo/internal/db"
 	"github.com/neboloop/nebo/internal/local"
+	"github.com/neboloop/nebo/internal/markdown"
 	"github.com/neboloop/nebo/internal/apps/settings"
 	"github.com/neboloop/nebo/internal/notify"
 	"github.com/neboloop/nebo/internal/provider"
 	"github.com/neboloop/nebo/internal/server"
 	"github.com/neboloop/nebo/internal/svc"
 	"github.com/neboloop/nebo/internal/updater"
+	"github.com/neboloop/nebo/internal/voice"
 )
 
 // approvalResponse holds the result of an approval request
@@ -101,6 +103,10 @@ type agentState struct {
 
 	// Heartbeat daemon for cron wake/enqueue (pointer-to-pointer: filled in by root.go/desktop.go after creation)
 	heartbeat **daemon.Heartbeat
+
+	// Cached companion chat session ID (set by first web UI chat request, reused by DM handler)
+	companionChatID   string
+	companionChatIDMu sync.RWMutex
 }
 
 // sendFrame sends a JSON frame to the server
@@ -307,8 +313,9 @@ type AgentOptions struct {
 	SvcCtx           *svc.ServiceContext   // For registering app capabilities with the HTTP layer
 	Quiet            bool                // Suppress console output for clean CLI
 	Dangerously      bool                // Bypass all tool approval prompts (CLI flag)
-	AgentMCPProxy    *server.AgentMCPProxy // Lazy handler for CLI provider MCP loopback
-	Heartbeat        **daemon.Heartbeat    // Pointer-to-pointer: set by root.go/desktop.go after creation
+	AgentMCPProxy       *server.AgentMCPProxy    // Lazy handler for CLI provider MCP loopback
+	VoiceDuplexProxy    *server.VoiceDuplexProxy // Lazy handler for full-duplex voice at /ws/voice
+	Heartbeat           **daemon.Heartbeat       // Pointer-to-pointer: set by root.go/desktop.go after creation
 }
 
 // friendlyNeboLoopError extracts a human-readable message from a NeboLoop API error.
@@ -1179,6 +1186,47 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 	r := runner.New(cfg, sessions, providers, registry)
 
+	// Voice duplex deps — shared by both direct WebSocket and comms relay handlers
+	voiceDeps := voice.DuplexDeps{
+		RunnerFunc: func(runCtx context.Context, sessionKey, prompt, channel string) (<-chan string, error) {
+			textCh := make(chan string, 50)
+			// Route voice through LaneMain so it shares backpressure and
+			// ordering with desktop text and phone text input.
+			go func() {
+				defer close(textCh)
+				_ = state.lanes.Enqueue(runCtx, agenthub.LaneMain, func(taskCtx context.Context) error {
+					events, err := r.Run(taskCtx, &runner.RunRequest{
+						SessionKey: sessionKey,
+						Prompt:     prompt,
+						Origin:     tools.OriginUser,
+						UserID:     "default-user",
+						Channel:    channel,
+					})
+					if err != nil {
+						return err
+					}
+					for event := range events {
+						if event.Type == ai.EventTypeText && event.Text != "" {
+							textCh <- event.Text
+						}
+					}
+					return nil
+				}, agenthub.WithDescription("Voice: "+prompt[:min(len(prompt), 40)]))
+			}()
+			return textCh, nil
+		},
+		SendFrame: func(frame map[string]any) error {
+			return state.sendFrame(frame)
+		},
+		SampleRate: 16000,
+	}
+
+	// Wire full-duplex voice WebSocket handler
+	if opts.VoiceDuplexProxy != nil {
+		opts.VoiceDuplexProxy.Set(voice.DuplexHandler(voiceDeps))
+		fmt.Println("[Agent] Voice duplex handler ready at /ws/voice")
+	}
+
 	// Provider loader is set below after appRegistry creation (needs gateway providers)
 
 	// Set up model selector for intelligent model routing and cheapest model selection
@@ -1600,61 +1648,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	state.skillLoader = skillLoader
 	state.appRegistry = appRegistry
 
-	// Wire SDK channel messages → agentic loop (replaces old MQTT channel bridge).
-	// Install events and channel messages are delivered via the SDK's single WebSocket.
-	neboloopPlugin.OnChannelMessage(func(msg neboloop.ChannelMessage) {
-		sessionKey := fmt.Sprintf("channel-%s-%s", msg.ChannelType, msg.ConversationID)
-
-		fmt.Printf("[sdk:channels] Processing %s message from %s in session %s\n",
-			msg.ChannelType, msg.SenderName, sessionKey)
-
-		state.lanes.EnqueueAsync(ctx, agenthub.LaneMain, func(taskCtx context.Context) error {
-			events, err := r.Run(taskCtx, &runner.RunRequest{
-				SessionKey: sessionKey,
-				Prompt:     msg.Text,
-				Origin:     tools.OriginUser,
-				UserID:     "default-user",
-				Channel:    msg.ChannelType,
-			})
-			if err != nil {
-				fmt.Printf("[sdk:channels] Run failed for %s: %v\n", msg.ChannelType, err)
-				return err
-			}
-
-			var result strings.Builder
-			for event := range events {
-				if event.Type == ai.EventTypeText {
-					result.WriteString(event.Text)
-				} else if event.Type == ai.EventTypeMessage {
-					if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
-						result.WriteString(event.Message.Content)
-					}
-				}
-			}
-
-			if result.Len() > 0 {
-				client := neboloopPlugin.Client()
-				if client != nil {
-					convID, parseErr := uuid.Parse(msg.ConversationID)
-					if parseErr != nil {
-						fmt.Printf("[sdk:channels] Invalid conversation ID %q: %v\n", msg.ConversationID, parseErr)
-						return nil
-					}
-					outMsg := neboloopsdk.ChannelMessage{
-						ChannelType: msg.ChannelType,
-						Text:        result.String(),
-					}
-					if err := client.SendChannelMessage(taskCtx, convID, outMsg); err != nil {
-						fmt.Printf("[sdk:channels] SendChannelMessage failed: %v\n", err)
-					}
-				}
-			}
-
-			return nil
-		}, agenthub.WithDescription(fmt.Sprintf("Channel: %s from %s", msg.ChannelType, msg.SenderName)))
-	})
-
-	// Wire SDK loop channel messages → comm lane
+	// Wire SDK loop channel messages → per-channel lanes
 	neboloopPlugin.OnLoopChannelMessage(func(msg neboloop.LoopChannelMessage) {
 		sessionKey := fmt.Sprintf("loop-channel-%s-%s", msg.ChannelID, msg.ConversationID)
 
@@ -1667,14 +1661,26 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			commModelOverride = cfg.LaneRouting.Comm
 		}
 
-		state.lanes.EnqueueAsync(ctx, agenthub.LaneComm, func(taskCtx context.Context) error {
+		// Check for channel skill bindings
+		var forceSkill string
+		if state.sqlDB != nil {
+			bindings, err := db.New(state.sqlDB).ListChannelSkills(context.Background(), msg.ChannelID)
+			if err == nil && len(bindings) > 0 {
+				forceSkill = bindings[0].SkillName
+				fmt.Printf("[sdk:loop-channel] Channel %s has skill binding: %s\n", msg.ChannelID, forceSkill)
+			}
+		}
+
+		laneName := fmt.Sprintf("loop-%s", msg.ChannelID)
+		state.lanes.EnqueueAsync(ctx, laneName, func(taskCtx context.Context) error {
 			events, err := r.Run(taskCtx, &runner.RunRequest{
 				SessionKey: sessionKey,
-				Prompt: fmt.Sprintf("[Loop Channel: %s | From: %s]\nYour text response will be sent to the channel automatically. Do not use tools to reply.\n\n%s",
+				Prompt: fmt.Sprintf("[Loop Channel: %s | From: %s]\n%s",
 					msg.ChannelName, msg.SenderName, msg.Text),
 				Origin:        tools.OriginComm,
 				UserID:        "default-user",
 				ModelOverride: commModelOverride,
+				ForceSkill:    forceSkill,
 			})
 			if err != nil {
 				fmt.Printf("[sdk:loop-channel] Run failed: %v\n", err)
@@ -1728,18 +1734,28 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			prompt = msg.Text
 
 			// Resolve the companion chat session so DMs share context with the web UI.
-			// Must use "companion-default" to match the frontend API's fallback user ID.
-			sessionKey = "main" // fallback
-			if state.sqlDB != nil {
-				queries := db.New(state.sqlDB)
-				chat, err := queries.GetOrCreateCompanionChat(context.Background(), db.GetOrCreateCompanionChatParams{
-					ID:     uuid.New().String(),
-					UserID: sql.NullString{String: "companion-default", Valid: true},
-				})
-				if err == nil {
-					sessionKey = chat.ID
-				} else {
-					fmt.Printf("[sdk:dm] Could not resolve companion chat, using fallback: %v\n", err)
+			// Use the cached session ID from the web UI's first chat request to ensure
+			// both paths use the same companion chat (avoids user ID mismatch).
+			state.companionChatIDMu.RLock()
+			cachedID := state.companionChatID
+			state.companionChatIDMu.RUnlock()
+
+			if cachedID != "" {
+				sessionKey = cachedID
+			} else {
+				// Web UI hasn't sent a message yet — fall back to DB lookup
+				sessionKey = "main"
+				if state.sqlDB != nil {
+					queries := db.New(state.sqlDB)
+					chat, err := queries.GetOrCreateCompanionChat(context.Background(), db.GetOrCreateCompanionChatParams{
+						ID:     uuid.New().String(),
+						UserID: sql.NullString{String: "companion-default", Valid: true},
+					})
+					if err == nil {
+						sessionKey = chat.ID
+					} else {
+						fmt.Printf("[sdk:dm] Could not resolve companion chat, using fallback: %v\n", err)
+					}
 				}
 			}
 		} else {
@@ -1948,22 +1964,114 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}, agenthub.WithDescription(fmt.Sprintf("DM from %s (owner=%v)", msg.SenderID, msg.IsOwner)))
 	})
 
+	// Wire SDK voice stream → full-duplex voice over comms relay.
+	// Phone sends voice frames via NeboLoop comms (stream=voice, ephemeral=true).
+	// Nebo processes ASR→LLM→TTS and streams audio back.
+	var (
+		commsVoiceSessions   = make(map[string]*voice.VoiceConn)
+		commsVoiceTransports = make(map[string]*voice.CommsTransport)
+		commsVoiceMu         sync.Mutex
+	)
+	neboloopPlugin.OnVoiceMessage(func(msg neboloop.VoiceMessage) {
+		commsVoiceMu.Lock()
+
+		// Parse the content to check message type
+		var content voice.CommsVoiceMessage
+		if err := json.Unmarshal(msg.Content, &content); err != nil {
+			commsVoiceMu.Unlock()
+			fmt.Printf("[sdk:voice] Failed to parse voice message: %v\n", err)
+			return
+		}
+
+		// voice_start → create a new session
+		if content.Type == "voice_start" {
+			// Clean up any existing session for this conversation
+			if old, ok := commsVoiceTransports[msg.ConversationID]; ok {
+				old.Close()
+				delete(commsVoiceSessions, msg.ConversationID)
+				delete(commsVoiceTransports, msg.ConversationID)
+			}
+
+			transport := voice.NewCommsTransport(func(outMsg voice.CommsVoiceMessage) error {
+				data, err := json.Marshal(outMsg)
+				if err != nil {
+					return err
+				}
+				sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				return neboloopPlugin.SendVoice(sendCtx, msg.ConversationID, data)
+			})
+
+			vc := voice.NewVoiceConn(transport, voiceDeps)
+			commsVoiceSessions[msg.ConversationID] = vc
+			commsVoiceTransports[msg.ConversationID] = transport
+			commsVoiceMu.Unlock()
+
+			fmt.Printf("[sdk:voice] New comms voice session for conversation %s\n", msg.ConversationID)
+
+			// Send voice_ready to the phone
+			readyMsg, _ := json.Marshal(voice.CommsVoiceMessage{Type: "voice_ready"})
+			sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = neboloopPlugin.SendVoice(sendCtx, msg.ConversationID, readyMsg)
+			cancel()
+
+			// Run the voice pipeline in a goroutine (blocks until session ends)
+			go func() {
+				vc.Serve(ctx)
+				commsVoiceMu.Lock()
+				delete(commsVoiceSessions, msg.ConversationID)
+				delete(commsVoiceTransports, msg.ConversationID)
+				commsVoiceMu.Unlock()
+				fmt.Printf("[sdk:voice] Comms voice session ended for conversation %s\n", msg.ConversationID)
+			}()
+			return
+		}
+
+		// voice_end → close the session
+		if content.Type == "voice_end" {
+			if t, ok := commsVoiceTransports[msg.ConversationID]; ok {
+				t.Close()
+				delete(commsVoiceSessions, msg.ConversationID)
+				delete(commsVoiceTransports, msg.ConversationID)
+			}
+			commsVoiceMu.Unlock()
+			fmt.Printf("[sdk:voice] Voice session ended by client for conversation %s\n", msg.ConversationID)
+			return
+		}
+
+		// All other messages (audio, interrupt, config) → feed to existing session
+		transport, ok := commsVoiceTransports[msg.ConversationID]
+		commsVoiceMu.Unlock()
+		if !ok {
+			return
+		}
+		transport.Feed(content)
+	})
+
 	// Wire SDK history requests → return recent companion chat messages.
 	// NeboLoop sends stream=history when the owner opens the P2P DM chat.
 	neboloopPlugin.OnHistoryRequest(func(req neboloop.HistoryRequest) []neboloop.HistoryMessage {
 		if state.sqlDB == nil {
 			return nil
 		}
-		queries := db.New(state.sqlDB)
 
-		// Resolve the companion chat (same session used by web UI and owner DMs)
-		chat, err := queries.GetOrCreateCompanionChat(context.Background(), db.GetOrCreateCompanionChatParams{
-			ID:     uuid.New().String(),
-			UserID: sql.NullString{String: "companion-default", Valid: true},
-		})
-		if err != nil {
-			fmt.Printf("[sdk:history] Could not resolve companion chat: %v\n", err)
-			return nil
+		// Use cached companion chat ID (same session the web UI uses)
+		state.companionChatIDMu.RLock()
+		chatID := state.companionChatID
+		state.companionChatIDMu.RUnlock()
+
+		if chatID == "" {
+			// Fallback: query DB with "companion-default" user ID
+			queries := db.New(state.sqlDB)
+			chat, err := queries.GetOrCreateCompanionChat(context.Background(), db.GetOrCreateCompanionChatParams{
+				ID:     uuid.New().String(),
+				UserID: sql.NullString{String: "companion-default", Valid: true},
+			})
+			if err != nil {
+				fmt.Printf("[sdk:history] Could not resolve companion chat: %v\n", err)
+				return nil
+			}
+			chatID = chat.ID
 		}
 
 		limit := req.Limit
@@ -1971,8 +2079,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			limit = 20
 		}
 
+		queries := db.New(state.sqlDB)
 		rows, err := queries.GetRecentChatMessages(context.Background(), db.GetRecentChatMessagesParams{
-			ChatID: chat.ID,
+			ChatID: chatID,
 			Limit:  int64(limit),
 		})
 		if err != nil {
@@ -1988,7 +2097,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 				Timestamp: row.CreatedAt,
 			})
 		}
-		fmt.Printf("[sdk:history] Returning %d messages for chat %s\n", len(out), chat.ID)
+		fmt.Printf("[sdk:history] Returning %d messages for chat %s\n", len(out), chatID)
 		return out
 	})
 
@@ -2125,6 +2234,10 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		})
 		// Wire loop querier: adapter converts plugin types → tool types
 		agentTool.SetLoopQuerier(&loopQuerierAdapter{plugin: neboloopPlugin})
+		// Wire identity syncer: pushes name/role to NeboLoop when profile is updated via tool
+		agentTool.SetIdentitySyncer(func(ctx context.Context, name, role string) {
+			_ = neboloopPlugin.UpdateBotIdentity(ctx, name, role)
+		})
 		// Share the orchestrator from taskTool so agent(resource:task) can spawn sub-agents
 		agentTool.SetOrchestrator(taskTool.GetOrchestrator())
 		// Wire interactive ask callback: blocks until user responds in the web UI
@@ -2136,6 +2249,41 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 	// Wire channel sender to message tool (now that appRegistry is available)
 	messageTool.SetChannelSender(appRegistry)
+
+	// Wire notify_owner: append to companion session + send WS frame to web UI
+	if notifyTool := registry.GetNotifyOwnerTool(); notifyTool != nil {
+		notifyTool.AppendToSession = func(content string) error {
+			sess, err := sessions.GetOrCreate("companion", "")
+			if err != nil {
+				return err
+			}
+			return sessions.AppendMessage(sess.ID, session.Message{
+				Role:    "assistant",
+				Content: content,
+			})
+		}
+		notifyTool.SendFrame = func(frame map[string]any) error {
+			return state.sendFrame(frame)
+		}
+	}
+
+	// Wire query_sessions: adapter converts SessionManager types → tool types
+	if qsTool := registry.GetQuerySessionsTool(); qsTool != nil {
+		qsTool.SetQuerier(&sessionQuerierAdapter{mgr: sessions})
+	}
+
+	// Wire desktop queue: route desktop tools through LaneDesktop for serialization
+	registry.SetDesktopQueue(func(ctx context.Context, execute func(ctx context.Context) *tools.ToolResult) *tools.ToolResult {
+		var result *tools.ToolResult
+		err := state.lanes.Enqueue(ctx, agenthub.LaneDesktop, func(laneCtx context.Context) error {
+			result = execute(laneCtx)
+			return nil
+		})
+		if err != nil {
+			return &tools.ToolResult{Content: fmt.Sprintf("Desktop queue error: %v", err), IsError: true}
+		}
+		return result
+	})
 
 	// Wire MCP bridge for external tool integrations
 	if opts.SvcCtx != nil && opts.SvcCtx.MCPClient != nil {
@@ -2722,6 +2870,9 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 			SessionKey string `json:"session_key"`
 			UserID     string `json:"user_id"`
 			System     string `json:"system"`
+			ChannelID  string `json:"channel_id"`
+			Text       string `json:"text"`
+			Limit      int    `json:"limit"`
 		} `json:"params"`
 	}
 
@@ -2778,6 +2929,178 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				"id":      frame.ID,
 				"ok":      true,
 				"payload": stats,
+			})
+
+		case "get_loops":
+			var loops []map[string]any
+			if active := state.commManager.GetActive(); active != nil {
+				// Fetch loop names from REST API
+				loopNames := make(map[string]string) // loopID → name
+				if ll, ok := active.(comm.LoopLister); ok {
+					if loopList, err := ll.ListLoops(ctx); err == nil {
+						for _, l := range loopList {
+							loopNames[l.ID] = l.Name
+						}
+					}
+				}
+
+				// Fetch channels and group by loop
+				if lister, ok := active.(comm.LoopChannelLister); ok {
+					channels, err := lister.ListLoopChannels(ctx)
+					if err == nil {
+						type loopEntry struct {
+							ID       string
+							Name     string
+							Channels []map[string]any
+						}
+						loopMap := make(map[string]*loopEntry)
+						for _, ch := range channels {
+							l, ok := loopMap[ch.LoopID]
+							if !ok {
+								name := loopNames[ch.LoopID]
+								if name == "" {
+									name = ch.LoopName // fallback to channel metadata
+								}
+								l = &loopEntry{ID: ch.LoopID, Name: name}
+								loopMap[ch.LoopID] = l
+							}
+							l.Channels = append(l.Channels, map[string]any{
+								"channel_id":   ch.ChannelID,
+								"channel_name": ch.ChannelName,
+							})
+						}
+						// If any loop still has no name, try per-loop fetch via LoopGetter
+						if lg, ok := active.(comm.LoopGetter); ok {
+							for _, l := range loopMap {
+								if l.Name == "" || l.Name == l.ID {
+									if info, err := lg.GetLoopInfo(ctx, l.ID); err == nil && info.Name != "" {
+										l.Name = info.Name
+									}
+								}
+							}
+						}
+						for _, l := range loopMap {
+							loops = append(loops, map[string]any{
+								"id":       l.ID,
+								"name":     l.Name,
+								"channels": l.Channels,
+							})
+						}
+					}
+				}
+			}
+			if loops == nil {
+				loops = []map[string]any{}
+			}
+
+			// Include lane activity summary for heartbeat/events
+			laneStats := state.lanes.GetLaneStats()
+			var heartbeatActive bool
+			var eventsActive int
+			if hs, ok := laneStats[agenthub.LaneHeartbeat]; ok {
+				heartbeatActive = hs.Active > 0
+			}
+			if es, ok := laneStats[agenthub.LaneEvents]; ok {
+				eventsActive = es.Active + es.Queued
+			}
+			var desktopActive bool
+			if ds, ok := laneStats[agenthub.LaneDesktop]; ok {
+				desktopActive = ds.Active > 0
+			}
+
+			state.sendFrame(map[string]any{
+				"type": "res",
+				"id":   frame.ID,
+				"ok":   true,
+				"payload": map[string]any{
+					"loops":            loops,
+					"heartbeat_active": heartbeatActive,
+					"events_active":    eventsActive,
+					"desktop_active":   desktopActive,
+				},
+			})
+
+		case "get_channel_messages":
+			channelID := frame.Params.ChannelID
+			limit := frame.Params.Limit
+			if limit <= 0 {
+				limit = 50
+			}
+			if channelID == "" {
+				state.sendFrame(map[string]any{
+					"type": "res", "id": frame.ID, "ok": false,
+					"payload": map[string]any{"error": "channel_id is required"},
+				})
+				break
+			}
+			var messages []comm.ChannelMessageItem
+			var members []comm.ChannelMemberItem
+			if active := state.commManager.GetActive(); active != nil {
+				if lister, ok := active.(comm.ChannelMessageLister); ok {
+					msgs, err := lister.ListChannelMessages(ctx, channelID, limit)
+					if err != nil {
+						state.sendFrame(map[string]any{
+							"type": "res", "id": frame.ID, "ok": false,
+							"payload": map[string]any{"error": err.Error()},
+						})
+						break
+					}
+					messages = msgs
+				}
+				if ml, ok := active.(comm.ChannelMemberLister); ok {
+					if m, err := ml.ListChannelMembers(ctx, channelID); err == nil {
+						members = m
+					}
+				}
+			}
+			if messages == nil {
+				messages = []comm.ChannelMessageItem{}
+			}
+			if members == nil {
+				members = []comm.ChannelMemberItem{}
+			}
+			// Render markdown server-side (same pattern as companion chat)
+			type renderedMsg struct {
+				comm.ChannelMessageItem
+				ContentHtml string `json:"content_html"`
+			}
+			rendered := make([]renderedMsg, len(messages))
+			for i, m := range messages {
+				rendered[i] = renderedMsg{
+					ChannelMessageItem: m,
+					ContentHtml:        markdown.Render(m.Content),
+				}
+			}
+			state.sendFrame(map[string]any{
+				"type": "res", "id": frame.ID, "ok": true,
+				"payload": map[string]any{"messages": rendered, "members": members},
+			})
+
+		case "send_channel_message":
+			channelID := frame.Params.ChannelID
+			text := frame.Params.Text
+			if channelID == "" || text == "" {
+				state.sendFrame(map[string]any{
+					"type": "res", "id": frame.ID, "ok": false,
+					"payload": map[string]any{"error": "channel_id and text are required"},
+				})
+				break
+			}
+			err := state.commManager.Send(ctx, comm.CommMessage{
+				To:      channelID,
+				Type:    comm.CommTypeLoopChannel,
+				Content: text,
+			})
+			if err != nil {
+				state.sendFrame(map[string]any{
+					"type": "res", "id": frame.ID, "ok": false,
+					"payload": map[string]any{"error": err.Error()},
+				})
+				break
+			}
+			state.sendFrame(map[string]any{
+				"type": "res", "id": frame.ID, "ok": true,
+				"payload": map[string]any{"success": true},
 			})
 
 		case "cancel":
@@ -2844,6 +3167,13 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 				lane = agenthub.LaneComm // Inter-agent communication
 			} else if isDev {
 				lane = agenthub.LaneDev // Developer assistant
+			}
+
+			// Cache companion chat session ID for DM handler to reuse
+			if lane == agenthub.LaneMain && !isHeartbeat && !isCronJob && !isCommMsg && !isDev {
+				state.companionChatIDMu.Lock()
+				state.companionChatID = sessionKey
+				state.companionChatIDMu.Unlock()
 			}
 
 			// Build a description for lane monitoring
@@ -3473,7 +3803,7 @@ func (a *loopQuerierAdapter) ListLoopMembers(ctx context.Context, loopID string)
 	}
 	result := make([]tools.MemberInfo, len(members))
 	for i, m := range members {
-		result[i] = tools.MemberInfo{BotID: m.BotID, BotName: m.BotName, IsOnline: m.IsOnline}
+		result[i] = tools.MemberInfo{BotID: m.BotID, BotName: m.BotName, Role: m.Role, IsOnline: m.IsOnline}
 	}
 	return result, nil
 }
@@ -3485,7 +3815,7 @@ func (a *loopQuerierAdapter) ListChannelMembers(ctx context.Context, channelID s
 	}
 	result := make([]tools.MemberInfo, len(members))
 	for i, m := range members {
-		result[i] = tools.MemberInfo{BotID: m.BotID, BotName: m.BotName, IsOnline: m.IsOnline}
+		result[i] = tools.MemberInfo{BotID: m.BotID, BotName: m.BotName, Role: m.Role, IsOnline: m.IsOnline}
 	}
 	return result, nil
 }
@@ -3500,6 +3830,44 @@ func (a *loopQuerierAdapter) ListChannelMessages(ctx context.Context, channelID 
 		result[i] = tools.MessageInfo{ID: msg.ID, From: msg.From, Content: msg.Content, CreatedAt: msg.CreatedAt}
 	}
 	return result, nil
+}
+
+// sessionQuerierAdapter wraps session.Manager to implement tools.SessionQuerier.
+// Converts db.AgentSession/AgentMessage → tools.SessionInfo/SessionMessage at the boundary.
+type sessionQuerierAdapter struct {
+	mgr *session.Manager
+}
+
+func (a *sessionQuerierAdapter) ListSessions(userID string) ([]tools.SessionInfo, error) {
+	sessions, err := a.mgr.ListSessions(userID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]tools.SessionInfo, len(sessions))
+	for i, s := range sessions {
+		result[i] = tools.SessionInfo{ID: s.ID, SessionKey: s.SessionKey, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt}
+	}
+	return result, nil
+}
+
+func (a *sessionQuerierAdapter) GetMessages(sessionID string, limit int) ([]tools.SessionMessage, error) {
+	messages, err := a.mgr.GetMessages(sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]tools.SessionMessage, len(messages))
+	for i, m := range messages {
+		result[i] = tools.SessionMessage{Role: m.Role, Content: m.Content}
+	}
+	return result, nil
+}
+
+func (a *sessionQuerierAdapter) GetOrCreate(sessionKey, userID string) (*tools.SessionInfo, error) {
+	sess, err := a.mgr.GetOrCreate(sessionKey, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &tools.SessionInfo{ID: sess.ID, SessionKey: sess.SessionKey, CreatedAt: sess.CreatedAt, UpdatedAt: sess.UpdatedAt}, nil
 }
 
 // buildAgentCard collects tool and skill metadata into an A2A-spec-compliant

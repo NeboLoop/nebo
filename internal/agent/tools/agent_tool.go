@@ -73,6 +73,7 @@ type LoopInfo struct {
 type MemberInfo struct {
 	BotID    string `json:"bot_id"`
 	BotName  string `json:"bot_name,omitempty"`
+	Role     string `json:"role,omitempty"`
 	IsOnline bool   `json:"is_online"`
 }
 
@@ -96,7 +97,7 @@ type MessageInfo struct {
 //   - comm: Inter-agent communication via comm lane plugins
 // AskWidget defines an interactive widget for inline user prompts.
 type AskWidget struct {
-	Type    string   `json:"type"`              // "buttons", "select", "text_input", "confirm", "radio", "checkbox"
+	Type    string   `json:"type"`              // "buttons", "select", "confirm", "radio", "checkbox"
 	Label   string   `json:"label,omitempty"`
 	Options []string `json:"options,omitempty"` // for buttons/select
 	Default string   `json:"default,omitempty"` // pre-filled value
@@ -136,6 +137,9 @@ type AgentDomainTool struct {
 	// Session management
 	sessions      *session.Manager
 	currentUserID string
+
+	// Identity sync (pushes name/role to NeboLoop)
+	identitySyncer func(ctx context.Context, name, role string)
 
 	// Interactive user prompts
 	askCallback AskCallback
@@ -266,6 +270,11 @@ func (t *AgentDomainTool) SetLoopChannelLister(fn func(ctx context.Context) ([]L
 // SetLoopQuerier sets the loop query provider for loop/member/message lookups.
 func (t *AgentDomainTool) SetLoopQuerier(q LoopQuerier) {
 	t.loopQuerier = q
+}
+
+// SetIdentitySyncer sets the callback for syncing identity (name/role) to NeboLoop.
+func (t *AgentDomainTool) SetIdentitySyncer(fn func(ctx context.Context, name, role string)) {
+	t.identitySyncer = fn
 }
 
 // SetChannelSender sets the channel sender for messaging
@@ -408,6 +417,7 @@ Resources:
 			`agent(resource: comm, action: channel_messages, channel_id: "channel-uuid", limit: 50)`,
 			`agent(resource: profile, action: get)`,
 			`agent(resource: profile, action: update, key: "name", value: "Jarvis")`,
+			`agent(resource: profile, action: update, key: "role", value: "Marketing Lead")`,
 			`agent(resource: profile, action: update, key: "emoji", value: "🤖")`,
 			`agent(resource: profile, action: update, key: "creature", value: "Rogue Diplomat")`,
 			`agent(resource: profile, action: update, key: "vibe", value: "chill but opinionated")`,
@@ -1769,7 +1779,11 @@ func (t *AgentDomainTool) commLoopMembers(ctx context.Context, in AgentDomainInp
 		if m.IsOnline {
 			status = "online"
 		}
-		sb.WriteString(fmt.Sprintf("  - %s (%s) [%s]\n", m.BotName, m.BotID, status))
+		role := m.Role
+		if role == "" {
+			role = "member"
+		}
+		sb.WriteString(fmt.Sprintf("  - %s (%s) [%s] role: %s\n", m.BotName, m.BotID, status, role))
 	}
 	return &ToolResult{Content: sb.String()}, nil
 }
@@ -1796,7 +1810,11 @@ func (t *AgentDomainTool) commChannelMembers(ctx context.Context, in AgentDomain
 		if m.IsOnline {
 			status = "online"
 		}
-		sb.WriteString(fmt.Sprintf("  - %s (%s) [%s]\n", m.BotName, m.BotID, status))
+		role := m.Role
+		if role == "" {
+			role = "member"
+		}
+		sb.WriteString(fmt.Sprintf("  - %s (%s) [%s] role: %s\n", m.BotName, m.BotID, status, role))
 	}
 	return &ToolResult{Content: sb.String()}, nil
 }
@@ -1879,6 +1897,9 @@ func (t *AgentDomainTool) handleProfileGet(ctx context.Context) (*ToolResult, er
 	if profile.Vibe.Valid && profile.Vibe.String != "" {
 		sb.WriteString(fmt.Sprintf("  Vibe: %s\n", profile.Vibe.String))
 	}
+	if profile.Role.Valid && profile.Role.String != "" {
+		sb.WriteString(fmt.Sprintf("  Role: %s\n", profile.Role.String))
+	}
 	if profile.PersonalityPreset.Valid {
 		sb.WriteString(fmt.Sprintf("  Personality Preset: %s\n", profile.PersonalityPreset.String))
 	}
@@ -1887,11 +1908,11 @@ func (t *AgentDomainTool) handleProfileGet(ctx context.Context) (*ToolResult, er
 
 func (t *AgentDomainTool) handleProfileUpdate(ctx context.Context, in AgentDomainInput) (*ToolResult, error) {
 	if in.Key == "" {
-		return &ToolResult{Content: "Profile update requires key and value. Supported keys: name, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end"}, nil
+		return &ToolResult{Content: "Profile update requires key and value. Supported keys: name, role, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end"}, nil
 	}
 	// Allow empty value for clearing quiet hours
 	if in.Value == "" && in.Key != "quiet_hours_start" && in.Key != "quiet_hours_end" {
-		return &ToolResult{Content: "Profile update requires key and value. Supported keys: name, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end"}, nil
+		return &ToolResult{Content: "Profile update requires key and value. Supported keys: name, role, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end"}, nil
 	}
 
 	if t.sessions == nil {
@@ -1912,6 +1933,11 @@ func (t *AgentDomainTool) handleProfileUpdate(ctx context.Context, in AgentDomai
 			return &ToolResult{Content: "Name too long (max 50 characters)"}, nil
 		}
 		params.Name = sql.NullString{String: in.Value, Valid: true}
+	case "role":
+		if len(in.Value) > 100 {
+			return &ToolResult{Content: "Role too long (max 100 characters)"}, nil
+		}
+		params.Role = sql.NullString{String: in.Value, Valid: true}
 	case "emoji":
 		params.Emoji = sql.NullString{String: in.Value, Valid: true}
 	case "creature":
@@ -1940,7 +1966,7 @@ func (t *AgentDomainTool) handleProfileUpdate(ctx context.Context, in AgentDomai
 			params.QuietHoursEnd = sql.NullString{String: in.Value, Valid: true}
 		}
 	default:
-		return &ToolResult{Content: fmt.Sprintf("Unknown profile key: %s. Supported keys: name, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end", in.Key)}, nil
+		return &ToolResult{Content: fmt.Sprintf("Unknown profile key: %s. Supported keys: name, role, emoji, creature, vibe, custom_personality, quiet_hours_start, quiet_hours_end", in.Key)}, nil
 	}
 
 	err := queries.UpdateAgentProfile(ctx, params)
@@ -1948,8 +1974,27 @@ func (t *AgentDomainTool) handleProfileUpdate(ctx context.Context, in AgentDomai
 		return &ToolResult{Content: fmt.Sprintf("Failed to update %s: %v", in.Key, err)}, nil
 	}
 
+	// Sync name/role changes to NeboLoop so other bots see the update
+	if (in.Key == "name" || in.Key == "role") && t.identitySyncer != nil {
+		profile, profileErr := queries.GetAgentProfile(ctx)
+		if profileErr == nil {
+			name := profile.Name
+			if name == "" {
+				name = "Nebo"
+			}
+			role := ""
+			if profile.Role.Valid {
+				role = profile.Role.String
+			}
+			t.identitySyncer(ctx, name, role)
+		}
+	}
+
 	if in.Key == "name" {
 		return &ToolResult{Content: fmt.Sprintf("Updated agent name to %q. I will now refer to myself as %s.", in.Value, in.Value)}, nil
+	}
+	if in.Key == "role" {
+		return &ToolResult{Content: fmt.Sprintf("Updated role to %q. This has been synced to NeboLoop.", in.Value)}, nil
 	}
 	return &ToolResult{Content: fmt.Sprintf("Updated agent %s to %q", in.Key, in.Value)}, nil
 }

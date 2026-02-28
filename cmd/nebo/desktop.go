@@ -498,15 +498,17 @@ func RunDesktop() {
 		wvm.SetCallbackURL(fmt.Sprintf("http://localhost:%d/internal/webview/callback", c.Port))
 
 		agentMCPProxy := server.NewAgentMCPProxy()
+		voiceDuplexProxy := server.NewVoiceDuplexProxy()
 
 		devlog.Printf("[Desktop] Starting HTTP server...\n")
 		go func() {
 			defer wg.Done()
 			opts := server.ServerOptions{
-				SvcCtx:          svcCtx,
-				Quiet:           true,
-				DevMode:         true,
-				AgentMCPHandler: agentMCPProxy,
+				SvcCtx:             svcCtx,
+				Quiet:              true,
+				DevMode:            true,
+				AgentMCPHandler:    agentMCPProxy,
+				VoiceDuplexHandler: voiceDuplexProxy,
 			}
 			if err := server.Run(ctx, *c, opts); err != nil {
 				devlog.Printf("[Server] Error: %v\n", err)
@@ -540,6 +542,7 @@ func RunDesktop() {
 				Quiet:            true,
 				Dangerously:      dangerouslyAll,
 				AgentMCPProxy:    agentMCPProxy,
+				VoiceDuplexProxy: voiceDuplexProxy,
 				Heartbeat:        &heartbeat,
 			}
 			if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {

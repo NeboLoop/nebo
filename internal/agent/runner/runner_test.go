@@ -499,7 +499,7 @@ func TestContextTokenLimit(t *testing.T) {
 
 	t.Run("no selector uses default", func(t *testing.T) {
 		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
-		limit := r.contextTokenLimit()
+		limit := r.contextTokenLimit(&runState{})
 		if limit != DefaultContextTokenLimit {
 			t.Errorf("expected %d without selector, got %d", DefaultContextTokenLimit, limit)
 		}
@@ -520,7 +520,7 @@ func TestContextTokenLimit(t *testing.T) {
 		}
 		r.selector = ai.NewModelSelector(modelsConfig)
 
-		limit := r.contextTokenLimit()
+		limit := r.contextTokenLimit(&runState{})
 		// effective = 200000 - 20000 = 180000 (AutoCompact tier)
 		if limit != 180000 {
 			t.Errorf("expected 180000 for 200k model, got %d", limit)
@@ -542,7 +542,7 @@ func TestContextTokenLimit(t *testing.T) {
 		}
 		r.selector = ai.NewModelSelector(modelsConfig)
 
-		limit := r.contextTokenLimit()
+		limit := r.contextTokenLimit(&runState{})
 		if limit != DefaultContextTokenLimit {
 			t.Errorf("expected default %d for small model, got %d", DefaultContextTokenLimit, limit)
 		}
@@ -563,8 +563,8 @@ func TestContextTokenLimit(t *testing.T) {
 		}
 		r.selector = ai.NewModelSelector(modelsConfig)
 
-		limit := r.contextTokenLimit()
-		flush := r.memoryFlushThreshold()
+		limit := r.contextTokenLimit(&runState{})
+		flush := r.memoryFlushThreshold(&runState{})
 		expected := limit * 75 / 100
 		if flush != expected {
 			t.Errorf("expected flush %d (75%% of %d), got %d", expected, limit, flush)
@@ -586,7 +586,7 @@ func TestContextTokenLimit(t *testing.T) {
 		}
 		r.selector = ai.NewModelSelector(modelsConfig)
 
-		limit := r.contextTokenLimit()
+		limit := r.contextTokenLimit(&runState{})
 		if limit != 500000 {
 			t.Errorf("expected 500000 cap for 1M model, got %d", limit)
 		}
@@ -607,7 +607,7 @@ func TestGraduatedThresholds(t *testing.T) {
 
 	t.Run("no selector returns defaults", func(t *testing.T) {
 		r := New(cfg, sessions, nil, tools.NewRegistry(nil))
-		th := r.contextThresholds()
+		th := r.contextThresholds(&runState{})
 
 		if th.Warning != DefaultContextTokenLimit-WarningOffset {
 			t.Errorf("Warning: expected %d, got %d", DefaultContextTokenLimit-WarningOffset, th.Warning)
@@ -635,7 +635,7 @@ func TestGraduatedThresholds(t *testing.T) {
 		}
 		r.selector = ai.NewModelSelector(modelsConfig)
 
-		th := r.contextThresholds()
+		th := r.contextThresholds(&runState{})
 		// effective = 200000 - 20000 = 180000
 		if th.Warning != 160000 {
 			t.Errorf("Warning: expected 160000, got %d", th.Warning)
@@ -663,7 +663,7 @@ func TestGraduatedThresholds(t *testing.T) {
 		}
 		r.selector = ai.NewModelSelector(modelsConfig)
 
-		th := r.contextThresholds()
+		th := r.contextThresholds(&runState{})
 		// effective floors at DefaultContextTokenLimit = 80000
 		if th.Warning < 40000 {
 			t.Errorf("Warning should be at least 40000, got %d", th.Warning)
@@ -691,7 +691,7 @@ func TestGraduatedThresholds(t *testing.T) {
 		}
 		r.selector = ai.NewModelSelector(modelsConfig)
 
-		th := r.contextThresholds()
+		th := r.contextThresholds(&runState{})
 		if th.AutoCompact != 500000 {
 			t.Errorf("AutoCompact: expected 500000 cap, got %d", th.AutoCompact)
 		}
@@ -720,7 +720,7 @@ func TestGraduatedThresholds(t *testing.T) {
 		}
 		r.selector = ai.NewModelSelector(modelsConfig)
 
-		th := r.contextThresholds()
+		th := r.contextThresholds(&runState{})
 		// Warning < Error < AutoCompact
 		if th.Warning >= th.Error {
 			t.Errorf("Warning (%d) should be < Error (%d)", th.Warning, th.Error)

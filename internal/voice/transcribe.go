@@ -71,70 +71,57 @@ var TTSHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, `{"error":"No TTS provider configured. Set ELEVENLABS_API_KEY or use macOS."}`, http.StatusServiceUnavailable)
 })
 
-// serveMacTTS uses the macOS `say` command to generate audio.
-func serveMacTTS(w http.ResponseWriter, req TTSRequest) {
+// macTTS uses the macOS `say` command to generate audio, returning raw AIFF bytes.
+func macTTS(text, voice string, speed float64) ([]byte, error) {
 	tmpFile, err := os.CreateTemp("", "nebo-tts-*.aiff")
 	if err != nil {
-		http.Error(w, `{"error":"Failed to create temp file"}`, http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
 	// Pick voice — default to Shelley (modern Siri-era voice)
-	voice := "Shelley (English (US))"
-	if req.Voice != "" {
-		voice = req.Voice
+	if voice == "" {
+		voice = "Shelley (English (US))"
 	}
 
 	// Build rate arg — `say` uses words per minute, default ~175
 	args := []string{"-v", voice, "-o", tmpPath}
-	if req.Speed > 0 && req.Speed != 1.0 {
-		rate := int(175 * req.Speed)
+	if speed > 0 && speed != 1.0 {
+		rate := int(175 * speed)
 		args = append(args, "-r", fmt.Sprintf("%d", rate))
 	}
-	args = append(args, req.Text)
+	args = append(args, text)
 
 	cmd := exec.Command("say", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"say command failed: %s"}`, string(output)), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("say command failed: %s", string(output))
 	}
 
-	// Read the generated audio file
-	audioData, err := os.ReadFile(tmpPath)
-	if err != nil {
-		http.Error(w, `{"error":"Failed to read audio file"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "audio/aiff")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(audioData)
+	return os.ReadFile(tmpPath)
 }
 
-// serveElevenLabsTTS uses the ElevenLabs API for high-quality TTS.
-// Returns true if it successfully served audio, false if caller should fall back.
-func serveElevenLabsTTS(w http.ResponseWriter, req TTSRequest, apiKey string) bool {
+// elevenLabsTTS calls the ElevenLabs API, returning raw MP3 bytes.
+// Returns nil, nil if the API call fails (caller should fall back).
+func elevenLabsTTS(text, voice string, speed float64, apiKey string) ([]byte, error) {
 	// Resolve voice ID
 	voiceID := elevenLabsVoices["rachel"] // default
-	if req.Voice != "" {
-		voiceLower := strings.ToLower(req.Voice)
+	if voice != "" {
+		voiceLower := strings.ToLower(voice)
 		if id, ok := elevenLabsVoices[voiceLower]; ok {
 			voiceID = id
 		} else {
-			voiceID = req.Voice
+			voiceID = voice
 		}
 	}
 
-	speed := req.Speed
 	if speed == 0 {
 		speed = 1.0
 	}
 
 	requestBody := map[string]any{
-		"text":     req.Text,
+		"text":     text,
 		"model_id": "eleven_turbo_v2_5",
 		"voice_settings": map[string]any{
 			"stability":        0.5,
@@ -148,7 +135,7 @@ func serveElevenLabsTTS(w http.ResponseWriter, req TTSRequest, apiKey string) bo
 		"https://api.elevenlabs.io/v1/text-to-speech/"+voiceID,
 		bytes.NewReader(jsonBody))
 	if err != nil {
-		return false
+		return nil, nil // silent fallback
 	}
 
 	apiReq.Header.Set("Content-Type", "application/json")
@@ -158,19 +145,67 @@ func serveElevenLabsTTS(w http.ResponseWriter, req TTSRequest, apiKey string) bo
 	client := &http.Client{}
 	resp, err := client.Do(apiReq)
 	if err != nil {
-		return false
+		return nil, nil // silent fallback
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// Quota exceeded, auth error, etc. — let caller fall back
 		io.ReadAll(resp.Body) // drain body
-		return false
+		return nil, nil       // quota exceeded, auth error → silent fallback
 	}
 
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil
+	}
+	return data, nil
+}
+
+// SynthesizeSpeech generates TTS audio. Tries ElevenLabs first (if API key set),
+// then falls back to macOS `say`. Returns audio bytes and content type.
+func SynthesizeSpeech(text, voice string, speed float64) ([]byte, string, error) {
+	apiKey := os.Getenv("ELEVENLABS_API_KEY")
+	if apiKey != "" {
+		data, err := elevenLabsTTS(text, voice, speed, apiKey)
+		if err == nil && data != nil {
+			return data, "audio/mpeg", nil
+		}
+		// ElevenLabs failed — fall through to macOS
+	}
+
+	if runtime.GOOS == "darwin" {
+		data, err := macTTS(text, voice, speed)
+		if err != nil {
+			return nil, "", err
+		}
+		return data, "audio/aiff", nil
+	}
+
+	return nil, "", fmt.Errorf("no TTS provider configured. Set ELEVENLABS_API_KEY or use macOS")
+}
+
+// serveMacTTS uses the macOS `say` command to generate audio (HTTP handler wrapper).
+func serveMacTTS(w http.ResponseWriter, req TTSRequest) {
+	data, err := macTTS(req.Text, req.Voice, req.Speed)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/aiff")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(data)
+}
+
+// serveElevenLabsTTS uses the ElevenLabs API for high-quality TTS (HTTP handler wrapper).
+// Returns true if it successfully served audio, false if caller should fall back.
+func serveElevenLabsTTS(w http.ResponseWriter, req TTSRequest, apiKey string) bool {
+	data, err := elevenLabsTTS(req.Text, req.Voice, req.Speed, apiKey)
+	if err != nil || data == nil {
+		return false
+	}
 	w.Header().Set("Content-Type", "audio/mpeg")
 	w.Header().Set("Cache-Control", "no-cache")
-	io.Copy(w, resp.Body)
+	w.Write(data)
 	return true
 }
 
@@ -194,19 +229,6 @@ var VoicesHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request
 		"voices": voices,
 	})
 })
-
-// defaultModelPath returns the default whisper model path for the platform.
-func defaultModelPath() string {
-	home, _ := os.UserHomeDir()
-	switch runtime.GOOS {
-	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "Nebo", "models", "ggml-base.en.bin")
-	case "windows":
-		return filepath.Join(os.Getenv("APPDATA"), "Nebo", "models", "ggml-base.en.bin")
-	default:
-		return filepath.Join(home, ".config", "nebo", "models", "ggml-base.en.bin")
-	}
-}
 
 // transcribeLocal runs whisper-cli on an audio file and returns the transcribed text.
 func transcribeLocal(audioPath, modelPath string) (string, error) {
@@ -339,37 +361,32 @@ var TranscribeHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Req
 	}
 	tmpFile.Close()
 
-	// Try local whisper-cli first
-	if _, err := exec.LookPath("whisper-cli"); err == nil {
-		modelPath := defaultModelPath()
-		if _, err := os.Stat(modelPath); err == nil {
-			// Convert to WAV if not already (MediaRecorder outputs webm/ogg)
-			wavPath := tmpPath
-			if ext != ".wav" {
-				converted, err := convertToWav(tmpPath)
-				if err != nil {
-					// Fall through to OpenAI
-					goto openai
-				}
-				wavPath = converted
-				defer os.Remove(wavPath)
+	// Try local transcription (embedded whisper on desktop, whisper-cli on headless)
+	{
+		wavPath := tmpPath
+		if ext != ".wav" {
+			converted, convErr := convertToWav(tmpPath)
+			if convErr != nil {
+				goto openai
 			}
+			wavPath = converted
+			defer os.Remove(wavPath)
+		}
 
-			text, err := transcribeLocal(wavPath, modelPath)
-			if err == nil {
-				text = strings.TrimSpace(text)
-				if text != "" && text != "[BLANK_AUDIO]" && text != "(silence)" {
-					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(map[string]string{"text": text})
-					return
-				}
-				// Empty/silence — return empty
+		text, transcribeErr := TranscribeFile(wavPath)
+		if transcribeErr == nil {
+			text = strings.TrimSpace(text)
+			if text != "" && text != "[BLANK_AUDIO]" && text != "(silence)" {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]string{"text": ""})
+				json.NewEncoder(w).Encode(map[string]string{"text": text})
 				return
 			}
-			// whisper-cli failed, fall through to OpenAI
+			// Empty/silence — return empty
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"text": ""})
+			return
 		}
+		// Local transcription failed, fall through to OpenAI
 	}
 
 openai:

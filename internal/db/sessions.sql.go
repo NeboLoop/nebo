@@ -69,7 +69,7 @@ const createSession = `-- name: CreateSession :one
 
 INSERT INTO sessions (id, name, scope, scope_id, metadata, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, unixepoch(), unixepoch())
-RETURNING id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task
+RETURNING id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count
 `
 
 type CreateSessionParams struct {
@@ -114,6 +114,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.CustomLabel,
 		&i.LastEmbeddedMessageID,
 		&i.ActiveTask,
+		&i.LastSummarizedCount,
 	)
 	return i, err
 }
@@ -302,7 +303,7 @@ const getOrCreateScopedSession = `-- name: GetOrCreateScopedSession :one
 INSERT INTO sessions (id, name, scope, scope_id, metadata, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, unixepoch(), unixepoch())
 ON CONFLICT(name, scope, scope_id) DO UPDATE SET updated_at = unixepoch()
-RETURNING id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task
+RETURNING id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count
 `
 
 type GetOrCreateScopedSessionParams struct {
@@ -346,6 +347,7 @@ func (q *Queries) GetOrCreateScopedSession(ctx context.Context, arg GetOrCreateS
 		&i.CustomLabel,
 		&i.LastEmbeddedMessageID,
 		&i.ActiveTask,
+		&i.LastSummarizedCount,
 	)
 	return i, err
 }
@@ -447,7 +449,7 @@ func (q *Queries) GetRecentSessionMessages(ctx context.Context, arg GetRecentSes
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions WHERE id = ?
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count FROM sessions WHERE id = ?
 `
 
 func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
@@ -477,6 +479,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
 		&i.CustomLabel,
 		&i.LastEmbeddedMessageID,
 		&i.ActiveTask,
+		&i.LastSummarizedCount,
 	)
 	return i, err
 }
@@ -496,7 +499,7 @@ func (q *Queries) GetSessionActiveTask(ctx context.Context, id string) (string, 
 }
 
 const getSessionByName = `-- name: GetSessionByName :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions WHERE name = ?
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count FROM sessions WHERE name = ?
 `
 
 func (q *Queries) GetSessionByName(ctx context.Context, name sql.NullString) (Session, error) {
@@ -526,12 +529,13 @@ func (q *Queries) GetSessionByName(ctx context.Context, name sql.NullString) (Se
 		&i.CustomLabel,
 		&i.LastEmbeddedMessageID,
 		&i.ActiveTask,
+		&i.LastSummarizedCount,
 	)
 	return i, err
 }
 
 const getSessionByNameAndScope = `-- name: GetSessionByNameAndScope :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count FROM sessions
 WHERE name = ? AND scope = ? AND scope_id = ?
 `
 
@@ -568,12 +572,13 @@ func (q *Queries) GetSessionByNameAndScope(ctx context.Context, arg GetSessionBy
 		&i.CustomLabel,
 		&i.LastEmbeddedMessageID,
 		&i.ActiveTask,
+		&i.LastSummarizedCount,
 	)
 	return i, err
 }
 
 const getSessionByNameAndScopeNullID = `-- name: GetSessionByNameAndScopeNullID :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count FROM sessions
 WHERE name = ? AND scope = ? AND (scope_id IS NULL OR scope_id = '')
 `
 
@@ -609,12 +614,13 @@ func (q *Queries) GetSessionByNameAndScopeNullID(ctx context.Context, arg GetSes
 		&i.CustomLabel,
 		&i.LastEmbeddedMessageID,
 		&i.ActiveTask,
+		&i.LastSummarizedCount,
 	)
 	return i, err
 }
 
 const getSessionByScope = `-- name: GetSessionByScope :one
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions WHERE scope = ? AND scope_id = ?
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count FROM sessions WHERE scope = ? AND scope_id = ?
 `
 
 type GetSessionByScopeParams struct {
@@ -649,6 +655,7 @@ func (q *Queries) GetSessionByScope(ctx context.Context, arg GetSessionByScopePa
 		&i.CustomLabel,
 		&i.LastEmbeddedMessageID,
 		&i.ActiveTask,
+		&i.LastSummarizedCount,
 	)
 	return i, err
 }
@@ -772,7 +779,7 @@ func (q *Queries) IncrementSessionMessageCount(ctx context.Context, id string) e
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count FROM sessions ORDER BY updated_at DESC LIMIT ? OFFSET ?
 `
 
 type ListSessionsParams struct {
@@ -813,6 +820,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 			&i.CustomLabel,
 			&i.LastEmbeddedMessageID,
 			&i.ActiveTask,
+			&i.LastSummarizedCount,
 		); err != nil {
 			return nil, err
 		}
@@ -828,7 +836,7 @@ func (q *Queries) ListSessions(ctx context.Context, arg ListSessionsParams) ([]S
 }
 
 const listSessionsByScope = `-- name: ListSessionsByScope :many
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count FROM sessions
 WHERE scope = ?
 ORDER BY updated_at DESC
 `
@@ -866,6 +874,7 @@ func (q *Queries) ListSessionsByScope(ctx context.Context, scope sql.NullString)
 			&i.CustomLabel,
 			&i.LastEmbeddedMessageID,
 			&i.ActiveTask,
+			&i.LastSummarizedCount,
 		); err != nil {
 			return nil, err
 		}
@@ -881,7 +890,7 @@ func (q *Queries) ListSessionsByScope(ctx context.Context, scope sql.NullString)
 }
 
 const listSessionsByScopeAndScopeID = `-- name: ListSessionsByScopeAndScopeID :many
-SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task FROM sessions
+SELECT id, name, scope, scope_id, summary, token_count, message_count, last_compacted_at, metadata, created_at, updated_at, compaction_count, memory_flush_at, memory_flush_compaction_count, send_policy, model_override, provider_override, auth_profile_override, auth_profile_override_source, verbose_level, custom_label, last_embedded_message_id, active_task, last_summarized_count FROM sessions
 WHERE scope = ? AND scope_id = ?
 ORDER BY updated_at DESC
 `
@@ -924,6 +933,7 @@ func (q *Queries) ListSessionsByScopeAndScopeID(ctx context.Context, arg ListSes
 			&i.CustomLabel,
 			&i.LastEmbeddedMessageID,
 			&i.ActiveTask,
+			&i.LastSummarizedCount,
 		); err != nil {
 			return nil, err
 		}

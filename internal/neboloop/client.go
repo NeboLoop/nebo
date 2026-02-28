@@ -329,7 +329,7 @@ func (c *Client) ListChannelMessages(ctx context.Context, channelID string, limi
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
-	return resp.Messages, nil
+	return resp.Normalize(), nil
 }
 
 // --------------------------------------------------------------------------

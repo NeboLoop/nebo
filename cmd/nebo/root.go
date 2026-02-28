@@ -127,7 +127,8 @@ func RunAll() {
 	}
 
 	// Create shared components (single binary = shared state)
-	agentMCPProxy := server.NewAgentMCPProxy() // Set by agent after MCP server init
+	agentMCPProxy := server.NewAgentMCPProxy()       // Set by agent after MCP server init
+	voiceDuplexProxy := server.NewVoiceDuplexProxy() // Set by agent after runner init
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
@@ -140,9 +141,10 @@ func RunAll() {
 			wg.Done()
 		}()
 		opts := server.ServerOptions{
-			SvcCtx:          svcCtx,
-			Quiet:           true, // Suppress server startup messages
-			AgentMCPHandler: agentMCPProxy,
+			SvcCtx:             svcCtx,
+			Quiet:              true, // Suppress server startup messages
+			AgentMCPHandler:    agentMCPProxy,
+			VoiceDuplexHandler: voiceDuplexProxy,
 		}
 		if err := server.Run(ctx, *c, opts); err != nil {
 			fmt.Printf("[Server] Error: %v\n", err)
@@ -189,6 +191,7 @@ func RunAll() {
 			Quiet:            true,
 			Dangerously:      dangerouslyAll,
 			AgentMCPProxy:    agentMCPProxy,
+			VoiceDuplexProxy: voiceDuplexProxy,
 			Heartbeat:        &heartbeat,
 		}
 		if err := runAgent(ctx, agentCfg, serverURL, agentOpts); err != nil {

@@ -48,16 +48,6 @@ func init() {
 	commLog = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-// ChannelMessage wraps the published SDK's ChannelMessage with envelope fields
-// populated from the Message header (ConversationID, MessageID).
-type ChannelMessage struct {
-	ChannelType    string `json:"channel_type"`
-	SenderName     string `json:"sender_name"`
-	Text           string `json:"text"`
-	ConversationID string `json:"-"` // from Message envelope
-	MessageID      string `json:"-"` // from Message envelope
-}
-
 // LoopChannelMessage represents an inbound loop channel message with metadata.
 type LoopChannelMessage struct {
 	ChannelID      string `json:"channel_id"`
@@ -132,7 +122,6 @@ type Plugin struct {
 
 	// Handlers for install events and channel messages (set by agent.go)
 	onInstall            func(neboloopsdk.InstallEvent)
-	onChannelMessage     func(ChannelMessage)
 	onLoopChannelMessage func(LoopChannelMessage)
 	onDMMessage          func(DMMessage)
 	onHistoryRequest     func(HistoryRequest) []HistoryMessage
@@ -181,13 +170,6 @@ func (p *Plugin) OnLoopChannelMessage(fn func(LoopChannelMessage)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.onLoopChannelMessage = fn
-}
-
-// OnChannelMessage registers a handler for inbound channel messages delivered via the SDK.
-func (p *Plugin) OnChannelMessage(fn func(ChannelMessage)) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.onChannelMessage = fn
 }
 
 // OnDMMessage registers a handler for inbound direct messages (stream=dm).
@@ -515,40 +497,6 @@ func (p *Plugin) handleMessage(msg neboloopsdk.Message) {
 		"content", string(msg.Content),
 	)
 	// Channel inbound messages from external bridges (Telegram, Discord, etc.)
-	// Note: loop channel messages (stream=channel) are handled exclusively by
-	// the OnLoopMessage chain handler to avoid double-processing.
-	if msg.Stream == "channels/inbound" {
-		p.mu.RLock()
-		fn := p.onChannelMessage
-		p.mu.RUnlock()
-		if fn == nil {
-			return
-		}
-
-		var sdkMsg neboloopsdk.ChannelMessage
-		if err := json.Unmarshal(msg.Content, &sdkMsg); err != nil {
-			commLog.Error("unmarshal channel message", "error", err)
-			return
-		}
-
-		cm := ChannelMessage{
-			ChannelType:    sdkMsg.ChannelType,
-			SenderName:     sdkMsg.SenderName,
-			Text:           sdkMsg.Text,
-			ConversationID: msg.ConversationID,
-			MessageID:      msg.MsgID,
-		}
-		commLog.Debug("[Comm:neboloop] ← CHANNEL inbound",
-			"channel_type", cm.ChannelType,
-			"sender_name", cm.SenderName,
-			"conv_id", cm.ConversationID,
-			"text_len", len(cm.Text),
-			"text_preview", truncateForLog(cm.Text, 200),
-		)
-		fn(cm)
-		return
-	}
-
 	// Direct messages from owner or other bots
 	if msg.Stream == "dm" {
 		p.mu.RLock()
@@ -1382,6 +1330,15 @@ func (p *Plugin) GetLoop(ctx context.Context, loopID string) (*neboloopapi.Loop,
 	return c.GetLoop(ctx, loopID)
 }
 
+// UpdateBotIdentity pushes the bot's name and role to NeboLoop.
+func (p *Plugin) UpdateBotIdentity(ctx context.Context, name, role string) error {
+	c, err := p.restClient()
+	if err != nil {
+		return err
+	}
+	return c.UpdateBotIdentity(ctx, name, role)
+}
+
 // ListLoopMembers returns members of a loop with online presence.
 func (p *Plugin) ListLoopMembers(ctx context.Context, loopID string) ([]neboloopapi.LoopMember, error) {
 	c, err := p.restClient()
@@ -1391,8 +1348,8 @@ func (p *Plugin) ListLoopMembers(ctx context.Context, loopID string) ([]neboloop
 	return c.ListLoopMembers(ctx, loopID)
 }
 
-// ListChannelMembers returns members of a channel with online presence.
-func (p *Plugin) ListChannelMembers(ctx context.Context, channelID string) ([]neboloopapi.ChannelMember, error) {
+// listChannelMembersRaw returns members of a channel with online presence (neboloop types).
+func (p *Plugin) listChannelMembersRaw(ctx context.Context, channelID string) ([]neboloopapi.ChannelMember, error) {
 	c, err := p.restClient()
 	if err != nil {
 		return nil, err
@@ -1400,13 +1357,39 @@ func (p *Plugin) ListChannelMembers(ctx context.Context, channelID string) ([]ne
 	return c.ListChannelMembers(ctx, channelID)
 }
 
-// ListChannelMessages fetches recent messages from a channel.
-func (p *Plugin) ListChannelMessages(ctx context.Context, channelID string, limit int) ([]neboloopapi.ChannelMessageItem, error) {
+// ListChannelMembers satisfies comm.ChannelMemberLister, converting to comm types.
+func (p *Plugin) ListChannelMembers(ctx context.Context, channelID string) ([]comm.ChannelMemberItem, error) {
+	members, err := p.listChannelMembersRaw(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]comm.ChannelMemberItem, len(members))
+	for i, m := range members {
+		result[i] = comm.ChannelMemberItem{BotID: m.BotID, BotName: m.BotName, Role: m.Role, IsOnline: m.IsOnline}
+	}
+	return result, nil
+}
+
+// listChannelMessagesRaw fetches recent messages from a channel (returns neboloopapi types).
+func (p *Plugin) listChannelMessagesRaw(ctx context.Context, channelID string, limit int) ([]neboloopapi.ChannelMessageItem, error) {
 	c, err := p.restClient()
 	if err != nil {
 		return nil, err
 	}
 	return c.ListChannelMessages(ctx, channelID, limit)
+}
+
+// ListChannelMessages satisfies comm.ChannelMessageLister, converting to comm types.
+func (p *Plugin) ListChannelMessages(ctx context.Context, channelID string, limit int) ([]comm.ChannelMessageItem, error) {
+	msgs, err := p.listChannelMessagesRaw(ctx, channelID, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]comm.ChannelMessageItem, len(msgs))
+	for i, m := range msgs {
+		result[i] = comm.ChannelMessageItem{ID: m.ID, From: m.From, Content: m.Content, CreatedAt: m.CreatedAt}
+	}
+	return result, nil
 }
 
 // restClient creates a REST client from the plugin's current credentials.
@@ -1449,9 +1432,41 @@ func enableTCPKeepAlive(conn net.Conn) {
 	}
 }
 
+// ListLoops returns all loops this bot is a member of via the REST API.
+func (p *Plugin) ListLoops(ctx context.Context) ([]comm.LoopInfo, error) {
+	loops, err := p.ListBotLoops(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]comm.LoopInfo, len(loops))
+	for i, l := range loops {
+		result[i] = comm.LoopInfo{
+			ID:          l.ID,
+			Name:        l.Name,
+			Description: l.Description,
+		}
+	}
+	return result, nil
+}
+
+// GetLoopInfo fetches a single loop by ID (satisfies comm.LoopGetter).
+func (p *Plugin) GetLoopInfo(ctx context.Context, loopID string) (*comm.LoopInfo, error) {
+	loop, err := p.GetLoop(ctx, loopID)
+	if err != nil {
+		return nil, err
+	}
+	return &comm.LoopInfo{
+		ID:          loop.ID,
+		Name:        loop.Name,
+		Description: loop.Description,
+	}, nil
+}
+
 // Compile-time interface checks
 var (
 	_ comm.CommPlugin        = (*Plugin)(nil)
 	_ settings.Configurable  = (*Plugin)(nil)
 	_ comm.LoopChannelLister = (*Plugin)(nil)
+	_ comm.LoopLister        = (*Plugin)(nil)
+	_ comm.LoopGetter        = (*Plugin)(nil)
 )

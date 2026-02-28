@@ -46,6 +46,7 @@ type Registry struct {
 	policy          *Policy
 	processRegistry *ProcessRegistry
 	listeners       []ChangeListener
+	desktopQueue    DesktopQueueFunc // When set, desktop tools are serialized through this
 }
 
 // NewRegistry creates a new tool registry with optional process registry for background bash support
@@ -182,38 +183,6 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 		}
 	}
 
-	// Check origin-based deny list before any approval logic
-	origin := GetOrigin(ctx)
-	if r.policy != nil && r.policy.IsDeniedForOrigin(origin, toolCall.Name) {
-		fmt.Printf("[Registry] Tool %q denied for origin=%s\n", toolCall.Name, origin)
-		return &ToolResult{
-			Content: fmt.Sprintf("Tool %q is not permitted for %s-origin requests", toolCall.Name, origin),
-			IsError: true,
-		}
-	}
-
-	// Check if approval is required
-	if tool.RequiresApproval() && r.policy != nil {
-		fmt.Printf("[Registry] Tool requires approval, policy level=%s\n", r.policy.Level)
-		approved, err := r.policy.RequestApproval(ctx, tool.Name(), toolCall.Input)
-		fmt.Printf("[Registry] Approval result: approved=%v err=%v\n", approved, err)
-		if err != nil {
-			return &ToolResult{
-				Content: fmt.Sprintf("Approval error: %v", err),
-				IsError: true,
-			}
-		}
-		if !approved {
-			return &ToolResult{
-				Content: "Tool execution denied by user",
-				IsError: true,
-			}
-		}
-	} else {
-		fmt.Printf("[Registry] No approval needed (requiresApproval=%v, hasPolicy=%v)\n",
-			tool.RequiresApproval(), r.policy != nil)
-	}
-
 	// Hard safety guard — unconditional, cannot be overridden by any setting
 	if err := CheckSafeguard(toolCall.Name, toolCall.Input); err != nil {
 		fmt.Printf("[Registry] SAFEGUARD BLOCKED: %s — %v\n", toolCall.Name, err)
@@ -223,18 +192,9 @@ func (r *Registry) Execute(ctx context.Context, toolCall *ai.ToolCall) *ToolResu
 		}
 	}
 
-	fmt.Printf("[Registry] Calling tool.Execute...\n")
-	result, err := tool.Execute(ctx, toolCall.Input)
-	fmt.Printf("[Registry] tool.Execute returned: err=%v\n", err)
-	if err != nil {
-		return &ToolResult{
-			Content: fmt.Sprintf("Tool error: %v", err),
-			IsError: true,
-		}
-	}
-
-	fmt.Printf("[Registry] Tool completed, content_len=%d, isError=%v\n", len(result.Content), result.IsError)
-	return result
+	// Delegate execution — routes desktop tools through LaneDesktop queue if configured,
+	// otherwise runs inline. Origin checks and approval happen inside executeTool().
+	return r.executeWithDesktopQueue(ctx, tool, toolCall)
 }
 
 // SetPolicy updates the registry's policy
@@ -305,6 +265,12 @@ func (r *Registry) registerDomainToolsWithPermissions(permissions map[string]boo
 	// Agent domain: task, cron, memory, message, session
 	// Note: AgentDomainTool requires DB and is registered via RegisterAgentDomainTool()
 	// The agent tool is always registered (it covers chat/memory which is always on)
+
+	// notify_owner: cross-lane owner notification (always registered, wired via setter)
+	r.Register(&NotifyOwnerTool{})
+
+	// query_sessions: cross-session awareness for Main Chat (always registered, wired via setter)
+	r.Register(&QuerySessionsTool{})
 }
 
 // GetProcessRegistry returns the process registry for external access
@@ -338,6 +304,30 @@ func (r *Registry) GetAgentDomainTool() *AgentDomainTool {
 	if tool, ok := r.tools["agent"]; ok {
 		if agentTool, ok := tool.(*AgentDomainTool); ok {
 			return agentTool
+		}
+	}
+	return nil
+}
+
+// GetNotifyOwnerTool returns the notify_owner tool for external wiring.
+func (r *Registry) GetNotifyOwnerTool() *NotifyOwnerTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if tool, ok := r.tools["notify_owner"]; ok {
+		if t, ok := tool.(*NotifyOwnerTool); ok {
+			return t
+		}
+	}
+	return nil
+}
+
+// GetQuerySessionsTool returns the query_sessions tool for external wiring.
+func (r *Registry) GetQuerySessionsTool() *QuerySessionsTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if tool, ok := r.tools["query_sessions"]; ok {
+		if t, ok := tool.(*QuerySessionsTool); ok {
+			return t
 		}
 	}
 	return nil

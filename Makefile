@@ -15,7 +15,7 @@ export CGO_LDFLAGS += -mmacosx-version-min=15.0
 SIGN_IDENTITY ?= Developer ID Application: Alma Tuck (7Y2D3KQ2UM)
 NOTARIZE_PROFILE ?= nebo-notarize
 
-.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install desktop package dmg notarize installer
+.PHONY: help dev build build-cli run clean test deps gen setup sqlc migrate-status migrate-up migrate-down cli release release-darwin release-linux install desktop whisper-lib package dmg notarize installer
 
 # Default target
 help:
@@ -74,10 +74,11 @@ dev:
 	fi
 
 # Build the unified CLI (server + agent in one binary)
-build:
+# Uses CGO for embedded voice pipeline (whisper, ONNX).
+build: whisper-lib
 	@echo "Building $(EXECUTABLE)..."
 	@cd app && pnpm build
-	CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(EXECUTABLE) .
+	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/$(EXECUTABLE) .
 
 # Build CLI only (for backward compatibility, same as build)
 build-cli: build
@@ -181,7 +182,7 @@ release: clean release-darwin release-linux release-windows
 # macOS builds (desktop — native window + system tray via Wails v3)
 # Requires CGO for Wails; must be built natively on each architecture.
 # For CI: use GitHub Actions matrix with macos-latest (arm64) and macos-13 (amd64).
-release-darwin:
+release-darwin: whisper-lib
 	@echo "Building for macOS (desktop)..."
 	@mkdir -p dist
 	@cd app && pnpm build
@@ -189,28 +190,36 @@ release-darwin:
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -tags desktop $(LDFLAGS) -o dist/nebo-darwin-arm64 .
 
 # Windows builds (GUI subsystem — no console window)
-release-windows:
+# Windows builds (CGO via MinGW for embedded whisper + ONNX voice pipeline)
+# CI: use GitHub Actions windows-latest runner with MSYS2/MinGW, or
+#     cross-compile from Linux with x86_64-w64-mingw32-gcc.
+release-windows: whisper-lib
 	@echo "Building for Windows..."
 	@mkdir -p dist
 	@cd app && pnpm build
 	go run github.com/tc-hib/go-winres@latest make --product-version "$(VERSION).0" --file-version "$(VERSION).0"
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath $(LDFLAGS_WIN) -o dist/nebo-windows-amd64.exe .
+	CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc GOOS=windows GOARCH=amd64 go build -trimpath $(LDFLAGS_WIN) -o dist/nebo-windows-amd64.exe .
 	@rm -f rsrc_windows_*.syso
 
-# Linux builds (headless — no Wails/CGO needed)
-release-linux:
+# Linux builds (CGO for embedded whisper + ONNX voice pipeline)
+# CI: use GitHub Actions matrix with ubuntu-latest (amd64) and ubuntu-arm64 (arm64).
+release-linux: whisper-lib
 	@echo "Building for Linux..."
 	@mkdir -p dist
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-linux-amd64 .
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-linux-arm64 .
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/nebo-linux-amd64 .
+	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/nebo-linux-arm64 .
 
 # =============================================================================
 # DESKTOP TARGETS (Wails v3)
 # =============================================================================
 
+# Build whisper.cpp static library (required for desktop voice)
+whisper-lib:
+	@./scripts/build-whisper.sh
+
 # Build desktop app (native window + system tray via Wails v3)
 # Requires CGO for Wails — only builds for the current platform.
-desktop:
+desktop: whisper-lib
 	@echo "Building $(EXECUTABLE) (desktop)..."
 	@cd app && pnpm build
 	CGO_ENABLED=1 go build -tags desktop $(LDFLAGS) -o bin/$(EXECUTABLE) .

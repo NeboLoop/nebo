@@ -19,7 +19,7 @@ Browser                           Server
                                   ←── 7. {text: "..."}
 8. Send text via WebSocket chat   ──→ 9. runner.Run() (agentic loop)
                                   ←── 10. chat_stream events (text)
-11. POST /api/v1/voice/tts        ──→ 12. Piper / macOS say / ElevenLabs
+11. POST /api/v1/voice/tts        ──→ 12. Kokoro ONNX / Piper / macOS say
                                   ←── 13. audio/mpeg blob
 14. new Audio(blob).play()
 15. onended → goto 2
@@ -622,12 +622,13 @@ func (vc *VoiceConn) extractSentences(buf *strings.Builder) {
 }
 ```
 
-**ttsLoop** — Receives sentences, generates audio. Phase 1 uses **bundled Piper TTS** as the default (offline, good quality, ~100ms/sentence on M-series Mac). Falls back to macOS `say` if Piper fails. ElevenLabs is an optional cloud upgrade if an API key is configured.
+**ttsLoop** — Receives sentences, generates audio. Phase 1 uses **Kokoro ONNX** as the desktop default — an 82M parameter TTS model running through the same onnxruntime already linked for Silero VAD. Produces natural, expressive speech at ~100ms/sentence on M-series Mac. Falls back to Piper (bundled binary) for headless, then macOS `say` as last resort. ElevenLabs is an optional cloud upgrade if an API key is configured.
 
 Phase 1 TTS fallback chain:
-1. **Piper** (bundled binary + voice model in Nebo.app, default, offline)
-2. **macOS `say`** (built-in, fallback if Piper fails)
-3. **ElevenLabs** (optional cloud upgrade, best quality, requires API key)
+1. **Kokoro ONNX** (desktop default, shares onnxruntime with Silero VAD, ~130MB model+voices, Apache 2.0)
+2. **Piper** (bundled binary, headless fallback, no CGO needed)
+3. **macOS `say`** (built-in, last resort)
+4. **ElevenLabs** (optional cloud upgrade, best quality, requires API key)
 
 ```go
 func (vc *VoiceConn) ttsLoop(ctx context.Context) {
@@ -638,7 +639,7 @@ func (vc *VoiceConn) ttsLoop(ctx context.Context) {
         case sentence := <-vc.ttsText:
             vc.sendControl("state_change", map[string]any{"state": "speaking"})
 
-            // Phase 1: Piper (bundled) → macOS say → ElevenLabs (if configured)
+            // Phase 1: Kokoro ONNX → Piper → macOS say → ElevenLabs (if configured)
             audioData, err := synthesizeSpeech(sentence)
             if err != nil { continue }
 
@@ -649,7 +650,7 @@ func (vc *VoiceConn) ttsLoop(ctx context.Context) {
 }
 ```
 
-Phase 3 upgrades to streaming TTS — either ElevenLabs streaming WebSocket API or direct ONNX Runtime inference on Piper models (sharing the runtime already linked for Silero VAD). First audio byte arrives during LLM generation.
+Phase 3 upgrades to streaming TTS — Kokoro ONNX already runs through onnxruntime so streaming is a matter of chunking generation. ElevenLabs streaming WebSocket API is an optional cloud alternative. First audio byte arrives during LLM generation.
 
 **speakerLoop** — Drains `outAudio` and writes binary frames to the WebSocket. Part of `writePump`.
 
@@ -755,7 +756,7 @@ for len(vc.outAudio) > 0 { <-vc.outAudio }
 7. **Server starts accumulating new speech** from `inAudio` → VAD → ASR
 8. **Leaked echo** during 20-40ms window → Silero VAD may false-positive, but real speech resets the state naturally
 
-**Phase 1 reality:** The user will hear a brief tail (~50ms) of the previous response during barge-in. This is acceptable for a desktop companion. Desktop builds get Silero VAD for reliable speech detection during playback; headless builds use RMS VAD which may false-trigger on echo. Phase 3 NLMS AEC makes this seamless everywhere.
+**Phase 1 reality:** The user will hear a brief tail (~50ms) of the previous response during barge-in. This is acceptable for a desktop companion. Desktop builds get Silero VAD for reliable speech detection during playback; headless builds use RMS VAD which may false-trigger on echo. Phase 3 NLMS AEC makes this seamless.
 
 ---
 
@@ -815,10 +816,38 @@ Phase 1 voice works fully offline:
 | Component | Offline Provider | Reference |
 |-----------|-----------------|-----------|
 | ASR | `whisper-cli` (already primary) | `transcribe.go:212` — `transcribeLocal()` |
-| TTS | **Piper** (bundled binary + voice model) → macOS `say` fallback | Bundled in Nebo.app, ~40MB for one voice |
+| TTS | **Kokoro ONNX** (desktop, shares onnxruntime with Silero VAD) → **Piper** (headless) → macOS `say` | ~130MB model+voices, Apache 2.0 |
 | LLM | Ollama (already supported) | Provider system handles routing |
 
-ElevenLabs is an optional cloud upgrade for TTS quality, not a requirement. The fallback chain: Piper → macOS `say` → ElevenLabs (if configured).
+ElevenLabs is an optional cloud upgrade for TTS quality, not a requirement. The fallback chain: Kokoro ONNX → Piper → macOS `say` → ElevenLabs (if configured).
+
+### Kokoro ONNX — Why It's the Default
+
+**Kokoro 82M** is an 82-million-parameter TTS model (Apache 2.0) that topped the HuggingFace TTS Arena, outperforming models 10x its size. Key advantages for Nebo:
+
+- **Shares onnxruntime with Silero VAD** — no additional native dependency on desktop builds
+- **~100ms per sentence** on M-series Mac CPU — faster than Piper, far faster than Sesame CSM
+- **50+ built-in voices** across English, Japanese, French, Chinese, Korean
+- **Voice blending** via embedding interpolation — create custom voices without training
+- **Pure ONNX inference** — no Python, no PyTorch, no external binary
+- **Small footprint**: `kokoro-v1.0.onnx` (~80MB) + `voices-v1.0.bin` (~50MB)
+
+**Integration:** Load model through `onnxruntime_go` (same as Silero VAD). The one wrinkle is **phonemization** — Kokoro requires text→IPA phoneme conversion before inference. Options:
+1. Port the `ttstokenizer` library (pure Python, no espeak dep) to Go — ~500 lines of IPA mapping
+2. Use `espeak-ng` as a subprocess for phonemization (available on all platforms)
+3. Bundle a pre-compiled phonemizer (the C# port KokoroSharp shows this is feasible)
+
+Build-tagged like Silero VAD: `//go:build cgo && kokoro` for desktop, falls back to Piper on headless.
+
+### Why Not Sesame CSM
+
+Sesame's Conversational Speech Model produces the most natural conversational speech available (Apache 2.0, open-source). However it's **far too slow for realtime**:
+- RTX 5070 Ti: ~0.5x realtime (10s audio takes 20s)
+- RTX 4090 optimized: 0.28x RTF (10s audio takes 2.8s)
+- Apple Silicon MLX: needs ~8.1GB RAM, not realtime
+- No ONNX port (autoregressive Llama backbone + custom audio decoder)
+
+**Watch for:** Future smaller/faster CSM variants, GGUF ports, or distilled models. If CSM hits realtime on Apple Silicon, it would replace Kokoro as the default due to superior conversational prosody.
 
 **Phase 1 voice works on an airplane.**
 
@@ -836,7 +865,7 @@ ElevenLabs is an optional cloud upgrade for TTS quality, not a requirement. The 
 | VAD (RMS fallback) | Browser-side (`+page.svelte:1583-1640`) | **CREATE** `voice/vad_rms.go` | Low | Permanent fallback for headless/no-CGO. Build tag: `!silero` |
 | VAD (Silero desktop) | None | **CREATE** `voice/vad_silero.go` | Medium | ONNX runtime, `//go:build cgo && silero`. Desktop default. |
 | Server ASR pipeline | `transcribeLocal()` + `convertToWav()` | **REUSE** from `transcribe.go:212,258` | Low | Call existing functions, add WAV writer |
-| Server TTS pipeline | `serveElevenLabsTTS()` + `serveMacTTS()` | **CREATE** Piper integration, **REUSE** macOS `say` + ElevenLabs as fallbacks | Medium | Bundle piper binary + voice model in app. Shell out like whisper-cli. |
+| Server TTS pipeline | `serveElevenLabsTTS()` + `serveMacTTS()` | **CREATE** Kokoro ONNX integration (desktop, build-tagged), **REUSE** Piper as headless fallback, macOS `say` + ElevenLabs as last resorts | Medium | Kokoro shares onnxruntime with Silero VAD. Needs Go phonemizer port. |
 | Sentence splitting | `feedTTSStream()` at `+page.svelte:1686-1706` | **MOVE** to Go, then **REMOVE** frontend | Low | Same regex, Go version |
 | LLM integration | `runner.Run()` | **REUSE** unchanged | Zero | Already returns `<-chan StreamEvent` |
 | Steering template | `channelTemplates` in `templates.go:20-25` | **EDIT** (add one entry) | Zero | Add `"voice"` key |
@@ -858,33 +887,36 @@ ElevenLabs is an optional cloud upgrade for TTS quality, not a requirement. The 
 - `internal/voice/vad.go` — NoiseGate, VAD interface, `rms()` utility
 - `internal/voice/vad_rms.go` — RMS VAD (pure Go, `//go:build !silero`, headless fallback)
 - `internal/voice/vad_silero.go` — Silero ONNX VAD (`//go:build cgo && silero`, desktop default)
+- `internal/voice/tts_kokoro.go` — Kokoro ONNX TTS (`//go:build cgo && kokoro`, desktop default)
+- `internal/voice/tts_piper.go` — Piper subprocess TTS (`//go:build !kokoro`, headless fallback)
+- `internal/voice/phonemize.go` — Text→IPA phoneme conversion for Kokoro (port of ttstokenizer)
 - `app/src/lib/voice/capture-processor.ts` — AudioWorklet Float32→Int16LE
 - `app/src/lib/voice/playback-processor.ts` — AudioWorklet ring buffer playback
 - `app/src/lib/voice/VoiceSession.ts` — Binary WS client, WorkletNode lifecycle
 
 **Reuse (edit):**
-- `transcribe.go` — extract `transcribeLocal()` for ASR pipeline use; macOS `say` and ElevenLabs become fallbacks behind Piper
+- `transcribe.go` — extract `transcribeLocal()` for ASR pipeline use; macOS `say` and ElevenLabs become last-resort fallbacks
 - `server.go` — add `/ws/voice` route alongside existing voice routes
 - `steering/templates.go` — add `"voice"` entry to `channelTemplates` map
 
 **Bundle in Nebo.app:**
-- `piper` binary (~5MB) + one voice model e.g. `en_US-amy-medium.onnx` (~40MB)
-- Ships inside `Contents/Resources/voice/` — same pattern as bundling whisper-cli
-- User downloads Nebo, voice works. No install step.
+- `kokoro-v1.0.onnx` (~80MB) + `voices-v1.0.bin` (~50MB) — Kokoro TTS model and voice embeddings
+- `piper` binary (~5MB) + one voice model (~40MB) — headless fallback
+- Ships inside `Contents/Resources/voice/` — user downloads Nebo, voice works. No install step.
 
 **Remove:**
 - Nothing yet in Phase 1. Browser half-duplex code stays until Phase 1 is stable.
 
-**Latency reality: 1100-2800ms from end-of-speech to first audio.**
+**Latency reality: 1050-2600ms from end-of-speech to first audio.**
 
 | Stage | Duration | Notes |
 |-------|----------|-------|
 | Speech accumulation + silence hangover | 300-800ms | VAD hangover before finalizing |
 | whisper-cli batch transcription | 500-2000ms | Depends on utterance length, model size |
 | LLM TTFT (Janus/local) | 200-1000ms | First token from provider |
-| TTS generation (Piper bundled / say fallback) | 100-400ms | Per-sentence, non-streaming |
+| TTS generation (Kokoro ONNX / Piper / say) | 50-200ms | Per-sentence, non-streaming |
 | WS frame + playback start | ~20ms | Negligible |
-| **Total** | **~1.1-2.8s** | |
+| **Total** | **~1.1-2.6s** | |
 
 This is walkie-talkie, not phone call. Acceptable for a desktop companion that does real work (writes emails, searches files, schedules meetings).
 
@@ -914,7 +946,7 @@ This is walkie-talkie, not phone call. Acceptable for a desktop companion that d
 **Goal:** First audio byte arrives during LLM generation, not after.
 
 **Create/Edit:**
-- Streaming TTS: either ElevenLabs WebSocket API (cloud) or direct ONNX inference on Piper models via shared onnxruntime (eliminates subprocess overhead)
+- Streaming TTS: Kokoro ONNX chunked generation (already in onnxruntime) or ElevenLabs WebSocket API (cloud)
 - Server-side NLMS echo cancellation (reference signal subtraction)
 - Move `feedTTSStream()` sentence splitting fully to server (it's already there from Phase 1), **remove** the frontend version when browser half-duplex code is deleted
 
@@ -1167,8 +1199,9 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 |---------|-------|-----|-------------------|---------|
 | `github.com/gorilla/websocket` | 1 | No | **Yes** | WS binary transport |
 | `whisper-cli` (external binary) | 1 | N/A | **Yes** (called via exec) | Batch ASR |
-| `piper` (bundled binary) | 1 | N/A | No (bundled in app) | Default TTS. ~5MB binary + ~40MB voice model. |
-| `github.com/yalue/onnxruntime_go` | 1 | **Yes** (desktop only) | No | Silero VAD inference. Build tag: `cgo && silero` |
+| `github.com/yalue/onnxruntime_go` | 1 | **Yes** (desktop only) | No | Silero VAD + Kokoro TTS inference. Build tag: `cgo && silero`/`cgo && kokoro`. One dep, two models. |
+| `kokoro-v1.0.onnx` + `voices-v1.0.bin` | 1 | N/A (data files) | No (bundled in app) | Kokoro TTS model (~80MB) + voice embeddings (~50MB). Apache 2.0. |
+| `piper` (bundled binary) | 1 | N/A | No (bundled in app) | Headless TTS fallback. ~5MB binary + ~40MB voice model. |
 | `github.com/hraban/opus` | 2 | **Yes** | No | Opus encode/decode |
 | Deepgram Go SDK | 2 | No | No | Streaming ASR |
 | ElevenLabs WS API | 3 | No | No | Streaming TTS (optional cloud upgrade) |
@@ -1180,9 +1213,9 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 | Speech accumulation + silence hangover | 300ms | 800ms | RMS VAD, 300ms hangover |
 | whisper-cli batch transcription | 500ms | 2000ms | ~3s utterance on base.en model |
 | LLM TTFT (Janus or Ollama) | 200ms | 1000ms | Depends on provider, prompt length |
-| TTS generation (Piper bundled or say) | 100ms | 400ms | Per-sentence, non-streaming |
+| TTS generation (Kokoro ONNX or Piper or say) | 50ms | 200ms | Per-sentence, non-streaming |
 | WS frame + AudioWorklet playback | ~20ms | ~20ms | Negligible |
-| **Total** | **~1.1s** | **~2.8s** | |
+| **Total** | **~1.1s** | **~2.6s** | |
 
 **Phase 1 UX:** Show ASR text immediately via `transcript` message, then LLM streaming text via `llm_text` messages. Audio is the third layer — not the only feedback channel. The user sees their words confirmed, then sees Nebo thinking, then hears the response.
 
@@ -1191,7 +1224,7 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 | Optimization | Savings |
 |-------------|---------|
 | Streaming ASR (Deepgram) — text during speech | −500-1500ms (overlaps with speech) |
-| Streaming TTS (Piper ONNX direct or ElevenLabs WS) — audio during LLM | −100-400ms (overlaps with LLM generation) |
+| Streaming TTS (Kokoro chunked or ElevenLabs WS) — audio during LLM | −50-200ms (overlaps with LLM generation) |
 | Silero VAD — faster speech endpoint detection | −100-200ms (tighter hangover) |
 | Opus — smaller frames, less WS overhead | −10-50ms |
 | **Net result** | **<1000ms end-of-speech to first audio** |
@@ -1204,7 +1237,7 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 
 | File | What to edit | Phase |
 |------|-------------|-------|
-| `internal/voice/transcribe.go` | Extract `transcribeLocal()` (L212) for ASR pipeline. macOS `say` + ElevenLabs become fallbacks behind Piper. HTTP handlers stay intact. | 1 |
+| `internal/voice/transcribe.go` | Extract `transcribeLocal()` (L212) for ASR pipeline. macOS `say` + ElevenLabs become last-resort fallbacks behind Kokoro and Piper. HTTP handlers stay intact. | 1 |
 | `internal/server/server.go` | Add `r.Get("/ws/voice", voice.DuplexHandler(svcCtx))` near L204-205 | 1 |
 | `internal/agent/steering/templates.go` | Add `"voice"` entry to `channelTemplates` map at L20-25 | 1 |
 | `app/src/routes/(app)/agent/+page.svelte` | Wire VoiceSession into existing voice toggle button (replace enterVoiceMode/exitVoiceMode) | 1 |
@@ -1217,6 +1250,9 @@ func DuplexHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 | `internal/voice/vad.go` | VAD interface, NoiseGate, `rms()` utility | 1 |
 | `internal/voice/vad_rms.go` | RMS VAD (`//go:build !silero`). Permanent fallback for headless/no-CGO. | 1 |
 | `internal/voice/vad_silero.go` | Silero ONNX VAD (`//go:build cgo && silero`). Desktop default. | 1 |
+| `internal/voice/tts_kokoro.go` | Kokoro ONNX TTS (`//go:build cgo && kokoro`). Desktop default. 82M params, 50+ voices. | 1 |
+| `internal/voice/tts_piper.go` | Piper subprocess TTS (`//go:build !kokoro`). Headless fallback. | 1 |
+| `internal/voice/phonemize.go` | Text→IPA phoneme conversion for Kokoro. Port of ttstokenizer (~500 lines). | 1 |
 | `internal/voice/opus.go` | Opus encoder/decoder (build tagged `//go:build opus`) | 2 |
 | `app/src/lib/voice/capture-processor.ts` | AudioWorklet: Float32→Int16LE, postMessage | 1 |
 | `app/src/lib/voice/playback-processor.ts` | AudioWorklet: ring buffer playback, zero-fill | 1 |

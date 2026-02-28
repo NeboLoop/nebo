@@ -1,6 +1,6 @@
 <script lang="ts">
 	export interface AskWidgetDef {
-		type: 'buttons' | 'select' | 'text_input' | 'confirm' | 'radio' | 'checkbox';
+		type: 'buttons' | 'select' | 'confirm' | 'radio' | 'checkbox';
 		label?: string;
 		options?: string[];
 		default?: string;
@@ -11,12 +11,12 @@
 		prompt: string;
 		widgets: AskWidgetDef[];
 		response?: string;
+		disabled?: boolean;
 		onSubmit: (requestId: string, value: string) => void;
 	}
 
-	let { requestId, prompt, widgets, response, onSubmit }: Props = $props();
+	let { requestId, prompt, widgets, response, disabled = false, onSubmit }: Props = $props();
 
-	let textValue = $state('');
 	let selectValue = $state('');
 	let radioValue = $state('');
 	let selectedOptions = $state(new Set<string>());
@@ -26,19 +26,6 @@
 	function submit(value: string) {
 		if (!answered) {
 			onSubmit(requestId, value);
-		}
-	}
-
-	function handleTextSubmit() {
-		if (textValue.trim()) {
-			submit(textValue.trim());
-		}
-	}
-
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && !e.shiftKey) {
-			e.preventDefault();
-			handleTextSubmit();
 		}
 	}
 
@@ -61,6 +48,10 @@
 			{#each (response ?? '').split(', ') as item}
 				<div class="badge badge-primary badge-sm">{item}</div>
 			{/each}
+		</div>
+	{:else if disabled}
+		<div class="flex flex-wrap gap-1">
+			<div class="badge badge-ghost badge-sm">Skipped</div>
 		</div>
 	{:else}
 		{#each widgets as widget}
@@ -98,24 +89,6 @@
 						onclick={() => submit(selectValue)}
 					>
 						OK
-					</button>
-				</div>
-			{:else if widget.type === 'text_input'}
-				<div class="flex gap-2 items-center">
-					<input
-						type="text"
-						class="input input-bordered input-sm flex-1"
-						placeholder={widget.default ?? 'Type your answer...'}
-						bind:value={textValue}
-						onkeydown={handleKeydown}
-					/>
-					<button
-						type="button"
-						class="btn btn-sm btn-primary"
-						disabled={!textValue.trim()}
-						onclick={handleTextSubmit}
-					>
-						Send
 					</button>
 				</div>
 			{:else if widget.type === 'radio'}

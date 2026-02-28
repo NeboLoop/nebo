@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy, tick } from 'svelte';
+	import { onMount, onDestroy, tick, getContext } from 'svelte';
 	import { browser } from '$app/environment';
 	import {
 		Send,
@@ -26,12 +26,16 @@
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ApprovalModal from '$lib/components/ui/ApprovalModal.svelte';
 	import { generateUUID } from '$lib/utils';
+	import { VoiceSession, type VoiceState as DuplexVoiceState } from '$lib/voice/VoiceSession';
 	import {
 		MessageGroup,
 		ToolOutputSidebar,
 		ReadingIndicator,
-		ChatInput
+		ChatInput,
+		ChannelChat
 	} from '$lib/components/chat';
+
+	const channelState = getContext<{ activeChannelId: string; activeChannelName: string; activeLoopName: string }>('channelState');
 
 	interface ApprovalRequest {
 		requestId: string;
@@ -114,6 +118,21 @@
 	// Available ElevenLabs voices
 	const ttsVoices = ['rachel', 'domi', 'bella', 'antoni', 'elli', 'josh', 'arnold', 'adam', 'sam'];
 
+	// Full-duplex voice state
+	let duplexSession: VoiceSession | null = null;
+	let duplexState = $state<DuplexVoiceState>('idle');
+	let duplexTranscript = $state('');
+	let duplexVadActive = $state(false);
+
+	// Voice model download state
+	let showModelDownload = $state(false);
+	let modelDownloadProgress = $state<Record<string, { downloaded: number; total: number; done: boolean }>>({});
+	let modelDownloadError = $state('');
+
+	// Wake word state
+	let wakeWordEnabled = $state(false);
+	let wakeWordSession: VoiceSession | null = null;
+
 	// Tool output sidebar
 	let sidebarTool = $state<ToolCall | null>(null);
 
@@ -166,6 +185,7 @@
 	// Stream staleness detection — shows "force stop" if no events for 60s
 	let lastEventTime = $state(Date.now());
 	let staleWarning = $state(false);
+	let pendingAskRequest = $state(false);
 
 	function markActivity() {
 		lastEventTime = Date.now();
@@ -198,6 +218,9 @@
 
 		// Don't arm the timer while tools are actively running — they can take minutes
 		if (hasRunningTools()) return;
+
+		// Don't arm the timer while waiting for an ask widget response
+		if (pendingAskRequest) return;
 
 		loadingTimeoutId = setTimeout(() => {
 			if (!isLoading) return;
@@ -238,6 +261,7 @@
 	$effect(() => {
 		if (!isLoading) {
 			staleWarning = false;
+			pendingAskRequest = false;
 			if (staleCheckIntervalId) {
 				clearInterval(staleCheckIntervalId);
 				staleCheckIntervalId = null;
@@ -245,7 +269,7 @@
 			return;
 		}
 		staleCheckIntervalId = setInterval(() => {
-			if (Date.now() - lastEventTime > 60_000) {
+			if (Date.now() - lastEventTime > 60_000 && !pendingAskRequest) {
 				staleWarning = true;
 			}
 		}, 5000);
@@ -331,6 +355,16 @@
 		}
 		// Clean up voice mode (kills stream, monitor, recorder, audio)
 		exitVoiceMode();
+		// Clean up duplex voice session
+		if (duplexSession) {
+			duplexSession.disconnect();
+			duplexSession = null;
+		}
+		// Clean up wake word listener
+		if (wakeWordSession) {
+			wakeWordSession.disconnect();
+			wakeWordSession = null;
+		}
 	});
 
 	// Save draft to localStorage when input changes
@@ -1084,6 +1118,13 @@
 	}
 
 	function handleAskRequest(data: Record<string, unknown>) {
+		markActivity();
+		pendingAskRequest = true;
+		if (loadingTimeoutId) {
+			clearTimeout(loadingTimeoutId);
+			loadingTimeoutId = null;
+		}
+
 		const requestId = data?.request_id as string;
 		const prompt = data?.prompt as string;
 		const widgets = data?.widgets as ContentBlock['askWidgets'];
@@ -1107,6 +1148,8 @@
 	}
 
 	function handleAskSubmit(requestId: string, value: string) {
+		pendingAskRequest = false;
+		resetLoadingTimeout();
 		const client = getWebSocketClient();
 		client.send('ask_response', {
 			request_id: requestId,
@@ -1867,9 +1910,206 @@
 		}
 	}
 
+	// Full-duplex voice mode
+	async function toggleDuplexVoice() {
+		if (duplexSession?.isActive()) {
+			duplexSession.disconnect();
+			duplexSession = null;
+			duplexState = 'idle';
+			duplexTranscript = '';
+			duplexVadActive = false;
+		} else {
+			// Check if voice models are downloaded
+			try {
+				const statusResp = await fetch('/api/v1/voice/models/status');
+				const status = await statusResp.json();
+				if (!status.ready) {
+					// Show download dialog
+					showModelDownload = true;
+					modelDownloadProgress = {};
+					modelDownloadError = '';
+					return;
+				}
+			} catch {
+				// Can't check status — proceed anyway (server might not support it yet)
+			}
+
+			await connectDuplexVoice();
+		}
+	}
+
+	async function connectDuplexVoice() {
+		duplexSession = new VoiceSession({
+			onStateChange: (state) => {
+				duplexState = state;
+			},
+			onTranscript: (text) => {
+				duplexTranscript = text;
+			},
+			onVadState: (active) => {
+				duplexVadActive = active;
+			},
+			onError: (message) => {
+				voiceLog.error('Duplex voice error: ' + message);
+				recordingError = message;
+			}
+		});
+		try {
+			await duplexSession.connect(ttsVoice);
+		} catch {
+			duplexSession = null;
+			duplexState = 'idle';
+		}
+	}
+
+	async function startModelDownload() {
+		modelDownloadError = '';
+		try {
+			const resp = await fetch('/api/v1/voice/models/download', { method: 'POST' });
+			if (!resp.ok) {
+				modelDownloadError = 'Download failed: ' + resp.statusText;
+				return;
+			}
+
+			const reader = resp.body?.getReader();
+			if (!reader) {
+				modelDownloadError = 'Streaming not supported';
+				return;
+			}
+
+			const decoder = new TextDecoder();
+			let buffer = '';
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split('\n');
+				buffer = lines.pop() || '';
+
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					try {
+						const data = JSON.parse(line.slice(6));
+						if (data.ready) {
+							// All done — close dialog and connect
+							showModelDownload = false;
+							await connectDuplexVoice();
+							return;
+						}
+						if (data.error) {
+							modelDownloadError = data.error;
+							return;
+						}
+						if (data.model) {
+							modelDownloadProgress[data.model] = {
+								downloaded: data.downloaded || 0,
+								total: data.total || 0,
+								done: data.done || false
+							};
+							modelDownloadProgress = { ...modelDownloadProgress };
+						}
+					} catch {
+						// Skip malformed SSE lines
+					}
+				}
+			}
+		} catch (err) {
+			modelDownloadError = err instanceof Error ? err.message : 'Download failed';
+		}
+	}
+
+	async function toggleWakeWord() {
+		if (wakeWordEnabled) {
+			// Disable
+			wakeWordSession?.disconnect();
+			wakeWordSession = null;
+			wakeWordEnabled = false;
+		} else {
+			// Enable — start listening for "Hey Nebo"
+			wakeWordSession = new VoiceSession({
+				onWakeWord: async () => {
+					// Wake word detected — stop wake word listener and start full duplex
+					wakeWordSession?.disconnect();
+					wakeWordSession = null;
+
+					// Check models first
+					try {
+						const statusResp = await fetch('/api/v1/voice/models/status');
+						const status = await statusResp.json();
+						if (!status.ready) {
+							showModelDownload = true;
+							return;
+						}
+					} catch {
+						// proceed anyway
+					}
+
+					await connectDuplexVoice();
+
+					// When duplex disconnects, restart wake word if still enabled
+					const checkRestart = setInterval(() => {
+						if (!duplexSession?.isActive() && wakeWordEnabled) {
+							clearInterval(checkRestart);
+							startWakeWordListener();
+						} else if (!wakeWordEnabled) {
+							clearInterval(checkRestart);
+						}
+					}, 500);
+				},
+				onError: (message) => {
+					voiceLog.error('Wake word error: ' + message);
+				}
+			});
+
+			try {
+				await wakeWordSession.startWakeWordListening();
+				wakeWordEnabled = true;
+			} catch {
+				wakeWordSession = null;
+				wakeWordEnabled = false;
+			}
+		}
+	}
+
+	async function startWakeWordListener() {
+		if (!wakeWordEnabled || wakeWordSession?.isActive()) return;
+		wakeWordSession = new VoiceSession({
+			onWakeWord: async () => {
+				wakeWordSession?.disconnect();
+				wakeWordSession = null;
+				await connectDuplexVoice();
+				const checkRestart = setInterval(() => {
+					if (!duplexSession?.isActive() && wakeWordEnabled) {
+						clearInterval(checkRestart);
+						startWakeWordListener();
+					} else if (!wakeWordEnabled) {
+						clearInterval(checkRestart);
+					}
+				}, 500);
+			},
+			onError: (message) => {
+				voiceLog.error('Wake word error: ' + message);
+			}
+		});
+		try {
+			await wakeWordSession.startWakeWordListening();
+		} catch {
+			wakeWordSession = null;
+		}
+	}
+
 	// Auto-focus textarea when user starts typing anywhere
 	function handleGlobalKeydown(e: KeyboardEvent) {
 		// Escape cancels generation (unless in voice mode, where it exits voice mode)
+		if (e.key === 'Escape' && duplexSession?.isActive()) {
+			e.preventDefault();
+			duplexSession.disconnect();
+			duplexSession = null;
+			duplexState = 'idle';
+			return;
+		}
 		if (e.key === 'Escape' && voiceMode) {
 			e.preventDefault();
 			exitVoiceMode();
@@ -1902,6 +2142,7 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
+{#if !channelState.activeChannelId}
 <!-- File drop zone for the entire chat area -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
@@ -1964,6 +2205,39 @@
 						<Volume2 class="w-4 h-4" />
 					{:else}
 						<VolumeOff class="w-4 h-4" />
+					{/if}
+				</button>
+				<!-- Full-duplex voice toggle -->
+				<button
+					type="button"
+					onclick={toggleDuplexVoice}
+					class="btn btn-sm btn-ghost gap-1"
+					class:btn-primary={duplexState !== 'idle'}
+					class:btn-outline={duplexState !== 'idle'}
+					title={duplexState !== 'idle' ? `Voice: ${duplexState}` : 'Start full-duplex voice'}
+				>
+					{#if duplexState !== 'idle'}
+						<Mic class="w-4 h-4 animate-pulse" />
+						<span class="text-xs hidden sm:inline">{duplexState}</span>
+					{:else}
+						<Mic class="w-4 h-4" />
+						<span class="text-xs hidden sm:inline">Duplex</span>
+					{/if}
+				</button>
+				<!-- Wake word toggle -->
+				<button
+					type="button"
+					onclick={toggleWakeWord}
+					class="btn btn-sm btn-ghost gap-1"
+					class:btn-success={wakeWordEnabled}
+					class:btn-outline={wakeWordEnabled}
+					title={wakeWordEnabled ? 'Disable "Hey Nebo"' : 'Enable "Hey Nebo" wake word'}
+				>
+					{#if wakeWordEnabled}
+						<Wifi class="w-4 h-4" />
+						<span class="text-xs hidden sm:inline">Listening</span>
+					{:else}
+						<WifiOff class="w-4 h-4" />
 					{/if}
 				</button>
 				<!-- History link -->
@@ -2112,4 +2386,70 @@
 	onDeny={handleDeny}
 />
 
+{#if showModelDownload}
+<div class="modal modal-open">
+	<div class="modal-box">
+		<h3 class="font-bold text-lg mb-4">Download Voice Models</h3>
+		<p class="text-sm text-base-content/70 mb-4">
+			Voice models need to be downloaded before first use. This is a one-time download.
+		</p>
+
+		{#if modelDownloadError}
+			<div class="alert alert-error mb-4">
+				<span>{modelDownloadError}</span>
+			</div>
+		{/if}
+
+		{#each Object.entries(modelDownloadProgress) as [name, prog]}
+			<div class="mb-3">
+				<div class="flex justify-between text-sm mb-1">
+					<span class="font-mono text-xs">{name}</span>
+					<span class="text-xs text-base-content/60">
+						{#if prog.done}
+							Done
+						{:else if prog.total > 0}
+							{Math.round((prog.downloaded / prog.total) * 100)}%
+						{:else}
+							Starting...
+						{/if}
+					</span>
+				</div>
+				<progress
+					class="progress progress-primary w-full"
+					value={prog.downloaded}
+					max={prog.total || 100}
+				></progress>
+			</div>
+		{/each}
+
+		<div class="modal-action">
+			<button class="btn btn-ghost" onclick={() => { showModelDownload = false; }}>
+				Cancel
+			</button>
+			<button
+				class="btn btn-primary"
+				onclick={startModelDownload}
+				disabled={Object.values(modelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
+			>
+				{#if Object.values(modelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
+					<Loader2 class="w-4 h-4 animate-spin" />
+					Downloading...
+				{:else}
+					Download
+				{/if}
+			</button>
+		</div>
+	</div>
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+	<div class="modal-backdrop" onclick={() => { showModelDownload = false; }}></div>
+</div>
+{/if}
+
 <ToolOutputSidebar tool={sidebarTool} onClose={closeToolSidebar} />
+{:else}
+<ChannelChat
+	channelId={channelState.activeChannelId}
+	channelName={channelState.activeChannelName}
+	loopName={channelState.activeLoopName}
+/>
+{/if}

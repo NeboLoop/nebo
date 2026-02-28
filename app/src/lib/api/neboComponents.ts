@@ -375,6 +375,13 @@ export interface GetAuthProfileResponse {
 	profile: AuthProfile
 }
 
+export interface GetChannelMessagesRequest {
+}
+
+export interface GetChannelMessagesRequestParams {
+	limit?: number
+}
+
 export interface GetChatRequest {
 }
 
@@ -998,6 +1005,10 @@ export interface SearchMemoriesRequestParams {
 export interface SearchMemoriesResponse {
 	memories: Array<MemoryItem>
 	total: number
+}
+
+export interface SendChannelMessageRequest {
+	text: string
 }
 
 export interface SendMessageRequest {
