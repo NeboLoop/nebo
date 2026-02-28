@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -1345,6 +1346,19 @@ func (t *WebDomainTool) HandleVision(ctx context.Context, imagePath, imageBase64
 
 // --- Search implementations ---
 
+// browserUserAgent returns a realistic browser user-agent string matching the
+// current platform so that search engines don't flag us as a bot.
+func browserUserAgent() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	case "linux":
+		return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	default: // windows
+		return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	}
+}
+
 type webSearchResult struct {
 	Title   string
 	URL     string
@@ -1358,7 +1372,7 @@ func (t *WebDomainTool) searchDuckDuckGo(ctx context.Context, query string, limi
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", browserUserAgent())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 
@@ -1465,7 +1479,30 @@ func (t *WebDomainTool) searchViaNativeBrowser(ctx context.Context, query string
 func parseWebDuckDuckGoHTML(html string, limit int) []webSearchResult {
 	var results []webSearchResult
 
-	parts := strings.Split(html, `class="result__body"`)
+	// Try multiple split strategies — DuckDuckGo periodically changes class names
+	splitMarkers := []string{
+		`class="result__body"`,
+		`class="result results_links`,
+		`class="links_main`,
+		`class="result "`,
+	}
+
+	var parts []string
+	for _, marker := range splitMarkers {
+		parts = strings.Split(html, marker)
+		if len(parts) > 1 {
+			break
+		}
+	}
+
+	if len(parts) <= 1 {
+		return results
+	}
+
+	// Link class names to try for extracting URL and title
+	linkClasses := []string{`class="result__a"`, `class="result__title"`, `class="link"`}
+	// Snippet class names to try
+	snippetClasses := []string{`class="result__snippet"`, `class="result__desc"`, `class="snippet"`}
 
 	for i, part := range parts[1:] {
 		if i >= limit {
@@ -1474,43 +1511,85 @@ func parseWebDuckDuckGoHTML(html string, limit int) []webSearchResult {
 
 		result := webSearchResult{}
 
-		if idx := strings.Index(part, `class="result__a"`); idx != -1 {
-			hrefStart := strings.Index(part[idx:], `href="`)
-			if hrefStart != -1 {
-				hrefStart += idx + 6
+		// Try each link class pattern to extract URL and title
+		for _, linkClass := range linkClasses {
+			if result.URL != "" {
+				break
+			}
+			if idx := strings.Index(part, linkClass); idx != -1 {
+				hrefStart := strings.Index(part[idx:], `href="`)
+				if hrefStart != -1 {
+					hrefStart += idx + 6
+					hrefEnd := strings.Index(part[hrefStart:], `"`)
+					if hrefEnd != -1 {
+						rawURL := part[hrefStart : hrefStart+hrefEnd]
+						if u, err := url.Parse(rawURL); err == nil {
+							if uddg := u.Query().Get("uddg"); uddg != "" {
+								result.URL = uddg
+							} else {
+								result.URL = rawURL
+							}
+						}
+					}
+				}
+
+				titleStart := strings.Index(part[idx:], ">")
+				if titleStart != -1 {
+					titleStart += idx + 1
+					titleEnd := strings.Index(part[titleStart:], "</a>")
+					if titleEnd != -1 {
+						result.Title = strings.TrimSpace(stripWebHTMLTags(part[titleStart : titleStart+titleEnd]))
+					}
+				}
+			}
+		}
+
+		// If no link class matched, try finding any <a href="..."> in the block
+		if result.URL == "" {
+			if idx := strings.Index(part, `<a href="`); idx != -1 {
+				hrefStart := idx + 9
 				hrefEnd := strings.Index(part[hrefStart:], `"`)
 				if hrefEnd != -1 {
 					rawURL := part[hrefStart : hrefStart+hrefEnd]
 					if u, err := url.Parse(rawURL); err == nil {
 						if uddg := u.Query().Get("uddg"); uddg != "" {
 							result.URL = uddg
-						} else {
+						} else if strings.HasPrefix(rawURL, "http") {
 							result.URL = rawURL
 						}
 					}
 				}
-			}
-
-			titleStart := strings.Index(part[idx:], ">")
-			if titleStart != -1 {
-				titleStart += idx + 1
-				titleEnd := strings.Index(part[titleStart:], "</a>")
-				if titleEnd != -1 {
-					result.Title = strings.TrimSpace(stripWebHTMLTags(part[titleStart : titleStart+titleEnd]))
+				// Extract title from inside the <a> tag
+				titleStart := strings.Index(part[hrefStart:], ">")
+				if titleStart != -1 {
+					titleStart += hrefStart + 1
+					titleEnd := strings.Index(part[titleStart:], "</a>")
+					if titleEnd != -1 {
+						result.Title = strings.TrimSpace(stripWebHTMLTags(part[titleStart : titleStart+titleEnd]))
+					}
 				}
 			}
 		}
 
-		if idx := strings.Index(part, `class="result__snippet"`); idx != -1 {
-			snippetStart := strings.Index(part[idx:], ">")
-			if snippetStart != -1 {
-				snippetStart += idx + 1
-				snippetEnd := strings.Index(part[snippetStart:], "</a>")
-				if snippetEnd == -1 {
-					snippetEnd = strings.Index(part[snippetStart:], "</span>")
-				}
-				if snippetEnd != -1 {
-					result.Snippet = strings.TrimSpace(stripWebHTMLTags(part[snippetStart : snippetStart+snippetEnd]))
+		// Try each snippet class pattern
+		for _, snippetClass := range snippetClasses {
+			if result.Snippet != "" {
+				break
+			}
+			if idx := strings.Index(part, snippetClass); idx != -1 {
+				snippetStart := strings.Index(part[idx:], ">")
+				if snippetStart != -1 {
+					snippetStart += idx + 1
+					snippetEnd := strings.Index(part[snippetStart:], "</a>")
+					if snippetEnd == -1 {
+						snippetEnd = strings.Index(part[snippetStart:], "</span>")
+					}
+					if snippetEnd == -1 {
+						snippetEnd = strings.Index(part[snippetStart:], "</div>")
+					}
+					if snippetEnd != -1 {
+						result.Snippet = strings.TrimSpace(stripWebHTMLTags(part[snippetStart : snippetStart+snippetEnd]))
+					}
 				}
 			}
 		}

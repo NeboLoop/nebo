@@ -473,6 +473,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 	}
 
 	compactionAttempted := false
+	nudgeAttempted := false     // One steering nudge per run when model stops mid-task
 	var runStartMessageID int64 // Captured on iteration 1; messages with ID >= this are protected from window eviction
 
 	// MAIN LOOP: Model selection + agentic execution
@@ -896,6 +897,21 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 				fmt.Printf("[Runner] Role ordering error (retrying): %v\n", err)
 				continue
 			}
+			// Transient network errors (HTTP/2 stream cancel, connection reset, etc.) - retry with backoff
+			if ai.IsTransientError(err) {
+				fmt.Printf("[Runner] Transient error (retrying in 2s): %v\n", err)
+				select {
+				case <-time.After(2 * time.Second):
+					continue
+				case <-ctx.Done():
+					return
+				}
+			}
+			// Context cancelled (user navigated away, lane cancelled, etc.) — exit silently
+			if ctx.Err() != nil {
+				fmt.Printf("[Runner] Context cancelled, stopping: %v\n", ctx.Err())
+				return
+			}
 			// Record error for profile tracking - generic error case
 			r.recordProfileError(ctx, provider, err)
 			errMsg := extractProviderErrorMessage(err)
@@ -910,6 +926,7 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 		var assistantContent strings.Builder
 		var toolCalls []session.ToolCall
 		eventCount := 0
+		streamRetry := false
 
 	streamLoop:
 		for {
@@ -920,8 +937,11 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 				}
 				eventCount++
 
-				// Forward ALL events to caller for display
-				resultCh <- event
+				// Forward non-error events to caller for display
+				// (errors are handled in EventTypeError with retry/reporting logic)
+				if event.Type != ai.EventTypeError {
+					resultCh <- event
+				}
 
 				switch event.Type {
 				case ai.EventTypeText:
@@ -943,6 +963,28 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 
 				case ai.EventTypeError:
 					fmt.Printf("[Runner] Error event received: %v\n", event.Error)
+					// Transient stream errors (HTTP/2 CANCEL, connection reset, etc.) — retry the iteration
+					if ai.IsTransientError(event.Error) {
+						fmt.Printf("[Runner] Transient stream error (retrying in 2s): %v\n", event.Error)
+						// Drain remaining events from the channel before retrying
+						for range events {
+						}
+						select {
+						case <-time.After(2 * time.Second):
+						case <-ctx.Done():
+							return
+						}
+						iteration-- // don't count the failed attempt
+						streamRetry = true
+						break streamLoop
+					}
+					// Context cancelled — exit silently, don't show error to user
+					if ctx.Err() != nil {
+						fmt.Printf("[Runner] Context cancelled during stream, stopping: %v\n", ctx.Err())
+						for range events {
+						}
+						return
+					}
 					// Send user-visible error message so the chat doesn't just hang
 					errMsg := extractProviderErrorMessage(event.Error)
 					resultCh <- ai.StreamEvent{Type: ai.EventTypeText, Text: errMsg}
@@ -984,6 +1026,11 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			}
 		}
 		fmt.Printf("[Runner] Stream complete: %d events, %d tool calls\n", eventCount, len(toolCalls))
+
+		// If a transient stream error triggered a retry, restart the iteration
+		if streamRetry {
+			continue
+		}
 
 		// Capture rate-limit info from Janus responses (every iteration)
 		r.captureRateLimit(provider)
@@ -1096,6 +1143,18 @@ func (r *Runner) runLoop(ctx context.Context, sessionID, sessionKey, systemPromp
 			}
 			resultCh <- ai.StreamEvent{Type: ai.EventTypeDone}
 			return
+		}
+
+		// Text-only response: model didn't use tools.
+		// If there's an active objective, give the steering system one more
+		// iteration so the pendingTaskAction generator can nudge the model
+		// back into action. Without this, the loop exits before steering fires.
+		// Allow one nudge attempt per run to avoid infinite loops.
+		activeTask, _ = r.sessions.GetActiveTask(sessionID)
+		if activeTask != "" && !nudgeAttempted {
+			nudgeAttempted = true
+			fmt.Printf("[Runner] Text-only response with active task — re-entering loop for steering nudge (iteration %d)\n", iteration)
+			continue
 		}
 
 		// No tool calls — task is complete

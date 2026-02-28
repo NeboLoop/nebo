@@ -48,9 +48,9 @@ type DesktopDomainOpts struct {
 	Input    Tool // mouse, keyboard, scroll (was: desktop)
 	UI       Tool // accessibility tree inspection (was: accessibility)
 	Window   Tool // window management (was: window)
-	Menu     Tool // menu bar interaction (was: menubar) — darwin only
-	Dialog   Tool // system dialog handling (was: dialog) — darwin only
-	Space    Tool // virtual desktop/spaces (was: spaces) — darwin only
+	Menu     Tool // menu bar interaction (was: menubar) — darwin + windows
+	Dialog   Tool // system dialog handling (was: dialog) — darwin + windows
+	Space    Tool // virtual desktop/spaces (was: spaces) — darwin + windows
 	Shortcut Tool // OS shortcuts/automations (was: shortcuts)
 }
 

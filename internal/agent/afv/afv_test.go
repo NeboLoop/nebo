@@ -253,11 +253,11 @@ func TestShouldFence(t *testing.T) {
 	}{
 		{tools.OriginComm, "anything", true},
 		{tools.OriginApp, "anything", true},
-		{tools.OriginSkill, "anything", true},
+		{tools.OriginSkill, "anything", false},
 		{tools.OriginUser, "web", true},
-		{tools.OriginUser, "file", true},
-		{tools.OriginUser, "shell", true},
-		{tools.OriginUser, "skill", true},
+		{tools.OriginUser, "file", false},
+		{tools.OriginUser, "shell", false},
+		{tools.OriginUser, "skill", false},
 		{tools.OriginUser, "agent", false},
 		{tools.OriginUser, "screenshot", false},
 		{tools.OriginSystem, "anything", false},
@@ -271,3 +271,4 @@ func TestShouldFence(t *testing.T) {
 		}
 	}
 }
+

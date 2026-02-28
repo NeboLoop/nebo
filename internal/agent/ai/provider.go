@@ -204,6 +204,35 @@ func IsRoleOrderingError(err error) bool {
 	return false
 }
 
+// IsTransientError checks if an error is a transient network/stream issue that
+// should be retried automatically (e.g., HTTP/2 stream cancellation, connection reset).
+func IsTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	keywords := []string{
+		"stream error",            // HTTP/2 stream errors (CANCEL, INTERNAL_ERROR, etc.)
+		"CANCEL",                  // HTTP/2 CANCEL specifically
+		"connection reset",        // TCP reset
+		"connection refused",      // Server not accepting connections
+		"actively refused",        // Windows-specific: connectex refused
+		"broken pipe",             // Write to closed connection
+		"EOF",                     // Unexpected disconnect
+		"TLS handshake",           // TLS negotiation failure
+		"context deadline exceeded", // Timeout (not user-initiated cancel)
+		"dial tcp",                // TCP dial failures (DNS, routing, etc.)
+		"no such host",            // DNS resolution failure
+		"i/o timeout",             // Network timeout
+	}
+	for _, kw := range keywords {
+		if containsIgnoreCase(msg, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 // containsContextError checks if error message indicates context overflow
 func containsContextError(msg string) bool {
 	keywords := []string{"context", "token", "length", "exceeded", "too long"}

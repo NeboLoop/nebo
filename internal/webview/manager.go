@@ -3,8 +3,11 @@ package webview
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+var windowCounter atomic.Int64
 
 // WindowHandle is the interface that a native webview window must satisfy.
 // In desktop mode, Wails WebviewWindow implements this. In headless mode, nil.
@@ -36,6 +39,7 @@ type Window struct {
 	Title       string
 	URL         string
 	Owner       string // Session key that created this window (for cleanup)
+	seq         int64
 	CreatedAt   time.Time
 	Handle      WindowHandle
 	Fingerprint *Fingerprint
@@ -106,7 +110,7 @@ func (m *Manager) CreateWindow(url, title, owner string) (*Window, error) {
 		return nil, fmt.Errorf("native browser requires desktop mode (not available in headless)")
 	}
 
-	id := fmt.Sprintf("win-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("win-%d-%d", time.Now().UnixNano(), windowCounter.Add(1))
 
 	if title == "" {
 		title = "Nebo Browser"
@@ -134,6 +138,7 @@ func (m *Manager) CreateWindow(url, title, owner string) (*Window, error) {
 		Title:       title,
 		URL:         url,
 		Owner:       owner,
+		seq:         windowCounter.Load(),
 		CreatedAt:   time.Now(),
 		Handle:      handle,
 		Fingerprint: fp,
@@ -161,7 +166,7 @@ func (m *Manager) GetWindow(id string) (*Window, error) {
 		// Return most recent window
 		var latest *Window
 		for _, w := range m.windows {
-			if latest == nil || w.CreatedAt.After(latest.CreatedAt) {
+			if latest == nil || w.seq > latest.seq {
 				latest = w
 			}
 		}
@@ -256,3 +261,6 @@ func (m *Manager) WindowCount() int {
 	defer m.mu.RUnlock()
 	return len(m.windows)
 }
+
+
+

@@ -124,6 +124,42 @@ Get-Process | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object {
 	return &ToolResult{Content: fmt.Sprintf("Found %d windows:\n\n%s", count, sb.String())}, nil
 }
 
+// findProcessPS returns a PowerShell snippet that finds a process by:
+// 1. Exact process name match (e.g., "msedge")
+// 2. Partial process name match (e.g., "edge" matches "msedge")
+// 3. Window title match (e.g., "Microsoft Edge" matches title containing it)
+// 4. FileDescription match (e.g., "Microsoft Edge" matches msedge.exe's description)
+// The title parameter, if provided, further filters by window title.
+func findProcessPS(app, title string) string {
+	escapedApp := strings.ReplaceAll(app, "'", "''")
+	titleFilter := ""
+	if title != "" {
+		escapedTitle := strings.ReplaceAll(title, "'", "''")
+		titleFilter = fmt.Sprintf(` | Where-Object { $_.MainWindowTitle -like '*%s*' }`, escapedTitle)
+	}
+
+	return fmt.Sprintf(`
+$allProcs = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 }
+# Try exact process name first
+$proc = $allProcs | Where-Object { $_.ProcessName -eq '%s' }%s | Select-Object -First 1
+if (-not $proc) {
+    # Try partial process name match (case-insensitive)
+    $proc = $allProcs | Where-Object { $_.ProcessName -like '*%s*' }%s | Select-Object -First 1
+}
+if (-not $proc) {
+    # Try matching window title
+    $proc = $allProcs | Where-Object { $_.MainWindowTitle -like '*%s*' }%s | Select-Object -First 1
+}
+if (-not $proc) {
+    # Try matching FileDescription from the executable's version info
+    # This handles human-readable names like "Microsoft Edge" -> msedge.exe
+    $proc = $allProcs | Where-Object {
+        try { $_.MainModule.FileVersionInfo.FileDescription -like '*%s*' } catch { $false }
+    }%s | Select-Object -First 1
+}
+`, escapedApp, titleFilter, escapedApp, titleFilter, escapedApp, titleFilter, escapedApp, titleFilter)
+}
+
 func (t *WindowTool) focusWindow(ctx context.Context, app, title string) (*ToolResult, error) {
 	if app == "" {
 		return &ToolResult{Content: "App name is required", IsError: true}, nil
@@ -140,7 +176,7 @@ public class WinAPI {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 "@
-$proc = Get-Process -Name '%s' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+%s
 if ($proc) {
     [WinAPI]::ShowWindow($proc.MainWindowHandle, 9)
     [WinAPI]::SetForegroundWindow($proc.MainWindowHandle)
@@ -148,7 +184,7 @@ if ($proc) {
 } else {
     "not found"
 }
-`, app)
+`, findProcessPS(app, title))
 
 	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
@@ -174,14 +210,14 @@ public class WinAPI {
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 }
 "@
-$proc = Get-Process -Name '%s' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+%s
 if ($proc) {
     [WinAPI]::SetWindowPos($proc.MainWindowHandle, [IntPtr]::Zero, %d, %d, 0, 0, 0x0001)
     "moved"
 } else {
     "not found"
 }
-`, app, x, y)
+`, findProcessPS(app, ""), x, y)
 
 	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
@@ -210,7 +246,7 @@ public class WinAPI {
     public struct RECT { public int Left, Top, Right, Bottom; }
 }
 "@
-$proc = Get-Process -Name '%s' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+%s
 if ($proc) {
     $rect = New-Object WinAPI+RECT
     [WinAPI]::GetWindowRect($proc.MainWindowHandle, [ref]$rect) | Out-Null
@@ -219,7 +255,7 @@ if ($proc) {
 } else {
     "not found"
 }
-`, app, width, height)
+`, findProcessPS(app, ""), width, height)
 
 	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
@@ -242,14 +278,14 @@ public class WinAPI {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 "@
-$proc = Get-Process -Name '%s' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+%s
 if ($proc) {
     [WinAPI]::ShowWindow($proc.MainWindowHandle, 6)
     "minimized"
 } else {
     "not found"
 }
-`, app)
+`, findProcessPS(app, ""))
 
 	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
@@ -272,14 +308,14 @@ public class WinAPI {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 "@
-$proc = Get-Process -Name '%s' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+%s
 if ($proc) {
     [WinAPI]::ShowWindow($proc.MainWindowHandle, 3)
     "maximized"
 } else {
     "not found"
 }
-`, app)
+`, findProcessPS(app, ""))
 
 	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {
@@ -294,14 +330,14 @@ func (t *WindowTool) closeWindow(ctx context.Context, app string) (*ToolResult, 
 	}
 
 	script := fmt.Sprintf(`
-$proc = Get-Process -Name '%s' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+%s
 if ($proc) {
     $proc.CloseMainWindow()
     "closed"
 } else {
     "not found"
 }
-`, app)
+`, findProcessPS(app, ""))
 
 	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil || strings.TrimSpace(string(out)) == "not found" {

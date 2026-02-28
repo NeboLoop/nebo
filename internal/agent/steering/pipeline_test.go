@@ -214,15 +214,15 @@ func TestChannelAdapter_WebSkipped(t *testing.T) {
 	}
 }
 
-func TestChannelAdapter_TelegramFires(t *testing.T) {
+func TestChannelAdapter_DMFires(t *testing.T) {
 	g := &channelAdapter{}
-	ctx := &Context{Channel: "telegram"}
+	ctx := &Context{Channel: "dm"}
 	msgs := g.Generate(ctx)
 	if len(msgs) == 0 {
-		t.Fatal("should fire for telegram")
+		t.Fatal("should fire for dm channel")
 	}
-	if !strings.Contains(msgs[0].Content, "Telegram") {
-		t.Error("should contain Telegram-specific content")
+	if !strings.Contains(msgs[0].Content, "DM") {
+		t.Error("should contain DM-specific content")
 	}
 }
 

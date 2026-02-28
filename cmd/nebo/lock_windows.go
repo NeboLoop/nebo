@@ -5,25 +5,49 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
 
-// acquireLock creates a lock file to ensure only one nebo instance runs
+// acquireLock creates a lock file to ensure only one nebo instance runs.
+// If the lock is held by a dead process, it removes the stale lock and retries.
 func acquireLock(dataDir string) (*os.File, error) {
 	lockPath := dataDir + "/nebo.lock"
 
-	// Try to create/open the lock file
+	file, err := tryLock(lockPath)
+	if err == nil {
+		return file, nil
+	}
+
+	// Lock failed — check if the holder is still alive
+	pid := readLockPID(lockPath)
+	if pid > 0 && !isProcessAlive(pid) {
+		fmt.Printf("Removing stale lock from dead process (PID %d)\n", pid)
+		os.Remove(lockPath)
+		// Brief pause to let the OS fully release the file handle
+		time.Sleep(100 * time.Millisecond)
+		return tryLock(lockPath)
+	}
+
+	if pid > 0 {
+		return nil, fmt.Errorf("cannot acquire lock (held by PID %d)", pid)
+	}
+	return nil, fmt.Errorf("cannot acquire lock")
+}
+
+// tryLock attempts to open and exclusively lock the lock file.
+func tryLock(lockPath string) (*os.File, error) {
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("cannot open lock file: %w", err)
 	}
 
-	// Try to get exclusive lock using Windows LockFileEx
 	handle := windows.Handle(file.Fd())
 	overlapped := &windows.Overlapped{}
 
-	// LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY
 	err = windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, overlapped)
 	if err != nil {
 		file.Close()
@@ -37,6 +61,36 @@ func acquireLock(dataDir string) (*os.File, error) {
 	file.Sync()
 
 	return file, nil
+}
+
+// readLockPID reads the PID from an existing lock file.
+func readLockPID(lockPath string) int {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+// isProcessAlive checks whether a process with the given PID is still running.
+func isProcessAlive(pid int) bool {
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(handle)
+
+	var exitCode uint32
+	err = windows.GetExitCodeProcess(handle, &exitCode)
+	if err != nil {
+		return false
+	}
+	// STILL_ACTIVE (259) means the process is still running
+	return exitCode == 259
 }
 
 // releaseLock releases the lock file

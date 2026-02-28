@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/neboloop/nebo/internal/agent/session"
@@ -129,10 +128,10 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 			args = append(args, "--model", req.Model)
 		}
 
-		// Pass system prompt if provided (claude CLI supports --system-prompt)
-		if req.System != "" && p.command == "claude" {
-			args = append(args, "--system-prompt", req.System)
-		}
+		// System prompt is prepended to the stdin content (below) instead of
+		// passed as --system-prompt flag to avoid Windows command-line length
+		// limits (8191 chars). The prompt built from messages already uses
+		// [System]/[User]/[Assistant] sections so this integrates naturally.
 
 		// Control thinking effort: low for casual chat, high for reasoning tasks.
 		// Low effort tells Claude CLI to minimize thinking tokens (saves cost).
@@ -148,16 +147,19 @@ func (p *CLIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan Stre
 		fmt.Printf("[CLIProvider] Running: %s (prompt_len=%d, system_len=%d, thinking=%v)\n",
 			p.command, len(prompt), len(req.System), req.EnableThinking)
 
-		// Create command. SysProcAttr.Setpgid forces Go to use fork+exec instead
-		// of posix_spawn on macOS, which avoids EINVAL errors that occur when
-		// Nebo's process state (open FDs, threads) triggers a posix_spawn edge case.
 		cmd := exec.CommandContext(ctx, p.command, args...)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.SysProcAttr = cliSysProcAttr()
 
 		// Pass the prompt via stdin instead of as a positional argument.
 		// This avoids EINVAL from fork/exec when conversation history
 		// produces a prompt too large or with content unsuitable for argv.
-		cmd.Stdin = strings.NewReader(prompt)
+		// System prompt is also included via stdin to avoid Windows 8191-char
+		// command-line limit that --system-prompt flag would hit.
+		stdinContent := prompt
+		if req.System != "" && p.command == "claude" {
+			stdinContent = "[System]\n" + req.System + "\n\n" + prompt
+		}
+		cmd.Stdin = strings.NewReader(stdinContent)
 
 		// Get stdout pipe for streaming
 		stdout, err := cmd.StdoutPipe()
@@ -676,7 +678,7 @@ func CheckCLIStatus(command string) CLIStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, command, "--version")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = cliSysProcAttr()
 	output, err := cmd.Output()
 	if err == nil {
 		status.Authenticated = true
