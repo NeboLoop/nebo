@@ -4,11 +4,13 @@ package neboloop
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,6 +101,14 @@ type AccountEvent struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+// VoiceMessage represents an inbound voice stream message relayed from the phone.
+// NeboLoop routes ephemeral voice frames between the phone and Nebo desktop.
+type VoiceMessage struct {
+	ConversationID string          `json:"conversation_id"`
+	SenderID       string          `json:"sender_id"`
+	Content        json.RawMessage `json:"content"` // raw JSON: {type, data, sample_rate, ...}
+}
+
 // Plugin implements comm.CommPlugin for NeboLoop comms SDK transport.
 type Plugin struct {
 	client  *neboloopsdk.Client
@@ -113,10 +123,12 @@ type Plugin struct {
 
 	card *comm.AgentCard // Stored for re-publish on reconnect
 
-	connected bool
-	authDead  bool // credentials rejected, stop reconnecting
-	done      chan struct{}
-	mu        sync.RWMutex
+	connected    bool
+	authDead     bool // credentials rejected, stop reconnecting
+	reconnecting bool // prevents concurrent reconnect attempts
+	done         chan struct{}
+	healthDone   chan struct{} // closed to stop current connection's goroutines
+	mu           sync.RWMutex
 
 	// Handlers for install events and channel messages (set by agent.go)
 	onInstall            func(neboloopsdk.InstallEvent)
@@ -134,6 +146,9 @@ type Plugin struct {
 
 	// onAccountEvent is called when an account-level event arrives (stream=account).
 	onAccountEvent func(AccountEvent)
+
+	// onVoiceMessage is called when a voice stream frame arrives from the phone.
+	onVoiceMessage func(VoiceMessage)
 
 	// onConnected is fired after a successful connect or reconnect.
 	onConnected func()
@@ -213,6 +228,14 @@ func (p *Plugin) OnConnected(fn func()) {
 	p.onConnected = fn
 }
 
+// OnVoiceMessage registers a handler for inbound voice stream frames (stream=voice).
+// Voice frames are ephemeral — NeboLoop relays them without DB persistence.
+func (p *Plugin) OnVoiceMessage(fn func(VoiceMessage)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.onVoiceMessage = fn
+}
+
 // OwnerID returns the owner's user ID extracted from the JWT sub claim.
 func (p *Plugin) OwnerID() string {
 	p.mu.RLock()
@@ -251,6 +274,25 @@ func (p *Plugin) SendDM(ctx context.Context, conversationID, text string) error 
 	}
 	commLog.Debug("[Comm:neboloop] SendDM ok", "conv_id", conversationID)
 	return nil
+}
+
+// SendVoice sends a voice stream message back to the phone via NeboLoop comms.
+// The content is sent as-is on the "voice" stream with ephemeral routing.
+func (p *Plugin) SendVoice(ctx context.Context, conversationID string, content []byte) error {
+	p.mu.RLock()
+	client := p.client
+	p.mu.RUnlock()
+
+	if client == nil {
+		return fmt.Errorf("neboloop: not connected")
+	}
+
+	convID, err := uuid.Parse(conversationID)
+	if err != nil {
+		return fmt.Errorf("neboloop: invalid conversation ID %q: %w", conversationID, err)
+	}
+
+	return client.Send(ctx, convID, "voice", content)
 }
 
 // SendTyping sends a typing indicator on a DM conversation.
@@ -331,6 +373,12 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 		p.done = make(chan struct{})
 	default:
 	}
+
+	// Create per-connection signal so goroutines exit on reconnect (not just shutdown)
+	p.healthDone = make(chan struct{})
+
+	// Enable TCP keepalive to prevent load balancers from killing idle connections
+	enableTCPKeepAlive(client.Conn())
 
 	// Start watchdog to detect SDK disconnects and trigger reconnect.
 	// The SDK closes its internal done channel on read errors (EOF, etc.)
@@ -560,6 +608,22 @@ func (p *Plugin) handleMessage(msg neboloopsdk.Message) {
 		return
 	}
 
+	// Voice stream — ephemeral audio/control frames relayed from the phone
+	if msg.Stream == "voice" {
+		p.mu.RLock()
+		fn := p.onVoiceMessage
+		p.mu.RUnlock()
+		if fn == nil {
+			return
+		}
+		fn(VoiceMessage{
+			ConversationID: msg.ConversationID,
+			SenderID:       msg.SenderID,
+			Content:        msg.Content,
+		})
+		return
+	}
+
 	// A2A streams
 	if msg.Stream == "a2a" || strings.HasPrefix(msg.Stream, "a2a/") {
 		p.handleA2AMessage(msg)
@@ -701,6 +765,12 @@ func (p *Plugin) Disconnect(_ context.Context) error {
 
 	if !p.connected || p.client == nil {
 		return nil
+	}
+
+	// Stop current connection's watchdog + health checker goroutines
+	if p.healthDone != nil {
+		close(p.healthDone)
+		p.healthDone = nil
 	}
 
 	// Signal reconnect goroutine to stop
@@ -888,6 +958,11 @@ func (p *Plugin) OnSettingsChanged(newSettings map[string]string) error {
 // The SDK closes its internal done channel on read errors, causing Send()
 // to return "client closed". When detected, marks disconnected and reconnects.
 func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
+	// Capture per-connection signal under lock so we exit if this connection is replaced.
+	p.mu.RLock()
+	healthDone := p.healthDone
+	p.mu.RUnlock()
+
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
@@ -895,6 +970,8 @@ func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 		select {
 		case <-p.done:
 			return
+		case <-healthDone:
+			return // this connection was replaced by reconnect
 		case <-ticker.C:
 			// Probe liveness: Send to nil UUID with "ping" stream.
 			// If the SDK's done channel is closed, this returns immediately.
@@ -929,6 +1006,11 @@ func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 // the watchdog and catches silent disconnects that happen between pings.
 // Only uses ping timeout — absence of inbound messages is normal for idle bots.
 func (p *Plugin) startHealthChecker() {
+	// Capture per-connection signal under lock so we exit if this connection is replaced.
+	p.mu.RLock()
+	healthDone := p.healthDone
+	p.mu.RUnlock()
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -938,6 +1020,8 @@ func (p *Plugin) startHealthChecker() {
 		select {
 		case <-p.done:
 			return
+		case <-healthDone:
+			return // this connection was replaced by reconnect
 		case <-ticker.C:
 			p.mu.RLock()
 			connected := p.connected
@@ -967,13 +1051,30 @@ func (p *Plugin) startHealthChecker() {
 // Called when the watchdog detects a disconnect.
 // Never stops retrying unless credentials are permanently rejected or p.done closes.
 func (p *Plugin) reconnect() {
-	p.mu.RLock()
+	p.mu.Lock()
+	if p.reconnecting {
+		p.mu.Unlock()
+		return // another goroutine is already reconnecting
+	}
+	p.reconnecting = true
 	dead := p.authDead
 	gateway := p.gateway
 	apiServer := p.apiServer
 	botID := p.botID
 	token := p.token
-	p.mu.RUnlock()
+
+	// Stop the old connection's watchdog + health checker goroutines
+	if p.healthDone != nil {
+		close(p.healthDone)
+		p.healthDone = nil
+	}
+	p.mu.Unlock()
+
+	defer func() {
+		p.mu.Lock()
+		p.reconnecting = false
+		p.mu.Unlock()
+	}()
 
 	if dead {
 		commLog.Error("[Comm:neboloop] credentials rejected, not reconnecting")
@@ -1053,7 +1154,11 @@ func (p *Plugin) reconnect() {
 		p.connected = true
 		p.lastMessageTime = time.Now()
 		p.lastPingSuccess = time.Now()
+		p.healthDone = make(chan struct{}) // new signal for new connection's goroutines
 		p.mu.Unlock()
+
+		// Enable TCP keepalive on the fresh connection
+		enableTCPKeepAlive(client.Conn())
 
 		fmt.Printf("[Comm:neboloop] Reconnected to %s\n", gateway)
 
@@ -1321,6 +1426,27 @@ func (p *Plugin) restClient() (*neboloopapi.Client, error) {
 		"bot_id":     botID,
 		"token":      token,
 	})
+}
+
+// enableTCPKeepAlive enables TCP-level keepalive on the connection to prevent
+// load balancers (ALB, CloudFlare) from killing idle TCP connections.
+// Handles both plain TCP and TLS-wrapped connections.
+func enableTCPKeepAlive(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(30 * time.Second)
+		return
+	}
+	// wss:// connections wrap TCP in TLS — unwrap to reach the TCPConn
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		if tc, ok := tlsConn.NetConn().(*net.TCPConn); ok {
+			tc.SetKeepAlive(true)
+			tc.SetKeepAlivePeriod(30 * time.Second)
+		}
+	}
 }
 
 // Compile-time interface checks

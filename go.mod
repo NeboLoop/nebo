@@ -3,7 +3,7 @@ module github.com/neboloop/nebo
 go 1.25.6
 
 require (
-	github.com/NeboLoop/neboloop-go-sdk v0.1.0
+	github.com/NeboLoop/neboloop-go-sdk v0.1.1
 	github.com/anthropics/anthropic-sdk-go v1.20.0
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
 	github.com/chromedp/chromedp v0.14.2
@@ -38,6 +38,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.44.3
 )
+
+require github.com/yalue/onnxruntime_go v1.26.0
 
 require (
 	al.essio.dev/pkg/shellescape v1.6.0 // indirect
