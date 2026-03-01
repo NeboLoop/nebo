@@ -323,7 +323,7 @@ func TestMemoryNudge_RecentMemoryStore(t *testing.T) {
 	// Add a memory store call 3 turns ago
 	msgs = append(msgs,
 		session.Message{Role: "user", Content: "I am a lawyer"},
-		makeAssistantWithToolCall("agent"),
+		makeAssistantWithToolCall("bot"),
 		session.Message{Role: "user", Content: "more chat"},
 		session.Message{Role: "assistant", Content: "ok"},
 	)

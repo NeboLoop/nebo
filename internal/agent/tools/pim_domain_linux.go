@@ -4,12 +4,11 @@ package tools
 
 func init() {
 	RegisterCapability(&Capability{
-		Tool: NewPIMDomainTool(
+		Tool: NewOrganizerDomainTool(
 			NewMailTool(),
 			NewContactsTool(),
 			NewCalendarTool(),
 			NewRemindersTool(),
-			nil,
 		),
 		Platforms: []string{PlatformLinux},
 		Category:  "productivity",

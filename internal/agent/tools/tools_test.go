@@ -552,22 +552,34 @@ func TestIsDeniedForOrigin(t *testing.T) {
 		name     string
 		origin   Origin
 		toolName string
+		input    json.RawMessage // optional: resource-level check
 		denied   bool
 	}{
-		{"user can use shell", OriginUser, "shell", false},
-		{"user can use file", OriginUser, "file", false},
-		{"system can use shell", OriginSystem, "shell", false},
-		{"comm denied shell", OriginComm, "shell", true},
-		{"comm can use file", OriginComm, "file", false},
-		{"app denied shell", OriginApp, "shell", true},
-		{"app can use file", OriginApp, "file", false},
-		{"skill denied shell", OriginSkill, "shell", true},
-		{"skill can use file", OriginSkill, "file", false},
+		{"user can use shell", OriginUser, "shell", nil, false},
+		{"user can use file", OriginUser, "file", nil, false},
+		{"system can use shell", OriginSystem, "shell", nil, false},
+		{"comm denied shell", OriginComm, "shell", nil, true},
+		{"comm can use file", OriginComm, "file", nil, false},
+		{"app denied shell", OriginApp, "shell", nil, true},
+		{"app can use file", OriginApp, "file", nil, false},
+		{"skill denied shell", OriginSkill, "shell", nil, true},
+		{"skill can use file", OriginSkill, "file", nil, false},
+		// Compound key: system:shell
+		{"comm denied system:shell", OriginComm, "system", json.RawMessage(`{"resource":"shell"}`), true},
+		{"comm allows system:file", OriginComm, "system", json.RawMessage(`{"resource":"file"}`), false},
+		{"app denied system:shell", OriginApp, "system", json.RawMessage(`{"resource":"shell"}`), true},
+		{"user allows system:shell", OriginUser, "system", json.RawMessage(`{"resource":"shell"}`), false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := policy.IsDeniedForOrigin(tt.origin, tt.toolName); got != tt.denied {
+			var got bool
+			if tt.input != nil {
+				got = policy.IsDeniedForOrigin(tt.origin, tt.toolName, tt.input)
+			} else {
+				got = policy.IsDeniedForOrigin(tt.origin, tt.toolName)
+			}
+			if got != tt.denied {
 				t.Errorf("IsDeniedForOrigin(%q, %q) = %v, want %v", tt.origin, tt.toolName, got, tt.denied)
 			}
 		})
@@ -591,24 +603,24 @@ func TestRegistryBlocksToolForOrigin(t *testing.T) {
 	registry := NewRegistry(policy)
 	registry.RegisterDefaults()
 
-	// Comm-origin context should be denied shell access
+	// Comm-origin context should be denied shell access via system tool
 	ctx := WithOrigin(context.Background(), OriginComm)
 	result := registry.Execute(ctx, &ai.ToolCall{
-		Name:  "shell",
-		Input: json.RawMessage(`{"resource":"bash","action":"exec","command":"echo hi"}`),
+		Name:  "system",
+		Input: json.RawMessage(`{"resource":"shell","action":"exec","command":"echo hi"}`),
 	})
 	if !result.IsError || !strings.Contains(result.Content, "not permitted") {
-		t.Error("expected shell to be denied for comm origin")
+		t.Errorf("expected system:shell to be denied for comm origin, got: %s", result.Content)
 	}
 
 	// User-origin context should succeed
 	ctx = WithOrigin(context.Background(), OriginUser)
 	result = registry.Execute(ctx, &ai.ToolCall{
-		Name:  "shell",
-		Input: json.RawMessage(`{"resource":"bash","action":"exec","command":"echo hi"}`),
+		Name:  "system",
+		Input: json.RawMessage(`{"resource":"shell","action":"exec","command":"echo hi"}`),
 	})
 	if result.IsError {
-		t.Errorf("expected shell to succeed for user origin, got error: %s", result.Content)
+		t.Errorf("expected system:shell to succeed for user origin, got error: %s", result.Content)
 	}
 }
 
@@ -620,25 +632,25 @@ func TestRegistryBlocksShellForAppOrigin(t *testing.T) {
 
 	ctx := WithOrigin(context.Background(), OriginApp)
 	result := registry.Execute(ctx, &ai.ToolCall{
-		Name:  "shell",
-		Input: json.RawMessage(`{"resource":"bash","action":"exec","command":"whoami"}`),
+		Name:  "system",
+		Input: json.RawMessage(`{"resource":"shell","action":"exec","command":"whoami"}`),
 	})
 	if !result.IsError {
-		t.Error("expected shell to be denied for app origin")
+		t.Error("expected system:shell to be denied for app origin")
 	}
 	if !strings.Contains(result.Content, "not permitted") {
 		t.Errorf("expected 'not permitted' in error, got: %s", result.Content)
 	}
 
-	// App should still be able to use file tool
+	// App should still be able to use system:file
 	tmpFile := filepath.Join(t.TempDir(), "test.txt")
 	os.WriteFile(tmpFile, []byte("hello"), 0644)
 	result = registry.Execute(ctx, &ai.ToolCall{
-		Name:  "file",
-		Input: json.RawMessage(fmt.Sprintf(`{"action":"read","path":"%s"}`, strings.ReplaceAll(tmpFile, `\`, `\\`))),
+		Name:  "system",
+		Input: json.RawMessage(fmt.Sprintf(`{"resource":"file","action":"read","path":"%s"}`, strings.ReplaceAll(tmpFile, `\`, `\\`))),
 	})
 	if result.IsError && strings.Contains(result.Content, "not permitted") {
-		t.Error("expected file tool to be allowed for app origin")
+		t.Error("expected system:file to be allowed for app origin")
 	}
 }
 
@@ -650,25 +662,25 @@ func TestRegistryBlocksShellForSkillOrigin(t *testing.T) {
 
 	ctx := WithOrigin(context.Background(), OriginSkill)
 	result := registry.Execute(ctx, &ai.ToolCall{
-		Name:  "shell",
-		Input: json.RawMessage(`{"resource":"bash","action":"exec","command":"id"}`),
+		Name:  "system",
+		Input: json.RawMessage(`{"resource":"shell","action":"exec","command":"id"}`),
 	})
 	if !result.IsError {
-		t.Error("expected shell to be denied for skill origin")
+		t.Error("expected system:shell to be denied for skill origin")
 	}
 	if !strings.Contains(result.Content, "not permitted") {
 		t.Errorf("expected 'not permitted' in error, got: %s", result.Content)
 	}
 
-	// Skill should still be able to use file tool
+	// Skill should still be able to use system:file
 	tmpFile := filepath.Join(t.TempDir(), "test.txt")
 	os.WriteFile(tmpFile, []byte("hello"), 0644)
 	result = registry.Execute(ctx, &ai.ToolCall{
-		Name:  "file",
-		Input: json.RawMessage(fmt.Sprintf(`{"action":"read","path":"%s"}`, strings.ReplaceAll(tmpFile, `\`, `\\`))),
+		Name:  "system",
+		Input: json.RawMessage(fmt.Sprintf(`{"resource":"file","action":"read","path":"%s"}`, strings.ReplaceAll(tmpFile, `\`, `\\`))),
 	})
 	if result.IsError && strings.Contains(result.Content, "not permitted") {
-		t.Error("expected file tool to be allowed for skill origin")
+		t.Error("expected system:file to be allowed for skill origin")
 	}
 }
 
@@ -829,17 +841,17 @@ func TestRegistryAllowsFileForAllOrigins(t *testing.T) {
 	testFile := filepath.Join(tmpDir, "test.txt")
 	os.WriteFile(testFile, []byte("hello"), 0644)
 
-	// All origins should be able to use file(action: read)
+	// All origins should be able to use system(resource: file, action: read)
 	pathJSON, _ := json.Marshal(testFile)
 	origins := []Origin{OriginUser, OriginComm, OriginApp, OriginSkill, OriginSystem}
 	for _, origin := range origins {
 		ctx := WithOrigin(context.Background(), origin)
 		result := registry.Execute(ctx, &ai.ToolCall{
-			Name:  "file",
-			Input: json.RawMessage(fmt.Sprintf(`{"action":"read","path":%s}`, pathJSON)),
+			Name:  "system",
+			Input: json.RawMessage(fmt.Sprintf(`{"resource":"file","action":"read","path":%s}`, pathJSON)),
 		})
 		if result.IsError {
-			t.Errorf("file read denied for origin=%s: %s", origin, result.Content)
+			t.Errorf("system:file read denied for origin=%s: %s", origin, result.Content)
 		}
 	}
 }

@@ -347,29 +347,14 @@ func TestMediaTypeFromExt(t *testing.T) {
 }
 
 // =============================================================================
-// Registry GetVisionTool tests
+// Vision tool is now a resource of BotTool (bot.vision)
 // =============================================================================
 
-func TestRegistryGetVisionTool(t *testing.T) {
-	registry := NewRegistry(nil)
-	registry.RegisterDefaults()
-
-	vt := registry.GetVisionTool()
-	if vt == nil {
-		t.Fatal("expected vision tool to be registered by default")
-	}
+func TestBotToolVisionResource(t *testing.T) {
+	// Vision is now accessed via BotTool, not standalone registration
+	vt := NewVisionTool(VisionConfig{})
 	if vt.Name() != "vision" {
 		t.Errorf("got name=%q, want 'vision'", vt.Name())
-	}
-}
-
-func TestRegistryGetVisionTool_Empty(t *testing.T) {
-	registry := NewRegistry(nil)
-	// Don't register defaults
-
-	vt := registry.GetVisionTool()
-	if vt != nil {
-		t.Error("expected nil when vision tool not registered")
 	}
 }
 

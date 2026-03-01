@@ -10,8 +10,8 @@ triggers:
   - skill for
   - new skill
 tools:
-  - file
-  - memory
+  - system
+  - bot
 tags:
   - skill-development
   - meta
@@ -108,7 +108,7 @@ Walk through the steps the agent should take. Be specific about tools:
 1. **Understand the scope** — Ask clarifying questions if the request is ambiguous.
 2. **Analyze systematically** — Use `web(action: search, ...)` for research, `file(action: read, ...)` for code.
 3. **Provide concrete feedback** — Don't list pros/cons without a recommendation.
-4. **Store insights** — Use `agent(resource: memory, action: store, ...)` for patterns worth remembering.
+4. **Store insights** — Use `bot(resource: memory, action: store, ...)` for patterns worth remembering.
 ```
 
 ## Effective Examples

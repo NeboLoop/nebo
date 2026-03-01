@@ -40,18 +40,26 @@ func NewDesktopDomainTool(opts DesktopDomainOpts) *DesktopDomainTool {
 	if opts.Shortcut != nil {
 		t.subTools["shortcut"] = opts.Shortcut
 	}
+	if opts.Screenshot != nil {
+		t.subTools["screenshot"] = opts.Screenshot
+	}
+	if opts.TTS != nil {
+		t.subTools["tts"] = opts.TTS
+	}
 	return t
 }
 
 // DesktopDomainOpts configures which sub-tools are available for the desktop domain.
 type DesktopDomainOpts struct {
-	Input    Tool // mouse, keyboard, scroll (was: desktop)
-	UI       Tool // accessibility tree inspection (was: accessibility)
-	Window   Tool // window management (was: window)
-	Menu     Tool // menu bar interaction (was: menubar) — darwin + windows
-	Dialog   Tool // system dialog handling (was: dialog) — darwin + windows
-	Space    Tool // virtual desktop/spaces (was: spaces) — darwin + windows
-	Shortcut Tool // OS shortcuts/automations (was: shortcuts)
+	Input      Tool // mouse, keyboard, scroll (was: desktop)
+	UI         Tool // accessibility tree inspection (was: accessibility)
+	Window     Tool // window management (was: window)
+	Menu       Tool // menu bar interaction (was: menubar) — darwin + windows
+	Dialog     Tool // system dialog handling (was: dialog) — darwin + windows
+	Space      Tool // virtual desktop/spaces (was: spaces) — darwin + windows
+	Shortcut   Tool // OS shortcuts/automations (was: shortcuts)
+	Screenshot Tool // screen capture + annotated element overlay
+	TTS        Tool // text-to-speech using system voice
 }
 
 func (t *DesktopDomainTool) Name() string          { return "desktop" }
@@ -82,6 +90,10 @@ func (t *DesktopDomainTool) ActionsFor(resource string) []string {
 		return []string{"list", "switch", "move_window"}
 	case "shortcut":
 		return []string{"list", "run"}
+	case "screenshot":
+		return []string{"capture", "see"}
+	case "tts":
+		return []string{"speak"}
 	default:
 		return nil
 	}
@@ -106,7 +118,7 @@ func (t *DesktopDomainTool) schemaConfig() DomainSchemaConfig {
 
 	return DomainSchemaConfig{
 		Domain:      "desktop",
-		Description: "Desktop automation: mouse/keyboard input, UI inspection, window management, menus, dialogs, spaces, shortcuts.",
+		Description: "Desktop automation: mouse/keyboard input, UI inspection, window management, menus, dialogs, spaces, shortcuts, screenshots, text-to-speech.",
 		Resources:   resources,
 		Fields: []FieldConfig{
 			{Name: "x", Type: "integer", Description: "X coordinate"},
@@ -141,6 +153,9 @@ func (t *DesktopDomainTool) schemaConfig() DomainSchemaConfig {
 			`desktop(resource: "window", action: "list")`,
 			`desktop(resource: "menu", action: "click", app: "Safari", menu_path: "File > New Window")`,
 			`desktop(resource: "shortcut", action: "run", name: "My Shortcut")`,
+			`desktop(resource: "screenshot", action: "capture")`,
+			`desktop(resource: "screenshot", action: "see", app: "Safari")`,
+			`desktop(resource: "tts", action: "speak", text: "Hello world")`,
 		},
 	}
 }
@@ -162,6 +177,10 @@ func (t *DesktopDomainTool) inferResource(action string) string {
 		return "space"
 	case "run":
 		return "shortcut"
+	case "capture", "see":
+		return "screenshot"
+	case "speak":
+		return "tts"
 	default:
 		return "" // ambiguous — require explicit resource
 	}

@@ -15,7 +15,7 @@ triggers:
   - can't respond
   - something went wrong
 tools:
-  - agent
+  - bot
 metadata:
   nebo:
     emoji: "⚡"

@@ -531,91 +531,14 @@ func TestIsFDAError(t *testing.T) {
 // PIM domain integration tests
 // =============================================================================
 
-func TestPIMDomainIncludesMessages(t *testing.T) {
-	tool := NewPIMDomainTool(nil, nil, nil, nil, NewMessagesTool())
-
-	resources := tool.Resources()
-	found := false
-	for _, r := range resources {
-		if r == "messages" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected 'messages' in resources, got: %v", resources)
-	}
-}
-
-func TestPIMDomainMessagesActions(t *testing.T) {
-	tool := NewPIMDomainTool(nil, nil, nil, nil, NewMessagesTool())
-
-	actions := tool.ActionsFor("messages")
-	expected := []string{"send", "conversations", "read", "search"}
-	if len(actions) != len(expected) {
-		t.Fatalf("expected %d actions, got %d: %v", len(expected), len(actions), actions)
-	}
-	for i, a := range expected {
-		if actions[i] != a {
-			t.Errorf("action[%d] = %q, want %q", i, actions[i], a)
-		}
-	}
-}
-
-func TestPIMDomainInferResourceConversations(t *testing.T) {
-	tool := NewPIMDomainTool(nil, nil, nil, nil, NewMessagesTool())
-	if got := tool.inferResource("conversations"); got != "messages" {
-		t.Errorf("inferResource(conversations) = %q, want 'messages'", got)
-	}
-}
-
-func TestPIMDomainNilMessages(t *testing.T) {
-	tool := NewPIMDomainTool(nil, nil, nil, nil, nil)
+func TestOrganizerDomainNoMessages(t *testing.T) {
+	tool := NewOrganizerDomainTool(nil, nil, nil, nil)
 
 	resources := tool.Resources()
 	for _, r := range resources {
 		if r == "messages" {
-			t.Error("messages should not be in resources when nil")
+			t.Error("messages should not be in organizer resources (moved to message tool)")
 		}
-	}
-}
-
-func TestPIMDomainMessagesRouting(t *testing.T) {
-	tool := NewPIMDomainTool(nil, nil, nil, nil, NewMessagesTool())
-
-	// Should route to messages and return validation error (missing chat_id)
-	input, _ := json.Marshal(map[string]string{
-		"resource": "messages",
-		"action":   "read",
-	})
-	result, err := tool.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.IsError {
-		t.Error("expected error for missing chat_id")
-	}
-	if !strings.Contains(result.Content, "chat_id") {
-		t.Errorf("expected 'chat_id' in error, got: %s", result.Content)
-	}
-}
-
-func TestPIMDomainMessagesInferredRouting(t *testing.T) {
-	tool := NewPIMDomainTool(nil, nil, nil, nil, NewMessagesTool())
-
-	// Action "conversations" should infer resource "messages"
-	input, _ := json.Marshal(map[string]string{
-		"action": "conversations",
-	})
-	result, err := tool.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// It will try to open the real chat.db and likely fail in CI/test,
-	// but we're testing routing, not DB access. The error should NOT be
-	// about missing resource.
-	if result.IsError && strings.Contains(result.Content, "Resource is required") {
-		t.Error("conversations should infer messages resource, but got 'Resource is required'")
 	}
 }
 
@@ -701,8 +624,8 @@ func TestToolCorrectionMessages(t *testing.T) {
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			got := toolCorrection(name)
-			if !strings.Contains(got, "pim") || !strings.Contains(got, "messages") {
-				t.Errorf("toolCorrection(%q) = %q, expected pim messages redirect", name, got)
+			if !strings.Contains(got, "message") || !strings.Contains(got, "sms") {
+				t.Errorf("toolCorrection(%q) = %q, expected message sms redirect", name, got)
 			}
 		})
 	}

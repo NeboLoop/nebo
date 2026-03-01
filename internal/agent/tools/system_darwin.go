@@ -10,24 +10,24 @@ import (
 	"strings"
 )
 
-// SystemTool provides macOS system controls.
+// SettingsTool provides macOS system controls.
 // Volume, brightness, sleep, lock, Wi-Fi, Bluetooth, dark mode.
-type SystemTool struct{}
+type SettingsTool struct{}
 
-// NewSystemTool creates a new system control tool
-func NewSystemTool() *SystemTool {
-	return &SystemTool{}
+// NewSettingsTool creates a new system control tool
+func NewSettingsTool() *SettingsTool {
+	return &SettingsTool{}
 }
 
-func (t *SystemTool) Name() string {
+func (t *SettingsTool) Name() string {
 	return "system"
 }
 
-func (t *SystemTool) Description() string {
+func (t *SettingsTool) Description() string {
 	return "Control system settings: volume, brightness, Wi-Fi, Bluetooth, dark mode, sleep, lock screen, and get system info."
 }
 
-func (t *SystemTool) Schema() json.RawMessage {
+func (t *SettingsTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -49,7 +49,7 @@ func (t *SystemTool) Schema() json.RawMessage {
 	}`)
 }
 
-func (t *SystemTool) RequiresApproval() bool {
+func (t *SettingsTool) RequiresApproval() bool {
 	return false
 }
 
@@ -59,7 +59,7 @@ type systemInput struct {
 	Enable *bool  `json:"enable"`
 }
 
-func (t *SystemTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
+func (t *SettingsTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var params systemInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
@@ -100,7 +100,7 @@ func (t *SystemTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 	}
 }
 
-func (t *SystemTool) setVolume(level int) (*ToolResult, error) {
+func (t *SettingsTool) setVolume(level int) (*ToolResult, error) {
 	if level < 0 || level > 100 {
 		return &ToolResult{Content: "Volume must be between 0 and 100", IsError: true}, nil
 	}
@@ -111,7 +111,7 @@ func (t *SystemTool) setVolume(level int) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Volume set to %d%%", level), IsError: false}, nil
 }
 
-func (t *SystemTool) setMute(mute bool) (*ToolResult, error) {
+func (t *SettingsTool) setMute(mute bool) (*ToolResult, error) {
 	script := `set volume with output muted`
 	if !mute {
 		script = `set volume without output muted`
@@ -125,7 +125,7 @@ func (t *SystemTool) setMute(mute bool) (*ToolResult, error) {
 	return &ToolResult{Content: "Audio unmuted", IsError: false}, nil
 }
 
-func (t *SystemTool) setBrightness(level int) (*ToolResult, error) {
+func (t *SettingsTool) setBrightness(level int) (*ToolResult, error) {
 	if level < 0 || level > 100 {
 		return &ToolResult{Content: "Brightness must be between 0 and 100", IsError: true}, nil
 	}
@@ -138,7 +138,7 @@ func (t *SystemTool) setBrightness(level int) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Brightness set to %d%%", level), IsError: false}, nil
 }
 
-func (t *SystemTool) sleep() (*ToolResult, error) {
+func (t *SettingsTool) sleep() (*ToolResult, error) {
 	cmd := exec.Command("pmset", "sleepnow")
 	if err := cmd.Run(); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to sleep: %v", err), IsError: true}, nil
@@ -146,7 +146,7 @@ func (t *SystemTool) sleep() (*ToolResult, error) {
 	return &ToolResult{Content: "Putting system to sleep...", IsError: false}, nil
 }
 
-func (t *SystemTool) lock() (*ToolResult, error) {
+func (t *SettingsTool) lock() (*ToolResult, error) {
 	cmd := exec.Command("pmset", "displaysleepnow")
 	if err := cmd.Run(); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to lock screen: %v", err), IsError: true}, nil
@@ -154,7 +154,7 @@ func (t *SystemTool) lock() (*ToolResult, error) {
 	return &ToolResult{Content: "Screen locked", IsError: false}, nil
 }
 
-func (t *SystemTool) getWifiStatus() (*ToolResult, error) {
+func (t *SettingsTool) getWifiStatus() (*ToolResult, error) {
 	cmd := exec.Command("networksetup", "-getairportpower", "en0")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -163,7 +163,7 @@ func (t *SystemTool) getWifiStatus() (*ToolResult, error) {
 	return &ToolResult{Content: strings.TrimSpace(string(output)), IsError: false}, nil
 }
 
-func (t *SystemTool) setWifi(enable bool) (*ToolResult, error) {
+func (t *SettingsTool) setWifi(enable bool) (*ToolResult, error) {
 	state := "off"
 	if enable {
 		state = "on"
@@ -175,7 +175,7 @@ func (t *SystemTool) setWifi(enable bool) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Wi-Fi turned %s", state), IsError: false}, nil
 }
 
-func (t *SystemTool) getBluetoothStatus() (*ToolResult, error) {
+func (t *SettingsTool) getBluetoothStatus() (*ToolResult, error) {
 	cmd := exec.Command("blueutil", "-p")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -188,7 +188,7 @@ func (t *SystemTool) getBluetoothStatus() (*ToolResult, error) {
 	return &ToolResult{Content: "Bluetooth: OFF", IsError: false}, nil
 }
 
-func (t *SystemTool) setBluetooth(enable bool) (*ToolResult, error) {
+func (t *SettingsTool) setBluetooth(enable bool) (*ToolResult, error) {
 	state := "0"
 	if enable {
 		state = "1"
@@ -203,7 +203,7 @@ func (t *SystemTool) setBluetooth(enable bool) (*ToolResult, error) {
 	return &ToolResult{Content: "Bluetooth turned off", IsError: false}, nil
 }
 
-func (t *SystemTool) getDarkModeStatus() (*ToolResult, error) {
+func (t *SettingsTool) getDarkModeStatus() (*ToolResult, error) {
 	script := `
 		tell application "System Events"
 			tell appearance preferences
@@ -222,7 +222,7 @@ func (t *SystemTool) getDarkModeStatus() (*ToolResult, error) {
 	return &ToolResult{Content: output, IsError: false}, nil
 }
 
-func (t *SystemTool) setDarkMode(enable bool) (*ToolResult, error) {
+func (t *SettingsTool) setDarkMode(enable bool) (*ToolResult, error) {
 	script := fmt.Sprintf(`
 		tell application "System Events"
 			tell appearance preferences
@@ -239,7 +239,7 @@ func (t *SystemTool) setDarkMode(enable bool) (*ToolResult, error) {
 	return &ToolResult{Content: "Dark mode disabled", IsError: false}, nil
 }
 
-func (t *SystemTool) getSystemInfo() (*ToolResult, error) {
+func (t *SettingsTool) getSystemInfo() (*ToolResult, error) {
 	script := `
 		set cpuInfo to do shell script "sysctl -n machdep.cpu.brand_string"
 		set memInfo to do shell script "sysctl -n hw.memsize"

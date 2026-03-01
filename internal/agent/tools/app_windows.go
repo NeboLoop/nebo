@@ -10,18 +10,18 @@ import (
 	"strings"
 )
 
-// AppTool provides Windows application control via PowerShell.
-type AppTool struct{}
+// OSAppTool provides Windows application control via PowerShell.
+type OSAppTool struct{}
 
-func NewAppTool() *AppTool { return &AppTool{} }
+func NewOSAppTool() *OSAppTool { return &OSAppTool{} }
 
-func (t *AppTool) Name() string { return "app" }
+func (t *OSAppTool) Name() string { return "app" }
 
-func (t *AppTool) Description() string {
+func (t *OSAppTool) Description() string {
 	return "Control applications: list running apps, launch, quit, activate, and get app info."
 }
 
-func (t *AppTool) Schema() json.RawMessage {
+func (t *OSAppTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -38,7 +38,7 @@ func (t *AppTool) Schema() json.RawMessage {
 	}`)
 }
 
-func (t *AppTool) RequiresApproval() bool { return true }
+func (t *OSAppTool) RequiresApproval() bool { return true }
 
 type appInput struct {
 	Action string `json:"action"`
@@ -47,7 +47,7 @@ type appInput struct {
 	Force  bool   `json:"force"`
 }
 
-func (t *AppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
+func (t *OSAppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var p appInput
 	if err := json.Unmarshal(input, &p); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
@@ -71,7 +71,7 @@ func (t *AppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 	}
 }
 
-func (t *AppTool) listApps(ctx context.Context) (*ToolResult, error) {
+func (t *OSAppTool) listApps(ctx context.Context) (*ToolResult, error) {
 	script := `
 Get-Process | Where-Object { $_.MainWindowTitle -ne '' } |
     Select-Object ProcessName, Id, MainWindowTitle, @{N='Memory';E={[math]::Round($_.WorkingSet64/1MB,1)}} |
@@ -92,7 +92,7 @@ Get-Process | Where-Object { $_.MainWindowTitle -ne '' } |
 	return &ToolResult{Content: sb.String()}, nil
 }
 
-func (t *AppTool) launchApp(ctx context.Context, name, path string) (*ToolResult, error) {
+func (t *OSAppTool) launchApp(ctx context.Context, name, path string) (*ToolResult, error) {
 	if name == "" && path == "" {
 		return &ToolResult{Content: "Name or path is required", IsError: true}, nil
 	}
@@ -116,7 +116,7 @@ func (t *AppTool) launchApp(ctx context.Context, name, path string) (*ToolResult
 	return &ToolResult{Content: fmt.Sprintf("Launched %s", appName)}, nil
 }
 
-func (t *AppTool) quitApp(ctx context.Context, name string, force bool) (*ToolResult, error) {
+func (t *OSAppTool) quitApp(ctx context.Context, name string, force bool) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -146,7 +146,7 @@ func (t *AppTool) quitApp(ctx context.Context, name string, force bool) (*ToolRe
 	return &ToolResult{Content: fmt.Sprintf("Quit %s", name)}, nil
 }
 
-func (t *AppTool) activateApp(ctx context.Context, name string) (*ToolResult, error) {
+func (t *OSAppTool) activateApp(ctx context.Context, name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -183,7 +183,7 @@ if ($proc) {
 	return &ToolResult{Content: fmt.Sprintf("Activated %s", name)}, nil
 }
 
-func (t *AppTool) getAppInfo(ctx context.Context, name string) (*ToolResult, error) {
+func (t *OSAppTool) getAppInfo(ctx context.Context, name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -215,7 +215,7 @@ if ($proc) {
 	return &ToolResult{Content: fmt.Sprintf("Application Info:\n\n%s", result)}, nil
 }
 
-func (t *AppTool) getFrontmostApp(ctx context.Context) (*ToolResult, error) {
+func (t *OSAppTool) getFrontmostApp(ctx context.Context) (*ToolResult, error) {
 	script := `
 Add-Type @"
 using System;

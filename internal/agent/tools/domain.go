@@ -53,7 +53,8 @@ type FieldConfig struct {
 	RequiredFor []string // Actions that require this field
 	Enum        []string // Allowed values (optional)
 	Default     any      // Default value (optional)
-	Items       string   // Item type for arrays (e.g., "string"). Defaults to "string" if omitted.
+	Items       string         // Item type for arrays (e.g., "string"). Defaults to "string" if omitted.
+	ItemSchema  map[string]any // Full JSON Schema for array items (overrides Items if set).
 }
 
 // DomainSchemaConfig configures JSON schema generation for domain tools
@@ -154,11 +155,15 @@ func BuildDomainSchema(cfg DomainSchemaConfig) json.RawMessage {
 
 		// Arrays require an "items" field for valid JSON Schema
 		if f.Type == "array" {
-			itemType := f.Items
-			if itemType == "" {
-				itemType = "string"
+			if f.ItemSchema != nil {
+				prop["items"] = f.ItemSchema
+			} else {
+				itemType := f.Items
+				if itemType == "" {
+					itemType = "string"
+				}
+				prop["items"] = map[string]any{"type": itemType}
 			}
-			prop["items"] = map[string]any{"type": itemType}
 		}
 
 		properties[f.Name] = prop

@@ -10,18 +10,18 @@ import (
 	"strings"
 )
 
-// AppTool provides Linux application control via standard utilities.
-type AppTool struct{}
+// OSAppTool provides Linux application control via standard utilities.
+type OSAppTool struct{}
 
-func NewAppTool() *AppTool { return &AppTool{} }
+func NewOSAppTool() *OSAppTool { return &OSAppTool{} }
 
-func (t *AppTool) Name() string { return "app" }
+func (t *OSAppTool) Name() string { return "app" }
 
-func (t *AppTool) Description() string {
+func (t *OSAppTool) Description() string {
 	return "Control applications: list running apps, launch, quit, activate, and get app info."
 }
 
-func (t *AppTool) Schema() json.RawMessage {
+func (t *OSAppTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -38,7 +38,7 @@ func (t *AppTool) Schema() json.RawMessage {
 	}`)
 }
 
-func (t *AppTool) RequiresApproval() bool { return true }
+func (t *OSAppTool) RequiresApproval() bool { return true }
 
 type appInput struct {
 	Action string `json:"action"`
@@ -47,7 +47,7 @@ type appInput struct {
 	Force  bool   `json:"force"`
 }
 
-func (t *AppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
+func (t *OSAppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var p appInput
 	if err := json.Unmarshal(input, &p); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
@@ -71,7 +71,7 @@ func (t *AppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 	}
 }
 
-func (t *AppTool) listApps() (*ToolResult, error) {
+func (t *OSAppTool) listApps() (*ToolResult, error) {
 	// Use wmctrl to list windows with their PIDs
 	out, err := exec.Command("wmctrl", "-l", "-p").Output()
 	if err != nil {
@@ -109,7 +109,7 @@ func (t *AppTool) listApps() (*ToolResult, error) {
 	return &ToolResult{Content: sb.String()}, nil
 }
 
-func (t *AppTool) launchApp(name, path string) (*ToolResult, error) {
+func (t *OSAppTool) launchApp(name, path string) (*ToolResult, error) {
 	if name == "" && path == "" {
 		return &ToolResult{Content: "Name or path is required", IsError: true}, nil
 	}
@@ -136,7 +136,7 @@ func (t *AppTool) launchApp(name, path string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Launched %s", appName)}, nil
 }
 
-func (t *AppTool) quitApp(name string, force bool) (*ToolResult, error) {
+func (t *OSAppTool) quitApp(name string, force bool) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -159,7 +159,7 @@ func (t *AppTool) quitApp(name string, force bool) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Terminated %s", name)}, nil
 }
 
-func (t *AppTool) activateApp(name string) (*ToolResult, error) {
+func (t *OSAppTool) activateApp(name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -179,7 +179,7 @@ func (t *AppTool) activateApp(name string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Activated %s", name)}, nil
 }
 
-func (t *AppTool) getAppInfo(name string) (*ToolResult, error) {
+func (t *OSAppTool) getAppInfo(name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -220,7 +220,7 @@ func (t *AppTool) getAppInfo(name string) (*ToolResult, error) {
 	return &ToolResult{Content: sb.String()}, nil
 }
 
-func (t *AppTool) getFrontmostApp() (*ToolResult, error) {
+func (t *OSAppTool) getFrontmostApp() (*ToolResult, error) {
 	// Try xdotool first
 	out, err := exec.Command("xdotool", "getactivewindow", "getwindowname").Output()
 	if err != nil {

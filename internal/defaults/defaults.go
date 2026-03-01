@@ -144,6 +144,40 @@ func ListDefaults() ([]string, error) {
 	return files, err
 }
 
+// BotIDFile is the name of the file that persists the bot_id.
+// This file is the source of truth for bot identity, surviving DB deletion.
+const BotIDFile = "bot_id"
+
+// ReadBotID reads the bot_id from <data_dir>/bot_id.
+// Returns empty string on any failure or if the value is not a valid 36-char UUID.
+func ReadBotID() string {
+	dir, err := DataDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(dir, BotIDFile))
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimSpace(string(data))
+	if len(id) != 36 {
+		return ""
+	}
+	return id
+}
+
+// WriteBotID persists the bot_id to <data_dir>/bot_id with read-only permissions (0400).
+// Removes any existing file first since 0400 prevents in-place overwrite.
+func WriteBotID(id string) error {
+	dir, err := DataDir()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, BotIDFile)
+	_ = os.Remove(path) // ignore error if file doesn't exist
+	return os.WriteFile(path, []byte(id), 0400)
+}
+
 // SetupCompleteFile is the name of the file that marks setup as complete.
 const SetupCompleteFile = ".setup-complete"
 

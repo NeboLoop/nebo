@@ -12,7 +12,7 @@ triggers:
   - use case research
 tools:
   - web
-  - file
+  - system
 tags:
   - research
   - competitive-analysis

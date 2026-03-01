@@ -13,9 +13,9 @@ triggers:
   - interview at
 tools:
   - web
-  - file
-  - memory
-  - calendar
+  - system
+  - bot
+  - organizer
 tags:
   - career
   - research

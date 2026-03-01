@@ -10,24 +10,24 @@ import (
 	"strings"
 )
 
-// SystemTool provides Linux system controls.
+// SettingsTool provides Linux system controls.
 // Volume, brightness, sleep, lock, Wi-Fi, Bluetooth.
-type SystemTool struct{}
+type SettingsTool struct{}
 
-// NewSystemTool creates a new system control tool
-func NewSystemTool() *SystemTool {
-	return &SystemTool{}
+// NewSettingsTool creates a new system control tool
+func NewSettingsTool() *SettingsTool {
+	return &SettingsTool{}
 }
 
-func (t *SystemTool) Name() string {
+func (t *SettingsTool) Name() string {
 	return "system"
 }
 
-func (t *SystemTool) Description() string {
+func (t *SettingsTool) Description() string {
 	return "Control system settings: volume, brightness, Wi-Fi, Bluetooth, sleep, lock screen, and get system info."
 }
 
-func (t *SystemTool) Schema() json.RawMessage {
+func (t *SettingsTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -49,7 +49,7 @@ func (t *SystemTool) Schema() json.RawMessage {
 	}`)
 }
 
-func (t *SystemTool) RequiresApproval() bool {
+func (t *SettingsTool) RequiresApproval() bool {
 	return false
 }
 
@@ -59,7 +59,7 @@ type systemInput struct {
 	Enable *bool  `json:"enable"`
 }
 
-func (t *SystemTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
+func (t *SettingsTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var params systemInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
@@ -95,7 +95,7 @@ func (t *SystemTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 	}
 }
 
-func (t *SystemTool) setVolume(level int) (*ToolResult, error) {
+func (t *SettingsTool) setVolume(level int) (*ToolResult, error) {
 	if level < 0 || level > 100 {
 		return &ToolResult{Content: "Volume must be between 0 and 100", IsError: true}, nil
 	}
@@ -120,7 +120,7 @@ func (t *SystemTool) setVolume(level int) (*ToolResult, error) {
 	return &ToolResult{Content: "No audio control available (install pulseaudio-utils or alsa-utils)", IsError: true}, nil
 }
 
-func (t *SystemTool) setMute(mute bool) (*ToolResult, error) {
+func (t *SettingsTool) setMute(mute bool) (*ToolResult, error) {
 	state := "1"
 	stateStr := "muted"
 	if !mute {
@@ -153,7 +153,7 @@ func (t *SystemTool) setMute(mute bool) (*ToolResult, error) {
 	return &ToolResult{Content: "No audio control available", IsError: true}, nil
 }
 
-func (t *SystemTool) setBrightness(level int) (*ToolResult, error) {
+func (t *SettingsTool) setBrightness(level int) (*ToolResult, error) {
 	if level < 0 || level > 100 {
 		return &ToolResult{Content: "Brightness must be between 0 and 100", IsError: true}, nil
 	}
@@ -179,7 +179,7 @@ func (t *SystemTool) setBrightness(level int) (*ToolResult, error) {
 	return &ToolResult{Content: "Brightness control unavailable (install brightnessctl or xbacklight)", IsError: true}, nil
 }
 
-func (t *SystemTool) sleep() (*ToolResult, error) {
+func (t *SettingsTool) sleep() (*ToolResult, error) {
 	// Try systemctl first (systemd)
 	if _, err := exec.LookPath("systemctl"); err == nil {
 		cmd := exec.Command("systemctl", "suspend")
@@ -201,7 +201,7 @@ func (t *SystemTool) sleep() (*ToolResult, error) {
 	return &ToolResult{Content: "Sleep not available (requires systemd or pm-utils)", IsError: true}, nil
 }
 
-func (t *SystemTool) lock() (*ToolResult, error) {
+func (t *SettingsTool) lock() (*ToolResult, error) {
 	// Try various screen lockers
 	lockers := [][]string{
 		{"loginctl", "lock-session"},         // systemd
@@ -224,7 +224,7 @@ func (t *SystemTool) lock() (*ToolResult, error) {
 	return &ToolResult{Content: "No screen locker found (install xdg-screensaver, gnome-screensaver, i3lock, etc.)", IsError: true}, nil
 }
 
-func (t *SystemTool) getWifiStatus() (*ToolResult, error) {
+func (t *SettingsTool) getWifiStatus() (*ToolResult, error) {
 	// Try nmcli (NetworkManager)
 	if _, err := exec.LookPath("nmcli"); err == nil {
 		out, err := exec.Command("nmcli", "-t", "-f", "WIFI", "radio").Output()
@@ -252,7 +252,7 @@ func (t *SystemTool) getWifiStatus() (*ToolResult, error) {
 	return &ToolResult{Content: "Wi-Fi status unavailable (NetworkManager or iwd not found)", IsError: false}, nil
 }
 
-func (t *SystemTool) setWifi(enable bool) (*ToolResult, error) {
+func (t *SettingsTool) setWifi(enable bool) (*ToolResult, error) {
 	state := "off"
 	if enable {
 		state = "on"
@@ -283,7 +283,7 @@ func (t *SystemTool) setWifi(enable bool) (*ToolResult, error) {
 	return &ToolResult{Content: "Wi-Fi control unavailable (install NetworkManager or rfkill)", IsError: true}, nil
 }
 
-func (t *SystemTool) getBluetoothStatus() (*ToolResult, error) {
+func (t *SettingsTool) getBluetoothStatus() (*ToolResult, error) {
 	// Try bluetoothctl
 	if _, err := exec.LookPath("bluetoothctl"); err == nil {
 		out, err := exec.Command("bluetoothctl", "show").Output()
@@ -313,7 +313,7 @@ func (t *SystemTool) getBluetoothStatus() (*ToolResult, error) {
 	return &ToolResult{Content: "Bluetooth status unavailable (install bluez)", IsError: false}, nil
 }
 
-func (t *SystemTool) setBluetooth(enable bool) (*ToolResult, error) {
+func (t *SettingsTool) setBluetooth(enable bool) (*ToolResult, error) {
 	// Try bluetoothctl
 	if _, err := exec.LookPath("bluetoothctl"); err == nil {
 		state := "off"
@@ -349,7 +349,7 @@ func (t *SystemTool) setBluetooth(enable bool) (*ToolResult, error) {
 	return &ToolResult{Content: "Bluetooth control unavailable (install bluez or rfkill)", IsError: true}, nil
 }
 
-func (t *SystemTool) getSystemInfo() (*ToolResult, error) {
+func (t *SettingsTool) getSystemInfo() (*ToolResult, error) {
 	var sb strings.Builder
 
 	// Hostname

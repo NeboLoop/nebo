@@ -15,7 +15,7 @@ triggers:
 tools:
   - web
   - skill
-  - agent
+  - bot
 tags:
   - setup
   - onboarding
@@ -40,7 +40,7 @@ This is NOT a store browsing experience. You are a personal agent who already kn
 Check memory first — you may already know their work, interests, and tools from the introduction skill.
 
 ```
-agent(resource: memory, action: search, query: "user work occupation")
+bot(resource: memory, action: search, query: "user work occupation")
 ```
 
 If you have enough context, skip straight to recommendations. If not, ask ONE natural question:

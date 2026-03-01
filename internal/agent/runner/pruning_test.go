@@ -521,22 +521,22 @@ func TestMicroCompact_StripAcknowledgedImages(t *testing.T) {
 }
 
 func TestMicroCompact_SkipsNonCompactableTools(t *testing.T) {
-	// Tool call from "agent" tool — should NOT be trimmed by micro-compact
-	// (agent is not in microCompactTools)
+	// Tool call from "bot" tool — should NOT be trimmed by micro-compact
+	// (bot is not in microCompactTools)
 	msgs := []session.Message{
 		{Role: "user", Content: "remember this"},
 		{
 			Role: "assistant",
 			ToolCalls: makeToolCalls(session.ToolCall{
-				ID:    "tc_agent",
-				Name:  "agent",
+				ID:    "tc_bot",
+				Name:  "bot",
 				Input: json.RawMessage(`{"resource":"memory","action":"store"}`),
 			}),
 		},
 		{
 			Role: "tool",
 			ToolResults: makeToolResults(session.ToolResult{
-				ToolCallID: "tc_agent",
+				ToolCallID: "tc_bot",
 				Content:    strings.Repeat("stored ok ", 10000),
 			}),
 		},
@@ -545,13 +545,13 @@ func TestMicroCompact_SkipsNonCompactableTools(t *testing.T) {
 
 	result, saved := microCompact(msgs, 1)
 	if saved != 0 {
-		t.Fatalf("agent tool results should not be trimmed, saved %d tokens", saved)
+		t.Fatalf("bot tool results should not be trimmed, saved %d tokens", saved)
 	}
 
 	var results []session.ToolResult
 	json.Unmarshal(result[2].ToolResults, &results)
 	if strings.HasPrefix(results[0].Content, "[trimmed:") {
-		t.Fatal("agent tool result should NOT be trimmed")
+		t.Fatal("bot tool result should NOT be trimmed")
 	}
 }
 

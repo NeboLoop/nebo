@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/neboloop/nebo/internal/db"
+	"github.com/neboloop/nebo/internal/defaults"
 	"github.com/neboloop/nebo/internal/httputil"
 	"github.com/neboloop/nebo/internal/neboloop"
 	"github.com/neboloop/nebo/internal/svc"
@@ -634,10 +635,18 @@ func NeboLoopConnectHandler(svcCtx *svc.ServiceContext) http.HandlerFunc {
 			apiServer = settings["api_server"]
 		}
 
-		// Ensure we have an immutable bot_id before redeeming
-		botID := settings["bot_id"]
+		// Ensure we have an immutable bot_id before redeeming.
+		// Priority: file → DB → generate new.
+		botID := defaults.ReadBotID()
+		if botID == "" {
+			botID = settings["bot_id"]
+		}
 		if botID == "" {
 			botID = uuid.New().String()
+		}
+		// Persist to file if not already there
+		if defaults.ReadBotID() == "" {
+			_ = defaults.WriteBotID(botID)
 		}
 
 		// Step 1: Redeem code (pass our immutable bot_id so the server registers it)

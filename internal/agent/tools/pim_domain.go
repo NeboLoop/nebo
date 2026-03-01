@@ -6,17 +6,17 @@ import (
 	"fmt"
 )
 
-// PIMDomainTool consolidates personal information management tools (mail, contacts,
+// OrganizerDomainTool consolidates personal information management tools (mail, contacts,
 // calendar, reminders) into a single STRAP domain tool with resource-based routing.
 // Each resource delegates to the existing platform-specific tool implementation.
-type PIMDomainTool struct {
+type OrganizerDomainTool struct {
 	subTools map[string]Tool // resource name → sub-tool
 }
 
-// NewPIMDomainTool creates a PIM domain tool with the given sub-tools.
+// NewOrganizerDomainTool creates a PIM domain tool with the given sub-tools.
 // Pass nil for resources not available on this platform.
-func NewPIMDomainTool(mail, contacts, calendar, reminders, messages Tool) *PIMDomainTool {
-	t := &PIMDomainTool{
+func NewOrganizerDomainTool(mail, contacts, calendar, reminders Tool) *OrganizerDomainTool {
+	t := &OrganizerDomainTool{
 		subTools: make(map[string]Tool),
 	}
 	if mail != nil {
@@ -31,17 +31,14 @@ func NewPIMDomainTool(mail, contacts, calendar, reminders, messages Tool) *PIMDo
 	if reminders != nil {
 		t.subTools["reminders"] = reminders
 	}
-	if messages != nil {
-		t.subTools["messages"] = messages
-	}
 	return t
 }
 
-func (t *PIMDomainTool) Name() string        { return "pim" }
-func (t *PIMDomainTool) Domain() string       { return "pim" }
-func (t *PIMDomainTool) RequiresApproval() bool { return true }
+func (t *OrganizerDomainTool) Name() string        { return "organizer" }
+func (t *OrganizerDomainTool) Domain() string       { return "organizer" }
+func (t *OrganizerDomainTool) RequiresApproval() bool { return true }
 
-func (t *PIMDomainTool) Resources() []string {
+func (t *OrganizerDomainTool) Resources() []string {
 	resources := make([]string, 0, len(t.subTools))
 	for r := range t.subTools {
 		resources = append(resources, r)
@@ -49,7 +46,7 @@ func (t *PIMDomainTool) Resources() []string {
 	return resources
 }
 
-func (t *PIMDomainTool) ActionsFor(resource string) []string {
+func (t *OrganizerDomainTool) ActionsFor(resource string) []string {
 	switch resource {
 	case "mail":
 		return []string{"accounts", "unread", "read", "send", "search"}
@@ -59,22 +56,20 @@ func (t *PIMDomainTool) ActionsFor(resource string) []string {
 		return []string{"calendars", "today", "upcoming", "create", "list"}
 	case "reminders":
 		return []string{"lists", "list", "create", "complete", "delete"}
-	case "messages":
-		return []string{"send", "conversations", "read", "search"}
 	default:
 		return nil
 	}
 }
 
-func (t *PIMDomainTool) Description() string {
+func (t *OrganizerDomainTool) Description() string {
 	return BuildDomainDescription(t.schemaConfig())
 }
 
-func (t *PIMDomainTool) Schema() json.RawMessage {
+func (t *OrganizerDomainTool) Schema() json.RawMessage {
 	return BuildDomainSchema(t.schemaConfig())
 }
 
-func (t *PIMDomainTool) schemaConfig() DomainSchemaConfig {
+func (t *OrganizerDomainTool) schemaConfig() DomainSchemaConfig {
 	resources := make(map[string]ResourceConfig)
 	for name := range t.subTools {
 		resources[name] = ResourceConfig{
@@ -84,8 +79,8 @@ func (t *PIMDomainTool) schemaConfig() DomainSchemaConfig {
 	}
 
 	return DomainSchemaConfig{
-		Domain:      "pim",
-		Description: "Personal information management: mail, contacts, calendar, reminders, messages/iMessage.",
+		Domain:      "organizer",
+		Description: "Personal information management: mail, contacts, calendar, reminders.",
 		Resources:   resources,
 		Fields: []FieldConfig{
 			{Name: "to", Type: "array", Description: "Recipients (for mail send) or single-element array (for messages send)", Items: "string"},
@@ -110,23 +105,19 @@ func (t *PIMDomainTool) schemaConfig() DomainSchemaConfig {
 			{Name: "due_date", Type: "string", Description: "Due date for reminder"},
 			{Name: "priority", Type: "integer", Description: "Priority (0=none, 1=high, 5=medium, 9=low)"},
 			{Name: "days", Type: "integer", Description: "Number of days to look ahead"},
-			{Name: "chat_id", Type: "string", Description: "Chat identifier for messages read (phone number, email, or chat ID)"},
 		},
 		Examples: []string{
-			`pim(resource: "mail", action: "unread")`,
-			`pim(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!")`,
-			`pim(resource: "contacts", action: "search", query: "Alice")`,
-			`pim(resource: "calendar", action: "today")`,
-			`pim(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal")`,
-			`pim(resource: "messages", action: "conversations")`,
-			`pim(resource: "messages", action: "send", to: "+15551234567", body: "On my way!")`,
-			`pim(resource: "messages", action: "read", chat_id: "+15551234567")`,
+			`organizer(resource: "mail", action: "unread")`,
+			`organizer(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!")`,
+			`organizer(resource: "contacts", action: "search", query: "Alice")`,
+			`organizer(resource: "calendar", action: "today")`,
+			`organizer(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal")`,
 		},
 	}
 }
 
 // inferResource guesses the resource from the action name when resource is omitted.
-func (t *PIMDomainTool) inferResource(action string) string {
+func (t *OrganizerDomainTool) inferResource(action string) string {
 	switch action {
 	case "accounts", "unread":
 		return "mail"
@@ -136,14 +127,12 @@ func (t *PIMDomainTool) inferResource(action string) string {
 		return "calendar"
 	case "lists", "complete":
 		return "reminders"
-	case "conversations":
-		return "messages"
 	default:
 		return "" // ambiguous — require explicit resource
 	}
 }
 
-func (t *PIMDomainTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
+func (t *OrganizerDomainTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var p DomainInput
 	if err := json.Unmarshal(input, &p); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil

@@ -10,8 +10,8 @@ triggers:
   - what can you do
   - introduce yourself
 tools:
-  - agent
-  - store
+  - bot
+  - skill
 metadata:
   nebo:
     emoji: "👋"
@@ -121,7 +121,7 @@ Write a short, personalized lead-in based on what you know about them. Then use 
 Example (adapt to their actual situation):
 
 ```
-agent(resource: message, action: ask, prompt: "Based on what you do, I'd recommend starting with a couple of these. Pick any that sound useful — I'll set them up for you.", widgets: [{type: "buttons", options: ["Research Assistant", "Small Business Ops", "Personal Finance", "Skip for now"]}])
+bot(resource: "ask", action: "prompt", text: "Based on what you do, I'd recommend starting with a couple of these. Pick any that sound useful — I'll set them up for you.", widgets: [{type: "buttons", options: ["Research Assistant", "Small Business Ops", "Personal Finance", "Skip for now"]}])
 ```
 
 **Rules for the picker:**
@@ -136,10 +136,10 @@ agent(resource: message, action: ask, prompt: "Based on what you do, I'd recomme
 If they pick one or more skills, install each one silently using the install code from the catalog above:
 
 ```
-store(resource: "skills", action: "install", id: "<install-code>")
+skill(action: "install", id: "<install-code>")
 ```
 
-Example: `store(resource: "skills", action: "install", id: "SKILL-GLXB-NNHJ-ZKCG")` for Research Assistant.
+Example: `skill(action: "install", id: "SKILL-GLXB-NNHJ-ZKCG")` for Research Assistant.
 
 Confirm warmly — one sentence. Something like:
 
@@ -169,11 +169,11 @@ Then STOP. Let them come to you.
 
 You have two tools. Here's exactly how to call each one.
 
-### agent — ask the user + store memories
+### bot — ask the user + store memories
 
 **Ask the user a question with an interactive widget:**
 ```
-agent(resource: message, action: ask, prompt: "Pick one", widgets: [{type: "buttons", options: ["Option A", "Option B", "Option C"]}])
+bot(resource: "ask", action: "prompt", text: "Pick one", widgets: [{type: "buttons", options: ["Option A", "Option B", "Option C"]}])
 ```
 The tool blocks until the user responds, then returns their answer as plain text.
 
@@ -181,14 +181,14 @@ Widget types: `buttons`, `select`, `confirm` (yes/no), `radio`, `checkbox`.
 
 **Store a memory silently:**
 ```
-agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit")
+bot(resource: "memory", action: "store", key: "user/name", value: "Alice", layer: "tacit")
 ```
 
-### store — install skills from NeboLoop
+### skill — install skills from NeboLoop
 
 **Install a skill using its install code:**
 ```
-store(resource: "skills", action: "install", id: "SKILL-XXXX-XXXX-XXXX")
+skill(action: "install", id: "SKILL-XXXX-XXXX-XXXX")
 ```
 The install code is the `SKILL-` prefixed code from the catalog. Pass it directly as the `id` — the API resolves it automatically. No UUID needed.
 

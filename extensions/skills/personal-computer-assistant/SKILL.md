@@ -19,11 +19,8 @@ triggers:
   - look at my
   - what's on
 tools:
-  - file
-  - shell
-  - app
+  - system
   - desktop
-  - screenshot
   - spotlight
   - clipboard
 tags:

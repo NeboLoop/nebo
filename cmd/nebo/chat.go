@@ -114,11 +114,10 @@ func runChat(cfg *agentcfg.Config, args []string, interactive bool, dangerously 
 
 	taskTool := tools.NewTaskTool()
 	taskTool.CreateOrchestrator(cfg, sessions, providers, registry)
-	registry.Register(taskTool)
 
-	agentStatusTool := tools.NewAgentStatusTool()
-	agentStatusTool.SetOrchestrator(taskTool.GetOrchestrator())
-	registry.Register(agentStatusTool)
+	botTool := tools.NewBotTool(tools.BotToolConfig{Sessions: sessions})
+	botTool.SetOrchestrator(taskTool.GetOrchestrator())
+	registry.RegisterBotTool(botTool)
 
 	r := runner.New(cfg, sessions, providers, registry)
 

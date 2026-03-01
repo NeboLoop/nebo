@@ -11,10 +11,8 @@ triggers:
   - what's today
   - morning briefing
 tools:
-  - calendar
-  - mail
-  - memory
-  - agent
+  - organizer
+  - bot
 tags:
   - productivity
   - automation
@@ -39,7 +37,7 @@ Generate a quick, actionable briefing of today's key priorities: calendar events
 
 1. **Get today's calendar** — Use `calendar(action: today)`. Note events in next 4 hours.
 2. **Check email** — Use `mail(action: unread, count: 5)`. Scan subject lines for action items (responses needed, approvals, flags).
-3. **Recall priorities** — Use `agent(resource: memory, action: search, query: "today's goals")` to see if user stored any priorities.
+3. **Recall priorities** — Use `bot(resource: memory, action: search, query: "today's goals")` to see if user stored any priorities.
 4. **Compose** — Combine into 3-5 key points in order of urgency.
 
 ## Example

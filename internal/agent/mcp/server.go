@@ -460,7 +460,7 @@ func (s *Server) buildToolGuide() string {
 		desc string
 	}
 	var domain, standalone []toolInfo
-	domainNames := map[string]bool{"file": true, "shell": true, "web": true, "agent": true}
+	domainNames := map[string]bool{"system": true, "web": true, "bot": true, "loop": true, "event": true, "message": true}
 
 	for _, def := range toolDefs {
 		firstLine := def.Description

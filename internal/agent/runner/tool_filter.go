@@ -11,9 +11,8 @@ import (
 // If any tool in a group was called in the session, include the entire group.
 var toolGroups = [][]string{
 	{"screenshot", "vision", "desktop"},
-	{"pim"},
+	{"organizer"},
 	{"system"},
-	{"advisors"},
 }
 
 // contextualKeywords maps tool names to keyword triggers.
@@ -22,9 +21,8 @@ var contextualKeywords = map[string][]string{
 	"screenshot": {"screenshot", "screen", "image", "look at", "see the", "show me"},
 	"vision":     {"screenshot", "screen", "image", "look at", "see the", "photo"},
 	"desktop":    {"click", "type", "window", "automat", "launch", "open app"},
-	"pim":        {"email", "calendar", "contact", "reminder", "meeting", "schedule"},
+	"organizer":  {"email", "calendar", "contact", "reminder", "meeting", "schedule"},
 	"system":     {"volume", "clipboard", "notification", "music", "battery", "wifi"},
-	"advisors":   {"advise", "pros and cons", "tradeoff", "deliberat", "weigh"},
 }
 
 // FilterTools selects which tools to include in the API request.
@@ -84,7 +82,7 @@ func FilterTools(allTools []ai.ToolDefinition, messages []session.Message, calle
 // isCoreTool returns true for tools that should always be included.
 func isCoreTool(name string) bool {
 	switch name {
-	case "file", "shell", "web", "agent", "skill":
+	case "system", "web", "bot", "loop", "event", "message", "skill":
 		return true
 	default:
 		return false

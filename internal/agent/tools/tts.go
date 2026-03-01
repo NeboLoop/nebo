@@ -77,10 +77,5 @@ func (t *TTSTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 	return &ToolResult{Content: "Spoke: " + params.Text}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewTTSTool(),
-		Platforms: []string{PlatformAll},
-		Category:  "media",
-	})
-}
+// TTSTool is registered as a resource of DesktopDomainTool via
+// desktop_domain_darwin/linux/windows.go → TTS: NewTTSTool().

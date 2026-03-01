@@ -10,18 +10,18 @@ import (
 	"strings"
 )
 
-// AppTool provides macOS application control via AppleScript.
-type AppTool struct{}
+// OSAppTool provides macOS application control via AppleScript.
+type OSAppTool struct{}
 
-func NewAppTool() *AppTool { return &AppTool{} }
+func NewOSAppTool() *OSAppTool { return &OSAppTool{} }
 
-func (t *AppTool) Name() string { return "app" }
+func (t *OSAppTool) Name() string { return "app" }
 
-func (t *AppTool) Description() string {
+func (t *OSAppTool) Description() string {
 	return "Control applications: list running apps, launch, quit, activate, hide, get info."
 }
 
-func (t *AppTool) Schema() json.RawMessage {
+func (t *OSAppTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -38,7 +38,7 @@ func (t *AppTool) Schema() json.RawMessage {
 	}`)
 }
 
-func (t *AppTool) RequiresApproval() bool { return true }
+func (t *OSAppTool) RequiresApproval() bool { return true }
 
 type appInput struct {
 	Action   string `json:"action"`
@@ -48,7 +48,7 @@ type appInput struct {
 	Force    bool   `json:"force"`
 }
 
-func (t *AppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
+func (t *OSAppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var p appInput
 	if err := json.Unmarshal(input, &p); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
@@ -76,7 +76,7 @@ func (t *AppTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResu
 	}
 }
 
-func (t *AppTool) listApps() (*ToolResult, error) {
+func (t *OSAppTool) listApps() (*ToolResult, error) {
 	script := `tell application "System Events"
 		set appInfo to ""
 		repeat with proc in (every process whose background only is false)
@@ -108,7 +108,7 @@ func (t *AppTool) listApps() (*ToolResult, error) {
 	return &ToolResult{Content: sb.String()}, nil
 }
 
-func (t *AppTool) launchApp(name, path string) (*ToolResult, error) {
+func (t *OSAppTool) launchApp(name, path string) (*ToolResult, error) {
 	if name == "" && path == "" {
 		return &ToolResult{Content: "Name or path is required", IsError: true}, nil
 	}
@@ -128,7 +128,7 @@ func (t *AppTool) launchApp(name, path string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Launched %s", appName)}, nil
 }
 
-func (t *AppTool) quitApp(name string, force bool) (*ToolResult, error) {
+func (t *OSAppTool) quitApp(name string, force bool) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -150,7 +150,7 @@ func (t *AppTool) quitApp(name string, force bool) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Quit %s", name)}, nil
 }
 
-func (t *AppTool) quitAllApps() (*ToolResult, error) {
+func (t *OSAppTool) quitAllApps() (*ToolResult, error) {
 	script := `tell application "System Events"
 		set appList to name of every process whose background only is false
 		set quitCount to 0
@@ -171,7 +171,7 @@ func (t *AppTool) quitAllApps() (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Requested quit for %s applications", strings.TrimSpace(out))}, nil
 }
 
-func (t *AppTool) activateApp(name string) (*ToolResult, error) {
+func (t *OSAppTool) activateApp(name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -182,7 +182,7 @@ func (t *AppTool) activateApp(name string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Activated %s", name)}, nil
 }
 
-func (t *AppTool) hideApp(name string) (*ToolResult, error) {
+func (t *OSAppTool) hideApp(name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -195,7 +195,7 @@ func (t *AppTool) hideApp(name string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Hidden %s", name)}, nil
 }
 
-func (t *AppTool) getAppInfo(name string) (*ToolResult, error) {
+func (t *OSAppTool) getAppInfo(name string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -228,7 +228,7 @@ func (t *AppTool) getAppInfo(name string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Application Info:\n\n%s", strings.TrimSpace(out))}, nil
 }
 
-func (t *AppTool) clickMenu(name, menuPath string) (*ToolResult, error) {
+func (t *OSAppTool) clickMenu(name, menuPath string) (*ToolResult, error) {
 	if name == "" {
 		return &ToolResult{Content: "Name is required", IsError: true}, nil
 	}
@@ -255,7 +255,7 @@ func (t *AppTool) clickMenu(name, menuPath string) (*ToolResult, error) {
 	return &ToolResult{Content: fmt.Sprintf("Clicked menu: %s > %s", name, menuPath)}, nil
 }
 
-func (t *AppTool) getFrontmostApp() (*ToolResult, error) {
+func (t *OSAppTool) getFrontmostApp() (*ToolResult, error) {
 	script := `tell application "System Events"
 		set frontApp to first process whose frontmost is true
 		set appName to name of frontApp
@@ -277,10 +277,5 @@ func (t *AppTool) getFrontmostApp() (*ToolResult, error) {
 	return &ToolResult{Content: result}, nil
 }
 
-func init() {
-	RegisterCapability(&Capability{
-		Tool:      NewAppTool(),
-		Platforms: []string{PlatformDarwin},
-		Category:  "system",
-	})
-}
+// OSAppTool is registered as a platform resource of SystemTool via
+// system_domain_darwin.go init() → RegisterSystemResourceInit("app", NewOSAppTool()).

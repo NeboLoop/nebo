@@ -486,7 +486,6 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 		maxIterations = 100
 	}
 
-	nudgeAttempted := false     // One steering nudge per run when model stops mid-task
 	var runStartMessageID int64 // Captured on iteration 1; messages with ID >= this are protected from window eviction
 
 	// MAIN LOOP: Model selection + agentic execution
@@ -1147,16 +1146,12 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 		}
 
 		// Text-only response: model didn't use tools.
-		// If there's an active objective, give the steering system one more
-		// iteration so the pendingTaskAction generator can nudge the model
-		// back into action. Without this, the loop exits before steering fires.
-		// Allow one nudge attempt per run to avoid infinite loops.
-		activeTask, _ = r.sessions.GetActiveTask(sessionID)
-		if activeTask != "" && !nudgeAttempted {
-			nudgeAttempted = true
-			fmt.Printf("[Runner] Text-only response with active task — re-entering loop for steering nudge (iteration %d)\n", iteration)
-			continue
-		}
+		// Note: we intentionally do NOT re-enter the loop for active task nudging.
+		// The steering generators (pendingTaskAction, objectiveTaskNudge) already
+		// fire on every iteration. Re-entering causes a second model call whose
+		// text response is concatenated with the first — producing the "double
+		// speaking" bug where users see two complete responses in one message.
+		// The model will be reminded about active tasks on the next user message.
 
 		// No tool calls — task is complete
 		// Record successful usage for profile tracking

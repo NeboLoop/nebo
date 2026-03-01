@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/neboloop/nebo/internal/agent/skills"
+	"github.com/neboloop/nebo/internal/neboloop"
 )
 
 const (
@@ -55,10 +56,11 @@ type SkillDomainTool struct {
 	entries       map[string]*skillEntry
 	invokedSkills map[string]map[string]*invokedSkillState // sessionKey -> slug -> invocation state
 	sessionTurns  map[string]int                           // sessionKey -> current turn number
-	dirty         bool                                     // schema/description cache invalidation
-	skillsDir     string                                   // user skills directory for create/update/delete
-	cachedSchema  json.RawMessage
-	cachedDesc    string
+	dirty          bool                                     // schema/description cache invalidation
+	skillsDir      string                                   // user skills directory for create/update/delete
+	clientProvider NeboLoopClientProvider                   // NeboLoop client for store operations
+	cachedSchema   json.RawMessage
+	cachedDesc     string
 }
 
 // skillEntry represents a registered skill — either app-backed or standalone.
@@ -76,10 +78,15 @@ type skillEntry struct {
 
 // SkillDomainInput is the input schema for the skill tool.
 type SkillDomainInput struct {
-	Name     string `json:"name,omitempty"`     // Skill slug
-	Resource string `json:"resource,omitempty"` // Passed through to adapter
-	Action   string `json:"action,omitempty"`   // "catalog", "help", "create", "update", "delete", or passed through
-	Content  string `json:"content,omitempty"`  // SKILL.md content for create/update
+	Name     string `json:"name,omitempty"`      // Skill slug
+	Resource string `json:"resource,omitempty"`  // Passed through to adapter
+	Action   string `json:"action,omitempty"`    // "catalog", "help", "create", "update", "delete", "browse", "install", "uninstall", or passed through
+	Content  string `json:"content,omitempty"`   // SKILL.md content for create/update
+	ID       string `json:"id,omitempty"`        // Skill ID or install code for browse/install/uninstall
+	Query    string `json:"query,omitempty"`     // Search query for browse
+	Category string `json:"category,omitempty"` // Category filter for browse
+	Page     int    `json:"page,omitempty"`      // Page number for browse
+	PageSize int    `json:"page_size,omitempty"` // Results per page for browse
 }
 
 // NewSkillDomainTool creates a new unified skill domain tool.
@@ -93,6 +100,14 @@ func NewSkillDomainTool(skillsDir string) *SkillDomainTool {
 		skillsDir:     skillsDir,
 		dirty:         true,
 	}
+}
+
+// SetClientProvider sets the NeboLoop client provider for store operations.
+func (t *SkillDomainTool) SetClientProvider(provider NeboLoopClientProvider) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.clientProvider = provider
+	t.dirty = true
 }
 
 // --- Tool interface ---
@@ -151,6 +166,12 @@ func (t *SkillDomainTool) Execute(ctx context.Context, input json.RawMessage) (*
 		return t.loadSkill(ctx, in)
 	case "unload":
 		return t.unloadSkill(ctx, in)
+	case "browse":
+		return t.browseSkills(ctx, in)
+	case "install":
+		return t.installSkill(ctx, in)
+	case "uninstall":
+		return t.uninstallSkill(ctx, in)
 	}
 
 	// No name → return catalog
@@ -214,7 +235,7 @@ func (t *SkillDomainTool) Resources() []string {
 }
 
 func (t *SkillDomainTool) ActionsFor(resource string) []string {
-	return []string{"catalog", "help", "create", "update", "delete", "load", "unload"}
+	return []string{"catalog", "help", "create", "update", "delete", "load", "unload", "browse", "install", "uninstall"}
 }
 
 // --- Registration ---
@@ -683,6 +704,101 @@ func (t *SkillDomainTool) deleteSkill(in SkillDomainInput) (*ToolResult, error) 
 	}
 
 	return &ToolResult{Content: fmt.Sprintf("Skill %q deleted successfully. It will be unloaded automatically.", in.Name)}, nil
+}
+
+// --- Store operations (browse/install/uninstall from NeboLoop) ---
+
+// browseSkills lists or gets skills from the NeboLoop store.
+func (t *SkillDomainTool) browseSkills(ctx context.Context, in SkillDomainInput) (*ToolResult, error) {
+	client, errResult := t.getStoreClient(ctx)
+	if errResult != nil {
+		return errResult, nil
+	}
+
+	// If ID provided, get details
+	if in.ID != "" {
+		resp, err := client.GetSkill(ctx, in.ID)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Failed to get skill: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatSkillDetail(resp)}, nil
+	}
+
+	resp, err := client.ListSkills(ctx, in.Query, in.Category, in.Page, in.PageSize)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to list skills: %v", err), IsError: true}, nil
+	}
+	return &ToolResult{Content: formatSkillsResponse(resp)}, nil
+}
+
+// installSkill installs a skill from the NeboLoop store.
+func (t *SkillDomainTool) installSkill(ctx context.Context, in SkillDomainInput) (*ToolResult, error) {
+	id := in.ID
+	if id == "" {
+		id = in.Name
+	}
+	if id == "" {
+		return &ToolResult{Content: "Error: 'id' or 'name' is required for install", IsError: true}, nil
+	}
+	client, errResult := t.getStoreClient(ctx)
+	if errResult != nil {
+		return errResult, nil
+	}
+
+	// SKILL-XXXX-XXXX-XXXX install codes go through the redeem endpoint
+	if isSkillInstallCode(id) {
+		resp, err := client.RedeemSkillCode(ctx, id)
+		if err != nil {
+			return &ToolResult{Content: fmt.Sprintf("Failed to install skill from code: %v", err), IsError: true}, nil
+		}
+		return &ToolResult{Content: formatInstallResponse(resp)}, nil
+	}
+	resp, err := client.InstallSkill(ctx, id)
+	if err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to install skill: %v", err), IsError: true}, nil
+	}
+	return &ToolResult{Content: formatInstallResponse(resp)}, nil
+}
+
+// uninstallSkill removes a skill installed from the NeboLoop store.
+func (t *SkillDomainTool) uninstallSkill(ctx context.Context, in SkillDomainInput) (*ToolResult, error) {
+	id := in.ID
+	if id == "" {
+		id = in.Name
+	}
+	if id == "" {
+		return &ToolResult{Content: "Error: 'id' or 'name' is required for uninstall", IsError: true}, nil
+	}
+	client, errResult := t.getStoreClient(ctx)
+	if errResult != nil {
+		return errResult, nil
+	}
+	if err := client.UninstallSkill(ctx, id); err != nil {
+		return &ToolResult{Content: fmt.Sprintf("Failed to uninstall skill: %v", err), IsError: true}, nil
+	}
+	return &ToolResult{Content: fmt.Sprintf("Skill %s uninstalled successfully", id)}, nil
+}
+
+// getStoreClient creates a NeboLoop client or returns an error ToolResult.
+func (t *SkillDomainTool) getStoreClient(ctx context.Context) (*neboloop.Client, *ToolResult) {
+	t.mu.RLock()
+	provider := t.clientProvider
+	t.mu.RUnlock()
+
+	if provider == nil {
+		return nil, &ToolResult{
+			Content: "Not connected to NeboLoop. Connect via Settings first.",
+			IsError: true,
+		}
+	}
+	client, err := provider(ctx)
+	if err != nil {
+		return nil, &ToolResult{
+			Content: fmt.Sprintf("Not connected to NeboLoop: %v. Connect via Settings first.", err),
+			IsError: true,
+		}
+	}
+	return client, nil
 }
 
 // --- Internals ---

@@ -4,14 +4,16 @@ package tools
 
 func init() {
 	RegisterCapability(&Capability{
-		Tool: NewPIMDomainTool(
+		Tool: NewOrganizerDomainTool(
 			NewMailTool(),
 			NewContactsTool(),
 			NewCalendarTool(),
 			NewRemindersTool(),
-			NewMessagesTool(),
 		),
 		Platforms: []string{PlatformDarwin},
 		Category:  "productivity",
 	})
+
+	// Register platform-specific message resources for the MsgTool.
+	RegisterMessageResourceInit("sms", NewMessagesTool())
 }

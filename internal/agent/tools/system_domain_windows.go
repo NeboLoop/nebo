@@ -3,17 +3,13 @@
 package tools
 
 func init() {
-	RegisterCapability(&Capability{
-		Tool: NewSystemDomainTool(SystemDomainOpts{
-			App:       NewAppTool(),
-			Notify:    NewNotificationTool(),
-			Clipboard: NewClipboardTool(),
-			Settings:  NewSystemTool(),
-			Music:     NewMusicTool(),
-			Search:    NewSpotlightTool(),
-			Keychain:  NewKeychainTool(),
-		}),
-		Platforms: []string{PlatformWindows},
-		Category:  "system",
-	})
+	RegisterSystemResourceInit("app", NewOSAppTool())
+	RegisterSystemResourceInit("clipboard", NewClipboardTool())
+	RegisterSystemResourceInit("settings", NewSettingsTool())
+	RegisterSystemResourceInit("music", NewMusicTool())
+	RegisterSystemResourceInit("search", NewSpotlightTool())
+	RegisterSystemResourceInit("keychain", NewKeychainTool())
+
+	// Register notification resource for the MsgTool.
+	RegisterMessageResourceInit("notify", NewNotificationTool())
 }

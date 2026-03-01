@@ -10,24 +10,24 @@ import (
 	"strings"
 )
 
-// SystemTool provides Windows system controls.
+// SettingsTool provides Windows system controls.
 // Volume, brightness, sleep, lock, Wi-Fi, Bluetooth.
-type SystemTool struct{}
+type SettingsTool struct{}
 
-// NewSystemTool creates a new system control tool
-func NewSystemTool() *SystemTool {
-	return &SystemTool{}
+// NewSettingsTool creates a new system control tool
+func NewSettingsTool() *SettingsTool {
+	return &SettingsTool{}
 }
 
-func (t *SystemTool) Name() string {
+func (t *SettingsTool) Name() string {
 	return "system"
 }
 
-func (t *SystemTool) Description() string {
+func (t *SettingsTool) Description() string {
 	return "Control system settings: volume, brightness, Wi-Fi, sleep, lock screen, and get system info."
 }
 
-func (t *SystemTool) Schema() json.RawMessage {
+func (t *SettingsTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
@@ -49,7 +49,7 @@ func (t *SystemTool) Schema() json.RawMessage {
 	}`)
 }
 
-func (t *SystemTool) RequiresApproval() bool {
+func (t *SettingsTool) RequiresApproval() bool {
 	return false
 }
 
@@ -59,7 +59,7 @@ type systemInput struct {
 	Enable *bool  `json:"enable"`
 }
 
-func (t *SystemTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
+func (t *SettingsTool) Execute(ctx context.Context, input json.RawMessage) (*ToolResult, error) {
 	var params systemInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to parse input: %v", err), IsError: true}, nil
@@ -95,7 +95,7 @@ func (t *SystemTool) Execute(ctx context.Context, input json.RawMessage) (*ToolR
 	}
 }
 
-func (t *SystemTool) setVolume(ctx context.Context, level int) (*ToolResult, error) {
+func (t *SettingsTool) setVolume(ctx context.Context, level int) (*ToolResult, error) {
 	if level < 0 || level > 100 {
 		return &ToolResult{Content: "Volume must be between 0 and 100", IsError: true}, nil
 	}
@@ -116,7 +116,7 @@ for ($i=0; $i -lt $target; $i++) { $obj.SendKeys([char]175) }
 	return &ToolResult{Content: fmt.Sprintf("Volume set to approximately %d%%", level), IsError: false}, nil
 }
 
-func (t *SystemTool) setMute(ctx context.Context) (*ToolResult, error) {
+func (t *SettingsTool) setMute(ctx context.Context) (*ToolResult, error) {
 	script := `
 $obj = New-Object -ComObject WScript.Shell
 $obj.SendKeys([char]173)
@@ -128,7 +128,7 @@ $obj.SendKeys([char]173)
 	return &ToolResult{Content: "Audio mute toggled", IsError: false}, nil
 }
 
-func (t *SystemTool) setBrightness(ctx context.Context, level int) (*ToolResult, error) {
+func (t *SettingsTool) setBrightness(ctx context.Context, level int) (*ToolResult, error) {
 	if level < 0 || level > 100 {
 		return &ToolResult{Content: "Brightness must be between 0 and 100", IsError: true}, nil
 	}
@@ -144,7 +144,7 @@ func (t *SystemTool) setBrightness(ctx context.Context, level int) (*ToolResult,
 	return &ToolResult{Content: fmt.Sprintf("Brightness set to %d%%", level), IsError: false}, nil
 }
 
-func (t *SystemTool) sleep(ctx context.Context) (*ToolResult, error) {
+func (t *SettingsTool) sleep(ctx context.Context) (*ToolResult, error) {
 	script := `rundll32.exe powrprof.dll,SetSuspendState 0,1,0`
 	if err := exec.CommandContext(ctx, "cmd", "/C", script).Run(); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to sleep: %v", err), IsError: true}, nil
@@ -152,14 +152,14 @@ func (t *SystemTool) sleep(ctx context.Context) (*ToolResult, error) {
 	return &ToolResult{Content: "Putting system to sleep...", IsError: false}, nil
 }
 
-func (t *SystemTool) lock(ctx context.Context) (*ToolResult, error) {
+func (t *SettingsTool) lock(ctx context.Context) (*ToolResult, error) {
 	if err := exec.CommandContext(ctx, "rundll32.exe", "user32.dll,LockWorkStation").Run(); err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to lock screen: %v", err), IsError: true}, nil
 	}
 	return &ToolResult{Content: "Screen locked", IsError: false}, nil
 }
 
-func (t *SystemTool) getWifiStatus(ctx context.Context) (*ToolResult, error) {
+func (t *SettingsTool) getWifiStatus(ctx context.Context) (*ToolResult, error) {
 	out, err := exec.CommandContext(ctx, "netsh", "wlan", "show", "interfaces").Output()
 	if err != nil {
 		return &ToolResult{Content: fmt.Sprintf("Failed to get Wi-Fi status: %v", err), IsError: true}, nil
@@ -167,7 +167,7 @@ func (t *SystemTool) getWifiStatus(ctx context.Context) (*ToolResult, error) {
 	return &ToolResult{Content: strings.TrimSpace(string(out)), IsError: false}, nil
 }
 
-func (t *SystemTool) setWifi(ctx context.Context, enable bool) (*ToolResult, error) {
+func (t *SettingsTool) setWifi(ctx context.Context, enable bool) (*ToolResult, error) {
 	state := "disabled"
 	if enable {
 		state = "enabled"
@@ -196,7 +196,7 @@ func (t *SystemTool) setWifi(ctx context.Context, enable bool) (*ToolResult, err
 	return &ToolResult{Content: fmt.Sprintf("Wi-Fi %s", state), IsError: false}, nil
 }
 
-func (t *SystemTool) getSystemInfo(ctx context.Context) (*ToolResult, error) {
+func (t *SettingsTool) getSystemInfo(ctx context.Context) (*ToolResult, error) {
 	script := `
 $os = Get-WmiObject Win32_OperatingSystem
 $cpu = Get-WmiObject Win32_Processor
@@ -217,7 +217,7 @@ $uptime = (Get-Date) - (Get-CimInstance -ClassName Win32_OperatingSystem).LastBo
 	return &ToolResult{Content: strings.TrimSpace(string(out)), IsError: false}, nil
 }
 
-func (t *SystemTool) getDarkModeStatus(ctx context.Context) (*ToolResult, error) {
+func (t *SettingsTool) getDarkModeStatus(ctx context.Context) (*ToolResult, error) {
 	script := `Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name AppsUseLightTheme -ErrorAction SilentlyContinue | Select-Object -ExpandProperty AppsUseLightTheme`
 	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", script).Output()
 	if err != nil {
@@ -230,7 +230,7 @@ func (t *SystemTool) getDarkModeStatus(ctx context.Context) (*ToolResult, error)
 	return &ToolResult{Content: "Dark mode: OFF"}, nil
 }
 
-func (t *SystemTool) setDarkMode(ctx context.Context, enable bool) (*ToolResult, error) {
+func (t *SettingsTool) setDarkMode(ctx context.Context, enable bool) (*ToolResult, error) {
 	value := 1
 	if enable {
 		value = 0

@@ -60,10 +60,11 @@ var SafeBins = []string{
 // defaultOriginDenyList returns the default per-origin tool restrictions.
 // Comm, App, and Skill origins are denied shell access — only direct user
 // and system origins can execute shell commands.
+// Entries can be tool names ("shell") or tool:resource compounds ("system:shell").
 func defaultOriginDenyList() map[Origin]map[string]bool {
-	commDeny := map[string]bool{"shell": true}  // No shell from remote agents
-	appDeny := map[string]bool{"shell": true}   // No shell from apps
-	skillDeny := map[string]bool{"shell": true} // No shell from skill templates
+	commDeny := map[string]bool{"shell": true, "system:shell": true}  // No shell from remote agents
+	appDeny := map[string]bool{"shell": true, "system:shell": true}   // No shell from apps
+	skillDeny := map[string]bool{"shell": true, "system:shell": true} // No shell from skill templates
 	return map[Origin]map[string]bool{
 		OriginComm:  commDeny,
 		OriginApp:   appDeny,
@@ -118,7 +119,8 @@ func NewPolicyFromConfig(level, askMode string, allowlist []string) *Policy {
 
 // IsDeniedForOrigin returns true if the given tool is blocked for the given origin.
 // This is a hard deny — no approval prompt, just rejected.
-func (p *Policy) IsDeniedForOrigin(origin Origin, toolName string) bool {
+// Checks both the tool name and tool:resource compound key when input contains a resource.
+func (p *Policy) IsDeniedForOrigin(origin Origin, toolName string, input ...json.RawMessage) bool {
 	if p.OriginDenyList == nil {
 		return false
 	}
@@ -126,7 +128,18 @@ func (p *Policy) IsDeniedForOrigin(origin Origin, toolName string) bool {
 	if !ok {
 		return false
 	}
-	return denied[toolName]
+	// Check bare tool name
+	if denied[toolName] {
+		return true
+	}
+	// Check tool:resource compound key if input has a resource field
+	if len(input) > 0 {
+		var d DomainInput
+		if err := json.Unmarshal(input[0], &d); err == nil && d.Resource != "" {
+			return denied[toolName+":"+d.Resource]
+		}
+	}
+	return false
 }
 
 // RequiresApproval checks if a command requires user approval

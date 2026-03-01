@@ -26,17 +26,20 @@ const (
 // microCompactTools lists tools whose results are candidates for micro-compaction.
 // These tools produce the largest outputs (file reads, shell output, web content).
 var microCompactTools = map[string]bool{
-	"file":  true, // read, grep, glob, edit
-	"shell": true, // exec
-	"web":   true, // fetch, search
+	"system": true, // file (read, grep, glob, edit) + shell (exec)
+	"web":    true, // fetch, search
+	"file":   true, // legacy name (pre-STRAP sessions)
+	"shell":  true, // legacy name (pre-STRAP sessions)
 }
 
 // trimPriority returns a priority value for a tool type (lower = trim first).
 func trimPriority(toolSummary string) int {
-	if strings.HasPrefix(toolSummary, "file(action: read") {
+	if strings.HasPrefix(toolSummary, "system(resource: file, action: read") ||
+		strings.HasPrefix(toolSummary, "file(action: read") {
 		return 0 // File reads produce the largest output
 	}
-	if strings.HasPrefix(toolSummary, "shell(") {
+	if strings.HasPrefix(toolSummary, "system(resource: shell") ||
+		strings.HasPrefix(toolSummary, "shell(") {
 		return 1 // Shell output is often large
 	}
 	if strings.HasPrefix(toolSummary, "web(") {

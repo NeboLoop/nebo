@@ -203,7 +203,7 @@ func (t *ShellTool) Execute(ctx context.Context, input json.RawMessage) (*ToolRe
 	}
 
 	switch in.Resource {
-	case "bash":
+	case "bash", "shell":
 		return t.handleBash(ctx, in)
 	case "process":
 		return t.handleProcess(ctx, in)

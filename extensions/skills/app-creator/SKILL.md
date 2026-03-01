@@ -11,8 +11,7 @@ triggers:
   - app for
   - write an app
 tools:
-  - file
-  - shell
+  - system
 tags:
   - development
   - app-platform
@@ -265,17 +264,17 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-w -s" -o binary-wind
 
 ### Uploading Binaries
 
-Use the `store` tool to upload each platform binary directly from the local filesystem:
+Use the `app` tool to upload each platform binary directly from the local filesystem:
 
 ```
-store(resource: "apps", action: "upload_binary", id: "APP_ID", platform: "darwin-arm64", file_path: "dist/binary-darwin-arm64")
-store(resource: "apps", action: "upload_binary", id: "APP_ID", platform: "darwin-amd64", file_path: "dist/binary-darwin-amd64")
-store(resource: "apps", action: "upload_binary", id: "APP_ID", platform: "linux-amd64", file_path: "dist/binary-linux-amd64")
-store(resource: "apps", action: "upload_binary", id: "APP_ID", platform: "linux-arm64", file_path: "dist/binary-linux-arm64")
-store(resource: "apps", action: "upload_binary", id: "APP_ID", platform: "windows-amd64", file_path: "dist/binary-windows-amd64.exe")
+app(action: "upload_binary", id: "APP_ID", platform: "darwin-arm64", file_path: "dist/binary-darwin-arm64")
+app(action: "upload_binary", id: "APP_ID", platform: "darwin-amd64", file_path: "dist/binary-darwin-amd64")
+app(action: "upload_binary", id: "APP_ID", platform: "linux-amd64", file_path: "dist/binary-linux-amd64")
+app(action: "upload_binary", id: "APP_ID", platform: "linux-arm64", file_path: "dist/binary-linux-arm64")
+app(action: "upload_binary", id: "APP_ID", platform: "windows-amd64", file_path: "dist/binary-windows-amd64.exe")
 ```
 
-The `APP_ID` is the UUID returned when the app was created in the marketplace. The store tool reads the local file and uploads it to NeboLoop — no tokens or curl needed.
+The `APP_ID` is the UUID returned when the app was created in the marketplace. The app tool reads the local file and uploads it to NeboLoop — no tokens or curl needed.
 
 ### Complete Publish Workflow
 

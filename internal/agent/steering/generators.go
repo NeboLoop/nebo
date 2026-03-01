@@ -111,8 +111,8 @@ func (g *memoryNudge) Generate(ctx *Context) []Message {
 		return nil
 	}
 
-	// Check turns since last agent tool use (memory ops go through the agent tool)
-	turnsSince := countTurnsSinceToolUse(ctx.Messages, "agent")
+	// Check turns since last bot tool use (memory ops go through the bot tool)
+	turnsSince := countTurnsSinceToolUse(ctx.Messages, "bot")
 	// If agent tool was used recently (within 10 turns), skip
 	if turnsSince >= 0 && turnsSince < 10 {
 		return nil
