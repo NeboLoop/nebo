@@ -193,8 +193,8 @@ type LoopChannelsResponse struct {
 
 // Loop describes a loop the bot belongs to.
 type Loop struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
+	ID          string `json:"loop_id"`
+	Name        string `json:"loop_name"`
 	Description string `json:"description,omitempty"`
 	MemberCount int    `json:"member_count,omitempty"`
 }

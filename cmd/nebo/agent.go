@@ -1886,20 +1886,8 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 			// Send response back to loop channel
 			if result.Len() > 0 {
-				client := neboloopPlugin.Client()
-				if client != nil {
-					loopContent, _ := json.Marshal(map[string]string{
-						"channel_id": msg.ChannelID,
-						"text":       result.String(),
-					})
-					convID, parseErr := uuid.Parse(msg.ConversationID)
-					if parseErr != nil {
-						fmt.Printf("[sdk:loop-channel] Invalid conversation ID %q: %v\n", msg.ConversationID, parseErr)
-						return nil
-					}
-					if err := client.Send(taskCtx, convID, "channel", loopContent); err != nil {
-						fmt.Printf("[sdk:loop-channel] SendLoopMessage failed: %v\n", err)
-					}
+				if err := neboloopPlugin.SendLoopChannelMessage(taskCtx, msg.ChannelID, msg.ConversationID, result.String()); err != nil {
+					fmt.Printf("[sdk:loop-channel] SendLoopMessage failed: %v\n", err)
 				}
 			}
 
@@ -3440,6 +3428,33 @@ func handleAgentMessageWithState(ctx context.Context, state *agentState, r *runn
 					(*state.heartbeat).Wake("cron:" + sessionKey)
 				}
 
+				// Forward main lane responses to loop channel so the owner's
+				// loop stays in sync with the companion chat.
+				if lane == agenthub.LaneMain && method == "run" && result.Len() > 0 {
+					if active := state.commManager.GetActive(); active != nil {
+						if nlp, ok := active.(*neboloop.Plugin); ok {
+							if client := nlp.Client(); client != nil {
+								metas := client.ChannelMetas()
+								for chID := range metas {
+									loopContent, _ := json.Marshal(map[string]string{
+										"channel_id": chID,
+										"text":       result.String(),
+									})
+									convs := client.Channels()
+									if convIDStr, ok := convs[chID]; ok {
+										if convID, err := uuid.Parse(convIDStr); err == nil {
+											if err := client.Send(taskCtx, convID, "channel", loopContent); err != nil {
+												devlog.Printf("[Agent-WS] Loop forward failed for channel %s: %v\n", chID, err)
+											}
+										}
+									}
+									break // send to first channel only
+								}
+							}
+						}
+					}
+				}
+
 				state.sendFrame(map[string]any{
 					"type": "res",
 					"id":   requestID,
@@ -3858,7 +3873,7 @@ func (a *loopQuerierAdapter) ListLoops(ctx context.Context) ([]tools.LoopInfo, e
 	}
 	result := make([]tools.LoopInfo, len(loops))
 	for i, l := range loops {
-		result[i] = tools.LoopInfo{ID: l.ID, Name: l.Name, Description: l.Description, MemberCount: l.MemberCount}
+		result[i] = tools.LoopInfo{ID: l.ID, Name: l.Name}
 	}
 	return result, nil
 }

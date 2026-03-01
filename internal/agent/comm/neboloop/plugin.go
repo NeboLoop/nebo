@@ -825,6 +825,28 @@ func (p *Plugin) Send(ctx context.Context, msg comm.CommMessage) error {
 	}
 }
 
+// SendLoopChannelMessage sends a message to a loop channel via the SDK.
+// Uses the conversation ID from the originating message for routing.
+func (p *Plugin) SendLoopChannelMessage(ctx context.Context, channelID, conversationID, text string) error {
+	p.mu.RLock()
+	if !p.connected || p.client == nil {
+		p.mu.RUnlock()
+		return fmt.Errorf("neboloop: not connected")
+	}
+	client := p.client
+	p.mu.RUnlock()
+
+	content, _ := json.Marshal(map[string]string{
+		"channel_id": channelID,
+		"text":       text,
+	})
+	convID, err := uuid.Parse(conversationID)
+	if err != nil {
+		return fmt.Errorf("neboloop: invalid conversation ID %q: %w", conversationID, err)
+	}
+	return client.Send(ctx, convID, "channel", content)
+}
+
 // Subscribe joins a conversation on the NeboLoop gateway.
 func (p *Plugin) Subscribe(_ context.Context, topic string) error {
 	p.mu.RLock()
@@ -927,31 +949,34 @@ func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 		case <-healthDone:
 			return // this connection was replaced by reconnect
 		case <-ticker.C:
-			// Probe liveness by checking if the SDK client is still open.
-			// Send() returns "client closed" immediately when the internal
-			// done channel is closed (no actual network I/O needed).
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			err := client.Send(ctx, uuid.Nil, "ping", nil)
-			cancel()
-
-			if err == nil {
-				p.mu.Lock()
-				p.lastPingSuccess = time.Now()
-				p.mu.Unlock()
-				continue // SDK client is alive
-			}
-
-			if strings.Contains(err.Error(), "client closed") {
-				commLog.Warn("[Comm:neboloop] connection lost (watchdog detected SDK close)")
+			// Probe liveness by checking the underlying net.Conn.
+			// SetWriteDeadline on a closed conn returns an error immediately.
+			// This is non-invasive: no data sent, no interference with SDK loops.
+			conn := client.Conn()
+			if conn == nil {
+				commLog.Warn("[Comm:neboloop] connection lost (watchdog: nil conn)")
 				p.mu.Lock()
 				p.connected = false
 				p.client = nil
 				p.mu.Unlock()
-
 				p.reconnect()
 				return
 			}
-			// Other errors (timeout, etc.) are transient — keep watching
+			if err := conn.SetWriteDeadline(time.Now()); err != nil {
+				commLog.Warn("[Comm:neboloop] connection lost (watchdog: conn closed)", "error", err)
+				p.mu.Lock()
+				p.connected = false
+				p.client = nil
+				p.mu.Unlock()
+				p.reconnect()
+				return
+			}
+			// Reset deadline so it doesn't interfere with the SDK's writeLoop
+			conn.SetWriteDeadline(time.Time{})
+
+			p.mu.Lock()
+			p.lastPingSuccess = time.Now()
+			p.mu.Unlock()
 		}
 	}
 }
@@ -1328,9 +1353,9 @@ func (p *Plugin) ListLoopChannels(ctx context.Context) ([]comm.LoopChannelInfo, 
 	return result, nil
 }
 
-// --- Loop query methods (Bot Query System) ---
+// --- Loop query methods (via REST client) ---
 
-// ListBotLoops returns all loops this bot belongs to.
+// ListBotLoops returns all loops this bot belongs to via the REST API.
 func (p *Plugin) ListBotLoops(ctx context.Context) ([]neboloopapi.Loop, error) {
 	c, err := p.restClient()
 	if err != nil {
@@ -1339,7 +1364,7 @@ func (p *Plugin) ListBotLoops(ctx context.Context) ([]neboloopapi.Loop, error) {
 	return c.ListBotLoops(ctx)
 }
 
-// GetLoop fetches a single loop by ID.
+// GetLoop fetches a single loop by ID via the REST API.
 func (p *Plugin) GetLoop(ctx context.Context, loopID string) (*neboloopapi.Loop, error) {
 	c, err := p.restClient()
 	if err != nil {
@@ -1362,7 +1387,7 @@ func (p *Plugin) UpdateBotIdentity(ctx context.Context, name, role string) error
 	return c.UpdateBotIdentity(ctx, name, role)
 }
 
-// ListLoopMembers returns members of a loop with online presence.
+// ListLoopMembers returns members of a loop with online presence via the REST API.
 func (p *Plugin) ListLoopMembers(ctx context.Context, loopID string) ([]neboloopapi.LoopMember, error) {
 	c, err := p.restClient()
 	if err != nil {
@@ -1371,7 +1396,7 @@ func (p *Plugin) ListLoopMembers(ctx context.Context, loopID string) ([]neboloop
 	return c.ListLoopMembers(ctx, loopID)
 }
 
-// listChannelMembersRaw returns members of a channel with online presence (neboloop types).
+// listChannelMembersRaw returns members of a channel with online presence via the REST API.
 func (p *Plugin) listChannelMembersRaw(ctx context.Context, channelID string) ([]neboloopapi.ChannelMember, error) {
 	c, err := p.restClient()
 	if err != nil {
@@ -1393,18 +1418,13 @@ func (p *Plugin) ListChannelMembers(ctx context.Context, channelID string) ([]co
 	return result, nil
 }
 
-// listChannelMessagesRaw fetches recent messages from a channel (returns neboloopapi types).
-func (p *Plugin) listChannelMessagesRaw(ctx context.Context, channelID string, limit int) ([]neboloopapi.ChannelMessageItem, error) {
+// ListChannelMessages satisfies comm.ChannelMessageLister via the REST API.
+func (p *Plugin) ListChannelMessages(ctx context.Context, channelID string, limit int) ([]comm.ChannelMessageItem, error) {
 	c, err := p.restClient()
 	if err != nil {
 		return nil, err
 	}
-	return c.ListChannelMessages(ctx, channelID, limit)
-}
-
-// ListChannelMessages satisfies comm.ChannelMessageLister, converting to comm types.
-func (p *Plugin) ListChannelMessages(ctx context.Context, channelID string, limit int) ([]comm.ChannelMessageItem, error) {
-	msgs, err := p.listChannelMessagesRaw(ctx, channelID, limit)
+	msgs, err := c.ListChannelMessages(ctx, channelID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1455,7 +1475,7 @@ func enableTCPKeepAlive(conn net.Conn) {
 	}
 }
 
-// ListLoops returns all loops this bot is a member of via the REST API.
+// ListLoops returns all loops this bot is a member of via the SDK.
 func (p *Plugin) ListLoops(ctx context.Context) ([]comm.LoopInfo, error) {
 	loops, err := p.ListBotLoops(ctx)
 	if err != nil {
@@ -1464,9 +1484,8 @@ func (p *Plugin) ListLoops(ctx context.Context) ([]comm.LoopInfo, error) {
 	result := make([]comm.LoopInfo, len(loops))
 	for i, l := range loops {
 		result[i] = comm.LoopInfo{
-			ID:          l.ID,
-			Name:        l.Name,
-			Description: l.Description,
+			ID:   l.ID,
+			Name: l.Name,
 		}
 	}
 	return result, nil
