@@ -327,6 +327,11 @@ func (p *Plugin) Connect(ctx context.Context, config map[string]string) error {
 		return fmt.Errorf("neboloop: 'gateway' or 'api_server' config is required")
 	}
 
+	// Derive api_server from gateway if not set (gateway may be injected from config)
+	if p.apiServer == "" && p.gateway != "" {
+		p.apiServer = deriveAPIServerURL(p.gateway)
+	}
+
 	p.token = config["token"]
 	if p.token == "" {
 		return fmt.Errorf("neboloop: 'token' (owner JWT) config is required")
@@ -902,9 +907,10 @@ func (p *Plugin) OnSettingsChanged(newSettings map[string]string) error {
 
 // --- watchdog & reconnect ---
 
-// watchConnection polls the SDK client to detect silent disconnects.
-// The SDK closes its internal done channel on read errors, causing Send()
-// to return "client closed". When detected, marks disconnected and reconnects.
+// watchConnection polls the SDK client to detect disconnects.
+// The SDK's writeLoop sends WebSocket-level pings every 30s for keepalive.
+// When a write or read error occurs, the SDK closes its internal done channel,
+// causing Send() to return "client closed". We detect this and reconnect.
 func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 	// Capture per-connection signal under lock so we exit if this connection is replaced.
 	p.mu.RLock()
@@ -921,8 +927,9 @@ func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 		case <-healthDone:
 			return // this connection was replaced by reconnect
 		case <-ticker.C:
-			// Probe liveness: Send to nil UUID with "ping" stream.
-			// If the SDK's done channel is closed, this returns immediately.
+			// Probe liveness by checking if the SDK client is still open.
+			// Send() returns "client closed" immediately when the internal
+			// done channel is closed (no actual network I/O needed).
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			err := client.Send(ctx, uuid.Nil, "ping", nil)
 			cancel()
@@ -931,11 +938,11 @@ func (p *Plugin) watchConnection(client *neboloopsdk.Client) {
 				p.mu.Lock()
 				p.lastPingSuccess = time.Now()
 				p.mu.Unlock()
-				continue // Send succeeded (or was queued) — connection alive
+				continue // SDK client is alive
 			}
 
 			if strings.Contains(err.Error(), "client closed") {
-				commLog.Warn("[Comm:neboloop] connection lost (watchdog detected EOF)")
+				commLog.Warn("[Comm:neboloop] connection lost (watchdog detected SDK close)")
 				p.mu.Lock()
 				p.connected = false
 				p.client = nil
@@ -1247,6 +1254,15 @@ func deriveGatewayURL(apiServer string) string {
 	return strings.TrimRight(gw, "/") + "/ws"
 }
 
+// deriveAPIServerURL converts a gateway WebSocket URL to the corresponding REST API base.
+// E.g., "wss://comms.neboloop.com/ws" → "https://comms.neboloop.com"
+func deriveAPIServerURL(gateway string) string {
+	api := strings.Replace(gateway, "wss://", "https://", 1)
+	api = strings.Replace(api, "ws://", "http://", 1)
+	api = strings.TrimSuffix(api, "/ws")
+	return strings.TrimRight(api, "/")
+}
+
 // ListLoopChannels returns all loop channels this bot belongs to.
 // Prefers the in-memory map populated by JOIN responses (zero HTTP calls).
 // Falls back to the REST API if no channels are cached yet.
@@ -1265,6 +1281,7 @@ func (p *Plugin) ListLoopChannels(ctx context.Context) ([]comm.LoopChannelInfo, 
 					ChannelID:   meta.ChannelID,
 					ChannelName: meta.ChannelName,
 					LoopID:      meta.LoopID,
+					LoopName:    meta.LoopName,
 				})
 			}
 
@@ -1329,6 +1346,11 @@ func (p *Plugin) GetLoop(ctx context.Context, loopID string) (*neboloopapi.Loop,
 		return nil, err
 	}
 	return c.GetLoop(ctx, loopID)
+}
+
+// BotID returns the bot's ID as known to NeboLoop.
+func (p *Plugin) BotID() string {
+	return p.botID
 }
 
 // UpdateBotIdentity pushes the bot's name and role to NeboLoop.

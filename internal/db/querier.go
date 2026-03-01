@@ -211,7 +211,8 @@ type Querier interface {
 	GetPluginSetting(ctx context.Context, arg GetPluginSettingParams) (PluginSetting, error)
 	GetProviderModel(ctx context.Context, id string) (ProviderModel, error)
 	GetProviderModelByModelId(ctx context.Context, arg GetProviderModelByModelIdParams) (ProviderModel, error)
-	// Get last N messages for context window (most recent first, reversed for display)
+	// Get last N user/assistant messages for UI display (excludes tool-role rows
+	// whose data is already reconstructed onto assistant messages via metadata).
 	GetRecentChatMessages(ctx context.Context, arg GetRecentChatMessagesParams) ([]ChatMessage, error)
 	// Get last N messages with tool data for runner context window
 	GetRecentChatMessagesWithTools(ctx context.Context, arg GetRecentChatMessagesWithToolsParams) ([]ChatMessage, error)

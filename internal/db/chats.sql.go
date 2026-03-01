@@ -558,7 +558,7 @@ func (q *Queries) GetOrCreateCompanionChat(ctx context.Context, arg GetOrCreateC
 const getRecentChatMessages = `-- name: GetRecentChatMessages :many
 SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM (
     SELECT id, chat_id, role, content, metadata, created_at, day_marker, tool_calls, tool_results, token_estimate FROM chat_messages
-    WHERE chat_id = ?
+    WHERE chat_id = ? AND role IN ('user', 'assistant')
     ORDER BY created_at DESC
     LIMIT ?
 ) sub ORDER BY created_at ASC
@@ -569,7 +569,8 @@ type GetRecentChatMessagesParams struct {
 	Limit  int64  `json:"limit"`
 }
 
-// Get last N messages for context window (most recent first, reversed for display)
+// Get last N user/assistant messages for UI display (excludes tool-role rows
+// whose data is already reconstructed onto assistant messages via metadata).
 func (q *Queries) GetRecentChatMessages(ctx context.Context, arg GetRecentChatMessagesParams) ([]ChatMessage, error) {
 	rows, err := q.db.QueryContext(ctx, getRecentChatMessages, arg.ChatID, arg.Limit)
 	if err != nil {

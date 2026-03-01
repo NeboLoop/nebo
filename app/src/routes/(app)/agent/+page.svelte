@@ -148,9 +148,8 @@
 		let currentGroup: MessageGroupType | null = null;
 
 		for (const msg of messages) {
-			// Skip system messages (tool notifications) in grouping - they're handled inline
-			if (msg.role === 'system') {
-				// System messages break groups but aren't displayed in groups
+			// Skip system and tool messages — tool data is reconstructed into assistant messages
+			if (msg.role === 'system' || msg.role === 'tool') {
 				currentGroup = null;
 				continue;
 			}

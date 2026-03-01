@@ -3,7 +3,7 @@ module github.com/neboloop/nebo
 go 1.25.6
 
 require (
-	github.com/NeboLoop/neboloop-go-sdk v0.1.1
+	github.com/NeboLoop/neboloop-go-sdk v0.1.3
 	github.com/anthropics/anthropic-sdk-go v1.20.0
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
 	github.com/chromedp/chromedp v0.14.2

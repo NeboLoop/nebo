@@ -38,6 +38,7 @@ import (
 	"github.com/neboloop/nebo/internal/agenthub"
 	"github.com/neboloop/nebo/internal/apps"
 	"github.com/neboloop/nebo/internal/crashlog"
+	"github.com/neboloop/nebo/internal/defaults"
 	"github.com/neboloop/nebo/internal/devlog"
 	"github.com/neboloop/nebo/internal/daemon"
 	"github.com/neboloop/nebo/internal/browser"
@@ -408,31 +409,48 @@ func isSkillCode(prompt string) bool {
 	return true
 }
 
-// ensureBotID returns the bot_id from plugin settings, generating and persisting
-// a new UUID if one doesn't exist yet. The bot_id is immutable once created.
+// ensureBotID returns the bot_id, resolving with file-first priority:
+//  1. File (<data_dir>/bot_id) — source of truth, survives DB deletion
+//  2. DB (plugin_settings) — backward compat, migrated to file on first read
+//  3. Generate — new UUID, persisted to both file and DB
 func ensureBotID(ctx context.Context, pluginStore *settings.Store) string {
-	if pluginStore == nil {
-		return ""
+	// 1. File — source of truth
+	if id := defaults.ReadBotID(); id != "" {
+		syncBotIDToDB(ctx, pluginStore, id)
+		return id
 	}
 
-	neboloopSettings, err := pluginStore.GetSettingsByName(ctx, "neboloop")
-	if err == nil && neboloopSettings["bot_id"] != "" {
-		return neboloopSettings["bot_id"]
+	// 2. DB — migrate existing installs to file
+	if pluginStore != nil {
+		s, err := pluginStore.GetSettingsByName(ctx, "neboloop")
+		if err == nil && s["bot_id"] != "" {
+			if err := defaults.WriteBotID(s["bot_id"]); err != nil {
+				devlog.Printf("[NeboLoop] Warning: failed to write bot_id file: %v\n", err)
+			}
+			return s["bot_id"]
+		}
 	}
 
-	// Generate a new bot_id and persist it
+	// 3. Generate new
 	botID := uuid.New().String()
+	if err := defaults.WriteBotID(botID); err != nil {
+		devlog.Printf("[NeboLoop] Warning: failed to write bot_id file: %v\n", err)
+	}
+	syncBotIDToDB(ctx, pluginStore, botID)
+	devlog.Printf("[NeboLoop] Generated bot_id: %s\n", botID)
+	return botID
+}
+
+// syncBotIDToDB writes the bot_id to the plugin_settings DB table for backward compatibility.
+func syncBotIDToDB(ctx context.Context, pluginStore *settings.Store, botID string) {
+	if pluginStore == nil {
+		return
+	}
 	p, err := pluginStore.GetPlugin(ctx, "neboloop")
 	if err != nil {
-		devlog.Printf("[NeboLoop] Warning: neboloop plugin not registered, cannot persist bot_id: %v\n", err)
-		return botID
+		return
 	}
-	if err := pluginStore.UpdateSettings(ctx, p.ID, map[string]string{"bot_id": botID}, nil); err != nil {
-		devlog.Printf("[NeboLoop] Warning: failed to persist bot_id: %v\n", err)
-	} else {
-		devlog.Printf("[NeboLoop] Generated bot_id: %s\n", botID)
-	}
-	return botID
+	_ = pluginStore.UpdateSettings(ctx, p.ID, map[string]string{"bot_id": botID}, nil)
 }
 
 // getNeboLoopJWT retrieves the owner's OAuth JWT from auth_profiles.
@@ -1678,16 +1696,59 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 	// Wire SDK loop channel messages → per-channel lanes
 	neboloopPlugin.OnLoopChannelMessage(func(msg neboloop.LoopChannelMessage) {
-		sessionKey := fmt.Sprintf("loop-channel-%s-%s", msg.ChannelID, msg.ConversationID)
-
-		fmt.Printf("[sdk:loop-channel] Processing message from %s in channel %s (session %s)\n",
-			msg.SenderName, msg.ChannelName, sessionKey)
-
-		// Resolve comm lane model override
-		var commModelOverride string
-		if cfg := provider.GetModelsConfig(); cfg != nil && cfg.LaneRouting != nil && cfg.LaneRouting.Comm != "" {
-			commModelOverride = cfg.LaneRouting.Comm
+		// Skip own messages to prevent echo loops
+		if msg.SenderID == neboloopPlugin.BotID() {
+			return
 		}
+
+		// Detect if the sender is the bot's owner
+		isOwner := neboloopPlugin.OwnerID() != "" && msg.SenderID == neboloopPlugin.OwnerID()
+
+		var laneName, sessionKey string
+		var origin tools.Origin
+		var prompt string
+		var modelOverride string
+
+		if isOwner {
+			// Owner loop messages route to main lane and share the companion chat,
+			// just like owner DMs — so the web UI shows them in real-time.
+			laneName = agenthub.LaneMain
+			origin = tools.OriginUser
+			prompt = msg.Text
+
+			state.companionChatIDMu.RLock()
+			cachedID := state.companionChatID
+			state.companionChatIDMu.RUnlock()
+
+			if cachedID != "" {
+				sessionKey = cachedID
+			} else {
+				sessionKey = "main"
+				if state.sqlDB != nil {
+					queries := db.New(state.sqlDB)
+					chat, err := queries.GetOrCreateCompanionChat(context.Background(), db.GetOrCreateCompanionChatParams{
+						ID:     uuid.New().String(),
+						UserID: sql.NullString{String: "companion-default", Valid: true},
+					})
+					if err == nil {
+						sessionKey = chat.ID
+					}
+				}
+			}
+		} else {
+			// External bot messages go to a per-channel lane with comm origin
+			laneName = fmt.Sprintf("loop-%s", msg.ChannelID)
+			sessionKey = fmt.Sprintf("loop-channel-%s-%s", msg.ChannelID, msg.ConversationID)
+			origin = tools.OriginComm
+			prompt = fmt.Sprintf("[Loop Channel: %s | From: %s]\n%s",
+				msg.ChannelName, msg.SenderName, msg.Text)
+			if cfg := provider.GetModelsConfig(); cfg != nil && cfg.LaneRouting != nil && cfg.LaneRouting.Comm != "" {
+				modelOverride = cfg.LaneRouting.Comm
+			}
+		}
+
+		fmt.Printf("[sdk:loop-channel] Processing message from %s in channel %s (owner=%v session=%s lane=%s)\n",
+			msg.SenderName, msg.ChannelName, isOwner, sessionKey, laneName)
 
 		// Check for channel skill bindings
 		var forceSkill string
@@ -1699,15 +1760,26 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			}
 		}
 
-		laneName := fmt.Sprintf("loop-%s", msg.ChannelID)
 		state.lanes.EnqueueAsync(ctx, laneName, func(taskCtx context.Context) error {
+			// For owner messages, broadcast the user message to the web UI
+			if isOwner {
+				state.sendFrame(map[string]any{
+					"type":   "event",
+					"method": "dm_user_message",
+					"payload": map[string]any{
+						"session_id": sessionKey,
+						"content":    prompt,
+						"source":     "neboloop_loop",
+					},
+				})
+			}
+
 			events, err := r.Run(taskCtx, &runner.RunRequest{
-				SessionKey: sessionKey,
-				Prompt: fmt.Sprintf("[Loop Channel: %s | From: %s]\n%s",
-					msg.ChannelName, msg.SenderName, msg.Text),
-				Origin:        tools.OriginComm,
+				SessionKey:    sessionKey,
+				Prompt:        prompt,
+				Origin:        origin,
 				UserID:        "default-user",
-				ModelOverride: commModelOverride,
+				ModelOverride: modelOverride,
 				ForceSkill:    forceSkill,
 			})
 			if err != nil {
@@ -1717,15 +1789,102 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 			var result strings.Builder
 			for event := range events {
-				if event.Type == ai.EventTypeText {
-					result.WriteString(event.Text)
-				} else if event.Type == ai.EventTypeMessage {
+				switch event.Type {
+				case ai.EventTypeText:
+					if event.Text != "" {
+						result.WriteString(event.Text)
+						if isOwner {
+							state.sendFrame(map[string]any{
+								"type":   "event",
+								"method": "chat_stream",
+								"payload": map[string]any{
+									"session_id": sessionKey,
+									"content":    event.Text,
+									"source":     "loop",
+								},
+							})
+						}
+					}
+				case ai.EventTypeToolCall:
+					if isOwner && event.ToolCall != nil {
+						state.sendFrame(map[string]any{
+							"type":   "event",
+							"method": "tool_start",
+							"payload": map[string]any{
+								"session_id": sessionKey,
+								"tool":       event.ToolCall.Name,
+								"tool_id":    event.ToolCall.ID,
+								"input":      event.ToolCall.Input,
+								"source":     "loop",
+							},
+						})
+					}
+				case ai.EventTypeToolResult:
+					if isOwner {
+						toolName, toolID := "", ""
+						if event.ToolCall != nil {
+							toolName = event.ToolCall.Name
+							toolID = event.ToolCall.ID
+						}
+						payload := map[string]any{
+							"session_id": sessionKey,
+							"result":     event.Text,
+							"tool_name":  toolName,
+							"tool_id":    toolID,
+							"source":     "loop",
+						}
+						if event.ImageURL != "" {
+							payload["image_url"] = event.ImageURL
+						}
+						state.sendFrame(map[string]any{
+							"type":    "event",
+							"method":  "tool_result",
+							"payload": payload,
+						})
+					}
+				case ai.EventTypeMessage:
 					if event.Message != nil && event.Message.Content != "" && result.Len() == 0 {
 						result.WriteString(event.Message.Content)
+						if isOwner {
+							state.sendFrame(map[string]any{
+								"type":   "event",
+								"method": "chat_stream",
+								"payload": map[string]any{
+									"session_id": sessionKey,
+									"content":    event.Message.Content,
+									"source":     "loop",
+								},
+							})
+						}
+					}
+				case ai.EventTypeThinking:
+					if isOwner && event.Text != "" {
+						state.sendFrame(map[string]any{
+							"type":   "event",
+							"method": "thinking",
+							"payload": map[string]any{
+								"session_id": sessionKey,
+								"content":    event.Text,
+								"source":     "loop",
+							},
+						})
 					}
 				}
 			}
 
+			// Notify web UI of completion
+			if isOwner {
+				state.sendFrame(map[string]any{
+					"type":   "event",
+					"method": "chat_complete",
+					"payload": map[string]any{
+						"session_id": sessionKey,
+						"source":     "loop",
+					},
+				})
+			}
+
+			// Send response back to loop channel
 			if result.Len() > 0 {
 				client := neboloopPlugin.Client()
 				if client != nil {
@@ -1745,7 +1904,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			}
 
 			return nil
-		}, agenthub.WithDescription(fmt.Sprintf("Loop channel: %s from %s", msg.ChannelName, msg.SenderName)))
+		}, agenthub.WithDescription(fmt.Sprintf("Loop channel: %s from %s (owner=%v)", msg.ChannelName, msg.SenderName, isOwner)))
 	})
 
 	// Wire SDK DM messages → owner gets main lane, external gets comm lane
