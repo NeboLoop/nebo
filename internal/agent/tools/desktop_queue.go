@@ -64,10 +64,34 @@ func (r *Registry) executeWithDesktopQueue(ctx context.Context, tool Tool, toolC
 func (r *Registry) executeTool(ctx context.Context, tool Tool, toolCall *ai.ToolCall) *ToolResult {
 	// Check origin-based restrictions
 	origin := GetOrigin(ctx)
-	if r.policy != nil && r.policy.IsDeniedForOrigin(origin, toolCall.Name) {
+	if r.policy != nil && r.policy.IsDeniedForOrigin(origin, toolCall.Name, toolCall.Input) {
 		return &ToolResult{
 			Content: fmt.Sprintf("Tool %q is not permitted for %s-origin requests", toolCall.Name, origin),
 			IsError: true,
+		}
+	}
+
+	// --- HOOK: tool.pre_execute ---
+	r.mu.RLock()
+	hooks := r.hooks
+	r.mu.RUnlock()
+	if hooks != nil && hooks.HasSubscribers("tool.pre_execute") {
+		payload, _ := json.Marshal(map[string]any{"tool": toolCall.Name, "input": toolCall.Input})
+		modified, handled := hooks.ApplyFilter(ctx, "tool.pre_execute", payload)
+		if handled {
+			// App fully handled this tool call — return app's result
+			var result ToolResult
+			if json.Unmarshal(modified, &result) == nil {
+				return &result
+			}
+			return &ToolResult{Content: string(modified)}
+		}
+		// Apply modifications to input
+		var mod struct {
+			Input json.RawMessage `json:"input"`
+		}
+		if json.Unmarshal(modified, &mod) == nil && mod.Input != nil {
+			toolCall.Input = mod.Input
 		}
 	}
 
@@ -103,6 +127,18 @@ func (r *Registry) executeTool(ctx context.Context, tool Tool, toolCall *ai.Tool
 	const maxResultLen = 100000
 	if len(result.Content) > maxResultLen {
 		result.Content = result.Content[:maxResultLen] + "\n\n[Output truncated — exceeded 100KB]"
+	}
+
+	// --- HOOK: tool.post_execute ---
+	if hooks != nil && hooks.HasSubscribers("tool.post_execute") {
+		payload, _ := json.Marshal(map[string]any{"tool": toolCall.Name, "input": toolCall.Input, "result": result})
+		modified, _ := hooks.ApplyFilter(ctx, "tool.post_execute", payload)
+		var mod struct {
+			Result *ToolResult `json:"result"`
+		}
+		if json.Unmarshal(modified, &mod) == nil && mod.Result != nil {
+			result = mod.Result
+		}
 	}
 
 	return result

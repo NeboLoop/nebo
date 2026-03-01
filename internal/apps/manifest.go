@@ -16,6 +16,7 @@ const (
 	CapComm     = "comm"
 	CapUI       = "ui"
 	CapSchedule = "schedule"
+	CapHooks    = "hooks"
 )
 
 // Capability prefixes for parameterized capabilities.
@@ -67,6 +68,9 @@ const (
 	PermPrefixBrowser  = "browser:"
 	PermPrefixOAuth    = "oauth:"
 	PermPrefixUser     = "user:"
+
+	// Hooks
+	PermPrefixHook = "hook:"
 )
 
 // AppManifest represents an app's manifest.json — the "plist" for Nebo apps.
@@ -82,6 +86,7 @@ type AppManifest struct {
 	StartupTimeout int               `json:"startup_timeout,omitempty"` // seconds, 0 = default (10s)
 	Provides       []string          `json:"provides"`
 	Permissions []string          `json:"permissions"`
+	Overrides   []string          `json:"overrides,omitempty"` // Hook names this app can fully replace (requires hook: permission + user approval)
 	OAuth       []OAuthRequirement `json:"oauth,omitempty"`
 }
 
@@ -157,6 +162,16 @@ func ValidateManifest(m *AppManifest) error {
 		}
 	}
 
+	// Validate overrides: each must have a corresponding hook: permission
+	for _, override := range m.Overrides {
+		if !ValidHookNames[override] {
+			return fmt.Errorf("invalid override hook name: %s", override)
+		}
+		if !CheckPermission(m, PermPrefixHook+override) {
+			return fmt.Errorf("override %q requires permission %q", override, PermPrefixHook+override)
+		}
+	}
+
 	return nil
 }
 
@@ -217,7 +232,7 @@ func CheckPermission(m *AppManifest, perm string) bool {
 
 func isValidCapability(cap string) bool {
 	switch cap {
-	case CapGateway, CapVision, CapBrowser, CapComm, CapUI, CapSchedule:
+	case CapGateway, CapVision, CapBrowser, CapComm, CapUI, CapSchedule, CapHooks:
 		return true
 	}
 	if strings.HasPrefix(cap, CapPrefixTool) || strings.HasPrefix(cap, CapPrefixChannel) {
@@ -237,6 +252,7 @@ var validPermissionPrefixes = []string{
 	PermPrefixModel, PermPrefixMCP,
 	PermPrefixDatabase, PermPrefixStorage,
 	PermPrefixSchedule, PermPrefixVoice, PermPrefixBrowser, PermPrefixOAuth, PermPrefixUser,
+	PermPrefixHook,
 }
 
 // validPermissionSuffixes maps each prefix to its allowed suffixes.
@@ -283,6 +299,9 @@ var validPermissionSuffixes = map[string][]string{
 	PermPrefixBrowser:  {"navigate"},
 	PermPrefixOAuth:    nil, // flexible: provider names ("google", "microsoft", etc.)
 	PermPrefixUser:     {"token", "id"},
+
+	// Hooks
+	PermPrefixHook: nil, // flexible: hook names ("tool.pre_execute", "memory.pre_store", etc.)
 }
 
 func isValidPermission(perm string) bool {

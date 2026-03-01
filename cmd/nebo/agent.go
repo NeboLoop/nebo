@@ -861,7 +861,7 @@ func handleSkillCode(ctx context.Context, prompt, requestID string, pluginStore 
 // Memory operations (store, recall, search) happen silently — the user shouldn't see
 // a wall of "agent store Completed" cards when the model learns facts.
 func isSilentToolCall(tc *ai.ToolCall) bool {
-	if tc == nil || tc.Name != "agent" {
+	if tc == nil || tc.Name != "bot" {
 		return false
 	}
 	var input struct {
@@ -1134,11 +1134,8 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 			Embedder: embeddingService,
 		}))
 	}
-	registry.RegisterAdvisorsTool(advisorsTool)
-
-	// Register message tool (channel sender wired after app registry is created)
-	messageTool := tools.NewMessageTool()
-	registry.Register(messageTool)
+	// advisorsTool object stays — still passed to botTool.SetAdvisorsTool()
+	// but no longer registered as a standalone tool
 
 	// Register cron tool for scheduled tasks (requires shared database)
 	var cronTool *tools.CronTool
@@ -1146,7 +1143,6 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	if opts.Database != nil {
 		cronTool, err = tools.NewCronTool(tools.CronConfig{DB: opts.Database})
 		if err == nil {
-			registry.Register(cronTool)
 			schedulerMgr = tools.NewSchedulerManager(tools.NewCronScheduler(cronTool))
 		}
 	}
@@ -1156,14 +1152,9 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 	// Wire up cron → agent execution (after runner is created)
 	// We'll set this callback after creating the runner below
 	taskTool.CreateOrchestrator(cfg, sessions, providers, registry)
-	registry.Register(taskTool)
 	defer taskTool.GetOrchestrator().Shutdown(context.Background())
 
-	agentStatusTool := tools.NewAgentStatusTool()
-	agentStatusTool.SetOrchestrator(taskTool.GetOrchestrator())
-	registry.Register(agentStatusTool)
-
-	// Register NeboLoop store tool for browsing/installing apps and uploading binaries
+	// NeboLoop client provider (used by app + skill tools for browse/install)
 	neboloopClientProvider := func(ctx context.Context) (*neboloopapi.Client, error) {
 		if opts.PluginStore == nil {
 			return nil, fmt.Errorf("plugin store not available")
@@ -1175,10 +1166,8 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		settings = injectNeboLoopAuth(ctx, sqlDB, ensureBotID(ctx, opts.PluginStore), settings)
 		return neboloopapi.NewClient(settings)
 	}
-	storeTool := tools.NewNeboLoopTool(neboloopClientProvider)
-	registry.Register(storeTool)
 
-	// --- New STRAP tools (coexist with old tools during migration) ---
+	// --- STRAP tools ---
 
 	// Bot domain: task, memory, session, profile, context, advisors, vision, ask
 	botTool := tools.NewBotTool(tools.BotToolConfig{
@@ -1552,6 +1541,14 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 
 	// Inject app catalog into agent system prompt so it knows about installed apps
 	r.SetAppCatalog(appRegistry)
+
+	// Wire app hooks into tool registry, runner, and bot tool
+	hookDispatcher := appRegistry.HookDispatcher()
+	registry.SetHookDispatcher(hookDispatcher)
+	r.SetHookDispatcher(hookDispatcher)
+	if botTool := registry.GetBotTool(); botTool != nil {
+		botTool.SetHookDispatcher(hookDispatcher)
+	}
 	appRegistry.OnQuarantine(func(event apps.QuarantineEvent) {
 		state.sendFrame(map[string]any{
 			"type":   "event",
@@ -2209,52 +2206,7 @@ func runAgent(ctx context.Context, cfg *agentcfg.Config, serverURL string, opts 
 		}
 	}
 
-	// Create agent domain tool with comm support
-	// Reuses the existing memoryTool and cronTool instances (single DB connection)
-	agentTool, agentToolErr := tools.NewAgentDomainTool(tools.AgentDomainConfig{
-		Sessions:      sessions,
-		ChannelSender: appRegistry,
-		MemoryTool:    memoryTool,
-		Scheduler:     schedulerMgr,
-	})
-	if agentToolErr == nil {
-		agentTool.SetCommService(commHandler)
-		// Wire loop channel listing: plugin → agent tool (avoids import cycle)
-		agentTool.SetLoopChannelLister(func(ctx context.Context) ([]tools.LoopChannelInfo, error) {
-			channels, err := neboloopPlugin.ListLoopChannels(ctx)
-			if err != nil {
-				return nil, err
-			}
-			result := make([]tools.LoopChannelInfo, len(channels))
-			for i, ch := range channels {
-				result[i] = tools.LoopChannelInfo{
-					ChannelID:   ch.ChannelID,
-					ChannelName: ch.ChannelName,
-					LoopID:      ch.LoopID,
-					LoopName:    ch.LoopName,
-				}
-			}
-			return result, nil
-		})
-		// Wire loop querier: adapter converts plugin types → tool types
-		agentTool.SetLoopQuerier(&loopQuerierAdapter{plugin: neboloopPlugin})
-		// Wire identity syncer: pushes name/role to NeboLoop when profile is updated via tool
-		agentTool.SetIdentitySyncer(func(ctx context.Context, name, role string) {
-			_ = neboloopPlugin.UpdateBotIdentity(ctx, name, role)
-		})
-		// Share the orchestrator from taskTool so agent(resource:task) can spawn sub-agents
-		agentTool.SetOrchestrator(taskTool.GetOrchestrator())
-		// Wire interactive ask callback: blocks until user responds in the web UI
-		agentTool.SetAskCallback(func(ctx context.Context, reqID, prompt string, widgets []tools.AskWidget) (string, error) {
-			return state.requestAsk(ctx, reqID, prompt, widgets)
-		})
-		registry.RegisterAgentDomainTool(agentTool)
-	}
-
-	// Wire channel sender to message tool (now that appRegistry is available)
-	messageTool.SetChannelSender(appRegistry)
-
-	// --- Wire new STRAP tools ---
+	// --- Wire STRAP tools ---
 
 	// Wire loop tool: comm service + channel lister + querier
 	if loopTool := registry.GetLoopTool(); loopTool != nil {
@@ -2581,7 +2533,12 @@ func handleIntroduction(ctx context.Context, state *agentState, r *runner.Runner
 	defer introductionInProgress.Delete(sessionKey)
 
 	// Check if user has already completed onboarding — skip introduction if so
-	dbContext, _ := memory.LoadContext(sessions.GetDB(), userID)
+	dbContext, loadErr := memory.LoadContext(sessions.GetDB(), userID)
+	if loadErr != nil {
+		fmt.Printf("[Agent] LoadContext error (userID=%q): %v\n", userID, loadErr)
+	}
+	fmt.Printf("[Agent] Introduction check: dbContext=%v, needsOnboarding=%v, userID=%q\n",
+		dbContext != nil, dbContext != nil && dbContext.NeedsOnboarding(), userID)
 	if dbContext != nil && !dbContext.NeedsOnboarding() {
 		fmt.Printf("[Agent] User already onboarded, skipping introduction\n")
 		state.sendFrame(map[string]any{

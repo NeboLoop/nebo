@@ -128,6 +128,7 @@ Every app requires a `manifest.json`:
 | `description` | `""` | Shown in the UI |
 | `oauth` | `[]` | OAuth provider requirements (see OAuth section) |
 | `startup_timeout` | `10` | Seconds to wait for gRPC socket (max 120) |
+| `overrides` | `[]` | Hook names this app can fully override (requires matching `hook:` permission) |
 | `signature` | `{}` | Code signing metadata (NeboLoop distribution only, optional in dev) |
 
 ---
@@ -144,6 +145,7 @@ Declare what your app provides:
 | `comm` | `CommService` | Inter-agent communication |
 | `ui` | `UIService` | Custom UI with HTTP proxy |
 | `schedule` | `ScheduleService` | Custom scheduling (replaces built-in cron) |
+| `hooks` | `HookService` | Intercept and transform Nebo behavior (WordPress-style actions & filters) |
 | `vision` | `ToolService` | Vision processing (uses ToolService) |
 | `browser` | `ToolService` | Browser automation (uses ToolService) |
 
@@ -179,6 +181,7 @@ Permissions control what the app can access. Deny by default — if not declared
 | `schedule:` | `schedule:create` | Cron job management |
 | `voice:` | `voice:record` | Voice/audio access |
 | `browser:` | `browser:navigate` | Browser automation |
+| `hook:` | `hook:tool.pre_execute`, `hook:memory.pre_store` | Hook subscriptions (required per hook) |
 | `oauth:` | `oauth:google`, `oauth:*` | OAuth token access |
 | `user:` | `user:token` | Receive user JWT in requests |
 | `settings:` | `settings:read` | Settings access |
@@ -854,26 +857,254 @@ The `ScheduleTrigger` message is **denormalized** — it contains everything Neb
 
 ---
 
-## Multi-Capability Apps
+## Hooks App
 
-An app can provide multiple capabilities. For example, a dashboard app that provides both a tool and a UI:
+Declare `"provides": ["hooks"]` in your manifest. Hooks let your app **intercept and transform** Nebo's built-in behavior — the same pattern WordPress uses with `add_action()` and `add_filter()`.
+
+Without hooks, apps can only **add** capabilities (tools, channels, etc.). With hooks, apps can **modify** how existing capabilities work: transform tool inputs before execution, enrich the system prompt, intercept memory storage, log every message, or fully replace built-in behavior.
+
+### Two Hook Types
+
+| Type | WordPress Equivalent | Behavior |
+|------|---------------------|----------|
+| **Filter** | `apply_filters()` | Data flows through. Nebo sends data to your app, your app returns (possibly modified) data. Multiple filters chain in priority order — each receives the previous filter's output. |
+| **Action** | `do_action()` | Fire-and-forget. Nebo calls your app for side effects (logging, syncing, notifications). No return value. |
+
+### Available Hook Points
+
+| Hook Name | Type | When It Fires | Payload |
+|-----------|------|---------------|---------|
+| `tool.pre_execute` | Filter | Before a tool runs | `{"tool": "shell", "input": {...}}` → modified input or `handled: true` to block |
+| `tool.post_execute` | Filter | After a tool runs | `{"tool": "shell", "input": {...}, "result": {...}}` → modified result |
+| `message.pre_send` | Filter | Before LLM API call | `{"system_prompt": "..."}` → modified system prompt |
+| `message.post_receive` | Filter | After LLM response | `{"response_text": "..."}` → modified response text |
+| `memory.pre_store` | Filter | Before memory is saved | `{"key": "...", "value": "...", "layer": "tacit"}` → modified or `handled: true` to skip built-in storage |
+| `memory.pre_recall` | Filter | Before memory lookup | `{"query": "..."}` → modified query or `handled: true` with custom results |
+| `session.message_append` | Action | After a message is saved | `{"session_id": "...", "role": "assistant", "content": "..."}` |
+| `prompt.system_sections` | Filter | During system prompt assembly | `{"sections": ["...", "..."]}` → add/remove/modify prompt sections |
+| `steering.generate` | Filter | During mid-conversation steering | `{"messages": [...]}` → inject custom steering messages |
+| `response.stream` | Filter | Each streamed chunk | `{"event": {...}}` → transform or suppress stream events |
+
+### Priority and Ordering
+
+Hooks use numeric priority — **lower numbers run first** (same as WordPress). Default priority is 10.
+
+When multiple apps subscribe to the same filter hook, they chain: app A (priority 5) runs first, its output feeds into app B (priority 10), and so on. This lets apps compose naturally — a compliance app at priority 5 can sanitize data before a logging app at priority 15 records it.
+
+### Override Mechanism
+
+A filter can return `handled: true` to tell Nebo to **skip the built-in implementation entirely**. When a filter sets `handled: true`, no further filters in the chain are called and Nebo uses the filter's response as the final result.
+
+To use overrides, your app must:
+
+1. Declare the hooks it can override in the manifest's `overrides` array
+2. Have a matching `hook:<hookname>` permission for each override
 
 ```json
 {
-    "id": "com.example.dashboard",
-    "name": "Dashboard",
-    "version": "1.0.0",
-    "provides": ["tool:dashboard_query", "ui"],
-    "permissions": ["network:outbound"]
+    "provides": ["hooks"],
+    "permissions": ["hook:memory.pre_store", "hook:memory.pre_recall"],
+    "overrides": ["memory.pre_store", "memory.pre_recall"]
 }
 ```
 
-Register both handlers with the SDK:
+The user must approve override permissions during installation. This prevents apps from silently replacing core behavior.
+
+### Timeouts and Circuit Breaker
+
+All hook calls have a **500ms timeout**. Since apps communicate over Unix sockets (not network), this is generous — calls typically complete in <1ms.
+
+- **On timeout:** The hook is skipped, original data is used, and a failure is recorded
+- **On error:** Same behavior — skip, use original data, record failure
+- **Circuit breaker:** After **3 consecutive failures**, all hooks for that app are disabled until Nebo restarts. This prevents a misbehaving app from degrading the entire system.
+- A single successful call resets the failure counter to zero
+
+### Permissions
+
+Each hook subscription requires a corresponding `hook:` permission in your manifest. If your app subscribes to `tool.pre_execute` via `ListHooks`, it must declare `"hook:tool.pre_execute"` in its permissions. Subscriptions without matching permissions are silently skipped.
+
+### HookService Proto
+
+```protobuf
+service HookService {
+  rpc ApplyFilter(HookRequest) returns (HookResponse);  // Filter hooks
+  rpc DoAction(HookRequest) returns (Empty);             // Action hooks
+  rpc ListHooks(Empty) returns (HookList);               // Declare subscriptions
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message HookRequest {
+  string hook = 1;           // e.g. "tool.pre_execute"
+  bytes  payload = 2;        // JSON-encoded hook-specific data
+  int64  timestamp_ms = 3;   // When the hook fired (Unix ms)
+}
+
+message HookResponse {
+  bytes  payload = 1;        // JSON-encoded modified data
+  bool   handled = 2;        // If true, Nebo skips the built-in implementation
+  string error = 3;          // Non-empty = hook failed, use original data
+}
+
+message HookList {
+  repeated HookRegistration hooks = 1;
+}
+
+message HookRegistration {
+  string hook = 1;           // Hook name
+  string type = 2;           // "action" or "filter"
+  int32  priority = 3;       // Lower = runs first (default 10)
+}
+```
+
+### Go Example — Compliance Filter
+
+This app intercepts tool execution to block shell commands containing sensitive patterns, and logs every stored memory to an external system.
+
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "strings"
+
+    nebo "github.com/neboloop/nebo-sdk-go"
+)
+
+type ComplianceHooks struct{}
+
+// ListHooks declares which hooks this app subscribes to.
+func (c *ComplianceHooks) ListHooks() []nebo.HookRegistration {
+    return []nebo.HookRegistration{
+        {Hook: "tool.pre_execute", Type: "filter", Priority: 5},
+        {Hook: "memory.pre_store", Type: "action", Priority: 10},
+    }
+}
+
+// ApplyFilter handles filter hooks.
+func (c *ComplianceHooks) ApplyFilter(_ context.Context, hook string, payload []byte) ([]byte, bool, error) {
+    switch hook {
+    case "tool.pre_execute":
+        return c.filterToolExecution(payload)
+    }
+    return payload, false, nil
+}
+
+// DoAction handles action hooks (fire-and-forget).
+func (c *ComplianceHooks) DoAction(_ context.Context, hook string, payload []byte) error {
+    switch hook {
+    case "memory.pre_store":
+        c.logMemoryStore(payload)
+    }
+    return nil
+}
+
+func (c *ComplianceHooks) filterToolExecution(payload []byte) ([]byte, bool, error) {
+    var req struct {
+        Tool  string          `json:"tool"`
+        Input json.RawMessage `json:"input"`
+    }
+    if err := json.Unmarshal(payload, &req); err != nil {
+        return payload, false, nil
+    }
+
+    // Block shell commands containing sensitive patterns
+    if req.Tool == "shell" {
+        var shellInput struct {
+            Command string `json:"command"`
+        }
+        if json.Unmarshal(req.Input, &shellInput) == nil {
+            blocked := []string{"curl.*api-key", "export.*SECRET", "passwd"}
+            for _, pattern := range blocked {
+                if strings.Contains(shellInput.Command, pattern) {
+                    // Return handled=true with an error result to block the tool call
+                    result, _ := json.Marshal(map[string]any{
+                        "error": fmt.Sprintf("Blocked by compliance policy: command matches pattern %q", pattern),
+                    })
+                    return result, true, nil
+                }
+            }
+        }
+    }
+
+    // Pass through unmodified
+    return payload, false, nil
+}
+
+func (c *ComplianceHooks) logMemoryStore(payload []byte) {
+    var mem struct {
+        Key   string `json:"key"`
+        Value string `json:"value"`
+        Layer string `json:"layer"`
+    }
+    if json.Unmarshal(payload, &mem) == nil {
+        log.Printf("[compliance] Memory stored: key=%s layer=%s", mem.Key, mem.Layer)
+        // In production: send to your SIEM, audit log, data warehouse, etc.
+    }
+}
+
+func main() {
+    app, err := nebo.New()
+    if err != nil {
+        log.Fatal(err)
+    }
+    app.RegisterHooks(&ComplianceHooks{})
+    log.Fatal(app.Run())
+}
+```
+
+**manifest.json:**
+
+```json
+{
+    "id": "com.example.compliance",
+    "name": "Compliance Filter",
+    "version": "1.0.0",
+    "description": "Blocks sensitive shell commands and logs memory operations",
+    "runtime": "local",
+    "protocol": "grpc",
+    "provides": ["hooks"],
+    "permissions": ["hook:tool.pre_execute", "hook:memory.pre_store"]
+}
+```
+
+### Example Use Cases
+
+| App | Hooks Used | What It Does |
+|-----|------------|-------------|
+| CRM sync | `memory.pre_store` (action) | Syncs every stored fact to Salesforce |
+| Compliance | `tool.pre_execute` (filter) | Blocks shell commands containing PII |
+| Custom LLM router | `message.pre_send` (filter) | Rewrites system prompt for specific models |
+| Analytics | `session.message_append` (action) | Streams all conversations to a data warehouse |
+| Enterprise memory | `memory.pre_store` + `memory.pre_recall` (filter, override) | Replaces SQLite embeddings with Pinecone |
+| Prompt injection guard | `message.post_receive` (filter) | Scans LLM responses for injected instructions |
+| Context enricher | `prompt.system_sections` (filter) | Injects company knowledge base into system prompt |
+
+---
+
+## Multi-Capability Apps
+
+An app can provide multiple capabilities. For example, a CRM app that provides a tool, hooks, and a UI:
+
+```json
+{
+    "id": "com.example.crm",
+    "name": "CRM Integration",
+    "version": "1.0.0",
+    "provides": ["tool:crm", "hooks", "ui"],
+    "permissions": ["network:outbound", "hook:memory.pre_store", "hook:tool.post_execute"]
+}
+```
+
+Register all handlers with the SDK:
 
 ```go
 app, _ := nebo.New()
-app.RegisterTool(&dashboardTool{})
-app.RegisterUI(&dashboardUI{})
+app.RegisterTool(&crmTool{})
+app.RegisterHooks(&crmHooks{})
+app.RegisterUI(&crmDashboard{})
 log.Fatal(app.Run())
 ```
 
@@ -1109,6 +1340,7 @@ Proto files live in `proto/apps/v0/`. The SDKs ship with pre-generated code, so 
 | `v0/gateway.proto` | `GatewayService` | HealthCheck, Stream (stream), Poll, Cancel, Configure |
 | `v0/ui.proto` | `UIService` | HealthCheck, HandleRequest, Configure |
 | `v0/schedule.proto` | `ScheduleService` | HealthCheck, Create, Get, List, Update, Delete, Enable, Disable, Trigger, History, Triggers (stream), Configure |
+| `v0/hooks.proto` | `HookService` | ApplyFilter, DoAction, ListHooks, HealthCheck |
 
 Every service includes `HealthCheck` and `Configure` RPCs. The SDK handles both automatically.
 
@@ -1246,8 +1478,10 @@ Screenshots, changelogs, and pricing are planned but not yet available.
 1. Create `manifest.json` with `id`, `name`, `version`, `provides`
 2. Write `SKILL.md` describing how the agent should use your app
 3. Install the SDK (`go get github.com/neboloop/nebo-sdk-go`)
-4. Implement the handler interface for your capability (`ToolHandler`, `ChannelHandler`, etc.)
+4. Implement the handler interface for your capability (`ToolHandler`, `ChannelHandler`, `HookHandler`, etc.)
 5. Register the handler and call `app.Run()`
 6. Build a native binary (`go build -o binary .`)
 7. Place binary + manifest.json + SKILL.md in `apps/<your-app-id>/` directory
 8. Nebo auto-discovers and launches it
+
+**For hooks apps:** Declare `hook:<hookname>` permissions for each hook you subscribe to. If you want to fully override built-in behavior (return `handled: true`), also add the hook name to the `overrides` array in your manifest.

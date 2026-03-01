@@ -62,6 +62,7 @@ type AppRegistry struct {
 	channelAdapters map[string]*AppChannelAdapter      // registered channel apps
 	scheduleAdapter *AppScheduleAdapter               // app-provided scheduler (replaces built-in)
 	commNames       map[string]string                  // appID -> comm plugin name (for deregistration)
+	hookDispatcher  *HookDispatcher                   // Dispatches hook calls to subscribed apps
 	mu              sync.RWMutex
 }
 
@@ -103,14 +104,15 @@ func NewAppRegistry(cfg AppRegistryConfig) *AppRegistry {
 	rt.inspector = ins
 
 	ar := &AppRegistry{
-		runtime:       rt,
-		appsDir:       appsDir,
-		queries:       cfg.Queries,
-		pluginStore:   cfg.PluginStore,
-		toolReg:       cfg.ToolReg,
-		skillTool:     cfg.SkillTool,
-		commMgr:       cfg.CommMgr,
-		grpcInspector: ins,
+		runtime:        rt,
+		appsDir:        appsDir,
+		queries:        cfg.Queries,
+		pluginStore:    cfg.PluginStore,
+		toolReg:        cfg.ToolReg,
+		skillTool:      cfg.SkillTool,
+		commMgr:        cfg.CommMgr,
+		grpcInspector:  ins,
+		hookDispatcher: NewHookDispatcher(),
 	}
 
 	return ar
@@ -317,6 +319,26 @@ func (ar *AppRegistry) launchAndRegister(ctx context.Context, appDir string) err
 			ar.scheduleAdapter = adapter
 			ar.mu.Unlock()
 			fmt.Printf("[apps] Registered schedule provider: %s\n", manifest.Name)
+
+		case cap == CapHooks && proc.HookClient != nil:
+			if !HasPermissionPrefix(manifest, PermPrefixHook) {
+				fmt.Printf("[apps] Warning: %s provides hooks but lacks hook: permissions — skipping\n", manifest.ID)
+				continue
+			}
+			// Query app for its hook subscriptions
+			list, err := proc.HookClient.ListHooks(ctx, &pb.Empty{})
+			if err != nil {
+				fmt.Printf("[apps] Warning: hook listing failed for %s: %v\n", manifest.ID, err)
+				continue
+			}
+			for _, reg := range list.Hooks {
+				// Validate app has hook:<hookname> permission for each hook
+				if !CheckPermission(manifest, PermPrefixHook+reg.Hook) {
+					fmt.Printf("[apps] Warning: %s tried to register hook %q without permission — skipping\n", manifest.ID, reg.Hook)
+					continue
+				}
+				ar.hookDispatcher.Register(manifest.ID, reg, proc.HookClient)
+			}
 		}
 	}
 
@@ -393,6 +415,9 @@ func (ar *AppRegistry) deregisterCapabilities(manifest *AppManifest) {
 			ar.mu.Lock()
 			delete(ar.uiApps, manifest.ID)
 			ar.mu.Unlock()
+
+		case cap == CapHooks:
+			ar.hookDispatcher.UnregisterApp(manifest.ID)
 		}
 	}
 
@@ -819,6 +844,11 @@ func (ar *AppRegistry) IsSideloaded(appID string) bool {
 		return false
 	}
 	return info.Mode()&os.ModeSymlink != 0
+}
+
+// HookDispatcher returns the hook dispatcher for wiring into execution flow.
+func (ar *AppRegistry) HookDispatcher() *HookDispatcher {
+	return ar.hookDispatcher
 }
 
 // Inspector returns the gRPC traffic inspector for dev tooling.

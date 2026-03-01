@@ -39,6 +39,18 @@ type Tool interface {
 // added contains names of new/replaced tools, removed contains names of deleted tools.
 type ChangeListener func(added []string, removed []string)
 
+// HookDispatcher is the interface for the app hooks system.
+// Defined here (not in apps/) to avoid circular imports.
+type HookDispatcher interface {
+	// ApplyFilter calls filter subscribers in priority order.
+	// Returns modified payload and whether a filter set handled=true.
+	ApplyFilter(ctx context.Context, hook string, payload []byte) ([]byte, bool)
+	// DoAction calls action subscribers (fire-and-forget with timeout).
+	DoAction(ctx context.Context, hook string, payload []byte)
+	// HasSubscribers returns true if any app is subscribed to the given hook.
+	HasSubscribers(hook string) bool
+}
+
 // Registry manages available tools
 type Registry struct {
 	mu              sync.RWMutex
@@ -47,6 +59,8 @@ type Registry struct {
 	processRegistry *ProcessRegistry
 	listeners       []ChangeListener
 	desktopQueue    DesktopQueueFunc // When set, desktop tools are serialized through this
+	systemTool      *SystemTool      // cached reference for accessor
+	hooks           HookDispatcher   // App hooks dispatcher (optional)
 }
 
 // NewRegistry creates a new tool registry with optional process registry for background bash support
@@ -204,6 +218,20 @@ func (r *Registry) SetPolicy(policy *Policy) {
 	r.policy = policy
 }
 
+// SetHookDispatcher sets the app hooks dispatcher for intercepting tool execution.
+func (r *Registry) SetHookDispatcher(hooks HookDispatcher) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hooks = hooks
+}
+
+// GetHookDispatcher returns the hook dispatcher (may be nil).
+func (r *Registry) GetHookDispatcher() HookDispatcher {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.hooks
+}
+
 // RegisterDefaults registers the default set of tools using the STRAP domain pattern
 // This consolidates 35+ tools into ~5 domain tools for reduced context window overhead
 func (r *Registry) RegisterDefaults() {
@@ -237,40 +265,29 @@ func (r *Registry) registerDomainToolsWithPermissions(permissions map[string]boo
 		return permissions[category]
 	}
 
-	// File domain: read, write, edit, glob, grep
-	if allowed("file") {
-		r.Register(NewFileTool())
-	}
+	// System domain: file + shell (always) + platform resources (app, clipboard, settings, music, search, keychain)
+	// Platform resources are registered via init() in system_domain_darwin/linux/windows.go
+	r.systemTool = NewSystemTool(r.policy, r.processRegistry)
+	r.Register(r.systemTool)
 
-	// Shell domain: bash, process, sessions
-	if allowed("shell") {
-		r.Register(NewShellTool(r.policy, r.processRegistry))
-	}
-
-	// Web domain: fetch, search, browser, screenshot
+	// Web domain: fetch, search, browser
 	if allowed("web") {
 		r.Register(NewWebDomainToolWithConfig(WebDomainConfig{
 			Headless: true,
 		}))
 	}
 
-	// Standalone screenshot tool (kept separate for direct capture)
-	if allowed("media") {
-		r.Register(NewScreenshotTool())
+	// Bot domain: task, memory, session, profile, context, advisors, vision, ask
+	// Requires DB — registered via RegisterBotTool() from agent.go
 
-		// Vision (image analysis) — always registered, AnalyzeFunc wired after provider loading
-		r.Register(NewVisionTool(VisionConfig{}))
-	}
+	// Loop domain: NeboLoop comms — dm, channel, group, topic
+	r.Register(NewLoopTool())
 
-	// Agent domain: task, cron, memory, message, session
-	// Note: AgentDomainTool requires DB and is registered via RegisterAgentDomainTool()
-	// The agent tool is always registered (it covers chat/memory which is always on)
+	// Message domain: outbound delivery — owner, sms, notify
+	r.Register(NewMsgTool())
 
-	// notify_owner: cross-lane owner notification (always registered, wired via setter)
-	r.Register(&NotifyOwnerTool{})
-
-	// query_sessions: cross-session awareness for Main Chat (always registered, wired via setter)
-	r.Register(&QuerySessionsTool{})
+	// Event domain: scheduling & reminders — registered via RegisterEventTool()
+	// App domain: app management + store — registered via RegisterAppTool()
 }
 
 // GetProcessRegistry returns the process registry for external access
@@ -278,81 +295,18 @@ func (r *Registry) GetProcessRegistry() *ProcessRegistry {
 	return r.processRegistry
 }
 
-// GetTaskTool returns the task tool for external access (e.g., to set recovery manager)
-func (r *Registry) GetTaskTool() *TaskTool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if tool, ok := r.tools["task"]; ok {
-		if taskTool, ok := tool.(*TaskTool); ok {
-			return taskTool
-		}
-	}
-	return nil
-}
-
-// RegisterAgentDomainTool registers the agent domain tool (task, cron, memory, message, session)
-// This must be called separately from RegisterDefaults since it requires DB and session manager
-func (r *Registry) RegisterAgentDomainTool(agentTool *AgentDomainTool) {
-	r.Register(agentTool)
-}
-
-// GetAgentDomainTool returns the agent domain tool for external access
-// (e.g., to set orchestrator, recovery manager, channel manager)
-func (r *Registry) GetAgentDomainTool() *AgentDomainTool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if tool, ok := r.tools["agent"]; ok {
-		if agentTool, ok := tool.(*AgentDomainTool); ok {
-			return agentTool
-		}
-	}
-	return nil
-}
-
-// GetNotifyOwnerTool returns the notify_owner tool for external wiring.
-func (r *Registry) GetNotifyOwnerTool() *NotifyOwnerTool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if tool, ok := r.tools["notify_owner"]; ok {
-		if t, ok := tool.(*NotifyOwnerTool); ok {
-			return t
-		}
-	}
-	return nil
-}
-
-// GetQuerySessionsTool returns the query_sessions tool for external wiring.
-func (r *Registry) GetQuerySessionsTool() *QuerySessionsTool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if tool, ok := r.tools["query_sessions"]; ok {
-		if t, ok := tool.(*QuerySessionsTool); ok {
-			return t
-		}
-	}
-	return nil
-}
-
-// GetFileTool returns the file domain tool for external access
+// GetFileTool returns the file tool (via system domain tool).
 func (r *Registry) GetFileTool() *FileTool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if tool, ok := r.tools["file"]; ok {
-		if fileTool, ok := tool.(*FileTool); ok {
-			return fileTool
-		}
+	if r.systemTool != nil {
+		return r.systemTool.GetFileTool()
 	}
 	return nil
 }
 
-// GetShellTool returns the shell domain tool for external access
+// GetShellTool returns the shell tool (via system domain tool).
 func (r *Registry) GetShellTool() *ShellTool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if tool, ok := r.tools["shell"]; ok {
-		if shellTool, ok := tool.(*ShellTool); ok {
-			return shellTool
-		}
+	if r.systemTool != nil {
+		return r.systemTool.GetShellTool()
 	}
 	return nil
 }
@@ -369,31 +323,94 @@ func (r *Registry) GetWebDomainTool() *WebDomainTool {
 	return nil
 }
 
-// GetVisionTool returns the vision tool for external access (e.g., to set AnalyzeFunc)
-func (r *Registry) GetVisionTool() *VisionTool {
+// RegisterBotTool registers the bot domain tool (task, memory, session, profile, context, advisors, vision, ask)
+// This must be called separately from RegisterDefaults since it requires DB and session manager.
+func (r *Registry) RegisterBotTool(botTool *BotTool) {
+	r.Register(botTool)
+}
+
+// GetBotTool returns the bot domain tool for external access.
+func (r *Registry) GetBotTool() *BotTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if tool, ok := r.tools["vision"]; ok {
-		if visionTool, ok := tool.(*VisionTool); ok {
-			return visionTool
+	if tool, ok := r.tools["bot"]; ok {
+		if botTool, ok := tool.(*BotTool); ok {
+			return botTool
 		}
 	}
 	return nil
 }
 
-// RegisterAdvisorsTool registers the advisors tool for internal deliberation
-// This must be called separately from RegisterDefaults since it requires a loader and provider
-func (r *Registry) RegisterAdvisorsTool(advisorsTool *AdvisorsTool) {
-	r.Register(advisorsTool)
-}
-
-// GetAdvisorsTool returns the advisors tool for external access
-func (r *Registry) GetAdvisorsTool() *AdvisorsTool {
+// GetLoopTool returns the loop domain tool for external access.
+func (r *Registry) GetLoopTool() *LoopTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if tool, ok := r.tools["advisors"]; ok {
-		if advisorsTool, ok := tool.(*AdvisorsTool); ok {
-			return advisorsTool
+	if tool, ok := r.tools["loop"]; ok {
+		if loopTool, ok := tool.(*LoopTool); ok {
+			return loopTool
+		}
+	}
+	return nil
+}
+
+// GetMsgTool returns the message domain tool for external access.
+func (r *Registry) GetMsgTool() *MsgTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if tool, ok := r.tools["message"]; ok {
+		if msgTool, ok := tool.(*MsgTool); ok {
+			return msgTool
+		}
+	}
+	return nil
+}
+
+// RegisterEventTool registers the event domain tool (cron, reminders).
+func (r *Registry) RegisterEventTool(eventTool *EventTool) {
+	r.Register(eventTool)
+}
+
+// GetEventTool returns the event domain tool for external access.
+func (r *Registry) GetEventTool() *EventTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if tool, ok := r.tools["event"]; ok {
+		if eventTool, ok := tool.(*EventTool); ok {
+			return eventTool
+		}
+	}
+	return nil
+}
+
+// RegisterAppTool registers the app domain tool (list, launch, stop, browse, install).
+func (r *Registry) RegisterAppTool(appTool *AppTool) {
+	r.Register(appTool)
+}
+
+// GetAppTool returns the app domain tool for external access.
+func (r *Registry) GetAppTool() *AppTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if tool, ok := r.tools["app"]; ok {
+		if appTool, ok := tool.(*AppTool); ok {
+			return appTool
+		}
+	}
+	return nil
+}
+
+// GetSystemTool returns the system domain tool for external access.
+func (r *Registry) GetSystemTool() *SystemTool {
+	return r.systemTool
+}
+
+// GetSkillTool returns the skill domain tool for external access.
+func (r *Registry) GetSkillTool() *SkillDomainTool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if tool, ok := r.tools["skill"]; ok {
+		if skillTool, ok := tool.(*SkillDomainTool); ok {
+			return skillTool
 		}
 	}
 	return nil
@@ -408,31 +425,39 @@ func toolCorrection(name string) string {
 	case "webfetch", "web_fetch":
 		return "INSTEAD USE: web(action: \"fetch\", url: \"https://...\")"
 	case "read":
-		return "INSTEAD USE: file(action: \"read\", path: \"/path/to/file\")"
+		return "INSTEAD USE: system(resource: \"file\", action: \"read\", path: \"/path/to/file\")"
 	case "write":
-		return "INSTEAD USE: file(action: \"write\", path: \"/path\", content: \"...\")"
+		return "INSTEAD USE: system(resource: \"file\", action: \"write\", path: \"/path\", content: \"...\")"
 	case "edit":
-		return "INSTEAD USE: file(action: \"edit\", path: \"/path\", old_string: \"...\", new_string: \"...\")"
+		return "INSTEAD USE: system(resource: \"file\", action: \"edit\", path: \"/path\", old_string: \"...\", new_string: \"...\")"
 	case "grep":
-		return "INSTEAD USE: file(action: \"grep\", pattern: \"...\", path: \"/dir\")"
+		return "INSTEAD USE: system(resource: \"file\", action: \"grep\", pattern: \"...\", path: \"/dir\")"
 	case "glob":
-		return "INSTEAD USE: file(action: \"glob\", pattern: \"**/*.go\")"
+		return "INSTEAD USE: system(resource: \"file\", action: \"glob\", pattern: \"**/*.go\")"
 	case "bash":
-		return "INSTEAD USE: shell(resource: \"bash\", action: \"exec\", command: \"...\")"
-	case "apps", "application", "applications", "app":
-		return "INSTEAD USE: system(resource: \"app\", action: \"list\") or system(resource: \"app\", action: \"launch\", name: \"AppName\")"
+		return "INSTEAD USE: system(resource: \"shell\", action: \"exec\", command: \"...\")"
+	case "file":
+		return "INSTEAD USE: system(resource: \"file\", action: \"read\", path: \"...\") — file operations are under the system tool"
+	case "shell":
+		return "INSTEAD USE: system(resource: \"shell\", action: \"exec\", command: \"...\") — shell operations are under the system tool"
+	case "agent":
+		return "INSTEAD USE: bot(resource: \"memory\", action: \"store\", ...) or bot(resource: \"task\", action: \"spawn\", ...) or loop(resource: \"channel\", action: \"send\", ...) or event(action: \"create\", ...)"
+	case "apps", "application", "applications":
+		return "INSTEAD USE: app(action: \"list\") or app(action: \"launch\", id: \"...\") or app(action: \"browse\")"
 	case "mail", "email":
-		return "INSTEAD USE: pim(resource: \"mail\", action: \"unread\") or pim(resource: \"mail\", action: \"send\", ...)"
+		return "INSTEAD USE: organizer(resource: \"mail\", action: \"unread\") or organizer(resource: \"mail\", action: \"send\", ...)"
 	case "contacts":
-		return "INSTEAD USE: pim(resource: \"contacts\", action: \"search\", query: \"...\")"
+		return "INSTEAD USE: organizer(resource: \"contacts\", action: \"search\", query: \"...\")"
 	case "calendar":
-		return "INSTEAD USE: pim(resource: \"calendar\", action: \"today\") or pim(resource: \"calendar\", action: \"create\", ...)"
+		return "INSTEAD USE: organizer(resource: \"calendar\", action: \"today\") or organizer(resource: \"calendar\", action: \"create\", ...)"
 	case "reminders":
-		return "INSTEAD USE: pim(resource: \"reminders\", action: \"list\") or pim(resource: \"reminders\", action: \"create\", ...)"
+		return "INSTEAD USE: organizer(resource: \"reminders\", action: \"list\") or organizer(resource: \"reminders\", action: \"create\", ...)"
+	case "pim":
+		return "INSTEAD USE: organizer(resource: \"mail\", action: \"...\") — pim has been renamed to organizer"
 	case "clipboard":
 		return "INSTEAD USE: system(resource: \"clipboard\", action: \"get\") or system(resource: \"clipboard\", action: \"set\", content: \"...\")"
 	case "notification", "notify":
-		return "INSTEAD USE: system(resource: \"notify\", action: \"send\", title: \"...\", text: \"...\")"
+		return "INSTEAD USE: message(resource: \"notify\", action: \"send\", title: \"...\", text: \"...\")"
 	case "music":
 		return "INSTEAD USE: system(resource: \"music\", action: \"play\") or system(resource: \"music\", action: \"status\")"
 	case "spotlight", "search":
@@ -454,7 +479,25 @@ func toolCorrection(name string) string {
 	case "dock":
 		return "INSTEAD USE: system(resource: \"app\", action: \"list\") — dock tool has been consolidated"
 	case "messages", "imessage", "sms", "text", "message":
-		return "INSTEAD USE: pim(resource: \"messages\", action: \"send\", to: \"+15551234567\", body: \"Hello!\") or pim(resource: \"messages\", action: \"conversations\")"
+		return "INSTEAD USE: message(resource: \"sms\", action: \"send\", to: \"+15551234567\", body: \"Hello!\") or message(resource: \"sms\", action: \"conversations\")"
+	case "notify_owner":
+		return "INSTEAD USE: message(resource: \"owner\", action: \"notify\", text: \"...\")"
+	case "query_sessions":
+		return "INSTEAD USE: bot(resource: \"session\", action: \"query\", query: \"...\")"
+	case "screenshot":
+		return "INSTEAD USE: desktop(resource: \"screenshot\", action: \"capture\") or desktop(resource: \"screenshot\", action: \"see\", app: \"...\")"
+	case "tts":
+		return "INSTEAD USE: desktop(resource: \"tts\", action: \"speak\", text: \"...\")"
+	case "vision":
+		return "INSTEAD USE: bot(resource: \"vision\", action: \"analyze\", image: \"...\", text: \"...\")"
+	case "advisors":
+		return "INSTEAD USE: bot(resource: \"advisors\", action: \"deliberate\", task: \"...\")"
+	case "store":
+		return "INSTEAD USE: skill(action: \"browse\") or app(action: \"browse\")"
+	case "cron":
+		return "INSTEAD USE: event(action: \"create\", ...) or event(action: \"list\")"
+	case "task":
+		return "INSTEAD USE: bot(resource: \"task\", action: \"spawn\", description: \"...\") or bot(resource: \"task\", action: \"list\")"
 	case "devtools", "dev_tools", "browser_devtools":
 		return "INSTEAD USE: web(resource: \"devtools\", action: \"console\") or web(resource: \"devtools\", action: \"source\")"
 	default:

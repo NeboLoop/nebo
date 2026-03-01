@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
@@ -22,6 +24,7 @@ type PromptContext struct {
 	ActiveSkills       string   // From ActiveSkillContent (can change mid-run)
 	AppCatalog         string
 	ModelAliases       []string
+	Hooks              tools.HookDispatcher // Optional hook dispatcher for prompt hooks
 }
 
 // DynamicContext holds per-iteration inputs that change between agentic loop iterations.
@@ -97,7 +100,7 @@ If a tool call SUCCEEDS, report what happened. Never contradict a successful res
 
 const sectionToolsDeclaration = `## Your Tools
 
-Your ONLY tools are the ones listed below and provided in the tool definitions. You do NOT have "WebFetch", "WebSearch", "Read", "Write", "Edit", "Grep", "Glob", "Bash", "TodoWrite", "EnterPlanMode", "AskUserQuestion", "Task", or "Context7" as tools. Those do not exist in your runtime. Your actual tools are: file, shell, web, agent, skill, desktop, pim, system, screenshot, and vision. When a user asks what tools you have, ONLY list these — never list tools from your training data.`
+Your ONLY tools are the ones listed below and provided in the tool definitions. You do NOT have "WebFetch", "WebSearch", "Read", "Write", "Edit", "Grep", "Glob", "Bash", "TodoWrite", "EnterPlanMode", "AskUserQuestion", "Task", or "Context7" as tools. Those do not exist in your runtime. Your actual tools are: system, web, bot, loop, message, event, skill, app, desktop, and organizer. When a user asks what tools you have, ONLY list these — never list tools from your training data.`
 
 const sectionCommStyle = `## Communication Style
 
@@ -114,14 +117,6 @@ Call them like: tool_name(resource: "resource", action: "action", param: "value"
 // strapToolDocs maps tool names to their STRAP documentation section.
 // Only sections for tools actually sent in the request are included in the prompt.
 var strapToolDocs = map[string]string{
-	"file": `### file — File Operations
-- file(action: read, path: "/path/to/file") — Read file contents
-- file(action: write, path: "/path", content: "...") — Write/create a file. Prefer editing existing files over creating new ones. Never create summary, report, or documentation files unless the user asks for one.
-- file(action: edit, path: "/path", old_string: "...", new_string: "...") — Edit a file
-- file(action: glob, pattern: "**/*.go") — Find files by pattern
-- file(action: grep, pattern: "search term", path: "/dir") — Search file contents`,
-
-	"shell": shellSTRAPDoc(),
 
 	"web": `### web — Web & Browser Automation
 Three modes:
@@ -169,65 +164,72 @@ Filling forms: snapshot → identify input refs → fill each field → click th
 Parallel research: Open a few windows for different URLs, reuse them by navigating with target_id instead of always opening new ones.
 Window discipline: ALWAYS close windows when you are finished with them. Never leave orphan windows open. When a task or research is complete, close every window you opened.`,
 
-	"agent": `### agent — Orchestration & State
+	"bot": `### bot — Self-Management & Cognition
 
 **Sub-agents (parallel work):**
 Spawn sub-agents for independent work that can run in parallel. Completion is push-based — they auto-announce results when done. Do NOT poll status in a loop; only check on-demand for debugging or if the user asks.
-- agent(resource: task, action: spawn, prompt: "Research competitor pricing", agent_type: "explore") — Spawn and get results when done
-- agent(resource: task, action: spawn, prompt: "...", wait: false) — Fire-and-forget, result announced later
-- agent(resource: task, action: status, agent_id: "...") — Check status (only when needed)
-- agent(resource: task, action: cancel, agent_id: "...") — Cancel a running sub-agent
+- bot(resource: task, action: spawn, prompt: "Research competitor pricing", agent_type: "explore") — Spawn and get results when done
+- bot(resource: task, action: spawn, prompt: "...", wait: false) — Fire-and-forget, result announced later
+- bot(resource: task, action: status, agent_id: "...") — Check status (only when needed)
+- bot(resource: task, action: cancel, agent_id: "...") — Cancel a running sub-agent
 
 **Work tracking (keep yourself on task):**
 For multi-step work, create tasks to track your progress. This prevents you from losing focus or repeating steps.
-- agent(resource: task, action: create, subject: "Test shell tool") — Create a trackable step
-- agent(resource: task, action: update, task_id: "1", status: "completed") — Mark done (pending → in_progress → completed)
-- agent(resource: task, action: list) — See all tasks and sub-agents
-- agent(resource: task, action: delete, task_id: "1") — Remove a task
+- bot(resource: task, action: create, subject: "Test shell tool") — Create a trackable step
+- bot(resource: task, action: update, task_id: "1", status: "completed") — Mark done (pending → in_progress → completed)
+- bot(resource: task, action: list) — See all tasks and sub-agents
+- bot(resource: task, action: delete, task_id: "1") — Remove a task
 
 When to spawn vs do it yourself:
 - Spawn when: multiple independent tasks, long-running research, tasks that don't depend on each other
 - Do it yourself when: simple single task, tasks that depend on each other's results, quick lookups
 
-**Reminders (scheduled tasks):**
-For anything recurring or time-based. Prefer task_type: "agent" — this means YOU execute the task when it fires, with full access to all your tools and memory.
-Use "instructions" to tell your future self HOW to accomplish the task — which tools to use, what steps to follow, constraints. The "message" is the what, "instructions" is the how.
-
-One-time reminders — use "at" (we compute the schedule automatically):
-- agent(resource: reminder, action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", message: "Remind user to call Kristi")
-- agent(resource: reminder, action: create, name: "send-sms", at: "in 5 minutes", task_type: "agent", message: "Send 'Go outside' to Kristi via text", instructions: "Send the message via the user's preferred messaging channel. The recipient phone number is stored in memory under contacts/kristi.")
-
-Recurring reminders — use "schedule" (cron expression):
-- agent(resource: reminder, action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send a summary to the owner", instructions: "Use the web tool to check the calendar, then deliver the summary via DM.")
-- agent(resource: reminder, action: create, name: "weekly-report", schedule: "0 0 17 * * 5", task_type: "agent", message: "Compile this week's completed tasks and draft a summary")
-
-Management:
-- agent(resource: reminder, action: list) — List all reminders
-- agent(resource: reminder, action: delete, name: "...") — Remove a reminder
-- agent(resource: reminder, action: pause/resume, name: "...") — Pause or resume
-- agent(resource: reminder, action: run, name: "...") — Trigger immediately
-
-Schedule format (recurring only): "second minute hour day-of-month month day-of-week"
-Examples: "0 0 9 * * 1-5" (9am weekdays), "0 30 8 * * *" (8:30am daily), "0 0 */2 * * *" (every 2 hours)
-
 **Memory (3-tier persistence):**
-- agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit") — Store a fact
-- agent(resource: memory, action: recall, key: "user/name") — Recall a specific fact
-- agent(resource: memory, action: search, query: "...") — Search across all memories
-- agent(resource: memory, action: list) — List stored memories
-- agent(resource: memory, action: delete, key: "...") — Delete a memory
+- bot(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit") — Store a fact
+- bot(resource: memory, action: recall, key: "user/name") — Recall a specific fact
+- bot(resource: memory, action: search, query: "...") — Search across all memories
+- bot(resource: memory, action: list) — List stored memories
+- bot(resource: memory, action: delete, key: "...") — Delete a memory
+- bot(resource: memory, action: clear) — Clear all memories
 Layers: "tacit" (long-term preferences — MOST COMMON), "daily" (today's facts, auto-expires), "entity" (people/places/things)
 
-**Messaging (via NeboLoop):**
-- agent(resource: message, action: send, to: "...", text: "Hello!") — Send a DM
-- agent(resource: message, action: list) — List available channels
-Use messaging to deliver results to the user via DM. Combine with reminders for proactive delivery.
-
 **Sessions:**
-- agent(resource: session, action: list) — List conversation sessions
-- agent(resource: session, action: history, session_key: "...") — View session history
-- agent(resource: session, action: status) — Current session status
-- agent(resource: session, action: clear) — Clear current session`,
+- bot(resource: session, action: list) — List conversation sessions
+- bot(resource: session, action: history, session_key: "...") — View session history
+- bot(resource: session, action: status) — Current session status
+- bot(resource: session, action: clear) — Clear current session
+- bot(resource: session, action: query, session_key: "...", query: "...") — Search session history
+
+**Profile:**
+- bot(resource: profile, action: get) — View bot identity/profile
+- bot(resource: profile, action: update, name: "...", role: "...") — Update profile
+- bot(resource: profile, action: open_billing) — Open billing/subscription page
+
+**Advisors (internal deliberation):**
+For complex decisions, consult advisors who return independent perspectives.
+- bot(resource: advisors, action: deliberate, task: "Should we use PostgreSQL or SQLite?") — Consult all
+- bot(resource: advisors, action: deliberate, task: "...", advisors: ["pragmatist", "skeptic"]) — Specific ones
+
+**Vision (image analysis):**
+- bot(resource: vision, action: analyze, image: "/path/to/image.png") — Analyze an image
+
+**Context (conversation management):**
+- bot(resource: context, action: summary) — Get current context/conversation summary
+- bot(resource: context, action: compact) — Compact conversation to free context space
+- bot(resource: context, action: reset) — Reset conversation context
+
+**Ask (user input):**
+- bot(resource: ask, action: prompt, text: "What would you like?") — Prompt user for input
+- bot(resource: ask, action: confirm, text: "Proceed with deletion?") — Yes/no confirmation
+- bot(resource: ask, action: select, text: "Pick a color", options: ["red", "blue", "green"]) — Multiple choice`,
+
+	"loop": loopSTRAPDoc(),
+
+	"event": eventSTRAPDoc(),
+
+	"message": messageSTRAPDoc(),
+
+	"app": appSTRAPDoc(),
 
 	"skill": `### skill — Capabilities & Knowledge (MANDATORY CHECK)
 Before replying to any request, scan your available skills:
@@ -243,72 +245,11 @@ Never read more than one skill upfront. Only load after choosing.
 If a skill returns an auth error, guide the user to Settings → Apps to reconnect.
 If a skill is not found, suggest checking the app store.`,
 
-	"advisors": `### advisors — Internal Deliberation
-For complex decisions, call the 'advisors' tool. Advisors run concurrently and return independent perspectives that YOU synthesize into a recommendation.
-- advisors(task: "Should we use PostgreSQL or SQLite for this use case?") — Consult all advisors
-- advisors(task: "...", advisors: ["pragmatist", "skeptic"]) — Consult specific ones
-Use for: significant decisions, multiple valid approaches, high-stakes choices. Skip for: routine tasks, clear-cut answers.`,
-
 	"desktop": desktopSTRAPDoc(),
 
-	"pim": `### pim — Personal Information Management
-- pim(resource: "mail", action: "unread") — Check unread email count
-- pim(resource: "mail", action: "read", count: 5) — Read recent emails
-- pim(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!") — Send email
-- pim(resource: "mail", action: "search", query: "invoice") — Search emails
-- pim(resource: "mail", action: "accounts") — List email accounts
-- pim(resource: "contacts", action: "search", query: "Alice") — Search contacts
-- pim(resource: "contacts", action: "get", name: "Alice Smith") — Get contact details
-- pim(resource: "contacts", action: "create", name: "Bob", email: "bob@example.com") — Create contact
-- pim(resource: "contacts", action: "groups") — List contact groups
-- pim(resource: "calendar", action: "today") — Today's events
-- pim(resource: "calendar", action: "upcoming", days: 7) — Upcoming events
-- pim(resource: "calendar", action: "create", title: "Meeting", date: "2024-01-15", time: "14:00") — Create event
-- pim(resource: "calendar", action: "calendars") — List calendars
-- pim(resource: "reminders", action: "list") — List reminders
-- pim(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal") — Create reminder
-- pim(resource: "reminders", action: "complete", reminder_id: "...") — Complete reminder
-- pim(resource: "reminders", action: "lists") — List reminder lists`,
+	"organizer": organizerSTRAPDoc(),
 
 	"system": systemSTRAPDoc(),
-
-	"screenshot": `### screenshot — Screen Capture
-- screenshot() — Capture the current screen
-- screenshot(format: "file") — Save to disk and return inline markdown image URL
-- screenshot(format: "both") — Both base64 and file`,
-
-	"vision": `### vision — Image Analysis
-- vision(path: "/path/to/image.png") — Analyze an image (requires API key)`,
-}
-
-// shellSTRAPDoc returns the shell STRAP documentation for the current platform.
-func shellSTRAPDoc() string {
-	if runtime.GOOS == "windows" {
-		return `### shell — Shell & Process Management (PowerShell)
-- shell(resource: bash, action: exec, command: "Get-ChildItem") — Run a PowerShell command
-- shell(resource: bash, action: exec, command: "...", background: true) — Run in background
-- shell(resource: process, action: list) — List running processes
-- shell(resource: process, action: kill, pid: 1234) — Kill a process
-- shell(resource: process, action: info, pid: 1234) — Process details
-- shell(resource: session, action: list) — List persistent shell sessions
-- shell(resource: session, action: poll, id: "...") — Read session output
-- shell(resource: session, action: log, id: "...") — Get full session log
-- shell(resource: session, action: write, id: "...", input: "...") — Send input to session
-- shell(resource: session, action: kill, id: "...") — End a session
-
-Note: Commands run in PowerShell. Use PowerShell cmdlets (Get-Process, Get-ChildItem, Invoke-WebRequest, etc.) not Unix commands.`
-	}
-	return `### shell — Shell & Process Management
-- shell(resource: bash, action: exec, command: "ls -la") — Run a command
-- shell(resource: bash, action: exec, command: "...", background: true) — Run in background
-- shell(resource: process, action: list) — List running processes
-- shell(resource: process, action: kill, pid: 1234) — Kill a process
-- shell(resource: process, action: info, pid: 1234) — Process details
-- shell(resource: session, action: list) — List persistent shell sessions
-- shell(resource: session, action: poll, id: "...") — Read session output
-- shell(resource: session, action: log, id: "...") — Get full session log
-- shell(resource: session, action: write, id: "...", input: "...") — Send input to session
-- shell(resource: session, action: kill, id: "...") — End a session`
 }
 
 // desktopSTRAPDoc returns the desktop STRAP documentation for the current platform.
@@ -337,6 +278,7 @@ func desktopSTRAPDoc() string {
 - desktop(resource: "window", action: "move", app: "Notepad", x: 0, y: 0) — Move window
 - desktop(resource: "window", action: "resize", app: "Notepad", width: 800, height: 600) — Resize
 - desktop(resource: "window", action: "minimize", app: "Notepad") — Minimize
+- desktop(resource: "window", action: "maximize", app: "Notepad") — Maximize
 - desktop(resource: "window", action: "close", app: "Notepad") — Close window
 - desktop(resource: "shortcut", action: "list") — List available shortcuts
 - desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut
@@ -344,13 +286,19 @@ func desktopSTRAPDoc() string {
 - desktop(resource: "menu", action: "menus", app: "Notepad", menu: "File") — List menu items
 - desktop(resource: "menu", action: "click", app: "Notepad", menu: "File", item: "New Window") — Click menu item
 - desktop(resource: "menu", action: "status") — List system tray icons
+- desktop(resource: "menu", action: "click_status", name: "...") — Click a system tray icon
 - desktop(resource: "dialog", action: "detect", app: "Notepad") — Detect open dialogs/modals
 - desktop(resource: "dialog", action: "list", app: "Notepad") — List dialog elements
 - desktop(resource: "dialog", action: "click", app: "Notepad", button_label: "OK") — Click dialog button
+- desktop(resource: "dialog", action: "fill", app: "Notepad", field: "...", value: "...") — Fill a dialog field
 - desktop(resource: "dialog", action: "dismiss", app: "Notepad") — Dismiss dialog
 - desktop(resource: "space", action: "list") — List virtual desktops
 - desktop(resource: "space", action: "switch", direction: "right") — Switch virtual desktop
 - desktop(resource: "space", action: "move_window", direction: "right") — Move window to adjacent desktop
+- desktop(resource: "screenshot", action: "capture") — Capture current screen
+- desktop(resource: "screenshot", action: "capture", format: "file") — Capture and save to disk (returns inline image URL)
+- desktop(resource: "screenshot", action: "see", app: "Notepad") — Capture specific app with annotated element IDs
+- desktop(resource: "tts", action: "speak", text: "Hello") — Text-to-speech
 Note: Menu bar automation works best with classic Win32 apps (Notepad, WordPad, Office). UWP and Electron apps may have limited menu access.`
 
 	case "linux":
@@ -376,9 +324,14 @@ Note: Menu bar automation works best with classic Win32 apps (Notepad, WordPad, 
 - desktop(resource: "window", action: "move", app: "Firefox", x: 0, y: 0) — Move window
 - desktop(resource: "window", action: "resize", app: "Firefox", width: 800, height: 600) — Resize
 - desktop(resource: "window", action: "minimize", app: "Firefox") — Minimize
+- desktop(resource: "window", action: "maximize", app: "Firefox") — Maximize
 - desktop(resource: "window", action: "close", app: "Firefox") — Close window
 - desktop(resource: "shortcut", action: "list") — List available shortcuts
-- desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut`
+- desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut
+- desktop(resource: "screenshot", action: "capture") — Capture current screen
+- desktop(resource: "screenshot", action: "capture", format: "file") — Capture and save to disk (returns inline image URL)
+- desktop(resource: "screenshot", action: "see", app: "Firefox") — Capture specific app with annotated element IDs
+- desktop(resource: "tts", action: "speak", text: "Hello") — Text-to-speech`
 
 	default: // darwin
 		return `### desktop — Desktop Automation
@@ -403,6 +356,7 @@ Note: Menu bar automation works best with classic Win32 apps (Notepad, WordPad, 
 - desktop(resource: "window", action: "move", app: "Safari", x: 0, y: 0) — Move window
 - desktop(resource: "window", action: "resize", app: "Safari", width: 800, height: 600) — Resize
 - desktop(resource: "window", action: "minimize", app: "Safari") — Minimize
+- desktop(resource: "window", action: "maximize", app: "Safari") — Maximize
 - desktop(resource: "window", action: "close", app: "Safari") — Close window
 - desktop(resource: "shortcut", action: "list") — List available shortcuts
 - desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut
@@ -410,13 +364,19 @@ Note: Menu bar automation works best with classic Win32 apps (Notepad, WordPad, 
 - desktop(resource: "menu", action: "menus", app: "Safari", menu: "File") — List menu items
 - desktop(resource: "menu", action: "click", app: "Safari", menu: "File", item: "New Window") — Click menu item
 - desktop(resource: "menu", action: "status") — List status bar items
+- desktop(resource: "menu", action: "click_status", name: "...") — Click a status bar item
 - desktop(resource: "dialog", action: "detect") — Detect system dialogs
 - desktop(resource: "dialog", action: "list") — List dialog elements
 - desktop(resource: "dialog", action: "click", button_label: "OK") — Click dialog button
+- desktop(resource: "dialog", action: "fill", field: "...", value: "...") — Fill a dialog field
 - desktop(resource: "dialog", action: "dismiss") — Dismiss dialog
 - desktop(resource: "space", action: "list") — List virtual desktops
 - desktop(resource: "space", action: "switch", space: 2) — Switch desktop
-- desktop(resource: "space", action: "move_window", app: "Safari", space: 2) — Move window to desktop`
+- desktop(resource: "space", action: "move_window", app: "Safari", space: 2) — Move window to desktop
+- desktop(resource: "screenshot", action: "capture") — Capture current screen
+- desktop(resource: "screenshot", action: "capture", format: "file") — Capture and save to disk (returns inline image URL)
+- desktop(resource: "screenshot", action: "see", app: "Safari") — Capture specific app with annotated element IDs
+- desktop(resource: "tts", action: "speak", text: "Hello") — Text-to-speech`
 	}
 }
 
@@ -424,23 +384,47 @@ Note: Menu bar automation works best with classic Win32 apps (Notepad, WordPad, 
 func systemSTRAPDoc() string {
 	switch runtime.GOOS {
 	case "windows":
-		return `### system — System Control
+		return `### system — OS Operations (files, commands, apps, settings)
+
+**File operations:**
+- system(resource: "file", action: "read", path: "/path/to/file") — Read file contents
+- system(resource: "file", action: "write", path: "/path", content: "...") — Write/create a file. Prefer editing existing files over creating new ones. Never create summary, report, or documentation files unless the user asks for one.
+- system(resource: "file", action: "edit", path: "/path", old_string: "...", new_string: "...") — Edit a file
+- system(resource: "file", action: "glob", pattern: "**/*.go") — Find files by pattern
+- system(resource: "file", action: "grep", pattern: "search term", path: "/dir") — Search file contents
+
+**Shell operations (PowerShell):**
+- system(resource: "shell", action: "exec", command: "Get-ChildItem") — Run a PowerShell command
+- system(resource: "shell", action: "exec", command: "...", background: true) — Run in background
+- system(resource: "shell", action: "list") — List running processes or sessions
+- system(resource: "shell", action: "kill", pid: 1234) — Kill a process
+- system(resource: "shell", action: "info", pid: 1234) — Process details
+- system(resource: "shell", action: "poll", session_id: "...") — Read background session output
+- system(resource: "shell", action: "log", session_id: "...") — Get full session log
+- system(resource: "shell", action: "write", session_id: "...", input: "...") — Send input to session
+- system(resource: "shell", action: "status") — Get shell/session status
+Note: Commands run in PowerShell. Use PowerShell cmdlets (Get-Process, Get-ChildItem, Invoke-WebRequest, etc.) not Unix commands.
+
+**Platform controls:**
 - system(resource: "app", action: "list") — List running applications
 - system(resource: "app", action: "launch", name: "Notepad") — Launch app
 - system(resource: "app", action: "quit", name: "Notepad") — Quit app
 - system(resource: "app", action: "activate", name: "Notepad") — Bring app to front
 - system(resource: "app", action: "info", name: "Notepad") — Get app details
 - system(resource: "app", action: "frontmost") — Get frontmost app
-- system(resource: "notify", action: "send", title: "Done!", text: "Task completed") — Send notification
-- system(resource: "notify", action: "alert", title: "Warning", text: "...") — Show alert dialog
-- system(resource: "notify", action: "speak", text: "Hello") — Text-to-speech
 - system(resource: "clipboard", action: "get") — Read clipboard
 - system(resource: "clipboard", action: "set", content: "text") — Set clipboard
 - system(resource: "clipboard", action: "clear") — Clear clipboard
+- system(resource: "clipboard", action: "type") — Get clipboard content type
+- system(resource: "clipboard", action: "history") — View clipboard history
 - system(resource: "settings", action: "volume", level: 50) — Set volume (0-100)
 - system(resource: "settings", action: "mute") — Mute audio
 - system(resource: "settings", action: "unmute") — Unmute audio
 - system(resource: "settings", action: "brightness", level: 70) — Set brightness (laptops only)
+- system(resource: "settings", action: "sleep") — Put system to sleep
+- system(resource: "settings", action: "lock") — Lock screen
+- system(resource: "settings", action: "wifi") — Get/toggle Wi-Fi
+- system(resource: "settings", action: "bluetooth") — Get/toggle Bluetooth
 - system(resource: "settings", action: "darkmode") — Check dark mode status
 - system(resource: "settings", action: "darkmode", enable: true) — Enable/disable dark mode
 - system(resource: "settings", action: "info") — System information
@@ -449,6 +433,10 @@ func systemSTRAPDoc() string {
 - system(resource: "music", action: "next") — Next track
 - system(resource: "music", action: "previous") — Previous track
 - system(resource: "music", action: "status") — Current track info
+- system(resource: "music", action: "search", query: "...") — Search music library
+- system(resource: "music", action: "volume", level: 50) — Set music volume
+- system(resource: "music", action: "playlists") — List playlists
+- system(resource: "music", action: "shuffle") — Toggle shuffle mode
 - system(resource: "search", action: "query", query: "project files") — Search files (uses Everything or Windows Search)
 - system(resource: "keychain", action: "get", service: "github", account: "user") — Get credential
 - system(resource: "keychain", action: "add", service: "github", account: "user", password: "...") — Store credential
@@ -456,23 +444,46 @@ func systemSTRAPDoc() string {
 - system(resource: "keychain", action: "delete", service: "github", account: "user") — Delete credential`
 
 	case "linux":
-		return `### system — System Control
+		return `### system — OS Operations (files, commands, apps, settings)
+
+**File operations:**
+- system(resource: "file", action: "read", path: "/path/to/file") — Read file contents
+- system(resource: "file", action: "write", path: "/path", content: "...") — Write/create a file. Prefer editing existing files over creating new ones. Never create summary, report, or documentation files unless the user asks for one.
+- system(resource: "file", action: "edit", path: "/path", old_string: "...", new_string: "...") — Edit a file
+- system(resource: "file", action: "glob", pattern: "**/*.go") — Find files by pattern
+- system(resource: "file", action: "grep", pattern: "search term", path: "/dir") — Search file contents
+
+**Shell operations:**
+- system(resource: "shell", action: "exec", command: "ls -la") — Run a command
+- system(resource: "shell", action: "exec", command: "...", background: true) — Run in background
+- system(resource: "shell", action: "list") — List running processes or sessions
+- system(resource: "shell", action: "kill", pid: 1234) — Kill a process
+- system(resource: "shell", action: "info", pid: 1234) — Process details
+- system(resource: "shell", action: "poll", session_id: "...") — Read background session output
+- system(resource: "shell", action: "log", session_id: "...") — Get full session log
+- system(resource: "shell", action: "write", session_id: "...", input: "...") — Send input to session
+- system(resource: "shell", action: "status") — Get shell/session status
+
+**Platform controls:**
 - system(resource: "app", action: "list") — List running applications
 - system(resource: "app", action: "launch", name: "Firefox") — Launch app
 - system(resource: "app", action: "quit", name: "Firefox") — Quit app
 - system(resource: "app", action: "activate", name: "Firefox") — Bring app to front
 - system(resource: "app", action: "info", name: "Firefox") — Get app details
 - system(resource: "app", action: "frontmost") — Get frontmost app
-- system(resource: "notify", action: "send", title: "Done!", text: "Task completed") — Send notification
-- system(resource: "notify", action: "alert", title: "Warning", text: "...") — Show alert dialog
-- system(resource: "notify", action: "speak", text: "Hello") — Text-to-speech
 - system(resource: "clipboard", action: "get") — Read clipboard
 - system(resource: "clipboard", action: "set", content: "text") — Set clipboard
 - system(resource: "clipboard", action: "clear") — Clear clipboard
+- system(resource: "clipboard", action: "type") — Get clipboard content type
+- system(resource: "clipboard", action: "history") — View clipboard history
 - system(resource: "settings", action: "volume", level: 50) — Set volume (0-100)
 - system(resource: "settings", action: "mute") — Mute audio
 - system(resource: "settings", action: "unmute") — Unmute audio
 - system(resource: "settings", action: "brightness", level: 70) — Set brightness
+- system(resource: "settings", action: "sleep") — Put system to sleep
+- system(resource: "settings", action: "lock") — Lock screen
+- system(resource: "settings", action: "wifi") — Get/toggle Wi-Fi
+- system(resource: "settings", action: "bluetooth") — Get/toggle Bluetooth
 - system(resource: "settings", action: "darkmode") — Check dark mode status
 - system(resource: "settings", action: "darkmode", enable: true) — Enable/disable dark mode
 - system(resource: "settings", action: "info") — System information
@@ -481,6 +492,10 @@ func systemSTRAPDoc() string {
 - system(resource: "music", action: "next") — Next track
 - system(resource: "music", action: "previous") — Previous track
 - system(resource: "music", action: "status") — Current track info
+- system(resource: "music", action: "search", query: "...") — Search music library
+- system(resource: "music", action: "volume", level: 50) — Set music volume
+- system(resource: "music", action: "playlists") — List playlists
+- system(resource: "music", action: "shuffle") — Toggle shuffle mode
 - system(resource: "search", action: "query", query: "project files") — Search files (uses locate/find)
 - system(resource: "keychain", action: "get", service: "github", account: "user") — Get credential
 - system(resource: "keychain", action: "add", service: "github", account: "user", password: "...") — Store credential
@@ -488,7 +503,27 @@ func systemSTRAPDoc() string {
 - system(resource: "keychain", action: "delete", service: "github", account: "user") — Delete credential`
 
 	default: // darwin
-		return `### system — System Control
+		return `### system — OS Operations (files, commands, apps, settings)
+
+**File operations:**
+- system(resource: "file", action: "read", path: "/path/to/file") — Read file contents
+- system(resource: "file", action: "write", path: "/path", content: "...") — Write/create a file. Prefer editing existing files over creating new ones. Never create summary, report, or documentation files unless the user asks for one.
+- system(resource: "file", action: "edit", path: "/path", old_string: "...", new_string: "...") — Edit a file
+- system(resource: "file", action: "glob", pattern: "**/*.go") — Find files by pattern
+- system(resource: "file", action: "grep", pattern: "search term", path: "/dir") — Search file contents
+
+**Shell operations:**
+- system(resource: "shell", action: "exec", command: "ls -la") — Run a command
+- system(resource: "shell", action: "exec", command: "...", background: true) — Run in background
+- system(resource: "shell", action: "list") — List running processes or sessions
+- system(resource: "shell", action: "kill", pid: 1234) — Kill a process
+- system(resource: "shell", action: "info", pid: 1234) — Process details
+- system(resource: "shell", action: "poll", session_id: "...") — Read background session output
+- system(resource: "shell", action: "log", session_id: "...") — Get full session log
+- system(resource: "shell", action: "write", session_id: "...", input: "...") — Send input to session
+- system(resource: "shell", action: "status") — Get shell/session status
+
+**Platform controls:**
 - system(resource: "app", action: "list") — List running applications
 - system(resource: "app", action: "launch", name: "Safari") — Launch app
 - system(resource: "app", action: "quit", name: "Safari") — Quit app
@@ -497,16 +532,19 @@ func systemSTRAPDoc() string {
 - system(resource: "app", action: "hide", name: "Safari") — Hide app
 - system(resource: "app", action: "info", name: "Safari") — Get app details
 - system(resource: "app", action: "frontmost") — Get frontmost app
-- system(resource: "notify", action: "send", title: "Done!", text: "Task completed") — Send notification
-- system(resource: "notify", action: "alert", title: "Warning", text: "...") — Show alert dialog
-- system(resource: "notify", action: "speak", text: "Hello") — Text-to-speech
 - system(resource: "clipboard", action: "get") — Read clipboard
 - system(resource: "clipboard", action: "set", content: "text") — Set clipboard
 - system(resource: "clipboard", action: "clear") — Clear clipboard
+- system(resource: "clipboard", action: "type") — Get clipboard content type
+- system(resource: "clipboard", action: "history") — View clipboard history
 - system(resource: "settings", action: "volume", level: 50) — Set volume (0-100)
 - system(resource: "settings", action: "mute") — Mute audio
 - system(resource: "settings", action: "unmute") — Unmute audio
 - system(resource: "settings", action: "brightness", level: 70) — Set brightness
+- system(resource: "settings", action: "sleep") — Put system to sleep
+- system(resource: "settings", action: "lock") — Lock screen
+- system(resource: "settings", action: "wifi") — Get/toggle Wi-Fi
+- system(resource: "settings", action: "bluetooth") — Get/toggle Bluetooth
 - system(resource: "settings", action: "darkmode") — Toggle dark mode
 - system(resource: "settings", action: "info") — System information
 - system(resource: "music", action: "play") — Play/resume music
@@ -514,12 +552,105 @@ func systemSTRAPDoc() string {
 - system(resource: "music", action: "next") — Next track
 - system(resource: "music", action: "previous") — Previous track
 - system(resource: "music", action: "status") — Current track info
+- system(resource: "music", action: "search", query: "...") — Search music library
+- system(resource: "music", action: "volume", level: 50) — Set music volume
+- system(resource: "music", action: "playlists") — List playlists
+- system(resource: "music", action: "shuffle") — Toggle shuffle mode
 - system(resource: "search", action: "query", query: "project files") — Search files/apps via Spotlight
 - system(resource: "keychain", action: "get", service: "github", account: "user") — Get password
 - system(resource: "keychain", action: "add", service: "github", account: "user", password: "...") — Store password
 - system(resource: "keychain", action: "find", service: "github") — Find keychain entries
 - system(resource: "keychain", action: "delete", service: "github", account: "user") — Delete entry`
 	}
+}
+
+func loopSTRAPDoc() string {
+	return `### loop — NeboLoop Communication
+- loop(resource: dm, action: send, to: "agent-uuid", text: "Hello") — Send a DM to another bot
+- loop(resource: channel, action: send, channel_id: "...", text: "Hello") — Send to a loop channel
+- loop(resource: channel, action: list) — List available channels
+- loop(resource: channel, action: messages, channel_id: "...", limit: 20) — Read channel messages
+- loop(resource: channel, action: members, channel_id: "...") — List channel members
+- loop(resource: group, action: list) — List loops you belong to
+- loop(resource: group, action: get, loop_id: "...") — Get loop details
+- loop(resource: group, action: members, loop_id: "...") — List loop members
+- loop(resource: topic, action: subscribe, topic: "news") — Subscribe to a topic
+- loop(resource: topic, action: unsubscribe, topic: "...") — Unsubscribe
+- loop(resource: topic, action: list) — List subscriptions
+- loop(resource: topic, action: status) — Get comm connection status
+Use loop for bot-to-bot communication and NeboLoop infrastructure.`
+}
+
+func eventSTRAPDoc() string {
+	return `### event — Scheduling & Reminders
+For anything recurring or time-based. Prefer task_type: "agent" — this means YOU execute the task when it fires, with full access to all your tools and memory.
+Use "instructions" to tell your future self HOW to accomplish the task. The "message" is the what, "instructions" is the how.
+
+One-time reminders — use "at" (we compute the schedule automatically):
+- event(action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", message: "Remind user to call Kristi")
+- event(action: create, name: "send-sms", at: "in 5 minutes", task_type: "agent", message: "Send text to Kristi", instructions: "Send via the user's preferred messaging channel.")
+
+Recurring reminders — use "schedule" (cron expression):
+- event(action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send a summary")
+- event(action: create, name: "weekly-report", schedule: "0 0 17 * * 5", task_type: "agent", message: "Compile this week's completed tasks")
+
+Management:
+- event(action: list) — List all reminders
+- event(action: delete, name: "...") — Remove a reminder
+- event(action: pause, name: "...") / event(action: resume, name: "...") — Pause or resume
+- event(action: run, name: "...") — Trigger immediately
+- event(action: history, name: "...") — View execution history
+
+Schedule format (recurring only): "second minute hour day-of-month month day-of-week"
+Examples: "0 0 9 * * 1-5" (9am weekdays), "0 30 8 * * *" (8:30am daily), "0 0 */2 * * *" (every 2 hours)`
+}
+
+func messageSTRAPDoc() string {
+	return `### message — Outbound Delivery
+- message(resource: owner, action: notify, text: "Task complete!") — Notify the owner via companion chat
+- message(resource: sms, action: send, to: "+15551234567", body: "Hello!") — Send SMS (macOS)
+- message(resource: sms, action: conversations) — List SMS conversations
+- message(resource: sms, action: read, chat_id: "+15551234567") — Read SMS messages
+- message(resource: sms, action: search, query: "meeting") — Search SMS messages
+- message(resource: notify, action: send, title: "Alert", text: "Something happened") — System notification
+- message(resource: notify, action: alert, title: "Warning", text: "...") — Show alert dialog
+- message(resource: notify, action: speak, text: "Hello") — Text-to-speech via system voice
+- message(resource: notify, action: dnd_status) — Check Do Not Disturb status
+Use message for outbound delivery to humans outside NeboLoop.`
+}
+
+func appSTRAPDoc() string {
+	return `### app — App Management
+- app(action: list) — List installed apps
+- app(action: launch, id: "app-uuid") — Launch an installed app
+- app(action: stop, id: "app-uuid") — Stop a running app
+- app(action: browse) — Browse the NeboLoop app store
+- app(action: browse, query: "calendar") — Search the store
+- app(action: install, id: "app-uuid") — Install an app from the store
+- app(action: uninstall, id: "app-uuid") — Uninstall an app`
+}
+
+func organizerSTRAPDoc() string {
+	return `### organizer — Personal Information Management
+- organizer(resource: "mail", action: "unread") — Check unread email count
+- organizer(resource: "mail", action: "read", count: 5) — Read recent emails
+- organizer(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!") — Send email
+- organizer(resource: "mail", action: "search", query: "invoice") — Search emails
+- organizer(resource: "mail", action: "accounts") — List email accounts
+- organizer(resource: "contacts", action: "search", query: "Alice") — Search contacts
+- organizer(resource: "contacts", action: "get", name: "Alice Smith") — Get contact details
+- organizer(resource: "contacts", action: "create", name: "Bob", email: "bob@example.com") — Create contact
+- organizer(resource: "contacts", action: "groups") — List contact groups
+- organizer(resource: "calendar", action: "today") — Today's events
+- organizer(resource: "calendar", action: "upcoming", days: 7) — Upcoming events
+- organizer(resource: "calendar", action: "create", title: "Meeting", date: "2024-01-15", time: "14:00") — Create event
+- organizer(resource: "calendar", action: "list", calendar: "Work") — List events from a specific calendar
+- organizer(resource: "calendar", action: "calendars") — List calendars
+- organizer(resource: "reminders", action: "list") — List reminders
+- organizer(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal") — Create reminder
+- organizer(resource: "reminders", action: "complete", reminder_id: "...") — Complete reminder
+- organizer(resource: "reminders", action: "delete", reminder_id: "...") — Delete reminder
+- organizer(resource: "reminders", action: "lists") — List reminder lists`
 }
 
 // buildSTRAPSection assembles the STRAP documentation for only the tools being sent.
@@ -530,7 +661,7 @@ func buildSTRAPSection(toolNames []string) string {
 
 	if len(toolNames) == 0 {
 		// No restriction — include all tool docs
-		for _, name := range []string{"file", "shell", "web", "agent", "skill", "desktop", "pim", "system", "advisors", "screenshot", "vision"} {
+		for _, name := range []string{"system", "web", "bot", "loop", "event", "message", "skill", "app", "desktop", "organizer"} {
 			if doc, ok := strapToolDocs[name]; ok {
 				sb.WriteString("\n\n")
 				sb.WriteString(doc)
@@ -557,7 +688,7 @@ func buildSTRAPSection(toolNames []string) string {
 const sectionMedia = `## Inline Media — Images & Video Embeds
 
 **Inline Images:**
-- screenshot(format: "file") saves to data directory, returns ![Screenshot](/api/v1/files/filename.png) which renders inline
+- desktop(resource: screenshot, action: capture, format: "file") saves to data directory, returns ![Screenshot](/api/v1/files/filename.png) which renders inline
 - For any image: copy it to the data files directory and use ![description](/api/v1/files/filename.png)
 - Supports PNG, JPEG, GIF, WebP, SVG
 
@@ -572,15 +703,15 @@ const sectionMemoryDocs = `## Memory System — CRITICAL
 You have PERSISTENT MEMORY that survives across sessions. NEVER say "I don't have persistent memory" or "my memory doesn't carry over." Your memory WORKS — use it proactively.
 
 **Reading memory — do this BEFORE answering questions about the user:**
-- agent(resource: memory, action: search, query: "...") — search across all memories
-- agent(resource: memory, action: recall, key: "user/name") — recall a specific fact
+- bot(resource: memory, action: search, query: "...") — search across all memories
+- bot(resource: memory, action: recall, key: "user/name") — recall a specific fact
 
 **Writing memory — AUTOMATIC, do NOT store explicitly:**
-Facts are automatically extracted from your conversation after each turn. You do NOT need to call agent(action: store) during normal conversation. The extraction system handles names, preferences, corrections, entities — everything.
+Facts are automatically extracted from your conversation after each turn. You do NOT need to call bot(action: store) during normal conversation. The extraction system handles names, preferences, corrections, entities — everything.
 
 Only use explicit store when the user says "remember this" or "save this" — i.e., they are explicitly asking you to persist something unusual that the extractor might miss.
 
-**NEVER call agent(action: store) multiple times in one turn.** One store max, and only when truly necessary.
+**NEVER call bot(action: store) multiple times in one turn.** One store max, and only when truly necessary.
 
 **Memory layers (for the rare explicit store):**
 - "tacit" — Long-term preferences, personal facts (MOST COMMON)
@@ -607,7 +738,7 @@ const sectionToolGuide = `## How to Choose the Right Tool
 
 **Complex requests = chain tools together:**
 - "Research and remember" → web + memory
-- "Find all PDFs and summarize" → file (glob) + file (read) + vision`
+- "Find all PDFs and summarize" → system (file glob) + system (file read) + bot (vision)`
 
 
 const sectionBehavior = `## Behavioral Guidelines
@@ -722,6 +853,18 @@ func BuildStaticPrompt(pctx PromptContext) string {
 		parts = append(parts, "---\nREMINDER: You are {agent_name}. Your ONLY tools are: "+toolList+". When a user asks about your capabilities, describe these tools. Never mention tools from your training data that are not in this list.")
 	}
 
+	// --- HOOK: prompt.system_sections ---
+	if pctx.Hooks != nil && pctx.Hooks.HasSubscribers("prompt.system_sections") {
+		sectionsJSON, _ := json.Marshal(map[string]any{"sections": parts})
+		modified, _ := pctx.Hooks.ApplyFilter(context.Background(), "prompt.system_sections", sectionsJSON)
+		var mod struct {
+			Sections []string `json:"sections"`
+		}
+		if json.Unmarshal(modified, &mod) == nil && len(mod.Sections) > 0 {
+			parts = mod.Sections
+		}
+	}
+
 	prompt := strings.Join(parts, "\n\n")
 
 	// Replace {agent_name} placeholder
@@ -785,7 +928,7 @@ func BuildDynamicSuffix(dctx DynamicContext) string {
 		sb.WriteString("\n\n---\n## ACTIVE TASK\nYou are currently working on: ")
 		sb.WriteString(dctx.ActiveTask)
 		sb.WriteString("\nDo not lose sight of this goal. Every tool call should advance this objective.")
-		sb.WriteString("\nFor multi-step work, use agent(resource: task, action: create) to track steps, then update them as you go. Do NOT narrate plans to the user — just track internally and execute.")
+		sb.WriteString("\nFor multi-step work, use bot(resource: task, action: create) to track steps, then update them as you go. Do NOT narrate plans to the user — just track internally and execute.")
 		sb.WriteString("\n---")
 	}
 

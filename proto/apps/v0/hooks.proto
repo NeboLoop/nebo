@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package apps.v0;
+
+option go_package = "github.com/NeboLoop/nebo/internal/apps/pb";
+
+import "proto/apps/v0/common.proto";
+
+// HookService allows apps to intercept and transform Nebo behavior.
+// Apps implement this service and declare hooks in their manifest.
+service HookService {
+  // ApplyFilter is called for filter hooks — app returns modified data.
+  rpc ApplyFilter(HookRequest) returns (HookResponse);
+
+  // DoAction is called for action hooks — app performs side effects.
+  rpc DoAction(HookRequest) returns (Empty);
+
+  // ListHooks returns the hooks this app subscribes to.
+  rpc ListHooks(Empty) returns (HookList);
+
+  // HealthCheck verifies the hook service is responsive.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// HookRequest carries data to the app for a specific hook point.
+message HookRequest {
+  string hook = 1;           // Hook name, e.g. "tool.pre_execute"
+  bytes  payload = 2;        // JSON-encoded hook-specific data
+  int64  timestamp_ms = 3;   // When the hook fired (Unix ms)
+}
+
+// HookResponse carries the app's modified data back to Nebo.
+message HookResponse {
+  bytes  payload = 1;        // JSON-encoded modified data (for filters)
+  bool   handled = 2;        // If true, Nebo skips the built-in implementation
+  string error = 3;          // Non-empty = hook failed, use original data
+}
+
+// HookList contains all hook registrations for an app.
+message HookList {
+  repeated HookRegistration hooks = 1;
+}
+
+// HookRegistration declares a single hook subscription.
+message HookRegistration {
+  string hook = 1;           // Hook name, e.g. "tool.pre_execute"
+  string type = 2;           // "action" or "filter"
+  int32  priority = 3;       // Lower = runs first (default 10)
+}

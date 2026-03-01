@@ -32,6 +32,7 @@ type AppProcess struct {
 	CommClient     pb.CommServiceClient
 	UIClient       pb.UIServiceClient
 	ScheduleClient pb.ScheduleServiceClient
+	HookClient     pb.HookServiceClient
 
 	cmd        *exec.Cmd
 	conn       *grpc.ClientConn
@@ -287,6 +288,8 @@ func (rt *Runtime) Launch(appDir string) (*AppProcess, error) {
 			proc.UIClient = pb.NewUIServiceClient(conn)
 		case cap == CapSchedule:
 			proc.ScheduleClient = pb.NewScheduleServiceClient(conn)
+		case cap == CapHooks:
+			proc.HookClient = pb.NewHookServiceClient(conn)
 		}
 	}
 

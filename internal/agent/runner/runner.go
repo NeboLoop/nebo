@@ -78,6 +78,7 @@ type Runner struct {
 	steering        *steering.Pipeline   // Mid-conversation steering message generator
 	fileTracker     *FileAccessTracker   // Tracks file reads for post-compaction re-injection
 	rateLimitStore      func(*ai.RateLimitInfo)  // Callback to publish latest rate-limit snapshot
+	hooks               tools.HookDispatcher    // App hooks dispatcher (optional)
 	extractingMemory    sync.Map          // sessionID → true: prevents overlapping extractions
 	detectingObjective  sync.Map          // sessionID → true: prevents overlapping detections
 	memoryTimers        sync.Map          // sessionID → *time.Timer: debounced extraction
@@ -177,8 +178,8 @@ func (r *Runner) SetupSubagentPersistence(mgr *recovery.Manager) {
 	if r.tools == nil {
 		return
 	}
-	if taskTool := r.tools.GetTaskTool(); taskTool != nil {
-		taskTool.SetRecoveryManager(mgr)
+	if botTool := r.tools.GetBotTool(); botTool != nil {
+		botTool.SetRecoveryManager(mgr)
 	}
 }
 
@@ -188,8 +189,8 @@ func (r *Runner) RecoverSubagents(ctx context.Context) (int, error) {
 	if r.tools == nil {
 		return 0, nil
 	}
-	if taskTool := r.tools.GetTaskTool(); taskTool != nil {
-		return taskTool.RecoverSubagents(ctx)
+	if botTool := r.tools.GetBotTool(); botTool != nil {
+		return botTool.RecoverSubagents(ctx)
 	}
 	return 0, nil
 }
@@ -237,6 +238,11 @@ func (r *Runner) SetRateLimitStore(fn func(*ai.RateLimitInfo)) {
 // SetProviderLoader sets the function to reload providers (for dynamic reload after onboarding)
 func (r *Runner) SetProviderLoader(loader ProviderLoaderFunc) {
 	r.providerLoader = loader
+}
+
+// SetHookDispatcher sets the app hooks dispatcher for intercepting runner behavior.
+func (r *Runner) SetHookDispatcher(hooks tools.HookDispatcher) {
+	r.hooks = hooks
 }
 
 // ReloadProviders attempts to reload providers from the loader function.
@@ -467,6 +473,7 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 		ActiveSkills:   activeSkills,
 		AppCatalog:     appCatalog,
 		ModelAliases:   modelAliases,
+		Hooks:          r.hooks,
 	}
 
 	if systemPrompt == "" {
@@ -727,10 +734,10 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 
 		// Mid-conversation steering: generate ephemeral guidance messages
 		if r.steering != nil {
-			// Gather work tasks from AgentDomainTool for steering context
+			// Gather work tasks from BotTool for steering context
 			var workTasks []steering.WorkTask
-			if agentTool := r.tools.GetAgentDomainTool(); agentTool != nil {
-				for _, wt := range agentTool.ListWorkTasks(sessionKey) {
+			if botTool := r.tools.GetBotTool(); botTool != nil {
+				for _, wt := range botTool.ListWorkTasks(sessionKey) {
 					workTasks = append(workTasks, steering.WorkTask{
 						ID: wt.ID, Subject: wt.Subject, Status: wt.Status,
 					})
@@ -750,6 +757,32 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 			}
 			if steeringMsgs := r.steering.Generate(steeringCtx); len(steeringMsgs) > 0 {
 				truncatedMessages = steering.Inject(truncatedMessages, steeringMsgs)
+			}
+
+			// --- HOOK: steering.generate ---
+			if r.hooks != nil && r.hooks.HasSubscribers("steering.generate") {
+				payload, _ := json.Marshal(map[string]any{
+					"session_id": sessionID,
+					"iteration":  iteration,
+				})
+				modified, _ := r.hooks.ApplyFilter(ctx, "steering.generate", payload)
+				var mod struct {
+					Messages []struct {
+						Content  string `json:"content"`
+						Position string `json:"position"` // "end" or "after_user"
+					} `json:"messages"`
+				}
+				if json.Unmarshal(modified, &mod) == nil && len(mod.Messages) > 0 {
+					var extra []steering.Message
+					for _, m := range mod.Messages {
+						pos := steering.PositionEnd
+						if m.Position == "after_user" {
+							pos = steering.PositionAfterUser
+						}
+						extra = append(extra, steering.Message{Content: m.Content, Position: pos})
+					}
+					truncatedMessages = steering.Inject(truncatedMessages, extra)
+				}
 			}
 		}
 
@@ -786,6 +819,21 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 				if provider.HandlesTools() || (selectedModel != "" && r.selector.SupportsThinking(selectedModel)) {
 					chatReq.EnableThinking = true
 				}
+			}
+		}
+
+		// --- HOOK: message.pre_send ---
+		if r.hooks != nil && r.hooks.HasSubscribers("message.pre_send") {
+			payload, _ := json.Marshal(map[string]any{
+				"system_prompt": chatReq.System,
+				"message_count": len(chatReq.Messages),
+			})
+			modified, _ := r.hooks.ApplyFilter(ctx, "message.pre_send", payload)
+			var mod struct {
+				SystemPrompt string `json:"system_prompt"`
+			}
+			if json.Unmarshal(modified, &mod) == nil && mod.SystemPrompt != "" {
+				chatReq.System = mod.SystemPrompt
 			}
 		}
 
@@ -962,6 +1010,22 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 		// Capture rate-limit info from Janus responses (every iteration)
 		r.captureRateLimit(provider)
 
+		// --- HOOK: message.post_receive ---
+		if r.hooks != nil && r.hooks.HasSubscribers("message.post_receive") {
+			payload, _ := json.Marshal(map[string]any{
+				"response_text": assistantContent.String(),
+				"tool_calls":    toolCalls,
+			})
+			modified, _ := r.hooks.ApplyFilter(ctx, "message.post_receive", payload)
+			var mod struct {
+				ResponseText *string `json:"response_text"`
+			}
+			if json.Unmarshal(modified, &mod) == nil && mod.ResponseText != nil {
+				assistantContent.Reset()
+				assistantContent.WriteString(*mod.ResponseText)
+			}
+		}
+
 		// Save assistant message (always save unless empty)
 		// Skip if provider handles tools — messages were already saved via EventTypeMessage
 		if !providerHandlesTools && (assistantContent.Len() > 0 || len(toolCalls) > 0) {
@@ -990,6 +1054,16 @@ func (r *Runner) runLoop(ctx context.Context, rs *runState, sessionID, sessionKe
 			})
 			if err != nil {
 				fmt.Printf("[Runner] ERROR saving assistant message: %v\n", err)
+			}
+
+			// --- HOOK: session.message_append (action) ---
+			if r.hooks != nil && r.hooks.HasSubscribers("session.message_append") {
+				hookPayload, _ := json.Marshal(map[string]any{
+					"session_id": sessionID,
+					"role":       "assistant",
+					"content":    assistantContent.String(),
+				})
+				r.hooks.DoAction(ctx, "session.message_append", hookPayload)
 			}
 		}
 
@@ -1804,8 +1878,8 @@ Rules:
 				fmt.Printf("[runner] Objective detection: SetActiveTask failed: %v\n", err)
 			}
 			// Clear work tasks — new objective means fresh task list
-			if agentTool := r.tools.GetAgentDomainTool(); agentTool != nil {
-				agentTool.ClearWorkTasks(sessionKey)
+			if botTool := r.tools.GetBotTool(); botTool != nil {
+				botTool.ClearWorkTasks(sessionKey)
 			}
 		}
 	case "update":
@@ -1818,8 +1892,8 @@ Rules:
 	case "clear":
 		fmt.Printf("[runner] Objective detection: CLEAR\n")
 		_ = r.sessions.ClearActiveTask(sessionID)
-		if agentTool := r.tools.GetAgentDomainTool(); agentTool != nil {
-			agentTool.ClearWorkTasks(sessionKey)
+		if botTool := r.tools.GetBotTool(); botTool != nil {
+			botTool.ClearWorkTasks(sessionKey)
 		}
 	case "keep":
 		// No change
