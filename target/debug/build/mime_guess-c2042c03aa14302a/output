@@ -1,0 +1,1 @@
+cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/Users/almatuck/workspaces/nebo/nebo-rs/target/debug/build/mime_guess-c2042c03aa14302a/out/mime_types_generated.rs

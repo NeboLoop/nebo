@@ -1,0 +1,21 @@
+[package]
+name = "nebo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "nebo"
+path = "src/main.rs"
+
+[dependencies]
+types = { workspace = true }
+config = { workspace = true }
+db = { workspace = true }
+auth = { workspace = true }
+server = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

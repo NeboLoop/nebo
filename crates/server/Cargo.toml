@@ -1,0 +1,21 @@
+[package]
+name = "nebo-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+types = { workspace = true }
+config = { workspace = true }
+db = { workspace = true }
+auth = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+rust-embed = { workspace = true }
+jsonwebtoken = { workspace = true }

@@ -1,0 +1,100 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/types",
+    "crates/config",
+    "crates/db",
+    "crates/auth",
+    "crates/ai",
+    "crates/tools",
+    "crates/agent",
+    "crates/server",
+    "crates/mcp",
+    "crates/apps",
+    "crates/browser",
+    "crates/voice",
+    "crates/comm",
+    "crates/notify",
+    "crates/updater",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/AltMagick/nebo"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP & Web
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = { version = "0.5" }
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "fs", "set-header", "trace"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+hyper = { version = "1" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Database
+rusqlite = { version = "0.38", features = ["bundled", "column_decltype"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.32"
+
+# Auth
+jsonwebtoken = "9"
+bcrypt = "0.16"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Crypto
+rand = "0.8"
+hex = "0.4"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+
+# Embedded assets
+rust-embed = { version = "8", features = ["compression", "include-exclude"] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+shellexpand = "3"
+dirs = "6"
+
+# Internal crates
+types = { path = "crates/types", package = "nebo-types" }
+config = { path = "crates/config", package = "nebo-config" }
+db = { path = "crates/db", package = "nebo-db" }
+auth = { path = "crates/auth", package = "nebo-auth" }
+ai = { path = "crates/ai", package = "nebo-ai" }
+tools = { path = "crates/tools", package = "nebo-tools" }
+agent = { path = "crates/agent", package = "nebo-agent" }
+server = { path = "crates/server", package = "nebo-server" }
+mcp = { path = "crates/mcp", package = "nebo-mcp" }
+apps = { path = "crates/apps", package = "nebo-apps" }
+browser = { path = "crates/browser", package = "nebo-browser" }
+voice = { path = "crates/voice", package = "nebo-voice" }
+comm = { path = "crates/comm", package = "nebo-comm" }
+notify_crate = { path = "crates/notify", package = "nebo-notify" }
+updater = { path = "crates/updater", package = "nebo-updater" }
+cli = { path = "crates/cli", package = "nebo" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

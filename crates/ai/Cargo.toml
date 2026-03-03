@@ -1,0 +1,29 @@
+[package]
+name = "nebo-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+types = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# HTTP
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Errors
+thiserror = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+futures = "0.3"
+async-trait = "0.1"
