@@ -1,0 +1,90 @@
+### web — Web & Browser Automation
+USE THIS when: user mentions a URL, asks to look something up, browse, search the web, fetch a page, or interact with a website.
+
+Two modes:
+- **fetch/search:** Simple HTTP requests and web search (no JavaScript, no rendering)
+- **browser:** Controls the user's Chrome browser via the Nebo extension. Full automation — navigate, read pages, click, fill forms, take screenshots. Works on the user's real browser with their logged-in sessions.
+
+Decision: If you just need an API response or static HTML → fetch. If you need to read a rendered page, interact with elements, or use the user's sessions → browser actions.
+
+Actions:
+- web(action: fetch, url: "https://api.example.com") — Simple HTTP request (no JS rendering)
+- web(action: search, query: "golang tutorials") — Web search
+- web(action: navigate, url: "https://example.com") — Navigate the active tab to a URL
+- web(action: read_page) — Get page accessibility tree with element refs [ref_1], [ref_2], etc.
+- web(action: read_page, filter: "interactive") — Only interactive elements (buttons, links, inputs)
+- web(action: read_page, depth: 5) — Limit tree depth (default 15). Use smaller depth for large pages.
+- web(action: read_page, refId: "ref_3") — Read subtree rooted at a specific element.
+- web(action: read_page, maxChars: 10000) — Limit output size.
+- web(action: click, ref: "ref_5") — Click element by ref
+- web(action: click, coordinate: [200, 300]) — Click at screen coordinates
+- web(action: double_click, ref: "ref_5") — Double-click (select word)
+- web(action: triple_click, ref: "ref_5") — Triple-click (select all text in field)
+- web(action: right_click, ref: "ref_5") — Right-click (context menu)
+- web(action: hover, ref: "ref_5") — Hover over element (trigger tooltips, dropdowns)
+- web(action: fill, ref: "ref_3", value: "hello") — Set form input value directly
+- web(action: form_input, ref: "ref_3", value: "hello") — Same as fill
+- web(action: type, text: "hello") — Type text via real keystrokes into focused element
+- web(action: select, ref: "ref_7", value: "option1") — Select dropdown option
+- web(action: screenshot) — Capture page screenshot
+- web(action: scroll, direction: "down") — Scroll page (up/down/left/right, default 3 ticks)
+- web(action: scroll, direction: "down", amount: 5) — Scroll by N ticks (100px each)
+- web(action: scroll_to, ref: "ref_10") — Scroll element into view
+- web(action: press, key: "Enter") — Press a key
+- web(action: press, key: "cmd+a") — Key chord (ctrl+a, cmd+shift+z, etc.)
+- web(action: press, key: "ArrowDown ArrowDown Enter") — Key sequence (space-separated)
+- web(action: press, key: "ArrowDown", repeat: 5) — Repeat key N times
+- web(action: drag, start_coordinate: [100, 200], coordinate: [300, 400]) — Click and drag
+- web(action: evaluate, expression: "document.title") — Run JavaScript
+- web(action: wait, duration: 2) — Wait N seconds (max 30)
+- web(action: go_back) — Browser back
+- web(action: go_forward) — Browser forward
+- web(action: new_tab, url: "https://...") — Open a new tab
+- web(action: close_tab) — Close current tab
+- web(action: list_tabs) — List all open tabs
+- web(action: status) — Check if browser extension is connected
+
+Filling forms — TWO approaches:
+1. fill/form_input(ref, value) — Sets the value directly via DOM. Works for most forms: text, textarea, select, checkbox (true/false), radio, date/time, number, range. Fast but may not work on React/Vue/Angular sites with controlled inputs.
+2. click + type — Click the field to focus it, then type text character-by-character via real keystrokes. This goes through the browser's real input pipeline, which ALL JavaScript frameworks hook into. Always works, even on React SPAs.
+
+IMPORTANT — For React/modern framework sites:
+If fill doesn't work (value appears set but the site doesn't react to it), switch to this approach:
+1. click(ref: "ref_3") — Click the input to focus it
+2. press(key: "cmd+a") — Select all existing text
+3. type(text: "your new value") — Type the new value via real keystrokes
+This simulates a real user and works on every site.
+
+For clearing a field: click it, press(key: "cmd+a"), press(key: "Backspace")
+
+CRITICAL — How read_page works:
+- read_page returns ONLY elements visible in the current viewport. Content below the fold is NOT included.
+- You CANNOT see the full page from a single read_page. You MUST scroll down and read_page again to see more.
+- After navigating to a page, ALWAYS scroll down at least once to see if there's more content below.
+- Refs are stable across read_page calls on the same page — the same element keeps the same ref.
+- If the page is large, use depth: 5 or filter: "interactive" to reduce output.
+- If output is too large, you'll get an error suggesting depth or refId. Follow its advice.
+- Use refId to zoom into a specific section (e.g. a form, a table, a sidebar) from a previous read_page.
+
+How to browse like a person:
+1. Navigate to the page.
+2. read_page to see what's visible in the viewport.
+3. Look at the content. If you don't see what you need, SCROLL DOWN and read_page again. Repeat until you find it or reach the bottom.
+4. Interact with elements: click links, fill forms, type in search boxes.
+5. After any interaction that changes the page (clicking a link, submitting a form), read_page again to see the new state.
+6. If you need to go back, use go_back.
+
+Searching for information (e.g. Google, Yelp, etc.):
+1. navigate to the search engine or site
+2. read_page to find the search box
+3. click the search input ref, then type your query, then press Enter
+4. read_page to see search results
+5. SCROLL DOWN to see more results if the first ones aren't what you need
+6. click a result link to visit the page
+7. read_page + scroll to read the content
+8. go_back if you need to try another result
+
+DO NOT just navigate and read_page once. Real pages have content below the fold. Scroll and explore.
+DO NOT give up after a single read_page. If you don't see what you need, scroll down or try a different approach.
+NEVER navigate directly to a URL with search query params (e.g. yelp.com/search?q=..., google.com/search?q=...). This triggers anti-bot detection and gets you blocked. Instead, navigate to the site's homepage, find the search box, click it, type your query, and press Enter — exactly like a real person would.
+When researching, CLICK INTO links and pages to get details. Don't just read titles from a list — open the actual pages, read them, go_back, and try the next one. Browse like a curious person who clicks things to learn more.

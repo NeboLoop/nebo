@@ -1,7 +1,13 @@
-use axum::extract::Request;
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::time::Instant;
+
+use axum::extract::{ConnectInfo, Request};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Json, Response};
+use tokio::sync::Mutex;
 
 use types::api::ErrorResponse;
 
@@ -66,4 +72,119 @@ fn auth_error(message: &str) -> Response {
         }),
     )
         .into_response()
+}
+
+/// Security headers applied to all routes (no CSP — that's per-route).
+/// HSTS, Permissions-Policy, X-Frame-Options, X-Content-Type-Options,
+/// X-XSS-Protection, Referrer-Policy.
+pub async fn security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        "permissions-policy",
+        "accelerometer=(), camera=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), payment=(), usb=()"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert(
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains; preload"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert("x-frame-options", "DENY".parse().unwrap());
+    headers.insert("x-xss-protection", "1; mode=block".parse().unwrap());
+    headers.insert(
+        "referrer-policy",
+        "strict-origin-when-cross-origin".parse().unwrap(),
+    );
+    response
+}
+
+/// Strict CSP for API routes only. Blocks all content loading since API responses
+/// should never render HTML/scripts. Matches Go's APISecurityHeaders().
+pub async fn api_security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        "content-security-policy",
+        "default-src 'none'; frame-ancestors 'none'"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert(
+        "cache-control",
+        "no-store, no-cache, must-revalidate, private"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("pragma", "no-cache".parse().unwrap());
+    response
+}
+
+/// In-memory rate limiter state.
+#[derive(Clone)]
+pub struct RateLimiter {
+    buckets: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
+    max_requests: u32,
+    window: std::time::Duration,
+}
+
+impl RateLimiter {
+    pub fn new(max_requests: u32, window: std::time::Duration) -> Self {
+        Self {
+            buckets: Arc::new(Mutex::new(HashMap::new())),
+            max_requests,
+            window,
+        }
+    }
+}
+
+/// Rate limiting middleware for auth routes.
+/// Uses ConnectInfo (RemoteAddr) only — intentionally ignores X-Forwarded-For
+/// because it is trivially spoofable by any client. Matches Go's DefaultKeyFunc.
+pub async fn rate_limit(request: Request, next: Next) -> Response {
+    let limiter = request
+        .extensions()
+        .get::<RateLimiter>()
+        .cloned();
+
+    let limiter = match limiter {
+        Some(l) => l,
+        None => return next.run(request).await,
+    };
+
+    // Extract client IP from peer address only (RemoteAddr).
+    // X-Forwarded-For is intentionally ignored — it is trivially spoofable.
+    // For deployments behind a trusted reverse proxy, add a TrustedProxy variant.
+    let ip = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+
+    let now = Instant::now();
+    let mut buckets = limiter.buckets.lock().await;
+    let entry = buckets.entry(ip).or_insert((0, now));
+
+    // Reset window if expired
+    if now.duration_since(entry.1) >= limiter.window {
+        *entry = (0, now);
+    }
+
+    entry.0 += 1;
+    if entry.0 > limiter.max_requests {
+        drop(buckets);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "rate limit exceeded, try again later".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    drop(buckets);
+
+    next.run(request).await
 }

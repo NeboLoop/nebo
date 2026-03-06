@@ -1,4 +1,6 @@
+pub mod credential;
 mod jwt;
+pub mod keyring;
 mod service;
 
 pub use jwt::{

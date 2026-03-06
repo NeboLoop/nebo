@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package apps.v0;
+
+option go_package = "github.com/NeboLoop/nebo/internal/apps/pb";
+
+import "proto/apps/v0/common.proto";
+
+// UIService is the interface for apps that provide a configuration UI.
+// Apps serve their own HTML/CSS/JS frontend. Nebo proxies HTTP requests
+// through gRPC over the existing Unix socket.
+service UIService {
+  // HealthCheck verifies the app is running.
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // Configure updates the app's settings.
+  rpc Configure(SettingsMap) returns (Empty);
+
+  // HandleRequest proxies an HTTP request from the browser to the app.
+  // The app registers standard net/http handlers; the SDK dispatches via
+  // a synthetic http.ServeMux backed by httptest.NewRecorder.
+  rpc HandleRequest(HttpRequest) returns (HttpResponse);
+}
+
+// HttpRequest represents an HTTP request proxied from the browser to the app.
+message HttpRequest {
+  string method = 1;                   // GET, POST, PUT, DELETE, etc.
+  string path = 2;                     // Path relative to /apps/{id}/api/
+  string query = 3;                    // Raw query string (e.g. "page=1&size=10")
+  map<string, string> headers = 4;     // Request headers
+  bytes body = 5;                      // Request body (empty for GET/HEAD)
+}
+
+// HttpResponse represents an HTTP response from the app back to the browser.
+message HttpResponse {
+  int32 status_code = 1;               // HTTP status code (200, 404, 500, etc.)
+  map<string, string> headers = 2;     // Response headers
+  bytes body = 3;                      // Response body
+}
+

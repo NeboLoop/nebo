@@ -42,6 +42,16 @@ pub struct ResetPasswordRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct VerifyEmailRequest {
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResendVerificationRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ChangePasswordRequest {
     #[serde(rename = "currentPassword")]
     pub current_password: String,

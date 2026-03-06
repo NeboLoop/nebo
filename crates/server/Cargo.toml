@@ -9,13 +9,38 @@ types = { workspace = true }
 config = { workspace = true }
 db = { workspace = true }
 auth = { workspace = true }
+ai = { workspace = true }
+agent = { workspace = true }
+tools = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 tracing = { workspace = true }
 rust-embed = { workspace = true }
 jsonwebtoken = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+shellexpand = { workspace = true }
+browser = { workspace = true }
+comm = { workspace = true }
+mcp = { workspace = true }
+updater = { workspace = true }
+cron = { workspace = true }
+open = "5"
+sha2 = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+base64 = "0.22"
+urlencoding = "2"
+url = "2"
+napp = { workspace = true }
+workflow = { workspace = true }
+tonic = "0.12"

@@ -118,6 +118,27 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_user(
+        &self,
+        user_id: &str,
+        name: Option<&str>,
+        email: Option<&str>,
+        avatar_url: Option<&str>,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE users SET
+                name = COALESCE(?2, name),
+                email = COALESCE(?3, email),
+                avatar_url = COALESCE(?4, avatar_url),
+                updated_at = strftime('%s','now')
+             WHERE id = ?1",
+            params![user_id, name, email, avatar_url],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn delete_user(&self, user_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM users WHERE id = ?1", params![user_id])

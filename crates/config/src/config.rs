@@ -38,6 +38,10 @@ pub struct Config {
     pub app_oauth: HashMap<String, AppOAuthProviderConfig>,
     #[serde(rename = "Log")]
     pub log: LogConfig,
+    /// Local Chrome extension ID for development (load unpacked).
+    /// Production Web Store ID is always included automatically.
+    #[serde(rename = "BrowserExtensionId", default)]
+    pub browser_extension_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -215,6 +219,7 @@ impl Default for Config {
             neboloop: NeboLoopConfig::default(),
             app_oauth: HashMap::new(),
             log: LogConfig::default(),
+            browser_extension_id: None,
         }
     }
 }

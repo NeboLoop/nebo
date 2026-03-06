@@ -8,6 +8,7 @@ license.workspace = true
 types = { workspace = true }
 config = { workspace = true }
 db = { workspace = true }
+mcp = { workspace = true }
 jsonwebtoken = { workspace = true }
 bcrypt = { workspace = true }
 serde = { workspace = true }
@@ -18,3 +19,4 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+keyring = "3"

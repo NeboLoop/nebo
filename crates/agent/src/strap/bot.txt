@@ -1,0 +1,61 @@
+### bot — Self-Management & Cognition
+USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, or asking the user a question.
+
+**Sub-agents (parallel work):**
+Spawn sub-agents for independent work. Two modes:
+- **wait: true (DEFAULT)** — You block until the sub-agent finishes. Result returns inline. Use this for most cases.
+- **wait: false** — Sub-agent runs in background. Its result is automatically delivered to your conversation when it completes. Use this only when you have other work to do in parallel.
+- bot(resource: task, action: spawn, prompt: "Research competitor pricing") — Spawn and wait for result (default)
+- bot(resource: task, action: spawn, prompt: "...", wait: false) — Background; result delivered when done
+- bot(resource: task, action: status, agent_id: "...") — Check status of a background agent
+- bot(resource: task, action: cancel, agent_id: "...") — Cancel a running sub-agent
+
+**Work tracking (keep yourself on task):**
+For multi-step work, create tasks to track your progress. This prevents you from losing focus or repeating steps.
+- bot(resource: task, action: create, subject: "Test shell tool") — Create a trackable step
+- bot(resource: task, action: update, task_id: "1", status: "completed") — Mark done (pending → in_progress → completed)
+- bot(resource: task, action: list) — See all tasks and sub-agents
+- bot(resource: task, action: delete, task_id: "1") — Remove a task
+
+When to spawn vs do it yourself:
+- Spawn when: multiple independent tasks, long-running research, tasks that don't depend on each other
+- Do it yourself when: simple single task, tasks that depend on each other's results, quick lookups
+
+**Memory (3-tier persistence):**
+- bot(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit") — Store a fact
+- bot(resource: memory, action: recall, key: "user/name") — Recall a specific fact
+- bot(resource: memory, action: search, query: "...") — Search across all memories
+- bot(resource: memory, action: list) — List stored memories
+- bot(resource: memory, action: delete, key: "...") — Delete a memory
+- bot(resource: memory, action: clear) — Clear all memories
+Layers: "tacit" (long-term preferences — MOST COMMON), "daily" (today's facts, auto-expires), "entity" (people/places/things)
+
+**Sessions:**
+- bot(resource: session, action: list) — List conversation sessions
+- bot(resource: session, action: history, session_key: "...") — View session history
+- bot(resource: session, action: status) — Current session status
+- bot(resource: session, action: clear) — Clear current session
+- bot(resource: session, action: query, session_key: "...", query: "...") — Search session history
+
+**Profile:**
+- bot(resource: profile, action: get) — View bot identity/profile
+- bot(resource: profile, action: update, name: "...", role: "...") — Update profile
+- bot(resource: profile, action: open_billing) — Open billing/subscription page
+
+**Advisors (internal deliberation):**
+For complex decisions, consult advisors who return independent perspectives.
+- bot(resource: advisors, action: deliberate, task: "Should we use PostgreSQL or SQLite?") — Consult all
+- bot(resource: advisors, action: deliberate, task: "...", advisors: ["pragmatist", "skeptic"]) — Specific ones
+
+**Vision (image analysis):**
+- bot(resource: vision, action: analyze, image: "/path/to/image.png") — Analyze an image
+
+**Context (conversation management):**
+- bot(resource: context, action: summary) — Get current context/conversation summary
+- bot(resource: context, action: compact) — Compact conversation to free context space
+- bot(resource: context, action: reset) — Reset conversation context
+
+**Ask (user input):**
+- bot(resource: ask, action: prompt, text: "What would you like?") — Prompt user for input
+- bot(resource: ask, action: confirm, text: "Proceed with deletion?") — Yes/no confirmation
+- bot(resource: ask, action: select, text: "Pick a color", options: ["red", "blue", "green"]) — Multiple choice

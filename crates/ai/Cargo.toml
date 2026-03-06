@@ -6,9 +6,11 @@ license.workspace = true
 
 [dependencies]
 types = { workspace = true }
+db = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 
 # HTTP
 reqwest = { workspace = true }
@@ -25,5 +27,15 @@ thiserror = { workspace = true }
 
 # Utilities
 uuid = { workspace = true }
-futures = "0.3"
+sha2 = { workspace = true }
+hex = { workspace = true }
+futures = { workspace = true }
 async-trait = "0.1"
+async-openai = { workspace = true }
+llama-cpp-2 = { version = "0.1", optional = true }
+
+[features]
+local-inference = ["dep:llama-cpp-2"]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

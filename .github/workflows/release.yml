@@ -1,0 +1,553 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  RUST_VERSION: "1.87"
+  NODE_VERSION: "20"
+
+jobs:
+  # ─── Build frontend (shared by all platform builds) ───────────────────
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Build frontend
+        run: |
+          cd app
+          pnpm install --frozen-lockfile
+          pnpm exec svelte-kit sync
+          pnpm run build
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: app/build/
+          retention-days: 1
+
+  # ─── macOS desktop builds (Tauri 2) ───────────────────────────────────
+  build-macos:
+    needs: frontend
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            arch: amd64
+    runs-on: ${{ matrix.runner }}
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && 'true' || 'false' }}
+      HAS_NOTARIZE_CREDS: ${{ secrets.APPLE_ID != '' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: src-tauri/ui/
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Import signing certificate
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > $RUNNER_TEMP/cert.p12
+          security import $RUNNER_TEMP/cert.p12 -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm $RUNNER_TEMP/cert.p12
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+
+      - name: Build Tauri desktop app
+        run: cargo tauri build --target ${{ matrix.target }}
+
+      - name: Re-sign .app with Developer ID
+        if: ${{ env.HAS_SIGNING_CERT == 'true' }}
+        env:
+          SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_PATH="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          codesign --force --sign "$SIGN_IDENTITY" \
+            --identifier dev.neboloop.nebo \
+            --entitlements assets/macos/nebo.entitlements \
+            --options runtime \
+            --deep \
+            "$APP_PATH"
+          echo "Nebo.app signed with Developer ID"
+
+      - name: Extract signed binary for auto-update
+        run: |
+          APP_PATH="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          cp "$APP_PATH/Contents/MacOS/Nebo" nebo-darwin-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-darwin-${{ matrix.arch }}-binary
+          path: nebo-darwin-${{ matrix.arch }}
+
+      - name: Locate .dmg
+        id: dmg
+        run: |
+          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/Nebo_*.dmg 2>/dev/null || true)
+          if [ -n "$DMG" ]; then
+            mkdir -p dist
+            PKG_VERSION="${{ github.ref_name }}"
+            PKG_VERSION="${PKG_VERSION#v}"
+            DEST="dist/Nebo-${PKG_VERSION}-${{ matrix.arch }}.dmg"
+            cp "$DMG" "$DEST"
+            echo "dmg_path=$DEST" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notarize .dmg
+        if: ${{ env.HAS_NOTARIZE_CREDS == 'true' && steps.dmg.outputs.dmg_path != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG_FILE="${{ steps.dmg.outputs.dmg_path }}"
+          echo "Submitting $DMG_FILE for notarization..."
+          xcrun notarytool submit "$DMG_FILE" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG_FILE"
+          echo "Notarization complete"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ steps.dmg.outputs.dmg_path != '' }}
+        with:
+          name: nebo-darwin-${{ matrix.arch }}
+          path: dist/Nebo-*.dmg
+
+  # ─── Linux desktop builds (Tauri 2 — WebKitGTK) ──────────────────────
+  build-linux:
+    needs: frontend
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            build-essential
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: src-tauri/ui/
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build Tauri desktop app
+        run: cargo tauri build
+
+      - name: Extract desktop binary
+        run: |
+          cp src-tauri/target/release/nebo-desktop nebo-linux-${{ matrix.arch }}
+
+      - name: Build headless CLI binary
+        run: cargo build --release -p nebo
+
+      - name: Extract headless binary
+        run: cp target/release/nebo nebo-linux-${{ matrix.arch }}-headless
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-linux-${{ matrix.arch }}
+          path: nebo-linux-${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-linux-${{ matrix.arch }}-headless
+          path: nebo-linux-${{ matrix.arch }}-headless
+
+      - name: Collect .deb
+        id: deb
+        run: |
+          DEB=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null || true)
+          if [ -n "$DEB" ]; then
+            cp $DEB .
+            echo "has_deb=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ steps.deb.outputs.has_deb == 'true' }}
+        with:
+          name: nebo-deb-${{ matrix.arch }}
+          path: "*.deb"
+
+  # ─── Windows desktop build (Tauri 2 — WebView2) ──────────────────────
+  build-windows:
+    needs: frontend
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build
+          path: src-tauri/ui/
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build Tauri desktop app
+        run: cargo tauri build
+
+      - name: Extract binary and MSI
+        shell: bash
+        run: |
+          cp src-tauri/target/release/nebo-desktop.exe nebo-windows-amd64.exe
+          MSI=$(ls src-tauri/target/release/bundle/msi/*.msi 2>/dev/null || true)
+          if [ -n "$MSI" ]; then
+            cp $MSI .
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-windows-amd64
+          path: nebo-windows-amd64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-windows-msi
+          path: "*.msi"
+          if-no-files-found: ignore
+
+  # ─── Sign Windows binaries (Azure Trusted Signing) ───────────────────
+  sign-windows:
+    needs: build-windows
+    if: vars.AZURE_SIGNING_ENABLED == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: nebo-windows-amd64
+          path: .
+
+      - name: Download Windows MSI
+        uses: actions/download-artifact@v4
+        with:
+          name: nebo-windows-msi
+          path: .
+        continue-on-error: true
+
+      - name: Sign binaries (Authenticode)
+        uses: azure/trusted-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}
+          files-folder-filter: exe,msi
+          files-folder-depth: 1
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-windows-amd64-signed
+          path: nebo-windows-amd64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nebo-windows-msi-signed
+          path: "*.msi"
+          if-no-files-found: ignore
+
+  # ─── Create GitHub release with all artifacts ─────────────────────────
+  release:
+    needs: [build-macos, build-linux, build-windows]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      DO_SPACES_KEY_SET: ${{ secrets.DO_SPACES_ACCESS_KEY != '' && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: nebo-*
+          merge-multiple: true
+
+      - name: Stage signed Windows binary (if available)
+        run: |
+          if [ -d "artifacts" ]; then
+            # Prefer signed variants
+            for f in artifacts/nebo-*-signed*; do
+              [ -f "$f" ] || continue
+              dest="artifacts/$(basename "$f" | sed 's/-signed//')"
+              cp "$f" "$dest"
+            done
+          fi
+
+      - name: List artifacts
+        run: ls -la artifacts/ 2>/dev/null || echo "No artifacts"
+
+      - name: Make binaries executable
+        run: chmod +x artifacts/nebo-* 2>/dev/null || true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum \
+            nebo-darwin-arm64 nebo-darwin-amd64 \
+            nebo-linux-amd64 nebo-linux-arm64 \
+            nebo-linux-amd64-headless nebo-linux-arm64-headless \
+            nebo-windows-amd64.exe 2>/dev/null | tee checksums.txt
+          echo "Generated checksums:"
+          cat checksums.txt
+
+      - name: Upload release assets to CDN
+        if: ${{ env.DO_SPACES_KEY_SET == 'true' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.DO_SPACES_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DO_SPACES_SECRET_KEY }}
+          S3_ENDPOINT: https://nyc3.digitaloceanspaces.com
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Generate version.json
+          cat > version.json << EOFJ
+          {
+            "version": "${TAG}",
+            "release_url": "https://github.com/NeboLoop/nebo-rs/releases/tag/${TAG}",
+            "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOFJ
+          sed -i 's/^          //' version.json
+
+          # Upload latest version pointer
+          aws s3 cp version.json s3://neboloop/releases/version.json \
+            --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
+
+          # Upload all release assets under releases/{tag}/
+          for f in artifacts/nebo-* artifacts/Nebo-* artifacts/*.deb artifacts/checksums.txt; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            case "$name" in *-signed*) continue ;; esac
+            aws s3 cp "$f" "s3://neboloop/releases/${TAG}/${name}" \
+              --endpoint-url "$S3_ENDPOINT" --acl public-read
+          done
+
+          # Upload per-tag version.json
+          aws s3 cp version.json "s3://neboloop/releases/${TAG}/version.json" \
+            --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
+          echo "Uploaded release assets to CDN: releases/${TAG}/"
+
+      - name: Remove intermediate signed binaries
+        run: rm -f artifacts/*-signed*
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── Update Homebrew cask (cross-repo) ────────────────────────────────
+  update-homebrew:
+    if: ${{ vars.HAS_TAP_TOKEN == 'true' }}
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: nebo-darwin-*
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        id: checksums
+        run: |
+          echo "darwin_arm64=$(sha256sum artifacts/Nebo-*-arm64.dmg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "darwin_amd64=$(sha256sum artifacts/Nebo-*-amd64.dmg | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: neboloop/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+
+      - name: Checkout source (for cask template)
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Update cask
+        env:
+          VERSION: ${{ github.ref_name }}
+          SHA_DARWIN_ARM64: ${{ steps.checksums.outputs.darwin_arm64 }}
+          SHA_DARWIN_AMD64: ${{ steps.checksums.outputs.darwin_amd64 }}
+        run: |
+          export PKG_VERSION="${VERSION#v}"
+          mkdir -p homebrew-tap/Casks
+          envsubst < source/scripts/nebo.rb.tmpl > homebrew-tap/Casks/nebo.rb
+
+      - name: Push cask update
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/nebo.rb
+          git rm -f Formula/nebo.rb 2>/dev/null || true
+          git commit -m "Update nebo to ${{ github.ref_name }}"
+          git push
+
+  # ─── Update APT repository (cross-repo) ──────────────────────────────
+  update-apt:
+    if: ${{ vars.HAS_TAP_TOKEN == 'true' }}
+    needs: build-linux
+    runs-on: ubuntu-latest
+    env:
+      HAS_GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' && 'true' || 'false' }}
+    steps:
+      - name: Download .deb packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nebo-deb-*
+          path: debs
+          merge-multiple: true
+
+      - name: Checkout apt repo
+        uses: actions/checkout@v4
+        with:
+          repository: neboloop/apt
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: apt-repo
+
+      - name: Install APT repo tools
+        run: sudo apt-get install -y dpkg-dev
+
+      - name: Update APT repository
+        run: |
+          mkdir -p apt-repo/pool/main
+          cp debs/*.deb apt-repo/pool/main/
+
+          cd apt-repo
+
+          # Generate Packages index
+          mkdir -p dists/stable/main/binary-amd64
+          mkdir -p dists/stable/main/binary-arm64
+
+          dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-amd64/Packages
+          dpkg-scanpackages pool/main /dev/null > dists/stable/main/binary-arm64/Packages
+          gzip -kf dists/stable/main/binary-amd64/Packages
+          gzip -kf dists/stable/main/binary-arm64/Packages
+
+          # Generate Release file
+          cat > dists/stable/Release << 'EOF'
+          Origin: Nebo
+          Label: Nebo
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 arm64
+          Components: main
+          Description: Nebo AI Agent
+          EOF
+          sed -i 's/^          //' dists/stable/Release
+
+          apt-ftparchive release dists/stable >> dists/stable/Release
+
+      - name: Sign APT repository
+        if: ${{ env.HAS_GPG_KEY == 'true' }}
+        env:
+          GPG_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_KEY" | gpg --import
+          gpg --armor --export > apt-repo/key.gpg
+          gpg --default-key nebo -abs -o apt-repo/dists/stable/Release.gpg apt-repo/dists/stable/Release
+          gpg --default-key nebo --clearsign -o apt-repo/dists/stable/InRelease apt-repo/dists/stable/Release
+
+      - name: Push APT repo update
+        working-directory: apt-repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update nebo to ${{ github.ref_name }}" || echo "No changes"
+          git push

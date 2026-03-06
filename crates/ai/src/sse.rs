@@ -1,10 +1,10 @@
-/// SSE (Server-Sent Events) line parser.
-///
-/// Handles the standard SSE format used by OpenAI and Anthropic APIs:
-/// - Lines starting with "data: " contain event data
-/// - "data: [DONE]" signals end of stream
-/// - Empty lines separate events
-/// - Lines starting with "event: " carry event type (used by Anthropic)
+//! SSE (Server-Sent Events) line parser.
+//!
+//! Handles the standard SSE format used by OpenAI and Anthropic APIs:
+//! - Lines starting with "data: " contain event data
+//! - "data: [DONE]" signals end of stream
+//! - Empty lines separate events
+//! - Lines starting with "event: " carry event type (used by Anthropic)
 
 /// Parsed SSE event.
 #[derive(Debug)]

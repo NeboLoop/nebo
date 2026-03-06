@@ -3,10 +3,10 @@ Host: 127.0.0.1
 Port: 27895
 Timeout: 60000 # 60 seconds for API testing
 
-# App settings (from .env)
+# App settings (from .env, defaults to localhost)
 App:
-  BaseURL: $APP_BASE_URL
-  Domain: $APP_DOMAIN
+  BaseURL: ${APP_BASE_URL:-http://localhost:27895}
+  Domain: ${APP_DOMAIN:-localhost}
 
 # Logging - configurable via Level: debug, info, error, severe
 Log:

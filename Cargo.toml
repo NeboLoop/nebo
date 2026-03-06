@@ -10,13 +10,15 @@ members = [
     "crates/agent",
     "crates/server",
     "crates/mcp",
-    "crates/apps",
+    "crates/napp",
+    "crates/workflow",
     "crates/browser",
     "crates/voice",
     "crates/comm",
     "crates/notify",
     "crates/updater",
     "crates/cli",
+    "src-tauri",
 ]
 
 [workspace.package]
@@ -71,8 +73,22 @@ uuid = { version = "1", features = ["v4"] }
 # Embedded assets
 rust-embed = { version = "8", features = ["compression", "include-exclude"] }
 
+# Async utilities
+futures = "0.3"
+async-openai = { version = "0.33", features = ["chat-completion"] }
+tokio-util = "0.7"
+tokio-tungstenite = { version = "0.26", features = ["connect", "native-tls"] }
+
+# Cron
+cron = "0.12"
+
+# Env
+dotenvy = "0.15"
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
+sysinfo = "0.33"
+regex = "1"
 shellexpand = "3"
 dirs = "6"
 
@@ -86,7 +102,8 @@ tools = { path = "crates/tools", package = "nebo-tools" }
 agent = { path = "crates/agent", package = "nebo-agent" }
 server = { path = "crates/server", package = "nebo-server" }
 mcp = { path = "crates/mcp", package = "nebo-mcp" }
-apps = { path = "crates/apps", package = "nebo-apps" }
+napp = { path = "crates/napp", package = "nebo-napp" }
+workflow = { path = "crates/workflow", package = "nebo-workflow" }
 browser = { path = "crates/browser", package = "nebo-browser" }
 voice = { path = "crates/voice", package = "nebo-voice" }
 comm = { path = "crates/comm", package = "nebo-comm" }

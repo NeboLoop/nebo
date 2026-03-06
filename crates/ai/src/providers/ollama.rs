@@ -49,15 +49,13 @@ impl OllamaProvider {
         // Collect tool call IDs that have responses
         let mut responded_tool_ids = std::collections::HashSet::new();
         for msg in &req.messages {
-            if msg.role == "tool" {
-                if let Some(ref tr_val) = msg.tool_results {
-                    if let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
+            if msg.role == "tool"
+                && let Some(ref tr_val) = msg.tool_results
+                    && let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
                         for r in &results {
                             responded_tool_ids.insert(r.tool_call_id.clone());
                         }
                     }
-                }
-            }
         }
 
         for msg in &req.messages {
@@ -72,8 +70,8 @@ impl OllamaProvider {
                 "assistant" => {
                     let mut ollama_tool_calls = Vec::new();
 
-                    if let Some(ref tc_val) = msg.tool_calls {
-                        if let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone()) {
+                    if let Some(ref tc_val) = msg.tool_calls
+                        && let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone()) {
                             for tc in tcs {
                                 if !responded_tool_ids.contains(&tc.id) {
                                     continue;
@@ -88,7 +86,6 @@ impl OllamaProvider {
                                 });
                             }
                         }
-                    }
 
                     if !msg.content.is_empty() || !ollama_tool_calls.is_empty() {
                         messages.push(OllamaMessage {
@@ -106,8 +103,8 @@ impl OllamaProvider {
                     });
                 }
                 "tool" => {
-                    if let Some(ref tr_val) = msg.tool_results {
-                        if let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
+                    if let Some(ref tr_val) = msg.tool_results
+                        && let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
                             for r in results {
                                 messages.push(OllamaMessage {
                                     role: "tool".to_string(),
@@ -116,7 +113,6 @@ impl OllamaProvider {
                                 });
                             }
                         }
-                    }
                 }
                 _ => {}
             }

@@ -5,3 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+reqwest = { workspace = true }
+futures = { workspace = true }
+tokio-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+zstd = "0.13"
+getrandom = "0.2"
+urlencoding = "2"

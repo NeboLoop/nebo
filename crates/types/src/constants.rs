@@ -45,6 +45,8 @@ pub mod lanes {
     pub const NESTED: &str = "nested";
     pub const HEARTBEAT: &str = "heartbeat";
     pub const COMM: &str = "comm";
+    pub const DEV: &str = "dev";
+    pub const DESKTOP: &str = "desktop";
 }
 
 /// Origin types for tool restrictions.

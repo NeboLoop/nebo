@@ -1,7 +1,18 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tokio::sync::mpsc;
+
+/// Rate limit metadata extracted from provider response headers.
+#[derive(Debug, Clone, Default)]
+pub struct RateLimitMeta {
+    pub remaining_requests: Option<u64>,
+    pub remaining_tokens: Option<u64>,
+    pub reset_after_secs: Option<f64>,
+    pub retry_after_secs: Option<u64>,
+}
 
 /// Streaming event types from AI providers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +25,9 @@ pub enum StreamEventType {
     Done,
     Thinking,
     Usage,
+    RateLimit,
+    ApprovalRequest,
+    AskRequest,
 }
 
 /// Token usage statistics from a streaming response.
@@ -43,6 +57,7 @@ pub struct StreamEvent {
     pub tool_call: Option<ToolCall>,
     pub error: Option<String>,
     pub usage: Option<UsageInfo>,
+    pub rate_limit: Option<RateLimitMeta>,
 }
 
 impl StreamEvent {
@@ -53,6 +68,7 @@ impl StreamEvent {
             tool_call: None,
             error: None,
             usage: None,
+            rate_limit: None,
         }
     }
 
@@ -63,6 +79,7 @@ impl StreamEvent {
             tool_call: None,
             error: None,
             usage: None,
+            rate_limit: None,
         }
     }
 
@@ -73,6 +90,7 @@ impl StreamEvent {
             tool_call: Some(tc),
             error: None,
             usage: None,
+            rate_limit: None,
         }
     }
 
@@ -83,6 +101,7 @@ impl StreamEvent {
             tool_call: None,
             error: Some(msg.into()),
             usage: None,
+            rate_limit: None,
         }
     }
 
@@ -93,6 +112,7 @@ impl StreamEvent {
             tool_call: None,
             error: None,
             usage: None,
+            rate_limit: None,
         }
     }
 
@@ -103,6 +123,40 @@ impl StreamEvent {
             tool_call: None,
             error: None,
             usage: Some(info),
+            rate_limit: None,
+        }
+    }
+
+    pub fn rate_limit_info(meta: RateLimitMeta) -> Self {
+        Self {
+            event_type: StreamEventType::RateLimit,
+            text: String::new(),
+            tool_call: None,
+            error: None,
+            usage: None,
+            rate_limit: Some(meta),
+        }
+    }
+
+    pub fn approval_request(tc: ToolCall) -> Self {
+        Self {
+            event_type: StreamEventType::ApprovalRequest,
+            text: String::new(),
+            tool_call: Some(tc),
+            error: None,
+            usage: None,
+            rate_limit: None,
+        }
+    }
+
+    pub fn ask_request(question_id: impl Into<String>, prompt: impl Into<String>) -> Self {
+        Self {
+            event_type: StreamEventType::AskRequest,
+            text: prompt.into(),
+            tool_call: None,
+            error: Some(question_id.into()), // reuse error field for question_id
+            usage: None,
+            rate_limit: None,
         }
     }
 }
@@ -115,8 +169,15 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
-/// A message in a conversation.
+/// Image content for vision messages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageContent {
+    pub media_type: String,
+    pub data: String,
+}
+
+/// A message in a conversation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
     #[serde(default)]
@@ -125,6 +186,8 @@ pub struct Message {
     pub tool_calls: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_results: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<ImageContent>>,
 }
 
 /// A request to an AI provider.
@@ -173,6 +236,23 @@ pub trait Provider: Send + Sync {
         &self,
         req: &ChatRequest,
     ) -> Result<EventReceiver, ProviderError>;
+}
+
+/// Optional trait for providers that support HTTP/2 connection reset recovery.
+/// Implemented by providers that use persistent HTTP/2 connections which can
+/// enter a poisoned state (GOAWAY frames, connection exhaustion).
+pub trait ConnectionResetter {
+    /// Reset all idle HTTP connections. Call when GOAWAY or connection errors
+    /// are detected to force new connections on the next request.
+    fn reset_connections(&self);
+}
+
+/// Optional trait for providers that track auth profile usage for billing.
+pub trait ProfileTracker {
+    /// Record successful usage (tokens consumed) against the auth profile.
+    fn record_usage(&self, input_tokens: i32, output_tokens: i32);
+    /// Record an error with a cooldown hint string (e.g., "rate_limit:60s").
+    fn record_error(&self, cooldown: &str);
 }
 
 /// Error from an AI provider.
@@ -276,7 +356,13 @@ pub fn classify_error_reason(err: &ProviderError) -> &str {
         }
         ProviderError::Request(msg) | ProviderError::Stream(msg) => {
             let lower = msg.to_lowercase();
-            if lower.contains("timeout") || lower.contains("timed out") {
+            if lower.contains("rate limit") || lower.contains("429") {
+                "rate_limit"
+            } else if lower.contains("billing") || lower.contains("quota") || lower.contains("payment") {
+                "billing"
+            } else if lower.contains("provider error") || lower.contains("upstream") {
+                "provider"
+            } else if lower.contains("timeout") || lower.contains("timed out") {
                 "timeout"
             } else {
                 "other"
@@ -299,12 +385,12 @@ pub struct ProviderConfig {
 
 /// Wraps a Provider with auth profile tracking.
 pub struct ProfiledProvider {
-    pub inner: Box<dyn Provider>,
+    pub inner: Arc<dyn Provider>,
     profile_id: String,
 }
 
 impl ProfiledProvider {
-    pub fn new(inner: Box<dyn Provider>, profile_id: String) -> Self {
+    pub fn new(inner: Arc<dyn Provider>, profile_id: String) -> Self {
         Self { inner, profile_id }
     }
 }

@@ -1,1 +1,37 @@
-// Agentic loop runner (Phase 3)
+pub mod advisors;
+pub mod chunking;
+pub mod hooks;
+pub mod concurrency;
+pub mod lanes;
+pub mod compaction;
+pub mod db_context;
+pub mod decompose;
+pub mod dedupe;
+pub mod fuzzy;
+pub mod keyparser;
+pub mod memory;
+pub mod memory_debounce;
+pub mod memory_flush;
+pub mod orchestrator;
+pub mod personality;
+pub mod prompt;
+pub mod pruning;
+pub mod runner;
+pub mod sanitize;
+pub mod search;
+pub mod search_adapter;
+pub mod selector;
+pub mod session;
+pub mod sidecar;
+pub mod steering;
+pub mod task_graph;
+pub mod tool_filter;
+pub mod transcript;
+
+pub use concurrency::ConcurrencyController;
+pub use lanes::LaneManager;
+pub use orchestrator::Orchestrator;
+pub use runner::{RunRequest, Runner};
+pub use selector::ModelSelector;
+pub use session::SessionManager;
+pub use steering::Pipeline as SteeringPipeline;

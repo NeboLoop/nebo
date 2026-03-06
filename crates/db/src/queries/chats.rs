@@ -280,6 +280,48 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    pub fn list_chat_days(
+        &self,
+        chat_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<(String, i64)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT day_marker, COUNT(*) as cnt FROM chat_messages
+                 WHERE chat_id = ?1 AND day_marker IS NOT NULL
+                 GROUP BY day_marker ORDER BY day_marker DESC LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id, limit, offset], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    pub fn get_chat_messages_by_day(
+        &self,
+        chat_id: &str,
+        day: &str,
+    ) -> Result<Vec<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM chat_messages WHERE chat_id = ?1 AND day_marker = ?2
+                 ORDER BY created_at ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![chat_id, day], row_to_chat_message)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn get_chat_messages_after_timestamp(
         &self,
         chat_id: &str,

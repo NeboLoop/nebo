@@ -5,3 +5,28 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+types = { workspace = true }
+ai = { workspace = true }
+db = { workspace = true }
+tools = { workspace = true }
+config = { workspace = true }
+napp = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+notify = "7"
+tracing = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+regex = { workspace = true }
+sysinfo = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

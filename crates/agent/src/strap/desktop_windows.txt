@@ -1,0 +1,46 @@
+### desktop — Desktop Automation
+USE THIS when: user wants to interact with the GUI — click, type, screenshot, manage windows, use menus, or control desktop apps visually.
+
+- desktop(resource: "input", action: "click", x: 100, y: 200) — Click at coordinates
+- desktop(resource: "input", action: "click", element: "B3") — Click element from screenshot
+- desktop(resource: "input", action: "double_click", x: 100, y: 200) — Double-click
+- desktop(resource: "input", action: "right_click", x: 100, y: 200) — Right-click
+- desktop(resource: "input", action: "type", text: "hello") — Type text
+- desktop(resource: "input", action: "hotkey", keys: "ctrl+c") — Keyboard shortcut
+- desktop(resource: "input", action: "scroll", direction: "down", amount: 3) — Scroll
+- desktop(resource: "input", action: "move", x: 100, y: 200) — Move cursor
+- desktop(resource: "input", action: "drag", x: 10, y: 10, to_x: 200, to_y: 200) — Drag
+- desktop(resource: "input", action: "paste", text: "content") — Paste via clipboard
+- desktop(resource: "ui", action: "tree", app: "Notepad") — Get UI element hierarchy
+- desktop(resource: "ui", action: "find", app: "Notepad", role: "button", label: "Submit") — Find elements
+- desktop(resource: "ui", action: "click", app: "Notepad", role: "button", label: "Submit") — Click element
+- desktop(resource: "ui", action: "get_value", app: "Notepad", role: "textfield", label: "Search") — Read value
+- desktop(resource: "ui", action: "set_value", app: "Notepad", role: "textfield", label: "Search", value: "query") — Set value
+- desktop(resource: "ui", action: "list_apps") — List apps with UI Automation access
+- desktop(resource: "window", action: "list") — List all windows
+- desktop(resource: "window", action: "focus", app: "Notepad") — Focus window
+- desktop(resource: "window", action: "move", app: "Notepad", x: 0, y: 0) — Move window
+- desktop(resource: "window", action: "resize", app: "Notepad", width: 800, height: 600) — Resize
+- desktop(resource: "window", action: "minimize", app: "Notepad") — Minimize
+- desktop(resource: "window", action: "maximize", app: "Notepad") — Maximize
+- desktop(resource: "window", action: "close", app: "Notepad") — Close window
+- desktop(resource: "shortcut", action: "list") — List available shortcuts
+- desktop(resource: "shortcut", action: "run", name: "My Shortcut") — Run a shortcut
+- desktop(resource: "menu", action: "list", app: "Notepad") — List menu bar items
+- desktop(resource: "menu", action: "menus", app: "Notepad", menu: "File") — List menu items
+- desktop(resource: "menu", action: "click", app: "Notepad", menu: "File", item: "New Window") — Click menu item
+- desktop(resource: "menu", action: "status") — List system tray icons
+- desktop(resource: "menu", action: "click_status", name: "...") — Click a system tray icon
+- desktop(resource: "dialog", action: "detect", app: "Notepad") — Detect open dialogs/modals
+- desktop(resource: "dialog", action: "list", app: "Notepad") — List dialog elements
+- desktop(resource: "dialog", action: "click", app: "Notepad", button_label: "OK") — Click dialog button
+- desktop(resource: "dialog", action: "fill", app: "Notepad", field: "...", value: "...") — Fill a dialog field
+- desktop(resource: "dialog", action: "dismiss", app: "Notepad") — Dismiss dialog
+- desktop(resource: "space", action: "list") — List virtual desktops
+- desktop(resource: "space", action: "switch", direction: "right") — Switch virtual desktop
+- desktop(resource: "space", action: "move_window", direction: "right") — Move window to adjacent desktop
+- desktop(resource: "screenshot", action: "capture") — Capture current screen
+- desktop(resource: "screenshot", action: "capture", format: "file") — Capture and save to disk (returns inline image URL)
+- desktop(resource: "screenshot", action: "see", app: "Notepad") — Capture specific app with annotated element IDs
+- desktop(resource: "tts", action: "speak", text: "Hello") — Text-to-speech
+Note: Menu bar automation works best with classic Win32 apps (Notepad, WordPad, Office). UWP and Electron apps may have limited menu access.

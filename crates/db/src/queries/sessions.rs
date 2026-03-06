@@ -308,6 +308,21 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
+
+    /// Update memory flush tracking after a pre-compaction flush.
+    pub fn update_session_memory_flush(
+        &self,
+        id: &str,
+        compaction_count: i64,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE sessions SET memory_flush_at = unixepoch(), memory_flush_compaction_count = ?2, updated_at = unixepoch() WHERE id = ?1",
+            params![id, compaction_count],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {

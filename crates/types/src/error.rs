@@ -36,8 +36,6 @@ pub enum NeboError {
     Server(String),
 
     // AI provider errors
-    #[error("provider error: {0}")]
-    Provider(String),
     #[error("context overflow")]
     ContextOverflow,
     #[error("rate limit exceeded")]
@@ -46,6 +44,10 @@ pub enum NeboError {
     // IO errors
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    // Validation
+    #[error("validation error: {0}")]
+    Validation(String),
 
     // Generic
     #[error("{0}")]

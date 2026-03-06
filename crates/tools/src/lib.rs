@@ -1,1 +1,41 @@
-// STRAP domain tools (Phase 3)
+pub mod bot_tool;
+pub mod desktop_tool;
+pub mod domain;
+pub mod event_tool;
+pub mod file_tool;
+pub mod grep_tool;
+pub mod message_tool;
+pub mod orchestrator;
+pub mod origin;
+pub mod policy;
+pub mod process;
+pub mod registry;
+pub mod safeguard;
+pub mod settings_tool;
+pub mod shell_tool;
+pub mod skill_tool;
+pub mod skills;
+pub mod spotlight_tool;
+pub mod system_tool;
+pub mod tools;
+pub mod web_tool;
+pub mod workflows;
+
+pub use domain::*;
+pub use file_tool::FileTool;
+pub use orchestrator::{
+    new_handle, OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator,
+};
+pub use origin::{Origin, ToolContext};
+pub use policy::{AskMode, Policy, PolicyLevel};
+pub use process::ProcessRegistry;
+pub use registry::{Registry, ToolResult};
+pub use shell_tool::ShellTool;
+pub use system_tool::SystemTool;
+pub use web_tool::WebTool;
+pub use bot_tool::{AdvisorDeliberator, BotTool, HybridSearchResult, HybridSearcher};
+pub use event_tool::EventTool;
+pub use skill_tool::SkillTool;
+pub use message_tool::MessageTool;
+pub use tools::{NappManager, NappToolInfo, ToolTool};
+pub use workflows::{WorkflowManager, WorkflowInfo, WorkflowRunInfo, WorkTool};

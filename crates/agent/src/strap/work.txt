@@ -1,0 +1,18 @@
+### work — Workflow Management & Execution
+USE THIS when: user wants to manage or run automated workflows.
+
+**Lifecycle actions (no resource):**
+- work(action: "list") — List installed workflows and their status
+- work(action: "install", code: "WORK-XXXX-XXXX") — Install from marketplace code
+- work(action: "uninstall", id: "workflow-id") — Uninstall a workflow
+
+**Dispatch to workflow (set resource = workflow name):**
+- work(resource: "weekly-report", action: "run") — Run the workflow (returns immediately with run_id)
+- work(resource: "weekly-report", action: "run", inputs: {"week": "2024-03"}) — Run with inputs
+- work(resource: "weekly-report", action: "status") — Check latest run status
+- work(resource: "weekly-report", action: "runs") — List recent runs
+- work(resource: "weekly-report", action: "toggle") — Enable/disable
+
+First use work(action: "list") to see available workflows and their names, then dispatch with resource.
+Workflows run as background subagents — run returns a run_id immediately.
+Use status to check progress. Workflows have their own tool access and token budgets.

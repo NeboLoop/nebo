@@ -62,3 +62,8 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(sess
 
 -- Index for finding non-compacted messages
 CREATE INDEX IF NOT EXISTS idx_session_messages_compacted ON session_messages(session_id, is_compacted);
+
+-- +goose Down
+DROP TABLE IF EXISTS session_messages;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS auth_profiles;

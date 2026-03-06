@@ -13,3 +13,6 @@ shellexpand = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+which = "7"

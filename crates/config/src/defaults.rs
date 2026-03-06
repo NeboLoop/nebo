@@ -69,6 +69,18 @@ pub fn write_bot_id(id: &str) -> Result<(), NeboError> {
     Ok(())
 }
 
+/// Ensure a bot_id exists. Reads from file first; if absent, generates a new UUID and persists it.
+pub fn ensure_bot_id() -> String {
+    if let Some(id) = read_bot_id() {
+        return id;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    if let Err(e) = write_bot_id(&id) {
+        tracing::warn!("failed to persist new bot_id: {}", e);
+    }
+    id
+}
+
 /// Checks if the setup has been marked as complete.
 pub fn is_setup_complete() -> Result<bool, NeboError> {
     let dir = data_dir()?;

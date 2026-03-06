@@ -1,89 +1,121 @@
+use async_openai::types::chat::{
+    ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
+    ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
+    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
+    ChatCompletionRequestSystemMessageContent, ChatCompletionRequestToolMessage,
+    ChatCompletionRequestToolMessageContent, ChatCompletionRequestUserMessage,
+    ChatCompletionRequestUserMessageContent, ChatCompletionTool, ChatCompletionTools,
+    CreateChatCompletionRequest, CreateChatCompletionStreamResponse, FunctionCall, FunctionObject,
+};
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::RwLock;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::sse::{self, SseEvent};
+use crate::sse::{SseEvent, parse_sse_line};
 use crate::types::*;
 
-/// OpenAI provider using raw HTTP SSE streaming.
-/// Reusable for any OpenAI-compatible API (OpenRouter, etc.) via base_url.
+/// OpenAI provider using async-openai types with raw reqwest streaming.
+///
+/// Uses the SDK's typed request/response structs for serialization safety,
+/// but makes HTTP requests directly with reqwest to avoid reqwest-eventsource's
+/// automatic SSE reconnection (which causes infinite retries on 502 from Janus).
 pub struct OpenAIProvider {
-    client: Client,
     api_key: String,
     model: String,
     base_url: String,
     provider_id: String,
+    /// Optional bot ID sent as X-Bot-ID header (used by Janus for per-bot billing).
+    bot_id: Option<String>,
+    /// Optional lane identifier sent as X-Lane header (used by Janus for routing).
+    lane: Option<String>,
+    /// HTTP client wrapped in RwLock for connection reset recovery.
+    http_client: RwLock<reqwest::Client>,
 }
 
 impl OpenAIProvider {
     pub fn new(api_key: String, model: String) -> Self {
         Self {
-            client: Client::new(),
             api_key,
             model,
             base_url: "https://api.openai.com/v1".to_string(),
             provider_id: "openai".to_string(),
+            bot_id: None,
+            lane: None,
+            http_client: RwLock::new(reqwest::Client::new()),
         }
     }
 
     /// Create with a custom base URL for OpenAI-compatible APIs.
     pub fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
         Self {
-            client: Client::new(),
             api_key,
             model,
             base_url,
             provider_id: "openai".to_string(),
+            bot_id: None,
+            lane: None,
+            http_client: RwLock::new(reqwest::Client::new()),
         }
     }
 
-    /// Override the provider ID (e.g., "openrouter").
+    /// Override the provider ID (e.g., "janus", "deepseek").
     pub fn set_provider_id(&mut self, id: impl Into<String>) {
         self.provider_id = id.into();
     }
 
-    /// Build OpenAI API messages from our generic format.
-    fn build_messages(&self, req: &ChatRequest) -> Vec<OpenAIMessage> {
-        // Collect tool call/result IDs for orphan filtering
-        let mut responded_tool_ids = std::collections::HashSet::new();
-        let mut issued_tool_ids = std::collections::HashSet::new();
+    /// Set the bot ID for X-Bot-ID header (used by Janus for per-bot billing).
+    pub fn set_bot_id(&mut self, id: impl Into<String>) {
+        self.bot_id = Some(id.into());
+    }
+
+    /// Set the lane for X-Lane header (used by Janus for routing).
+    pub fn set_lane(&mut self, lane: impl Into<String>) {
+        self.lane = Some(lane.into());
+    }
+
+    /// Build async-openai messages from our generic format.
+    fn build_messages(&self, req: &ChatRequest) -> Vec<ChatCompletionRequestMessage> {
+        // Build indexes for history sanitisation (same as Go buildMessages):
+        // - respondedToolIDs: tool_call_ids that have a matching tool-result message
+        // - issuedToolIDs: tool_call_ids that appear in an assistant tool_calls field
+        let mut responded_tool_ids = HashSet::new();
+        let mut issued_tool_ids = HashSet::new();
 
         for msg in &req.messages {
-            if msg.role == "tool" {
-                if let Some(ref tr_val) = msg.tool_results {
-                    if let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
-                        for r in &results {
-                            responded_tool_ids.insert(r.tool_call_id.clone());
-                        }
-                    }
+            if msg.role == "tool"
+                && let Some(ref tr_val) = msg.tool_results
+                && let Ok(results) =
+                    serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone())
+            {
+                for r in &results {
+                    responded_tool_ids.insert(r.tool_call_id.clone());
                 }
             }
-            if msg.role == "assistant" {
-                if let Some(ref tc_val) = msg.tool_calls {
-                    if let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone()) {
-                        for tc in &tcs {
-                            issued_tool_ids.insert(tc.id.clone());
-                        }
-                    }
+            if msg.role == "assistant"
+                && let Some(ref tc_val) = msg.tool_calls
+                && let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone())
+            {
+                for tc in &tcs {
+                    issued_tool_ids.insert(tc.id.clone());
                 }
             }
         }
 
         let mut messages = Vec::new();
+        let mut skipped_orphans = 0u32;
 
         // Add system message
         if !req.system.is_empty() {
-            messages.push(OpenAIMessage {
-                role: "system".to_string(),
-                content: Some(req.system.clone()),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-            });
+            messages.push(ChatCompletionRequestMessage::System(
+                ChatCompletionRequestSystemMessage {
+                    content: ChatCompletionRequestSystemMessageContent::Text(req.system.clone()),
+                    name: None,
+                },
+            ));
         }
 
         for msg in &req.messages {
@@ -92,68 +124,83 @@ impl OpenAIProvider {
                     if msg.content.is_empty() {
                         continue;
                     }
-                    messages.push(OpenAIMessage {
-                        role: "user".to_string(),
-                        content: Some(msg.content.clone()),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        name: None,
-                    });
+                    messages.push(ChatCompletionRequestMessage::User(
+                        ChatCompletionRequestUserMessage {
+                            content: ChatCompletionRequestUserMessageContent::Text(
+                                msg.content.clone(),
+                            ),
+                            name: None,
+                        },
+                    ));
                 }
                 "assistant" => {
                     let mut tool_calls = Vec::new();
 
-                    if let Some(ref tc_val) = msg.tool_calls {
-                        if let Ok(tcs) = serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone()) {
-                            for tc in tcs {
-                                if !responded_tool_ids.contains(&tc.id) {
-                                    continue;
-                                }
-                                tool_calls.push(OpenAIToolCall {
-                                    index: None,
-                                    id: Some(tc.id),
-                                    call_type: Some("function".to_string()),
-                                    function: OpenAIFunction {
-                                        name: Some(tc.name),
-                                        arguments: Some(tc.input.to_string()),
-                                    },
-                                });
+                    if let Some(ref tc_val) = msg.tool_calls
+                        && let Ok(tcs) =
+                            serde_json::from_value::<Vec<SessionToolCall>>(tc_val.clone())
+                    {
+                        for tc in tcs {
+                            if !responded_tool_ids.contains(&tc.id) {
+                                skipped_orphans += 1;
+                                continue;
                             }
+                            tool_calls.push(ChatCompletionMessageToolCalls::Function(
+                                ChatCompletionMessageToolCall {
+                                    id: tc.id,
+                                    function: FunctionCall {
+                                        name: tc.name,
+                                        arguments: tc.input.to_string(),
+                                    },
+                                },
+                            ));
                         }
                     }
 
                     if !msg.content.is_empty() || !tool_calls.is_empty() {
                         // Some gateways reject null content with tool_calls
                         let content = if msg.content.is_empty() && !tool_calls.is_empty() {
-                            Some(" ".to_string())
+                            Some(ChatCompletionRequestAssistantMessageContent::Text(
+                                " ".to_string(),
+                            ))
                         } else if !msg.content.is_empty() {
-                            Some(msg.content.clone())
+                            Some(ChatCompletionRequestAssistantMessageContent::Text(
+                                msg.content.clone(),
+                            ))
                         } else {
                             None
                         };
 
-                        messages.push(OpenAIMessage {
-                            role: "assistant".to_string(),
-                            content,
-                            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
-                            tool_call_id: None,
-                            name: None,
-                        });
+                        messages.push(ChatCompletionRequestMessage::Assistant(
+                            ChatCompletionRequestAssistantMessage {
+                                content,
+                                tool_calls: if tool_calls.is_empty() {
+                                    None
+                                } else {
+                                    Some(tool_calls)
+                                },
+                                ..Default::default()
+                            },
+                        ));
                     }
                 }
                 "tool" => {
-                    if let Some(ref tr_val) = msg.tool_results {
-                        if let Ok(results) = serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone()) {
-                            for r in results {
-                                if issued_tool_ids.contains(&r.tool_call_id) && responded_tool_ids.contains(&r.tool_call_id) {
-                                    messages.push(OpenAIMessage {
-                                        role: "tool".to_string(),
-                                        content: Some(r.content),
-                                        tool_calls: None,
-                                        tool_call_id: Some(r.tool_call_id),
-                                        name: None,
-                                    });
-                                }
+                    if let Some(ref tr_val) = msg.tool_results
+                        && let Ok(results) =
+                            serde_json::from_value::<Vec<SessionToolResult>>(tr_val.clone())
+                    {
+                        for r in results {
+                            if issued_tool_ids.contains(&r.tool_call_id)
+                                && responded_tool_ids.contains(&r.tool_call_id)
+                            {
+                                messages.push(ChatCompletionRequestMessage::Tool(
+                                    ChatCompletionRequestToolMessage {
+                                        content: ChatCompletionRequestToolMessageContent::Text(
+                                            r.content,
+                                        ),
+                                        tool_call_id: r.tool_call_id,
+                                    },
+                                ));
                             }
                         }
                     }
@@ -162,136 +209,243 @@ impl OpenAIProvider {
                     if msg.content.is_empty() {
                         continue;
                     }
-                    messages.push(OpenAIMessage {
-                        role: "system".to_string(),
-                        content: Some(msg.content.clone()),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        name: None,
-                    });
+                    messages.push(ChatCompletionRequestMessage::System(
+                        ChatCompletionRequestSystemMessage {
+                            content: ChatCompletionRequestSystemMessageContent::Text(
+                                msg.content.clone(),
+                            ),
+                            name: None,
+                        },
+                    ));
                 }
                 _ => {}
             }
         }
 
+        if skipped_orphans > 0 {
+            debug!(skipped_orphans, "cleaned orphaned tool_calls from history");
+        }
+
         messages
     }
 
-    /// Handle the SSE stream from OpenAI.
-    async fn handle_stream(
-        response: reqwest::Response,
-        tx: mpsc::Sender<StreamEvent>,
-    ) {
-        // Accumulate tool calls by index
-        let mut tool_calls: HashMap<i32, AccumulatedToolCall> = HashMap::new();
-        let mut emitted_tool_calls = std::collections::HashSet::new();
-
+    /// Handle raw SSE byte stream, converting to our StreamEvent types.
+    ///
+    /// Uses our own SSE parser + SDK response types for deserialization.
+    /// No reqwest-eventsource — no automatic reconnection on errors.
+    ///
+    /// Handles Janus-specific quirks from the Go implementation:
+    /// - Breaks on finish_reason (Janus may not send [DONE] sentinel)
+    /// - Deduplicates tool names/arguments (Janus sends complete values in every chunk)
+    /// - Fallback tool emission from accumulator at end of stream
+    async fn handle_stream(response: reqwest::Response, tx: mpsc::Sender<StreamEvent>) {
         let mut byte_stream = response.bytes_stream();
         let mut line_buf = String::new();
 
-        while let Some(chunk_result) = byte_stream.next().await {
-            let chunk = match chunk_result {
-                Ok(c) => c,
+        // Accumulate tool calls by index
+        let mut tool_calls: HashMap<u32, AccumulatedToolCall> = HashMap::new();
+        let mut emitted_tool_calls = HashSet::new();
+        // Janus dedup: track which tool indices already have name/complete args
+        let mut seen_tool_name: HashSet<u32> = HashSet::new();
+        let mut seen_tool_args: HashSet<u32> = HashSet::new();
+
+        let mut text_chunks = 0u32;
+        let mut chunk_count = 0u32;
+        let mut finished = false;
+
+        'outer: while let Some(result) = byte_stream.next().await {
+            let bytes = match result {
+                Ok(b) => b,
                 Err(e) => {
-                    let _ = tx.send(StreamEvent::error(format!("stream read error: {e}"))).await;
-                    return;
+                    warn!(error = %e, "stream read error");
+                    let _ = tx
+                        .send(StreamEvent::error(format!("stream read error: {e}")))
+                        .await;
+                    break;
                 }
             };
 
-            let text = match std::str::from_utf8(&chunk) {
-                Ok(t) => t,
-                Err(e) => {
-                    let _ = tx.send(StreamEvent::error(format!("invalid utf8: {e}"))).await;
-                    return;
-                }
-            };
+            let text = String::from_utf8_lossy(&bytes);
+            line_buf.push_str(&text);
 
-            line_buf.push_str(text);
-
+            // Process complete lines
             while let Some(newline_pos) = line_buf.find('\n') {
                 let line = line_buf[..newline_pos].to_string();
                 line_buf = line_buf[newline_pos + 1..].to_string();
 
-                match sse::parse_sse_line(&line) {
+                match parse_sse_line(&line) {
+                    SseEvent::Done => {
+                        finished = true;
+                        break 'outer;
+                    }
                     SseEvent::Data(data) => {
-                        let chunk: OpenAIStreamChunk = match serde_json::from_str(&data) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                debug!("failed to parse OpenAI chunk: {e}, data: {data}");
-                                continue;
+                        // Check for OpenAI-compatible error responses (e.g. from Janus)
+                        // These have {"error":{"message":"...","type":"...","code":"..."}}
+                        // and don't match the stream response schema.
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if let Some(err_obj) = val.get("error") {
+                                let msg = err_obj
+                                    .get("message")
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or("unknown provider error");
+                                let code = err_obj
+                                    .get("code")
+                                    .and_then(|c| c.as_str())
+                                    .unwrap_or("");
+                                let err_type = err_obj
+                                    .get("type")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("");
+                                warn!(
+                                    error = msg,
+                                    code = code,
+                                    error_type = err_type,
+                                    raw = %err_obj,
+                                    "provider returned error in SSE stream"
+                                );
+                                let _ = tx
+                                    .send(StreamEvent::error(msg.to_string()))
+                                    .await;
+                                finished = true;
+                                break 'outer;
                             }
-                        };
+                        }
 
-                        if let Some(choice) = chunk.choices.first() {
+                        let response: CreateChatCompletionStreamResponse =
+                            match serde_json::from_str(&data) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    warn!(error = %e, data = &data, "failed to parse SSE chunk");
+                                    continue;
+                                }
+                            };
+
+                        chunk_count += 1;
+
+                        if chunk_count == 1 {
+                            debug!(
+                                model = %response.model,
+                                choices = response.choices.len(),
+                                "first stream chunk"
+                            );
+                        }
+
+                        for choice in &response.choices {
                             // Stream text content
-                            if let Some(ref content) = choice.delta.content {
+                            if let Some(content) = choice.delta.content.as_deref() {
                                 if !content.is_empty() {
+                                    text_chunks += 1;
                                     let _ = tx.send(StreamEvent::text(content)).await;
                                 }
                             }
 
-                            // Stream reasoning content (MiniMax)
-                            if let Some(ref reasoning) = choice.delta.reasoning_content {
-                                if !reasoning.is_empty() {
-                                    let _ = tx.send(StreamEvent::thinking(reasoning)).await;
-                                }
-                            }
-
-                            // Accumulate tool calls by index
+                            // Accumulate tool calls by index, with Janus deduplication
                             if let Some(ref tcs) = choice.delta.tool_calls {
                                 for tc in tcs {
-                                    let idx = tc.index.unwrap_or(0);
-                                    let entry = tool_calls.entry(idx).or_insert_with(|| AccumulatedToolCall {
-                                        id: String::new(),
-                                        name: String::new(),
-                                        arguments: String::new(),
-                                    });
+                                    let idx = tc.index;
+                                    let entry = tool_calls
+                                        .entry(idx)
+                                        .or_insert_with(|| AccumulatedToolCall {
+                                            id: String::new(),
+                                            name: String::new(),
+                                            arguments: String::new(),
+                                        });
 
-                                    if let Some(ref id) = tc.id {
+                                    if let Some(id) = tc.id.as_deref() {
                                         if !id.is_empty() {
-                                            entry.id = id.clone();
+                                            entry.id = id.to_string();
                                         }
                                     }
-                                    if let Some(ref name) = tc.function.name {
-                                        if !name.is_empty() {
-                                            entry.name = name.clone();
+
+                                    if let Some(ref func) = tc.function {
+                                        // Dedup tool name: Janus sends name in every chunk
+                                        if let Some(name) = func.name.as_deref() {
+                                            if !name.is_empty()
+                                                && !seen_tool_name.contains(&idx)
+                                            {
+                                                entry.name = name.to_string();
+                                                seen_tool_name.insert(idx);
+                                            }
                                         }
-                                    }
-                                    if let Some(ref args) = tc.function.arguments {
-                                        entry.arguments.push_str(args);
+
+                                        // Dedup tool args: Janus sends complete JSON in every chunk
+                                        if let Some(args) = func.arguments.as_deref() {
+                                            if !args.is_empty() {
+                                                if seen_tool_args.contains(&idx) {
+                                                    // Already have complete args, skip duplicate
+                                                } else if serde_json::from_str::<
+                                                    serde_json::Value,
+                                                >(
+                                                    args
+                                                )
+                                                .is_ok()
+                                                {
+                                                    // Complete JSON in one chunk (Janus style)
+                                                    entry.arguments = args.to_string();
+                                                    seen_tool_args.insert(idx);
+                                                } else {
+                                                    // Partial JSON (standard OpenAI streaming)
+                                                    entry.arguments.push_str(args);
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
 
-                            // Check finish reason
-                            if choice.finish_reason.is_some() {
-                                break;
+                            // Check finish reason — break.
+                            // Janus may not send [DONE] sentinel after finish_reason,
+                            // which would block until TCP timeout (~120s).
+                            if let Some(ref reason) = choice.finish_reason {
+                                debug!(
+                                    finish_reason = ?reason,
+                                    text_chunks,
+                                    chunk_count,
+                                    "stream finished"
+                                );
+                                finished = true;
+                                break 'outer;
                             }
                         }
-                    }
-                    SseEvent::Done => {
-                        break;
                     }
                     _ => {}
                 }
             }
         }
 
-        // Emit accumulated tool calls
-        for (_, tc) in &tool_calls {
-            if !tc.id.is_empty() && !emitted_tool_calls.contains(&tc.id) {
+        if text_chunks == 0 && tool_calls.is_empty() {
+            warn!(
+                finished,
+                chunk_count, "stream completed with no text and no tool calls"
+            );
+        }
+
+        // Emit accumulated tool calls (fallback for Janus single-chunk tool calls)
+        for tc in tool_calls.values() {
+            if !tc.id.is_empty() && !tc.name.is_empty() && !emitted_tool_calls.contains(&tc.id) {
                 emitted_tool_calls.insert(tc.id.clone());
                 let input: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Object(Default::default()));
-                let _ = tx.send(StreamEvent::tool_call(ToolCall {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input,
-                })).await;
+                let _ = tx
+                    .send(StreamEvent::tool_call(ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        input,
+                    }))
+                    .await;
             }
         }
 
         let _ = tx.send(StreamEvent::done()).await;
+    }
+}
+
+impl ConnectionResetter for OpenAIProvider {
+    fn reset_connections(&self) {
+        let mut lock = self.http_client.write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *lock = reqwest::Client::new();
+        info!(provider = %self.provider_id, "reset HTTP connections");
     }
 }
 
@@ -301,77 +455,210 @@ impl Provider for OpenAIProvider {
         &self.provider_id
     }
 
-    async fn stream(
-        &self,
-        req: &ChatRequest,
-    ) -> Result<EventReceiver, ProviderError> {
+    async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
         let messages = self.build_messages(req);
 
-        let model = if req.model.is_empty() { &self.model } else { &req.model };
+        let model = if req.model.is_empty() {
+            &self.model
+        } else {
+            &req.model
+        };
 
         // Build tools
-        let tools: Option<Vec<OpenAITool>> = if req.tools.is_empty() {
+        let tools: Option<Vec<ChatCompletionTools>> = if req.tools.is_empty() {
             None
         } else {
-            Some(req.tools.iter().map(|t| OpenAITool {
-                tool_type: "function".to_string(),
-                function: OpenAIFunctionDef {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.input_schema.clone(),
-                },
-            }).collect())
+            Some(
+                req.tools
+                    .iter()
+                    .map(|t| {
+                        ChatCompletionTools::Function(ChatCompletionTool {
+                            function: FunctionObject {
+                                name: t.name.clone(),
+                                description: Some(t.description.clone()),
+                                parameters: Some(t.input_schema.clone()),
+                                strict: None,
+                            },
+                        })
+                    })
+                    .collect(),
+            )
         };
 
-        let api_req = OpenAIApiRequest {
+        let api_req = CreateChatCompletionRequest {
             model: model.to_string(),
             messages,
-            max_completion_tokens: if req.max_tokens > 0 { Some(req.max_tokens) } else { None },
-            temperature: if req.temperature > 0.0 { Some(req.temperature) } else { None },
-            stream: true,
-            stream_options: Some(StreamOptions { include_usage: true }),
+            stream: Some(true),
+            max_completion_tokens: if req.max_tokens > 0 {
+                Some(req.max_tokens as u32)
+            } else {
+                None
+            },
+            temperature: if req.temperature > 0.0 {
+                Some(req.temperature as f32)
+            } else {
+                None
+            },
             tools,
-            tool_choice: if !req.tools.is_empty() { Some("auto".to_string()) } else { None },
+            ..Default::default()
         };
 
-        info!(model = model, messages = api_req.messages.len(), tools = req.tools.len(), "sending OpenAI request");
+        info!(
+            model = model,
+            messages = api_req.messages.len(),
+            tools = req.tools.len(),
+            "sending OpenAI request"
+        );
 
-        let response = self.client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("authorization", format!("Bearer {}", self.api_key))
-            .header("content-type", "application/json")
+        // Debug: log the full request body on first few requests to diagnose Janus errors
+        if let Ok(body_json) = serde_json::to_string(&api_req) {
+            debug!(body = %body_json, "OpenAI request body");
+        }
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", self.api_key)
+                .parse()
+                .expect("valid auth header"),
+        );
+        if let Some(ref bot_id) = self.bot_id {
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-bot-id"),
+                bot_id.parse().expect("valid X-Bot-ID header"),
+            );
+        }
+        if let Some(ref lane) = self.lane {
+            if let Ok(val) = lane.parse() {
+                headers.insert(
+                    reqwest::header::HeaderName::from_static("x-lane"),
+                    val,
+                );
+            }
+        }
+
+        let client = self.http_client.read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let response = client
+            .post(&url)
+            .headers(headers)
             .json(&api_req)
             .send()
             .await
             .map_err(|e| ProviderError::Request(e.to_string()))?;
 
-        let status = response.status();
-        if !status.is_success() {
+        if !response.status().is_success() {
+            let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            if status.as_u16() == 429 {
-                return Err(ProviderError::RateLimit);
-            }
-            if status.as_u16() == 401 {
-                return Err(ProviderError::Auth(body));
-            }
-            if body.contains("context_length_exceeded") || (body.contains("context") && body.contains("exceeded")) {
-                return Err(ProviderError::ContextOverflow);
-            }
-            return Err(ProviderError::Api {
-                code: status.as_u16().to_string(),
-                message: body,
-                retryable: status.as_u16() >= 500,
-            });
+            warn!(
+                status = status.as_u16(),
+                body = %body,
+                url = %url,
+                model = model,
+                "provider HTTP error"
+            );
+            return Err(map_http_error(status.as_u16(), &body));
         }
 
         let (tx, rx) = mpsc::channel(100);
+
+        // Extract rate limit metadata from response headers
+        let resp_headers = response.headers();
+        let remaining_requests = resp_headers
+            .get("x-ratelimit-remaining-requests")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let remaining_tokens = resp_headers
+            .get("x-ratelimit-remaining-tokens")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let reset_after = resp_headers
+            .get("x-ratelimit-reset-requests")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<f64>().ok());
+
+        // Janus session/weekly rate limit headers
+        let session_remaining = resp_headers
+            .get("x-ratelimit-session-remaining-tokens")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let weekly_remaining = resp_headers
+            .get("x-ratelimit-weekly-remaining-tokens")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+
+        // Use session remaining if available (tighter constraint), else standard
+        let effective_remaining = session_remaining.or(remaining_tokens);
+
+        if remaining_requests.is_some() || effective_remaining.is_some() || weekly_remaining.is_some() {
+            let _ = tx
+                .send(StreamEvent::rate_limit_info(RateLimitMeta {
+                    remaining_requests,
+                    remaining_tokens: effective_remaining,
+                    reset_after_secs: reset_after,
+                    retry_after_secs: None,
+                }))
+                .await;
+        }
+
         tokio::spawn(Self::handle_stream(response, tx));
 
         Ok(rx)
     }
 }
 
-// --- Helper types ---
+/// Map HTTP error status + body to our ProviderError type.
+fn map_http_error(status: u16, body: &str) -> ProviderError {
+    // Try to parse as OpenAI error JSON: {"error":{"message":"...", "code":"..."}}
+    let (msg, code) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        let err = &v["error"];
+        (
+            err["message"].as_str().unwrap_or(body).to_string(),
+            err["code"].as_str().unwrap_or("").to_string(),
+        )
+    } else {
+        (body.to_string(), String::new())
+    };
+
+    match status {
+        429 => ProviderError::RateLimit,
+        401 => ProviderError::Auth(msg),
+        _ => {
+            // Rate limit by code/message
+            if code == "rate_limit_exceeded"
+                || msg.contains("rate limit")
+                || msg.contains("429")
+            {
+                return ProviderError::RateLimit;
+            }
+            // Auth
+            if code == "invalid_api_key"
+                || code == "authentication_error"
+                || msg.contains("Incorrect API key")
+                || msg.contains("unauthorized")
+            {
+                return ProviderError::Auth(msg);
+            }
+            // Context overflow
+            if code == "context_length_exceeded"
+                || (msg.contains("context") && msg.contains("exceeded"))
+                || msg.contains("maximum context length")
+            {
+                return ProviderError::ContextOverflow;
+            }
+
+            ProviderError::Api {
+                code,
+                message: msg,
+                retryable: status >= 500,
+            }
+        }
+    }
+}
+
+// --- Helper types (kept for history deserialization and tool accumulation) ---
 
 struct AccumulatedToolCall {
     id: String,
@@ -392,99 +679,4 @@ struct SessionToolResult {
     content: String,
     #[serde(default)]
     is_error: bool,
-}
-
-// --- OpenAI API types ---
-
-#[derive(Debug, Serialize)]
-struct OpenAIApiRequest {
-    model: String,
-    messages: Vec<OpenAIMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f64>,
-    stream: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream_options: Option<StreamOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<OpenAITool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct StreamOptions {
-    include_usage: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAIMessage {
-    role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<Vec<OpenAIToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct OpenAIToolCall {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    index: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<String>,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    call_type: Option<String>,
-    function: OpenAIFunction,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct OpenAIFunction {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    arguments: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAITool {
-    #[serde(rename = "type")]
-    tool_type: String,
-    function: OpenAIFunctionDef,
-}
-
-#[derive(Debug, Serialize)]
-struct OpenAIFunctionDef {
-    name: String,
-    description: String,
-    parameters: serde_json::Value,
-}
-
-// --- Streaming response types ---
-
-#[derive(Debug, Deserialize)]
-struct OpenAIStreamChunk {
-    #[serde(default)]
-    choices: Vec<OpenAIStreamChoice>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIStreamChoice {
-    delta: OpenAIStreamDelta,
-    #[serde(default)]
-    finish_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIStreamDelta {
-    #[serde(default)]
-    content: Option<String>,
-    #[serde(default)]
-    reasoning_content: Option<String>,
-    #[serde(default)]
-    tool_calls: Option<Vec<OpenAIToolCall>>,
 }

@@ -1,0 +1,15 @@
+### skill — Capabilities & Knowledge (MANDATORY CHECK)
+USE THIS when: user asks for something unfamiliar, or you're unsure if a specialized skill exists for the task.
+
+Before replying to any request, scan your available skills:
+1. If a skill clearly applies → load it with skill(name: "...") to get detailed instructions, then follow them
+2. If multiple skills could apply → choose the most specific one
+3. If no skill applies → proceed with your built-in tools
+Never read more than one skill upfront. Only load after choosing.
+
+- skill(action: "catalog") — Browse all available skills and apps
+- skill(name: "calendar") — Load detailed instructions for a skill
+- skill(name: "calendar", resource: "events", action: "list") — Execute a skill action directly
+
+If a skill returns an auth error, guide the user to Settings → Apps to reconnect.
+If a skill is not found, suggest checking the app store.

@@ -323,6 +323,51 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
     }
+
+    /// Update only the metadata of a memory by ID.
+    pub fn update_memory_metadata(&self, id: i64, metadata: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE memories SET metadata = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            params![id, metadata],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get tacit memories filtered by namespace prefix and minimum confidence from metadata.
+    /// Memories without metadata or without a confidence field pass the filter (backward compat).
+    pub fn get_tacit_memories_with_min_confidence(
+        &self,
+        user_id: &str,
+        namespace_prefix: &str,
+        min_confidence: f64,
+        limit: i64,
+    ) -> Result<Vec<Memory>, NeboError> {
+        let conn = self.conn()?;
+        let pattern = format!("{namespace_prefix}%");
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
+                        accessed_at, access_count, user_id
+                 FROM memories
+                 WHERE namespace LIKE ?1
+                   AND user_id = ?2
+                   AND (
+                     metadata IS NULL
+                     OR json_extract(metadata, '$.confidence') IS NULL
+                     OR json_extract(metadata, '$.confidence') >= ?3
+                   )
+                 ORDER BY access_count DESC
+                 LIMIT ?4",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![pattern, user_id, min_confidence, limit], row_to_memory)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
 }
 
 fn row_to_memory(row: &rusqlite::Row) -> rusqlite::Result<Memory> {

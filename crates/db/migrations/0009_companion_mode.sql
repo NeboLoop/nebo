@@ -15,3 +15,7 @@ CREATE INDEX idx_chat_messages_day ON chat_messages(chat_id, day_marker);
 
 -- Backfill day_marker for existing messages
 UPDATE chat_messages SET day_marker = date(created_at, 'unixepoch') WHERE day_marker IS NULL;
+
+-- +goose Down
+DROP INDEX IF EXISTS idx_chat_messages_day;
+DROP INDEX IF EXISTS idx_chats_user_companion;
