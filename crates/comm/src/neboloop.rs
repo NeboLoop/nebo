@@ -53,6 +53,8 @@ struct Inner {
 pub struct NeboLoopPlugin {
     inner: RwLock<Inner>,
     bot_id: RwLock<String>,
+    /// Rotated bot JWT from the last AUTH_OK (token rotation).
+    rotated_token: RwLock<Option<String>>,
     /// Conversation maps — updated by the join processor, queried by public methods.
     conv_maps: Arc<RwLock<ConvMaps>>,
     /// Monotonic ULID generator for outgoing message IDs.
@@ -70,9 +72,16 @@ impl NeboLoopPlugin {
                 api: None,
             }),
             bot_id: RwLock::new(String::new()),
+            rotated_token: RwLock::new(None),
             conv_maps: Arc::new(RwLock::new(ConvMaps::default())),
             ulid_gen: UlidGen::new(),
         }
+    }
+
+    /// Returns the rotated bot JWT from the last AUTH_OK, if any.
+    /// The caller should persist this token and use it for the next connect.
+    pub async fn take_rotated_token(&self) -> Option<String> {
+        self.rotated_token.write().await.take()
     }
 
     /// Get the API client (available after connect).
@@ -308,6 +317,13 @@ impl CommPlugin for NeboLoopPlugin {
                 "unexpected frame type {}",
                 auth_header.frame_type
             )));
+        }
+
+        // Parse AUTH_OK to extract rotated token (if present)
+        if let Ok(auth_result) = serde_json::from_slice::<wire::AuthResultPayload>(auth_payload) {
+            if !auth_result.token.is_empty() {
+                *self.rotated_token.write().await = Some(auth_result.token);
+            }
         }
 
         info!(gateway = %gateway, bot_id = %bot_id, "connected to neboloop gateway");

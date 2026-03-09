@@ -24,6 +24,9 @@ pub struct AuthResultPayload {
     pub bot_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub plan: String,
+    /// Rotated bot JWT — use this token for the next reconnect.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub token: String,
 }
 
 /// SEND_MESSAGE frame payload (client -> server).
