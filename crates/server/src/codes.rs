@@ -73,14 +73,30 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
 
 // ── Code Dispatch ───────────────────────────────────────────────────
 
+/// Rich result from a per-type code handler.
+struct CodeHandlerResult {
+    message: String,
+    artifact_name: Option<String>,
+    checkout_url: Option<String>,
+}
+
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
 pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, session_id: &str) {
+    let (code_type_str, status_message) = match code_type {
+        CodeType::Nebo => ("nebo", "Connecting to NeboLoop..."),
+        CodeType::Skill => ("skill", "Installing skill..."),
+        CodeType::Work => ("workflow", "Installing workflow..."),
+        CodeType::Role => ("role", "Installing role..."),
+        CodeType::Loop => ("loop", "Joining loop..."),
+    };
+
     state.hub.broadcast(
         "code_processing",
         serde_json::json!({
             "session_id": session_id,
             "code": code,
-            "code_type": format!("{:?}", code_type),
+            "code_type": code_type_str,
+            "status_message": status_message,
         }),
     );
 
@@ -93,14 +109,19 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
     };
 
     match result {
-        Ok(msg) => {
+        Ok(r) => {
+            let payment_required = r.checkout_url.is_some();
             state.hub.broadcast(
                 "code_result",
                 serde_json::json!({
                     "session_id": session_id,
                     "code": code,
+                    "code_type": code_type_str,
                     "success": true,
-                    "message": msg,
+                    "message": r.message,
+                    "artifact_name": r.artifact_name,
+                    "payment_required": payment_required,
+                    "checkout_url": r.checkout_url,
                 }),
             );
         }
@@ -111,6 +132,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
                 serde_json::json!({
                     "session_id": session_id,
                     "code": code,
+                    "code_type": code_type_str,
                     "success": false,
                     "error": e.to_string(),
                 }),
@@ -127,12 +149,16 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
 
 // ── Per-Type Handlers ───────────────────────────────────────────────
 
-async fn handle_nebo_code(state: &AppState, code: &str) -> Result<String, NeboError> {
+async fn handle_nebo_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let bot_id = redeem_nebo_code(state, code).await?;
-    Ok(format!("Connected to NeboLoop (bot: {})", &bot_id[..8]))
+    Ok(CodeHandlerResult {
+        message: format!("Connected to NeboLoop (bot: {})", &bot_id[..8]),
+        artifact_name: None,
+        checkout_url: None,
+    })
 }
 
-async fn handle_skill_code(state: &AppState, code: &str) -> Result<String, NeboError> {
+async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
     let resp = api
         .install_skill(code)
@@ -140,7 +166,12 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<String, NeboE
         .map_err(|e| NeboError::Internal(format!("install_skill: {e}")))?;
 
     if resp.status == "payment_required" {
-        return Ok(format!("Skill requires payment. Checkout: {}", resp.checkout_url.unwrap_or_default()));
+        let name = resp.artifact.name.clone();
+        return Ok(CodeHandlerResult {
+            message: format!("Skill requires payment: {}", name),
+            artifact_name: Some(name),
+            checkout_url: Some(resp.checkout_url.unwrap_or_default()),
+        });
     }
 
     let artifact_id = resp.artifact.id.clone();
@@ -178,10 +209,14 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<String, NeboE
         });
     }
 
-    Ok(format!("Installed skill: {}", name))
+    Ok(CodeHandlerResult {
+        message: format!("Installed skill: {}", name),
+        artifact_name: Some(name),
+        checkout_url: None,
+    })
 }
 
-async fn handle_work_code(state: &AppState, code: &str) -> Result<String, NeboError> {
+async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
     let resp = api
         .install_workflow(code)
@@ -189,7 +224,12 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<String, NeboEr
         .map_err(|e| NeboError::Internal(format!("install_workflow: {e}")))?;
 
     if resp.status == "payment_required" {
-        return Ok(format!("Workflow requires payment. Checkout: {}", resp.checkout_url.unwrap_or_default()));
+        let name = resp.artifact.name.clone();
+        return Ok(CodeHandlerResult {
+            message: format!("Workflow requires payment: {}", name),
+            artifact_name: Some(name),
+            checkout_url: Some(resp.checkout_url.unwrap_or_default()),
+        });
     }
 
     let artifact_id = resp.artifact.id.clone();
@@ -215,10 +255,14 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<String, NeboEr
         }
     });
 
-    Ok(format!("Installed workflow: {}", artifact_name))
+    Ok(CodeHandlerResult {
+        message: format!("Installed workflow: {}", artifact_name),
+        artifact_name: Some(artifact_name),
+        checkout_url: None,
+    })
 }
 
-async fn handle_role_code(state: &AppState, code: &str) -> Result<String, NeboError> {
+async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
     let resp = api
         .install_role(code)
@@ -226,7 +270,12 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<String, NeboEr
         .map_err(|e| NeboError::Internal(format!("install_role: {e}")))?;
 
     if resp.status == "payment_required" {
-        return Ok(format!("Role requires payment. Checkout: {}", resp.checkout_url.unwrap_or_default()));
+        let name = resp.artifact.name.clone();
+        return Ok(CodeHandlerResult {
+            message: format!("Role requires payment: {}", name),
+            artifact_name: Some(name),
+            checkout_url: Some(resp.checkout_url.unwrap_or_default()),
+        });
     }
 
     let artifact_id = resp.artifact.id.clone();
@@ -250,16 +299,25 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<String, NeboEr
         }
     });
 
-    Ok(format!("Installed role: {}", artifact_name))
+    Ok(CodeHandlerResult {
+        message: format!("Installed role: {}", artifact_name),
+        artifact_name: Some(artifact_name),
+        checkout_url: None,
+    })
 }
 
-async fn handle_loop_code(state: &AppState, code: &str) -> Result<String, NeboError> {
+async fn handle_loop_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
     let resp = api
         .join_loop(code)
         .await
         .map_err(|e| NeboError::Internal(format!("join_loop: {e}")))?;
-    Ok(format!("Joined loop: {}", resp.name))
+    let name = resp.name.clone();
+    Ok(CodeHandlerResult {
+        message: format!("Joined loop: {}", name),
+        artifact_name: Some(name),
+        checkout_url: None,
+    })
 }
 
 // ── REST Endpoint ───────────────────────────────────────────────────
@@ -304,11 +362,14 @@ pub async fn submit_code(
     };
 
     match result {
-        Ok(msg) => Ok(axum::response::Json(serde_json::json!({
+        Ok(r) => Ok(axum::response::Json(serde_json::json!({
             "success": true,
             "code": validated_code,
             "codeType": format!("{:?}", code_type),
-            "message": msg,
+            "message": r.message,
+            "artifact_name": r.artifact_name,
+            "payment_required": r.checkout_url.is_some(),
+            "checkout_url": r.checkout_url,
         }))),
         Err(e) => Err((
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,

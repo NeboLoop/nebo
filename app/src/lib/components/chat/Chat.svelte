@@ -107,6 +107,12 @@
 	let scrollingProgrammatically = false;
 	let draftInitialized = $state(false);
 
+	// ── Virtual scroll (top-truncation) ───────────────────────────────
+	const VS_WINDOW = 20;
+	const VS_LOAD_MORE = 20;
+	let renderStart = $state(0);
+	let loadingMore = false;
+
 	// ── Companion-only state ───────────────────────────────────────────
 	let voiceOutputEnabled = $state(false);
 	let isSpeaking = $state(false);
@@ -130,6 +136,7 @@
 	let wakeWordSession: VoiceSession | null = null;
 	let duplexLevel = $state(0);
 	let sidebarTool = $state<ToolCall | null>(null);
+	let codeStatusMessageId = $state<string | null>(null);
 
 	// ── Channel-only state ─────────────────────────────────────────────
 	let channelMemberNames = $state<Record<string, string>>({});
@@ -152,15 +159,18 @@
 		let currentGroup: MessageGroupType | null = null;
 
 		for (const msg of messages) {
-			if (msg.role === 'system' || msg.role === 'tool') {
+			if (msg.role === 'system' || (msg.role as string) === 'tool') {
 				currentGroup = null;
 				continue;
 			}
 
 			const role = msg.role as 'user' | 'assistant';
 			const name = isChannel ? resolveChannelName(msg) : (role === 'assistant' ? agentName : 'You');
+			const hasTools = (msg.toolCalls?.length ?? 0) > 0;
+			const prevHasTools = (currentGroup?.messages.at(-1)?.toolCalls?.length ?? 0) > 0;
 
-			if (!currentGroup || currentGroup.role !== role || (isChannel && currentGroup.agentName !== name)) {
+			// Break group on role change, name change (channels), or tool-bearing vs text-only switch
+			if (!currentGroup || currentGroup.role !== role || (isChannel && currentGroup.agentName !== name) || hasTools !== prevHasTools) {
 				currentGroup = { role, messages: [], agentName: name };
 				groups.push(currentGroup);
 			}
@@ -168,6 +178,25 @@
 		}
 
 		return groups;
+	});
+
+	// Windowed slice for rendering — always includes the tail so streaming works
+	const renderedGroups = $derived.by(() => {
+		return groupedMessages.slice(renderStart).map((g, i) => ({ group: g, idx: renderStart + i }));
+	});
+
+	// When total groups change, keep the window pinned to the tail
+	let prevGroupCount = 0;
+	$effect(() => {
+		const total = groupedMessages.length;
+		if (total !== prevGroupCount) {
+			prevGroupCount = total;
+			if (total <= VS_WINDOW) {
+				renderStart = 0;
+			} else if (!loadingMore) {
+				renderStart = total - VS_WINDOW;
+			}
+		}
 	});
 
 	// Message queue (companion-only)
@@ -284,7 +313,11 @@
 				client.on('agent_warning', (data: Record<string, unknown>) => {
 					warningMessage = (data?.message as string) || 'The AI service is temporarily busy. Retrying...';
 					warningToast = true;
-				})
+				}),
+				client.on('code_processing', handleCodeProcessing),
+				client.on('code_result', handleCodeResult),
+				client.on('dep_installed', handleDepInstalled),
+				client.on('dep_cascade_complete', handleDepCascadeComplete)
 			);
 
 			if (browser) {
@@ -458,7 +491,8 @@
 
 			if (parsed.toolCalls && Array.isArray(parsed.toolCalls)) {
 				result.toolCalls = parsed.toolCalls.map(
-					(tc: { name: string; input: string; output?: string; status?: string }) => ({
+					(tc: { id?: string; name: string; input: string; output?: string; status?: string }) => ({
+						id: tc.id,
 						name: tc.name,
 						input: tc.input,
 						output: tc.output,
@@ -1103,6 +1137,93 @@
 		scrollToBottom();
 	}
 
+	function handleCodeProcessing(data: Record<string, unknown>) {
+		const code = (data?.code as string) || '';
+		const statusMessage = (data?.status_message as string) || 'Processing code...';
+		const msgId = generateUUID();
+		codeStatusMessageId = msgId;
+
+		const processingMsg: Message = {
+			id: msgId,
+			role: 'assistant',
+			content: `**${statusMessage}**\n\nCode: \`${code}\``,
+			timestamp: new Date()
+		};
+		messages = [...messages, processingMsg];
+		scrollToBottom();
+	}
+
+	function handleCodeResult(data: Record<string, unknown>) {
+		const success = data?.success as boolean;
+		const code = (data?.code as string) || '';
+		const codeType = (data?.code_type as string) || '';
+		const artifactName = data?.artifact_name as string | undefined;
+		const paymentRequired = data?.payment_required as boolean;
+		const checkoutUrl = data?.checkout_url as string | undefined;
+		const errorMsg = (data?.error as string) || '';
+
+		let content: string;
+		if (success && paymentRequired && checkoutUrl) {
+			const typeLabel = codeType.charAt(0).toUpperCase() + codeType.slice(1);
+			const name = artifactName || code;
+			content = `**${typeLabel} requires payment**\n\n**${name}** is a paid artifact.\n\n[Complete checkout to install](${checkoutUrl})`;
+		} else if (success) {
+			const msg = (data?.message as string) || 'Done';
+			content = `**${msg}**`;
+		} else {
+			content = `**Failed to process code \`${code}\`**\n\n${errorMsg}`;
+		}
+
+		if (codeStatusMessageId) {
+			const idx = messages.findIndex((m) => m.id === codeStatusMessageId);
+			if (idx >= 0) {
+				const updated: Message = {
+					...messages[idx],
+					content
+				};
+				messages = [...messages.slice(0, idx), updated, ...messages.slice(idx + 1)];
+			}
+			codeStatusMessageId = null;
+		} else {
+			const resultMsg: Message = {
+				id: generateUUID(),
+				role: 'assistant',
+				content,
+				timestamp: new Date()
+			};
+			messages = [...messages, resultMsg];
+		}
+		scrollToBottom();
+	}
+
+	function handleDepInstalled(data: Record<string, unknown>) {
+		const reference = (data?.reference as string) || '';
+		const depType = ((data?.depType as string) || 'skill').toLowerCase();
+
+		const depMsg: Message = {
+			id: generateUUID(),
+			role: 'assistant',
+			content: `Installed dependency: **${reference}** (${depType})`,
+			timestamp: new Date()
+		};
+		messages = [...messages, depMsg];
+		scrollToBottom();
+	}
+
+	function handleDepCascadeComplete(data: Record<string, unknown>) {
+		const installed = (data?.installed as number) || 0;
+		if (installed === 0) return;
+
+		const depMsg: Message = {
+			id: generateUUID(),
+			role: 'assistant',
+			content: `All ${installed} ${installed === 1 ? 'dependency' : 'dependencies'} installed successfully.`,
+			timestamp: new Date()
+		};
+		messages = [...messages, depMsg];
+		scrollToBottom();
+	}
+
 	function handleDMUserMessage(data: Record<string, unknown>) {
 		if (chatId && data?.session_id !== chatId) return;
 		const content = (data?.content as string) || '';
@@ -1350,6 +1471,20 @@
 		} else if (!wasNearBottom && !showScrollButton) {
 			autoScrollEnabled = true;
 		}
+
+		// Load earlier groups when scrolling near the top
+		if (scrollTop < 200 && renderStart > 0 && !loadingMore) {
+			loadingMore = true;
+			const prevHeight = scrollHeight;
+			renderStart = Math.max(0, renderStart - VS_LOAD_MORE);
+			tick().then(() => {
+				if (messagesContainer) {
+					const newHeight = messagesContainer.scrollHeight;
+					messagesContainer.scrollTop += newHeight - prevHeight;
+				}
+				loadingMore = false;
+			});
+		}
 	}
 
 	function scrollToBottom() {
@@ -1397,6 +1532,7 @@
 		messages = [];
 		currentStreamingMessage = null;
 		inputValue = '';
+		renderStart = 0;
 		clearDraft();
 	}
 
@@ -1929,8 +2065,8 @@
 						</div>
 					{/if}
 				{:else}
-					<!-- Grouped messages -->
-					{#each groupedMessages as group, groupIndex (groupIndex)}
+					<!-- Grouped messages (windowed) -->
+					{#each renderedGroups as { group, idx } (idx)}
 						<MessageGroup
 							messages={group.messages}
 							role={group.role}
@@ -1940,7 +2076,7 @@
 							onViewToolOutput={isCompanion ? openToolSidebar : undefined}
 							isStreaming={isCompanion && group.role === 'assistant' &&
 								isLoading &&
-								groupIndex === groupedMessages.length - 1}
+								idx === groupedMessages.length - 1}
 							onAskSubmit={isCompanion ? handleAskSubmit : undefined}
 						/>
 					{/each}
@@ -2092,5 +2228,5 @@
 
 <Toast message={warningMessage} type="warning" duration={8000} bind:show={warningToast} />
 
-<ToolOutputSidebar tool={sidebarTool} onClose={closeToolSidebar} />
+<ToolOutputSidebar tool={sidebarTool} {chatId} onClose={closeToolSidebar} />
 {/if}
