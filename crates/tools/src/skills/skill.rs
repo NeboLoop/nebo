@@ -14,10 +14,27 @@ pub enum SkillSource {
 }
 
 /// A skill parsed from a SKILL.md file with YAML frontmatter.
+///
+/// Implements the Agent Skills standard (https://skill.md) plus Nebo extensions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
+    // ── Agent Skills Standard Fields ────────────────────────────────
     pub name: String,
     pub description: String,
+    /// License name or reference to bundled license file.
+    #[serde(default)]
+    pub license: String,
+    /// Environment requirements (intended product, system packages, network, etc.).
+    #[serde(default)]
+    pub compatibility: String,
+    /// Pre-approved tools the skill may use (space-delimited). Experimental.
+    #[serde(default, alias = "allowed-tools")]
+    pub allowed_tools: String,
+    /// Arbitrary key-value metadata.
+    #[serde(default)]
+    pub metadata: HashMap<String, serde_json::Value>,
+
+    // ── Nebo Extension Fields ───────────────────────────────────────
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default)]
@@ -30,7 +47,7 @@ pub struct Skill {
     pub platform: Vec<String>,
     #[serde(default)]
     pub triggers: Vec<String>,
-    /// Platform capabilities this skill needs (Agent Skills standard extension).
+    /// Platform capabilities this skill needs.
     /// e.g., ["python", "storage", "vision"]
     #[serde(default)]
     pub capabilities: Vec<String>,
@@ -38,8 +55,6 @@ pub struct Skill {
     pub priority: i32,
     #[serde(default)]
     pub max_turns: i32,
-    #[serde(default)]
-    pub metadata: HashMap<String, serde_json::Value>,
     /// The markdown body (not from YAML — parsed from the content after frontmatter).
     #[serde(skip)]
     pub template: String,
@@ -66,13 +81,31 @@ fn default_version() -> String {
 }
 
 impl Skill {
-    /// Validate that required fields are present.
+    /// Validate that required fields are present and conform to the Agent Skills standard.
     pub fn validate(&self) -> Result<(), String> {
         if self.name.is_empty() {
             return Err("skill name is required".into());
         }
+        if self.name.len() > 64 {
+            return Err(format!("skill name exceeds 64 characters: {}", self.name.len()));
+        }
+        if self.name.starts_with('-') || self.name.ends_with('-') {
+            return Err("skill name must not start or end with a hyphen".into());
+        }
+        if self.name.contains("--") {
+            return Err("skill name must not contain consecutive hyphens".into());
+        }
+        if !self.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+            return Err("skill name must contain only lowercase letters, digits, and hyphens".into());
+        }
         if self.description.is_empty() {
             return Err("skill description is required".into());
+        }
+        if self.description.len() > 1024 {
+            return Err(format!("skill description exceeds 1024 characters: {}", self.description.len()));
+        }
+        if self.compatibility.len() > 500 {
+            return Err(format!("compatibility exceeds 500 characters: {}", self.compatibility.len()));
         }
         Ok(())
     }
@@ -289,6 +322,9 @@ You are a research specialist. When activated, focus on:
             name: String::new(),
             description: "test".into(),
             version: "1.0.0".into(),
+            license: String::new(),
+            compatibility: String::new(),
+            allowed_tools: String::new(),
             author: String::new(),
             dependencies: vec![],
             tags: vec![],
@@ -399,5 +435,78 @@ Process spreadsheets.
         let result = skill.read_resource("../../../etc/passwd");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("path traversal"));
+    }
+
+    // ── Agent Skills Standard Compliance Tests ──────────────────────
+
+    #[test]
+    fn test_standard_fields_parsing() {
+        let md = r#"---
+name: pdf-processing
+description: Extract text and tables from PDF files.
+license: Apache-2.0
+compatibility: Requires python3, poppler-utils
+allowed-tools: Bash(git:*) Read
+metadata:
+  author: example-org
+  version: "1.0"
+---
+
+Process PDFs here.
+"#;
+        let skill = parse_skill_md(md.as_bytes()).unwrap();
+        assert_eq!(skill.name, "pdf-processing");
+        assert_eq!(skill.license, "Apache-2.0");
+        assert_eq!(skill.compatibility, "Requires python3, poppler-utils");
+        assert_eq!(skill.allowed_tools, "Bash(git:*) Read");
+        assert_eq!(
+            skill.metadata.get("author").and_then(|v| v.as_str()),
+            Some("example-org")
+        );
+    }
+
+    #[test]
+    fn test_name_validation_uppercase() {
+        let result = parse_skill_md(b"---\nname: PDF-Processing\ndescription: t\n---\nbody");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("lowercase"));
+    }
+
+    #[test]
+    fn test_name_validation_leading_hyphen() {
+        let result = parse_skill_md(b"---\nname: -pdf\ndescription: t\n---\nbody");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("hyphen"));
+    }
+
+    #[test]
+    fn test_name_validation_trailing_hyphen() {
+        let result = parse_skill_md(b"---\nname: pdf-\ndescription: t\n---\nbody");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("hyphen"));
+    }
+
+    #[test]
+    fn test_name_validation_consecutive_hyphens() {
+        let result = parse_skill_md(b"---\nname: pdf--processing\ndescription: t\n---\nbody");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("consecutive"));
+    }
+
+    #[test]
+    fn test_name_validation_too_long() {
+        let long_name = "a".repeat(65);
+        let md = format!("---\nname: {}\ndescription: t\n---\nbody", long_name);
+        let result = parse_skill_md(md.as_bytes());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("64"));
+    }
+
+    #[test]
+    fn test_name_validation_valid_names() {
+        for name in &["a", "pdf-processing", "data-analysis", "code-review", "a1b2"] {
+            let md = format!("---\nname: {}\ndescription: test\n---\nbody", name);
+            assert!(parse_skill_md(md.as_bytes()).is_ok(), "should accept name: {}", name);
+        }
     }
 }
