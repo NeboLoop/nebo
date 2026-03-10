@@ -102,7 +102,7 @@ impl Store {
         user_id: &str,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
-        conn.execute(
+        let rows = conn.execute(
             "INSERT INTO memories (namespace, key, value, tags, metadata, user_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
              ON CONFLICT(namespace, key, user_id) DO UPDATE SET
@@ -113,6 +113,31 @@ impl Store {
             params![namespace, key, value, tags, metadata, user_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
+
+        // Verify on the same connection — catches FTS trigger rollbacks
+        if rows == 0 {
+            return Err(NeboError::Database(
+                "upsert_memory: INSERT affected 0 rows".to_string(),
+            ));
+        }
+
+        // Verify data is actually readable (same connection, no pool isolation issues)
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM memories WHERE namespace = ?1 AND key = ?2 AND user_id = ?3)",
+                params![namespace, key, user_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !exists {
+            return Err(NeboError::Database(
+                "upsert_memory: data not found after INSERT — FTS trigger may have rolled back the write. \
+                 Restart the server to apply migration 0054 which rebuilds the FTS table."
+                    .to_string(),
+            ));
+        }
+
         Ok(())
     }
 
@@ -158,6 +183,31 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Find a memory by key alone (no namespace/user_id filter).
+    /// Used as a last-resort fallback when scoped lookups fail.
+    pub fn find_memory_by_key(&self, key: &str) -> Result<Option<Memory>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
+                    accessed_at, access_count, user_id
+             FROM memories WHERE key = ?1 LIMIT 1",
+            params![key],
+            row_to_memory,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Delete a memory by key alone (no namespace/user_id filter).
+    pub fn delete_memory_by_key_only(&self, key: &str) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM memories WHERE key = ?1",
+            params![key],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn delete_memories_by_namespace_and_user(
         &self,
         namespace_prefix: &str,
@@ -184,7 +234,7 @@ impl Store {
             .prepare(
                 "SELECT id, namespace, key, value, tags, metadata, created_at, updated_at,
                         accessed_at, access_count, user_id
-                 FROM memories WHERE key LIKE ?1 OR value LIKE ?1 OR tags LIKE ?1
+                 FROM memories WHERE namespace LIKE ?1 OR key LIKE ?1 OR value LIKE ?1 OR tags LIKE ?1
                  ORDER BY access_count DESC LIMIT ?2 OFFSET ?3",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -367,6 +417,78 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Check FTS5 health and rebuild if broken. Call at startup.
+    pub fn ensure_fts_healthy(&self) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+
+        // Check if memories_fts table exists
+        let fts_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts')",
+                [],
+                |row: &rusqlite::Row| row.get(0),
+            )
+            .unwrap_or(false);
+
+        if !fts_exists {
+            tracing::warn!("memories_fts table missing — rebuilding");
+            self.rebuild_fts()?;
+            return Ok(());
+        }
+
+        // Integrity check: try a simple FTS query
+        let fts_ok = conn
+            .execute("INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')", [])
+            .is_ok();
+
+        if !fts_ok {
+            tracing::warn!("memories_fts integrity check failed — rebuilding");
+            self.rebuild_fts()?;
+        }
+
+        Ok(())
+    }
+
+    /// Rebuild the FTS5 table and triggers from scratch.
+    fn rebuild_fts(&self) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS memories_ai;
+             DROP TRIGGER IF EXISTS memories_au;
+             DROP TRIGGER IF EXISTS memories_ad;
+             DROP TABLE IF EXISTS memories_fts;
+
+             CREATE VIRTUAL TABLE memories_fts USING fts5(
+                 key, value, tags,
+                 content='memories',
+                 content_rowid='id'
+             );
+
+             INSERT INTO memories_fts(rowid, key, value, tags)
+                 SELECT id, key, value, tags FROM memories;
+
+             CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+                 INSERT INTO memories_fts(rowid, key, value, tags)
+                 VALUES (new.id, new.key, new.value, new.tags);
+             END;
+
+             CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+                 INSERT INTO memories_fts(memories_fts, rowid, key, value, tags)
+                 VALUES ('delete', old.id, old.key, old.value, old.tags);
+                 INSERT INTO memories_fts(rowid, key, value, tags)
+                 VALUES (new.id, new.key, new.value, new.tags);
+             END;
+
+             CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+                 INSERT INTO memories_fts(memories_fts, rowid, key, value, tags)
+                 VALUES ('delete', old.id, old.key, old.value, old.tags);
+             END;"
+        ).map_err(|e| NeboError::Database(format!("rebuild_fts failed: {}", e)))?;
+
+        tracing::info!("memories_fts rebuilt successfully");
+        Ok(())
     }
 }
 

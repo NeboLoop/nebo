@@ -1,0 +1,13 @@
+[package]
+name = "notepad"
+version = "1.0.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+nebo-sdk = { git = "https://github.com/NeboLoop/nebo-sdk-rust", branch = "main" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"

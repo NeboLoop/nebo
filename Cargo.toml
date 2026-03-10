@@ -89,6 +89,7 @@ dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.33"
 regex = "1"
+semver = "1"
 shellexpand = "3"
 dirs = "6"
 
@@ -110,6 +111,11 @@ comm = { path = "crates/comm", package = "nebo-comm" }
 notify_crate = { path = "crates/notify", package = "nebo-notify" }
 updater = { path = "crates/updater", package = "nebo-updater" }
 cli = { path = "crates/cli", package = "nebo" }
+sandbox-runtime = { path = "../sandbox-runtime" }
+
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
 
 [profile.release]
 lto = true

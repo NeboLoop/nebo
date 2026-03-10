@@ -15,6 +15,7 @@ use super::manager::WorkflowManager;
 /// - `work(resource: "my-workflow", action: "status")` — latest run status
 /// - `work(resource: "my-workflow", action: "runs")` — list recent runs
 /// - `work(resource: "my-workflow", action: "toggle")` — enable/disable
+/// - `work(action: "cancel", id: "run-id")` — cancel a running workflow
 pub struct WorkTool {
     manager: Arc<dyn WorkflowManager>,
 }
@@ -31,6 +32,10 @@ struct WorkInput {
     id: String,
     #[serde(default)]
     inputs: serde_json::Value,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    definition: String,
 }
 
 impl WorkTool {
@@ -84,9 +89,36 @@ impl WorkTool {
                     Err(e) => ToolResult::error(format!("uninstall failed: {}", e)),
                 }
             }
-            "" => ToolResult::error("action is required. Use: list, install, uninstall. Or set resource to dispatch to a workflow."),
+            "cancel" => {
+                if parsed.id.is_empty() {
+                    return ToolResult::error("id is required (run ID)");
+                }
+                match self.manager.cancel(&parsed.id).await {
+                    Ok(()) => ToolResult::ok(format!("Workflow run {} cancelled", parsed.id)),
+                    Err(e) => ToolResult::error(format!("cancel failed: {}", e)),
+                }
+            }
+            "create" => {
+                if parsed.definition.is_empty() {
+                    return ToolResult::error("definition is required (workflow JSON)");
+                }
+                if parsed.name.is_empty() {
+                    return ToolResult::error("name is required");
+                }
+                match self.manager.create(&parsed.name, &parsed.definition).await {
+                    Ok(info) => {
+                        let json = serde_json::json!({
+                            "created": true,
+                            "workflow": info,
+                        });
+                        ToolResult::ok(serde_json::to_string_pretty(&json).unwrap_or_default())
+                    }
+                    Err(e) => ToolResult::error(format!("create failed: {}", e)),
+                }
+            }
+            "" => ToolResult::error("action is required. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow."),
             other => ToolResult::error(format!(
-                "unknown action: {:?}. Use: list, install, uninstall. Or set resource to dispatch to a workflow.",
+                "unknown action: {:?}. Use: list, create, install, uninstall, cancel. Or set resource to dispatch to a workflow.",
                 other
             )),
         }
@@ -163,7 +195,7 @@ impl DynTool for WorkTool {
     }
 
     fn description(&self) -> String {
-        "Manage and run automated workflows. Use action: list/install/uninstall for lifecycle, or set resource to a workflow name for: run/status/runs/toggle.".to_string()
+        "Manage and run automated workflows. Use action: list/create/install/uninstall for lifecycle, or set resource to a workflow name for: run/status/runs/toggle.".to_string()
     }
 
     fn schema(&self) -> serde_json::Value {
@@ -176,7 +208,7 @@ impl DynTool for WorkTool {
                 },
                 "action": {
                     "type": "string",
-                    "description": "Lifecycle: list, install, uninstall. Dispatch: run, status, runs, toggle."
+                    "description": "Lifecycle: list, create, install, uninstall. Dispatch: run, status, runs, toggle."
                 },
                 "code": {
                     "type": "string",
@@ -189,6 +221,14 @@ impl DynTool for WorkTool {
                 "inputs": {
                     "type": "object",
                     "description": "Input parameters for workflow run"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Workflow name (for create)"
+                },
+                "definition": {
+                    "type": "string",
+                    "description": "Workflow JSON definition (for create)"
                 }
             },
             "required": ["action"],

@@ -1,4 +1,4 @@
-# Nebo Platform Taxonomy: Skills, Tools, Workflows, and Roles
+# Nebo Platform Taxonomy: Skills, Workflows, and Roles
 
 **Document Type:** SME Architecture Reference
 **Status:** Canonical
@@ -12,13 +12,13 @@ Nebo's platform is built around five primitive objects, each with a unique insta
 
 | Code Prefix | Primitive | What It Is |
 |-------------|-----------|------------|
-| `SKILL-XXXX-XXXX-XXXX` | Skill | Knowledge the agent loads into context |
-| `TOOL-XXXX-XXXX-XXXX` | Tool | Executable capability the agent invokes |
+| `SKIL-XXXX-XXXX-XXXX` | Skill | Knowledge the agent loads into context |
 | `WORK-XXXX-XXXX-XXXX` | Workflow | A procedure composed of activities |
+| `ROLE-XXXX-XXXX-XXXX` | Role | A job with a schedule — binds workflows to triggers |
 | `NEBO-XXXX-XXXX-XXXX` | Agent (Nebo) | The agent instance that runs everything |
 | `LOOP-XXXX-XXXX-XXXX` | Community | The NeboLoop community where primitives are shared |
 
-A **Role** is a marketplace concept — a curated bundle of Workflows presented as a job function. It is not a system primitive with its own runtime object. See the Roles section for the `ROLE.md` format.
+A **Role** is a job description with a schedule. It bundles Workflows and Skills into a complete job profile and — critically — defines *when* each workflow runs. Roles own the event bindings. Workflows are pure procedures with no opinion about timing. This separation means the same workflow can run on different schedules in different Roles, and users can change when something runs without touching the procedure itself.
 
 ---
 
@@ -32,12 +32,12 @@ A Skill is **a single file**: `SKILL.md`.
 
 ### When Skills are used
 
-Skills are injected into the agent's context at the point where they are needed — either when a Tool declares it needs them to operate, or when a Workflow activity specifies them for a particular step. The agent reads the Skill as part of its context window and uses that knowledge to inform its reasoning and output quality.
+Skills are injected into the agent's context at the point where they are needed — when a Workflow activity specifies them for a particular step. The agent reads the Skill as part of its context window and uses that knowledge to inform its reasoning and output quality.
 
 ### File structure
 
 ```
-SKILL-XXXX-XXXX-XXXX/
+SKIL-XXXX-XXXX-XXXX/
 └── SKILL.md
 ```
 
@@ -50,137 +50,55 @@ The `SKILL.md` is plain markdown. It can include:
 
 ### Examples
 
-- `SKILL-sales-qualification` — How to evaluate whether a lead is worth pursuing
-- `SKILL-onboarding-tone` — How to write warm, professional onboarding communications
-- `SKILL-tax-law-schedule-c` — Current tax code guidance for Schedule C filers
-- `SKILL-industry-knowledge-realestate` — Real estate market context and terminology
+- `SKIL-sales-qualification` — How to evaluate whether a lead is worth pursuing
+- `SKIL-onboarding-tone` — How to write warm, professional onboarding communications
+- `SKIL-tax-law-schedule-c` — Current tax code guidance for Schedule C filers
+- `SKIL-industry-knowledge-realestate` — Real estate market context and terminology
 
 ### Installation
 
 ```go
-InstallSkill(ctx, "SKILL-XXXX-XXXX-XXXX")
+InstallSkill(ctx, "SKIL-XXXX-XXXX-XXXX")
 ```
 
-Skills are free, lightweight, and always auto-installed when a Tool or Workflow depends on them. There is no reason to present the user with a choice about Skill installation.
+Skills are free, lightweight, and always auto-installed when a Workflow depends on them. There is no reason to present the user with a choice about Skill installation.
 
 ---
 
-## 2. Tools
-
-### What a Tool is
-
-A Tool is executable capability. It is something the agent can do: call an external API, read a file, send an email, query a database, run a computation, post to Slack. Tools are the agent's hands.
-
-A Tool is three files: `SKILL.md` + `manifest.json` + an executable.
-
-### File structure
-
-```
-TOOL-XXXX-XXXX-XXXX/
-├── SKILL.md          — What this tool does, how to use it, when to use it
-├── manifest.json     — Metadata, parameters, return types, interface declarations
-└── <executable>      — Go binary, script, gRPC server, MCP endpoint, etc.
-```
-
-The `SKILL.md` in a Tool is the agent's user manual for the tool. It describes what the tool does, what inputs it expects, what it returns, and how to invoke it effectively. The agent reads this to understand when and how to use the tool.
-
-### manifest.json
-
-```json
-{
-  "id": "TOOL-A1B2-C3D4-E5F6",
-  "name": "AcmeCRM",
-  "version": "1.0.0",
-  "author": "acme",
-  "description": "Query and update Acme CRM contacts and opportunities",
-  "implements": ["crm-lookup", "contact-search", "contact-update"],
-  "parameters": {
-    "query": { "type": "string", "required": true },
-    "limit": { "type": "integer", "required": false, "default": 10 }
-  },
-  "returns": {
-    "contacts": { "type": "array" },
-    "total": { "type": "integer" }
-  }
-}
-```
-
-The `implements` field is critical. It declares which **tool interfaces** this tool satisfies. Tool interfaces are abstract capability declarations (e.g., `crm-lookup`, `email-send`) that Workflows reference when they need a capability but want to remain tool-agnostic. NeboLoop indexes these at install time for dependency resolution.
-
-### Tool binding modes
-
-Workflows can reference tools in two ways:
-
-**Interface binding** (generic, swappable):
-```json
-{ "interface": "crm-lookup" }
-```
-The workflow says "I need a CRM lookup capability." At install time, the user chooses which installed tool satisfies this interface. If they have multiple options, they pick. If they have none, the marketplace guides them to compatible tools.
-
-**Code binding** (pinned, specific):
-```json
-{ "code": "TOOL-A1B2-C3D4-E5F6" }
-```
-The workflow requires exactly this tool. Used when a tool developer builds workflows optimized specifically for their own tool's behavior and API response format.
-
-### MCP Tools
-
-An MCP server endpoint is a Tool. The `manifest.json` declares the MCP URL and the `implements` interfaces it satisfies. The executable is the MCP server. The pattern is identical.
-
-### Examples
-
-- `TOOL-crm-lookup` — Query Salesforce, HubSpot, or a custom CRM
-- `TOOL-email-send` — Send email via Gmail, Outlook, or Outlet
-- `TOOL-calendar-manage` — Read availability and book slots in Google Calendar
-- `TOOL-slack-notify` — Post messages to Slack channels
-
-### Installation
-
-```go
-InstallApp(ctx, "TOOL-XXXX-XXXX-XXXX")
-```
-
----
-
-## 3. Workflows
+## 2. Workflows
 
 ### What a Workflow is
 
-A Workflow is a procedure. It defines the repeatable steps required to accomplish a specific job function — decomposed into **activities**, each with its own intent, skills, tools, model selection, and token budget.
+A Workflow is a pure procedure. It defines the repeatable steps required to accomplish a specific task — decomposed into **activities**, each with its own intent, skills, model selection, and token budget. A Workflow has no opinion about *when* it runs. It defines *how* something gets done. Triggers and schedules belong to the Role that binds the workflow.
 
-A Workflow is three files: `SKILL.md` + `manifest.json` + `workflow.json`.
+A Workflow is three files: `manifest.json` + `workflow.json` + `WORKFLOW.md`.
 
 ### File structure
 
 ```
 WORK-XXXX-XXXX-XXXX/
-├── SKILL.md          — What this workflow does, when to run it, how the agent should approach it
-├── manifest.json     — Metadata, versioning, dependencies
-└── workflow.json     — The orchestration definition
+├── manifest.json     — Universal identity envelope
+├── workflow.json     — The procedure definition (activities, steps, budgets)
+└── WORKFLOW.md       — What this workflow does, how the agent should approach it
 ```
 
-### The four layers of a Workflow
+### The three layers of a Workflow
 
 A well-designed workflow gives the agent everything it needs to do a job reliably and intelligently:
 
 1. **Specialized knowledge** — Skills loaded per activity give the agent domain expertise
-2. **Executable capabilities** — Tools available per activity give the agent the ability to take action
-3. **Repeatable procedure** — Steps within each activity define what to do, in order, every time
-4. **Autonomy** — The agent's intent-driven reasoning means it handles edge cases intelligently without rigid hardwiring
+2. **Repeatable procedure** — Steps within each activity define what to do, in order, every time
+3. **Autonomy** — The agent's intent-driven reasoning means it handles edge cases intelligently without rigid hardwiring
 
 ### workflow.json schema
+
+> **Note:** There is no `triggers` field. Workflows are pure procedures. The Role's `role.json` binds workflows to triggers. This means the same workflow can run on different schedules in different Roles, and a user can change when something runs without touching the procedure itself.
 
 ```json
 {
   "version": "1.0",
   "id": "lead-qualification",
   "name": "Lead Qualification",
-
-  "triggers": [
-    { "type": "event", "event": "new_contact_form_submission" },
-    { "type": "schedule", "cron": "0 9 * * 1-5" },
-    { "type": "manual" }
-  ],
 
   "inputs": {
     "client_name": { "type": "string", "required": true },
@@ -193,7 +111,6 @@ A well-designed workflow gives the agent everything it needs to do a job reliabl
       "id": "lookup",
       "intent": "Find existing contact record and history",
       "skills": [],
-      "tools": ["TOOL-A1B2-C3D4-E5F6"],
       "model": "haiku",
       "steps": [
         "Search CRM by email address",
@@ -206,8 +123,7 @@ A well-designed workflow gives the agent everything it needs to do a job reliabl
     {
       "id": "assess",
       "intent": "Evaluate lead quality based on all available signals",
-      "skills": ["SKILL-sales-qualification", "SKILL-industry-knowledge"],
-      "tools": ["TOOL-A1B2-C3D4-E5F6"],
+      "skills": ["SKIL-sales-qualification", "SKIL-industry-knowledge"],
       "model": "sonnet",
       "steps": [
         "Review inquiry type against ideal client profile",
@@ -222,8 +138,7 @@ A well-designed workflow gives the agent everything it needs to do a job reliabl
     {
       "id": "route",
       "intent": "Take appropriate action based on qualification score",
-      "skills": ["SKILL-onboarding-tone"],
-      "tools": ["TOOL-A1B2-C3D4-E5F6", "TOOL-G7H8-I9J0-K1L2"],
+      "skills": ["SKIL-onboarding-tone"],
       "model": "haiku",
       "steps": [
         "If score >= 7, tag as qualified in CRM",
@@ -237,11 +152,7 @@ A well-designed workflow gives the agent everything it needs to do a job reliabl
   ],
 
   "dependencies": {
-    "skills": ["SKILL-sales-qualification", "SKILL-industry-knowledge", "SKILL-onboarding-tone"],
-    "tools": [
-      { "code": "TOOL-A1B2-C3D4-E5F6", "name": "AcmeCRM" },
-      { "code": "TOOL-G7H8-I9J0-K1L2", "name": "AcmeMail" }
-    ],
+    "skills": ["SKIL-sales-qualification", "SKIL-industry-knowledge", "SKIL-onboarding-tone"],
     "workflows": []
   },
 
@@ -256,7 +167,7 @@ A well-designed workflow gives the agent everything it needs to do a job reliabl
 
 These two terms are distinct and should never be conflated:
 
-- **Activity** — A bounded unit of work within a workflow. Has its own `intent`, `skills`, `tools`, `model`, and `token_budget`. Corresponds to a Runner.Run() call in the execution engine.
+- **Activity** — A bounded unit of work within a workflow. Has its own `intent`, `skills`, `model`, and `token_budget`. Corresponds to a Runner.Run() call in the execution engine.
 - **Step** — A single natural-language instruction inside an activity. Steps are what the agent reads and follows. They define the procedure.
 
 A workflow has activities. An activity has steps.
@@ -284,22 +195,13 @@ Each activity has a `token_budget.max`. The `budget.total_per_run` at the workfl
 **Token budget components per activity:**
 - Skill context loaded for this activity (counted from SKILL.md file sizes)
 - Step instructions passed to the agent
-- Agent reasoning and tool call overhead
-- Tool response parsing
-
-### Triggers
-
-Workflows are triggered by events, schedules, or manual invocation. The trigger system maps to existing Nebo infrastructure:
-
-- `event` → event lane (fires on a named system or user event)
-- `schedule` → cron lane (standard cron expression)
-- `manual` → direct invocation by user or another workflow
+- Agent reasoning overhead
 
 ### Sub-workflows
 
 An activity can invoke another workflow. The invoked workflow runs as a sub-agent and can be synchronous (wait for completion) or asynchronous (fire and continue).
 
-For long-running processes that require waiting on external events (e.g., "wait for client reply"), decompose into separate workflows connected by triggers rather than building async wait state into a single workflow. This keeps each workflow bounded and token-predictable.
+For long-running processes that require waiting on external events (e.g., "wait for client reply"), decompose into separate workflows connected by event triggers at the Role level rather than building async wait state into a single workflow. This keeps each workflow bounded and token-predictable.
 
 ### Error handling
 
@@ -323,92 +225,145 @@ Default if `on_error` is omitted: retry once, then notify owner.
 InstallWorkflow(ctx, "WORK-XXXX-XXXX-XXXX")
 ```
 
-Installing a workflow auto-installs all its declared dependencies — skills, tools, and sub-workflows — before the first activity runs.
+Installing a workflow auto-installs all its declared dependencies — skills and sub-workflows. A standalone workflow without a Role can still be invoked manually or via the `work` tool, but it has no scheduled triggers. Only a Role binds a workflow to a schedule.
 
 ---
 
-## 4. Roles
+
+## 3. Roles
 
 ### What a Role is
 
-A Role is a job description. It bundles a set of Workflows that together replicate a human job function. A Role is not a system primitive — there is no `InstallRole()` runtime method in v1. A Role is a marketplace packaging concept.
+A Role is a job description with a schedule. It bundles Workflows and Skills into a complete job profile — and it defines *when* each workflow runs. The Role is the only artifact type that owns event bindings. A Workflow is a pure procedure; the Role gives it a rhythm.
 
-A Role is a single file: `ROLE.md` with YAML frontmatter.
+Think about a human Chief of Staff. When you hire one, you're not hiring someone who *can* do morning briefings. You're hiring someone who *knows when* to do them without being told. The timing is part of the job definition. That's what a Role is.
+
+A Role is three files: `manifest.json` + `role.json` + `ROLE.md`.
+
+### File structure
+
+```
+ROLE-XXXX-XXXX-XXXX/
+├── manifest.json     — Universal identity envelope
+├── role.json         — Job definition: workflow-to-trigger bindings, event schedule
+└── ROLE.md           — Persona and job description (prose)
+```
 
 ### When to use a Role
 
-Use Roles to present a complete job function to a non-technical user. Instead of asking a realtor to browse and install five individual workflows, the marketplace presents a "Client Intake Specialist" Role that installs everything at once.
+Use Roles to present a complete job function to a non-technical user. Instead of asking a realtor to browse and install five individual workflows, the marketplace presents a "Client Intake Specialist" Role that installs everything at once — procedures, knowledge, capabilities, and the schedule that ties them together.
 
 The non-technical user's interaction is: enter a code, get an employee.
 
-### ROLE.md format
+### role.json — The Job Definition
+
+The `role.json` carries the operational structure: which workflows to run, when to run them, and what events to listen for. This is the file that makes a Role more than a folder of workflows — it's what makes it an employee who already knows the job.
+
+```json
+{
+  "workflows": {
+    "lead-qualification": {
+      "ref": "WORK-A1B2-C3D4-E5F6",
+      "trigger": {
+        "type": "event",
+        "sources": ["form.submitted"]
+      },
+      "description": "Qualifies incoming leads in real time"
+    },
+    "client-followup": {
+      "ref": "WORK-G7H8-I9J0-K1L2",
+      "trigger": {
+        "type": "schedule",
+        "cron": "0 9 * * 1-5"
+      },
+      "description": "Morning follow-up on pending leads"
+    },
+    "consultation-scheduler": {
+      "ref": "WORK-M3N4-O5P6-Q7R8",
+      "trigger": {
+        "type": "event",
+        "sources": ["lead.qualified"]
+      },
+      "description": "Books consultations for qualified leads"
+    }
+  },
+  "skills": [
+    "SKIL-sales-qualification",
+    "SKIL-onboarding-tone",
+    "SKIL-customer-service"
+  ],
+  "pricing": {
+    "model": "monthly_fixed",
+    "cost": 47.0
+  },
+  "defaults": {
+    "timezone": "user_local",
+    "configurable": [
+      "workflows.client-followup.trigger.cron"
+    ]
+  }
+}
+```
+
+#### Trigger types
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `schedule` | `cron` (string) | Fires on a cron schedule. Standard 5-field cron expression. |
+| `heartbeat` | `interval` (string), `window` (string, optional) | Fires at a recurring interval. Window limits active hours (e.g., `"08:00-18:00"`). |
+| `event` | `sources` (string[]) | Fires when any listed event occurs. |
+| `manual` | — | Only fires by explicit user request or API call. |
+
+> **Key principle:** The workflow doesn't decide when it runs. The Role does. The same workflow can run at 7am in one Role and 9am in another. The procedure doesn't change just because you want your briefing at a different time.
+
+#### User-configurable fields
+
+The `defaults.configurable` array lists JSON paths within `role.json` that the user can override after installation. The Role ships with opinionated defaults; the user adjusts what matters to them without editing the workflow or role definition.
+
+### ROLE.md — The Persona
+
+The `ROLE.md` is the agent's job description in prose. It defines who the agent *is* when operating in this Role — personality, communication style, priorities, judgment calls. No YAML frontmatter — identity lives in `manifest.json`, operational wiring lives in `role.json`, and the persona is pure markdown.
 
 ```markdown
----
-id: client-intake-specialist
-name: Client Intake Specialist
-code: ROLE-7K3M-Q9P2-X4W1
-description: Handles new client inquiries, qualifies leads, and schedules initial consultations
-workflows:
-  - WORK-A1B2-C3D4-E5F6
-  - WORK-G7H8-I9J0-K1L2
-  - WORK-M3N4-O5P6-Q7R8
-tools:
-  - TOOL-A1B2-C3D4-E5F6
-  - TOOL-G7H8-I9J0-K1L2
-skills:
-  - SKILL-sales-qualification
-  - SKILL-onboarding-tone
-  - SKILL-customer-service
-pricing:
-  model: monthly_fixed
-  amount: 47
-  currency: usd
-estimated_tokens_per_day: 45000
-estimated_cost_per_run: "$0.02"
----
-
 # Client Intake Specialist
 
-A Client Intake Specialist handles your first impression with new prospects.
-This role qualifies incoming leads, gathers their information, and routes them
-to the right next step — automatically.
+You handle first impressions with new prospects. You qualify incoming leads,
+gather their information, and route them to the right next step — automatically.
 
-## What it does
+## Communication Style
 
-- Receives new contact form submissions in real time
-- Looks up existing records in your CRM to identify prior relationships
-- Scores leads based on fit, budget signals, and service area
-- Routes qualified leads to your sales team with a summary
-- Sends polite referral emails to non-fits with suggested alternatives
+- Professional but warm — these are potential clients, not data points
+- When referring out, always provide alternatives and explain why
+- Internal notifications are crisp and data-driven
 
-## What it needs
+## Judgment
 
-Three workflows that run on triggers:
-
-1. **Lead Qualification** — runs when a new form is submitted
-2. **Client Follow-Up** — runs on a morning schedule for pending leads
-3. **Consultation Scheduler** — runs when a qualified lead is ready to book
-
-These workflows collectively require a CRM tool and an email tool.
-You will be prompted to connect compatible tools during installation.
-
-## Performance
-
-- Estimated token usage: ~7,500 per lead qualified
-- Estimated cost per lead: $0.02
-- Monthly pricing: $47 (assumes up to ~2,350 qualified interactions/month)
+- A qualified lead scores >= 7 on fit, budget signals, and service area
+- Previously declined prospects are flagged, not re-qualified
+- When in doubt, qualify up — false negatives cost more than false positives
 ```
 
 ### Role as marketplace entry point
 
-The Role's install code (`ROLE-7K3M-Q9P2-X4W1`) is shareable by users directly. A realtor texts a code to another realtor. No browsing, no sign-up friction. The Nebo agent resolves the code, fetches the `ROLE.md` from NeboLoop, and installs all declared workflows and their transitive dependencies.
+The Role's install code (`ROLE-7K3M-Q9P2-X4W1`) is shareable by users directly. A realtor texts a code to another realtor. No browsing, no sign-up friction. The Nebo agent resolves the code, fetches the Role package from NeboLoop, and installs all declared workflows and their transitive dependencies.
+
+### Auto-install cascade
+
+When a user installs a Role:
+
+1. Parse `role.json` for all workflow references
+2. For each workflow: resolve and install its declared dependencies (skills, sub-workflows)
+3. Install any additional skills listed directly in `role.json`
+4. Register all trigger bindings from `role.json`
+5. Load the ROLE.md persona into the agent's context
+
+The user installs a job. Everything else cascades.
 
 ---
 
-## 5. The Workflow Specialist
+## 4. The Workflow Specialist
 
-The Skills/Tools/Workflows/Roles taxonomy creates a new human job category that did not exist before Nebo: the **Workflow Specialist**.
+The Skills/Workflows/Roles taxonomy creates a new human job category that did not exist before Nebo: the **Workflow Specialist**.
 
 ### What a Workflow Specialist does
 
@@ -436,43 +391,47 @@ Optimized: 70% haiku / 30% sonnet routing
 4.8 (142 installs) · $47/month
 ```
 
-### Workflow Specialists vs. Tool Developers
-
-These are distinct roles with complementary incentives:
-
-| | Tool Developer | Workflow Specialist |
-|---|---|---|
-| **Builds** | Tools with specific capabilities | Workflows that use those tools |
-| **Sells** | Tool installs | Workflow/Role installs |
-| **Incentive** | More tools used = more revenue | More workflows sold = more revenue |
-| **Expertise** | API integration, Go/MCP development | Job process design, LLM optimization |
-
-A Tool Developer can also be a Workflow Specialist — they build a CRM tool and then build the best-possible workflows for it, because nobody knows their tool's capabilities and response formats better than they do.
-
 ---
 
-## 6. The Platform Hierarchy
+## 5. The Platform Hierarchy
 
 ```
-ROLE       — job function (marketplace bundle)
-  └── WORK — workflow (procedure)
+ROLE  >  WORK  >  SKILL
+(job)   (procedure) (knowledge)
+```
+
+**Design direction:** Start with what the agent needs to *know* (Skill), chain knowledge into procedures (Workflow), and compose procedures into a job with a schedule (Role).
+
+**Dependency direction:** Installing a Role cascades downward — installs Workflows, which install Skills.
+
+**Trigger ownership:** Roles own the schedule. Workflows are pure procedures with no opinion about timing. The same workflow can run on different schedules in different Roles.
+
+```
+ROLE       — job with a schedule (owns triggers, binds workflows to events)
+  └── WORK — pure procedure (activities, steps, budgets — no triggers)
         ├── SKILL — knowledge (loaded per activity)
-        ├── TOOL  — capability (invoked per activity)
         └── WORK  — sub-workflow (called per activity)
 
 NEBO       — the agent that runs all of the above
 LOOP       — the community where all of the above is shared
 ```
 
+**Package envelope:** Every artifact type ships a `manifest.json` as its universal identity envelope. The store reads one file to index any package. Artifact-specific files carry domain logic only.
+
+| Artifact | Package Contents |
+|----------|-----------------|
+| Skill | `manifest.json` + `SKILL.md` |
+| Workflow | `manifest.json` + `workflow.json` + `WORKFLOW.md` |
+| Role | `manifest.json` + `role.json` + `ROLE.md` |
+
 Every object has a code. Every code maps to an SDK install method. Every install resolves dependencies transitively before execution begins.
 
 The non-technical user's experience: enter a code, get a working AI employee.
 The Workflow Specialist's experience: design, optimize, publish, earn.
-The Tool Developer's experience: build a capability, the ecosystem builds on top of it.
 
 ---
 
-## 7. Execution Model
+## 6. Execution Model
 
 Nebo's workflow engine is a single-node Temporal-style orchestrator where the worker is an AI agent. Existing infrastructure maps directly:
 
@@ -489,11 +448,11 @@ Nebo's workflow engine is a single-node Temporal-style orchestrator where the wo
 
 Each activity is a bounded `Runner.Run()` call. Activities within the same workflow share a conversation session, so context from the `lookup` activity is naturally visible to the `assess` activity. For v1, workflows are constrained to a single model provider family per workflow to ensure session compatibility.
 
-Async waits (e.g., "wait for email reply") are handled by decomposing into separate trigger-linked workflows rather than persisting mid-workflow state. Workflow A sends the email and completes. An event trigger fires when the reply arrives. Workflow B handles the reply. Each workflow is short, bounded, and token-predictable.
+Async waits (e.g., "wait for email reply") are handled by decomposing into separate workflows connected by event triggers at the Role level rather than persisting mid-workflow state. Workflow A sends the email and completes. The Role's `role.json` defines an event trigger that fires when the reply arrives. Workflow B handles the reply. Each workflow is short, bounded, and token-predictable. The Role orchestrates the timing; the workflows stay pure procedures.
 
 ---
 
-## 8. Install Code Resolution
+## 7. Install Code Resolution
 
 Every primitive in the Nebo ecosystem is identified by a typed install code. The code prefix determines how the agent resolves and installs the object.
 
@@ -518,33 +477,30 @@ User enters code (e.g., "ROLE-7K3M-Q9P2-X4W1")
 
 | Prefix | SDK Method | What Gets Installed | Dependency Resolution |
 |--------|-----------|--------------------|-----------------------|
-| `SKILL-` | `InstallSkill(ctx, code)` | Single SKILL.md file | None -- skills are leaf nodes |
-| `TOOL-` | `InstallApp(ctx, code)` | manifest.json + binary + SKILL.md | Auto-install declared skill dependencies |
-| `WORK-` | `InstallWorkflow(ctx, code)` | workflow.json + manifest.json + SKILL.md | Auto-install all declared skills, tools, and sub-workflows |
-| `ROLE-` | `InstallRole(ctx, code)` | All declared workflows (transitive) | Auto-install all workflows + their full dependency trees |
-| `LOOP-` | `JoinLoop(ctx, code)` | Loop membership + shared context | No binary install -- joins community channel |
-| `NEBO-` | Reserved | Agent instance identifier | NOT installable -- used for routing and identity |
+| `SKIL-` | `InstallSkill(ctx, code)` | manifest.json + SKILL.md | None — skills are leaf nodes |
+| `WORK-` | `InstallWorkflow(ctx, code)` | manifest.json + workflow.json + WORKFLOW.md | Auto-install all declared skills and sub-workflows |
+| `ROLE-` | `InstallRole(ctx, code)` | manifest.json + role.json + ROLE.md + all declared workflows (transitive) | Auto-install all workflows + their full dependency trees, register trigger bindings |
+| `LOOP-` | `JoinLoop(ctx, code)` | Loop membership + shared context | No binary install — joins community channel |
+| `NEBO-` | Reserved | Agent instance identifier | NOT installable — used for routing and identity |
 
 ### Dependency Resolution Order
 
 For a Role install, the resolution order is:
 
 ```
-1. Fetch ROLE.md from NeboLoop
-2. Parse workflow list from frontmatter
+1. Fetch Role package from NeboLoop (manifest.json + role.json + ROLE.md)
+2. Parse role.json for workflow references
 3. For each workflow:
-   a. Fetch workflow.json
+   a. Fetch workflow package (manifest.json + workflow.json + WORKFLOW.md)
    b. Parse dependencies.skills -> queue skill installs
-   c. Parse dependencies.tools -> queue tool installs
-   d. Parse dependencies.workflows -> recurse (sub-workflows)
-4. Deduplicate all queued installs
-5. Install in order: skills -> tools -> workflows -> register role
+   c. Parse dependencies.workflows -> recurse (sub-workflows)
+4. Install additional skills listed directly in role.json
+5. Deduplicate all queued installs
+6. Install in order: skills -> workflows -> register trigger bindings -> load persona
 ```
 
 ### Conflict Resolution
 
-- **Version conflicts:** If two workflows depend on different versions of the same tool, the HIGHER version wins. The lower-version workflow is tested against the higher version during marketplace submission.
-- **Interface conflicts:** If two tools implement the same interface, the user chooses during install. The selection is persisted in `plugin_settings`.
 - **Circular dependencies:** Detected during marketplace submission (rejected). The resolution algorithm tracks visited nodes and aborts on cycles.
 
 ### Code Sharing
@@ -553,7 +509,7 @@ Install codes are designed for human sharing -- text messages, emails, social me
 
 ---
 
-## 9. Marketplace Integration
+## 8. Marketplace Integration
 
 The NeboLoop marketplace is the distribution channel for all primitives. Every install code resolves through NeboLoop's REST API.
 
@@ -579,11 +535,10 @@ GET  /api/v1/store/roles                   -> List roles (future)
 | Primitive | Pricing Model | Revenue Split |
 |-----------|--------------|---------------|
 | Skill | Free | N/A |
-| Tool | One-time or subscription | 70% creator / 30% NeboLoop |
 | Workflow | Per-run or subscription | 70% creator / 30% NeboLoop |
 | Role | Monthly subscription | 70% creator / 30% NeboLoop |
 
-Skills are always free -- they are pure knowledge with negligible distribution cost. Tools, workflows, and roles are monetizable. The 70/30 split is applied after payment processing fees.
+Skills are always free -- they are pure knowledge with negligible distribution cost. Workflows and roles are monetizable. The 70/30 split is applied after payment processing fees.
 
 ### Submission Pipeline
 
@@ -611,36 +566,33 @@ The `plugin_registry` is the local source of truth. NeboLoop is the authoritativ
 NeboLoop sends update_available event via WebSocket
   -> Nebo checks local plugin_registry version
   -> If newer version: background download
-  -> For tools with new permissions: stage in .pending/, require user approval
-  -> For tools with no new permissions: auto-apply
   -> For skills/workflows: auto-apply (no binary, no permissions)
 ```
 
 ---
 
-## 10. Rust Implementation Status
+## 9. Rust Implementation Status
 
 | Component | Go | Rust | Notes |
 |-----------|-----|------|-------|
-| SKILL.md loading | Y | Y | `crates/agent/src/skills/` -- fsnotify hot-reload |
+| SKILL.md loading | Y | Y | `crates/agent/src/skills/` — fsnotify hot-reload |
 | Skill trigger matching | Y | Y | Case-insensitive substring matching |
 | Skill execution (context injection) | Y | Y | Injected into system prompt per session |
 | Skill store install | Y | N | Store routes NOT implemented in Rust |
-| Tool (app) install | Y | P | Basic manifest + binary, missing gRPC adapters |
-| Tool interface binding | N | N | New feature -- NOT in Go, designed for Rust |
-| Workflow engine | N | N | New feature -- spec in `workflow-engine.md` |
-| Role install | N | N | New feature -- marketplace packaging only |
+| Universal manifest.json | N | N | New feature — universal envelope for all artifact types |
+| Workflow engine | N | N | New feature — spec in `workflow-engine.md` |
+| Role install (role.json) | N | N | New feature — includes trigger binding registration |
+| Role trigger registration | N | N | New feature — Roles own event bindings, workflows are triggerless |
 | Install code resolution | P | N | Go has store install but NOT typed prefix routing |
-| Dependency resolution (transitive) | N | N | New feature -- designed for Rust |
+| Dependency resolution (transitive) | N | N | New feature — designed for Rust |
 | Marketplace store API | Y | N | Go has full store handlers, Rust has none |
-| Plugin registry (local tracking) | Y | N | Go has `plugin_registry` table, Rust missing |
-| Update flow (WS events) | Y | P | Rust has updater for binary, NOT for apps/skills |
+| Update flow (WS events) | Y | P | Rust has updater for binary, NOT for skills |
 | Revenue/billing integration | N/A | N/A | Server-side (NeboLoop), NOT in Nebo client |
 
 **Legend:** Y = Implemented, N = Not implemented, P = Partially implemented
 
 ---
 
-*This document captures decisions made in discussion 4743279a-d5df-4629-a7bc-622ef7a9dc85 with input from the Nebo SME, NeboLoop SME, and Rust shell agents.*
+*This document captures decisions from discussions 4743279a-d5df-4629-a7bc-622ef7a9dc85 and subsequent architecture sessions. Key changes: manifest.json is now a universal package envelope for all artifact types; triggers moved from workflow.json to role.json; Roles own the schedule, Workflows are pure procedures.*
 
-*Generated: 2026-03-04*
+*Last updated: 2026-03-06*

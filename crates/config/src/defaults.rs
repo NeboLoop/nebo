@@ -81,6 +81,91 @@ pub fn ensure_bot_id() -> String {
     id
 }
 
+// ── Artifact Directory Helpers ─────────────────────────────────────
+
+/// Returns the `nebo/` directory for marketplace (sealed) artifacts.
+pub fn nebo_dir() -> Result<PathBuf, NeboError> {
+    Ok(data_dir()?.join("nebo"))
+}
+
+/// Returns the `user/` directory for user-created (loose) artifacts.
+pub fn user_dir() -> Result<PathBuf, NeboError> {
+    Ok(data_dir()?.join("user"))
+}
+
+/// Artifact type subdirectories.
+const ARTIFACT_TYPES: &[&str] = &["skills", "tools", "workflows", "roles"];
+
+/// Returns the `bundled/` directory for skills shipped with the app.
+pub fn bundled_skills_dir() -> Result<PathBuf, NeboError> {
+    Ok(data_dir()?.join("bundled").join("skills"))
+}
+
+/// Ensure all artifact directories exist for both namespaces.
+///
+/// Creates:
+/// - `<data_dir>/bundled/skills/`
+/// - `<data_dir>/nebo/{skills,tools,workflows,roles}/`
+/// - `<data_dir>/user/{skills,tools,workflows,roles}/`
+/// - `<data_dir>/data/`
+pub fn ensure_artifact_dirs() -> Result<(), NeboError> {
+    let data = data_dir()?;
+
+    // Ensure data/ for database
+    fs::create_dir_all(data.join("data")).map_err(|e| {
+        NeboError::DataDir(format!("failed to create data/ directory: {e}"))
+    })?;
+
+    // Ensure bundled skills directory
+    fs::create_dir_all(data.join("bundled").join("skills")).map_err(|e| {
+        NeboError::DataDir(format!("failed to create bundled/skills directory: {e}"))
+    })?;
+
+    // Create nebo/ and user/ subdirectories
+    for namespace in &["nebo", "user"] {
+        for artifact_type in ARTIFACT_TYPES {
+            let dir = data.join(namespace).join(artifact_type);
+            fs::create_dir_all(&dir).map_err(|e| {
+                NeboError::DataDir(format!(
+                    "failed to create {}/{} directory: {e}",
+                    namespace, artifact_type
+                ))
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve the filesystem path for a sealed .napp artifact.
+///
+/// Returns `<data_dir>/nebo/<artifact_type>/<qualified_name>/<version>.napp`
+///
+/// # Example
+/// ```ignore
+/// let path = artifact_napp_path("skills", "@acme/skills/sales-qualification", "1.0.0")?;
+/// // => <data_dir>/nebo/skills/@acme/skills/sales-qualification/1.0.0.napp
+/// ```
+pub fn artifact_napp_path(
+    artifact_type: &str,
+    qualified_name: &str,
+    version: &str,
+) -> Result<PathBuf, NeboError> {
+    let dir = nebo_dir()?.join(artifact_type).join(qualified_name);
+    Ok(dir.join(format!("{}.napp", version)))
+}
+
+/// Returns the user artifact directory for a given type and name.
+///
+/// # Example
+/// ```ignore
+/// let path = user_artifact_path("skills", "my-custom-skill")?;
+/// // => <data_dir>/user/skills/my-custom-skill/
+/// ```
+pub fn user_artifact_path(artifact_type: &str, name: &str) -> Result<PathBuf, NeboError> {
+    Ok(user_dir()?.join(artifact_type).join(name))
+}
+
 /// Checks if the setup has been marked as complete.
 pub fn is_setup_complete() -> Result<bool, NeboError> {
     let dir = data_dir()?;

@@ -99,9 +99,15 @@ pub fn decay_score(access_count: i64, accessed_at: Option<i64>) -> f64 {
 /// Score a memory by combining confidence from metadata with decay.
 pub fn score_memory(mem: &Memory) -> f64 {
     let confidence = extract_confidence_from_metadata(mem).unwrap_or(0.75);
+    // Parse TEXT timestamp from SQLite (e.g. "2026-03-06 12:34:56") into epoch seconds
+    let accessed_ts = mem.accessed_at.as_deref().and_then(|s| {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+            .ok()
+            .map(|dt| dt.and_utc().timestamp())
+    });
     let decay = decay_score(
         mem.access_count.unwrap_or(0),
-        mem.accessed_at,
+        accessed_ts,
     );
     confidence * decay
 }
@@ -767,7 +773,7 @@ mod tests {
             metadata: Some(r#"{"confidence": 0.9}"#.to_string()),
             created_at: None,
             updated_at: None,
-            accessed_at: Some(chrono::Utc::now().timestamp()),
+            accessed_at: Some(chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
             access_count: Some(10),
             user_id: "u1".to_string(),
         };
@@ -780,7 +786,7 @@ mod tests {
             metadata: Some(r#"{"confidence": 0.5}"#.to_string()),
             created_at: None,
             updated_at: None,
-            accessed_at: Some(chrono::Utc::now().timestamp() - 90 * 86400),
+            accessed_at: Some((chrono::Utc::now() - chrono::Duration::days(90)).format("%Y-%m-%d %H:%M:%S").to_string()),
             access_count: Some(1),
             user_id: "u1".to_string(),
         };

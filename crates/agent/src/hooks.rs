@@ -60,3 +60,35 @@ pub struct MessageAppendPayload {
     pub role: String,
     pub content: String,
 }
+
+/// Payload for `agent.turn` action hook.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TurnPayload {
+    pub session_id: String,
+    pub turn: usize,
+    pub tool_calls: Vec<String>,
+    pub total_tool_calls: Vec<String>,
+    pub has_active_task: bool,
+}
+
+/// Payload for `agent.should_continue` filter hook.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ShouldContinuePayload {
+    pub session_id: String,
+    pub turn: usize,
+    pub total_tool_calls: Vec<String>,
+    pub has_active_task: bool,
+}
+
+/// Response from `agent.should_continue` filter hook.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ShouldContinueResponse {
+    #[serde(default = "default_true")]
+    pub should_continue: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}

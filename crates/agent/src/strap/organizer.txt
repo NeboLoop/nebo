@@ -1,22 +1,22 @@
-### organizer — Personal Information Management
+### os — Personal Information Management (resource: mail/contacts/calendar/reminders)
 USE THIS when: user mentions email, calendar, contacts, reminders, appointments, or events.
 
-- organizer(resource: "mail", action: "unread") — Check unread email count
-- organizer(resource: "mail", action: "read", count: 5) — Read recent emails
-- organizer(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!") — Send email
-- organizer(resource: "mail", action: "search", query: "invoice") — Search emails
-- organizer(resource: "mail", action: "accounts") — List email accounts
-- organizer(resource: "contacts", action: "search", query: "Alice") — Search contacts
-- organizer(resource: "contacts", action: "get", name: "Alice Smith") — Get contact details
-- organizer(resource: "contacts", action: "create", name: "Bob", email: "bob@example.com") — Create contact
-- organizer(resource: "contacts", action: "groups") — List contact groups
-- organizer(resource: "calendar", action: "today") — Today's events
-- organizer(resource: "calendar", action: "upcoming", days: 7) — Upcoming events
-- organizer(resource: "calendar", action: "create", title: "Meeting", date: "2024-01-15", time: "14:00") — Create event
-- organizer(resource: "calendar", action: "list", calendar: "Work") — List events from a specific calendar
-- organizer(resource: "calendar", action: "calendars") — List calendars
-- organizer(resource: "reminders", action: "list") — List reminders
-- organizer(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal") — Create reminder
-- organizer(resource: "reminders", action: "complete", reminder_id: "...") — Complete reminder
-- organizer(resource: "reminders", action: "delete", reminder_id: "...") — Delete reminder
-- organizer(resource: "reminders", action: "lists") — List reminder lists
+- os(resource: "mail", action: "unread") — Check unread email count
+- os(resource: "mail", action: "read", count: 5) — Read recent emails
+- os(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!") — Send email
+- os(resource: "mail", action: "search", query: "invoice") — Search emails
+- os(resource: "mail", action: "accounts") — List email accounts
+- os(resource: "contacts", action: "search", query: "Alice") — Search contacts
+- os(resource: "contacts", action: "get", name: "Alice Smith") — Get contact details
+- os(resource: "contacts", action: "create", name: "Bob", email: "bob@example.com") — Create contact
+- os(resource: "contacts", action: "groups") — List contact groups
+- os(resource: "calendar", action: "today") — Today's events
+- os(resource: "calendar", action: "upcoming", days: 7) — Upcoming events
+- os(resource: "calendar", action: "create", title: "Meeting", date: "2024-01-15", time: "14:00") — Create event
+- os(resource: "calendar", action: "list", calendar: "Work") — List events from a specific calendar
+- os(resource: "calendar", action: "calendars") — List calendars
+- os(resource: "reminders", action: "list") — List reminders
+- os(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal") — Create reminder
+- os(resource: "reminders", action: "complete", reminder_id: "...") — Complete reminder
+- os(resource: "reminders", action: "delete", reminder_id: "...") — Delete reminder
+- os(resource: "reminders", action: "lists") — List reminder lists

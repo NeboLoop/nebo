@@ -24,7 +24,7 @@ pub struct SpawnResult {
     pub error: Option<String>,
 }
 
-/// Trait implemented by agent::Orchestrator, consumed by tools::BotTool.
+/// Trait implemented by agent::Orchestrator, consumed by tools::AgentTool.
 /// Uses Pin<Box<dyn Future>> for object safety (async_trait alternative).
 pub trait SubAgentOrchestrator: Send + Sync {
     /// Spawn a single sub-agent.

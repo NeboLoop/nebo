@@ -1,0 +1,56 @@
+{
+  "version": "1",
+  "id": "research-report",
+  "name": "Research Report",
+  "inputs": {
+    "topic": {
+      "type": "string",
+      "required": true
+    },
+    "depth": {
+      "type": "string",
+      "required": false,
+      "default": "brief"
+    }
+  },
+  "activities": [
+    {
+      "id": "research",
+      "intent": "Research the given topic and gather key facts",
+      "skills": ["@nebo/skills/quick-research@1.0.0"],
+      "tools": ["@nebo/tools/notepad@1.0.0"],
+      "model": "claude-sonnet",
+      "steps": [
+        "Break the topic into 2-3 specific questions",
+        "Research each question using available information",
+        "Save each finding to the notepad with a descriptive key"
+      ],
+      "token_budget": { "max": 4096 },
+      "on_error": { "retry": 2, "fallback": "notify_owner" }
+    },
+    {
+      "id": "summarize",
+      "intent": "Write a concise research summary from the findings",
+      "tools": ["@nebo/tools/notepad@1.0.0"],
+      "model": "claude-haiku",
+      "steps": [
+        "List all saved notes from the research phase",
+        "Read each note to gather all findings",
+        "Write a structured summary with: key facts, sources, and open questions"
+      ],
+      "token_budget": { "max": 2048 },
+      "on_error": { "retry": 1, "fallback": "notify_owner" }
+    }
+  ],
+  "dependencies": {
+    "skills": ["@nebo/skills/quick-research@1.0.0"],
+    "tools": [
+      "@nebo/tools/notepad@1.0.0"
+    ],
+    "workflows": []
+  },
+  "budget": {
+    "total_per_run": 8192,
+    "cost_estimate": "$0.03"
+  }
+}

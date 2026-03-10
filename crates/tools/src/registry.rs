@@ -10,7 +10,7 @@ use crate::origin::ToolContext;
 use crate::policy::Policy;
 use crate::process::ProcessRegistry;
 use crate::safeguard;
-use crate::system_tool::SystemTool;
+
 
 /// Result of a tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +54,11 @@ pub trait Tool: Send + Sync {
     /// Whether this tool needs user approval.
     fn requires_approval(&self) -> bool;
 
+    /// Per-resource approval check. Override for tools with mixed approval per resource.
+    fn requires_approval_for(&self, _input: &serde_json::Value) -> bool {
+        self.requires_approval()
+    }
+
     /// Execute the tool with the given input.
     fn execute(
         &self,
@@ -68,6 +73,10 @@ pub trait DynTool: Send + Sync {
     fn description(&self) -> String;
     fn schema(&self) -> serde_json::Value;
     fn requires_approval(&self) -> bool;
+    /// Per-resource approval check. Override for tools with mixed approval per resource.
+    fn requires_approval_for(&self, _input: &serde_json::Value) -> bool {
+        self.requires_approval()
+    }
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -199,11 +208,11 @@ impl Registry {
         self.policy.read().await.clone()
     }
 
-    /// Register the default set of tools (system domain tool only — no DB access).
+    /// Register the default set of tools (os tool only — no DB access).
     pub async fn register_defaults(&self) {
         let policy = self.policy.read().await.clone();
-        let system_tool = SystemTool::new(policy, self.process_registry.clone());
-        self.register(Box::new(system_tool)).await;
+        let os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        self.register(Box::new(os_tool)).await;
     }
 
     /// Register all domain tools including those that need DB access.
@@ -212,9 +221,6 @@ impl Registry {
     }
 
     /// Register all domain tools with optional browser manager.
-    /// The `permissions` map controls which capability categories are enabled.
-    /// Keys: "chat", "file", "shell", "web", "contacts", "desktop", "media", "system".
-    /// A None map registers all tools (no filtering). A missing key defaults to denied.
     pub async fn register_all_with_browser(
         &self,
         store: Arc<db::Store>,
@@ -231,9 +237,12 @@ impl Registry {
             skill_loader,
             advisor_runner,
             hybrid_searcher,
-            None,
-            None,
-            None,
+            None, // workflow_manager
+            None, // permissions
+            None, // plan_tier
+            None, // sandbox_manager
+            None, // comm_plugin
+            None, // active_role
         )
         .await;
     }
@@ -249,9 +258,12 @@ impl Registry {
         skill_loader: Option<Arc<crate::skills::Loader>>,
         advisor_runner: Option<Arc<dyn crate::bot_tool::AdvisorDeliberator>>,
         hybrid_searcher: Option<Arc<dyn crate::bot_tool::HybridSearcher>>,
-        napp_manager: Option<Arc<dyn crate::tools::NappManager>>,
         workflow_manager: Option<Arc<dyn crate::workflows::WorkflowManager>>,
         permissions: Option<&HashMap<String, bool>>,
+        plan_tier: Option<Arc<tokio::sync::RwLock<String>>>,
+        sandbox_manager: Option<Arc<sandbox_runtime::SandboxManager>>,
+        comm_plugin: Option<Arc<dyn comm::CommPlugin>>,
+        active_role: Option<crate::role_tool::ActiveRoleState>,
     ) {
         let allowed = |category: &str| -> bool {
             match permissions {
@@ -260,69 +272,131 @@ impl Registry {
             }
         };
 
-        // System tool (file + shell) — always registered (core functionality)
+        // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — always registered
         let policy = self.policy.read().await.clone();
-        let system_tool = SystemTool::new(policy, self.process_registry.clone());
-        self.register(Box::new(system_tool)).await;
+        let os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        self.register(Box::new(os_tool)).await;
 
         // Web tool (HTTP fetch + search + browser) — requires "web" permission
         if allowed("web") {
-            let web_tool = match browser_manager {
-                Some(mgr) => crate::web_tool::WebTool::new().with_browser(mgr),
-                None => crate::web_tool::WebTool::new(),
-            };
+            let mut web_tool = crate::web_tool::WebTool::new().with_store(store.clone());
+            if let Some(mgr) = browser_manager {
+                web_tool = web_tool.with_browser(mgr);
+            }
             self.register(Box::new(web_tool)).await;
         }
 
-        // Bot tool (memory, tasks, sessions, profile, sub-agents) — always registered (core)
-        let mut bot_tool = crate::bot_tool::BotTool::new(store.clone(), orchestrator);
+        // Agent tool (memory, tasks, sessions, context, advisors, ask) — always registered (core)
+        let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator);
+        let runner_for_events = advisor_runner.clone();
         if let Some(runner) = advisor_runner {
-            bot_tool = bot_tool.with_advisor_runner(runner);
+            agent_tool = agent_tool.with_advisor_runner(runner);
         }
         if let Some(searcher) = hybrid_searcher {
-            bot_tool = bot_tool.with_hybrid_searcher(searcher);
+            agent_tool = agent_tool.with_hybrid_searcher(searcher);
         }
-        self.register(Box::new(bot_tool)).await;
+        self.register(Box::new(agent_tool)).await;
 
         // Event tool (scheduled tasks / cron) — always registered (core)
-        self.register(Box::new(crate::event_tool::EventTool::new(store.clone()))).await;
+        let mut event_tool = crate::event_tool::EventTool::new(store.clone());
+        if let Some(runner) = runner_for_events {
+            event_tool = event_tool.with_runner(runner);
+        }
+        self.register(Box::new(event_tool)).await;
 
         // Skill tool (skill management) — always registered (core)
-        if let Some(loader) = skill_loader {
-            self.register(Box::new(crate::skill_tool::SkillTool::new(loader))).await;
+        if let Some(ref loader) = skill_loader {
+            self.register(Box::new(crate::skill_tool::SkillTool::new(loader.clone()).with_store(store.clone()))).await;
         } else {
-            let skills_dir = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")).join("skills");
-            let loader = Arc::new(crate::skills::Loader::new(skills_dir, None));
-            self.register(Box::new(crate::skill_tool::SkillTool::new(loader))).await;
+            let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let bundled_dir = data.join("bundled").join("skills");
+            let installed_dir = data.join("nebo").join("skills");
+            let user_dir = data.join("user").join("skills");
+            let loader_default = Arc::new(crate::skills::Loader::new(bundled_dir, installed_dir, user_dir));
+            self.register(Box::new(crate::skill_tool::SkillTool::new(loader_default))).await;
+        }
+
+        // Execute tool (script execution) — registered when skill_loader and plan_tier are available
+        if let (Some(loader), Some(tier)) = (&skill_loader, &plan_tier) {
+            self.register(Box::new(crate::execute_tool::ExecuteTool::new(
+                loader.clone(),
+                tier.clone(),
+                sandbox_manager.clone(),
+            )))
+            .await;
         }
 
         // Message tool (owner notifications) — always registered (core)
-        self.register(Box::new(crate::message_tool::MessageTool::new(store))).await;
-
-        // Desktop tool (window, input, clipboard, notification, capture) — requires "desktop" permission
-        if allowed("desktop") {
-            self.register(Box::new(crate::desktop_tool::DesktopTool::new())).await;
-        }
-
-        // Settings tool (volume, brightness, wifi, bluetooth, battery) — requires "system" permission
-        if allowed("system") {
-            self.register(Box::new(crate::settings_tool::SettingsTool::new())).await;
-        }
-
-        // Spotlight tool (file search via OS index) — requires "system" permission
-        if allowed("system") {
-            self.register(Box::new(crate::spotlight_tool::SpotlightTool::new())).await;
-        }
-
-        // Tool tool (napp lifecycle + dispatch) — always registered when manager is provided
-        if let Some(manager) = napp_manager {
-            self.register(Box::new(crate::tools::ToolTool::new(manager))).await;
-        }
+        self.register(Box::new(crate::message_tool::MessageTool::new(store.clone()))).await;
 
         // Work tool (workflow lifecycle + execution) — always registered when manager is provided
         if let Some(manager) = workflow_manager {
             self.register(Box::new(crate::workflows::WorkTool::new(manager))).await;
         }
+
+        // Role tool (role management: list, activate, deactivate, info, create, install) — always registered
+        {
+            let role_state = active_role.unwrap_or_else(|| {
+                std::sync::Arc::new(tokio::sync::RwLock::new(None))
+            });
+            self.register(Box::new(crate::role_tool::RoleTool::new(store, role_state))).await;
+        }
+
+        // Loop tool (NeboLoop comms: dm, channel, group, topic) — requires "loop" permission + comm plugin
+        if allowed("loop") {
+            if let Some(ref comm) = comm_plugin {
+                self.register(Box::new(crate::loop_tool::LoopTool::new(comm.clone()))).await;
+            } else {
+                // Register a stub so the tool appears in /integrations/tools even before NeboLoop connects
+                self.register(Box::new(LoopStubTool)).await;
+            }
+        }
+    }
+}
+
+/// Stub loop tool registered when NeboLoop is not yet connected.
+/// Ensures the tool appears in /integrations/tools (10/10) even pre-connect.
+struct LoopStubTool;
+
+impl DynTool for LoopStubTool {
+    fn name(&self) -> &str {
+        "loop"
+    }
+
+    fn description(&self) -> String {
+        "NeboLoop communication — send DMs, manage channels, groups, and topics".to_string()
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "resource": {
+                    "type": "string",
+                    "enum": ["dm", "channel", "group", "topic"],
+                    "description": "Communication resource"
+                },
+                "action": {
+                    "type": "string",
+                    "description": "Action to perform"
+                }
+            },
+            "required": ["action"]
+        })
+    }
+
+    fn requires_approval(&self) -> bool {
+        false
+    }
+
+    fn execute_dyn<'a>(
+        &'a self,
+        _ctx: &'a ToolContext,
+        _input: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
+        Box::pin(async move {
+            ToolResult::error("NeboLoop is not connected. Connect to NeboLoop first to use communication features.")
+        })
     }
 }
 
@@ -433,45 +507,56 @@ fn tool_correction(name: &str) -> String {
         "webfetch" | "web_fetch" => {
             "INSTEAD USE: web(action: \"fetch\", url: \"https://...\")".to_string()
         }
-        "read" => {
-            "INSTEAD USE: system(resource: \"file\", action: \"read\", path: \"/path/to/file\")"
-                .to_string()
+        "read" | "file" => {
+            "INSTEAD USE: os(resource: \"file\", action: \"read\", path: \"/path/to/file\")".to_string()
         }
         "write" => {
-            "INSTEAD USE: system(resource: \"file\", action: \"write\", path: \"/path\", content: \"...\")"
-                .to_string()
+            "INSTEAD USE: os(resource: \"file\", action: \"write\", path: \"/path\", content: \"...\")".to_string()
         }
         "edit" => {
-            "INSTEAD USE: system(resource: \"file\", action: \"edit\", path: \"/path\", old_string: \"...\", new_string: \"...\")"
-                .to_string()
+            "INSTEAD USE: os(resource: \"file\", action: \"edit\", path: \"/path\", old_string: \"...\", new_string: \"...\")".to_string()
         }
         "grep" => {
-            "INSTEAD USE: system(resource: \"file\", action: \"grep\", pattern: \"...\", path: \"/dir\")"
-                .to_string()
+            "INSTEAD USE: os(resource: \"file\", action: \"grep\", pattern: \"...\", path: \"/dir\")".to_string()
         }
         "glob" => {
-            "INSTEAD USE: system(resource: \"file\", action: \"glob\", pattern: \"**/*.go\")"
-                .to_string()
+            "INSTEAD USE: os(resource: \"file\", action: \"glob\", pattern: \"**/*.go\")".to_string()
         }
-        "bash" => {
-            "INSTEAD USE: system(resource: \"shell\", action: \"exec\", command: \"...\")"
-                .to_string()
+        "bash" | "shell" => {
+            "INSTEAD USE: os(resource: \"shell\", action: \"exec\", command: \"...\")".to_string()
         }
-        "file" => {
-            "INSTEAD USE: system(resource: \"file\", action: \"read\", path: \"...\") — file operations are under the system tool"
-                .to_string()
+        "system" => {
+            "INSTEAD USE: os(resource: \"file\", action: \"read\", ...) or os(resource: \"shell\", action: \"exec\", ...) — system is now os".to_string()
         }
-        "shell" => {
-            "INSTEAD USE: system(resource: \"shell\", action: \"exec\", command: \"...\") — shell operations are under the system tool"
-                .to_string()
+        "bot" => {
+            "INSTEAD USE: agent(resource: \"memory\", action: \"recall\", ...) — bot is now agent".to_string()
         }
-        "app" | "napp" | "install" | "package" => {
-            "INSTEAD USE: tool(action: \"list\") to see installed tools, tool(action: \"install\", code: \"TOOL-XXXX-XXXX\") to install, or tool(resource: \"tool-name\", action: \"...\") to dispatch"
-                .to_string()
+        "desktop" => {
+            "INSTEAD USE: os(resource: \"window\", action: \"list\") or os(resource: \"capture\", action: \"screenshot\") — desktop is now under os".to_string()
+        }
+        "app" => {
+            "INSTEAD USE: os(resource: \"app\", action: \"launch\", app: \"...\") — app is now under os".to_string()
+        }
+        "settings" => {
+            "INSTEAD USE: os(resource: \"settings\", action: \"volume\", value: 50) — settings is now under os".to_string()
+        }
+        "music" => {
+            "INSTEAD USE: os(resource: \"music\", action: \"play\") — music is now under os".to_string()
+        }
+        "keychain" => {
+            "INSTEAD USE: os(resource: \"keychain\", action: \"get\", service: \"...\") — keychain is now under os".to_string()
+        }
+        "spotlight" => {
+            "INSTEAD USE: os(resource: \"search\", action: \"search\", query: \"...\") — spotlight is now under os".to_string()
+        }
+        "organizer" => {
+            "INSTEAD USE: os(resource: \"mail\", action: \"unread\") or os(resource: \"calendar\", action: \"today\") — organizer is now under os".to_string()
+        }
+        "napp" | "install" | "package" => {
+            "INSTEAD USE: skill(action: \"catalog\") to see available skills, skill(action: \"install\", code: \"SKILL-XXXX-XXXX\") to install".to_string()
         }
         "workflow" | "automation" | "work_flow" => {
-            "INSTEAD USE: work(action: \"list\") to see workflows, work(resource: \"name\", action: \"run\") to run, or work(action: \"install\", code: \"WORK-XXXX-XXXX\") to install"
-                .to_string()
+            "INSTEAD USE: work(action: \"list\") to see workflows, work(resource: \"name\", action: \"run\") to run".to_string()
         }
         _ => "Check your available tools and use the correct name.".to_string(),
     }
@@ -491,9 +576,13 @@ mod tests {
 
     #[test]
     fn test_tool_correction() {
-        assert!(tool_correction("read").contains("system"));
-        assert!(tool_correction("bash").contains("system"));
+        assert!(tool_correction("read").contains("os"));
+        assert!(tool_correction("bash").contains("os"));
         assert!(tool_correction("websearch").contains("web"));
+        assert!(tool_correction("system").contains("os"));
+        assert!(tool_correction("bot").contains("agent"));
+        assert!(tool_correction("desktop").contains("os"));
+        assert!(tool_correction("music").contains("os"));
         assert!(tool_correction("unknown_tool").contains("Check your available tools"));
     }
 }

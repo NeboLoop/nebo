@@ -45,7 +45,7 @@ pub async fn create_workflow(
         .ok_or_else(|| to_error_response(types::NeboError::Validation("definition required".into())))?;
 
     // Validate the workflow definition
-    let def = workflow::parser::parse_workflow(definition)
+    let _def = workflow::parser::parse_workflow(definition)
         .map_err(|e| to_error_response(types::NeboError::Validation(e.to_string())))?;
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -59,15 +59,37 @@ pub async fn create_workflow(
         .create_workflow(&id, code, name, version, definition, skill_md, manifest)
         .map_err(to_error_response)?;
 
-    // Register triggers (cron schedules)
-    workflow::triggers::register_triggers(&def, &state.store);
+    // Write workflow.json to user/workflows/{name}/ for filesystem-based loading
+    if let Ok(user_dir) = config::user_dir() {
+        let wf_dir = user_dir.join("workflows").join(name);
+        if std::fs::create_dir_all(&wf_dir).is_ok() {
+            let json_path = wf_dir.join("workflow.json");
+            if std::fs::write(&json_path, definition).is_ok() {
+                let _ = state.store.set_workflow_napp_path(&id, &wf_dir.to_string_lossy());
+            }
+        }
+    }
+
+    // Triggers are now role-owned (via role.json), not workflow-level
 
     state.hub.broadcast(
         "workflow_installed",
         serde_json::json!({ "workflowId": wf.id, "name": wf.name }),
     );
 
-    Ok(Json(serde_json::json!({ "workflow": wf })))
+    // Cascade: resolve workflow deps
+    let deps = crate::deps::extract_workflow_deps(&_def);
+    let cascade = if !deps.is_empty() {
+        let mut visited = std::collections::HashSet::new();
+        Some(crate::deps::resolve_cascade(&state, deps, &mut visited).await)
+    } else {
+        None
+    };
+
+    Ok(Json(serde_json::json!({
+        "workflow": wf,
+        "cascade": cascade,
+    })))
 }
 
 /// GET /workflows/{id}
@@ -102,17 +124,13 @@ pub async fn update_workflow(
     let manifest = body["manifest"].as_str().or(existing.manifest.as_deref());
 
     // Validate definition if changed
-    let def = workflow::parser::parse_workflow(definition)
+    let _def = workflow::parser::parse_workflow(definition)
         .map_err(|e| to_error_response(types::NeboError::Validation(e.to_string())))?;
 
     state
         .store
         .update_workflow(&id, name, version, definition, skill_md, manifest)
         .map_err(to_error_response)?;
-
-    // Re-register triggers
-    workflow::triggers::unregister_triggers(&def.id, &state.store);
-    workflow::triggers::register_triggers(&def, &state.store);
 
     let updated = state
         .store
@@ -137,11 +155,24 @@ pub async fn delete_workflow(
     // Unregister triggers
     workflow::triggers::unregister_triggers(&id, &state.store);
 
-    // Delete bindings then workflow
+    // Delete runs, bindings, then workflow
+    if let Err(e) = state.store.delete_workflow_runs(&id) {
+        tracing::warn!(workflow_id = %id, error = %e, "failed to delete workflow runs");
+    }
     if let Err(e) = state.store.delete_workflow_bindings(&id) {
         tracing::warn!(workflow_id = %id, error = %e, "failed to delete workflow bindings");
     }
     state.store.delete_workflow(&id).map_err(to_error_response)?;
+
+    // Clean up filesystem directory if it exists
+    if let Some(ref napp_path) = wf.napp_path {
+        let path = std::path::Path::new(napp_path);
+        if path.exists() {
+            if let Err(e) = std::fs::remove_dir_all(path) {
+                tracing::warn!(workflow_id = %id, path = %napp_path, error = %e, "failed to remove workflow directory");
+            }
+        }
+    }
 
     state.hub.broadcast(
         "workflow_uninstalled",
@@ -172,9 +203,15 @@ pub async fn toggle_workflow(
 pub async fn run_workflow(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(body): Json<serde_json::Value>,
+    body: axum::body::Bytes,
 ) -> HandlerResult<serde_json::Value> {
-    let inputs = body.get("inputs").cloned().unwrap_or(serde_json::json!({}));
+    let parsed: serde_json::Value = if body.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| to_error_response(types::NeboError::Validation(format!("invalid JSON: {}", e))))?
+    };
+    let inputs = parsed.get("inputs").cloned().unwrap_or(serde_json::json!({}));
 
     let run_id = state
         .workflow_manager
@@ -233,6 +270,30 @@ pub async fn get_run(
     })))
 }
 
+/// POST /workflows/{id}/runs/{runId}/cancel
+pub async fn cancel_run(
+    State(state): State<AppState>,
+    Path((id, run_id)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    // Verify run belongs to requested workflow
+    let run = state
+        .store
+        .get_workflow_run(&run_id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    if run.workflow_id != id {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+
+    state
+        .workflow_manager
+        .cancel(&run_id)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(e)))?;
+
+    Ok(Json(serde_json::json!({ "cancelled": true, "runId": run_id })))
+}
+
 /// GET /workflows/{id}/bindings
 pub async fn list_bindings(
     State(state): State<AppState>,
@@ -270,9 +331,10 @@ pub async fn update_bindings(
         let interface_name = b["interfaceName"]
             .as_str()
             .ok_or_else(|| to_error_response(types::NeboError::Validation("interfaceName required".into())))?;
-        let tool_code = b["toolCode"]
+        let tool_code = b["tool"]
             .as_str()
-            .ok_or_else(|| to_error_response(types::NeboError::Validation("toolCode required".into())))?;
+            .or_else(|| b["toolCode"].as_str())
+            .ok_or_else(|| to_error_response(types::NeboError::Validation("tool required".into())))?;
         state
             .store
             .upsert_workflow_binding(&id, interface_name, tool_code)

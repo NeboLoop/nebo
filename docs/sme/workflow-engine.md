@@ -124,7 +124,7 @@ pub struct Activity {
     pub id: String,                         // "lookup"
     pub intent: String,                     // "Find existing contact record"
     #[serde(default)]
-    pub skills: Vec<String>,                // ["SKILL-sales-qualification"]
+    pub skills: Vec<String>,                // ["SKIL-sales-qualification"]
     pub tools: Vec<ToolRef>,                // code or interface binding
     pub model: String,                      // "haiku", "sonnet", "opus"
     pub steps: Vec<String>,                 // natural-language instructions
@@ -587,7 +587,7 @@ fn detect_install_code(input: &str) -> Option<InstallCode> {
     // Existing codes (from Go)
     if trimmed.starts_with("NEBO-") && trimmed.len() == 19 { return Some(NeboLoop(trimmed)); }
     if trimmed.starts_with("LOOP-") && trimmed.len() == 19 { return Some(Loop(trimmed)); }
-    if trimmed.starts_with("SKILL-") && trimmed.len() == 20 { return Some(Skill(trimmed)); }
+    if trimmed.starts_with("SKIL-") && trimmed.len() == 20 { return Some(Skill(trimmed)); }
 
     // Renamed: APP- → TOOL- (support both for backwards compat)
     if trimmed.starts_with("APP-") && trimmed.len() == 18 { return Some(Tool(trimmed)); }

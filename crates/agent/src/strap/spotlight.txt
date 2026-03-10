@@ -1,0 +1,7 @@
+### os — File Search (resource: search)
+USE THIS when: user wants to search for files by name, content, or metadata using the OS search index.
+
+- os(resource: "search", action: "search", query: "budget 2024") — Search for files matching query
+- os(resource: "search", action: "search", query: "*.pdf", dir: "~/Documents") — Search within a directory
+
+Uses Spotlight (macOS), plocate/find (Linux), or Windows Search (Windows) for fast indexed search.

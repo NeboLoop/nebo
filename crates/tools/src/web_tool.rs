@@ -8,19 +8,21 @@ use crate::registry::{DynTool, ToolResult};
 pub struct WebTool {
     client: reqwest::Client,
     browser: Option<Arc<browser::Manager>>,
+    store: Option<Arc<db::Store>>,
 }
 
 impl WebTool {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .user_agent("Nebo/1.0")
+            .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             client,
             browser: None,
+            store: None,
         }
     }
 
@@ -29,9 +31,14 @@ impl WebTool {
         self
     }
 
+    pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
     fn infer_resource(&self, action: &str) -> &str {
         match action {
-            "fetch" | "get" | "post" | "put" | "delete" | "head" => "http",
+            "fetch" | "get" | "post" | "put" | "delete" | "head" | "sanitize" => "http",
             "search" | "query" => "search",
             "navigate" | "snapshot" | "read_page" | "click" | "double_click" | "triple_click"
             | "right_click" | "fill" | "form_input" | "type" | "screenshot" | "evaluate"
@@ -54,6 +61,39 @@ impl WebTool {
         // SSRF protection: block private IPs
         if is_private_url(url) {
             return ToolResult::error("Cannot fetch private/internal URLs (SSRF protection)");
+        }
+
+        // Sanitize action: fetch HTML, extract visible text, chunk for LLM context
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("fetch");
+        if action == "sanitize" {
+            let resp = match self.client.get(url).send().await {
+                Ok(r) => r,
+                Err(e) => return ToolResult::error(format!("HTTP request failed: {}", e)),
+            };
+            let status = resp.status().as_u16();
+            let html = match resp.text().await {
+                Ok(t) => t,
+                Err(e) => return ToolResult::error(format!("Failed to read response body: {}", e)),
+            };
+            let clean = sanitize_html(&html);
+            let max_chars = input
+                .get("chunk_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(4000) as usize;
+            let chunks = chunk_text(&clean, max_chars);
+            let total = chunks.len();
+            let chunk_idx = input
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            if total == 0 {
+                return ToolResult::ok(format!("HTTP {} — Status: {}\n\n(no visible text)", url, status));
+            }
+            let idx = chunk_idx.min(total - 1);
+            return ToolResult::ok(format!(
+                "HTTP {} — Status: {}\nChunk {}/{} ({} chars each)\n\n{}",
+                url, status, idx + 1, total, max_chars, chunks[idx]
+            ));
         }
 
         let method = input
@@ -145,31 +185,116 @@ impl WebTool {
             None => return ToolResult::error("query is required for search"),
         };
 
-        // Use DuckDuckGo HTML search (no API key needed)
+        // 1. Try BYOK API providers (check auth_profiles for search-* providers)
+        if let Some(store) = &self.store {
+            for provider in ["search-brave", "search-tavily", "search-google", "search-serpapi"] {
+                if let Ok(profiles) = store.list_active_auth_profiles_by_provider(provider) {
+                    if let Some(profile) = profiles.first() {
+                        match self.search_via_api(provider, &profile.api_key, query, profile.metadata.as_deref().unwrap_or("")).await {
+                            Ok(results) if !results.is_empty() => {
+                                return format_search_results(query, &results);
+                            }
+                            Err(e) => {
+                                tracing::warn!(provider, error = %e, "BYOK search failed, trying next");
+                            }
+                            _ => {} // empty results, try next
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback: Brave HTML scraping (no API key needed)
+        self.search_brave_html(query).await
+    }
+
+    /// Dispatch to the correct BYOK search API provider.
+    async fn search_via_api(&self, provider: &str, api_key: &str, query: &str, metadata: &str) -> Result<Vec<SearchResult>, String> {
+        match provider {
+            "search-brave" => self.search_brave_api(api_key, query).await,
+            "search-tavily" => self.search_tavily(api_key, query).await,
+            "search-google" => self.search_google_cse(api_key, query, metadata).await,
+            "search-serpapi" => self.search_serpapi(api_key, query).await,
+            _ => Err(format!("unknown search provider: {}", provider)),
+        }
+    }
+
+    /// Brave Search API (requires X-Subscription-Token header).
+    async fn search_brave_api(&self, api_key: &str, query: &str) -> Result<Vec<SearchResult>, String> {
+        let url = format!(
+            "https://api.search.brave.com/res/v1/web/search?q={}&count=10",
+            urlencoding::encode(query)
+        );
+        let resp = self.client.get(&url)
+            .header("X-Subscription-Token", api_key)
+            .header("Accept", "application/json")
+            .send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("Brave API returned status {}", resp.status()));
+        }
+        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(parse_brave_api_results(&body))
+    }
+
+    /// Tavily Search API (api_key in JSON body).
+    async fn search_tavily(&self, api_key: &str, query: &str) -> Result<Vec<SearchResult>, String> {
+        let body = serde_json::json!({ "api_key": api_key, "query": query, "max_results": 10 });
+        let resp = self.client.post("https://api.tavily.com/search")
+            .json(&body)
+            .send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("Tavily API returned status {}", resp.status()));
+        }
+        let result: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(parse_tavily_results(&result))
+    }
+
+    /// Google Custom Search Engine API (key + cx params).
+    async fn search_google_cse(&self, api_key: &str, query: &str, metadata: &str) -> Result<Vec<SearchResult>, String> {
+        let cx = serde_json::from_str::<serde_json::Value>(metadata).ok()
+            .and_then(|m| m["cx"].as_str().map(String::from))
+            .ok_or("Google CSE requires 'cx' in metadata")?;
+        let url = format!(
+            "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}",
+            api_key, cx, urlencoding::encode(query)
+        );
+        let resp = self.client.get(&url).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("Google CSE API returned status {}", resp.status()));
+        }
+        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(parse_google_cse_results(&body))
+    }
+
+    /// SerpAPI (api_key as query param).
+    async fn search_serpapi(&self, api_key: &str, query: &str) -> Result<Vec<SearchResult>, String> {
+        let url = format!(
+            "https://serpapi.com/search.json?api_key={}&q={}&num=10",
+            api_key, urlencoding::encode(query)
+        );
+        let resp = self.client.get(&url).send().await.map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("SerpAPI returned status {}", resp.status()));
+        }
+        let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(parse_serpapi_results(&body))
+    }
+
+    /// Fallback: Brave HTML scraping (no API key needed).
+    async fn search_brave_html(&self, query: &str) -> ToolResult {
         let search_url = format!(
-            "https://html.duckduckgo.com/html/?q={}",
+            "https://search.brave.com/search?q={}",
             urlencoding::encode(query)
         );
 
         match self.client.get(&search_url).send().await {
             Ok(resp) => match resp.text().await {
                 Ok(html) => {
-                    let results = parse_ddg_results(&html);
+                    let results = parse_brave_results(&html);
                     if results.is_empty() {
                         ToolResult::ok(format!("No results found for: {}", query))
                     } else {
-                        let formatted: Vec<String> = results
-                            .iter()
-                            .enumerate()
-                            .map(|(i, r)| {
-                                format!("{}. {}\n   {}\n   {}", i + 1, r.title, r.url, r.snippet)
-                            })
-                            .collect();
-                        ToolResult::ok(format!(
-                            "Search results for: {}\n\n{}",
-                            query,
-                            formatted.join("\n\n")
-                        ))
+                        format_search_results(query, &results)
                     }
                 }
                 Err(e) => ToolResult::error(format!("Failed to read search response: {}", e)),
@@ -232,6 +357,57 @@ impl WebTool {
         }
 
         self.handle_browser_via_extension(&executor, action, input).await
+    }
+
+    /// Handle devtools actions via the Chrome extension (CDP bridge).
+    async fn handle_devtools(&self, input: &serde_json::Value) -> ToolResult {
+        let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+
+        let manager = match &self.browser {
+            Some(m) => m,
+            None => {
+                return ToolResult::error(
+                    "DevTools requires browser extension. Use web(action: \"status\") to check connection."
+                );
+            }
+        };
+
+        let executor = match manager.executor() {
+            Some(e) => e,
+            None => {
+                return ToolResult::error("Browser automation not configured.");
+            }
+        };
+
+        if !executor.is_connected() {
+            return ToolResult::error("Browser extension not connected.");
+        }
+
+        // Forward devtools actions to the extension
+        let tool_name = match action {
+            "console" => "devtools_console",
+            "source" => "devtools_source",
+            "storage" => "devtools_storage",
+            "dom" => "devtools_dom",
+            "cookies" => "devtools_cookies",
+            "performance" => "devtools_performance",
+            _ => {
+                return ToolResult::error(format!(
+                    "Unknown devtools action '{}'. Available: console, source, storage, dom, cookies, performance",
+                    action
+                ));
+            }
+        };
+
+        let args = build_extension_args(action, input);
+        match executor.execute(tool_name, &args).await {
+            Ok(result) => {
+                let text = serde_json::to_string_pretty(&result)
+                    .unwrap_or_else(|_| format!("{}", result));
+                ToolResult::ok(text)
+            }
+            Err(e) => ToolResult::error(format!("DevTools action failed: {}", e)),
+        }
     }
 
     /// Handle browser actions via the Chrome extension (native messaging).
@@ -315,16 +491,19 @@ impl DynTool for WebTool {
     }
 
     fn description(&self) -> String {
-        "Web operations — HTTP requests, search, and browser automation.\n\n\
+        "Web operations — HTTP requests, search, browser automation, and devtools.\n\n\
          Resources and Actions:\n\
-         - http: fetch (HTTP request with any method)\n\
-         - search: query (Web search via DuckDuckGo)\n\
-         - browser: navigate, read_page, click, double_click, triple_click, right_click, hover, fill, form_input, type, select, screenshot, scroll, scroll_to, press, drag, go_back, go_forward, wait, evaluate\n\n\
+         - http: fetch (HTTP request with any method), sanitize (extract visible text and chunk for LLM)\n\
+         - search: query (Web search via Brave Search)\n\
+         - browser: navigate, read_page, click, double_click, triple_click, right_click, hover, fill, form_input, type, select, screenshot, scroll, scroll_to, press, drag, go_back, go_forward, wait, evaluate\n\
+         - devtools: console, source, storage, dom, cookies, performance (Chrome DevTools Protocol via extension)\n\n\
          Browser workflow: read_page returns an accessibility tree with element refs. Use refs for click/fill/select.\n\
          For React/modern sites: use click on field first, then type to fill (character-by-character via real key events).\n\
          triple_click selects all text in a field, then type to replace it.\n\n\
          Examples:\n  \
          web(action: \"fetch\", url: \"https://example.com\")\n  \
+         web(action: \"sanitize\", url: \"https://example.com\") — extract text, chunked\n  \
+         web(action: \"sanitize\", url: \"https://example.com\", chunk_size: 8000) — larger chunks\n  \
          web(action: \"search\", query: \"rust async programming\")\n  \
          web(action: \"navigate\", url: \"https://example.com\")\n  \
          web(action: \"read_page\", filter: \"interactive\")\n  \
@@ -335,7 +514,10 @@ impl DynTool for WebTool {
          web(action: \"hover\", ref: \"ref_5\")\n  \
          web(action: \"scroll_to\", ref: \"ref_10\")\n  \
          web(action: \"press\", key: \"cmd+a\") — key chord\n  \
-         web(action: \"press\", key: \"ArrowDown ArrowDown Enter\") — key sequence"
+         web(action: \"press\", key: \"ArrowDown ArrowDown Enter\") — key sequence\n  \
+         web(action: \"console\") — read browser console logs\n  \
+         web(action: \"cookies\") — inspect cookies\n  \
+         web(action: \"performance\") — page performance metrics"
             .to_string()
     }
 
@@ -351,12 +533,14 @@ impl DynTool for WebTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["fetch", "get", "post", "put", "delete", "head", "search", "query",
+                    "enum": ["fetch", "get", "post", "put", "delete", "head", "sanitize",
+                             "search", "query",
                              "navigate", "read_page", "snapshot", "click", "double_click",
                              "triple_click", "right_click", "hover", "fill", "form_input",
                              "type", "select", "screenshot", "scroll", "scroll_to", "press",
                              "key", "drag", "go_back", "go_forward", "wait", "evaluate",
-                             "list_tabs", "new_tab", "close_tab", "status"]
+                             "list_tabs", "new_tab", "close_tab", "status",
+                             "console", "source", "storage", "dom", "cookies", "performance"]
                 },
                 "url": {
                     "type": "string",
@@ -457,6 +641,10 @@ impl DynTool for WebTool {
                 "duration": {
                     "type": "number",
                     "description": "Seconds to wait (for wait action, max 30)"
+                },
+                "chunk_size": {
+                    "type": "integer",
+                    "description": "Max characters per chunk for sanitize (default 4000)"
                 }
             },
             "required": ["action"]
@@ -486,16 +674,17 @@ impl DynTool for WebTool {
 
             if resource.is_empty() {
                 return ToolResult::error(
-                    "Resource is required. Available: http, search, browser",
+                    "Resource is required. Available: http, search, browser, devtools",
                 );
             }
 
             match resource.as_str() {
                 "http" => self.handle_http(&input).await,
                 "search" => self.handle_search(&input).await,
-                "browser" | "devtools" => self.handle_browser(&input).await,
+                "browser" => self.handle_browser(&input).await,
+                "devtools" => self.handle_devtools(&input).await,
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: http, search, browser",
+                    "Resource {:?} not available. Available: http, search, browser, devtools",
                     other
                 )),
             }
@@ -524,6 +713,10 @@ fn build_extension_args(action: &str, input: &serde_json::Value) -> serde_json::
         "wait" => vec!["ms", "duration"],
         "evaluate" => vec!["expression", "text"],
         "snapshot" | "read_page" => vec!["filter", "depth", "maxChars", "refId"],
+        // DevTools actions — forward url, selector, expression, and filter params
+        "console" | "source" | "storage" | "dom" | "cookies" | "performance" => {
+            vec!["url", "selector", "expression", "filter"]
+        }
         _ => vec![],
     };
 
@@ -616,39 +809,150 @@ struct SearchResult {
     snippet: String,
 }
 
-/// Parse DuckDuckGo HTML search results.
-fn parse_ddg_results(html: &str) -> Vec<SearchResult> {
+/// Format search results into a ToolResult.
+fn format_search_results(query: &str, results: &[SearchResult]) -> ToolResult {
+    let formatted: Vec<String> = results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("{}. {}\n   {}\n   {}", i + 1, r.title, r.url, r.snippet))
+        .collect();
+    ToolResult::ok(format!(
+        "Search results for: {}\n\n{}",
+        query,
+        formatted.join("\n\n")
+    ))
+}
+
+/// Parse Brave Search API JSON response.
+fn parse_brave_api_results(body: &serde_json::Value) -> Vec<SearchResult> {
+    let empty = vec![];
+    let results = body.get("web")
+        .and_then(|w| w.get("results"))
+        .and_then(|r| r.as_array())
+        .unwrap_or(&empty);
+    results.iter().filter_map(|r| {
+        let title = r.get("title").and_then(|v| v.as_str())?;
+        let url = r.get("url").and_then(|v| v.as_str())?;
+        let snippet = r.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        Some(SearchResult { title: title.to_string(), url: url.to_string(), snippet: snippet.to_string() })
+    }).take(10).collect()
+}
+
+/// Parse Tavily Search API JSON response.
+fn parse_tavily_results(body: &serde_json::Value) -> Vec<SearchResult> {
+    let empty = vec![];
+    let results = body.get("results").and_then(|r| r.as_array()).unwrap_or(&empty);
+    results.iter().filter_map(|r| {
+        let title = r.get("title").and_then(|v| v.as_str())?;
+        let url = r.get("url").and_then(|v| v.as_str())?;
+        let snippet = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        Some(SearchResult { title: title.to_string(), url: url.to_string(), snippet: snippet.to_string() })
+    }).take(10).collect()
+}
+
+/// Parse Google Custom Search Engine API JSON response.
+fn parse_google_cse_results(body: &serde_json::Value) -> Vec<SearchResult> {
+    let empty = vec![];
+    let items = body.get("items").and_then(|r| r.as_array()).unwrap_or(&empty);
+    items.iter().filter_map(|r| {
+        let title = r.get("title").and_then(|v| v.as_str())?;
+        let url = r.get("link").and_then(|v| v.as_str())?;
+        let snippet = r.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+        Some(SearchResult { title: title.to_string(), url: url.to_string(), snippet: snippet.to_string() })
+    }).take(10).collect()
+}
+
+/// Parse SerpAPI JSON response.
+fn parse_serpapi_results(body: &serde_json::Value) -> Vec<SearchResult> {
+    let empty = vec![];
+    let results = body.get("organic_results").and_then(|r| r.as_array()).unwrap_or(&empty);
+    results.iter().filter_map(|r| {
+        let title = r.get("title").and_then(|v| v.as_str())?;
+        let url = r.get("link").and_then(|v| v.as_str())?;
+        let snippet = r.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+        Some(SearchResult { title: title.to_string(), url: url.to_string(), snippet: snippet.to_string() })
+    }).take(10).collect()
+}
+
+/// Parse Brave Search HTML results.
+fn parse_brave_results(html: &str) -> Vec<SearchResult> {
     let mut results = Vec::new();
 
-    // DuckDuckGo HTML results are in <a class="result__a"> tags
-    // with <a class="result__snippet"> for snippets
-    for chunk in html.split("class=\"result__body\"") {
-        if results.len() >= 10 {
-            break;
+    // Brave wraps each result in a div with id="N-web" or similar data attributes.
+    // Titles are in <div class="title search-snippet-title ...">
+    // URLs are in <cite class="snippet-url ...">
+    // Descriptions are in <div class="snippet-description ...">
+    // We split by snippet-url to isolate each result block.
+    let chunks: Vec<&str> = html.split("snippet-url").collect();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        if i == 0 || results.len() >= 10 {
+            continue;
         }
 
-        let title = extract_between(chunk, "class=\"result__a\"", "</a>")
-            .map(|s| strip_html(&s))
+        // Extract URL from the cite tag content (e.g., "neboloop.com › blog")
+        // But we need the actual href — look for href in the nearby anchor.
+        // The cite contains display URL; the actual link is in the title's parent <a>.
+        let display_url = extract_between(chunk, ">", "<")
+            .map(|s| strip_html(&s).trim().to_string())
             .unwrap_or_default();
 
-        let url = extract_attr(chunk, "class=\"result__a\"", "href")
-            .unwrap_or_default();
+        // Look for the title in the next chunk section (search-snippet-title)
+        let title = if let Some(title_chunk) = chunk.split("search-snippet-title").nth(1) {
+            extract_between(title_chunk, ">", "</div>")
+                .map(|s| strip_html(&s).trim().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
 
-        let snippet = extract_between(chunk, "class=\"result__snippet\"", "</a>")
-            .or_else(|| extract_between(chunk, "class=\"result__snippet\"", "</td>"))
-            .map(|s| strip_html(&s))
+        // Look for description (snippet-description)
+        let snippet = if let Some(desc_chunk) = chunk.split("snippet-description").nth(1) {
+            extract_between(desc_chunk, ">", "</div>")
+                .map(|s| strip_html(&s).trim().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        // Extract actual href from nearby anchor tag
+        let url = extract_attr_forward(chunk, "href")
+            .or_else(|| {
+                // Try to reconstruct URL from display URL
+                let clean = display_url.replace(" › ", "/");
+                if !clean.is_empty() && !clean.contains(' ') {
+                    Some(format!("https://{}", clean))
+                } else {
+                    None
+                }
+            })
             .unwrap_or_default();
 
         if !title.is_empty() && !url.is_empty() {
             results.push(SearchResult {
-                title: title.trim().to_string(),
-                url: clean_ddg_url(&url),
-                snippet: snippet.trim().to_string(),
+                title,
+                url,
+                snippet,
             });
         }
     }
 
     results
+}
+
+/// Extract the first href="..." value found in a chunk.
+fn extract_attr_forward(html: &str, attr: &str) -> Option<String> {
+    let pattern = format!("{}=\"", attr);
+    let idx = html.find(&pattern)?;
+    let after = &html[idx + pattern.len()..];
+    let end = after.find('"')?;
+    let val = &after[..end];
+    // Skip javascript: and # links
+    if val.starts_with("http") {
+        Some(val.to_string())
+    } else {
+        None
+    }
 }
 
 fn extract_between(html: &str, start_marker: &str, end_marker: &str) -> Option<String> {
@@ -675,15 +979,36 @@ fn extract_attr(html: &str, marker: &str, attr: &str) -> Option<String> {
     Some(after_attr[..end_quote].to_string())
 }
 
-fn clean_ddg_url(url: &str) -> String {
-    // DuckDuckGo wraps URLs in redirect: //duckduckgo.com/l/?uddg=ENCODED_URL
-    if let Some(idx) = url.find("uddg=") {
-        let encoded = &url[idx + 5..];
-        let end = encoded.find('&').unwrap_or(encoded.len());
-        urlencoding::decode(&encoded[..end])
-            .unwrap_or_else(|_| encoded[..end].into())
-            .to_string()
-    } else {
-        url.to_string()
-    }
+/// Extract visible text from HTML, stripping tags, scripts, styles,
+/// and collapsing blank lines.
+fn sanitize_html(html: &str) -> String {
+    let stripped = strip_html(html);
+    stripped
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
+
+/// Chunk text into LLM-friendly segments by line boundaries.
+fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
+    let max_chars = if max_chars == 0 { 4000 } else { max_chars };
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if current.len() + line.len() + 1 > max_chars && !current.is_empty() {
+            chunks.push(current.clone());
+            current.clear();
+        }
+        if !current.is_empty() {
+            current.push('\n');
+        }
+        current.push_str(line);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+

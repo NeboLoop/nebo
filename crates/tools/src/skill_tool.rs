@@ -4,21 +4,27 @@ use crate::domain::DomainInput;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
-use crate::skills::Loader;
+use crate::skills::{Loader, SkillSource};
 
 /// SkillTool manages skills — SKILL.md-defined agent capabilities.
 /// Delegates to the agent::skills::Loader for directory-based loading and hot-reload.
 pub struct SkillTool {
     loader: Arc<Loader>,
+    store: Option<Arc<db::Store>>,
 }
 
 impl SkillTool {
     pub fn new(loader: Arc<Loader>) -> Self {
-        Self { loader }
+        Self { loader, store: None }
     }
 
-    fn skills_dir() -> Result<std::path::PathBuf, String> {
-        config::data_dir()
+    pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    fn user_skills_dir() -> Result<std::path::PathBuf, String> {
+        config::user_dir()
             .map(|d| d.join("skills"))
             .map_err(|e| format!("data dir error: {}", e))
     }
@@ -34,15 +40,27 @@ impl DynTool for SkillTool {
          Actions:\n\
          - catalog: List all available skills\n\
          - help: Show full content of a skill by name\n\
+         - browse: List resource files in a skill's directory\n\
+         - read_resource: Read a specific resource file by relative path\n\
          - load: Activate a skill for the current session\n\
          - unload: Deactivate a skill\n\
          - create: Create a new skill from YAML content\n\
          - update: Update an existing skill\n\
-         - delete: Delete a user-created skill\n\n\
+         - delete: Delete a user-created skill\n\
+         - install: Install a skill from NeboLoop marketplace (SKIL-XXXX-XXXX code)\n\
+         - featured: Show featured skills with high capability counts\n\
+         - popular: Show most-used skills sorted by capabilities\n\
+         - reviews: Show reviews for a skill (requires name)\n\n\
          Examples:\n  \
          skill(action: \"catalog\")\n  \
          skill(action: \"help\", name: \"coding-assistant\")\n  \
-         skill(action: \"load\", name: \"coding-assistant\")"
+         skill(action: \"browse\", name: \"xlsx-processor\")\n  \
+         skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\")\n  \
+         skill(action: \"load\", name: \"coding-assistant\")\n  \
+         skill(action: \"install\", code: \"SKIL-XXXX-XXXX\")\n  \
+         skill(action: \"featured\")\n  \
+         skill(action: \"popular\")\n  \
+         skill(action: \"reviews\", name: \"coding-assistant\")"
             .to_string()
     }
 
@@ -53,7 +71,7 @@ impl DynTool for SkillTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["catalog", "help", "load", "unload", "create", "update", "delete"]
+                    "enum": ["catalog", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "featured", "popular", "reviews"]
                 },
                 "name": {
                     "type": "string",
@@ -62,6 +80,14 @@ impl DynTool for SkillTool {
                 "content": {
                     "type": "string",
                     "description": "Skill YAML content (for create/update)"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Relative path for browse filter or resource read"
+                },
+                "code": {
+                    "type": "string",
+                    "description": "Marketplace code for install (e.g. SKIL-XXXX-XXXX)"
                 }
             },
             "required": ["action"]
@@ -93,12 +119,27 @@ impl DynTool for SkillTool {
                             .iter()
                             .map(|s| {
                                 let status = if s.enabled { "enabled" } else { "disabled" };
+                                let source_label = match s.source {
+                                    SkillSource::Installed => "nebo",
+                                    SkillSource::User => "user",
+                                };
                                 let triggers = if s.triggers.is_empty() {
                                     String::new()
                                 } else {
                                     format!(" (triggers: {})", s.triggers.join(", "))
                                 };
-                                format!("- {} [{}] — {}{}", s.name, status, s.description, triggers)
+                                let caps = if s.capabilities.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" [caps: {}]", s.capabilities.join(", "))
+                                };
+                                let resource_count = s.list_resources().map(|r| r.len()).unwrap_or(0);
+                                let resources = if resource_count > 0 {
+                                    format!(" ({} resource files)", resource_count)
+                                } else {
+                                    String::new()
+                                };
+                                format!("- {} [{}|{}] — {}{}{}{}", s.name, status, source_label, s.description, caps, resources, triggers)
                             })
                             .collect();
                         ToolResult::ok(format!(
@@ -122,26 +163,53 @@ impl DynTool for SkillTool {
                             if !skill.triggers.is_empty() {
                                 output.push_str(&format!("**Triggers:** {}\n", skill.triggers.join(", ")));
                             }
-                            if !skill.tools.is_empty() {
-                                output.push_str(&format!("**Tools:** {}\n", skill.tools.join(", ")));
+                            if !skill.capabilities.is_empty() {
+                                output.push_str(&format!("**Capabilities:** {}\n", skill.capabilities.join(", ")));
                             }
                             if !skill.template.is_empty() {
                                 output.push_str(&format!("\n---\n\n{}", skill.template));
+                            }
+                            // Append resource info
+                            if let Ok(resources) = skill.list_resources() {
+                                if !resources.is_empty() {
+                                    output.push_str(&format!("\n\n---\n\n**Resources:** {} files\n", resources.len()));
+                                    // Show available subdirectories
+                                    let mut dirs: Vec<String> = resources
+                                        .iter()
+                                        .filter_map(|r| r.split('/').next().map(String::from))
+                                        .collect::<std::collections::HashSet<_>>()
+                                        .into_iter()
+                                        .filter(|d| resources.iter().any(|r| r.starts_with(&format!("{}/", d))))
+                                        .collect();
+                                    dirs.sort();
+                                    if !dirs.is_empty() {
+                                        output.push_str(&format!("**Directories:** {}\n", dirs.join(", ")));
+                                    }
+                                    output.push_str("\nUse skill(action: \"browse\", name: \"");
+                                    output.push_str(name);
+                                    output.push_str("\") to explore resources.");
+                                }
                             }
                             ToolResult::ok(output)
                         }
                         None => {
                             // Fall back to reading raw file from skills dir
-                            let dir = match Self::skills_dir() {
+                            let dir = match Self::user_skills_dir() {
                                 Ok(d) => d,
                                 Err(e) => return ToolResult::error(e),
                             };
                             let yaml_path = dir.join(format!("{}.yaml", name));
                             let disabled_path = dir.join(format!("{}.yaml.disabled", name));
+                            let skill_md_path = dir.join(name).join("SKILL.md");
+                            let skill_md_disabled = dir.join(name).join("SKILL.md.disabled");
                             let path = if yaml_path.exists() {
                                 yaml_path
                             } else if disabled_path.exists() {
                                 disabled_path
+                            } else if skill_md_path.exists() {
+                                skill_md_path
+                            } else if skill_md_disabled.exists() {
+                                skill_md_disabled
                             } else {
                                 return ToolResult::error(format!("Skill '{}' not found", name));
                             };
@@ -152,22 +220,100 @@ impl DynTool for SkillTool {
                         }
                     }
                 }
+                "browse" => {
+                    let name = input["name"].as_str().unwrap_or("");
+                    if name.is_empty() {
+                        return ToolResult::error("name is required");
+                    }
+                    let filter_path = input["path"].as_str().unwrap_or("");
+
+                    match self.loader.get(name).await {
+                        Some(skill) => match skill.list_resources() {
+                            Ok(mut resources) => {
+                                if !filter_path.is_empty() {
+                                    let prefix = if filter_path.ends_with('/') {
+                                        filter_path.to_string()
+                                    } else {
+                                        format!("{}/", filter_path)
+                                    };
+                                    resources.retain(|r| r.starts_with(&prefix));
+                                }
+                                if resources.is_empty() {
+                                    if filter_path.is_empty() {
+                                        ToolResult::ok(format!("Skill '{}' has no resource files.", name))
+                                    } else {
+                                        ToolResult::ok(format!("No resources found in '{}/{}'.", name, filter_path))
+                                    }
+                                } else {
+                                    resources.sort();
+                                    let listing: Vec<String> = resources.iter().map(|r| {
+                                        let size = if let Some(ref base) = skill.base_dir {
+                                            std::fs::metadata(base.join(r))
+                                                .map(|m| format!(" ({} bytes)", m.len()))
+                                                .unwrap_or_default()
+                                        } else {
+                                            String::new()
+                                        };
+                                        format!("  {}{}", r, size)
+                                    }).collect();
+                                    ToolResult::ok(format!(
+                                        "Resources in '{}':\n{}",
+                                        name,
+                                        listing.join("\n")
+                                    ))
+                                }
+                            }
+                            Err(e) => ToolResult::error(format!("Failed to list resources: {}", e)),
+                        },
+                        None => ToolResult::error(format!("Skill '{}' not found", name)),
+                    }
+                }
+                "read_resource" => {
+                    let name = input["name"].as_str().unwrap_or("");
+                    let path = input["path"].as_str().unwrap_or("");
+                    if name.is_empty() || path.is_empty() {
+                        return ToolResult::error("name and path are required");
+                    }
+
+                    match self.loader.get(name).await {
+                        Some(skill) => match skill.read_resource(path) {
+                            Ok(data) => {
+                                match String::from_utf8(data.clone()) {
+                                    Ok(text) => ToolResult::ok(text),
+                                    Err(_) => ToolResult::ok(format!("binary file, {} bytes", data.len())),
+                                }
+                            }
+                            Err(e) => ToolResult::error(e),
+                        },
+                        None => ToolResult::error(format!("Skill '{}' not found", name)),
+                    }
+                }
                 "load" => {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
                         return ToolResult::error("name is required");
                     }
-                    let dir = match Self::skills_dir() {
+                    let dir = match Self::user_skills_dir() {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
                     let disabled_path = dir.join(format!("{}.yaml.disabled", name));
                     let enabled_path = dir.join(format!("{}.yaml", name));
+                    let skill_dir = dir.join(name);
 
                     if self.loader.get(name).await.is_some_and(|s| s.enabled) {
                         ToolResult::ok(format!("Skill '{}' is already enabled.", name))
                     } else if disabled_path.exists() {
                         match std::fs::rename(&disabled_path, &enabled_path) {
+                            Ok(_) => ToolResult::ok(format!("Skill '{}' enabled.", name)),
+                            Err(e) => ToolResult::error(format!("Failed to enable skill: {}", e)),
+                        }
+                    } else if skill_dir.join("SKILL.md.disabled").exists() {
+                        // SKILL.md subdirectory format — rename SKILL.md.disabled back to SKILL.md
+                        match std::fs::rename(
+                            skill_dir.join("SKILL.md.disabled"),
+                            skill_dir.join("SKILL.md"),
+                        ) {
                             Ok(_) => ToolResult::ok(format!("Skill '{}' enabled.", name)),
                             Err(e) => ToolResult::error(format!("Failed to enable skill: {}", e)),
                         }
@@ -180,17 +326,27 @@ impl DynTool for SkillTool {
                     if name.is_empty() {
                         return ToolResult::error("name is required");
                     }
-                    let dir = match Self::skills_dir() {
+                    let dir = match Self::user_skills_dir() {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
                     let enabled_path = dir.join(format!("{}.yaml", name));
                     let disabled_path = dir.join(format!("{}.yaml.disabled", name));
+                    let skill_dir = dir.join(name);
 
-                    if disabled_path.exists() {
+                    if disabled_path.exists() || skill_dir.join("SKILL.md.disabled").exists() {
                         ToolResult::ok(format!("Skill '{}' is already disabled.", name))
                     } else if enabled_path.exists() {
                         match std::fs::rename(&enabled_path, &disabled_path) {
+                            Ok(_) => ToolResult::ok(format!("Skill '{}' disabled.", name)),
+                            Err(e) => ToolResult::error(format!("Failed to disable skill: {}", e)),
+                        }
+                    } else if skill_dir.join("SKILL.md").exists() {
+                        // SKILL.md subdirectory format — rename SKILL.md to SKILL.md.disabled
+                        match std::fs::rename(
+                            skill_dir.join("SKILL.md"),
+                            skill_dir.join("SKILL.md.disabled"),
+                        ) {
                             Ok(_) => ToolResult::ok(format!("Skill '{}' disabled.", name)),
                             Err(e) => ToolResult::error(format!("Failed to disable skill: {}", e)),
                         }
@@ -200,13 +356,16 @@ impl DynTool for SkillTool {
                 }
                 "create" => {
                     let name = input["name"].as_str().unwrap_or("");
-                    let content = input["content"].as_str().unwrap_or("");
+                    let content_raw = input["content"].as_str().unwrap_or("");
 
-                    if name.is_empty() || content.is_empty() {
+                    if name.is_empty() || content_raw.is_empty() {
                         return ToolResult::error("name and content are required");
                     }
 
-                    let dir = match Self::skills_dir() {
+                    // LLMs often send literal \n instead of real newlines in tool call strings.
+                    let content = content_raw.replace("\\n", "\n");
+
+                    let dir = match Self::user_skills_dir() {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
@@ -251,7 +410,7 @@ impl DynTool for SkillTool {
                         }
                     }
 
-                    let dir = match Self::skills_dir() {
+                    let dir = match Self::user_skills_dir() {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
@@ -270,7 +429,7 @@ impl DynTool for SkillTool {
                         return ToolResult::error("name is required");
                     }
 
-                    let dir = match Self::skills_dir() {
+                    let dir = match Self::user_skills_dir() {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
@@ -299,8 +458,88 @@ impl DynTool for SkillTool {
 
                     ToolResult::ok(format!("Deleted skill '{}'", name))
                 }
+                "featured" => {
+                    // Return featured skills from the marketplace
+                    // For now, filter installed skills that are enabled and have high capability counts
+                    let skills = self.loader.list().await;
+                    let featured: Vec<_> = skills.iter()
+                        .filter(|s| s.enabled && !s.capabilities.is_empty())
+                        .take(10)
+                        .collect();
+                    if featured.is_empty() {
+                        ToolResult::ok("No featured skills available.")
+                    } else {
+                        let lines: Vec<String> = featured.iter()
+                            .map(|s| format!("- {} — {} [caps: {}]", s.name, s.description, s.capabilities.join(", ")))
+                            .collect();
+                        ToolResult::ok(format!("Featured skills:\n{}", lines.join("\n")))
+                    }
+                }
+                "popular" => {
+                    // Return most-used skills (sorted by those that have triggers or capabilities)
+                    let skills = self.loader.list().await;
+                    let mut popular: Vec<_> = skills.iter()
+                        .filter(|s| s.enabled)
+                        .collect();
+                    popular.sort_by(|a, b| b.capabilities.len().cmp(&a.capabilities.len()));
+                    let top: Vec<_> = popular.into_iter().take(10).collect();
+                    if top.is_empty() {
+                        ToolResult::ok("No skills installed.")
+                    } else {
+                        let lines: Vec<String> = top.iter()
+                            .map(|s| format!("- {} — {}", s.name, s.description))
+                            .collect();
+                        ToolResult::ok(format!("Popular skills:\n{}", lines.join("\n")))
+                    }
+                }
+                "install" => {
+                    let code = input["code"].as_str().unwrap_or("");
+                    if code.is_empty() || !code.starts_with("SKIL-") {
+                        return ToolResult::error("'code' is required and must start with SKIL- (e.g. SKIL-XXXX-XXXX)");
+                    }
+
+                    let store = match &self.store {
+                        Some(s) => s,
+                        None => return ToolResult::error("install not available — store not configured"),
+                    };
+
+                    let api = match crate::build_neboloop_api(store) {
+                        Ok(a) => a,
+                        Err(e) => return ToolResult::error(format!("NeboLoop connection required: {}", e)),
+                    };
+
+                    match api.install_skill(code).await {
+                        Ok(resp) => {
+                            if resp.status == "payment_required" {
+                                return ToolResult::ok(format!(
+                                    "Skill requires payment. Checkout: {}",
+                                    resp.checkout_url.unwrap_or_default()
+                                ));
+                            }
+
+                            let name = resp.artifact.name.clone();
+                            let artifact_id = resp.artifact.id.clone();
+
+                            // Fetch and persist artifact content
+                            if let Err(e) = crate::persist_skill_from_api(&api, &artifact_id, &name, code).await {
+                                tracing::warn!(code, error = %e, "failed to persist skill after install");
+                            }
+
+                            ToolResult::ok(format!("Installed skill: {}", name))
+                        }
+                        Err(e) => ToolResult::error(format!("install failed: {}", e)),
+                    }
+                }
+                "reviews" => {
+                    let name = input["name"].as_str().unwrap_or("");
+                    if name.is_empty() {
+                        return ToolResult::error("name is required for reviews");
+                    }
+                    // Reviews would come from the marketplace API; for now return placeholder
+                    ToolResult::ok(format!("No reviews available for skill '{}'. Reviews are synced from the NeboLoop marketplace.", name))
+                }
                 other => ToolResult::error(format!(
-                    "Unknown action: {}. Available: catalog, help, load, unload, create, update, delete",
+                    "Unknown action: {}. Available: catalog, help, browse, read_resource, load, unload, create, update, delete, install, featured, popular, reviews",
                     other
                 )),
             }

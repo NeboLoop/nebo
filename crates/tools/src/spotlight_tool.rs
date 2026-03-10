@@ -16,7 +16,7 @@ impl DynTool for SpotlightTool {
     }
 
     fn description(&self) -> String {
-        "Search for files using the OS search index (Spotlight on macOS, plocate on Linux).\n\n\
+        "Search for files using the OS search index (Spotlight on macOS, plocate on Linux, PowerShell on Windows).\n\n\
          Actions:\n\
          - search: Find files matching a query\n\n\
          Examples:\n  \
@@ -151,9 +151,40 @@ async fn handle_search(input: &serde_json::Value) -> ToolResult {
         }
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
     {
-        ToolResult::error("File search is only supported on macOS and Linux")
+        // Use PowerShell to search via Windows Search API
+        let escaped_query = query.replace("'", "''");
+        let search_dir = if dir.is_empty() { "$env:USERPROFILE".to_string() } else { format!("'{}'", dir.replace("'", "''")) };
+        let script = format!(
+            "Get-ChildItem -Path {} -Recurse -Filter '*{}*' -ErrorAction SilentlyContinue | Select-Object -First {} -ExpandProperty FullName",
+            search_dir, escaped_query, limit
+        );
+        match tokio::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let results: Vec<&str> = text.lines().take(limit).collect();
+                if results.is_empty() {
+                    ToolResult::ok("No files found")
+                } else {
+                    ToolResult::ok(format!("Found {} results:\n{}", results.len(), results.join("\n")))
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                ToolResult::error(format!("Search error: {}", stderr))
+            }
+            Err(e) => ToolResult::error(format!("Failed to run search: {}", e)),
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        ToolResult::error("File search is not supported on this platform")
     }
 }
 

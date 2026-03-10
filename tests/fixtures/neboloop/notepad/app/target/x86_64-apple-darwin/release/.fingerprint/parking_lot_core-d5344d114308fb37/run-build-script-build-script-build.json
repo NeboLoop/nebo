@@ -1,0 +1,1 @@
+{"rustc":13850170861107434965,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[6545091685033313457,"build_script_build",false,8563556996877058522]],"local":[{"RerunIfChanged":{"output":"x86_64-apple-darwin/release/build/parking_lot_core-d5344d114308fb37/output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

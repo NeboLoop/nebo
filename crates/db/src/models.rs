@@ -208,10 +208,10 @@ pub struct CronJob {
     pub deliver: Option<String>,
     #[serde(serialize_with = "opt_i64_as_bool")]
     pub enabled: Option<i64>,
-    pub last_run: Option<i64>,
+    pub last_run: Option<String>,
     pub run_count: Option<i64>,
     pub last_error: Option<String>,
-    pub created_at: Option<i64>,
+    pub created_at: Option<String>,
     pub instructions: Option<String>,
 }
 
@@ -220,8 +220,8 @@ pub struct CronJob {
 pub struct CronHistory {
     pub id: i64,
     pub job_id: i64,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
     #[serde(serialize_with = "opt_i64_as_bool")]
     pub success: Option<i64>,
     pub output: Option<String>,
@@ -237,9 +237,9 @@ pub struct Memory {
     pub value: String,
     pub tags: Option<String>,
     pub metadata: Option<String>,
-    pub created_at: Option<i64>,
-    pub updated_at: Option<i64>,
-    pub accessed_at: Option<i64>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub accessed_at: Option<String>,
     pub access_count: Option<i64>,
     pub user_id: String,
 }
@@ -488,6 +488,8 @@ pub struct Workflow {
     pub is_enabled: i64,
     pub installed_at: i64,
     pub updated_at: i64,
+    /// Path to .napp archive or user directory on filesystem.
+    pub napp_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -496,6 +498,7 @@ pub struct WorkflowToolBinding {
     pub id: i64,
     pub workflow_id: String,
     pub interface_name: String,
+    #[serde(rename = "tool", alias = "toolCode")]
     pub tool_code: String,
 }
 
@@ -547,4 +550,23 @@ pub struct Role {
     pub is_enabled: i64,
     pub installed_at: i64,
     pub updated_at: i64,
+    /// Path to .napp archive or user directory on filesystem.
+    pub napp_path: Option<String>,
+}
+
+/// A workflow binding owned by a role, with trigger configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleWorkflow {
+    pub id: i64,
+    pub role_id: String,
+    pub binding_name: String,
+    pub workflow_ref: String,
+    pub workflow_id: Option<String>,
+    pub trigger_type: String,
+    pub trigger_config: String,
+    pub description: Option<String>,
+    pub inputs: Option<String>,
+    #[serde(serialize_with = "i64_as_bool")]
+    pub is_active: i64,
 }

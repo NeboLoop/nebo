@@ -195,7 +195,7 @@ async fn run_single_advisor(
 }
 
 /// Implement the AdvisorDeliberator trait from tools crate
-/// so that BotTool can call deliberate without circular dependencies.
+/// so that AgentTool can call deliberate without circular dependencies.
 impl tools::bot_tool::AdvisorDeliberator for Runner {
     fn deliberate<'a>(
         &'a self,

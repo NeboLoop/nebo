@@ -9,11 +9,17 @@ use crate::registry::{DynTool, ToolResult};
 /// Flat domain (no resources, actions map directly).
 pub struct EventTool {
     store: Arc<Store>,
+    runner: Option<Arc<dyn crate::bot_tool::AdvisorDeliberator>>,
 }
 
 impl EventTool {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { store }
+        Self { store, runner: None }
+    }
+
+    pub fn with_runner(mut self, runner: Arc<dyn crate::bot_tool::AdvisorDeliberator>) -> Self {
+        self.runner = Some(runner);
+        self
     }
 }
 
@@ -220,12 +226,16 @@ impl DynTool for EventTool {
                                     }
                                 }
                                 "agent" => {
-                                    // Agent tasks need the runner — return a message since we don't have it here
                                     let prompt = job.message.as_deref().unwrap_or("");
                                     if prompt.is_empty() {
                                         (false, "No prompt configured for agent task".to_string())
+                                    } else if let Some(ref runner) = self.runner {
+                                        match runner.deliberate(prompt).await {
+                                            Ok(result) => (true, result),
+                                            Err(e) => (false, format!("Agent task failed: {}", e)),
+                                        }
                                     } else {
-                                        (false, format!("Agent task '{}' should be run via the API /tasks/{}/run endpoint which has access to the agent runner.", name, name))
+                                        (false, format!("Agent task '{}' — runner not available. Run via the scheduler or API.", name))
                                     }
                                 }
                                 other => (false, format!("Unknown task type: {}", other)),

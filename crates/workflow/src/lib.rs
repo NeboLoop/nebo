@@ -1,8 +1,10 @@
+pub mod events;
+pub mod loader;
 pub mod parser;
 pub mod engine;
 pub mod triggers;
 
-pub use parser::{WorkflowDef, Activity, Trigger, ToolRef};
+pub use parser::{WorkflowDef, Activity};
 pub use engine::{execute_workflow, execute_activity};
 
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +33,8 @@ pub enum WorkflowError {
     Database(String),
     #[error("provider error: {0}")]
     Provider(String),
+    #[error("workflow cancelled")]
+    Cancelled,
     #[error("{0}")]
     Other(String),
 }

@@ -1,0 +1,9 @@
+### role — Role Management
+USE THIS when: user wants to manage roles (list, activate, deactivate), check current role, or install a new role.
+
+- role(action: "list") — List available roles
+- role(action: "activate", name: "chief-of-staff") — Assume a role (injects persona, registers triggers)
+- role(action: "deactivate") — Drop current role, revert to default
+- role(action: "info", name: "chief-of-staff") — Show role details
+- role(action: "create", name: "my-role", role_md: "# Role...") — Create a user role
+- role(action: "install", code: "ROLE-XXXX-XXXX") — Install from marketplace

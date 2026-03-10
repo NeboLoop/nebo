@@ -146,6 +146,15 @@ impl Runtime {
         let timeout = Duration::from_secs(manifest.effective_startup_timeout() as u64);
         self.wait_for_socket(&sock_path, timeout).await?;
 
+        // Health check: verify the socket is connectable
+        if let Err(e) = self.health_check(&sock_path, Duration::from_secs(5)).await {
+            warn!(
+                tool = manifest.id.as_str(),
+                error = %e,
+                "health check failed after socket appeared (tool may use lazy init)"
+            );
+        }
+
         // Set socket permissions
         #[cfg(unix)]
         {
@@ -189,6 +198,24 @@ impl Runtime {
             }
         }
         Err(NappError::NotFound("no binary found".into()))
+    }
+
+    /// Check that the socket is connectable (basic health check).
+    ///
+    /// This is a best-effort check — tools may implement lazy init, so a failure
+    /// here is logged as a warning but does not block launch.
+    async fn health_check(&self, sock_path: &Path, timeout: Duration) -> Result<(), NappError> {
+        match tokio::time::timeout(timeout, tokio::net::UnixStream::connect(sock_path)).await {
+            Ok(Ok(_stream)) => Ok(()),
+            Ok(Err(e)) => Err(NappError::Runtime(format!(
+                "socket connect failed: {}",
+                e
+            ))),
+            Err(_) => Err(NappError::Runtime(format!(
+                "socket connect timed out after {}s",
+                timeout.as_secs()
+            ))),
+        }
     }
 
     /// Wait for the Unix domain socket to appear.

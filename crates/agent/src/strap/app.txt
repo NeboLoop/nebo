@@ -1,0 +1,11 @@
+### os — App Lifecycle (resource: app)
+USE THIS when: user wants to launch, quit, list, or manage running applications.
+
+- os(resource: "app", action: "list") — List all running applications
+- os(resource: "app", action: "launch", name: "Safari") — Launch an application
+- os(resource: "app", action: "quit", name: "Safari") — Quit an application
+- os(resource: "app", action: "quit_all") — Quit all applications (except system apps)
+- os(resource: "app", action: "activate", name: "Safari") — Bring app to front / focus
+- os(resource: "app", action: "hide", name: "Safari") — Hide an application
+- os(resource: "app", action: "info", name: "Safari") — Get application details (path, version, etc.)
+- os(resource: "app", action: "frontmost") — Get the currently focused application

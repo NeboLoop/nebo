@@ -1,0 +1,12 @@
+{
+  "id": "notepad",
+  "name": "Notepad",
+  "version": "1.0.0",
+  "type": "tool",
+  "description": "Simple persistent note storage for saving and retrieving text",
+  "author": "nebo",
+  "tags": ["storage", "notes", "utility"],
+  "provides": ["tool:notepad", "ui"],
+  "permissions": ["storage:*"],
+  "implements": ["ToolService", "UIService"]
+}

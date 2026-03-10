@@ -12,7 +12,6 @@ pub mod roles;
 pub mod setup;
 pub mod skills;
 pub mod tasks;
-pub mod tools;
 pub mod user;
 pub mod workflows;
 pub mod ws;

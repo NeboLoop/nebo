@@ -1,63 +1,77 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use super::skill::{parse_skill_md, Skill};
+use super::skill::{parse_skill_md, Skill, SkillSource};
 
-/// Manages loading, caching, and hot-reloading of SKILL.md files.
+/// Manages loading, caching, and hot-reloading of skills from bundled,
+/// sealed .napp archives (nebo/skills/) and loose files (user/skills/).
 pub struct Loader {
-    /// User skills directory (e.g. <data_dir>/skills/).
-    skills_dir: PathBuf,
-    /// Optional bundled skills directory (shipped with the app).
-    bundled_dir: Option<PathBuf>,
+    /// Bundled skills directory (shipped with app, e.g. <data_dir>/bundled/skills/).
+    bundled_dir: PathBuf,
+    /// User skills directory (e.g. <data_dir>/user/skills/).
+    user_dir: PathBuf,
+    /// Installed (marketplace) skills directory (e.g. <data_dir>/nebo/skills/).
+    installed_dir: PathBuf,
     /// Loaded skills keyed by name.
     skills: Arc<RwLock<HashMap<String, Skill>>>,
 }
 
 impl Loader {
-    pub fn new(skills_dir: PathBuf, bundled_dir: Option<PathBuf>) -> Self {
+    pub fn new(bundled_dir: PathBuf, installed_dir: PathBuf, user_dir: PathBuf) -> Self {
         Self {
-            skills_dir,
             bundled_dir,
+            user_dir,
+            installed_dir,
             skills: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Load all skills from bundled and user directories.
-    /// Bundled skills are loaded first; user skills override by name.
+    /// Load all skills from bundled, installed (.napp) and user (loose files) directories.
+    /// Loading order: bundled → installed (override by name) → user (override by name).
+    /// After loading, verifies dependencies — skills with missing deps are dropped.
     pub async fn load_all(&self) -> usize {
         let mut loaded = HashMap::new();
 
-        // Load bundled skills first
-        if let Some(ref bundled) = self.bundled_dir {
-            if bundled.exists() {
-                for mut skill in load_skills_from_dir(bundled) {
-                    skill.enabled = true;
-                    loaded.insert(skill.name.clone(), skill);
-                }
+        // 1. Load bundled skills (shipped with app)
+        if self.bundled_dir.exists() {
+            for mut skill in load_skills_from_dir(&self.bundled_dir, SkillSource::Installed) {
+                skill.enabled = true;
+                loaded.insert(skill.name.clone(), skill);
             }
         }
 
-        // Load user skills (override bundled by name)
-        if self.skills_dir.exists() {
-            for skill in load_skills_from_dir(&self.skills_dir) {
+        // 2. Load installed skills from extracted directories (override bundled)
+        if self.installed_dir.exists() {
+            for mut skill in load_skills_from_nested_dir(&self.installed_dir, SkillSource::Installed) {
+                skill.enabled = true;
+                loaded.insert(skill.name.clone(), skill);
+            }
+        }
+
+        // 3. Load user skills (override installed by name)
+        if self.user_dir.exists() {
+            for skill in load_skills_from_dir(&self.user_dir, SkillSource::User) {
                 loaded.insert(skill.name.clone(), skill);
             }
         }
 
         // Also load flat .yaml / .yaml.disabled files for backward compatibility
-        for skill in load_yaml_skills(&self.skills_dir) {
+        for skill in load_yaml_skills(&self.user_dir) {
             if !loaded.contains_key(&skill.name) {
                 loaded.insert(skill.name.clone(), skill);
             }
         }
 
+        // Verify dependencies — skip skills with missing deps
+        verify_dependencies(&mut loaded);
+
         let count = loaded.len();
         *self.skills.write().await = loaded;
-        info!(count, dir = %self.skills_dir.display(), "loaded skills");
+        info!(count, installed_dir = %self.installed_dir.display(), user_dir = %self.user_dir.display(), "loaded skills");
         count
     }
 
@@ -93,9 +107,15 @@ impl Loader {
 
     /// Start watching for filesystem changes and reload on modification.
     /// Returns a JoinHandle that runs until cancelled.
+    /// Get the bundled skills directory path.
+    pub fn bundled_dir(&self) -> &Path {
+        &self.bundled_dir
+    }
+
     pub fn watch(&self) -> tokio::task::JoinHandle<()> {
-        let skills_dir = self.skills_dir.clone();
         let bundled_dir = self.bundled_dir.clone();
+        let user_dir = self.user_dir.clone();
+        let installed_dir = self.installed_dir.clone();
         let skills = self.skills.clone();
 
         tokio::spawn(async move {
@@ -118,17 +138,15 @@ impl Loader {
                 }
             };
 
-            if skills_dir.exists() {
-                if let Err(e) = watcher.watch(&skills_dir, RecursiveMode::Recursive) {
-                    warn!(error = %e, dir = %skills_dir.display(), "failed to watch skills dir");
+            if user_dir.exists() {
+                if let Err(e) = watcher.watch(&user_dir, RecursiveMode::Recursive) {
+                    warn!(error = %e, dir = %user_dir.display(), "failed to watch user skills dir");
                 }
             }
 
-            if let Some(ref bundled) = bundled_dir {
-                if bundled.exists() {
-                    if let Err(e) = watcher.watch(bundled, RecursiveMode::Recursive) {
-                        warn!(error = %e, dir = %bundled.display(), "failed to watch bundled skills dir");
-                    }
+            if installed_dir.exists() {
+                if let Err(e) = watcher.watch(&installed_dir, RecursiveMode::Recursive) {
+                    warn!(error = %e, dir = %installed_dir.display(), "failed to watch installed skills dir");
                 }
             }
 
@@ -153,6 +171,24 @@ impl Loader {
                             name.eq_ignore_ascii_case("skill.md")
                                 || name.ends_with(".yaml")
                                 || name.ends_with(".yaml.disabled")
+                                || name.ends_with(".napp")
+                                // Trigger reload when resource files change
+                                || p.ancestors().any(|a| {
+                                    a.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(|n| {
+                                            matches!(
+                                                n,
+                                                "scripts"
+                                                    | "references"
+                                                    | "assets"
+                                                    | "examples"
+                                                    | "agents"
+                                                    | "core"
+                                            )
+                                        })
+                                        .unwrap_or(false)
+                                })
                         });
                         if !relevant {
                             continue;
@@ -166,26 +202,33 @@ impl Loader {
                         debug!("skills directory changed, reloading");
                         let mut loaded = HashMap::new();
 
-                        if let Some(ref bundled) = bundled_dir {
-                            if bundled.exists() {
-                                for mut skill in load_skills_from_dir(bundled) {
-                                    skill.enabled = true;
-                                    loaded.insert(skill.name.clone(), skill);
-                                }
-                            }
-                        }
-
-                        if skills_dir.exists() {
-                            for skill in load_skills_from_dir(&skills_dir) {
+                        if bundled_dir.exists() {
+                            for mut skill in load_skills_from_dir(&bundled_dir, SkillSource::Installed) {
+                                skill.enabled = true;
                                 loaded.insert(skill.name.clone(), skill);
                             }
                         }
 
-                        for skill in load_yaml_skills(&skills_dir) {
+                        if installed_dir.exists() {
+                            for mut skill in load_skills_from_nested_dir(&installed_dir, SkillSource::Installed) {
+                                skill.enabled = true;
+                                loaded.insert(skill.name.clone(), skill);
+                            }
+                        }
+
+                        if user_dir.exists() {
+                            for skill in load_skills_from_dir(&user_dir, SkillSource::User) {
+                                loaded.insert(skill.name.clone(), skill);
+                            }
+                        }
+
+                        for skill in load_yaml_skills(&user_dir) {
                             if !loaded.contains_key(&skill.name) {
                                 loaded.insert(skill.name.clone(), skill);
                             }
                         }
+
+                        verify_dependencies(&mut loaded);
 
                         let count = loaded.len();
                         *skills.write().await = loaded;
@@ -200,14 +243,121 @@ impl Loader {
     }
 
     /// Get the user skills directory path.
-    pub fn skills_dir(&self) -> &Path {
-        &self.skills_dir
+    pub fn user_dir(&self) -> &Path {
+        &self.user_dir
+    }
+
+    /// Get the installed skills directory path.
+    pub fn installed_dir(&self) -> &Path {
+        &self.installed_dir
+    }
+
+    /// Write a skill to the user skills directory.
+    ///
+    /// If content starts with `---` (YAML frontmatter), writes as `{name}/SKILL.md`.
+    /// Otherwise writes as `{name}.yaml`.
+    /// Returns the path written to.
+    pub fn write_skill(&self, name: &str, content: &str) -> Result<PathBuf, String> {
+        write_skill(&self.user_dir, name, content)
+    }
+
+    /// Resolve the path of a user skill by name.
+    /// Checks SKILL.md in directory, then .yaml, then .yaml.disabled.
+    pub fn resolve_user_skill_path(&self, name: &str) -> Option<PathBuf> {
+        resolve_skill_path(&self.user_dir, name)
     }
 }
 
-/// Load SKILL.md files from a directory.
+/// Write a skill file to a directory.
+///
+/// If content starts with `---` (YAML frontmatter), writes as `{name}/SKILL.md`.
+/// Otherwise writes as `{name}.yaml`.
+pub fn write_skill(skills_dir: &Path, name: &str, content: &str) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(skills_dir)
+        .map_err(|e| format!("failed to create skills dir: {}", e))?;
+
+    if content.trim_start().starts_with("---") {
+        let skill_dir = skills_dir.join(name);
+        std::fs::create_dir_all(&skill_dir)
+            .map_err(|e| format!("failed to create skill dir: {}", e))?;
+        let path = skill_dir.join("SKILL.md");
+        std::fs::write(&path, content)
+            .map_err(|e| format!("failed to write SKILL.md: {}", e))?;
+        Ok(path)
+    } else {
+        let path = skills_dir.join(format!("{}.yaml", name));
+        std::fs::write(&path, content)
+            .map_err(|e| format!("failed to write skill yaml: {}", e))?;
+        Ok(path)
+    }
+}
+
+/// Resolve the path of a skill in a directory by name.
+/// Checks: directory with SKILL.md, then .yaml, then .yaml.disabled.
+pub fn resolve_skill_path(skills_dir: &Path, name: &str) -> Option<PathBuf> {
+    // Check SKILL.md in subdirectory
+    let dir_path = skills_dir.join(name);
+    if dir_path.is_dir() {
+        if let Some(md_path) = find_skill_md(&dir_path) {
+            return Some(md_path);
+        }
+    }
+    // Check flat .yaml
+    let yaml_path = skills_dir.join(format!("{}.yaml", name));
+    if yaml_path.exists() {
+        return Some(yaml_path);
+    }
+    // Check .yaml.disabled
+    let disabled_path = skills_dir.join(format!("{}.yaml.disabled", name));
+    if disabled_path.exists() {
+        return Some(disabled_path);
+    }
+    None
+}
+
+/// Load skills from extracted .napp directories in a directory tree.
+///
+/// Recursively walks the directory looking for SKILL.md marker files
+/// (from extracted .napp archives or loose skill dirs).
+fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
+    let mut skills = Vec::new();
+    napp::reader::walk_for_marker(dir, "SKILL.md", &mut |skill_dir| {
+        let md_path = match find_skill_md(skill_dir) {
+            Some(p) => p,
+            None => return,
+        };
+        match std::fs::read(&md_path) {
+            Ok(data) => match parse_skill_md(&data) {
+                Ok(mut skill) => {
+                    skill.enabled = true;
+                    skill.source = source;
+                    skill.source_path = Some(md_path);
+                    skill.base_dir = Some(skill_dir.to_path_buf());
+                    if skill.matches_platform() {
+                        skills.push(skill);
+                    } else {
+                        debug!(
+                            name = %skill.name,
+                            platform = ?skill.platform,
+                            "skipping installed skill: platform mismatch"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(path = %skill_dir.display(), error = %e, "failed to parse SKILL.md");
+                }
+            },
+            Err(e) => {
+                warn!(path = %md_path.display(), error = %e, "failed to read SKILL.md");
+            }
+        }
+    });
+    skills
+}
+
+/// Load SKILL.md files from a directory (loose files).
 /// Each subdirectory should contain a SKILL.md file.
-fn load_skills_from_dir(dir: &Path) -> Vec<Skill> {
+fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
     let mut skills = Vec::new();
 
     let entries = match std::fs::read_dir(dir) {
@@ -222,30 +372,38 @@ fn load_skills_from_dir(dir: &Path) -> Vec<Skill> {
         let path = entry.path();
 
         if path.is_dir() {
-            // Look for SKILL.md (case-insensitive) inside the subdirectory
-            if let Some(md_path) = find_skill_md(&path) {
-                match std::fs::read(&md_path) {
-                    Ok(data) => match parse_skill_md(&data) {
-                        Ok(mut skill) => {
-                            skill.enabled = true;
-                            skill.source_path = Some(md_path);
-                            if skill.matches_platform() {
-                                skills.push(skill);
-                            } else {
-                                debug!(
-                                    name = %skill.name,
-                                    platform = ?skill.platform,
-                                    "skipping skill: platform mismatch"
-                                );
-                            }
+            // Look for SKILL.md (case-insensitive), then SKILL.md.disabled
+            let (md_path, enabled) = if let Some(p) = find_skill_md(&path) {
+                (p, true)
+            } else if let Some(p) = find_skill_md_disabled(&path) {
+                (p, false)
+            } else {
+                continue;
+            };
+
+            match std::fs::read(&md_path) {
+                Ok(data) => match parse_skill_md(&data) {
+                    Ok(mut skill) => {
+                        skill.enabled = enabled;
+                        skill.source_path = Some(md_path);
+                        skill.source = source;
+                        skill.base_dir = Some(path.clone());
+                        if skill.matches_platform() {
+                            skills.push(skill);
+                        } else {
+                            debug!(
+                                name = %skill.name,
+                                platform = ?skill.platform,
+                                "skipping skill: platform mismatch"
+                            );
                         }
-                        Err(e) => {
-                            warn!(path = %md_path.display(), error = %e, "failed to parse SKILL.md");
-                        }
-                    },
-                    Err(e) => {
-                        warn!(path = %md_path.display(), error = %e, "failed to read SKILL.md");
                     }
+                    Err(e) => {
+                        warn!(path = %md_path.display(), error = %e, "failed to parse SKILL.md");
+                    }
+                },
+                Err(e) => {
+                    warn!(path = %md_path.display(), error = %e, "failed to read SKILL.md");
                 }
             }
         }
@@ -265,6 +423,33 @@ fn find_skill_md(dir: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Find a SKILL.md.disabled file in a directory (case-insensitive).
+fn find_skill_md_disabled(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.eq_ignore_ascii_case("skill.md.disabled") {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+/// Verify skill dependencies — drop skills with missing deps.
+fn verify_dependencies(loaded: &mut HashMap<String, Skill>) {
+    let names: HashSet<String> = loaded.keys().cloned().collect();
+    loaded.retain(|name, skill| {
+        for dep in &skill.dependencies {
+            if !names.contains(dep) {
+                warn!(skill = %name, missing_dep = %dep, "skill skipped: missing dependency");
+                return false;
+            }
+        }
+        true
+    });
 }
 
 /// Load flat .yaml / .yaml.disabled skill files for backward compatibility.
@@ -299,13 +484,15 @@ fn load_yaml_skills(dir: &Path) -> Vec<Skill> {
                 tags: vec![],
                 platform: vec![],
                 triggers: vec![],
-                tools: vec![],
+                capabilities: vec![],
                 priority: 0,
                 max_turns: 0,
                 metadata: HashMap::new(),
                 template: content,
                 enabled,
                 source_path: Some(entry.path()),
+                source: SkillSource::User,
+                base_dir: None,
             });
         }
     }
@@ -322,6 +509,21 @@ mod tests {
         let skill_dir = dir.join(name);
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+    }
+
+    /// Create an extracted skill directory (simulates extracted .napp).
+    fn create_skill_extracted(dir: &Path, qualified_name: &str, version: &str, skill_md: &[u8]) {
+        let version_dir = dir.join(qualified_name).join(version);
+        std::fs::create_dir_all(&version_dir).unwrap();
+        std::fs::write(version_dir.join("SKILL.md"), skill_md).unwrap();
+        std::fs::write(
+            version_dir.join("manifest.json"),
+            format!(
+                r#"{{"id":"{}","name":"test","version":"{}","artifact_type":"skill"}}"#,
+                qualified_name, version
+            ),
+        )
+        .unwrap();
     }
 
     const BASIC_SKILL: &str = r#"---
@@ -348,9 +550,11 @@ Windows specific instructions.
     #[tokio::test]
     async fn test_load_all() {
         let tmp = TempDir::new().unwrap();
+        let installed = TempDir::new().unwrap();
         create_skill_md(tmp.path(), "test-skill", BASIC_SKILL);
 
-        let loader = Loader::new(tmp.path().to_path_buf(), None);
+        let bundled = TempDir::new().unwrap();
+        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
         let count = loader.load_all().await;
         assert_eq!(count, 1);
 
@@ -358,15 +562,66 @@ Windows specific instructions.
         assert_eq!(skill.description, "A test skill");
         assert_eq!(skill.priority, 5);
         assert!(skill.template.contains("test skill template"));
+        assert_eq!(skill.source, SkillSource::User);
+    }
+
+    #[tokio::test]
+    async fn test_load_from_extracted() {
+        let bundled = TempDir::new().unwrap();
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+
+        create_skill_extracted(
+            installed.path(),
+            "@acme/skills/test",
+            "1.0.0",
+            BASIC_SKILL.as_bytes(),
+        );
+
+        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), user.path().to_path_buf());
+        let count = loader.load_all().await;
+        assert_eq!(count, 1);
+
+        let skill = loader.get("test-skill").await.unwrap();
+        assert_eq!(skill.source, SkillSource::Installed);
+        assert!(skill.base_dir.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_user_overrides_installed() {
+        let bundled = TempDir::new().unwrap();
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+
+        create_skill_extracted(
+            installed.path(),
+            "@acme/skills/test",
+            "1.0.0",
+            BASIC_SKILL.as_bytes(),
+        );
+        create_skill_md(
+            user.path(),
+            "test-skill",
+            &BASIC_SKILL.replace("A test skill", "User override"),
+        );
+
+        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), user.path().to_path_buf());
+        loader.load_all().await;
+
+        let skill = loader.get("test-skill").await.unwrap();
+        assert_eq!(skill.description, "User override");
+        assert_eq!(skill.source, SkillSource::User);
     }
 
     #[tokio::test]
     async fn test_platform_filtering() {
+        let installed = TempDir::new().unwrap();
         let tmp = TempDir::new().unwrap();
         create_skill_md(tmp.path(), "windows-only", PLATFORM_SKILL);
         create_skill_md(tmp.path(), "test-skill", BASIC_SKILL);
 
-        let loader = Loader::new(tmp.path().to_path_buf(), None);
+        let bundled = TempDir::new().unwrap();
+        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
         assert!(loader.get("test-skill").await.is_some());
@@ -380,10 +635,12 @@ Windows specific instructions.
 
     #[tokio::test]
     async fn test_trigger_matching() {
+        let installed = TempDir::new().unwrap();
         let tmp = TempDir::new().unwrap();
         create_skill_md(tmp.path(), "test-skill", BASIC_SKILL);
 
-        let loader = Loader::new(tmp.path().to_path_buf(), None);
+        let bundled = TempDir::new().unwrap();
+        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
         let matches = loader.match_triggers("please test trigger this", 3).await;
@@ -396,6 +653,7 @@ Windows specific instructions.
 
     #[tokio::test]
     async fn test_list_sorted_by_priority() {
+        let installed = TempDir::new().unwrap();
         let tmp = TempDir::new().unwrap();
         create_skill_md(
             tmp.path(),
@@ -412,7 +670,8 @@ Windows specific instructions.
                 .replace("priority: 5", "priority: 100"),
         );
 
-        let loader = Loader::new(tmp.path().to_path_buf(), None);
+        let bundled = TempDir::new().unwrap();
+        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
         let list = loader.list().await;
@@ -422,26 +681,8 @@ Windows specific instructions.
     }
 
     #[tokio::test]
-    async fn test_bundled_override() {
-        let bundled = TempDir::new().unwrap();
-        let user = TempDir::new().unwrap();
-
-        create_skill_md(bundled.path(), "shared", BASIC_SKILL);
-        create_skill_md(
-            user.path(),
-            "shared",
-            &BASIC_SKILL.replace("A test skill", "User override"),
-        );
-
-        let loader = Loader::new(user.path().to_path_buf(), Some(bundled.path().to_path_buf()));
-        loader.load_all().await;
-
-        let skill = loader.get("test-skill").await.unwrap();
-        assert_eq!(skill.description, "User override");
-    }
-
-    #[tokio::test]
     async fn test_yaml_backward_compat() {
+        let installed = TempDir::new().unwrap();
         let tmp = TempDir::new().unwrap();
         std::fs::write(
             tmp.path().join("legacy.yaml"),
@@ -454,12 +695,14 @@ Windows specific instructions.
         )
         .unwrap();
 
-        let loader = Loader::new(tmp.path().to_path_buf(), None);
+        let bundled = TempDir::new().unwrap();
+        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
         loader.load_all().await;
 
         let legacy = loader.get("legacy").await.unwrap();
         assert!(legacy.enabled);
         assert!(legacy.template.contains("old format"));
+        assert_eq!(legacy.source, SkillSource::User);
 
         let disabled = loader.get("disabled").await.unwrap();
         assert!(!disabled.enabled);

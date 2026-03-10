@@ -1,0 +1,7 @@
+### execute — Script Execution
+USE THIS when: user wants to run a script (Python, Node.js, etc.) from an installed skill.
+
+- execute(skill_id: "SKILL-XXXX-XXXX", args: {...}) — Execute a skill's binary/script
+- execute(skill_id: "SKILL-XXXX-XXXX", action: "info") — Get skill execution info
+
+Scripts run in a sandboxed environment with managed runtimes (Python via uv, Node via bun).

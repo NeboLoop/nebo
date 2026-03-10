@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Notepad</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; padding: 1.5rem; max-width: 640px; }
+    h1 { font-size: 1.25rem; margin-bottom: 1rem; }
+    .notes-list { list-style: none; }
+    .notes-list li {
+      padding: 0.75rem;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+      cursor: pointer;
+    }
+    .notes-list li:hover { background: #f5f5f5; }
+    .note-key { font-weight: 600; }
+    .note-preview { color: #666; font-size: 0.875rem; margin-top: 0.25rem; }
+    .empty { color: #999; font-style: italic; padding: 2rem 0; text-align: center; }
+    .error { color: #d32f2f; padding: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Notepad</h1>
+  <div id="app">
+    <p class="empty">Loading notes...</p>
+  </div>
+  <script>
+    const app = document.getElementById('app');
+    async function loadNotes() {
+      try {
+        const res = await fetch('api/notes');
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+        if (!data.notes || data.notes.length === 0) {
+          app.innerHTML = '<p class="empty">No notes saved yet.</p>';
+          return;
+        }
+        const list = document.createElement('ul');
+        list.className = 'notes-list';
+        data.notes.forEach(n => {
+          const li = document.createElement('li');
+          li.innerHTML = `<div class="note-key">${esc(n.key)}</div>
+            <div class="note-preview">${esc(n.preview)}</div>`;
+          list.appendChild(li);
+        });
+        app.innerHTML = '';
+        app.appendChild(list);
+      } catch (e) {
+        app.innerHTML = `<p class="error">Failed to load notes: ${esc(e.message)}</p>`;
+      }
+    }
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+    loadNotes();
+  </script>
+</body>
+</html>

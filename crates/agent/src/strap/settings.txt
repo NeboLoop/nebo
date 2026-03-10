@@ -1,0 +1,19 @@
+### os — System Settings (resource: settings)
+USE THIS when: user wants to control volume, brightness, Wi-Fi, Bluetooth, dark mode, or system power.
+
+- os(resource: "settings", action: "get", setting: "volume") — Get current volume
+- os(resource: "settings", action: "set", setting: "volume", value: 50) — Set volume (0-100)
+- os(resource: "settings", action: "mute", setting: "volume") — Mute audio
+- os(resource: "settings", action: "unmute", setting: "volume") — Unmute audio
+- os(resource: "settings", action: "get", setting: "brightness") — Get current brightness
+- os(resource: "settings", action: "set", setting: "brightness", value: 70) — Set brightness (0-100)
+- os(resource: "settings", action: "status", setting: "wifi") — Get Wi-Fi status
+- os(resource: "settings", action: "toggle", setting: "wifi") — Toggle Wi-Fi on/off
+- os(resource: "settings", action: "status", setting: "bluetooth") — Get Bluetooth status
+- os(resource: "settings", action: "toggle", setting: "bluetooth") — Toggle Bluetooth on/off
+- os(resource: "settings", action: "status", setting: "darkmode") — Check dark mode status
+- os(resource: "settings", action: "toggle", setting: "darkmode") — Toggle dark mode
+- os(resource: "settings", action: "status", setting: "battery") — Battery level and charging state
+- os(resource: "settings", action: "sleep") — Put system to sleep
+- os(resource: "settings", action: "lock") — Lock screen
+- os(resource: "settings", action: "info") — System information (hostname, OS, memory, etc.)

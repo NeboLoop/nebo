@@ -1,0 +1,18 @@
+/Users/almatuck/workspaces/nebo/nebo-rs/tests/fixtures/neboloop/notepad/app/target/debug/deps/nebo_sdk-5e9356cd6d1f3743.d: /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/lib.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/app.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/channel.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/comm.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/env.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/error.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/gateway.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/schema.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/schedule.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/tool.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/ui.rs /Users/almatuck/workspaces/nebo/nebo-rs/tests/fixtures/neboloop/notepad/app/target/debug/build/nebo-sdk-dc742aae7456447c/out/apps.v0.rs
+
+/Users/almatuck/workspaces/nebo/nebo-rs/tests/fixtures/neboloop/notepad/app/target/debug/deps/libnebo_sdk-5e9356cd6d1f3743.rmeta: /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/lib.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/app.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/channel.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/comm.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/env.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/error.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/gateway.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/schema.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/schedule.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/tool.rs /Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/ui.rs /Users/almatuck/workspaces/nebo/nebo-rs/tests/fixtures/neboloop/notepad/app/target/debug/build/nebo-sdk-dc742aae7456447c/out/apps.v0.rs
+
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/lib.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/app.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/channel.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/comm.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/env.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/error.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/gateway.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/schema.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/schedule.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/tool.rs:
+/Users/almatuck/.cargo/git/checkouts/nebo-sdk-rust-6b3b65540db9d684/ac458b2/src/ui.rs:
+/Users/almatuck/workspaces/nebo/nebo-rs/tests/fixtures/neboloop/notepad/app/target/debug/build/nebo-sdk-dc742aae7456447c/out/apps.v0.rs:
+
+# env-dep:OUT_DIR=/Users/almatuck/workspaces/nebo/nebo-rs/tests/fixtures/neboloop/notepad/app/target/debug/build/nebo-sdk-dc742aae7456447c/out

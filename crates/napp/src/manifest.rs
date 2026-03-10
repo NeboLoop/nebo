@@ -2,14 +2,77 @@ use serde::{Deserialize, Serialize};
 
 use crate::NappError;
 
-/// Tool manifest (manifest.json in .napp package).
+/// Parsed qualified name: `@org/type/name`.
+///
+/// Valid types: `skills`, `workflows`, `roles`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualifiedName {
+    pub org: String,
+    pub artifact_type: String,
+    pub artifact_name: String,
+}
+
+impl QualifiedName {
+    /// Parse `@org/type/name` format.
+    pub fn parse(name: &str) -> Result<Self, NappError> {
+        let s = name.strip_prefix('@').ok_or_else(|| {
+            NappError::Manifest(format!("qualified name must start with '@': {}", name))
+        })?;
+
+        let parts: Vec<&str> = s.splitn(3, '/').collect();
+        if parts.len() != 3 {
+            return Err(NappError::Manifest(format!(
+                "qualified name must be @org/type/name: {}",
+                name
+            )));
+        }
+
+        let artifact_type = parts[1];
+        if !["skills", "workflows", "roles"].contains(&artifact_type) {
+            return Err(NappError::Manifest(format!(
+                "invalid artifact type '{}' in qualified name (expected skills/workflows/roles)",
+                artifact_type
+            )));
+        }
+
+        Ok(Self {
+            org: parts[0].to_string(),
+            artifact_type: artifact_type.to_string(),
+            artifact_name: parts[2].to_string(),
+        })
+    }
+
+    /// Format as the full qualified string.
+    pub fn to_string(&self) -> String {
+        format!("@{}/{}/{}", self.org, self.artifact_type, self.artifact_name)
+    }
+}
+
+/// Package manifest (manifest.json) — universal envelope for all artifact types.
+///
+/// Every artifact (skill, tool, workflow, role) includes a manifest.json with
+/// identity fields (id, name, version, type, description). Tool-specific fields
+/// (provides, permissions, implements, etc.) default to empty for non-tool artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
     pub name: String,
     pub version: String,
+    /// Artifact type: "skill", "tool", "workflow", or "role".
+    #[serde(rename = "type", default)]
+    pub artifact_type: String,
     #[serde(default)]
     pub description: String,
+    /// Publisher name.
+    #[serde(default)]
+    pub author: String,
+    /// Marketplace code (assigned on publish).
+    #[serde(default)]
+    pub code: String,
+    /// Categorization tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    // -- Tool-specific fields (ignored for non-tool artifacts) --
     #[serde(default = "default_runtime")]
     pub runtime: String,
     #[serde(default = "default_protocol")]
@@ -44,6 +107,15 @@ pub struct ManifestSignature {
     pub algorithm: String,
     #[serde(default)]
     pub key_id: String,
+    /// SHA256 hash of the binary — verified on every launch.
+    #[serde(default)]
+    pub binary_hash: String,
+    /// Signature over the manifest content.
+    #[serde(default)]
+    pub manifest_signature: String,
+    /// Signature over the binary hash.
+    #[serde(default)]
+    pub binary_signature: String,
 }
 
 /// OAuth requirement for a tool.
@@ -76,9 +148,30 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// Backward-compatible ID accessor.
+    ///
+    /// If `name` is a qualified name (`@org/type/name`), returns `&self.name`.
+    /// Otherwise returns `&self.id`.
+    pub fn id(&self) -> &str {
+        if self.name.starts_with('@') {
+            &self.name
+        } else {
+            &self.id
+        }
+    }
+
+    /// Parse the qualified name if `name` starts with `@`.
+    pub fn qualified_name(&self) -> Option<QualifiedName> {
+        if self.name.starts_with('@') {
+            QualifiedName::parse(&self.name).ok()
+        } else {
+            None
+        }
+    }
+
     /// Validate the manifest.
     pub fn validate(&self) -> Result<(), NappError> {
-        if self.id.is_empty() {
+        if self.id.is_empty() && !self.name.starts_with('@') {
             return Err(NappError::Manifest("id is required".into()));
         }
         if self.name.is_empty() {
@@ -86,6 +179,11 @@ impl Manifest {
         }
         if self.version.is_empty() {
             return Err(NappError::Manifest("version is required".into()));
+        }
+
+        // Validate qualified name format when name starts with @
+        if self.name.starts_with('@') {
+            QualifiedName::parse(&self.name)?;
         }
 
         // Validate capabilities
@@ -166,15 +264,10 @@ mod tests {
             name: "Test Tool".into(),
             version: "1.0.0".into(),
             description: "A test tool".into(),
-            runtime: "local".into(),
-            protocol: "grpc".into(),
-            signature: None,
             startup_timeout: 10,
             provides: vec!["gateway".into(), "tool:search".into()],
             permissions: vec!["network:*".into(), "tool:web".into()],
-            overrides: vec![],
-            oauth: vec![],
-            implements: vec![],
+            ..Default::default()
         };
         assert!(m.validate().is_ok());
     }
@@ -217,6 +310,34 @@ mod tests {
     }
 
     #[test]
+    fn test_qualified_name_parse() {
+        let qn = QualifiedName::parse("@acme/skills/crm-lookup").unwrap();
+        assert_eq!(qn.org, "acme");
+        assert_eq!(qn.artifact_type, "skills");
+        assert_eq!(qn.artifact_name, "crm-lookup");
+    }
+
+    #[test]
+    fn test_qualified_name_invalid() {
+        assert!(QualifiedName::parse("not-qualified").is_err());
+        assert!(QualifiedName::parse("@acme/invalid_type/name").is_err());
+        assert!(QualifiedName::parse("@acme/skills").is_err());
+        assert!(QualifiedName::parse("@acme/tools/name").is_err()); // tools no longer valid
+    }
+
+    #[test]
+    fn test_manifest_id_accessor() {
+        let mut m = Manifest::default();
+        m.id = "legacy-id".into();
+        m.name = "Legacy Name".into();
+        m.version = "1.0".into();
+        assert_eq!(m.id(), "legacy-id");
+
+        m.name = "@acme/skills/crm-lookup".into();
+        assert_eq!(m.id(), "@acme/skills/crm-lookup");
+    }
+
+    #[test]
     fn test_implements_field() {
         let json = r#"{
             "id": "crm-tool",
@@ -235,7 +356,11 @@ impl Default for Manifest {
             id: String::new(),
             name: String::new(),
             version: String::new(),
+            artifact_type: String::new(),
             description: String::new(),
+            author: String::new(),
+            code: String::new(),
+            tags: vec![],
             runtime: "local".into(),
             protocol: "grpc".into(),
             signature: None,

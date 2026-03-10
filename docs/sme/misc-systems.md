@@ -1101,17 +1101,17 @@ Stores `user/name`, `user/location`, `user/work`, `user/timezone` silently in ta
 **Install codes for available skills:**
 | Skill | Code |
 |-------|------|
-| Content Creator | `SKILL-F639-PJ5J-WT3W` |
-| Family Hub | `SKILL-DSJ8-H4XG-ESP4` |
-| Health & Wellness | `SKILL-7KRC-4JT8-N8VX` |
-| Interview Prep | `SKILL-ENXP-YGJZ-9GUN` |
-| Job Search Coach | `SKILL-LNWY-Q7W2-KHVN` |
-| Personal Finance | `SKILL-T5JE-JQLA-YJ5E` |
-| Research Assistant | `SKILL-GLXB-NNHJ-ZKCG` |
-| Small Business Ops | `SKILL-BVS3-UDJ3-C2JX` |
-| Student Learning | `SKILL-LLFN-BLT8-39GV` |
-| Support Operations | `SKILL-TY54-HP5S-339D` |
-| Travel Planner | `SKILL-YCST-9FLL-FL9V` |
+| Content Creator | `SKIL-F639-PJ5J-WT3W` |
+| Family Hub | `SKIL-DSJ8-H4XG-ESP4` |
+| Health & Wellness | `SKIL-7KRC-4JT8-N8VX` |
+| Interview Prep | `SKIL-ENXP-YGJZ-9GUN` |
+| Job Search Coach | `SKIL-LNWY-Q7W2-KHVN` |
+| Personal Finance | `SKIL-T5JE-JQLA-YJ5E` |
+| Research Assistant | `SKIL-GLXB-NNHJ-ZKCG` |
+| Small Business Ops | `SKIL-BVS3-UDJ3-C2JX` |
+| Student Learning | `SKIL-LLFN-BLT8-39GV` |
+| Support Operations | `SKIL-TY54-HP5S-339D` |
+| Travel Planner | `SKIL-YCST-9FLL-FL9V` |
 
 #### janus-quota (priority: 95, max_turns: 1)
 **Triggers:** quota, tokens, limit exceeded, ran out of tokens, out of credits, upgrade plan, weekly limit, can't respond, something went wrong

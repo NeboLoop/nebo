@@ -1,0 +1,9 @@
+{
+  "id": "researcher",
+  "name": "Researcher",
+  "version": "1.0.0",
+  "type": "role",
+  "description": "On-demand research assistant that produces structured reports",
+  "author": "nebo",
+  "tags": ["research", "productivity"]
+}

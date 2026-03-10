@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Valid hook names.
 pub const VALID_HOOKS: &[&str] = &[
@@ -16,6 +16,8 @@ pub const VALID_HOOKS: &[&str] = &[
     "prompt.system_sections",
     "steering.generate",
     "response.stream",
+    "agent.turn",
+    "agent.should_continue",
 ];
 
 /// Hook type.
@@ -44,8 +46,12 @@ struct HookSubscription {
     priority: i32,
     consecutive_failures: u32,
     disabled: bool,
+    disabled_at: Option<Instant>,
     caller: Arc<dyn HookCaller>,
 }
+
+/// Duration after which a disabled hook is automatically re-enabled.
+const CIRCUIT_BREAKER_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 
 /// Hook dispatcher manages app hook subscriptions.
 pub struct HookDispatcher {
@@ -89,6 +95,7 @@ impl HookDispatcher {
             priority,
             consecutive_failures: 0,
             disabled: false,
+            disabled_at: None,
             caller,
         });
 
@@ -113,10 +120,11 @@ impl HookDispatcher {
                     sub.consecutive_failures += 1;
                     if sub.consecutive_failures >= self.max_failures {
                         sub.disabled = true;
+                        sub.disabled_at = Some(Instant::now());
                         warn!(
                             app = app_id,
                             hook = hook_name,
-                            "hook disabled after {} consecutive failures",
+                            "hook disabled after {} consecutive failures (recovery in 5m)",
                             self.max_failures
                         );
                         return true;
@@ -141,8 +149,32 @@ impl HookDispatcher {
         }
     }
 
+    /// Re-enable hooks that have exceeded the 5-minute cooldown.
+    fn recover_disabled(&self) {
+        let mut hooks = self.hooks.write().unwrap();
+        let now = Instant::now();
+        for subs in hooks.values_mut() {
+            for sub in subs.iter_mut() {
+                if sub.disabled {
+                    if let Some(at) = sub.disabled_at {
+                        if now.duration_since(at) >= CIRCUIT_BREAKER_COOLDOWN {
+                            sub.disabled = false;
+                            sub.consecutive_failures = 0;
+                            sub.disabled_at = None;
+                            info!(
+                                app = %sub.app_id,
+                                "hook recovered after cooldown"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Get active subscribers for a hook (excluding disabled).
     pub fn subscribers(&self, hook_name: &str) -> Vec<(String, HookType)> {
+        self.recover_disabled();
         let hooks = self.hooks.read().unwrap();
         hooks
             .get(hook_name)
@@ -162,6 +194,7 @@ impl HookDispatcher {
 
     /// Check if any apps have hooks registered for a name.
     pub fn has_subscribers(&self, hook_name: &str) -> bool {
+        self.recover_disabled();
         let hooks = self.hooks.read().unwrap();
         hooks
             .get(hook_name)
@@ -175,6 +208,7 @@ impl HookDispatcher {
         hook_name: &str,
         hook_type: HookType,
     ) -> Vec<(String, Arc<dyn HookCaller>)> {
+        self.recover_disabled();
         let hooks = self.hooks.read().unwrap();
         hooks
             .get(hook_name)

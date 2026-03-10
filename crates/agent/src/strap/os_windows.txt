@@ -1,0 +1,22 @@
+### os — Files & Shell
+USE THIS when: user wants to read/write/find files or run shell commands.
+Prefer file actions over shell commands: file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.
+
+**File operations:**
+- os(resource: "file", action: "read", path: "/path/to/file") — Read file contents
+- os(resource: "file", action: "write", path: "/path", content: "...") — Write/create a file
+- os(resource: "file", action: "edit", path: "/path", old_string: "...", new_string: "...") — Edit a file
+- os(resource: "file", action: "glob", pattern: "**/*.go") — Find files by pattern
+- os(resource: "file", action: "grep", pattern: "search term", path: "/dir") — Search file contents
+
+**Shell operations (PowerShell):**
+- os(resource: "shell", action: "exec", command: "Get-ChildItem") — Run a PowerShell command
+- os(resource: "shell", action: "exec", command: "...", background: true) — Run in background
+- os(resource: "shell", action: "list") — List running processes or sessions
+- os(resource: "shell", action: "kill", pid: 1234) — Kill a process
+- os(resource: "shell", action: "info", pid: 1234) — Process details
+- os(resource: "shell", action: "poll", session_id: "...") — Read background session output
+- os(resource: "shell", action: "log", session_id: "...") — Get full session log
+- os(resource: "shell", action: "write", session_id: "...", input: "...") — Send input to session
+- os(resource: "shell", action: "status") — Get shell/session status
+Note: Commands run in PowerShell. Use PowerShell cmdlets (Get-Process, Get-ChildItem, Invoke-WebRequest, etc.) not Unix commands.

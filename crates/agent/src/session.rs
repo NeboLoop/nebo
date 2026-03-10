@@ -6,6 +6,7 @@ use db::Store;
 use types::NeboError;
 
 /// Manages agent sessions backed by the database.
+#[derive(Clone)]
 pub struct SessionManager {
     store: Arc<Store>,
     /// Cache: session_id -> session_key (name) for fast lookups.

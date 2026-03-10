@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use ai::{ChatRequest, StreamEventType};
@@ -12,6 +14,13 @@ use crate::WorkflowError;
 const MAX_ITERATIONS: u32 = 20;
 
 /// Execute a complete workflow run.
+///
+/// If `existing_run_id` is provided, uses that run record instead of creating a new one.
+/// This avoids duplicate run records when the caller (e.g. WorkflowManager) already created one.
+///
+/// `cancel_token` — checked before each activity; if cancelled, returns `WorkflowError::Cancelled`.
+/// `skill_content` — maps skill qualified name → SKILL.md body text, injected into activity prompts.
+/// `event_bus` — if provided, an `emit` tool is injected into every activity's tool set.
 pub async fn execute_workflow(
     def: &WorkflowDef,
     inputs: serde_json::Value,
@@ -20,26 +29,41 @@ pub async fn execute_workflow(
     store: &Arc<Store>,
     provider: &dyn ai::Provider,
     resolved_tools: &[Box<dyn DynTool>],
+    existing_run_id: Option<&str>,
+    cancel_token: Option<&CancellationToken>,
+    skill_content: Option<&HashMap<String, String>>,
+    event_bus: Option<&tools::EventBus>,
 ) -> Result<String, WorkflowError> {
-    let run_id = uuid::Uuid::new_v4().to_string();
-    let session_key = format!("workflow-{}-{}", def.id, run_id);
-
-    // Create workflow run record
-    store
-        .create_workflow_run(
-            &run_id,
-            &def.id,
-            trigger_type,
-            trigger_detail,
-            Some(&inputs.to_string()),
-            Some(&session_key),
-        )
-        .map_err(|e| WorkflowError::Database(e.to_string()))?;
+    let run_id = match existing_run_id {
+        Some(id) => id.to_string(),
+        None => {
+            let id = uuid::Uuid::new_v4().to_string();
+            let session_key = format!("workflow-{}-{}", def.id, id);
+            store
+                .create_workflow_run(
+                    &id,
+                    &def.id,
+                    trigger_type,
+                    trigger_detail,
+                    Some(&inputs.to_string()),
+                    Some(&session_key),
+                )
+                .map_err(|e| WorkflowError::Database(e.to_string()))?;
+            id
+        }
+    };
 
     let mut total_tokens: u32 = 0;
     let mut prior_context = String::new();
 
     for activity in &def.activities {
+        // Check for cancellation before each activity
+        if let Some(token) = cancel_token {
+            if token.is_cancelled() {
+                return Err(WorkflowError::Cancelled);
+            }
+        }
+
         info!(
             workflow = def.id.as_str(),
             activity = activity.id.as_str(),
@@ -58,22 +82,15 @@ pub async fn execute_workflow(
             warn!(run_id = %run_id, error = %e, "failed to update workflow run status");
         }
 
-        // Filter tools for this activity
-        let activity_tools: Vec<&Box<dyn DynTool>> = resolved_tools
-            .iter()
-            .filter(|t| {
-                // If activity declares no tools, include none
-                if activity.tools.is_empty() {
-                    return false;
-                }
-                // Include tool if its name matches any declared tool ref
-                activity.tools.iter().any(|tr| match tr {
-                    crate::parser::ToolRef::Code(code) => t.name() == code,
-                    crate::parser::ToolRef::Pinned { code } => t.name() == code,
-                    crate::parser::ToolRef::Interface { interface } => t.name() == interface,
-                })
-            })
-            .collect();
+        // All resolved tools are available to every activity
+        let mut activity_tools: Vec<&Box<dyn DynTool>> = resolved_tools.iter().collect();
+
+        // Inject emit tool if event bus is available (always available, no declaration needed)
+        let emit_tool_box: Option<Box<dyn DynTool>> = event_bus
+            .map(|bus| Box::new(tools::EmitTool::new(bus.clone())) as Box<dyn DynTool>);
+        if let Some(ref emit) = emit_tool_box {
+            activity_tools.push(emit);
+        }
 
         let started_at = chrono::Utc::now().timestamp();
 
@@ -83,6 +100,7 @@ pub async fn execute_workflow(
             &inputs,
             provider,
             &activity_tools,
+            skill_content,
         )
         .await
         {
@@ -188,11 +206,12 @@ async fn execute_activity_with_retry(
     inputs: &serde_json::Value,
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
+    skill_content: Option<&HashMap<String, String>>,
 ) -> Result<(String, u32), WorkflowError> {
     let max_attempts = activity.on_error.retry.max(1);
 
     for attempt in 0..max_attempts {
-        match execute_activity(activity, prior_context, inputs, provider, tools).await {
+        match execute_activity(activity, prior_context, inputs, provider, tools, skill_content).await {
             Ok(result) => return Ok(result),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
@@ -216,12 +235,13 @@ pub async fn execute_activity(
     inputs: &serde_json::Value,
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
+    skill_content: Option<&HashMap<String, String>>,
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
 
     // Build system prompt: skill content + intent + steps (NO steering, NO memory)
-    let system = build_activity_prompt(activity, prior_context, inputs);
+    let system = build_activity_prompt(activity, prior_context, inputs, skill_content);
 
     // Build tool definitions
     let tool_defs: Vec<ai::ToolDefinition> = tools
@@ -340,12 +360,31 @@ pub async fn execute_activity(
 }
 
 /// Build the system prompt for an activity (lean — no steering, memory, or personality).
+///
+/// Spec order: Skills → Task → Steps → Inputs → Prior Results
 fn build_activity_prompt(
     activity: &Activity,
     prior_context: &str,
     inputs: &serde_json::Value,
+    skill_content: Option<&HashMap<String, String>>,
 ) -> String {
     let mut prompt = String::new();
+
+    // Skills — injected from SKILL.md content
+    if let Some(skills) = skill_content {
+        let activity_skills: Vec<&str> = activity
+            .skills
+            .iter()
+            .filter_map(|name| skills.get(name.as_str()).map(|body| body.as_str()))
+            .collect();
+        if !activity_skills.is_empty() {
+            prompt.push_str("## Skills\n");
+            for body in activity_skills {
+                prompt.push_str(body);
+                prompt.push_str("\n\n");
+            }
+        }
+    }
 
     // Intent
     prompt.push_str(&format!("## Task\n{}\n\n", activity.intent));

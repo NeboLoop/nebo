@@ -3,9 +3,11 @@
 //! Bridges workflow lifecycle operations (DB queries, marketplace install) with
 //! workflow execution (spawned via tokio::spawn, using the workflow engine).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use ai::Provider;
@@ -22,6 +24,12 @@ pub struct WorkflowManagerImpl {
     tools: Arc<tools::Registry>,
     hub: Arc<ClientHub>,
     config: config::Config,
+    /// Active run cancellation tokens, keyed by run_id.
+    active_runs: Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>,
+    /// Event bus for emitting workflow lifecycle events.
+    event_bus: Option<tools::EventBus>,
+    /// Skill loader for resolving skill_content in workflow execution.
+    skill_loader: Option<Arc<tools::skills::Loader>>,
 }
 
 impl WorkflowManagerImpl {
@@ -31,6 +39,8 @@ impl WorkflowManagerImpl {
         tools: Arc<tools::Registry>,
         hub: Arc<ClientHub>,
         config: config::Config,
+        event_bus: Option<tools::EventBus>,
+        skill_loader: Option<Arc<tools::skills::Loader>>,
     ) -> Self {
         Self {
             store,
@@ -38,6 +48,40 @@ impl WorkflowManagerImpl {
             tools,
             hub,
             config,
+            active_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            event_bus,
+            skill_loader,
+        }
+    }
+
+    /// Cancel a running workflow by run_id.
+    pub async fn cancel_run(&self, run_id: &str) -> Result<(), String> {
+        let token = {
+            let runs = self.active_runs.lock().unwrap();
+            runs.get(run_id).cloned()
+        };
+        match token {
+            Some(t) => {
+                t.cancel();
+                // Update DB status
+                if let Err(e) = self.store.update_workflow_run(
+                    run_id,
+                    Some("cancelled"),
+                    None,
+                    None,
+                    Some("cancelled by user"),
+                    None,
+                ) {
+                    warn!(run_id, error = %e, "failed to update cancelled run status");
+                }
+                self.hub.broadcast(
+                    "workflow_run_cancelled",
+                    serde_json::json!({ "runId": run_id }),
+                );
+                info!(run_id, "workflow run cancelled");
+                Ok(())
+            }
+            None => Err(format!("no active run found: {}", run_id)),
         }
     }
 
@@ -59,19 +103,49 @@ impl WorkflowManagerImpl {
     }
 
     fn workflow_to_info(&self, wf: &db::models::Workflow) -> WorkflowInfo {
-        let (trigger_count, activity_count) = match workflow::parser::parse_workflow(&wf.definition) {
-            Ok(def) => (def.triggers.len(), def.activities.len()),
-            Err(_) => (0, 0),
+        let activity_count = match self.load_workflow_def(wf) {
+            Ok(def) => def.activities.len(),
+            Err(_) => 0,
         };
+
+        // Description lives in manifest.json, not workflow.json (per packaging spec)
+        let description = wf
+            .manifest
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .and_then(|v| v["description"].as_str().map(String::from))
+            .unwrap_or_default();
+
         WorkflowInfo {
             id: wf.id.clone(),
             name: wf.name.clone(),
             version: wf.version.clone(),
-            description: String::new(),
+            description,
             is_enabled: wf.is_enabled != 0,
-            trigger_count,
+            trigger_count: 0, // Triggers are now role-owned
             activity_count,
         }
+    }
+
+    /// Load workflow definition from filesystem directory or fall back to DB.
+    fn load_workflow_def(&self, wf: &db::models::Workflow) -> Result<workflow::WorkflowDef, String> {
+        // Try loading from napp_path first (always a directory after migration)
+        if let Some(ref napp_path) = wf.napp_path {
+            let path = std::path::Path::new(napp_path);
+            if path.is_dir() {
+                let json_path = path.join("workflow.json");
+                if json_path.exists() {
+                    let json = std::fs::read_to_string(&json_path)
+                        .map_err(|e| e.to_string())?;
+                    return workflow::parser::parse_workflow(&json)
+                        .map_err(|e| e.to_string());
+                }
+            }
+        }
+
+        // Fall back to definition stored in DB
+        workflow::parser::parse_workflow(&wf.definition)
+            .map_err(|e| e.to_string())
     }
 
     fn run_to_info(run: &db::models::WorkflowRun) -> WorkflowRunInfo {
@@ -109,31 +183,60 @@ impl WorkflowManager for WorkflowManagerImpl {
                 .await
                 .map_err(|e| format!("install_workflow: {}", e))?;
 
-            // The response id is the workflow ID from NeboLoop
+            // The response artifact.id is the workflow ID from NeboLoop
             // Look up the workflow in DB (handle_work_code in codes.rs already stored it)
             // If not found, the install may have been handled via the codes path
-            match self.store.get_workflow(&resp.id) {
+            match self.store.get_workflow(&resp.artifact.id) {
                 Ok(Some(wf)) => Ok(self.workflow_to_info(&wf)),
-                _ => Err(format!("workflow installed but not found in local DB (id: {})", resp.id)),
+                _ => Err(format!("workflow installed but not found in local DB (id: {})", resp.artifact.id)),
             }
         })
     }
 
     fn uninstall<'a>(&'a self, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
-            // Unregister triggers
-            if let Ok(Some(wf)) = self.store.get_workflow(id) {
-                if let Ok(def) = workflow::parser::parse_workflow(&wf.definition) {
-                    workflow::triggers::unregister_triggers(&def.id, &self.store);
+            // Resolve workflow — try by ID first, then by name
+            let wf = self.store.get_workflow(id)
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    // Try resolving by name if ID lookup failed
+                    self.store.list_workflows(500, 0).ok().and_then(|wfs| {
+                        let lower = id.to_lowercase();
+                        wfs.into_iter().find(|w| w.name.to_lowercase() == lower)
+                    })
+                })
+                .ok_or_else(|| format!("workflow '{}' not found", id))?;
+
+            let wf_id = wf.id.clone();
+            let napp_path = wf.napp_path.clone();
+
+            // Unregister triggers while we have the workflow
+            if let Ok(def) = self.load_workflow_def(&wf) {
+                workflow::triggers::unregister_triggers(&def.id, &self.store);
+            }
+
+            // Delete runs, bindings, then workflow
+            if let Err(e) = self.store.delete_workflow_runs(&wf_id) {
+                warn!(workflow_id = %wf_id, error = %e, "failed to delete workflow runs");
+            }
+            if let Err(e) = self.store.delete_workflow_bindings(&wf_id) {
+                warn!(workflow_id = %wf_id, error = %e, "failed to delete workflow bindings");
+            }
+            self.store.delete_workflow(&wf_id)
+                .map_err(|e| format!("delete_workflow: {}", e))?;
+
+            // Clean up filesystem directory if it exists
+            if let Some(ref path_str) = napp_path {
+                let path = std::path::Path::new(path_str);
+                if path.exists() {
+                    if let Err(e) = std::fs::remove_dir_all(path) {
+                        warn!(workflow_id = %id, path = %path_str, error = %e, "failed to remove workflow directory");
+                    }
                 }
             }
 
-            // Delete bindings then workflow
-            if let Err(e) = self.store.delete_workflow_bindings(id) {
-                warn!(workflow_id = %id, error = %e, "failed to delete workflow bindings");
-            }
-            self.store.delete_workflow(id)
-                .map_err(|e| format!("delete_workflow: {}", e))
+            Ok(())
         })
     }
 
@@ -175,7 +278,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 return Err("workflow is disabled".into());
             }
 
-            let def = workflow::parser::parse_workflow(&wf.definition)
+            let def = self.load_workflow_def(&wf)
                 .map_err(|e| format!("parse error: {}", e))?;
 
             // Create run record
@@ -190,11 +293,21 @@ impl WorkflowManager for WorkflowManagerImpl {
                 Some(&session_key),
             ).map_err(|e| format!("create_workflow_run: {}", e))?;
 
+            // Create cancellation token
+            let cancel_token = CancellationToken::new();
+            {
+                let mut runs = self.active_runs.lock().unwrap();
+                runs.insert(run_id.clone(), cancel_token.clone());
+            }
+
             // Clone Arcs for the spawned task
             let store = self.store.clone();
             let providers = self.providers.clone();
             let tools_registry = self.tools.clone();
             let hub = self.hub.clone();
+            let active_runs = self.active_runs.clone();
+            let event_bus = self.event_bus.clone();
+            let skill_loader = self.skill_loader.clone();
             let run_id_clone = run_id.clone();
             let wf_id = id.to_string();
             let wf_name = wf.name.clone();
@@ -231,10 +344,11 @@ impl WorkflowManager for WorkflowManagerImpl {
                     }
                 };
 
-                // Build tool wrappers from the registry snapshot
+                // Build tool wrappers from the registry snapshot (exclude MCP proxy tools)
                 let tool_defs = tools_registry.list().await;
                 let resolved_tools: Vec<Box<dyn DynTool>> = tool_defs
                     .iter()
+                    .filter(|td| !td.name.starts_with("mcp__"))
                     .map(|td| {
                         Box::new(RegistryTool {
                             tool_name: td.name.clone(),
@@ -253,6 +367,25 @@ impl WorkflowManager for WorkflowManagerImpl {
                     "executing workflow in background"
                 );
 
+                // Load skill content for activities that reference skills
+                let skill_content = if let Some(ref loader) = skill_loader {
+                    let mut map = HashMap::new();
+                    for activity in &def.activities {
+                        for skill_name in &activity.skills {
+                            if !map.contains_key(skill_name) {
+                                if let Some(skill) = loader.get(skill_name).await {
+                                    if !skill.template.is_empty() {
+                                        map.insert(skill_name.clone(), skill.template.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if map.is_empty() { None } else { Some(map) }
+                } else {
+                    None
+                };
+
                 match workflow::engine::execute_workflow(
                     &def,
                     inputs,
@@ -261,9 +394,13 @@ impl WorkflowManager for WorkflowManagerImpl {
                     &store,
                     &*provider,
                     &resolved_tools,
+                    Some(&run_id_clone),
+                    Some(&cancel_token),
+                    skill_content.as_ref(),
+                    event_bus.as_ref(),
                 ).await {
                     Ok(_engine_run_id) => {
-                        // Engine creates its own run record; update ours to completed
+                        // Update run record to completed
                         if let Err(e) = store.update_workflow_run(
                             &run_id_clone,
                             Some("completed"),
@@ -282,6 +419,18 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 "name": wf_name,
                             }),
                         );
+                        // Emit system event
+                        if let Some(ref bus) = event_bus {
+                            bus.emit(tools::Event {
+                                source: format!("workflow.{}.completed", wf_id),
+                                payload: serde_json::json!({ "runId": run_id_clone, "name": wf_name }),
+                                origin: format!("workflow:{}:{}", wf_id, run_id_clone),
+                                timestamp: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs(),
+                            });
+                        }
                         info!(workflow = %wf_id, run_id = %run_id_clone, "workflow completed");
                     }
                     Err(e) => {
@@ -304,9 +453,25 @@ impl WorkflowManager for WorkflowManagerImpl {
                                 "error": err_msg,
                             }),
                         );
+                        // Emit system event
+                        if let Some(ref bus) = event_bus {
+                            bus.emit(tools::Event {
+                                source: format!("workflow.{}.failed", wf_id),
+                                payload: serde_json::json!({ "runId": run_id_clone, "error": err_msg }),
+                                origin: format!("workflow:{}:{}", wf_id, run_id_clone),
+                                timestamp: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs(),
+                            });
+                        }
                         warn!(workflow = %wf_id, run_id = %run_id_clone, error = %err_msg, "workflow failed");
                     }
                 }
+
+                // Remove from active runs
+                let mut runs = active_runs.lock().unwrap();
+                runs.remove(&run_id_clone);
             });
 
             Ok(run_id)
@@ -342,6 +507,50 @@ impl WorkflowManager for WorkflowManagerImpl {
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "workflow not found after toggle".to_string())?;
             Ok(wf.is_enabled != 0)
+        })
+    }
+
+    fn create<'a>(
+        &'a self,
+        name: &'a str,
+        definition: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<WorkflowInfo, String>> + Send + 'a>> {
+        Box::pin(async move {
+            // Validate the workflow definition
+            let _def = workflow::parser::parse_workflow(definition)
+                .map_err(|e| format!("invalid workflow definition: {}", e))?;
+
+            let id = uuid::Uuid::new_v4().to_string();
+
+            let wf = self.store
+                .create_workflow(&id, None, name, "1.0", definition, None, None)
+                .map_err(|e| format!("create_workflow: {}", e))?;
+
+            // Write workflow.json to user/workflows/{name}/ for filesystem-based loading
+            if let Ok(user_dir) = config::user_dir() {
+                let wf_dir = user_dir.join("workflows").join(name);
+                if std::fs::create_dir_all(&wf_dir).is_ok() {
+                    let json_path = wf_dir.join("workflow.json");
+                    if std::fs::write(&json_path, definition).is_ok() {
+                        let _ = self.store.set_workflow_napp_path(&id, &wf_dir.to_string_lossy());
+                    }
+                }
+            }
+
+            self.hub.broadcast(
+                "workflow_installed",
+                serde_json::json!({ "workflowId": wf.id, "name": wf.name }),
+            );
+
+            info!(workflow_id = %wf.id, name = %wf.name, "workflow created via agent");
+
+            Ok(self.workflow_to_info(&wf))
+        })
+    }
+
+    fn cancel<'a>(&'a self, run_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            self.cancel_run(run_id).await
         })
     }
 }

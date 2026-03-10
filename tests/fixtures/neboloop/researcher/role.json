@@ -1,0 +1,11 @@
+{
+  "workflows": {
+    "research": {
+      "ref": "@nebo/workflows/research-report@1.0.0",
+      "trigger": { "type": "manual" },
+      "description": "On-demand research — user provides a topic, gets a report"
+    }
+  },
+  "skills": ["@nebo/skills/quick-research@1.0.0"],
+  "tools": ["@nebo/tools/notepad@1.0.0"]
+}

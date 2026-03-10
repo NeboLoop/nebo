@@ -155,6 +155,9 @@ pub struct SkillItem {
 }
 
 /// Full skill detail with manifest.
+///
+/// Also used for workflow and role detail — all artifact types share
+/// the `GET /api/v1/skills/{id}` endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillDetail {
@@ -162,8 +165,21 @@ pub struct SkillDetail {
     pub item: SkillItem,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_url: Option<String>,
+    /// Primary content: SKILL.md, WORKFLOW.md, or ROLE.md text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<serde_json::Value>,
+    /// Secondary markdown content (marketplace description).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_md: Option<String>,
+    /// Artifact type: "skill", "workflow", or "role".
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub artifact_type: Option<String>,
+    /// Install code (e.g. SKIL-XXXX-XXXX).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// Type-specific config (workflow definition JSON for workflows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_config: Option<serde_json::Value>,
 }
 
 /// Paginated list response for GET /api/v1/skills.
@@ -284,7 +300,7 @@ pub struct InstallResponseApp {
     pub manifest: Option<serde_json::Value>,
 }
 
-/// Returned by POST /api/v1/apps/{id}/install and POST /api/v1/skills/{id}/install.
+/// Returned by POST /api/v1/{apps,skills,workflows,roles}/{id}/install.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallResponse {
@@ -293,6 +309,11 @@ pub struct InstallResponse {
     pub app: Option<InstallResponseApp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill: Option<InstallResponseApp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<InstallResponseApp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<InstallResponseApp>,
+    #[serde(default)]
     pub installed_at: String,
     #[serde(default)]
     pub update_available: bool,
@@ -312,6 +333,41 @@ impl InstallResponse {
             format!("{}{}", api_server, fallback_path)
         }
     }
+}
+
+// ── Code Redemption Types ────────────────────────────────────────────
+
+/// Returned by POST /api/v1/codes/redeem — universal code redemption.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeRedeemResponse {
+    /// "installed" or "payment_required"
+    pub status: String,
+    pub artifact: CodeRedeemArtifact,
+    #[serde(default)]
+    pub installs: Vec<CodeRedeemInstall>,
+    /// Present when status == "payment_required"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeRedeemArtifact {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub artifact_type: String,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeRedeemInstall {
+    pub bot_id: String,
+    pub status: String,
 }
 
 // ── Connection Code Types ────────────────────────────────────────────

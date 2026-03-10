@@ -1,0 +1,9 @@
+{
+  "id": "research-report",
+  "name": "Research Report",
+  "version": "1.0.0",
+  "type": "workflow",
+  "description": "Research a topic and produce a structured summary",
+  "author": "nebo",
+  "tags": ["research", "productivity"]
+}

@@ -1,48 +1,88 @@
 use db::Store;
 use tracing::{info, warn};
 
-use crate::parser::{Trigger, WorkflowDef};
+/// Register schedule triggers for a workflow from cron_jobs in the DB.
+///
+/// Triggers are now owned by Roles (via role.json). This function only
+/// handles schedule-based cron job registration when called explicitly
+/// (e.g., from role install cascade).
+pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
+    let name = format!("workflow-{}", workflow_id);
+    match store.upsert_cron_job(
+        &name,
+        cron,
+        workflow_id,      // command = workflow ID
+        "workflow",       // task_type
+        None,             // message
+        None,             // deliver
+        None,             // instructions
+        true,             // enabled
+    ) {
+        Ok(_) => info!(
+            workflow = workflow_id,
+            cron,
+            "registered schedule trigger"
+        ),
+        Err(e) => warn!(
+            workflow = workflow_id,
+            error = %e,
+            "failed to register schedule trigger"
+        ),
+    }
+}
 
-/// Register triggers for a workflow definition.
-pub fn register_triggers(def: &WorkflowDef, store: &Store) {
-    for trigger in &def.triggers {
-        match trigger {
-            Trigger::Schedule { cron } => {
-                let name = format!("workflow-{}", def.id);
+/// Register all triggers from a role's workflow bindings.
+///
+/// For schedule triggers: creates cron_job with name `role-{role_id}-{binding}`.
+/// For event triggers: stored in role_workflows table, consumed by EventDispatcher.
+pub fn register_role_triggers(role_id: &str, bindings: &[db::models::RoleWorkflow], store: &Store) {
+    for binding in bindings {
+        if binding.trigger_type == "schedule" {
+            let name = format!("role-{}-{}", role_id, binding.binding_name);
+            if let Some(workflow_id) = &binding.workflow_id {
                 match store.upsert_cron_job(
                     &name,
-                    cron,
-                    &def.id,         // command = workflow ID
-                    "workflow",       // task_type
-                    None,             // message
-                    None,             // deliver
-                    None,             // instructions
-                    true,             // enabled
+                    &binding.trigger_config,
+                    workflow_id,
+                    "workflow",
+                    None,
+                    None,
+                    None,
+                    true,
                 ) {
                     Ok(_) => info!(
-                        workflow = def.id.as_str(),
-                        cron = cron.as_str(),
-                        "registered schedule trigger"
+                        role = role_id,
+                        binding = %binding.binding_name,
+                        cron = %binding.trigger_config,
+                        "registered role schedule trigger"
                     ),
                     Err(e) => warn!(
-                        workflow = def.id.as_str(),
+                        role = role_id,
+                        binding = %binding.binding_name,
                         error = %e,
-                        "failed to register schedule trigger"
+                        "failed to register role schedule trigger"
                     ),
                 }
             }
-            Trigger::Event { event } => {
-                // Events system not yet ported — stub for future
-                info!(
-                    workflow = def.id.as_str(),
-                    event = event.as_str(),
-                    "event trigger registered (stub)"
-                );
-            }
-            Trigger::Manual => {
-                // Manual triggers don't need registration
+        }
+        // Event triggers are stored in role_workflows and consumed by EventDispatcher
+    }
+}
+
+/// Unregister all triggers for a role (cron jobs with role-{role_id} prefix).
+pub fn unregister_role_triggers(role_id: &str, store: &Store) {
+    let prefix = format!("role-{}-", role_id);
+    match store.delete_cron_jobs_by_prefix(&prefix) {
+        Ok(count) => {
+            if count > 0 {
+                info!(role = role_id, deleted = count, "unregistered role triggers");
             }
         }
+        Err(e) => warn!(
+            role = role_id,
+            error = %e,
+            "failed to unregister role triggers"
+        ),
     }
 }
 

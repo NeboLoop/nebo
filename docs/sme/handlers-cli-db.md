@@ -1303,7 +1303,7 @@ Handles incoming WebSocket frames from the server:
 | `event` | `integrations_changed` | Re-syncs MCP bridge |
 
 **`run` method processing:**
-1. Intercept special codes before LLM: NEBO-xxxx (connection), LOOP-xxxx (invite), SKILL-xxxx (install), APP-xxxx (install)
+1. Intercept special codes before LLM: NEBO-xxxx (connection), LOOP-xxxx (invite), SKIL-xxxx (install), APP-xxxx (install)
 2. Determine lane by session key prefix: `heartbeat-` -> heartbeat, `reminder-`/`routine-` -> events, `comm-` -> comm, `dev-` -> dev, else -> main
 3. Cache companion chat ID for DM handler
 4. Derive origin from lane: system for heartbeat/cron, comm for comm messages, user for everything else
@@ -1320,7 +1320,7 @@ Four special code patterns are intercepted before the LLM:
 |---------|--------|---------|---------|
 | `NEBO-XXXX-XXXX-XXXX` | 19 | `NEBO-AB12-CD34-EF56` | `handleNeboLoopCode` -- redeems connection code, activates comm |
 | `LOOP-XXXX-XXXX-XXXX` | 19 | `LOOP-AB12-CD34-EF56` | `handleLoopCode` -- joins bot to a loop |
-| `SKILL-XXXX-XXXX-XXXX` | 20 | `SKILL-AB12-CD34-EF56` | `handleSkillCode` -- installs skill from NeboLoop |
+| `SKIL-XXXX-XXXX-XXXX` | 19 | `SKIL-AB12-CD34-EF56` | `handleSkillCode` -- installs skill from NeboLoop |
 | `APP-XXXX-XXXX-XXXX` | 18 | `APP-AB12-CD34-EF56` | `handleAppCode` -- installs app from NeboLoop |
 
 All interceptors emit tool-call-style events for UI feedback.

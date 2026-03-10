@@ -1,0 +1,9 @@
+{
+  "id": "quick-research",
+  "name": "Quick Research",
+  "version": "1.0.0",
+  "type": "skill",
+  "description": "Focused research on a specific topic with structured output",
+  "author": "nebo",
+  "tags": ["research", "productivity"]
+}

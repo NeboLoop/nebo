@@ -1,9 +1,9 @@
 pub mod codes;
+pub mod deps;
 pub mod handlers;
 pub mod middleware;
-pub mod napp_adapter;
-pub mod napp_manager;
 pub mod workflow_manager;
+mod migration;
 mod scheduler;
 mod spa;
 mod state;
@@ -99,7 +99,7 @@ fn seed_models_from_catalog(store: &db::Store, models_cfg: &config::ModelsConfig
 
 /// Build AI providers from auth_profiles in the database.
 /// Config is needed for NeboLoop's Janus URL (not stored in auth_profile).
-fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&config::AllCliStatuses>) -> Vec<Arc<dyn ai::Provider>> {
+pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&config::AllCliStatuses>) -> Vec<Arc<dyn ai::Provider>> {
     let profiles = match store.list_auth_profiles() {
         Ok(p) => p,
         Err(e) => {
@@ -267,6 +267,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Initialize database
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
 
+    // Ensure FTS5 index for memories is healthy (auto-rebuild if corrupted)
+    if let Err(e) = store.ensure_fts_healthy() {
+        warn!(error = %e, "FTS health check failed — memory search may be degraded");
+    }
+
     // Ensure bot_id exists: file → DB (Go migration) → generate new
     if config::read_bot_id().is_none() {
         // Check DB for bot_id set by the Go version (plugin_settings table)
@@ -287,6 +292,17 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Sync bot_id to DB for backward compatibility
     if let Some(bot_id) = config::read_bot_id() {
         let _ = store.set_plugin_setting("neboloop", "bot_id", &bot_id);
+    }
+
+    // Auto-mark setup complete: DB initialized + bot_id exists = setup is done
+    if !config::is_setup_complete().unwrap_or(false) {
+        if config::read_bot_id().is_some() {
+            if let Err(e) = config::mark_setup_complete() {
+                warn!("failed to mark setup complete: {}", e);
+            } else {
+                info!("setup marked complete (DB ready + bot_id exists)");
+            }
+        }
     }
 
     // Initialize auth service
@@ -353,12 +369,26 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
-    // Initialize skill loader (SKILL.md directory-based loading with hot-reload)
-    let skills_dir = data_dir.join("skills");
-    let bundled_skills_dir = data_dir.join("extensions").join("skills");
+    // Ensure artifact directory structure exists (nebo/ and user/ namespaces)
+    if let Err(e) = config::ensure_artifact_dirs() {
+        warn!("failed to create artifact directories: {}", e);
+    }
+
+    // Run one-time migration from old layout to nebo/user split
+    migration::migrate_if_needed(&data_dir);
+
+    // Extract sealed .napp archives to sibling directories (one-time)
+    migration::migrate_napp_extraction(&data_dir);
+
+    // Initialize skill loader (bundled + extracted dirs from nebo/skills/ + loose files from user/skills/)
+    let bundled_skills_dir = config::bundled_skills_dir().unwrap_or_else(|_| data_dir.join("bundled").join("skills"));
+    let installed_skills_dir = data_dir.join("nebo").join("skills");
+    let user_skills_dir = data_dir.join("user").join("skills");
+    let _ = std::fs::create_dir_all(&bundled_skills_dir);
     let skill_loader = Arc::new(tools::skills::Loader::new(
-        skills_dir,
-        if bundled_skills_dir.exists() { Some(bundled_skills_dir) } else { None },
+        bundled_skills_dir,
+        installed_skills_dir,
+        user_skills_dir,
     ));
     skill_loader.load_all().await;
     skill_loader.watch();
@@ -385,20 +415,45 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         agent::search_adapter::HybridSearchAdapter::new(store.clone(), None),
     );
 
-    // Initialize tool package registry (moved before tool registration so ToolTool can be wired)
-    let tools_dir = data_dir.join("tools");
+    // Initialize napp package registry
     let napp_config = napp::RegistryConfig {
-        tools_dir,
+        installed_tools_dir: data_dir.join("nebo").join("tools"),
+        user_tools_dir: data_dir.join("user").join("tools"),
         neboloop_url: Some(cfg.neboloop.api_url.clone()),
     };
     let napp_registry = Arc::new(napp::Registry::new(napp_config));
 
-    // Create napp manager (lifecycle + dispatch bridge for ToolTool)
-    let napp_manager = Arc::new(napp_manager::NappManagerImpl::new(
-        napp_registry.clone(),
-        store.clone(),
-        cfg.clone(),
-    ));
+    // Plan tier — updated by NeboLoop AUTH_OK handler, read by ExecuteTool
+    let plan_tier = Arc::new(tokio::sync::RwLock::new("free".to_string()));
+
+    // Initialize OS-level sandbox for script execution (macOS Seatbelt / Linux bubblewrap)
+    let sandbox_manager = {
+        let mut mgr = sandbox_runtime::SandboxManager::new();
+        if mgr.is_supported_platform() {
+            match mgr
+                .initialize(
+                    sandbox_runtime::SandboxRuntimeConfig::default_config(),
+                    None,
+                    false,
+                )
+                .await
+            {
+                Ok(()) => {
+                    info!("sandbox runtime initialized");
+                    Some(Arc::new(mgr))
+                }
+                Err(e) => {
+                    warn!("sandbox init failed, scripts will run unsandboxed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
+    // Create shared active role state — used by RoleTool to inject role persona into system prompt
+    let active_role_state: tools::ActiveRoleState = std::sync::Arc::new(tokio::sync::RwLock::new(None));
 
     tool_registry
         .register_all_with_permissions(
@@ -408,9 +463,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             Some(skill_loader.clone()),
             advisor_runner,
             Some(hybrid_searcher),
-            Some(napp_manager.clone() as Arc<dyn tools::NappManager>),
             None, // workflow_manager registered separately after Runner is created
             None,
+            Some(plan_tier.clone()),
+            sandbox_manager,
+            None, // comm_plugin — set later when NeboLoop connects
+            Some(active_role_state.clone()),
         )
         .await;
 
@@ -479,15 +537,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     });
 
-    // Discover and launch installed tools, then sync adapters (best-effort, don't block startup)
+    // Discover and launch installed tools (best-effort, don't block startup)
     {
         let reg = napp_registry.clone();
-        let mgr = napp_manager.clone();
         tokio::spawn(async move {
             if let Err(e) = reg.discover_and_launch().await {
                 warn!("tool discovery failed: {}", e);
             }
-            mgr.sync_adapters().await;
         });
     }
 
@@ -511,7 +567,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
             loop {
                 interval.tick().await;
-                let tools = registry.list_tools().await;
+                let tools = registry.list_processes().await;
                 for tool in &tools {
                     if tool.running { continue; }
                     if supervisor.should_restart(&tool.id).await {
@@ -619,7 +675,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         concurrency.clone(),
         hooks.clone(),
         Some(mcp_context.clone()),
+        active_role_state,
     ));
+
+    // Create event bus and dispatcher for workflow-to-workflow events
+    let (event_bus, event_rx) = tools::EventBus::new();
+    let event_dispatcher = Arc::new(workflow::events::EventDispatcher::new());
+
+    // Register EmitTool so it appears in tools list and is available to all origins
+    tool_registry.register(Box::new(tools::EmitTool::new(event_bus.clone()))).await;
 
     // Create workflow manager (needs runner's shared providers for background execution)
     let workflow_manager = Arc::new(workflow_manager::WorkflowManagerImpl::new(
@@ -628,11 +692,56 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         tool_registry.clone(),
         hub.clone(),
         cfg.clone(),
+        Some(event_bus.clone()),
+        Some(skill_loader.clone()),
     ));
     // Register WorkTool now that the manager exists
     tool_registry.register(Box::new(tools::WorkTool::new(
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
     ))).await;
+
+    // Reconcile role triggers at startup: re-register schedule cron jobs and
+    // rebuild event subscriptions from role_workflows table.
+    {
+        let mut event_subs = Vec::new();
+        if let Ok(roles) = store.list_roles(1000, 0) {
+            for role in &roles {
+                if role.is_enabled == 0 {
+                    continue;
+                }
+                if let Ok(bindings) = store.list_role_workflows(&role.id) {
+                    workflow::triggers::register_role_triggers(&role.id, &bindings, &store);
+                    for b in &bindings {
+                        if b.trigger_type == "event" {
+                            for source in b.trigger_config.split(',') {
+                                event_subs.push(workflow::events::EventSubscription {
+                                    pattern: source.trim().to_string(),
+                                    workflow_id: b.workflow_id.clone().unwrap_or_default(),
+                                    default_inputs: b
+                                        .inputs
+                                        .as_ref()
+                                        .and_then(|s| serde_json::from_str(s).ok())
+                                        .unwrap_or_default(),
+                                    role_source: role.id.clone(),
+                                    binding_name: b.binding_name.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !event_subs.is_empty() {
+            info!(count = event_subs.len(), "reconciled event subscriptions from roles");
+            event_dispatcher.set_subscriptions(event_subs).await;
+        }
+    }
+
+    // Spawn event dispatcher loop (matches events to role-owned subscriptions)
+    event_dispatcher.clone().spawn(
+        event_rx,
+        workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
+    );
 
     // Create orchestrator and fill the late-binding handle
     let orchestrator = agent::Orchestrator::new(runner.clone(), store.clone(), concurrency.clone())
@@ -666,7 +775,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         tools: tool_registry,
         bridge,
         napp_registry,
-        napp_manager,
         workflow_manager: workflow_manager.clone(),
         models_config,
         cli_statuses,
@@ -679,6 +787,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
         mcp_context,
+        event_bus,
+        event_dispatcher,
+        plan_tier,
     };
 
     // Auto-connect NeboLoop if enabled and credentials exist
@@ -982,13 +1093,6 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/neboloop/janus/usage", axum::routing::get(handlers::neboloop::janus_usage))
         .route("/neboloop/open", axum::routing::get(handlers::neboloop::open_neboloop))
         .route("/neboloop/connect", axum::routing::post(handlers::neboloop::connect_handler))
-        // Tools (installable .napp packages)
-        .route("/tools", axum::routing::get(handlers::tools::list_tools))
-        .route("/tools/sideload", axum::routing::post(handlers::tools::sideload_tool))
-        .route("/tools/install", axum::routing::post(handlers::tools::install_tool))
-        .route("/tools/{id}", axum::routing::get(handlers::tools::get_tool))
-        .route("/tools/{id}", axum::routing::delete(handlers::tools::uninstall_tool))
-        .route("/tools/{id}/sideload", axum::routing::delete(handlers::tools::unsideload_tool))
         // Workflows
         .route("/workflows", axum::routing::get(handlers::workflows::list_workflows))
         .route("/workflows", axum::routing::post(handlers::workflows::create_workflow))
@@ -999,6 +1103,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/workflows/{id}/run", axum::routing::post(handlers::workflows::run_workflow))
         .route("/workflows/{id}/runs", axum::routing::get(handlers::workflows::list_runs))
         .route("/workflows/{id}/runs/{runId}", axum::routing::get(handlers::workflows::get_run))
+        .route("/workflows/{id}/runs/{runId}/cancel", axum::routing::post(handlers::workflows::cancel_run))
         .route("/workflows/{id}/bindings", axum::routing::get(handlers::workflows::list_bindings))
         .route("/workflows/{id}/bindings", axum::routing::put(handlers::workflows::update_bindings))
         // Roles
@@ -1009,6 +1114,10 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/roles/{id}", axum::routing::delete(handlers::roles::delete_role))
         .route("/roles/{id}/toggle", axum::routing::post(handlers::roles::toggle_role))
         .route("/roles/{id}/install-deps", axum::routing::post(handlers::roles::install_deps))
+        // Codes (marketplace install via REST)
+        .route("/codes", axum::routing::post(codes::submit_code))
+        // Dependency cascade
+        .route("/deps/approve", axum::routing::post(deps::approve_deps))
         // User profile/preferences (public — single-user local app)
         .route("/user/me/profile", axum::routing::get(handlers::user::get_profile))
         .route("/user/me/profile", axum::routing::put(handlers::user::update_profile))

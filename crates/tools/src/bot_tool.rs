@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use db::Store;
+use tracing::{debug, warn};
 use crate::domain::DomainInput;
 use crate::orchestrator::OrchestratorHandle;
 use crate::origin::ToolContext;
@@ -35,16 +36,16 @@ pub struct HybridSearchResult {
     pub score: f64,
 }
 
-/// BotTool is the agent's self-management domain tool.
-/// Consolidates: memory, sessions, tasks (work items), profile, context, and ask.
-pub struct BotTool {
+/// AgentTool is the agent's self-management domain tool.
+/// Resources: memory, task, session, context, advisors, ask.
+pub struct AgentTool {
     store: Arc<Store>,
     orchestrator: OrchestratorHandle,
     advisor_runner: Option<Arc<dyn AdvisorDeliberator>>,
     hybrid_searcher: Option<Arc<dyn HybridSearcher>>,
 }
 
-impl BotTool {
+impl AgentTool {
     pub fn new(store: Arc<Store>, orchestrator: OrchestratorHandle) -> Self {
         Self { store, orchestrator, advisor_runner: None, hybrid_searcher: None }
     }
@@ -64,10 +65,8 @@ impl BotTool {
             "store" | "recall" | "search" => "memory",
             "spawn" | "orchestrate" | "status" | "cancel" | "create" | "update" | "delete" => "task",
             "history" | "query" => "session",
-            "get" | "open_billing" => "profile",
             "reset" | "compact" | "summary" => "context",
             "deliberate" => "advisors",
-            "analyze" => "vision",
             "prompt" | "confirm" | "select" => "ask",
             _ => "",
         }
@@ -86,8 +85,49 @@ impl BotTool {
                     return ToolResult::error("key and value are required");
                 }
 
+                debug!(
+                    namespace = namespace,
+                    key = key,
+                    value_len = value.len(),
+                    user_id = %ctx.user_id,
+                    "memory store attempt"
+                );
+
                 match self.store.upsert_memory(namespace, key, value, None, None, &ctx.user_id) {
-                    Ok(_) => ToolResult::ok(format!("Stored memory: [{}] {} = {}", namespace, key, value)),
+                    Ok(_) => {
+                        // Verify the write was persisted by reading it back (different pool connection)
+                        let verify = self.store.get_memory_by_key_and_user(namespace, key, &ctx.user_id);
+                        match &verify {
+                            Ok(Some(m)) => debug!(
+                                key = key,
+                                stored_value = %m.value,
+                                "memory store verified on separate connection"
+                            ),
+                            Ok(None) => {
+                                // Data not visible on a different connection — persistence failure
+                                let total = self.store.count_memories().unwrap_or(-1);
+                                warn!(
+                                    namespace = namespace,
+                                    key = key,
+                                    user_id = %ctx.user_id,
+                                    total_memories = total,
+                                    "memory store: upsert OK but cross-connection verify found NOTHING"
+                                );
+                                return ToolResult::error(format!(
+                                    "Memory store failed: data not persisted (wrote to [{}] {} but read-back returned nothing). \
+                                     Total memories in DB: {}. This may indicate FTS trigger corruption — \
+                                     try restarting the server.",
+                                    namespace, key, total
+                                ));
+                            }
+                            Err(e) => warn!(
+                                key = key,
+                                error = %e,
+                                "memory store verify read failed"
+                            ),
+                        }
+                        ToolResult::ok(format!("Stored memory: [{}] {} = {}", namespace, key, value))
+                    }
                     Err(e) => ToolResult::error(format!("Failed to store memory: {}", e)),
                 }
             }
@@ -98,13 +138,60 @@ impl BotTool {
                     return ToolResult::error("key is required");
                 }
 
+                debug!(
+                    namespace = namespace,
+                    key = key,
+                    user_id = %ctx.user_id,
+                    "memory recall attempt"
+                );
+
                 match self.store.get_memory_by_key_and_user(namespace, key, &ctx.user_id) {
                     Ok(Some(mem)) => {
                         // Increment access count on recall
                         let _ = self.store.increment_memory_access_by_key(namespace, key, &ctx.user_id);
                         ToolResult::ok(format!("[{}] {}: {}", mem.namespace, mem.key, mem.value))
                     }
-                    Ok(None) => ToolResult::ok(format!("No memory found for key: {}", key)),
+                    Ok(None) => {
+                        // Fallback 1: try without user_id filter
+                        let any = self.store.get_memory_by_key(namespace, key);
+                        match any {
+                            Ok(Some(m)) => {
+                                warn!(
+                                    namespace = namespace,
+                                    key = key,
+                                    expected_user_id = %ctx.user_id,
+                                    actual_user_id = %m.user_id,
+                                    "memory exists but user_id mismatch — returning anyway"
+                                );
+                                let _ = self.store.increment_memory_access_by_key(namespace, key, &m.user_id);
+                                ToolResult::ok(format!("[{}] {}: {}", m.namespace, m.key, m.value))
+                            }
+                            Ok(None) => {
+                                // Fallback 2: try key-only lookup across all namespaces
+                                match self.store.find_memory_by_key(key) {
+                                    Ok(Some(m)) => {
+                                        warn!(
+                                            expected_namespace = namespace,
+                                            actual_namespace = %m.namespace,
+                                            key = key,
+                                            "memory found in different namespace"
+                                        );
+                                        ToolResult::ok(format!("[{}] {}: {}", m.namespace, m.key, m.value))
+                                    }
+                                    _ => {
+                                        warn!(
+                                            namespace = namespace,
+                                            key = key,
+                                            user_id = %ctx.user_id,
+                                            "memory not found at all — not in DB"
+                                        );
+                                        ToolResult::ok(format!("No memory found for key: {}", key))
+                                    }
+                                }
+                            }
+                            Err(_) => ToolResult::ok(format!("No memory found for key: {}", key)),
+                        }
+                    }
                     Err(e) => ToolResult::error(format!("Failed to recall memory: {}", e)),
                 }
             }
@@ -119,18 +206,18 @@ impl BotTool {
                 // Use hybrid search (FTS5 + vector) when available
                 if let Some(ref searcher) = self.hybrid_searcher {
                     let results = searcher.search(query, &ctx.user_id, limit).await;
-                    if results.is_empty() {
-                        return ToolResult::ok(format!("No memories found matching: {}", query));
+                    if !results.is_empty() {
+                        let lines: Vec<String> = results
+                            .iter()
+                            .map(|r| format!("- [{}] {}: {} (score: {:.2})", r.namespace, r.key, r.value, r.score))
+                            .collect();
+                        return ToolResult::ok(format!(
+                            "Found {} memories:\n{}",
+                            results.len(),
+                            lines.join("\n")
+                        ));
                     }
-                    let lines: Vec<String> = results
-                        .iter()
-                        .map(|r| format!("- [{}] {}: {} (score: {:.2})", r.namespace, r.key, r.value, r.score))
-                        .collect();
-                    return ToolResult::ok(format!(
-                        "Found {} memories:\n{}",
-                        results.len(),
-                        lines.join("\n")
-                    ));
+                    // Fall through to LIKE query if hybrid returned nothing
                 }
 
                 // Fallback: simple LIKE query
@@ -190,7 +277,21 @@ impl BotTool {
                     return ToolResult::error("key is required");
                 }
                 match self.store.delete_memory_by_key_and_user(namespace, key, &ctx.user_id) {
-                    Ok(count) => ToolResult::ok(format!("Deleted {} memory entries for key: {}", count, key)),
+                    Ok(count) if count > 0 => {
+                        ToolResult::ok(format!("Deleted {} memory entries for key: {}", count, key))
+                    }
+                    Ok(_) => {
+                        // Scoped delete found nothing — try key-only fallback
+                        match self.store.delete_memory_by_key_only(key) {
+                            Ok(count) if count > 0 => {
+                                warn!(key = key, namespace = namespace, count = count,
+                                    "delete: scoped query missed, key-only fallback deleted entries");
+                                ToolResult::ok(format!("Deleted {} memory entries for key: {}", count, key))
+                            }
+                            Ok(_) => ToolResult::ok(format!("Deleted 0 memory entries for key: {}", key)),
+                            Err(e) => ToolResult::error(format!("Failed to delete: {}", e)),
+                        }
+                    }
                     Err(e) => ToolResult::error(format!("Failed to delete: {}", e)),
                 }
             }
@@ -242,7 +343,7 @@ impl BotTool {
                     model_override: model_override.to_string(),
                     parent_session_id: ctx.session_id.clone(),
                     parent_session_key: ctx.session_key.clone(),
-                    user_id: String::new(),
+                    user_id: ctx.user_id.clone(),
                     wait,
                 };
 
@@ -500,47 +601,44 @@ impl BotTool {
                     Err(e) => ToolResult::error(format!("Failed to clear session: {}", e)),
                 }
             }
-            _ => ToolResult::error(format!(
-                "Unknown session action: {}. Available: list, history, status, clear",
-                action
-            )),
-        }
-    }
+            "query" => {
+                let query_text = input["query"].as_str().unwrap_or("");
+                if query_text.is_empty() {
+                    return ToolResult::error("query is required for cross-session search");
+                }
+                let limit = input["limit"].as_i64().unwrap_or(20) as usize;
 
-    async fn handle_profile(&self, input: &serde_json::Value) -> ToolResult {
-        let action = input["action"].as_str().unwrap_or("get");
-
-        match action {
-            "get" => match self.store.get_agent_profile() {
-                Ok(Some(profile)) => ToolResult::ok(format!(
-                    "Name: {}\nRole: {}\nPersonality: {}\nEmoji: {}\nCreature: {}\nVibe: {}",
-                    profile.name,
-                    profile.role.as_deref().unwrap_or("-"),
-                    profile.personality_preset.as_deref().unwrap_or("-"),
-                    profile.emoji.as_deref().unwrap_or("-"),
-                    profile.creature.as_deref().unwrap_or("-"),
-                    profile.vibe.as_deref().unwrap_or("-"),
-                )),
-                Ok(None) => ToolResult::ok("No agent profile configured."),
-                Err(e) => ToolResult::error(format!("Failed to get profile: {}", e)),
-            },
-            "update" => {
-                let name = input.get("name").and_then(|v| v.as_str());
-                let role = input.get("role").and_then(|v| v.as_str());
-                let emoji = input.get("emoji_char").and_then(|v| v.as_str());
-                let creature = input.get("creature").and_then(|v| v.as_str());
-                let vibe = input.get("vibe").and_then(|v| v.as_str());
-
-                match self.store.update_agent_profile(
-                    name, None, None, None, None, None, None, None,
-                    emoji, creature, vibe, role, None, None, None, None, None,
-                ) {
-                    Ok(_) => ToolResult::ok("Profile updated."),
-                    Err(e) => ToolResult::error(format!("Failed to update profile: {}", e)),
+                // Fallback: list sessions, then search each
+                match self.store.list_sessions(100, 0) {
+                    Ok(sessions) => {
+                        let mut found = Vec::new();
+                        for session in &sessions {
+                            if let Ok(msgs) = self.store.get_chat_messages(&session.id) {
+                                for msg in msgs {
+                                    if msg.content.to_lowercase().contains(&query_text.to_lowercase()) {
+                                        let preview = if msg.content.len() > 150 {
+                                            format!("{}...", &msg.content[..150])
+                                        } else {
+                                            msg.content.clone()
+                                        };
+                                        found.push(format!("- [{}] {}: {}", session.id, msg.role, preview));
+                                        if found.len() >= limit { break; }
+                                    }
+                                }
+                            }
+                            if found.len() >= limit { break; }
+                        }
+                        if found.is_empty() {
+                            ToolResult::ok(format!("No messages found matching: {}", query_text))
+                        } else {
+                            ToolResult::ok(format!("Found {} messages:\n{}", found.len(), found.join("\n")))
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Cross-session search failed: {}", e)),
                 }
             }
             _ => ToolResult::error(format!(
-                "Unknown profile action: {}. Available: get, update",
+                "Unknown session action: {}. Available: list, history, status, clear, query",
                 action
             )),
         }
@@ -551,7 +649,9 @@ impl BotTool {
         match action {
             "summary" => {
                 // Get recent messages from the current session for a summary
-                match self.store.get_chat_messages(&ctx.session_id) {
+                // Use session_key as the chat_id (messages are stored under session name, not session UUID)
+                let chat_id = if !ctx.session_key.is_empty() { &ctx.session_key } else { &ctx.session_id };
+                match self.store.get_chat_messages(chat_id) {
                     Ok(msgs) => {
                         let count = msgs.len();
                         let user_count = msgs.iter().filter(|m| m.role == "user").count();
@@ -707,26 +807,27 @@ impl BotTool {
     }
 }
 
-impl DynTool for BotTool {
+impl DynTool for AgentTool {
     fn name(&self) -> &str {
-        "bot"
+        "agent"
     }
 
     fn description(&self) -> String {
-        "Agent self-management — memory, tasks, sessions, profile, and context.\n\n\
+        "Agent self-management — memory, tasks, sessions, context, advisors, and ask.\n\n\
          Resources and Actions:\n\
          - memory: store, recall, search, list, delete, clear\n\
          - task: spawn, orchestrate, status, cancel, create, update, list, delete\n\
-         - session: list, history, status, clear\n\
-         - profile: get, update\n\
+         - session: list, history, status, clear, query (cross-session search)\n\
          - context: summary, reset, compact\n\
-         - advisors: deliberate\n\n\
+         - advisors: deliberate, list\n\
+         - ask: prompt, confirm, select\n\n\
          Examples:\n  \
-         bot(resource: \"memory\", action: \"store\", key: \"user_name\", value: \"Alice\")\n  \
-         bot(resource: \"memory\", action: \"recall\", key: \"user_name\")\n  \
-         bot(resource: \"task\", action: \"create\", subject: \"Research topic X\")\n  \
-         bot(resource: \"session\", action: \"list\")\n  \
-         bot(resource: \"profile\", action: \"get\")"
+         agent(resource: \"memory\", action: \"store\", key: \"user_name\", value: \"Alice\")\n  \
+         agent(resource: \"memory\", action: \"recall\", key: \"user_name\")\n  \
+         agent(resource: \"task\", action: \"create\", subject: \"Research topic X\")\n  \
+         agent(resource: \"session\", action: \"list\")\n  \
+         agent(resource: \"session\", action: \"query\", query: \"deployment issue\")\n  \
+         agent(resource: \"advisors\", action: \"deliberate\", task: \"How to approach X\")"
             .to_string()
     }
 
@@ -737,7 +838,7 @@ impl DynTool for BotTool {
                 "resource": {
                     "type": "string",
                     "description": "Resource type",
-                    "enum": ["memory", "task", "session", "profile", "context", "advisors", "ask"]
+                    "enum": ["memory", "task", "session", "context", "advisors", "ask"]
                 },
                 "action": {
                     "type": "string",
@@ -757,9 +858,9 @@ impl DynTool for BotTool {
                 "model_override": { "type": "string", "description": "Model override for sub-agent" },
                 "wait": { "type": "boolean", "description": "Wait for sub-agent to complete (default: true)" },
                 "session_id": { "type": "string", "description": "Session ID" },
-                "name": { "type": "string", "description": "Profile name" },
-                "role": { "type": "string", "description": "Profile role" },
-                "task": { "type": "string", "description": "Task description for advisor deliberation" }
+                "task": { "type": "string", "description": "Task description for advisor deliberation" },
+                "text": { "type": "string", "description": "Text for ask prompts" },
+                "options": { "type": "array", "description": "Options for select action" }
             },
             "required": ["action"]
         })
@@ -788,7 +889,7 @@ impl DynTool for BotTool {
 
             if resource.is_empty() {
                 return ToolResult::error(
-                    "Resource is required. Available: memory, task, session, profile, context, advisors, ask",
+                    "Resource is required. Available: memory, task, session, context, advisors, ask",
                 );
             }
 
@@ -796,18 +897,11 @@ impl DynTool for BotTool {
                 "memory" => self.handle_memory(&input, ctx).await,
                 "task" => self.handle_task(&input, ctx).await,
                 "session" => self.handle_session(&input, ctx).await,
-                "profile" => self.handle_profile(&input).await,
                 "context" => self.handle_context(&input, ctx).await,
                 "advisors" => self.handle_advisors(&input).await,
                 "ask" => self.handle_ask(&input).await,
-                "vision" => {
-                    // Vision requires multimodal input which is handled at the provider level
-                    ToolResult::error(
-                        "Vision analysis requires image input. Send images directly in your message to the agent.",
-                    )
-                }
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: memory, task, session, profile, context, advisors, ask",
+                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask",
                     other
                 )),
             }

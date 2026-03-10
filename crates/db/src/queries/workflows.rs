@@ -11,7 +11,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, code, name, version, definition, skill_md, manifest,
-                        is_enabled, installed_at, updated_at
+                        is_enabled, installed_at, updated_at, napp_path
                  FROM workflows ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -32,7 +32,7 @@ impl Store {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, code, name, version, definition, skill_md, manifest,
-                    is_enabled, installed_at, updated_at
+                    is_enabled, installed_at, updated_at, napp_path
              FROM workflows WHERE id = ?1",
             params![id],
             row_to_workflow,
@@ -45,7 +45,7 @@ impl Store {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, code, name, version, definition, skill_md, manifest,
-                    is_enabled, installed_at, updated_at
+                    is_enabled, installed_at, updated_at, napp_path
              FROM workflows WHERE code = ?1",
             params![code],
             row_to_workflow,
@@ -69,7 +69,7 @@ impl Store {
             "INSERT INTO workflows (id, code, name, version, definition, skill_md, manifest)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              RETURNING id, code, name, version, definition, skill_md, manifest,
-                       is_enabled, installed_at, updated_at",
+                       is_enabled, installed_at, updated_at, napp_path",
             params![id, code, name, version, definition, skill_md, manifest],
             row_to_workflow,
         )
@@ -96,10 +96,27 @@ impl Store {
         Ok(())
     }
 
+    pub fn delete_workflow_runs(&self, workflow_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM workflow_runs WHERE workflow_id = ?1", params![workflow_id])
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn delete_workflow(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM workflows WHERE id = ?1", params![id])
             .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn set_workflow_napp_path(&self, id: &str, napp_path: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE workflows SET napp_path = ?1, updated_at = unixepoch() WHERE id = ?2",
+            params![napp_path, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -385,6 +402,7 @@ fn row_to_workflow(row: &rusqlite::Row) -> rusqlite::Result<Workflow> {
         is_enabled: row.get(7)?,
         installed_at: row.get(8)?,
         updated_at: row.get(9)?,
+        napp_path: row.get(10)?,
     })
 }
 

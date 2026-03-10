@@ -2,14 +2,17 @@ pub mod hooks;
 pub mod manifest;
 pub mod pb;
 pub mod napp;
+pub mod reader;
 pub mod registry;
 pub mod role;
+pub mod role_loader;
 pub mod runtime;
 pub mod sandbox;
 pub mod signing;
 pub mod supervisor;
+pub mod version;
 
-pub use manifest::{Manifest, ManifestSignature};
+pub use manifest::{Manifest, ManifestSignature, QualifiedName};
 pub use registry::{Registry, RegistryConfig};
 pub use runtime::{Process, Runtime};
 pub use signing::{SigningKeyProvider, RevocationChecker};

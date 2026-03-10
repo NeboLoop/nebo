@@ -208,6 +208,7 @@ pub async fn list_tools(
                 "name": t.name,
                 "description": t.description,
                 "source": "builtin",
+                "inputSchema": t.input_schema,
             })
         })
         .collect();

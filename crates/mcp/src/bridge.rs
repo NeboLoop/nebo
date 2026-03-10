@@ -206,7 +206,8 @@ impl Bridge {
 /// Generate a namespaced tool name: mcp__{server_type}__{tool_name}
 fn make_tool_name(server_type: &str, original: &str) -> String {
     let st = server_type.to_lowercase().replace(' ', "_");
-    format!("mcp__{}__{}", st, original)
+    let tn = original.to_lowercase().replace(' ', "_");
+    format!("mcp__{}__{}", st, tn)
 }
 
 #[cfg(test)]
@@ -222,6 +223,11 @@ mod tests {
         assert_eq!(
             make_tool_name("My Server", "do_thing"),
             "mcp__my_server__do_thing"
+        );
+        // Tool names with spaces and mixed case get normalized
+        assert_eq!(
+            make_tool_name("slack", "Send Message"),
+            "mcp__slack__send_message"
         );
     }
 }

@@ -3,7 +3,7 @@
 > Definitive reference for the entire skills-and-tools stack in the Nebo Rust codebase.
 > Covers tool registration, execution pipeline, STRAP domain pattern, built-in tools,
 > policy/safeguards, process registry, skill lifecycle, .napp packaging, hooks, the
-> ROLE/WORK/TOOL/SKILL hierarchy, and agent integration.
+> ROLE/WORK/SKILL hierarchy, and agent integration.
 
 ---
 
@@ -17,7 +17,7 @@
 6. [Skill System](#6-skill-system)
 7. [.napp Package Format](#7-napp-package-format)
 8. [Hooks System](#8-hooks-system)
-9. [ROLE/WORK/TOOL/SKILL Hierarchy](#9-roleworktoolskill-hierarchy)
+9. [ROLE/WORK/SKILL Hierarchy](#9-roleworkskill-hierarchy)
 10. [Agent Integration](#10-agent-integration)
 11. [Cross-Reference to Go Docs](#11-cross-reference-to-go-docs)
 
@@ -800,7 +800,7 @@ A `.napp` file is a tar archive containing:
 | `manifest.json` | Yes | 1MB | Package manifest |
 | `binary` or `app` | Yes | 500MB | Native executable |
 | `signatures.json` | No | 1MB | ED25519 signatures |
-| `SKILL.md` / `skill.md` | No | 1MB | Bundled skill |
+| `TOOL.md` / `tool.md` | No | 1MB | Instructions for the agent (legacy naming) |
 | `ui/*` | No | 5MB each | Web UI assets |
 
 **`extract_napp(napp_path, dest_dir) -> Result<Manifest, NappError>`**
@@ -1134,29 +1134,27 @@ pub struct HookDispatcher {
 
 ---
 
-## 9. ROLE/WORK/TOOL/SKILL Hierarchy
+## 9. ROLE/WORK/SKILL Hierarchy
 
 ### 9.1 Hierarchy Overview
 
 ```
-ROLE → WORK → TOOL → SKILL
-(job)   (procedure) (capability) (knowledge)
+ROLE → WORK → SKILL
+(job)   (procedure) (knowledge)
 ```
 
 Each layer auto-installs its dependencies downward:
-- Installing a **ROLE** installs its referenced WORKs, TOOLs, and SKILLs
-- Installing a **WORK** installs its referenced TOOLs and SKILLs
-- Installing a **TOOL** installs as a .napp with bundled SKILLs
+- Installing a **ROLE** installs its referenced WORKs and SKILLs
+- Installing a **WORK** installs its referenced SKILLs
 
 ### 9.2 Code Formats
 
 ```
-SKILL-XXXX-XXXX-XXXX — Knowledge artifact (markdown)
-TOOL-XXXX-XXXX-XXXX  — Executable capability (.napp)
-WORK-XXXX-XXXX-XXXX  — Procedure (workflow.json)
-ROLE-XXXX-XXXX-XXXX  — Marketplace bundle (ROLE.md)
-NEBO-XXXX-XXXX-XXXX  — Agent instance (account linking)
-LOOP-XXXX-XXXX-XXXX  — Community (channel linking)
+SKIL-XXXX-XXXX-XXXX — Knowledge artifact (markdown)
+WORK-XXXX-XXXX-XXXX — Procedure (workflow.json)
+ROLE-XXXX-XXXX-XXXX — Marketplace bundle (ROLE.md)
+NEBO-XXXX-XXXX-XXXX — Agent instance (account linking)
+LOOP-XXXX-XXXX-XXXX — Community (channel linking)
 ```
 
 Format pattern: `PREFIX-AAAA-BBBB-CCCC` (prefix + 3 groups of 4 characters).
@@ -1173,8 +1171,7 @@ pub struct RoleDef {
     pub name: String,
     pub description: String,
     pub workflows: Vec<String>,     // WORK-* codes
-    pub tools: Vec<String>,         // TOOL-* codes
-    pub skills: Vec<String>,        // SKILL-* codes
+    pub skills: Vec<String>,        // SKIL-* codes
     pub pricing: Option<RolePricing>,
     pub body: String,               // Markdown body
 }
@@ -1194,10 +1191,8 @@ name: Sales SDR
 description: Outbound sales development representative
 workflows:
   - WORK-lead-qualification
-tools:
-  - TOOL-crm-lookup
 skills:
-  - SKILL-sales-qualification
+  - SKIL-sales-qualification
 pricing:
   model: monthly_fixed
   cost: 47.0
@@ -1209,8 +1204,7 @@ Markdown body describing behavior...
 
 **Validation:**
 - `id` and `name` are required
-- Skill codes must start with `SKILL-`
-- Tool codes must start with `TOOL-`
+- Skill codes must start with `SKIL-`
 - Workflow codes must start with `WORK-`
 
 ### 9.4 WorkflowDef
@@ -1239,17 +1233,10 @@ pub struct Activity {
     pub id: String,
     pub intent: String,                     // What this activity does
     pub skills: Vec<String>,                // SKILL codes
-    pub tools: Vec<ToolRef>,                // Tool references
     pub model: String,                      // "haiku", "sonnet", "opus"
     pub steps: Vec<String>,                 // Natural language instructions
     pub token_budget: TokenBudget,          // default max: 4096
     pub on_error: OnError,                  // retry + fallback policy
-}
-
-pub enum ToolRef {
-    Code(String),                           // "TOOL-A1B2-C3D4-E5F6"
-    Interface { interface: String },        // { "interface": "crm-lookup" }
-    Pinned { code: String },                // { "code": "TOOL-..." }
 }
 
 pub enum Fallback {
@@ -1275,15 +1262,6 @@ CREATE TABLE workflows (
     manifest TEXT,
     installed_at TEXT DEFAULT (datetime('now')),
     enabled INTEGER DEFAULT 1
-);
-
--- Tool interface bindings (user's choices)
-CREATE TABLE workflow_tool_bindings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    workflow_id TEXT NOT NULL REFERENCES workflows(id),
-    interface_name TEXT NOT NULL,
-    tool_code TEXT NOT NULL,
-    UNIQUE(workflow_id, interface_name)
 );
 
 -- Workflow run history
@@ -1339,7 +1317,6 @@ pub async fn execute_workflow(
     trigger_detail: Option<&str>,
     store: &Arc<Store>,
     provider: &dyn ai::Provider,
-    resolved_tools: &[Box<dyn DynTool>],
 ) -> Result<String, WorkflowError>
 ```
 
@@ -1347,15 +1324,13 @@ pub async fn execute_workflow(
 1. Create workflow run record with UUID
 2. Create shared session key: `"workflow-{workflow_id}-{run_id}"`
 3. Sequentially execute each activity
-4. Filter tools per activity (only declared tools available)
-5. Accumulate prior context between activities
-6. Track total tokens against `budget.total_per_run`
-7. Apply `on_error.fallback` policy on failure
-8. Return run ID on success
+4. Accumulate prior context between activities
+5. Track total tokens against `budget.total_per_run`
+6. Apply `on_error.fallback` policy on failure
+7. Return run ID on success
 
 **Activity execution** is a lean agentic loop (no steering, no memory, no personality):
 - Build prompt from `intent + steps + prior_context + inputs`
-- Only declared tools available
 - Hard token ceiling: `token_budget.max` (default 4096)
 - Max 20 iterations per activity
 - Retry logic via `on_error.retry` (default 1 attempt)
@@ -1726,7 +1701,7 @@ The system prompt is composed of sections:
 | Skill System | [platform-taxonomy.md](platform-taxonomy.md) | Same SKILL.md format. Rust adds hot-reload via `watch()` |
 | .napp Package | [plugins-store-oauth-dev.md](plugins-store-oauth-dev.md) | Same archive format. Rust uses tar instead of custom format |
 | Hooks | [agent-tools.md](agent-tools.md) | Same 10 hooks. Rust adds circuit breaker (3 failures) |
-| Hierarchy | [platform-taxonomy.md](platform-taxonomy.md) | Same ROLE/WORK/TOOL/SKILL hierarchy |
+| Hierarchy | [platform-taxonomy.md](platform-taxonomy.md) | Same ROLE/WORK/SKILL hierarchy |
 | Agent Loop | [agent-core.md](agent-core.md) | Same agentic loop structure. Rust adds micro-compaction |
 | Steering | [agent-core.md](agent-core.md) | Same 12 generators. Rust uses panic recovery per generator |
 | Memory | [embeddings-and-memory.md](embeddings-and-memory.md) | Same decay formula. Rust adds two-pass overfetch |

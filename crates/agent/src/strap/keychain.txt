@@ -1,0 +1,9 @@
+### os — Credential Storage (resource: keychain)
+USE THIS when: user wants to store, retrieve, or manage passwords, API keys, or credentials.
+
+- os(resource: "keychain", action: "get", service: "github", account: "user") — Get a stored password
+- os(resource: "keychain", action: "find", service: "github") — Search for matching credentials
+- os(resource: "keychain", action: "add", service: "github", account: "user", password: "...") — Store a credential
+- os(resource: "keychain", action: "delete", service: "github", account: "user") — Delete a credential
+
+NOTE: All keychain operations require user approval before execution.

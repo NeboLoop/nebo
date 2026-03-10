@@ -22,7 +22,11 @@ prost = "0.13"
 base64 = "0.22"
 libc = "0.2"
 serde_yaml = { workspace = true }
+semver = { workspace = true }
 async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 tonic-build = "0.12"

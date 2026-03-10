@@ -9,10 +9,12 @@ db = { workspace = true }
 ai = { workspace = true }
 tools = { workspace = true }
 config = { workspace = true }
+napp = { workspace = true }
 types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }

@@ -132,7 +132,7 @@ pub fn micro_compact(
     let mut tokens_saved = 0usize;
 
     // Find tool result indices eligible for compaction
-    let compactable_tools = ["system", "web", "file", "shell"];
+    let compactable_tools = ["os", "system", "web", "file", "shell"];
     let mut tool_result_indices: Vec<(usize, usize, String)> = Vec::new(); // (index, age_from_end, tool_name)
 
     for (i, msg) in result.iter().enumerate() {
@@ -244,7 +244,7 @@ fn trim_priority(tool_name: &str) -> usize {
         "web" => 0,    // Stale fastest
         "file" => 1,   // Largest output
         "shell" => 2,  // Often large
-        "system" => 2, // Same as shell
+        "os" | "system" => 2, // Same as shell
         _ => 3,
     }
 }

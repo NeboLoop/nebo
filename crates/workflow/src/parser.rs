@@ -3,13 +3,14 @@ use serde::{Deserialize, Serialize};
 use crate::WorkflowError;
 
 /// Top-level workflow definition (parsed from workflow.json).
+///
+/// Triggers are no longer part of workflow.json — they are owned by Roles
+/// (via role.json). Legacy `triggers` fields are silently ignored on parse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowDef {
     pub version: String,
     pub id: String,
     pub name: String,
-    #[serde(default)]
-    pub triggers: Vec<Trigger>,
     #[serde(default)]
     pub inputs: HashMap<String, InputParam>,
     pub activities: Vec<Activity>,
@@ -17,18 +18,6 @@ pub struct WorkflowDef {
     pub dependencies: Dependencies,
     #[serde(default)]
     pub budget: Budget,
-}
-
-/// Trigger type for a workflow.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum Trigger {
-    #[serde(rename = "event")]
-    Event { event: String },
-    #[serde(rename = "schedule")]
-    Schedule { cron: String },
-    #[serde(rename = "manual")]
-    Manual,
 }
 
 /// Input parameter definition.
@@ -50,8 +39,6 @@ pub struct Activity {
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
-    pub tools: Vec<ToolRef>,
-    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub steps: Vec<String>,
@@ -59,15 +46,6 @@ pub struct Activity {
     pub token_budget: TokenBudget,
     #[serde(default)]
     pub on_error: OnError,
-}
-
-/// Tool reference — can be a code string, interface binding, or pinned code.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ToolRef {
-    Interface { interface: String },
-    Pinned { code: String },
-    Code(String),
 }
 
 /// Token budget for an activity.
@@ -117,22 +95,13 @@ pub enum Fallback {
     Abort,
 }
 
-/// Workflow dependencies.
+/// Workflow dependencies — qualified names that must be installed.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Dependencies {
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
-    pub tools: Vec<ToolDep>,
-    #[serde(default)]
     pub workflows: Vec<String>,
-}
-
-/// Tool dependency descriptor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDep {
-    pub code: String,
-    pub name: String,
 }
 
 /// Budget constraints for the entire workflow run.
@@ -202,7 +171,6 @@ mod tests {
             "version": "1.0",
             "id": "test-wf",
             "name": "Test Workflow",
-            "triggers": [{"type": "manual"}],
             "inputs": {},
             "activities": [{
                 "id": "step1",
@@ -211,12 +179,29 @@ mod tests {
                 "steps": ["Step one"],
                 "token_budget": {"max": 1000}
             }],
-            "dependencies": {"skills": [], "tools": []},
+            "dependencies": {"skills": []},
             "budget": {"total_per_run": 1000, "cost_estimate": "$0.001"}
         }"#;
         let def = parse_workflow(json).unwrap();
         assert_eq!(def.id, "test-wf");
         assert_eq!(def.activities.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_legacy_triggers_ignored() {
+        // Legacy workflow.json with triggers should parse without error
+        let json = r#"{
+            "version": "1.0",
+            "id": "test-wf",
+            "name": "Test",
+            "triggers": [{"type": "manual"}],
+            "activities": [{
+                "id": "step1",
+                "intent": "Do something"
+            }]
+        }"#;
+        let def = parse_workflow(json).unwrap();
+        assert_eq!(def.id, "test-wf");
     }
 
     #[test]
@@ -233,27 +218,4 @@ mod tests {
         assert!(parse_workflow(json).is_err());
     }
 
-    #[test]
-    fn test_parse_tool_ref_variants() {
-        let code: ToolRef = serde_json::from_str(r#""TOOL-A1B2-C3D4-E5F6""#).unwrap();
-        assert!(matches!(code, ToolRef::Code(_)));
-
-        let iface: ToolRef = serde_json::from_str(r#"{"interface": "crm-lookup"}"#).unwrap();
-        assert!(matches!(iface, ToolRef::Interface { .. }));
-
-        let pinned: ToolRef = serde_json::from_str(r#"{"code": "TOOL-A1B2-C3D4-E5F6"}"#).unwrap();
-        assert!(matches!(pinned, ToolRef::Pinned { .. }));
-    }
-
-    #[test]
-    fn test_parse_triggers() {
-        let manual: Trigger = serde_json::from_str(r#"{"type": "manual"}"#).unwrap();
-        assert!(matches!(manual, Trigger::Manual));
-
-        let sched: Trigger = serde_json::from_str(r#"{"type": "schedule", "cron": "0 * * * *"}"#).unwrap();
-        assert!(matches!(sched, Trigger::Schedule { .. }));
-
-        let event: Trigger = serde_json::from_str(r#"{"type": "event", "event": "lead.created"}"#).unwrap();
-        assert!(matches!(event, Trigger::Event { .. }));
-    }
 }

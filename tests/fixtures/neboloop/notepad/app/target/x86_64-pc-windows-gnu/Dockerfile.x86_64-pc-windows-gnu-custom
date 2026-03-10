@@ -1,0 +1,5 @@
+
+                FROM ghcr.io/cross-rs/x86_64-pc-windows-gnu:main
+                ARG CROSS_DEB_ARCH=
+                ARG CROSS_CMD
+                RUN eval "${CROSS_CMD}"

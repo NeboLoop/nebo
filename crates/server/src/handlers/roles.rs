@@ -1,6 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
+use tracing::{info, warn};
 
 use crate::state::AppState;
 use super::{to_error_response, HandlerResult};
@@ -15,6 +16,18 @@ pub struct ListQuery {
 
 fn default_limit() -> i64 {
     50
+}
+
+/// Extract roleJson from request body — handles both string and object values.
+fn extract_role_json_str(body: &serde_json::Value) -> Option<String> {
+    let val = &body["roleJson"];
+    if let Some(s) = val.as_str() {
+        Some(s.to_string())
+    } else if val.is_object() {
+        Some(val.to_string())
+    } else {
+        None
+    }
 }
 
 /// Parse ROLE.md content: extract YAML frontmatter between `---` delimiters.
@@ -49,8 +62,6 @@ struct RoleFrontmatter {
     #[serde(default)]
     workflows: Vec<String>,
     #[serde(default)]
-    tools: Vec<String>,
-    #[serde(default)]
     skills: Vec<String>,
     #[serde(default)]
     pricing: Option<RolePricing>,
@@ -70,11 +81,37 @@ pub async fn list_roles(
     Query(q): Query<ListQuery>,
 ) -> HandlerResult<serde_json::Value> {
     let limit = q.limit.min(100);
-    let roles = state.store.list_roles(limit, q.offset).map_err(to_error_response)?;
+    let db_roles = state.store.list_roles(limit, q.offset).map_err(to_error_response)?;
     let total = state.store.count_roles().unwrap_or(0);
+
+    // Also scan filesystem roles (matching agent behavior)
+    let mut fs_roles = Vec::new();
+    if let Ok(data_dir) = config::data_dir() {
+        let installed = napp::role_loader::scan_installed_roles(&data_dir.join("nebo").join("roles"));
+        let user = napp::role_loader::scan_user_roles(&data_dir.join("user").join("roles"));
+
+        let db_names: Vec<&str> = db_roles.iter().map(|r| r.name.as_str()).collect();
+        for role in installed.into_iter().chain(user.into_iter()) {
+            if !db_names.contains(&role.role_def.name.as_str()) {
+                let source = match role.source {
+                    napp::role_loader::RoleSource::Installed => "installed",
+                    napp::role_loader::RoleSource::User => "user",
+                };
+                fs_roles.push(serde_json::json!({
+                    "name": role.role_def.name,
+                    "description": role.role_def.description,
+                    "source": source,
+                    "version": role.version,
+                    "isEnabled": true,
+                }));
+            }
+        }
+    }
+
     Ok(Json(serde_json::json!({
-        "roles": roles,
-        "total": total,
+        "roles": db_roles,
+        "filesystemRoles": fs_roles,
+        "total": total + fs_roles.len() as i64,
     })))
 }
 
@@ -104,15 +141,69 @@ pub async fn create_role(
         &fm.description
     };
 
-    let frontmatter_json = serde_json::json!({
-        "workflows": fm.workflows,
-        "tools": fm.tools,
-        "skills": fm.skills,
-        "pricing": fm.pricing.as_ref().map(|p| serde_json::json!({
-            "model": p.model,
-            "cost": p.cost,
-        })),
-    });
+    // Merge roleJson refs into frontmatter so they persist on query
+    let mut merged_workflows = fm.workflows.clone();
+    let mut merged_skills = fm.skills.clone();
+
+    if let Some(role_json_str) = extract_role_json_str(&body) {
+        if let Ok(role_config) = napp::role::parse_role_config(&role_json_str) {
+            for (_, binding) in &role_config.workflows {
+                if !merged_workflows.contains(&binding.workflow_ref) {
+                    merged_workflows.push(binding.workflow_ref.clone());
+                }
+            }
+            for s in &role_config.skills {
+                if !merged_skills.contains(s) {
+                    merged_skills.push(s.clone());
+                }
+            }
+        }
+    }
+
+    // Build frontmatter: include roleJson data if present for full trigger info
+    let frontmatter_json = if let Some(ref rj_str) = extract_role_json_str(&body) {
+        if let Ok(_role_config) = napp::role::parse_role_config(rj_str) {
+            // Store full roleJson as frontmatter so GET returns trigger data
+            let mut fm_val: serde_json::Value = serde_json::from_str(rj_str).unwrap_or_default();
+            // Ensure workflows/skills include merged values from ROLE.md frontmatter
+            if let Some(obj) = fm_val.as_object_mut() {
+                if !obj.contains_key("workflows") {
+                    obj.insert("workflows".into(), serde_json::json!({}));
+                }
+                if !obj.contains_key("skills") {
+                    obj.insert("skills".into(), serde_json::json!(merged_skills));
+                }
+            }
+            // Add pricing from ROLE.md frontmatter if not in roleJson
+            if let (Some(obj), Some(p)) = (fm_val.as_object_mut(), &fm.pricing) {
+                if !obj.contains_key("pricing") {
+                    obj.insert("pricing".into(), serde_json::json!({
+                        "model": p.model,
+                        "cost": p.cost,
+                    }));
+                }
+            }
+            fm_val
+        } else {
+            serde_json::json!({
+                "workflows": merged_workflows,
+                "skills": merged_skills,
+                "pricing": fm.pricing.as_ref().map(|p| serde_json::json!({
+                    "model": p.model,
+                    "cost": p.cost,
+                })),
+            })
+        }
+    } else {
+        serde_json::json!({
+            "workflows": merged_workflows,
+            "skills": merged_skills,
+            "pricing": fm.pricing.as_ref().map(|p| serde_json::json!({
+                "model": p.model,
+                "cost": p.cost,
+            })),
+        })
+    };
 
     let pricing_model = fm.pricing.as_ref().map(|p| p.model.as_str());
     let pricing_cost = fm.pricing.as_ref().map(|p| p.cost);
@@ -131,17 +222,76 @@ pub async fn create_role(
         )
         .map_err(to_error_response)?;
 
+    // Write ROLE.md and role.json to user/roles/{name}/ for filesystem-based loading
+    if let Ok(user_dir) = config::user_dir() {
+        let role_dir = user_dir.join("roles").join(name);
+        if std::fs::create_dir_all(&role_dir).is_ok() {
+            let _ = std::fs::write(role_dir.join("ROLE.md"), role_md);
+            // Write the original roleJson if provided (contains triggers, workflow bindings),
+            // otherwise fall back to the merged frontmatter
+            let role_json_content = extract_role_json_str(&body)
+                .unwrap_or_else(|| frontmatter_json.to_string());
+            let _ = std::fs::write(role_dir.join("role.json"), &role_json_content);
+            // Auto-generate manifest.json so version info is available
+            let manifest_path = role_dir.join("manifest.json");
+            if !manifest_path.exists() {
+                let manifest = serde_json::json!({
+                    "name": name,
+                    "version": "1.0.0",
+                    "type": "role",
+                    "description": description,
+                });
+                let _ = std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap_or_default());
+            }
+            let _ = state.store.set_role_napp_path(&id, &role_dir.to_string_lossy());
+        }
+    }
+
+    // Process role.json workflow bindings if provided
+    let mut install_report = Vec::new();
+    if let Some(role_json_str) = extract_role_json_str(&body) {
+        if let Ok(role_config) = napp::role::parse_role_config(&role_json_str) {
+            install_report = process_role_bindings(&id, &role_config, &state).await;
+        }
+    }
+
     state.hub.broadcast(
         "role_installed",
         serde_json::json!({ "roleId": role.id, "name": role.name }),
     );
 
-    // Report missing dependencies
-    let missing_deps = check_dependencies(&fm, &state);
+    // Cascade: resolve dependencies
+    let mut deps = Vec::new();
+    for w in &fm.workflows {
+        deps.push(crate::deps::DepRef {
+            dep_type: crate::deps::DepType::Workflow,
+            reference: w.clone(),
+        });
+    }
+    for s in &fm.skills {
+        deps.push(crate::deps::DepRef {
+            dep_type: crate::deps::DepType::Skill,
+            reference: s.clone(),
+        });
+    }
+    // Also pull deps from role.json if provided
+    if let Some(role_json_str) = extract_role_json_str(&body) {
+        if let Ok(role_config) = napp::role::parse_role_config(&role_json_str) {
+            deps.extend(crate::deps::extract_role_deps(&role_config));
+        }
+    }
+
+    let cascade = if !deps.is_empty() {
+        let mut visited = std::collections::HashSet::new();
+        Some(crate::deps::resolve_cascade(&state, deps, &mut visited).await)
+    } else {
+        None
+    };
 
     Ok(Json(serde_json::json!({
         "role": role,
-        "missingDeps": missing_deps,
+        "installReport": install_report,
+        "cascade": cascade,
     })))
 }
 
@@ -186,7 +336,6 @@ pub async fn update_role(
 
     let frontmatter_json = serde_json::json!({
         "workflows": fm.workflows,
-        "tools": fm.tools,
         "skills": fm.skills,
         "pricing": fm.pricing.as_ref().map(|p| serde_json::json!({
             "model": p.model,
@@ -230,7 +379,21 @@ pub async fn delete_role(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
+    // Unregister triggers (cron jobs with role-{id} prefix)
+    workflow::triggers::unregister_role_triggers(&id, &state.store);
+
+    // role_workflows are cascade-deleted via FK when role is deleted
     state.store.delete_role(&id).map_err(to_error_response)?;
+
+    // Clean up filesystem directory if it exists
+    if let Some(ref napp_path) = role.napp_path {
+        let path = std::path::Path::new(napp_path);
+        if path.exists() {
+            if let Err(e) = std::fs::remove_dir_all(path) {
+                warn!(role_id = %id, path = %napp_path, error = %e, "failed to remove role directory");
+            }
+        }
+    }
 
     state.hub.broadcast(
         "role_uninstalled",
@@ -265,57 +428,149 @@ pub async fn install_deps(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    let (fm, _body) = parse_role_md(&role.role_md).map_err(to_error_response)?;
-    let missing = check_dependencies(&fm, &state);
+    // Collect deps from frontmatter
+    let deps = crate::deps::extract_role_deps_from_frontmatter(&role.frontmatter);
 
-    // Report what's missing — actual NeboLoop downloads handled by install code redemption flow
+    // Also collect from role.json bindings if stored
+    let mut all_deps = deps;
+    if let Ok(bindings) = state.store.list_role_workflows(&id) {
+        for b in &bindings {
+            all_deps.push(crate::deps::DepRef {
+                dep_type: crate::deps::DepType::Workflow,
+                reference: b.workflow_ref.clone(),
+            });
+        }
+    }
 
-    let total = missing.len();
+    // Force-install (user explicitly requested)
+    let mut visited = std::collections::HashSet::new();
+    let cascade = crate::deps::resolve_cascade_force(&state, all_deps, &mut visited).await;
+
     Ok(Json(serde_json::json!({
         "roleId": id,
-        "missingDeps": missing,
-        "total": total,
+        "cascade": cascade,
     })))
 }
 
-/// Check which dependencies are missing for a role.
-fn check_dependencies(fm: &RoleFrontmatter, state: &AppState) -> Vec<serde_json::Value> {
-    let mut missing = Vec::new();
+/// Process workflow bindings from role.json: upsert to DB and register triggers.
+async fn process_role_bindings(
+    role_id: &str,
+    config: &napp::role::RoleConfig,
+    state: &AppState,
+) -> Vec<serde_json::Value> {
+    let mut report = Vec::new();
 
-    // Check skills (file-based)
-    if let Ok(data_dir) = config::data_dir() {
-        let skills_dir = data_dir.join("skills");
-        for skill_code in &fm.skills {
-            let skill_path = skills_dir.join(format!("{}.yaml", skill_code));
-            let skill_dir_path = skills_dir.join(skill_code).join("SKILL.md");
-            if !skill_path.exists() && !skill_dir_path.exists() {
-                missing.push(serde_json::json!({
-                    "type": "skill",
-                    "code": skill_code,
-                }));
+    for (binding_name, binding) in &config.workflows {
+        let (trigger_type, trigger_config) = match &binding.trigger {
+            napp::role::RoleTrigger::Schedule { cron } => ("schedule", cron.clone()),
+            napp::role::RoleTrigger::Heartbeat { interval, window } => {
+                let cfg = match window {
+                    Some(w) => format!("{}|{}", interval, w),
+                    None => interval.clone(),
+                };
+                ("heartbeat", cfg)
             }
-        }
-    }
+            napp::role::RoleTrigger::Event { sources } => ("event", sources.join(",")),
+            napp::role::RoleTrigger::Manual => ("manual", String::new()),
+        };
 
-    // Check workflows (DB-based)
-    for wf_code in &fm.workflows {
-        if state.store.get_workflow_by_code(wf_code).ok().flatten().is_none() {
-            missing.push(serde_json::json!({
-                "type": "workflow",
-                "code": wf_code,
+        // Try to resolve workflow_id from the ref
+        let workflow_id = resolve_workflow_ref(&binding.workflow_ref, state);
+
+        let inputs_json = if binding.inputs.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&binding.inputs).ok()
+        };
+
+        let desc = if binding.description.is_empty() {
+            None
+        } else {
+            Some(binding.description.as_str())
+        };
+
+        if let Err(e) = state.store.upsert_role_workflow(
+            role_id,
+            binding_name,
+            &binding.workflow_ref,
+            workflow_id.as_deref(),
+            trigger_type,
+            &trigger_config,
+            desc,
+            inputs_json.as_deref(),
+        ) {
+            warn!(role = role_id, binding = %binding_name, error = %e, "failed to upsert role workflow");
+            report.push(serde_json::json!({
+                "binding": binding_name,
+                "status": "error",
+                "error": e.to_string(),
             }));
+            continue;
         }
-    }
 
-    // Check tools (napp registry — in-memory)
-    // Tool check requires async napp_registry access — report as unchecked for now
-    for tool_code in &fm.tools {
-        missing.push(serde_json::json!({
-            "type": "tool",
-            "code": tool_code,
-            "status": "unchecked",
+        report.push(serde_json::json!({
+            "binding": binding_name,
+            "ref": binding.workflow_ref,
+            "workflowId": workflow_id,
+            "triggerType": trigger_type,
+            "status": if workflow_id.is_some() { "linked" } else { "pending" },
         }));
     }
 
-    missing
+    // Register schedule/event triggers from the bindings
+    if let Ok(bindings) = state.store.list_role_workflows(role_id) {
+        workflow::triggers::register_role_triggers(role_id, &bindings, &state.store);
+
+        // Register event subscriptions with the dispatcher
+        let event_subs: Vec<_> = bindings
+            .iter()
+            .filter(|b| b.trigger_type == "event")
+            .flat_map(|b| {
+                b.trigger_config.split(',').map(move |source| {
+                    workflow::events::EventSubscription {
+                        pattern: source.trim().to_string(),
+                        workflow_id: b.workflow_id.clone().unwrap_or_default(),
+                        default_inputs: b
+                            .inputs
+                            .as_ref()
+                            .and_then(|s| serde_json::from_str(s).ok())
+                            .unwrap_or_default(),
+                        role_source: role_id.to_string(),
+                        binding_name: b.binding_name.clone(),
+                    }
+                })
+            })
+            .collect();
+
+        for sub in event_subs {
+            state.event_dispatcher.subscribe(sub).await;
+        }
+    }
+
+    info!(role = role_id, bindings = config.workflows.len(), "processed role bindings");
+    report
 }
+
+/// Try to resolve a workflow ref to a local workflow ID.
+fn resolve_workflow_ref(workflow_ref: &str, state: &AppState) -> Option<String> {
+    // Try by code (WORK-XXXX-XXXX)
+    if workflow_ref.starts_with("WORK-") {
+        return state
+            .store
+            .get_workflow_by_code(workflow_ref)
+            .ok()
+            .flatten()
+            .map(|wf| wf.id);
+    }
+    // Try by name search for qualified refs
+    if let Ok(workflows) = state.store.list_workflows(100, 0) {
+        let lower = workflow_ref.to_lowercase();
+        for wf in &workflows {
+            if wf.name.to_lowercase() == lower || wf.id == workflow_ref {
+                return Some(wf.id.clone());
+            }
+        }
+    }
+    None
+}
+

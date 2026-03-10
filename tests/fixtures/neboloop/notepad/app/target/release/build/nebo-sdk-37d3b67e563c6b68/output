@@ -1,0 +1,8 @@
+cargo:rerun-if-changed=proto/apps/v0/common.proto
+cargo:rerun-if-changed=proto/apps/v0/tool.proto
+cargo:rerun-if-changed=proto/apps/v0/channel.proto
+cargo:rerun-if-changed=proto/apps/v0/gateway.proto
+cargo:rerun-if-changed=proto/apps/v0/comm.proto
+cargo:rerun-if-changed=proto/apps/v0/ui.proto
+cargo:rerun-if-changed=proto/apps/v0/schedule.proto
+cargo:rerun-if-changed=.

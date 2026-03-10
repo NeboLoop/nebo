@@ -9,8 +9,10 @@ types = { workspace = true }
 ai = { workspace = true }
 db = { workspace = true }
 config = { workspace = true }
+napp = { workspace = true }
 
 browser = { workspace = true }
+comm = { workspace = true }
 mcp = { workspace = true }
 notify_crate = { workspace = true }
 tokio = { workspace = true }
@@ -29,6 +31,9 @@ walkdir = "2"
 which = "7"
 urlencoding = "2"
 base64 = "0.22"
+tempfile = "3"
+sandbox-runtime = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+flate2 = "1"
+tar = "0.4"

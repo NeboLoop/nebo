@@ -314,54 +314,12 @@ async fn run_chat(
     prompt: Option<String>,
 ) -> anyhow::Result<()> {
     let store = Arc::new(db::Store::new(&cfg.database.sqlite_path)?);
-    let profiles = store.list_auth_profiles()?;
 
-    if profiles.is_empty() {
-        println!("No providers configured. Add one with `nebo serve` and the web UI.");
-        return Ok(());
-    }
-
-    // Build providers from auth profiles
-    let models_cfg = config::ModelsConfig::load();
-    let mut providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
-    for profile in &profiles {
-        if profile.is_active.unwrap_or(0) == 0 {
-            continue;
-        }
-        let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
-            "anthropic" => {
-                let default_model = models_cfg.default_model_for_provider("anthropic")
-                    .unwrap_or_else(|| "claude-sonnet-4-5-20250929".into());
-                Some(Arc::new(ai::AnthropicProvider::new(
-                    profile.api_key.clone(),
-                    profile.model.clone().unwrap_or(default_model),
-                )))
-            }
-            "openai" => {
-                let default_model = models_cfg.default_model_for_provider("openai")
-                    .unwrap_or_else(|| "gpt-5.2".into());
-                Some(Arc::new(ai::OpenAIProvider::new(
-                    profile.api_key.clone(),
-                    profile.model.clone().unwrap_or(default_model),
-                )))
-            }
-            "ollama" => {
-                let default_model = models_cfg.default_model_for_provider("ollama")
-                    .unwrap_or_else(|| "qwen3:4b".into());
-                Some(Arc::new(ai::OllamaProvider::new(
-                    profile.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into()),
-                    profile.model.clone().unwrap_or(default_model),
-                )))
-            }
-            _ => None,
-        };
-        if let Some(p) = provider {
-            providers.push(p);
-        }
-    }
+    // Build providers using the canonical server function (handles all provider types)
+    let providers = server::build_providers(&store, cfg, None);
 
     if providers.is_empty() {
-        println!("No active providers available.");
+        println!("No active providers available. Add one with `nebo serve` and the web UI.");
         return Ok(());
     }
 

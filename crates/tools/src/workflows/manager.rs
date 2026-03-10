@@ -32,8 +32,7 @@ pub struct WorkflowRunInfo {
 
 /// Trait for managing workflows and dispatching runs.
 ///
-/// Defined in tools crate, implemented in server crate (same pattern as
-/// NappManager and AdvisorDeliberator).
+/// Defined in tools crate, implemented in server crate.
 pub trait WorkflowManager: Send + Sync {
     /// List all installed workflows.
     fn list(&self) -> Pin<Box<dyn Future<Output = Vec<WorkflowInfo>> + Send + '_>>;
@@ -63,4 +62,14 @@ pub trait WorkflowManager: Send + Sync {
 
     /// Toggle a workflow's enabled state. Returns new is_enabled.
     fn toggle<'a>(&'a self, id: &'a str) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
+
+    /// Create a new workflow from a name and JSON definition.
+    fn create<'a>(
+        &'a self,
+        name: &'a str,
+        definition: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
+
+    /// Cancel a running workflow by run_id.
+    fn cancel<'a>(&'a self, run_id: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 }

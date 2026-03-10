@@ -156,7 +156,7 @@ impl Store {
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE cron_jobs SET last_run = CURRENT_TIMESTAMP, run_count = run_count + 1, last_error = ?2 WHERE id = ?1",
+            "UPDATE cron_jobs SET last_run = datetime('now'), run_count = run_count + 1, last_error = ?2 WHERE id = ?1",
             params![id, last_error],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;

@@ -192,8 +192,8 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     sections.push(
         "# Memory Instructions\n\
          You have persistent memory. Facts are automatically extracted from conversations.\n\
-         Use bot(resource: memory, action: search) to find memories.\n\
-         Use bot(resource: memory, action: recall, key: \"...\") for specific facts.\n\
+         Use agent(resource: memory, action: search) to find memories.\n\
+         Use agent(resource: memory, action: recall, key: \"...\") for specific facts.\n\
          Only use explicit store when the user says \"remember this\"."
             .to_string(),
     );

@@ -61,6 +61,7 @@ impl Pipeline {
             Box::new(PendingTaskAction),
             Box::new(TaskProgress),
             Box::new(ActiveObjectiveReminder),
+            Box::new(ProgressNudge),
             Box::new(LoopDetector),
             Box::new(JanusQuotaWarning),
         ];
@@ -201,7 +202,7 @@ fn count_consecutive_same_tool_calls(messages: &[ChatMessage]) -> (String, usize
                         .unwrap_or("")
                         .to_string();
 
-                    if name == "bot" {
+                    if name == "agent" {
                         break; // Progress marker
                     }
 
@@ -520,7 +521,42 @@ impl Generator for LoopDetector {
     }
 }
 
-// 12. Janus Quota Warning
+// 12. Progress Nudge
+struct ProgressNudge;
+impl Generator for ProgressNudge {
+    fn name(&self) -> &str { "progress_nudge" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
+        if ctx.active_task.is_empty() || ctx.iteration < 10 {
+            return vec![];
+        }
+
+        if ctx.iteration == 10 {
+            return vec![SteeringMessage {
+                content: "You are on turn 10. Assess your progress: \
+                          what have you found so far and what remains? \
+                          If you have enough, synthesize your results."
+                    .to_string(),
+                position: Position::End,
+            }];
+        }
+
+        if ctx.iteration % 10 == 0 {
+            return vec![SteeringMessage {
+                content: format!(
+                    "You are on turn {}. Wrap up now. \
+                     Synthesize what you have and deliver results. \
+                     Do not start new lines of inquiry.",
+                    ctx.iteration
+                ),
+                position: Position::End,
+            }];
+        }
+
+        vec![]
+    }
+}
+
+// 13. Janus Quota Warning
 struct JanusQuotaWarning;
 impl Generator for JanusQuotaWarning {
     fn name(&self) -> &str { "janus_quota_warning" }

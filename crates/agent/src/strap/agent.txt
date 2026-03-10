@@ -1,0 +1,61 @@
+### agent — Self-Management & Cognition
+USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, or asking the user a question.
+
+**Sub-agents (parallel work):**
+Spawn sub-agents for independent work. Two modes:
+- **wait: true (DEFAULT)** — You block until the sub-agent finishes. Result returns inline. Use this for most cases.
+- **wait: false** — Sub-agent runs in background. Its result is automatically delivered to your conversation when it completes. Use this only when you have other work to do in parallel.
+- agent(resource: task, action: spawn, prompt: "Research competitor pricing") — Spawn and wait for result (default)
+- agent(resource: task, action: spawn, prompt: "...", wait: false) — Background; result delivered when done
+- agent(resource: task, action: status, agent_id: "...") — Check status of a background agent
+- agent(resource: task, action: cancel, agent_id: "...") — Cancel a running sub-agent
+
+**Work tracking (keep yourself on task):**
+For multi-step work, create tasks to track your progress. This prevents you from losing focus or repeating steps.
+- agent(resource: task, action: create, subject: "Test shell tool") — Create a trackable step
+- agent(resource: task, action: update, task_id: "1", status: "completed") — Mark done (pending → in_progress → completed)
+- agent(resource: task, action: list) — See all tasks and sub-agents
+- agent(resource: task, action: delete, task_id: "1") — Remove a task
+
+When to spawn vs do it yourself:
+- Spawn when: multiple independent tasks, long-running research, tasks that don't depend on each other
+- Do it yourself when: simple single task, tasks that depend on each other's results, quick lookups
+
+**Memory (3-tier persistence):**
+- agent(resource: memory, action: store, key: "user/name", value: "Alice", layer: "tacit") — Store a fact
+- agent(resource: memory, action: recall, key: "user/name") — Recall a specific fact
+- agent(resource: memory, action: search, query: "...") — Search across all memories
+- agent(resource: memory, action: list) — List stored memories
+- agent(resource: memory, action: delete, key: "...") — Delete a memory
+- agent(resource: memory, action: clear) — Clear all memories
+Layers: "tacit" (long-term preferences — MOST COMMON), "daily" (today's facts, auto-expires), "entity" (people/places/things)
+
+**Sessions:**
+- agent(resource: session, action: list) — List conversation sessions
+- agent(resource: session, action: history, session_key: "...") — View session history
+- agent(resource: session, action: status) — Current session status
+- agent(resource: session, action: clear) — Clear current session
+- agent(resource: session, action: query, session_key: "...", query: "...") — Search session history
+
+**Profile:**
+- agent(resource: profile, action: get) — View bot identity/profile
+- agent(resource: profile, action: update, name: "...", role: "...") — Update profile
+- agent(resource: profile, action: open_billing) — Open billing/subscription page
+
+**Advisors (internal deliberation):**
+For complex decisions, consult advisors who return independent perspectives.
+- agent(resource: advisors, action: deliberate, task: "Should we use PostgreSQL or SQLite?") — Consult all
+- agent(resource: advisors, action: deliberate, task: "...", advisors: ["pragmatist", "skeptic"]) — Specific ones
+
+**Vision (image analysis):**
+- agent(resource: vision, action: analyze, image: "/path/to/image.png") — Analyze an image
+
+**Context (conversation management):**
+- agent(resource: context, action: summary) — Get current context/conversation summary
+- agent(resource: context, action: compact) — Compact conversation to free context space
+- agent(resource: context, action: reset) — Reset conversation context
+
+**Ask (user input):**
+- agent(resource: ask, action: prompt, text: "What would you like?") — Prompt user for input
+- agent(resource: ask, action: confirm, text: "Proceed with deletion?") — Yes/no confirmation
+- agent(resource: ask, action: select, text: "Pick a color", options: ["red", "blue", "green"]) — Multiple choice

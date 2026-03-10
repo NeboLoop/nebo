@@ -1,0 +1,5 @@
+
+                FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+                ARG CROSS_DEB_ARCH=
+                ARG CROSS_CMD
+                RUN eval "${CROSS_CMD}"

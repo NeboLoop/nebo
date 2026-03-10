@@ -182,10 +182,20 @@ impl NeboLoopApi {
         self.do_json(reqwest::Method::GET, &format!("/api/v1/skills/{}", id), None::<&()>).await
     }
 
-    /// Install a skill for this bot. Accepts install codes as ID.
-    pub async fn install_skill(&self, id: &str) -> Result<InstallResponse, CommError> {
-        let body = serde_json::json!({ "botId": self.bot_id });
-        self.do_json(reqwest::Method::POST, &format!("/api/v1/skills/{}/install", id), Some(&body)).await
+    // ── Universal Code Redemption ────────────────────────────────────
+
+    /// Redeem any marketplace code (SKIL-*, WORK-*, ROLE-*) via the universal endpoint.
+    pub async fn redeem_code(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
+        let body = serde_json::json!({
+            "code": code,
+            "botIds": [self.bot_id],
+        });
+        self.do_json(reqwest::Method::POST, "/api/v1/codes/redeem", Some(&body)).await
+    }
+
+    /// Install a skill for this bot via universal code redemption.
+    pub async fn install_skill(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
+        self.redeem_code(code).await
     }
 
     /// Uninstall a skill for this bot.
@@ -195,10 +205,9 @@ impl NeboLoopApi {
 
     // ── Workflows ───────────────────────────────────────────────────
 
-    /// Install a workflow for this bot. Accepts install codes as ID.
-    pub async fn install_workflow(&self, id: &str) -> Result<InstallResponse, CommError> {
-        let body = serde_json::json!({ "botId": self.bot_id });
-        self.do_json(reqwest::Method::POST, &format!("/api/v1/workflows/{}/install", id), Some(&body)).await
+    /// Install a workflow for this bot via universal code redemption.
+    pub async fn install_workflow(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
+        self.redeem_code(code).await
     }
 
     /// Uninstall a workflow for this bot.
@@ -213,10 +222,9 @@ impl NeboLoopApi {
 
     // ── Roles ───────────────────────────────────────────────────────
 
-    /// Install a role for this bot (cascades: role -> workflows -> tools -> skills).
-    pub async fn install_role(&self, id: &str) -> Result<InstallResponse, CommError> {
-        let body = serde_json::json!({ "botId": self.bot_id });
-        self.do_json(reqwest::Method::POST, &format!("/api/v1/roles/{}/install", id), Some(&body)).await
+    /// Install a role for this bot via universal code redemption.
+    pub async fn install_role(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
+        self.redeem_code(code).await
     }
 
     /// Uninstall a role for this bot.

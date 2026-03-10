@@ -1,6 +1,17 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// Where a skill was loaded from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSource {
+    /// Installed from NeboLoop marketplace (sealed .napp archive).
+    Installed,
+    /// User-created (loose files in user/ directory).
+    User,
+}
 
 /// A skill parsed from a SKILL.md file with YAML frontmatter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,8 +30,10 @@ pub struct Skill {
     pub platform: Vec<String>,
     #[serde(default)]
     pub triggers: Vec<String>,
+    /// Platform capabilities this skill needs (Agent Skills standard extension).
+    /// e.g., ["python", "storage", "vision"]
     #[serde(default)]
-    pub tools: Vec<String>,
+    pub capabilities: Vec<String>,
     #[serde(default)]
     pub priority: i32,
     #[serde(default)]
@@ -35,7 +48,17 @@ pub struct Skill {
     pub enabled: bool,
     /// Filesystem path this skill was loaded from.
     #[serde(skip)]
-    pub source_path: Option<std::path::PathBuf>,
+    pub source_path: Option<PathBuf>,
+    /// Where this skill was loaded from (marketplace vs user).
+    #[serde(default = "default_source")]
+    pub source: SkillSource,
+    /// Root directory of the skill (parent of SKILL.md).
+    #[serde(skip)]
+    pub base_dir: Option<PathBuf>,
+}
+
+fn default_source() -> SkillSource {
+    SkillSource::User
 }
 
 fn default_version() -> String {
@@ -65,6 +88,43 @@ impl Skill {
             .any(|p| p.eq_ignore_ascii_case(&current))
     }
 
+    /// Check if this skill requires cloud sandbox execution.
+    pub fn needs_sandbox(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|c| matches!(c.as_str(), "python" | "typescript"))
+    }
+
+    /// List resource files (not SKILL.md itself).
+    pub fn list_resources(&self) -> Result<Vec<String>, String> {
+        if let Some(ref base_dir) = self.base_dir {
+            let mut resources = Vec::new();
+            walk_resources(base_dir, base_dir, &mut resources);
+            Ok(resources)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// Read a resource file by relative path.
+    /// Path traversal (`..`) is rejected.
+    pub fn read_resource(&self, relative_path: &str) -> Result<Vec<u8>, String> {
+        if relative_path.contains("..") {
+            return Err("path traversal not allowed".into());
+        }
+
+        if let Some(ref base_dir) = self.base_dir {
+            let full = base_dir.join(relative_path);
+            // Guard against symlink escapes
+            if !full.starts_with(base_dir) {
+                return Err("path traversal not allowed".into());
+            }
+            std::fs::read(&full).map_err(|e| format!("failed to read resource: {}", e))
+        } else {
+            Err("skill has no resource directory".into())
+        }
+    }
+
     /// Check if a message matches any of this skill's triggers (case-insensitive substring).
     pub fn matches_trigger(&self, message: &str) -> bool {
         if self.triggers.is_empty() {
@@ -74,6 +134,32 @@ impl Skill {
         self.triggers
             .iter()
             .any(|t| msg_lower.contains(&t.to_lowercase()))
+    }
+}
+
+/// Recursively walk a directory collecting relative paths, skipping SKILL.md and hidden files.
+fn walk_resources(base: &Path, dir: &Path, out: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        // Skip hidden files, SKILL.md, and packaging metadata
+        if name_str.starts_with('.')
+            || name_str.eq_ignore_ascii_case("skill.md")
+            || name_str == "manifest.json"
+            || name_str == "signatures.json"
+        {
+            continue;
+        }
+        if path.is_dir() {
+            walk_resources(base, &path, out);
+        } else if let Ok(rel) = path.strip_prefix(base) {
+            out.push(rel.to_string_lossy().to_string());
+        }
     }
 }
 
@@ -151,9 +237,6 @@ triggers:
 platform:
   - macos
   - linux
-tools:
-  - web
-  - bot
 tags:
   - research
   - information
@@ -182,7 +265,6 @@ You are a research specialist. When activated, focus on:
             vec!["research", "find information", "look up"]
         );
         assert_eq!(skill.platform, vec!["macos", "linux"]);
-        assert_eq!(skill.tools, vec!["web", "bot"]);
         assert!(skill.template.contains("research specialist"));
     }
 
@@ -212,13 +294,15 @@ You are a research specialist. When activated, focus on:
             tags: vec![],
             platform: vec![],
             triggers: vec![],
-            tools: vec![],
+            capabilities: vec![],
             priority: 0,
             max_turns: 0,
             metadata: HashMap::new(),
             template: String::new(),
             enabled: true,
             source_path: None,
+            source: SkillSource::User,
+            base_dir: None,
         };
         assert!(skill.validate().is_err());
         skill.name = "test".into();
@@ -238,5 +322,82 @@ You are a research specialist. When activated, focus on:
         let mut skill = parse_skill_md(SAMPLE_SKILL.as_bytes()).unwrap();
         skill.platform.clear();
         assert!(skill.matches_platform());
+    }
+
+    #[test]
+    fn test_capabilities_parsing() {
+        let md = r#"---
+name: xlsx-processor
+description: Create Excel files
+capabilities:
+  - python
+  - storage
+---
+
+Process spreadsheets.
+"#;
+        let skill = parse_skill_md(md.as_bytes()).unwrap();
+        assert_eq!(skill.capabilities, vec!["python", "storage"]);
+    }
+
+    #[test]
+    fn test_needs_sandbox() {
+        let mut skill = parse_skill_md(SAMPLE_SKILL.as_bytes()).unwrap();
+        assert!(!skill.needs_sandbox());
+
+        skill.capabilities = vec!["python".into()];
+        assert!(skill.needs_sandbox());
+
+        skill.capabilities = vec!["typescript".into()];
+        assert!(skill.needs_sandbox());
+
+        skill.capabilities = vec!["storage".into(), "vision".into()];
+        assert!(!skill.needs_sandbox());
+    }
+
+    #[test]
+    fn test_list_resources_loose() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path();
+
+        // Create skill structure
+        std::fs::write(base.join("SKILL.md"), "---\nname: test\ndescription: t\n---\nbody").unwrap();
+        std::fs::create_dir_all(base.join("scripts")).unwrap();
+        std::fs::write(base.join("scripts/run.py"), "print('hello')").unwrap();
+        std::fs::create_dir_all(base.join("references")).unwrap();
+        std::fs::write(base.join("references/guide.md"), "# Guide").unwrap();
+
+        let mut skill = parse_skill_md(b"---\nname: test\ndescription: t\n---\nbody").unwrap();
+        skill.base_dir = Some(base.to_path_buf());
+
+        let resources = skill.list_resources().unwrap();
+        assert_eq!(resources.len(), 2);
+        assert!(resources.iter().any(|r| r.contains("run.py")));
+        assert!(resources.iter().any(|r| r.contains("guide.md")));
+    }
+
+    #[test]
+    fn test_read_resource_loose() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join("scripts")).unwrap();
+        std::fs::write(base.join("scripts/run.py"), "print('hello')").unwrap();
+
+        let mut skill = parse_skill_md(b"---\nname: test\ndescription: t\n---\nbody").unwrap();
+        skill.base_dir = Some(base.to_path_buf());
+
+        let content = skill.read_resource("scripts/run.py").unwrap();
+        assert_eq!(content, b"print('hello')");
+    }
+
+    #[test]
+    fn test_read_resource_path_traversal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut skill = parse_skill_md(b"---\nname: test\ndescription: t\n---\nbody").unwrap();
+        skill.base_dir = Some(tmp.path().to_path_buf());
+
+        let result = skill.read_resource("../../../etc/passwd");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("path traversal"));
     }
 }

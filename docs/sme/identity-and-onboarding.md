@@ -850,16 +850,16 @@ CRITICAL rule: Memory operations are invisible. The skill EXPLICITLY forbids nar
 ### 6.1 Install Code Format
 
 ```
-SKILL-XXXX-XXXX-XXXX
+SKIL-XXXX-XXXX-XXXX
 ```
 
-20 characters total. Starts with `SKILL-`. Dashes at positions 10 and 15. All other characters uppercase A-Z or 0-9.
+19 characters total. Starts with `SKIL-`. Dashes at positions 9 and 14. All other characters uppercase A-Z or 0-9.
 
 ```go
 func isSkillInstallCode(id string) bool {
-    // Length must be 20
-    // Must start with "SKILL-"
-    // Dashes at positions 10 and 15
+    // Length must be 19
+    // Must start with "SKIL-"
+    // Dashes at positions 9 and 14
     // All other chars uppercase A-Z or 0-9
 }
 ```
@@ -868,17 +868,17 @@ func isSkillInstallCode(id string) bool {
 
 | Skill | Install Code | Best For |
 |-------|-------------|----------|
-| Content Creator | `SKILL-F639-PJ5J-WT3W` | Writers, marketers |
-| Family Hub | `SKILL-DSJ8-H4XG-ESP4` | Parents, family coordinators |
-| Health & Wellness | `SKILL-7KRC-4JT8-N8VX` | Fitness, nutrition, habits |
-| Interview Prep | `SKILL-ENXP-YGJZ-9GUN` | Job seekers |
-| Job Search Coach | `SKILL-LNWY-Q7W2-KHVN` | Actively job hunting |
-| Personal Finance | `SKILL-T5JE-JQLA-YJ5E` | Budgets, bills, savings |
-| Research Assistant | `SKILL-GLXB-NNHJ-ZKCG` | Students, analysts |
-| Small Business Ops | `SKILL-BVS3-UDJ3-C2JX` | Small business owners, freelancers |
-| Student Learning | `SKILL-LLFN-BLT8-39GV` | Students at any level |
-| Support Operations | `SKILL-TY54-HP5S-339D` | Customer support, ops |
-| Travel Planner | `SKILL-YCST-9FLL-FL9V` | Travelers, trip planners |
+| Content Creator | `SKIL-F639-PJ5J-WT3W` | Writers, marketers |
+| Family Hub | `SKIL-DSJ8-H4XG-ESP4` | Parents, family coordinators |
+| Health & Wellness | `SKIL-7KRC-4JT8-N8VX` | Fitness, nutrition, habits |
+| Interview Prep | `SKIL-ENXP-YGJZ-9GUN` | Job seekers |
+| Job Search Coach | `SKIL-LNWY-Q7W2-KHVN` | Actively job hunting |
+| Personal Finance | `SKIL-T5JE-JQLA-YJ5E` | Budgets, bills, savings |
+| Research Assistant | `SKIL-GLXB-NNHJ-ZKCG` | Students, analysts |
+| Small Business Ops | `SKIL-BVS3-UDJ3-C2JX` | Small business owners, freelancers |
+| Student Learning | `SKIL-LLFN-BLT8-39GV` | Students at any level |
+| Support Operations | `SKIL-TY54-HP5S-339D` | Customer support, ops |
+| Travel Planner | `SKIL-YCST-9FLL-FL9V` | Travelers, trip planners |
 
 ### 6.3 Install Flow
 
@@ -902,17 +902,17 @@ The Rust equivalent should validate skill codes and delegate to a NeboLoop REST 
 
 ```rust
 /// Validates a skill install code.
-/// Format: SKILL-XXXX-XXXX-XXXX (20 chars, uppercase alphanumeric segments)
+/// Format: SKIL-XXXX-XXXX-XXXX (19 chars, uppercase alphanumeric segments)
 fn is_skill_install_code(id: &str) -> bool {
-    if id.len() != 20 || !id.starts_with("SKILL-") {
+    if id.len() != 19 || !id.starts_with("SKIL-") {
         return false;
     }
     let bytes = id.as_bytes();
-    if bytes[10] != b'-' || bytes[15] != b'-' {
+    if bytes[9] != b'-' || bytes[14] != b'-' {
         return false;
     }
     bytes.iter().enumerate().all(|(i, &b)| {
-        if i == 5 || i == 10 || i == 15 {
+        if i == 4 || i == 9 || i == 14 {
             b == b'-'
         } else {
             b.is_ascii_uppercase() || b.is_ascii_digit()

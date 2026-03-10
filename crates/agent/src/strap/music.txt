@@ -1,0 +1,12 @@
+### os — Media Playback Control (resource: music)
+USE THIS when: user wants to play, pause, skip, or control music/media playback.
+
+- os(resource: "music", action: "play") — Play/resume music
+- os(resource: "music", action: "pause") — Pause music
+- os(resource: "music", action: "next") — Skip to next track
+- os(resource: "music", action: "previous") — Go to previous track
+- os(resource: "music", action: "status") — Get current track info (title, artist, album, state)
+- os(resource: "music", action: "search", query: "...") — Search music library
+- os(resource: "music", action: "volume", level: 50) — Set music volume (0-100), omit level to get current
+- os(resource: "music", action: "playlists") — List available playlists
+- os(resource: "music", action: "shuffle") — Toggle shuffle mode, or shuffle(enable: true/false)

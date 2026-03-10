@@ -4,7 +4,6 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Default)]
 pub struct PromptContext {
     pub agent_name: String,
-    pub tool_names: Vec<String>,
     pub active_skill: Option<String>,
     pub skill_hints: Vec<String>,
     pub model_aliases: String,
@@ -14,6 +13,8 @@ pub struct PromptContext {
     /// Rich DB context formatted via db_context::format_for_system_prompt.
     /// When set, replaces the simple memory_context in the prompt.
     pub db_context: Option<String>,
+    /// Active role ROLE.md body, injected before identity when set.
+    pub active_role: Option<String>,
 }
 
 /// Per-iteration inputs that change between agentic loop iterations.
@@ -53,7 +54,7 @@ const SECTION_STRAP_HEADER: &str = "## Your Tools (STRAP Pattern)\n\nYour tools 
 const SECTION_MEDIA: &str = r#"## Inline Media — Images & Video Embeds
 
 **Inline Images:**
-- desktop(resource: screenshot, action: capture, format: "file") saves to data directory, returns ![Screenshot](/api/v1/files/filename.png) which renders inline
+- os(resource: "screenshot", action: "capture", format: "file") saves to data directory, returns ![Screenshot](/api/v1/files/filename.png) which renders inline
 - For any image: copy it to the data files directory and use ![description](/api/v1/files/filename.png)
 - Supports PNG, JPEG, GIF, WebP, SVG
 
@@ -68,15 +69,15 @@ const SECTION_MEMORY_DOCS: &str = r#"## Memory System — CRITICAL
 You have PERSISTENT MEMORY that survives across sessions. NEVER say "I don't have persistent memory" or "my memory doesn't carry over." Your memory WORKS — use it proactively.
 
 **Reading memory — do this BEFORE answering questions about the user:**
-- bot(resource: memory, action: search, query: "...") — search across all memories
-- bot(resource: memory, action: recall, key: "user/name") — recall a specific fact
+- agent(resource: "memory", action: "search", query: "...") — search across all memories
+- agent(resource: "memory", action: "recall", key: "user/name") — recall a specific fact
 
 **Writing memory — AUTOMATIC, do NOT store explicitly:**
-Facts are automatically extracted from your conversation after each turn. You do NOT need to call bot(action: store) during normal conversation. The extraction system handles names, preferences, corrections, entities — everything.
+Facts are automatically extracted from your conversation after each turn. You do NOT need to call agent(action: "store") during normal conversation. The extraction system handles names, preferences, corrections, entities — everything.
 
 Only use explicit store when the user says "remember this" or "save this" — i.e., they are explicitly asking you to persist something unusual that the extractor might miss.
 
-**NEVER call bot(action: store) multiple times in one turn.** One store max, and only when truly necessary.
+**NEVER call agent(action: "store") multiple times in one turn.** One store max, and only when truly necessary.
 
 **Memory layers (for the rare explicit store):**
 - "tacit" — Long-term preferences, personal facts (MOST COMMON)
@@ -92,60 +93,69 @@ const SECTION_TOOL_GUIDE: &str = r#"## Tool Routing — Match Intent to Tool
 Route every request to a tool call. Whether responding to a user message, executing a scheduled event, or handling a channel trigger — the same routing applies. Do not deliberate — match and act.
 
 **Files — read, write, find, search:**
-→ system(resource: file, action: read|write|edit|glob|grep)
+→ os(resource: "file", action: "read"|"write"|"edit"|"glob"|"grep")
 → Prefer file actions over shell commands: use file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find/ls
 
+**Shell commands:**
+→ os(resource: "shell", action: "exec") — ONLY when no dedicated file/app/settings action covers it
+
 **Web — browse, fetch, search:**
-→ API or static page: web(action: fetch, url: "...")
-→ Web search: web(action: search, query: "...")
-→ JavaScript site or reading: web(action: navigate, profile: "native") — reuse windows via target_id
-→ Logged-in session (Gmail, etc.): web(action: navigate, profile: "chrome")
-→ Complex automation/DevTools: web(action: navigate, profile: "nebo")
+→ API or static page: web(action: "fetch", url: "...")
+→ Web search: web(action: "search", query: "...")
+→ JavaScript site or reading: web(action: "navigate", profile: "native") — reuse windows via target_id
+→ Logged-in session (Gmail, etc.): web(action: "navigate", profile: "chrome")
+→ Complex automation/DevTools: web(action: "navigate", profile: "nebo")
 
 **Memory — anything about the user or past work:**
-→ ALWAYS search memory FIRST: bot(resource: memory, action: search, query: "...")
-→ Recall specific fact: bot(resource: memory, action: recall, key: "...")
+→ ALWAYS search memory FIRST: agent(resource: "memory", action: "search", query: "...")
+→ Recall specific fact: agent(resource: "memory", action: "recall", key: "...")
 → Only go to web/files if memory doesn't have it
 
 **Scheduling — "every", "remind me", "daily", "in 10 minutes":**
-→ event(action: create, task_type: "agent", ...) — always agent type so YOU execute it
+→ event(action: "create", task_type: "agent", ...) — always agent type so YOU execute it
 
 **Unfamiliar request or "Can you...?":**
 → FIRST: skill(action: "catalog") — check available skills before saying no
 → Then try your built-in tools
 
+**Roles — switch persona, list roles:**
+→ role(action: "list"|"activate"|"deactivate"|"info")
+
 **Send a message or post to a channel:**
-→ Human outside NeboLoop: message(resource: sms|owner|notify, ...)
-→ Another bot (DM): loop(resource: dm, action: send, ...)
-→ Loop channel: loop(resource: channel, action: send, channel_id: "...", text: "...")
+→ Human outside NeboLoop: message(resource: "sms"|"owner"|"notify", ...)
+→ Another bot (DM): loop(resource: "dm", action: "send", ...)
+→ Loop channel: loop(resource: "channel", action: "send", channel_id: "...", text: "...")
 
 **Computer control — apps, settings, GUI:**
-→ Launch/quit apps: system(resource: app, ...)
-→ System settings (volume, brightness, wifi): system(resource: settings, ...)
-→ GUI interaction (click, type, screenshot): desktop(resource: input|ui|window, ...)
-→ Music: system(resource: music, ...)
+→ Launch/quit apps: os(resource: "app", action: "launch"|"quit"|"activate"|"info"|"frontmost")
+→ System settings (volume, brightness, wifi): os(resource: "settings", action: "volume"|"brightness"|"wifi"|"bluetooth"|"battery")
+→ GUI interaction (click, type, screenshot): os(resource: "input"|"ui"|"window"|"screenshot", ...)
+→ Music: os(resource: "music", action: "play"|"pause"|"next"|"previous"|"status"|"volume")
 
 **Email, calendar, contacts:**
-→ organizer(resource: mail|calendar|contacts|reminders, ...)
+→ os(resource: "mail"|"calendar"|"contacts"|"reminders", ...)
+
+**Credentials & passwords:**
+→ os(resource: "keychain", action: "get"|"find"|"add"|"delete", service: "...", ...)
+
+**File search:**
+→ os(resource: "search", action: "search", query: "...")
 
 **Multiple independent tasks in one request:**
-→ Spawn sub-agents: bot(resource: task, action: spawn, ...) — don't serialize independent work
+→ Spawn sub-agents: agent(resource: "task", action: "spawn", ...) — don't serialize independent work
 
 **Multi-step work you're doing yourself:**
-→ Track steps: bot(resource: task, action: create, ...) then update as you go
-
-**Shell commands:**
-→ system(resource: shell, action: exec) — ONLY when no dedicated file/app/settings action covers it
+→ Track steps: agent(resource: "task", action: "create", ...) then update as you go
 
 **Complex requests = chain tools:**
 → "Research and remember" = web + memory
-→ "Find all PDFs and summarize" = file glob + file read + vision
-→ "Download and install" = web fetch + shell exec
+→ "Find all PDFs and summarize" = os(file glob) + os(file read) + vision
+→ "Download and install" = web fetch + os(shell exec)
 
 **Work that spans time (do X now, follow up later):**
 → Do the immediate work with tools, then create an event for the deferred part
-→ event(action: create, task_type: "agent", message: "what to do", instructions: "how to do it — brief your future self")
-→ The event run can use bot(resource: session, action: query) to pull context from the original conversation"#;
+→ event(action: "create", task_type: "agent", message: "what to do", instructions: "how to do it — brief your future self")
+→ The event run can use agent(resource: "session", action: "query") to pull context from the original conversation"#;
 
 const SECTION_BEHAVIOR: &str = r#"## Tool Execution
 - Call tools directly. Share results concisely. Don't narrate routine calls.
@@ -193,16 +203,26 @@ You share this computer with a real person. Be a courteous roommate:
 
 // --- STRAP tool documentation (compile-time includes) ---
 
+// Core tool docs (always loaded when tool is active)
 const STRAP_WEB: &str = include_str!("strap/web.txt");
-const STRAP_BOT: &str = include_str!("strap/bot.txt");
+const STRAP_AGENT: &str = include_str!("strap/agent.txt");
+const STRAP_ROLE: &str = include_str!("strap/role.txt");
 const STRAP_LOOP: &str = include_str!("strap/loop.txt");
 const STRAP_EVENT: &str = include_str!("strap/event.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
-const STRAP_TOOL: &str = include_str!("strap/tool.txt");
 const STRAP_SKILL: &str = include_str!("strap/skill.txt");
 const STRAP_WORK: &str = include_str!("strap/work.txt");
-const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
+const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
 
+// OS base docs (file + shell, platform-specific)
+#[cfg(target_os = "windows")]
+const STRAP_OS: &str = include_str!("strap/os_windows.txt");
+#[cfg(target_os = "linux")]
+const STRAP_OS: &str = include_str!("strap/os_linux.txt");
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+const STRAP_OS: &str = include_str!("strap/os_macos.txt");
+
+// OS sub-context docs (loaded dynamically based on keyword matching)
 #[cfg(target_os = "windows")]
 const STRAP_DESKTOP: &str = include_str!("strap/desktop_windows.txt");
 #[cfg(target_os = "linux")]
@@ -210,55 +230,68 @@ const STRAP_DESKTOP: &str = include_str!("strap/desktop_linux.txt");
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
 const STRAP_DESKTOP: &str = include_str!("strap/desktop_macos.txt");
 
-#[cfg(target_os = "windows")]
-const STRAP_SYSTEM: &str = include_str!("strap/system_windows.txt");
-#[cfg(target_os = "linux")]
-const STRAP_SYSTEM: &str = include_str!("strap/system_linux.txt");
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-const STRAP_SYSTEM: &str = include_str!("strap/system_macos.txt");
+const STRAP_APP: &str = include_str!("strap/app.txt");
+const STRAP_MUSIC: &str = include_str!("strap/music.txt");
+const STRAP_KEYCHAIN: &str = include_str!("strap/keychain.txt");
+const STRAP_SETTINGS: &str = include_str!("strap/settings.txt");
+const STRAP_SPOTLIGHT: &str = include_str!("strap/spotlight.txt");
+const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
 
+/// Get STRAP doc for a registered tool name.
 fn strap_doc(tool_name: &str) -> Option<&'static str> {
     match tool_name {
+        "os" => Some(STRAP_OS),
         "web" => Some(STRAP_WEB),
-        "bot" => Some(STRAP_BOT),
+        "agent" => Some(STRAP_AGENT),
+        "role" => Some(STRAP_ROLE),
         "loop" => Some(STRAP_LOOP),
         "event" => Some(STRAP_EVENT),
         "message" => Some(STRAP_MESSAGE),
-        "tool" => Some(STRAP_TOOL),
         "skill" => Some(STRAP_SKILL),
-        "desktop" => Some(STRAP_DESKTOP),
-        "system" => Some(STRAP_SYSTEM),
         "work" => Some(STRAP_WORK),
+        "execute" => Some(STRAP_EXECUTE),
+        _ => None,
+    }
+}
+
+/// Get STRAP doc for an OS sub-context (activated by keyword matching).
+fn strap_context_doc(context_name: &str) -> Option<&'static str> {
+    match context_name {
+        "desktop" => Some(STRAP_DESKTOP),
+        "app" => Some(STRAP_APP),
+        "music" => Some(STRAP_MUSIC),
+        "keychain" => Some(STRAP_KEYCHAIN),
+        "settings" => Some(STRAP_SETTINGS),
+        "spotlight" => Some(STRAP_SPOTLIGHT),
         "organizer" => Some(STRAP_ORGANIZER),
         _ => None,
     }
 }
 
-/// Build the STRAP documentation section for only the tools being sent.
-fn build_strap_section(tool_names: &[String]) -> String {
+/// Build the STRAP documentation section for the specified tools and active contexts.
+/// Called per-iteration with the filtered tool list and keyword-matched contexts.
+/// Tool names drive which core STRAP docs load; active_contexts drive which
+/// OS sub-docs (desktop, app, music, etc.) get injected.
+pub fn build_strap_section(tool_names: &[String], active_contexts: &[String]) -> String {
     let mut sb = String::from(SECTION_STRAP_HEADER);
 
-    if tool_names.is_empty() {
-        // No restriction — include all tool docs
-        let all_tools = [
-            "system", "web", "bot", "loop", "event", "message", "skill", "tool", "work",
-            "desktop", "organizer",
-        ];
-        for name in &all_tools {
+    let mut seen = HashSet::new();
+    // 1. Core tool docs
+    for name in tool_names {
+        if seen.insert(name.as_str()) {
             if let Some(doc) = strap_doc(name) {
                 sb.push_str("\n\n");
                 sb.push_str(doc);
             }
         }
-    } else {
-        // Only include docs for tools being sent
-        let mut seen = HashSet::new();
-        for name in tool_names {
-            if seen.insert(name.as_str()) {
-                if let Some(doc) = strap_doc(name) {
-                    sb.push_str("\n\n");
-                    sb.push_str(doc);
-                }
+    }
+
+    // 2. OS sub-context docs (only when keywords matched)
+    for ctx in active_contexts {
+        if seen.insert(ctx.as_str()) {
+            if let Some(doc) = strap_context_doc(ctx) {
+                sb.push_str("\n\n");
+                sb.push_str(doc);
             }
         }
     }
@@ -266,8 +299,23 @@ fn build_strap_section(tool_names: &[String]) -> String {
     sb
 }
 
+/// Build the registered tools list for only the specified tools.
+/// Called per-iteration with the filtered tool list.
+pub fn build_tools_list(tool_names: &[String]) -> String {
+    if tool_names.is_empty() {
+        return String::new();
+    }
+    let tool_list = tool_names.join(", ");
+    format!(
+        "## Active Tools\nTool names are case-sensitive. Call tools exactly as listed: {}\nThese are your ONLY tools for this turn. Do not reference or attempt to call any tool not in this list.",
+        tool_list
+    )
+}
+
 /// Build the cacheable static portion of the system prompt.
 /// Called once per Run(), reused across iterations.
+/// Does NOT include STRAP docs or tool list — those are injected per-iteration
+/// via build_strap_section() and build_tools_list() to keep context minimal.
 pub fn build_static(pctx: &PromptContext) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -280,55 +328,50 @@ pub fn build_static(pctx: &PromptContext) -> String {
         parts.push(format!("# Remembered Facts\n{}", pctx.memory_context));
     }
 
-    // 2. Separator
+    // 2. Active role persona (overrides default identity when set)
+    if let Some(ref role_md) = pctx.active_role {
+        if !role_md.is_empty() {
+            parts.push(format!("## Active Role\n\n{}", role_md));
+        }
+    }
+
+    // 3. Separator
     parts.push("---".to_string());
 
-    // 3. Static prompt sections
+    // 4. Static prompt sections
     parts.push(SECTION_IDENTITY.to_string());
     parts.push(SECTION_CAPABILITIES.to_string());
     parts.push(SECTION_TOOLS_DECLARATION.to_string());
     parts.push(SECTION_COMM_STYLE.to_string());
 
-    // 4. STRAP tool documentation — filtered to active tools
-    parts.push(build_strap_section(&pctx.tool_names));
-
-    // 5. Media section
+    // 4. Media section
     parts.push(SECTION_MEDIA.to_string());
 
-    // 6. Memory docs
+    // 5. Memory docs
     parts.push(SECTION_MEMORY_DOCS.to_string());
 
-    // 7. Tool routing guide
+    // 6. Tool routing guide
     parts.push(SECTION_TOOL_GUIDE.to_string());
 
-    // 8. Behavior
+    // 7. Behavior
     parts.push(SECTION_BEHAVIOR.to_string());
 
-    // 9. System etiquette
+    // 8. System etiquette
     parts.push(SECTION_SYSTEM_ETIQUETTE.to_string());
 
-    // 10. Registered tool list (reinforces tool awareness)
-    if !pctx.tool_names.is_empty() {
-        let tool_list = pctx.tool_names.join(", ");
-        parts.push(format!(
-            "## Registered Tools (runtime)\nTool names are case-sensitive. Call tools exactly as listed: {}\nThese are your ONLY tools. Do not reference or attempt to call any tool not in this list.",
-            tool_list
-        ));
-    }
-
-    // 11. Skill hints
+    // 9. Skill hints
     if !pctx.skill_hints.is_empty() {
         parts.push(pctx.skill_hints.join("\n"));
     }
 
-    // 12. Active skill content
+    // 10. Active skill content
     if let Some(ref skill) = pctx.active_skill {
         if !skill.is_empty() {
             parts.push(skill.clone());
         }
     }
 
-    // 13. Model aliases
+    // 11. Model aliases
     if !pctx.model_aliases.is_empty() {
         parts.push(format!(
             "## Model Switching\n\nUsers can ask to switch models. Available models:\n{}\n\nWhen a user asks to switch models, acknowledge the request and confirm the switch.",
@@ -412,7 +455,7 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         sb.push_str("Ongoing work: ");
         sb.push_str(&dctx.active_task);
         sb.push_str("\nThis is context about previous work in this session. The user's latest message ALWAYS takes priority over this objective. Only continue this work if the user explicitly asks to resume (e.g., \"keep going\", \"continue\", \"back to that\").");
-        sb.push_str("\nFor multi-step work, use bot(resource: task, action: create) to track steps, then update them as you go.");
+        sb.push_str("\nFor multi-step work, use agent(resource: \"task\", action: \"create\") to track steps, then update them as you go.");
         sb.push_str("\n---");
     }
 
@@ -454,22 +497,68 @@ mod tests {
     }
 
     #[test]
-    fn test_strap_only_active_tools() {
-        let result = build_strap_section(&[
-            "web".to_string(),
-            "bot".to_string(),
-        ]);
-        assert!(result.contains("STRAP Pattern"));
-        assert!(result.contains("web"));
-        assert!(result.contains("bot"));
-        // Should NOT include tools not in the list
-        // (loop, event, etc. are not included)
+    fn test_build_static_excludes_strap() {
+        let pctx = PromptContext {
+            agent_name: "Nebo".to_string(),
+            ..Default::default()
+        };
+        let result = build_static(&pctx);
+        // STRAP docs should NOT be in static prompt — they're injected per-iteration
+        assert!(!result.contains("STRAP Pattern"));
     }
 
     #[test]
-    fn test_strap_all_tools_when_empty() {
-        let result = build_strap_section(&[]);
+    fn test_strap_only_active_tools() {
+        let result = build_strap_section(&[
+            "web".to_string(),
+            "agent".to_string(),
+        ], &[]);
         assert!(result.contains("STRAP Pattern"));
+        assert!(result.contains("web"));
+        assert!(result.contains("agent"));
+    }
+
+    #[test]
+    fn test_strap_empty_is_header_only() {
+        let result = build_strap_section(&[], &[]);
+        assert!(result.contains("STRAP Pattern"));
+        // No tool docs appended
+        assert!(!result.contains("### "));
+    }
+
+    #[test]
+    fn test_strap_includes_os_sub_contexts() {
+        let result = build_strap_section(
+            &["os".to_string()],
+            &[
+                "app".to_string(),
+                "music".to_string(),
+                "keychain".to_string(),
+                "settings".to_string(),
+                "spotlight".to_string(),
+            ],
+        );
+        // Base os doc should be included
+        assert!(result.contains("os"));
+        // Sub-context docs should also be included
+        assert!(result.contains("App Lifecycle"));
+        assert!(result.contains("Media Playback"));
+        assert!(result.contains("Credential Storage"));
+        assert!(result.contains("System Settings"));
+        assert!(result.contains("File Search"));
+    }
+
+    #[test]
+    fn test_tools_list() {
+        let result = build_tools_list(&["os".to_string(), "web".to_string(), "agent".to_string()]);
+        assert!(result.contains("os, web, agent"));
+        assert!(result.contains("Active Tools"));
+    }
+
+    #[test]
+    fn test_tools_list_empty() {
+        let result = build_tools_list(&[]);
+        assert!(result.is_empty());
     }
 
     #[test]

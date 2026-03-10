@@ -3547,11 +3547,13 @@ dependencies = [
  "libc",
  "prost",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
  "tar",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
@@ -3596,11 +3598,13 @@ dependencies = [
  "rand 0.8.5",
  "reqwest 0.12.28",
  "rust-embed",
+ "sandbox-runtime",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
  "shellexpand",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tonic",
@@ -3618,20 +3622,25 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "dirs",
+ "flate2",
  "glob",
  "nebo-ai",
  "nebo-browser",
+ "nebo-comm",
  "nebo-config",
  "nebo-db",
  "nebo-mcp",
+ "nebo-napp",
  "nebo-notify",
  "nebo-types",
  "notify",
  "regex",
  "reqwest 0.12.28",
+ "sandbox-runtime",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3681,12 +3690,14 @@ dependencies = [
  "nebo-ai",
  "nebo-config",
  "nebo-db",
+ "nebo-napp",
  "nebo-tools",
  "nebo-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -5215,6 +5226,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox-runtime"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "dirs",
+ "rand 0.8.5",
+ "regex",
+ "serde",
+ "serde_json",
+ "shell-escape",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5585,6 +5612,12 @@ dependencies = [
  "sigchld",
  "windows-sys 0.60.2",
 ]
+
+[[package]]
+name = "shell-escape"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45bb67a18fa91266cc7807181f62f9178a6873bfad7dc788c42e6430db40184f"
 
 [[package]]
 name = "shellexpand"

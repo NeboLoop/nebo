@@ -12,7 +12,6 @@ use tools::Registry;
 use comm::PluginManager;
 
 use crate::handlers::ws::ClientHub;
-use crate::napp_manager::NappManagerImpl;
 use crate::workflow_manager::WorkflowManagerImpl;
 
 /// Shared application state passed to all handlers via Axum extractors.
@@ -27,8 +26,6 @@ pub struct AppState {
     pub bridge: Arc<mcp::Bridge>,
     /// Tool package registry for managing installable tools (.napp packages)
     pub napp_registry: Arc<napp::Registry>,
-    /// Napp manager for agent tool dispatch and lifecycle
-    pub napp_manager: Arc<NappManagerImpl>,
     /// Workflow manager for workflow lifecycle and execution
     pub workflow_manager: Arc<WorkflowManagerImpl>,
     /// Models catalog loaded from models.yaml (read-only config for routing/aliases)
@@ -53,4 +50,10 @@ pub struct AppState {
     pub hooks: Arc<napp::HookDispatcher>,
     /// Shared MCP context for CLI provider tool calls (set by runner before each agentic loop)
     pub mcp_context: Arc<tokio::sync::Mutex<tools::ToolContext>>,
+    /// Event bus for workflow-to-workflow and system events
+    pub event_bus: tools::EventBus,
+    /// Event dispatcher that matches events to role subscriptions
+    pub event_dispatcher: Arc<workflow::events::EventDispatcher>,
+    /// NeboLoop plan tier (free, pro, team, enterprise) — updated by AUTH_OK handler
+    pub plan_tier: Arc<tokio::sync::RwLock<String>>,
 }

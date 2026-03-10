@@ -1,11 +1,11 @@
 //! Code interception and dispatch for NeboLoop marketplace codes.
 //!
-//! Detects NEBO/SKILL/TOOL/WORK/ROLE/LOOP codes in chat prompts, handles them
+//! Detects NEBO/SKILL/WORK/ROLE/LOOP codes in chat prompts, handles them
 //! before the prompt reaches the agent runner, and broadcasts results to the client.
 
 use std::collections::HashMap;
 
-use tracing::{info, warn};
+use tracing::warn;
 
 use comm::api::NeboLoopApi;
 use types::NeboError;
@@ -19,7 +19,6 @@ use crate::state::AppState;
 pub enum CodeType {
     Nebo,
     Skill,
-    Tool,
     Work,
     Role,
     Loop,
@@ -42,10 +41,8 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
     // Must match PREFIX-XXXX-XXXX exactly
     let (prefix, code_type) = if upper.starts_with("NEBO-") {
         ("NEBO-", CodeType::Nebo)
-    } else if upper.starts_with("SKILL-") {
-        ("SKILL-", CodeType::Skill)
-    } else if upper.starts_with("TOOL-") {
-        ("TOOL-", CodeType::Tool)
+    } else if upper.starts_with("SKIL-") {
+        ("SKIL-", CodeType::Skill)
     } else if upper.starts_with("WORK-") {
         ("WORK-", CodeType::Work)
     } else if upper.starts_with("ROLE-") {
@@ -90,7 +87,6 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
     let result = match code_type {
         CodeType::Nebo => handle_nebo_code(state, code).await,
         CodeType::Skill => handle_skill_code(state, code).await,
-        CodeType::Tool => handle_tool_code(state, code).await,
         CodeType::Work => handle_work_code(state, code).await,
         CodeType::Role => handle_role_code(state, code).await,
         CodeType::Loop => handle_loop_code(state, code).await,
@@ -142,38 +138,39 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<String, NeboE
         .install_skill(code)
         .await
         .map_err(|e| NeboError::Internal(format!("install_skill: {e}")))?;
-    let name = resp
-        .skill
-        .as_ref()
-        .map(|s| s.name.as_str())
-        .unwrap_or("skill");
-    Ok(format!("Installed skill: {}", name))
-}
 
-async fn handle_tool_code(state: &AppState, code: &str) -> Result<String, NeboError> {
-    let api = build_api_client(state)?;
-    let resp = api
-        .install_app(code)
-        .await
-        .map_err(|e| NeboError::Internal(format!("install_app: {e}")))?;
+    if resp.status == "payment_required" {
+        return Ok(format!("Skill requires payment. Checkout: {}", resp.checkout_url.unwrap_or_default()));
+    }
 
-    let name = resp
-        .app
-        .as_ref()
-        .map(|a| a.name.as_str())
-        .unwrap_or("tool");
+    let artifact_id = resp.artifact.id.clone();
+    let name = resp.artifact.name.clone();
 
-    // Download and install the .napp package
-    let download_url = resp.download_url(api.api_server(), &format!("/api/v1/apps/{}/download", code));
-    let registry = state.napp_registry.clone();
+    // Fetch artifact content from NeboLoop and persist to filesystem
+    if let Err(e) = tools::persist_skill_from_api(&api, &artifact_id, &name, code).await {
+        warn!(code, error = %e, "failed to persist skill artifact after redeem");
+    }
+
+    // Cascade: resolve skill deps (tools[], dependencies[])
+    let state_clone = state.clone();
+    let name_clone = name.clone();
     tokio::spawn(async move {
-        match registry.install_from_url(&download_url).await {
-            Ok(tool_id) => info!(tool_id = %tool_id, "napp installed from code"),
-            Err(e) => warn!(error = %e, "napp install from code failed"),
+        // Try to load the freshly installed skill to extract deps
+        if let Ok(user_dir) = config::user_dir() {
+            let skill_path = user_dir.join("skills").join(&name_clone).join("SKILL.md");
+            if let Ok(data) = std::fs::read(&skill_path) {
+                if let Ok(skill) = tools::skills::parse_skill_md(&data) {
+                    let deps = crate::deps::extract_skill_deps(&skill);
+                    if !deps.is_empty() {
+                        let mut visited = std::collections::HashSet::new();
+                        crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
+                    }
+                }
+            }
         }
     });
 
-    Ok(format!("Installing tool: {}", name))
+    Ok(format!("Installed skill: {}", name))
 }
 
 async fn handle_work_code(state: &AppState, code: &str) -> Result<String, NeboError> {
@@ -182,7 +179,35 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<String, NeboEr
         .install_workflow(code)
         .await
         .map_err(|e| NeboError::Internal(format!("install_workflow: {e}")))?;
-    Ok(format!("Installed workflow: {}", resp.id))
+
+    if resp.status == "payment_required" {
+        return Ok(format!("Workflow requires payment. Checkout: {}", resp.checkout_url.unwrap_or_default()));
+    }
+
+    let artifact_id = resp.artifact.id.clone();
+    let artifact_name = resp.artifact.name.clone();
+
+    // Fetch artifact content from NeboLoop and persist to DB + filesystem
+    if let Err(e) = persist_workflow_artifact(&api, &artifact_id, &artifact_name, code, &state.store).await {
+        warn!(code, error = %e, "failed to persist workflow artifact after redeem");
+    }
+
+    // Cascade: resolve workflow deps (skills, tools, sub-workflows)
+    let state_clone = state.clone();
+    let artifact_id_clone = artifact_id.clone();
+    tokio::spawn(async move {
+        if let Ok(Some(wf)) = state_clone.store.get_workflow(&artifact_id_clone) {
+            if let Ok(def) = workflow::parser::parse_workflow(&wf.definition) {
+                let deps = crate::deps::extract_workflow_deps(&def);
+                if !deps.is_empty() {
+                    let mut visited = std::collections::HashSet::new();
+                    crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
+                }
+            }
+        }
+    });
+
+    Ok(format!("Installed workflow: {}", artifact_name))
 }
 
 async fn handle_role_code(state: &AppState, code: &str) -> Result<String, NeboError> {
@@ -191,7 +216,33 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<String, NeboEr
         .install_role(code)
         .await
         .map_err(|e| NeboError::Internal(format!("install_role: {e}")))?;
-    Ok(format!("Installed role: {}", resp.id))
+
+    if resp.status == "payment_required" {
+        return Ok(format!("Role requires payment. Checkout: {}", resp.checkout_url.unwrap_or_default()));
+    }
+
+    let artifact_id = resp.artifact.id.clone();
+    let artifact_name = resp.artifact.name.clone();
+
+    // Fetch artifact content from NeboLoop and persist to DB + filesystem
+    if let Err(e) = tools::persist_role_from_api(&api, &artifact_id, &artifact_name, code, &state.store).await {
+        warn!(code, error = %e, "failed to persist role artifact after redeem");
+    }
+
+    // Cascade: resolve role deps (workflows, skills, tools from frontmatter)
+    let state_clone = state.clone();
+    let artifact_id_clone = artifact_id.clone();
+    tokio::spawn(async move {
+        if let Ok(Some(role)) = state_clone.store.get_role(&artifact_id_clone) {
+            let deps = crate::deps::extract_role_deps_from_frontmatter(&role.frontmatter);
+            if !deps.is_empty() {
+                let mut visited = std::collections::HashSet::new();
+                crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
+            }
+        }
+    });
+
+    Ok(format!("Installed role: {}", artifact_name))
 }
 
 async fn handle_loop_code(state: &AppState, code: &str) -> Result<String, NeboError> {
@@ -203,9 +254,66 @@ async fn handle_loop_code(state: &AppState, code: &str) -> Result<String, NeboEr
     Ok(format!("Joined loop: {}", resp.name))
 }
 
+// ── REST Endpoint ───────────────────────────────────────────────────
+
+/// POST /api/v1/codes — submit a marketplace code via REST.
+///
+/// Body: `{ "code": "SKIL-RFBM-XCYT" }`
+/// Returns: `{ "success": true, "message": "Installed skill: ..." }`
+pub async fn submit_code(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::response::Json(body): axum::response::Json<serde_json::Value>,
+) -> Result<
+    axum::response::Json<serde_json::Value>,
+    (axum::http::StatusCode, axum::response::Json<types::api::ErrorResponse>),
+> {
+    let code = body["code"]
+        .as_str()
+        .ok_or_else(|| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::response::Json(types::api::ErrorResponse {
+                    error: "code is required".into(),
+                }),
+            )
+        })?;
+
+    let (code_type, validated_code) = detect_code(code).ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::response::Json(types::api::ErrorResponse {
+                error: format!("invalid code format: {}", code),
+            }),
+        )
+    })?;
+
+    let result = match code_type {
+        CodeType::Nebo => handle_nebo_code(&state, validated_code).await,
+        CodeType::Skill => handle_skill_code(&state, validated_code).await,
+        CodeType::Work => handle_work_code(&state, validated_code).await,
+        CodeType::Role => handle_role_code(&state, validated_code).await,
+        CodeType::Loop => handle_loop_code(&state, validated_code).await,
+    };
+
+    match result {
+        Ok(msg) => Ok(axum::response::Json(serde_json::json!({
+            "success": true,
+            "code": validated_code,
+            "codeType": format!("{:?}", code_type),
+            "message": msg,
+        }))),
+        Err(e) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::response::Json(types::api::ErrorResponse {
+                error: e.to_string(),
+            }),
+        )),
+    }
+}
+
 // ── API Client Helper ───────────────────────────────────────────────
 
-fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboError> {
+pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboError> {
     let bot_id = config::read_bot_id()
         .ok_or_else(|| NeboError::Internal("no bot_id configured".into()))?;
     let profiles = state
@@ -217,6 +325,74 @@ fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboError> {
         .ok_or_else(|| NeboError::Internal("not connected to NeboLoop".into()))?;
     let api_server = state.config.neboloop.api_url.clone();
     Ok(NeboLoopApi::new(api_server, bot_id, profile.api_key.clone()))
+}
+
+// ── Artifact Persistence ────────────────────────────────────────────
+//
+// After redeem_code() registers the install in the NeboLoop cloud DB,
+// these functions fetch the actual artifact content and persist locally.
+//
+// Skills and roles: canonical implementation in tools::persist_skill_from_api
+// and tools::persist_role_from_api. Workflows have a unique DB+filesystem
+// persist path that only exists here.
+
+/// Fetch workflow content from NeboLoop and persist to DB + filesystem.
+async fn persist_workflow_artifact(
+    api: &NeboLoopApi,
+    artifact_id: &str,
+    name: &str,
+    code: &str,
+    store: &db::Store,
+) -> Result<(), String> {
+    let detail = api.get_skill(artifact_id).await
+        .map_err(|e| format!("fetch workflow detail: {e}"))?;
+
+    let manifest_text = tools::extract_manifest_text(&detail)
+        .unwrap_or_default();
+
+    // For workflows, manifest is WORKFLOW.md and type_config may hold the definition
+    let definition = detail.type_config
+        .as_ref()
+        .map(|v| serde_json::to_string(v).unwrap_or_default())
+        .unwrap_or_default();
+
+    // Persist to DB
+    let _ = store.create_workflow(
+        artifact_id,
+        Some(code),
+        name,
+        &detail.item.version,
+        &definition,
+        if manifest_text.is_empty() { None } else { Some(&manifest_text) },
+        None,
+    ).map_err(|e| format!("create_workflow: {e}"))?;
+
+    // Also write to filesystem
+    let user_dir = config::user_dir()
+        .map_err(|e| format!("user_dir: {e}"))?;
+    let slug = &detail.item.slug;
+    let wf_dir = user_dir.join("workflows").join(if slug.is_empty() { name } else { slug });
+    std::fs::create_dir_all(&wf_dir)
+        .map_err(|e| format!("create workflow dir: {e}"))?;
+
+    if !manifest_text.is_empty() {
+        if let Err(e) = std::fs::write(wf_dir.join("WORKFLOW.md"), &manifest_text) {
+            warn!(workflow = name, error = %e, "failed to write WORKFLOW.md");
+        }
+    }
+    if !definition.is_empty() {
+        if let Err(e) = std::fs::write(wf_dir.join("workflow.json"), &definition) {
+            warn!(workflow = name, error = %e, "failed to write workflow.json");
+        }
+    }
+
+    // Set napp_path on DB record
+    if let Err(e) = store.set_workflow_napp_path(artifact_id, &wf_dir.to_string_lossy()) {
+        warn!(workflow = name, error = %e, "failed to set napp_path");
+    }
+
+    tracing::info!(workflow = name, dir = %wf_dir.display(), "persisted workflow artifact");
+    Ok(())
 }
 
 // ── Shared Helpers ──────────────────────────────────────────────────
@@ -304,8 +480,7 @@ mod tests {
     #[test]
     fn test_detect_code_valid() {
         assert!(matches!(detect_code("NEBO-A1B2-C3D4"), Some((CodeType::Nebo, _))));
-        assert!(matches!(detect_code("SKILL-0000-ZZZZ"), Some((CodeType::Skill, _))));
-        assert!(matches!(detect_code("TOOL-ABCD-EF01"), Some((CodeType::Tool, _))));
+        assert!(matches!(detect_code("SKIL-0000-ZZZZ"), Some((CodeType::Skill, _))));
         assert!(matches!(detect_code("WORK-1234-5678"), Some((CodeType::Work, _))));
         assert!(matches!(detect_code("ROLE-9999-AAAA"), Some((CodeType::Role, _))));
         assert!(matches!(detect_code("LOOP-QRST-VWXY"), Some((CodeType::Loop, _))));
@@ -314,7 +489,7 @@ mod tests {
     #[test]
     fn test_detect_code_case_insensitive() {
         assert!(matches!(detect_code("nebo-a1b2-c3d4"), Some((CodeType::Nebo, _))));
-        assert!(matches!(detect_code("Skill-0000-ZZZZ"), Some((CodeType::Skill, _))));
+        assert!(matches!(detect_code("skil-0000-ZZZZ"), Some((CodeType::Skill, _))));
     }
 
     #[test]

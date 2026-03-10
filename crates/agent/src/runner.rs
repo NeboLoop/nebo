@@ -88,6 +88,7 @@ pub struct Runner {
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
+    active_role: tools::ActiveRoleState,
 }
 
 impl Runner {
@@ -99,6 +100,7 @@ impl Runner {
         concurrency: Arc<ConcurrencyController>,
         hooks: Arc<napp::HookDispatcher>,
         mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
+        active_role: tools::ActiveRoleState,
     ) -> Self {
         Self {
             sessions: SessionManager::new(store.clone()),
@@ -110,6 +112,7 @@ impl Runner {
             concurrency,
             hooks,
             mcp_context,
+            active_role,
         }
     }
 
@@ -170,25 +173,29 @@ impl Runner {
         // Append user message
         if !req.prompt.is_empty() {
             info!(session_id = %session_id, prompt_len = req.prompt.len(), "appending user message");
-            let _ = self.sessions.append_message(
+            if let Err(e) = self.sessions.append_message(
                 &session_id,
                 "user",
                 &req.prompt,
                 None,
                 None,
-            );
+            ) {
+                warn!(session_id = %session_id, error = %e, "failed to append user message");
+            }
         }
 
         // Create result channel
         let (tx, rx) = mpsc::channel(100);
 
-        // Clone Arc refs for the spawned task
+        // Clone refs for the spawned task (SessionManager shares cache via Arc)
+        let session_mgr = self.sessions.clone();
         let store = self.store.clone();
         let tools = self.tools.clone();
         let providers = self.providers.clone();
         let concurrency = self.concurrency.clone();
         let selector = self.selector.clone();
         let hooks = self.hooks.clone();
+        let active_role = self.active_role.clone();
         let system_prompt = req.system.clone();
         let user_id = req.user_id.clone();
         let origin = req.origin;
@@ -226,7 +233,6 @@ impl Runner {
         }
 
         tokio::spawn(async move {
-            let session_mgr = SessionManager::new(store.clone());
             let steering = steering::Pipeline::new();
 
             let result = run_loop(
@@ -249,6 +255,7 @@ impl Runner {
                 skip_memory,
                 max_iterations,
                 &cancel_token,
+                &active_role,
             )
             .await;
 
@@ -338,6 +345,7 @@ async fn run_loop(
     skip_memory: bool,
     max_iterations: usize,
     cancel_token: &CancellationToken,
+    active_role: &tools::ActiveRoleState,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
@@ -360,15 +368,13 @@ async fn run_loop(
         .get_active_task(session_id)
         .unwrap_or_default();
 
-    // Get tool names for STRAP doc filtering
-    let all_tool_defs_initial = tools.list().await;
-    let tool_names: Vec<String> = all_tool_defs_initial.iter().map(|t| t.name.clone()).collect();
-
     // Build static system prompt — use modular prompt when no custom one is provided
+    // STRAP docs and tool list are NOT included here — they're injected per-iteration
+    // based on which tools pass the context filter (dynamic injection).
     let static_system = if system_prompt.is_empty() {
+        let active_role_body = active_role.read().await.clone();
         let pctx = prompt::PromptContext {
             agent_name: agent_name.clone(),
-            tool_names: tool_names.clone(),
             active_skill: None,
             skill_hints: Vec::new(),
             model_aliases: model_aliases.to_string(),
@@ -376,6 +382,7 @@ async fn run_loop(
             platform: std::env::consts::OS.to_string(),
             memory_context: String::new(),
             db_context: Some(db_context_formatted.clone()),
+            active_role: active_role_body,
         };
         prompt::build_static(&pctx)
     } else {
@@ -405,6 +412,25 @@ async fn run_loop(
             info!(session_id, "run cancelled before iteration {}", iteration);
             return Ok(());
         }
+
+        // agent.should_continue filter — let apps dynamically stop the agent
+        if hooks.has_subscribers("agent.should_continue") {
+            let payload = serde_json::to_vec(&crate::hooks::ShouldContinuePayload {
+                session_id: session_id.to_string(),
+                turn: iteration,
+                total_tool_calls: called_tools.clone(),
+                has_active_task: !active_task.is_empty(),
+            })
+            .unwrap_or_default();
+            let (result, _) = hooks.apply_filter("agent.should_continue", payload).await;
+            if let Ok(resp) = serde_json::from_slice::<crate::hooks::ShouldContinueResponse>(&result) {
+                if !resp.should_continue {
+                    info!(session_id, turn = iteration, reason = ?resp.reason, "hook requested stop");
+                    break;
+                }
+            }
+        }
+
         info!(iteration, session_id, "agentic loop iteration");
 
         // Load messages from session, then sanitize ordering.
@@ -417,7 +443,14 @@ async fn run_loop(
         );
 
         if all_messages.is_empty() {
-            return Err("No messages in session".to_string());
+            let chat_id = sessions.resolve_session_key(session_id)
+                .unwrap_or_else(|_| format!("(unresolved, fallback=chat-{})", session_id));
+            warn!(
+                session_id,
+                chat_id = %chat_id,
+                "No messages in session — session_key may not have been cached"
+            );
+            return Err(format!("No messages in session (session_id={}, chat_id={})", session_id, chat_id));
         }
 
         // Apply sliding window
@@ -460,9 +493,9 @@ async fn run_loop(
             pruning::micro_compact(&window_messages, thresholds.warning);
         window_messages = compacted_messages;
 
-        // Get tool definitions, filtered by context
+        // Get tool definitions, filtered by context (returns active contexts for STRAP sub-doc injection)
         let all_tool_defs = tools.list().await;
-        let tool_defs = tool_filter::filter_tools(&all_tool_defs, &window_messages, &called_tools);
+        let (tool_defs, active_contexts) = tool_filter::filter_tools_with_context(&all_tool_defs, &window_messages, &called_tools);
 
         // Parse work tasks for steering
         let work_tasks_json = sessions.get_work_tasks(session_id).unwrap_or_default();
@@ -522,6 +555,11 @@ async fn run_loop(
             ai_messages = convert_messages(&all_with_steering);
         }
 
+        // Build per-iteration STRAP docs + tool list based on filtered tools
+        let filtered_tool_names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
+        let strap_section = prompt::build_strap_section(&filtered_tool_names, &active_contexts);
+        let tools_list = prompt::build_tools_list(&filtered_tool_names);
+
         // Build dynamic system suffix
         let dctx = prompt::DynamicContext {
             provider_name: String::new(),
@@ -531,7 +569,7 @@ async fn run_loop(
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
-        let full_system = format!("{}{}", static_system, dynamic_suffix);
+        let full_system = format!("{}\n\n{}\n\n{}{}", static_system, strap_section, tools_list, dynamic_suffix);
 
         // Hook: message.pre_send — let apps modify system prompt before LLM call
         let full_system = if hooks.has_subscribers("message.pre_send") {
@@ -867,9 +905,11 @@ async fn run_loop(
 
         // Execute tool calls in parallel
         if !tool_calls.is_empty() {
+            let resolved_key = sessions.resolve_session_key(session_id)
+                .unwrap_or_else(|_| session_id.to_string());
             let ctx = ToolContext {
                 origin,
-                session_key: session_id.to_string(),
+                session_key: resolved_key,
                 session_id: session_id.to_string(),
                 user_id: user_id.to_string(),
             };
@@ -988,6 +1028,20 @@ async fn run_loop(
                 );
             }
 
+            // agent.turn action — notify apps after tool execution
+            if hooks.has_subscribers("agent.turn") {
+                let turn_tool_names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();
+                let payload = serde_json::to_vec(&crate::hooks::TurnPayload {
+                    session_id: session_id.to_string(),
+                    turn: iteration,
+                    tool_calls: turn_tool_names,
+                    total_tool_calls: called_tools.clone(),
+                    has_active_task: !active_task.is_empty(),
+                })
+                .unwrap_or_default();
+                hooks.do_action("agent.turn", payload).await;
+            }
+
             // Continue loop — LLM needs to respond to tool results
             continue;
         }
@@ -1013,6 +1067,19 @@ async fn run_loop(
                 None,
             );
             continue;
+        }
+
+        // agent.turn action — notify apps at natural break
+        if hooks.has_subscribers("agent.turn") {
+            let payload = serde_json::to_vec(&crate::hooks::TurnPayload {
+                session_id: session_id.to_string(),
+                turn: iteration,
+                tool_calls: vec![],
+                total_tool_calls: called_tools.clone(),
+                has_active_task: !active_task.is_empty(),
+            })
+            .unwrap_or_default();
+            hooks.do_action("agent.turn", payload).await;
         }
 
         // Conversation turn complete
