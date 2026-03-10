@@ -1577,3 +1577,120 @@ Uses `testSecret = "test-secret-key-12345"` and `jwt.SigningMethodHS256`.
 8. **Cron sinks:** Native notification via `notify/Send()` + web UI event + optional channel delivery.
 9. **Heartbeat:** Periodic ticks via `daemon/Heartbeat`, dispatched through `msgbus/Bus` like any other message.
 10. **Credentials:** Master key from OS keychain (`keyring/`) initializes `credential/` package at startup. All DB secrets encrypted at rest.
+
+---
+
+## Rust Mapping Notes
+
+This section documents the Rust equivalents (or gaps) for the Go infrastructure systems described above.
+
+### Message Bus (`msgbus/`)
+
+**Rust status: No direct equivalent. Replaced by a simpler architecture.**
+
+The Go `msgbus` package is a heavyweight pub/sub coordinator that routes every inbound message through `events.Subject` to lanes and then to the runner. In Rust, this indirection is eliminated:
+
+- **`crates/server/src/handlers/ws.rs`** — The `ClientHub` struct (`broadcast::Sender<HubEvent>`) replaces the `realtime/Hub` broadcast layer. It uses `tokio::sync::broadcast` (buffer size 256) instead of Go's goroutine-per-subscriber model.
+- **`crates/server/src/handlers/ws.rs::handle_client_ws()`** — Handles WebSocket messages directly in a `tokio::select!` loop (client messages + hub broadcasts). There is no intermediate `ChatContext` or `pendingRequest` tracking layer; the handler calls `Runner::run()` inline and streams events back to the client.
+- **`crates/agent/src/runner.rs`** — The `Runner` is called directly from WebSocket handlers and the scheduler, not via a message bus.
+- **`crates/agent/src/lanes.rs`** — The `LaneManager` exists and provides per-lane task queuing with concurrency limits, equivalent to Go's `agenthub.LaneManager`. Tasks are enqueued directly from handlers rather than via a bus routing step.
+- **ResponseSink pattern:** Not ported. Rust uses `tokio::sync::mpsc` channels and direct streaming via `axum::extract::ws::WebSocket`. The Go sink abstraction (HubFrameSink, OwnerDMSink, CronSink, etc.) is replaced by per-handler streaming logic.
+- **DMRelayer:** Not yet ported. NeboLoop DM relay is handled in `crates/comm/` but there is no automatic bidirectional companion sync wrapper equivalent to `DMRelaySink`.
+
+**Key difference:** Go uses `Emit -> Subject -> route -> lane -> runner` (4 hops). Rust uses `handler -> lane -> runner` (2 hops). The event-based decoupling is traded for simpler direct calls.
+
+### Events System (`events/`)
+
+**Rust status: Implemented, with a different design.**
+
+The Go `events` package is a generic, lock-free, in-process pub/sub system (`Subject` with atomic pointers, copy-on-write subscriber maps, replay cache). The Rust version is purpose-built for workflow event dispatch rather than general pub/sub:
+
+- **`crates/tools/src/events.rs`** — `EventBus` struct backed by `tokio::sync::mpsc::UnboundedSender<Event>`. Provides `emit()` for best-effort event delivery. The `Event` type carries `source` (String), `payload` (serde_json::Value), `origin` (String), and `timestamp` (u64). Much simpler than Go's generic `events.Subject`.
+- **`crates/workflow/src/events.rs`** — `EventDispatcher` struct that consumes events from the `EventBus` receiver, matches them against role-owned `EventSubscription` entries (pattern matching with wildcard suffix support, e.g. `"email.*"`), and triggers workflow runs via `WorkflowManager::run()`. Spawns a single tokio task via `EventDispatcher::spawn()`.
+- **`crates/tools/src/emit_tool.rs`** — `EmitTool` agent tool that allows workflow activities to fire events into the `EventBus`. Always injected for workflow activities.
+- **Wired in `AppState`** — Both `event_bus: tools::EventBus` and `event_dispatcher: Arc<workflow::events::EventDispatcher>` are fields on `crates/server/src/state.rs::AppState`.
+
+**What is NOT ported from Go `events/`:**
+- No generic type-parameterized pub/sub (`Subscribe[T]`, `Emit[T]`). Rust uses a single concrete `Event` type.
+- No replay cache or `WantsReplay` option.
+- No copy-on-write atomic subscriber management (Rust uses `tokio::sync::RwLock` instead).
+- No `WithSyncDelivery` option (all delivery is async via tokio tasks).
+- No `WithBufferSize` configuration (unbounded channel).
+- No topic-based routing (Go uses arbitrary topic strings; Rust events have a `source` field matched by the dispatcher).
+- No `Subject`-level shutdown protocol. The bus drops naturally when the sender is dropped.
+
+**CDP/browser topics** (`TopicCDPBroadcast`, `CDPClientTopic`): Not applicable. Browser automation in Rust uses `crates/browser/` with a different WebSocket-based CDP communication model.
+
+### Keyring (`keyring/`)
+
+**Rust status: Fully implemented.**
+
+- **`crates/auth/src/keyring.rs`** — Uses the `keyring` crate (Rust equivalent of `github.com/zalando/go-keyring`). Same service/account naming: `SERVICE_NAME = "nebo"`, `ACCOUNT_NAME = "master-encryption-key"`.
+- **API:** `available() -> bool`, `get() -> Option<String>`, `set(key: &str) -> Result<(), String>`, `delete() -> Result<(), String>`.
+- **Difference from Go:** The Rust `get()` returns the key as a raw `String` (not hex-decoded bytes). The Go version stores hex-encoded and decodes to `[]byte`. The Rust version stores and retrieves the plaintext key string directly.
+- **Difference from Go:** No `NEBO_KEYRING_DISABLED` environment variable check. The Rust `available()` function probes the keyring directly by attempting to read the master key entry. Go uses a separate write/read/delete probe cycle with a test entry.
+- **OS backends:** Same cross-platform coverage via the `keyring` crate: macOS Keychain Services, Windows Credential Manager, Linux Secret Service D-Bus API.
+
+### Credential Storage (`credential/`)
+
+**Rust status: Fully implemented.**
+
+- **`crates/auth/src/credential.rs`** — Global `OnceLock<mcp::crypto::Encryptor>` (Rust equivalent of Go's `sync.RWMutex`-protected `encKey []byte`). Same `"enc:"` prefix convention.
+- **API:** `init(encryptor)`, `is_initialized() -> bool`, `encrypt(plaintext) -> Result<String, String>`, `decrypt(value) -> Result<String, String>`, `is_encrypted(value) -> bool`.
+- **Encryption backend:** `crates/mcp/src/crypto.rs` — `Encryptor` struct using AES-256-GCM (via `aes-gcm` crate). Provides `encrypt()`, `decrypt()`, `encrypt_b64()`, `decrypt_b64()`, `from_passphrase()`, `generate()`. The Go version delegates to `mcpclient.EncryptString/DecryptString`.
+- **Migration:** Not yet ported. Go's `credential.Migrate()` encrypts all plaintext credentials across 4 tables in a single transaction. The Rust codebase does not have an equivalent migration function for existing plaintext values.
+
+### Keychain Tool (Agent-facing)
+
+**Rust status: Implemented (not present in Go `internal/` — this is Rust-only).**
+
+- **`crates/tools/src/keychain_tool.rs`** — `KeychainTool` is an agent-accessible tool (implements `DynTool`) for cross-platform credential storage management. Actions: `get`, `find`, `add`, `delete`. Platform-specific implementations via `#[cfg(target_os)]`: macOS (`security` CLI), Linux (`secret-tool` / libsecret), Windows (`cmdkey`).
+- This is distinct from the internal `keyring` module — the keychain tool gives the *agent* access to the user's OS credential store, while `auth::keyring` is for Nebo's own master encryption key.
+
+### Notification System (`notify/`)
+
+**Rust status: Fully implemented.**
+
+- **`crates/notify/src/lib.rs`** — `pub fn send(title, body)` with the same sanitization and platform dispatch as Go. macOS uses AppleScript, Linux uses `notify-send`, Windows uses PowerShell toast.
+
+### Heartbeat Daemon (`daemon/`)
+
+**Rust status: Partially covered by the scheduler.**
+
+- **`crates/server/src/scheduler.rs`** — A cron scheduler loop that polls enabled `cron_jobs` every 60 seconds. Handles both `bash` and `agent` task types. This covers the cron firing portion of Go's `daemon/Heartbeat`.
+- **`crates/tools/src/event_tool.rs`** — `EventTool` provides agent-accessible CRUD for scheduled tasks (create, list, delete, pause, resume, run, history). Equivalent to Go's cron job management.
+- **What is NOT ported:**
+  - `HEARTBEAT.md` file loading and heartbeat prompt formatting.
+  - Clock-aligned tick intervals (Rust uses a fixed 60s poll).
+  - Wake mechanism (non-blocking immediate tick bypass).
+  - Quiet hours checking.
+  - Event queue (collecting events between ticks for inclusion in heartbeat prompt).
+  - Prompt dedup via FNV-1a hashing.
+
+### Real-Time Hub (`realtime/`)
+
+**Rust status: Implemented with simpler architecture.**
+
+- **`crates/server/src/handlers/ws.rs`** — `ClientHub` (broadcast channel) + `handle_client_ws()` (per-connection tokio task). Replaces Go's `realtime/Hub` + `Client` + `ChatContext` + handler registration pattern.
+- **Supported client message types:** `chat`, `cancel`, `approval_response`, `ask_response`, `session_reset`, `ping` (via WebSocket protocol ping/pong).
+- **Supported server event types:** `connected`, `chat_stream`, `chat_complete`, `tool_call`, `tool_result`, `thinking`, `error`, `chat_cancelled`, `approval_request`, `ask`, `session_reset`.
+- **What is NOT ported:**
+  - `check_stream` (stream resumption on reconnect).
+  - Title generation request flow (auto-titling new chats).
+  - Introduction request handler.
+  - Rewrite handler.
+  - `DMRelaySink` / bidirectional companion sync.
+  - Silent tool filtering.
+  - Content block tracking and partial save.
+
+### WebSocket Handler (`websocket/`)
+
+**Rust status: Implemented differently.**
+
+- **`crates/server/src/handlers/ws.rs`** — Axum's built-in WebSocket upgrade (`axum::extract::WebSocketUpgrade`) replaces the Go `gorilla/websocket` upgrader + custom auth flow.
+- **Auth:** The Rust WebSocket endpoint is currently unauthenticated (localhost-only, single-user desktop app). Go's pre-upgrade JWT auth, post-connect auth, and cookie-based auth are not ported.
+- **Ping/pong:** Handled by Axum/tokio-tungstenite at the protocol level rather than application-level ping/pong messages.
+
+---
+
+*Last updated: 2026-03-10*

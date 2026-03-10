@@ -222,9 +222,12 @@ Umbrella for file and shell tools. Always registered.
 
 | Resource | Actions | Purpose |
 |---|---|---|
-| (default) | `search`, `fetch`, `browse`, `screenshot` | Web search, page fetching, browser control |
+| **http** | `fetch`, `get`, `post`, `put`, `delete`, `head`, `sanitize` | HTTP requests with any method, HTML text extraction with chunking |
+| **search** | `search`, `query` | Web search (BYOK: Brave API, Tavily, Google CSE, SerpAPI; fallback: Brave HTML scrape) |
+| **browser** | `navigate`, `read_page`, `snapshot`, `click`, `double_click`, `triple_click`, `right_click`, `hover`, `fill`, `form_input`, `type`, `select`, `screenshot`, `scroll`, `scroll_to`, `press`, `key`, `drag`, `go_back`, `go_forward`, `wait`, `evaluate`, `list_tabs`, `new_tab`, `close_tab`, `close`, `status`, `text` | Browser automation via Chrome extension (30 actions) |
+| **devtools** | `console`, `source`, `storage`, `dom`, `cookies`, `performance` | Chrome DevTools Protocol inspection via extension |
 
-Requires `"web"` permission. Optional browser manager integration.
+Requires `"web"` permission. Optional browser manager integration. Resource is auto-inferred from action if omitted.
 
 ### EventTool (`event`)
 
@@ -249,6 +252,38 @@ Always registered.
 | (default) | `send`, `list`, `join`, `leave` | NeboLoop channel communication |
 
 Requires `"loop"` permission and active `CommPlugin`.
+
+### RoleTool (`role`)
+
+**Source:** `crates/tools/src/role_tool.rs`
+
+Manages agent roles — the top of the hierarchy (ROLE → WORK → SKILL). A role defines who the agent is: persona, workflows, skills, triggers. **Always registered** (core tool).
+
+```rust
+pub struct RoleTool {
+    store: Arc<Store>,
+    active_role: ActiveRoleState,  // Arc<RwLock<Option<String>>>
+    installed_dir: PathBuf,
+    user_dir: PathBuf,
+}
+```
+
+| Action | Required Params | Purpose |
+|---|---|---|
+| `list` | — | List roles from filesystem (installed + user) and DB |
+| `activate` | `name` | Assume a role: inject persona into system prompt, register triggers (cron + role_workflows) |
+| `deactivate` | — | Drop current role, revert to default persona |
+| `info` | `name?` | Show role details (workflows, skills, triggers, persona preview). Without `name`, shows active role. |
+| `create` | `name`, `role_md`, `role_json?` | Create user role: writes ROLE.md + optional role.json + auto-generated manifest.json |
+| `install` | `code` | Install from marketplace (`ROLE-XXXX-XXXX`), handles payment flow |
+
+**Role Activation Flow:**
+1. Find role by name (user dir → installed dir → DB fallback)
+2. Set ROLE.md body into `ActiveRoleState` (read by runner for prompt injection)
+3. Enable in DB if exists
+4. Parse role.json config → register workflow triggers (`upsert_role_workflow`) + cron jobs
+
+**Key Type:** `ActiveRoleState = Arc<RwLock<Option<String>>>` — shared between RoleTool and the agent runner. When `Some(body)`, the body is injected into the system prompt.
 
 ---
 
@@ -744,9 +779,7 @@ Smart contextual filtering determines which tools the LLM sees on each turn.
 **Tier 1: Core Tools (always included)**
 
 ```rust
-const CORE_TOOLS: &[&str] = &[
-    "system", "web", "bot", "loop", "event", "message", "skill", "work"
-];
+const CORE_TOOLS: &[&str] = &["os", "web", "agent", "event", "message", "skill", "role"];
 ```
 
 **Tier 2: Contextual Groups (keyword-triggered)**
@@ -892,7 +925,7 @@ Full tool suite with capability-based filtering:
 
 | Permission | Tools Registered |
 |---|---|
-| *(always)* | SystemTool, BotTool, EventTool, SkillTool, MessageTool |
+| *(always)* | OsTool, AgentTool, EventTool, SkillTool, MessageTool, RoleTool |
 | `"web"` | WebTool |
 | `"desktop"` | DesktopTool, AppTool |
 | `"media"` | MusicTool |
@@ -908,6 +941,7 @@ Full tool suite with capability-based filtering:
 | WorkTool | `workflow_manager` |
 | WebTool | `"web"` permission + optional browser |
 | LoopTool | `"loop"` permission + CommPlugin |
+| RoleTool | *(always, uses default ActiveRoleState if none provided)* |
 
 ---
 
@@ -924,15 +958,12 @@ Full tool suite with capability-based filtering:
 | `crates/tools/src/sandbox_policy.rs` | New in Rust (no Go equivalent) |
 | `crates/tools/src/events.rs` | New in Rust (no Go equivalent) |
 | `crates/agent/src/tool_filter.rs` | `internal/agent/tools/filter.go` |
+| `crates/tools/src/role_tool.rs` | New in Rust (no Go equivalent) |
 | `crates/mcp/src/bridge.rs` | `internal/mcp/bridge.go` |
-
-**Go-only docs for reference:**
-- [agent-tools.md](agent-tools.md) — Go agent tools deep-dive
-- [platform-tools.md](platform-tools.md) — Go platform tools deep-dive
 
 **Rust comprehensive reference:**
 - [skills-and-tools.md](skills-and-tools.md) — Covers skills + tools together with .napp packaging and hooks
 
 ---
 
-*Last updated: 2026-03-08*
+*Last updated: 2026-03-10*

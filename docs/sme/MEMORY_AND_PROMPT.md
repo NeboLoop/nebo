@@ -1,5 +1,7 @@
 # Memory & Prompt System -- SME Deep-Dive (Unified Go + Rust)
 
+> **Last updated:** 2026-03-10
+>
 > **Purpose:** Definitive technical reference for Nebo's entire memory system and system prompt pipeline -- storage, extraction, personality synthesis, hybrid search, embeddings, session transcript indexing, prompt assembly, steering, context management, and AFV security. This document covers the COMPLETE Go implementation and maps every subsystem to its Rust migration status.
 >
 > **How to read this document:** Each section documents the full Go logic (algorithms, constants, data types). A **Rust Status** subsection at the end of each section tells you what exists in `nebo-rs` and what is missing.
@@ -45,15 +47,21 @@
 |------|---------|--------|
 | `crates/agent/src/runner.rs` | Agentic loop with provider fallback, objective detection | Ported (core loop) |
 | `crates/agent/src/prompt.rs` | `build_static()`, `build_dynamic_suffix()`, STRAP docs | Ported (full) |
-| `crates/agent/src/memory.rs` | Extraction, storage, `load_memory_context()` | Partial |
+| `crates/agent/src/memory.rs` | Extraction, storage, confidence, decay scoring, `load_memory_context()`, `embed_memories_async()` | Ported |
 | `crates/agent/src/memory_debounce.rs` | Debounced extraction timer (5s per session) | Ported |
 | `crates/agent/src/steering.rs` | 12 steering generators, injection, pipeline | Ported (expanded from Go's 10) |
 | `crates/agent/src/pruning.rs` | Sliding window, micro-compact, token estimation | Ported (different approach) |
 | `crates/agent/src/compaction.rs` | Tool failure collection, enhanced summary | Ported (partial) |
 | `crates/agent/src/session.rs` | SessionManager: CRUD, summary, active task, work tasks | Ported |
-| `crates/tools/src/bot_tool.rs` | `handle_memory()`: store/recall/search/list/delete/clear | Ported (basic) |
+| `crates/agent/src/search.rs` | Hybrid search: FTS5 + vector + adaptive weights + cosine similarity | Ported |
+| `crates/agent/src/chunking.rs` | Sentence-boundary text chunking with overlap | Ported |
+| `crates/agent/src/transcript.rs` | Session transcript indexing (post-compaction embedding) | Ported |
+| `crates/agent/src/sanitize.rs` | Prompt injection detection, key/value sanitization | Ported |
+| `crates/ai/src/embedding.rs` | EmbeddingProvider trait, OpenAI + Ollama providers, cached wrapper | Ported |
+| `crates/tools/src/bot_tool.rs` | `handle_memory()`: store/recall/search/list/delete/clear + hybrid search | Ported |
+| `crates/db/src/queries/embeddings.rs` | Embedding cache, memory chunks, memory embeddings DB queries | Ported |
 | `crates/db/migrations/0013_agent_tools.sql` | memories + FTS5 tables | Ported |
-| `crates/db/migrations/0016_vector_embeddings.sql` | memory_chunks, embeddings, cache | Ported (schema only) |
+| `crates/db/migrations/0016_vector_embeddings.sql` | memory_chunks, embeddings, cache | Ported (schema + code) |
 | `crates/db/migrations/0038_memory_chunks_schema_update.sql` | Nullable memory_id, renamed columns | Ported |
 | `crates/db/migrations/0039_session_embed_tracking.sql` | `last_embedded_message_id` | Ported |
 
@@ -600,27 +608,21 @@ Also handles `tacit` namespace with `user/` key prefix (auto-extraction format).
 
 ### Rust Status
 
-**Ported (basic):** `crates/tools/src/bot_tool.rs` implements `handle_memory()` with 6 actions:
-- `store` -- calls `store.upsert_memory()`, no sanitization, no embedding, no user profile sync
-- `recall` -- exact key match only, no fallback to hybrid search, no access_count increment
-- `search` -- LIKE-based search via `store.search_memories()`, no hybrid search, no score display
+**Ported (substantial):** `crates/tools/src/bot_tool.rs` implements `handle_memory()` with 6 actions:
+- `store` -- calls `store.upsert_memory()` with user_id scoping, write verification on separate connection
+- `recall` -- exact key match with user_id, fallback to key-only lookup across namespaces, `access_count` increment
+- `search` -- hybrid search (FTS5 + vector) via `HybridSearcher` trait when available, falls back to LIKE query, score display
 - `list` -- `list_memories_by_namespace()`, max 50
 - `delete` -- `delete_memory_by_key_and_user()`
 - `clear` -- `delete_memories_by_namespace_and_user()`
 
+Embedding on write: `embed_memories_async()` in `crates/agent/src/memory.rs` spawns a background task to chunk and embed stored memories.
+
 **Missing:**
-- User-scoped operations (hardcoded empty `user_id` in Rust)
-- Sanitization (injection pattern filtering)
-- Layer + namespace resolution logic
-- `embedMemory()` async embedding on write
 - `syncToUserProfile()` bridging
-- `IsDuplicate()` deduplication
-- Style reinforcement (metadata increment, confidence boost)
-- Recall fallback to hybrid search
-- `access_count` tracking and increment
-- Hybrid search integration (no `HybridSearcher` in Rust)
-- Embedding, index, embed actions from Go
+- `IsDuplicate()` deduplication (upsert handles collisions at DB level)
 - `searchWithContext` variant
+- `embed` and `index` actions from Go (embedding happens automatically, not as explicit tool actions)
 
 ---
 
@@ -725,16 +727,15 @@ If FTS5 fails (corrupt index, query syntax error), LIKE search provides degraded
 
 ### Rust Status
 
-**Not ported.** The entire hybrid search system is missing from Rust:
-- No `HybridSearcher` struct
-- No FTS5 query building or BM25 normalization
-- No vector search (no embedding provider integration)
-- No adaptive weights
-- No session chunk FTS with dampening
-- No `mergeResults()` score fusion
-- Bot tool search uses basic SQL LIKE via `store.search_memories()`
-
-The FTS5 virtual tables exist in the database (migrations are ported) but are not queried by any Rust code.
+**Ported.** Full hybrid search in `crates/agent/src/search.rs`:
+- `hybrid_search()` combines FTS5 text search and vector similarity
+- FTS5 query building with `sanitize_fts_query()` and BM25 normalization via `normalize_bm25()`
+- Vector search via `EmbeddingProvider` trait -- embeds query, loads all user embeddings, cosine similarity scoring
+- Adaptive weights based on query classification (short proper noun, short generic, medium, long)
+- Session chunk FTS with 0.6x dampening
+- Merged score fusion: results keyed by memory/chunk ID, scores accumulated from FTS + vector sources
+- `HybridSearchAdapter` in `crates/agent/src/search_adapter.rs` bridges to the bot tool's `HybridSearcher` trait
+- `cosine_similarity()` implemented in `search.rs`
 
 ---
 
@@ -789,13 +790,15 @@ func CosineSimilarity(a, b []float32) float64 {
 
 ### Rust Status
 
-**Not ported.** No embeddings service exists in Rust:
-- No `Provider` trait for embeddings
-- No OpenAI or Ollama embedding providers
-- No SHA256 caching
-- No cosine similarity function
-- No batch embedding with retry
-- The `embedding_cache` table exists (migration ported) but is unused
+**Ported.** Full embeddings service in `crates/ai/src/embedding.rs`:
+- `EmbeddingProvider` trait with `id()`, `dimensions()`, `embed()` methods
+- `OpenAIEmbeddingProvider` -- `text-embedding-3-small` default, 1536 dims, configurable base URL and model
+- `OllamaEmbeddingProvider` -- configurable model and dimensions, `POST {baseURL}/api/embed`
+- `CachedEmbeddingProvider` -- wraps any provider with SHA256 content hashing to `embedding_cache` table
+- Batch embedding with 3-attempt retry (exponential backoff: 500ms, 2s, 8s) and auth error short-circuit
+- Cosine similarity in `crates/agent/src/search.rs`
+- DB queries in `crates/db/src/queries/embeddings.rs`: `get_cached_embedding`, `insert_cached_embedding`, `insert_memory_chunk`, `insert_memory_embedding`, `get_all_embeddings_by_user`
+- Embeddings stored as little-endian `f32` byte blobs (not JSON-serialized as in Go)
 
 ---
 
@@ -847,7 +850,11 @@ type Chunk struct {
 
 ### Rust Status
 
-**Not ported.** No text chunker exists in Rust. The `memory_chunks` table schema is migrated but no code writes to it.
+**Ported.** `crates/agent/src/chunking.rs` implements sentence-boundary text chunking:
+- Same constants as Go: `DEFAULT_CHUNK_SIZE = 1600`, `DEFAULT_OVERLAP = 320`, `SHORT_CIRCUIT_SIZE = 1920`
+- `chunk_text()` and `chunk_text_default()` split text at sentence boundaries (`.`, `!`, `?` + space/newline) and paragraph boundaries (`\n\n`)
+- Returns `TextChunk` structs with text, start_char, end_char offsets
+- Used by `embed_memories_async()` in `memory.rs` and `index_compacted_messages()` in `transcript.rs`
 
 ---
 
@@ -890,11 +897,14 @@ Converges asymptotically toward 1.0 -- never quite reaches it.
 
 ### Rust Status
 
-**Not ported.** The confidence system is absent:
-- Rust uses a flat default confidence of 0.75 for all facts (no `explicit` mapping)
-- No confidence filter on system prompt loading
-- No reinforcement confidence boost
-- No `json_extract(metadata, '$.confidence')` filtering in queries
+**Ported.** Full confidence system in `crates/agent/src/memory.rs` and `crates/db/src/queries/memories.rs`:
+- `resolve_confidence()` maps `explicit: true` -> 0.9, `explicit: false` -> 0.6, `None` -> raw value (clamped 0-1)
+- Confidence stored in memory metadata JSON (`{"confidence": ...}`)
+- `get_tacit_memories_with_min_confidence()` filters with `json_extract(metadata, '$.confidence') >= 0.65` (same SQL as Go)
+- Style reinforcement in `store_style_observation()`: `new = old + (1 - old) * 0.2`, tracks `reinforced_count` and `last_reinforced`
+- Decay scoring via `decay_score()`: `access_count * 0.7^(days_since_access / 30)`
+- `score_memory()` combines confidence * decay for ranking
+- Two-pass overfetch in `load_memory_context()`: personality (30 overfetch, cap 10) then other tacit (120 overfetch, fill remaining)
 
 ---
 
@@ -935,11 +945,12 @@ All queries are user-scoped via `user_id` column. The unique constraint `(namesp
 
 ### Rust Status
 
-**Not ported.** No sanitization exists in Rust:
-- No prompt injection regex patterns
-- No key/value length limits
-- No control character stripping
-- User isolation is incomplete (bot_tool passes empty string for `user_id`)
+**Ported.** `crates/agent/src/sanitize.rs` implements:
+- `detect_prompt_injection()` -- 14 regex patterns (case-insensitive) checked against memory keys and values before storage
+- `sanitize_memory_key()` -- strips control chars (preserves newlines), truncates to 128 chars
+- `sanitize_memory_value()` -- strips control chars (preserves newlines), truncates to 2048 chars
+- Used by `store_facts()` in `memory.rs` -- injection-detected entries are skipped with debug logging
+- User isolation via `user_id` scoping in bot_tool and memory queries
 
 ---
 
@@ -1556,11 +1567,13 @@ Compaction completes
 
 ### Rust Status
 
-**Not ported.** No session transcript indexing exists:
-- No `IndexSessionTranscript()` function
-- No `last_embedded_message_id` tracking (migration exists but unused)
-- No session chunks written to `memory_chunks`
-- No embedding pipeline for compacted messages
+**Ported.** `crates/agent/src/transcript.rs` implements `index_compacted_messages()`:
+- Reads `last_embedded_message_id` high-water mark from session
+- Filters messages after high-water mark (user + assistant roles, non-empty)
+- Groups into blocks of 5 messages, concatenates as `"role: content"` (truncated to 500 chars per message)
+- Chunks each block via `chunking::chunk_text_default()`
+- Batch embeds via `EmbeddingProvider`, stores to `memory_chunks` (source="session", memory_id=NULL, path=sessionID) and `memory_embeddings`
+- Updates `last_embedded_message_id` to highest processed message ID
 
 ---
 
@@ -1792,7 +1805,7 @@ The system is designed so that the most important knowledge has multiple paths t
 
 ### Rust Status
 
-**Paths 1, 3, 4 exist.** Path 2 (compaction summary) partially exists (summary field is stored/loaded but never LLM-generated; only quick fallback summaries). Path for personality directive (row 2) does not exist. Hybrid search path (row 7) does not exist. Session transcript chunk path (row 8) does not exist.
+**Paths 1, 3, 4, 7, 8 exist.** Path 2 (compaction summary) partially exists (summary field is stored/loaded but never LLM-generated; only quick fallback summaries). Path for personality directive (row 2) does not exist. Hybrid search path (row 7) exists via `hybrid_search()` in `search.rs` with `HybridSearchAdapter`. Session transcript chunk path (row 8) exists -- `transcript.rs` indexes compacted messages, searchable via hybrid search.
 
 ---
 
@@ -1907,9 +1920,10 @@ Safe to run on startup -- removes inferred facts that were never confirmed.
 ### Rust Status
 
 **Partially applicable.** Rust has:
-- `load_memory_context()` performance: simpler queries, likely < 100ms
+- `load_memory_context()` performance: two-pass overfetch with decay scoring, confidence filtering, likely < 200ms
 - Extraction time: same (depends on LLM provider)
-- Search: LIKE-based only, typically 10-50ms
+- Search: hybrid (FTS5 + vector) via `hybrid_search()`, typically 100-300ms; LIKE fallback typically 10-50ms
+- Embedding: async, non-blocking (same characteristics as Go)
 - Memory debouncer: Tokio `JoinHandle` HashMap, one per session
 
 ---
@@ -2031,7 +2045,7 @@ Messages are immutable and append-only. The runner writes via `CreateChatMessage
 
 ### Rust Status
 
-**Schema ported.** All tables exist in Rust's SQLite migrations under `crates/db/migrations/`. The `Store` in `crates/db/` has CRUD methods for `memories`, `chat_messages`, and `sessions`. The FTS5 tables, `memory_chunks`, `memory_embeddings`, and `embedding_cache` tables exist but are **not populated by any Rust code** (no embedding pipeline).
+**Schema ported and actively used.** All tables exist in Rust's SQLite migrations under `crates/db/migrations/`. The `Store` in `crates/db/` has CRUD methods for `memories`, `chat_messages`, and `sessions`. The FTS5 tables are queried by hybrid search (`crates/agent/src/search.rs`). The `memory_chunks`, `memory_embeddings`, and `embedding_cache` tables are populated by the embedding pipeline (`crates/agent/src/memory.rs`, `crates/agent/src/transcript.rs`) and queried by vector search.
 
 ---
 
@@ -2053,7 +2067,7 @@ Messages are immutable and append-only. The runner writes via `CreateChatMessage
 
 ### Rust Status
 
-**All migrations ported.** The database schema is complete. The gap is in the Rust application code that uses these tables -- many columns/tables exist but are unused by Rust code (e.g., `memory_chunks`, `memory_embeddings`, `embedding_cache`, `compaction_count`, `memory_flush_*`, `last_embedded_message_id`).
+**All migrations ported.** The database schema is complete. Most tables are now actively used by Rust code. The embedding pipeline populates `memory_chunks`, `memory_embeddings`, and `embedding_cache`. Session transcript indexing uses `last_embedded_message_id`. Remaining unused columns: `compaction_count`, `memory_flush_*` (no pre-compaction flush yet).
 
 ---
 
@@ -2262,17 +2276,17 @@ compactionRecovery steering fires
 
 ### Rust Implementation Notes
 
-Decisions 1, 3, 4, 9 are implemented in Rust. Decision 2 is partially implemented (single injection). Decisions 5, 6, 7, 8, 10, 11, 12 have no Rust implementation yet. Rust uses a sliding window model instead of progressive compaction (decision 6), which is simpler but loses the LLM-generated summary capability.
+Decisions 1, 3, 4, 7, 9, 10, 11, 12 are implemented in Rust. Decision 2 is partially implemented (single injection). Decisions 5, 6, 8 have no Rust implementation yet. Rust uses a sliding window model instead of progressive compaction (decision 6), which is simpler but loses the LLM-generated summary capability.
 
 ---
 
 ## 30. Gotchas & Edge Cases
 
-1. **One-turn lag for auto-extracted memories in prompt.** Memories extracted in Turn N appear in the system prompt at Turn N+1. The agent CAN search/recall them in the same turn via the `agent` tool -- they are immediately searchable after async embedding. **Rust:** Same lag, but no embedding so memories are only searchable via LIKE, not vector similarity.
+1. **One-turn lag for auto-extracted memories in prompt.** Memories extracted in Turn N appear in the system prompt at Turn N+1. The agent CAN search/recall them in the same turn via the `agent` tool -- they are immediately searchable after async embedding. **Rust:** Same behavior -- memories appear in prompt at Turn N+1, searchable immediately via hybrid search (FTS5 + vector similarity) after async embedding.
 
 2. **Personality slot competition.** The 10-slot reservation for `tacit/personality` is shared between style observations AND the directive itself. With many style observations, some will be excluded even though they contributed to the synthesized directive. **Rust:** N/A -- no personality system.
 
-3. **Session chunks in FTS are dampened.** Session transcript chunks participate in `memory_chunks_fts` with a 0.6x dampening factor, and in vector search via LEFT JOIN. They are less precise than dedicated memory records. **Rust:** N/A -- no session transcript indexing.
+3. **Session chunks in FTS are dampened.** Session transcript chunks participate in `memory_chunks_fts` with a 0.6x dampening factor, and in vector search via LEFT JOIN. They are less precise than dedicated memory records. **Rust:** Same -- session chunks are indexed by `transcript.rs`, and `search.rs` applies 0.6x dampening for session-source chunks in FTS.
 
 4. **Cumulative summary is lossy but tiered.** Each compaction promotes tiers: old earlier+recent compress to 600 chars `[Earlier context]`, old current compresses to 1500 chars `[Recent context]`, new summary goes in at full fidelity. Max 6000 chars total. **Rust:** Only has quick fallback summary (no LLM, no tiering).
 
@@ -2282,19 +2296,19 @@ Decisions 1, 3, 4, 9 are implemented in Rust. Decision 2 is partially implemente
 
 7. **Background objective survives compaction but yields to user.** The objective persists in `sessions.active_task` and re-injects every dynamic suffix as a soft pin. **Rust:** Same -- objective detection runs in background, persists in `active_task`, re-injected in dynamic suffix.
 
-8. **Embedding model migration invalidates search.** `MigrateEmbeddings()` clears stale vectors. Until `BackfillEmbeddings()` completes, vector search returns no results. **Rust:** N/A -- no embeddings system.
+8. **Embedding model migration invalidates search.** `MigrateEmbeddings()` clears stale vectors. Until `BackfillEmbeddings()` completes, vector search returns no results. **Rust:** Same risk applies -- embeddings are model-scoped in the DB, but no `MigrateEmbeddings()` or `BackfillEmbeddings()` exists yet. Changing the embedding model would leave old vectors unsearchable.
 
 9. **File re-injection is prompt-only.** When compaction triggers file re-injection (up to 5 files, 50k token budget), those file contents appear as a synthetic user message. **Rust:** N/A -- no file re-injection.
 
 10. **Steering messages are invisible to extraction.** Extraction only sees real messages (tool-role also filtered). Steering messages are ephemeral and never persisted, so they can't be extracted or indexed. **Rust:** Same -- steering messages are not persisted.
 
-11. **Recall falls back to search.** If `recall(key="...")` doesn't find an exact match, it falls back to hybrid search using the key as a query. **Rust:** No fallback -- recall returns "No memory found" on miss.
+11. **Recall falls back to search.** If `recall(key="...")` doesn't find an exact match, it falls back to hybrid search using the key as a query. **Rust:** Recall has multi-step fallback (try without user_id filter, then key-only across all namespaces) but does NOT fall back to hybrid search on miss.
 
 12. **Concurrent extraction guard.** `sync.Map` prevents overlapping extractions for the same session. **Rust:** `MemoryDebouncer` cancels previous timer (via `handle.abort()`), achieving similar dedup but at the scheduling level rather than execution level.
 
-13. **Style values are never overwritten.** `StoreStyleEntryForUser()` updates metadata (reinforcement count, confidence) but keeps the original observation text. **Rust:** Style entries are upserted like regular memories -- values ARE overwritten.
+13. **Style values are never overwritten.** `StoreStyleEntryForUser()` updates metadata (reinforcement count, confidence) but keeps the original observation text. **Rust:** Same behavior -- `store_style_observation()` updates metadata (reinforced_count, confidence, last_reinforced) but preserves the original value when reinforcing an existing entry.
 
-14. **Embedding cache eviction is startup-only.** No runtime eviction. Long-running instances could accumulate stale cache entries during the 30-day window. **Rust:** N/A -- no embedding cache usage.
+14. **Embedding cache eviction is startup-only.** No runtime eviction. Long-running instances could accumulate stale cache entries during the 30-day window. **Rust:** Same issue -- `CachedEmbeddingProvider` writes to `embedding_cache` but no eviction logic exists (no startup cleanup of entries older than 30 days).
 
 15. **Double-execution prevention for memory flush.** `ShouldRunMemoryFlush()` checks `compaction_count` vs `memory_flush_compaction_count`. **Rust:** N/A -- no memory flush.
 
@@ -2321,21 +2335,23 @@ The personality synthesis is the **emergence layer** -- individual style observa
 | Principle | Rust Status |
 |-----------|-------------|
 | Automatic extraction | Ported (debounced idle extraction). Missing pre-compaction flush. |
-| Passive delivery via system prompt | Partially ported (simple bullet list, no decay scoring, no confidence filter, no personality directive). |
-| Active recall via tools | Partially ported (LIKE search only, no hybrid search, no vector search). |
-| Confidence quality gate | Not ported (no confidence mapping, no filtering). |
+| Passive delivery via system prompt | Ported (sectioned output with decay scoring, confidence filter >= 0.65, two-pass overfetch). Missing personality directive synthesis. |
+| Active recall via tools | Ported (hybrid search: FTS5 + vector similarity with adaptive weights, LIKE fallback). |
+| Confidence quality gate | Ported (explicit -> 0.9/0.6 mapping, json_extract filtering, style reinforcement). |
 
 ### Priority Migration Order (recommendation)
 
-1. **Confidence system** -- Map `explicit` -> 0.9/0.6, add confidence filter to `load_memory_context()`
-2. **Decay scoring** -- Implement `decayScore()` and two-pass overfetch in memory loading
+Items 1-2, 4-7, 10, 12 are **done**. Remaining:
+
+1. ~~**Confidence system**~~ -- Done (`resolve_confidence()`, `get_tacit_memories_with_min_confidence()`)
+2. ~~**Decay scoring**~~ -- Done (`decay_score()`, two-pass overfetch in `load_memory_context()`)
 3. **DB context assembly** -- Build `DBContext` with agent profile, user profile, personality
-4. **Embeddings service** -- Provider trait, OpenAI provider, caching, cosine similarity
-5. **Text chunking** -- Port `SplitText()` with sentence-boundary chunking
-6. **Hybrid search** -- FTS5 queries, vector search, adaptive weights, score fusion
-7. **Style reinforcement** -- `StoreStyleEntryForUser()` with metadata increment
+4. ~~**Embeddings service**~~ -- Done (`EmbeddingProvider` trait, OpenAI + Ollama providers, `CachedEmbeddingProvider`)
+5. ~~**Text chunking**~~ -- Done (`crates/agent/src/chunking.rs`)
+6. ~~**Hybrid search**~~ -- Done (`crates/agent/src/search.rs`, FTS5 + vector + adaptive weights)
+7. ~~**Style reinforcement**~~ -- Done (`store_style_observation()` with confidence boost)
 8. **Personality synthesis** -- `SynthesizeDirective()` with decay and LLM generation
 9. **Compaction** -- LLM-powered summary, progressive keep, tiered cumulative summaries
-10. **Session transcript indexing** -- Post-compaction embedding of message blocks
+10. ~~**Session transcript indexing**~~ -- Done (`crates/agent/src/transcript.rs`)
 11. **AFV security** -- Fence pair generation, guide injection, pre-send verification
-12. **Sanitization** -- Injection pattern regex, content limits, control char stripping
+12. ~~**Sanitization**~~ -- Done (`crates/agent/src/sanitize.rs`: injection regex, content limits, control char stripping)

@@ -11,6 +11,7 @@ members = [
     "crates/server",
     "crates/mcp",
     "crates/napp",
+    "crates/proto",
     "crates/workflow",
     "crates/browser",
     "crates/voice",
@@ -104,6 +105,7 @@ agent = { path = "crates/agent", package = "nebo-agent" }
 server = { path = "crates/server", package = "nebo-server" }
 mcp = { path = "crates/mcp", package = "nebo-mcp" }
 napp = { path = "crates/napp", package = "nebo-napp" }
+proto = { path = "crates/proto", package = "nebo-proto" }
 workflow = { path = "crates/workflow", package = "nebo-workflow" }
 browser = { path = "crates/browser", package = "nebo-browser" }
 voice = { path = "crates/voice", package = "nebo-voice" }

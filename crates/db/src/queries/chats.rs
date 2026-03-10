@@ -97,12 +97,13 @@ impl Store {
         tool_calls: Option<&str>,
         tool_results: Option<&str>,
         token_estimate: Option<i64>,
+        metadata: Option<&str>,
     ) -> Result<ChatMessage, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
             "INSERT INTO chat_messages (id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate, day_marker, created_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, date('now', 'localtime'), unixepoch()) RETURNING *",
-            params![id, chat_id, role, content, tool_calls, tool_results, token_estimate],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, date('now', 'localtime'), unixepoch()) RETURNING *",
+            params![id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate],
             row_to_chat_message,
         )
         .map_err(|e| NeboError::Database(e.to_string()))
@@ -111,7 +112,7 @@ impl Store {
     pub fn get_chat_messages(&self, chat_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT * FROM chat_messages WHERE chat_id = ?1 ORDER BY created_at ASC")
+            .prepare("SELECT * FROM chat_messages WHERE chat_id = ?1 ORDER BY created_at ASC, rowid ASC")
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map(params![chat_id], row_to_chat_message)
@@ -140,9 +141,9 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT * FROM (
-                    SELECT * FROM chat_messages WHERE chat_id = ?1 AND role IN ('user', 'assistant')
-                    ORDER BY created_at DESC LIMIT ?2
-                 ) sub ORDER BY created_at ASC",
+                    SELECT *, rowid AS _rn FROM chat_messages WHERE chat_id = ?1 AND role IN ('user', 'assistant')
+                    ORDER BY created_at DESC, _rn DESC LIMIT ?2
+                 ) sub ORDER BY created_at ASC, _rn ASC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -161,9 +162,9 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT * FROM (
-                    SELECT * FROM chat_messages WHERE chat_id = ?1
-                    ORDER BY created_at DESC LIMIT ?2
-                 ) sub ORDER BY created_at ASC",
+                    SELECT *, rowid AS _rn FROM chat_messages WHERE chat_id = ?1
+                    ORDER BY created_at DESC, _rn DESC LIMIT ?2
+                 ) sub ORDER BY created_at ASC, _rn ASC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -171,6 +172,44 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Find a tool call's output by searching role='tool' messages' tool_results JSON.
+    /// Returns (output_content, is_error) if found.
+    pub fn find_tool_output(
+        &self,
+        chat_id: &str,
+        tool_call_id: &str,
+    ) -> Result<Option<(String, bool)>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT tool_results FROM chat_messages
+                 WHERE chat_id = ?1 AND role = 'tool' AND tool_results LIKE '%' || ?2 || '%'
+                 LIMIT 1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let result: Option<String> = stmt
+            .query_row(params![chat_id, tool_call_id], |row| row.get(0))
+            .optional()
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        if let Some(tr_json) = result {
+            if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(&tr_json) {
+                for r in &results {
+                    if r.get("tool_call_id").and_then(|v| v.as_str()) == Some(tool_call_id) {
+                        let content = r
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let is_error =
+                            r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                        return Ok(Some((content, is_error)));
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     pub fn delete_chat_message(&self, id: &str) -> Result<(), NeboError> {
@@ -240,7 +279,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT * FROM chat_messages WHERE chat_id = ?1 AND content LIKE '%' || ?2 || '%'
-                 ORDER BY created_at DESC LIMIT ?3 OFFSET ?4",
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?3 OFFSET ?4",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -312,7 +351,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT * FROM chat_messages WHERE chat_id = ?1 AND day_marker = ?2
-                 ORDER BY created_at ASC",
+                 ORDER BY created_at ASC, rowid ASC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
@@ -331,7 +370,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at > ?2
-                 AND role IN ('user', 'assistant') ORDER BY created_at ASC",
+                 AND role IN ('user', 'assistant') ORDER BY created_at ASC, rowid ASC",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt

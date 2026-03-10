@@ -4,6 +4,21 @@ Source code locations:
 - Embeddings: `/Users/almatuck/workspaces/nebo/nebo/internal/agent/embeddings/`
 - Memory: `/Users/almatuck/workspaces/nebo/nebo/internal/agent/memory/`
 
+> **Rust implementation status (2026-03-10):**
+> Embedding providers are implemented in `crates/ai/src/embedding.rs`:
+> - `EmbeddingProvider` trait with `id()`, `dimensions()`, `embed()` (async).
+> - `OpenAIEmbeddingProvider` -- defaults match Go: model `text-embedding-3-small`, 1536 dims, base URL `https://api.openai.com/v1`. Supports custom base_url and model/dims override. Has retry logic with exponential backoff (500ms, 2s, 8s).
+> - `OllamaEmbeddingProvider` -- uses `/api/embed` endpoint (matches Go). Same retry backoff.
+> - `CachedEmbeddingProvider` -- wraps any provider with SHA-256 content hashing to `embedding_cache` table via `db::Store`. Matches Go's caching approach.
+>
+> Memory system is implemented in `crates/agent/src/memory.rs`:
+> - Fact extraction via LLM with 6 categories: preferences, entities, decisions, styles, artifacts, task_context.
+> - Style reinforcement: confidence boosted by `(1 - old) * 0.2` on repeated observations, with `reinforced_count` tracking.
+> - Decay scoring: `access_count * 0.7^(days/30)` combined with confidence. Matches Go.
+> - Two-pass overfetch with decay ranking for `load_memory_context`.
+> - Background embedding via `embed_memories_async` using chunking from `crates/agent/src/chunking.rs`.
+> - Sanitization and prompt injection detection via `crates/agent/src/sanitize.rs`.
+
 ---
 
 ## Part 1: Embeddings System
@@ -1133,3 +1148,5 @@ Confidence flows through the entire pipeline:
 | Min style observations for synthesis | 5 | `personality.go` |
 | Decay threshold days (count=1) | 14 | `personality.go` |
 | Max observations for synthesis | 15 | `personality.go` |
+
+*Last updated: 2026-03-10*

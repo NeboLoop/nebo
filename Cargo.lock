@@ -3545,7 +3545,6 @@ dependencies = [
  "flate2",
  "hex",
  "libc",
- "prost",
  "reqwest 0.12.28",
  "semver",
  "serde",
@@ -3556,8 +3555,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tonic",
- "tonic-build",
  "tracing",
  "uuid",
 ]
@@ -3567,6 +3564,15 @@ name = "nebo-notify"
 version = "0.1.0"
 dependencies = [
  "tracing",
+]
+
+[[package]]
+name = "nebo-proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]

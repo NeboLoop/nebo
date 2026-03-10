@@ -1,14 +1,21 @@
 # MCP and Communication Plugins: Comprehensive Logic Deep-Dive
 
+**Source:** `internal/mcp/`, `internal/agent/comm/`, `internal/agent/comm/neboloop/` | **Target:** `crates/mcp/`, `crates/comm/`, `crates/server/src/handlers/mcp_server.rs` | **Status:** Partial | **Last updated:** 2026-03-10
+
 This document provides an exhaustive, function-by-function analysis of the Go implementation for:
 1. MCP (Model Context Protocol) server, client, bridge, tools, auth, and OAuth
 2. Communication plugin system (CommPlugin interface, PluginManager, CommHandler)
 3. NeboLoop communication plugin (WebSocket gateway, DM handling, reconnect)
 
-Source locations:
+Go source locations:
 - `/Users/almatuck/workspaces/nebo/nebo/internal/mcp/`
 - `/Users/almatuck/workspaces/nebo/nebo/internal/agent/comm/`
 - `/Users/almatuck/workspaces/nebo/nebo/internal/agent/comm/neboloop/`
+
+Rust source locations:
+- `crates/mcp/src/` — client, bridge, crypto, types (ported)
+- `crates/server/src/handlers/mcp_server.rs` — MCP JSON-RPC server with STRAP service tool (ported, simplified)
+- `crates/comm/` — CommPlugin trait, NeboLoop WebSocket client (ported)
 
 ---
 
@@ -2025,9 +2032,44 @@ var (
 
 ---
 
+## Rust Implementation Status
+
+The Rust codebase (`crates/mcp/` and `crates/server/src/handlers/mcp_server.rs`) has partial MCP support. Here is the current state compared to the Go implementation documented above.
+
+### Ported
+
+| Component | Rust location | Notes |
+|-----------|---------------|-------|
+| MCP Client | `crates/mcp/src/client.rs` | OAuth discovery, tool listing, tool calling, session management, token encrypt/decrypt. Equivalent to Go `internal/mcp/client/`. |
+| MCP Bridge | `crates/mcp/src/bridge.rs` | `ProxyToolRegistry` trait, `sync_all`, connect/disconnect, namespaced tool proxy (`mcp__{type}__{name}`). Equivalent to Go `internal/mcp/bridge/`. |
+| MCP Crypto | `crates/mcp/src/crypto.rs` | AES-256-GCM `Encryptor` with passphrase derivation, key resolution (env → file → generate). Equivalent to Go `internal/mcp/client/crypto.go`. |
+| MCP Types | `crates/mcp/src/types.rs` | `McpToolDef`, `McpToolResult`, `ConnectionStatus`, `OAuthTokens`, `OAuthMetadata`. |
+| MCP JSON-RPC Server | `crates/server/src/handlers/mcp_server.rs` | `POST /agent/mcp` — JSON-RPC 2.0 handler. Handles `initialize`, `notifications/initialized`, `tools/list`, `tools/call`. Exposes all agent STRAP tools plus a `nebo` service tool. Simplified vs Go: no per-user auth scoping, no session cache, no SDK-based streamable HTTP — uses direct JSON-RPC dispatch instead. |
+| `nebo` Service Tool (STRAP) | `crates/server/src/handlers/mcp_server.rs` | Single `nebo` tool using resource/action pattern. Supports: `chat/send` (runs full agent loop with timeout), `sessions/list`, `{id}/history`, `{id}/reset`, `emit` (event bus). Auto-approves tool calls and ask requests from MCP clients. |
+
+### Not Yet Ported
+
+| Component | Go location | Notes |
+|-----------|-------------|-------|
+| MCP Auth | `internal/mcp/mcpauth/auth.go` | JWT-based per-user MCP authentication. Rust server currently has no per-request auth for `/agent/mcp`. |
+| MCP Context | `internal/mcp/mcpctx/context.go` | User-scoped `ToolContext` with session ID, auth mode, structured errors. Rust uses a shared `mcp_context` mutex instead. |
+| MCP Handler (session mgmt) | `internal/mcp/handler.go` | Session cache (`sync.Map`), auth middleware, RFC 9728 `WWW-Authenticate` challenges. Rust server does not manage MCP sessions. |
+| MCP OAuth Server | `internal/mcp/oauth/` | Full OAuth 2.1 authorization server (DCR, PKCE S256, authorization code flow, token refresh, HTML login page). Not ported. |
+| MCP-Exposed Tools | `internal/mcp/server.go` | Go registers `user`, `notification`, `memory` tools per-user. Rust exposes all agent STRAP tools instead (different approach, not a 1:1 port). |
+| MCP OAuth Routes | `/mcp/oauth/*` | Protected resource metadata, authorization server metadata, client registration, authorize, token endpoints. Not ported. |
+
+### Key Differences
+
+1. **Server architecture:** Go uses the `modelcontextprotocol/go-sdk` with `StreamableHTTPHandler` in STATELESS mode and per-request server creation. Rust uses a direct JSON-RPC 2.0 handler on Axum with no SDK dependency.
+2. **Tool exposure:** Go exposes 3 MCP-specific tools (user, notification, memory). Rust exposes ALL agent STRAP tools plus the `nebo` service tool, making the full agent toolkit available to MCP clients like Claude Desktop.
+3. **Authentication:** Go validates Bearer JWTs per-request with user-scoped tool contexts. Rust has no per-request auth on the MCP endpoint yet.
+4. **Service tool:** The `nebo` service tool (STRAP pattern) is Rust-only — it does not exist in Go. It provides chat, session management, and event emission through a single tool with resource/action dispatch.
+
+---
+
 ## Architecture Summary
 
-### MCP Data Flow (Nebo as MCP Server)
+### MCP Data Flow (Nebo as MCP Server) — Go
 
 ```
 External Client (Claude Desktop, etc.)
@@ -2051,6 +2093,31 @@ Handler.getServerForRequest
   |
   v
 Tool execution (user-scoped via ToolContext)
+```
+
+### MCP Data Flow (Nebo as MCP Server) — Rust
+
+```
+External Client (Claude Desktop, CLI provider, etc.)
+  |
+  | HTTP POST /agent/mcp (JSON-RPC 2.0)
+  |
+  v
+agent_mcp_handler (Axum, no auth middleware yet)
+  |-- Parse JSON-RPC request
+  |-- Dispatch by method:
+  |
+  +-- "initialize"              → server info + capabilities
+  +-- "notifications/initialized" → ack
+  +-- "tools/list"              → all STRAP tools + nebo service tool
+  +-- "tools/call"
+       |-- name == "nebo"       → execute_nebo_tool (resource/action dispatch)
+       |   |-- chat/send        → runner.run() (full agent loop, auto-approve)
+       |   |-- sessions/list    → session listing
+       |   |-- {id}/history     → message history
+       |   |-- {id}/reset       → clear session
+       |   |-- emit             → event bus
+       |-- else                 → tools.execute() (STRAP tool registry)
 ```
 
 ### MCP Data Flow (Nebo as MCP Client)

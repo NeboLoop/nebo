@@ -1011,6 +1011,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/chats/{id}", axum::routing::put(handlers::chat::update_chat))
         .route("/chats/{id}", axum::routing::delete(handlers::chat::delete_chat))
         .route("/chats/{id}/messages", axum::routing::get(handlers::chat::get_chat_messages))
+        .route("/chats/{chat_id}/tool-output/{tool_call_id}", axum::routing::get(handlers::chat::get_tool_output))
         // Agent
         .route("/agent/sessions", axum::routing::get(handlers::agent::list_sessions))
         .route("/agent/sessions/{id}", axum::routing::delete(handlers::agent::delete_session))

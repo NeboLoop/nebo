@@ -2,6 +2,15 @@
 
 This document provides a comprehensive logic deep-dive covering every HTTP handler, CLI command, and database layer component in the Nebo Go codebase. It is intended as a subject-matter-expert reference for the Rust rewrite.
 
+> **Rust implementation status (2026-03-10):**
+> Handlers are in `crates/server/src/handlers/` with 18 modules: `agent`, `auth`, `chat`, `files`, `integrations`, `mcp_server`, `memory`, `neboloop`, `notification`, `provider`, `roles`, `setup`, `skills`, `tasks`, `user`, `workflows`, `ws`, `mod`. All use Axum extractors (`State`, `Path`, `Query`, `Json`).
+>
+> Key handler difference from Go as of commit 9f6dafc (2026-03-09):
+> - Chat: `build_message_metadata()` added to reconstruct tool call/result metadata on refresh. Runs on `get_companion_chat`, `get_chat_history_by_day`, and `get_chat_messages`. It collects tool results from `role="tool"` messages and rebuilds `toolCalls` + `contentBlocks` metadata in-place on assistant messages.
+> - Companion chat default message limit is 20 (Go used 200), configurable via `?limit=` query param.
+> - Markdown-to-HTML rendering is NOT done server-side in Rust (handled by frontend).
+> - `role="tool"` messages are NOT filtered out in Rust responses.
+
 ---
 
 ## Table of Contents
@@ -1879,3 +1888,5 @@ All API keys and tokens stored in the database are encrypted:
 - `credential.Encrypt(plaintext)` -- Encrypts before storage
 - `credential.Decrypt(ciphertext)` -- Decrypts before use
 - Fallback: if decryption fails, assumes plaintext (migration window for existing installs)
+
+*Last updated: 2026-03-10*

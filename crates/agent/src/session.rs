@@ -97,6 +97,7 @@ impl SessionManager {
         content: &str,
         tool_calls: Option<&str>,
         tool_results: Option<&str>,
+        metadata: Option<&str>,
     ) -> Result<ChatMessage, NeboError> {
         // Skip truly empty messages
         if content.is_empty()
@@ -119,6 +120,7 @@ impl SessionManager {
             tool_calls,
             tool_results,
             Some(token_estimate),
+            metadata,
         )?;
 
         let _ = self.store.increment_session_message_count(session_id);

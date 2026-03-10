@@ -1,5 +1,5 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Proto root is 2 levels up from crates/napp/
+    // Proto root is 2 levels up from crates/proto/
     let workspace_root = "../..";
 
     // Only compile the protos we actually use as gRPC clients.

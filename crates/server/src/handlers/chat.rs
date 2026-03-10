@@ -78,13 +78,62 @@ pub async fn delete_chat(
     Ok(Json(serde_json::json!({"success": true})))
 }
 
+/// Build toolCalls array (without output) from the tool_calls column.
+fn build_ui_tool_calls(
+    tc_json: &str,
+    tool_statuses: &HashMap<String, bool>,
+) -> Option<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
+    let calls: Vec<serde_json::Value> = serde_json::from_str(tc_json).ok()?;
+    if calls.is_empty() {
+        return None;
+    }
+    let ui_calls: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|tc| {
+            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let input = tc.get("input").cloned().unwrap_or(serde_json::Value::Null);
+            let input_str = if input.is_string() {
+                input.as_str().unwrap_or("").to_string()
+            } else {
+                serde_json::to_string(&input).unwrap_or_default()
+            };
+            let status = match tool_statuses.get(id) {
+                Some(true) => "error",
+                _ => "complete",
+            };
+            serde_json::json!({
+                "id": id,
+                "name": name,
+                "input": input_str,
+                "status": status
+            })
+        })
+        .collect();
+    Some((ui_calls, calls))
+}
+
+/// Build default contentBlocks: text first, then tools (fallback for old messages).
+fn default_content_blocks(content: &str, call_count: usize) -> Vec<serde_json::Value> {
+    let mut blocks = Vec::new();
+    if !content.is_empty() {
+        blocks.push(serde_json::json!({"type": "text", "text": content}));
+    }
+    for i in 0..call_count {
+        blocks.push(serde_json::json!({"type": "tool", "toolCallIndex": i}));
+    }
+    blocks
+}
+
 /// Reconstruct metadata JSON from tool_calls + tool_results columns.
-/// For each assistant message with tool_calls, builds a metadata JSON with:
-/// - toolCalls: [{id, name, input, output, status}] (matched with tool results)
-/// - contentBlocks: [{type:"text"}, {type:"tool", toolCallIndex:N}]
+///
+/// Handles three cases:
+/// 1. Old metadata with toolCalls already built — strip outputs, done
+/// 2. New metadata with only contentBlocks (persisted block order) — build toolCalls, use persisted order
+/// 3. No metadata — build everything, fall back to text→tools order
 fn build_message_metadata(messages: &mut [db::models::ChatMessage]) {
-    // Phase 1: Collect tool results from role="tool" messages
-    let mut tool_results: HashMap<String, (String, bool)> = HashMap::new();
+    // Phase 1: Collect tool result statuses from role="tool" messages
+    let mut tool_statuses: HashMap<String, bool> = HashMap::new();
     for msg in messages.iter() {
         if msg.role != "tool" {
             continue;
@@ -92,69 +141,74 @@ fn build_message_metadata(messages: &mut [db::models::ChatMessage]) {
         if let Some(tr_json) = msg.tool_results.as_deref() {
             if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
                 for r in &results {
-                    if let (Some(id), Some(content)) = (
-                        r.get("tool_call_id").and_then(|v| v.as_str()),
-                        r.get("content").and_then(|v| v.as_str()),
-                    ) {
+                    if let Some(id) = r.get("tool_call_id").and_then(|v| v.as_str()) {
                         let is_error =
                             r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
-                        tool_results.insert(id.to_string(), (content.to_string(), is_error));
+                        tool_statuses.insert(id.to_string(), is_error);
                     }
                 }
             }
         }
     }
 
-    // Phase 2: For each assistant message with tool_calls, build metadata
+    // Phase 2: For each assistant message, build/augment metadata
     for msg in messages.iter_mut() {
-        if msg.role != "assistant" || msg.metadata.is_some() {
+        if msg.role != "assistant" {
             continue;
         }
-        let tc_json: String = match &msg.tool_calls {
+
+        let existing_meta: Option<serde_json::Value> = msg
+            .metadata
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
+
+        // Case 1: Old metadata already has toolCalls — strip outputs, done
+        if let Some(ref meta) = existing_meta {
+            if meta.get("toolCalls").is_some() {
+                let mut m = meta.clone();
+                if let Some(tcs) = m.get_mut("toolCalls").and_then(|v| v.as_array_mut()) {
+                    for tc in tcs.iter_mut() {
+                        if let Some(obj) = tc.as_object_mut() {
+                            obj.remove("output");
+                        }
+                    }
+                }
+                msg.metadata = Some(m.to_string());
+                continue;
+            }
+        }
+
+        // Need tool_calls column to build toolCalls array
+        let tc_json = match &msg.tool_calls {
             Some(tc) if !tc.is_empty() => tc.clone(),
             _ => continue,
         };
-        let calls: Vec<serde_json::Value> = match serde_json::from_str(&tc_json) {
-            Ok(v) => v,
-            Err(_) => continue,
+        let (ui_calls, raw_calls) = match build_ui_tool_calls(&tc_json, &tool_statuses) {
+            Some(v) => v,
+            None => continue,
         };
-        if calls.is_empty() {
-            continue;
-        }
 
-        let ui_calls: Vec<serde_json::Value> = calls
-            .iter()
-            .map(|tc| {
-                let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let input = tc.get("input").cloned().unwrap_or(serde_json::Value::Null);
-                let input_str = if input.is_string() {
-                    input.as_str().unwrap_or("").to_string()
-                } else {
-                    serde_json::to_string(&input).unwrap_or_default()
-                };
-                let (output, status) = match tool_results.get(id) {
-                    Some((content, true)) => (content.clone(), "error"),
-                    Some((content, false)) => (content.clone(), "complete"),
-                    None => (String::new(), "complete"),
-                };
-                serde_json::json!({
-                    "id": id,
-                    "name": name,
-                    "input": input_str,
-                    "output": output,
-                    "status": status
-                })
-            })
-            .collect();
-
-        let mut blocks: Vec<serde_json::Value> = Vec::new();
-        if !msg.content.is_empty() {
-            blocks.push(serde_json::json!({"type": "text", "text": msg.content}));
-        }
-        for (i, _) in calls.iter().enumerate() {
-            blocks.push(serde_json::json!({"type": "tool", "toolCallIndex": i}));
-        }
+        // Case 2: Metadata has persisted contentBlocks (block order from streaming) — use it
+        // Case 3: No metadata — fall back to text→tools order
+        let blocks = if let Some(ref meta) = existing_meta {
+            if let Some(persisted) = meta.get("contentBlocks").and_then(|v| v.as_array()) {
+                // Hydrate persisted blocks: add text content to "text" entries
+                persisted
+                    .iter()
+                    .map(|b| {
+                        if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                            serde_json::json!({"type": "text", "text": msg.content})
+                        } else {
+                            b.clone()
+                        }
+                    })
+                    .collect()
+            } else {
+                default_content_blocks(&msg.content, raw_calls.len())
+            }
+        } else {
+            default_content_blocks(&msg.content, raw_calls.len())
+        };
 
         msg.metadata = Some(
             serde_json::json!({
@@ -166,12 +220,82 @@ fn build_message_metadata(messages: &mut [db::models::ChatMessage]) {
     }
 }
 
+/// GET /api/v1/chats/:chat_id/tool-output/:tool_call_id
+/// Lazily fetch a single tool call's output.
+pub async fn get_tool_output(
+    State(state): State<AppState>,
+    Path((chat_id, tool_call_id)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    // First check role='tool' messages for the tool_call_id
+    if let Some(output) = state
+        .store
+        .find_tool_output(&chat_id, &tool_call_id)
+        .unwrap_or(None)
+    {
+        return Ok(Json(serde_json::json!({ "output": output.0, "isError": output.1 })));
+    }
+
+    // Fallback: check persisted metadata on assistant messages
+    if let Some(output) = find_tool_output_in_metadata(&state, &chat_id, &tool_call_id) {
+        return Ok(Json(serde_json::json!({ "output": output.0, "isError": output.1 })));
+    }
+
+    Ok(Json(serde_json::json!({ "output": "", "isError": false })))
+}
+
+/// Search persisted assistant metadata for a tool call's output.
+fn find_tool_output_in_metadata(
+    state: &AppState,
+    chat_id: &str,
+    tool_call_id: &str,
+) -> Option<(String, bool)> {
+    let messages = state
+        .store
+        .get_recent_chat_messages_with_tools(chat_id, 100)
+        .ok()?;
+    for msg in &messages {
+        if msg.role != "assistant" {
+            continue;
+        }
+        let meta_str = msg.metadata.as_deref()?;
+        let meta: serde_json::Value = serde_json::from_str(meta_str).ok()?;
+        if let Some(tool_calls) = meta.get("toolCalls").and_then(|v| v.as_array()) {
+            for tc in tool_calls {
+                if tc.get("id").and_then(|v| v.as_str()) == Some(tool_call_id) {
+                    let output = tc
+                        .get("output")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_error = tc
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        == Some("error");
+                    return Some((output, is_error));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Stable user_id for the companion chat (matches Go's companionUserIDFallback).
 const COMPANION_USER_ID: &str = "companion-default";
 
-/// GET /api/v1/chats/companion
+fn default_message_limit() -> i64 {
+    20
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompanionQuery {
+    #[serde(default = "default_message_limit")]
+    pub limit: i64,
+}
+
+/// GET /api/v1/chats/companion?limit=30
 pub async fn get_companion_chat(
     State(state): State<AppState>,
+    Query(query): Query<CompanionQuery>,
 ) -> HandlerResult<serde_json::Value> {
     // Use "companion-default" as user_id (matches Go behavior)
     let chat = if let Ok(Some(chat)) = state.store.get_companion_chat_by_user(COMPANION_USER_ID) {
@@ -187,10 +311,10 @@ pub async fn get_companion_chat(
     // Messages are stored with chat_id = chat.id (the session_key used by the runner)
     let mut messages = state
         .store
-        .get_chat_messages(&chat.id)
+        .get_recent_chat_messages_with_tools(&chat.id, query.limit)
         .unwrap_or_default();
     build_message_metadata(&mut messages);
-    let total = messages.len() as i64;
+    let total = state.store.count_chat_messages(&chat.id).unwrap_or(messages.len() as i64);
 
     Ok(Json(serde_json::json!({
         "chat": chat,

@@ -4,6 +4,17 @@ This document provides a complete reference for the authentication system and ap
 in the Go codebase. Every function signature, struct, constant, and flow is documented
 from the actual source code.
 
+> **Rust implementation status (2026-03-10):**
+> The Rust `crates/auth/` crate implements the core auth subsystem:
+> - `jwt.rs` -- JWT validation (`validate_jwt`, `validate_jwt_claims`) using `jsonwebtoken` crate with HS256. Also handles agent WebSocket tokens (`generate_agent_ws_token`, `validate_agent_ws_token`).
+> - `service.rs` -- `AuthService` with `register`, `login`, `refresh_token`, `change_password`, `delete_user`, `create_password_reset_token`, `reset_password`. Uses bcrypt for password hashing and SHA-256 for refresh token hashing (matches Go).
+> - `credential.rs` -- Credential encryption via `mcp::crypto::Encryptor` with `enc:` prefix for encrypted values. Global `OnceLock`-based encryptor.
+> - `keyring.rs` -- OS keychain integration for master encryption key storage via the `keyring` crate.
+>
+> The Rust middleware lives in `crates/server/src/middleware.rs` with Axum-based `jwt_auth`, `security_headers`, `api_security_headers`, and `rate_limit` middleware functions.
+>
+> The app platform (napp) lives in `crates/napp/` with `manifest.rs`, `napp.rs`, `runtime.rs`, `sandbox.rs`, `signing.rs`, `supervisor.rs`, `registry.rs`, `reader.rs`, `role.rs`, `role_loader.rs`, `hooks.rs`, `version.rs`.
+
 ---
 
 ## Table of Contents
@@ -2033,3 +2044,5 @@ message HookRegistration { string hook; string type; int32 priority; }
 8. **Quarantine preserves data**: Revoked apps have binaries removed but `data/` and `logs/` preserved.
 9. **Per-app launch mutex**: Prevents duplicate processes when watcher/supervisor/registry race.
 10. **8 gRPC service types**: Gateway, Tool, Channel, Comm, UI, Schedule, Hooks, plus Common messages.
+
+*Last updated: 2026-03-10*

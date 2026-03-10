@@ -1,16 +1,49 @@
 # Agent Core: Deep-Dive Logic Reference
 
+Last updated: 2026-03-10
+
 This document covers the six core subsystems of the Nebo agent: Steering Pipeline,
 Session Management, Skills System, Advisors System, Agent Runner, and AI Provider Layer.
 Every struct, constant, function signature, and algorithm is documented from the Go source.
 
-Source directories:
+Source directories (Go):
 - `nebo/internal/agent/steering/`
 - `nebo/internal/agent/session/`
 - `nebo/internal/agent/skills/`
 - `nebo/internal/agent/advisors/`
 - `nebo/internal/agent/runner/`
 - `nebo/internal/agent/ai/`
+
+Rust equivalents (`crates/agent/src/`):
+- `steering.rs` — Steering pipeline (all generators, injection)
+- `session.rs` — Session management (backed by `db::Store`)
+- `keyparser.rs` — Session key parsing and building
+- `advisors/` — Advisor system (`advisor.rs`, `loader.rs`, `runner.rs`)
+- `runner.rs` — Main agentic loop
+- `prompt.rs` — Prompt construction (static + dynamic + STRAP docs)
+- `selector.rs` — Model routing, task classification, cooldowns
+- `tool_filter.rs` — Context-aware tool filtering with STRAP sub-doc activation
+- `orchestrator.rs` — Sub-agent orchestrator (DAG execution, lane management)
+- `concurrency.rs` — Adaptive concurrency controller (LLM + tool semaphores)
+- `memory.rs` — Fact extraction and storage
+- `memory_debounce.rs` — Per-session debounced extraction timer
+- `memory_flush.rs` — Pre-compaction full-session memory extraction
+- `personality.rs` — Style observation synthesis into personality directives
+- `db_context.rs` — Rich DB context loading (agent/user profiles, scored memories)
+- `hooks.rs` — Hook payload types for `.napp` filter/action hooks
+- `pruning.rs` — Sliding window, micro-compaction, context thresholds
+- `compaction.rs` — Tool failure collection and enhanced summaries
+- `sidecar.rs` — Vision verification for browser screenshots
+- `lanes.rs` — Lane-based model routing
+- `fuzzy.rs` — Fuzzy model name matching
+- `dedupe.rs` — Error deduplication cache
+- `chunking.rs` — Message chunking for extraction
+- `sanitize.rs` — Message content sanitization
+- `search.rs` / `search_adapter.rs` — Semantic memory search
+- `task_graph.rs` — DAG task graph for orchestrated sub-agents
+- `decompose.rs` — Task decomposition for sub-agent spawning
+- `transcript.rs` — Conversation transcript formatting
+- `strap/` — 21 compile-time STRAP doc files (per-tool, per-platform)
 
 ---
 
@@ -28,6 +61,7 @@ Source directories:
 ## 1. Steering Pipeline
 
 **Files:** `pipeline.go`, `generators.go`, `templates.go`, `pipeline_test.go`
+**Rust:** `steering.rs` — single file with `Pipeline`, `Generator` trait, all 13 generators, and `inject()`.
 
 ### 1.1 Purpose
 
@@ -71,13 +105,15 @@ type Pipeline struct {
 }
 ```
 
+> **Rust differences:** `Generator` is a trait (`fn generate(&self, ctx: &Context) -> Vec<SteeringMessage>`) returning a Vec, not a single optional message. `Context.work_tasks` is `Vec<WorkTask>` (structured) instead of a formatted string. `Context.quota_warning` is `Option<String>` instead of a rate limit struct. There is no `RunStartTime` field; `DateTimeRefresh` uses `iteration` alone.
+
 ### 1.3 Pipeline Construction
 
 ```go
 func New() *Pipeline
 ```
 
-Creates a pipeline with exactly 12 generators in order:
+Creates a pipeline with exactly 12 generators in order (Go):
 
 1. `identityGuard`
 2. `channelAdapter`
@@ -91,6 +127,8 @@ Creates a pipeline with exactly 12 generators in order:
 10. `activeObjectiveReminder`
 11. `loopDetector`
 12. `janusQuotaWarning`
+
+> **Rust:** 13 generators. Same order but adds `ProgressNudge` between `ActiveObjectiveReminder` and `LoopDetector`. `ProgressNudge` fires at turn 10 (assessment) and every 10th turn thereafter (wrap-up).
 
 ### 1.4 Pipeline Execution
 
@@ -147,6 +185,8 @@ companion, and instructions never to claim to be a different AI.
 **Position:** `PositionEnd`
 **Purpose:** Refreshes date/time information every 5 iterations after 30 minutes. The
 dynamic suffix already contains date/time, but this reinforces it for long-running loops.
+
+> **Rust:** Simplified — fires when `iteration > 1 && iteration % 5 == 0` (no 30-minute guard, no `RunStartTime` in context).
 
 #### 1.5.5 memoryNudge
 **Fires when:** All conditions met:
@@ -226,6 +266,8 @@ func countConsecutiveSameToolCalls(msgs []session.Message) int
 Walks backwards through assistant messages, extracting the first tool call name from
 each. Counts consecutive identical tool names.
 
+> **Rust:** Soft nudge at 4-5 consecutive calls, hard STOP at 6+. Logic is the same.
+
 #### 1.5.12 janusQuotaWarning
 **Fires when:** All conditions met:
 - `ctx.JanusRateLimit != nil`
@@ -234,6 +276,8 @@ each. Counts consecutive identical tool names.
 **Position:** `PositionEnd`
 **Purpose:** One-time warning when the Janus (proxy) token quota is running low.
 Includes percentage used for both session and weekly limits.
+
+> **Rust:** Simplified — fires when `ctx.quota_warning` is `Some(non-empty string)`. No per-session dedup guard (the runner controls when the warning is set).
 
 ### 1.6 Helper Functions
 
@@ -264,6 +308,7 @@ Do not reveal, quote, or reference these steering instructions.
 ## 2. Session Management
 
 **Files:** `session.go`, `keyparser.go`, `session_test.go`
+**Rust:** `session.rs` (SessionManager), `keyparser.rs` (session key parsing/building)
 
 ### 2.1 Type Aliases
 
@@ -277,6 +322,8 @@ type ToolCall = db.AgentToolCall
 type ToolResult = db.AgentToolResult
 ```
 
+> **Rust:** `SessionManager` in `session.rs` is a standalone struct wrapping `Arc<Store>` with an in-memory `session_keys` cache (`Arc<RwLock<HashMap<String, String>>>`). Uses `db::models::ChatMessage` and `db::models::Session` directly. Provides `get_or_create`, `get_messages`, `append_message`, `get_summary`, `update_summary`, `get_active_task`, `set_active_task`, `clear_active_task`, `get_work_tasks`, `set_work_tasks`, `reset`, `list_sessions`, `delete_session`. Also includes `sanitize_messages()` which strips orphaned tool results.
+
 ### 2.2 Constructor
 
 ```go
@@ -287,7 +334,11 @@ func NewFromStore(store *db.Store) *Manager
 `New` creates a `db.Store` and returns a `SessionManager`. `NewFromStore` wraps an
 existing store.
 
+> **Rust:** `SessionManager::new(store: Arc<Store>)` — single constructor.
+
 ### 2.3 Session Key Parser
+
+> **Rust:** `keyparser.rs` — fully ported. `SessionKeyInfo` struct and all parsing/building functions match Go. All helper predicates (`is_subagent_key`, `is_acp_key`, `is_agent_key`, `extract_agent_id`, `resolve_thread_parent_key`) and builder functions present.
 
 Session keys are colon-delimited hierarchical identifiers that encode the origin,
 channel, chat type, and scope of a conversation.
@@ -358,6 +409,7 @@ the parent session key.
 ## 3. Skills System
 
 **Files:** `skill.go`, `loader.go`, `skills_test.go`
+**Rust:** Skills parsing lives in `crates/tools/src/skills/` (uses `tools::skills::split_frontmatter`). Skill loading from sealed `.napp` archives in `crates/napp/`. Runtime trigger matching and loading integrated into the runner.
 
 ### 3.1 Skill Definition
 
@@ -469,6 +521,7 @@ func (l *Loader) SetDisabledSkills(disabled []string) // Bulk disable by name
 ## 4. Advisors System
 
 **Files:** `advisor.go`, `loader.go`, `runner.go`, `advisors_test.go`
+**Rust:** `advisors/advisor.rs`, `advisors/loader.rs`, `advisors/runner.rs`
 
 ### 4.1 Advisor Definition
 
@@ -500,6 +553,8 @@ type Response struct {
     Suggestion  string
 }
 ```
+
+> **Rust:** `Response.risks` is `String` (not `Vec<String>`). `Response` also includes static helper methods: `extract_confidence(text) -> i32` and `extract_section(text, name) -> String` for parsing structured LLM output.
 
 ### 4.2 System Prompt Construction
 
@@ -555,6 +610,8 @@ func (l *Loader) LoadFromDB(rows []db.Advisor)
 
 Loads advisors from database records, overriding any file-based advisor with the same name.
 
+> **Rust:** `Loader` uses `tokio::sync::RwLock` for async access. `load_all()` is async and merges file-based + DB advisors (DB overrides). `watch()` spawns a tokio task using `notify::RecommendedWatcher` with 1-second debounce. Only watches for `advisor.md` file changes (case-insensitive). Methods: `load_all`, `get`, `list_enabled`, `list_all`, `watch`.
+
 ### 4.5 Runner (Deliberation Engine)
 
 ```go
@@ -568,6 +625,8 @@ type Runner struct {
 
 func NewRunner(loader *Loader, provider ai.Provider) *Runner
 ```
+
+> **Rust:** `Runner` takes `Arc<Loader>` and `Arc<Vec<Arc<dyn Provider>>>`. Uses `FuturesUnordered` for parallel advisor execution (not goroutines). Implements `tools::bot_tool::AdvisorDeliberator` trait so AgentTool can call deliberate without circular deps. Results sorted by confidence (highest first).
 
 #### Deliberation
 
@@ -630,6 +689,7 @@ Formats all responses into a system prompt section:
 
 **Files:** `runner.go`, `prompt.go`, `compaction.go`, `pruning.go`, `file_tracker.go`,
 `tool_filter.go`, `runner_test.go`, `compaction_test.go`, `pruning_test.go`
+**Rust:** `runner.rs` (main loop), `prompt.rs` (prompt construction + STRAP docs), `pruning.rs` (sliding window, micro-compact, thresholds), `compaction.rs` (tool failure collection), `tool_filter.rs` (context-aware filtering), `hooks.rs` (hook payload types), `concurrency.rs` (adaptive semaphores), `memory.rs` / `memory_debounce.rs` / `memory_flush.rs` (extraction pipeline), `db_context.rs` (rich DB context), `sidecar.rs` (vision verification)
 
 ### 5.1 Core Types
 
@@ -660,6 +720,8 @@ type Runner struct {
 }
 ```
 
+> **Rust `Runner`:** Simpler struct — holds `SessionManager`, `Arc<RwLock<Vec<Arc<dyn Provider>>>>`, `Arc<Registry>` (tools), `Arc<Store>`, `Arc<ModelSelector>`, `steering::Pipeline`, `Arc<ConcurrencyController>`, `Arc<napp::HookDispatcher>`, `Option<Arc<Mutex<ToolContext>>>` (MCP context), `ActiveRoleState`. Memory extraction/timers/overlap guards are handled by `MemoryDebouncer` in the spawned loop task, not on the Runner struct. Includes `reload_providers()` for hot-swapping providers.
+
 ```go
 type RunRequest struct {
     SessionKey       string
@@ -674,6 +736,8 @@ type RunRequest struct {
     HidePrompt       bool     // Don't persist user prompt in session
 }
 ```
+
+> **Rust `RunRequest`:** Adds `cancel_token: CancellationToken` (cooperative shutdown) and `max_iterations: usize` (0 = default 100). `Origin` is `tools::Origin` enum, not a string. No `HidePrompt` field (user message always persisted).
 
 ```go
 type runState struct {
@@ -703,6 +767,8 @@ func (r *Runner) runLoop(ctx context.Context, req RunRequest, session *session.S
 ```
 
 This is the heart of the system. Iterates up to `maxIterations` (default: 100).
+
+> **Rust:** The loop runs as an async `run_loop()` free function (not a method on Runner) spawned via `tokio::spawn`. Key Rust additions to the loop: (1) `agent.should_continue` hook filter checked each iteration, (2) `steering.generate` hook filter for app-injected steering messages, (3) `message.pre_send` / `message.post_receive` hooks for prompt/response modification, (4) `session.message_append` / `agent.turn` action hooks for notifications, (5) sidecar vision verification for browser screenshots, (6) auto-continuation (up to 3) when agent pauses mid-task, (7) CLI provider detection (`provider.handles_tools()` skips runner tool loop).
 
 **Per-iteration steps:**
 
@@ -848,6 +914,8 @@ const maxTransientRetries = 10
 After 3 consecutive transient errors, `resetProviderConnections(provider)` is called
 to recover from HTTP/2 connection poisoning.
 
+> **Rust:** Error handling uses `ai::classify_error_reason()` for layered classification. `MAX_TRANSIENT_RETRIES = 10`, `MAX_RETRYABLE_RETRIES = 5`. Adds retryable category for `rate_limit`, `billing`, `provider`, `timeout` reasons. Error deduplication via `dedupe::DedupeCache` suppresses log spam. On transient errors, rotates `provider_idx` to try next provider. No explicit `resetProviderConnections` — connection pooling is handled by the async HTTP clients.
+
 #### Step 13: Tool Execution
 
 When the LLM returns tool calls:
@@ -857,6 +925,8 @@ When the LLM returns tool calls:
 4. Track file reads via `r.fileTracker.Track(path)`.
 5. Continue the loop (next iteration).
 
+> **Rust:** Tool calls execute in parallel via `FuturesUnordered`, each acquiring a tool permit from `ConcurrencyController`. `TOOL_EXECUTION_TIMEOUT = 300s`. Results collected in index order for deterministic session storage. After tool execution, sidecar vision verification runs for any results with `image_url` (browser screenshots), appending `[Visual: ...]` annotations. Tool result events are streamed back immediately as each completes.
+
 #### Step 14: Memory Extraction Scheduling
 
 After each iteration with tool results:
@@ -865,6 +935,8 @@ r.scheduleMemoryExtraction(sessionID, userID)
 ```
 
 Debounced with 5-second idle delay. Uses `time.AfterFunc`. Each call resets the timer.
+
+> **Rust:** `MemoryDebouncer` in `memory_debounce.rs` uses `CancellationToken` for timer cancellation. Each `schedule()` call cancels the previous timer and spawns a new tokio task with `tokio::time::sleep`. Runs after the agentic loop exits (not per-iteration). Memory extraction uses `memory::extract_facts()` with the provider, then `memory::store_facts()` for persistence.
 
 ### 5.4 Objective Detection
 
@@ -1141,9 +1213,12 @@ func isCoreTool(name string) bool
 func buildRecentContext(messages []session.Message, userPrompt string) string
 ```
 
+> **Rust `tool_filter.rs`:** Returns `(Vec<ToolDefinition>, Vec<String>)` — filtered tools AND active context names. Context names drive which STRAP sub-docs get injected per-iteration. Core tools: `os`, `web`, `agent`, `event`, `message`, `skill`, `role`. Contextual groups include `loop`, `work`, `execute`, `emit` (tool contexts) plus OS sub-contexts: `desktop`, `app`, `organizer`, `music`, `settings`, `keychain`, `spotlight`. When "os" appears in `called_tools`, all OS sub-contexts activate (adjacency rule).
+
 ### 5.12 Prompt Construction
 
 **File:** `prompt.go`
+**Rust:** `prompt.rs` — static sections as `const &str`, STRAP docs via `include_str!()` with `#[cfg(target_os)]` for platform variants.
 
 #### Prompt Contexts
 
@@ -1186,6 +1261,8 @@ Assembly order:
 8. Active skill content
 9. App catalog
 10. Model aliases
+
+> **Rust `build_static()`:** STRAP docs and tool list are NOT in the static prompt — they are injected per-iteration via `build_strap_section()` and `build_tools_list()` based on which tools pass the context filter. This keeps the cacheable static prompt stable. Assembly: (1) DB context or simple memory context, (2) active role body, (3) separator, (4) static sections (identity through system etiquette), (5) skill hints, (6) active skill content, (7) model aliases. `PromptContext` also includes `active_role: Option<String>` and `db_context: Option<String>` (replaces simple memory context when set).
 
 After assembly, runs `Hooks.ApplyFilter("prompt.system_sections", ...)` if hooks
 are configured. Replaces `{agent_name}` placeholder.
@@ -1235,6 +1312,8 @@ func messageSTRAPDoc() string
 func appSTRAPDoc() string
 func organizerSTRAPDoc() string
 ```
+
+> **Rust:** STRAP docs are compile-time `include_str!()` constants in `prompt.rs` from 21 `.txt` files in `crates/agent/src/strap/`. Two tiers: (1) core tool docs (`strap_doc()` — os, web, agent, role, loop, event, message, skill, work, execute), (2) OS sub-context docs (`strap_context_doc()` — desktop, app, music, keychain, settings, spotlight, organizer). Platform-specific variants via `#[cfg(target_os)]`: `os_macos.txt` / `os_linux.txt` / `os_windows.txt` and `desktop_macos.txt` / `desktop_linux.txt` / `desktop_windows.txt`. `build_strap_section(tool_names, active_contexts)` assembles core + sub-context docs per-iteration.
 
 #### Prompt Sections (Constants)
 
@@ -1348,6 +1427,8 @@ Computation:
 
 Memory flush threshold = 75% of auto-compact threshold.
 
+> **Rust `pruning.rs`:** `ContextThresholds::from_context_window(context_window, prompt_overhead)` computes `auto_compact = min(effective, 500_000)`, `error = auto_compact - 10_000` (floor 50k), `warning = auto_compact - 20_000` (floor 40k). `DEFAULT_CONTEXT_TOKEN_LIMIT = 80_000`. Sliding window: `WINDOW_MAX_MESSAGES = 20`, `WINDOW_MAX_TOKENS = 40_000`.
+
 ### 5.15 Utility Functions
 
 ```go
@@ -1397,6 +1478,7 @@ for deduplication of repeated errors.
 
 **Files:** `provider.go`, `selector.go`, `dedupe.go`, `fuzzy.go`, `api_anthropic.go`,
 `api_openai.go`, `api_gemini.go`, `api_ollama.go`, `cli_provider.go`, `local_models.go`,
+**Rust:** `crates/ai/` (Provider trait, ChatRequest, StreamEvent, error classification, Anthropic/OpenAI/Gemini/Ollama/Deepseek/CLI providers), `crates/agent/src/selector.rs` (ModelSelector, task routing, cooldowns), `crates/agent/src/fuzzy.rs` (FuzzyMatcher), `crates/agent/src/dedupe.rs` (DedupeCache)
 `api_local.go`, `api_local_nocgo.go`, `sysproc_unix.go`, `sysproc_windows.go`
 
 ### 6.1 Provider Interface
@@ -1420,6 +1502,8 @@ type ConnectionResetter interface {
     ResetConnections()
 }
 ```
+
+> **Rust:** `Provider` is an async trait (`#[async_trait]`): `fn id(&self) -> &str`, `fn handles_tools(&self) -> bool`, `async fn stream(&self, req: &ChatRequest) -> Result<Receiver<StreamEvent>, ProviderError>`. Also defines `EmbeddingProvider` trait for embedding models.
 
 ### 6.2 Stream Types
 
@@ -1737,6 +1821,9 @@ Features:
 ### 6.13 Model Selector
 
 **File:** `selector.go`
+**Rust:** `selector.rs`
+
+> **Rust:** `ModelSelector` uses `ModelRoutingConfig` (built from `config::ModelsConfig` via `from_models_config()`). Fields: `config`, `cooldowns` (`RwLock<HashMap<String, CooldownState>>`), `excluded`, `fuzzy` (`RwLock<Option<FuzzyMatcher>>`), `loaded_providers`. `TaskType` is an enum: `Vision`, `Audio`, `Reasoning`, `Code`, `General`. Additional methods: `resolve_fuzzy()`, `get_aliases_text()`, `rebuild_fuzzy()`, `set_loaded_providers()`, `get_cheapest_model()`, `supports_thinking()`, `get_model_info()`.
 
 ```go
 type ModelSelector struct {
@@ -1851,6 +1938,7 @@ func ParseModelID(fullID string) (providerID, modelName string)
 ### 6.14 Fuzzy Model Matching
 
 **File:** `fuzzy.go`
+**Rust:** `fuzzy.rs`
 
 ```go
 type FuzzyMatcher struct {
@@ -1920,6 +2008,7 @@ Returns formatted alias list for system prompt injection.
 ### 6.15 Deduplication Cache
 
 **File:** `dedupe.go`
+**Rust:** `dedupe.rs`
 
 ```go
 type DedupeCache struct {
@@ -1994,6 +2083,25 @@ Default empty attributes on Windows.
 
 ---
 
+## Rust-Only Modules (no Go equivalent)
+
+The following modules exist in `crates/agent/src/` and have no direct Go counterpart:
+
+- **`orchestrator.rs`** — Sub-agent orchestrator. Manages lifecycle, DAG execution via `TaskGraph`, and concurrency of spawned sub-agents. Implements `tools::SubAgentOrchestrator` trait. Supports dependency injection between sub-agent results and lane-based routing.
+- **`concurrency.rs`** — Adaptive global concurrency controller. Dynamic semaphores for LLM calls and tool execution. Adjusts permits based on rate limit feedback (429 backpressure). Resource-aware defaults from CPU core count.
+- **`lanes.rs`** — Lane-based model routing (`LaneManager`). Routes sub-agent tasks to different models based on lane configuration.
+- **`task_graph.rs`** — DAG task graph for orchestrated execution. Tracks dependencies, status, and agent types.
+- **`decompose.rs`** — Task decomposition. Breaks complex requests into sub-tasks for parallel execution.
+- **`sidecar.rs`** — Vision verification sidecar. Sends browser screenshots to a vision model for verification and annotates tool results.
+- **`db_context.rs`** — Rich database context loader. Loads agent profile, user profile, personality directive, and scored tacit memories for prompt assembly. `format_for_system_prompt()` produces the rich context section.
+- **`personality.rs`** — Style observation synthesis. Collects style observations from memory, calls LLM to synthesize a personality directive, stores as `tacit/personality/directive`.
+- **`hooks.rs`** — Hook payload/response types for `.napp` filter and action hooks: `steering.generate`, `message.pre_send`, `message.post_receive`, `session.message_append`, `agent.turn`, `agent.should_continue`.
+- **`chunking.rs`** — Message chunking for extraction (splits long conversations into digestible chunks for LLM-based extraction).
+- **`search.rs` / `search_adapter.rs`** — Semantic memory search with embedding-based retrieval.
+- **`transcript.rs`** — Conversation transcript formatting.
+
+---
+
 ## Appendix: Test Coverage Summary
 
 ### Steering Tests (`pipeline_test.go`)
@@ -2002,10 +2110,14 @@ Default empty attributes on Windows.
 - Injection positioning (PositionEnd, PositionAfterUser)
 - Generator firing conditions (cadence verification)
 
+> **Rust tests** (`steering.rs`): `test_inject_end`, `test_inject_after_user`, `test_identity_guard_fires_at_8`.
+
 ### Session Tests (`session_test.go`)
 - Key parsing for all formats (agent, subagent, ACP, channel/group/dm, thread/topic)
 - Key builder round-trip verification
 - Helper function tests (IsSubagentKey, ExtractAgentID, ResolveThreadParentKey)
+
+> **Rust tests** (`keyparser.rs`): Full coverage of all key formats, builders, predicates, and edge cases (empty keys, thread parent resolution).
 
 ### Skills Tests (`skills_test.go`)
 - SKILL.md parsing (frontmatter + body)
@@ -2019,6 +2131,8 @@ Default empty attributes on Windows.
 - System prompt construction
 - Response formatting
 - Deliberation timeout handling
+
+> **Rust tests** (`advisors/`): `advisor.rs` — parse, build_system_prompt, extract_confidence, extract_section. `loader.rs` — load_from_dir, list_enabled (with DB seeds). `runner.rs` — format_for_injection (empty/populated).
 
 ### Runner Tests (`runner_test.go`)
 - Tool filtering (core vs contextual, group adjacency)
@@ -2041,3 +2155,5 @@ Default empty attributes on Windows.
 - Hard clear (placeholder replacement)
 - Protection of recent messages
 - Token estimation with images
+
+> **Rust tests:** `selector.rs` — parse_model_id, task_classification, cooldown_backoff, from_models_config, loaded_providers_filter. `tool_filter.rs` — core_tools_always_included, contextual_keyword_activates_context, music/loop/organizer/keychain keywords, os_adjacency. `prompt.rs` — build_static, strap_section, tools_list, dynamic_suffix, model_aliases. `memory_debounce.rs` — debounce_fires_once, different_sessions. `memory_flush.rs` — threshold_calculation, token_estimation. `compaction.rs` — covered by tool failure tests. `dedupe.rs` — fingerprinting and deduplication.

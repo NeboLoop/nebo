@@ -302,6 +302,13 @@ export function getCompanionChat() {
 }
 
 /**
+ * @description "Get tool output lazily by tool_call_id"
+ */
+export function getToolOutput(chatId: string, toolCallId: string) {
+	return webapi.get<{ output: string; isError: boolean }>(`/api/v1/chats/${chatId}/tool-output/${toolCallId}`)
+}
+
+/**
  * @description "List chat days"
  * @param req
  */

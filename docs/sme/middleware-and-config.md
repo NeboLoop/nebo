@@ -4,6 +4,17 @@ Comprehensive logic-level documentation of Go packages in `nebo/internal/`.
 Every struct, function signature, constant, and algorithmic detail is documented
 from the source code.
 
+> **Rust implementation status (2026-03-10):**
+> Middleware is implemented in `crates/server/src/middleware.rs` (Axum-based):
+> - `jwt_auth` -- Validates `Authorization: Bearer <token>` header, inserts `AuthClaims { user_id, email }` into request extensions. Uses `auth::validate_jwt_claims`.
+> - `security_headers` -- Adds HSTS, Permissions-Policy, X-Frame-Options (DENY), X-Content-Type-Options (nosniff), X-XSS-Protection, Referrer-Policy. Matches Go's `SecurityHeaders()`.
+> - `api_security_headers` -- Strict CSP (`default-src 'none'`) + no-cache for API routes. Matches Go's `APISecurityHeaders()`.
+> - `rate_limit` -- In-memory IP-based rate limiter using `RateLimiter` struct with `HashMap<IpAddr, (count, Instant)>`. Uses `ConnectInfo` (RemoteAddr) only; intentionally ignores X-Forwarded-For (matches Go's `DefaultKeyFunc`).
+> - CORS is configured at the router level via `tower_http::cors`, not as a standalone middleware function.
+> - CSRF protection and compression middleware have not been ported to Rust yet.
+>
+> Configuration: `crates/config/` handles config loading. Server state is in `crates/server/src/state.rs` (`AppState`). Logging uses the `tracing` crate. Self-updater is in `crates/updater/`.
+
 ---
 
 ## Table of Contents
@@ -2356,3 +2367,5 @@ func (svc *ServiceContext) Close()
 func (svc *ServiceContext) UseLocal() bool
 ```
 - Returns `true` if `DB != nil` (local SQLite mode).
+
+*Last updated: 2026-03-10*

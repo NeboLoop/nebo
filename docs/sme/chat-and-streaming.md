@@ -1,6 +1,6 @@
 # Chat and Streaming: Complete Logic Deep-Dive
 
-**Source:** `internal/realtime/`, `internal/agenthub/`, `internal/db/session_manager.go`, `internal/agent/tools/agent_tool.go`, `cmd/nebo/agent.go`, `app/src/routes/(app)/agent/` | **Target:** `crates/server/src/handlers/ws.rs`, `crates/agent/src/runner.rs`, `crates/agent/src/session.rs`, `crates/db/src/queries/chats.rs` | **Status:** Draft
+**Source:** `internal/realtime/`, `internal/agenthub/`, `internal/db/session_manager.go`, `internal/agent/tools/agent_tool.go`, `cmd/nebo/agent.go`, `app/src/routes/(app)/agent/` | **Target:** `crates/server/src/handlers/ws.rs`, `crates/agent/src/runner.rs`, `crates/agent/src/session.rs`, `crates/db/src/queries/chats.rs` | **Status:** Draft | **Last updated:** 2026-03-10
 
 This document consolidates four Go SME docs -- AGENT_INPUT, CHAT_DISPLAY, CHAT_SYSTEMS, and WEBFORMS -- into a single comprehensive reference for the Rust rewrite. It covers the full chat pipeline from user keystroke to database persistence, including real-time streaming, content block assembly, interactive widgets, approval modals, session management, and channel chat.
 
@@ -437,10 +437,12 @@ pub struct StreamEvent {
     pub tool_call: Option<ToolCall>,
     pub error: Option<String>,
     pub usage: Option<UsageInfo>,
+    pub rate_limit: Option<RateLimitMeta>,
+    pub widgets: Option<serde_json::Value>,
 }
 ```
 
-The `AskRequest` variant reuses the `error` field for `question_id` and `text` for the prompt. This is a pragmatic reuse rather than adding a dedicated field.
+The `AskRequest` variant reuses the `error` field for `question_id` and `text` for the prompt. The `widgets` field carries the optional ask widget definitions (buttons, select, radio, etc.) for `AskRequest` events; it is `None` for all other event types.
 
 ---
 
@@ -544,8 +546,9 @@ The Rust implementation forwards `StreamEvent` values directly from the runner's
 |-----|--------|----------|
 | No fence marker stripping | LLM fence markers may leak to UI | Medium |
 | No content accumulation | `stream_status` cannot replay missed content | Medium |
-| No server-side contentBlock building | `metadata` column stays NULL | Low (frontend handles it) |
 | No text holdback buffer | Rare: partial multi-byte if provider sends raw bytes | Low |
+
+Note: Server-side contentBlock building was addressed via read-time metadata reconstruction in `build_message_metadata()` (see [section 5.7](#57-rust-read-time-metadata-reconstruction-build_message_metadata)). The `metadata` column is not written to the DB, but the HTTP response includes reconstructed `toolCalls` and `contentBlocks` for all assistant messages with tool calls.
 
 ---
 
@@ -663,6 +666,28 @@ On stream completion, `buildMetadata()` serializes all contentBlocks (including 
 ```
 
 Separate `tool_calls` and `tool_results` columns exist for easier querying by the runner context builder.
+
+### 5.7 Rust: Read-Time Metadata Reconstruction (`build_message_metadata`)
+
+**File(s):** `crates/server/src/handlers/chat.rs`
+
+Unlike Go, which builds and persists `metadata` JSON during streaming, the Rust implementation reconstructs metadata at read time from the already-persisted `tool_calls` and `tool_results` columns. The `build_message_metadata()` function runs on every HTTP response that returns chat messages.
+
+**Algorithm (two-phase):**
+
+1. **Phase 1 -- Collect tool results.** Scan all `role="tool"` messages, parse their `tool_results` JSON column, and build a `HashMap<tool_call_id, (content, is_error)>`.
+2. **Phase 2 -- Build metadata for assistant messages.** For each `role="assistant"` message that has `tool_calls` but no existing `metadata`, parse the `tool_calls` JSON, match each call's ID against the Phase 1 results map, and construct:
+   - `toolCalls[]` -- array of `{id, name, input, output, status}` objects
+   - `contentBlocks[]` -- ordered array with a `{type:"text"}` block (if the message has text content) followed by `{type:"tool", toolCallIndex:N}` blocks for each tool call
+
+The reconstructed metadata is set on the in-memory `ChatMessage.metadata` field before serialization -- it is NOT written back to the database.
+
+**Applied to all message-returning endpoints:**
+- `GET /api/v1/chats/companion` (via `get_companion_chat`)
+- `GET /api/v1/chats/history/:day` (via `get_chat_history_by_day`)
+- `GET /api/v1/chats/:id/messages` (via `get_chat_messages`)
+
+This approach ensures tool calls and their results survive page refresh and appear correctly in the frontend's content block renderer without requiring changes to the runner's write path.
 
 ---
 
@@ -1146,15 +1171,17 @@ The companion chat uses `"companion-default"` as the `user_id` value (constant `
 // crates/server/src/handlers/chat.rs
 const COMPANION_USER_ID: &str = "companion-default";
 
-pub async fn get_companion_chat(State(state): State<AppState>) -> HandlerResult<serde_json::Value> {
+pub async fn get_companion_chat(State(state): State<AppState>, Query(query): Query<CompanionQuery>) -> HandlerResult<serde_json::Value> {
     let chat = if let Ok(Some(chat)) = state.store.get_companion_chat_by_user(COMPANION_USER_ID) {
         chat
     } else {
         let id = uuid::Uuid::new_v4().to_string();
         state.store.get_or_create_companion_chat(&id, COMPANION_USER_ID)?
     };
-    let messages = state.store.get_chat_messages(&chat.id).unwrap_or_default();
-    Ok(Json(json!({"chat": chat, "messages": messages, "totalMessages": messages.len()})))
+    let mut messages = state.store.get_recent_chat_messages_with_tools(&chat.id, query.limit).unwrap_or_default();
+    build_message_metadata(&mut messages);  // Reconstruct toolCalls + contentBlocks from DB columns
+    let total = state.store.count_chat_messages(&chat.id).unwrap_or(messages.len() as i64);
+    Ok(Json(json!({"chat": chat, "messages": messages, "totalMessages": total})))
 }
 ```
 
@@ -1649,9 +1676,9 @@ const DRAFT_STORAGE_KEY = 'nebo_companion_draft';
 | Text blocks (frontend) | Y | Frontend assembles from `chat_stream` events |
 | Tool blocks (frontend) | Y | Frontend creates from `tool_start` / `tool_result` |
 | Image blocks | N | No `image` event emitted by tools |
-| Ask blocks | P | Ask events emitted but missing `widgets` payload in broadcast |
-| Metadata persistence | N | `metadata` column NOT populated by runner |
-| contentBlocks in metadata JSON | N | NOT built server-side |
+| Ask blocks | Y | Ask events emitted with `widgets` payload in broadcast |
+| Metadata reconstruction (read-time) | Y | `build_message_metadata()` reconstructs `toolCalls` + `contentBlocks` from DB columns on HTTP read |
+| contentBlocks in HTTP responses | Y | Built at read time from `tool_calls` + `tool_results` columns (not persisted to `metadata` column) |
 
 ### 14.5 Ask Widget System
 
@@ -1660,7 +1687,7 @@ const DRAFT_STORAGE_KEY = 'nebo_companion_draft';
 | `ask_request` event broadcast | Y | Via `StreamEventType::AskRequest` |
 | `ask_response` handling | Y | `oneshot` channel in `ask_channels` |
 | Blocking until response | Y | Runner awaits oneshot receiver |
-| Widget types in payload | N | Only `question_id` and `prompt` sent (no `widgets` array) |
+| Widget types in payload | Y | `widgets` field on `StreamEvent`, included in `ask_request` broadcast when present |
 | Default confirm(Yes/No) | N | No default widget generation |
 | Ask block persistence in metadata | N | NOT implemented |
 | text_input widget type | N | NOT implemented in agent tool |
@@ -1684,7 +1711,8 @@ const DRAFT_STORAGE_KEY = 'nebo_companion_draft';
 | Orphan sanitization | Y | `sanitize_messages()` in `session.rs` |
 | Token estimation | Y | chars/4 heuristic |
 | day_marker generation | Y | `date('now', 'localtime')` in SQL |
-| Metadata JSON building | N | `metadata` column always NULL |
+| Metadata JSON building (write-time) | N | `metadata` column stays NULL in DB (not populated by runner) |
+| Metadata reconstruction (read-time) | Y | `build_message_metadata()` reconstructs from `tool_calls` + `tool_results` on HTTP read |
 | tool_calls column | Y | Stored as JSON string by runner |
 | tool_results column | Y | Stored as JSON string by runner |
 
@@ -1755,16 +1783,16 @@ const DRAFT_STORAGE_KEY = 'nebo_companion_draft';
 | WebSocket Protocol | 11 | 1 | 0 |
 | Server Events | 9 | 1 | 3 |
 | Stream Processing | 0 | 0 | 6 |
-| Content Blocks | 2 | 1 | 3 |
-| Ask Widgets | 3 | 0 | 3 |
+| Content Blocks | 5 | 0 | 1 |
+| Ask Widgets | 4 | 0 | 3 |
 | Approval Modals | 3 | 1 | 1 |
-| Message Persistence | 6 | 0 | 1 |
+| Message Persistence | 8 | 0 | 1 |
 | Session Management | 9 | 0 | 0 |
 | Chat HTTP Endpoints | 11 | 0 | 0 |
 | Barge-In / Queuing | 5 | 0 | 0 |
 | Stream Resumption | 2 | 1 | 1 |
 | Channel Chat | 2 | 0 | 4 |
-| **TOTAL** | **63** | **4** | **22** |
+| **TOTAL** | **69** | **4** | **20** |
 
 Legend: Y = implemented, P = partial, N = not started
 
@@ -1826,4 +1854,4 @@ Legend: Y = implemented, P = partial, N = not started
 
 ---
 
-*Generated: 2026-03-04*
+*Generated: 2026-03-04 | Updated: 2026-03-10*

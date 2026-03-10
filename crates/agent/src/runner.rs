@@ -179,6 +179,7 @@ impl Runner {
                 &req.prompt,
                 None,
                 None,
+                None,
             ) {
                 warn!(session_id = %session_id, error = %e, "failed to append user message");
             }
@@ -729,11 +730,18 @@ async fn run_loop(
         let mut assistant_content = String::new();
         let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
         let mut stream_error: Option<String> = None;
+        // Track the order of content blocks (text vs tool) for correct rehydration.
+        // Each entry is either "text" (coalesced) or a tool index.
+        let mut block_order: Vec<(&str, Option<usize>)> = Vec::new();
 
         while let Some(event) = rx.recv().await {
             match event.event_type {
                 StreamEventType::Text => {
                     assistant_content.push_str(&event.text);
+                    // Coalesce consecutive text events into one block
+                    if block_order.last().map_or(true, |b| b.0 != "text") {
+                        block_order.push(("text", None));
+                    }
                     let _ = tx.send(event).await;
                 }
                 StreamEventType::Thinking => {
@@ -744,6 +752,7 @@ async fn run_loop(
                     if let Some(ref tc) = event.tool_call {
                         info!(session_id, tool = %tc.name, tool_id = %tc.id, "tool call received");
                         tool_calls.push(tc.clone());
+                        block_order.push(("tool", Some(tool_calls.len() - 1)));
                     }
                     let _ = tx.send(event).await;
                 }
@@ -877,12 +886,27 @@ async fn run_loop(
                 serde_json::to_string(&tool_calls).ok()
             };
 
+            // Persist the content block order so rehydration preserves it.
+            let metadata = if block_order.len() > 1 || block_order.first().map_or(false, |b| b.0 == "tool") {
+                let blocks: Vec<serde_json::Value> = block_order
+                    .iter()
+                    .map(|(kind, idx)| match (*kind, idx) {
+                        ("tool", Some(i)) => serde_json::json!({"type": "tool", "toolCallIndex": i}),
+                        _ => serde_json::json!({"type": "text"}),
+                    })
+                    .collect();
+                serde_json::to_string(&serde_json::json!({"contentBlocks": blocks})).ok()
+            } else {
+                None // single text block = default order, no need to persist
+            };
+
             let _ = sessions.append_message(
                 session_id,
                 "assistant",
                 &assistant_content,
                 tc_json.as_deref(),
                 None,
+                metadata.as_deref(),
             );
 
             // Hook: session.message_append — notify apps that a message was saved
@@ -1026,6 +1050,7 @@ async fn run_loop(
                     "",
                     None,
                     Some(&tr_json),
+                    None,
                 );
             }
 
@@ -1064,6 +1089,7 @@ async fn run_loop(
                 session_id,
                 "user",
                 "<system>Continue with your current objective. Do not ask for permission — use your tools to make progress.</system>",
+                None,
                 None,
                 None,
             );

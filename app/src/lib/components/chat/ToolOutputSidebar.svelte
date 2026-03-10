@@ -1,8 +1,10 @@
 <script lang="ts">
-	import { X, Copy, Check, FileEdit, FileText, Terminal, Search, Globe } from 'lucide-svelte';
+	import { X, Copy, Check, FileEdit, FileText, Terminal, Search, Globe, Loader2 } from 'lucide-svelte';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
+	import { getToolOutput } from '$lib/api';
 
 	interface ToolCall {
+		id?: string;
 		name: string;
 		input: unknown;
 		output?: string;
@@ -11,17 +13,70 @@
 
 	interface Props {
 		tool: ToolCall | null;
+		chatId: string | null;
 		onClose: () => void;
 	}
 
-	let { tool, onClose }: Props = $props();
+	let { tool, chatId, onClose }: Props = $props();
 
 	let copied = $state(false);
+	let loadedOutput = $state<string | null>(null);
+	let loadingOutput = $state(false);
+	let loadError = $state<string | null>(null);
+	let lastLoadedId = $state<string | null>(null);
+
+	// Lazy-load tool output when the sidebar opens with a new tool
+	$effect(() => {
+		if (!tool || !chatId) {
+			loadedOutput = null;
+			lastLoadedId = null;
+			loadError = null;
+			return;
+		}
+
+		// Already have inline output (e.g. from streaming)
+		if (tool.output) {
+			loadedOutput = tool.output;
+			lastLoadedId = tool.id ?? null;
+			return;
+		}
+
+		// Already loaded this tool
+		if (tool.id && tool.id === lastLoadedId) return;
+
+		// No id to look up
+		if (!tool.id) {
+			loadedOutput = null;
+			lastLoadedId = null;
+			return;
+		}
+
+		const toolCallId = tool.id;
+		loadingOutput = true;
+		loadError = null;
+		loadedOutput = null;
+
+		getToolOutput(chatId, toolCallId)
+			.then((res) => {
+				loadedOutput = res.output || '';
+				lastLoadedId = toolCallId;
+			})
+			.catch((err) => {
+				loadError = 'Failed to load output';
+				console.error('Failed to load tool output:', err);
+			})
+			.finally(() => {
+				loadingOutput = false;
+			});
+	});
+
+	const displayOutput = $derived(loadedOutput ?? tool?.output ?? '');
+	const hasOutput = $derived(displayOutput.trim().length > 0);
 
 	async function copyOutput() {
-		if (!tool?.output) return;
+		if (!displayOutput) return;
 		try {
-			await navigator.clipboard.writeText(tool.output);
+			await navigator.clipboard.writeText(displayOutput);
 			copied = true;
 			setTimeout(() => {
 				copied = false;
@@ -116,7 +171,6 @@
 
 	const displayName = $derived(tool ? formatToolName(tool.name, tool.input) : '');
 	const command = $derived(tool ? extractCommand(tool.input) : '');
-	const hasOutput = $derived(tool?.output && tool.output.trim().length > 0);
 </script>
 
 {#if tool}
@@ -151,7 +205,14 @@
 			{/if}
 
 			<!-- Output -->
-			{#if hasOutput}
+			{#if loadingOutput}
+				<div class="flex items-center gap-2 text-base-content/60">
+					<Loader2 class="w-4 h-4 animate-spin" />
+					<span class="text-sm">Loading output...</span>
+				</div>
+			{:else if loadError}
+				<p class="text-error text-sm italic">{loadError}</p>
+			{:else if hasOutput}
 				<div class="relative">
 					<button
 						type="button"
@@ -166,7 +227,7 @@
 						{/if}
 					</button>
 					<div class="bg-base-200/50 rounded-lg p-4 pr-12">
-						<pre class="text-sm font-mono text-base-content/80 whitespace-pre-wrap break-all">{tool.output}</pre>
+						<pre class="text-sm font-mono text-base-content/80 whitespace-pre-wrap break-all">{displayOutput}</pre>
 					</div>
 				</div>
 			{:else}

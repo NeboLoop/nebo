@@ -220,9 +220,10 @@ Every Go SME document now has corresponding Rust migration coverage. The 27 Go d
 
 #### 12. MCP Server + OAuth
 - **Go:** `internal/mcp/` -- JSON-RPC server, protocol handler, authentication, context, OAuth, MCP-exposed tools
-- **Rust:** MCP bridge + client + crypto only, NO server
-- **Missing:** MCP JSON-RPC server, MCP auth, MCP context, MCP OAuth handler, MCP-exposed tools (memory, notification, user)
-- **Go routes missing:** `/mcp/*`, `/mcp/oauth/*`, `/agent/mcp/*`
+- **Rust:** MCP bridge + client + crypto + JSON-RPC server (`POST /agent/mcp`) with STRAP service tool (`nebo`). Exposes all agent tools + nebo service tool (chat, sessions, events).
+- **Missing:** MCP auth (per-user JWT scoping), MCP context (user-scoped ToolContext), MCP OAuth handler, MCP session management
+- **Go routes missing:** `/mcp/*`, `/mcp/oauth/*`
+- **Go routes ported:** `/agent/mcp` (JSON-RPC 2.0, simplified — no auth middleware, no session cache)
 
 #### 13. Plugin System + Store/Marketplace
 - **Go:** `internal/handler/plugins/handler.go` (939 lines) + DB tables
@@ -683,7 +684,7 @@ Go tools missing from Rust tool registry:
 |---|---|---|
 | `/mcp/*` | Y | N |
 | `/mcp/oauth/*` | Y | N |
-| `/agent/mcp/*` | Y | N |
+| `/agent/mcp` | Y | Y (JSON-RPC 2.0, STRAP tools + nebo service tool) |
 
 ### External Routes
 

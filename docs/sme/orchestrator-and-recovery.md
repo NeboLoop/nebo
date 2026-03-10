@@ -6,6 +6,18 @@ Source files:
 - `nebo/internal/db/migrations/0022_pending_tasks.sql`
 - Integration: `nebo/internal/agent/tools/bot_tool.go`, `nebo/internal/agent/tools/types.go`, `nebo/internal/agent/runner/runner.go`, `nebo/cmd/nebo/agent.go`
 
+> **Rust implementation status (2026-03-10):**
+> The Rust orchestrator is in `crates/agent/src/orchestrator.rs` and differs from Go in several ways:
+> - Implements `tools::SubAgentOrchestrator` trait (spawn, execute_dag, cancel, status, list_active, recover).
+> - Uses `tokio::sync::RwLock` + `CancellationToken` instead of `sync.RWMutex` + `context.CancelFunc`.
+> - Concurrency is managed by `ConcurrencyController` (in `crates/agent/src/concurrency.rs`) with LLM permits, not a hard-coded `maxConcurrent: 5`.
+> - **DAG execution**: Rust adds `execute_dag_internal` which decomposes tasks via `crates/agent/src/decompose.rs`, builds a `TaskGraph` (in `task_graph.rs`), and schedules sub-tasks reactively using `FuturesUnordered`. Go had no DAG support.
+> - Agent types: Explore, Plan, General (same as Go) with `system_prompt_for_type()`.
+> - Session keys use format `subagent:{parent_session_key}:{task_id}` (Go used `subagent-agent-{UnixNano}`).
+> - Task IDs use `sa-{uuid}` format (Go used `agent-{UnixNano}`).
+> - Recovery: `recover_internal()` matches Go's rules (2h age limit, retry exhaustion check, completion heuristic) but routes recovered tasks through `LaneManager` when available.
+> - `check_completion_heuristic()` matches Go's 4-rule heuristic exactly.
+
 ---
 
 ## 1. Recovery Package (`internal/agent/recovery/`)
@@ -977,3 +989,5 @@ There are two separate system prompt builders:
 2. **`buildAgentSystemPrompt(agentType, task)`** in `tools/types.go` -- used by `BotTool.taskSpawn()` to create a specialized prompt based on `agent_type` (explore, plan, general). This is passed as `req.SystemPrompt`, so it takes precedence over the orchestrator's default.
 
 In practice, the BotTool always calls `buildAgentSystemPrompt()` and passes the result as `SystemPrompt`, so the orchestrator's `buildSubAgentPrompt()` is only a fallback for direct `Spawn()` calls that don't set `SystemPrompt`.
+
+*Last updated: 2026-03-10*
