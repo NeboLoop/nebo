@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::extract::{Path, Query, State};
 use axum::response::Json;
 use serde::Deserialize;
@@ -76,6 +78,94 @@ pub async fn delete_chat(
     Ok(Json(serde_json::json!({"success": true})))
 }
 
+/// Reconstruct metadata JSON from tool_calls + tool_results columns.
+/// For each assistant message with tool_calls, builds a metadata JSON with:
+/// - toolCalls: [{id, name, input, output, status}] (matched with tool results)
+/// - contentBlocks: [{type:"text"}, {type:"tool", toolCallIndex:N}]
+fn build_message_metadata(messages: &mut [db::models::ChatMessage]) {
+    // Phase 1: Collect tool results from role="tool" messages
+    let mut tool_results: HashMap<String, (String, bool)> = HashMap::new();
+    for msg in messages.iter() {
+        if msg.role != "tool" {
+            continue;
+        }
+        if let Some(tr_json) = msg.tool_results.as_deref() {
+            if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
+                for r in &results {
+                    if let (Some(id), Some(content)) = (
+                        r.get("tool_call_id").and_then(|v| v.as_str()),
+                        r.get("content").and_then(|v| v.as_str()),
+                    ) {
+                        let is_error =
+                            r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                        tool_results.insert(id.to_string(), (content.to_string(), is_error));
+                    }
+                }
+            }
+        }
+    }
+
+    // Phase 2: For each assistant message with tool_calls, build metadata
+    for msg in messages.iter_mut() {
+        if msg.role != "assistant" || msg.metadata.is_some() {
+            continue;
+        }
+        let tc_json: String = match &msg.tool_calls {
+            Some(tc) if !tc.is_empty() => tc.clone(),
+            _ => continue,
+        };
+        let calls: Vec<serde_json::Value> = match serde_json::from_str(&tc_json) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if calls.is_empty() {
+            continue;
+        }
+
+        let ui_calls: Vec<serde_json::Value> = calls
+            .iter()
+            .map(|tc| {
+                let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let name = tc.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let input = tc.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                let input_str = if input.is_string() {
+                    input.as_str().unwrap_or("").to_string()
+                } else {
+                    serde_json::to_string(&input).unwrap_or_default()
+                };
+                let (output, status) = match tool_results.get(id) {
+                    Some((content, true)) => (content.clone(), "error"),
+                    Some((content, false)) => (content.clone(), "complete"),
+                    None => (String::new(), "complete"),
+                };
+                serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "input": input_str,
+                    "output": output,
+                    "status": status
+                })
+            })
+            .collect();
+
+        let mut blocks: Vec<serde_json::Value> = Vec::new();
+        if !msg.content.is_empty() {
+            blocks.push(serde_json::json!({"type": "text", "text": msg.content}));
+        }
+        for (i, _) in calls.iter().enumerate() {
+            blocks.push(serde_json::json!({"type": "tool", "toolCallIndex": i}));
+        }
+
+        msg.metadata = Some(
+            serde_json::json!({
+                "toolCalls": ui_calls,
+                "contentBlocks": blocks,
+            })
+            .to_string(),
+        );
+    }
+}
+
 /// Stable user_id for the companion chat (matches Go's companionUserIDFallback).
 const COMPANION_USER_ID: &str = "companion-default";
 
@@ -95,10 +185,11 @@ pub async fn get_companion_chat(
     };
 
     // Messages are stored with chat_id = chat.id (the session_key used by the runner)
-    let messages = state
+    let mut messages = state
         .store
         .get_chat_messages(&chat.id)
         .unwrap_or_default();
+    build_message_metadata(&mut messages);
     let total = messages.len() as i64;
 
     Ok(Json(serde_json::json!({
@@ -199,10 +290,11 @@ pub async fn get_chat_history_by_day(
         None => return Ok(Json(serde_json::json!({"messages": []}))),
     };
 
-    let messages = state
+    let mut messages = state
         .store
         .get_chat_messages_by_day(&chat.id, &day)
         .map_err(to_error_response)?;
+    build_message_metadata(&mut messages);
 
     Ok(Json(serde_json::json!({"messages": messages})))
 }
@@ -212,6 +304,7 @@ pub async fn get_chat_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let messages = state.store.get_chat_messages(&id).map_err(to_error_response)?;
+    let mut messages = state.store.get_chat_messages(&id).map_err(to_error_response)?;
+    build_message_metadata(&mut messages);
     Ok(Json(serde_json::json!({"messages": messages})))
 }

@@ -434,14 +434,15 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                         }
                         StreamEventType::AskRequest => {
                             let request_id = event.error.as_deref().unwrap_or("");
-                            hub.broadcast(
-                                "ask_request",
-                                serde_json::json!({
-                                    "session_id": sid,
-                                    "request_id": request_id,
-                                    "prompt": event.text,
-                                }),
-                            );
+                            let mut payload = serde_json::json!({
+                                "session_id": sid,
+                                "request_id": request_id,
+                                "prompt": event.text,
+                            });
+                            if let Some(widgets) = &event.widgets {
+                                payload["widgets"] = widgets.clone();
+                            }
+                            hub.broadcast("ask_request", payload);
                         }
                         StreamEventType::RateLimit => {
                             // Rate limit metadata — handled internally by runner

@@ -967,6 +967,7 @@ async fn run_loop(
                         },
                         usage: None,
                         rate_limit: None,
+                        widgets: None,
                     })
                     .await;
                 results[idx] = Some((tc, result));

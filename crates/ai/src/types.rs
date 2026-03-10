@@ -58,6 +58,7 @@ pub struct StreamEvent {
     pub error: Option<String>,
     pub usage: Option<UsageInfo>,
     pub rate_limit: Option<RateLimitMeta>,
+    pub widgets: Option<serde_json::Value>,
 }
 
 impl StreamEvent {
@@ -69,6 +70,7 @@ impl StreamEvent {
             error: None,
             usage: None,
             rate_limit: None,
+            widgets: None,
         }
     }
 
@@ -80,6 +82,7 @@ impl StreamEvent {
             error: None,
             usage: None,
             rate_limit: None,
+            widgets: None,
         }
     }
 
@@ -91,6 +94,7 @@ impl StreamEvent {
             error: None,
             usage: None,
             rate_limit: None,
+            widgets: None,
         }
     }
 
@@ -102,6 +106,7 @@ impl StreamEvent {
             error: Some(msg.into()),
             usage: None,
             rate_limit: None,
+            widgets: None,
         }
     }
 
@@ -113,6 +118,7 @@ impl StreamEvent {
             error: None,
             usage: None,
             rate_limit: None,
+            widgets: None,
         }
     }
 
@@ -124,6 +130,7 @@ impl StreamEvent {
             error: None,
             usage: Some(info),
             rate_limit: None,
+            widgets: None,
         }
     }
 
@@ -135,6 +142,7 @@ impl StreamEvent {
             error: None,
             usage: None,
             rate_limit: Some(meta),
+            widgets: None,
         }
     }
 
@@ -146,10 +154,15 @@ impl StreamEvent {
             error: None,
             usage: None,
             rate_limit: None,
+            widgets: None,
         }
     }
 
-    pub fn ask_request(question_id: impl Into<String>, prompt: impl Into<String>) -> Self {
+    pub fn ask_request(
+        question_id: impl Into<String>,
+        prompt: impl Into<String>,
+        widgets: Option<serde_json::Value>,
+    ) -> Self {
         Self {
             event_type: StreamEventType::AskRequest,
             text: prompt.into(),
@@ -157,6 +170,7 @@ impl StreamEvent {
             error: Some(question_id.into()), // reuse error field for question_id
             usage: None,
             rate_limit: None,
+            widgets,
         }
     }
 }
