@@ -165,4 +165,4 @@ install: notarize
 github-release:
 	@if [ -z "$(TAG)" ]; then echo "Usage: make github-release TAG=v0.1.0"; exit 1; fi
 	@echo "Creating GitHub release $(TAG)..."
-	gh release create $(TAG) dist/* --title "Nebo $(TAG)" --generate-notes --repo NeboLoop/nebo-rs
+	gh release create $(TAG) dist/* --title "Nebo $(TAG)" --generate-notes --repo NeboLoop/nebo

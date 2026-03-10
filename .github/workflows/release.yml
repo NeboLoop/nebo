@@ -391,7 +391,7 @@ jobs:
           cat > version.json << EOFJ
           {
             "version": "${TAG}",
-            "release_url": "https://github.com/NeboLoop/nebo-rs/releases/tag/${TAG}",
+            "release_url": "https://github.com/NeboLoop/nebo/releases/tag/${TAG}",
             "published_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOFJ

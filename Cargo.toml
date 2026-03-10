@@ -25,7 +25,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/AltMagick/nebo"
+repository = "https://github.com/NeboLoop/nebo"
 
 [workspace.dependencies]
 # Async runtime
