@@ -56,4 +56,6 @@ pub struct AppState {
     pub event_dispatcher: Arc<workflow::events::EventDispatcher>,
     /// NeboLoop plan tier (free, pro, team, enterprise) — updated by AUTH_OK handler
     pub plan_tier: Arc<tokio::sync::RwLock<String>>,
+    /// Skill loader for hot-reload after marketplace installs
+    pub skill_loader: Arc<tools::skills::Loader>,
 }

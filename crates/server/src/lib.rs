@@ -790,6 +790,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         event_bus,
         event_dispatcher,
         plan_tier,
+        skill_loader: skill_loader.clone(),
     };
 
     // Auto-connect NeboLoop if enabled and credentials exist
@@ -1073,6 +1074,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/integrations", axum::routing::get(handlers::integrations::list_integrations))
         .route("/integrations", axum::routing::post(handlers::integrations::create_integration))
         .route("/integrations/registry", axum::routing::get(handlers::integrations::list_registry))
+        .route("/mcp/servers", axum::routing::get(handlers::integrations::list_registry))
         .route("/integrations/tools", axum::routing::get(handlers::integrations::list_tools))
         .route("/integrations/{id}", axum::routing::get(handlers::integrations::get_integration))
         .route("/integrations/{id}", axum::routing::put(handlers::integrations::update_integration))

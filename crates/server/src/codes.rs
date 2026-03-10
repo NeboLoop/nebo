@@ -158,6 +158,9 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<String, NeboE
         }
     };
 
+    // Reload skill loader so skill appears in catalog immediately
+    state.skill_loader.load_all().await;
+
     // Cascade: resolve skill deps (tools[], dependencies[])
     if let Some(skill_dir) = skill_dir {
         let state_clone = state.clone();

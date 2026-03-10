@@ -402,6 +402,13 @@ impl DynTool for SkillTool {
 
                     // Check if skill exists in loader or as file
                     if let Some(skill) = self.loader.get(name).await {
+                        // Protect marketplace (installed) skills from modification
+                        if matches!(skill.source, SkillSource::Installed) {
+                            return ToolResult::error(format!(
+                                "Cannot update marketplace skill '{}'. It was installed from NeboLoop and is read-only.",
+                                name
+                            ));
+                        }
                         if let Some(ref path) = skill.source_path {
                             match std::fs::write(path, content) {
                                 Ok(_) => return ToolResult::ok(format!("Updated skill '{}'", name)),
@@ -427,6 +434,16 @@ impl DynTool for SkillTool {
                     let name = input["name"].as_str().unwrap_or("");
                     if name.is_empty() {
                         return ToolResult::error("name is required");
+                    }
+
+                    // Protect marketplace (installed) skills from deletion
+                    if let Some(skill) = self.loader.get(name).await {
+                        if matches!(skill.source, SkillSource::Installed) {
+                            return ToolResult::error(format!(
+                                "Cannot delete marketplace skill '{}'. It was installed from NeboLoop and is read-only.",
+                                name
+                            ));
+                        }
                     }
 
                     let dir = match Self::user_skills_dir() {
@@ -524,6 +541,9 @@ impl DynTool for SkillTool {
                             if let Err(e) = crate::persist_skill_from_api(&api, &artifact_id, &name, code).await {
                                 tracing::warn!(code, error = %e, "failed to persist skill after install");
                             }
+
+                            // Force reload so skill appears in catalog immediately
+                            self.loader.load_all().await;
 
                             ToolResult::ok(format!("Installed skill: {}", name))
                         }
