@@ -399,8 +399,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     advisor_loader.load_all().await;
     advisor_loader.watch();
 
-    // Build a second provider set for advisor deliberation (lightweight HTTP clients)
-    let advisor_providers = build_providers(&store, &cfg, None);
+    // Build a second provider set for advisor deliberation (includes CLI providers)
+    let advisor_providers = build_providers(&store, &cfg, Some(&cli_statuses));
     let advisor_runner: Option<Arc<dyn tools::AdvisorDeliberator>> = if advisor_providers.is_empty() {
         None
     } else {

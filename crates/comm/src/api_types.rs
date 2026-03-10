@@ -6,8 +6,8 @@ use std::collections::HashMap;
 // ── App / Tool Types ─────────────────────────────────────────────────
 
 /// Developer who published an app or skill.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct Author {
     pub id: String,
     pub name: String,
@@ -131,7 +131,9 @@ pub struct ReviewsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SkillItem {
     pub id: String,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub slug: String,
     #[serde(default)]
     pub description: String,
@@ -141,6 +143,7 @@ pub struct SkillItem {
     pub category: String,
     #[serde(default)]
     pub version: String,
+    #[serde(default)]
     pub author: Author,
     #[serde(default)]
     pub install_count: i64,

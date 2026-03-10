@@ -276,23 +276,36 @@ impl AgentTool {
                 if key.is_empty() {
                     return ToolResult::error("key is required");
                 }
-                match self.store.delete_memory_by_key_and_user(namespace, key, &ctx.user_id) {
-                    Ok(count) if count > 0 => {
-                        ToolResult::ok(format!("Deleted {} memory entries for key: {}", count, key))
+                // Delete cascade: user+namespace+key → namespace+key → key-only
+                let mut total = 0usize;
+
+                // Step 1: exact scope (namespace + key + user_id)
+                if let Ok(n) = self.store.delete_memory_by_key_and_user(namespace, key, &ctx.user_id) {
+                    total += n;
+                }
+
+                // Step 2: namespace-scoped (catches user_id mismatches)
+                if let Ok(n) = self.store.delete_memory_by_key_and_user(namespace, key, "") {
+                    total += n;
+                }
+
+                // Step 3: key-only across all namespaces (catches namespace mismatches)
+                match self.store.delete_memory_by_key_only(key) {
+                    Ok(n) => {
+                        total += n;
+                        if n > 0 && total > n {
+                            warn!(key = key, namespace = namespace, total = total,
+                                "delete: required broader fallback to fully purge");
+                        }
+                        ToolResult::ok(format!("Deleted {} memory entries for key: {}", total, key))
                     }
-                    Ok(_) => {
-                        // Scoped delete found nothing — try key-only fallback
-                        match self.store.delete_memory_by_key_only(key) {
-                            Ok(count) if count > 0 => {
-                                warn!(key = key, namespace = namespace, count = count,
-                                    "delete: scoped query missed, key-only fallback deleted entries");
-                                ToolResult::ok(format!("Deleted {} memory entries for key: {}", count, key))
-                            }
-                            Ok(_) => ToolResult::ok(format!("Deleted 0 memory entries for key: {}", key)),
-                            Err(e) => ToolResult::error(format!("Failed to delete: {}", e)),
+                    Err(e) => {
+                        if total > 0 {
+                            ToolResult::ok(format!("Deleted {} memory entries for key: {}", total, key))
+                        } else {
+                            ToolResult::error(format!("Failed to delete: {}", e))
                         }
                     }
-                    Err(e) => ToolResult::error(format!("Failed to delete: {}", e)),
                 }
             }
             "clear" => {

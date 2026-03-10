@@ -79,11 +79,22 @@ pub(crate) fn build_neboloop_api(store: &db::Store) -> Result<comm::api::NeboLoo
 // the actual content and write it to the local filesystem.
 
 /// Extract the manifest text (SKILL.md/WORKFLOW.md/ROLE.md) from a SkillDetail.
+/// Tries `manifest` field first, then falls back to `content_md`.
 pub fn extract_manifest_text(detail: &comm::api_types::SkillDetail) -> Option<String> {
-    detail.manifest.as_ref().and_then(|v| match v {
-        serde_json::Value::String(s) => Some(s.clone()),
-        _ => serde_json::to_string(v).ok(),
-    })
+    // Primary: manifest field (can be JSON string or object)
+    if let Some(ref v) = detail.manifest {
+        let text = match v {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+            serde_json::Value::Null => None,
+            serde_json::Value::String(_) => None, // empty string
+            _ => serde_json::to_string(v).ok(),
+        };
+        if text.is_some() {
+            return text;
+        }
+    }
+    // Fallback: content_md field
+    detail.content_md.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
 /// Fetch skill content from NeboLoop and persist SKILL.md + manifest.json to user dir.

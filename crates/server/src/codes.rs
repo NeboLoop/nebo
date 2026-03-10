@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use comm::api::NeboLoopApi;
 use types::NeboError;
@@ -147,8 +147,9 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<String, NeboE
     let name = resp.artifact.name.clone();
 
     // Fetch artifact content from NeboLoop and persist to filesystem
-    if let Err(e) = tools::persist_skill_from_api(&api, &artifact_id, &name, code).await {
-        warn!(code, error = %e, "failed to persist skill artifact after redeem");
+    match tools::persist_skill_from_api(&api, &artifact_id, &name, code).await {
+        Ok(()) => info!(code, name = %name, "persisted skill artifact to filesystem"),
+        Err(e) => warn!(code, artifact_id = %artifact_id, error = %e, "failed to persist skill artifact after redeem"),
     }
 
     // Cascade: resolve skill deps (tools[], dependencies[])
