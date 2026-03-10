@@ -97,22 +97,33 @@ pub fn extract_manifest_text(detail: &comm::api_types::SkillDetail) -> Option<St
     detail.content_md.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
-/// Fetch skill content from NeboLoop and persist SKILL.md + manifest.json to user dir.
+/// Fetch skill content from NeboLoop and persist SKILL.md + manifest.json to nebo/ namespace.
+/// Returns the skill directory path on success (for cascade dependency resolution).
 pub async fn persist_skill_from_api(
     api: &comm::api::NeboLoopApi,
     artifact_id: &str,
     name: &str,
     code: &str,
-) -> Result<(), String> {
+) -> Result<std::path::PathBuf, String> {
     let detail = api.get_skill(artifact_id).await
         .map_err(|e| format!("fetch skill detail: {e}"))?;
 
+    let has_api_manifest = extract_manifest_text(&detail).is_some();
+    // Use manifest from API, or generate a minimal SKILL.md from metadata
     let manifest_text = extract_manifest_text(&detail)
-        .ok_or_else(|| "skill has no manifest content".to_string())?;
+        .unwrap_or_else(|| {
+            tracing::info!(skill = name, "API returned no manifest; generating from metadata");
+            generate_minimal_skill_md(name, &detail.item.description)
+        });
+    if has_api_manifest {
+        tracing::debug!(skill = name, len = manifest_text.len(), "using manifest from API");
+    }
 
-    let user_dir = config::user_dir().map_err(|e| format!("user_dir: {e}"))?;
+    // Marketplace artifacts go to nebo/ namespace (installed), not user/
+    let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
     let slug = &detail.item.slug;
-    let skill_dir = user_dir.join("skills").join(if slug.is_empty() { name } else { slug });
+    let dir_name = if slug.is_empty() { name } else { slug.as_str() };
+    let skill_dir = nebo_dir.join("skills").join(dir_name);
 
     std::fs::create_dir_all(&skill_dir).map_err(|e| format!("create skill dir: {e}"))?;
     std::fs::write(skill_dir.join("SKILL.md"), &manifest_text)
@@ -133,10 +144,20 @@ pub async fn persist_skill_from_api(
     }
 
     tracing::info!(skill = name, dir = %skill_dir.display(), "persisted skill artifact");
-    Ok(())
+    Ok(skill_dir)
 }
 
-/// Fetch role content from NeboLoop and persist to DB + filesystem.
+/// Generate a minimal SKILL.md from metadata when the API returns no manifest content.
+fn generate_minimal_skill_md(name: &str, description: &str) -> String {
+    format!(
+        "---\nname: {}\ndescription: {}\n---\n{}\n",
+        name,
+        if description.is_empty() { name } else { description },
+        if description.is_empty() { "" } else { description },
+    )
+}
+
+/// Fetch role content from NeboLoop and persist to DB + nebo/ namespace.
 pub async fn persist_role_from_api(
     api: &comm::api::NeboLoopApi,
     artifact_id: &str,
@@ -147,7 +168,8 @@ pub async fn persist_role_from_api(
     let detail = api.get_skill(artifact_id).await
         .map_err(|e| format!("fetch role detail: {e}"))?;
 
-    let manifest_text = extract_manifest_text(&detail).unwrap_or_default();
+    let manifest_text = extract_manifest_text(&detail)
+        .unwrap_or_else(|| generate_minimal_role_md(name, &detail.item.description));
 
     // Persist to DB
     let _ = store.create_role(
@@ -161,16 +183,15 @@ pub async fn persist_role_from_api(
         None,
     ).map_err(|e| format!("create_role: {e}"))?;
 
-    // Write to filesystem
-    let user_dir = config::user_dir().map_err(|e| format!("user_dir: {e}"))?;
+    // Marketplace artifacts go to nebo/ namespace (installed)
+    let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
     let slug = &detail.item.slug;
-    let role_dir = user_dir.join("roles").join(if slug.is_empty() { name } else { slug });
+    let dir_name = if slug.is_empty() { name } else { slug.as_str() };
+    let role_dir = nebo_dir.join("roles").join(dir_name);
     std::fs::create_dir_all(&role_dir).map_err(|e| format!("create role dir: {e}"))?;
 
-    if !manifest_text.is_empty() {
-        if let Err(e) = std::fs::write(role_dir.join("ROLE.md"), &manifest_text) {
-            tracing::warn!(role = name, error = %e, "failed to write ROLE.md");
-        }
+    if let Err(e) = std::fs::write(role_dir.join("ROLE.md"), &manifest_text) {
+        tracing::warn!(role = name, error = %e, "failed to write ROLE.md");
     }
 
     let manifest_json = serde_json::json!({
@@ -189,4 +210,14 @@ pub async fn persist_role_from_api(
 
     tracing::info!(role = name, dir = %role_dir.display(), "persisted role artifact");
     Ok(())
+}
+
+/// Generate a minimal ROLE.md from metadata.
+fn generate_minimal_role_md(name: &str, description: &str) -> String {
+    format!(
+        "---\nname: {}\ndescription: {}\n---\n{}\n",
+        name,
+        if description.is_empty() { name } else { description },
+        if description.is_empty() { "" } else { description },
+    )
 }

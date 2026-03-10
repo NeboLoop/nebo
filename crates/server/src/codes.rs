@@ -147,18 +147,22 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<String, NeboE
     let name = resp.artifact.name.clone();
 
     // Fetch artifact content from NeboLoop and persist to filesystem
-    match tools::persist_skill_from_api(&api, &artifact_id, &name, code).await {
-        Ok(()) => info!(code, name = %name, "persisted skill artifact to filesystem"),
-        Err(e) => warn!(code, artifact_id = %artifact_id, error = %e, "failed to persist skill artifact after redeem"),
-    }
+    let skill_dir = match tools::persist_skill_from_api(&api, &artifact_id, &name, code).await {
+        Ok(dir) => {
+            info!(code, name = %name, dir = %dir.display(), "persisted skill artifact to filesystem");
+            Some(dir)
+        }
+        Err(e) => {
+            warn!(code, artifact_id = %artifact_id, error = %e, "failed to persist skill artifact after redeem");
+            None
+        }
+    };
 
     // Cascade: resolve skill deps (tools[], dependencies[])
-    let state_clone = state.clone();
-    let name_clone = name.clone();
-    tokio::spawn(async move {
-        // Try to load the freshly installed skill to extract deps
-        if let Ok(user_dir) = config::user_dir() {
-            let skill_path = user_dir.join("skills").join(&name_clone).join("SKILL.md");
+    if let Some(skill_dir) = skill_dir {
+        let state_clone = state.clone();
+        tokio::spawn(async move {
+            let skill_path = skill_dir.join("SKILL.md");
             if let Ok(data) = std::fs::read(&skill_path) {
                 if let Ok(skill) = tools::skills::parse_skill_md(&data) {
                     let deps = crate::deps::extract_skill_deps(&skill);
@@ -168,8 +172,8 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<String, NeboE
                     }
                 }
             }
-        }
-    });
+        });
+    }
 
     Ok(format!("Installed skill: {}", name))
 }
@@ -368,11 +372,12 @@ async fn persist_workflow_artifact(
         None,
     ).map_err(|e| format!("create_workflow: {e}"))?;
 
-    // Also write to filesystem
-    let user_dir = config::user_dir()
-        .map_err(|e| format!("user_dir: {e}"))?;
+    // Marketplace artifacts go to nebo/ namespace (installed)
+    let nebo_dir = config::nebo_dir()
+        .map_err(|e| format!("nebo_dir: {e}"))?;
     let slug = &detail.item.slug;
-    let wf_dir = user_dir.join("workflows").join(if slug.is_empty() { name } else { slug });
+    let dir_name = if slug.is_empty() { name } else { slug.as_str() };
+    let wf_dir = nebo_dir.join("workflows").join(dir_name);
     std::fs::create_dir_all(&wf_dir)
         .map_err(|e| format!("create workflow dir: {e}"))?;
 
