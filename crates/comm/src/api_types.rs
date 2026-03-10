@@ -183,6 +183,9 @@ pub struct SkillDetail {
     /// Type-specific config (workflow definition JSON for workflows).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_config: Option<serde_json::Value>,
+    /// URL to download the sealed .napp archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
 }
 
 /// Paginated list response for GET /api/v1/skills.
@@ -354,6 +357,9 @@ pub struct CodeRedeemResponse {
     pub checkout_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<serde_json::Value>,
+    /// URL to download the sealed .napp archive (present for approved artifacts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -97,7 +97,12 @@ pub fn extract_manifest_text(detail: &comm::api_types::SkillDetail) -> Option<St
     detail.content_md.as_ref().filter(|s| !s.is_empty()).cloned()
 }
 
-/// Fetch skill content from NeboLoop and persist SKILL.md + manifest.json to nebo/ namespace.
+/// Fetch skill content from NeboLoop and persist to nebo/ namespace.
+///
+/// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
+/// and stores it at `nebo/skills/{slug}/{version}.napp`, then extracts it.
+/// Otherwise falls back to writing loose SKILL.md + manifest.json files.
+///
 /// Returns the skill directory path on success (for cascade dependency resolution).
 pub async fn persist_skill_from_api(
     api: &comm::api::NeboLoopApi,
@@ -108,8 +113,44 @@ pub async fn persist_skill_from_api(
     let detail = api.get_skill(artifact_id).await
         .map_err(|e| format!("fetch skill detail: {e}"))?;
 
+    let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
+    let slug = &detail.item.slug;
+    let dir_name = if slug.is_empty() { name } else { slug.as_str() };
+    let version = if detail.item.version.is_empty() { "1.0.0" } else { &detail.item.version };
+
+    // Try sealed .napp download first
+    if let Some(ref download_url) = detail.download_url {
+        let napp_dir = nebo_dir.join("skills").join(dir_name);
+        std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create skill dir: {e}"))?;
+        let napp_path = napp_dir.join(format!("{}.napp", version));
+
+        match api.download_napp(download_url).await {
+            Ok(data) => {
+                std::fs::write(&napp_path, &data)
+                    .map_err(|e| format!("write .napp: {e}"))?;
+                tracing::info!(skill = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
+
+                // Extract alongside so the skill loader can find SKILL.md
+                // e.g. nebo/skills/my-cloud/1.0.0.napp → nebo/skills/my-cloud/1.0.0/
+                match napp::reader::extract_napp_alongside(&napp_path) {
+                    Ok(extract_dir) => {
+                        tracing::info!(skill = name, dir = %extract_dir.display(), "extracted .napp");
+                        return Ok(extract_dir);
+                    }
+                    Err(e) => {
+                        tracing::warn!(skill = name, error = %e, "failed to extract .napp; falling back to loose files");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(skill = name, error = %e, "failed to download .napp; falling back to loose files");
+            }
+        }
+    }
+
+    // Fallback: write loose SKILL.md + manifest.json
+    let skill_dir = nebo_dir.join("skills").join(dir_name);
     let has_api_manifest = extract_manifest_text(&detail).is_some();
-    // Use manifest from API, or generate a minimal SKILL.md from metadata
     let manifest_text = extract_manifest_text(&detail)
         .unwrap_or_else(|| {
             tracing::info!(skill = name, "API returned no manifest; generating from metadata");
@@ -118,12 +159,6 @@ pub async fn persist_skill_from_api(
     if has_api_manifest {
         tracing::debug!(skill = name, len = manifest_text.len(), "using manifest from API");
     }
-
-    // Marketplace artifacts go to nebo/ namespace (installed), not user/
-    let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
-    let slug = &detail.item.slug;
-    let dir_name = if slug.is_empty() { name } else { slug.as_str() };
-    let skill_dir = nebo_dir.join("skills").join(dir_name);
 
     std::fs::create_dir_all(&skill_dir).map_err(|e| format!("create skill dir: {e}"))?;
     std::fs::write(skill_dir.join("SKILL.md"), &manifest_text)
@@ -143,7 +178,7 @@ pub async fn persist_skill_from_api(
         tracing::warn!(skill = name, error = %e, "failed to write manifest.json");
     }
 
-    tracing::info!(skill = name, dir = %skill_dir.display(), "persisted skill artifact");
+    tracing::info!(skill = name, dir = %skill_dir.display(), "persisted skill artifact (loose)");
     Ok(skill_dir)
 }
 
@@ -158,6 +193,10 @@ fn generate_minimal_skill_md(name: &str, description: &str) -> String {
 }
 
 /// Fetch role content from NeboLoop and persist to DB + nebo/ namespace.
+///
+/// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
+/// and stores it at `nebo/roles/{slug}/{version}.napp`, then extracts it.
+/// Otherwise falls back to writing loose ROLE.md + manifest.json files.
 pub async fn persist_role_from_api(
     api: &comm::api::NeboLoopApi,
     artifact_id: &str,
@@ -187,6 +226,37 @@ pub async fn persist_role_from_api(
     let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
     let slug = &detail.item.slug;
     let dir_name = if slug.is_empty() { name } else { slug.as_str() };
+    let version = if detail.item.version.is_empty() { "1.0.0" } else { &detail.item.version };
+
+    // Try sealed .napp download first
+    if let Some(ref download_url) = detail.download_url {
+        let napp_dir = nebo_dir.join("roles").join(dir_name);
+        std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create role dir: {e}"))?;
+        let napp_path = napp_dir.join(format!("{}.napp", version));
+
+        match api.download_napp(download_url).await {
+            Ok(data) => {
+                std::fs::write(&napp_path, &data)
+                    .map_err(|e| format!("write .napp: {e}"))?;
+                tracing::info!(role = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
+
+                match napp::reader::extract_napp_alongside(&napp_path) {
+                    Ok(extract_dir) => {
+                        tracing::info!(role = name, dir = %extract_dir.display(), "extracted .napp");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(role = name, error = %e, "failed to extract .napp; falling back to loose files");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(role = name, error = %e, "failed to download .napp; falling back to loose files");
+            }
+        }
+    }
+
+    // Fallback: write loose ROLE.md + manifest.json
     let role_dir = nebo_dir.join("roles").join(dir_name);
     std::fs::create_dir_all(&role_dir).map_err(|e| format!("create role dir: {e}"))?;
 
@@ -208,7 +278,7 @@ pub async fn persist_role_from_api(
         tracing::warn!(role = name, error = %e, "failed to write manifest.json");
     }
 
-    tracing::info!(role = name, dir = %role_dir.display(), "persisted role artifact");
+    tracing::info!(role = name, dir = %role_dir.display(), "persisted role artifact (loose)");
     Ok(())
 }
 

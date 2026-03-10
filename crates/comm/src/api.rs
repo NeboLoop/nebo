@@ -198,6 +198,20 @@ impl NeboLoopApi {
         self.redeem_code(code).await
     }
 
+    /// Download a sealed .napp archive from a URL.
+    ///
+    /// The URL can be absolute (CDN) or relative (API path like `/api/v1/artifacts/{id}/download`).
+    /// Returns the raw bytes of the .napp tar.gz archive.
+    pub async fn download_napp(&self, url: &str) -> Result<Vec<u8>, CommError> {
+        let full_url = if url.starts_with("http://") || url.starts_with("https://") {
+            url.to_string()
+        } else {
+            format!("{}{}", self.api_server, url)
+        };
+        debug!(url = %full_url, "downloading .napp archive");
+        self.fetch_raw(&full_url).await
+    }
+
     /// Uninstall a skill for this bot.
     pub async fn uninstall_skill(&self, id: &str) -> Result<(), CommError> {
         self.do_void(reqwest::Method::DELETE, &format!("/api/v1/skills/{}/install/{}", id, self.bot_id), None::<&()>).await

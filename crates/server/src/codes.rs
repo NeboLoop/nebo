@@ -345,6 +345,10 @@ pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboErro
 // persist path that only exists here.
 
 /// Fetch workflow content from NeboLoop and persist to DB + filesystem.
+///
+/// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
+/// and stores it at `nebo/workflows/{slug}/{version}.napp`, then extracts it.
+/// Otherwise falls back to writing loose WORKFLOW.md + workflow.json files.
 async fn persist_workflow_artifact(
     api: &NeboLoopApi,
     artifact_id: &str,
@@ -380,6 +384,42 @@ async fn persist_workflow_artifact(
         .map_err(|e| format!("nebo_dir: {e}"))?;
     let slug = &detail.item.slug;
     let dir_name = if slug.is_empty() { name } else { slug.as_str() };
+    let version = if detail.item.version.is_empty() { "1.0.0" } else { &detail.item.version };
+
+    // Try sealed .napp download first
+    if let Some(ref download_url) = detail.download_url {
+        let napp_dir = nebo_dir.join("workflows").join(dir_name);
+        std::fs::create_dir_all(&napp_dir)
+            .map_err(|e| format!("create workflow dir: {e}"))?;
+        let napp_path = napp_dir.join(format!("{}.napp", version));
+
+        match api.download_napp(download_url).await {
+            Ok(data) => {
+                std::fs::write(&napp_path, &data)
+                    .map_err(|e| format!("write .napp: {e}"))?;
+                tracing::info!(workflow = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
+
+                match napp::reader::extract_napp_alongside(&napp_path) {
+                    Ok(extract_dir) => {
+                        tracing::info!(workflow = name, dir = %extract_dir.display(), "extracted .napp");
+                        // Set napp_path on DB record to the sealed archive
+                        if let Err(e) = store.set_workflow_napp_path(artifact_id, &napp_path.to_string_lossy()) {
+                            warn!(workflow = name, error = %e, "failed to set napp_path");
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(workflow = name, error = %e, "failed to extract .napp; falling back to loose files");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(workflow = name, error = %e, "failed to download .napp; falling back to loose files");
+            }
+        }
+    }
+
+    // Fallback: write loose WORKFLOW.md + workflow.json
     let wf_dir = nebo_dir.join("workflows").join(dir_name);
     std::fs::create_dir_all(&wf_dir)
         .map_err(|e| format!("create workflow dir: {e}"))?;
@@ -400,7 +440,7 @@ async fn persist_workflow_artifact(
         warn!(workflow = name, error = %e, "failed to set napp_path");
     }
 
-    tracing::info!(workflow = name, dir = %wf_dir.display(), "persisted workflow artifact");
+    tracing::info!(workflow = name, dir = %wf_dir.display(), "persisted workflow artifact (loose)");
     Ok(())
 }
 
