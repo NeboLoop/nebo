@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+
+# Build output
+build/
+dist/
+.svelte-kit/
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Git
+.git
+.gitignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+.dockerignore
+
+# Documentation
+*.md
+LICENSE
+
+# Test files
+*.spec.ts
+*.test.ts
+coverage/
+
+# Environment files
+.env
+.env.*
+
+# Debug and logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Temporary files
+tmp/
+temp/
+
+# Editor directories
+.idea/
+.vscode/
+*.sublime-*

@@ -1,0 +1,2096 @@
+<script lang="ts">
+	import { onMount, onDestroy, tick } from 'svelte';
+	import { browser } from '$app/environment';
+	import {
+		Bot,
+		Loader2,
+		ArrowDown,
+		Copy,
+		Check,
+		History
+	} from 'lucide-svelte';
+	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
+	import { getCompanionChat, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
+	import { logger } from '$lib/monitoring/logger';
+
+	const log = logger.child({ component: 'Chat' });
+	const voiceLog = logger.child({ component: 'Voice' });
+	import type { ChatMessage as ApiChatMessage } from '$lib/api';
+	import type { ChannelMessage, GetChannelMessagesResponse } from '$lib/api/neboComponents';
+	import Markdown from '$lib/components/ui/Markdown.svelte';
+	import ApprovalModal from '$lib/components/ui/ApprovalModal.svelte';
+	import Toast from '$lib/components/ui/Toast.svelte';
+	import { generateUUID } from '$lib/utils';
+	import { VoiceSession, type VoiceState as DuplexVoiceState } from '$lib/voice/VoiceSession';
+	import {
+		MessageGroup,
+		ToolOutputSidebar,
+		ReadingIndicator,
+		ChatInput
+	} from '$lib/components/chat';
+
+	// ── Mode prop ──────────────────────────────────────────────────────
+	interface ChatMode {
+		type: 'companion' | 'channel';
+		channelId?: string;
+		channelName?: string;
+		loopName?: string;
+	}
+
+	let { mode }: { mode: ChatMode } = $props();
+
+	const isCompanion = $derived(mode.type === 'companion');
+	const isChannel = $derived(mode.type === 'channel');
+
+	// ── Shared interfaces ──────────────────────────────────────────────
+	interface ApprovalRequest {
+		requestId: string;
+		tool: string;
+		input: Record<string, unknown>;
+	}
+
+	const DRAFT_STORAGE_KEY = 'nebo_companion_draft';
+
+	interface Message {
+		id: string;
+		role: 'user' | 'assistant' | 'system';
+		content: string;
+		contentHtml?: string;
+		timestamp: Date;
+		toolCalls?: ToolCall[];
+		streaming?: boolean;
+		thinking?: string;
+		contentBlocks?: ContentBlock[];
+		senderName?: string; // For channel mode multi-participant display
+	}
+
+	interface ToolCall {
+		id?: string;
+		name: string;
+		input: string;
+		output?: string;
+		status?: 'running' | 'complete' | 'error';
+	}
+
+	interface ContentBlock {
+		type: 'text' | 'tool' | 'image' | 'ask';
+		text?: string;
+		toolCallIndex?: number;
+		imageData?: string;
+		imageMimeType?: string;
+		imageURL?: string;
+		askRequestId?: string;
+		askPrompt?: string;
+		askWidgets?: Array<{
+			type: 'buttons' | 'select' | 'text_input' | 'confirm' | 'radio' | 'checkbox';
+			label?: string;
+			options?: string[];
+			default?: string;
+		}>;
+		askResponse?: string;
+	}
+
+	// ── Shared state ───────────────────────────────────────────────────
+	let chatId = $state<string | null>(null);
+	let messages = $state<Message[]>([]);
+	let totalMessages = $state<number>(0);
+	let inputValue = $state('');
+	let isLoading = $state(false);
+	let wsConnected = $state(false);
+	let agentName = $state('Nebo');
+	let messagesContainer: HTMLDivElement;
+	let currentStreamingMessage = $state<Message | null>(null);
+	let chatLoaded = $state(false);
+	let copiedMessageId = $state<string | null>(null);
+	let showScrollButton = $state(false);
+	let autoScrollEnabled = $state(true);
+	let scrollingProgrammatically = false;
+	let draftInitialized = $state(false);
+
+	// ── Companion-only state ───────────────────────────────────────────
+	let voiceOutputEnabled = $state(false);
+	let isSpeaking = $state(false);
+	let currentAudio: HTMLAudioElement | null = null;
+	let ttsVoice = $state('rachel');
+	let ttsSentenceBuffer = '';
+	let ttsQueue: string[] = [];
+	let ttsPlaying = false;
+	let ttsStreamingActive = false;
+	let ttsCancelToken = 0;
+	const ttsVoices = ['rachel', 'domi', 'bella', 'antoni', 'elli', 'josh', 'arnold', 'adam', 'sam'];
+
+	let duplexSession: VoiceSession | null = null;
+	let duplexState = $state<DuplexVoiceState>('idle');
+	let duplexTranscript = $state('');
+	let duplexVadActive = $state(false);
+	let showModelDownload = $state(false);
+	let modelDownloadProgress = $state<Record<string, { downloaded: number; total: number; done: boolean }>>({});
+	let modelDownloadError = $state('');
+	let wakeWordEnabled = $state(false);
+	let wakeWordSession: VoiceSession | null = null;
+	let duplexLevel = $state(0);
+	let sidebarTool = $state<ToolCall | null>(null);
+
+	// ── Channel-only state ─────────────────────────────────────────────
+	let channelMemberNames = $state<Record<string, string>>({});
+	let channelSending = $state(false);
+
+	// ── Shared derived / grouping ──────────────────────────────────────
+	interface MessageGroupType {
+		role: 'user' | 'assistant';
+		messages: Message[];
+		agentName: string;
+	}
+
+	function resolveChannelName(msg: Message): string {
+		if (msg.senderName) return msg.senderName;
+		return 'Unknown';
+	}
+
+	const groupedMessages = $derived.by((): MessageGroupType[] => {
+		const groups: MessageGroupType[] = [];
+		let currentGroup: MessageGroupType | null = null;
+
+		for (const msg of messages) {
+			if (msg.role === 'system' || msg.role === 'tool') {
+				currentGroup = null;
+				continue;
+			}
+
+			const role = msg.role as 'user' | 'assistant';
+			const name = isChannel ? resolveChannelName(msg) : (role === 'assistant' ? agentName : 'You');
+
+			if (!currentGroup || currentGroup.role !== role || (isChannel && currentGroup.agentName !== name)) {
+				currentGroup = { role, messages: [], agentName: name };
+				groups.push(currentGroup);
+			}
+			currentGroup.messages.push(msg);
+		}
+
+		return groups;
+	});
+
+	// Message queue (companion-only)
+	interface QueuedMessage {
+		id: string;
+		content: string;
+	}
+	let messageQueue = $state<QueuedMessage[]>([]);
+	let chatInputRef: { focus: () => void; handleDrop: (e: DragEvent) => void } | undefined;
+	let isDraggingOver = $state(false);
+	let dragCounter = 0;
+	let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
+	let pendingScrollRAF: number | null = null;
+	let staleCheckIntervalId: ReturnType<typeof setInterval> | null = null;
+
+	// Stream staleness detection (companion-only)
+	let lastEventTime = $state(Date.now());
+	let staleWarning = $state(false);
+	let pendingAskRequest = $state(false);
+
+	function markActivity() {
+		lastEventTime = Date.now();
+		staleWarning = false;
+	}
+
+	function replaceMessageById(updatedMsg: Message): void {
+		const idx = messages.findIndex((m) => m.id === updatedMsg.id);
+		if (idx >= 0) {
+			messages = [...messages.slice(0, idx), updatedMsg, ...messages.slice(idx + 1)];
+		}
+	}
+
+	function hasRunningTools(): boolean {
+		return !!currentStreamingMessage?.toolCalls?.some((tc) => tc.status === 'running');
+	}
+
+	function resetLoadingTimeout() {
+		markActivity();
+	}
+
+	// Stream staleness check (companion-only)
+	$effect(() => {
+		if (!isCompanion) return;
+		if (!isLoading) {
+			staleWarning = false;
+			pendingAskRequest = false;
+			if (staleCheckIntervalId) {
+				clearInterval(staleCheckIntervalId);
+				staleCheckIntervalId = null;
+			}
+			return;
+		}
+		staleCheckIntervalId = setInterval(() => {
+			if (Date.now() - lastEventTime > 600_000 && !pendingAskRequest && !hasRunningTools()) {
+				staleWarning = true;
+			}
+		}, 5000);
+		return () => {
+			if (staleCheckIntervalId) {
+				clearInterval(staleCheckIntervalId);
+				staleCheckIntervalId = null;
+			}
+		};
+	});
+
+	// Approval request queue (companion-only)
+	let approvalQueue = $state<ApprovalRequest[]>([]);
+	const pendingApproval = $derived(approvalQueue.length > 0 ? approvalQueue[0] : null);
+
+	let unsubscribers: (() => void)[] = [];
+
+	let warningToast = $state(false);
+	let warningMessage = $state('');
+
+	const suggestions = [
+		'Read the README and summarize this project',
+		'List all files in the current directory',
+		'Search the web for the latest Go release',
+		'Help me debug an issue with my code'
+	];
+
+	// ── Lifecycle ──────────────────────────────────────────────────────
+	onMount(async () => {
+		const client = getWebSocketClient();
+
+		unsubscribers.push(
+			client.onStatus((status: ConnectionStatus) => {
+				wsConnected = status === 'connected';
+			})
+		);
+
+		// Fetch agent profile for display name (both modes need it)
+		try {
+			const profile = await getAgentProfile();
+			if (profile.name) agentName = profile.name;
+		} catch {}
+
+		if (isCompanion) {
+			unsubscribers.push(
+				client.on('chat_stream', handleChatStream),
+				client.on('chat_complete', handleChatComplete),
+				client.on('chat_response', handleChatResponse),
+				client.on('tool_start', handleToolStart),
+				client.on('tool_result', handleToolResult),
+				client.on('image', handleImage),
+				client.on('thinking', handleThinking),
+				client.on('error', handleError),
+				client.on('approval_request', handleApprovalRequest),
+				client.on('stream_status', handleStreamStatus),
+				client.on('chat_cancelled', handleChatCancelled),
+				client.on('reminder_complete', handleReminderComplete),
+				client.on('dm_user_message', handleDMUserMessage),
+				client.on('ask_request', handleAskRequest),
+				client.on('agent_warning', (data: Record<string, unknown>) => {
+					warningMessage = (data?.message as string) || 'The AI service is temporarily busy. Retrying...';
+					warningToast = true;
+				})
+			);
+
+			if (browser) {
+				const savedDraft = localStorage.getItem(DRAFT_STORAGE_KEY);
+				if (savedDraft) {
+					inputValue = savedDraft;
+				}
+				draftInitialized = true;
+			}
+
+			await loadCompanionChat();
+		} else {
+			// Channel mode
+			unsubscribers.push(
+				client.on('loop_channel_message', handleLoopChannelMessage)
+			);
+			await loadChannelMessages();
+		}
+	});
+
+	onDestroy(() => {
+		unsubscribers.forEach((unsub) => unsub());
+		if (pendingScrollRAF) {
+			cancelAnimationFrame(pendingScrollRAF);
+			pendingScrollRAF = null;
+		}
+		if (staleCheckIntervalId) {
+			clearInterval(staleCheckIntervalId);
+			staleCheckIntervalId = null;
+		}
+		if (duplexSession) {
+			duplexSession.disconnect();
+			duplexSession = null;
+		}
+		if (wakeWordSession) {
+			wakeWordSession.disconnect();
+			wakeWordSession = null;
+		}
+	});
+
+	// Save draft to localStorage (companion-only)
+	$effect(() => {
+		if (!isCompanion) return;
+		if (browser && draftInitialized) {
+			if (inputValue) {
+				localStorage.setItem(DRAFT_STORAGE_KEY, inputValue);
+			} else {
+				localStorage.removeItem(DRAFT_STORAGE_KEY);
+			}
+		}
+	});
+
+	function clearDraft() {
+		if (browser) {
+			localStorage.removeItem(DRAFT_STORAGE_KEY);
+		}
+	}
+
+	// ── Channel message handlers ───────────────────────────────────────
+	async function loadChannelMessages() {
+		try {
+			chatLoaded = false;
+			const res = await getChannelMessages({ limit: 200 }, mode.channelId!);
+			const data = res as GetChannelMessagesResponse;
+			if (data?.messages) {
+				messages = (data.messages as ChannelMessage[]).map((m) => {
+					const isOwner = m.from === 'You' || m.role === 'user';
+					return {
+						id: m.id,
+						role: (isOwner ? 'user' : 'assistant') as 'user' | 'assistant',
+						content: m.content,
+						contentHtml: m.contentHtml || undefined,
+						timestamp: new Date(m.createdAt),
+						senderName: isOwner ? 'You' : resolveNameFromId(m.from)
+					};
+				});
+			}
+			if (data?.members) {
+				const names: Record<string, string> = {};
+				for (const m of data.members) {
+					names[m.botId] = m.botName || m.botId.substring(0, 8);
+				}
+				channelMemberNames = names;
+			}
+			chatLoaded = true;
+			await tick();
+			if (messagesContainer) {
+				messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'instant' });
+			}
+		} catch {
+			chatLoaded = true;
+		}
+	}
+
+	function resolveNameFromId(senderId: string): string {
+		if (senderId === 'You') return 'You';
+		if (senderId === 'bot') return agentName;
+		return channelMemberNames[senderId] || senderId.substring(0, 8) + '\u2026';
+	}
+
+	function handleLoopChannelMessage(data: Record<string, unknown>) {
+		if (data?.channel_id !== mode.channelId) return;
+
+		const senderId = (data?.sender_id as string) || '';
+		const role = (data?.role as string) || '';
+		const isOwner = role === 'user' || senderId === 'You'; // role-based with backward compat
+		const source = (data?.source as string) || '';
+
+		// Dedup echo-back against optimistic message
+		if (source === 'owner_send') {
+			const tempIdx = messages.findIndex(
+				(m) => m.id.startsWith('temp-') && m.content === data?.content
+			);
+			if (tempIdx >= 0) {
+				messages = [...messages.slice(0, tempIdx), ...messages.slice(tempIdx + 1)];
+			}
+		}
+
+		const msg: Message = {
+			id: (data?.message_id as string) || generateUUID(),
+			role: isOwner ? 'user' : 'assistant',
+			content: (data?.content as string) || '',
+			timestamp: new Date((data?.timestamp as string) || Date.now()),
+			senderName: (data?.sender_name as string) || resolveNameFromId(senderId)
+		};
+		messages = [...messages, msg];
+	}
+
+	function sendChannelMsg() {
+		const text = inputValue.trim();
+		if (!text || channelSending) return;
+
+		const tempId = `temp-${Date.now()}`;
+		messages = [
+			...messages,
+			{
+				id: tempId,
+				role: 'user',
+				content: text,
+				timestamp: new Date(),
+				senderName: 'You'
+			}
+		];
+		inputValue = '';
+		channelSending = true;
+
+		autoScrollEnabled = true;
+		showScrollButton = false;
+
+		sendChannelMessage({ text }, mode.channelId!)
+			.catch(() => {
+				messages = messages.filter((m) => m.id !== tempId);
+			})
+			.finally(() => {
+				channelSending = false;
+			});
+	}
+
+	// ── Companion chat handlers ────────────────────────────────────────
+	interface ParsedMetadata {
+		toolCalls?: ToolCall[];
+		thinking?: string;
+		contentBlocks?: ContentBlock[];
+	}
+
+	function parseMetadata(metadata: string | undefined): ParsedMetadata {
+		if (!metadata) return {};
+		try {
+			const parsed = JSON.parse(metadata);
+			const result: ParsedMetadata = {};
+
+			if (parsed.toolCalls && Array.isArray(parsed.toolCalls)) {
+				result.toolCalls = parsed.toolCalls.map(
+					(tc: { name: string; input: string; output?: string; status?: string }) => ({
+						name: tc.name,
+						input: tc.input,
+						output: tc.output,
+						status: (tc.status === 'error' ? 'error' : 'complete') as 'complete' | 'error'
+					})
+				);
+			}
+
+			if (parsed.thinking && typeof parsed.thinking === 'string') {
+				result.thinking = parsed.thinking;
+			}
+
+			if (parsed.contentBlocks && Array.isArray(parsed.contentBlocks)) {
+				result.contentBlocks = parsed.contentBlocks;
+			}
+
+			return result;
+		} catch {
+			// Invalid JSON
+		}
+		return {};
+	}
+
+	function parseMultipartContent(content: string): { text: string; blocks: ContentBlock[] } | null {
+		if (!content.startsWith('[')) return null;
+		try {
+			const parts = JSON.parse(content);
+			if (!Array.isArray(parts)) return null;
+			const blocks: ContentBlock[] = [];
+			const textParts: string[] = [];
+			for (const part of parts) {
+				if (part.type === 'text' && part.text) {
+					blocks.push({ type: 'text', text: part.text });
+					textParts.push(part.text);
+				} else if (part.type === 'image' && part.source?.data) {
+					blocks.push({
+						type: 'image',
+						imageData: part.source.data,
+						imageMimeType: part.source.media_type || 'image/png'
+					});
+				}
+			}
+			if (blocks.length === 0) return null;
+			return { text: textParts.join('\n'), blocks };
+		} catch {
+			return null;
+		}
+	}
+
+	async function loadCompanionChat() {
+		try {
+			const res = await getCompanionChat();
+			chatId = res.chat.id;
+			log.debug('Loaded companion chat: ' + chatId);
+			messages = (res.messages || []).map((m: ApiChatMessage) => {
+				const meta = parseMetadata((m as { metadata?: string }).metadata);
+				let content = m.content;
+				let contentBlocks = meta.contentBlocks;
+				if (!contentBlocks?.length) {
+					const multipart = parseMultipartContent(content);
+					if (multipart) {
+						content = multipart.text;
+						contentBlocks = multipart.blocks;
+					}
+				}
+				return {
+					id: m.id,
+					role: m.role as 'user' | 'assistant' | 'system',
+					content,
+					contentHtml: m.contentHtml || undefined,
+					timestamp: new Date(m.createdAt),
+					toolCalls: meta.toolCalls,
+					thinking: meta.thinking,
+					contentBlocks
+				};
+			});
+			totalMessages = res.totalMessages || messages.length;
+			chatLoaded = true;
+			log.debug('Messages loaded: ' + messages.length + ' total: ' + totalMessages);
+
+			if (messages.length > 0) {
+				tick().then(() => {
+					requestAnimationFrame(() => {
+						if (messagesContainer) {
+							messagesContainer.scrollTo({
+								top: messagesContainer.scrollHeight,
+								behavior: 'smooth'
+							});
+						}
+					});
+				});
+			}
+
+			checkForActiveStream();
+		} catch (err) {
+			log.error('Failed to load companion chat', err);
+			chatLoaded = true;
+		}
+	}
+
+	let streamCheckResponded = false;
+
+	function checkForActiveStream() {
+		streamCheckResponded = false;
+		const client = getWebSocketClient();
+
+		setTimeout(() => {
+			if (!streamCheckResponded && messages.length === 0 && chatId && !isLoading) {
+				log.warn('Stream check timed out — requesting introduction');
+				requestIntroduction();
+			}
+		}, 5000);
+
+		if (!client.isConnected() || !chatId) {
+			const unsub = client.onStatus((status: ConnectionStatus) => {
+				if (status === 'connected' && chatId) {
+					unsub();
+					log.debug('Checking for active stream on session: ' + chatId);
+					client.send('check_stream', { session_id: chatId });
+				}
+			});
+			return;
+		}
+		log.debug('Checking for active stream on session: ' + chatId);
+		client.send('check_stream', { session_id: chatId });
+	}
+
+	function requestIntroduction() {
+		const client = getWebSocketClient();
+		log.debug('requestIntroduction called, connected: ' + client.isConnected());
+		if (!client.isConnected()) {
+			log.debug('WebSocket not connected, waiting...');
+			const unsub = client.onStatus((status: ConnectionStatus) => {
+				log.debug('WebSocket status changed: ' + status);
+				if (status === 'connected') {
+					unsub();
+					doRequestIntroduction();
+				}
+			});
+			return;
+		}
+		doRequestIntroduction();
+	}
+
+	function doRequestIntroduction() {
+		log.debug('Sending request_introduction for session: ' + chatId);
+		const client = getWebSocketClient();
+		isLoading = true;
+		client.send('request_introduction', {
+			session_id: chatId || ''
+		});
+	}
+
+	const hasMoreHistory = $derived(totalMessages > messages.length);
+
+	function sendToAgent(prompt: string) {
+		isLoading = true;
+		const client = getWebSocketClient();
+
+		if (client.isConnected()) {
+			client.send('chat', {
+				session_id: chatId || '',
+				prompt: prompt,
+				companion: true
+			});
+		} else {
+			log.warn('WebSocket not connected, cannot send message');
+			isLoading = false;
+			if (messageQueue.length > 0) {
+				setTimeout(() => processQueue(), 100);
+			}
+		}
+	}
+
+	function handleChatStream(data: Record<string, unknown>) {
+		log.debug('handleChatStream called: ' + data?.session_id + ' chatId: ' + chatId);
+		if (chatId && data?.session_id !== chatId) {
+			log.debug('handleChatStream: session_id mismatch, ignoring');
+			return;
+		}
+
+		if (!chatId && data?.session_id) {
+			chatId = data.session_id as string;
+		}
+
+		const isDMStream = data?.source === 'dm';
+		if (!isLoading && !isDMStream) {
+			log.debug('handleChatStream: re-arming isLoading (stream resumed after timeout)');
+			isLoading = true;
+		}
+		resetLoadingTimeout();
+
+		const chunk = (data?.content as string) || '';
+
+		if (voiceOutputEnabled && chunk) {
+			if (!ttsStreamingActive) {
+				stopTTSQueue();
+				ttsStreamingActive = true;
+			}
+			feedTTSStream(chunk);
+		}
+
+		if (currentStreamingMessage) {
+			if (currentStreamingMessage.toolCalls?.length) {
+				const hasRunning = currentStreamingMessage.toolCalls.some((tc) => tc.status === 'running');
+				if (hasRunning) {
+					log.debug('handleChatStream: text arrived with running tools — marking all complete');
+					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					);
+				}
+			}
+			currentStreamingMessage.content += chunk;
+			if (!currentStreamingMessage.contentBlocks) {
+				currentStreamingMessage.contentBlocks = [];
+			}
+			const blocks = currentStreamingMessage.contentBlocks;
+			if (blocks.length === 0 || blocks[blocks.length - 1].type !== 'text') {
+				blocks.push({ type: 'text', text: chunk });
+			} else {
+				blocks[blocks.length - 1] = {
+					...blocks[blocks.length - 1],
+					text: (blocks[blocks.length - 1].text || '') + chunk
+				};
+			}
+			currentStreamingMessage.contentBlocks = [...blocks];
+			replaceMessageById({ ...currentStreamingMessage });
+		} else {
+			currentStreamingMessage = {
+				id: generateUUID(),
+				role: 'assistant',
+				content: chunk,
+				timestamp: new Date(),
+				streaming: true,
+				contentBlocks: [{ type: 'text', text: chunk }]
+			};
+			messages = [...messages, currentStreamingMessage];
+		}
+	}
+
+	function processQueue() {
+		if (messageQueue.length > 0) {
+			const next = messageQueue[0];
+			messageQueue = messageQueue.slice(1);
+			log.debug('Processing queued message: ' + next.content.substring(0, 50));
+
+			const userMessage: Message = {
+				id: next.id,
+				role: 'user',
+				content: next.content,
+				timestamp: new Date()
+			};
+			messages = [...messages, userMessage];
+
+			handleSendPrompt(next.content);
+		}
+	}
+
+	function recallFromQueue(): string | null {
+		if (messageQueue.length === 0) return null;
+		const last = messageQueue[messageQueue.length - 1];
+		messageQueue = messageQueue.slice(0, -1);
+		return last.content;
+	}
+
+	function cancelQueuedMessage(queuedId: string) {
+		const item = messageQueue.find((q) => q.id === queuedId);
+		if (!item) return;
+		messageQueue = messageQueue.filter((q) => q.id !== queuedId);
+		log.debug('Cancelled queued message: ' + item.content.substring(0, 50));
+	}
+
+	function handleChatComplete(data: Record<string, unknown>) {
+		log.debug('handleChatComplete called', {
+			sessionId: data?.session_id as string,
+			chatId: chatId ?? undefined,
+			hasStreamingMsg: String(!!currentStreamingMessage),
+			toolCount: String(currentStreamingMessage?.toolCalls?.length ?? 0),
+			messagesCount: String(messages.length)
+		});
+
+		if (chatId && data?.session_id !== chatId) {
+			log.debug(
+				'handleChatComplete: session mismatch, expected ' + chatId + ' got ' + data?.session_id
+			);
+			return;
+		}
+
+		const isDMComplete = data?.source === 'dm';
+
+		if (isDMComplete) {
+			if (currentStreamingMessage) {
+				currentStreamingMessage.streaming = false;
+				if (currentStreamingMessage.toolCalls?.length) {
+					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					);
+				}
+				replaceMessageById({ ...currentStreamingMessage });
+				currentStreamingMessage = null;
+			}
+			return;
+		}
+
+		if (cancelTimeoutId) {
+			clearTimeout(cancelTimeoutId);
+			cancelTimeoutId = null;
+		}
+
+		let completedContent = '';
+		if (currentStreamingMessage) {
+			completedContent = currentStreamingMessage.content;
+			currentStreamingMessage.streaming = false;
+			if (currentStreamingMessage.toolCalls?.length) {
+				const beforeStatuses = currentStreamingMessage.toolCalls.map((t) => t.status);
+				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
+					tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+				);
+				const afterStatuses = currentStreamingMessage.toolCalls.map((t) => t.status);
+				log.debug(
+					'Safety net: tool statuses before: ' +
+						beforeStatuses.join(',') +
+						' after: ' +
+						afterStatuses.join(',')
+				);
+			}
+			const finalMsg = { ...currentStreamingMessage };
+			replaceMessageById(finalMsg);
+			currentStreamingMessage = null;
+		} else {
+			log.debug('handleChatComplete: NO currentStreamingMessage!');
+			const lastIdx = messages.length - 1;
+			if (
+				lastIdx >= 0 &&
+				messages[lastIdx].role === 'assistant' &&
+				messages[lastIdx].toolCalls?.length
+			) {
+				const lastMsg = messages[lastIdx];
+				const hasRunningInLast = lastMsg.toolCalls!.some((tc) => tc.status === 'running');
+				if (hasRunningInLast) {
+					log.debug(
+						'Safety net (non-streaming): marking running tools as complete in last message'
+					);
+					const updatedTools = lastMsg.toolCalls!.map((tc) =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					);
+					messages = [...messages.slice(0, lastIdx), { ...lastMsg, toolCalls: updatedTools }];
+				}
+			}
+		}
+		isLoading = false;
+
+		if (voiceOutputEnabled && ttsStreamingActive) {
+			flushTTSBuffer();
+		} else if (voiceOutputEnabled && completedContent) {
+			speakText(completedContent);
+		}
+
+		processQueue();
+	}
+
+	function cancelMessage() {
+		const client = getWebSocketClient();
+		client.send('cancel', {
+			session_id: chatId || ''
+		});
+
+		if (cancelTimeoutId) clearTimeout(cancelTimeoutId);
+		cancelTimeoutId = setTimeout(() => {
+			cancelTimeoutId = null;
+			if (isLoading) {
+				log.warn('Cancel timeout - force resetting loading state');
+				if (currentStreamingMessage) {
+					currentStreamingMessage.streaming = false;
+					if (currentStreamingMessage.content) {
+						currentStreamingMessage.content += '\n\n*[Generation cancelled]*';
+					} else {
+						currentStreamingMessage.content = '*[Generation cancelled]*';
+					}
+					if (currentStreamingMessage.toolCalls?.length) {
+						currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
+							tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+						);
+					}
+					const finalMsg = { ...currentStreamingMessage };
+					replaceMessageById(finalMsg);
+					currentStreamingMessage = null;
+				}
+				isLoading = false;
+				processQueue();
+			}
+		}, 2000);
+	}
+
+	function handleChatCancelled(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+
+		if (cancelTimeoutId) {
+			clearTimeout(cancelTimeoutId);
+			cancelTimeoutId = null;
+		}
+
+		if (currentStreamingMessage) {
+			currentStreamingMessage.streaming = false;
+			if (currentStreamingMessage.content) {
+				currentStreamingMessage.content += '\n\n*[Generation cancelled]*';
+			} else {
+				currentStreamingMessage.content = '*[Generation cancelled]*';
+			}
+			if (currentStreamingMessage.toolCalls?.length) {
+				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
+					tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+				);
+			}
+			const finalMsg = { ...currentStreamingMessage };
+			replaceMessageById(finalMsg);
+			currentStreamingMessage = null;
+		}
+		isLoading = false;
+		processQueue();
+	}
+
+	function handleChatResponse(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+
+		const assistantMessage: Message = {
+			id: generateUUID(),
+			role: 'assistant',
+			content: (data?.content as string) || '',
+			timestamp: new Date(),
+			toolCalls: data?.tool_calls as ToolCall[]
+		};
+		messages = [...messages, assistantMessage];
+		isLoading = false;
+	}
+
+	function handleToolStart(data: Record<string, unknown>) {
+		log.debug('handleToolStart: ' + (data?.tool as string));
+		if (chatId && data?.session_id !== chatId) {
+			log.debug('handleToolStart: session_id mismatch, ignoring');
+			return;
+		}
+
+		resetLoadingTimeout();
+
+		const toolName = data?.tool as string;
+		const toolID = (data?.tool_id as string) || '';
+		const rawInput = data?.input;
+		const toolInput =
+			typeof rawInput === 'string'
+				? rawInput
+				: rawInput != null
+					? JSON.stringify(rawInput)
+					: '';
+		const newToolCall: ToolCall = {
+			id: toolID,
+			name: toolName,
+			input: toolInput,
+			status: 'running'
+		};
+
+		if (currentStreamingMessage) {
+			if (!currentStreamingMessage.toolCalls) {
+				currentStreamingMessage.toolCalls = [];
+			}
+			const toolIndex = currentStreamingMessage.toolCalls.length;
+			currentStreamingMessage.toolCalls = [...currentStreamingMessage.toolCalls, newToolCall];
+			if (!currentStreamingMessage.contentBlocks) {
+				currentStreamingMessage.contentBlocks = [];
+			}
+			currentStreamingMessage.contentBlocks = [
+				...currentStreamingMessage.contentBlocks,
+				{ type: 'tool' as const, toolCallIndex: toolIndex }
+			];
+			replaceMessageById({ ...currentStreamingMessage });
+		} else {
+			currentStreamingMessage = {
+				id: generateUUID(),
+				role: 'assistant',
+				content: '',
+				timestamp: new Date(),
+				streaming: true,
+				toolCalls: [newToolCall],
+				contentBlocks: [{ type: 'tool', toolCallIndex: 0 }]
+			};
+			messages = [...messages, currentStreamingMessage];
+		}
+	}
+
+	function handleToolResult(data: Record<string, unknown>) {
+		log.debug('handleToolResult: ' + ((data?.tool_name as string) || (data?.tool_id as string)));
+
+		if (chatId && data?.session_id !== chatId) {
+			log.debug('handleToolResult: session mismatch');
+			return;
+		}
+
+		resetLoadingTimeout();
+
+		const result = (data?.result as string) || '';
+		const toolID = (data?.tool_id as string) || '';
+		const toolName = (data?.tool_name as string) || '';
+		const imageURL = (data?.image_url as string) || '';
+		log.debug(
+			'Tool result received: ' + toolName + ' id: ' + toolID + ' result_length: ' + result?.length
+		);
+
+		const findAndUpdateTool = (toolCalls: ToolCall[]): ToolCall[] | null => {
+			const updated = [...toolCalls];
+			if (toolID) {
+				const idx = updated.findIndex((tc) => tc.id === toolID);
+				if (idx >= 0) {
+					log.debug('Found tool by ID at index ' + idx);
+					updated[idx] = { ...updated[idx], output: result, status: 'complete' };
+					return updated;
+				}
+			}
+			const runningIdx = updated.findIndex((tc) => tc.status === 'running');
+			if (runningIdx >= 0) {
+				log.debug('Fallback: updating first running tool at index ' + runningIdx);
+				updated[runningIdx] = { ...updated[runningIdx], output: result, status: 'complete' };
+				return updated;
+			}
+			return null;
+		};
+
+		const appendImageBlock = (msg: Message) => {
+			if (!imageURL) return;
+			if (!msg.contentBlocks) msg.contentBlocks = [];
+			msg.contentBlocks = [...msg.contentBlocks, { type: 'image' as const, imageURL }];
+		};
+
+		if (currentStreamingMessage?.toolCalls?.length) {
+			const updatedToolCalls = findAndUpdateTool(currentStreamingMessage.toolCalls);
+			if (updatedToolCalls) {
+				currentStreamingMessage = { ...currentStreamingMessage, toolCalls: updatedToolCalls };
+				appendImageBlock(currentStreamingMessage);
+				replaceMessageById({ ...currentStreamingMessage });
+				log.debug('Updated tool in streaming message');
+				return;
+			}
+		}
+
+		log.debug('handleToolResult: trying fallback to recent assistant messages');
+		for (let i = messages.length - 1; i >= Math.max(0, messages.length - 5); i--) {
+			const msg = messages[i];
+			if (msg.role === 'assistant' && msg.toolCalls?.length) {
+				const updatedToolCalls = findAndUpdateTool(msg.toolCalls);
+				if (updatedToolCalls) {
+					const updatedMsg = { ...msg, toolCalls: updatedToolCalls };
+					appendImageBlock(updatedMsg);
+					messages = [
+						...messages.slice(0, i),
+						updatedMsg,
+						...messages.slice(i + 1)
+					];
+					log.debug('Fallback: updated tool in message at index ' + i);
+					return;
+				}
+			}
+		}
+
+		log.warn('handleToolResult: SKIP - no suitable tool to update (tool_id: ' + toolID + ')');
+	}
+
+	function handleImage(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+		resetLoadingTimeout();
+
+		const imageURL = (data?.image_url as string) || '';
+		if (!imageURL) return;
+
+		if (currentStreamingMessage) {
+			if (!currentStreamingMessage.contentBlocks) {
+				currentStreamingMessage.contentBlocks = [];
+			}
+			currentStreamingMessage.contentBlocks = [
+				...currentStreamingMessage.contentBlocks,
+				{ type: 'image' as const, imageURL }
+			];
+			replaceMessageById({ ...currentStreamingMessage });
+		}
+	}
+
+	function handleThinking(data: Record<string, unknown>) {
+		log.debug('handleThinking');
+		if (chatId && data?.session_id !== chatId) return;
+		resetLoadingTimeout();
+
+		const thinkingContent = (data?.content as string) || '';
+
+		if (currentStreamingMessage) {
+			currentStreamingMessage.thinking = (currentStreamingMessage.thinking || '') + thinkingContent;
+			replaceMessageById({ ...currentStreamingMessage });
+		} else {
+			currentStreamingMessage = {
+				id: generateUUID(),
+				role: 'assistant',
+				content: '',
+				timestamp: new Date(),
+				streaming: true,
+				thinking: thinkingContent
+			};
+			messages = [...messages, currentStreamingMessage];
+		}
+	}
+
+	function handleError(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+
+		if (currentStreamingMessage?.toolCalls?.length) {
+			currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
+				tc.status === 'running' ? { ...tc, status: 'error' as const } : tc
+			);
+			replaceMessageById({ ...currentStreamingMessage });
+		}
+
+		const errorMessage: Message = {
+			id: generateUUID(),
+			role: 'assistant',
+			content: `Error: ${data?.error || 'Unknown error'}`,
+			timestamp: new Date()
+		};
+		messages = [...messages, errorMessage];
+		isLoading = false;
+		currentStreamingMessage = null;
+		processQueue();
+	}
+
+	function handleReminderComplete(data: Record<string, unknown>) {
+		const name = (data?.name as string) || 'Reminder';
+		const result = (data?.result as string) || '';
+		if (!result) return;
+
+		const reminderMessage: Message = {
+			id: generateUUID(),
+			role: 'assistant',
+			content: `**Reminder — ${name}**\n\n${result}`,
+			timestamp: new Date()
+		};
+		messages = [...messages, reminderMessage];
+		scrollToBottom();
+	}
+
+	function handleDMUserMessage(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+		const content = (data?.content as string) || '';
+		if (!content) return;
+
+		const source = (data?.source as string) || 'dm';
+		const userMsg: Message = {
+			id: generateUUID(),
+			role: 'user',
+			content: content,
+			timestamp: new Date()
+		};
+		messages = [...messages, userMsg];
+		log.debug('DM user message from ' + source + ': ' + content.substring(0, 50));
+		scrollToBottom();
+	}
+
+	function handleAskRequest(data: Record<string, unknown>) {
+		markActivity();
+		pendingAskRequest = true;
+
+		const requestId = data?.request_id as string;
+		const prompt = data?.prompt as string;
+		const widgets = data?.widgets as ContentBlock['askWidgets'];
+
+		if (requestId && currentStreamingMessage) {
+			const updatedBlocks = [
+				...(currentStreamingMessage.contentBlocks ?? []),
+				{
+					type: 'ask' as const,
+					askRequestId: requestId,
+					askPrompt: prompt,
+					askWidgets: widgets ?? [{ type: 'confirm' as const, options: ['Yes', 'No'] }]
+				}
+			];
+			currentStreamingMessage = {
+				...currentStreamingMessage,
+				contentBlocks: updatedBlocks
+			};
+			replaceMessageById(currentStreamingMessage);
+		}
+	}
+
+	function handleAskSubmit(requestId: string, value: string) {
+		pendingAskRequest = false;
+		resetLoadingTimeout();
+		const client = getWebSocketClient();
+		client.send('ask_response', {
+			request_id: requestId,
+			value
+		});
+
+		if (currentStreamingMessage?.contentBlocks) {
+			const updatedBlocks = currentStreamingMessage.contentBlocks.map((block) => {
+				if (block.type === 'ask' && block.askRequestId === requestId) {
+					return { ...block, askResponse: value };
+				}
+				return block;
+			});
+			currentStreamingMessage = {
+				...currentStreamingMessage,
+				contentBlocks: updatedBlocks
+			};
+			replaceMessageById(currentStreamingMessage);
+		}
+
+		messages = messages.map((msg) => {
+			if (msg.contentBlocks?.some((b) => b.askRequestId === requestId)) {
+				return {
+					...msg,
+					contentBlocks: msg.contentBlocks!.map((block) => {
+						if (block.type === 'ask' && block.askRequestId === requestId) {
+							return { ...block, askResponse: value };
+						}
+						return block;
+					})
+				};
+			}
+			return msg;
+		});
+	}
+
+	function handleApprovalRequest(data: Record<string, unknown>) {
+		const requestId = data?.request_id as string;
+		const tool = data?.tool as string;
+		const input = data?.input as Record<string, unknown>;
+
+		if (requestId && tool) {
+			approvalQueue = [...approvalQueue, { requestId, tool, input: input || {} }];
+		}
+	}
+
+	function handleStreamStatus(data: Record<string, unknown>) {
+		log.debug('handleStreamStatus: active=' + data?.active + ' session=' + data?.session_id);
+		const sessionId = data?.session_id as string;
+		const active = data?.active as boolean;
+		const content = (data?.content as string) || '';
+
+		streamCheckResponded = true;
+
+		if (sessionId !== chatId) {
+			log.debug('Stream status for different session, ignoring');
+			return;
+		}
+
+		if (!active) {
+			log.debug('No active stream to resume');
+			if (messages.length === 0 && chatId) {
+				log.debug('Chat is empty, requesting introduction...');
+				requestIntroduction();
+			}
+			return;
+		}
+
+		log.info('Resuming stream with ' + content.length + ' bytes of content');
+		isLoading = true;
+		currentStreamingMessage = {
+			id: generateUUID(),
+			role: 'assistant',
+			content: content,
+			timestamp: new Date(),
+			streaming: true
+		};
+		messages = [...messages, currentStreamingMessage];
+	}
+
+	function resolveApproval(requestId: string) {
+		approvalQueue = approvalQueue.filter((r) => r.requestId !== requestId);
+	}
+
+	function handleApprove(requestId: string) {
+		const client = getWebSocketClient();
+		client.send('approval_response', {
+			request_id: requestId,
+			approved: true
+		});
+		resolveApproval(requestId);
+	}
+
+	function handleApproveAlways(requestId: string) {
+		const client = getWebSocketClient();
+		client.send('approval_response', {
+			request_id: requestId,
+			approved: true,
+			always: true
+		});
+		resolveApproval(requestId);
+	}
+
+	function handleDeny(requestId: string) {
+		const client = getWebSocketClient();
+		client.send('approval_response', {
+			request_id: requestId,
+			approved: false
+		});
+		resolveApproval(requestId);
+	}
+
+	function handleSendPrompt(prompt: string) {
+		sendToAgent(prompt);
+	}
+
+	function sendMessage() {
+		if (isChannel) {
+			sendChannelMsg();
+			return;
+		}
+
+		if (!inputValue.trim()) return;
+
+		const prompt = inputValue.trim();
+
+		inputValue = '';
+		clearDraft();
+
+		if (isLoading) {
+			log.debug('Queuing message: ' + prompt.substring(0, 50));
+			messageQueue = [...messageQueue, { id: generateUUID(), content: prompt }];
+			return;
+		}
+
+		const userMessage: Message = {
+			id: generateUUID(),
+			role: 'user',
+			content: prompt,
+			timestamp: new Date()
+		};
+		messages = [...messages, userMessage];
+
+		autoScrollEnabled = true;
+		showScrollButton = false;
+
+		handleSendPrompt(prompt);
+	}
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			sendMessage();
+		}
+	}
+
+	function selectSuggestion(text: string) {
+		inputValue = text;
+		sendMessage();
+	}
+
+	// Auto-scroll
+	$effect(() => {
+		const messageCount = messages.length;
+		const streamingContent = currentStreamingMessage?.content;
+		const isStreaming = !!streamingContent;
+
+		if (messagesContainer && (messageCount > 0 || streamingContent) && autoScrollEnabled) {
+			if (pendingScrollRAF) {
+				cancelAnimationFrame(pendingScrollRAF);
+			}
+			scrollingProgrammatically = true;
+			pendingScrollRAF = requestAnimationFrame(() => {
+				pendingScrollRAF = null;
+				if (messagesContainer && autoScrollEnabled) {
+					messagesContainer.scrollTo({
+						top: messagesContainer.scrollHeight,
+						behavior: isStreaming ? 'instant' : 'smooth'
+					});
+				}
+				requestAnimationFrame(() => {
+					scrollingProgrammatically = false;
+				});
+			});
+		}
+	});
+
+	function handleScroll() {
+		if (!messagesContainer) return;
+		if (scrollingProgrammatically) return;
+
+		const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
+		const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+		const wasNearBottom = !showScrollButton;
+		showScrollButton = distanceFromBottom > 100;
+
+		if (wasNearBottom && showScrollButton) {
+			autoScrollEnabled = false;
+		} else if (!wasNearBottom && !showScrollButton) {
+			autoScrollEnabled = true;
+		}
+	}
+
+	function scrollToBottom() {
+		if (messagesContainer) {
+			scrollingProgrammatically = true;
+			messagesContainer.scrollTo({
+				top: messagesContainer.scrollHeight,
+				behavior: 'smooth'
+			});
+			showScrollButton = false;
+			autoScrollEnabled = true;
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => {
+					scrollingProgrammatically = false;
+				});
+			});
+		}
+	}
+
+	async function copyMessage(messageId: string, content: string) {
+		try {
+			await navigator.clipboard.writeText(content);
+			copiedMessageId = messageId;
+			setTimeout(() => {
+				copiedMessageId = null;
+			}, 2000);
+		} catch (err) {
+			log.error('Failed to copy', err);
+		}
+	}
+
+	function openToolSidebar(tool: ToolCall) {
+		sidebarTool = tool;
+	}
+
+	function closeToolSidebar() {
+		sidebarTool = null;
+	}
+
+	function resetChat() {
+		const client = getWebSocketClient();
+		if (chatId && client.isConnected()) {
+			client.send('session_reset', { session_id: chatId });
+		}
+		messages = [];
+		currentStreamingMessage = null;
+		inputValue = '';
+		clearDraft();
+	}
+
+	// ── TTS (companion-only) ───────────────────────────────────────────
+	function cleanTextForTTS(text: string): string {
+		return text
+			.replace(/```[\s\S]*?```/g, '')
+			.replace(/`[^`]+`/g, '')
+			.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+			.replace(/[*_~]+/g, '')
+			.replace(/^#+\s*/gm, '')
+			.replace(/^[-*]\s*/gm, '')
+			.replace(/\n{2,}/g, '. ')
+			.replace(/\n/g, ' ')
+			.replace(/\s{2,}/g, ' ')
+			.trim();
+	}
+
+	function feedTTSStream(chunk: string) {
+		if (!voiceOutputEnabled || !ttsStreamingActive) return;
+
+		ttsSentenceBuffer += chunk;
+
+		const sentencePattern = /^([\s\S]*?[.!?])(\s|$)/;
+		let match;
+		while ((match = sentencePattern.exec(ttsSentenceBuffer)) !== null) {
+			const sentence = match[1].trim();
+			ttsSentenceBuffer = ttsSentenceBuffer.slice(match[0].length);
+
+			const clean = cleanTextForTTS(sentence);
+			if (clean.length > 2) {
+				ttsQueue.push(clean);
+				playNextTTS();
+			}
+		}
+	}
+
+	function flushTTSBuffer() {
+		if (ttsSentenceBuffer.trim()) {
+			const clean = cleanTextForTTS(ttsSentenceBuffer);
+			if (clean.length > 2) {
+				ttsQueue.push(clean);
+				playNextTTS();
+			}
+		}
+		ttsSentenceBuffer = '';
+		ttsStreamingActive = false;
+	}
+
+	async function playNextTTS() {
+		if (ttsPlaying || ttsQueue.length === 0) return;
+		ttsPlaying = true;
+		isSpeaking = true;
+		const myToken = ttsCancelToken;
+
+		while (ttsQueue.length > 0) {
+			if (ttsCancelToken !== myToken) break;
+
+			const sentence = ttsQueue.shift()!;
+
+			try {
+				const audioBlob = await speakTTS({
+					text: sentence,
+					voice: ttsVoice,
+					speed: 1.0
+				});
+
+				if (ttsCancelToken !== myToken) break;
+
+				const audioUrl = URL.createObjectURL(audioBlob);
+
+				await new Promise<void>((resolve) => {
+					currentAudio = new Audio(audioUrl);
+					currentAudio.onended = () => {
+						URL.revokeObjectURL(audioUrl);
+						currentAudio = null;
+						resolve();
+					};
+					currentAudio.onerror = () => {
+						log.error('Audio playback error');
+						URL.revokeObjectURL(audioUrl);
+						currentAudio = null;
+						resolve();
+					};
+					currentAudio.play();
+				});
+			} catch (err) {
+				log.error('TTS failed for sentence', err);
+			}
+
+			if (!voiceOutputEnabled || ttsCancelToken !== myToken) {
+				ttsQueue.length = 0;
+				break;
+			}
+		}
+
+		if (ttsCancelToken === myToken) {
+			ttsPlaying = false;
+			isSpeaking = false;
+		}
+	}
+
+	function stopTTSQueue() {
+		ttsCancelToken++;
+		ttsQueue.length = 0;
+		ttsSentenceBuffer = '';
+		ttsStreamingActive = false;
+		ttsPlaying = false;
+		if (currentAudio) {
+			const audio = currentAudio;
+			currentAudio = null;
+			audio.onended = null;
+			audio.onerror = null;
+			audio.pause();
+		}
+		isSpeaking = false;
+	}
+
+	async function speakText(text: string) {
+		if (!voiceOutputEnabled || !text.trim()) return;
+
+		stopTTSQueue();
+
+		const cleanText = cleanTextForTTS(text);
+		if (!cleanText) return;
+
+		isSpeaking = true;
+
+		try {
+			const audioBlob = await speakTTS({
+				text: cleanText,
+				voice: ttsVoice,
+				speed: 1.0
+			});
+			const audioUrl = URL.createObjectURL(audioBlob);
+
+			currentAudio = new Audio(audioUrl);
+			currentAudio.onended = () => {
+				isSpeaking = false;
+				URL.revokeObjectURL(audioUrl);
+				currentAudio = null;
+			};
+			currentAudio.onerror = () => {
+				log.error('Audio playback error');
+				isSpeaking = false;
+				URL.revokeObjectURL(audioUrl);
+				currentAudio = null;
+			};
+			currentAudio.play();
+		} catch (err) {
+			log.error('TTS failed', err);
+			isSpeaking = false;
+			if ('speechSynthesis' in window) {
+				const utterance = new SpeechSynthesisUtterance(cleanText);
+				utterance.onend = () => {
+					isSpeaking = false;
+				};
+				utterance.onerror = () => {
+					isSpeaking = false;
+				};
+				speechSynthesis.speak(utterance);
+			} else {
+				isSpeaking = false;
+			}
+		}
+	}
+
+	function stopSpeaking() {
+		stopTTSQueue();
+		if ('speechSynthesis' in window) {
+			speechSynthesis.cancel();
+		}
+		isSpeaking = false;
+	}
+
+	function toggleVoiceOutput() {
+		if (voiceOutputEnabled) {
+			voiceOutputEnabled = false;
+			stopSpeaking();
+		} else {
+			voiceOutputEnabled = true;
+		}
+	}
+
+	// ── Duplex voice (companion-only) ──────────────────────────────────
+	async function toggleDuplexVoice() {
+		if (duplexSession?.isActive()) {
+			duplexSession.disconnect();
+			duplexSession = null;
+			duplexState = 'idle';
+			duplexTranscript = '';
+			duplexVadActive = false;
+			duplexLevel = 0;
+			voiceOutputEnabled = false;
+			stopSpeaking();
+		} else {
+			// Check if voice models are downloaded
+			try {
+				const resp = await fetch('/api/v1/voice/models/status');
+				const status = await resp.json();
+				if (!status.ready) {
+					showModelDownload = true;
+					modelDownloadProgress = {};
+					modelDownloadError = '';
+					return;
+				}
+			} catch {
+				// Status check failed — try connecting anyway
+			}
+			voiceOutputEnabled = true;
+			await connectDuplexVoice();
+		}
+	}
+
+	async function connectDuplexVoice() {
+		duplexSession = new VoiceSession({
+			onStateChange: (state) => {
+				duplexState = state;
+			},
+			onTranscript: (text) => {
+				duplexTranscript = text;
+			},
+			onAudioLevel: (level) => {
+				duplexLevel = level;
+			},
+			onVadState: (active) => {
+				duplexVadActive = active;
+			},
+			onError: (message) => {
+				voiceLog.error('Duplex voice error: ' + message);
+			}
+		});
+		try {
+			await duplexSession.connect(ttsVoice);
+		} catch {
+			duplexSession = null;
+			duplexState = 'idle';
+		}
+	}
+
+	async function startModelDownload() {
+		modelDownloadError = '';
+		try {
+			const resp = await fetch('/api/v1/voice/models/download', { method: 'POST' });
+			if (!resp.ok) {
+				modelDownloadError = 'Download failed: ' + resp.statusText;
+				return;
+			}
+
+			const reader = resp.body?.getReader();
+			if (!reader) {
+				modelDownloadError = 'Streaming not supported';
+				return;
+			}
+
+			const decoder = new TextDecoder();
+			let buffer = '';
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split('\n');
+				buffer = lines.pop() || '';
+
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					try {
+						const data = JSON.parse(line.slice(6));
+						if (data.ready) {
+							showModelDownload = false;
+							await connectDuplexVoice();
+							return;
+						}
+						if (data.error) {
+							modelDownloadError = data.error;
+							return;
+						}
+						if (data.model) {
+							modelDownloadProgress[data.model] = {
+								downloaded: data.downloaded || 0,
+								total: data.total || 0,
+								done: data.done || false
+							};
+							modelDownloadProgress = { ...modelDownloadProgress };
+						}
+					} catch {
+						// Skip malformed SSE lines
+					}
+				}
+			}
+		} catch (err) {
+			modelDownloadError = err instanceof Error ? err.message : 'Download failed';
+		}
+	}
+
+	async function toggleWakeWord() {
+		if (wakeWordEnabled) {
+			wakeWordSession?.disconnect();
+			wakeWordSession = null;
+			wakeWordEnabled = false;
+		} else {
+			wakeWordSession = new VoiceSession({
+				onWakeWord: async () => {
+					wakeWordSession?.disconnect();
+					wakeWordSession = null;
+
+					try {
+						const statusResp = await fetch('/api/v1/voice/models/status');
+						const status = await statusResp.json();
+						if (!status.ready) {
+							showModelDownload = true;
+							return;
+						}
+					} catch {
+						// proceed anyway
+					}
+
+					await connectDuplexVoice();
+
+					const checkRestart = setInterval(() => {
+						if (!duplexSession?.isActive() && wakeWordEnabled) {
+							clearInterval(checkRestart);
+							startWakeWordListener();
+						} else if (!wakeWordEnabled) {
+							clearInterval(checkRestart);
+						}
+					}, 500);
+				},
+				onError: (message) => {
+					voiceLog.error('Wake word error: ' + message);
+				}
+			});
+
+			try {
+				await wakeWordSession.startWakeWordListening();
+				wakeWordEnabled = true;
+			} catch {
+				wakeWordSession = null;
+				wakeWordEnabled = false;
+			}
+		}
+	}
+
+	async function startWakeWordListener() {
+		if (!wakeWordEnabled || wakeWordSession?.isActive()) return;
+		wakeWordSession = new VoiceSession({
+			onWakeWord: async () => {
+				wakeWordSession?.disconnect();
+				wakeWordSession = null;
+				await connectDuplexVoice();
+				const checkRestart = setInterval(() => {
+					if (!duplexSession?.isActive() && wakeWordEnabled) {
+						clearInterval(checkRestart);
+						startWakeWordListener();
+					} else if (!wakeWordEnabled) {
+						clearInterval(checkRestart);
+					}
+				}, 500);
+			},
+			onError: (message) => {
+				voiceLog.error('Wake word error: ' + message);
+			}
+		});
+		try {
+			await wakeWordSession.startWakeWordListening();
+		} catch {
+			wakeWordSession = null;
+		}
+	}
+
+	// Global keydown handler (companion-only escape handling)
+	function handleGlobalKeydown(e: KeyboardEvent) {
+		if (!isCompanion) return;
+
+		if (e.key === 'Escape' && duplexSession?.isActive()) {
+			e.preventDefault();
+			duplexSession.disconnect();
+			duplexSession = null;
+			duplexState = 'idle';
+			return;
+		}
+		if (e.key === 'Escape' && isLoading) {
+			e.preventDefault();
+			cancelMessage();
+			return;
+		}
+
+		if (
+			document.activeElement?.tagName === 'INPUT' ||
+			document.activeElement?.tagName === 'TEXTAREA'
+		) {
+			return;
+		}
+		if (e.ctrlKey || e.metaKey || e.altKey || e.key.length > 1) {
+			return;
+		}
+		if (chatInputRef && duplexState === 'idle') {
+			chatInputRef.focus();
+		}
+	}
+</script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
+
+<!-- File drop zone for the entire chat area -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="flex flex-col h-full bg-base-100"
+	ondragover={(e) => e.preventDefault()}
+	ondragenter={(e) => {
+		e.preventDefault();
+		dragCounter++;
+		if (e.dataTransfer?.types.includes('Files')) {
+			isDraggingOver = true;
+		}
+	}}
+	ondragleave={() => {
+		dragCounter--;
+		if (dragCounter <= 0) {
+			dragCounter = 0;
+			isDraggingOver = false;
+		}
+	}}
+	ondrop={(e) => {
+		e.preventDefault();
+		dragCounter = 0;
+		isDraggingOver = false;
+		if (e.dataTransfer?.files.length) {
+			chatInputRef?.handleDrop(e);
+		}
+	}}
+>
+	<!-- Header -->
+	{#if isChannel}
+		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
+			<div class="max-w-4xl mx-auto flex items-center px-6 h-14">
+				<span class="text-lg font-semibold text-base-content/40 mr-1">#</span>
+				<span class="text-lg font-semibold text-base-content">{mode.channelName}</span>
+				{#if mode.loopName}
+					<span class="mx-2 text-base-content/30">&middot;</span>
+					<span class="text-sm text-base-content/50">{mode.loopName}</span>
+				{/if}
+			</div>
+		</header>
+	{:else}
+		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
+			<div class="max-w-4xl mx-auto flex items-center justify-between px-6 h-14">
+				<div class="flex flex-col justify-center">
+					<h1 class="text-lg font-semibold text-base-content leading-tight">Chat</h1>
+					<p class="text-xs text-base-content/50 leading-tight">
+						Direct chat session with your AI companion.
+					</p>
+				</div>
+				<div class="flex items-center gap-2 shrink-0">
+					{#if wsConnected}
+						<div class="flex items-center gap-1.5 text-xs text-success px-2">
+							<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+							<span class="hidden sm:inline">Connected</span>
+						</div>
+					{:else}
+						<div class="flex items-center gap-1.5 text-xs text-warning px-2">
+							<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+							<span class="hidden sm:inline">Offline</span>
+						</div>
+					{/if}
+					<!-- Voice UI hidden — re-enable when phonemizer is fixed (see docs/sme/VOICE_DUPLEX.md) -->
+					<a href="/agent/history" class="btn btn-sm btn-ghost gap-1.5" title="View history">
+						<History class="w-4 h-4" />
+						<span class="hidden sm:inline">History</span>
+					</a>
+				</div>
+			</div>
+		</header>
+	{/if}
+
+	<!-- Messages Area -->
+	<div class="relative flex-1 min-h-0">
+		<div
+			bind:this={messagesContainer}
+			onscroll={handleScroll}
+			class="h-full overflow-y-auto overscroll-contain scroll-pb-4"
+		>
+			<div class="max-w-4xl mx-auto p-6 space-y-6">
+				{#if isCompanion && hasMoreHistory}
+					<div class="flex justify-center">
+						<a
+							href="/agent/history"
+							class="flex items-center gap-2 px-4 py-2 rounded-lg bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
+						>
+							<History class="w-4 h-4" />
+							<span>View {totalMessages - messages.length} earlier messages in history</span>
+						</a>
+					</div>
+				{/if}
+				{#if !chatLoaded}
+					<div class="flex items-center justify-center h-full">
+						<Loader2 class="w-6 h-6 text-base-content/40 animate-spin" />
+					</div>
+				{:else if messages.length === 0}
+					{#if isCompanion}
+						<!-- Empty state with suggestions -->
+						<div class="flex flex-col items-center justify-center pt-12 text-center">
+							<div class="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+								<Bot class="w-8 h-8 text-primary" />
+							</div>
+							<h2 class="font-display text-xl font-bold text-base-content mb-2">Your AI Companion</h2>
+							<p class="text-sm text-base-content/60 max-w-md mb-8">
+								I'm here to help with tasks like reading files, running commands, searching the web,
+								and more.
+							</p>
+
+							<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg w-full">
+								{#each suggestions as suggestion}
+									<button
+										type="button"
+										onclick={() => selectSuggestion(suggestion)}
+										class="text-left px-4 py-3 rounded-xl bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
+										disabled={isLoading}
+									>
+										{suggestion}
+									</button>
+								{/each}
+							</div>
+						</div>
+					{:else}
+						<div class="flex items-center justify-center h-full">
+							<p class="text-base-content/40 text-sm">No messages yet</p>
+						</div>
+					{/if}
+				{:else}
+					<!-- Grouped messages -->
+					{#each groupedMessages as group, groupIndex (groupIndex)}
+						<MessageGroup
+							messages={group.messages}
+							role={group.role}
+							agentName={group.agentName}
+							onCopy={copyMessage}
+							copiedId={copiedMessageId}
+							onViewToolOutput={isCompanion ? openToolSidebar : undefined}
+							isStreaming={isCompanion && group.role === 'assistant' &&
+								isLoading &&
+								groupIndex === groupedMessages.length - 1}
+							onAskSubmit={isCompanion ? handleAskSubmit : undefined}
+						/>
+					{/each}
+
+					<!-- Loading indicator (companion-only) -->
+					{#if isCompanion && isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
+						<div class="flex gap-3 mb-4">
+							<div
+								class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm bg-base-300 text-base-content/60"
+							>
+								A
+							</div>
+							<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] items-start">
+								<div class="rounded-xl px-3.5 py-2.5 bg-base-200 animate-pulse-border">
+									<ReadingIndicator />
+								</div>
+								<div class="flex gap-2 items-baseline mt-1.5">
+									<span class="text-xs font-medium text-base-content/50">Assistant</span>
+								</div>
+							</div>
+						</div>
+					{/if}
+				{/if}
+			</div>
+		</div>
+
+		<!-- Scroll to bottom button -->
+		{#if showScrollButton}
+			<div class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10">
+				<button
+					type="button"
+					onclick={scrollToBottom}
+					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/60 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
+					title="Scroll to bottom"
+				>
+					<ArrowDown class="w-5 h-5" />
+				</button>
+			</div>
+		{/if}
+	</div>
+
+	<!-- Stale warning (companion-only) -->
+	{#if isCompanion && staleWarning}
+		<div class="max-w-4xl mx-auto px-6 pb-2">
+			<div class="alert alert-warning text-sm py-2">
+				<span>No activity for 60s — the agent may be stuck.</span>
+				<button class="btn btn-sm btn-ghost" onclick={cancelMessage}>Force stop</button>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Input Area -->
+	{#if isChannel}
+		<div class="border-t border-base-300 bg-base-100 shrink-0 px-4 py-3">
+			<div class="max-w-4xl mx-auto">
+				<ChatInput
+					bind:value={inputValue}
+					onSend={sendMessage}
+					placeholder="Message #{mode.channelName}..."
+					disabled={channelSending}
+				/>
+			</div>
+		</div>
+	{:else}
+		<ChatInput
+			bind:this={chatInputRef}
+			bind:value={inputValue}
+			{isLoading}
+			duplexActive={duplexState !== 'idle'}
+			audioLevel={duplexLevel}
+			{isDraggingOver}
+			queuedMessages={messageQueue}
+			onSend={sendMessage}
+			onCancel={cancelMessage}
+			onCancelQueued={cancelQueuedMessage}
+			onRecallQueue={recallFromQueue}
+			onNewSession={resetChat}
+		/>
+		<!-- Voice UI hidden — re-enable onToggleDuplex={toggleDuplexVoice} when phonemizer is fixed (see docs/sme/VOICE_DUPLEX.md) -->
+	{/if}
+</div>
+
+{#if isCompanion}
+<ApprovalModal
+	request={pendingApproval}
+	onApprove={handleApprove}
+	onApproveAlways={handleApproveAlways}
+	onDeny={handleDeny}
+/>
+
+{#if showModelDownload}
+<div class="modal modal-open">
+	<div class="modal-box">
+		<h3 class="font-bold text-lg mb-4">Download Voice Models</h3>
+		<p class="text-sm text-base-content/70 mb-4">
+			Voice models need to be downloaded before first use. This is a one-time download.
+		</p>
+
+		{#if modelDownloadError}
+			<div class="alert alert-error mb-4">
+				<span>{modelDownloadError}</span>
+			</div>
+		{/if}
+
+		{#each Object.entries(modelDownloadProgress) as [name, prog]}
+			<div class="mb-3">
+				<div class="flex justify-between text-sm mb-1">
+					<span class="font-mono text-xs">{name}</span>
+					<span class="text-xs text-base-content/60">
+						{#if prog.done}
+							Done
+						{:else if prog.total > 0}
+							{Math.round((prog.downloaded / prog.total) * 100)}%
+						{:else}
+							Starting...
+						{/if}
+					</span>
+				</div>
+				<progress
+					class="progress progress-primary w-full"
+					value={prog.downloaded}
+					max={prog.total || 100}
+				></progress>
+			</div>
+		{/each}
+
+		<div class="modal-action">
+			<button class="btn btn-ghost" onclick={() => { showModelDownload = false; }}>
+				Cancel
+			</button>
+			<button
+				class="btn btn-primary"
+				onclick={startModelDownload}
+				disabled={Object.values(modelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
+			>
+				{#if Object.values(modelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
+					<Loader2 class="w-4 h-4 animate-spin" />
+					Downloading...
+				{:else}
+					Download
+				{/if}
+			</button>
+		</div>
+	</div>
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+	<div class="modal-backdrop" onclick={() => { showModelDownload = false; }}></div>
+</div>
+{/if}
+
+<Toast message={warningMessage} type="warning" duration={8000} bind:show={warningToast} />
+
+<ToolOutputSidebar tool={sidebarTool} onClose={closeToolSidebar} />
+{/if}
