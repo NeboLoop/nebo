@@ -83,8 +83,6 @@
 					<span class="text-info-content/60 ml-1">&mdash; run <code>brew upgrade nebo</code></span>
 				{:else if $updateInfo.installMethod === 'package_manager'}
 					<span class="text-info-content/60 ml-1">&mdash; run <code>sudo apt upgrade nebo</code></span>
-				{:else if $updateInfo.installMethod === 'app_bundle'}
-					<span class="text-info-content/60 ml-1">&mdash; <a href={$updateInfo.releaseUrl || 'https://github.com/NeboLoop/nebo/releases'} target="_blank" class="link">download the latest version</a></span>
 				{/if}
 			</div>
 			{#if $updateInfo.canAutoUpdate}

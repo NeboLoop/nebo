@@ -54,9 +54,158 @@ fn copy_file(src: &Path, dst: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
-/// Apply the update: replace binary and restart.
+/// Apply the update: detect install method and use the appropriate strategy.
+///
+/// - `app_bundle`: downloaded file is a DMG/MSI/AppImage — mount, replace .app, relaunch
+/// - `direct`: downloaded file is the raw binary — replace in-place, execve
+pub fn apply(new_path: &Path) -> Result<(), UpdateError> {
+    let method = crate::detect_install_method();
+    match method {
+        "app_bundle" => apply_app_bundle(new_path),
+        _ => apply_direct(new_path),
+    }
+}
+
+// ── App Bundle Update (DMG / MSI / AppImage) ────────────────────────
+
+/// macOS: mount DMG, copy Nebo.app to /Applications, relaunch.
+#[cfg(target_os = "macos")]
+fn apply_app_bundle(dmg_path: &Path) -> Result<(), UpdateError> {
+    use std::process::Command;
+
+    // 1. Mount the DMG
+    let mount_output = Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-noverify", "-noautoopen"])
+        .arg(dmg_path)
+        .output()
+        .map_err(|e| UpdateError::Other(format!("hdiutil attach: {}", e)))?;
+
+    if !mount_output.status.success() {
+        return Err(UpdateError::Other(format!(
+            "hdiutil attach failed: {}",
+            String::from_utf8_lossy(&mount_output.stderr)
+        )));
+    }
+
+    // Parse mount point from hdiutil output (last column of last line)
+    let stdout = String::from_utf8_lossy(&mount_output.stdout);
+    let mount_point = stdout
+        .lines()
+        .last()
+        .and_then(|line| line.split('\t').last())
+        .map(|s| s.trim().to_string())
+        .ok_or_else(|| UpdateError::Other("failed to parse mount point".into()))?;
+
+    // 2. Find Nebo.app in mounted DMG
+    let source_app = std::path::PathBuf::from(&mount_point).join("Nebo.app");
+    if !source_app.is_dir() {
+        let _ = Command::new("hdiutil").args(["detach", &mount_point]).output();
+        return Err(UpdateError::Other(format!(
+            "Nebo.app not found in DMG at {}",
+            source_app.display()
+        )));
+    }
+
+    // 3. Determine destination — where the current .app lives
+    let current_exe = std::env::current_exe()
+        .map_err(|e| UpdateError::Other(format!("resolve executable: {}", e)))?;
+    let dest_app = current_exe
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("/Applications/Nebo.app"));
+
+    // 4. Remove old .app and copy new one
+    run_pre_apply();
+
+    let _ = std::fs::remove_dir_all(&dest_app);
+    let cp_output = Command::new("cp")
+        .args(["-R"])
+        .arg(&source_app)
+        .arg(&dest_app)
+        .output()
+        .map_err(|e| UpdateError::Other(format!("cp -R: {}", e)))?;
+
+    if !cp_output.status.success() {
+        let _ = Command::new("hdiutil").args(["detach", &mount_point]).output();
+        return Err(UpdateError::Other(format!(
+            "failed to copy Nebo.app: {}",
+            String::from_utf8_lossy(&cp_output.stderr)
+        )));
+    }
+
+    // 5. Unmount DMG
+    let _ = Command::new("hdiutil").args(["detach", &mount_point]).output();
+
+    // 6. Clean temp
+    let _ = std::fs::remove_file(dmg_path);
+
+    // 7. Relaunch the app
+    let _ = Command::new("open")
+        .args(["-n"])
+        .arg(&dest_app)
+        .spawn();
+
+    std::process::exit(0);
+}
+
+/// Windows: run the MSI installer silently and exit.
+#[cfg(target_os = "windows")]
+fn apply_app_bundle(msi_path: &Path) -> Result<(), UpdateError> {
+    use std::process::Command;
+
+    run_pre_apply();
+
+    // msiexec /i Nebo.msi /quiet /norestart
+    Command::new("msiexec")
+        .args(["/i"])
+        .arg(msi_path)
+        .args(["/quiet", "/norestart"])
+        .spawn()
+        .map_err(|e| UpdateError::Other(format!("msiexec: {}", e)))?;
+
+    std::process::exit(0);
+}
+
+/// Linux: replace AppImage, make executable, relaunch.
+#[cfg(target_os = "linux")]
+fn apply_app_bundle(appimage_path: &Path) -> Result<(), UpdateError> {
+    let current_exe = std::env::current_exe()
+        .map_err(|e| UpdateError::Other(format!("resolve executable: {}", e)))?;
+    let real_path = std::fs::canonicalize(&current_exe)
+        .map_err(|e| UpdateError::Other(format!("resolve symlinks: {}", e)))?;
+
+    // Backup
+    let backup = real_path.with_extension("old");
+    copy_file(&real_path, &backup)?;
+
+    // Replace
+    if let Err(e) = copy_file(appimage_path, &real_path) {
+        let _ = copy_file(&backup, &real_path);
+        return Err(UpdateError::Other(format!("replace AppImage: {}", e)));
+    }
+
+    // Make executable
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&real_path, std::fs::Permissions::from_mode(0o755))?;
+
+    let _ = std::fs::remove_file(appimage_path);
+
+    run_pre_apply();
+
+    // Relaunch
+    std::process::Command::new(&real_path)
+        .spawn()
+        .map_err(|e| UpdateError::Other(format!("relaunch: {}", e)))?;
+
+    std::process::exit(0);
+}
+
+// ── Direct Binary Update ────────────────────────────────────────────
+
+/// Unix: replace binary in-place and execve into the new process.
 #[cfg(unix)]
-pub fn apply(new_binary_path: &Path) -> Result<(), UpdateError> {
+fn apply_direct(new_binary_path: &Path) -> Result<(), UpdateError> {
     use std::ffi::CString;
 
     let current_exe = std::env::current_exe()
@@ -98,38 +247,9 @@ pub fn apply(new_binary_path: &Path) -> Result<(), UpdateError> {
     nix_execve(&c_path, &args, &env)
 }
 
-#[cfg(unix)]
-fn nix_execve(
-    path: &std::ffi::CString,
-    args: &[std::ffi::CString],
-    env: &[std::ffi::CString],
-) -> Result<(), UpdateError> {
-    // Use libc::execve directly
-    let c_args: Vec<*const libc::c_char> = args
-        .iter()
-        .map(|a| a.as_ptr())
-        .chain(std::iter::once(std::ptr::null()))
-        .collect();
-    let c_env: Vec<*const libc::c_char> = env
-        .iter()
-        .map(|e| e.as_ptr())
-        .chain(std::iter::once(std::ptr::null()))
-        .collect();
-
-    unsafe {
-        libc::execve(path.as_ptr(), c_args.as_ptr(), c_env.as_ptr());
-    }
-
-    // If execve returns, it failed
-    Err(UpdateError::Other(format!(
-        "execve failed: {}",
-        std::io::Error::last_os_error()
-    )))
-}
-
-/// Apply the update on Windows: rename current → .old, copy new → current, spawn new process.
+/// Windows: rename current → .old, copy new → current, spawn new process.
 #[cfg(windows)]
-pub fn apply(new_binary_path: &Path) -> Result<(), UpdateError> {
+fn apply_direct(new_binary_path: &Path) -> Result<(), UpdateError> {
     let current_exe = std::env::current_exe()
         .map_err(|e| UpdateError::Other(format!("resolve executable: {}", e)))?;
 
@@ -158,4 +278,32 @@ pub fn apply(new_binary_path: &Path) -> Result<(), UpdateError> {
         .map_err(|e| UpdateError::Other(format!("start new process: {}", e)))?;
 
     std::process::exit(0);
+}
+
+#[cfg(unix)]
+fn nix_execve(
+    path: &std::ffi::CString,
+    args: &[std::ffi::CString],
+    env: &[std::ffi::CString],
+) -> Result<(), UpdateError> {
+    let c_args: Vec<*const libc::c_char> = args
+        .iter()
+        .map(|a| a.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+    let c_env: Vec<*const libc::c_char> = env
+        .iter()
+        .map(|e| e.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+
+    unsafe {
+        libc::execve(path.as_ptr(), c_args.as_ptr(), c_env.as_ptr());
+    }
+
+    // If execve returns, it failed
+    Err(UpdateError::Other(format!(
+        "execve failed: {}",
+        std::io::Error::last_os_error()
+    )))
 }

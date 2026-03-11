@@ -74,7 +74,7 @@ pub async fn check(current_version: &str) -> Result<CheckResult, UpdateError> {
         release_url: manifest.release_url,
         published_at: manifest.published_at,
         install_method: method.to_string(),
-        can_auto_update: method == "direct",
+        can_auto_update: method == "direct" || method == "app_bundle",
     })
 }
 
@@ -141,15 +141,46 @@ pub fn asset_name() -> String {
     }
 }
 
+/// CDN architecture label for the current platform.
+fn cdn_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    }
+}
+
+/// Get the platform-specific app bundle asset name (DMG, MSI, AppImage).
+pub fn bundle_asset_name(version: &str) -> Option<String> {
+    let pkg_version = version.trim_start_matches('v');
+    let arch = cdn_arch();
+    match std::env::consts::OS {
+        "macos" => Some(format!("Nebo-{}-{}.dmg", pkg_version, arch)),
+        "windows" => Some(format!("Nebo-{}-{}.msi", pkg_version, arch)),
+        "linux" => Some(format!("Nebo-{}-{}.AppImage", pkg_version, arch)),
+        _ => None,
+    }
+}
+
 /// Progress callback: (downloaded_bytes, total_bytes).
 pub type ProgressFn = Box<dyn Fn(u64, u64) + Send>;
 
-/// Download the release binary for the given tag to a temp file.
+/// Download the release asset for the given tag to a temp file.
+///
+/// For headless/CLI installs, downloads the raw binary.
+/// For app bundles, downloads the platform installer (DMG, MSI, AppImage).
 pub async fn download(
     tag: &str,
     progress: Option<ProgressFn>,
 ) -> Result<std::path::PathBuf, UpdateError> {
-    let asset = asset_name();
+    let method = detect_install_method();
+    let asset = if method == "app_bundle" {
+        bundle_asset_name(tag).ok_or_else(|| {
+            UpdateError::Other("no app bundle available for this platform".into())
+        })?
+    } else {
+        asset_name()
+    };
     let url = format!("{}/{}/{}", RELEASE_DOWNLOAD_URL, tag, asset);
 
     let client = reqwest::Client::builder()
