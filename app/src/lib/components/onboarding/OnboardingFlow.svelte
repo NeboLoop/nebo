@@ -327,13 +327,9 @@
 		neboLoopError = '';
 		neboLoopLoading = true;
 		try {
-			const { state, authorizeUrl } = await neboLoopOAuthStartWithJanus(cameFromJanus);
+			const { state } = await neboLoopOAuthStartWithJanus(cameFromJanus);
 			neboLoopPendingState = state;
-
-			// Open browser from frontend as fallback (server also opens via open::that)
-			if (authorizeUrl) {
-				window.open(authorizeUrl, '_blank');
-			}
+			// Server opens the OAuth URL in the system browser via open::that()
 
 			// Auto-timeout after 3 minutes
 			const timeout = setTimeout(
