@@ -247,13 +247,8 @@ fn main() {
                 _ => {}
             }
         })
-        .build(tauri::generate_context!())
-        .expect("error while building Nebo desktop")
-        .run(|app, event| {
-            // Cmd+Q / tray Quit fires ExitRequested — let it through.
-            // Window state is already persisted on every move/resize.
-            let _ = (&app, &event);
-        });
+        .run(tauri::generate_context!())
+        .expect("error while running Nebo desktop");
 }
 
 fn wait_for_server() {
