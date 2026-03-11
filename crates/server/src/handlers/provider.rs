@@ -8,7 +8,7 @@ use crate::state::AppState;
 use super::{to_error_response, HandlerResult};
 
 /// Rebuild AI providers from auth_profiles and reload them on the runner.
-async fn reload_providers(state: &AppState) {
+pub(crate) async fn reload_providers(state: &AppState) {
     let profiles = match state.store.list_auth_profiles() {
         Ok(p) => p,
         Err(e) => {

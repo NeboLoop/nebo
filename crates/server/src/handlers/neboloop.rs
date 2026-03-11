@@ -237,6 +237,9 @@ pub async fn oauth_callback(
         warn!("Failed to store NeboLoop profile: {e}");
     }
 
+    // Reload AI providers so Janus is available immediately
+    super::provider::reload_providers(&app_state).await;
+
     // Mark flow as completed
     flow.email = user_info.email.clone();
     flow.display_name = user_info.display_name.clone();
