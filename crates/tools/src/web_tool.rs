@@ -965,20 +965,6 @@ fn extract_between(html: &str, start_marker: &str, end_marker: &str) -> Option<S
     Some(content_start[..end_idx].to_string())
 }
 
-fn extract_attr(html: &str, marker: &str, attr: &str) -> Option<String> {
-    let start_idx = html.find(marker)?;
-    let before_marker = &html[..start_idx];
-    // Walk backward to find the opening < tag
-    let tag_start = before_marker.rfind('<')?;
-    let tag_content = &html[tag_start..start_idx + marker.len()];
-    // Find the attribute
-    let attr_pattern = format!("{}=\"", attr);
-    let attr_idx = tag_content.find(&attr_pattern)?;
-    let after_attr = &tag_content[attr_idx + attr_pattern.len()..];
-    let end_quote = after_attr.find('"')?;
-    Some(after_attr[..end_quote].to_string())
-}
-
 /// Extract visible text from HTML, stripping tags, scripts, styles,
 /// and collapsing blank lines.
 fn sanitize_html(html: &str) -> String {

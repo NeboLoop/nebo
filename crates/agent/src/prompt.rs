@@ -328,18 +328,20 @@ pub fn build_static(pctx: &PromptContext) -> String {
         parts.push(format!("# Remembered Facts\n{}", pctx.memory_context));
     }
 
-    // 2. Active role persona (overrides default identity when set)
-    if let Some(ref role_md) = pctx.active_role {
-        if !role_md.is_empty() {
-            parts.push(format!("## Active Role\n\n{}", role_md));
-        }
-    }
-
-    // 3. Separator
+    // 2. Separator
     parts.push("---".to_string());
 
-    // 4. Static prompt sections
-    parts.push(SECTION_IDENTITY.to_string());
+    // 3. Identity: role body REPLACES the default identity when set.
+    //    The role IS the bot's identity. Standard capability sections still append.
+    if let Some(ref role_md) = pctx.active_role {
+        if !role_md.is_empty() {
+            parts.push(role_md.clone());
+        } else {
+            parts.push(SECTION_IDENTITY.to_string());
+        }
+    } else {
+        parts.push(SECTION_IDENTITY.to_string());
+    }
     parts.push(SECTION_CAPABILITIES.to_string());
     parts.push(SECTION_TOOLS_DECLARATION.to_string());
     parts.push(SECTION_COMM_STYLE.to_string());

@@ -6,6 +6,7 @@ use tracing::{info, warn};
 use crate::state::AppState;
 use super::{to_error_response, HandlerResult};
 
+
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
     #[serde(default = "default_limit")]
@@ -549,6 +550,230 @@ async fn process_role_bindings(
 
     info!(role = role_id, bindings = config.workflows.len(), "processed role bindings");
     report
+}
+
+/// GET /roles/active — returns currently active roles from the RoleRegistry.
+pub async fn list_active_roles(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let registry = state.role_registry.read().await;
+    let roles: Vec<serde_json::Value> = registry.values().map(|role| {
+        serde_json::json!({
+            "roleId": role.role_id,
+            "name": role.name,
+            "channelId": role.channel_id,
+            "hasConfig": role.config.is_some(),
+            "workflowCount": role.config.as_ref().map(|c| c.workflows.len()).unwrap_or(0),
+            "skillCount": role.config.as_ref().map(|c| c.skills.len()).unwrap_or(0),
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({
+        "roles": roles,
+        "count": roles.len(),
+    })))
+}
+
+/// POST /roles/{id}/activate — activate a role from the REST API (makes it appear in sidebar).
+pub async fn activate_role(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let role = state
+        .store
+        .get_role(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let role_id = role.id.clone();
+    let config = if !role.frontmatter.is_empty() {
+        napp::role::parse_role_config(&role.frontmatter).ok()
+    } else {
+        None
+    };
+
+    let active = tools::ActiveRole {
+        role_id: role_id.clone(),
+        name: role.name.clone(),
+        role_md: role.role_md.clone(),
+        config,
+        channel_id: None,
+    };
+
+    state.role_registry.write().await.insert(role_id.clone(), active);
+
+    state.hub.broadcast(
+        "role_activated",
+        serde_json::json!({ "roleId": role_id, "name": role.name }),
+    );
+
+    Ok(Json(serde_json::json!({
+        "roleId": role_id,
+        "name": role.name,
+        "status": "active",
+    })))
+}
+
+/// POST /roles/{id}/deactivate — deactivate a role from the REST API.
+pub async fn deactivate_role(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let removed = state.role_registry.write().await.remove(&id);
+    match removed {
+        Some(role) => {
+            state.hub.broadcast(
+                "role_deactivated",
+                serde_json::json!({ "roleId": id, "name": role.name }),
+            );
+            Ok(Json(serde_json::json!({
+                "roleId": id,
+                "name": role.name,
+                "status": "deactivated",
+            })))
+        }
+        None => Err(to_error_response(types::NeboError::NotFound)),
+    }
+}
+
+/// POST /roles/{id}/chat — send a message to a role's agent.
+pub async fn chat_with_role(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    let prompt = body["prompt"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    if prompt.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "prompt is required".into(),
+        )));
+    }
+
+    // Verify role is active
+    {
+        let reg = state.role_registry.read().await;
+        if !reg.contains_key(&id) {
+            return Err(to_error_response(types::NeboError::Validation(
+                format!("Role '{}' is not active. Activate it first.", id),
+            )));
+        }
+    }
+
+    let session_key = agent::keyparser::build_role_session_key(&id, "web");
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+
+    let req = agent::RunRequest {
+        session_key: session_key.clone(),
+        prompt,
+        role_id: id.clone(),
+        origin: tools::Origin::User,
+        channel: "web".to_string(),
+        cancel_token,
+        ..Default::default()
+    };
+
+    let hub = state.hub.clone();
+    let runner = state.runner.clone();
+    let sid = session_key.clone();
+    let role_id = id.clone();
+
+    // Broadcast chat_created
+    hub.broadcast("chat_created", serde_json::json!({
+        "session_id": sid,
+        "channel": "web",
+        "role_id": role_id,
+    }));
+
+    // Route through lane system
+    let lane_task = agent::lanes::make_task(
+        types::constants::lanes::MAIN,
+        format!("role-chat:{}", sid),
+        async move {
+            match runner.run(req).await {
+                Ok(mut rx) => {
+                    loop {
+                        match rx.recv().await {
+                            Some(event) => {
+                                match event.event_type {
+                                    ai::StreamEventType::Text => {
+                                        hub.broadcast("chat_stream", serde_json::json!({
+                                            "session_id": sid,
+                                            "content": event.text,
+                                            "role_id": role_id,
+                                        }));
+                                    }
+                                    ai::StreamEventType::Done => break,
+                                    ai::StreamEventType::Error => {
+                                        hub.broadcast("chat_error", serde_json::json!({
+                                            "session_id": sid,
+                                            "error": event.error.unwrap_or_default(),
+                                            "role_id": role_id,
+                                        }));
+                                    }
+                                    ai::StreamEventType::ToolCall => {
+                                        if let Some(ref tc) = event.tool_call {
+                                            hub.broadcast("tool_start", serde_json::json!({
+                                                "session_id": sid,
+                                                "tool_id": tc.id,
+                                                "tool": tc.name,
+                                                "input": tc.input,
+                                                "role_id": role_id,
+                                            }));
+                                        }
+                                    }
+                                    ai::StreamEventType::ToolResult => {
+                                        hub.broadcast("tool_result", serde_json::json!({
+                                            "session_id": sid,
+                                            "tool_id": event.tool_call.as_ref().map(|tc| tc.id.as_str()).unwrap_or(""),
+                                            "tool_name": event.tool_call.as_ref().map(|tc| tc.name.as_str()).unwrap_or(""),
+                                            "result": event.text,
+                                            "is_error": event.error.is_some(),
+                                            "role_id": role_id,
+                                        }));
+                                    }
+                                    ai::StreamEventType::Thinking => {
+                                        hub.broadcast("thinking", serde_json::json!({
+                                            "session_id": sid,
+                                            "content": event.text,
+                                            "role_id": role_id,
+                                        }));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    hub.broadcast("chat_complete", serde_json::json!({
+                        "session_id": sid,
+                        "role_id": role_id,
+                    }));
+                }
+                Err(e) => {
+                    hub.broadcast("chat_error", serde_json::json!({
+                        "session_id": sid,
+                        "error": e.to_string(),
+                        "role_id": role_id,
+                    }));
+                    hub.broadcast("chat_complete", serde_json::json!({
+                        "session_id": sid,
+                        "role_id": role_id,
+                    }));
+                }
+            }
+            Ok(())
+        },
+    );
+    state.lanes.enqueue_async(types::constants::lanes::MAIN, lane_task);
+
+    Ok(Json(serde_json::json!({
+        "sessionId": session_key,
+        "roleId": id,
+        "status": "dispatched",
+    })))
 }
 
 /// Try to resolve a workflow ref to a local workflow ID.

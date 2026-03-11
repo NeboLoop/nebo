@@ -134,6 +134,10 @@ export function listStoreSkills(params?: Record<string, string | number>): Promi
 	return webapi.get<components.ListStoreSkillsResponse>('/api/v1/store/skills', params);
 }
 
+export function listStoreWorkflows(params?: Record<string, string | number>): Promise<components.ListStoreWorkflowsResponse> {
+	return webapi.get<components.ListStoreWorkflowsResponse>('/api/v1/store/workflows', params);
+}
+
 // NeboLoop OAuth with Janus opt-in
 import type * as components from './neboComponents';
 

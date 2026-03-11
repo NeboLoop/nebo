@@ -12,6 +12,8 @@ pub struct SessionKeyInfo {
     pub is_topic: bool,
     pub parent_key: String,
     pub rest: String,
+    /// When set, this session belongs to a specific role (e.g. "role:researcher:web").
+    pub role_id: String,
 }
 
 /// Parse a hierarchical session key into components.
@@ -42,6 +44,17 @@ pub fn parse_session_key(key: &str) -> SessionKeyInfo {
 
     // Check for special prefixes
     match parts[0] {
+        "role" => {
+            // Format: role:<roleId>:<rest>
+            if parts.len() >= 2 {
+                info.role_id = parts[1].to_string();
+                if parts.len() > 2 {
+                    info.channel = parts[2].to_string();
+                    info.rest = parts[2..].join(":");
+                }
+            }
+            return info;
+        }
         "agent" => {
             if parts.len() >= 2 {
                 info.agent_id = parts[1].to_string();
@@ -208,6 +221,25 @@ pub fn build_topic_session_key(parent_key: &str, topic_id: &str) -> String {
     format!("{}:topic:{}", parent_key, topic_id)
 }
 
+/// Build a role-scoped session key: `role:<roleId>:<channel>`.
+pub fn build_role_session_key(role_id: &str, channel: &str) -> String {
+    if channel.is_empty() {
+        format!("role:{}:web", role_id)
+    } else {
+        format!("role:{}:{}", role_id, channel)
+    }
+}
+
+/// Returns true if the key represents a role session.
+pub fn is_role_key(key: &str) -> bool {
+    key.starts_with("role:")
+}
+
+/// Extract the role ID from a role-scoped session key.
+pub fn extract_role_id(key: &str) -> String {
+    parse_session_key(key).role_id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +376,25 @@ mod tests {
             "discord:group:123"
         );
         assert_eq!(resolve_thread_parent_key("discord:group:123"), "");
+    }
+
+    #[test]
+    fn test_parse_role_key() {
+        let info = parse_session_key("role:researcher:web");
+        assert_eq!(info.role_id, "researcher");
+        assert_eq!(info.channel, "web");
+    }
+
+    #[test]
+    fn test_role_key_predicates() {
+        assert!(is_role_key("role:researcher:web"));
+        assert!(!is_role_key("agent:x"));
+        assert_eq!(extract_role_id("role:researcher:web"), "researcher");
+    }
+
+    #[test]
+    fn test_build_role_session_key() {
+        assert_eq!(build_role_session_key("researcher", "web"), "role:researcher:web");
+        assert_eq!(build_role_session_key("chief-of-staff", ""), "role:chief-of-staff:web");
     }
 }

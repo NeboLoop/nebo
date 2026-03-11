@@ -31,16 +31,19 @@
 
 	// ── Mode prop ──────────────────────────────────────────────────────
 	interface ChatMode {
-		type: 'companion' | 'channel';
+		type: 'companion' | 'channel' | 'role';
 		channelId?: string;
 		channelName?: string;
 		loopName?: string;
+		roleId?: string;
+		roleName?: string;
 	}
 
 	let { mode }: { mode: ChatMode } = $props();
 
 	const isCompanion = $derived(mode.type === 'companion');
 	const isChannel = $derived(mode.type === 'channel');
+	const isRole = $derived(mode.type === 'role');
 
 	// ── Shared interfaces ──────────────────────────────────────────────
 	interface ApprovalRequest {
@@ -294,7 +297,7 @@
 			if (profile.name) agentName = profile.name;
 		} catch {}
 
-		if (isCompanion) {
+		if (isCompanion || isRole) {
 			unsubscribers.push(
 				client.on('chat_stream', handleChatStream),
 				client.on('chat_complete', handleChatComplete),
@@ -320,7 +323,7 @@
 				client.on('dep_cascade_complete', handleDepCascadeComplete)
 			);
 
-			if (browser) {
+			if (isCompanion && browser) {
 				const savedDraft = localStorage.getItem(DRAFT_STORAGE_KEY);
 				if (savedDraft) {
 					inputValue = savedDraft;
@@ -328,7 +331,14 @@
 				draftInitialized = true;
 			}
 
-			await loadCompanionChat();
+			if (isRole) {
+				// Role chat: set chatId to role-scoped session key, load existing messages
+				chatId = `role:${mode.roleId}:web`;
+				agentName = mode.roleName || 'Role';
+				chatLoaded = true;
+			} else {
+				await loadCompanionChat();
+			}
 		} else {
 			// Channel mode
 			unsubscribers.push(
@@ -653,11 +663,15 @@
 		const client = getWebSocketClient();
 
 		if (client.isConnected()) {
-			client.send('chat', {
+			const payload: Record<string, unknown> = {
 				session_id: chatId || '',
 				prompt: prompt,
-				companion: true
-			});
+				companion: !isRole
+			};
+			if (isRole && mode.roleId) {
+				payload.role_id = mode.roleId;
+			}
+			client.send('chat', payload);
 		} else {
 			log.warn('WebSocket not connected, cannot send message');
 			isLoading = false;
@@ -1977,6 +1991,34 @@
 					<span class="mx-2 text-base-content/30">&middot;</span>
 					<span class="text-sm text-base-content/50">{mode.loopName}</span>
 				{/if}
+			</div>
+		</header>
+	{:else if isRole}
+		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
+			<div class="max-w-4xl mx-auto flex items-center justify-between px-6 h-14">
+				<div class="flex items-center gap-3">
+					<svg class="w-5 h-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+						<circle cx="12" cy="7" r="4" />
+					</svg>
+					<div class="flex flex-col justify-center">
+						<h1 class="text-lg font-semibold text-base-content leading-tight">{mode.roleName}</h1>
+						<p class="text-xs text-base-content/50 leading-tight">Role</p>
+					</div>
+				</div>
+				<div class="flex items-center gap-2 shrink-0">
+					{#if wsConnected}
+						<div class="flex items-center gap-1.5 text-xs text-success px-2">
+							<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+							<span class="hidden sm:inline">Connected</span>
+						</div>
+					{:else}
+						<div class="flex items-center gap-1.5 text-xs text-warning px-2">
+							<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+							<span class="hidden sm:inline">Offline</span>
+						</div>
+					{/if}
+				</div>
 			</div>
 		</header>
 	{:else}

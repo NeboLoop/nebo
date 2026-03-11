@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -8,25 +9,43 @@ use db::Store;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
-/// Shared state for the active role's ROLE.md body.
-/// Written by RoleTool on activate/deactivate, read by the runner for prompt injection.
-pub type ActiveRoleState = Arc<RwLock<Option<String>>>;
+/// A single active role — its own bot with isolated persona and scoped capabilities.
+#[derive(Debug, Clone)]
+pub struct ActiveRole {
+    /// Unique role identifier (DB id or filesystem name).
+    pub role_id: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Full ROLE.md body — becomes the system prompt identity.
+    pub role_md: String,
+    /// Parsed role.json config (workflows, skills, triggers).
+    pub config: Option<napp::role::RoleConfig>,
+    /// Optional bound NeboLoop channel.
+    pub channel_id: Option<String>,
+}
+
+/// Registry of all currently active roles. Multiple roles run concurrently.
+/// Key = role_id (lowercase name or DB id).
+pub type RoleRegistry = Arc<RwLock<HashMap<String, ActiveRole>>>;
+
+/// Legacy alias — callers that only need the old behavior can still compile.
+pub type ActiveRoleState = RoleRegistry;
 
 /// RoleTool manages the agent's roles — the top of the hierarchy.
 /// A role defines who the agent is: persona, workflows, skills, triggers.
 pub struct RoleTool {
     store: Arc<Store>,
-    active_role: ActiveRoleState,
+    role_registry: RoleRegistry,
     installed_dir: PathBuf,
     user_dir: PathBuf,
 }
 
 impl RoleTool {
-    pub fn new(store: Arc<Store>, active_role: ActiveRoleState) -> Self {
+    pub fn new(store: Arc<Store>, role_registry: RoleRegistry) -> Self {
         let data = config::data_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             store,
-            active_role,
+            role_registry,
             installed_dir: data.join("nebo").join("roles"),
             user_dir: data.join("user").join("roles"),
         }
@@ -76,8 +95,14 @@ impl RoleTool {
             }
         }
 
-        let active = self.active_role.read().await;
-        let status = if active.is_some() { " (a role is currently active)" } else { "" };
+        let registry = self.role_registry.read().await;
+        let active_count = registry.len();
+        let status = if active_count > 0 {
+            let names: Vec<&str> = registry.values().map(|r| r.name.as_str()).collect();
+            format!(" ({} active: {})", active_count, names.join(", "))
+        } else {
+            String::new()
+        };
 
         ToolResult::ok(format!("{} roles available{}:\n{}", lines.len(), status, lines.join("\n")))
     }
@@ -96,8 +121,22 @@ impl RoleTool {
                 let body = loaded.role_def.body.clone();
                 let role_name = loaded.role_def.name.clone();
 
-                // Set active role body for prompt injection
-                *self.active_role.write().await = Some(body);
+                // Derive a stable role_id
+                let role_id = if !loaded.role_def.id.is_empty() {
+                    loaded.role_def.id.clone()
+                } else {
+                    role_name.to_lowercase().replace(' ', "-")
+                };
+
+                // Insert into role registry (multiple roles can be active)
+                let active = ActiveRole {
+                    role_id: role_id.clone(),
+                    name: role_name.clone(),
+                    role_md: body,
+                    config: loaded.config.clone(),
+                    channel_id: None,
+                };
+                self.role_registry.write().await.insert(role_id.clone(), active);
 
                 // Enable in DB if exists
                 if let Ok(roles) = self.store.list_roles(100, 0) {
@@ -108,7 +147,7 @@ impl RoleTool {
                     }
                 }
 
-                let mut result = format!("Activated role: {}", role_name);
+                let mut result = format!("Activated role: {} (id: {})", role_name, role_id);
                 if let Some(ref config) = loaded.config {
                     let wf_count = config.workflows.len();
                     let skill_count = config.skills.len();
@@ -120,11 +159,6 @@ impl RoleTool {
                     }
 
                     // Register triggers (cron jobs, role_workflows DB records)
-                    let role_id = if !loaded.role_def.id.is_empty() {
-                        loaded.role_def.id.clone()
-                    } else {
-                        role_name.clone()
-                    };
                     self.register_config_triggers(&role_id, config);
                 }
 
@@ -137,33 +171,61 @@ impl RoleTool {
         }
     }
 
-    async fn handle_deactivate(&self) -> ToolResult {
-        let was_active = self.active_role.read().await.is_some();
-        *self.active_role.write().await = None;
+    async fn handle_deactivate(&self, input: &serde_json::Value) -> ToolResult {
+        let name = input["name"].as_str().unwrap_or("");
 
-        if was_active {
-            ToolResult::ok("Role deactivated. Reverting to default persona.")
+        let mut registry = self.role_registry.write().await;
+
+        if name.is_empty() {
+            // Deactivate all roles
+            if registry.is_empty() {
+                return ToolResult::ok("No roles are active.");
+            }
+            let names: Vec<String> = registry.values().map(|r| r.name.clone()).collect();
+            registry.clear();
+            ToolResult::ok(format!("Deactivated all roles: {}", names.join(", ")))
         } else {
-            ToolResult::ok("No role was active.")
+            // Deactivate a specific role by name or id
+            let lower = name.to_lowercase();
+            let key = registry.iter()
+                .find(|(k, v)| k.to_lowercase() == lower || v.name.to_lowercase() == lower)
+                .map(|(k, _)| k.clone());
+            match key {
+                Some(k) => {
+                    let role = registry.remove(&k).unwrap();
+                    ToolResult::ok(format!("Deactivated role: {}", role.name))
+                }
+                None => ToolResult::error(format!(
+                    "Role '{}' is not active. Active roles: {}",
+                    name,
+                    if registry.is_empty() {
+                        "none".to_string()
+                    } else {
+                        registry.values().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+                    }
+                )),
+            }
         }
     }
 
     async fn handle_info(&self, input: &serde_json::Value) -> ToolResult {
         let name = input["name"].as_str().unwrap_or("");
         if name.is_empty() {
-            // Show current active role info
-            let active = self.active_role.read().await;
-            return match active.as_ref() {
-                Some(body) => {
-                    let preview = if body.len() > 500 {
-                        format!("{}...", &body[..500])
-                    } else {
-                        body.clone()
-                    };
-                    ToolResult::ok(format!("Active role:\n\n{}", preview))
-                }
-                None => ToolResult::ok("No role is currently active."),
-            };
+            // Show all active roles
+            let registry = self.role_registry.read().await;
+            if registry.is_empty() {
+                return ToolResult::ok("No roles are currently active.");
+            }
+            let mut lines = Vec::new();
+            for (id, role) in registry.iter() {
+                let preview = if role.role_md.len() > 200 {
+                    format!("{}...", &role.role_md[..200])
+                } else {
+                    role.role_md.clone()
+                };
+                lines.push(format!("**{}** (id: {})\n{}", role.name, id, preview));
+            }
+            return ToolResult::ok(format!("Active roles ({}):\n\n{}", registry.len(), lines.join("\n\n---\n\n")));
         }
 
         match self.find_role(name) {
@@ -470,7 +532,7 @@ impl DynTool for RoleTool {
          Actions:\n\
          - list: list available roles (installed + user-created)\n\
          - activate: assume a role (injects persona, registers triggers)\n\
-         - deactivate: drop current role, revert to default persona\n\
+         - deactivate: drop a role by name (or all roles if no name given)\n\
          - info: show role details (workflows, skills, triggers, persona)\n\
          - create: create a new user role from name + ROLE.md content (+ optional role_json for triggers)\n\
          - install: install a role from marketplace (ROLE-XXXX-XXXX)\n\n\
@@ -495,7 +557,7 @@ impl DynTool for RoleTool {
                 },
                 "name": {
                     "type": "string",
-                    "description": "Role name (for activate, info, create)"
+                    "description": "Role name (for activate, deactivate, info, create)"
                 },
                 "role_md": {
                     "type": "string",
@@ -529,7 +591,7 @@ impl DynTool for RoleTool {
             match action {
                 "list" => self.handle_list().await,
                 "activate" => self.handle_activate(&input).await,
-                "deactivate" => self.handle_deactivate().await,
+                "deactivate" => self.handle_deactivate(&input).await,
                 "info" => self.handle_info(&input).await,
                 "create" => self.handle_create(&input).await,
                 "install" => self.handle_install(&input).await,

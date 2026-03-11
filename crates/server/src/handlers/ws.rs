@@ -294,6 +294,16 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         return;
     }
 
+    // Extract optional role_id from chat payload
+    let role_id = data["role_id"].as_str().unwrap_or("").to_string();
+
+    // If role_id is set, build a role-scoped session key for isolation
+    let session_id = if !role_id.is_empty() {
+        agent::keyparser::build_role_session_key(&role_id, &channel)
+    } else {
+        session_id
+    };
+
     let hub = state.hub.clone();
     let runner = state.runner.clone();
     let sid = session_id.clone();
@@ -303,7 +313,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
     active_runs.lock().await.insert(sid.clone(), cancel_token.clone());
     let active_runs_cleanup = active_runs.clone();
 
-    info!(session_id = %sid, "dispatching chat to agent");
+    info!(session_id = %sid, role_id = %role_id, "dispatching chat to agent");
 
     // Broadcast chat_created so frontend can track new conversations
     hub.broadcast(
@@ -311,11 +321,15 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         serde_json::json!({
             "session_id": sid,
             "channel": channel,
+            "role_id": role_id,
         }),
     );
 
     // Route through lane system for concurrency control
+    let rid = role_id.clone();
+    let broadcast_role_id = role_id;
     let lane_task = make_task(lanes::MAIN, format!("chat:{}", sid), async move {
+        let role_id_ref = broadcast_role_id;
         let req = RunRequest {
             session_key: sid.clone(),
             prompt,
@@ -324,6 +338,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
             channel,
             origin: Origin::User,
             cancel_token: cancel_token.clone(),
+            role_id: rid,
             ..Default::default()
         };
 
@@ -336,6 +351,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                         _ = cancel_token.cancelled() => {
                             hub.broadcast("chat_cancelled", serde_json::json!({
                                 "session_id": sid,
+                                "role_id": role_id_ref,
                             }));
                             break;
                         }
@@ -351,6 +367,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                                 serde_json::json!({
                                     "session_id": sid,
                                     "content": event.text,
+                                    "role_id": role_id_ref,
                                 }),
                             );
                         }
@@ -360,6 +377,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                                 serde_json::json!({
                                     "session_id": sid,
                                     "content": event.text,
+                                    "role_id": role_id_ref,
                                 }),
                             );
                         }
@@ -372,6 +390,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                                         "tool_id": tc.id,
                                         "tool": tc.name,
                                         "input": tc.input,
+                                        "role_id": role_id_ref,
                                     }),
                                 );
                             }
@@ -395,6 +414,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                                     "tool_name": tool_name,
                                     "result": event.text,
                                     "is_error": event.error.is_some(),
+                                    "role_id": role_id_ref,
                                 }),
                             );
                         }
@@ -404,6 +424,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                                 serde_json::json!({
                                     "session_id": sid,
                                     "error": event.error.unwrap_or_default(),
+                                    "role_id": role_id_ref,
                                 }),
                             );
                         }
@@ -459,6 +480,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                     "chat_complete",
                     serde_json::json!({
                         "session_id": sid,
+                        "role_id": role_id_ref,
                     }),
                 );
             }
@@ -469,12 +491,14 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
                     serde_json::json!({
                         "session_id": sid,
                         "error": e.to_string(),
+                        "role_id": role_id_ref,
                     }),
                 );
                 hub.broadcast(
                     "chat_complete",
                     serde_json::json!({
                         "session_id": sid,
+                        "role_id": role_id_ref,
                     }),
                 );
             }

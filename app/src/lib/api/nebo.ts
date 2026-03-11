@@ -87,6 +87,34 @@ export function getLoops() {
 }
 
 /**
+ * @description "Get active roles — roles currently running as separate bots"
+ */
+export function getActiveRoles() {
+	return webapi.get<components.GetActiveRolesResponse>(`/api/v1/roles/active`)
+}
+
+/**
+ * @description "Activate a role — makes it appear in sidebar as its own bot"
+ */
+export function activateRole(roleId: string) {
+	return webapi.post<components.ActivateRoleResponse>(`/api/v1/roles/${roleId}/activate`, {})
+}
+
+/**
+ * @description "Deactivate a role — removes it from sidebar"
+ */
+export function deactivateRole(roleId: string) {
+	return webapi.post<components.DeactivateRoleResponse>(`/api/v1/roles/${roleId}/deactivate`, {})
+}
+
+/**
+ * @description "Send a chat message to a specific role"
+ */
+export function chatWithRole(roleId: string, prompt: string) {
+	return webapi.post<components.ChatWithRoleResponse>(`/api/v1/roles/${roleId}/chat`, { prompt })
+}
+
+/**
  * @description "List personality presets"
  */
 export function listPersonalityPresets() {
@@ -1238,6 +1266,12 @@ export function listWorkflowRuns(id: string) {
 
 export function getWorkflowRun(workflowId: string, runId: string) {
 	return webapi.get<{ run: WorkflowRun; activities: ActivityResult[] }>(`/api/v1/workflows/${workflowId}/runs/${runId}`);
+}
+
+export function cancelWorkflowRun(workflowId: string, runId: string) {
+	return webapi.post<{ cancelled: boolean; runId: string }>(
+		`/api/v1/workflows/${workflowId}/runs/${runId}/cancel`, {}
+	);
 }
 
 export function listAllRuns() {

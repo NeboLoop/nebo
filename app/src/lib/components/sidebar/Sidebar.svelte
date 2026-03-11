@@ -1,27 +1,40 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getWebSocketClient } from '$lib/websocket/client';
-	import { getLoops } from '$lib/api/nebo';
+	import { getLoops, getActiveRoles } from '$lib/api/nebo';
 	import type { GetLoopsResponse, LoopChannelEntry, LoopEntry } from '$lib/api/neboComponents';
+
+	interface ActiveRoleEntry {
+		roleId: string;
+		name: string;
+		channelId?: string;
+		workflowCount: number;
+		skillCount: number;
+	}
 
 	let {
 		activeChannelId = $bindable(''),
+		activeRoleId = '',
 		onSelectMyChat = () => {},
-		onSelectChannel = (_channelId: string, _channelName: string, _loopName: string) => {}
+		onSelectChannel = (_channelId: string, _channelName: string, _loopName: string) => {},
+		onSelectRole = (_roleId: string, _roleName: string) => {}
 	}: {
 		activeChannelId?: string;
+		activeRoleId?: string;
 		onSelectMyChat?: () => void;
 		onSelectChannel?: (channelId: string, channelName: string, loopName: string) => void;
+		onSelectRole?: (roleId: string, roleName: string) => void;
 	} = $props();
 
 	let loops: LoopEntry[] = $state([]);
 	let expandedLoops: Set<string> = $state(new Set());
+	let activeRoles: ActiveRoleEntry[] = $state([]);
 	let desktopActive = $state(false);
 	let heartbeatActive = $state(false);
 	let eventsActive = $state(0);
 	let notificationCount = $state(0);
 
-	const isMyChatActive = $derived(activeChannelId === '');
+	const isMyChatActive = $derived(activeChannelId === '' && activeRoleId === '');
 
 	async function loadLoops() {
 		try {
@@ -53,6 +66,17 @@
 		expandedLoops = next;
 	}
 
+	async function loadActiveRoles() {
+		try {
+			const data = await getActiveRoles();
+			if (data?.roles) {
+				activeRoles = data.roles;
+			}
+		} catch {
+			// No active roles — fine
+		}
+	}
+
 	function selectMyChat() {
 		activeChannelId = '';
 		onSelectMyChat();
@@ -63,8 +87,13 @@
 		onSelectChannel(channel.channelId, channel.channelName, loopName);
 	}
 
+	function selectRole(role: ActiveRoleEntry) {
+		onSelectRole(role.roleId, role.name);
+	}
+
 	onMount(() => {
 		loadLoops();
+		loadActiveRoles();
 
 		const wsClient = getWebSocketClient();
 
@@ -72,6 +101,7 @@
 		const unsubStatus = wsClient.onStatus((status) => {
 			if (status === 'connected') {
 				loadLoops();
+				loadActiveRoles();
 			}
 		});
 
@@ -90,14 +120,27 @@
 			loadLoops();
 		});
 
+		// Reload roles when activated/deactivated
+		const unsubRoleActivated = wsClient.on('role_activated', () => {
+			loadActiveRoles();
+		});
+		const unsubRoleDeactivated = wsClient.on('role_deactivated', () => {
+			loadActiveRoles();
+		});
+
 		// Periodic refresh (channels can change via NeboLoop)
-		const refreshInterval = setInterval(loadLoops, 60000);
+		const refreshInterval = setInterval(() => {
+			loadLoops();
+			loadActiveRoles();
+		}, 60000);
 
 		return () => {
 			unsubStatus();
 			unsubDesktop();
 			unsubNotify();
 			unsubLane();
+			unsubRoleActivated();
+			unsubRoleDeactivated();
 			clearInterval(refreshInterval);
 		};
 	});
@@ -120,7 +163,7 @@
 			{/if}
 		</button>
 
-		<!-- Loops with channels -->
+		<!-- Loops with channels + roles -->
 		{#if loops.length > 0}
 			<div class="sidebar-section-label">Loops</div>
 			{#each loops as loop (loop.id)}
@@ -134,18 +177,49 @@
 					<span class="sidebar-label">{loop.name || loop.id}</span>
 				</button>
 
-				{#if expandedLoops.has(loop.id) && loop.channels}
-					{#each loop.channels as channel (channel.channelId)}
+				{#if expandedLoops.has(loop.id)}
+					{#if loop.channels}
+						{#each loop.channels as channel (channel.channelId)}
+							<button
+								class="sidebar-item sidebar-channel"
+								class:sidebar-item-active={activeChannelId === channel.channelId}
+								onclick={() => selectChannel(channel, loop.name)}
+							>
+								<span class="sidebar-channel-hash">#</span>
+								<span class="sidebar-label">{channel.channelName}</span>
+							</button>
+						{/each}
+					{/if}
+
+					<!-- Roles within this loop -->
+					{#each activeRoles.filter(r => r.channelId) as role (role.roleId)}
 						<button
-							class="sidebar-item sidebar-channel"
-							class:sidebar-item-active={activeChannelId === channel.channelId}
-							onclick={() => selectChannel(channel, loop.name)}
+							class="sidebar-item sidebar-role"
+							class:sidebar-item-active={activeRoleId === role.roleId}
+							onclick={() => selectRole(role)}
 						>
 							<span class="sidebar-channel-hash">#</span>
-							<span class="sidebar-label">{channel.channelName}</span>
+							<span class="sidebar-label">{role.name.toLowerCase()}</span>
+							<span class="sidebar-role-indicator">&#10038;</span>
 						</button>
 					{/each}
 				{/if}
+			{/each}
+		{/if}
+
+		<!-- Standalone roles (not yet linked to a loop) -->
+		{#if activeRoles.filter(r => !r.channelId).length > 0}
+			<div class="sidebar-section-label">Roles</div>
+			{#each activeRoles.filter(r => !r.channelId) as role (role.roleId)}
+				<button
+					class="sidebar-item sidebar-role"
+					class:sidebar-item-active={activeRoleId === role.roleId}
+					onclick={() => selectRole(role)}
+				>
+					<span class="sidebar-channel-hash">#</span>
+					<span class="sidebar-label">{role.name.toLowerCase()}</span>
+					<span class="sidebar-role-indicator">&#10038;</span>
+				</button>
 			{/each}
 		{/if}
 

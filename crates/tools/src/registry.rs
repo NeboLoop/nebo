@@ -336,10 +336,10 @@ impl Registry {
 
         // Role tool (role management: list, activate, deactivate, info, create, install) — always registered
         {
-            let role_state = active_role.unwrap_or_else(|| {
-                std::sync::Arc::new(tokio::sync::RwLock::new(None))
+            let role_reg = active_role.unwrap_or_else(|| {
+                std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
             });
-            self.register(Box::new(crate::role_tool::RoleTool::new(store, role_state))).await;
+            self.register(Box::new(crate::role_tool::RoleTool::new(store, role_reg))).await;
         }
 
         // Loop tool (NeboLoop comms: dm, channel, group, topic) — requires "loop" permission + comm plugin

@@ -11,6 +11,7 @@ pub mod provider;
 pub mod roles;
 pub mod setup;
 pub mod skills;
+pub mod store;
 pub mod tasks;
 pub mod user;
 pub mod workflows;

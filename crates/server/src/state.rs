@@ -58,4 +58,6 @@ pub struct AppState {
     pub plan_tier: Arc<tokio::sync::RwLock<String>>,
     /// Skill loader for hot-reload after marketplace installs
     pub skill_loader: Arc<tools::skills::Loader>,
+    /// Registry of currently active roles — each role is its own bot with isolated persona
+    pub role_registry: tools::RoleRegistry,
 }

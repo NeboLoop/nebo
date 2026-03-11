@@ -55,6 +55,9 @@ pub struct RunRequest {
     pub max_iterations: usize,
     /// Cancellation token for cooperative shutdown of the agentic loop.
     pub cancel_token: CancellationToken,
+    /// When set, this run executes as a specific role. The role's persona
+    /// replaces the default identity, and session history is isolated.
+    pub role_id: String,
 }
 
 /// Per-run mutable state (prevents data races across concurrent runs).
@@ -88,7 +91,7 @@ pub struct Runner {
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
-    active_role: tools::ActiveRoleState,
+    role_registry: tools::RoleRegistry,
 }
 
 impl Runner {
@@ -100,7 +103,7 @@ impl Runner {
         concurrency: Arc<ConcurrencyController>,
         hooks: Arc<napp::HookDispatcher>,
         mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
-        active_role: tools::ActiveRoleState,
+        role_registry: tools::RoleRegistry,
     ) -> Self {
         Self {
             sessions: SessionManager::new(store.clone()),
@@ -112,7 +115,7 @@ impl Runner {
             concurrency,
             hooks,
             mcp_context,
-            active_role,
+            role_registry,
         }
     }
 
@@ -196,7 +199,8 @@ impl Runner {
         let concurrency = self.concurrency.clone();
         let selector = self.selector.clone();
         let hooks = self.hooks.clone();
-        let active_role = self.active_role.clone();
+        let role_registry = self.role_registry.clone();
+        let role_id = req.role_id.clone();
         let system_prompt = req.system.clone();
         let user_id = req.user_id.clone();
         let origin = req.origin;
@@ -256,7 +260,8 @@ impl Runner {
                 skip_memory,
                 max_iterations,
                 &cancel_token,
-                &active_role,
+                &role_registry,
+                &role_id,
             )
             .await;
 
@@ -346,7 +351,8 @@ async fn run_loop(
     skip_memory: bool,
     max_iterations: usize,
     cancel_token: &CancellationToken,
-    active_role: &tools::ActiveRoleState,
+    role_registry: &tools::RoleRegistry,
+    role_id: &str,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
@@ -355,13 +361,27 @@ async fn run_loop(
     let mut provider_idx: usize = 0;
     let mut auto_continuations = 0usize;
 
+    // Resolve role from registry if role_id is set
+    let active_role_entry = if !role_id.is_empty() {
+        let reg = role_registry.read().await;
+        reg.get(role_id).cloned()
+    } else {
+        None
+    };
+
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
     let db_ctx = db_context::load_db_context(store, user_id);
-    let agent_name = db_ctx
-        .agent
-        .as_ref()
-        .map(|a| a.name.clone())
-        .unwrap_or_else(|| "Nebo".to_string());
+
+    // If running as a role, use the role name as agent_name
+    let agent_name = if let Some(ref role) = active_role_entry {
+        role.name.clone()
+    } else {
+        db_ctx
+            .agent
+            .as_ref()
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "Nebo".to_string())
+    };
     let db_context_formatted = db_context::format_for_system_prompt(&db_ctx, &agent_name);
 
     // Get active task
@@ -372,8 +392,8 @@ async fn run_loop(
     // Build static system prompt — use modular prompt when no custom one is provided
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
     // based on which tools pass the context filter (dynamic injection).
+    let active_role_body = active_role_entry.as_ref().map(|r| r.role_md.clone());
     let static_system = if system_prompt.is_empty() {
-        let active_role_body = active_role.read().await.clone();
         let pctx = prompt::PromptContext {
             agent_name: agent_name.clone(),
             active_skill: None,

@@ -230,8 +230,15 @@ impl NeboLoopApi {
     }
 
     /// List workflows from NeboLoop catalog.
-    pub async fn list_workflows(&self) -> Result<WorkflowsResponse, CommError> {
-        self.do_json(reqwest::Method::GET, "/api/v1/workflows", None::<&()>).await
+    pub async fn list_workflows(
+        &self,
+        query: Option<&str>,
+        category: Option<&str>,
+        page: Option<i64>,
+        page_size: Option<i64>,
+    ) -> Result<WorkflowsResponse, CommError> {
+        let path = format!("/api/v1/workflows{}", build_query(query, category, page, page_size));
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
     // ── Roles ───────────────────────────────────────────────────────

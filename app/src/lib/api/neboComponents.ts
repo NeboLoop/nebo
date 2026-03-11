@@ -466,6 +466,39 @@ export interface GetLoopsResponse {
 	desktopActive: boolean
 }
 
+// Active roles — running as separate bots in the sidebar
+export interface ActiveRoleEntry {
+	roleId: string
+	name: string
+	channelId?: string
+	hasConfig: boolean
+	workflowCount: number
+	skillCount: number
+}
+
+export interface GetActiveRolesResponse {
+	roles: Array<ActiveRoleEntry>
+	count: number
+}
+
+export interface ActivateRoleResponse {
+	roleId: string
+	name: string
+	status: string
+}
+
+export interface DeactivateRoleResponse {
+	roleId: string
+	name: string
+	status: string
+}
+
+export interface ChatWithRoleResponse {
+	sessionId: string
+	roleId: string
+	status: string
+}
+
 export interface GetMCPIntegrationRequest {
 }
 
@@ -707,6 +740,24 @@ export interface ListStoreAppsResponse {
 
 export interface ListStoreSkillsResponse {
 	skills: Array<SkillItem>
+	totalCount: number
+	page: number
+	pageSize: number
+}
+
+export interface StoreWorkflowItem {
+	id: string
+	name: string
+	slug: string
+	description: string
+	version: string
+	author: Author
+	installCount: number
+	isInstalled: boolean
+}
+
+export interface ListStoreWorkflowsResponse {
+	workflows: Array<StoreWorkflowItem>
 	totalCount: number
 	page: number
 	pageSize: number

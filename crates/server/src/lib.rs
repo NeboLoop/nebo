@@ -452,8 +452,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     };
 
-    // Create shared active role state — used by RoleTool to inject role persona into system prompt
-    let active_role_state: tools::ActiveRoleState = std::sync::Arc::new(tokio::sync::RwLock::new(None));
+    // Create shared role registry — multiple roles can be active concurrently, each with isolated persona
+    let active_role_state: tools::RoleRegistry = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
     tool_registry
         .register_all_with_permissions(
@@ -675,7 +675,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         concurrency.clone(),
         hooks.clone(),
         Some(mcp_context.clone()),
-        active_role_state,
+        active_role_state.clone(),
     ));
 
     // Create event bus and dispatcher for workflow-to-workflow events
@@ -791,6 +791,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         event_dispatcher,
         plan_tier,
         skill_loader: skill_loader.clone(),
+        role_registry: active_role_state,
     };
 
     // Auto-connect NeboLoop if enabled and credentials exist
@@ -1117,7 +1118,17 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/roles/{id}", axum::routing::delete(handlers::roles::delete_role))
         .route("/roles/{id}/toggle", axum::routing::post(handlers::roles::toggle_role))
         .route("/roles/{id}/install-deps", axum::routing::post(handlers::roles::install_deps))
+        .route("/roles/active", axum::routing::get(handlers::roles::list_active_roles))
+        .route("/roles/{id}/activate", axum::routing::post(handlers::roles::activate_role))
+        .route("/roles/{id}/deactivate", axum::routing::post(handlers::roles::deactivate_role))
+        .route("/roles/{id}/chat", axum::routing::post(handlers::roles::chat_with_role))
         // Codes (marketplace install via REST)
+        .route("/store/apps", axum::routing::get(handlers::store::list_store_apps))
+        .route("/store/skills", axum::routing::get(handlers::store::list_store_skills))
+        .route("/store/skills/{id}/install", axum::routing::post(handlers::store::install_store_skill))
+        .route("/store/skills/{id}/install", axum::routing::delete(handlers::store::uninstall_store_skill))
+        .route("/store/workflows", axum::routing::get(handlers::store::list_store_workflows))
+
         .route("/codes", axum::routing::post(codes::submit_code))
         // Dependency cascade
         .route("/deps/approve", axum::routing::post(deps::approve_deps))

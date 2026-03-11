@@ -78,6 +78,7 @@ impl DynTool for DesktopTool {
                 "width": { "type": "integer", "description": "Width for resize/move" },
                 "height": { "type": "integer", "description": "Height for resize/move" },
                 "region": { "type": "string", "description": "Region for screenshot: 'x,y,w,h'" },
+                "quality": { "type": "string", "description": "Screenshot quality: 'low' (800px, 50% JPEG), 'medium' (1280px, 65% JPEG, default), 'high' (full-res PNG)" },
                 "name": { "type": "string", "description": "Name for shortcut/menu/dialog element" },
                 "value": { "type": "string", "description": "Value for set_value/fill" },
                 "role": { "type": "string", "description": "UI element role filter (e.g. 'AXButton')" },
@@ -1335,14 +1336,8 @@ $bmp.Dispose()"#,
             match tokio::fs::read(&tmp_path).await {
                 Ok(bytes) => {
                     let _ = tokio::fs::remove_file(&tmp_path).await;
-                    use base64::Engine;
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    let data_uri = format!("data:image/png;base64,{}", b64);
-                    ToolResult {
-                        content: format!("Screenshot captured ({} bytes)", bytes.len()),
-                        is_error: false,
-                        image_url: Some(data_uri),
-                    }
+                    let quality = input["quality"].as_str().unwrap_or("medium");
+                    compress_and_encode(&bytes, quality)
                 }
                 Err(e) => ToolResult::error(format!("Failed to read screenshot: {}", e)),
             }
@@ -1352,6 +1347,86 @@ $bmp.Dispose()"#,
             ToolResult::error(format!("Screenshot failed: {}", stderr))
         }
         Err(e) => ToolResult::error(format!("Failed to run screenshot tool: {}", e)),
+    }
+}
+
+/// Compress a raw PNG screenshot to JPEG at the given quality level, resize, and base64-encode.
+///
+/// Quality levels:
+/// - "low":    800px max width, 50% JPEG
+/// - "medium": 1280px max width, 65% JPEG (default)
+/// - "high":   original PNG, no compression
+fn compress_and_encode(png_bytes: &[u8], quality: &str) -> ToolResult {
+    use base64::Engine;
+    use image::ImageReader;
+    use std::io::Cursor;
+
+    if quality == "high" {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+        return ToolResult {
+            content: format!("Screenshot captured (high quality, {} bytes)", png_bytes.len()),
+            is_error: false,
+            image_url: Some(format!("data:image/png;base64,{}", b64)),
+        };
+    }
+
+    let (max_width, jpeg_quality) = match quality {
+        "low" => (800u32, 50u8),
+        _ => (1280u32, 65u8), // "medium" or any other value
+    };
+
+    let img = match ImageReader::new(Cursor::new(png_bytes))
+        .with_guessed_format()
+        .and_then(|r| r.decode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+    {
+        Ok(img) => img,
+        Err(e) => {
+            // Fall back to raw PNG if decode fails
+            tracing::warn!(error = %e, "failed to decode screenshot for compression, returning raw PNG");
+            let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+            return ToolResult {
+                content: format!("Screenshot captured ({} bytes, uncompressed)", png_bytes.len()),
+                is_error: false,
+                image_url: Some(format!("data:image/png;base64,{}", b64)),
+            };
+        }
+    };
+
+    // Resize if wider than max_width
+    let img = if img.width() > max_width {
+        img.resize(max_width, u32::MAX, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+
+    // Encode to JPEG
+    let mut jpeg_buf = Cursor::new(Vec::new());
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, jpeg_quality);
+    match img.write_with_encoder(encoder) {
+        Ok(()) => {
+            let jpeg_bytes = jpeg_buf.into_inner();
+            let original_kb = png_bytes.len() / 1024;
+            let compressed_kb = jpeg_bytes.len() / 1024;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+            ToolResult {
+                content: format!(
+                    "Screenshot captured ({}KB → {}KB, {}x{} {}% JPEG)",
+                    original_kb, compressed_kb, img.width(), img.height(), jpeg_quality
+                ),
+                is_error: false,
+                image_url: Some(format!("data:image/jpeg;base64,{}", b64)),
+            }
+        }
+        Err(e) => {
+            // Fall back to raw PNG
+            tracing::warn!(error = %e, "JPEG encode failed, returning raw PNG");
+            let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+            ToolResult {
+                content: format!("Screenshot captured ({} bytes, uncompressed)", png_bytes.len()),
+                is_error: false,
+                image_url: Some(format!("data:image/png;base64,{}", b64)),
+            }
+        }
     }
 }
 

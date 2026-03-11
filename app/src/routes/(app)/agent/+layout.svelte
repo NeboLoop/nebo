@@ -9,17 +9,29 @@
 		activeChannelId = $state('');
 		activeChannelName = $state('');
 		activeLoopName = $state('');
+		activeRoleId = $state('');
+		activeRoleName = $state('');
 	}
 
 	const channelState = new ChannelState();
 	setContext('channelState', channelState);
+
+	function clearAll() {
+		channelState.activeChannelId = '';
+		channelState.activeChannelName = '';
+		channelState.activeLoopName = '';
+		channelState.activeRoleId = '';
+		channelState.activeRoleName = '';
+	}
 </script>
 
 <div class="flex flex-1 min-h-0">
 	<Sidebar
 		bind:activeChannelId={channelState.activeChannelId}
-		onSelectMyChat={() => { channelState.activeChannelId = ''; channelState.activeChannelName = ''; channelState.activeLoopName = ''; }}
-		onSelectChannel={(id, name, loop) => { channelState.activeChannelId = id; channelState.activeChannelName = name; channelState.activeLoopName = loop; }}
+		activeRoleId={channelState.activeRoleId}
+		onSelectMyChat={() => { clearAll(); }}
+		onSelectChannel={(id, name, loop) => { clearAll(); channelState.activeChannelId = id; channelState.activeChannelName = name; channelState.activeLoopName = loop; }}
+		onSelectRole={(id, name) => { clearAll(); channelState.activeRoleId = id; channelState.activeRoleName = name; }}
 	/>
 
 	<!-- Main Content -->

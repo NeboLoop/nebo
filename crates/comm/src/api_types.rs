@@ -243,6 +243,10 @@ pub struct WorkflowsResponse {
     pub workflows: Vec<WorkflowItem>,
     #[serde(default)]
     pub total_count: i64,
+    #[serde(default)]
+    pub page: i64,
+    #[serde(default)]
+    pub page_size: i64,
 }
 
 // ── Role Types ───────────────────────────────────────────────────────

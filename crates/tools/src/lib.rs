@@ -43,7 +43,7 @@ pub use registry::{Registry, ToolResult};
 pub use shell_tool::ShellTool;
 pub use system_tool::SystemTool;
 pub use os_tool::OsTool;
-pub use role_tool::{RoleTool, ActiveRoleState};
+pub use role_tool::{RoleTool, ActiveRoleState, ActiveRole, RoleRegistry};
 pub use web_tool::WebTool;
 pub use bot_tool::{AdvisorDeliberator, AgentTool, HybridSearchResult, HybridSearcher};
 pub use event_tool::EventTool;

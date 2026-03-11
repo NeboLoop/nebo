@@ -453,6 +453,15 @@
 		flex-shrink: 0;
 	}
 
+	.sidebar-role {
+		@apply pl-8;
+	}
+
+	.sidebar-role-indicator {
+		@apply text-primary/50 text-[10px] font-bold;
+		flex-shrink: 0;
+	}
+
 	.sidebar-activity-item {
 		@apply flex items-center gap-2 mx-2 px-3 py-1.5 rounded-lg text-xs;
 		@apply text-base-content/50;
@@ -467,6 +476,12 @@
 		width: 6px;
 		height: 6px;
 		animation: pulse-border 1.5s ease-in-out infinite;
+	}
+
+	/* Workflow page layout */
+	.workflow-page {
+		@apply flex min-h-0;
+		height: calc(100dvh - 64px - 3rem - 52px);
 	}
 
 	/* ===== Form Helpers ===== */
