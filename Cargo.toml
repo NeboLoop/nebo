@@ -112,7 +112,7 @@ voice = { path = "crates/voice", package = "nebo-voice" }
 comm = { path = "crates/comm", package = "nebo-comm" }
 notify_crate = { path = "crates/notify", package = "nebo-notify" }
 updater = { path = "crates/updater", package = "nebo-updater" }
-cli = { path = "crates/cli", package = "nebo" }
+cli = { path = "crates/cli", package = "nebo-cli" }
 sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
 
 [profile.dev]

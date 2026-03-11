@@ -55,7 +55,7 @@ dev:
 
 build:
 	@echo "Building headless CLI binary..."
-	cargo build --release -p nebo
+	cargo build --release -p nebo-cli
 
 build-desktop:
 	@echo "Building Tauri desktop app..."
@@ -84,27 +84,27 @@ release-darwin:
 	@cd app && pnpm build
 	# arm64
 	cargo tauri build --target aarch64-apple-darwin
-	cp $(TAURI_TARGET)/aarch64-apple-darwin/release/nebo-desktop dist/nebo-darwin-arm64
+	cp $(TAURI_TARGET)/aarch64-apple-darwin/release/nebo dist/nebo-darwin-arm64
 	# amd64
 	cargo tauri build --target x86_64-apple-darwin
-	cp $(TAURI_TARGET)/x86_64-apple-darwin/release/nebo-desktop dist/nebo-darwin-amd64
+	cp $(TAURI_TARGET)/x86_64-apple-darwin/release/nebo dist/nebo-darwin-amd64
 
 # Linux: Tauri desktop + headless CLI
 release-linux:
 	@echo "Building for Linux..."
 	@mkdir -p dist
 	cargo tauri build
-	cp $(TAURI_RELEASE)/nebo-desktop dist/nebo-linux-$(ARCH)
+	cp $(TAURI_RELEASE)/nebo dist/nebo-linux-$(ARCH)
 	# Headless binary
-	cargo build --release -p nebo
-	cp target/release/nebo dist/nebo-linux-$(ARCH)-headless
+	cargo build --release -p nebo-cli
+	cp target/release/nebo-cli dist/nebo-linux-$(ARCH)-headless
 
 # Windows: Tauri desktop app
 release-windows:
 	@echo "Building for Windows..."
 	@mkdir -p dist
 	cargo tauri build
-	cp $(TAURI_RELEASE)/nebo-desktop.exe dist/nebo-windows-amd64.exe
+	cp $(TAURI_RELEASE)/nebo.exe dist/nebo-windows-amd64.exe
 
 # ─── macOS Desktop Targets ──────────────────────────────────────────────────
 

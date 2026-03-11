@@ -1,5 +1,5 @@
 [package]
-name = "nebo-desktop"
+name = "nebo"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

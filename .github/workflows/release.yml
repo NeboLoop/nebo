@@ -205,13 +205,13 @@ jobs:
 
       - name: Extract desktop binary
         run: |
-          cp src-tauri/target/release/nebo-desktop nebo-linux-${{ matrix.arch }}
+          cp src-tauri/target/release/nebo nebo-linux-${{ matrix.arch }}
 
       - name: Build headless CLI binary
-        run: cargo build --release -p nebo
+        run: cargo build --release -p nebo-cli
 
       - name: Extract headless binary
-        run: cp target/release/nebo nebo-linux-${{ matrix.arch }}-headless
+        run: cp target/release/nebo-cli nebo-linux-${{ matrix.arch }}-headless
 
       - uses: actions/upload-artifact@v4
         with:
@@ -269,7 +269,7 @@ jobs:
       - name: Extract binary and MSI
         shell: bash
         run: |
-          cp src-tauri/target/release/nebo-desktop.exe nebo-windows-amd64.exe
+          cp src-tauri/target/release/nebo.exe nebo-windows-amd64.exe
           MSI=$(ls src-tauri/target/release/bundle/msi/*.msi 2>/dev/null || true)
           if [ -n "$MSI" ]; then
             cp $MSI .

@@ -3340,24 +3340,17 @@ dependencies = [
 name = "nebo"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "clap",
  "dotenvy",
- "futures",
- "nebo-agent",
- "nebo-ai",
- "nebo-auth",
- "nebo-browser",
  "nebo-config",
- "nebo-db",
  "nebo-server",
- "nebo-tools",
- "nebo-types",
- "reqwest 0.12.28",
+ "open",
  "serde",
  "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
  "tokio",
- "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
 ]
@@ -3448,6 +3441,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebo-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dotenvy",
+ "futures",
+ "nebo-agent",
+ "nebo-ai",
+ "nebo-auth",
+ "nebo-browser",
+ "nebo-config",
+ "nebo-db",
+ "nebo-server",
+ "nebo-tools",
+ "nebo-types",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "nebo-comm"
 version = "0.1.0"
 dependencies = [
@@ -3498,25 +3517,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "nebo-desktop"
-version = "0.1.0"
-dependencies = [
- "dotenvy",
- "nebo-config",
- "nebo-server",
- "open",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

@@ -204,6 +204,7 @@ impl Runtime {
     ///
     /// This is a best-effort check — tools may implement lazy init, so a failure
     /// here is logged as a warning but does not block launch.
+    #[cfg(unix)]
     async fn health_check(&self, sock_path: &Path, timeout: Duration) -> Result<(), NappError> {
         match tokio::time::timeout(timeout, tokio::net::UnixStream::connect(sock_path)).await {
             Ok(Ok(_stream)) => Ok(()),
@@ -216,6 +217,12 @@ impl Runtime {
                 timeout.as_secs()
             ))),
         }
+    }
+
+    #[cfg(not(unix))]
+    async fn health_check(&self, _sock_path: &Path, _timeout: Duration) -> Result<(), NappError> {
+        // Unix sockets not available on Windows; skip health check
+        Ok(())
     }
 
     /// Wait for the Unix domain socket to appear.
