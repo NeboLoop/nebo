@@ -25,6 +25,8 @@ enum RuntimeKind {
     Bun(PathBuf),
     /// System-installed runtime found via `which`
     System(PathBuf),
+    /// Pre-compiled binary extracted from .napp — runs directly
+    Binary,
 }
 
 /// Tool that executes scripts bundled with skills.
@@ -127,6 +129,10 @@ impl ExecuteTool {
                     }
                 }
                 format!("{} {}", bin.to_string_lossy(), script)
+            }
+            RuntimeKind::Binary => {
+                // Binary runs directly — script_path IS the executable
+                script.to_string()
             }
         }
     }
@@ -250,10 +256,11 @@ impl DynTool for ExecuteTool {
     }
 
     fn description(&self) -> String {
-        "Execute a script bundled with a skill. Runs locally if the runtime is installed, \
+        "Execute a script or binary bundled with a skill. Runs locally if the runtime is installed, \
          or in the cloud sandbox for paid tiers.\n\n\
-         Example:\n  \
-         execute(skill: \"xlsx-processor\", script: \"scripts/recalc.py\", args: {\"file\": \"output.xlsx\"})"
+         Examples:\n  \
+         execute(skill: \"xlsx-processor\", script: \"scripts/recalc.py\", args: {\"file\": \"output.xlsx\"})\n  \
+         execute(skill: \"pptx\", script: \"binary\", args: {\"command\": \"create\", \"spec\": {...}})"
             .to_string()
     }
 
@@ -267,7 +274,7 @@ impl DynTool for ExecuteTool {
                 },
                 "script": {
                     "type": "string",
-                    "description": "Relative path to the script within the skill (e.g. 'scripts/recalc.py')"
+                    "description": "Relative path to the script within the skill (e.g. 'scripts/recalc.py'), or 'binary' to run the pre-compiled executable"
                 },
                 "args": {
                     "type": "object",
@@ -310,18 +317,48 @@ impl DynTool for ExecuteTool {
                 None => return ToolResult::error(format!("Skill '{}' not found", skill_name)),
             };
 
-            // 2. Detect language
+            // 2. Check for binary execution — bin/ directory or legacy root "binary"
+            let is_bin = script_path == "binary"
+                || script_path.starts_with("bin/");
+            if is_bin {
+                if let Some(ref base_dir) = skill.base_dir {
+                    // Try exact path first (e.g. "bin/nebo-office"), then legacy "binary"
+                    let binary_path = base_dir.join(script_path);
+                    if binary_path.is_file() {
+                        debug!(skill = skill_name, path = %binary_path.display(), "executing binary from .napp");
+                        return self
+                            .execute_local(&RuntimeKind::Binary, "binary", &skill, script_path, &args, timeout)
+                            .await;
+                    }
+                    // Legacy: root-level "binary" entry
+                    if script_path == "binary" {
+                        let legacy = base_dir.join("binary");
+                        if legacy.is_file() {
+                            debug!(skill = skill_name, "executing legacy binary from .napp");
+                            return self
+                                .execute_local(&RuntimeKind::Binary, "binary", &skill, "binary", &args, timeout)
+                                .await;
+                        }
+                    }
+                }
+                return ToolResult::error(format!(
+                    "Skill '{}' has no binary at '{}'. The .napp archive may not contain a binary for this platform.",
+                    skill_name, script_path
+                ));
+            }
+
+            // 3. Detect language
             let language = match Self::detect_language(script_path) {
                 Some(lang) => lang,
                 None => {
                     return ToolResult::error(format!(
-                        "Unsupported script type: {}. Supported: .py, .ts, .js",
+                        "Unsupported script type: {}. Supported: .py, .ts, .js, or 'binary'",
                         script_path
                     ))
                 }
             };
 
-            // 3. Try local execution first
+            // 4. Try local execution first
             if let Some(runtime) = Self::find_runtime(language) {
                 debug!(language, ?runtime, "found runtime");
                 return self
@@ -329,7 +366,7 @@ impl DynTool for ExecuteTool {
                     .await;
             }
 
-            // 4. Try cloud sandbox (Janus)
+            // 5. Try cloud sandbox (Janus)
             let tier = self.plan_tier.read().await.clone();
             if tier == "pro" || tier == "team" || tier == "enterprise" {
                 // TODO: Wire to POST {janus_url}/v1/execute when Janus endpoint is ready.
@@ -343,7 +380,7 @@ impl DynTool for ExecuteTool {
                 );
             }
 
-            // 5. Neither available — show both options
+            // 6. Neither available — show both options
             ToolResult::error(format!(
                 "No {} runtime found locally and cloud sandbox requires a paid plan.\n\n\
                  Option 1: Install {} locally (free)\n\

@@ -95,11 +95,15 @@ pub fn extract_napp_entry(
 
     std::fs::write(dest, &content)?;
 
-    // Set executable permissions for binaries
+    // Set executable permissions for binaries, scripts, and bin/ entries
     #[cfg(unix)]
-    if entry_name == "binary" || entry_name == "app" {
+    if entry_name == "binary"
+        || entry_name == "app"
+        || entry_name.starts_with("bin/")
+        || entry_name.starts_with("scripts/")
+    {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o555))?;
+        std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))?;
     }
 
     Ok(())
@@ -195,11 +199,15 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
 
         std::fs::write(&dest_path, &content)?;
 
-        // Set executable permissions for binaries
+        // Set executable permissions for binaries, scripts, and bin/ entries
         #[cfg(unix)]
-        if normalized == "binary" || normalized == "app" {
+        if normalized == "binary"
+            || normalized == "app"
+            || normalized.starts_with("bin/")
+            || normalized.starts_with("scripts/")
+        {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dest_path, std::fs::Permissions::from_mode(0o555))?;
+            std::fs::set_permissions(&dest_path, std::fs::Permissions::from_mode(0o755))?;
         }
 
         extracted.push(normalized);

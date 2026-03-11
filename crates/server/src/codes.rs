@@ -286,6 +286,27 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
         warn!(code, error = %e, "failed to persist role artifact after redeem");
     }
 
+    // Auto-activate the role so it appears in the sidebar immediately
+    if let Ok(Some(role)) = state.store.get_role(&artifact_id) {
+        let config = if !role.frontmatter.is_empty() {
+            napp::role::parse_role_config(&role.frontmatter).ok()
+        } else {
+            None
+        };
+        let active = tools::ActiveRole {
+            role_id: artifact_id.clone(),
+            name: role.name.clone(),
+            role_md: role.role_md.clone(),
+            config,
+            channel_id: None,
+        };
+        state.role_registry.write().await.insert(artifact_id.clone(), active);
+        state.hub.broadcast(
+            "role_activated",
+            serde_json::json!({ "roleId": artifact_id, "name": role.name }),
+        );
+    }
+
     // Cascade: resolve role deps (workflows, skills, tools from frontmatter)
     let state_clone = state.clone();
     let artifact_id_clone = artifact_id.clone();
@@ -447,8 +468,10 @@ async fn persist_workflow_artifact(
     let dir_name = if slug.is_empty() { name } else { slug.as_str() };
     let version = if detail.item.version.is_empty() { "1.0.0" } else { &detail.item.version };
 
-    // Try sealed .napp download first
-    if let Some(ref download_url) = detail.download_url {
+    // Try sealed .napp download — use API-provided URL or construct from artifact ID
+    let download_url = detail.download_url.clone()
+        .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
+    if let Some(ref download_url) = download_url {
         let napp_dir = nebo_dir.join("workflows").join(dir_name);
         std::fs::create_dir_all(&napp_dir)
             .map_err(|e| format!("create workflow dir: {e}"))?;

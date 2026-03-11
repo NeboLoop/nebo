@@ -754,7 +754,17 @@ async fn run_loop(
         // Each entry is either "text" (coalesced) or a tool index.
         let mut block_order: Vec<(&str, Option<usize>)> = Vec::new();
 
-        while let Some(event) = rx.recv().await {
+        loop {
+            let event = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    info!(session_id, "run cancelled during LLM stream");
+                    return Ok(());
+                }
+                ev = rx.recv() => match ev {
+                    Some(e) => e,
+                    None => break,
+                }
+            };
             match event.event_type {
                 StreamEventType::Text => {
                     assistant_content.push_str(&event.text);
@@ -993,7 +1003,18 @@ async fn run_loop(
 
             // Collect results as they complete, send events immediately
             let mut results: Vec<Option<(ai::ToolCall, ToolResult)>> = vec![None; tool_calls.len()];
-            while let Some((idx, tc, result)) = futures.next().await {
+            loop {
+                let item = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        info!(session_id, "run cancelled during tool execution");
+                        return Ok(());
+                    }
+                    next = futures.next() => match next {
+                        Some(v) => v,
+                        None => break,
+                    }
+                };
+                let (idx, tc, result) = item;
                 // Send tool result event immediately as each completes
                 let _ = tx
                     .send(StreamEvent {
@@ -1043,7 +1064,13 @@ async fn run_loop(
                         }
                     }
 
-                    while let Some((idx, verification)) = sidecar_futures.next().await {
+                    while let Some((idx, verification)) = tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            info!(session_id, "run cancelled during sidecar verification");
+                            return Ok(());
+                        }
+                        next = sidecar_futures.next() => next
+                    } {
                         if let Some(text) = verification {
                             if let Some((_, ref mut result)) = results[idx] {
                                 result.content.push_str(&format!("\n\n[Visual: {}]", text));
