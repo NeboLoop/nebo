@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 env:
-  RUST_VERSION: "1.87"
+  RUST_VERSION: "1.88"
   NODE_VERSION: "20"
 
 jobs:
@@ -75,7 +75,7 @@ jobs:
           path: src-tauri/ui/
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Import signing certificate
         if: ${{ env.HAS_SIGNING_CERT == 'true' }}
@@ -198,7 +198,7 @@ jobs:
           path: src-tauri/ui/
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build Tauri desktop app
         run: cargo tauri build
@@ -261,7 +261,7 @@ jobs:
           path: src-tauri/ui/
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2"
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build Tauri desktop app
         run: cargo tauri build
