@@ -106,13 +106,22 @@ jobs:
 
           # Sign embedded frameworks/dylibs first (inside-out signing)
           find "$APP_PATH/Contents/Frameworks" -type f -perm +111 -o -name "*.dylib" 2>/dev/null | while read f; do
-            codesign --force --sign "$SIGN_IDENTITY" --options runtime "$f"
+            codesign --force --sign "$SIGN_IDENTITY" --timestamp --options runtime "$f"
           done
 
-          # Sign the main binary
+          # Sign the main executable explicitly
           codesign --force --sign "$SIGN_IDENTITY" \
             --identifier dev.neboloop.nebo \
             --entitlements assets/macos/nebo.entitlements \
+            --timestamp \
+            --options runtime \
+            "$APP_PATH/Contents/MacOS/nebo"
+
+          # Sign the .app bundle
+          codesign --force --sign "$SIGN_IDENTITY" \
+            --identifier dev.neboloop.nebo \
+            --entitlements assets/macos/nebo.entitlements \
+            --timestamp \
             --options runtime \
             "$APP_PATH"
 
@@ -122,7 +131,7 @@ jobs:
       - name: Extract signed binary for auto-update
         run: |
           APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
-          cp "$APP_PATH/Contents/MacOS/Nebo" nebo-darwin-${{ matrix.arch }}
+          cp "$APP_PATH/Contents/MacOS/nebo" nebo-darwin-${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
         with:
