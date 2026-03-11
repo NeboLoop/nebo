@@ -113,7 +113,7 @@ comm = { path = "crates/comm", package = "nebo-comm" }
 notify_crate = { path = "crates/notify", package = "nebo-notify" }
 updater = { path = "crates/updater", package = "nebo-updater" }
 cli = { path = "crates/cli", package = "nebo" }
-sandbox-runtime = { path = "../sandbox-runtime" }
+sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
 
 [profile.dev]
 debug = 1

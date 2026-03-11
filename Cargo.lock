@@ -5237,6 +5237,7 @@ dependencies = [
 [[package]]
 name = "sandbox-runtime"
 version = "0.1.0"
+source = "git+https://github.com/NeboLoop/sandbox-runtime.git?branch=master#d40808d5c12bc5faa3fefd0d21baf01b4a68631a"
 dependencies = [
  "base64 0.22.1",
  "dirs",
