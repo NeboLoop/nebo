@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
 
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
@@ -16,6 +18,9 @@ const SERVER_URL: &str = "http://localhost:27895";
 /// Set to true once the window has been restored and shown.
 /// Prevents saving stale state from initial creation events.
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
+
+/// Dedup external URL opens — on_navigation and on_new_window can both fire for the same URL.
+static LAST_OPENED_URL: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 
 // ── Window state: always stored as logical pixels ──────────────────────
 
@@ -73,6 +78,20 @@ fn save_state(window: &tauri::Window) {
     if let Ok(data) = serde_json::to_string(&state) {
         let _ = std::fs::write(state_path(), data);
     }
+}
+
+/// Open a URL in the system browser, deduplicating rapid repeats of the same URL.
+fn open_external(url: &str) {
+    let mut last = LAST_OPENED_URL.lock().unwrap();
+    if let Some((ref prev_url, ref when)) = *last {
+        if prev_url == url && when.elapsed().as_millis() < 2000 {
+            tracing::debug!("Suppressed duplicate open for: {url}");
+            return;
+        }
+    }
+    *last = Some((url.to_string(), Instant::now()));
+    tracing::info!("Opening external URL in browser: {url}");
+    let _ = open::that(url);
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -137,13 +156,11 @@ fn main() {
                 {
                     return true;
                 }
-                tracing::info!("Opening external URL in browser: {url}");
-                let _ = open::that(url.as_str());
+                open_external(url.as_str());
                 false
             })
             .on_new_window(|url, _features| {
-                tracing::info!("Intercepted window.open for: {url}");
-                let _ = open::that(url.as_str());
+                open_external(url.as_str());
                 NewWindowResponse::Deny
             })
             .build()?;
@@ -213,7 +230,10 @@ fn main() {
         .on_window_event(|window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { api, .. } => {
+                    // Hide to tray — the server keeps running in the background.
+                    // Users quit via tray menu "Quit Nebo" or Cmd+Q.
                     api.prevent_close();
+                    save_state(window);
                     let _ = window.hide();
                 }
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
@@ -227,8 +247,13 @@ fn main() {
                 _ => {}
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Nebo desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building Nebo desktop")
+        .run(|app, event| {
+            // Cmd+Q / tray Quit fires ExitRequested — let it through.
+            // Window state is already persisted on every move/resize.
+            let _ = (&app, &event);
+        });
 }
 
 fn wait_for_server() {
