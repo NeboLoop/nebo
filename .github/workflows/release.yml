@@ -72,7 +72,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-build
-          path: src-tauri/ui/
+          path: app/build/
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
@@ -195,7 +195,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-build
-          path: src-tauri/ui/
+          path: app/build/
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
@@ -258,7 +258,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-build
-          path: src-tauri/ui/
+          path: app/build/
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
