@@ -102,7 +102,7 @@ jobs:
         env:
           SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          APP_PATH="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
           codesign --force --sign "$SIGN_IDENTITY" \
             --identifier dev.neboloop.nebo \
             --entitlements assets/macos/nebo.entitlements \
@@ -113,7 +113,7 @@ jobs:
 
       - name: Extract signed binary for auto-update
         run: |
-          APP_PATH="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
           cp "$APP_PATH/Contents/MacOS/Nebo" nebo-darwin-${{ matrix.arch }}
 
       - uses: actions/upload-artifact@v4
@@ -124,7 +124,7 @@ jobs:
       - name: Locate .dmg
         id: dmg
         run: |
-          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/Nebo_*.dmg 2>/dev/null || true)
+          DMG=$(ls target/${{ matrix.target }}/release/bundle/dmg/Nebo_*.dmg 2>/dev/null || true)
           if [ -n "$DMG" ]; then
             mkdir -p dist
             PKG_VERSION="${{ github.ref_name }}"
@@ -205,7 +205,7 @@ jobs:
 
       - name: Extract desktop binary
         run: |
-          cp src-tauri/target/release/nebo nebo-linux-${{ matrix.arch }}
+          cp target/release/nebo nebo-linux-${{ matrix.arch }}
 
       - name: Build headless CLI binary
         run: cargo build --release -p nebo-cli
@@ -226,7 +226,7 @@ jobs:
       - name: Collect .deb
         id: deb
         run: |
-          DEB=$(ls src-tauri/target/release/bundle/deb/*.deb 2>/dev/null || true)
+          DEB=$(ls target/release/bundle/deb/*.deb 2>/dev/null || true)
           if [ -n "$DEB" ]; then
             cp $DEB .
             echo "has_deb=true" >> "$GITHUB_OUTPUT"
@@ -269,8 +269,8 @@ jobs:
       - name: Extract binary and MSI
         shell: bash
         run: |
-          cp src-tauri/target/release/nebo.exe nebo-windows-amd64.exe
-          MSI=$(ls src-tauri/target/release/bundle/msi/*.msi 2>/dev/null || true)
+          cp target/release/nebo.exe nebo-windows-amd64.exe
+          MSI=$(ls target/release/bundle/msi/*.msi 2>/dev/null || true)
           if [ -n "$MSI" ]; then
             cp $MSI .
           fi
