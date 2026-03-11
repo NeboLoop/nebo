@@ -138,16 +138,17 @@ jobs:
           name: nebo-darwin-${{ matrix.arch }}-binary
           path: nebo-darwin-${{ matrix.arch }}
 
-      - name: Locate .dmg
+      - name: Create .dmg from signed .app
         id: dmg
         run: |
-          DMG=$(ls target/${{ matrix.target }}/release/bundle/dmg/Nebo_*.dmg 2>/dev/null || true)
-          if [ -n "$DMG" ]; then
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+          if [ -d "$APP_PATH" ]; then
             mkdir -p dist
             PKG_VERSION="${{ github.ref_name }}"
             PKG_VERSION="${PKG_VERSION#v}"
             DEST="dist/Nebo-${PKG_VERSION}-${{ matrix.arch }}.dmg"
-            cp "$DMG" "$DEST"
+            hdiutil create -volname "Nebo" -srcfolder "$APP_PATH" \
+              -ov -format UDZO "$DEST"
             echo "dmg_path=$DEST" >> "$GITHUB_OUTPUT"
           fi
 
@@ -160,11 +161,22 @@ jobs:
         run: |
           DMG_FILE="${{ steps.dmg.outputs.dmg_path }}"
           echo "Submitting $DMG_FILE for notarization..."
-          xcrun notarytool submit "$DMG_FILE" \
+          # Capture submission output to extract ID for log retrieval
+          SUBMIT_OUT=$(xcrun notarytool submit "$DMG_FILE" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait
+            --wait 2>&1) || true
+          echo "$SUBMIT_OUT"
+          SUB_ID=$(echo "$SUBMIT_OUT" | grep "id:" | head -1 | awk '{print $2}')
+          if echo "$SUBMIT_OUT" | grep -q "status: Invalid"; then
+            echo "Notarization failed — fetching detailed log..."
+            xcrun notarytool log "$SUB_ID" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" 2>&1 || true
+            exit 1
+          fi
           xcrun stapler staple "$DMG_FILE"
           echo "Notarization complete"
 
