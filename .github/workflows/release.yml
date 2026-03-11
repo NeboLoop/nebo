@@ -147,8 +147,22 @@ jobs:
             PKG_VERSION="${{ github.ref_name }}"
             PKG_VERSION="${PKG_VERSION#v}"
             DEST="dist/Nebo-${PKG_VERSION}-${{ matrix.arch }}.dmg"
-            hdiutil create -volname "Nebo" -srcfolder "$APP_PATH" \
-              -ov -format UDZO "$DEST"
+            # Stage .app in a temp folder for create-dmg
+            STAGE=$(mktemp -d)
+            cp -R "$APP_PATH" "$STAGE/Nebo.app"
+            # Install create-dmg for drag-to-Applications layout
+            brew install create-dmg
+            create-dmg \
+              --volname "Nebo" \
+              --window-pos 200 120 \
+              --window-size 600 400 \
+              --icon-size 100 \
+              --icon "Nebo.app" 175 190 \
+              --hide-extension "Nebo.app" \
+              --app-drop-link 425 190 \
+              "$DEST" \
+              "$STAGE"
+            rm -rf "$STAGE"
             echo "dmg_path=$DEST" >> "$GITHUB_OUTPUT"
           fi
 
