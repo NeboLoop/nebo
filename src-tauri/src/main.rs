@@ -97,6 +97,20 @@ fn open_external(url: &str) {
 // ────────────────────────────────────────────────────────────────────────
 
 fn main() {
+    // Chrome native messaging: if Chrome launched us, run as a relay — no GUI.
+    // Chrome passes `chrome-extension://EXTENSION_ID/` as the sole argument.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().any(|a| a.starts_with("chrome-extension://")) {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            if let Err(e) = rt.block_on(run_native_messaging()) {
+                eprintln!("[nebo-relay] error: {e}");
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
+
     dotenvy::dotenv().ok();
 
     tracing_subscriber::fmt()
@@ -262,4 +276,180 @@ fn wait_for_server() {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     tracing::warn!("Server did not become ready in 15s, launching window anyway");
+}
+
+// ── Chrome native messaging relay ─────────────────────────────────────
+// Lightweight stdin/stdout bridge between Chrome extension and Nebo server (WS).
+// Extension ←stdin/stdout→ this process ←WebSocket→ Nebo server
+
+async fn run_native_messaging() -> anyhow::Result<()> {
+    use futures::{SinkExt, StreamExt};
+    use tokio::io::AsyncReadExt;
+    use std::sync::Arc;
+
+    eprintln!("[nebo-relay] starting native messaging bridge");
+
+    let ws_url = "ws://127.0.0.1:27895/ws/extension";
+
+    // Retry WS connection with backoff — server may not be ready yet
+    let ws_stream = {
+        let mut attempts = 0u32;
+        loop {
+            match tokio_tungstenite::connect_async(ws_url).await {
+                Ok((stream, _)) => {
+                    eprintln!("[nebo-relay] connected to server at {ws_url}");
+                    break stream;
+                }
+                Err(e) if attempts < 10 => {
+                    attempts += 1;
+                    let delay = std::cmp::min(500 * 2u64.pow(attempts - 1), 5000);
+                    eprintln!(
+                        "[nebo-relay] WS connect attempt {attempts}/10 failed ({e}), retrying in {delay}ms"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                Err(e) => {
+                    eprintln!("[nebo-relay] giving up after 10 attempts: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+
+    // Detect which browser launched this relay
+    let browser = detect_parent_browser();
+    eprintln!("[nebo-relay] detected browser: {browser}");
+
+    let hello = serde_json::json!({
+        "type": "hello",
+        "browser": browser,
+        "relay": true,
+    });
+    let _ = ws_tx
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::to_string(&hello).unwrap().into(),
+        ))
+        .await;
+
+    let mut stdin = tokio::io::stdin();
+    let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
+
+    let stdout_send = stdout.clone();
+
+    // stdin → WS
+    let send_task = tokio::spawn(async move {
+        loop {
+            let mut len_buf = [0u8; 4];
+            if stdin.read_exact(&mut len_buf).await.is_err() {
+                eprintln!("[nebo-relay] stdin closed");
+                break;
+            }
+            let len = u32::from_le_bytes(len_buf) as usize;
+            if len > 1_048_576 {
+                eprintln!("[nebo-relay] message too large: {len} bytes");
+                break;
+            }
+
+            let mut body = vec![0u8; len];
+            if stdin.read_exact(&mut body).await.is_err() {
+                break;
+            }
+
+            let msg: serde_json::Value = match serde_json::from_slice(&body) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[nebo-relay] malformed JSON: {e}");
+                    continue;
+                }
+            };
+
+            let msg_type = msg["type"].as_str().unwrap_or("");
+
+            match msg_type {
+                "hello" => {
+                    let resp = serde_json::json!({"type": "connected"});
+                    let _ = write_native_message(&stdout_send, &resp).await;
+                    let text = serde_json::to_string(&msg).unwrap();
+                    let _ = ws_tx
+                        .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+                        .await;
+                    continue;
+                }
+                "ping" => {
+                    let resp = serde_json::json!({"type": "pong"});
+                    let _ = write_native_message(&stdout_send, &resp).await;
+                    continue;
+                }
+                _ => {}
+            }
+
+            let text = serde_json::to_string(&msg).unwrap();
+            if ws_tx
+                .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+                .await
+                .is_err()
+            {
+                eprintln!("[nebo-relay] WS send failed");
+                break;
+            }
+        }
+    });
+
+    // WS → stdout
+    let stdout_recv = stdout.clone();
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = ws_rx.next().await {
+            if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if write_native_message(&stdout_recv, &parsed).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = send_task => {}
+        _ = recv_task => {}
+    }
+
+    eprintln!("[nebo-relay] shutting down");
+    std::process::exit(0);
+}
+
+async fn write_native_message(
+    stdout: &tokio::sync::Mutex<tokio::io::Stdout>,
+    msg: &serde_json::Value,
+) -> Result<(), std::io::Error> {
+    use tokio::io::AsyncWriteExt;
+    let json_bytes = serde_json::to_vec(msg).unwrap();
+    let len = (json_bytes.len() as u32).to_le_bytes();
+    let mut out = stdout.lock().await;
+    out.write_all(&len).await?;
+    out.write_all(&json_bytes).await?;
+    out.flush().await?;
+    Ok(())
+}
+
+fn detect_parent_browser() -> String {
+    #[cfg(unix)]
+    {
+        let ppid = std::os::unix::process::parent_id();
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(["-p", &ppid.to_string(), "-o", "comm="])
+            .output()
+        {
+            let parent = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+            if parent.contains("brave") { return "brave".into(); }
+            if parent.contains("chrome") { return "chrome".into(); }
+            if parent.contains("firefox") { return "firefox".into(); }
+            if parent.contains("edge") { return "edge".into(); }
+            if parent.contains("arc") { return "arc".into(); }
+            if !parent.is_empty() { return parent; }
+        }
+    }
+    "unknown".into()
 }

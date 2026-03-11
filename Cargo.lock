@@ -3340,7 +3340,9 @@ dependencies = [
 name = "nebo"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dotenvy",
+ "futures",
  "nebo-config",
  "nebo-server",
  "open",
@@ -3351,6 +3353,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-single-instance",
  "tokio",
+ "tokio-tungstenite 0.26.2",
  "tracing",
  "tracing-subscriber",
 ]
