@@ -737,6 +737,33 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
+    // Populate role_registry from DB so enabled roles appear in sidebar after restart
+    {
+        if let Ok(roles) = store.list_roles(1000, 0) {
+            let mut registry = active_role_state.write().await;
+            for role in &roles {
+                if role.is_enabled == 0 {
+                    continue;
+                }
+                let config = if !role.frontmatter.is_empty() {
+                    napp::role::parse_role_config(&role.frontmatter).ok()
+                } else {
+                    None
+                };
+                registry.insert(role.id.clone(), tools::ActiveRole {
+                    role_id: role.id.clone(),
+                    name: role.name.clone(),
+                    role_md: role.role_md.clone(),
+                    config,
+                    channel_id: None,
+                });
+            }
+            if !registry.is_empty() {
+                info!(count = registry.len(), "restored active roles from DB");
+            }
+        }
+    }
+
     // Spawn event dispatcher loop (matches events to role-owned subscriptions)
     event_dispatcher.clone().spawn(
         event_rx,
