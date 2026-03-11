@@ -103,12 +103,20 @@ jobs:
           SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Nebo.app"
+
+          # Sign embedded frameworks/dylibs first (inside-out signing)
+          find "$APP_PATH/Contents/Frameworks" -type f -perm +111 -o -name "*.dylib" 2>/dev/null | while read f; do
+            codesign --force --sign "$SIGN_IDENTITY" --options runtime "$f"
+          done
+
+          # Sign the main binary
           codesign --force --sign "$SIGN_IDENTITY" \
             --identifier dev.neboloop.nebo \
             --entitlements assets/macos/nebo.entitlements \
             --options runtime \
-            --deep \
             "$APP_PATH"
+
+          codesign --verify --deep --strict "$APP_PATH"
           echo "Nebo.app signed with Developer ID"
 
       - name: Extract signed binary for auto-update

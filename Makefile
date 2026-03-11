@@ -118,7 +118,6 @@ app-bundle: build-desktop
 		--identifier dev.neboloop.nebo \
 		--entitlements assets/macos/nebo.entitlements \
 		--options runtime \
-		--deep \
 		dist/Nebo.app
 	@echo "Built: dist/Nebo.app (Developer ID signed)"
 
