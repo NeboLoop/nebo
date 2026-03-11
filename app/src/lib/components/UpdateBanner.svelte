@@ -51,7 +51,7 @@
 {#if show}
 	<div class="alert alert-info shadow-lg mx-4 mt-2 mb-0 flex items-center gap-3 py-2 px-4 text-sm">
 		{#if $downloadProgress}
-			<!-- Download in progress — always visible even if user clicked Update Now -->
+			<!-- Download in progress -->
 			<Download class="w-5 h-5 shrink-0 animate-pulse" />
 			<div class="flex-1 min-w-0 flex items-center gap-3">
 				<span>Downloading update...</span>
@@ -59,11 +59,11 @@
 				<span class="text-info-content/60 tabular-nums">{$downloadProgress.percent}%</span>
 			</div>
 		{:else if $updateError}
-			<!-- Download or verification failed — always visible -->
+			<!-- Download or verification failed -->
 			<ArrowUpCircle class="w-5 h-5 shrink-0" />
 			<div class="flex-1 min-w-0">
 				<span class="font-semibold">Update failed</span>
-				<span class="text-info-content/60">— please try again</span>
+				<span class="text-info-content/60">&mdash; please try again</span>
 			</div>
 			<button class="btn btn-sm btn-primary" onclick={handleRetry}>
 				Retry
@@ -72,7 +72,7 @@
 			<!-- Binary staged, applying + restarting -->
 			<span class="loading loading-spinner loading-sm shrink-0"></span>
 			<div class="flex-1 min-w-0">
-				Updating Nebo — this will only take a moment...
+				Updating Nebo &mdash; this will only take a moment...
 			</div>
 		{:else if $updateInfo?.available}
 			<!-- Update available -->
@@ -80,9 +80,11 @@
 			<div class="flex-1 min-w-0">
 				<span class="font-semibold">Nebo {$updateInfo.latestVersion}</span> is available
 				{#if $updateInfo.installMethod === 'homebrew'}
-					<span class="text-info-content/60 ml-1">— run <code>brew upgrade nebo</code></span>
+					<span class="text-info-content/60 ml-1">&mdash; run <code>brew upgrade nebo</code></span>
 				{:else if $updateInfo.installMethod === 'package_manager'}
-					<span class="text-info-content/60 ml-1">— run <code>sudo apt upgrade nebo</code></span>
+					<span class="text-info-content/60 ml-1">&mdash; run <code>sudo apt upgrade nebo</code></span>
+				{:else if $updateInfo.installMethod === 'app_bundle'}
+					<span class="text-info-content/60 ml-1">&mdash; <a href={$updateInfo.releaseUrl || 'https://github.com/NeboLoop/nebo/releases'} target="_blank" class="link">download the latest version</a></span>
 				{/if}
 			</div>
 			{#if $updateInfo.canAutoUpdate}

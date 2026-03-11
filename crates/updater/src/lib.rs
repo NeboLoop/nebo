@@ -87,6 +87,20 @@ pub fn detect_install_method() -> &'static str {
     let resolved = std::fs::canonicalize(&exe).unwrap_or(exe);
     let path = resolved.to_string_lossy().to_string();
 
+    // Desktop app bundles — must update via installer, not raw binary replacement.
+    // macOS: Nebo.app/Contents/MacOS/nebo
+    // Windows: tauri puts the exe in a versioned dir or Program Files
+    // Linux: AppImage or .deb-installed paths
+    #[cfg(target_os = "macos")]
+    if path.contains(".app/Contents/MacOS/") {
+        return "app_bundle";
+    }
+
+    #[cfg(target_os = "windows")]
+    if path.contains("\\Nebo\\") || path.contains("\\WindowsApps\\") {
+        return "app_bundle";
+    }
+
     if path.contains("/opt/homebrew/") || path.contains("/usr/local/Cellar/") {
         return "homebrew";
     }
