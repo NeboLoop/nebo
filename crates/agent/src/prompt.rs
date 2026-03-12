@@ -414,12 +414,7 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     ));
 
     // 2. System context
-    let hostname = std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let hostname = get_hostname();
 
     let os_name = if cfg!(target_os = "macos") {
         "macOS"
@@ -595,5 +590,27 @@ mod tests {
         let result = build_static(&pctx);
         assert!(result.contains("Model Switching"));
         assert!(result.contains("sonnet: anthropic/claude-sonnet-4"));
+    }
+}
+
+/// Get the system hostname without spawning a subprocess.
+///
+/// On Windows, `Command::new("hostname")` flashes a console window, so we
+/// read the COMPUTERNAME env var instead. On Unix we use libc gethostname.
+fn get_hostname() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut buf = [0u8; 256];
+        let result = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+        if result == 0 {
+            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            String::from_utf8_lossy(&buf[..len]).to_string()
+        } else {
+            "unknown".to_string()
+        }
     }
 }

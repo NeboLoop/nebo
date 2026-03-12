@@ -189,15 +189,20 @@ impl ExecuteTool {
             base_cmd
         };
 
-        // Execute via sh -c
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c").arg(&final_cmd);
+        // Execute via sh -c (or powershell on Windows)
+        let (shell, shell_args) = crate::process::shell_command();
+        let mut cmd = tokio::process::Command::new(&shell);
+        for arg in &shell_args {
+            cmd.arg(arg);
+        }
+        cmd.arg(&final_cmd);
 
         // Pass args as environment variable
         if !args.is_null() {
             cmd.env("SKILL_ARGS", args.to_string());
         }
 
+        crate::process::hide_window(&mut cmd);
         cmd.current_dir(tmp_dir.path());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());

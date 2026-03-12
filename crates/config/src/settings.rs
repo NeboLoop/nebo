@@ -34,14 +34,31 @@ pub fn load_settings() -> Result<Settings, NeboError> {
     let path = dir.join(files::SETTINGS_JSON);
 
     // Try to load existing
-    if let Ok(data) = fs::read_to_string(&path)
-        && let Ok(mut settings) = serde_json::from_str::<Settings>(&data) {
-            if settings.access_secret.is_empty() {
-                settings.access_secret = generate_secret();
-                save_settings(&settings)?;
+    if path.exists() {
+        match fs::read_to_string(&path) {
+            Ok(data) => {
+                // Strip UTF-8 BOM if present (common on Windows)
+                let clean = data.strip_prefix('\u{FEFF}').unwrap_or(&data);
+                match serde_json::from_str::<Settings>(clean) {
+                    Ok(mut settings) => {
+                        // Trim whitespace from secret to avoid HMAC mismatches
+                        settings.access_secret = settings.access_secret.trim().to_string();
+                        if settings.access_secret.is_empty() {
+                            settings.access_secret = generate_secret();
+                            save_settings(&settings)?;
+                        }
+                        return Ok(settings);
+                    }
+                    Err(e) => {
+                        tracing::warn!("settings.json exists but failed to parse: {e} — regenerating");
+                    }
+                }
             }
-            return Ok(settings);
+            Err(e) => {
+                tracing::warn!("settings.json exists but failed to read: {e} — regenerating");
+            }
         }
+    }
 
     // Create new settings with generated secret
     let settings = Settings {

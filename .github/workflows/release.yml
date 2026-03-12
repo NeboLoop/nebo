@@ -306,6 +306,9 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
+      - name: Install WiX Toolset v3
+        run: choco install wixtoolset -y --force
+
       - name: Build Tauri desktop app
         run: cargo tauri build
 
@@ -315,7 +318,10 @@ jobs:
           cp target/release/nebo.exe nebo-windows-amd64.exe
           MSI=$(ls target/release/bundle/msi/*.msi 2>/dev/null || true)
           if [ -n "$MSI" ]; then
-            cp $MSI .
+            PKG_VERSION="${GITHUB_REF_NAME#v}"
+            cp $MSI "Nebo-${PKG_VERSION}-amd64.msi"
+          else
+            echo "::warning::No MSI found in target/release/bundle/msi/"
           fi
 
       - uses: actions/upload-artifact@v4
@@ -327,7 +333,7 @@ jobs:
         with:
           name: nebo-windows-msi
           path: "*.msi"
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   # ─── Sign Windows binaries (Azure Trusted Signing) ───────────────────
   sign-windows:
@@ -348,7 +354,6 @@ jobs:
         with:
           name: nebo-windows-msi
           path: .
-        continue-on-error: true
 
       - name: Sign binaries (Authenticode)
         uses: azure/trusted-signing-action@v1
@@ -375,11 +380,11 @@ jobs:
         with:
           name: nebo-windows-msi-signed
           path: "*.msi"
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
   # ─── Create GitHub release with all artifacts ─────────────────────────
   release:
-    needs: [build-macos, build-linux, build-windows]
+    needs: [build-macos, build-linux, build-windows, sign-windows]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     env:
@@ -391,14 +396,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: nebo-*
+          pattern: "[nN]ebo-*"
           merge-multiple: true
 
-      - name: Stage signed Windows binary (if available)
+      - name: Stage signed Windows artifacts (if available)
         run: |
           if [ -d "artifacts" ]; then
-            # Prefer signed variants
-            for f in artifacts/nebo-*-signed*; do
+            # Prefer signed variants — overwrite unsigned with signed
+            for f in artifacts/*-signed*; do
               [ -f "$f" ] || continue
               dest="artifacts/$(basename "$f" | sed 's/-signed//')"
               cp "$f" "$dest"
@@ -418,7 +423,8 @@ jobs:
             nebo-darwin-arm64 nebo-darwin-amd64 \
             nebo-linux-amd64 nebo-linux-arm64 \
             nebo-linux-amd64-headless nebo-linux-arm64-headless \
-            nebo-windows-amd64.exe 2>/dev/null | tee checksums.txt
+            nebo-windows-amd64.exe \
+            Nebo-*.dmg Nebo-*.msi 2>/dev/null | tee checksums.txt
           echo "Generated checksums:"
           cat checksums.txt
 
@@ -458,7 +464,7 @@ jobs:
             --endpoint-url "$S3_ENDPOINT" --acl public-read --content-type application/json
           echo "Uploaded release assets to CDN: releases/${TAG}/"
 
-      - name: Remove intermediate signed binaries
+      - name: Remove intermediate signed artifacts
         run: rm -f artifacts/*-signed*
 
       - name: Create release

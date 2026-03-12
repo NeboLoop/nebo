@@ -109,6 +109,7 @@ impl ShellTool {
             cmd.current_dir(&input.cwd);
         }
 
+        process::hide_window(&mut cmd);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd.env_clear();

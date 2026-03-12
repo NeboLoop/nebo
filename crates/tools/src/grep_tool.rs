@@ -78,7 +78,10 @@ impl GrepTool {
         args.push(pattern.to_string());
         args.push(path.to_string());
 
-        let output = match Command::new(rg_path).args(&args).output() {
+        let mut rg_cmd = Command::new(rg_path);
+        rg_cmd.args(&args);
+        crate::process::hide_window_std(&mut rg_cmd);
+        let output = match rg_cmd.output() {
             Ok(o) => o,
             Err(e) => return ToolResult::error(format!("Error running ripgrep: {}", e)),
         };

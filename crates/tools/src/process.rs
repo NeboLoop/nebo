@@ -65,6 +65,7 @@ impl ProcessRegistry {
             cmd.current_dir(dir);
         }
 
+        hide_window(&mut cmd);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
         cmd.stdin(Stdio::piped());
@@ -286,6 +287,36 @@ pub fn shell_command() -> (String, Vec<String>) {
     {
         ("bash".to_string(), vec!["-c".to_string()])
     }
+}
+
+/// Configure a Command to not flash a console window on Windows.
+///
+/// On Windows, subprocess spawning creates a visible console window by default.
+/// This sets the CREATE_NO_WINDOW creation flag to suppress it.
+/// No-op on non-Windows platforms.
+#[cfg(target_os = "windows")]
+pub fn hide_window(cmd: &mut tokio::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn hide_window(_cmd: &mut tokio::process::Command) {
+    // No-op on Unix
+}
+
+/// Configure a std::process::Command to not flash a console window on Windows.
+#[cfg(target_os = "windows")]
+pub fn hide_window_std(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn hide_window_std(_cmd: &mut std::process::Command) {
+    // No-op on Unix
 }
 
 /// Environment variables that can be exploited for code injection.
