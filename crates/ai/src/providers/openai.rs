@@ -252,6 +252,7 @@ impl OpenAIProvider {
         let mut text_chunks = 0u32;
         let mut chunk_count = 0u32;
         let mut finished = false;
+        let mut last_provider_metadata: Option<HashMap<String, String>> = None;
 
         'outer: while let Some(result) = byte_stream.next().await {
             let bytes = match result {
@@ -279,10 +280,11 @@ impl OpenAIProvider {
                         break 'outer;
                     }
                     SseEvent::Data(data) => {
+                        // Pre-parse as Value to check for errors and extract provider_metadata
+                        let raw_val = serde_json::from_str::<serde_json::Value>(&data).ok();
+
                         // Check for OpenAI-compatible error responses (e.g. from Janus)
-                        // These have {"error":{"message":"...","type":"...","code":"..."}}
-                        // and don't match the stream response schema.
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data) {
+                        if let Some(ref val) = raw_val {
                             if let Some(err_obj) = val.get("error") {
                                 let msg = err_obj
                                     .get("message")
@@ -308,6 +310,15 @@ impl OpenAIProvider {
                                     .await;
                                 finished = true;
                                 break 'outer;
+                            }
+                        }
+
+                        // Extract provider_metadata from Janus for tool stickiness
+                        if let Some(ref val) = raw_val {
+                            if let Some(pm) = val.get("provider_metadata") {
+                                if let Ok(meta) = serde_json::from_value::<HashMap<String, String>>(pm.clone()) {
+                                    last_provider_metadata = Some(meta);
+                                }
                             }
                         }
 
@@ -436,7 +447,9 @@ impl OpenAIProvider {
             }
         }
 
-        let _ = tx.send(StreamEvent::done()).await;
+        let mut done_event = StreamEvent::done();
+        done_event.provider_metadata = last_provider_metadata;
+        let _ = tx.send(done_event).await;
     }
 }
 
@@ -510,19 +523,30 @@ impl Provider for OpenAIProvider {
             "sending OpenAI request"
         );
 
+        // Serialize request, injecting metadata for Janus tool stickiness
+        let mut body_val = serde_json::to_value(&api_req)
+            .map_err(|e| ProviderError::Request(format!("serialize error: {e}")))?;
+        if let Some(ref meta) = req.metadata {
+            if let serde_json::Value::Object(ref mut map) = body_val {
+                map.insert("metadata".to_string(), serde_json::to_value(meta).unwrap());
+            }
+        }
+
         // Debug: log the full request body on first few requests to diagnose Janus errors
-        if let Ok(body_json) = serde_json::to_string(&api_req) {
+        if let Ok(body_json) = serde_json::to_string(&body_val) {
             debug!(body = %body_json, "OpenAI request body");
         }
 
         let url = format!("{}/chat/completions", self.base_url);
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", self.api_key)
-                .parse()
-                .expect("valid auth header"),
-        );
+        if !self.api_key.is_empty() {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", self.api_key)
+                    .parse()
+                    .expect("valid auth header"),
+            );
+        }
         if let Some(ref bot_id) = self.bot_id {
             headers.insert(
                 reqwest::header::HeaderName::from_static("x-bot-id"),
@@ -544,7 +568,7 @@ impl Provider for OpenAIProvider {
         let response = client
             .post(&url)
             .headers(headers)
-            .json(&api_req)
+            .json(&body_val)
             .send()
             .await
             .map_err(|e| ProviderError::Request(e.to_string()))?;

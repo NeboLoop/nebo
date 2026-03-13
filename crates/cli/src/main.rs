@@ -374,6 +374,7 @@ async fn send_chat_message(
         static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
+        metadata: None,
     };
 
     let mut rx = provider.stream(&req).await

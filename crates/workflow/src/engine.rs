@@ -282,6 +282,7 @@ pub async fn execute_activity(
             static_system: String::new(),
             model: activity.model.clone(),
             enable_thinking: false,
+            metadata: None,
         };
 
         let mut rx = provider

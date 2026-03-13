@@ -78,12 +78,18 @@ pub(crate) async fn reload_providers(state: &AppState) {
                     .and_then(|m| m.get("janus_provider"))
                     .and_then(|v| v.as_str())
                     == Some("true");
-                if is_janus && !profile.api_key.is_empty() {
+                if is_janus {
                     let janus_url = &state.config.neboloop.janus_url;
-                    let model = profile.model.clone().unwrap_or_else(|| "janus".into());
+                    let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
                     let bot_id = config::read_bot_id().unwrap_or_default();
+                    // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
+                    let api_key = if profile.api_key.is_empty() {
+                        bot_id.clone()
+                    } else {
+                        profile.api_key.clone()
+                    };
                     let mut p = ai::OpenAIProvider::with_base_url(
-                        profile.api_key.clone(),
+                        api_key,
                         model,
                         format!("{}/v1", janus_url),
                     );
@@ -93,6 +99,11 @@ pub(crate) async fn reload_providers(state: &AppState) {
                     }
                     Some(Arc::new(p))
                 } else {
+                    info!(
+                        profile_id = %profile.id,
+                        has_metadata = metadata.is_some(),
+                        "neboloop profile found but janus_provider not enabled, skipping AI provider"
+                    );
                     None
                 }
             }
@@ -235,6 +246,14 @@ pub async fn update_provider(
         .update_auth_profile(&id, name, api_key, model, base_url, priority, auth_type, metadata.as_deref())
         .map_err(to_error_response)?;
 
+    // Handle isActive toggle (separate DB column, not part of update_auth_profile)
+    if let Some(is_active) = body.get("isActive").and_then(|v| v.as_bool()) {
+        state
+            .store
+            .toggle_auth_profile(&id, if is_active { 1 } else { 0 })
+            .map_err(to_error_response)?;
+    }
+
     // Reload providers on the runner
     reload_providers(&state).await;
 
@@ -344,6 +363,7 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
         static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
+        metadata: None,
     };
 
     match tokio::time::timeout(std::time::Duration::from_secs(15), provider.stream(&req)).await {

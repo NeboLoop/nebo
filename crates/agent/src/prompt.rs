@@ -426,10 +426,18 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         std::env::consts::OS
     };
 
+    // Build model identity line — for Janus gateway, use branded name
+    let model_line = if dctx.provider_name == "janus" || dctx.model_name.starts_with("nebo-") {
+        format!("Model: neboloop/{} — you are Nebo, NOT Claude, GPT, Gemini, or any other model. Never claim to be a specific LLM.", dctx.model_name)
+    } else if dctx.provider_name.is_empty() && dctx.model_name.is_empty() {
+        "Model: Nebo AI".to_string()
+    } else {
+        format!("Model: {}/{}", dctx.provider_name, dctx.model_name)
+    };
+
     sb.push_str(&format!(
-        "\n\n[System Context]\nModel: {}/{}\nDate: {}\nTime: {}\nTimezone: {}\nComputer: {}\nOS: {} ({})",
-        dctx.provider_name,
-        dctx.model_name,
+        "\n\n[System Context]\n{}\nDate: {}\nTime: {}\nTimezone: {}\nComputer: {}\nOS: {} ({})",
+        model_line,
         now.format("%A, %B %-d, %Y"),
         now.format("%-I:%M %p"),
         zone,

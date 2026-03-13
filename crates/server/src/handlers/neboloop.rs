@@ -697,18 +697,22 @@ pub(crate) fn store_neboloop_profile(
         .list_active_auth_profiles_by_provider("neboloop")
         .unwrap_or_default();
 
-    // Carry forward janus_provider from existing profile if not explicitly set
+    // Default to janus enabled — it's the primary reason users connect to NeboLoop.
+    // Only disable if an existing profile explicitly has janus_provider="false".
     let janus = if janus_provider {
         true
     } else {
-        profiles.iter().any(|p| {
+        // Check existing profiles: if any explicitly set to "false", respect that;
+        // otherwise default to true (new connections always get Janus).
+        let explicitly_disabled = profiles.iter().any(|p| {
             p.metadata
                 .as_deref()
                 .and_then(|m| serde_json::from_str::<HashMap<String, String>>(m).ok())
                 .map_or(false, |meta| {
-                    meta.get("janus_provider").map_or(false, |v| v == "true")
+                    meta.get("janus_provider").map_or(false, |v| v == "false")
                 })
-        })
+        });
+        !explicitly_disabled
     };
 
     let mut metadata = HashMap::new();

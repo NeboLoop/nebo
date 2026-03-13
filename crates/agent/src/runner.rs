@@ -100,6 +100,7 @@ pub struct Runner {
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
     role_registry: tools::RoleRegistry,
+    skill_loader: Option<Arc<tools::skills::Loader>>,
 }
 
 impl Runner {
@@ -112,6 +113,7 @@ impl Runner {
         hooks: Arc<napp::HookDispatcher>,
         mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
         role_registry: tools::RoleRegistry,
+        skill_loader: Option<Arc<tools::skills::Loader>>,
     ) -> Self {
         Self {
             sessions: SessionManager::new(store.clone()),
@@ -124,6 +126,7 @@ impl Runner {
             hooks,
             mcp_context,
             role_registry,
+            skill_loader,
         }
     }
 
@@ -214,6 +217,9 @@ impl Runner {
         let user_id = req.user_id.clone();
         let origin = req.origin;
         let skip_memory = req.skip_memory_extract;
+        let user_prompt = req.prompt.clone();
+        let force_skill = req.force_skill.clone();
+        let skill_loader = self.skill_loader.clone();
 
         // Resolve fuzzy model override — prefer explicit model_override, fall back to entity preference
         let raw_model = if !req.model_override.is_empty() {
@@ -284,6 +290,9 @@ impl Runner {
                 personality_snippet.as_deref(),
                 entity_permissions.as_ref(),
                 entity_resource_grants.as_ref(),
+                &user_prompt,
+                &force_skill,
+                skill_loader.as_deref(),
             )
             .await;
 
@@ -318,6 +327,7 @@ impl Runner {
             static_system: String::new(),
             model: String::new(),
             enable_thinking: false,
+            metadata: None,
         };
 
         let mut rx = prov_lock[0].stream(&req).await?;
@@ -378,12 +388,17 @@ async fn run_loop(
     personality_snippet: Option<&str>,
     entity_permissions: Option<&HashMap<String, bool>>,
     entity_resource_grants: Option<&HashMap<String, String>>,
+    user_prompt: &str,
+    force_skill: &str,
+    skill_loader: Option<&tools::skills::Loader>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
     let mut retryable_retries = 0usize;
     let mut called_tools: Vec<String> = Vec::new();
     let mut provider_idx: usize = 0;
+    // Janus provider metadata for tool stickiness — echoed back in subsequent requests
+    let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
     let mut auto_continuations = 0usize;
 
     // Resolve role from registry if role_id is set
@@ -407,12 +422,57 @@ async fn run_loop(
             .map(|a| a.name.clone())
             .unwrap_or_else(|| "Nebo".to_string())
     };
-    let db_context_formatted = db_context::format_for_system_prompt(&db_ctx, &agent_name);
+    let mut db_context_formatted = db_context::format_for_system_prompt(&db_ctx, &agent_name);
+
+    // Pre-load prompt-relevant memories via FTS (surfaces memories the decay scoring may miss)
+    if !user_prompt.is_empty() {
+        let existing_ids: std::collections::HashSet<i64> =
+            db_ctx.tacit_memories.iter().map(|sm| sm.memory.id).collect();
+        let relevant = db_context::load_prompt_relevant_memories(
+            store, user_id, user_prompt, &existing_ids,
+        );
+        if !relevant.is_empty() {
+            db_context_formatted.push_str(&relevant);
+        }
+    }
 
     // Get active task
     let active_task = sessions
         .get_active_task(session_id)
         .unwrap_or_default();
+
+    // Match skills against user prompt (force_skill overrides trigger matching)
+    let (active_skill_template, skill_hints) = if let Some(loader) = skill_loader {
+        if !force_skill.is_empty() {
+            // Forced skill: look up by name directly
+            match loader.get(force_skill).await {
+                Some(skill) if skill.enabled => {
+                    info!(skill = %skill.name, "force-activated skill");
+                    (Some(skill.template.clone()), vec![format!("Active skill: {} — {}", skill.name, skill.description)])
+                }
+                _ => {
+                    warn!(force_skill, "forced skill not found or disabled");
+                    (None, Vec::new())
+                }
+            }
+        } else if !user_prompt.is_empty() {
+            // Trigger matching: find best matching skill
+            let matches = loader.match_triggers(user_prompt, 3).await;
+            if let Some(best) = matches.first() {
+                info!(skill = %best.name, priority = best.priority, "skill matched via trigger");
+                let hints: Vec<String> = matches.iter()
+                    .map(|s| format!("Available skill: {} — {}", s.name, s.description))
+                    .collect();
+                (Some(best.template.clone()), hints)
+            } else {
+                (None, Vec::new())
+            }
+        } else {
+            (None, Vec::new())
+        }
+    } else {
+        (None, Vec::new())
+    };
 
     // Build static system prompt — use modular prompt when no custom one is provided
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
@@ -421,8 +481,8 @@ async fn run_loop(
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
             agent_name: agent_name.clone(),
-            active_skill: None,
-            skill_hints: Vec::new(),
+            active_skill: active_skill_template,
+            skill_hints,
             model_aliases: model_aliases.to_string(),
             channel: channel.to_string(),
             platform: std::env::consts::OS.to_string(),
@@ -617,10 +677,32 @@ async fn run_loop(
         let strap_section = prompt::build_strap_section(&filtered_tool_names, &active_contexts);
         let tools_list = prompt::build_tools_list(&filtered_tool_names);
 
-        // Build dynamic system suffix
+        // Select model: use override if set, otherwise ask the selector
+        let selected_model = if !model_override.is_empty() {
+            model_override.to_string()
+        } else {
+            selector.select(&window_messages)
+        };
+
+        // Determine thinking mode
+        let enable_thinking = if !selected_model.is_empty() {
+            let task = selector.classify_task(&window_messages);
+            task == selector::TaskType::Reasoning && selector.supports_thinking(&selected_model)
+        } else {
+            false
+        };
+
+        // Parse selected model to find the right provider
+        let (selected_provider_id, selected_model_name) = if selected_model.is_empty() {
+            ("", "")
+        } else {
+            selector::parse_model_id(&selected_model)
+        };
+
+        // Build dynamic system suffix — AFTER model selection so identity is accurate
         let dctx = prompt::DynamicContext {
-            provider_name: String::new(),
-            model_name: if model_override.is_empty() { String::new() } else { model_override.to_string() },
+            provider_name: selected_provider_id.to_string(),
+            model_name: selected_model_name.to_string(),
             active_task: active_task.clone(),
             summary: summary.clone(),
         };
@@ -647,28 +729,6 @@ async fn run_loop(
             full_system
         };
 
-        // Select model: use override if set, otherwise ask the selector
-        let selected_model = if !model_override.is_empty() {
-            model_override.to_string()
-        } else {
-            selector.select(&window_messages)
-        };
-
-        // Determine thinking mode
-        let enable_thinking = if !selected_model.is_empty() {
-            let task = selector.classify_task(&window_messages);
-            task == selector::TaskType::Reasoning && selector.supports_thinking(&selected_model)
-        } else {
-            false
-        };
-
-        // Parse selected model to find the right provider
-        let (selected_provider_id, selected_model_name) = if selected_model.is_empty() {
-            ("", "")
-        } else {
-            selector::parse_model_id(&selected_model)
-        };
-
         // Build ChatRequest
         let chat_req = ChatRequest {
             messages: ai_messages,
@@ -683,6 +743,7 @@ async fn run_loop(
                 selected_model_name.to_string()
             },
             enable_thinking,
+            metadata: sticky_metadata.clone(),
         };
 
         // Acquire LLM permit before provider call (blocks if at capacity)
@@ -838,9 +899,15 @@ async fn run_loop(
                         concurrency.report_success(Some(meta));
                     }
                 }
-                StreamEventType::Done | StreamEventType::ToolResult
+                StreamEventType::Done => {
+                    // Capture provider metadata for Janus tool stickiness
+                    if let Some(meta) = event.provider_metadata {
+                        sticky_metadata = Some(meta);
+                    }
+                }
+                StreamEventType::ToolResult
                 | StreamEventType::ApprovalRequest | StreamEventType::AskRequest => {
-                    // Done: handled after loop. ToolResult/Approval/Ask: only sent by runner, not received from provider.
+                    // ToolResult/Approval/Ask: only sent by runner, not received from provider.
                 }
             }
         }
@@ -1071,6 +1138,7 @@ async fn run_loop(
                         usage: None,
                         rate_limit: None,
                         widgets: None,
+                        provider_metadata: None,
                     })
                     .await;
                 results[idx] = Some((tc, result));
@@ -1508,6 +1576,7 @@ Rules:
         static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
+        metadata: None,
     };
 
     let stream_result = provider.stream(&req).await;

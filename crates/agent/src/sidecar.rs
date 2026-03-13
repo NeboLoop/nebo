@@ -41,6 +41,7 @@ pub async fn verify_screenshot(
         static_system: String::new(),
         model: sidecar_model(),
         enable_thinking: false,
+        metadata: None,
     };
 
     let mut rx = match provider.stream(&req).await {

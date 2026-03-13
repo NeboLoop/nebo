@@ -166,18 +166,18 @@ providers:
       active: false
 
   janus:
-    - id: janus
-      displayName: Janus
+    - id: nebo-1
+      displayName: Nebo 1
       contextWindow: 200000
       capabilities: [vision, tools, streaming, code, reasoning]
       active: true
-    - id: text-embedding-small
-      displayName: Janus Embeddings (Small)
+    - id: nebo-embed-small
+      displayName: Nebo Embeddings (Small)
       contextWindow: 8191
       capabilities: [embeddings]
       active: true
-    - id: text-embedding-large
-      displayName: Janus Embeddings (Large)
+    - id: nebo-embed-large
+      displayName: Nebo Embeddings (Large)
       contextWindow: 8191
       capabilities: [embeddings]
       active: true

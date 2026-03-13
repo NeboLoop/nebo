@@ -211,6 +211,7 @@ impl LocalProvider {
                 }),
                 rate_limit: None,
                 widgets: None,
+                provider_metadata: None,
             });
 
             let _ = tx_clone.blocking_send(StreamEvent::done());

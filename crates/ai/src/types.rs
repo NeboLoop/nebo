@@ -66,6 +66,8 @@ pub struct StreamEvent {
     pub usage: Option<UsageInfo>,
     pub rate_limit: Option<RateLimitMeta>,
     pub widgets: Option<serde_json::Value>,
+    /// Provider metadata from Janus for tool stickiness routing.
+    pub provider_metadata: Option<HashMap<String, String>>,
 }
 
 impl StreamEvent {
@@ -78,6 +80,7 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets: None,
+            provider_metadata: None,
         }
     }
 
@@ -90,6 +93,7 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets: None,
+            provider_metadata: None,
         }
     }
 
@@ -102,6 +106,7 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets: None,
+            provider_metadata: None,
         }
     }
 
@@ -114,6 +119,7 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets: None,
+            provider_metadata: None,
         }
     }
 
@@ -126,6 +132,7 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets: None,
+            provider_metadata: None,
         }
     }
 
@@ -138,6 +145,7 @@ impl StreamEvent {
             usage: Some(info),
             rate_limit: None,
             widgets: None,
+            provider_metadata: None,
         }
     }
 
@@ -150,6 +158,7 @@ impl StreamEvent {
             usage: None,
             rate_limit: Some(meta),
             widgets: None,
+            provider_metadata: None,
         }
     }
 
@@ -162,6 +171,7 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets: None,
+            provider_metadata: None,
         }
     }
 
@@ -178,6 +188,7 @@ impl StreamEvent {
             usage: None,
             rate_limit: None,
             widgets,
+            provider_metadata: None,
         }
     }
 }
@@ -229,6 +240,9 @@ pub struct ChatRequest {
     pub model: String,
     #[serde(default)]
     pub enable_thinking: bool,
+    /// Provider metadata echoed back for Janus tool stickiness routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, String>>,
 }
 
 /// Sender half of a streaming event channel.

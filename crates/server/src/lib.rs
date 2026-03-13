@@ -176,11 +176,17 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                     .and_then(|m| m.get("janus_provider"))
                     .and_then(|v| v.as_str())
                     == Some("true");
-                if is_janus && !profile.api_key.is_empty() {
+                if is_janus {
                     // Janus URL comes from config (NeboLoop.JanusURL), NOT auth_profile base_url
                     let janus_url = &cfg.neboloop.janus_url;
-                    let model = profile.model.clone().unwrap_or_else(|| "janus".into());
+                    let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
                     let bot_id = config::read_bot_id().unwrap_or_default();
+                    // Janus authenticates via X-Bot-ID header; api_key (OAuth token) is optional
+                    let api_key = if profile.api_key.is_empty() {
+                        bot_id.clone()
+                    } else {
+                        profile.api_key.clone()
+                    };
                     info!(
                         model = %model,
                         janus_url = %janus_url,
@@ -188,7 +194,7 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                         "loaded Janus provider via NeboLoop"
                     );
                     let mut p = ai::OpenAIProvider::with_base_url(
-                        profile.api_key.clone(),
+                        api_key,
                         model,
                         format!("{}/v1", janus_url),
                     );
@@ -198,7 +204,12 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                     }
                     Some(Arc::new(p))
                 } else {
-                    None // neboloop profile exists for comms, not AI
+                    info!(
+                        profile_id = %profile.id,
+                        has_metadata = metadata.is_some(),
+                        "neboloop profile found but janus_provider not enabled, skipping AI provider"
+                    );
+                    None
                 }
             }
             _ => {
@@ -679,6 +690,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         hooks.clone(),
         Some(mcp_context.clone()),
         active_role_state.clone(),
+        Some(skill_loader.clone()),
     ));
 
     // Create event bus and dispatcher for workflow-to-workflow events

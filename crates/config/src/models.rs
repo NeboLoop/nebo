@@ -258,11 +258,21 @@ impl ModelsConfig {
                         }
                     }
 
-                    // Migrate janus model IDs: strip "janus/" prefix
+                    // Migrate janus model IDs: strip legacy prefixes
                     if let Some(janus_models) = cfg.providers.get_mut("janus") {
                         for model in janus_models.iter_mut() {
                             if let Some(stripped) = model.id.strip_prefix("janus/") {
                                 model.id = stripped.to_string();
+                            }
+                            if let Some(stripped) = model.id.strip_prefix("neboloop/") {
+                                model.id = stripped.to_string();
+                            }
+                            // Migrate old "janus" model ID to "nebo-1"
+                            if model.id == "janus" {
+                                model.id = "nebo-1".to_string();
+                                if model.display_name == "Janus" {
+                                    model.display_name = "Nebo 1".to_string();
+                                }
                             }
                         }
                     }

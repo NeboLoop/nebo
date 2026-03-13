@@ -156,6 +156,7 @@ pub async fn extract_facts(
         static_system: String::new(),
         model: String::new(),
         enable_thinking: false,
+        metadata: None,
     };
 
     let mut rx = match provider.stream(&req).await {
