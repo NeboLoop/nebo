@@ -592,8 +592,9 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     crate::handlers::neboloop::store_neboloop_profile(
         state,
         &api_server,
-        &resp.id,      // owner_id from redeem response
-        &resp.name,     // use bot name as display identifier
+        &resp.id,               // owner_id from redeem response
+        &resp.owner_email,      // owner email from redeem response
+        &resp.owner_display_name, // owner display name from redeem response
         &resp.connection_token,
         "",             // no refresh token from code redemption
         false,          // not a janus provider

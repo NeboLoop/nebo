@@ -12,8 +12,6 @@
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { AdvisorItem } from '$lib/api/neboComponents';
-	import Button from '$lib/components/ui/Button.svelte';
-	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 
 	let isLoading = $state(true);
@@ -44,16 +42,16 @@
 
 	const roleOptions = ['general', 'critic', 'builder', 'historian', 'strategist', 'analyst', 'innovator', 'user-advocate'];
 
-	// Role → color mapping for visual distinction
-	const roleColors: Record<string, { border: string; badge: string; bg: string }> = {
-		critic: { border: 'border-l-error', badge: 'badge-error', bg: 'bg-error/5' },
-		builder: { border: 'border-l-success', badge: 'badge-success', bg: 'bg-success/5' },
-		historian: { border: 'border-l-warning', badge: 'badge-warning', bg: 'bg-warning/5' },
-		strategist: { border: 'border-l-info', badge: 'badge-info', bg: 'bg-info/5' },
-		innovator: { border: 'border-l-secondary', badge: 'badge-secondary', bg: 'bg-secondary/5' },
-		analyst: { border: 'border-l-accent', badge: 'badge-accent', bg: 'bg-accent/5' },
-		'user-advocate': { border: 'border-l-primary', badge: 'badge-primary', bg: 'bg-primary/5' },
-		general: { border: 'border-l-base-content/20', badge: 'badge-ghost', bg: 'bg-base-200' }
+	// Role → color mapping (subtle left border + pill only, neutral card bg)
+	const roleColors: Record<string, { border: string; pill: string }> = {
+		critic: { border: 'border-l-error', pill: 'bg-error/15 text-error' },
+		builder: { border: 'border-l-success', pill: 'bg-success/15 text-success' },
+		historian: { border: 'border-l-warning', pill: 'bg-warning/15 text-warning' },
+		strategist: { border: 'border-l-info', pill: 'bg-info/15 text-info' },
+		innovator: { border: 'border-l-secondary', pill: 'bg-secondary/15 text-secondary' },
+		analyst: { border: 'border-l-accent', pill: 'bg-accent/15 text-accent' },
+		'user-advocate': { border: 'border-l-primary', pill: 'bg-primary/15 text-primary' },
+		general: { border: 'border-l-base-content/20', pill: 'bg-base-content/10 text-base-content/70' }
 	};
 
 	function getRoleStyle(role: string) {
@@ -149,336 +147,351 @@
 	}
 </script>
 
-<div class="flex flex-col gap-5">
-	<!-- Header -->
-	<div class="flex items-center justify-between">
-		<div>
-			<h2 class="font-display text-xl font-bold text-base-content mb-1">Advisors</h2>
-			<p class="text-sm text-base-content/60">
-				Internal voices that deliberate before the agent responds
-			</p>
-		</div>
-		<Button type="primary" size="sm" onclick={() => (showCreate = !showCreate)}>
-			<Plus class="w-4 h-4 mr-1" />
-			New Advisor
-		</Button>
+<div class="mb-6 flex items-center justify-between">
+	<div>
+		<h2 class="font-display text-xl font-bold text-base-content mb-1">Advisors</h2>
+		<p class="text-sm text-base-content/70">
+			Internal voices that deliberate before the agent responds
+		</p>
 	</div>
+	<button
+		class="h-9 px-4 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5"
+		onclick={() => (showCreate = !showCreate)}
+	>
+		<Plus class="w-4 h-4" />
+		New Advisor
+	</button>
+</div>
 
-	<!-- Alerts -->
-	{#if success}
-		<Alert type="success">{success}</Alert>
-	{/if}
-	{#if error}
-		<Alert type="error" title="Error">{error}</Alert>
-	{/if}
+{#if success}
+	<div class="mb-4 rounded-xl bg-success/10 border border-success/20 px-4 py-3 text-sm text-success">
+		{success}
+	</div>
+{/if}
+{#if error}
+	<div class="mb-4 rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error">
+		{error}
+	</div>
+{/if}
 
-	<!-- Create Form -->
-	{#if showCreate}
-		<div class="bg-base-200 rounded-xl p-5 space-y-4 border border-base-300">
-			<h3 class="font-semibold text-base-content">Create Advisor</h3>
-			<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-				<div>
-					<label class="label" for="advisor-name">
-						<span class="label-text">Name (slug)</span>
-					</label>
-					<input
-						id="advisor-name"
-						type="text"
-						bind:value={newName}
-						placeholder="e.g. skeptic"
-						class="input input-bordered input-sm w-full"
-					/>
-				</div>
-				<div>
-					<label class="label" for="advisor-role">
-						<span class="label-text">Role</span>
-					</label>
-					<select id="advisor-role" bind:value={newRole} class="select select-bordered select-sm w-full">
-						{#each roleOptions as role}
-							<option value={role}>{role}</option>
-						{/each}
-					</select>
-				</div>
-				<div>
-					<label class="label" for="advisor-priority">
-						<span class="label-text">Priority (higher = speaks first)</span>
-					</label>
-					<input
-						id="advisor-priority"
-						type="number"
-						bind:value={newPriority}
-						min="1"
-						max="100"
-						class="input input-bordered input-sm w-full"
-					/>
-				</div>
-				<div>
-					<label class="label" for="advisor-timeout">
-						<span class="label-text">Timeout</span>
-					</label>
-					<select
-						id="advisor-timeout"
-						bind:value={newTimeout}
-						class="select select-bordered select-sm w-full"
-					>
-						{#each timeoutOptions as opt}
-							<option value={opt.value}>{opt.label}</option>
-						{/each}
-					</select>
-				</div>
-			</div>
+<!-- Create Form -->
+{#if showCreate}
+	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-4 mb-6">
+		<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">Create Advisor</h3>
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 			<div>
-				<label class="label" for="advisor-description">
-					<span class="label-text">Description</span>
+				<label class="text-sm font-medium text-base-content/70" for="advisor-name">
+					Name (slug)
 				</label>
 				<input
-					id="advisor-description"
+					id="advisor-name"
 					type="text"
-					bind:value={newDescription}
-					placeholder="What does this advisor do?"
-					class="input input-bordered input-sm w-full"
+					bind:value={newName}
+					placeholder="e.g. skeptic"
+					class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 				/>
 			</div>
 			<div>
-				<label class="label cursor-pointer justify-start gap-3" for="advisor-memory">
-					<input
-						id="advisor-memory"
-						type="checkbox"
-						bind:checked={newMemoryAccess}
-						class="toggle toggle-sm toggle-primary"
-					/>
-					<span class="label-text">Memory Access</span>
+				<label class="text-sm font-medium text-base-content/70" for="advisor-role">
+					Role
 				</label>
+				<select
+					id="advisor-role"
+					bind:value={newRole}
+					class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+				>
+					{#each roleOptions as role}
+						<option value={role}>{role}</option>
+					{/each}
+				</select>
 			</div>
 			<div>
-				<label class="label" for="advisor-persona">
-					<span class="label-text">Persona (system prompt)</span>
+				<label class="text-sm font-medium text-base-content/70" for="advisor-priority">
+					Priority (higher = speaks first)
 				</label>
-				<textarea
-					id="advisor-persona"
-					bind:value={newPersona}
-					placeholder="You are the Skeptic. Your role is to challenge ideas and find flaws..."
-					class="textarea textarea-bordered w-full h-32 text-sm"
-				></textarea>
+				<input
+					id="advisor-priority"
+					type="number"
+					bind:value={newPriority}
+					min="1"
+					max="100"
+					class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+				/>
 			</div>
-			<div class="flex justify-end gap-2 pt-1">
-				<Button
-					type="ghost"
-					size="sm"
-					onclick={() => {
-						showCreate = false;
-						resetCreateForm();
-					}}
+			<div>
+				<label class="text-sm font-medium text-base-content/70" for="advisor-timeout">
+					Timeout
+				</label>
+				<select
+					id="advisor-timeout"
+					bind:value={newTimeout}
+					class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 				>
-					Cancel
-				</Button>
-				<Button
-					type="primary"
-					size="sm"
-					onclick={handleCreate}
-					disabled={isCreating || !newName.trim() || !newPersona.trim()}
-				>
-					{#if isCreating}
-						<Spinner size={14} />
-						<span class="ml-1">Creating...</span>
-					{:else}
-						Create
-					{/if}
-				</Button>
+					{#each timeoutOptions as opt}
+						<option value={opt.value}>{opt.label}</option>
+					{/each}
+				</select>
 			</div>
 		</div>
-	{/if}
+		<div>
+			<label class="text-sm font-medium text-base-content/70" for="advisor-description">
+				Description
+			</label>
+			<input
+				id="advisor-description"
+				type="text"
+				bind:value={newDescription}
+				placeholder="What does this advisor do?"
+				class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+			/>
+		</div>
+		<div class="flex items-center gap-3">
+			<input
+				id="advisor-memory"
+				type="checkbox"
+				bind:checked={newMemoryAccess}
+				class="toggle toggle-sm toggle-primary"
+			/>
+			<label class="text-sm font-medium text-base-content/70 cursor-pointer" for="advisor-memory">
+				Memory Access
+			</label>
+		</div>
+		<div>
+			<label class="text-sm font-medium text-base-content/70" for="advisor-persona">
+				Persona (system prompt)
+			</label>
+			<textarea
+				id="advisor-persona"
+				bind:value={newPersona}
+				placeholder="You are the Skeptic. Your role is to challenge ideas and find flaws..."
+				class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-sm focus:outline-none focus:border-primary/50 transition-colors resize-none h-32"
+			></textarea>
+		</div>
+		<div class="flex justify-end gap-2 pt-1">
+			<button
+				class="h-9 px-4 rounded-full text-sm font-medium text-base-content/70 hover:bg-base-content/5 transition-colors"
+				onclick={() => {
+					showCreate = false;
+					resetCreateForm();
+				}}
+			>
+				Cancel
+			</button>
+			<button
+				class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30 flex items-center gap-1.5"
+				onclick={handleCreate}
+				disabled={isCreating || !newName.trim() || !newPersona.trim()}
+			>
+				{#if isCreating}
+					<Spinner size={14} />
+					Creating...
+				{:else}
+					Create
+				{/if}
+			</button>
+		</div>
+	</div>
+{/if}
 
-	<!-- Advisor List -->
-	{#if isLoading}
-		<div class="flex flex-col items-center justify-center py-12 gap-4">
-			<Spinner size={32} />
-			<p class="text-sm text-base-content/60">Loading advisors...</p>
-		</div>
-	{:else if advisors.length === 0}
-		<div class="flex flex-col items-center justify-center py-16 gap-3 text-base-content/50">
-			<MessagesSquare class="w-12 h-12" />
-			<p class="font-medium">No advisors configured</p>
-			<p class="text-sm">Advisors provide internal perspectives before the agent responds</p>
-			<Button type="primary" size="sm" onclick={() => (showCreate = true)}>
-				<Plus class="w-4 h-4 mr-1" />
-				Create your first advisor
-			</Button>
-		</div>
-	{:else}
-		<div class="space-y-3">
-			{#each advisors as advisor (advisor.name)}
-				{@const style = getRoleStyle(advisor.role)}
-				<div
-					class="rounded-xl border-l-4 {style.border} {style.bg} transition-all"
-					class:opacity-50={!advisor.enabled}
+<!-- Advisor List -->
+{#if isLoading}
+	<div class="flex items-center justify-center gap-3 py-16">
+		<Spinner size={20} />
+		<span class="text-sm text-base-content/70">Loading advisors...</span>
+	</div>
+{:else if advisors.length === 0}
+	<div class="flex flex-col items-center justify-center py-16 gap-3 text-base-content/70">
+		<MessagesSquare class="w-12 h-12" />
+		<p class="font-medium">No advisors configured</p>
+		<p class="text-sm">Advisors provide internal perspectives before the agent responds</p>
+		<button
+			class="h-9 px-4 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5 mt-2"
+			onclick={() => (showCreate = true)}
+		>
+			<Plus class="w-4 h-4" />
+			Create your first advisor
+		</button>
+	</div>
+{:else}
+	<div class="space-y-3">
+		{#each advisors as advisor (advisor.name)}
+			{@const style = getRoleStyle(advisor.role)}
+			<div
+				class="rounded-2xl border-l-4 {style.border} bg-base-200/50 border border-base-content/10 transition-all"
+				class:opacity-50={!advisor.enabled}
+			>
+				<!-- Advisor card -->
+				<button
+					class="w-full p-4 cursor-pointer text-left"
+					onclick={() => toggleExpand(advisor.name)}
 				>
-					<!-- Advisor card -->
-					<button
-						class="w-full p-4 cursor-pointer text-left"
-						onclick={() => toggleExpand(advisor.name)}
-					>
-						<div class="flex items-start gap-3">
-							<!-- Toggle -->
-							<div class="pt-0.5">
-								<input
-									type="checkbox"
-									checked={advisor.enabled}
-									onclick={(e) => e.stopPropagation()}
-									onchange={() => handleToggle(advisor)}
-									class="toggle toggle-sm toggle-primary"
-								/>
-							</div>
+					<div class="flex items-start gap-3">
+						<!-- Toggle -->
+						<div class="pt-0.5">
+							<input
+								type="checkbox"
+								checked={advisor.enabled}
+								onclick={(e) => e.stopPropagation()}
+								onchange={() => handleToggle(advisor)}
+								class="toggle toggle-sm toggle-primary"
+							/>
+						</div>
 
-							<!-- Name + meta -->
-							<div class="flex-1 min-w-0">
-								<div class="flex items-center gap-2 mb-1">
-									<span class="font-semibold text-base-content">{advisor.name}</span>
-									<span class="badge badge-sm {style.badge}">{advisor.role}</span>
-									{#if advisor.memoryAccess}
-										<Brain class="w-3.5 h-3.5 text-primary" title="Has memory access" />
-									{/if}
-								</div>
-								{#if advisor.description}
-									<p class="text-sm text-base-content/60 leading-snug">
-										{advisor.description}
-									</p>
+						<!-- Name + meta -->
+						<div class="flex-1 min-w-0">
+							<div class="flex items-center gap-2 mb-1">
+								<span class="font-semibold text-base-content">{advisor.name}</span>
+								<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold {style.pill}">{advisor.role}</span>
+								{#if advisor.memoryAccess}
+									<Brain class="w-3.5 h-3.5 text-primary" title="Has memory access" />
 								{/if}
-								<div class="flex items-center gap-3 mt-2 text-xs text-base-content/40">
-									<span class="flex items-center gap-1">
-										<Clock class="w-3 h-3" />
-										{advisor.timeoutSeconds}s
-									</span>
-									<span class="flex items-center gap-1">
-										<ArrowUpDown class="w-3 h-3" />
-										Priority {advisor.priority}
-									</span>
-								</div>
 							</div>
-
-							<!-- Expand chevron -->
-							<div class="pt-1">
-								{#if expandedAdvisor === advisor.name}
-									<ChevronUp class="w-4 h-4 text-base-content/40" />
-								{:else}
-									<ChevronDown class="w-4 h-4 text-base-content/40" />
-								{/if}
+							{#if advisor.description}
+								<p class="text-sm text-base-content/70 leading-snug">
+									{advisor.description}
+								</p>
+							{/if}
+							<div class="flex items-center gap-3 mt-2 text-sm text-base-content/70">
+								<span class="flex items-center gap-1">
+									<Clock class="w-3 h-3" />
+									{advisor.timeoutSeconds}s
+								</span>
+								<span class="flex items-center gap-1">
+									<ArrowUpDown class="w-3 h-3" />
+									Priority {advisor.priority}
+								</span>
 							</div>
 						</div>
-					</button>
 
-					<!-- Expanded details -->
-					{#if expandedAdvisor === advisor.name}
-						<div class="px-4 pb-4 space-y-3 border-t border-base-300/50">
-							<div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3">
-								<div>
-									<label class="label" for="edit-role-{advisor.name}">
-										<span class="label-text text-xs">Role</span>
-									</label>
-									<select
-										id="edit-role-{advisor.name}"
-										value={advisor.role}
-										onchange={(e) => handleUpdate(advisor, 'role', e.currentTarget.value)}
-										class="select select-bordered select-sm w-full"
-									>
-										{#each roleOptions as role}
-											<option value={role}>{role}</option>
-										{/each}
-									</select>
-								</div>
-								<div>
-									<label class="label" for="edit-timeout-{advisor.name}">
-										<span class="label-text text-xs">Timeout</span>
-									</label>
-									<select
-										id="edit-timeout-{advisor.name}"
-										value={advisor.timeoutSeconds}
-										onchange={(e) => handleUpdate(advisor, 'timeoutSeconds', parseInt(e.currentTarget.value))}
-										class="select select-bordered select-sm w-full"
-									>
-										{#each timeoutOptions as opt}
-											<option value={opt.value}>{opt.label}</option>
-										{/each}
-									</select>
-								</div>
-								<div>
-									<label class="label" for="edit-priority-{advisor.name}">
-										<span class="label-text text-xs">Priority</span>
-									</label>
-									<input
-										id="edit-priority-{advisor.name}"
-										type="number"
-										value={advisor.priority}
-										min="1"
-										max="100"
-										onchange={(e) => handleUpdate(advisor, 'priority', parseInt(e.currentTarget.value))}
-										class="input input-bordered input-sm w-full"
-									/>
-								</div>
-							</div>
+						<!-- Expand chevron -->
+						<div class="pt-1">
+							{#if expandedAdvisor === advisor.name}
+								<ChevronUp class="w-4 h-4 text-base-content/70" />
+							{:else}
+								<ChevronDown class="w-4 h-4 text-base-content/70" />
+							{/if}
+						</div>
+					</div>
+				</button>
 
+				<!-- Expanded details -->
+				{#if expandedAdvisor === advisor.name}
+					<div class="px-4 pb-4 space-y-4 border-t border-base-content/10">
+						<div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4">
 							<div>
-								<label class="label" for="edit-desc-{advisor.name}">
-									<span class="label-text text-xs">Description</span>
+								<label class="text-sm font-medium text-base-content/70" for="edit-role-{advisor.name}">
+									Role
+								</label>
+								<select
+									id="edit-role-{advisor.name}"
+									value={advisor.role}
+									onchange={(e) => handleUpdate(advisor, 'role', e.currentTarget.value)}
+									class="w-full h-9 mt-1.5 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+								>
+									{#each roleOptions as role}
+										<option value={role}>{role}</option>
+									{/each}
+								</select>
+							</div>
+							<div>
+								<label class="text-sm font-medium text-base-content/70" for="edit-timeout-{advisor.name}">
+									Timeout
+								</label>
+								<select
+									id="edit-timeout-{advisor.name}"
+									value={advisor.timeoutSeconds}
+									onchange={(e) => handleUpdate(advisor, 'timeoutSeconds', parseInt(e.currentTarget.value))}
+									class="w-full h-9 mt-1.5 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+								>
+									{#each timeoutOptions as opt}
+										<option value={opt.value}>{opt.label}</option>
+									{/each}
+								</select>
+							</div>
+							<div>
+								<label class="text-sm font-medium text-base-content/70" for="edit-priority-{advisor.name}">
+									Priority
 								</label>
 								<input
-									id="edit-desc-{advisor.name}"
-									type="text"
-									value={advisor.description}
-									onchange={(e) => handleUpdate(advisor, 'description', e.currentTarget.value)}
-									class="input input-bordered input-sm w-full"
+									id="edit-priority-{advisor.name}"
+									type="number"
+									value={advisor.priority}
+									min="1"
+									max="100"
+									onchange={(e) => handleUpdate(advisor, 'priority', parseInt(e.currentTarget.value))}
+									class="w-full h-9 mt-1.5 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 								/>
 							</div>
+						</div>
 
-							<label class="label cursor-pointer justify-start gap-3" for="edit-memory-{advisor.name}">
-								<input
-									id="edit-memory-{advisor.name}"
-									type="checkbox"
-									checked={advisor.memoryAccess}
-									onchange={() => handleUpdate(advisor, 'memoryAccess', !advisor.memoryAccess)}
-									class="toggle toggle-sm toggle-primary"
-								/>
-								<span class="label-text text-xs">Memory Access</span>
+						<div>
+							<label class="text-sm font-medium text-base-content/70" for="edit-desc-{advisor.name}">
+								Description
 							</label>
-
-							<div>
-								<label class="label" for="edit-persona-{advisor.name}">
-									<span class="label-text text-xs">Persona</span>
-								</label>
-								<textarea
-									id="edit-persona-{advisor.name}"
-									value={advisor.persona}
-									onchange={(e) => handleUpdate(advisor, 'persona', e.currentTarget.value)}
-									class="textarea textarea-bordered w-full h-40 text-sm font-mono leading-relaxed"
-								></textarea>
-							</div>
-
-							<div class="flex justify-end pt-1">
-								{#if deleteConfirm === advisor.name}
-									<div class="flex items-center gap-2">
-										<span class="text-xs text-error">Delete this advisor?</span>
-										<Button type="error" size="xs" onclick={() => handleDelete(advisor.name)}>
-											Confirm
-										</Button>
-										<Button type="ghost" size="xs" onclick={() => (deleteConfirm = null)}>
-											Cancel
-										</Button>
-									</div>
-								{:else}
-									<Button
-										type="ghost"
-										size="xs"
-										onclick={() => (deleteConfirm = advisor.name)}
-									>
-										<Trash2 class="w-3.5 h-3.5 mr-1 text-error" />
-										Delete
-									</Button>
-								{/if}
-							</div>
+							<input
+								id="edit-desc-{advisor.name}"
+								type="text"
+								value={advisor.description}
+								onchange={(e) => handleUpdate(advisor, 'description', e.currentTarget.value)}
+								class="w-full h-9 mt-1.5 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+							/>
 						</div>
-					{/if}
-				</div>
-			{/each}
-		</div>
-	{/if}
-</div>
+
+						<div class="flex items-center gap-3">
+							<input
+								id="edit-memory-{advisor.name}"
+								type="checkbox"
+								checked={advisor.memoryAccess}
+								onchange={() => handleUpdate(advisor, 'memoryAccess', !advisor.memoryAccess)}
+								class="toggle toggle-sm toggle-primary"
+							/>
+							<label class="text-sm font-medium text-base-content/70 cursor-pointer" for="edit-memory-{advisor.name}">
+								Memory Access
+							</label>
+						</div>
+
+						<div>
+							<label class="text-sm font-medium text-base-content/70" for="edit-persona-{advisor.name}">
+								Persona
+							</label>
+							<textarea
+								id="edit-persona-{advisor.name}"
+								value={advisor.persona}
+								onchange={(e) => handleUpdate(advisor, 'persona', e.currentTarget.value)}
+								class="w-full mt-1.5 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-sm font-mono leading-relaxed focus:outline-none focus:border-primary/50 transition-colors resize-none h-40"
+							></textarea>
+						</div>
+
+						<div class="flex justify-end pt-1">
+							{#if deleteConfirm === advisor.name}
+								<div class="flex items-center gap-2">
+									<span class="text-sm text-error">Delete this advisor?</span>
+									<button
+										class="h-7 px-3 rounded-full bg-error text-error-content text-xs font-bold hover:brightness-110 transition-all"
+										onclick={() => handleDelete(advisor.name)}
+									>
+										Confirm
+									</button>
+									<button
+										class="h-7 px-3 rounded-full text-xs font-medium text-base-content/70 hover:bg-base-content/5 transition-colors"
+										onclick={() => (deleteConfirm = null)}
+									>
+										Cancel
+									</button>
+								</div>
+							{:else}
+								<button
+									class="h-7 px-3 rounded-full text-xs font-medium text-base-content/70 hover:text-error hover:bg-error/10 transition-colors flex items-center gap-1"
+									onclick={() => (deleteConfirm = advisor.name)}
+								>
+									<Trash2 class="w-3.5 h-3.5" />
+									Delete
+								</button>
+							{/if}
+						</div>
+					</div>
+				{/if}
+			</div>
+		{/each}
+	</div>
+{/if}

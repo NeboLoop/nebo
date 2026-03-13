@@ -253,7 +253,7 @@
 							></div>
 						{/each}
 					</div>
-					<span class="text-xs text-base-content/40 ml-2">Listening...</span>
+					<span class="text-xs text-base-content/70 ml-2">Listening...</span>
 				</div>
 			{:else}
 				<!-- Textarea row -->
@@ -268,7 +268,7 @@
 							: placeholder}
 						disabled={disabled || duplexActive}
 						rows="1"
-						class="w-full bg-transparent border-none outline-none resize-none text-sm leading-relaxed placeholder:text-base-content/40 min-h-[24px] max-h-[200px]"
+						class="w-full bg-transparent border-none outline-none resize-none text-sm leading-relaxed placeholder:text-base-content/70 min-h-[24px] max-h-[200px]"
 					></textarea>
 				</div>
 			{/if}
@@ -280,7 +280,7 @@
 					<button
 						type="button"
 						onclick={handleBrowseFiles}
-						class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/50 hover:text-base-content"
+						class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/70 hover:text-base-content"
 						title="Attach file (inserts path)"
 					>
 						<Plus class="w-4 h-4" />
@@ -291,7 +291,7 @@
 						<button
 							type="button"
 							onclick={onNewSession}
-							class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/50 hover:text-base-content"
+							class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/70 hover:text-base-content"
 							{disabled}
 							title="New session"
 						>
@@ -308,7 +308,7 @@
 							onclick={() => onToggleDuplex?.()}
 							class="btn btn-ghost btn-sm btn-square rounded-lg {duplexActive
 								? 'text-success animate-pulse'
-								: 'text-base-content/50 hover:text-base-content'}"
+								: 'text-base-content/70 hover:text-base-content'}"
 							title={duplexActive ? 'End voice session' : 'Voice conversation'}
 						>
 							<AudioLines class="w-4 h-4" />
@@ -332,7 +332,7 @@
 							disabled={!canSend}
 							class="btn btn-sm btn-circle transition-all {canSend
 								? 'btn-primary'
-								: 'btn-ghost bg-base-300 text-base-content/30'}"
+								: 'btn-ghost bg-base-300 text-base-content/70'}"
 							title="Send message"
 						>
 							<ArrowUp class="w-4 h-4" />
@@ -343,7 +343,7 @@
 		</div>
 
 		<!-- Disclaimer -->
-		<p class="text-center text-xs text-base-content/40 mt-2">
+		<p class="text-center text-xs text-base-content/70 mt-2">
 			Nebo can make mistakes. Verify important information.
 		</p>
 	</div>

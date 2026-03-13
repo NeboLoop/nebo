@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod auth;
 pub mod chat;
+pub mod entity_config;
 pub mod files;
 pub mod integrations;
 pub mod mcp_server;

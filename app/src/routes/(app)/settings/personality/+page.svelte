@@ -1,8 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import Card from '$lib/components/ui/Card.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
-	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import { Save } from 'lucide-svelte';
 	import {
@@ -137,7 +134,7 @@
 				formality,
 				proactivity
 			});
-			saveMessage = 'Personality saved';
+			saveMessage = 'Soul saved';
 			saveError = false;
 			setTimeout(() => (saveMessage = ''), 3000);
 		} catch (error) {
@@ -177,30 +174,29 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Soul</h2>
-	<p class="text-sm text-base-content/60">The core personality and values that define your agent</p>
+	<p class="text-sm text-base-content/70">The core personality and values that define your agent</p>
 </div>
 
 {#if isLoading}
-	<Card>
-		<div class="flex items-center justify-center gap-3 py-8">
-			<Spinner size={20} />
-			<span class="text-sm text-base-content/60">Loading personality...</span>
-		</div>
-	</Card>
+	<div class="flex items-center justify-center gap-3 py-16">
+		<Spinner size={20} />
+		<span class="text-sm text-base-content/70">Loading personality...</span>
+	</div>
 {:else}
 	<form
 		onsubmit={(e) => {
 			e.preventDefault();
 			saveProfile();
 		}}
+		class="space-y-6"
 	>
-		<Card>
-			<!-- Soul -->
+		<!-- Soul -->
+		<section>
 			<div class="flex items-center justify-between mb-3">
-				<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider">Soul</h3>
+				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">Soul</h3>
 				{#if presets.length > 0}
 					<select
-						class="select select-bordered select-xs text-xs"
+						class="h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 						onchange={loadPreset}
 					>
 						<option value="" selected disabled>Load a template...</option>
@@ -211,32 +207,33 @@
 				{/if}
 			</div>
 
-			<textarea
-				id="personality-prompt"
-				class="textarea textarea-bordered w-full font-mono text-xs leading-relaxed resize-none overflow-y-auto"
-				style="min-height: 6rem; max-height: 60vh; field-sizing: content;"
-				placeholder="Define your agent's personality, behavior, and communication style..."
-				bind:value={customPersonality}
-			></textarea>
-			{#if showRevert}
-				<div class="flex items-center justify-between mt-2 px-3 py-2 rounded-lg bg-base-200">
-					<span class="text-sm text-base-content/70">Template loaded — replaced your previous soul.</span>
-					<button type="button" class="btn btn-ghost btn-xs" onclick={revertSoul}>
-						Undo
-					</button>
-				</div>
-			{:else}
-				<p class="text-xs text-base-content/30 mt-1">
-					This is your agent's core personality prompt — its soul.
-				</p>
-			{/if}
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+				<textarea
+					id="personality-prompt"
+					class="w-full rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 font-mono text-sm leading-relaxed resize-none overflow-y-auto focus:outline-none focus:border-primary/50 transition-colors"
+					style="min-height: 6rem; max-height: 60vh; field-sizing: content;"
+					placeholder="Define your agent's personality, behavior, and communication style..."
+					bind:value={customPersonality}
+				></textarea>
+				{#if showRevert}
+					<div class="flex items-center justify-between mt-3 px-4 py-2.5 rounded-xl bg-base-content/5 border border-base-content/10">
+						<span class="text-sm text-base-content/70">Template loaded — replaced your previous soul.</span>
+						<button type="button" class="text-sm font-medium text-primary hover:text-primary/80 transition-colors" onclick={revertSoul}>
+							Undo
+						</button>
+					</div>
+				{:else}
+					<p class="text-sm text-base-content/70 mt-2">
+						This is your agent's core personality prompt — its soul.
+					</p>
+				{/if}
+			</div>
+		</section>
 
-			<div class="divider"></div>
-
-			<!-- Tuning -->
-			<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider mb-3">Tuning</h3>
-
-			<div class="space-y-3">
+		<!-- Tuning -->
+		<section>
+			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Tuning</h3>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-4">
 				{#each tuningRows as row}
 					<div class="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
 						<span class="text-sm font-medium text-base-content w-24 shrink-0">{row.label}</span>
@@ -244,10 +241,10 @@
 							{#each row.options as option}
 								<button
 									type="button"
-									class="px-2.5 py-1 rounded-md text-xs font-medium border transition-colors
+									class="px-3 py-1.5 rounded-lg text-sm font-medium border transition-all
 										{row.value === option.value
 											? 'bg-primary/10 border-primary/30 text-primary'
-											: 'bg-base-200 border-transparent text-base-content/50 hover:border-base-content/15'}"
+											: 'bg-base-content/5 border-transparent text-base-content/70 hover:border-base-content/15'}"
 									onclick={() => row.set(option.value)}
 								>
 									{option.label}
@@ -257,25 +254,28 @@
 					</div>
 				{/each}
 			</div>
-		</Card>
+		</section>
 
+		<!-- Save -->
 		{#if saveMessage}
-			<div class="mt-4">
-				<Alert type={saveError ? 'error' : 'success'} title={saveError ? 'Error' : 'Saved'}>
-					{saveMessage}
-				</Alert>
+			<div class="rounded-xl {saveError ? 'bg-error/10 border border-error/20 text-error' : 'bg-success/10 border border-success/20 text-success'} px-4 py-3 text-sm">
+				{saveMessage}
 			</div>
 		{/if}
 
-		<div class="flex justify-end mt-4">
-			<Button type="primary" htmlType="submit" disabled={isSaving}>
+		<div class="flex justify-end">
+			<button
+				type="submit"
+				disabled={isSaving}
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+			>
 				{#if isSaving}
 					<Spinner size={16} />
 					Saving...
 				{:else}
-					Save Personality
+					Save Soul
 				{/if}
-			</Button>
+			</button>
 		</div>
 	</form>
 {/if}

@@ -161,11 +161,11 @@
 					</div>
 				</div>
 				<h2 class="card-title justify-center text-xl">Check Your Email</h2>
-				<p class="text-base-content/60 text-sm">
+				<p class="text-base-content/70 text-sm">
 					We've sent password reset instructions to <strong>{email}</strong>.
 					Please check your inbox and follow the link to reset your password.
 				</p>
-				<p class="text-base-content/40 text-xs mt-2">
+				<p class="text-base-content/70 text-xs mt-2">
 					Didn't receive the email? Check your spam folder or
 					<button type="button" class="link link-primary" onclick={() => passwordReset.reset()}>
 						try again
@@ -185,7 +185,7 @@
 			<div class="card-body">
 				<div class="text-center mb-4">
 					<h2 class="card-title justify-center text-2xl">Reset Password</h2>
-					<p class="text-base-content/60 text-sm">
+					<p class="text-base-content/70 text-sm">
 						Enter your email address and we'll send you instructions to reset your password.
 					</p>
 				</div>
@@ -245,7 +245,7 @@
 
 				{#if onBackToLogin}
 					<div class="divider"></div>
-					<p class="text-center text-sm text-base-content/60">
+					<p class="text-center text-sm text-base-content/70">
 						Remember your password?
 						<button
 							type="button"
@@ -275,7 +275,7 @@
 					</div>
 				</div>
 				<h2 class="card-title justify-center text-xl">Password Reset Complete</h2>
-				<p class="text-base-content/60 text-sm">
+				<p class="text-base-content/70 text-sm">
 					Your password has been successfully reset. You can now sign in with your new password.
 				</p>
 				{#if onBackToLogin}
@@ -292,7 +292,7 @@
 			<div class="card-body">
 				<div class="text-center mb-4">
 					<h2 class="card-title justify-center text-2xl">Create New Password</h2>
-					<p class="text-base-content/60 text-sm">Enter your new password below.</p>
+					<p class="text-base-content/70 text-sm">Enter your new password below.</p>
 				</div>
 
 				{#if storeError}
@@ -375,7 +375,7 @@
 								</ul>
 							</div>
 						{:else}
-							<p class="text-xs text-base-content/60 mt-1" id={passwordHintId}>
+							<p class="text-xs text-base-content/70 mt-1" id={passwordHintId}>
 								Password must be at least 8 characters with uppercase, lowercase, and numbers
 							</p>
 						{/if}

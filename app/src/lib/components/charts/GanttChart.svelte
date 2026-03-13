@@ -169,7 +169,7 @@
 <div bind:this={containerRef} class="gantt-chart-container w-full overflow-x-auto">
 	{#if tasks.length === 0}
 		<div class="empty-state flex items-center justify-center" style="height: {effectiveHeight}px;">
-			<p class="text-base-content/60 text-sm">No tasks to display</p>
+			<p class="text-base-content/70 text-sm">No tasks to display</p>
 		</div>
 	{:else}
 		<svg width={containerWidth} height={effectiveHeight}>

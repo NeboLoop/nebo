@@ -100,6 +100,12 @@ impl Store {
         metadata: Option<&str>,
     ) -> Result<ChatMessage, NeboError> {
         let conn = self.conn()?;
+        // Ensure parent chat row exists (role/channel sessions don't pre-create one).
+        conn.execute(
+            "INSERT OR IGNORE INTO chats (id, title, created_at, updated_at) VALUES (?1, ?1, unixepoch(), unixepoch())",
+            params![chat_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
         conn.query_row(
             "INSERT INTO chat_messages (id, chat_id, role, content, metadata, tool_calls, tool_results, token_estimate, day_marker, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, date('now', 'localtime'), unixepoch()) RETURNING *",

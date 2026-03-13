@@ -39,7 +39,7 @@
 				</div>
 				<div>
 					<h3 class="font-semibold text-base-content">Tool Approval Required</h3>
-					<p class="text-sm text-base-content/60">The agent wants to run a tool</p>
+					<p class="text-sm text-base-content/70">The agent wants to run a tool</p>
 				</div>
 			</div>
 

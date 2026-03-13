@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::domain::DomainInput;
 use crate::origin::ToolContext;
-use crate::registry::{DynTool, ToolResult};
+use crate::registry::{DynTool, ResourceKind, ToolResult};
 
 /// WebTool consolidates web operations: HTTP fetch, search, and browser automation.
 pub struct WebTool {
@@ -653,6 +653,23 @@ impl DynTool for WebTool {
 
     fn requires_approval(&self) -> bool {
         true
+    }
+
+    fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
+        let resource = input.get("resource")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let resource = if resource.is_empty() {
+            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            self.infer_resource(action)
+        } else {
+            resource
+        };
+        match resource {
+            "browser" | "devtools" => Some(ResourceKind::Browser),
+            // http, search are parallelizable
+            _ => None,
+        }
     }
 
     fn execute_dyn<'a>(

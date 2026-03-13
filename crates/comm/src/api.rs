@@ -121,6 +121,27 @@ impl NeboLoopApi {
         Ok(())
     }
 
+    // ── Products (unified) ─────────────────────────────────────────
+
+    /// List products from NeboLoop catalog (roles, skills, workflows).
+    /// Returns `{ "skills": [...] }` regardless of type.
+    pub async fn list_products(
+        &self,
+        artifact_type: Option<&str>,
+        query: Option<&str>,
+        category: Option<&str>,
+        page: Option<i64>,
+        page_size: Option<i64>,
+    ) -> Result<serde_json::Value, CommError> {
+        let mut qs = build_query(query, category, page, page_size);
+        if let Some(t) = artifact_type {
+            let sep = if qs.is_empty() { "?" } else { "&" };
+            qs.push_str(&format!("{}type={}", sep, urlencoding::encode(t)));
+        }
+        let path = format!("/api/v1/products{}", qs);
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
     // ── Apps / Tools ────────────────────────────────────────────────
 
     /// List apps from NeboLoop catalog.
@@ -180,6 +201,90 @@ impl NeboLoopApi {
     /// Get a single skill with manifest.
     pub async fn get_skill(&self, id: &str) -> Result<SkillDetail, CommError> {
         self.do_json(reqwest::Method::GET, &format!("/api/v1/skills/{}", id), None::<&()>).await
+    }
+
+    /// List top/popular skills.
+    pub async fn list_top_skills(
+        &self,
+        page: Option<i64>,
+        page_size: Option<i64>,
+    ) -> Result<serde_json::Value, CommError> {
+        let path = format!("/api/v1/skills/top{}", build_query(None, None, page, page_size));
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
+    /// Get reviews for a skill/product.
+    pub async fn get_skill_reviews(
+        &self,
+        id: &str,
+        page: Option<i64>,
+        page_size: Option<i64>,
+    ) -> Result<ReviewsResponse, CommError> {
+        let path = format!("/api/v1/skills/{}/reviews{}", id, build_query(None, None, page, page_size));
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
+    /// Submit a review for a skill/product.
+    pub async fn submit_skill_review(
+        &self,
+        id: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, &format!("/api/v1/skills/{}/reviews", id), Some(body)).await
+    }
+
+    /// Get media (screenshots, videos) for a skill/product.
+    pub async fn get_skill_media(&self, id: &str) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, &format!("/api/v1/skills/{}/media", id), None::<&()>).await
+    }
+
+    /// Get feedback for a skill/product.
+    pub async fn get_skill_feedback(
+        &self,
+        id: &str,
+        page: Option<i64>,
+        page_size: Option<i64>,
+    ) -> Result<serde_json::Value, CommError> {
+        let path = format!("/api/v1/skills/{}/feedback{}", id, build_query(None, None, page, page_size));
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
+    /// Submit feedback for a skill/product.
+    pub async fn submit_skill_feedback(
+        &self,
+        id: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, &format!("/api/v1/skills/{}/feedback", id), Some(body)).await
+    }
+
+    /// Get similar products for an app/product.
+    pub async fn get_similar_apps(&self, id: &str) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, &format!("/api/v1/apps/{}/similar", id), None::<&()>).await
+    }
+
+    /// Get featured apps/products.
+    pub async fn get_featured(
+        &self,
+        artifact_type: Option<&str>,
+    ) -> Result<serde_json::Value, CommError> {
+        let mut path = "/api/v1/apps/featured".to_string();
+        if let Some(t) = artifact_type {
+            if !t.is_empty() {
+                path.push_str(&format!("?type={}", urlencoding::encode(t)));
+            }
+        }
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
+    /// List marketplace categories with counts.
+    pub async fn list_categories(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/marketplace/categories", None::<&()>).await
+    }
+
+    /// Get screenshots for a product type.
+    pub async fn get_screenshots(&self, screenshot_type: &str) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, &format!("/api/v1/screenshots/{}", screenshot_type), None::<&()>).await
     }
 
     // ── Universal Code Redemption ────────────────────────────────────
@@ -326,6 +431,43 @@ impl NeboLoopApi {
         }
         let resp: ChannelMessagesResponse = self.do_json(reqwest::Method::GET, &path, None::<&()>).await?;
         Ok(resp.normalize())
+    }
+
+    // ── Billing ────────────────────────────────────────────────────
+
+    /// List billing prices/plans.
+    pub async fn billing_prices(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/billing/prices", None::<&()>).await
+    }
+
+    /// Get current subscription status.
+    pub async fn billing_subscription(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/billing/subscription", None::<&()>).await
+    }
+
+    /// Create a Stripe checkout session for a given price.
+    pub async fn billing_checkout(&self, price_id: &str) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/create-checkout-session", Some(&serde_json::json!({"priceId": price_id}))).await
+    }
+
+    /// Create a Stripe customer portal session.
+    pub async fn billing_portal(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/customer-portal", None::<&()>).await
+    }
+
+    /// Cancel a subscription.
+    pub async fn billing_cancel(&self, subscription_id: &str) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/cancel-subscription", Some(&serde_json::json!({"subscriptionId": subscription_id}))).await
+    }
+
+    /// List invoices (owner-scoped).
+    pub async fn billing_invoices(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/owners/me/invoices", None::<&()>).await
+    }
+
+    /// List payment methods (owner-scoped).
+    pub async fn billing_payment_methods(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/owners/me/payment-methods", None::<&()>).await
     }
 
     // ── Raw Fetch ───────────────────────────────────────────────────

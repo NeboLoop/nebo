@@ -226,7 +226,7 @@
 <div class="flex flex-col h-full min-h-0">
 	<!-- Project Header Bar -->
 	<div class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-base-300 bg-base-200/50">
-		<span class="text-xs font-medium text-base-content/50">Project:</span>
+		<span class="text-xs font-medium text-base-content/70">Project:</span>
 		<select
 			bind:value={selectedAppId}
 			class="select select-bordered select-xs"
@@ -274,7 +274,7 @@
 				{actionError}
 			</span>
 		{:else if selectedApp}
-			<span class="text-xs text-base-content/30 ml-auto">
+			<span class="text-xs text-base-content/70 ml-auto">
 				{selectedApp.running ? 'Running' : 'Stopped'}
 			</span>
 		{/if}
@@ -329,7 +329,7 @@
 							sandbox="allow-scripts allow-forms allow-same-origin"
 						></iframe>
 					{:else}
-						<div class="flex items-center justify-center h-full text-base-content/50 text-sm">
+						<div class="flex items-center justify-center h-full text-base-content/70 text-sm">
 							Select an app to preview its UI
 						</div>
 					{/if}

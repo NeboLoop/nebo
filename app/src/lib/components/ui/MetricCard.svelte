@@ -99,7 +99,7 @@
 		<div class="card bg-base-200 border border-error/30 h-full">
 			<div class="card-body p-4 items-center justify-center text-center">
 				{#if title}
-					<div class="text-[10px] font-semibold text-base-content/60 uppercase tracking-wider mb-2">{title}</div>
+					<div class="text-[10px] font-semibold text-base-content/70 uppercase tracking-wider mb-2">{title}</div>
 				{/if}
 				<i class="fas fa-exclamation-triangle text-3xl text-error mb-2"></i>
 				<div class="text-xs text-error">{error}</div>
@@ -110,7 +110,7 @@
 			<div class="card-body p-5 flex flex-col">
 				<!-- Title Row -->
 				{#if title}
-					<div class="text-[10px] font-semibold text-base-content/60 uppercase tracking-wider mb-3">{title}</div>
+					<div class="text-[10px] font-semibold text-base-content/70 uppercase tracking-wider mb-3">{title}</div>
 				{/if}
 
 				<!-- Main Value & Change -->
@@ -135,7 +135,7 @@
 						{/if}
 					</div>
 					{#if subtitle}
-						<div class="text-xs text-base-content/60">{subtitle}</div>
+						<div class="text-xs text-base-content/70">{subtitle}</div>
 					{/if}
 				</div>
 

@@ -149,7 +149,7 @@
 <div bind:this={containerRef} class="treemap-chart-container w-full h-full">
 	{#if data.length === 0}
 		<div class="empty-state flex items-center justify-center h-full">
-			<p class="text-base-content/60 text-sm">No data to display</p>
+			<p class="text-base-content/70 text-sm">No data to display</p>
 		</div>
 	{:else}
 		<svg width={containerWidth} height={effectiveHeight}>

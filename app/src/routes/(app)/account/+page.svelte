@@ -9,5 +9,5 @@
 </script>
 
 <div class="flex items-center justify-center py-12">
-	<p class="text-base-content/60">Redirecting to settings...</p>
+	<p class="text-base-content/70">Redirecting to settings...</p>
 </div>

@@ -141,7 +141,7 @@
 			return 'text-error';
 		}
 
-		return 'text-base-content/60';
+		return 'text-base-content/70';
 	});
 
 	const className = $derived(`input input-bordered w-full ${sizeClasses[size]} ${validationClass()} ${extraClass}`.trim());

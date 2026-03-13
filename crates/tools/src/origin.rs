@@ -27,6 +27,10 @@ pub struct ToolContext {
     pub session_key: String,
     pub session_id: String,
     pub user_id: String,
+    /// Per-entity permission overrides (tool category → allowed).
+    pub entity_permissions: Option<std::collections::HashMap<String, bool>>,
+    /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
+    pub resource_grants: Option<std::collections::HashMap<String, String>>,
 }
 
 impl ToolContext {

@@ -570,3 +570,24 @@ pub struct RoleWorkflow {
     #[serde(serialize_with = "i64_as_bool")]
     pub is_active: i64,
 }
+
+// ── Entity Config ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityConfig {
+    pub id: i64,
+    pub entity_type: String,
+    pub entity_id: String,
+    pub heartbeat_enabled: Option<i64>,
+    pub heartbeat_interval_minutes: Option<i64>,
+    pub heartbeat_content: Option<String>,
+    pub heartbeat_window_start: Option<String>,
+    pub heartbeat_window_end: Option<String>,
+    pub permissions: Option<String>,
+    pub resource_grants: Option<String>,
+    pub model_preference: Option<String>,
+    pub personality_snippet: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

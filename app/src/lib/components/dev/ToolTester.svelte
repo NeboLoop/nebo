@@ -165,7 +165,7 @@
 			{/each}
 		</select>
 
-		<span class="text-xs text-base-content/40 flex-1 truncate">
+		<span class="text-xs text-base-content/70 flex-1 truncate">
 			{selectedTool?.description ?? ''}
 		</span>
 
@@ -192,17 +192,17 @@
 
 	{#if loadingTools && tools.length === 0}
 		<div class="flex flex-col items-center justify-center flex-1 gap-2">
-			<Loader2 class="w-6 h-6 text-base-content/40 animate-spin" />
-			<p class="text-xs text-base-content/50">Loading tools...</p>
+			<Loader2 class="w-6 h-6 text-base-content/70 animate-spin" />
+			<p class="text-xs text-base-content/70">Loading tools...</p>
 		</div>
 	{:else if loadError}
-		<div class="flex flex-col items-center justify-center flex-1 text-base-content/50 gap-2">
+		<div class="flex flex-col items-center justify-center flex-1 text-base-content/70 gap-2">
 			<Wrench class="w-8 h-8" />
 			<p class="text-sm text-error">{loadError}</p>
 			<button type="button" class="btn btn-xs btn-ghost" onclick={loadTools}>Retry</button>
 		</div>
 	{:else if !selectedTool}
-		<div class="flex flex-col items-center justify-center flex-1 text-base-content/50 gap-2">
+		<div class="flex flex-col items-center justify-center flex-1 text-base-content/70 gap-2">
 			<Wrench class="w-8 h-8" />
 			<p class="text-sm font-medium">No Tools Available</p>
 			<p class="text-xs">Sideload an app with tools to get started</p>
@@ -214,7 +214,7 @@
 				{#if schemaString}
 					<details class="text-xs">
 						<summary
-							class="cursor-pointer text-base-content/50 hover:text-base-content/70 select-none"
+							class="cursor-pointer text-base-content/70 hover:text-base-content/70 select-none"
 						>
 							Schema reference
 						</summary>
@@ -232,7 +232,7 @@
 				></textarea>
 
 				<div class="flex items-center justify-between">
-					<span class="text-xs text-base-content/40">
+					<span class="text-xs text-base-content/70">
 						{navigator?.userAgent?.includes('Mac') ? 'Cmd' : 'Ctrl'}+Enter to run
 					</span>
 					<button
@@ -256,7 +256,7 @@
 			<div class="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
 				{#if history.length === 0}
 					<div
-						class="flex flex-col items-center justify-center h-full text-base-content/30 gap-1"
+						class="flex flex-col items-center justify-center h-full text-base-content/70 gap-1"
 					>
 						<p class="text-xs">No executions yet</p>
 					</div>
@@ -280,11 +280,11 @@
 								<span class="text-xs font-mono font-medium flex-1 truncate"
 									>{entry.tool}</span
 								>
-								<span class="text-xs text-base-content/40">
+								<span class="text-xs text-base-content/70">
 									{entry.timestamp.toLocaleTimeString()}
 								</span>
 								<ChevronDown
-									class="w-3 h-3 text-base-content/40 transition-transform {expandedEntryId ===
+									class="w-3 h-3 text-base-content/70 transition-transform {expandedEntryId ===
 									entry.id
 										? 'rotate-180'
 										: ''}"
@@ -294,12 +294,12 @@
 							{#if expandedEntryId === entry.id}
 								<div class="px-3 pb-3 space-y-2 border-t border-base-300/50">
 									<div>
-										<p class="text-xs text-base-content/50 mb-1">Input</p>
+										<p class="text-xs text-base-content/70 mb-1">Input</p>
 										<pre
 											class="text-xs font-mono bg-base-300/50 rounded p-2 overflow-auto max-h-24">{entry.input}</pre>
 									</div>
 									<div>
-										<p class="text-xs text-base-content/50 mb-1">Output</p>
+										<p class="text-xs text-base-content/70 mb-1">Output</p>
 										<pre
 											class="text-xs font-mono bg-base-300/50 rounded p-2 overflow-auto max-h-48 whitespace-pre-wrap">{entry.content}</pre>
 									</div>

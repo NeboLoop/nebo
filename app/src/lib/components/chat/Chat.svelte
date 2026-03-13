@@ -7,10 +7,12 @@
 		ArrowDown,
 		Copy,
 		Check,
-		History
+		History,
+		Settings,
+		X
 	} from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
-	import { getCompanionChat, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
+	import { getCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
 	import { logger } from '$lib/monitoring/logger';
 
 	const log = logger.child({ component: 'Chat' });
@@ -28,6 +30,7 @@
 		ReadingIndicator,
 		ChatInput
 	} from '$lib/components/chat';
+	import EntityConfigPanel from '$lib/components/chat/EntityConfigPanel.svelte';
 
 	// ── Mode prop ──────────────────────────────────────────────────────
 	interface ChatMode {
@@ -44,6 +47,11 @@
 	const isCompanion = $derived(mode.type === 'companion');
 	const isChannel = $derived(mode.type === 'channel');
 	const isRole = $derived(mode.type === 'role');
+
+	// Entity config panel state
+	let showConfig = $state(false);
+	const entityType = $derived(isChannel ? 'channel' : isRole ? 'role' : 'main');
+	const entityId = $derived(isChannel ? (mode.channelId ?? '') : isRole ? (mode.roleId ?? '') : 'main');
 
 	// ── Shared interfaces ──────────────────────────────────────────────
 	interface ApprovalRequest {
@@ -335,7 +343,7 @@
 				// Role chat: set chatId to role-scoped session key, load existing messages
 				chatId = `role:${mode.roleId}:web`;
 				agentName = mode.roleName || 'Role';
-				chatLoaded = true;
+				await loadRoleChat();
 			} else {
 				await loadCompanionChat();
 			}
@@ -599,6 +607,52 @@
 			checkForActiveStream();
 		} catch (err) {
 			log.error('Failed to load companion chat', err);
+			chatLoaded = true;
+		}
+	}
+
+	async function loadRoleChat() {
+		try {
+			const res = await getChatMessages(chatId);
+			messages = (res.messages || []).map((m: ApiChatMessage) => {
+				const meta = parseMetadata((m as { metadata?: string }).metadata);
+				let content = m.content;
+				let contentBlocks = meta.contentBlocks;
+				if (!contentBlocks?.length) {
+					const multipart = parseMultipartContent(content);
+					if (multipart) {
+						content = multipart.text;
+						contentBlocks = multipart.blocks;
+					}
+				}
+				return {
+					id: m.id,
+					role: m.role as 'user' | 'assistant' | 'system',
+					content,
+					contentHtml: m.contentHtml || undefined,
+					timestamp: new Date(m.createdAt),
+					toolCalls: meta.toolCalls,
+					thinking: meta.thinking,
+					contentBlocks
+				};
+			});
+			totalMessages = messages.length;
+			chatLoaded = true;
+			if (messages.length > 0) {
+				tick().then(() => {
+					requestAnimationFrame(() => {
+						if (messagesContainer) {
+							messagesContainer.scrollTo({
+								top: messagesContainer.scrollHeight,
+								behavior: 'smooth'
+							});
+						}
+					});
+				});
+			}
+			checkForActiveStream();
+		} catch {
+			// Chat may not exist yet (first interaction) — that's OK
 			chatLoaded = true;
 		}
 	}
@@ -1984,18 +2038,25 @@
 	<!-- Header -->
 	{#if isChannel}
 		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
-			<div class="max-w-4xl mx-auto flex items-center px-6 h-14">
-				<span class="text-lg font-semibold text-base-content/40 mr-1">#</span>
-				<span class="text-lg font-semibold text-base-content">{mode.channelName}</span>
-				{#if mode.loopName}
-					<span class="mx-2 text-base-content/30">&middot;</span>
-					<span class="text-sm text-base-content/50">{mode.loopName}</span>
-				{/if}
+			<div class="flex items-center justify-between px-6 h-14">
+				<div class="flex items-center">
+					<span class="text-lg font-semibold text-base-content/70 mr-1">#</span>
+					<span class="text-lg font-semibold text-base-content">{mode.channelName}</span>
+					{#if mode.loopName}
+						<span class="mx-2 text-base-content/70">&middot;</span>
+						<span class="text-sm text-base-content/70">{mode.loopName}</span>
+					{/if}
+				</div>
+				<div class="flex items-center gap-2 shrink-0">
+					<button class="btn btn-sm btn-ghost" class:btn-active={showConfig} title="Entity settings" onclick={() => showConfig = !showConfig}>
+						<Settings class="w-4 h-4" />
+					</button>
+				</div>
 			</div>
 		</header>
 	{:else if isRole}
 		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
-			<div class="max-w-4xl mx-auto flex items-center justify-between px-6 h-14">
+			<div class="flex items-center justify-between px-6 h-14">
 				<div class="flex items-center gap-3">
 					<svg class="w-5 h-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
@@ -2003,10 +2064,13 @@
 					</svg>
 					<div class="flex flex-col justify-center">
 						<h1 class="text-lg font-semibold text-base-content leading-tight">{mode.roleName}</h1>
-						<p class="text-xs text-base-content/50 leading-tight">Role</p>
+						<p class="text-xs text-base-content/70 leading-tight">Role</p>
 					</div>
 				</div>
 				<div class="flex items-center gap-2 shrink-0">
+					<button class="btn btn-sm btn-ghost" class:btn-active={showConfig} title="Entity settings" onclick={() => showConfig = !showConfig}>
+						<Settings class="w-4 h-4" />
+					</button>
 					{#if wsConnected}
 						<div class="flex items-center gap-1.5 text-xs text-success px-2">
 							<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
@@ -2023,14 +2087,17 @@
 		</header>
 	{:else}
 		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
-			<div class="max-w-4xl mx-auto flex items-center justify-between px-6 h-14">
+			<div class="flex items-center justify-between px-6 h-14">
 				<div class="flex flex-col justify-center">
 					<h1 class="text-lg font-semibold text-base-content leading-tight">Chat</h1>
-					<p class="text-xs text-base-content/50 leading-tight">
+					<p class="text-xs text-base-content/70 leading-tight">
 						Direct chat session with your AI companion.
 					</p>
 				</div>
 				<div class="flex items-center gap-2 shrink-0">
+					<button class="btn btn-sm btn-ghost" class:btn-active={showConfig} title="Entity settings" onclick={() => showConfig = !showConfig}>
+						<Settings class="w-4 h-4" />
+					</button>
 					{#if wsConnected}
 						<div class="flex items-center gap-1.5 text-xs text-success px-2">
 							<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
@@ -2050,6 +2117,11 @@
 				</div>
 			</div>
 		</header>
+	{/if}
+
+	<!-- Entity Config Panel -->
+	{#if showConfig}
+		<EntityConfigPanel {entityType} {entityId} onclose={() => showConfig = false} />
 	{/if}
 
 	<!-- Messages Area -->
@@ -2073,7 +2145,7 @@
 				{/if}
 				{#if !chatLoaded}
 					<div class="flex items-center justify-center h-full">
-						<Loader2 class="w-6 h-6 text-base-content/40 animate-spin" />
+						<Loader2 class="w-6 h-6 text-base-content/70 animate-spin" />
 					</div>
 				{:else if messages.length === 0}
 					{#if isCompanion}
@@ -2083,7 +2155,7 @@
 								<Bot class="w-8 h-8 text-primary" />
 							</div>
 							<h2 class="font-display text-xl font-bold text-base-content mb-2">Your AI Companion</h2>
-							<p class="text-sm text-base-content/60 max-w-md mb-8">
+							<p class="text-sm text-base-content/70 max-w-md mb-8">
 								I'm here to help with tasks like reading files, running commands, searching the web,
 								and more.
 							</p>
@@ -2103,7 +2175,7 @@
 						</div>
 					{:else}
 						<div class="flex items-center justify-center h-full">
-							<p class="text-base-content/40 text-sm">No messages yet</p>
+							<p class="text-base-content/70 text-sm">No messages yet</p>
 						</div>
 					{/if}
 				{:else}
@@ -2127,7 +2199,7 @@
 					{#if isCompanion && isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
 						<div class="flex gap-3 mb-4">
 							<div
-								class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm bg-base-300 text-base-content/60"
+								class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm bg-base-300 text-base-content/70"
 							>
 								A
 							</div>
@@ -2136,7 +2208,7 @@
 									<ReadingIndicator />
 								</div>
 								<div class="flex gap-2 items-baseline mt-1.5">
-									<span class="text-xs font-medium text-base-content/50">Assistant</span>
+									<span class="text-xs font-medium text-base-content/70">Assistant</span>
 								</div>
 							</div>
 						</div>
@@ -2151,7 +2223,7 @@
 				<button
 					type="button"
 					onclick={scrollToBottom}
-					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/60 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
+					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/70 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
 					title="Scroll to bottom"
 				>
 					<ArrowDown class="w-5 h-5" />
@@ -2210,47 +2282,63 @@
 />
 
 {#if showModelDownload}
-<div class="modal modal-open">
-	<div class="modal-box">
-		<h3 class="font-bold text-lg mb-4">Download Voice Models</h3>
-		<p class="text-sm text-base-content/70 mb-4">
-			Voice models need to be downloaded before first use. This is a one-time download.
-		</p>
+<div class="nebo-modal-backdrop" role="dialog" aria-modal="true">
+	<button type="button" class="nebo-modal-overlay" onclick={() => { showModelDownload = false; }}></button>
+	<div class="nebo-modal-card max-w-md">
+		<!-- Header -->
+		<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
+			<h3 class="font-display text-lg font-bold">Download Voice Models</h3>
+			<button type="button" onclick={() => { showModelDownload = false; }} class="nebo-modal-close" aria-label="Close">
+				<X class="w-5 h-5 text-base-content/90" />
+			</button>
+		</div>
+		<!-- Body -->
+		<div class="px-5 py-5">
+			<p class="text-sm text-base-content/70 mb-4">
+				Voice models need to be downloaded before first use. This is a one-time download.
+			</p>
 
-		{#if modelDownloadError}
-			<div class="alert alert-error mb-4">
-				<span>{modelDownloadError}</span>
-			</div>
-		{/if}
-
-		{#each Object.entries(modelDownloadProgress) as [name, prog]}
-			<div class="mb-3">
-				<div class="flex justify-between text-sm mb-1">
-					<span class="font-mono text-xs">{name}</span>
-					<span class="text-xs text-base-content/60">
-						{#if prog.done}
-							Done
-						{:else if prog.total > 0}
-							{Math.round((prog.downloaded / prog.total) * 100)}%
-						{:else}
-							Starting...
-						{/if}
-					</span>
+			{#if modelDownloadError}
+				<div class="rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error mb-4">
+					{modelDownloadError}
 				</div>
-				<progress
-					class="progress progress-primary w-full"
-					value={prog.downloaded}
-					max={prog.total || 100}
-				></progress>
-			</div>
-		{/each}
+			{/if}
 
-		<div class="modal-action">
-			<button class="btn btn-ghost" onclick={() => { showModelDownload = false; }}>
+			{#each Object.entries(modelDownloadProgress) as [name, prog]}
+				<div class="mb-3">
+					<div class="flex justify-between text-sm mb-1">
+						<span class="font-mono text-xs">{name}</span>
+						<span class="text-xs text-base-content/70">
+							{#if prog.done}
+								Done
+							{:else if prog.total > 0}
+								{Math.round((prog.downloaded / prog.total) * 100)}%
+							{:else}
+								Starting...
+							{/if}
+						</span>
+					</div>
+					<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
+						<div
+							class="h-full rounded-full bg-primary transition-all"
+							style="width: {prog.total > 0 ? (prog.downloaded / prog.total) * 100 : 0}%"
+						></div>
+					</div>
+				</div>
+			{/each}
+		</div>
+		<!-- Footer -->
+		<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
+			<button
+				type="button"
+				class="h-10 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+				onclick={() => { showModelDownload = false; }}
+			>
 				Cancel
 			</button>
 			<button
-				class="btn btn-primary"
+				type="button"
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
 				onclick={startModelDownload}
 				disabled={Object.values(modelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
 			>
@@ -2263,8 +2351,6 @@
 			</button>
 		</div>
 	</div>
-	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" onclick={() => { showModelDownload = false; }}></div>
 </div>
 {/if}
 

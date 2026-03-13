@@ -579,26 +579,56 @@ impl Provider for OpenAIProvider {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<f64>().ok());
 
-        // Janus session/weekly rate limit headers
+        // Janus session rate limit headers
+        let session_limit = resp_headers
+            .get("x-ratelimit-session-limit-tokens")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
         let session_remaining = resp_headers
             .get("x-ratelimit-session-remaining-tokens")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let session_reset = resp_headers
+            .get("x-ratelimit-session-reset")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_string());
+
+        // Janus weekly rate limit headers
+        let weekly_limit = resp_headers
+            .get("x-ratelimit-weekly-limit-tokens")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
         let weekly_remaining = resp_headers
             .get("x-ratelimit-weekly-remaining-tokens")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
+        let weekly_reset = resp_headers
+            .get("x-ratelimit-weekly-reset")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_string());
 
         // Use session remaining if available (tighter constraint), else standard
         let effective_remaining = session_remaining.or(remaining_tokens);
 
-        if remaining_requests.is_some() || effective_remaining.is_some() || weekly_remaining.is_some() {
+        let has_any = remaining_requests.is_some()
+            || effective_remaining.is_some()
+            || weekly_remaining.is_some()
+            || session_limit.is_some()
+            || weekly_limit.is_some();
+
+        if has_any {
             let _ = tx
                 .send(StreamEvent::rate_limit_info(RateLimitMeta {
                     remaining_requests,
                     remaining_tokens: effective_remaining,
                     reset_after_secs: reset_after,
                     retry_after_secs: None,
+                    session_limit_tokens: session_limit,
+                    session_remaining_tokens: session_remaining,
+                    session_reset_at: session_reset,
+                    weekly_limit_tokens: weekly_limit,
+                    weekly_remaining_tokens: weekly_remaining,
+                    weekly_reset_at: weekly_reset,
                 }))
                 .await;
         }

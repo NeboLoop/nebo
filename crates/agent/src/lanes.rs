@@ -1,3 +1,87 @@
+//! # Lane System — Per-Category Task Queue with Concurrency Control
+//!
+//! The lane system isolates different types of work into independent FIFO queues,
+//! each with its own concurrency cap. This prevents one workload from starving
+//! another — e.g., a flood of NeboLoop messages won't block the user's interactive
+//! chat, and heartbeat ticks won't pile up.
+//!
+//! ## Architecture
+//!
+//! ```text
+//!   Callers (ws.rs, lib.rs, roles.rs, etc.)
+//!       │
+//!       │  lanes.enqueue_async("main", task)
+//!       │  lanes.enqueue("comm", task) → oneshot::Receiver
+//!       ▼
+//!   ┌─────────────────────────────────────────────────────────┐
+//!   │ LaneManager                                             │
+//!   │                                                         │
+//!   │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐      │
+//!   │  │  main   │ │  comm   │ │heartbeat│ │ desktop │ ...   │
+//!   │  │ max:∞  │ │ max:∞  │ │ max:1   │ │ max:1   │      │
+//!   │  │ [queue]│ │ [queue]│ │ [queue] │ │ [queue] │      │
+//!   │  │ pump ◄─│ │ pump ◄─│ │ pump ◄──│ │ pump ◄──│      │
+//!   │  └───┬────┘ └───┬────┘ └───┬─────┘ └───┬─────┘      │
+//!   │      │          │          │            │             │
+//!   │      └──────────┴────┬─────┴────────────┘             │
+//!   │                      │                                 │
+//!   └──────────────────────┼─────────────────────────────────┘
+//!                          │ tokio::spawn(task.task)
+//!                          ▼
+//!                    Runner.run() → StreamEvents → ClientHub
+//! ```
+//!
+//! ## Lanes
+//!
+//! | Lane        | Max Concurrent | Purpose                                  |
+//! |-------------|---------------|------------------------------------------|
+//! | `main`      | unlimited*    | User chat from frontend WebSocket         |
+//! | `comm`      | unlimited*    | Inbound NeboLoop chat/DM messages         |
+//! | `events`    | unlimited*    | Event-triggered workflow runs              |
+//! | `subagent`  | unlimited*    | Sub-agent spawns                          |
+//! | `nested`    | unlimited*    | Nested tool calls                         |
+//! | `dev`       | unlimited*    | Developer assistant panel                 |
+//! | `heartbeat` | unlimited*    | Role proactive ticks (per-role dedup)     |
+//! | `desktop`   | 1             | Screen/mouse automation (one cursor)      |
+//!
+//! \* "unlimited" (`max_concurrent = 0`) means the lane itself imposes no cap;
+//! the global [`ConcurrencyController`] governs LLM concurrency based on machine
+//! resources and provider rate limits.
+//!
+//! ## Pump Mechanism
+//!
+//! Each lane has a dedicated `tokio::spawn`ed pump loop driven by [`Notify`]:
+//!
+//! 1. **Sleep** — waits on `notify.notified()` (or cancellation).
+//! 2. **Drain** — locks state, pops tasks from the FIFO queue while under the
+//!    concurrency cap, increments `active` for each.
+//! 3. **Spawn** — each popped task runs as its own tokio task.
+//! 4. **Complete** — on finish, decrements `active` and re-notifies the pump
+//!    so queued work can fill the freed slot.
+//!
+//! Stale tasks (waiting longer than `warn_after_ms`) emit a tracing warning.
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! let lanes = LaneManager::new();
+//! lanes.start_pumps();
+//!
+//! // Fire-and-forget
+//! let task = make_task("main", "user chat", async { /* ... */ Ok(()) });
+//! lanes.enqueue_async("main", task);
+//!
+//! // Wait for completion
+//! let task = make_task("heartbeat", "proactive tick", async { Ok(()) });
+//! let rx = lanes.enqueue("heartbeat", task).unwrap();
+//! let result = rx.await; // Ok(()) or Err(String)
+//!
+//! // Unknown lanes fall back to "main" with a warning
+//! lanes.enqueue_async("typo", task); // → routed to main
+//!
+//! lanes.shutdown(); // cancels all pump loops
+//! ```
+
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
@@ -10,7 +94,24 @@ use tracing::{debug, info, warn};
 
 use types::constants::lanes;
 
-/// A task to be executed within a lane.
+/// A unit of work to be executed within a lane.
+///
+/// Created via [`make_task`] and enqueued onto a lane through [`LaneManager::enqueue`]
+/// or [`LaneManager::enqueue_async`]. The `task` future typically contains a full
+/// `Runner.run()` → event loop → hub broadcast pipeline.
+///
+/// # Fields
+///
+/// - `id` — Auto-generated identifier (`"{lane}-{nanosecond_timestamp}"`).
+/// - `lane` — Which lane this task targets (informational; routing is by the
+///   lane name passed to `enqueue`).
+/// - `description` — Human-readable label for logging.
+/// - `task` — The boxed, pinned future to execute.
+/// - `enqueued_at` — Timestamp for stale-task warnings.
+/// - `warn_after_ms` — If the task sits in the queue longer than this, emit a
+///   tracing warning. Default: 2000ms.
+/// - `completion_tx` — Optional oneshot sender, set by [`LaneManager::enqueue`]
+///   so the caller can await completion.
 pub struct LaneTask {
     pub id: String,
     pub lane: String,
@@ -21,49 +122,64 @@ pub struct LaneTask {
     pub completion_tx: Option<oneshot::Sender<Result<(), String>>>,
 }
 
-/// Internal state for a single lane.
+/// Internal state for a single lane: its FIFO queue, active count, and cap.
 struct LaneState {
     queue: VecDeque<LaneTask>,
     active: usize,
-    max_concurrent: usize, // 0 = unlimited
+    /// Maximum concurrent tasks for this lane. `0` means unlimited — the global
+    /// `ConcurrencyController` governs instead.
+    max_concurrent: usize,
 }
 
-/// Manages per-lane task queuing and concurrency limits.
+/// Per-category task queue manager with concurrency control.
 ///
-/// Each lane has its own FIFO queue and concurrency cap. Tasks are dispatched
-/// through per-lane pump tasks that respect the capacity.
+/// Holds all 8 lanes, each with its own FIFO queue and pump loop. Tasks are
+/// enqueued by name and dispatched up to each lane's concurrency cap.
+/// Unknown lane names silently fall back to `"main"` with a warning.
+///
+/// # Lifecycle
+///
+/// 1. `LaneManager::new()` — creates all lanes (no pump tasks yet).
+/// 2. `start_pumps()` — spawns a tokio task per lane that drains the queue.
+/// 3. `enqueue()` / `enqueue_async()` — push tasks; pump wakes automatically.
+/// 4. `shutdown()` — cancels all pump loops via `CancellationToken`.
 pub struct LaneManager {
     lanes: HashMap<String, (Arc<std::sync::Mutex<LaneState>>, Arc<Notify>)>,
     cancel: CancellationToken,
 }
 
-/// Lane configuration: name and max concurrency.
+/// Static configuration for a single lane.
 struct LaneConfig {
     name: &'static str,
     max_concurrent: usize,
 }
 
-/// Default lane configurations.
+/// Lane configurations.
+///
 /// ALL lanes route through Runner and may make LLM calls. The adaptive
-/// ConcurrencyController governs concurrency globally based on available
-/// machine resources and LLM rate limits. Lane limits here only exist
+/// `ConcurrencyController` governs concurrency globally based on available
+/// machine resources and LLM rate limits. Lane-level limits here only exist
 /// for physical or design serialization constraints:
-/// - desktop: one screen, one mouse, one keyboard
-/// - heartbeat: one proactive tick at a time
-/// - dev: one developer assistant per project
+///
+/// - `heartbeat` (unlimited): multiple roles tick concurrently; per-role
+///   dedup prevents the same role from piling up overlapping ticks.
+/// - `desktop` (max 1): one screen, one mouse, one keyboard — concurrent
+///   desktop automation would fight over the same physical resources.
 const LANE_CONFIGS: &[LaneConfig] = &[
     LaneConfig { name: lanes::MAIN, max_concurrent: 0 },
     LaneConfig { name: lanes::EVENTS, max_concurrent: 0 },
     LaneConfig { name: lanes::SUBAGENT, max_concurrent: 0 },
     LaneConfig { name: lanes::NESTED, max_concurrent: 0 },
-    LaneConfig { name: lanes::HEARTBEAT, max_concurrent: 1 },    // sequential ticks
+    LaneConfig { name: lanes::HEARTBEAT, max_concurrent: 0 },    // multiple roles tick concurrently
     LaneConfig { name: lanes::COMM, max_concurrent: 0 },
     LaneConfig { name: lanes::DEV, max_concurrent: 0 },
     LaneConfig { name: lanes::DESKTOP, max_concurrent: 1 },      // one screen, one mouse
 ];
 
 impl LaneManager {
-    /// Create a new LaneManager with all configured lanes.
+    /// Create a new `LaneManager` with all lanes from [`LANE_CONFIGS`].
+    ///
+    /// Does **not** start pump tasks — call [`start_pumps`] after construction.
     pub fn new() -> Self {
         let mut lanes = HashMap::new();
 
@@ -85,8 +201,14 @@ impl LaneManager {
         }
     }
 
-    /// Start per-lane pump tasks. Each pump waits for notifications, dequeues
-    /// tasks up to the lane's concurrency limit, and spawns them.
+    /// Start per-lane pump tasks.
+    ///
+    /// Spawns one tokio task per lane. Each pump sleeps on [`Notify`], wakes
+    /// when a task is enqueued, drains the FIFO queue up to `max_concurrent`,
+    /// and spawns each task. Completed tasks decrement the active count and
+    /// re-notify the pump so queued work can fill the freed slot.
+    ///
+    /// Pumps run until [`shutdown`] cancels the shared `CancellationToken`.
     pub fn start_pumps(&self) {
         for (name, (state, notify)) in &self.lanes {
             let name = name.clone();
@@ -112,6 +234,12 @@ impl LaneManager {
     }
 
     /// Enqueue a task and return a completion handle.
+    ///
+    /// The returned `oneshot::Receiver` resolves with `Ok(())` on success or
+    /// `Err(message)` on failure. Returns `None` only if the lane (and the
+    /// `"main"` fallback) doesn't exist — should never happen in practice.
+    ///
+    /// Unknown lane names silently fall back to `"main"` with a tracing warning.
     pub fn enqueue(&self, lane: &str, task: LaneTask) -> Option<oneshot::Receiver<Result<(), String>>> {
         let (lane_state, notify) = match self.lanes.get(lane) {
             Some(pair) => pair,
@@ -138,6 +266,10 @@ impl LaneManager {
     }
 
     /// Enqueue a task without waiting for completion (fire-and-forget).
+    ///
+    /// Same as [`enqueue`] but discards the completion handle. The task's
+    /// `completion_tx` is left as `None`, so no one receives the result.
+    /// Unknown lane names fall back to `"main"`.
     pub fn enqueue_async(&self, lane: &str, task: LaneTask) {
         let (lane_state, notify) = match self.lanes.get(lane) {
             Some(pair) => pair,
@@ -158,7 +290,10 @@ impl LaneManager {
         notify.notify_one();
     }
 
-    /// Get status info for all lanes: (name, active, queued, max_concurrent).
+    /// Get status snapshot for all lanes, sorted alphabetically by name.
+    ///
+    /// Returns `(name, active_count, queued_count, max_concurrent)` tuples.
+    /// Useful for monitoring dashboards and the `/api/v1/agent/status` endpoint.
     pub fn status(&self) -> Vec<(String, usize, usize, usize)> {
         let mut result = Vec::new();
         for (name, (state, _)) in &self.lanes {
@@ -169,13 +304,20 @@ impl LaneManager {
         result
     }
 
-    /// Shutdown all lane pumps.
+    /// Cancel all pump loops. Already-running tasks continue to completion;
+    /// queued tasks are abandoned.
     pub fn shutdown(&self) {
         self.cancel.cancel();
     }
 }
 
 /// Drain ready tasks from a lane's queue, respecting concurrency limits.
+///
+/// Called by the pump loop each time it wakes. Pops tasks in FIFO order
+/// while `active < max_concurrent` (or unlimited when `max_concurrent == 0`),
+/// spawning each as a tokio task. Emits a stale-task warning if any task
+/// waited longer than its `warn_after_ms`. On task completion, decrements
+/// `active` and re-notifies the pump for the next queued item.
 async fn pump_lane(
     name: &str,
     state: &Arc<std::sync::Mutex<LaneState>>,
@@ -241,7 +383,21 @@ async fn pump_lane(
     }
 }
 
-/// Create a LaneTask from an async closure.
+/// Create a [`LaneTask`] from an async future.
+///
+/// Generates an ID in the format `"{lane}-{nanosecond_timestamp}"` and sets
+/// the default stale-task warning threshold to 2000ms. The `completion_tx`
+/// is left as `None` — [`LaneManager::enqueue`] sets it before queuing.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let task = make_task("main", "user chat", async {
+///     // ... run the chat pipeline ...
+///     Ok(())
+/// });
+/// lanes.enqueue_async("main", task);
+/// ```
 pub fn make_task(
     lane: &str,
     description: impl Into<String>,
@@ -292,9 +448,9 @@ mod tests {
         assert_eq!(events.3, 0);
         let subagent = status.iter().find(|s| s.0 == "subagent").unwrap();
         assert_eq!(subagent.3, 0);
-        // Work-nature constraints preserved
+        // Heartbeat unlimited — multiple roles tick concurrently
         let heartbeat = status.iter().find(|s| s.0 == "heartbeat").unwrap();
-        assert_eq!(heartbeat.3, 1);
+        assert_eq!(heartbeat.3, 0);
         let desktop = status.iter().find(|s| s.0 == "desktop").unwrap();
         assert_eq!(desktop.3, 1);
         let comm = status.iter().find(|s| s.0 == "comm").unwrap();

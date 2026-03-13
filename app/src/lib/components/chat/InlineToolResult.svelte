@@ -79,7 +79,7 @@
 
 	<!-- Tool card inline -->
 	<div class="flex items-center gap-3 px-3 py-2 rounded-lg bg-base-200/50 border border-base-300">
-		<div class="text-base-content/60">
+		<div class="text-base-content/70">
 			<svelte:component this={ToolIcon} class="w-4 h-4" />
 		</div>
 		<span class="font-medium text-sm text-base-content">{displayName}</span>

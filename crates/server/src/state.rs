@@ -11,8 +11,22 @@ use tools::Registry;
 
 use comm::PluginManager;
 
+use serde::Serialize;
+
 use crate::handlers::ws::ClientHub;
 use crate::workflow_manager::WorkflowManagerImpl;
+
+/// Janus AI usage stats stored in memory, updated from rate limit headers.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JanusUsage {
+    pub session_limit_tokens: u64,
+    pub session_remaining_tokens: u64,
+    pub session_reset_at: String,
+    pub weekly_limit_tokens: u64,
+    pub weekly_remaining_tokens: u64,
+    pub weekly_reset_at: String,
+}
 
 /// Shared application state passed to all handlers via Axum extractors.
 #[derive(Clone)]
@@ -60,4 +74,8 @@ pub struct AppState {
     pub skill_loader: Arc<tools::skills::Loader>,
     /// Registry of currently active roles — each role is its own bot with isolated persona
     pub role_registry: tools::RoleRegistry,
+    /// Autonomous role workers — one per active role, manages trigger lifecycle
+    pub role_workers: Arc<agent::RoleWorkerRegistry>,
+    /// Janus AI usage stats (session/weekly token limits), updated from rate limit headers
+    pub janus_usage: Arc<tokio::sync::RwLock<Option<JanusUsage>>>,
 }

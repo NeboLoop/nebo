@@ -10,9 +10,11 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use super::HandlerResult;
+use super::{to_error_response, HandlerResult};
+use crate::codes::build_api_client;
 use crate::state::AppState;
 use config;
+use types::NeboError;
 use types::api::ErrorResponse;
 
 const NEBOLOOP_OAUTH_CLIENT_ID: &str = "nbl_nebo_desktop";
@@ -230,6 +232,7 @@ pub async fn oauth_callback(
         &api_url,
         &user_info.id,
         &user_info.email,
+        &user_info.display_name,
         &token_resp.access_token,
         &token_resp.refresh_token,
         janus_provider,
@@ -335,6 +338,10 @@ pub struct AccountStatusResponse {
     pub owner_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 pub async fn account_status(
@@ -352,21 +359,28 @@ pub async fn account_status(
             profile_id: None,
             owner_id: None,
             email: None,
+            display_name: None,
+            plan: None,
         }));
     }
 
     let profile = &profiles[0];
     let mut owner_id = None;
     let mut email = None;
+    let mut display_name = None;
     let mut janus_provider = false;
 
     if let Some(ref meta_str) = profile.metadata {
         if let Ok(meta) = serde_json::from_str::<HashMap<String, String>>(meta_str) {
             owner_id = meta.get("owner_id").cloned();
             email = meta.get("email").cloned();
+            display_name = meta.get("display_name").cloned();
             janus_provider = meta.get("janus_provider").map_or(false, |v| v == "true");
         }
     }
+
+    let plan = state.plan_tier.read().await.clone();
+    let plan = if plan.is_empty() || plan == "free" { None } else { Some(plan) };
 
     Ok(Json(AccountStatusResponse {
         connected: true,
@@ -374,6 +388,8 @@ pub async fn account_status(
         profile_id: Some(profile.id.clone()),
         owner_id,
         email,
+        display_name,
+        plan,
     }))
 }
 
@@ -402,21 +418,61 @@ pub async fn bot_status(
 // --- Janus AI usage ---
 
 /// GET /api/v1/neboloop/janus/usage — Janus usage stats.
-/// Returns zeroed-out usage when running in local mode (no Janus proxy).
-pub async fn janus_usage() -> HandlerResult<serde_json::Value> {
+/// Returns real data from in-memory rate limit headers when available.
+pub async fn janus_usage(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let usage = state.janus_usage.read().await;
+    let (session, weekly) = match usage.as_ref() {
+        Some(u) => {
+            let session_used = u.session_limit_tokens.saturating_sub(u.session_remaining_tokens);
+            let session_pct = if u.session_limit_tokens > 0 {
+                ((session_used as f64 / u.session_limit_tokens as f64) * 100.0).round() as u64
+            } else {
+                0
+            };
+            let weekly_used = u.weekly_limit_tokens.saturating_sub(u.weekly_remaining_tokens);
+            let weekly_pct = if u.weekly_limit_tokens > 0 {
+                ((weekly_used as f64 / u.weekly_limit_tokens as f64) * 100.0).round() as u64
+            } else {
+                0
+            };
+            (
+                serde_json::json!({
+                    "limitTokens": u.session_limit_tokens,
+                    "remainingTokens": u.session_remaining_tokens,
+                    "usedTokens": session_used,
+                    "percentUsed": session_pct,
+                    "resetAt": if u.session_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.session_reset_at.clone()) },
+                }),
+                serde_json::json!({
+                    "limitTokens": u.weekly_limit_tokens,
+                    "remainingTokens": u.weekly_remaining_tokens,
+                    "usedTokens": weekly_used,
+                    "percentUsed": weekly_pct,
+                    "resetAt": if u.weekly_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.weekly_reset_at.clone()) },
+                }),
+            )
+        }
+        None => (
+            serde_json::json!({
+                "limitTokens": 0,
+                "remainingTokens": 0,
+                "usedTokens": 0,
+                "percentUsed": 0,
+            }),
+            serde_json::json!({
+                "limitTokens": 0,
+                "remainingTokens": 0,
+                "usedTokens": 0,
+                "percentUsed": 0,
+            }),
+        ),
+    };
+
     Ok(Json(serde_json::json!({
-        "session": {
-            "limitTokens": 0,
-            "remainingTokens": 0,
-            "usedTokens": 0,
-            "percentUsed": 0,
-        },
-        "weekly": {
-            "limitTokens": 0,
-            "remainingTokens": 0,
-            "usedTokens": 0,
-            "percentUsed": 0,
-        },
+        "session": session,
+        "weekly": weekly,
     })))
 }
 
@@ -456,6 +512,100 @@ pub async fn account_disconnect(
     Ok(Json(DisconnectResponse {
         message: "Disconnected from NeboLoop".into(),
     }))
+}
+
+// --- Billing proxy handlers ---
+
+/// GET /api/v1/neboloop/billing/prices — list billing plans/prices.
+pub async fn billing_prices(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.billing_prices().await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_prices: {e}"))))?;
+    Ok(Json(resp))
+}
+
+/// GET /api/v1/neboloop/billing/subscription — current subscription.
+pub async fn billing_subscription(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.billing_subscription().await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_subscription: {e}"))))?;
+    Ok(Json(resp))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutRequest {
+    pub price_id: String,
+}
+
+/// POST /api/v1/neboloop/billing/checkout — create Stripe checkout session.
+pub async fn billing_checkout(
+    State(state): State<AppState>,
+    Json(body): Json<CheckoutRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.billing_checkout(&body.price_id).await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_checkout: {e}"))))?;
+    // Open checkout URL in system browser (Stripe CSP blocks iframe embedding)
+    if let Some(url) = resp.get("checkoutUrl").and_then(|v| v.as_str()) {
+        let _ = open::that(url);
+    }
+    Ok(Json(resp))
+}
+
+/// POST /api/v1/neboloop/billing/portal — open Stripe customer portal.
+pub async fn billing_portal(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.billing_portal().await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_portal: {e}"))))?;
+    // Open portal URL in system browser (Stripe CSP blocks iframe embedding)
+    if let Some(url) = resp.get("portalUrl").and_then(|v| v.as_str()) {
+        let _ = open::that(url);
+    }
+    Ok(Json(resp))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelRequest {
+    pub subscription_id: String,
+}
+
+/// POST /api/v1/neboloop/billing/cancel — cancel subscription.
+pub async fn billing_cancel(
+    State(state): State<AppState>,
+    Json(body): Json<CancelRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.billing_cancel(&body.subscription_id).await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_cancel: {e}"))))?;
+    Ok(Json(resp))
+}
+
+/// GET /api/v1/neboloop/billing/invoices — list invoices.
+pub async fn billing_invoices(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.billing_invoices().await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_invoices: {e}"))))?;
+    Ok(Json(resp))
+}
+
+/// GET /api/v1/neboloop/billing/payment-methods — list payment methods.
+pub async fn billing_payment_methods(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.billing_payment_methods().await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_payment_methods: {e}"))))?;
+    Ok(Json(resp))
 }
 
 // --- HTTP helpers ---
@@ -537,6 +687,7 @@ pub(crate) fn store_neboloop_profile(
     api_url: &str,
     owner_id: &str,
     email: &str,
+    display_name: &str,
     token: &str,
     refresh_token: &str,
     janus_provider: bool,
@@ -563,6 +714,7 @@ pub(crate) fn store_neboloop_profile(
     let mut metadata = HashMap::new();
     metadata.insert("owner_id", owner_id.to_string());
     metadata.insert("email", email.to_string());
+    metadata.insert("display_name", display_name.to_string());
     metadata.insert("refresh_token", refresh_token.to_string());
     if janus {
         metadata.insert("janus_provider", "true".to_string());

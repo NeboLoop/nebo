@@ -586,7 +586,7 @@
 									<span class="font-semibold">Janus</span>
 									<span class="badge badge-primary badge-sm">Recommended</span>
 								</div>
-								<p class="text-sm text-base-content/60 mt-1">
+								<p class="text-sm text-base-content/70 mt-1">
 									AI powered by NeboLoop — no API keys needed
 								</p>
 							</div>
@@ -605,7 +605,7 @@
 					<!-- More options toggle -->
 					<button
 						type="button"
-						class="w-full text-sm text-base-content/50 hover:text-base-content/70 flex items-center justify-center gap-1 py-2"
+						class="w-full text-sm text-base-content/70 hover:text-base-content/70 flex items-center justify-center gap-1 py-2"
 						onclick={() => (showMoreProviders = !showMoreProviders)}
 					>
 						Use your own API key or CLI instead
@@ -620,8 +620,8 @@
 					<div class="space-y-3 mb-6 scrollbar-overlay min-h-0">
 						{#if isCheckingCLI}
 							<div class="flex items-center justify-center py-4">
-								<Loader2 class="w-5 h-5 animate-spin text-base-content/40" />
-								<span class="ml-2 text-sm text-base-content/40">Detecting CLI tools...</span>
+								<Loader2 class="w-5 h-5 animate-spin text-base-content/70" />
+								<span class="ml-2 text-sm text-base-content/70">Detecting CLI tools...</span>
 							</div>
 						{:else}
 							<!-- Show all authenticated CLIs -->
@@ -645,11 +645,11 @@
 												<span class="font-semibold">{info.name}</span>
 												<span class="badge badge-success badge-sm">Ready</span>
 											</div>
-											<p class="text-sm text-base-content/60 mt-1">
+											<p class="text-sm text-base-content/70 mt-1">
 												{info.description}
 											</p>
 											{#if status?.version}
-												<p class="text-xs text-base-content/40 mt-1">
+												<p class="text-xs text-base-content/70 mt-1">
 													v{status.version}
 												</p>
 											{/if}
@@ -686,7 +686,7 @@
 														<span class="font-semibold">{info.name}</span>
 														<span class="badge badge-warning badge-sm">Needs Login</span>
 													</div>
-													<p class="text-sm text-base-content/60 mt-1">
+													<p class="text-sm text-base-content/70 mt-1">
 														Installed but not logged in. Run <code
 															class="text-xs bg-base-300 px-1 rounded">{cliKey}</code
 														> in terminal to authenticate.
@@ -716,7 +716,7 @@
 									<div class="flex items-center gap-2">
 										<span class="font-semibold">Add API Key</span>
 									</div>
-									<p class="text-sm text-base-content/60 mt-1">
+									<p class="text-sm text-base-content/70 mt-1">
 										Use an API key from Anthropic, OpenAI, or Google.
 									</p>
 								</div>
@@ -835,7 +835,7 @@
 
 					<button
 						type="button"
-						class="w-full text-sm text-base-content/60 hover:text-base-content"
+						class="w-full text-sm text-base-content/70 hover:text-base-content"
 						onclick={() => (currentStep = 'provider-choice')}
 					>
 						← Back to provider selection
@@ -880,7 +880,7 @@
 									class="p-1.5 rounded-lg {permissions[cap.key] ? 'bg-primary/20' : 'bg-base-200'}"
 								>
 									<cap.icon
-										class="w-4 h-4 {permissions[cap.key] ? 'text-primary' : 'text-base-content/50'}"
+										class="w-4 h-4 {permissions[cap.key] ? 'text-primary' : 'text-base-content/70'}"
 									/>
 								</div>
 								<div class="flex-1 min-w-0">
@@ -890,7 +890,7 @@
 											<span class="badge badge-neutral badge-xs">Always on</span>
 										{/if}
 									</div>
-									<p class="text-xs text-base-content/50 truncate">{cap.description}</p>
+									<p class="text-xs text-base-content/70 truncate">{cap.description}</p>
 								</div>
 								<input
 									type="checkbox"
@@ -984,10 +984,10 @@
 							{/if}
 						</Button>
 						{#if neboLoopLoading}
-							<p class="text-sm text-base-content/50">Complete sign-in in your browser</p>
+							<p class="text-sm text-base-content/70">Complete sign-in in your browser</p>
 							<button
 								type="button"
-								class="text-sm text-base-content/50 hover:text-base-content underline"
+								class="text-sm text-base-content/70 hover:text-base-content underline"
 								onclick={() => {
 									cleanupNeboLoopOAuth();
 									neboLoopLoading = false;
@@ -1001,7 +1001,7 @@
 					<div class="flex justify-between mt-4">
 						<button
 							type="button"
-							class="text-sm text-base-content/60 hover:text-base-content"
+							class="text-sm text-base-content/70 hover:text-base-content"
 							onclick={() => {
 								if (cameFromJanus) {
 									cameFromJanus = false;
@@ -1016,7 +1016,7 @@
 						{#if !cameFromJanus}
 							<button
 								type="button"
-								class="text-sm text-base-content/60 hover:text-base-content"
+								class="text-sm text-base-content/70 hover:text-base-content"
 								onclick={completeOnboarding}
 							>
 								Skip for now →

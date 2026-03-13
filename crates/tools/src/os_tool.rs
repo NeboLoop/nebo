@@ -10,7 +10,7 @@ use crate::organizer_tool::OrganizerTool;
 use crate::origin::ToolContext;
 use crate::policy::Policy;
 use crate::process::ProcessRegistry;
-use crate::registry::{DynTool, ToolResult};
+use crate::registry::{DynTool, ResourceKind, ToolResult};
 use crate::settings_tool::SettingsTool;
 use crate::shell_tool::ShellTool;
 use crate::spotlight_tool::SpotlightTool;
@@ -233,6 +233,26 @@ impl DynTool for OsTool {
             resource
         };
         !AUTO_APPROVE_RESOURCES.contains(&resource)
+    }
+
+    fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
+        let resource = input.get("resource")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let resource = if resource.is_empty() {
+            let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            OsTool::infer_resource(action)
+        } else {
+            resource
+        };
+        match resource {
+            // Physical screen resources — one mouse, one keyboard, one display
+            "window" | "input" | "ui" | "menu" | "dialog"
+            | "space" | "shortcut" | "capture" | "app" => Some(ResourceKind::Screen),
+            // Parallelizable: clipboard, notification, tts, dock, file, shell,
+            // settings, music, keychain, search, mail, contacts, calendar, reminders
+            _ => None,
+        }
     }
 
     fn execute_dyn<'a>(

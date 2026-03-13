@@ -1,10 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import Card from '$lib/components/ui/Card.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
-	import Drawer from '$lib/components/ui/Drawer.svelte';
-	import SearchInput from '$lib/components/ui/SearchInput.svelte';
-	import { Brain, Trash2, Edit2, RefreshCw, X, Save, Tag, Eye } from 'lucide-svelte';
+	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
+	import { Brain, Trash2, Edit2, RefreshCw, X, Save, Tag, Eye, Search } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { MemoryItem, MemoryStatsResponse } from '$lib/api/nebo';
 
@@ -19,7 +17,7 @@
 	let editTags = $state('');
 	let currentPage = $state(1);
 	let total = $state(0);
-	let drawerOpen = $state(false);
+	let detailOpen = $state(false);
 	const pageSize = 50;
 
 	onMount(async () => {
@@ -78,7 +76,7 @@
 	async function selectMemory(memory: MemoryItem) {
 		selectedMemory = memory;
 		isEditing = false;
-		drawerOpen = true;
+		detailOpen = true;
 		try {
 			const data = await api.getMemory(String(memory.id));
 			selectedMemory = data.memory;
@@ -87,8 +85,8 @@
 		}
 	}
 
-	function closeDrawer() {
-		drawerOpen = false;
+	function closeDetail() {
+		detailOpen = false;
 		selectedMemory = null;
 		isEditing = false;
 	}
@@ -119,7 +117,7 @@
 			await api.deleteMemory(String(memory.id));
 			memories = memories.filter(m => m.id !== memory.id);
 			if (selectedMemory?.id === memory.id) {
-				closeDrawer();
+				closeDetail();
 			}
 			await loadStats();
 		} catch (error) {
@@ -142,10 +140,10 @@
 
 	function getLayerColor(layer: string): string {
 		switch (layer) {
-			case 'tacit': return 'badge-primary';
-			case 'daily': return 'badge-secondary';
-			case 'entity': return 'badge-accent';
-			default: return 'badge-ghost';
+			case 'tacit': return 'bg-primary/10 text-primary';
+			case 'daily': return 'bg-secondary/10 text-secondary';
+			case 'entity': return 'bg-accent/10 text-accent';
+			default: return 'bg-base-content/5 text-base-content/70';
 		}
 	}
 
@@ -167,12 +165,12 @@
 	}
 </script>
 
-<!-- Header with inline stats -->
+<!-- Header -->
 <div class="mb-4 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Memories</h2>
 		{#if stats}
-			<p class="text-sm text-base-content/60">
+			<p class="text-sm text-base-content/70">
 				<span class="font-medium text-base-content/80">{stats.totalCount}</span> total
 				<span class="mx-1">&middot;</span>
 				<span class="text-primary font-medium">{stats.layerCounts?.tacit || 0}</span> tacit
@@ -182,27 +180,32 @@
 				<span class="text-accent font-medium">{stats.layerCounts?.entity || 0}</span> entity
 			</p>
 		{:else}
-			<p class="text-sm text-base-content/60">Browse and manage what the agent remembers about you</p>
+			<p class="text-sm text-base-content/70">Browse and manage what the agent remembers about you</p>
 		{/if}
 	</div>
-	<Button type="ghost" onclick={() => { loadMemories(); loadStats(); }}>
-		<RefreshCw class="w-4 h-4 mr-2" />
-		Refresh
-	</Button>
+	<button
+		type="button"
+		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5"
+		onclick={() => { loadMemories(); loadStats(); }}
+	>
+		<RefreshCw class="w-3.5 h-3.5" />
+	</button>
 </div>
 
 <!-- Namespace filter pills -->
 {#if stats?.namespaces?.length}
 	<div class="flex flex-wrap gap-1.5 mb-4">
 		<button
-			class="btn btn-xs {selectedNamespace === '' ? 'btn-primary' : 'btn-ghost'}"
+			type="button"
+			class="px-2.5 py-1 rounded-lg text-[13px] font-medium transition-colors {selectedNamespace === '' ? 'bg-primary/10 text-primary border border-primary/30' : 'bg-base-content/5 text-base-content/70 border border-transparent hover:border-base-content/15'}"
 			onclick={() => selectNamespaceFilter('')}
 		>
 			All
 		</button>
 		{#each stats.namespaces as ns}
 			<button
-				class="btn btn-xs {selectedNamespace === ns ? 'btn-primary' : 'btn-ghost'}"
+				type="button"
+				class="px-2.5 py-1 rounded-lg text-[13px] font-medium transition-colors {selectedNamespace === ns ? 'bg-primary/10 text-primary border border-primary/30' : 'bg-base-content/5 text-base-content/70 border border-transparent hover:border-base-content/15'}"
 				onclick={() => selectNamespaceFilter(ns)}
 			>
 				{ns}
@@ -211,161 +214,155 @@
 	</div>
 {/if}
 
-<!-- Search + Memory List -->
-<Card>
-	<SearchInput
-		bind:value={searchQuery}
+<!-- Search -->
+<div class="relative mb-4">
+	<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/40" />
+	<input
+		type="text"
+		class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 pl-10 pr-10 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 		placeholder="Search memories..."
+		bind:value={searchQuery}
 		onkeydown={handleSearchKeydown}
-		onclear={handleSearchClear}
-		class="mb-4"
 	/>
+	{#if searchQuery}
+		<button
+			type="button"
+			class="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-base-content/40 hover:text-base-content transition-colors"
+			onclick={handleSearchClear}
+		>
+			<X class="w-4 h-4" />
+		</button>
+	{/if}
+</div>
 
-	{#if isLoading}
-		<div class="py-8 text-center text-base-content/60">Loading...</div>
-	{:else if memories.length === 0}
-		<div class="py-8 text-center text-base-content/60">
-			<Brain class="w-8 h-8 mx-auto mb-2 opacity-50" />
-			<p>No memories found</p>
-		</div>
-	{:else}
-		<div class="space-y-2 max-h-[60vh] overflow-y-auto">
-			{#each memories as memory}
-				<div
-					class="p-3 rounded-lg transition-colors cursor-pointer group {selectedMemory?.id === memory.id ? 'bg-primary/10 border border-primary/30' : 'bg-base-200 hover:bg-base-300'}"
-					onclick={() => selectMemory(memory)}
-					onkeydown={(e) => e.key === 'Enter' && selectMemory(memory)}
-					role="button"
-					tabindex="0"
-				>
-					<div class="flex items-start justify-between gap-2 mb-1">
-						<span class="font-medium text-sm truncate flex-1">{memory.key}</span>
-						<div class="flex items-center gap-1.5 shrink-0">
-							<button
-								class="btn btn-ghost btn-xs opacity-0 group-hover:opacity-100 transition-opacity text-error"
-								title="Delete memory"
-								onclick={(e) => { e.stopPropagation(); deleteMemoryHandler(memory); }}
-							>
-								<Trash2 class="w-3.5 h-3.5" />
-							</button>
-							<span class="badge badge-sm {getLayerColor(getLayerFromNamespace(memory.namespace))}">
-								{getLayerFromNamespace(memory.namespace)}
-							</span>
-						</div>
-					</div>
-					<p class="text-sm text-base-content/70 line-clamp-2 mb-2">{memory.value}</p>
-					<div class="flex items-center gap-3 text-xs text-base-content/50">
-						<span class="truncate">{memory.namespace}</span>
-						<span class="flex items-center gap-1">
-							<Eye class="w-3 h-3" />
-							{memory.accessCount}
+<!-- Memory List -->
+{#if isLoading}
+	<div class="flex items-center justify-center gap-3 py-16">
+		<Spinner size={20} />
+		<span class="text-sm text-base-content/70">Loading memories...</span>
+	</div>
+{:else if memories.length === 0}
+	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-12 text-center">
+		<Brain class="w-10 h-10 mx-auto mb-3 text-base-content/30" />
+		<p class="text-sm text-base-content/50">No memories found</p>
+	</div>
+{:else}
+	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10 max-h-[60vh] overflow-y-auto">
+		{#each memories as memory}
+			<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+			<div
+				class="w-full p-4 text-left transition-colors group hover:bg-base-content/5 cursor-pointer {selectedMemory?.id === memory.id ? 'bg-primary/5' : ''}"
+				onclick={() => selectMemory(memory)}
+				role="button"
+				tabindex="0"
+			>
+				<div class="flex items-start justify-between gap-2 mb-1">
+					<span class="text-sm font-medium text-base-content truncate flex-1">{memory.key}</span>
+					<div class="flex items-center gap-1.5 shrink-0">
+						<button
+							type="button"
+							class="p-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity text-base-content/30 hover:text-error hover:bg-error/10"
+							onclick={(e) => { e.stopPropagation(); deleteMemoryHandler(memory); }}
+						>
+							<Trash2 class="w-3.5 h-3.5" />
+						</button>
+						<span class="text-[11px] font-semibold uppercase px-1.5 py-0.5 rounded {getLayerColor(getLayerFromNamespace(memory.namespace))}">
+							{getLayerFromNamespace(memory.namespace)}
 						</span>
 					</div>
 				</div>
-			{/each}
-		</div>
-
-		<!-- Pagination -->
-		{#if total > pageSize}
-			<div class="flex justify-center gap-2 mt-4 pt-4 border-t border-base-300">
-				<Button
-					type="ghost"
-					size="sm"
-					disabled={currentPage === 1}
-					onclick={() => { currentPage--; loadMemories(); }}
-				>
-					Previous
-				</Button>
-				<span class="text-sm text-base-content/60 py-2">
-					Page {currentPage} of {Math.ceil(total / pageSize)}
-				</span>
-				<Button
-					type="ghost"
-					size="sm"
-					disabled={currentPage >= Math.ceil(total / pageSize)}
-					onclick={() => { currentPage++; loadMemories(); }}
-				>
-					Next
-				</Button>
+				<p class="text-sm text-base-content/70 line-clamp-2 mb-2">{memory.value}</p>
+				<div class="flex items-center gap-3 text-[13px] text-base-content/50">
+					<span class="truncate">{memory.namespace}</span>
+					<span class="flex items-center gap-1">
+						<Eye class="w-3 h-3" />
+						{memory.accessCount}
+					</span>
+				</div>
 			</div>
-		{/if}
+		{/each}
+	</div>
+
+	<!-- Pagination -->
+	{#if total > pageSize}
+		<div class="flex items-center justify-center gap-3 mt-4">
+			<button
+				type="button"
+				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 transition-colors disabled:opacity-30"
+				disabled={currentPage === 1}
+				onclick={() => { currentPage--; loadMemories(); }}
+			>
+				Previous
+			</button>
+			<span class="text-sm text-base-content/50">
+				Page {currentPage} of {Math.ceil(total / pageSize)}
+			</span>
+			<button
+				type="button"
+				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 transition-colors disabled:opacity-30"
+				disabled={currentPage >= Math.ceil(total / pageSize)}
+				onclick={() => { currentPage++; loadMemories(); }}
+			>
+				Next
+			</button>
+		</div>
 	{/if}
-</Card>
+{/if}
 
-<!-- Memory Detail Drawer -->
-<Drawer bind:open={drawerOpen} position="right" size="lg" title={selectedMemory?.key || 'Memory Detail'} onclose={closeDrawer}>
+<!-- Memory Detail Modal -->
+<Modal bind:show={detailOpen} title={selectedMemory?.key || 'Memory Detail'} size="md" onclose={closeDetail}>
 	{#if selectedMemory}
-		<!-- Actions -->
-		<div class="flex gap-2 mb-6">
-			{#if isEditing}
-				<Button type="ghost" size="sm" onclick={() => isEditing = false}>
-					<X class="w-4 h-4 mr-1" />
-					Cancel
-				</Button>
-				<Button type="primary" size="sm" onclick={saveEdit}>
-					<Save class="w-4 h-4 mr-1" />
-					Save
-				</Button>
-			{:else}
-				<Button type="ghost" size="sm" onclick={startEdit}>
-					<Edit2 class="w-4 h-4 mr-1" />
-					Edit
-				</Button>
-				<Button type="ghost" size="sm" onclick={() => deleteMemoryHandler(selectedMemory!)}>
-					<Trash2 class="w-4 h-4 mr-1 text-error" />
-					Delete
-				</Button>
-			{/if}
-		</div>
-
 		<!-- Metadata -->
-		<div class="mb-6 space-y-2 text-sm">
-			<div class="flex items-center gap-2">
-				<span class="text-base-content/60 w-28">Namespace:</span>
-				<span class="badge badge-ghost">{selectedMemory.namespace}</span>
-			</div>
-			<div class="flex items-center gap-2">
-				<span class="text-base-content/60 w-28">Layer:</span>
-				<span class="badge {getLayerColor(getLayerFromNamespace(selectedMemory.namespace))}">
-					{getLayerFromNamespace(selectedMemory.namespace)}
-				</span>
-			</div>
-			<div class="flex items-center gap-2">
-				<span class="text-base-content/60 w-28">Access Count:</span>
-				<span>{selectedMemory.accessCount}</span>
-			</div>
-			<div class="flex items-center gap-2">
-				<span class="text-base-content/60 w-28">Created:</span>
-				<span class="text-base-content/70">{formatDate(selectedMemory.createdAt)}</span>
-			</div>
-			<div class="flex items-center gap-2">
-				<span class="text-base-content/60 w-28">Updated:</span>
-				<span class="text-base-content/70">{formatDate(selectedMemory.updatedAt)}</span>
-			</div>
-			<div class="flex items-center gap-2">
-				<span class="text-base-content/60 w-28">Last Access:</span>
-				<span class="text-base-content/70">{selectedMemory.accessedAt ? formatDate(selectedMemory.accessedAt) : 'Never'}</span>
+		<div class="space-y-3 mb-5">
+			<div class="grid grid-cols-2 gap-3">
+				<div>
+					<p class="text-[13px] text-base-content/50 mb-0.5">Namespace</p>
+					<p class="text-sm text-base-content">{selectedMemory.namespace}</p>
+				</div>
+				<div>
+					<p class="text-[13px] text-base-content/50 mb-0.5">Layer</p>
+					<span class="text-[11px] font-semibold uppercase px-1.5 py-0.5 rounded {getLayerColor(getLayerFromNamespace(selectedMemory.namespace))}">
+						{getLayerFromNamespace(selectedMemory.namespace)}
+					</span>
+				</div>
+				<div>
+					<p class="text-[13px] text-base-content/50 mb-0.5">Access Count</p>
+					<p class="text-sm text-base-content">{selectedMemory.accessCount}</p>
+				</div>
+				<div>
+					<p class="text-[13px] text-base-content/50 mb-0.5">Last Access</p>
+					<p class="text-sm text-base-content/70">{selectedMemory.accessedAt ? formatDate(selectedMemory.accessedAt) : 'Never'}</p>
+				</div>
+				<div>
+					<p class="text-[13px] text-base-content/50 mb-0.5">Created</p>
+					<p class="text-sm text-base-content/70">{formatDate(selectedMemory.createdAt)}</p>
+				</div>
+				<div>
+					<p class="text-[13px] text-base-content/50 mb-0.5">Updated</p>
+					<p class="text-sm text-base-content/70">{formatDate(selectedMemory.updatedAt)}</p>
+				</div>
 			</div>
 		</div>
 
 		<!-- Tags -->
 		{#if isEditing}
-			<div class="mb-6">
-				<label class="text-sm text-base-content/60 mb-1 block">Tags (comma-separated)</label>
+			<div class="mb-5">
+				<label class="text-sm font-medium text-base-content/70 mb-1.5 block" for="edit-tags">Tags (comma-separated)</label>
 				<input
+					id="edit-tags"
 					type="text"
-					class="input input-bordered w-full"
+					class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 					bind:value={editTags}
 					placeholder="tag1, tag2, tag3"
 				/>
 			</div>
 		{:else if selectedMemory.tags?.length}
-			<div class="mb-6">
-				<label class="text-sm text-base-content/60 mb-1 block">Tags</label>
-				<div class="flex flex-wrap gap-1">
+			<div class="mb-5">
+				<p class="text-[13px] text-base-content/50 mb-1.5">Tags</p>
+				<div class="flex flex-wrap gap-1.5">
 					{#each selectedMemory.tags as tag}
-						<span class="badge badge-outline badge-sm">
-							<Tag class="w-3 h-3 mr-1" />
+						<span class="inline-flex items-center gap-1 text-[11px] font-medium bg-base-content/5 text-base-content/70 px-2 py-0.5 rounded">
+							<Tag class="w-3 h-3" />
 							{tag}
 						</span>
 					{/each}
@@ -375,17 +372,65 @@
 
 		<!-- Value -->
 		<div>
-			<label class="text-sm text-base-content/60 mb-1 block">Value</label>
+			<p class="text-[13px] text-base-content/50 mb-1.5">Value</p>
 			{#if isEditing}
 				<textarea
-					class="textarea textarea-bordered w-full h-48"
+					class="w-full rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-sm focus:outline-none focus:border-primary/50 transition-colors resize-none h-48"
 					bind:value={editValue}
 				></textarea>
 			{:else}
-				<div class="bg-base-300 rounded-lg p-4 whitespace-pre-wrap text-sm max-h-64 overflow-y-auto">
+				<div class="rounded-xl bg-base-content/5 border border-base-content/10 p-4 whitespace-pre-wrap text-sm text-base-content/70 max-h-64 overflow-y-auto">
 					{selectedMemory.value}
 				</div>
 			{/if}
 		</div>
 	{/if}
-</Drawer>
+
+	{#snippet footer()}
+		<div class="flex items-center justify-between w-full">
+			{#if isEditing}
+				<button
+					type="button"
+					class="h-9 px-4 rounded-full text-sm font-medium text-base-content/70 hover:bg-base-content/5 transition-colors"
+					onclick={() => isEditing = false}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5"
+					onclick={saveEdit}
+				>
+					<Save class="w-4 h-4" />
+					Save
+				</button>
+			{:else}
+				<div class="flex items-center gap-2">
+					<button
+						type="button"
+						class="h-8 px-3 rounded-lg text-[13px] font-medium text-base-content/70 hover:bg-base-content/5 transition-colors flex items-center gap-1.5"
+						onclick={startEdit}
+					>
+						<Edit2 class="w-3.5 h-3.5" />
+						Edit
+					</button>
+					<button
+						type="button"
+						class="h-8 px-3 rounded-lg text-[13px] font-medium text-base-content/70 hover:text-error hover:bg-error/10 transition-colors flex items-center gap-1.5"
+						onclick={() => deleteMemoryHandler(selectedMemory!)}
+					>
+						<Trash2 class="w-3.5 h-3.5" />
+						Delete
+					</button>
+				</div>
+				<button
+					type="button"
+					class="h-9 px-4 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+					onclick={closeDetail}
+				>
+					Close
+				</button>
+			{/if}
+		</div>
+	{/snippet}
+</Modal>

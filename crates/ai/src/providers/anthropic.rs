@@ -461,6 +461,7 @@ impl Provider for AnthropicProvider {
                     remaining_tokens,
                     reset_after_secs: reset_after,
                     retry_after_secs: None,
+                    ..Default::default()
                 }))
                 .await;
         }

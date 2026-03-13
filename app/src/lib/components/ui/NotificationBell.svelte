@@ -149,7 +149,7 @@
 			<!-- Notification List -->
 			<div class="max-h-96 overflow-y-auto">
 				{#if $notifications.length === 0}
-					<div class="px-4 py-8 text-center text-base-content/60">
+					<div class="px-4 py-8 text-center text-base-content/70">
 						<Bell class="w-8 h-8 mx-auto mb-2 opacity-40" />
 						<p>No notifications yet</p>
 					</div>
@@ -183,7 +183,7 @@
 											{n.body}
 										</p>
 									{/if}
-									<p class="text-xs text-base-content/50 mt-1">
+									<p class="text-xs text-base-content/70 mt-1">
 										{formatTime(n.createdAt)}
 									</p>
 								</div>

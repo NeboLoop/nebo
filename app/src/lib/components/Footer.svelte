@@ -37,7 +37,7 @@
 						{site.name}
 					</span>
 				</a>
-				<p class="mt-4 text-sm text-base-content/60 max-w-xs leading-relaxed">
+				<p class="mt-4 text-sm text-base-content/70 max-w-xs leading-relaxed">
 					{site.description}
 				</p>
 				<!-- Social Links -->
@@ -48,7 +48,7 @@
 								href={social.href}
 								target="_blank"
 								rel="noopener noreferrer"
-								class="text-base-content/40 hover:text-base-content transition-colors"
+								class="text-base-content/70 hover:text-base-content transition-colors"
 								aria-label={social.label}
 							>
 								{#if social.icon === 'twitter'}
@@ -84,7 +84,7 @@
 						<li>
 							<a
 								href={link.href}
-								class="text-sm text-base-content/60 hover:text-base-content transition-colors"
+								class="text-sm text-base-content/70 hover:text-base-content transition-colors"
 							>
 								{link.label}
 							</a>
@@ -103,7 +103,7 @@
 						<li>
 							<a
 								href={link.href}
-								class="text-sm text-base-content/60 hover:text-base-content transition-colors"
+								class="text-sm text-base-content/70 hover:text-base-content transition-colors"
 							>
 								{link.label}
 							</a>
@@ -115,7 +115,7 @@
 
 		<!-- Bottom -->
 		<div class="mt-12 pt-8 border-t border-base-content/10">
-			<p class="text-sm text-base-content/40 text-center sm:text-left">
+			<p class="text-sm text-base-content/70 text-center sm:text-left">
 				&copy; {currentYear} {site.legal.companyName}. All rights reserved.
 			</p>
 		</div>

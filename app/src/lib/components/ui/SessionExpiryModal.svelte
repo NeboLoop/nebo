@@ -1,11 +1,10 @@
 <!--
   Session Expiry Modal Component
-  Shows when user session is about to expire, gives option to continue or logout
+  Matches NeboLoop.com modal style
 -->
 
 <script lang="ts">
-	import { Clock, LogOut } from 'lucide-svelte';
-	import Button from './Button.svelte';
+	import { Clock, LogOut, X } from 'lucide-svelte';
 
 	interface Props {
 		show?: boolean;
@@ -21,7 +20,6 @@
 		onLogout
 	}: Props = $props();
 
-	// Format seconds as MM:SS
 	let formattedTime = $derived(() => {
 		const mins = Math.floor(secondsRemaining / 60);
 		const secs = secondsRemaining % 60;
@@ -45,59 +43,61 @@
 	}
 </script>
 
-<div
-	class="modal"
-	class:modal-open={show}
-	onkeydown={handleKeydown}
-	role="dialog"
-	aria-modal="true"
-	aria-labelledby="session-expiry-title"
-	tabindex="-1"
->
-	<div class="modal-box max-w-md">
-		<!-- Icon and Title -->
-		<div class="flex flex-col items-center text-center pb-4">
-			<div class="w-16 h-16 rounded-full bg-warning/20 flex items-center justify-center mb-4">
-				<Clock class="w-8 h-8 text-warning" />
-			</div>
-			<h3 id="session-expiry-title" class="text-xl font-bold">Session Expiring Soon</h3>
-		</div>
+{#if show}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="nebo-modal-backdrop"
+		onkeydown={handleKeydown}
+		role="dialog"
+		aria-modal="true"
+		aria-labelledby="session-expiry-title"
+		tabindex="-1"
+	>
+		<div class="nebo-modal-overlay"></div>
 
-		<!-- Body -->
-		<div class="text-center py-4">
-			<p class="text-base-content/70 mb-4">
-				Your session will expire in
-			</p>
-			<div class="text-4xl font-mono font-bold text-warning mb-4">
-				{formattedTime()}
+		<div class="nebo-modal-card max-w-md">
+			<!-- Header -->
+			<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
+				<h3 id="session-expiry-title" class="font-display text-lg font-bold">Session Expiring Soon</h3>
+				<button type="button" onclick={handleContinue} class="nebo-modal-close" aria-label="Close">
+					<X class="w-5 h-5 text-base-content/90" />
+				</button>
 			</div>
-			<p class="text-sm text-base-content/60">
-				Click "Continue Session" to stay logged in, or you'll be automatically logged out.
-			</p>
-		</div>
 
-		<!-- Actions -->
-		<div class="flex flex-col sm:flex-row gap-3 pt-4 border-t border-base-300">
-			<Button
-				type="ghost"
-				onclick={handleLogout}
-				class="flex-1 gap-2"
-			>
-				<LogOut class="w-4 h-4" />
-				Log Out Now
-			</Button>
-			<Button
-				type="primary"
-				onclick={handleContinue}
-				class="flex-1"
-			>
-				Continue Session
-			</Button>
+			<!-- Body -->
+			<div class="px-5 py-5 text-center">
+				<div class="w-16 h-16 rounded-full bg-warning/20 flex items-center justify-center mx-auto mb-4">
+					<Clock class="w-8 h-8 text-warning" />
+				</div>
+				<p class="text-sm text-base-content/70 mb-4">
+					Your session will expire in
+				</p>
+				<div class="text-4xl font-mono font-bold text-warning mb-4">
+					{formattedTime()}
+				</div>
+				<p class="text-sm text-base-content/70">
+					Click "Continue Session" to stay logged in, or you'll be automatically logged out.
+				</p>
+			</div>
+
+			<!-- Footer -->
+			<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
+				<button
+					type="button"
+					class="h-10 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors flex items-center gap-2"
+					onclick={handleLogout}
+				>
+					<LogOut class="w-4 h-4" />
+					Log Out Now
+				</button>
+				<button
+					type="button"
+					class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all"
+					onclick={handleContinue}
+				>
+					Continue Session
+				</button>
+			</div>
 		</div>
 	</div>
-
-	<!-- Backdrop - don't allow closing by clicking outside -->
-	<div class="modal-backdrop">
-		<button class="cursor-default">close</button>
-	</div>
-</div>
+{/if}

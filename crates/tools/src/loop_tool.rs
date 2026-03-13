@@ -112,25 +112,31 @@ impl LoopTool {
                 }
             }
             "messages" => {
-                // Requires ChannelMessageLister — not available via trait object
-                ToolResult::error(
-                    "Feature not available with current comm plugin. \
-                     Channel message listing requires extended comm capabilities.",
-                )
+                let channel_id = input["channel_id"].as_str().unwrap_or("");
+                if channel_id.is_empty() {
+                    return ToolResult::error("channel_id is required for channel messages");
+                }
+                let limit = input["limit"].as_u64().unwrap_or(50) as usize;
+                match self.comm.list_channel_messages(channel_id, limit).await {
+                    Ok(msgs) => ToolResult::ok(serde_json::to_string_pretty(&msgs).unwrap_or_default()),
+                    Err(e) => ToolResult::error(format!("Failed to list channel messages: {}", e)),
+                }
             }
             "members" => {
-                // Requires ChannelMemberLister — not available via trait object
-                ToolResult::error(
-                    "Feature not available with current comm plugin. \
-                     Channel member listing requires extended comm capabilities.",
-                )
+                let channel_id = input["channel_id"].as_str().unwrap_or("");
+                if channel_id.is_empty() {
+                    return ToolResult::error("channel_id is required for channel members");
+                }
+                match self.comm.list_channel_members(channel_id).await {
+                    Ok(members) => ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default()),
+                    Err(e) => ToolResult::error(format!("Failed to list channel members: {}", e)),
+                }
             }
             "list" => {
-                // Requires LoopChannelLister — not available via trait object
-                ToolResult::error(
-                    "Feature not available with current comm plugin. \
-                     Channel listing requires extended comm capabilities.",
-                )
+                match self.comm.list_channels().await {
+                    Ok(channels) => ToolResult::ok(serde_json::to_string_pretty(&channels).unwrap_or_default()),
+                    Err(e) => ToolResult::error(format!("Failed to list channels: {}", e)),
+                }
             }
             _ => ToolResult::error(format!(
                 "Unknown channel action: {}. Available: send, messages, members, list",
@@ -144,26 +150,30 @@ impl LoopTool {
 
         match action {
             "list" => {
-                // Requires LoopLister — not available via trait object
-                ToolResult::error(
-                    "Feature not available with current comm plugin. \
-                     Loop listing requires extended comm capabilities.",
-                )
+                match self.comm.list_loops().await {
+                    Ok(loops) => ToolResult::ok(serde_json::to_string_pretty(&loops).unwrap_or_default()),
+                    Err(e) => ToolResult::error(format!("Failed to list loops: {}", e)),
+                }
             }
             "get" => {
-                let _loop_id = input["loop_id"].as_str().unwrap_or("");
-                // Requires LoopGetter — not available via trait object
-                ToolResult::error(
-                    "Feature not available with current comm plugin. \
-                     Loop info requires extended comm capabilities.",
-                )
+                let loop_id = input["loop_id"].as_str().unwrap_or("");
+                if loop_id.is_empty() {
+                    return ToolResult::error("loop_id is required for group get");
+                }
+                match self.comm.get_loop_info(loop_id).await {
+                    Ok(info) => ToolResult::ok(serde_json::to_string_pretty(&info).unwrap_or_default()),
+                    Err(e) => ToolResult::error(format!("Failed to get loop info: {}", e)),
+                }
             }
             "members" => {
-                // Requires ChannelMemberLister for the loop's default channel
-                ToolResult::error(
-                    "Feature not available with current comm plugin. \
-                     Loop member listing requires extended comm capabilities.",
-                )
+                let loop_id = input["loop_id"].as_str().unwrap_or("");
+                if loop_id.is_empty() {
+                    return ToolResult::error("loop_id is required for group members");
+                }
+                match self.comm.list_channel_members(loop_id).await {
+                    Ok(members) => ToolResult::ok(serde_json::to_string_pretty(&members).unwrap_or_default()),
+                    Err(e) => ToolResult::error(format!("Failed to list group members: {}", e)),
+                }
             }
             _ => ToolResult::error(format!(
                 "Unknown group action: {}. Available: list, get, members",

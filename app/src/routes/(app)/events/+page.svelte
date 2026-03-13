@@ -58,7 +58,7 @@
 		if (type.startsWith('tool')) return 'text-info';
 		if (type.startsWith('agent')) return 'text-success';
 		if (type.startsWith('error') || type.startsWith('fail')) return 'text-error';
-		return 'text-base-content/50';
+		return 'text-base-content/70';
 	}
 </script>
 
@@ -66,7 +66,7 @@
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Events</h2>
-		<p class="text-sm text-base-content/60">System events — workflow triggers, tool completions, agent activity</p>
+		<p class="text-sm text-base-content/70">System events — workflow triggers, tool completions, agent activity</p>
 	</div>
 	<button class="btn btn-ghost btn-sm" onclick={load} disabled={isLoading}>
 		<RefreshCw class="w-4 h-4 {isLoading ? 'animate-spin' : ''}" />
@@ -76,14 +76,14 @@
 
 {#if isLoading}
 	<Card>
-		<div class="py-12 text-center text-base-content/60">
+		<div class="py-12 text-center text-base-content/70">
 			<span class="loading loading-spinner loading-md"></span>
 		</div>
 	</Card>
 {:else if events.length > 0}
 	<!-- Type filter -->
 	<div class="flex items-center gap-2 mb-4 flex-wrap">
-		<Filter class="w-3.5 h-3.5 text-base-content/30" />
+		<Filter class="w-3.5 h-3.5 text-base-content/70" />
 		{#each eventTypes as type}
 			<button
 				class="badge cursor-pointer transition-colors {selectedType === type ? 'badge-primary' : 'badge-ghost hover:badge-outline'}"
@@ -101,23 +101,23 @@
 				<div class="flex-1 min-w-0">
 					<div class="flex items-center gap-2 mb-0.5">
 						<span class="text-xs font-mono font-medium {eventColor(event.type)}">{event.type}</span>
-						<span class="text-[10px] text-base-content/30">{event.source}</span>
+						<span class="text-[10px] text-base-content/70">{event.source}</span>
 					</div>
 					{#if event.payload}
-						<pre class="text-[10px] text-base-content/40 font-mono leading-relaxed truncate">{event.payload}</pre>
+						<pre class="text-[10px] text-base-content/70 font-mono leading-relaxed truncate">{event.payload}</pre>
 					{/if}
 				</div>
-				<span class="text-[10px] text-base-content/30 tabular-nums shrink-0 mt-0.5">{formatDate(event.created_at)}</span>
+				<span class="text-[10px] text-base-content/70 tabular-nums shrink-0 mt-0.5">{formatDate(event.created_at)}</span>
 			</div>
 		{/each}
 	</div>
 {:else}
 	<Card>
-		<div class="py-16 text-center text-base-content/60">
+		<div class="py-16 text-center text-base-content/70">
 			<Activity class="w-12 h-12 mx-auto mb-4 opacity-20" />
 			<p class="font-medium mb-2">No events yet</p>
-			<p class="text-sm text-base-content/40">Events will appear here as workflows run, tools execute, and agents act.</p>
-			<p class="text-xs text-base-content/30 mt-4">Event bus coming in a future release.</p>
+			<p class="text-sm text-base-content/70">Events will appear here as workflows run, tools execute, and agents act.</p>
+			<p class="text-xs text-base-content/70 mt-4">Event bus coming in a future release.</p>
 		</div>
 	</Card>
 {/if}

@@ -1,6 +1,6 @@
 <!--
   Modal Component
-  Using DaisyUI modal classes
+  Matches NeboLoop.com modal style
 -->
 
 <script lang="ts">
@@ -10,6 +10,7 @@
 		show?: boolean;
 		open?: boolean;
 		title: string;
+		description?: string;
 		size?: 'sm' | 'md' | 'lg' | 'xl' | 'full';
 		closeOnBackdrop?: boolean;
 		closeOnEscape?: boolean;
@@ -23,8 +24,9 @@
 		show = $bindable(false),
 		open = $bindable(false),
 		title,
+		description = '',
 		size = 'md',
-		closeOnBackdrop = false,
+		closeOnBackdrop = true,
 		closeOnEscape = true,
 		showCloseButton = true,
 		onclose,
@@ -32,15 +34,14 @@
 		footer
 	}: Props = $props();
 
-	// Support both 'show' and 'open' props
 	let isOpen = $derived(show || open);
 
-	const sizeClasses: Record<string, string> = {
-		sm: 'modal-box max-w-md',
-		md: 'modal-box max-w-lg',
-		lg: 'modal-box max-w-2xl',
-		xl: 'modal-box max-w-4xl',
-		full: 'modal-box w-full max-w-5xl h-[calc(100vh-2rem)] max-h-[calc(100vh-2rem)] overflow-x-hidden'
+	const widthClasses: Record<string, string> = {
+		sm: 'max-w-md',
+		md: 'max-w-lg',
+		lg: 'max-w-2xl',
+		xl: 'max-w-4xl',
+		full: 'max-w-5xl'
 	};
 
 	function closeModal() {
@@ -62,36 +63,50 @@
 	}
 </script>
 
-<div class="modal" class:modal-open={isOpen} onkeydown={handleKeydown} role="dialog" aria-modal="true" tabindex="-1">
-	<div class={sizeClasses[size]}>
-		<!-- Header -->
-		<div class="flex items-center justify-between pb-4 border-b border-base-300">
-			<h3 class="text-xl font-bold">{title}</h3>
-			{#if showCloseButton}
-				<button
-					onclick={closeModal}
-					class="btn btn-sm btn-circle btn-ghost"
-					aria-label="Close"
-				>
-					<X class="h-5 w-5" />
-				</button>
+{#if isOpen}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="nebo-modal-backdrop"
+		onkeydown={handleKeydown}
+		role="dialog"
+		aria-modal="true"
+		tabindex="-1"
+	>
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<button type="button" class="nebo-modal-overlay" onclick={handleBackdropClick}></button>
+
+		<div class="nebo-modal-card {widthClasses[size]} {size === 'full' ? 'nebo-modal-full' : ''}">
+			<!-- Header -->
+			<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
+				<div>
+					<h3 class="font-display text-lg font-bold">{title}</h3>
+					{#if description}
+						<p class="text-sm text-base-content/70 mt-0.5">{description}</p>
+					{/if}
+				</div>
+				{#if showCloseButton}
+					<button
+						type="button"
+						onclick={closeModal}
+						class="nebo-modal-close"
+						aria-label="Close"
+					>
+						<X class="w-5 h-5 text-base-content/90" />
+					</button>
+				{/if}
+			</div>
+
+			<!-- Body -->
+			<div class="px-5 py-5 overflow-y-auto {size === 'full' ? 'max-h-[calc(100vh-10rem)]' : 'max-h-[60vh]'}">
+				{@render children()}
+			</div>
+
+			<!-- Footer -->
+			{#if footer}
+				<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
+					{@render footer()}
+				</div>
 			{/if}
 		</div>
-
-		<!-- Body -->
-		<div class="py-4 overflow-y-auto {size === 'full' ? 'max-h-[calc(100vh-10rem)]' : 'max-h-[60vh]'}">
-			{@render children()}
-		</div>
-
-		<!-- Footer (if provided) -->
-		{#if footer}
-			<div class="modal-action pt-4 border-t border-base-300">
-				{@render footer()}
-			</div>
-		{/if}
 	</div>
-	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" onclick={handleBackdropClick}>
-		<button class="cursor-default">close</button>
-	</div>
-</div>
+{/if}

@@ -160,7 +160,7 @@
 <div bind:this={containerRef} class="histogram-chart-container flex flex-col w-full h-full">
 	{#if data.length === 0}
 		<div class="empty-state flex-1 flex items-center justify-center">
-			<p class="text-base-content/60 text-sm">No data to display</p>
+			<p class="text-base-content/70 text-sm">No data to display</p>
 		</div>
 	{:else}
 		<svg viewBox="0 0 {viewBoxWidth} {viewBoxHeight}" preserveAspectRatio="xMidYMid meet" class="flex-1 w-full">
@@ -274,7 +274,7 @@ Count: {bin.count}</title>
 		</svg>
 
 		<!-- Statistics -->
-		<div class="flex justify-center gap-6 text-xs text-base-content/60 mt-2">
+		<div class="flex justify-center gap-6 text-xs text-base-content/70 mt-2">
 			<span>n = {data.length}</span>
 			<span>μ = {stats.mean.toFixed(2)}</span>
 			<span>σ = {stats.stdDev.toFixed(2)}</span>

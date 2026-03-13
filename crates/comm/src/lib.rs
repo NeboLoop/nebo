@@ -42,41 +42,36 @@ pub trait CommPlugin: Send + Sync {
 
     /// Message handler (set by PluginManager).
     fn set_message_handler(&self, handler: MessageHandler);
-}
 
-/// Optional trait for plugins that can list loop channels.
-#[async_trait::async_trait]
-pub trait LoopChannelLister: CommPlugin {
-    async fn list_loop_channels(&self) -> Result<Vec<LoopChannelInfo>, CommError>;
-}
+    /// List loop channels this bot belongs to.
+    async fn list_channels(&self) -> Result<Vec<LoopChannelInfo>, CommError> {
+        Err(CommError::Other("not supported".into()))
+    }
 
-/// Optional trait for plugins that can list loops.
-#[async_trait::async_trait]
-pub trait LoopLister: CommPlugin {
-    async fn list_loops(&self) -> Result<Vec<LoopInfo>, CommError>;
-}
+    /// List loops this bot belongs to.
+    async fn list_loops(&self) -> Result<Vec<LoopInfo>, CommError> {
+        Err(CommError::Other("not supported".into()))
+    }
 
-/// Optional trait for plugins that can get a single loop by ID.
-#[async_trait::async_trait]
-pub trait LoopGetter: CommPlugin {
-    async fn get_loop_info(&self, loop_id: &str) -> Result<LoopInfo, CommError>;
-}
+    /// Get info for a single loop by ID.
+    async fn get_loop_info(&self, _loop_id: &str) -> Result<LoopInfo, CommError> {
+        Err(CommError::Other("not supported".into()))
+    }
 
-/// Optional trait for plugins that can list channel messages.
-#[async_trait::async_trait]
-pub trait ChannelMessageLister: CommPlugin {
+    /// List messages in a channel.
     async fn list_channel_messages(
         &self,
-        channel_id: &str,
-        limit: usize,
-    ) -> Result<Vec<ChannelMessageItem>, CommError>;
-}
+        _channel_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<ChannelMessageItem>, CommError> {
+        Err(CommError::Other("not supported".into()))
+    }
 
-/// Optional trait for plugins that can list channel members.
-#[async_trait::async_trait]
-pub trait ChannelMemberLister: CommPlugin {
+    /// List members of a channel.
     async fn list_channel_members(
         &self,
-        channel_id: &str,
-    ) -> Result<Vec<ChannelMemberItem>, CommError>;
+        _channel_id: &str,
+    ) -> Result<Vec<ChannelMemberItem>, CommError> {
+        Err(CommError::Other("not supported".into()))
+    }
 }

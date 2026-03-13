@@ -11,6 +11,48 @@ use crate::policy::Policy;
 use crate::process::ProcessRegistry;
 use crate::safeguard;
 
+// ── Resource Permits ────────────────────────────────────────────────
+
+/// Physical resource kinds that require serialized access.
+///
+/// Tools that control physical resources (screen, browser) must declare
+/// which resource they need via [`DynTool::resource_permit`]. The registry
+/// acquires a per-resource mutex before executing, preventing concurrent
+/// roles/workflows from fighting over the same physical device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResourceKind {
+    /// Mouse, keyboard, accessibility, app control, screenshots.
+    Screen,
+    /// CDP session (Chrome extension automation).
+    Browser,
+}
+
+/// Per-resource mutexes for serializing physical device access.
+///
+/// Each `Mutex<()>` acts as a max-1 permit — the guard auto-releases
+/// when the tool execution finishes. Upgradeable to `Semaphore` later
+/// if we ever need >1 concurrent sessions per resource.
+pub struct ResourcePermits {
+    screen: tokio::sync::Mutex<()>,
+    browser: tokio::sync::Mutex<()>,
+}
+
+impl ResourcePermits {
+    pub fn new() -> Self {
+        Self {
+            screen: tokio::sync::Mutex::new(()),
+            browser: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    pub async fn acquire(&self, kind: ResourceKind) -> tokio::sync::MutexGuard<'_, ()> {
+        match kind {
+            ResourceKind::Screen => self.screen.lock().await,
+            ResourceKind::Browser => self.browser.lock().await,
+        }
+    }
+}
+
 
 /// Result of a tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +119,13 @@ pub trait DynTool: Send + Sync {
     fn requires_approval_for(&self, _input: &serde_json::Value) -> bool {
         self.requires_approval()
     }
+    /// Declare which physical resource this tool call needs exclusive access to.
+    ///
+    /// Return `Some(ResourceKind)` to serialize access — the registry will acquire
+    /// the corresponding permit before executing. Default: `None` (no serialization).
+    fn resource_permit(&self, _input: &serde_json::Value) -> Option<ResourceKind> {
+        None
+    }
     fn execute_dyn<'a>(
         &'a self,
         ctx: &'a ToolContext,
@@ -90,6 +139,7 @@ pub struct Registry {
     policy: Arc<RwLock<Policy>>,
     process_registry: Arc<ProcessRegistry>,
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
+    resource_permits: ResourcePermits,
 }
 
 impl Registry {
@@ -99,6 +149,7 @@ impl Registry {
             policy: Arc::new(RwLock::new(policy)),
             process_registry: Arc::new(ProcessRegistry::new()),
             bridge: std::sync::RwLock::new(None),
+            resource_permits: ResourcePermits::new(),
         }
     }
 
@@ -144,7 +195,44 @@ impl Registry {
             .collect()
     }
 
+    /// List tools filtered by per-entity permissions.
+    /// Tools whose category is denied are excluded from the list sent to the LLM.
+    pub async fn list_with_permissions(
+        &self,
+        permissions: Option<&std::collections::HashMap<String, bool>>,
+    ) -> Vec<ToolDefinition> {
+        let tools = self.tools.read().await;
+        tools
+            .values()
+            .filter(|tool| {
+                if let Some(perms) = permissions {
+                    let cat = tool_category(tool.name());
+                    if let Some(&allowed) = perms.get(cat) {
+                        return allowed;
+                    }
+                }
+                true // no permission set = allowed
+            })
+            .map(|tool| ToolDefinition {
+                name: tool.name().to_string(),
+                description: tool.description(),
+                input_schema: tool.schema(),
+            })
+            .collect()
+    }
+
     /// Execute a tool and return the result.
+    ///
+    /// Uses a two-phase approach to avoid holding the `tools` read-lock
+    /// while waiting for a resource permit:
+    ///
+    /// 1. **Validate** — read-lock tools, check safeguard + policy, call
+    ///    `resource_permit()` to determine which physical resource (if any)
+    ///    the tool needs. Drop the read-lock.
+    /// 2. **Acquire permit** — if a resource is needed, block until the
+    ///    corresponding `ResourcePermits` mutex is free.
+    /// 3. **Execute** — re-read-lock tools and run `execute_dyn()`. The
+    ///    permit guard stays alive for the duration of execution.
     pub async fn execute(
         &self,
         ctx: &ToolContext,
@@ -156,41 +244,93 @@ impl Registry {
 
         debug!(tool = %name, "executing tool");
 
-        let tools = self.tools.read().await;
-        let tool = match tools.get(name) {
-            Some(t) => t,
-            None => {
-                warn!(tool = %name, "unknown tool");
-                let available: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
-                let correction = tool_correction(name);
-                return ToolResult::error(format!(
-                    "TOOL ERROR: {:?} does not exist. You do NOT have that tool. Do NOT call it again.\n\n{}\nYour available tools are: {}",
-                    name, correction, available.join(", ")
-                ));
+        // ── Phase 1: Validate + determine resource permit ──────────
+        let permit_kind = {
+            let tools = self.tools.read().await;
+            let tool = match tools.get(name) {
+                Some(t) => t,
+                None => {
+                    warn!(tool = %name, "unknown tool");
+                    let available: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
+                    let correction = tool_correction(name);
+                    return ToolResult::error(format!(
+                        "TOOL ERROR: {:?} does not exist. You do NOT have that tool. Do NOT call it again.\n\n{}\nYour available tools are: {}",
+                        name, correction, available.join(", ")
+                    ));
+                }
+            };
+
+            // Hard safety guard — unconditional, cannot be overridden
+            if let Some(err) = safeguard::check_safeguard(name, &input) {
+                warn!(tool = %name, error = %err, "safeguard blocked");
+                return ToolResult::error(err);
             }
+
+            // Check origin-based deny list
+            let resource = input
+                .get("resource")
+                .and_then(|v| v.as_str());
+            {
+                let policy = self.policy.read().await;
+                if policy.is_denied_for_origin(ctx.origin, name, resource) {
+                    return ToolResult::error(format!(
+                        "Tool '{}' is not permitted from {:?} origin",
+                        name, ctx.origin
+                    ));
+                }
+            }
+
+            tool.resource_permit(&input)
+        }; // ← tools read-lock dropped
+
+        // ── Phase 1b: Entity permission check ─────────────────────
+        if let Some(ref perms) = ctx.entity_permissions {
+            let category = tool_category(name);
+            if let Some(&allowed) = perms.get(category) {
+                if !allowed {
+                    return ToolResult::error(format!(
+                        "Tool '{}' is denied for this entity (category '{}')",
+                        name, category
+                    ));
+                }
+            }
+        }
+
+        // ── Phase 1c: Entity resource grant check ─────────────────
+        if let Some(ref grants) = ctx.resource_grants {
+            if let Some(kind) = &permit_kind {
+                let resource_name = match kind {
+                    ResourceKind::Screen => "screen",
+                    ResourceKind::Browser => "browser",
+                };
+                if let Some(grant) = grants.get(resource_name) {
+                    if grant == "deny" {
+                        return ToolResult::error(format!(
+                            "Resource '{}' is denied for this entity",
+                            resource_name
+                        ));
+                    }
+                }
+            }
+        }
+
+        // ── Phase 2: Acquire resource permit (may block) ───────────
+        let _permit_guard = if let Some(kind) = permit_kind {
+            debug!(tool = %name, resource = ?kind, "acquiring resource permit");
+            Some(self.resource_permits.acquire(kind).await)
+        } else {
+            None
         };
 
-        // Hard safety guard — unconditional, cannot be overridden
-        if let Some(err) = safeguard::check_safeguard(name, &input) {
-            warn!(tool = %name, error = %err, "safeguard blocked");
-            return ToolResult::error(err);
+        // ── Phase 3: Re-acquire lock and execute ───────────────────
+        let tools = self.tools.read().await;
+        match tools.get(name) {
+            Some(tool) => tool.execute_dyn(ctx, input).await,
+            None => ToolResult::error(format!(
+                "Tool '{}' was unregistered during permit acquisition",
+                name
+            )),
         }
-
-        // Check origin-based deny list
-        let resource = input
-            .get("resource")
-            .and_then(|v| v.as_str());
-        {
-            let policy = self.policy.read().await;
-            if policy.is_denied_for_origin(ctx.origin, name, resource) {
-                return ToolResult::error(format!(
-                    "Tool '{}' is not permitted from {:?} origin",
-                    name, ctx.origin
-                ));
-            }
-        }
-
-        tool.execute_dyn(ctx, input).await
     }
 
     /// Update the policy.
@@ -480,6 +620,20 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.block_on(self.unregister(name));
         }
+    }
+}
+
+/// Map a tool name to its permission category.
+/// Categories match the keys used in entity_config.permissions JSON.
+fn tool_category(name: &str) -> &str {
+    match name {
+        "web" => "web",
+        "os" => "desktop",
+        "agent" => "memory",
+        "skill" => "filesystem",
+        "work" => "filesystem",
+        "loop" => "web",
+        _ => "other",
     }
 }
 

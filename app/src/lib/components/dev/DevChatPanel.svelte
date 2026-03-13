@@ -619,7 +619,7 @@
 			<div class="flex flex-col justify-center">
 				<h2 class="text-sm font-semibold text-base-content leading-tight">{title}</h2>
 				{#if subtitle}
-					<p class="text-xs text-base-content/50 leading-tight">{subtitle}</p>
+					<p class="text-xs text-base-content/70 leading-tight">{subtitle}</p>
 				{/if}
 			</div>
 			<div class="flex items-center gap-2 shrink-0">
@@ -651,7 +651,7 @@
 						</div>
 						<h3 class="font-display text-lg font-bold text-base-content mb-1">{title}</h3>
 						{#if subtitle}
-							<p class="text-sm text-base-content/60 max-w-md mb-6">{subtitle}</p>
+							<p class="text-sm text-base-content/70 max-w-md mb-6">{subtitle}</p>
 						{/if}
 						{#if suggestions.length > 0}
 							<div class="grid grid-cols-1 gap-2 max-w-md w-full">
@@ -680,7 +680,7 @@
 
 					{#if isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
 						<div class="flex gap-3 mb-4">
-							<div class="w-8 h-8 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-xs bg-base-300 text-base-content/60">
+							<div class="w-8 h-8 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-xs bg-base-300 text-base-content/70">
 								A
 							</div>
 							<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] items-start">
@@ -699,7 +699,7 @@
 				<button
 					type="button"
 					onclick={scrollToBottom}
-					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/60 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
+					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/70 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
 					title="Scroll to bottom"
 				>
 					<ArrowDown class="w-4 h-4" />

@@ -145,10 +145,10 @@
 				{/if}
 			</button>
 			{#if loading}
-				<p class="text-sm text-base-content/50">Complete sign-in in your browser</p>
+				<p class="text-sm text-base-content/70">Complete sign-in in your browser</p>
 				<button
 					type="button"
-					class="text-sm text-base-content/50 hover:text-base-content underline"
+					class="text-sm text-base-content/70 hover:text-base-content underline"
 					onclick={() => { cleanup(); loading = false; }}
 				>
 					Cancel

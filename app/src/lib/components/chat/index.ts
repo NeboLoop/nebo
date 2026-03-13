@@ -8,3 +8,4 @@ export { default as ToolOutputSidebar } from './ToolOutputSidebar.svelte';
 export { default as ChatInput } from './ChatInput.svelte';
 export { default as Chat } from './Chat.svelte';
 export { default as AskWidget } from './AskWidget.svelte';
+export { default as EntityConfigPanel } from './EntityConfigPanel.svelte';

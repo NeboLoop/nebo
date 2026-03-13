@@ -24,6 +24,14 @@
 
 	let { children }: { children: Snippet } = $props();
 
+	// Theme: detect OS preference, allow user override
+	let themePref = $state<'light' | 'dark' | 'system'>('system');
+	let systemDark = $state(true);
+
+	const resolvedTheme = $derived(
+		themePref === 'system' ? (systemDark ? 'dark' : 'light') : themePref
+	);
+
 	// Onboarding state
 	let isCheckingOnboarding = $state(true);
 	let showOnboarding = $state(false);
@@ -41,7 +49,26 @@
 		$page.url.pathname.startsWith('/agent')
 	);
 
+	// Edge-to-edge routes with their own sidebar (no centering wrapper)
+	const isEdgeToEdgeRoute = $derived(
+		$page.url.pathname.startsWith('/store')
+	);
+
+	// Settings renders as a centered modal overlay
+	const isSettingsRoute = $derived(
+		$page.url.pathname.startsWith('/settings')
+	);
+
 	onMount(async () => {
+		// Theme: listen to OS preference changes in real time
+		const mq = window.matchMedia('(prefers-color-scheme: dark)');
+		systemDark = mq.matches;
+		const onSystemChange = (e: MediaQueryListEvent) => { systemDark = e.matches; };
+		mq.addEventListener('change', onSystemChange);
+
+		// Sync resolved theme to <html data-theme="...">
+		$effect(() => { document.documentElement.setAttribute('data-theme', resolvedTheme); });
+
 		// Connect WebSocket — pass token from auth store (in-memory)
 		const wsClient = getWebSocketClient();
 		const authState = get(auth);
@@ -103,10 +130,17 @@
 			}
 		});
 
-		// Check if user needs onboarding
+		// Check if user needs onboarding + load theme preference
 		try {
-			const response = await api.getUserProfile();
+			const [response, prefsData] = await Promise.all([
+				api.getUserProfile(),
+				api.getPreferences().catch(() => ({ preferences: null }))
+			]);
 			showOnboarding = !response.profile?.onboardingCompleted;
+			const savedTheme = prefsData.preferences?.theme;
+			if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
+				themePref = savedTheme;
+			}
 		} catch (err) {
 			// If we can't get profile, show onboarding
 			showOnboarding = true;
@@ -115,6 +149,7 @@
 		}
 
 		return () => {
+			mq.removeEventListener('change', onSystemChange);
 			unsubQuarantine();
 			unsubUpdate();
 			unsubProgress();
@@ -150,6 +185,34 @@
 			</div>
 		{/each}
 		<main id="main-content" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+			{@render children()}
+		</main>
+	</div>
+{:else if isSettingsRoute}
+	<div class="layout-app h-full">
+		<AppNav />
+		<UpdateBanner />
+		{#each quarantineNotices as notice (notice.app_id)}
+			<div class="px-6 pt-2">
+				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>
+					Your data is safe. This app was automatically stopped and quarantined by NeboLoop.
+				</Alert>
+			</div>
+		{/each}
+		{@render children()}
+	</div>
+{:else if isEdgeToEdgeRoute}
+	<div class="layout-app h-full">
+		<AppNav />
+		<UpdateBanner />
+		{#each quarantineNotices as notice (notice.app_id)}
+			<div class="px-6 pt-2">
+				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>
+					Your data is safe. This app was automatically stopped and quarantined by NeboLoop.
+				</Alert>
+			</div>
+		{/each}
+		<main id="main-content" class="flex-1 px-6 pt-6">
 			{@render children()}
 		</main>
 	</div>

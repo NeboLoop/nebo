@@ -1,8 +1,11 @@
+pub mod chat_dispatch;
 pub mod codes;
 pub mod deps;
+pub mod entity_config;
 pub mod handlers;
 pub mod middleware;
 pub mod workflow_manager;
+mod heartbeat;
 mod migration;
 mod scheduler;
 mod spa;
@@ -700,40 +703,27 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
     ))).await;
 
-    // Reconcile role triggers at startup: re-register schedule cron jobs and
-    // rebuild event subscriptions from role_workflows table.
+    // Create role worker registry — manages autonomous trigger lifecycle for each role
+    let role_workers = Arc::new(agent::RoleWorkerRegistry::new(
+        store.clone(),
+        workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
+        event_dispatcher.clone(),
+    ));
+
+    // Start workers for all enabled roles (replaces manual trigger reconciliation)
     {
-        let mut event_subs = Vec::new();
         if let Ok(roles) = store.list_roles(1000, 0) {
+            let mut started = 0usize;
             for role in &roles {
                 if role.is_enabled == 0 {
                     continue;
                 }
-                if let Ok(bindings) = store.list_role_workflows(&role.id) {
-                    workflow::triggers::register_role_triggers(&role.id, &bindings, &store);
-                    for b in &bindings {
-                        if b.trigger_type == "event" {
-                            for source in b.trigger_config.split(',') {
-                                event_subs.push(workflow::events::EventSubscription {
-                                    pattern: source.trim().to_string(),
-                                    workflow_id: b.workflow_id.clone().unwrap_or_default(),
-                                    default_inputs: b
-                                        .inputs
-                                        .as_ref()
-                                        .and_then(|s| serde_json::from_str(s).ok())
-                                        .unwrap_or_default(),
-                                    role_source: role.id.clone(),
-                                    binding_name: b.binding_name.clone(),
-                                });
-                            }
-                        }
-                    }
-                }
+                role_workers.start_role(&role.id, &role.name).await;
+                started += 1;
             }
-        }
-        if !event_subs.is_empty() {
-            info!(count = event_subs.len(), "reconciled event subscriptions from roles");
-            event_dispatcher.set_subscriptions(event_subs).await;
+            if started > 0 {
+                info!(count = started, "started role workers for enabled roles");
+            }
         }
     }
 
@@ -819,7 +809,22 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         plan_tier,
         skill_loader: skill_loader.clone(),
         role_registry: active_role_state,
+        role_workers,
+        janus_usage: Arc::new(tokio::sync::RwLock::new(None)),
     };
+
+    // Replace comm message handler with full version that routes chat/DM to agent runner
+    {
+        let handler_state = state.clone();
+        state.comm_manager.set_message_handler({
+            Arc::new(move |msg: comm::CommMessage| {
+                let st = handler_state.clone();
+                tokio::spawn(async move {
+                    handle_comm_message(st, msg).await;
+                });
+            })
+        }).await;
+    }
 
     // Auto-connect NeboLoop if enabled and credentials exist
     if cfg.is_neboloop_enabled() {
@@ -949,6 +954,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         state.workflow_manager.clone(),
     );
 
+    // Spawn heartbeat scheduler for per-entity heartbeats
+    heartbeat::spawn(state.clone());
+
     // Build router
     // WebSocket routes are kept outside CompressionLayer — compression corrupts
     // the upgraded socket since it wraps the response body stream.
@@ -994,6 +1002,125 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .map_err(|e| NeboError::Server(format!("server error: {e}")))?;
 
     Ok(())
+}
+
+/// Handle an incoming NeboLoop message with full access to runner/lanes/comm.
+async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
+    // Route install events to napp registry
+    if msg.topic == "installs" {
+        if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
+            let reg = state.napp_registry.clone();
+            let hub = state.hub.clone();
+            match reg.handle_install_event(event).await {
+                Ok(()) => hub.broadcast("tool_event", serde_json::json!({"status": "ok"})),
+                Err(e) => {
+                    tracing::warn!("install event handling failed: {}", e);
+                    hub.broadcast("tool_error", serde_json::json!({"error": e.to_string()}));
+                }
+            }
+            return;
+        }
+    }
+
+    // Route chat and DM messages to the agent runner via unified chat pipeline
+    if msg.topic == "chat" || msg.topic == "dm" {
+        let text = extract_message_text(&msg.content);
+        if text.is_empty() {
+            return;
+        }
+
+        // Notify the user about the inbound message
+        let preview = if text.len() > 80 { format!("{}...", &text[..80]) } else { text.clone() };
+        notify_crate::send(&format!("Message from {}", msg.from), &preview);
+
+        let session_key = agent::keyparser::build_session_key(
+            "neboloop",
+            &msg.topic,
+            &msg.conversation_id,
+        );
+
+        // Resolve entity config for the channel
+        let entity_config = entity_config::resolve_for_chat(
+            &state.store,
+            "channel",
+            &msg.topic,
+        );
+
+        let config = chat_dispatch::ChatConfig {
+            session_key,
+            prompt: text,
+            system: String::new(),
+            user_id: String::new(),
+            channel: "neboloop".to_string(),
+            origin: tools::Origin::Comm,
+            role_id: String::new(),
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            lane: types::constants::lanes::COMM.to_string(),
+            comm_reply: Some(chat_dispatch::CommReplyConfig {
+                topic: msg.topic.clone(),
+                conversation_id: msg.conversation_id.clone(),
+            }),
+            entity_config,
+        };
+
+        chat_dispatch::run_chat(&state, config, None).await;
+
+        // Also emit into event bus so role event triggers can fire
+        state.event_bus.emit(tools::events::Event {
+            source: format!("neboloop.{}", msg.topic),
+            payload: serde_json::json!({
+                "from": msg.from,
+                "content": msg.content,
+                "conversation_id": msg.conversation_id,
+            }),
+            origin: "neboloop".to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        });
+        return;
+    }
+
+    // Emit other message types into event bus for role triggers
+    state.event_bus.emit(tools::events::Event {
+        source: format!("neboloop.{}", msg.topic),
+        payload: serde_json::json!({
+            "from": msg.from,
+            "content": msg.content,
+            "topic": msg.topic,
+        }),
+        origin: "neboloop".to_string(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    });
+
+    // Default: broadcast to frontend clients
+    state.hub.broadcast(
+        "comm_message",
+        serde_json::json!({
+            "from": msg.from,
+            "to": msg.to,
+            "content": msg.content,
+            "type": msg.msg_type,
+            "topic": msg.topic,
+        }),
+    );
+}
+
+/// Extract text from a comm message content (JSON or plain text).
+fn extract_message_text(content: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
+        if let Some(text) = v["text"].as_str() {
+            return text.to_string();
+        }
+        if let Some(text) = v["content"].as_str() {
+            return text.to_string();
+        }
+    }
+    content.to_string()
 }
 
 async fn health_handler() -> Json<HealthResponse> {
@@ -1124,6 +1251,13 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/neboloop/janus/usage", axum::routing::get(handlers::neboloop::janus_usage))
         .route("/neboloop/open", axum::routing::get(handlers::neboloop::open_neboloop))
         .route("/neboloop/connect", axum::routing::post(handlers::neboloop::connect_handler))
+        .route("/neboloop/billing/prices", axum::routing::get(handlers::neboloop::billing_prices))
+        .route("/neboloop/billing/subscription", axum::routing::get(handlers::neboloop::billing_subscription))
+        .route("/neboloop/billing/checkout", axum::routing::post(handlers::neboloop::billing_checkout))
+        .route("/neboloop/billing/portal", axum::routing::post(handlers::neboloop::billing_portal))
+        .route("/neboloop/billing/cancel", axum::routing::post(handlers::neboloop::billing_cancel))
+        .route("/neboloop/billing/invoices", axum::routing::get(handlers::neboloop::billing_invoices))
+        .route("/neboloop/billing/payment-methods", axum::routing::get(handlers::neboloop::billing_payment_methods))
         // Workflows
         .route("/workflows", axum::routing::get(handlers::workflows::list_workflows))
         .route("/workflows", axum::routing::post(handlers::workflows::create_workflow))
@@ -1155,7 +1289,23 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/store/skills/{id}/install", axum::routing::post(handlers::store::install_store_skill))
         .route("/store/skills/{id}/install", axum::routing::delete(handlers::store::uninstall_store_skill))
         .route("/store/workflows", axum::routing::get(handlers::store::list_store_workflows))
+        // Marketplace proxy endpoints
+        .route("/store/products", axum::routing::get(handlers::store::list_store_products))
+        .route("/store/products/top", axum::routing::get(handlers::store::list_store_products_top))
+        .route("/store/featured", axum::routing::get(handlers::store::list_store_featured))
+        .route("/store/categories", axum::routing::get(handlers::store::list_store_categories))
+        .route("/store/screenshots/{type}", axum::routing::get(handlers::store::get_store_screenshots))
+        .route("/store/products/{id}", axum::routing::get(handlers::store::get_store_product))
+        .route("/store/products/{id}/reviews", axum::routing::get(handlers::store::get_store_product_reviews).post(handlers::store::submit_store_product_review))
+        .route("/store/products/{id}/similar", axum::routing::get(handlers::store::get_store_product_similar))
+        .route("/store/products/{id}/media", axum::routing::get(handlers::store::get_store_product_media))
+        .route("/store/products/{id}/feedback", axum::routing::get(handlers::store::get_store_product_feedback).post(handlers::store::submit_store_product_feedback))
+        .route("/store/products/{id}/install", axum::routing::post(handlers::store::install_store_product))
 
+        // Entity Config (per-entity settings)
+        .route("/entity-config/{entity_type}/{entity_id}", axum::routing::get(handlers::entity_config::get_entity_config))
+        .route("/entity-config/{entity_type}/{entity_id}", axum::routing::put(handlers::entity_config::update_entity_config))
+        .route("/entity-config/{entity_type}/{entity_id}", axum::routing::delete(handlers::entity_config::delete_entity_config))
         .route("/codes", axum::routing::post(codes::submit_code))
         // Dependency cascade
         .route("/deps/approve", axum::routing::post(deps::approve_deps))

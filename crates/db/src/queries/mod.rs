@@ -16,3 +16,4 @@ mod user_profile;
 mod provider_models;
 mod workflows;
 mod roles;
+mod entity_config;

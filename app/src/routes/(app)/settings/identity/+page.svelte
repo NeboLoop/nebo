@@ -1,10 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import Card from '$lib/components/ui/Card.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
-	import { Fingerprint, Save } from 'lucide-svelte';
 	import { getAgentProfile, updateAgentProfile } from '$lib/api/nebo';
 	import NeboIcon from '$lib/components/icons/NeboIcon.svelte';
 
@@ -94,162 +91,167 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Identity</h2>
-	<p class="text-sm text-base-content/60">Your agent's name, avatar, and persona</p>
+	<p class="text-sm text-base-content/70">Your agent's name, avatar, and persona</p>
 </div>
 
 {#if isLoading}
-	<Card>
-		<div class="flex items-center justify-center gap-3 py-8">
-			<Spinner size={20} />
-			<span class="text-sm text-base-content/60">Loading identity...</span>
-		</div>
-	</Card>
+	<div class="flex items-center justify-center gap-3 py-16">
+		<Spinner size={20} />
+		<span class="text-sm text-base-content/70">Loading identity...</span>
+	</div>
 {:else}
 	<form
 		onsubmit={(e) => {
 			e.preventDefault();
 			saveIdentity();
 		}}
+		class="space-y-6"
 	>
-		<!-- Character Card Preview -->
-		<div class="rounded-2xl border border-base-300 bg-gradient-to-br from-base-200/50 to-base-100 p-6 mb-6">
-			<div class="flex items-start gap-5">
-				<!-- Avatar — click to change -->
-				<label class="identity-avatar-trigger w-20 h-20 rounded-2xl bg-base-200 flex items-center justify-center overflow-hidden shrink-0 border border-base-300 cursor-pointer relative group">
-					{#if avatar}
-						<img src={avatar} alt="Avatar" class="w-full h-full object-cover" />
-					{:else}
-						<NeboIcon class="w-14 h-14" />
-					{/if}
-					<div class="identity-avatar-overlay absolute inset-0 rounded-2xl bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-						<span class="text-white text-xs font-medium">Change</span>
+		<!-- Avatar -->
+		<section>
+			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Avatar</h3>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+				<div class="flex items-start gap-5">
+					<label class="identity-avatar-trigger w-20 h-20 rounded-2xl bg-base-content/5 flex items-center justify-center overflow-hidden shrink-0 border border-base-content/10 cursor-pointer relative group">
+						{#if avatar}
+							<img src={avatar} alt="Avatar" class="w-full h-full object-cover" />
+						{:else}
+							<NeboIcon class="w-14 h-14" />
+						{/if}
+						<div class="identity-avatar-overlay absolute inset-0 rounded-2xl bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+							<span class="text-white text-sm font-medium">Change</span>
+						</div>
+						<input
+							type="file"
+							class="hidden"
+							accept="image/png,image/jpeg,image/gif,image/webp"
+							onchange={handleAvatarUpload}
+						/>
+					</label>
+
+					<div class="flex-1 min-w-0">
+						<h2 class="text-xl font-bold text-base-content truncate">
+							{#if emoji && !avatar}<span class="mr-1.5">{emoji}</span>{/if}{displayName}
+						</h2>
+						<p class="text-sm text-base-content/70">{displayCreature}</p>
+						{#if displayRole}
+							<p class="text-sm text-base-content/70 mt-0.5">{displayRole}</p>
+						{/if}
+						{#if displayVibe}
+							<p class="text-sm text-base-content/70 italic mt-1">"{displayVibe}"</p>
+						{/if}
 					</div>
-					<input
-						type="file"
-						class="hidden"
-						accept="image/png,image/jpeg,image/gif,image/webp"
-						onchange={handleAvatarUpload}
-					/>
-				</label>
-
-				<div class="flex-1 min-w-0">
-					<h2 class="text-xl font-bold text-base-content truncate">
-						{#if emoji && !avatar}<span class="mr-1.5">{emoji}</span>{/if}{displayName}
-					</h2>
-					<p class="text-sm text-base-content/60">{displayCreature}</p>
-					{#if displayRole}
-						<p class="text-xs text-base-content/50 mt-0.5">{displayRole}</p>
-					{/if}
-					{#if displayVibe}
-						<p class="text-sm text-base-content/40 italic mt-1">"{displayVibe}"</p>
-					{/if}
 				</div>
+				{#if avatar}
+					<div class="flex justify-start mt-3">
+						<button type="button" class="text-sm text-base-content/70 hover:text-error transition-colors" onclick={clearAvatar}>
+							Remove custom avatar
+						</button>
+					</div>
+				{:else}
+					<p class="text-sm text-base-content/70 mt-3">Click the avatar to upload a custom image</p>
+				{/if}
 			</div>
-			{#if avatar}
-				<div class="flex justify-start mt-3">
-					<button type="button" class="text-xs text-base-content/40 hover:text-error transition-colors" onclick={clearAvatar}>
-						Remove custom avatar
-					</button>
-				</div>
-			{:else}
-				<p class="text-xs text-base-content/30 mt-3">Click the avatar to upload a custom image</p>
-			{/if}
-		</div>
+		</section>
 
-		<Card>
-			<h3 class="text-sm font-semibold text-base-content/50 uppercase tracking-wider mb-4">Identity</h3>
-
-			<div class="space-y-4">
-				<div>
-					<label class="block text-sm font-medium text-base-content mb-1" for="agent-name">
-						Name
-					</label>
-					<input
-						id="agent-name"
-						type="text"
-						class="input input-bordered input-sm w-full max-w-xs"
-						placeholder="Nebo"
-						bind:value={agentName}
-					/>
-					<p class="text-xs text-base-content/30 mt-1">What your agent calls itself</p>
-				</div>
-
-				<div>
-					<label class="block text-sm font-medium text-base-content mb-1" for="agent-creature">
-						Creature
-					</label>
-					<textarea
-						id="agent-creature"
-						class="textarea textarea-bordered textarea-sm w-full resize-none"
-						rows="1"
-						placeholder="Helpful sidekick, Sarcastic librarian, Rogue diplomat..."
-						bind:value={creature}
-					></textarea>
-					<p class="text-xs text-base-content/30 mt-1">The archetype your agent embodies</p>
+		<!-- Identity -->
+		<section>
+			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Identity</h3>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
+				<div class="grid sm:grid-cols-2 gap-4">
+					<div>
+						<label class="text-sm font-medium text-base-content/70" for="agent-name">
+							What should your agent be called?
+						</label>
+						<input
+							id="agent-name"
+							type="text"
+							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+							placeholder="Nebo"
+							bind:value={agentName}
+						/>
+					</div>
+					<div>
+						<label class="text-sm font-medium text-base-content/70" for="agent-emoji">
+							Emoji
+						</label>
+						<input
+							id="agent-emoji"
+							type="text"
+							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+							placeholder="Used in chat bubbles and notifications"
+							bind:value={emoji}
+						/>
+					</div>
 				</div>
 
 				<div>
-					<label class="block text-sm font-medium text-base-content mb-1" for="agent-role">
-						Role
+					<label class="text-sm font-medium text-base-content/70" for="agent-role">
+						What's your relationship dynamic?
 					</label>
 					<input
 						id="agent-role"
 						type="text"
-						class="input input-bordered input-sm w-full max-w-xs"
+						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 						placeholder="Friend, Mentor, Coach, COO..."
 						bind:value={role}
 					/>
-					<p class="text-xs text-base-content/30 mt-1">Your relationship dynamic with this agent</p>
+				</div>
+			</div>
+		</section>
+
+		<!-- Persona -->
+		<section>
+			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Persona</h3>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
+				<div>
+					<label class="text-sm font-medium text-base-content/70" for="agent-creature">
+						What archetype does it embody?
+					</label>
+					<input
+						id="agent-creature"
+						type="text"
+						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+						placeholder="Helpful sidekick, Sarcastic librarian, Rogue diplomat..."
+						bind:value={creature}
+					/>
 				</div>
 
 				<div>
-					<label class="block text-sm font-medium text-base-content mb-1" for="agent-vibe">
-						Vibe
+					<label class="text-sm font-medium text-base-content/70" for="agent-vibe">
+						What's the vibe?
 					</label>
 					<textarea
 						id="agent-vibe"
-						class="textarea textarea-bordered textarea-sm w-full resize-none"
+						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-sm focus:outline-none focus:border-primary/50 transition-colors resize-none"
 						rows="2"
 						placeholder="chill but opinionated, dry humor"
 						bind:value={vibe}
 					></textarea>
-					<p class="text-xs text-base-content/30 mt-1">Your agent's energy in a few words</p>
-				</div>
-
-				<div>
-					<label class="block text-sm font-medium text-base-content mb-1" for="agent-emoji">
-						Emoji
-					</label>
-					<input
-						id="agent-emoji"
-						type="text"
-						class="input input-bordered input-sm w-20"
-						placeholder="🤖"
-						bind:value={emoji}
-					/>
-					<p class="text-xs text-base-content/30 mt-1">Shows up in chat bubbles and notifications</p>
 				</div>
 			</div>
+		</section>
 
-		</Card>
-
+		<!-- Save -->
 		{#if saveMessage}
-			<div class="mt-4">
-				<Alert type={saveError ? 'error' : 'success'} title={saveError ? 'Error' : 'Saved'}>
-					{saveMessage}
-				</Alert>
-			</div>
+			<Alert type={saveError ? 'error' : 'success'} title={saveError ? 'Error' : 'Saved'}>
+				{saveMessage}
+			</Alert>
 		{/if}
 
-		<div class="flex justify-end mt-4">
-			<Button type="primary" htmlType="submit" disabled={isSaving}>
+		<div class="flex justify-end">
+			<button
+				type="submit"
+				disabled={isSaving}
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+			>
 				{#if isSaving}
 					<Spinner size={16} />
 					Saving...
 				{:else}
 					Save Identity
 				{/if}
-			</Button>
+			</button>
 		</div>
 	</form>
 {/if}

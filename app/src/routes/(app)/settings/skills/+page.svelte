@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import Card from '$lib/components/ui/Card.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import SkillEditorModal from '$lib/components/skills/SkillEditorModal.svelte';
 	import {
 		Zap, RefreshCw, Power, Store, Download, Check, Star, Plus, Pencil, Trash2,
@@ -137,31 +136,36 @@
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Skills</h2>
-		<p class="text-sm text-base-content/60">Standalone orchestration skills for the agent</p>
+		<p class="text-sm text-base-content/70">Standalone orchestration skills for the agent</p>
 	</div>
 	<div class="flex items-center gap-2">
-		<Button type="primary" onclick={openCreate}>
-			<Plus class="w-4 h-4 mr-2" />
+		<button
+			type="button"
+			class="h-9 px-4 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5"
+			onclick={openCreate}
+		>
+			<Plus class="w-4 h-4" />
 			Create Skill
-		</Button>
-		<Button type="ghost" onclick={loadAll}>
-			<RefreshCw class="w-4 h-4 mr-2" />
-			Refresh
-		</Button>
+		</button>
+		<button
+			type="button"
+			class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5"
+			onclick={loadAll}
+		>
+			<RefreshCw class="w-3.5 h-3.5" />
+		</button>
 	</div>
 </div>
 
 {#if isLoading}
-	<Card>
-		<div class="py-12 text-center text-base-content/60">
-			<span class="loading loading-spinner loading-md"></span>
-			<p class="mt-2">Loading skills...</p>
-		</div>
-	</Card>
+	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/70">
+		<Spinner class="w-5 h-5 mx-auto mb-2" />
+		<p class="text-sm">Loading skills...</p>
+	</div>
 {:else}
 	<!-- Installed Skills -->
 	<div class="mb-8">
-		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 mb-4">Installed Skills</h3>
+		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/70 mb-4">Installed Skills</h3>
 
 		{#if skills.length > 0}
 			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -173,45 +177,41 @@
 					>
 						<div class="flex items-center gap-3 mb-2">
 							<div class="w-9 h-9 rounded-lg {skill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
-								<Zap class="w-4.5 h-4.5 {skill.enabled ? 'text-primary' : 'text-base-content/30'}" />
+								<Zap class="w-4.5 h-4.5 {skill.enabled ? 'text-primary' : 'text-base-content/70'}" />
 							</div>
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2">
 									<span class="font-display font-bold text-sm text-base-content truncate">{skill.name}</span>
-									<span class="text-[10px] text-base-content/40 tabular-nums">v{skill.version}</span>
+									<span class="text-[10px] text-base-content/70 tabular-nums">v{skill.version}</span>
 								</div>
 							</div>
 							{#if skill.source === 'bundled'}
-								<span class="text-[10px] font-medium uppercase tracking-wide text-base-content/30">Bundled</span>
+								<span class="text-[10px] font-medium uppercase tracking-wide text-base-content/70">Bundled</span>
 							{/if}
 						</div>
-						<p class="text-xs text-base-content/50 line-clamp-2 leading-relaxed">{skill.description}</p>
+						<p class="text-sm text-base-content/70 line-clamp-2 leading-relaxed">{skill.description}</p>
 					</button>
 				{/each}
 			</div>
 		{:else}
-			<Card>
-				<div class="py-12 text-center text-base-content/60">
-					<Zap class="w-12 h-12 mx-auto mb-4 opacity-20" />
-					<p class="font-medium mb-2">No skills found</p>
-					<p class="text-sm">Create a skill or browse the store.</p>
-				</div>
-			</Card>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/70">
+				<Zap class="w-12 h-12 mx-auto mb-4 opacity-20" />
+				<p class="font-medium mb-2">No skills found</p>
+				<p class="text-sm">Create a skill or browse the store.</p>
+			</div>
 		{/if}
 	</div>
 
 	<!-- Skill Store -->
 	{#if neboLoopConnected}
 		<div>
-			<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 mb-4">Skill Store</h3>
+			<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/70 mb-4">Skill Store</h3>
 
 			{#if isLoadingStore}
-				<Card>
-					<div class="py-8 text-center text-base-content/60">
-						<span class="loading loading-spinner loading-md"></span>
-						<p class="mt-2">Loading store...</p>
-					</div>
-				</Card>
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/70">
+					<Spinner class="w-5 h-5 mx-auto mb-2" />
+					<p class="text-sm">Loading store...</p>
+				</div>
 			{:else if storeSkills.length > 0}
 				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
 					{#each storeSkills as skill}
@@ -221,12 +221,12 @@
 									{#if skill.icon}
 										<img src={skill.icon} alt={skill.name} class="w-9 h-9 rounded-lg object-cover" />
 									{:else}
-										<Store class="w-4.5 h-4.5 text-base-content/40" />
+										<Store class="w-4.5 h-4.5 text-base-content/70" />
 									{/if}
 								</div>
 								<div class="flex-1 min-w-0">
 									<span class="font-display font-bold text-sm text-base-content truncate block">{skill.name}</span>
-									<span class="text-[10px] text-base-content/40">
+									<span class="text-[10px] text-base-content/70">
 										by {skill.author.name}
 										{#if skill.author.verified}
 											<Check class="w-2.5 h-2.5 inline text-success" />
@@ -234,9 +234,9 @@
 									</span>
 								</div>
 							</div>
-							<p class="text-xs text-base-content/50 line-clamp-2 leading-relaxed mb-3">{skill.description}</p>
+							<p class="text-sm text-base-content/70 line-clamp-2 leading-relaxed mb-3">{skill.description}</p>
 							<div class="flex items-center justify-between">
-								<div class="flex items-center gap-3 text-[10px] text-base-content/30">
+								<div class="flex items-center gap-3 text-[10px] text-base-content/70">
 									{#if skill.rating > 0}
 										<span class="flex items-center gap-0.5">
 											<Star class="w-3 h-3" />
@@ -252,12 +252,12 @@
 								</div>
 								{#if skill.isInstalled}
 									<button
-										class="btn btn-xs btn-ghost text-success gap-1"
+										class="h-7 px-2.5 rounded-md bg-success/10 text-success text-[11px] font-semibold flex items-center gap-1 hover:bg-success/20 transition-colors disabled:opacity-50"
 										onclick={() => handleUninstall(skill)}
 										disabled={installingSkill === skill.id}
 									>
 										{#if installingSkill === skill.id}
-											<span class="loading loading-spinner loading-xs"></span>
+											<Loader2 class="w-3 h-3 animate-spin" />
 										{:else}
 											<Check class="w-3 h-3" />
 											Installed
@@ -265,12 +265,12 @@
 									</button>
 								{:else}
 									<button
-										class="btn btn-xs btn-primary gap-1"
+										class="h-7 px-2.5 rounded-md bg-primary text-primary-content text-[11px] font-semibold flex items-center gap-1 hover:brightness-110 transition-all disabled:opacity-50"
 										onclick={() => handleInstall(skill)}
 										disabled={installingSkill === skill.id}
 									>
 										{#if installingSkill === skill.id}
-											<span class="loading loading-spinner loading-xs"></span>
+											<Loader2 class="w-3 h-3 animate-spin" />
 										{:else}
 											Install
 										{/if}
@@ -281,13 +281,11 @@
 					{/each}
 				</div>
 			{:else}
-				<Card>
-					<div class="py-8 text-center text-base-content/60">
-						<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
-						<p class="font-medium mb-1">No skills available yet</p>
-						<p class="text-sm">Check back later for new skills.</p>
-					</div>
-				</Card>
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/70">
+					<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
+					<p class="font-medium mb-1">No skills available yet</p>
+					<p class="text-sm">Check back later for new skills.</p>
+				</div>
 			{/if}
 		</div>
 	{/if}
@@ -300,19 +298,19 @@
 			<!-- Header with icon and status -->
 			<div class="flex items-center gap-4">
 				<div class="w-14 h-14 rounded-2xl {selectedSkill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
-					<Zap class="w-7 h-7 {selectedSkill.enabled ? 'text-primary' : 'text-base-content/30'}" />
+					<Zap class="w-7 h-7 {selectedSkill.enabled ? 'text-primary' : 'text-base-content/70'}" />
 				</div>
 				<div class="flex-1 min-w-0">
 					<div class="flex items-center gap-2 mb-1">
-						<span class="text-xs text-base-content/40 tabular-nums">v{selectedSkill.version}</span>
+						<span class="text-sm text-base-content/70 tabular-nums">v{selectedSkill.version}</span>
 						{#if selectedSkill.source === 'bundled'}
-							<span class="badge badge-xs badge-ghost">Bundled</span>
+							<span class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded bg-base-content/10 text-base-content/70">Bundled</span>
 						{/if}
-						<span class="badge badge-xs {selectedSkill.enabled ? 'badge-success' : 'badge-ghost'}">
+						<span class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded {selectedSkill.enabled ? 'bg-success/10 text-success' : 'bg-base-content/10 text-base-content/70'}">
 							{selectedSkill.enabled ? 'Enabled' : 'Disabled'}
 						</span>
 					</div>
-					<p class="text-sm text-base-content/60 leading-relaxed">{selectedSkill.description}</p>
+					<p class="text-sm text-base-content/70 leading-relaxed">{selectedSkill.description}</p>
 				</div>
 			</div>
 
@@ -320,11 +318,11 @@
 			<div class="divide-y divide-base-200 rounded-xl bg-base-200/30 overflow-hidden">
 				{#if selectedSkill.tools && selectedSkill.tools.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
-						<Wrench class="w-4 h-4 text-base-content/40 shrink-0" />
-						<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Tools</span>
+						<Wrench class="w-4 h-4 text-base-content/70 shrink-0" />
+						<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Tools</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.tools as tool}
-								<span class="badge badge-sm badge-outline">{tool}</span>
+								<span class="text-[11px] font-medium px-2 py-0.5 rounded-md bg-base-content/5 border border-base-content/10 text-base-content/70">{tool}</span>
 							{/each}
 						</div>
 					</div>
@@ -332,11 +330,11 @@
 
 				{#if selectedSkill.tags && selectedSkill.tags.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
-						<Tag class="w-4 h-4 text-base-content/40 shrink-0" />
-						<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Tags</span>
+						<Tag class="w-4 h-4 text-base-content/70 shrink-0" />
+						<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Tags</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.tags as tag}
-								<span class="badge badge-sm badge-ghost">{tag}</span>
+								<span class="text-[11px] font-medium px-2 py-0.5 rounded-md bg-base-content/5 text-base-content/70">{tag}</span>
 							{/each}
 						</div>
 					</div>
@@ -344,25 +342,25 @@
 
 				{#if selectedSkill.dependencies && selectedSkill.dependencies.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
-						<FileText class="w-4 h-4 text-base-content/40 shrink-0" />
-						<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Deps</span>
+						<FileText class="w-4 h-4 text-base-content/70 shrink-0" />
+						<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Deps</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.dependencies as dep}
-								<span class="badge badge-sm badge-outline">{dep}</span>
+								<span class="text-[11px] font-medium px-2 py-0.5 rounded-md bg-base-content/5 border border-base-content/10 text-base-content/70">{dep}</span>
 							{/each}
 						</div>
 					</div>
 				{/if}
 
 				<div class="flex items-center gap-3 px-4 py-3">
-					<Hash class="w-4 h-4 text-base-content/40 shrink-0" />
-					<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Priority</span>
+					<Hash class="w-4 h-4 text-base-content/70 shrink-0" />
+					<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Priority</span>
 					<span class="text-sm text-base-content/70">{selectedSkill.priority}</span>
 				</div>
 
 				<div class="flex items-center gap-3 px-4 py-3">
-					<FolderOpen class="w-4 h-4 text-base-content/40 shrink-0" />
-					<span class="text-xs font-medium text-base-content/50 w-16 shrink-0">Source</span>
+					<FolderOpen class="w-4 h-4 text-base-content/70 shrink-0" />
+					<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Source</span>
 					<span class="text-sm text-base-content/70 truncate">{selectedSkill.filePath || selectedSkill.source}</span>
 				</div>
 			</div>
@@ -373,14 +371,14 @@
 				<div class="flex items-center gap-2">
 					{#if selectedSkill.editable}
 						<button
-							class="btn btn-sm btn-ghost gap-1.5 text-base-content/60 hover:text-primary"
+							class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-primary/30 hover:text-primary transition-colors flex items-center gap-1.5"
 							onclick={() => openEdit(selectedSkill)}
 						>
 							<Pencil class="w-3.5 h-3.5" />
 							Edit
 						</button>
 						<button
-							class="btn btn-sm btn-ghost gap-1.5 text-base-content/60 hover:text-error"
+							class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-error/30 hover:text-error transition-colors flex items-center gap-1.5 disabled:opacity-50"
 							onclick={() => handleDelete(selectedSkill)}
 							disabled={deletingSkill === selectedSkill.name}
 						>
@@ -394,7 +392,7 @@
 					{/if}
 				</div>
 				<button
-					class="btn btn-sm {selectedSkill.enabled ? 'btn-outline btn-success' : 'btn-primary'} gap-1.5"
+					class="h-8 px-4 rounded-lg text-[13px] font-bold flex items-center gap-1.5 transition-all disabled:opacity-50 {selectedSkill.enabled ? 'bg-success/10 border border-success/20 text-success hover:bg-success/20' : 'bg-primary text-primary-content hover:brightness-110'}"
 					onclick={() => handleToggle(selectedSkill.name)}
 					disabled={togglingSkill === selectedSkill.name}
 				>

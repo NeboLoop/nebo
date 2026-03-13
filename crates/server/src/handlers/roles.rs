@@ -602,6 +602,9 @@ pub async fn activate_role(
 
     state.role_registry.write().await.insert(role_id.clone(), active);
 
+    // Start autonomous role worker (heartbeat, event, schedule triggers)
+    state.role_workers.start_role(&role_id, &role.name).await;
+
     state.hub.broadcast(
         "role_activated",
         serde_json::json!({ "roleId": role_id, "name": role.name }),
@@ -619,6 +622,9 @@ pub async fn deactivate_role(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
+    // Stop autonomous role worker (cancels heartbeat, event, schedule triggers)
+    state.role_workers.stop_role(&id).await;
+
     let removed = state.role_registry.write().await.remove(&id);
     match removed {
         Some(role) => {
@@ -636,7 +642,7 @@ pub async fn deactivate_role(
     }
 }
 
-/// POST /roles/{id}/chat — send a message to a role's agent.
+/// POST /roles/{id}/chat — send a message to a role's agent via the unified chat pipeline.
 pub async fn chat_with_role(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -663,111 +669,24 @@ pub async fn chat_with_role(
     }
 
     let session_key = agent::keyparser::build_role_session_key(&id, "web");
-    let cancel_token = tokio_util::sync::CancellationToken::new();
 
-    let req = agent::RunRequest {
+    let entity_config = crate::entity_config::resolve_for_chat(&state.store, "role", &id);
+
+    let config = crate::chat_dispatch::ChatConfig {
         session_key: session_key.clone(),
         prompt,
-        role_id: id.clone(),
-        origin: tools::Origin::User,
+        system: String::new(),
+        user_id: String::new(),
         channel: "web".to_string(),
-        cancel_token,
-        ..Default::default()
+        origin: tools::Origin::User,
+        role_id: id.clone(),
+        cancel_token: tokio_util::sync::CancellationToken::new(),
+        lane: types::constants::lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
     };
 
-    let hub = state.hub.clone();
-    let runner = state.runner.clone();
-    let sid = session_key.clone();
-    let role_id = id.clone();
-
-    // Broadcast chat_created
-    hub.broadcast("chat_created", serde_json::json!({
-        "session_id": sid,
-        "channel": "web",
-        "role_id": role_id,
-    }));
-
-    // Route through lane system
-    let lane_task = agent::lanes::make_task(
-        types::constants::lanes::MAIN,
-        format!("role-chat:{}", sid),
-        async move {
-            match runner.run(req).await {
-                Ok(mut rx) => {
-                    loop {
-                        match rx.recv().await {
-                            Some(event) => {
-                                match event.event_type {
-                                    ai::StreamEventType::Text => {
-                                        hub.broadcast("chat_stream", serde_json::json!({
-                                            "session_id": sid,
-                                            "content": event.text,
-                                            "role_id": role_id,
-                                        }));
-                                    }
-                                    ai::StreamEventType::Done => break,
-                                    ai::StreamEventType::Error => {
-                                        hub.broadcast("chat_error", serde_json::json!({
-                                            "session_id": sid,
-                                            "error": event.error.unwrap_or_default(),
-                                            "role_id": role_id,
-                                        }));
-                                    }
-                                    ai::StreamEventType::ToolCall => {
-                                        if let Some(ref tc) = event.tool_call {
-                                            hub.broadcast("tool_start", serde_json::json!({
-                                                "session_id": sid,
-                                                "tool_id": tc.id,
-                                                "tool": tc.name,
-                                                "input": tc.input,
-                                                "role_id": role_id,
-                                            }));
-                                        }
-                                    }
-                                    ai::StreamEventType::ToolResult => {
-                                        hub.broadcast("tool_result", serde_json::json!({
-                                            "session_id": sid,
-                                            "tool_id": event.tool_call.as_ref().map(|tc| tc.id.as_str()).unwrap_or(""),
-                                            "tool_name": event.tool_call.as_ref().map(|tc| tc.name.as_str()).unwrap_or(""),
-                                            "result": event.text,
-                                            "is_error": event.error.is_some(),
-                                            "role_id": role_id,
-                                        }));
-                                    }
-                                    ai::StreamEventType::Thinking => {
-                                        hub.broadcast("thinking", serde_json::json!({
-                                            "session_id": sid,
-                                            "content": event.text,
-                                            "role_id": role_id,
-                                        }));
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            None => break,
-                        }
-                    }
-                    hub.broadcast("chat_complete", serde_json::json!({
-                        "session_id": sid,
-                        "role_id": role_id,
-                    }));
-                }
-                Err(e) => {
-                    hub.broadcast("chat_error", serde_json::json!({
-                        "session_id": sid,
-                        "error": e.to_string(),
-                        "role_id": role_id,
-                    }));
-                    hub.broadcast("chat_complete", serde_json::json!({
-                        "session_id": sid,
-                        "role_id": role_id,
-                    }));
-                }
-            }
-            Ok(())
-        },
-    );
-    state.lanes.enqueue_async(types::constants::lanes::MAIN, lane_task);
+    crate::chat_dispatch::run_chat(&state, config, None).await;
 
     Ok(Json(serde_json::json!({
         "sessionId": session_key,

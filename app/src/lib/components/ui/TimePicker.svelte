@@ -137,7 +137,7 @@
 		class="flex items-center {sizes.wrapper} p-2 bg-base-100 border border-base-300 rounded-lg"
 		class:opacity-50={disabled}
 	>
-		<Clock class="w-4 h-4 text-base-content/40" />
+		<Clock class="w-4 h-4 text-base-content/70" />
 
 		<!-- Hours -->
 		<div class="flex flex-col items-center">
@@ -169,7 +169,7 @@
 			</button>
 		</div>
 
-		<span class="text-xl font-bold text-base-content/60">:</span>
+		<span class="text-xl font-bold text-base-content/70">:</span>
 
 		<!-- Minutes -->
 		<div class="flex flex-col items-center">

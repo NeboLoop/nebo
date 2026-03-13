@@ -495,13 +495,8 @@ impl CommPlugin for NeboLoopPlugin {
             inner.handler = Some(handler);
         }
     }
-}
 
-// Implement optional query traits via REST API delegation.
-
-#[async_trait::async_trait]
-impl crate::LoopChannelLister for NeboLoopPlugin {
-    async fn list_loop_channels(&self) -> Result<Vec<LoopChannelInfo>, CommError> {
+    async fn list_channels(&self) -> Result<Vec<LoopChannelInfo>, CommError> {
         let api = self
             .inner
             .read()
@@ -521,10 +516,7 @@ impl crate::LoopChannelLister for NeboLoopPlugin {
             })
             .collect())
     }
-}
 
-#[async_trait::async_trait]
-impl crate::LoopLister for NeboLoopPlugin {
     async fn list_loops(&self) -> Result<Vec<LoopInfo>, CommError> {
         let api = self
             .inner
@@ -544,10 +536,7 @@ impl crate::LoopLister for NeboLoopPlugin {
             })
             .collect())
     }
-}
 
-#[async_trait::async_trait]
-impl crate::LoopGetter for NeboLoopPlugin {
     async fn get_loop_info(&self, loop_id: &str) -> Result<LoopInfo, CommError> {
         let api = self
             .inner
@@ -564,10 +553,7 @@ impl crate::LoopGetter for NeboLoopPlugin {
             description: l.description,
         })
     }
-}
 
-#[async_trait::async_trait]
-impl crate::ChannelMessageLister for NeboLoopPlugin {
     async fn list_channel_messages(
         &self,
         channel_id: &str,
@@ -595,10 +581,7 @@ impl crate::ChannelMessageLister for NeboLoopPlugin {
             })
             .collect())
     }
-}
 
-#[async_trait::async_trait]
-impl crate::ChannelMemberLister for NeboLoopPlugin {
     async fn list_channel_members(
         &self,
         channel_id: &str,

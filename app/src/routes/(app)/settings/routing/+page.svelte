@@ -3,10 +3,7 @@
 	import { Cpu, Eye, Code, Brain, Sparkles, Volume2, Tag, Plus, Trash2, Activity } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type * as components from '$lib/api/neboComponents';
-	import Card from '$lib/components/ui/Card.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
-	import Alert from '$lib/components/ui/Alert.svelte';
 
 	let isLoading = $state(true);
 	let error = $state('');
@@ -17,25 +14,25 @@
 
 	// Routing form state
 	let routingForm = $state({
-		vision: '',
-		audio: '',
-		reasoning: '',
-		code: '',
-		general: ''
+		vision: 'auto',
+		audio: 'auto',
+		reasoning: 'auto',
+		code: 'auto',
+		general: 'auto'
 	});
 	let backupForm = $state({
-		vision: '',
-		audio: '',
-		reasoning: '',
-		code: '',
-		general: ''
+		vision: 'none',
+		audio: 'none',
+		reasoning: 'none',
+		code: 'none',
+		general: 'none'
 	});
 	let aliasesForm = $state<{ alias: string; modelId: string }[]>([]);
 	let laneRoutingForm = $state({
-		heartbeat: '',
-		events: '',
-		comm: '',
-		subagent: ''
+		heartbeat: 'auto',
+		events: 'auto',
+		comm: 'auto',
+		subagent: 'auto'
 	});
 	let isSaving = $state(false);
 
@@ -89,20 +86,27 @@
 			// Populate task routing form
 			const taskRouting = modelsRes.taskRouting;
 			if (taskRouting) {
+				// Build set of valid model option values
+				const validValues = new Set(
+					getGroupedModelOptions().flatMap(g => g.models.map(m => m.value))
+				);
+				const norm = (v: string | undefined) => (v && validValues.has(v)) ? v : 'auto';
+				const normB = (v: string | undefined) => (v && validValues.has(v)) ? v : 'none';
+
 				routingForm = {
-					vision: taskRouting.vision || '',
-					audio: taskRouting.audio || '',
-					reasoning: taskRouting.reasoning || '',
-					code: taskRouting.code || '',
-					general: taskRouting.general || ''
+					vision: norm(taskRouting.vision),
+					audio: norm(taskRouting.audio),
+					reasoning: norm(taskRouting.reasoning),
+					code: norm(taskRouting.code),
+					general: norm(taskRouting.general)
 				};
 				const fb = taskRouting.fallbacks || {};
 				backupForm = {
-					vision: fb['vision']?.[0] || '',
-					audio: fb['audio']?.[0] || '',
-					reasoning: fb['reasoning']?.[0] || '',
-					code: fb['code']?.[0] || '',
-					general: fb['general']?.[0] || ''
+					vision: normB(fb['vision']?.[0]),
+					audio: normB(fb['audio']?.[0]),
+					reasoning: normB(fb['reasoning']?.[0]),
+					code: normB(fb['code']?.[0]),
+					general: normB(fb['general']?.[0])
 				};
 			}
 
@@ -113,10 +117,10 @@
 			const lr = modelsRes.laneRouting;
 			if (lr) {
 				laneRoutingForm = {
-					heartbeat: lr['heartbeat'] || '',
-					events: lr['events'] || '',
-					comm: lr['comm'] || '',
-					subagent: lr['subagent'] || ''
+					heartbeat: lr['heartbeat'] || 'auto',
+					events: lr['events'] || 'auto',
+					comm: lr['comm'] || 'auto',
+					subagent: lr['subagent'] || 'auto'
 				};
 			}
 
@@ -217,9 +221,10 @@
 		isSaving = true;
 		error = '';
 		try {
+			const toApi = (v: string) => (v === 'auto' || v === 'none') ? '' : v;
 			const fallbacks: { [key: string]: string[] } = {};
 			for (const mode of routingModes) {
-				const backup = backupForm[mode.key];
+				const backup = toApi(backupForm[mode.key]);
 				if (backup) {
 					fallbacks[mode.key] = [backup];
 				}
@@ -234,11 +239,11 @@
 			if (laneRoutingForm.subagent) laneRouting['subagent'] = laneRoutingForm.subagent;
 
 			await api.updateTaskRouting({
-				vision: routingForm.vision,
-				audio: routingForm.audio,
-				reasoning: routingForm.reasoning,
-				code: routingForm.code,
-				general: routingForm.general,
+				vision: toApi(routingForm.vision),
+				audio: toApi(routingForm.audio),
+				reasoning: toApi(routingForm.reasoning),
+				code: toApi(routingForm.code),
+				general: toApi(routingForm.general),
 				fallbacks,
 				aliases: validAliases,
 				laneRouting: Object.keys(laneRouting).length > 0 ? laneRouting : undefined
@@ -249,6 +254,15 @@
 		} finally {
 			isSaving = false;
 		}
+	}
+
+	const groups = $derived(getGroupedModelOptions());
+	const allModelValues = $derived(new Set(groups.flatMap(g => g.models.map(m => m.value))));
+
+	function formatModelId(id: string): string {
+		// "anthropic/claude-sonnet-4-5-20250929" → "claude-sonnet-4-5-20250929"
+		const parts = id.split('/');
+		return parts.length > 1 ? parts.slice(1).join('/') : id;
 	}
 
 	function addAlias() {
@@ -262,62 +276,39 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Routing</h2>
-	<p class="text-sm text-base-content/60">Which model handles each type of task</p>
+	<p class="text-sm text-base-content/70">Which model handles each type of task</p>
 </div>
 
-<div class="space-y-6">
-	{#if isLoading}
-		<Card>
-			<div class="flex flex-col items-center justify-center gap-4 py-8">
-				<Spinner size={32} />
-				<p class="text-sm text-base-content/60">Loading routing configuration...</p>
-			</div>
-		</Card>
-	{:else}
+{#if isLoading}
+	<div class="flex items-center justify-center gap-3 py-16">
+		<Spinner size={20} />
+		<span class="text-sm text-base-content/70">Loading routing configuration...</span>
+	</div>
+{:else}
+	<div class="space-y-6">
 		{#if error}
-			<Alert type="error" title="Error">{error}</Alert>
+			<div class="rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error">
+				{error}
+			</div>
 		{/if}
 
 		<!-- Task Routing -->
-		<Card>
-			<div class="flex items-center justify-between mb-4">
-				<h3 class="text-lg font-semibold text-base-content">Task Routing</h3>
-				<Button type="primary" size="sm" onclick={saveAll} disabled={isSaving}>
-					{#if isSaving}
-						<Spinner size={16} />
-						Saving...
-					{:else}
-						Save
-					{/if}
-				</Button>
-			</div>
-
-			{@const groups = getGroupedModelOptions()}
-			<div class="overflow-x-auto">
-				<table class="table w-full">
-					<thead>
-						<tr>
-							<th class="text-xs text-base-content/50 font-medium w-40">Task Type</th>
-							<th class="text-xs text-base-content/50 font-medium">Main Model</th>
-							<th class="text-xs text-base-content/50 font-medium">Backup</th>
-							<th class="w-8"></th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each routingModes as mode}
-							<tr>
-								<td>
-									<div class="flex items-center gap-2">
-										<mode.icon class="w-4 h-4 {mode.color} shrink-0" />
-										<div>
-											<span class="text-sm font-medium text-base-content">{mode.label}</span>
-											<p class="text-xs text-base-content/40">{mode.description}</p>
-										</div>
-									</div>
-								</td>
-								<td>
-									<select bind:value={routingForm[mode.key]} class="select select-bordered select-sm w-full">
-										<option value="">Auto</option>
+		<section>
+			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Task Routing</h3>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+					<div class="space-y-5">
+					{#each routingModes as mode}
+						<div>
+							<div class="flex items-center gap-2 mb-2">
+								<mode.icon class="w-4 h-4 {mode.color} shrink-0" />
+								<span class="text-sm font-medium text-base-content">{mode.label}</span>
+								<span class="text-sm text-base-content/70">{mode.description}</span>
+							</div>
+							<div class="grid sm:grid-cols-2 gap-3">
+								<div>
+									<label class="text-sm font-medium text-base-content/70">Main model</label>
+									<select bind:value={routingForm[mode.key]} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors">
+										<option value="auto">Auto</option>
 										{#each groups as group}
 											<optgroup label={group.label}>
 												{#each group.models as opt}
@@ -326,10 +317,11 @@
 											</optgroup>
 										{/each}
 									</select>
-								</td>
-								<td>
-									<select bind:value={backupForm[mode.key]} class="select select-bordered select-sm w-full">
-										<option value="">None</option>
+								</div>
+								<div>
+									<label class="text-sm font-medium text-base-content/70">Backup</label>
+									<select bind:value={backupForm[mode.key]} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors">
+										<option value="none">None</option>
 										{#each groups as group}
 											<optgroup label={group.label}>
 												{#each group.models as opt}
@@ -338,32 +330,30 @@
 											</optgroup>
 										{/each}
 									</select>
-								</td>
-								<td></td>
-							</tr>
-						{/each}
+								</div>
+							</div>
+						</div>
+					{/each}
+				</div>
 
-						<!-- Separator for aliases -->
-						{#if aliasesForm.filter(a => !['claude', 'codex', 'gemini'].includes(a.alias)).length > 0}
-							<tr>
-								<td colspan="4">
-									<div class="flex items-center gap-2 pt-1">
-										<Tag class="w-3.5 h-3.5 text-base-content/30" />
-										<span class="text-xs text-base-content/40 font-medium">Custom Aliases</span>
-									</div>
-								</td>
-							</tr>
-						{/if}
-
-						<!-- Custom alias rows -->
-						{#each aliasesForm as aliasEntry, index}
-							{#if !['claude', 'codex', 'gemini'].includes(aliasEntry.alias)}
-								<tr>
-									<td>
-										<input type="text" placeholder="e.g. fast" bind:value={aliasEntry.alias} class="input input-bordered input-sm w-full" />
-									</td>
-									<td>
-										<select bind:value={aliasEntry.modelId} class="select select-bordered select-sm w-full">
+				<!-- Custom Aliases -->
+				{#if aliasesForm.filter(a => !['claude', 'codex', 'gemini'].includes(a.alias)).length > 0}
+					<div class="mt-5 pt-5 border-t border-base-content/10">
+						<div class="flex items-center gap-2 mb-3">
+							<Tag class="w-3.5 h-3.5 text-base-content/70" />
+							<span class="text-sm font-medium text-base-content/70">Custom Aliases</span>
+						</div>
+						<div class="space-y-3">
+							{#each aliasesForm as aliasEntry, index}
+								{#if !['claude', 'codex', 'gemini'].includes(aliasEntry.alias)}
+									<div class="flex items-center gap-3">
+										<input
+											type="text"
+											placeholder="e.g. fast"
+											bind:value={aliasEntry.alias}
+											class="w-40 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+										/>
+										<select bind:value={aliasEntry.modelId} class="flex-1 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors">
 											<option value="">Select model...</option>
 											{#each groups as group}
 												<optgroup label={group.label}>
@@ -373,73 +363,76 @@
 												</optgroup>
 											{/each}
 										</select>
-									</td>
-									<td></td>
-									<td>
-										<button type="button" class="btn btn-ghost btn-sm btn-square" onclick={() => removeAlias(index)}>
-											<Trash2 class="w-3.5 h-3.5 text-base-content/40" />
+										<button
+											type="button"
+											class="w-11 h-11 rounded-xl bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/20 transition-colors"
+											onclick={() => removeAlias(index)}
+											aria-label="Remove alias"
+										>
+											<Trash2 class="w-4 h-4 text-base-content/70" />
 										</button>
-									</td>
-								</tr>
-							{/if}
-						{/each}
-					</tbody>
-				</table>
+									</div>
+								{/if}
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<div class="mt-4">
+					<button
+						type="button"
+						class="flex items-center gap-2 text-sm font-medium text-base-content/70 hover:text-primary transition-colors"
+						onclick={addAlias}
+					>
+						<Plus class="w-4 h-4" /> Add shortcut
+					</button>
+				</div>
 			</div>
-			<div class="mt-2">
-				<Button type="ghost" size="sm" onclick={addAlias}>
-					<Plus class="w-4 h-4" /> Add Shortcut
-				</Button>
-			</div>
-		</Card>
+		</section>
 
 		<!-- Lane Routing -->
-		<Card>
-			<div class="flex items-center gap-3 mb-4">
-				<div class="w-10 h-10 rounded-xl bg-accent/10 flex items-center justify-center">
-					<Activity class="w-5 h-5 text-accent" />
-				</div>
-				<div>
-					<h3 class="text-lg font-semibold text-base-content">Lane Routing</h3>
-					<p class="text-sm text-base-content/60">Assign cheaper models to background lanes to reduce costs</p>
-				</div>
-			</div>
-
-			{@const groups = getGroupedModelOptions()}
-			<div class="overflow-x-auto">
-				<table class="table w-full">
-					<thead>
-						<tr>
-							<th class="text-xs text-base-content/50 font-medium w-40">Lane</th>
-							<th class="text-xs text-base-content/50 font-medium">Model</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each laneModes as lane}
-							<tr>
-								<td>
-									<div>
-										<span class="text-sm font-medium text-base-content">{lane.label}</span>
-										<p class="text-xs text-base-content/40">{lane.description}</p>
-									</div>
-								</td>
-								<td>
-									<select bind:value={laneRoutingForm[lane.key]} class="select select-bordered select-sm w-full">
-										<option value="">Same as All Purpose</option>
-										{#each groups as group}
-											<optgroup label={group.label}>
-												{#each group.models as opt}
-													<option value={opt.value}>{opt.label}</option>
-												{/each}
-											</optgroup>
+		<section>
+			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-1">Lane Routing</h3>
+			<p class="text-sm text-base-content/70 mb-3">Assign cheaper models to background lanes to reduce costs</p>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+					<div class="space-y-5">
+					{#each laneModes as lane}
+						<div>
+							<div class="flex items-center gap-2 mb-2">
+								<span class="text-sm font-medium text-base-content">{lane.label}</span>
+								<span class="text-sm text-base-content/70">{lane.description}</span>
+							</div>
+							<select bind:value={laneRoutingForm[lane.key]} class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors">
+								<option value="auto">Auto</option>
+								{#each groups as group}
+									<optgroup label={group.label}>
+										{#each group.models as opt}
+											<option value={opt.value}>{opt.label}</option>
 										{/each}
-									</select>
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
+									</optgroup>
+								{/each}
+							</select>
+						</div>
+					{/each}
+				</div>
 			</div>
-		</Card>
-	{/if}
-</div>
+		</section>
+
+		<!-- Save -->
+		<div class="flex justify-end">
+			<button
+				type="button"
+				disabled={isSaving}
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+				onclick={saveAll}
+			>
+				{#if isSaving}
+					<Spinner size={16} />
+					Saving...
+				{:else}
+					Save Routing
+				{/if}
+			</button>
+		</div>
+	</div>
+{/if}

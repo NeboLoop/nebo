@@ -912,6 +912,72 @@ export interface ModelPricing {
 	cachedInput?: number
 }
 
+// ── Billing types ─────────────────────────────────────────────────
+
+export interface BillingPriceInfo {
+	id: string
+	productName: string
+	displayName: string
+	productDisplayName: string
+	productDescription?: string
+	productFeatures?: string[]
+	nickname: string
+	amountCents: number
+	currency: string
+	interval: string
+	stripePriceId: string
+	displayOrder: number
+}
+
+export interface PaymentMethodInfo {
+	id: string
+	type: string
+	brand?: string
+	lastFour?: string
+	expiresAt?: string
+	isDefault: boolean
+	createdAt: string
+}
+
+export interface InvoiceInfo {
+	id: string
+	amountCents: number
+	currency: string
+	description: string
+	status: string
+	pdfUrl?: string
+	createdAt: string
+}
+
+export interface BillingPricesResponse {
+	prices: BillingPriceInfo[]
+}
+
+export interface BillingSubscriptionResponse {
+	plan: string
+	subscriptions: any[]
+}
+
+export interface BillingCheckoutResponse {
+	checkoutUrl: string
+}
+
+export interface BillingPortalResponse {
+	portalUrl: string
+}
+
+export interface BillingCancelResponse {
+	status: string
+}
+
+export interface BillingInvoicesResponse {
+	invoices: InvoiceInfo[]
+}
+
+export interface BillingPaymentMethodsResponse {
+	methods: PaymentMethodInfo[]
+}
+
 export interface NeboLoopAccountStatusResponse {
 	connected: boolean
 	janusProvider: boolean
@@ -919,6 +985,7 @@ export interface NeboLoopAccountStatusResponse {
 	ownerId?: string
 	email?: string
 	displayName?: string
+	plan?: string
 }
 
 export interface NeboLoopConnectRequest {

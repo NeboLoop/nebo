@@ -42,6 +42,7 @@ base64 = "0.22"
 urlencoding = "2"
 url = "2"
 napp = { workspace = true }
+notify_crate = { workspace = true }
 workflow = { workspace = true }
 tonic = "0.12"
 sandbox-runtime = { workspace = true }

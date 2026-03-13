@@ -11,6 +11,8 @@ db = { workspace = true }
 tools = { workspace = true }
 config = { workspace = true }
 napp = { workspace = true }
+notify_crate = { workspace = true }
+workflow = { workspace = true }
 
 tokio = { workspace = true }
 tokio-util = { workspace = true }

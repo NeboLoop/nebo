@@ -192,7 +192,7 @@
 <div bind:this={containerRef} class="scatter-chart-container flex flex-col w-full h-full">
 	{#if datasets.length === 0 || allPoints.length === 0}
 		<div class="empty-state flex-1 flex items-center justify-center">
-			<p class="text-base-content/60 text-sm">No data to display</p>
+			<p class="text-base-content/70 text-sm">No data to display</p>
 		</div>
 	{:else}
 		<svg viewBox="0 0 {viewBoxWidth} {viewBoxHeight}" preserveAspectRatio="xMidYMid meet" class="flex-1 w-full">

@@ -125,14 +125,14 @@
 	}
 </script>
 
-<div class="rule-section rounded-xl border border-base-300 bg-base-100 overflow-hidden">
+<div class="rule-section rounded-2xl border border-base-content/10 bg-base-200/50 overflow-hidden">
 	<!-- Section Header -->
 	<button
 		type="button"
-		class="rule-section-header w-full flex items-center gap-2 px-4 py-3 hover:bg-base-200/50 transition-colors"
+		class="rule-section-header w-full flex items-center gap-2 px-4 py-3 hover:bg-base-content/[0.03] transition-colors"
 		onclick={() => (collapsed = !collapsed)}
 	>
-		<span class="text-base-content/40">
+		<span class="text-base-content/70">
 			{#if collapsed}
 				<ChevronRight class="w-4 h-4" />
 			{:else}
@@ -143,7 +143,7 @@
 		{#if editingName}
 			<!-- svelte-ignore a11y_autofocus -->
 			<input
-				class="input input-bordered input-xs flex-1 text-sm font-semibold"
+				class="flex-1 h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-sm font-semibold focus:outline-none focus:border-primary/50 transition-colors"
 				bind:value={nameInput}
 				onkeydown={handleNameKeydown}
 				onblur={saveName}
@@ -163,7 +163,7 @@
 		{/if}
 
 		{#if readonly}
-			<Lock class="w-3.5 h-3.5 text-base-content/30" />
+			<Lock class="w-3.5 h-3.5 text-base-content/70" />
 		{:else}
 			<button
 				type="button"
@@ -194,7 +194,7 @@
 								class="w-4 h-4 rounded border-2 flex items-center justify-center transition-colors
 								{item.enabled
 									? 'bg-primary border-primary'
-									: 'bg-base-200 border-base-300'}"
+									: 'bg-base-content/5 border-base-content/20'}"
 							>
 								{#if item.enabled}
 									<svg class="w-2.5 h-2.5 text-primary-content" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
@@ -208,7 +208,7 @@
 					{#if editingItemId === item.id}
 						<!-- svelte-ignore a11y_autofocus -->
 						<input
-							class="input input-bordered input-xs flex-1 text-sm"
+							class="flex-1 h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 							bind:value={itemInput}
 							onkeydown={(e) => handleItemKeydown(e, item.id)}
 							onblur={() => saveItem(item.id)}
@@ -217,7 +217,7 @@
 					{:else}
 						<span
 							class="flex-1 text-sm leading-relaxed transition-colors
-							{item.enabled ? 'text-base-content' : 'text-base-content/30 line-through'}
+							{item.enabled ? 'text-base-content' : 'text-base-content/70 line-through'}
 							{readonly ? '' : 'cursor-pointer hover:text-primary'}"
 							ondblclick={() => startEditItem(item)}
 						>
@@ -242,7 +242,7 @@
 					<div class="flex items-center gap-2 py-1">
 						<!-- svelte-ignore a11y_autofocus -->
 						<input
-							class="input input-bordered input-xs flex-1 text-sm"
+							class="flex-1 h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 							placeholder="Type a {itemLabel}..."
 							bind:value={newItemText}
 							onkeydown={handleNewItemKeydown}
@@ -253,7 +253,7 @@
 				{:else}
 					<button
 						type="button"
-						class="flex items-center gap-1.5 text-xs text-base-content/40 hover:text-primary transition-colors py-1"
+						class="flex items-center gap-1.5 text-xs text-base-content/70 hover:text-primary transition-colors py-1"
 						onclick={startAddItem}
 					>
 						<Plus class="w-3.5 h-3.5" />

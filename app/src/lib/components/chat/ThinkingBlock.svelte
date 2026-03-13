@@ -21,7 +21,7 @@
 	<button
 		type="button"
 		onclick={toggle}
-		class="flex items-center gap-2 w-full text-left text-sm text-base-content/60 hover:text-base-content/80 transition-colors"
+		class="flex items-center gap-2 w-full text-left text-sm text-base-content/70 hover:text-base-content/80 transition-colors"
 	>
 		{#if isCollapsed}
 			<ChevronRight class="w-4 h-4" />

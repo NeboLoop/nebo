@@ -1,11 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Terminal, Wifi, Zap, ExternalLink, HardDrive, Download, Loader2 } from 'lucide-svelte';
+	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Terminal, Wifi, Zap, ExternalLink, ChevronDown, X } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import webapi from '$lib/api/gocliRequest';
 	import type * as components from '$lib/api/neboComponents';
-	import Card from '$lib/components/ui/Card.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
 	import Toggle from '$lib/components/ui/Toggle.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -37,22 +35,8 @@
 	// CLI providers from API
 	let cliProviders = $state<components.CLIProviderInfo[]>([]);
 
-	// Local models state (Qwen 3.5 series managed by Janus)
-	let localModelsAvailable = $state<Record<string, boolean>>({});
-	let showLocalModelDownload = $state(false);
-	let localModelDownloadProgress = $state<Record<string, { downloaded: number; total: number; done: boolean }>>({});
-	let localModelDownloadError = $state('');
-	let localModelsDismissed = $state(false);
-
-	// The Qwen 3.5 series — the only models Janus supports locally
-	const janusLocalModels = [
-		{ name: 'qwen3.5-0.8b', label: 'Qwen 3.5 0.8B', size: '533 MB', desc: 'Edge — tiny, fast' },
-		{ name: 'qwen3.5-2b', label: 'Qwen 3.5 2B', size: '1.6 GB', desc: 'Edge — compact' },
-		{ name: 'qwen3.5-4b', label: 'Qwen 3.5 4B', size: '2.7 GB', desc: 'Agent — multimodal base' },
-		{ name: 'qwen3.5-9b', label: 'Qwen 3.5 9B', size: '5.68 GB', desc: 'Full — near large-model quality' },
-	];
-	let localModelsAnyReady = $derived(Object.values(localModelsAvailable).some(v => v));
-	let localModelsAllReady = $derived(janusLocalModels.every(m => localModelsAvailable[m.name]));
+	// More section expanded
+	let showMore = $state(false);
 
 	function openAddModal(providerType?: string) {
 		if (providerType) {
@@ -79,8 +63,6 @@
 		{ value: 'ollama', label: 'Ollama (Local)' }
 	];
 
-	// Merge models.yaml catalog with auth_profiles to show all providers
-	// Excludes CLI providers (shown separately) and Janus (shown separately)
 	let allProviders = $derived(() => {
 		const result: {
 			type: string;
@@ -92,8 +74,6 @@
 
 		const modelProviderTypes = Object.keys(models);
 		const allTypes = new Set([...modelProviderTypes, ...providerOptions.map(p => p.value)]);
-
-		// Skip CLI providers and Janus (they're shown separately)
 		const cliProviderIds = cliProviders.map(p => p.id);
 
 		for (const providerType of allTypes) {
@@ -119,11 +99,22 @@
 		});
 	});
 
-	// Janus models (shown in their own section)
-	let janusModels = $derived(() => models['janus'] || []);
+	// Hide embedding models — they're always on when Nebo AI is enabled
+	let janusModels = $derived(() => {
+		const all = models['janus'] || [];
+		return all.filter(m => !/embeddings?/i.test(m.displayName || m.id));
+	});
+
+	// Friendly display name for Janus models
+	function janusDisplayName(model: components.ModelInfo): string {
+		const name = model.displayName || model.id;
+		if (/^janus\s*embeddings?/i.test(name)) return 'Embeddings';
+		if (/^janus$/i.test(name)) return 'Nebo AI';
+		return name.replace(/^janus\s*/i, 'Nebo AI ');
+	}
 
 	onMount(async () => {
-		await Promise.all([loadProviders(), loadModels(), loadJanusStatus(), loadJanusUsage(), loadLocalModelsStatus()]);
+		await Promise.all([loadProviders(), loadModels(), loadJanusStatus(), loadJanusUsage()]);
 		const h = () => { loadJanusStatus(); loadJanusUsage(); };
 		window.addEventListener('nebo:plan_changed', h);
 		return () => window.removeEventListener('nebo:plan_changed', h);
@@ -152,7 +143,7 @@
 			await api.updateAuthProfile({ metadata: { janus_provider: enabled ? 'true' : 'false' } }, janusStatus.profileId);
 			await loadJanusStatus();
 		} catch (err: any) {
-			error = err?.message || 'Failed to toggle Janus';
+			error = err?.message || 'Failed to toggle provider';
 		} finally {
 			isTogglingJanus = false;
 		}
@@ -176,7 +167,6 @@
 			const response = await api.listModels();
 			models = response.models || {};
 			availableCLIs = response.availableCLIs || null;
-
 			cliProviders = response.cliProviders || [];
 		} catch (err: any) {
 			console.error('Failed to load models:', err);
@@ -211,7 +201,18 @@
 		const newActive = !model.isActive;
 		model.isActive = newActive;
 		try {
+			// Auto-enable Janus provider when toggling a Janus model on
+			if (providerType === 'janus' && newActive && janusStatus?.connected && !janusStatus.janusProvider) {
+				await toggleJanus(true);
+			}
 			await api.updateModel({ active: newActive }, providerType, model.id);
+			// Auto-disable Janus provider when all Janus models are off
+			if (providerType === 'janus' && !newActive && janusStatus?.janusProvider) {
+				const anyActive = janusModels().some(m => m.isActive);
+				if (!anyActive) {
+					await toggleJanus(false);
+				}
+			}
 		} catch (err: any) {
 			model.isActive = !newActive;
 			error = err?.message || 'Failed to update model';
@@ -236,85 +237,6 @@
 			await loadProviders();
 		} catch (err: any) {
 			error = err?.message || 'Failed to delete provider';
-		}
-	}
-
-	async function loadLocalModelsStatus() {
-		try {
-			const data = await api.localModelsStatus();
-			localModelsAvailable = data.available || {};
-		} catch {
-			// Not critical — local models are optional
-		}
-	}
-
-	async function startLocalModelDownload() {
-		localModelDownloadError = '';
-		localModelDownloadProgress = {};
-		try {
-			const resp = await fetch('/api/v1/local-models/download', { method: 'POST' });
-
-			if (!resp.ok) {
-				localModelDownloadError = `Download failed: ${resp.statusText}`;
-				return;
-			}
-
-			const contentType = resp.headers.get('content-type') || '';
-			if (contentType.includes('application/json')) {
-				const data = await resp.json();
-				if (data.ready) {
-					showLocalModelDownload = false;
-					await loadLocalModelsStatus();
-					return;
-				}
-			}
-
-			const reader = resp.body?.getReader();
-			if (!reader) {
-				localModelDownloadError = 'Streaming not supported';
-				return;
-			}
-
-			const decoder = new TextDecoder();
-			let buffer = '';
-
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split('\n');
-				buffer = lines.pop() || '';
-
-				for (const line of lines) {
-					if (!line.startsWith('data: ')) continue;
-					try {
-						const data = JSON.parse(line.slice(6));
-						if (data.ready) {
-							showLocalModelDownload = false;
-							await loadLocalModelsStatus();
-							return;
-						}
-						if (data.error) {
-							localModelDownloadError = data.error;
-							return;
-						}
-						if (data.model_name) {
-							localModelDownloadProgress[data.model_name] = {
-								downloaded: data.downloaded || 0,
-								total: data.total || 0,
-								done: data.percent === 100
-							};
-							localModelDownloadProgress = { ...localModelDownloadProgress };
-						}
-					} catch {
-						// Skip malformed SSE lines
-					}
-				}
-			}
-			await loadLocalModelsStatus();
-		} catch (err) {
-			localModelDownloadError = err instanceof Error ? err.message : 'Download failed';
 		}
 	}
 
@@ -345,397 +267,278 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Providers</h2>
-	<p class="text-sm text-base-content/60">AI model providers and API keys</p>
+	<p class="text-sm text-base-content/70">AI model providers and API keys</p>
 </div>
 
-<div class="space-y-6">
-	{#if isLoading}
-		<Card>
-			<div class="flex flex-col items-center justify-center gap-4 py-8">
-				<Spinner size={32} />
-				<p class="text-sm text-base-content/60">Loading providers...</p>
-			</div>
-		</Card>
-	{:else}
+{#if isLoading}
+	<div class="flex items-center justify-center gap-3 py-16">
+		<Spinner size={20} />
+		<span class="text-sm text-base-content/70">Loading providers...</span>
+	</div>
+{:else}
+	<div class="space-y-6">
 		{#if error}
 			<Alert type="error" title="Error">{error}</Alert>
 		{/if}
 
-		<!-- Connection Status Banner -->
-		{#if janusStatus?.connected && janusStatus.janusProvider}
-			<div class="flex items-center gap-3 rounded-lg bg-success/10 px-4 py-3">
-				<Wifi class="w-5 h-5 text-success" />
-				<div class="flex-1">
-					<p class="text-sm font-medium text-success">Connected via NeboLoop</p>
-					{#if janusStatus.email}
-						<p class="text-xs text-base-content/60">{janusStatus.email}</p>
-					{/if}
-				</div>
-				<Toggle checked={true} disabled={isTogglingJanus} onchange={() => toggleJanus(false)} />
-			</div>
-		{:else if janusStatus?.connected && !janusStatus.janusProvider}
-			<div class="flex items-center gap-3 rounded-lg bg-base-200/50 px-4 py-3">
-				<Wifi class="w-5 h-5 text-base-content/40" />
-				<div class="flex-1">
-					<p class="text-sm font-medium text-base-content">NeboLoop Connected</p>
-					<p class="text-xs text-base-content/60">Enable Janus AI to use NeboLoop as your AI provider</p>
-				</div>
-				<Toggle checked={false} disabled={isTogglingJanus} onchange={() => toggleJanus(true)} />
-			</div>
-		{:else if !janusStatus?.connected && providers.length === 0 && !availableCLIs?.claude && !availableCLIs?.codex && !availableCLIs?.gemini}
-			<div class="flex items-center gap-3 rounded-lg bg-warning/10 px-4 py-3">
-				<XCircle class="w-5 h-5 text-warning" />
-				<p class="text-sm font-medium text-warning">No AI providers configured</p>
-			</div>
-		{/if}
+		<!-- NeboLoop AI — Primary Provider -->
+		<section>
+			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">NeboLoop AI</h3>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+				{#if janusStatus?.connected}
+					<!-- Provider header — same as Anthropic/DeepSeek -->
+					<p class="text-sm font-medium text-base-content">NeboLoop AI</p>
 
-		<!-- Janus (NeboLoop AI Gateway) -->
-		{#if janusModels().length > 0}
-			<Card>
-				<div class="flex items-center gap-3 mb-3">
-					<Zap class="w-5 h-5 text-primary" />
-					<div class="flex-1">
-						<h4 class="font-medium text-base-content">Janus</h4>
-						<p class="text-xs text-base-content/60">NeboLoop AI Gateway — {janusModels().filter(m => m.isActive).length} active model{janusModels().filter(m => m.isActive).length !== 1 ? 's' : ''}</p>
-					</div>
-					<button class="btn btn-ghost btn-xs gap-1 text-base-content/50" onclick={() => webapi.get('/api/v1/neboloop/open', { path: '/app/settings/billing' })}>
-						Upgrade
-						<ExternalLink class="w-3 h-3" />
-					</button>
-				</div>
-			{#if janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
-				<div class="flex flex-col gap-2 px-4 py-2 mb-3">
-					{#if janusUsage.session.limitTokens > 0}
-						<div>
-							<div class="flex justify-between text-xs text-base-content/60 mb-1">
-								<span>Session: {janusUsage.session.percentUsed}% used</span>
-								{#if janusUsage.session.resetAt}
-									{@const reset = new Date(janusUsage.session.resetAt)}
-									{@const now = new Date()}
-									{@const diffMs = reset.getTime() - now.getTime()}
-									{@const diffH = Math.floor(diffMs / 3600000)}
-									{@const diffM = Math.floor((diffMs % 3600000) / 60000)}
-									<span>Resets in {diffH}h {diffM}m</span>
-								{/if}
-							</div>
-							<progress
-								class="progress w-full {janusUsage.session.percentUsed > 80 ? 'progress-warning' : 'progress-primary'}"
-								value={janusUsage.session.percentUsed}
-								max="100"
-							></progress>
-						</div>
-					{/if}
-					{#if janusUsage.weekly.limitTokens > 0}
-						<div>
-							<div class="flex justify-between text-xs text-base-content/60 mb-1">
-								<span>Weekly: {janusUsage.weekly.percentUsed}% used</span>
-								{#if janusUsage.weekly.resetAt}
-									<span>Resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-								{/if}
-							</div>
-							<progress
-								class="progress w-full {janusUsage.weekly.percentUsed > 80 ? 'progress-warning' : 'progress-primary'}"
-								value={janusUsage.weekly.percentUsed}
-								max="100"
-							></progress>
-						</div>
-					{/if}
-				</div>
-			{/if}
-				<div class="grid gap-2">
-					{#each janusModels() as model (model.id)}
-						<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
-							<div class="flex-1">
-								<p class="font-medium text-sm text-base-content">{model.displayName}</p>
-							</div>
-							<div class="flex items-center gap-3">
-								<p class="text-xs text-base-content/50 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} tokens</p>
-								<Toggle
-									checked={model.isActive}
-									onchange={() => toggleModel('janus', model)}
-								/>
-							</div>
-						</div>
-					{/each}
-				</div>
-
-				<!-- Offline / Local Models (Qwen 3.5 Series) — DISABLED: local routing not yet reliable -->
-				{#if false}
-				<div class="mt-4 pt-4 border-t border-base-200">
-					<div class="flex items-center justify-between mb-3">
-						<div class="flex items-center gap-2">
-							<HardDrive class="w-4 h-4 text-base-content/50" />
-							<h5 class="text-sm font-medium text-base-content">Offline</h5>
-							{#if localModelsAllReady}
-								<span class="badge badge-sm badge-success gap-1">All ready</span>
-							{:else if localModelsAnyReady}
-								<span class="badge badge-sm badge-info gap-1">Partial</span>
+					<!-- Usage -->
+					{#if janusStatus.janusProvider && janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
+						<div class="space-y-3 mt-4">
+							{#if janusUsage.session.limitTokens > 0}
+								<div>
+									<div class="flex justify-between text-sm text-base-content/70 mb-1">
+										<span>Session</span>
+										<span>{janusUsage.session.percentUsed}% used{#if janusUsage.session.resetAt}{@const reset = new Date(janusUsage.session.resetAt)}{@const now = new Date()}{@const diffMs = reset.getTime() - now.getTime()}{@const diffH = Math.floor(diffMs / 3600000)}{@const diffM = Math.floor((diffMs % 3600000) / 60000)} &middot; resets in {diffH}h {diffM}m{/if}</span>
+									</div>
+									<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
+										<div
+											class="h-full rounded-full transition-all {janusUsage.session.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
+											style="width: {janusUsage.session.percentUsed}%"
+										></div>
+									</div>
+								</div>
+							{/if}
+							{#if janusUsage.weekly.limitTokens > 0}
+								<div>
+									<div class="flex justify-between text-sm text-base-content/70 mb-1">
+										<span>Weekly</span>
+										<span>{janusUsage.weekly.percentUsed}% used{#if janusUsage.weekly.resetAt} &middot; resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}{/if}</span>
+									</div>
+									<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
+										<div
+											class="h-full rounded-full transition-all {janusUsage.weekly.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
+											style="width: {janusUsage.weekly.percentUsed}%"
+										></div>
+									</div>
+								</div>
 							{/if}
 						</div>
-						{#if !localModelsAllReady && !localModelsDismissed}
-							<button class="btn btn-secondary btn-xs gap-1" onclick={() => { showLocalModelDownload = true; }}>
-								<Download class="w-3 h-3" />
-								{localModelsAnyReady ? 'Download remaining' : 'Download'}
-							</button>
-						{/if}
-					</div>
+					{/if}
 
-					{#if localModelsAnyReady || !localModelsDismissed}
-						<p class="text-xs text-base-content/40 mb-2">Qwen 3.5 series — simple tasks run locally for free, even offline.</p>
-						<div class="grid gap-1.5">
-							{#each janusLocalModels as model (model.name)}
-								<div class="flex items-center justify-between py-1.5 px-3 rounded bg-base-200/20">
-									<div class="flex items-center gap-2">
-										<span class="text-xs font-medium text-base-content">{model.label}</span>
-										<span class="text-xs text-base-content/30">{model.desc}</span>
-									</div>
-									<div class="flex items-center gap-2">
-										<span class="text-xs text-base-content/30 tabular-nums">{model.size}</span>
-										{#if localModelsAvailable[model.name]}
-											<CheckCircle class="w-3.5 h-3.5 text-success" />
-										{:else}
-											<span class="w-3.5 h-3.5 rounded-full border border-base-300"></span>
-										{/if}
+					<!-- Models with toggles — same as Anthropic/DeepSeek -->
+					{#if janusModels().length > 0}
+						<div class="mt-3 space-y-1.5">
+							{#each janusModels() as model (model.id)}
+								<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5">
+									<p class="text-sm text-base-content">{janusDisplayName(model)}</p>
+									<div class="flex items-center gap-3">
+										<span class="text-sm text-base-content/70 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+										<Toggle
+											checked={model.isActive}
+											onchange={() => toggleModel('janus', model)}
+										/>
 									</div>
 								</div>
 							{/each}
 						</div>
-					{:else}
-						<p class="text-xs text-base-content/30">No offline models.
-							<button class="link link-hover text-xs" onclick={() => { localModelsDismissed = false; }}>Set up</button>
-						</p>
 					{/if}
-				</div>
+
+				{:else}
+					<!-- Not connected -->
+					<div class="flex items-center justify-between">
+						<div>
+							<p class="text-sm font-medium text-base-content">Not connected</p>
+							<p class="text-sm text-base-content/70">Connect your NeboLoop account to use AI models</p>
+						</div>
+						<a href="/settings/account" class="text-sm font-medium text-primary hover:brightness-110 transition-all">
+							Connect
+						</a>
+					</div>
 				{/if}
-			</Card>
-		{/if}
-
-		<!-- CLI Providers -->
-		{#if cliProviders.length > 0}
-			<Card>
-				<div class="flex items-center gap-3 mb-3">
-					<Terminal class="w-5 h-5 text-accent" />
-					<div>
-						<h4 class="font-medium text-base-content">CLI Providers</h4>
-						<p class="text-xs text-base-content/60">Locally installed AI tools — no API key needed</p>
-					</div>
-				</div>
-				<div class="grid gap-2">
-					{#each cliProviders as cli (cli.id)}
-						<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
-							<div>
-								<p class="font-medium text-sm text-base-content">{cli.displayName}</p>
-								<p class="text-xs text-base-content/60"><code>{cli.command}</code> — {cli.installHint}</p>
-							</div>
-							<Toggle checked={cli.active} onchange={() => toggleCLI(cli)} />
-						</div>
-					{/each}
-				</div>
-			</Card>
-		{/if}
-
-		<!-- API Providers -->
-		<Card>
-			<div class="flex items-center justify-between mb-4">
-				<div class="flex items-center gap-3">
-					<div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-						<Key class="w-5 h-5 text-primary" />
-					</div>
-					<div>
-						<h3 class="text-lg font-semibold text-base-content">API Keys</h3>
-						<p class="text-sm text-base-content/60">Manage provider connections and models</p>
-					</div>
-				</div>
-				<Button type="primary" size="sm" onclick={() => openAddModal()}>
-					<Plus class="w-4 h-4" />
-					Add Provider
-				</Button>
 			</div>
+		</section>
 
-			<div class="divide-y divide-base-200">
-				{#each allProviders() as prov, i (prov.type)}
-					<div class="py-4 first:pt-0 last:pb-0">
-						<div class="flex items-center justify-between">
-							<div class="flex items-center gap-4">
-								<div class="w-10 h-10 rounded-lg flex items-center justify-center {prov.configured && prov.profile?.isActive ? 'bg-success/10' : prov.configured ? 'bg-warning/10' : 'bg-base-200'}">
-									{#if prov.configured && prov.profile?.isActive}
-										<CheckCircle class="w-5 h-5 text-success" />
-									{:else if prov.configured}
-										<XCircle class="w-5 h-5 text-warning" />
-									{:else}
-										<Key class="w-5 h-5 text-base-content/40" />
-									{/if}
-								</div>
-								<div>
-									<h4 class="font-medium text-base-content">{prov.profile?.name || prov.label}</h4>
-									{#if prov.profile?.name && prov.profile.name !== prov.label}
-										<p class="text-sm text-base-content/60">{prov.label}</p>
-									{/if}
-								</div>
-							</div>
-							<div class="flex items-center gap-3">
-								{#if prov.configured && prov.profile}
-									{#if testResult?.id === prov.profile.id}
-										<span class="text-sm {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
-									{/if}
-									<Button type="ghost" size="sm" onclick={() => testProvider(prov.profile!.id)} disabled={testingId === prov.profile.id}>
-										{#if testingId === prov.profile.id}<Spinner size={16} />{:else}<RefreshCw class="w-4 h-4" />{/if} Test
-									</Button>
-									<Toggle checked={prov.profile.isActive} onchange={() => toggleProvider(prov.profile!)} />
-									<Button type="ghost" size="sm" onclick={() => deleteProvider(prov.profile!.id)}>
-										<Trash2 class="w-4 h-4 text-error" />
-									</Button>
-								{:else}
-									<button type="button" class="text-xs text-base-content/40 hover:text-primary transition-colors" onclick={() => openAddModal(prov.type)}>
-										Add key
-									</button>
-								{/if}
-							</div>
-						</div>
-						{#if prov.models.length > 0}
-							<div class="mt-3 grid gap-2">
-								{#each prov.models as model (model.id)}
-									<div class="flex items-center justify-between py-2 px-3 rounded-lg bg-base-200/30">
-										<div class="flex-1">
-											<p class="font-medium text-sm text-base-content">{model.displayName}</p>
+		<!-- More Providers (collapsible) -->
+		<section>
+			<button
+				type="button"
+				class="flex items-center gap-2 w-full text-left mb-3"
+				onclick={() => showMore = !showMore}
+			>
+				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">More Providers</h3>
+				<ChevronDown class="w-4 h-4 text-base-content/70 transition-transform {showMore ? 'rotate-180' : ''}" />
+			</button>
+
+			{#if showMore}
+				<div class="space-y-4">
+					<!-- CLI Providers -->
+					{#if cliProviders.length > 0}
+						<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+							<p class="text-sm font-medium text-base-content/70 mb-3">CLI Providers</p>
+							<div class="space-y-2">
+								{#each cliProviders as cli (cli.id)}
+									<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
+										<div>
+											<p class="text-sm font-medium text-base-content">{cli.displayName}</p>
+											<p class="text-sm text-base-content/70"><code class="text-sm">{cli.command}</code></p>
 										</div>
-										<div class="flex items-center gap-3">
-											<p class="text-xs text-base-content/50 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} tokens</p>
-											<Toggle checked={model.isActive} onchange={() => toggleModel(prov.type, model)} />
-										</div>
+										<Toggle checked={cli.active} onchange={() => toggleCLI(cli)} />
 									</div>
 								{/each}
 							</div>
-						{/if}
+						</div>
+					{/if}
+
+					<!-- API Keys -->
+					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+						<div class="flex items-center justify-between mb-4">
+							<p class="text-sm font-medium text-base-content/70">API Keys</p>
+							<button
+								type="button"
+								class="flex items-center gap-1.5 text-sm font-medium text-base-content/70 hover:text-primary transition-colors"
+								onclick={() => openAddModal()}
+							>
+								<Plus class="w-4 h-4" /> Add provider
+							</button>
+						</div>
+
+						<div class="space-y-3">
+							{#each allProviders() as prov (prov.type)}
+								<div class="py-3 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
+									<div class="flex items-center justify-between">
+										<div class="flex items-center gap-3">
+											{#if prov.configured && prov.profile?.isActive}
+												<div class="w-2 h-2 rounded-full bg-success"></div>
+											{:else if prov.configured}
+												<div class="w-2 h-2 rounded-full bg-warning"></div>
+											{:else}
+												<div class="w-2 h-2 rounded-full bg-base-content/20"></div>
+											{/if}
+											<div>
+												<p class="text-sm font-medium text-base-content">{prov.profile?.name || prov.label}</p>
+												{#if prov.profile?.name && prov.profile.name !== prov.label}
+													<p class="text-sm text-base-content/70">{prov.label}</p>
+												{/if}
+											</div>
+										</div>
+										<div class="flex items-center gap-3">
+											{#if prov.configured && prov.profile}
+												{#if testResult?.id === prov.profile.id}
+													<span class="text-sm {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
+												{/if}
+												<button
+													type="button"
+													class="text-sm text-base-content/70 hover:text-primary transition-colors"
+													onclick={() => testProvider(prov.profile!.id)}
+													disabled={testingId === prov.profile.id}
+												>
+													{#if testingId === prov.profile.id}<Spinner size={14} />{:else}Test{/if}
+												</button>
+												<Toggle checked={prov.profile.isActive} onchange={() => toggleProvider(prov.profile!)} />
+												<button
+													type="button"
+													class="text-sm text-base-content/70 hover:text-error transition-colors"
+													onclick={() => deleteProvider(prov.profile!.id)}
+												>
+													<Trash2 class="w-4 h-4" />
+												</button>
+											{:else}
+												<button
+													type="button"
+													class="text-sm text-base-content/70 hover:text-primary transition-colors"
+													onclick={() => openAddModal(prov.type)}
+												>
+													Add key
+												</button>
+											{/if}
+										</div>
+									</div>
+
+									<!-- Model toggles -->
+									{#if prov.models.length > 0}
+										<div class="mt-3 space-y-1.5">
+											{#each prov.models as model (model.id)}
+												<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5 {!prov.configured ? 'opacity-50' : ''}">
+													<p class="text-sm text-base-content">{model.displayName}</p>
+													<div class="flex items-center gap-3">
+														<span class="text-sm text-base-content/70 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+														<Toggle
+															checked={prov.configured ? model.isActive : false}
+															disabled={!prov.configured}
+															onchange={() => toggleModel(prov.type, model)}
+														/>
+													</div>
+												</div>
+											{/each}
+										</div>
+									{/if}
+								</div>
+							{/each}
+						</div>
 					</div>
-				{/each}
-			</div>
-		</Card>
-
-	{/if}
-</div>
-
-<!-- Add Provider Modal -->
-<!-- Local Model Download Modal — DISABLED: local routing not yet reliable -->
-{#if false && showLocalModelDownload}
-<div class="modal modal-open">
-	<div class="modal-box">
-		<h3 class="font-bold text-lg mb-4">Download Local Models</h3>
-		<p class="text-sm text-base-content/70 mb-4">
-			Local models run directly on your computer — no API key, no internet connection required. This is a one-time download.
-		</p>
-
-		{#if localModelDownloadError}
-			<div class="alert alert-error mb-4">
-				<span>{localModelDownloadError}</span>
-			</div>
-		{/if}
-
-		{#each Object.entries(localModelDownloadProgress) as [name, prog]}
-			<div class="mb-3">
-				<div class="flex justify-between text-sm mb-1">
-					<span class="font-mono text-xs">{name}</span>
-					<span class="text-xs text-base-content/60">
-						{#if prog.done}
-							Done
-						{:else if prog.total > 0}
-							{Math.round((prog.downloaded / prog.total) * 100)}%
-						{:else}
-							Starting...
-						{/if}
-					</span>
 				</div>
-				<progress
-					class="progress progress-secondary w-full"
-					value={prog.downloaded}
-					max={prog.total || 100}
-				></progress>
-			</div>
-		{/each}
-
-		{#if Object.keys(localModelDownloadProgress).length === 0}
-			<div class="text-sm text-base-content/60 mb-4 space-y-2">
-				{#each janusLocalModels as model (model.name)}
-					<div class="flex justify-between py-1">
-						<span>
-							{model.label}
-							<span class="text-xs text-base-content/40">({model.desc})</span>
-							{#if localModelsAvailable[model.name]}
-								<span class="text-xs text-success ml-1">Installed</span>
-							{/if}
-						</span>
-						<span class="text-xs tabular-nums">{model.size}</span>
-					</div>
-				{/each}
-				<div class="flex justify-between py-1 border-t border-base-200 mt-2 pt-2">
-					<span class="font-medium">Total</span>
-					<span class="text-xs tabular-nums font-medium">~10.5 GB</span>
-				</div>
-			</div>
-		{/if}
-
-		<div class="modal-action">
-			<button class="btn btn-ghost" onclick={() => { showLocalModelDownload = false; }}>
-				Cancel
-			</button>
-			<button
-				class="btn btn-secondary"
-				onclick={startLocalModelDownload}
-				disabled={Object.values(localModelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
-			>
-				{#if Object.values(localModelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
-					<Loader2 class="w-4 h-4 animate-spin" />
-					Downloading...
-				{:else}
-					Download
-				{/if}
-			</button>
-		</div>
+			{/if}
+		</section>
 	</div>
-	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" onclick={() => { showLocalModelDownload = false; }}></div>
-</div>
 {/if}
 
+<!-- Add Provider Modal -->
 {#if showAddForm}
-	<div class="modal modal-open">
-		<div class="modal-box">
-			<h3 class="font-bold text-lg mb-4">Add Provider</h3>
-			<div class="space-y-4">
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="nebo-modal-backdrop" role="dialog" aria-modal="true" tabindex="-1" onkeydown={(e) => e.key === 'Escape' && closeAddModal()}>
+		<button type="button" class="nebo-modal-overlay" onclick={closeAddModal}></button>
+		<div class="nebo-modal-card max-w-lg">
+			<!-- Header -->
+			<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
+				<h3 class="font-display text-lg font-bold">Add Provider</h3>
+				<button type="button" onclick={closeAddModal} class="nebo-modal-close" aria-label="Close">
+					<X class="w-5 h-5 text-base-content/90" />
+				</button>
+			</div>
+			<!-- Body -->
+			<div class="px-5 py-5 space-y-4">
 				<div>
-					<label for="provider-type" class="block text-sm font-medium text-base-content mb-1">Provider Type</label>
-					<select id="provider-type" bind:value={newProvider.provider} class="select select-bordered w-full">
+					<label class="text-sm font-medium text-base-content/70" for="provider-type">Provider type</label>
+					<select id="provider-type" bind:value={newProvider.provider} class="select w-full mt-1">
 						{#each providerOptions as opt}
 							<option value={opt.value}>{opt.label}</option>
 						{/each}
 					</select>
 				</div>
 				<div>
-					<label for="provider-name" class="block text-sm font-medium text-base-content mb-1">Name</label>
-					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder="My Anthropic Key" class="input input-bordered w-full" />
+					<label class="text-sm font-medium text-base-content/70" for="provider-name">Name</label>
+					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder="My Anthropic Key" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors" />
 				</div>
 				<div>
-					<label for="api-key" class="block text-sm font-medium text-base-content mb-1">API Key</label>
-					<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={newProvider.provider === 'ollama' ? 'Not required for Ollama' : 'sk-...'} class="input input-bordered w-full" />
+					<label class="text-sm font-medium text-base-content/70" for="api-key">API key</label>
+					<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={newProvider.provider === 'ollama' ? 'Not required for Ollama' : 'sk-...'} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors" />
 				</div>
 				{#if newProvider.provider === 'ollama'}
 					<div>
-						<label for="base-url" class="block text-sm font-medium text-base-content mb-1">Base URL (optional)</label>
-						<input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder="http://localhost:11434" class="input input-bordered w-full" />
+						<label class="text-sm font-medium text-base-content/70" for="base-url">Base URL <span class="font-normal">optional</span></label>
+						<input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder="http://localhost:11434" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors" />
 					</div>
 				{/if}
 				{#if addError}
 					<Alert type="error" title="Error">{addError}</Alert>
 				{/if}
 			</div>
-			<div class="modal-action">
-				<Button type="ghost" onclick={closeAddModal}>Cancel</Button>
-				<Button type="primary" onclick={addProvider} disabled={isAdding}>
+			<!-- Footer -->
+			<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
+				<button
+					type="button"
+					class="h-10 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+					onclick={closeAddModal}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+					onclick={addProvider}
+					disabled={isAdding}
+				>
 					{#if isAdding}<Spinner size={16} /> Adding...{:else}Add Provider{/if}
-				</Button>
+				</button>
 			</div>
 		</div>
-		<button type="button" class="modal-backdrop" onclick={closeAddModal}>close</button>
 	</div>
 {/if}
-

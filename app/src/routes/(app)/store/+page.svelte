@@ -1,561 +1,248 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import Card from '$lib/components/ui/Card.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
-	import Badge from '$lib/components/ui/Badge.svelte';
+	import { onMount } from 'svelte';
 	import {
-		RefreshCw,
-		Search,
-		Download,
-		Trash2,
-		Star,
-		Package,
-		Zap,
-		BadgeCheck,
-		Loader2,
-		Link,
-		WifiOff
+		Clock,
+		Bell,
+		Sun,
+		Moon,
+		Code,
+		Sparkles
 	} from 'lucide-svelte';
-	import {
-		listStoreApps,
-		listStoreSkills,
-		installStoreApp,
-		uninstallStoreApp,
-		installStoreSkill,
-		uninstallStoreSkill,
-		neboLoopStatus as fetchNeboLoopStatus
-	} from '$lib/api/index';
-	import type { AppItem, SkillItem, NeboLoopStatusResponse } from '$lib/api';
-	import { getWebSocketClient } from '$lib/websocket/client';
+	import LargeCard from '$lib/components/marketplace/LargeCard.svelte';
+	import InstallCode from '$lib/components/InstallCode.svelte';
+	import SectionEditorial from '$lib/components/marketplace/sections/SectionEditorial.svelte';
+	import SectionListGrid from '$lib/components/marketplace/sections/SectionListGrid.svelte';
+	import webapi from '$lib/api/gocliRequest';
+	import { type AppItem, toAppItem } from '$lib/types/marketplace';
 
-	let storeTab = $state<'apps' | 'skills'>('apps');
+	let loading = $state(true);
 
-	// Store state - Apps
-	let storeApps = $state<AppItem[]>([]);
-	let appsLoading = $state(false);
-	let appsError = $state<string | null>(null);
-	let appsLoaded = $state(false);
-	let appsTotalCount = $state(0);
-	let appsPage = $state(1);
-	let appsPageSize = $state(20);
+	let featuredRole: AppItem | null = $state(null);
+	let featuredSkills: AppItem[] = $state([]);
+	let featuredWorkflows: AppItem[] = $state([]);
+	let roles: AppItem[] = $state([]);
+	let workflowItems: AppItem[] = $state([]);
+	let skillItems: AppItem[] = $state([]);
 
-	// Store state - Skills
-	let storeSkills = $state<SkillItem[]>([]);
-	let skillsLoading = $state(false);
-	let skillsError = $state<string | null>(null);
-	let skillsLoaded = $state(false);
-	let skillsTotalCount = $state(0);
-	let skillsPage = $state(1);
-	let skillsPageSize = $state(20);
+	const chiefOfStaffWorkflows = [
+		{
+			icon: Sun,
+			time: '7:00 AM',
+			label: 'Morning Briefing',
+			desc: "What's on today, what matters most, what can wait"
+		},
+		{
+			icon: Clock,
+			time: 'Every 30m',
+			label: 'Day Monitor',
+			desc: 'Watches for changes, interrupts only when it matters'
+		},
+		{
+			icon: Moon,
+			time: '6:00 PM',
+			label: 'Evening Wrap',
+			desc: "What happened, what's unresolved, what's tomorrow"
+		},
+		{
+			icon: Bell,
+			time: 'On event',
+			label: 'Urgent Interrupt',
+			desc: 'Something needs attention now'
+		}
+	];
 
-	// Shared store search/filter
-	let storeSearch = $state('');
-	let storeCategory = $state('');
+	function loadData(data: Record<string, any>) {
+		roles = (data.roles || []).map((s: any, i: number) => toAppItem({ ...s, type: 'role' }, i));
+		workflowItems = (data.workflows || []).map((s: any, i: number) =>
+			toAppItem({ ...s, type: 'workflow' }, i)
+		);
+		skillItems = (data.skills || []).map((s: any, i: number) =>
+			toAppItem({ ...s, type: 'skill' }, i)
+		);
 
-	// Install/uninstall in-flight tracking
-	let installing = $state<Record<string, boolean>>({});
-	let uninstalling = $state<Record<string, boolean>>({});
-
-	// NeboLoop connection state
-	let neboLoopStatus = $state<NeboLoopStatusResponse | null>(null);
-
-	let unsubscribers: (() => void)[] = [];
+		const fr = (data.featuredRole || []).map((a: any, i: number) =>
+			toAppItem({ ...a, type: 'role' }, i)
+		);
+		featuredRole = fr[0] || null;
+		featuredSkills = (data.featuredSkill || []).map((a: any, i: number) =>
+			toAppItem({ ...a, type: a.type || 'skill' }, i)
+		);
+		featuredWorkflows = (data.featuredWorkflow || []).map((a: any, i: number) =>
+			toAppItem({ ...a, type: a.type || 'workflow' }, i)
+		);
+	}
 
 	onMount(async () => {
-		await loadNeboLoopStatus();
-		loadCurrentStoreTab();
-
-		const client = getWebSocketClient();
-		unsubscribers.push(
-			client.on('plugin_settings_updated', () => {
-				loadNeboLoopStatus();
-			})
-		);
-	});
-
-	onDestroy(() => {
-		unsubscribers.forEach((unsub) => unsub());
-	});
-
-	async function loadStoreApps() {
-		appsLoading = true;
-		appsError = null;
 		try {
-			const params: Record<string, string | number> = {
-				page: appsPage,
-				pageSize: appsPageSize
-			};
-			if (storeSearch) params.q = storeSearch;
-			if (storeCategory) params.category = storeCategory;
+			const [
+				rolesRes,
+				workflowsRes,
+				skillsRes,
+				featuredRoleRes,
+				featuredSkillRes,
+				featuredWorkflowRes
+			] = await Promise.all([
+				webapi.get<any>('/api/v1/store/products', { type: 'role' }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'workflow' }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'skill' }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/featured', { type: 'role' }).catch(() => ({ apps: [] })),
+				webapi.get<any>('/api/v1/store/featured', { type: 'skill' }).catch(() => ({ apps: [] })),
+				webapi.get<any>('/api/v1/store/featured', { type: 'workflow' }).catch(() => ({ apps: [] }))
+			]);
 
-			const data = await listStoreApps(params);
-			storeApps = data.apps || [];
-			appsTotalCount = data.totalCount || 0;
-			appsLoaded = true;
-		} catch (error: any) {
-			appsError = error.message || 'Failed to load apps';
-			storeApps = [];
-		} finally {
-			appsLoading = false;
-		}
-	}
-
-	async function loadStoreSkills() {
-		skillsLoading = true;
-		skillsError = null;
-		try {
-			const params: Record<string, string | number> = {
-				page: skillsPage,
-				pageSize: skillsPageSize
-			};
-			if (storeSearch) params.q = storeSearch;
-			if (storeCategory) params.category = storeCategory;
-
-			const data = await listStoreSkills(params);
-			storeSkills = data.skills || [];
-			skillsTotalCount = data.totalCount || 0;
-			skillsLoaded = true;
-		} catch (error: any) {
-			skillsError = error.message || 'Failed to load skills';
-			storeSkills = [];
-		} finally {
-			skillsLoading = false;
-		}
-	}
-
-	function switchStoreTab(tab: 'apps' | 'skills') {
-		storeTab = tab;
-		loadCurrentStoreTab();
-	}
-
-	function loadCurrentStoreTab() {
-		if (storeTab === 'apps' && !appsLoaded) {
-			loadStoreApps();
-		} else if (storeTab === 'skills' && !skillsLoaded) {
-			loadStoreSkills();
-		}
-	}
-
-	function handleStoreSearch() {
-		appsPage = 1;
-		skillsPage = 1;
-		appsLoaded = false;
-		skillsLoaded = false;
-		if (storeTab === 'apps') {
-			loadStoreApps();
-		} else {
-			loadStoreSkills();
-		}
-	}
-
-	function refreshStore() {
-		appsLoaded = false;
-		skillsLoaded = false;
-		if (storeTab === 'apps') {
-			loadStoreApps();
-		} else {
-			loadStoreSkills();
-		}
-	}
-
-	async function handleInstallApp(app: AppItem) {
-		installing = { ...installing, [app.id]: true };
-		try {
-			await installStoreApp(app.id);
-			storeApps = storeApps.map((a) => (a.id === app.id ? { ...a, isInstalled: true } : a));
-		} catch (error: any) {
-			console.error('Failed to install app:', error);
-		} finally {
-			installing = { ...installing, [app.id]: false };
-		}
-	}
-
-	async function handleUninstallApp(app: AppItem) {
-		uninstalling = { ...uninstalling, [app.id]: true };
-		try {
-			await uninstallStoreApp(app.id);
-			storeApps = storeApps.map((a) => (a.id === app.id ? { ...a, isInstalled: false } : a));
-		} catch (error: any) {
-			console.error('Failed to uninstall app:', error);
-		} finally {
-			uninstalling = { ...uninstalling, [app.id]: false };
-		}
-	}
-
-	async function handleInstallSkill(skill: SkillItem) {
-		installing = { ...installing, [skill.id]: true };
-		try {
-			await installStoreSkill(skill.id);
-			storeSkills = storeSkills.map((s) => (s.id === skill.id ? { ...s, isInstalled: true } : s));
-		} catch (error: any) {
-			console.error('Failed to install skill:', error);
-		} finally {
-			installing = { ...installing, [skill.id]: false };
-		}
-	}
-
-	async function handleUninstallSkill(skill: SkillItem) {
-		uninstalling = { ...uninstalling, [skill.id]: true };
-		try {
-			await uninstallStoreSkill(skill.id);
-			storeSkills = storeSkills.map((s) => (s.id === skill.id ? { ...s, isInstalled: false } : s));
-		} catch (error: any) {
-			console.error('Failed to uninstall skill:', error);
-		} finally {
-			uninstalling = { ...uninstalling, [skill.id]: false };
-		}
-	}
-
-	async function loadNeboLoopStatus() {
-		try {
-			neboLoopStatus = await fetchNeboLoopStatus();
+			loadData({
+				roles: rolesRes.skills || [],
+				workflows: workflowsRes.skills || [],
+				skills: skillsRes.skills || [],
+				featuredRole: featuredRoleRes.apps || [],
+				featuredSkill: featuredSkillRes.apps || [],
+				featuredWorkflow: featuredWorkflowRes.apps || []
+			});
 		} catch {
-			neboLoopStatus = null;
+			/* ignore */
 		}
-	}
-
+		loading = false;
+	});
 </script>
 
-<div class="max-w-5xl mx-auto px-4 py-6">
-	<div class="mb-6 flex items-center justify-between">
-		<div>
-			<h1 class="font-display text-2xl font-bold text-base-content mb-1">Marketplace</h1>
-			<p class="text-sm text-base-content/60">
-				Browse and install apps and skills for your agent.
-			</p>
-		</div>
-		<Button type="ghost" onclick={refreshStore}>
-			<RefreshCw class="w-4 h-4 mr-2" />
-			Refresh
-		</Button>
+<div class="max-w-7xl mx-auto">
+	<!-- Hero -->
+	<div class="px-6 pt-8 pb-2">
+		<h2 class="font-display text-3xl sm:text-4xl font-black leading-tight">
+			Marketplace
+		</h2>
+		<p class="text-base text-base-content/70 mt-2 max-w-xl">
+			Roles, skills, and workflows for your desktop AI.
+		</p>
 	</div>
 
-	<!-- NeboLoop connection status -->
-	{#if neboLoopStatus && !neboLoopStatus.connected}
-		<Card>
-			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-3">
-					<WifiOff class="w-5 h-5 text-base-content/40" />
-					<div>
-						<div class="text-sm font-medium text-base-content">Not connected to NeboLoop</div>
-						<div class="text-xs text-base-content/40">Connect your account to browse the store</div>
+	<!-- Featured Role -- FeaturedCard or editorial card with workflows -->
+	{#if loading}
+		<div class="px-6 pt-6 pb-2">
+			<div class="rounded-2xl bg-base-content/5 p-6 sm:p-8 animate-pulse">
+				<div class="flex items-start gap-4 mb-6">
+					<div class="w-14 h-14 rounded-2xl bg-base-content/10"></div>
+					<div class="flex-1">
+						<div class="h-4 w-24 bg-base-content/10 rounded mb-2"></div>
+						<div class="h-6 w-48 bg-base-content/10 rounded mb-2"></div>
+						<div class="h-4 w-64 bg-base-content/10 rounded"></div>
 					</div>
 				</div>
-				<a href="/settings/neboloop" class="btn btn-sm btn-primary">
-					<Link class="w-4 h-4 mr-1" />
-					Connect
-				</a>
 			</div>
-		</Card>
-	{/if}
-
-	<!-- Apps / Skills sub-tabs -->
-	<div class="flex gap-4 mb-4 mt-6">
-		<button
-			type="button"
-			class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors
-				{storeTab === 'apps'
-					? 'bg-primary/10 text-primary'
-					: 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
-			onclick={() => switchStoreTab('apps')}
-		>
-			<Package class="w-4 h-4 inline-block mr-1 -mt-0.5" />
-			Apps
-		</button>
-		<button
-			type="button"
-			class="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors
-				{storeTab === 'skills'
-					? 'bg-primary/10 text-primary'
-					: 'text-base-content/60 hover:text-base-content hover:bg-base-200'}"
-			onclick={() => switchStoreTab('skills')}
-		>
-			<Zap class="w-4 h-4 inline-block mr-1 -mt-0.5" />
-			Skills
-		</button>
-	</div>
-
-	<!-- Search and filter bar -->
-	<div class="flex gap-3 mb-6">
-		<div class="flex-1 relative">
-			<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/40" />
-			<input
-				type="text"
-				placeholder="Search {storeTab}..."
-				class="w-full pl-10 pr-4 py-2 rounded-lg bg-base-200 border border-base-300 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
-				bind:value={storeSearch}
-				onkeydown={(e) => e.key === 'Enter' && handleStoreSearch()}
-			/>
 		</div>
-		<select
-			class="px-3 py-2 rounded-lg bg-base-200 border border-base-300 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
-			bind:value={storeCategory}
-			onchange={handleStoreSearch}
-		>
-			<option value="">All Categories</option>
-			<option value="communication">Communication</option>
-			<option value="productivity">Productivity</option>
-			<option value="development">Development</option>
-			<option value="integration">Integrations</option>
-			<option value="utility">Utilities</option>
-		</select>
-		<Button type="primary" size="sm" onclick={handleStoreSearch}>
-			<Search class="w-4 h-4 mr-1" />
-			Search
-		</Button>
+	{:else if featuredRole}
+		<div class="px-6 pt-6 pb-2">
+			<div class="rounded-2xl bg-gradient-to-br {featuredRole.iconBg} p-6 sm:p-8">
+				<div class="flex items-start gap-4 mb-6">
+					<div
+						class="w-14 h-14 rounded-2xl bg-base-100/50 flex items-center justify-center text-2xl shrink-0"
+					>
+						{featuredRole.iconEmoji}
+					</div>
+					<div class="flex-1 min-w-0">
+						<p class="text-sm font-semibold uppercase tracking-wider text-base-content/90">
+							Featured Role
+						</p>
+						<h3 class="font-display text-2xl sm:text-3xl font-bold mt-0.5">{featuredRole.name}</h3>
+						<p class="text-base text-base-content/90 mt-1">{featuredRole.description}</p>
+					</div>
+				</div>
+
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+					{#each chiefOfStaffWorkflows as wf}
+						{@const Icon = wf.icon}
+						<div class="flex items-start gap-3 rounded-xl bg-base-100/30 p-4">
+							<div
+								class="w-9 h-9 rounded-lg bg-base-100/50 flex items-center justify-center shrink-0"
+							>
+								<Icon class="w-4 h-4 text-base-content/80" />
+							</div>
+							<div class="min-w-0">
+								<div class="flex items-center gap-2">
+									<p class="text-base font-semibold">{wf.label}</p>
+									<span class="text-sm text-base-content/90">{wf.time}</span>
+								</div>
+								<p class="text-sm text-base-content/90 mt-0.5">{wf.desc}</p>
+							</div>
+						</div>
+					{/each}
+				</div>
+
+				<div class="flex items-center justify-between">
+					<InstallCode code={featuredRole.code} compact />
+					<span class="btn-market btn-market-get">{featuredRole.price}</span>
+				</div>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Featured Skills -->
+	<SectionEditorial title="Featured Skills" items={featuredSkills} />
+
+	<!-- Featured Workflows -->
+	<SectionEditorial title="Featured Workflows" items={featuredWorkflows} />
+
+	<!-- Roles -- LargeCard grid -->
+	<div class="pt-8 pb-2">
+		<div class="flex items-baseline justify-between px-6 mb-4">
+			<div>
+				<h3 class="font-display text-xl font-bold">Roles</h3>
+				<p class="text-xs text-base-content/70 mt-0.5">Job profiles that put Nebo to work</p>
+			</div>
+			<a href="/store/roles" class="text-sm text-primary font-medium">Browse All</a>
+		</div>
+		{#if loading}
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 px-6">
+				{#each Array(2) as _}
+					<div
+						class="rounded-2xl bg-base-content/5 border border-base-content/10 h-64 animate-pulse"
+					></div>
+				{/each}
+			</div>
+		{:else if roles.length > 0}
+			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 px-6">
+				{#each roles.slice(0, 4) as role}
+					<LargeCard item={role} />
+				{/each}
+			</div>
+		{:else}
+			<div class="flex flex-col items-center justify-center py-12 text-center px-6">
+				<Sparkles class="w-8 h-8 text-base-content/10 mb-2" />
+				<p class="text-sm text-base-content/70">No roles available yet</p>
+			</div>
+		{/if}
 	</div>
 
-	<!-- Apps listing -->
-	{#if storeTab === 'apps'}
-		{#if appsLoading}
-			<Card>
-				<div class="py-8 text-center text-base-content/60">Loading apps...</div>
-			</Card>
-		{:else if appsError}
-			<Card>
-				<div class="py-12 text-center">
-					<Package class="w-12 h-12 mx-auto mb-3 text-base-content/30" />
-					<p class="text-base-content/60 mb-2">Could not load apps</p>
-					<p class="text-sm text-error mb-4">{appsError}</p>
-					<p class="text-xs text-base-content/40">
-						Make sure you are connected to NeboLoop above.
-					</p>
-				</div>
-			</Card>
-		{:else if storeApps.length === 0 && appsLoaded}
-			<Card>
-				<div class="py-12 text-center">
-					<Package class="w-12 h-12 mx-auto mb-3 text-base-content/30" />
-					<p class="text-base-content/60">No apps found.</p>
-					{#if storeSearch || storeCategory}
-						<button
-							type="button"
-							class="mt-3 text-sm text-primary hover:underline"
-							onclick={() => { storeSearch = ''; storeCategory = ''; loadStoreApps(); }}
-						>
-							Clear filters
-						</button>
-					{/if}
-				</div>
-			</Card>
-		{:else}
-			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-				{#each storeApps as app (app.id)}
-					<Card>
-						<div class="flex gap-3">
-							<div class="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-xl shrink-0">
-								{app.icon || '📦'}
-							</div>
-							<div class="flex-1 min-w-0">
-								<div class="flex items-center gap-2 mb-1">
-									<span class="font-semibold text-base-content truncate">{app.name}</span>
-									{#if app.version}
-										<span class="text-xs text-base-content/40">v{app.version}</span>
-									{/if}
-								</div>
-								<p class="text-sm text-base-content/60 line-clamp-2 mb-2">{app.description}</p>
-								<div class="flex items-center gap-3 text-xs text-base-content/50">
-									{#if app.author}
-										<span class="flex items-center gap-1">
-											{app.author.name}
-											{#if app.author.verified}
-												<BadgeCheck class="w-3 h-3 text-primary" />
-											{/if}
-										</span>
-									{/if}
-									{#if app.category}
-										<Badge variant="ghost" size="xs">{app.category}</Badge>
-									{/if}
-									{#if app.rating > 0}
-										<span class="flex items-center gap-0.5">
-											<Star class="w-3 h-3 text-warning" />
-											{app.rating.toFixed(1)}
-										</span>
-									{/if}
-									{#if app.installCount > 0}
-										<span class="flex items-center gap-0.5">
-											<Download class="w-3 h-3" />
-											{app.installCount}
-										</span>
-									{/if}
-								</div>
-							</div>
-						</div>
-						<div class="mt-3 flex justify-end">
-							{#if app.isInstalled}
-								<Button
-									type="ghost"
-									size="xs"
-									disabled={uninstalling[app.id]}
-									onclick={() => handleUninstallApp(app)}
-								>
-									{#if uninstalling[app.id]}
-										<Loader2 class="w-3 h-3 mr-1 animate-spin" />
-									{:else}
-										<Trash2 class="w-3 h-3 mr-1" />
-									{/if}
-									Uninstall
-								</Button>
-							{:else}
-								<Button
-									type="primary"
-									size="xs"
-									disabled={installing[app.id]}
-									onclick={() => handleInstallApp(app)}
-								>
-									{#if installing[app.id]}
-										<Loader2 class="w-3 h-3 mr-1 animate-spin" />
-									{:else}
-										<Download class="w-3 h-3 mr-1" />
-									{/if}
-									Install
-								</Button>
-							{/if}
-						</div>
-					</Card>
-				{/each}
-			</div>
-
-			{#if appsTotalCount > appsPageSize}
-				<div class="mt-6 flex items-center justify-center gap-2">
-					<Button type="ghost" size="sm" disabled={appsPage <= 1} onclick={() => { appsPage--; loadStoreApps(); }}>
-						Previous
-					</Button>
-					<span class="text-sm text-base-content/60">
-						Page {appsPage} of {Math.ceil(appsTotalCount / appsPageSize)}
-					</span>
-					<Button type="ghost" size="sm" disabled={appsPage >= Math.ceil(appsTotalCount / appsPageSize)} onclick={() => { appsPage++; loadStoreApps(); }}>
-						Next
-					</Button>
-				</div>
-			{/if}
-		{/if}
+	<!-- Workflows -->
+	<SectionListGrid title="Workflows" seeAllHref="/store/workflows" items={workflowItems} />
+	{#if !loading && workflowItems.length === 0}
+		<div class="flex flex-col items-center justify-center py-12 text-center px-6">
+			<Sparkles class="w-8 h-8 text-base-content/10 mb-2" />
+			<p class="text-sm text-base-content/70">No workflows available yet</p>
+		</div>
 	{/if}
 
-	<!-- Skills listing -->
-	{#if storeTab === 'skills'}
-		{#if skillsLoading}
-			<Card>
-				<div class="py-8 text-center text-base-content/60">Loading skills...</div>
-			</Card>
-		{:else if skillsError}
-			<Card>
-				<div class="py-12 text-center">
-					<Zap class="w-12 h-12 mx-auto mb-3 text-base-content/30" />
-					<p class="text-base-content/60 mb-2">Could not load skills</p>
-					<p class="text-sm text-error mb-4">{skillsError}</p>
-					<p class="text-xs text-base-content/40">
-						Make sure you are connected to NeboLoop above.
-					</p>
-				</div>
-			</Card>
-		{:else if storeSkills.length === 0 && skillsLoaded}
-			<Card>
-				<div class="py-12 text-center">
-					<Zap class="w-12 h-12 mx-auto mb-3 text-base-content/30" />
-					<p class="text-base-content/60">No skills found.</p>
-					{#if storeSearch || storeCategory}
-						<button
-							type="button"
-							class="mt-3 text-sm text-primary hover:underline"
-							onclick={() => { storeSearch = ''; storeCategory = ''; loadStoreSkills(); }}
-						>
-							Clear filters
-						</button>
-					{/if}
-				</div>
-			</Card>
-		{:else}
-			<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-				{#each storeSkills as skill (skill.id)}
-					<Card>
-						<div class="flex gap-3">
-							<div class="w-12 h-12 rounded-xl bg-base-200 flex items-center justify-center text-xl shrink-0">
-								{skill.icon || '⚡'}
-							</div>
-							<div class="flex-1 min-w-0">
-								<div class="flex items-center gap-2 mb-1">
-									<span class="font-semibold text-base-content truncate">{skill.name}</span>
-									{#if skill.version}
-										<span class="text-xs text-base-content/40">v{skill.version}</span>
-									{/if}
-								</div>
-								<p class="text-sm text-base-content/60 line-clamp-2 mb-2">{skill.description}</p>
-								<div class="flex items-center gap-3 text-xs text-base-content/50">
-									{#if skill.author}
-										<span class="flex items-center gap-1">
-											{skill.author.name}
-											{#if skill.author.verified}
-												<BadgeCheck class="w-3 h-3 text-primary" />
-											{/if}
-										</span>
-									{/if}
-									{#if skill.category}
-										<Badge variant="ghost" size="xs">{skill.category}</Badge>
-									{/if}
-									{#if skill.rating > 0}
-										<span class="flex items-center gap-0.5">
-											<Star class="w-3 h-3 text-warning" />
-											{skill.rating.toFixed(1)}
-										</span>
-									{/if}
-									{#if skill.installCount > 0}
-										<span class="flex items-center gap-0.5">
-											<Download class="w-3 h-3" />
-											{skill.installCount}
-										</span>
-									{/if}
-								</div>
-							</div>
-						</div>
-						<div class="mt-3 flex justify-end">
-							{#if skill.isInstalled}
-								<Button
-									type="ghost"
-									size="xs"
-									disabled={uninstalling[skill.id]}
-									onclick={() => handleUninstallSkill(skill)}
-								>
-									{#if uninstalling[skill.id]}
-										<Loader2 class="w-3 h-3 mr-1 animate-spin" />
-									{:else}
-										<Trash2 class="w-3 h-3 mr-1" />
-									{/if}
-									Uninstall
-								</Button>
-							{:else}
-								<Button
-									type="primary"
-									size="xs"
-									disabled={installing[skill.id]}
-									onclick={() => handleInstallSkill(skill)}
-								>
-									{#if installing[skill.id]}
-										<Loader2 class="w-3 h-3 mr-1 animate-spin" />
-									{:else}
-										<Download class="w-3 h-3 mr-1" />
-									{/if}
-									Install
-								</Button>
-							{/if}
-						</div>
-					</Card>
-				{/each}
-			</div>
-
-			{#if skillsTotalCount > skillsPageSize}
-				<div class="mt-6 flex items-center justify-center gap-2">
-					<Button type="ghost" size="sm" disabled={skillsPage <= 1} onclick={() => { skillsPage--; loadStoreSkills(); }}>
-						Previous
-					</Button>
-					<span class="text-sm text-base-content/60">
-						Page {skillsPage} of {Math.ceil(skillsTotalCount / skillsPageSize)}
-					</span>
-					<Button type="ghost" size="sm" disabled={skillsPage >= Math.ceil(skillsTotalCount / skillsPageSize)} onclick={() => { skillsPage++; loadStoreSkills(); }}>
-						Next
-					</Button>
-				</div>
-			{/if}
-		{/if}
+	<!-- Skills -->
+	<SectionListGrid title="Skills" seeAllHref="/store/skills" items={skillItems} />
+	{#if !loading && skillItems.length === 0}
+		<div class="flex flex-col items-center justify-center py-12 text-center px-6">
+			<Sparkles class="w-8 h-8 text-base-content/10 mb-2" />
+			<p class="text-sm text-base-content/70">No skills available yet</p>
+		</div>
 	{/if}
+
+	<!-- Build for Nebo -->
+	<div class="px-6 pt-8 pb-8">
+		<div class="rounded-2xl border border-primary/20 bg-primary/5 p-8 sm:p-10 text-center">
+			<div
+				class="w-14 h-14 rounded-2xl bg-primary/15 flex items-center justify-center mx-auto mb-4"
+			>
+				<Code class="w-7 h-7 text-primary" />
+			</div>
+			<h3 class="font-display text-2xl font-bold">Build for Nebo</h3>
+			<p class="text-sm text-base-content/70 mt-2 max-w-md mx-auto">
+				Create Skills and Workflows. Compose them into Roles. Publish to the marketplace.
+			</p>
+		</div>
+	</div>
 </div>

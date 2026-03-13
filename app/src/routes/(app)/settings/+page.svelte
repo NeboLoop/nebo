@@ -2,9 +2,9 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 
-	// Redirect to profile tab by default
+	// Redirect to Account tab by default
 	onMount(() => {
-		goto('/settings/profile', { replaceState: true });
+		goto('/settings/account', { replaceState: true });
 	});
 </script>
 

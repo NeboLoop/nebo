@@ -37,7 +37,7 @@
 <div class="flex flex-col border border-base-content/20 rounded-lg overflow-hidden min-h-0 {className}">
 	<!-- Toolbar -->
 	<div class="flex items-center justify-between px-3 py-2 bg-base-200 border-b border-base-content/20 shrink-0">
-		<span class="text-xs font-medium text-base-content/60">Markdown</span>
+		<span class="text-xs font-medium text-base-content/70">Markdown</span>
 		<div class="flex gap-1">
 			<button
 				type="button"
@@ -87,7 +87,7 @@
 						{@html html}
 					</div>
 				{:else}
-					<p class="text-sm text-base-content/40 italic">Preview will appear here...</p>
+					<p class="text-sm text-base-content/70 italic">Preview will appear here...</p>
 				{/if}
 			</div>
 		{/if}

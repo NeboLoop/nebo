@@ -239,7 +239,7 @@
 									<button
 										type="button"
 										onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
-										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/50 hover:text-base-content"
+										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/70 hover:text-base-content"
 										title="Copy"
 									>
 										{#if copiedId === resolved.id}
@@ -295,7 +295,7 @@
 								<button
 									type="button"
 									onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
-									class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/50 hover:text-base-content"
+									class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/70 hover:text-base-content"
 									title="Copy"
 								>
 									{#if copiedId === resolved.id}
@@ -320,9 +320,9 @@
 
 		<!-- Footer: sender name + timestamp -->
 		<div class="flex gap-2 items-baseline mt-1.5 {role === 'user' ? 'flex-row-reverse' : ''}">
-			<span class="text-xs font-medium text-base-content/50">{role === 'user' ? 'You' : agentName}</span>
+			<span class="text-xs font-medium text-base-content/70">{role === 'user' ? 'You' : agentName}</span>
 			{#if groupTimestamp}
-				<span class="text-xs text-base-content/40">{formatTime(groupTimestamp)}</span>
+				<span class="text-xs text-base-content/70">{formatTime(groupTimestamp)}</span>
 			{/if}
 		</div>
 	</div>

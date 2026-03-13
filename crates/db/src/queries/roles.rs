@@ -193,6 +193,22 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    pub fn update_role_workflow_last_fired(
+        &self,
+        role_id: &str,
+        binding_name: &str,
+        fired_at: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE role_workflows SET last_fired = ?1
+             WHERE role_id = ?2 AND binding_name = ?3",
+            params![fired_at, role_id, binding_name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn delete_cron_jobs_by_prefix(&self, prefix: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         let pattern = format!("{}%", prefix);

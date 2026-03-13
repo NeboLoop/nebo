@@ -211,10 +211,24 @@ pub async fn update_provider(
     let base_url = body["baseUrl"].as_str().or(existing.base_url.as_deref());
     let priority = body["priority"].as_i64().unwrap_or(existing.priority.unwrap_or(50));
     let auth_type = body["authType"].as_str().or(existing.auth_type.as_deref());
-    let metadata = body
-        .get("metadata")
-        .map(|v| v.to_string())
-        .or(existing.metadata.clone());
+    // Merge incoming metadata into existing metadata (don't replace wholesale)
+    let metadata = {
+        let mut merged: serde_json::Map<String, serde_json::Value> = existing
+            .metadata
+            .as_ref()
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or_default();
+        if let Some(incoming) = body.get("metadata").and_then(|v| v.as_object()) {
+            for (k, v) in incoming {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        if merged.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(merged).to_string())
+        }
+    };
 
     state
         .store

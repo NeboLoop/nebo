@@ -11,6 +11,7 @@ use tauri::{
     webview::NewWindowResponse,
     LogicalPosition, Manager, WebviewUrl, WebviewWindowBuilder,
 };
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 use tracing_subscriber::EnvFilter;
 
 const SERVER_URL: &str = "http://localhost:27895";
@@ -141,6 +142,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -239,6 +241,28 @@ fn main() {
                 })
                 .build(app)?;
 
+            // Global hotkey: Cmd+Shift+Space (macOS) / Ctrl+Shift+Space (others)
+            // Toggles a floating prompt window for quick input
+            {
+                use tauri_plugin_global_shortcut::ShortcutState;
+
+                let handle = app.handle().clone();
+                app.global_shortcut().on_shortcut(
+                    if cfg!(target_os = "macos") {
+                        "CmdOrCtrl+Shift+Space"
+                    } else {
+                        "Ctrl+Shift+Space"
+                    },
+                    move |_app, shortcut, event| {
+                        if event.state != ShortcutState::Pressed {
+                            return;
+                        }
+                        let _ = shortcut; // silence unused warning
+                        toggle_prompt_window(&handle);
+                    },
+                )?;
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -263,6 +287,38 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Nebo desktop");
+}
+
+/// Toggle the floating prompt window. Creates it on first use, then shows/hides.
+fn toggle_prompt_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("prompt") {
+        if win.is_visible().unwrap_or(false) {
+            let _ = win.hide();
+        } else {
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+    } else {
+        // Create a small centered floating window pointing at the prompt route
+        let url = format!("{}/prompt", SERVER_URL);
+        match WebviewWindowBuilder::new(app, "prompt", WebviewUrl::External(url.parse().unwrap()))
+            .title("Nebo")
+            .inner_size(600.0, 80.0)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .visible(true)
+            .center()
+            .build()
+        {
+            Ok(win) => {
+                let _ = win.set_focus();
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create prompt window: {e}");
+            }
+        }
+    }
 }
 
 fn wait_for_server() {

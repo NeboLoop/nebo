@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import Card from '$lib/components/ui/Card.svelte';
+	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import {
 		GitBranch,
 		RefreshCw,
@@ -190,7 +190,7 @@
 			case 'completed': return 'text-success';
 			case 'failed': return 'text-error';
 			case 'aborted': return 'text-warning';
-			default: return 'text-base-content/40';
+			default: return 'text-base-content/70';
 		}
 	}
 
@@ -235,21 +235,23 @@
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Workflows</h2>
-		<p class="text-sm text-base-content/60">Automated multi-step procedures running as subagents</p>
+		<p class="text-sm text-base-content/70">Automated multi-step procedures running as subagents</p>
 	</div>
-	<button class="btn btn-ghost btn-sm" onclick={loadAll} disabled={isLoading}>
-		<RefreshCw class="w-4 h-4 {isLoading ? 'animate-spin' : ''}" />
+	<button
+		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5 disabled:opacity-50"
+		onclick={loadAll}
+		disabled={isLoading}
+	>
+		<RefreshCw class="w-3.5 h-3.5 {isLoading ? 'animate-spin' : ''}" />
 		Refresh
 	</button>
 </div>
 
 {#if isLoading}
-	<Card>
-		<div class="py-12 text-center text-base-content/60">
-			<span class="loading loading-spinner loading-md"></span>
-			<p class="mt-2">Loading workflows...</p>
-		</div>
-	</Card>
+	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/70">
+		<Spinner class="w-5 h-5 mx-auto mb-2" />
+		<p class="text-sm">Loading workflows...</p>
+	</div>
 {:else}
 
 	<!-- Live runs banner -->
@@ -273,12 +275,12 @@
 							<div class="flex items-center gap-2">
 								<span class="text-sm font-medium text-base-content truncate">{run.workflow_name}</span>
 								{#if run.current_activity}
-									<span class="text-xs text-base-content/40">→ {run.current_activity}</span>
+									<span class="text-sm text-base-content/70">→ {run.current_activity}</span>
 								{/if}
 							</div>
-							<div class="text-xs text-base-content/40">Started {formatTime(run.started_at)}</div>
+							<div class="text-sm text-base-content/70">Started {formatTime(run.started_at)}</div>
 						</div>
-						<ChevronRight class="w-4 h-4 text-base-content/30 shrink-0" />
+						<ChevronRight class="w-4 h-4 text-base-content/70 shrink-0" />
 					</button>
 				{/each}
 			</div>
@@ -287,7 +289,7 @@
 
 	<!-- Installed Workflows -->
 	<div class="mb-8">
-		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40 mb-4">Installed</h3>
+		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/70 mb-4">Installed</h3>
 
 		{#if workflows.length > 0}
 			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -305,16 +307,16 @@
 								{#if activeRun}
 									<Loader2 class="w-4.5 h-4.5 text-info animate-spin" />
 								{:else}
-									<GitBranch class="w-4.5 h-4.5 {wf.enabled ? 'text-primary' : 'text-base-content/30'}" />
+									<GitBranch class="w-4.5 h-4.5 {wf.enabled ? 'text-primary' : 'text-base-content/70'}" />
 								{/if}
 							</div>
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2 mb-0.5">
 									<span class="font-display font-bold text-sm text-base-content truncate">{wf.name}</span>
-									<span class="text-[10px] text-base-content/30 tabular-nums shrink-0">v{wf.version}</span>
+									<span class="text-[10px] text-base-content/70 tabular-nums shrink-0">v{wf.version}</span>
 								</div>
 								{#if def?.activities}
-									<div class="text-xs text-base-content/40">
+									<div class="text-sm text-base-content/70">
 										{def.activities.length} {def.activities.length === 1 ? 'activity' : 'activities'}
 										{#if def.budget?.cost_estimate}
 											· {def.budget.cost_estimate}/run
@@ -328,7 +330,7 @@
 						{#if def?.triggers?.length > 0}
 							<div class="flex flex-wrap gap-1 mb-3">
 								{#each def.triggers as trigger}
-									<span class="badge badge-xs badge-ghost gap-1">
+									<span class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-base-content/10 text-base-content/70 flex items-center gap-1">
 										{#if trigger.type === 'schedule'}
 											<CalendarClock class="w-2.5 h-2.5" />
 											{trigger.cron}
@@ -348,9 +350,9 @@
 						{#if activeRun}
 							<div class="mb-3 rounded-lg bg-info/5 px-3 py-2 ring-1 ring-info/15">
 								<div class="flex items-center gap-2">
-									<span class="text-xs text-info font-medium">Running</span>
+									<span class="text-sm text-info font-medium">Running</span>
 									{#if activeRun.current_activity}
-										<span class="text-xs text-base-content/50">→ {activeRun.current_activity}</span>
+										<span class="text-sm text-base-content/70">→ {activeRun.current_activity}</span>
 									{/if}
 								</div>
 							</div>
@@ -359,14 +361,14 @@
 						<!-- Actions -->
 						<div class="flex items-center gap-1 pt-1 border-t border-base-content/5">
 							<button
-								class="btn btn-xs btn-ghost gap-1 flex-1"
+								class="h-7 px-2 rounded-md text-[11px] font-medium text-base-content/70 hover:bg-base-content/5 transition-colors flex items-center gap-1 flex-1"
 								onclick={() => openWorkflowDetail(wf)}
 							>
 								<Activity class="w-3 h-3" />
 								History
 							</button>
 							<button
-								class="btn btn-xs btn-ghost gap-1"
+								class="h-7 w-7 rounded-md text-base-content/70 hover:bg-base-content/5 transition-colors flex items-center justify-center disabled:opacity-50"
 								onclick={() => handleRun(wf)}
 								disabled={isRunning || !wf.enabled || !!activeRun}
 								title="Run now"
@@ -378,7 +380,7 @@
 								{/if}
 							</button>
 							<button
-								class="btn btn-xs btn-ghost gap-1"
+								class="h-7 w-7 rounded-md text-base-content/70 hover:bg-base-content/5 transition-colors flex items-center justify-center disabled:opacity-50"
 								onclick={() => handleToggle(wf)}
 								disabled={isToggling}
 								title={wf.enabled ? 'Disable' : 'Enable'}
@@ -386,11 +388,11 @@
 								{#if isToggling}
 									<Loader2 class="w-3 h-3 animate-spin" />
 								{:else}
-									<Power class="w-3 h-3 {wf.enabled ? 'text-success' : 'text-base-content/30'}" />
+									<Power class="w-3 h-3 {wf.enabled ? 'text-success' : 'text-base-content/70'}" />
 								{/if}
 							</button>
 							<button
-								class="btn btn-xs btn-ghost gap-1 hover:text-error"
+								class="h-7 w-7 rounded-md text-base-content/70 hover:bg-base-content/5 hover:text-error transition-colors flex items-center justify-center disabled:opacity-50"
 								onclick={() => handleDelete(wf)}
 								disabled={isDeleting}
 								title="Delete"
@@ -406,22 +408,20 @@
 				{/each}
 			</div>
 		{:else}
-			<Card>
-				<div class="py-12 text-center text-base-content/60">
-					<GitBranch class="w-12 h-12 mx-auto mb-4 opacity-20" />
-					<p class="font-medium mb-2">No workflows installed</p>
-					<p class="text-sm">Install a workflow using a WORK-XXXX-XXXX code.</p>
-				</div>
-			</Card>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/70">
+				<GitBranch class="w-12 h-12 mx-auto mb-4 opacity-20" />
+				<p class="font-medium mb-2">No workflows installed</p>
+				<p class="text-sm">Install a workflow using a WORK-XXXX-XXXX code.</p>
+			</div>
 		{/if}
 	</div>
 
 	<!-- Recent Runs -->
 	<div>
 		<div class="flex items-center justify-between mb-4">
-			<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/40">Recent Runs</h3>
+			<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/70">Recent Runs</h3>
 			{#if isLoadingRuns}
-				<span class="loading loading-spinner loading-xs text-base-content/30"></span>
+				<Spinner class="w-3.5 h-3.5" />
 			{/if}
 		</div>
 
@@ -437,9 +437,9 @@
 						<div class="flex-1 min-w-0">
 							<div class="flex items-center gap-2">
 								<span class="text-sm font-medium text-base-content truncate">{run.workflow_name}</span>
-								<span class="badge badge-xs {run.status === 'completed' ? 'badge-success' : run.status === 'failed' ? 'badge-error' : run.status === 'running' ? 'badge-info' : 'badge-warning'}">{run.status}</span>
+								<span class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded {run.status === 'completed' ? 'bg-success/10 text-success' : run.status === 'failed' ? 'bg-error/10 text-error' : run.status === 'running' ? 'bg-info/10 text-info' : 'bg-warning/10 text-warning'}">{run.status}</span>
 							</div>
-							<div class="flex items-center gap-3 text-xs text-base-content/40 mt-0.5">
+							<div class="flex items-center gap-3 text-sm text-base-content/70 mt-0.5">
 								<span class="flex items-center gap-1">
 									<Clock class="w-3 h-3" />
 									{formatDate(run.started_at)}
@@ -459,13 +459,11 @@
 				{/each}
 			</div>
 		{:else if !isLoadingRuns}
-			<Card>
-				<div class="py-8 text-center text-base-content/60">
-					<Activity class="w-10 h-10 mx-auto mb-3 opacity-20" />
-					<p class="font-medium mb-1">No runs yet</p>
-					<p class="text-sm">Run a workflow manually or wait for a scheduled trigger.</p>
-				</div>
-			</Card>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/70">
+				<Activity class="w-10 h-10 mx-auto mb-3 opacity-20" />
+				<p class="font-medium mb-1">No runs yet</p>
+				<p class="text-sm">Run a workflow manually or wait for a scheduled trigger.</p>
+			</div>
 		{/if}
 	</div>
 
@@ -479,9 +477,9 @@
 			<div class="flex items-center justify-between px-6 py-4 border-b border-base-content/5">
 				<div>
 					<h3 class="font-display font-bold text-base-content">{selectedWorkflow.name}</h3>
-					<p class="text-xs text-base-content/40 mt-0.5">Run history</p>
+					<p class="text-sm text-base-content/70 mt-0.5">Run history</p>
 				</div>
-				<button class="btn btn-ghost btn-sm btn-square" onclick={() => { showWorkflowDetail = false; }}>✕</button>
+				<button class="h-8 w-8 rounded-lg bg-base-content/5 border border-base-content/10 text-base-content/70 hover:text-base-content transition-colors flex items-center justify-center text-sm" onclick={() => { showWorkflowDetail = false; }}>✕</button>
 			</div>
 			<div class="overflow-y-auto flex-1 p-4">
 				{#if workflowRuns.length > 0}
@@ -495,10 +493,10 @@
 								<Icon class="w-4 h-4 shrink-0 {statusClass(run.status)} {run.status === 'running' ? 'animate-spin' : ''}" />
 								<div class="flex-1 min-w-0">
 									<div class="flex items-center gap-2 mb-0.5">
-										<span class="badge badge-xs {run.status === 'completed' ? 'badge-success' : run.status === 'failed' ? 'badge-error' : run.status === 'running' ? 'badge-info' : 'badge-warning'}">{run.status}</span>
-										<span class="text-xs text-base-content/40 capitalize">{run.trigger_type}</span>
+										<span class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded {run.status === 'completed' ? 'bg-success/10 text-success' : run.status === 'failed' ? 'bg-error/10 text-error' : run.status === 'running' ? 'bg-info/10 text-info' : 'bg-warning/10 text-warning'}">{run.status}</span>
+										<span class="text-sm text-base-content/70 capitalize">{run.trigger_type}</span>
 									</div>
-									<div class="flex items-center gap-3 text-xs text-base-content/40">
+									<div class="flex items-center gap-3 text-sm text-base-content/70">
 										<span>{formatDate(run.started_at)}</span>
 										<span>{formatDuration(run.started_at, run.completed_at)}</span>
 										{#if run.total_tokens_used > 0}
@@ -511,7 +509,7 @@
 						{/each}
 					</div>
 				{:else}
-					<div class="py-8 text-center text-base-content/40">
+					<div class="py-8 text-center text-base-content/70">
 						<Activity class="w-8 h-8 mx-auto mb-2 opacity-30" />
 						<p class="text-sm">No runs yet</p>
 					</div>
@@ -533,25 +531,25 @@
 					<RunIcon class="w-5 h-5 {statusClass(selectedRun.status)} {selectedRun.status === 'running' ? 'animate-spin' : ''}" />
 					<div>
 						<h3 class="font-display font-bold text-base-content text-sm">Run {selectedRun.id.slice(0, 8)}</h3>
-						<p class="text-xs text-base-content/40">{formatDate(selectedRun.started_at)}</p>
+						<p class="text-sm text-base-content/70">{formatDate(selectedRun.started_at)}</p>
 					</div>
 				</div>
-				<button class="btn btn-ghost btn-sm btn-square" onclick={() => { showRunDetail = false; selectedRun = null; }}>✕</button>
+				<button class="h-8 w-8 rounded-lg bg-base-content/5 border border-base-content/10 text-base-content/70 hover:text-base-content transition-colors flex items-center justify-center text-sm" onclick={() => { showRunDetail = false; selectedRun = null; }}>✕</button>
 			</div>
 
 			<div class="overflow-y-auto flex-1 p-5 flex flex-col gap-4">
 				<!-- Stats row -->
 				<div class="grid grid-cols-3 gap-2">
 					<div class="rounded-xl bg-base-200/50 px-3 py-2.5 text-center">
-						<div class="text-[10px] uppercase tracking-wide text-base-content/40 mb-1">Duration</div>
+						<div class="text-[10px] uppercase tracking-wide text-base-content/70 mb-1">Duration</div>
 						<div class="text-sm font-bold text-base-content tabular-nums">{formatDuration(selectedRun.started_at, selectedRun.completed_at)}</div>
 					</div>
 					<div class="rounded-xl bg-base-200/50 px-3 py-2.5 text-center">
-						<div class="text-[10px] uppercase tracking-wide text-base-content/40 mb-1">Tokens</div>
+						<div class="text-[10px] uppercase tracking-wide text-base-content/70 mb-1">Tokens</div>
 						<div class="text-sm font-bold text-base-content tabular-nums">{selectedRun.total_tokens_used.toLocaleString()}</div>
 					</div>
 					<div class="rounded-xl bg-base-200/50 px-3 py-2.5 text-center">
-						<div class="text-[10px] uppercase tracking-wide text-base-content/40 mb-1">Trigger</div>
+						<div class="text-[10px] uppercase tracking-wide text-base-content/70 mb-1">Trigger</div>
 						<div class="text-sm font-bold text-base-content capitalize">{selectedRun.trigger_type}</div>
 					</div>
 				</div>
@@ -561,42 +559,42 @@
 					<div class="rounded-xl bg-error/5 ring-1 ring-error/20 px-4 py-3">
 						<div class="flex items-center gap-2 mb-1">
 							<XCircle class="w-3.5 h-3.5 text-error" />
-							<span class="text-xs font-semibold text-error">Failed{selectedRun.error_activity ? ` at "${selectedRun.error_activity}"` : ''}</span>
+							<span class="text-sm font-semibold text-error">Failed{selectedRun.error_activity ? ` at "${selectedRun.error_activity}"` : ''}</span>
 						</div>
-						<p class="text-xs text-base-content/60 font-mono leading-relaxed">{selectedRun.error}</p>
+						<p class="text-sm text-base-content/70 font-mono leading-relaxed">{selectedRun.error}</p>
 					</div>
 				{/if}
 
 				<!-- Activities -->
 				<div>
-					<h4 class="text-xs font-semibold uppercase tracking-wider text-base-content/40 mb-3">Activities</h4>
+					<h4 class="text-sm font-semibold uppercase tracking-wider text-base-content/70 mb-3">Activities</h4>
 					{#if loadingRunDetail}
 						<div class="py-4 text-center">
-							<span class="loading loading-spinner loading-sm text-base-content/30"></span>
+							<Spinner class="w-4 h-4 mx-auto" />
 						</div>
 					{:else if selectedRunActivities.length > 0}
 						<div class="flex flex-col gap-1.5">
 							{#each selectedRunActivities as act}
 								{@const AIcon = activityStatusIcon(act.status)}
 								<div class="flex items-center gap-3 rounded-lg bg-base-200/40 px-3 py-2.5">
-									<AIcon class="w-3.5 h-3.5 shrink-0 {act.status === 'completed' ? 'text-success' : act.status === 'failed' ? 'text-error' : 'text-base-content/30'}" />
+									<AIcon class="w-3.5 h-3.5 shrink-0 {act.status === 'completed' ? 'text-success' : act.status === 'failed' ? 'text-error' : 'text-base-content/70'}" />
 									<div class="flex-1 min-w-0">
-										<div class="text-xs font-medium text-base-content">{act.activity_id}</div>
+										<div class="text-sm font-medium text-base-content">{act.activity_id}</div>
 										{#if act.error}
-											<div class="text-xs text-error/70 truncate mt-0.5">{act.error}</div>
+											<div class="text-sm text-error/70 truncate mt-0.5">{act.error}</div>
 										{/if}
 									</div>
 									<div class="text-right shrink-0">
-										<div class="text-xs text-base-content/40 tabular-nums">{formatDuration(act.started_at, act.completed_at)}</div>
+										<div class="text-sm text-base-content/70 tabular-nums">{formatDuration(act.started_at, act.completed_at)}</div>
 										{#if act.tokens_used > 0}
-											<div class="text-[10px] text-base-content/30 tabular-nums">{act.tokens_used.toLocaleString()} tok</div>
+											<div class="text-[10px] text-base-content/70 tabular-nums">{act.tokens_used.toLocaleString()} tok</div>
 										{/if}
 									</div>
 								</div>
 							{/each}
 						</div>
 					{:else}
-						<div class="py-4 text-center text-xs text-base-content/40">No activity data available</div>
+						<div class="py-4 text-center text-sm text-base-content/70">No activity data available</div>
 					{/if}
 				</div>
 			</div>

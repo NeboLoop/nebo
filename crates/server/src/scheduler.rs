@@ -108,12 +108,11 @@ async fn tick(
 
         if success {
             info!(job = job.name.as_str(), "task completed");
+            notify_crate::send("Nebo", &format!("{} completed", job.name));
         } else {
-            warn!(
-                job = job.name.as_str(),
-                error = err_msg.as_deref().unwrap_or("unknown"),
-                "task failed"
-            );
+            let err = err_msg.as_deref().unwrap_or("unknown");
+            warn!(job = job.name.as_str(), error = err, "task failed");
+            notify_crate::send("Nebo", &format!("{} failed: {}", job.name, err));
         }
     }
 

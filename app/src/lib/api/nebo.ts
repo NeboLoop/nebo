@@ -385,6 +385,13 @@ export function getChat(id: string) {
 }
 
 /**
+ * @description "Get chat messages by chat_id"
+ */
+export function getChatMessages(chatId: string) {
+	return webapi.get<{ messages: components.ChatMessage[] }>(`/api/v1/chats/${chatId}/messages`)
+}
+
+/**
  * @description "Update chat"
  * @param req
  */
@@ -741,6 +748,57 @@ export function neboLoopRegister(req: components.NeboLoopRegisterRequest) {
  */
 export function neboLoopStatus() {
 	return webapi.get<components.NeboLoopStatusResponse>(`/api/v1/neboloop/status`)
+}
+
+// ─── Billing ─────────────────────────────────────────────────────────────────
+
+/**
+ * @description "Get billing prices/plans"
+ */
+export function neboLoopBillingPrices() {
+	return webapi.get<components.BillingPricesResponse>(`/api/v1/neboloop/billing/prices`)
+}
+
+/**
+ * @description "Get current subscription"
+ */
+export function neboLoopBillingSubscription() {
+	return webapi.get<components.BillingSubscriptionResponse>(`/api/v1/neboloop/billing/subscription`)
+}
+
+/**
+ * @description "Create Stripe checkout session"
+ */
+export function neboLoopBillingCheckout(priceId: string) {
+	return webapi.post<components.BillingCheckoutResponse>(`/api/v1/neboloop/billing/checkout`, { priceId })
+}
+
+/**
+ * @description "Open Stripe customer portal"
+ */
+export function neboLoopBillingPortal() {
+	return webapi.post<components.BillingPortalResponse>(`/api/v1/neboloop/billing/portal`)
+}
+
+/**
+ * @description "Cancel subscription"
+ */
+export function neboLoopBillingCancel(subscriptionId: string) {
+	return webapi.post<components.BillingCancelResponse>(`/api/v1/neboloop/billing/cancel`, { subscriptionId })
+}
+
+/**
+ * @description "List invoices"
+ */
+export function neboLoopBillingInvoices() {
+	return webapi.get<components.BillingInvoicesResponse>(`/api/v1/neboloop/billing/invoices`)
+}
+
+/**
+ * @description "List payment methods"
+ */
+export function neboLoopBillingPaymentMethods() {
+	return webapi.get<components.BillingPaymentMethodsResponse>(`/api/v1/neboloop/billing/payment-methods`)
 }
 
 /**
@@ -1277,5 +1335,33 @@ export function cancelWorkflowRun(workflowId: string, runId: string) {
 export function listAllRuns() {
 	// Fetch runs across all workflows by listing workflows then their runs
 	return webapi.get<{ runs: (WorkflowRun & { workflow_name: string })[] }>(`/api/v1/workflows/runs`);
+}
+
+// ─── Entity Config ───────────────────────────────────────────────────────────
+
+export interface ResolvedEntityConfig {
+	entityType: string;
+	entityId: string;
+	heartbeatEnabled: boolean;
+	heartbeatIntervalMinutes: number;
+	heartbeatContent: string;
+	heartbeatWindow: [string, string] | null;
+	permissions: Record<string, boolean>;
+	resourceGrants: Record<string, string>;
+	modelPreference: string | null;
+	personalitySnippet: string | null;
+	overrides: Record<string, boolean>;
+}
+
+export function getEntityConfig(entityType: string, entityId: string) {
+	return webapi.get<{ config: ResolvedEntityConfig }>(`/api/v1/entity-config/${entityType}/${entityId}`);
+}
+
+export function updateEntityConfig(entityType: string, entityId: string, patch: Record<string, unknown>) {
+	return webapi.put<{ config: ResolvedEntityConfig }>(`/api/v1/entity-config/${entityType}/${entityId}`, patch);
+}
+
+export function deleteEntityConfig(entityType: string, entityId: string) {
+	return webapi.delete<{ message: string }>(`/api/v1/entity-config/${entityType}/${entityId}`);
 }
 

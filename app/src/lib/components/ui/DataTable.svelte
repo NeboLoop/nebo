@@ -137,7 +137,7 @@
 	{#if loading}
 		<div class="flex items-center justify-center p-12">
 			<span class="loading loading-spinner loading-md"></span>
-			<span class="ml-2 text-sm text-base-content/60">Loading...</span>
+			<span class="ml-2 text-sm text-base-content/70">Loading...</span>
 		</div>
 	{:else if error}
 		<div class="flex items-center justify-center p-12">
@@ -145,7 +145,7 @@
 		</div>
 	{:else if data.length === 0}
 		<div class="flex items-center justify-center p-12">
-			<span class="text-sm text-base-content/60">No data available</span>
+			<span class="text-sm text-base-content/70">No data available</span>
 		</div>
 	{:else}
 		<table class={tableClass}>
@@ -197,7 +197,7 @@
 
 		{#if showPagination && totalPages > 1}
 			<div class="flex items-center justify-between border-t border-base-300 px-4 py-3">
-				<div class="text-sm text-base-content/60">
+				<div class="text-sm text-base-content/70">
 					Showing
 					<span class="font-medium">{(currentPage - 1) * pageSize + 1}</span>
 					to

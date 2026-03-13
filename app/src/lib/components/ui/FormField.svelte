@@ -51,7 +51,7 @@
 			{#if error}
 				<span class="label-text-alt text-error">{error}</span>
 			{:else if hint}
-				<span class="label-text-alt text-base-content/60">{hint}</span>
+				<span class="label-text-alt text-base-content/70">{hint}</span>
 			{/if}
 		</label>
 	{/if}

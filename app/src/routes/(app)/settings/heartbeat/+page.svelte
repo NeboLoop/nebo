@@ -1,9 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Heart, Save, RotateCcw, Clock, Info } from 'lucide-svelte';
+	import { Clock, Info, RotateCcw, Save, Loader2 } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
-	import Button from '$lib/components/ui/Button.svelte';
-	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import MarkdownEditor from '$lib/components/ui/MarkdownEditor.svelte';
 
@@ -124,41 +122,40 @@ Write tasks in plain language - the agent will interpret and act on them.
 	<div class="shrink-0 mb-4">
 		<div class="mb-4">
 			<h2 class="font-display text-xl font-bold text-base-content mb-1">Heartbeat</h2>
-			<p class="text-sm text-base-content/60">Proactive tasks the agent checks periodically</p>
+			<p class="text-sm text-base-content/70">Proactive tasks the agent checks periodically</p>
 		</div>
 
-		<div class="bg-base-200 rounded-lg p-4">
-			<div class="flex items-start gap-3">
-				<Clock class="w-5 h-5 text-primary mt-0.5" />
-				<div class="flex-1">
-					<div class="flex items-center justify-between gap-4">
-						<div class="text-sm">
-							<p class="font-medium text-base-content">Check Interval</p>
-							<p class="text-base-content/60">
-								How often the agent reviews tasks and takes action
-							</p>
-						</div>
-						<select
-							bind:value={intervalMinutes}
-							onchange={handleIntervalChange}
-							class="select select-bordered select-sm w-36"
-							disabled={isLoading}
-						>
-							{#each intervalOptions as opt}
-								<option value={opt.value}>{opt.label}</option>
-							{/each}
-						</select>
+		<!-- Check Interval -->
+		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+			<div class="flex items-center justify-between gap-4">
+				<div class="flex items-center gap-3">
+					<div class="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+						<Clock class="w-4.5 h-4.5 text-primary" />
+					</div>
+					<div>
+						<p class="text-sm font-medium text-base-content">Check Interval</p>
+						<p class="text-sm text-base-content/70">How often the agent reviews tasks and takes action</p>
 					</div>
 				</div>
+				<select
+					bind:value={intervalMinutes}
+					onchange={handleIntervalChange}
+					class="h-9 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+					disabled={isLoading}
+				>
+					{#each intervalOptions as opt}
+						<option value={opt.value}>{opt.label}</option>
+					{/each}
+				</select>
 			</div>
 		</div>
 	</div>
 
 	<!-- Editor - fills remaining space -->
 	{#if isLoading}
-		<div class="flex-1 flex flex-col items-center justify-center gap-4">
-			<Spinner size={32} />
-			<p class="text-sm text-base-content/60">Loading heartbeat tasks...</p>
+		<div class="flex-1 flex items-center justify-center gap-3 py-16">
+			<Spinner size={20} />
+			<span class="text-sm text-base-content/70">Loading heartbeat tasks...</span>
 		</div>
 	{:else}
 		<MarkdownEditor
@@ -167,39 +164,49 @@ Write tasks in plain language - the agent will interpret and act on them.
 			class="flex-1"
 		/>
 
-		<div class="shrink-0 flex items-center gap-2 text-xs text-base-content/50 mt-2">
+		<div class="shrink-0 flex items-center gap-2 text-sm text-base-content/50 mt-2">
 			<Info class="w-3.5 h-3.5" />
 			<span>Saved to: HEARTBEAT.md in your Nebo data directory</span>
 		</div>
 	{/if}
 
-	<!-- Alerts -->
+	<!-- Feedback -->
 	{#if saveSuccess}
-		<div class="shrink-0 mt-4">
-			<Alert type="success" title="Saved">Heartbeat settings have been updated.</Alert>
+		<div class="shrink-0 mt-3 rounded-xl bg-success/10 border border-success/20 px-4 py-3 text-sm text-success">
+			Heartbeat settings have been updated.
 		</div>
 	{/if}
 
 	{#if saveError}
-		<div class="shrink-0 mt-4">
-			<Alert type="error" title="Error">{saveError}</Alert>
+		<div class="shrink-0 mt-3 rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error">
+			{saveError}
 		</div>
 	{/if}
 
 	<!-- Footer buttons -->
 	<div class="shrink-0 flex justify-between mt-4">
-		<Button type="ghost" onclick={handleReset} disabled={isLoading}>
-			<RotateCcw class="w-4 h-4 mr-2" />
+		<button
+			type="button"
+			class="h-9 px-4 rounded-xl bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-2 disabled:opacity-30"
+			onclick={handleReset}
+			disabled={isLoading}
+		>
+			<RotateCcw class="w-4 h-4" />
 			Reset to Template
-		</Button>
-		<Button type="primary" onclick={handleSave} disabled={isSaving || !hasChanges || isLoading}>
+		</button>
+		<button
+			type="button"
+			class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all flex items-center gap-2 disabled:opacity-30"
+			onclick={handleSave}
+			disabled={isSaving || !hasChanges || isLoading}
+		>
 			{#if isSaving}
-				<Spinner size={16} />
-				<span class="ml-2">Saving...</span>
+				<Loader2 class="w-4 h-4 animate-spin" />
+				Saving...
 			{:else}
-				<Save class="w-4 h-4 mr-2" />
+				<Save class="w-4 h-4" />
 				Save Settings
 			{/if}
-		</Button>
+		</button>
 	</div>
 </div>

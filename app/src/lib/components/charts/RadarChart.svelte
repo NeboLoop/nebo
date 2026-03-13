@@ -141,7 +141,7 @@
 <div bind:this={containerRef} class="radar-chart-container flex flex-col items-center justify-center w-full h-full">
 	{#if labels.length === 0 || datasets.length === 0}
 		<div class="empty-state flex items-center justify-center">
-			<p class="text-base-content/60 text-sm">No data to display</p>
+			<p class="text-base-content/70 text-sm">No data to display</p>
 		</div>
 	{:else}
 		<svg width={size} height={size} viewBox="0 0 {size} {size}">

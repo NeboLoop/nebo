@@ -58,6 +58,14 @@ pub struct RunRequest {
     /// When set, this run executes as a specific role. The role's persona
     /// replaces the default identity, and session history is isolated.
     pub role_id: String,
+    /// Per-entity permission overrides (tool category → allowed).
+    pub permissions: Option<HashMap<String, bool>>,
+    /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
+    pub resource_grants: Option<HashMap<String, String>>,
+    /// Per-entity model preference (fuzzy-resolved before provider selection).
+    pub model_preference: Option<String>,
+    /// Per-entity personality snippet prepended to system prompt.
+    pub personality_snippet: Option<String>,
 }
 
 /// Per-run mutable state (prevents data races across concurrent runs).
@@ -176,16 +184,17 @@ impl Runner {
         // Append user message
         if !req.prompt.is_empty() {
             info!(session_id = %session_id, prompt_len = req.prompt.len(), "appending user message");
-            if let Err(e) = self.sessions.append_message(
+            self.sessions.append_message(
                 &session_id,
                 "user",
                 &req.prompt,
                 None,
                 None,
                 None,
-            ) {
+            ).map_err(|e| {
                 warn!(session_id = %session_id, error = %e, "failed to append user message");
-            }
+                ProviderError::Request(format!("failed to store message: {}", e))
+            })?;
         }
 
         // Create result channel
@@ -206,12 +215,19 @@ impl Runner {
         let origin = req.origin;
         let skip_memory = req.skip_memory_extract;
 
-        // Resolve fuzzy model override (e.g. "sonnet" -> "anthropic/claude-sonnet-4")
-        let model_override = if req.model_override.is_empty() {
+        // Resolve fuzzy model override — prefer explicit model_override, fall back to entity preference
+        let raw_model = if !req.model_override.is_empty() {
+            req.model_override.clone()
+        } else if let Some(ref pref) = req.model_preference {
+            pref.clone()
+        } else {
+            String::new()
+        };
+        let model_override = if raw_model.is_empty() {
             String::new()
         } else {
-            self.selector.resolve_fuzzy(&req.model_override)
-                .unwrap_or_else(|| req.model_override.clone())
+            self.selector.resolve_fuzzy(&raw_model)
+                .unwrap_or_else(|| raw_model.clone())
         };
 
         // Derive channel from session key via keyparser, fall back to explicit channel
@@ -227,6 +243,9 @@ impl Runner {
 
         let cancel_token = req.cancel_token.clone();
         let max_iterations = if req.max_iterations > 0 { req.max_iterations } else { DEFAULT_MAX_ITERATIONS };
+        let entity_permissions = req.permissions.clone();
+        let entity_resource_grants = req.resource_grants.clone();
+        let personality_snippet = req.personality_snippet.clone();
 
         // Set MCP context so CLI providers can access tools with the right session info
         if let Some(ref mcp_ctx) = self.mcp_context {
@@ -262,6 +281,9 @@ impl Runner {
                 &cancel_token,
                 &role_registry,
                 &role_id,
+                personality_snippet.as_deref(),
+                entity_permissions.as_ref(),
+                entity_resource_grants.as_ref(),
             )
             .await;
 
@@ -353,6 +375,9 @@ async fn run_loop(
     cancel_token: &CancellationToken,
     role_registry: &tools::RoleRegistry,
     role_id: &str,
+    personality_snippet: Option<&str>,
+    entity_permissions: Option<&HashMap<String, bool>>,
+    entity_resource_grants: Option<&HashMap<String, String>>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
@@ -408,6 +433,17 @@ async fn run_loop(
         prompt::build_static(&pctx)
     } else {
         build_system_prompt(system_prompt, &db_context_formatted)
+    };
+
+    // Prepend personality snippet if provided by entity config
+    let static_system = if let Some(snippet) = personality_snippet {
+        if snippet.is_empty() {
+            static_system
+        } else {
+            format!("{}\n\n{}", snippet, static_system)
+        }
+    } else {
+        static_system
     };
 
     // Record run start time for sliding window protection
@@ -966,6 +1002,8 @@ async fn run_loop(
                 session_key: resolved_key,
                 session_id: session_id.to_string(),
                 user_id: user_id.to_string(),
+                entity_permissions: entity_permissions.cloned(),
+                resource_grants: entity_resource_grants.cloned(),
             };
 
             // Track tool names for filter

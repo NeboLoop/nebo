@@ -206,28 +206,28 @@
 		<div class="flex items-center justify-between mb-2">
 			<div>
 				<h2 class="font-display text-xl font-bold text-base-content mb-1">Rules</h2>
-				<p class="text-sm text-base-content/60">Define how your agent should behave</p>
+				<p class="text-sm text-base-content/70">Define how your agent should behave</p>
 			</div>
-			<div class="flex items-center gap-2">
+			<div class="flex items-center gap-3">
 				{#if saveStatus === 'saving'}
-					<span class="flex items-center gap-1.5 text-xs text-base-content/40">
+					<span class="flex items-center gap-1.5 text-sm text-base-content/70">
 						<Spinner size={12} />
 						Saving...
 					</span>
 				{:else if saveStatus === 'saved'}
-					<span class="flex items-center gap-1.5 text-xs text-success">
+					<span class="flex items-center gap-1.5 text-sm text-success">
 						<Check class="w-3.5 h-3.5" />
 						Saved
 					</span>
 				{:else if saveStatus === 'error'}
-					<span class="flex items-center gap-1.5 text-xs text-error">
+					<span class="flex items-center gap-1.5 text-sm text-error">
 						<AlertCircle class="w-3.5 h-3.5" />
 						Failed to save
 					</span>
 				{/if}
 				<button
 					type="button"
-					class="text-base-content/30 hover:text-base-content/60 transition-colors"
+					class="p-1.5 rounded-lg text-base-content/70 hover:text-base-content/70 hover:bg-base-content/5 transition-colors"
 					title="Reset to defaults"
 					onclick={handleReset}
 				>
@@ -240,7 +240,7 @@
 	{#if isLoading}
 		<div class="flex-1 flex flex-col items-center justify-center gap-4">
 			<Spinner size={32} />
-			<p class="text-sm text-base-content/60">Loading rules...</p>
+			<p class="text-sm text-base-content/70">Loading rules...</p>
 		</div>
 	{:else}
 		<div class="flex-1 space-y-3 min-h-0 overflow-y-auto">
@@ -257,7 +257,7 @@
 				<div class="flex items-center gap-2 px-1">
 					<!-- svelte-ignore a11y_autofocus -->
 					<input
-						class="input input-bordered input-sm flex-1"
+						class="flex-1 h-9 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
 						placeholder="Section name..."
 						bind:value={addingSectionName}
 						onkeydown={handleAddSectionKeydown}
@@ -271,7 +271,7 @@
 			{:else}
 				<button
 					type="button"
-					class="flex items-center gap-2 text-sm text-base-content/40 hover:text-primary transition-colors px-1 py-2"
+					class="flex items-center gap-2 text-sm text-base-content/70 hover:text-primary transition-colors px-1 py-2"
 					onclick={() => (showAddSection = true)}
 				>
 					<Plus class="w-4 h-4" />

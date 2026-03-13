@@ -39,7 +39,7 @@ pub use orchestrator::{
 pub use origin::{Origin, ToolContext};
 pub use policy::{AskMode, Policy, PolicyLevel};
 pub use process::ProcessRegistry;
-pub use registry::{Registry, ToolResult};
+pub use registry::{Registry, ResourceKind, ToolResult};
 pub use shell_tool::ShellTool;
 pub use system_tool::SystemTool;
 pub use os_tool::OsTool;

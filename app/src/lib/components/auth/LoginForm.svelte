@@ -130,7 +130,7 @@
 	<div class="card-body">
 		<div class="text-center mb-4">
 			<h2 class="card-title justify-center text-2xl">Welcome Back</h2>
-			<p class="text-base-content/60 text-sm">Sign in to your account to continue</p>
+			<p class="text-base-content/70 text-sm">Sign in to your account to continue</p>
 		</div>
 
 		{#if $authError}
@@ -183,7 +183,7 @@
 					</button>
 				{/if}
 
-				<div class="divider text-xs text-base-content/50">or continue with email</div>
+				<div class="divider text-xs text-base-content/70">or continue with email</div>
 			</div>
 		{/if}
 
@@ -272,7 +272,7 @@
 
 		{#if onRegisterClick}
 			<div class="divider"></div>
-			<p class="text-center text-sm text-base-content/60">
+			<p class="text-center text-sm text-base-content/70">
 				Don't have an account?
 				<button
 					type="button"

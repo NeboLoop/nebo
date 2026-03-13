@@ -56,7 +56,7 @@
 	{:else}
 		{#each widgets as widget}
 			{#if widget.label}
-				<p class="text-xs text-base-content/60 mb-1">{widget.label}</p>
+				<p class="text-xs text-base-content/70 mb-1">{widget.label}</p>
 			{/if}
 
 			{#if widget.type === 'buttons' || widget.type === 'confirm'}

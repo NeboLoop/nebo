@@ -406,6 +406,8 @@ pub struct RedeemCodeResponse {
     pub purpose: String,
     pub visibility: String,
     pub connection_token: String,
+    pub owner_email: String,
+    pub owner_display_name: String,
 }
 
 // ── Bot Identity ─────────────────────────────────────────────────────

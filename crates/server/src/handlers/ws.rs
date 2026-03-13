@@ -1,19 +1,16 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use agent::lanes::make_task;
-use agent::RunRequest;
-use ai::StreamEventType;
 use tools::Origin;
 use types::constants::lanes;
 
+use crate::chat_dispatch::{ActiveRuns, ChatConfig, run_chat};
 use crate::state::AppState;
 
 /// Broadcast channel for real-time events to connected clients.
@@ -58,13 +55,10 @@ pub async fn client_ws_handler(
     ws.on_upgrade(move |socket| handle_client_ws(socket, state))
 }
 
-/// Tracks active agent runs so they can be cancelled.
-type ActiveRuns = Arc<Mutex<HashMap<String, CancellationToken>>>;
-
 async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
     info!("ws client connected — starting handle_client_ws");
     let mut hub_rx = state.hub.subscribe();
-    let active_runs: ActiveRuns = Arc::new(Mutex::new(HashMap::new()));
+    let active_runs: ActiveRuns = Default::default();
 
     // Send initial connection confirmation
     let welcome = serde_json::json!({
@@ -260,7 +254,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
     info!("ws client disconnected");
 }
 
-/// Dispatch a chat message to the agent runner and stream results via the hub.
+/// Dispatch a chat message to the agent runner via the unified chat pipeline.
 async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: ActiveRuns) {
     let data = &msg["data"];
     let session_id = data["session_id"]
@@ -271,6 +265,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
     let system = data["system"].as_str().unwrap_or("").to_string();
     let user_id = data["user_id"].as_str().unwrap_or("").to_string();
     let channel = data["channel"].as_str().unwrap_or("web").to_string();
+    let role_id = data["role_id"].as_str().unwrap_or("").to_string();
 
     info!(
         session_id = %session_id,
@@ -294,221 +289,40 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         return;
     }
 
-    // Extract optional role_id from chat payload
-    let role_id = data["role_id"].as_str().unwrap_or("").to_string();
-
     // If role_id is set, build a role-scoped session key for isolation
-    let session_id = if !role_id.is_empty() {
+    let session_key = if !role_id.is_empty() {
         agent::keyparser::build_role_session_key(&role_id, &channel)
     } else {
         session_id
     };
 
-    let hub = state.hub.clone();
-    let runner = state.runner.clone();
-    let sid = session_id.clone();
-    let cancel_token = CancellationToken::new();
+    info!(session_id = %session_key, role_id = %role_id, "dispatching chat to agent");
 
-    // Register this run so it can be cancelled
-    active_runs.lock().await.insert(sid.clone(), cancel_token.clone());
-    let active_runs_cleanup = active_runs.clone();
-
-    info!(session_id = %sid, role_id = %role_id, "dispatching chat to agent");
-
-    // Broadcast chat_created so frontend can track new conversations
-    hub.broadcast(
-        "chat_created",
-        serde_json::json!({
-            "session_id": sid,
-            "channel": channel,
-            "role_id": role_id,
-        }),
-    );
-
-    // Route through lane system for concurrency control
-    let rid = role_id.clone();
-    let broadcast_role_id = role_id;
-    let lane_task = make_task(lanes::MAIN, format!("chat:{}", sid), async move {
-        let role_id_ref = broadcast_role_id;
-        let req = RunRequest {
-            session_key: sid.clone(),
-            prompt,
-            system,
-            user_id,
-            channel,
-            origin: Origin::User,
-            cancel_token: cancel_token.clone(),
-            role_id: rid,
-            ..Default::default()
+    // Resolve entity config for the active entity
+    let entity_config = {
+        let (etype, eid) = if !role_id.is_empty() {
+            ("role", role_id.as_str())
+        } else {
+            ("main", "main")
         };
+        crate::entity_config::resolve_for_chat(&state.store, etype, eid)
+    };
 
-        info!(session_id = %sid, "calling runner.run()");
-        match runner.run(req).await {
-            Ok(mut rx) => {
-                info!(session_id = %sid, "runner.run() returned stream, processing events");
-                loop {
-                    let event = tokio::select! {
-                        _ = cancel_token.cancelled() => {
-                            hub.broadcast("chat_cancelled", serde_json::json!({
-                                "session_id": sid,
-                                "role_id": role_id_ref,
-                            }));
-                            break;
-                        }
-                        ev = rx.recv() => match ev {
-                            Some(e) => e,
-                            None => break,
-                        }
-                    };
-                    match event.event_type {
-                        StreamEventType::Text => {
-                            hub.broadcast(
-                                "chat_stream",
-                                serde_json::json!({
-                                    "session_id": sid,
-                                    "content": event.text,
-                                    "role_id": role_id_ref,
-                                }),
-                            );
-                        }
-                        StreamEventType::Thinking => {
-                            hub.broadcast(
-                                "thinking",
-                                serde_json::json!({
-                                    "session_id": sid,
-                                    "content": event.text,
-                                    "role_id": role_id_ref,
-                                }),
-                            );
-                        }
-                        StreamEventType::ToolCall => {
-                            if let Some(ref tc) = event.tool_call {
-                                hub.broadcast(
-                                    "tool_start",
-                                    serde_json::json!({
-                                        "session_id": sid,
-                                        "tool_id": tc.id,
-                                        "tool": tc.name,
-                                        "input": tc.input,
-                                        "role_id": role_id_ref,
-                                    }),
-                                );
-                            }
-                        }
-                        StreamEventType::ToolResult => {
-                            let tool_name = event
-                                .tool_call
-                                .as_ref()
-                                .map(|tc| tc.name.as_str())
-                                .unwrap_or("");
-                            let tool_id = event
-                                .tool_call
-                                .as_ref()
-                                .map(|tc| tc.id.as_str())
-                                .unwrap_or("");
-                            hub.broadcast(
-                                "tool_result",
-                                serde_json::json!({
-                                    "session_id": sid,
-                                    "tool_id": tool_id,
-                                    "tool_name": tool_name,
-                                    "result": event.text,
-                                    "is_error": event.error.is_some(),
-                                    "role_id": role_id_ref,
-                                }),
-                            );
-                        }
-                        StreamEventType::Error => {
-                            hub.broadcast(
-                                "chat_error",
-                                serde_json::json!({
-                                    "session_id": sid,
-                                    "error": event.error.unwrap_or_default(),
-                                    "role_id": role_id_ref,
-                                }),
-                            );
-                        }
-                        StreamEventType::Usage => {
-                            if let Some(ref usage) = event.usage {
-                                hub.broadcast(
-                                    "usage",
-                                    serde_json::json!({
-                                        "session_id": sid,
-                                        "input_tokens": usage.input_tokens,
-                                        "output_tokens": usage.output_tokens,
-                                    }),
-                                );
-                            }
-                        }
-                        StreamEventType::ApprovalRequest => {
-                            if let Some(ref tc) = event.tool_call {
-                                hub.broadcast(
-                                    "approval_request",
-                                    serde_json::json!({
-                                        "session_id": sid,
-                                        "request_id": tc.id,
-                                        "tool": tc.name,
-                                        "input": tc.input,
-                                    }),
-                                );
-                            }
-                        }
-                        StreamEventType::AskRequest => {
-                            let request_id = event.error.as_deref().unwrap_or("");
-                            let mut payload = serde_json::json!({
-                                "session_id": sid,
-                                "request_id": request_id,
-                                "prompt": event.text,
-                            });
-                            if let Some(widgets) = &event.widgets {
-                                payload["widgets"] = widgets.clone();
-                            }
-                            hub.broadcast("ask_request", payload);
-                        }
-                        StreamEventType::RateLimit => {
-                            // Rate limit metadata — handled internally by runner
-                        }
-                        StreamEventType::Done => {
-                            // Done event handled below — always send chat_complete
-                        }
-                    }
-                }
+    let config = ChatConfig {
+        session_key,
+        prompt,
+        system,
+        user_id,
+        channel,
+        origin: Origin::User,
+        role_id,
+        cancel_token: CancellationToken::new(),
+        lane: lanes::MAIN.to_string(),
+        comm_reply: None,
+        entity_config,
+    };
 
-                // Always send chat_complete when stream ends (normal, error, or cancel)
-                // so the frontend stops the typing indicator.
-                hub.broadcast(
-                    "chat_complete",
-                    serde_json::json!({
-                        "session_id": sid,
-                        "role_id": role_id_ref,
-                    }),
-                );
-            }
-            Err(e) => {
-                warn!(error = %e, "agent run failed");
-                hub.broadcast(
-                    "chat_error",
-                    serde_json::json!({
-                        "session_id": sid,
-                        "error": e.to_string(),
-                        "role_id": role_id_ref,
-                    }),
-                );
-                hub.broadcast(
-                    "chat_complete",
-                    serde_json::json!({
-                        "session_id": sid,
-                        "role_id": role_id_ref,
-                    }),
-                );
-            }
-        }
-
-        // Clean up active run tracking
-        active_runs_cleanup.lock().await.remove(&sid);
-        Ok(())
-    });
-    state.lanes.enqueue_async(lanes::MAIN, lane_task);
+    run_chat(state, config, Some(active_runs)).await;
 }
 
 /// GET /api/v1/agent/ws — Agent WebSocket endpoint for agent-to-server communication.
