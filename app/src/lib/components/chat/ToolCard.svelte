@@ -157,16 +157,16 @@
 	onclick={onclick}
 >
 	<div class="flex items-start gap-3">
-		<div class="shrink-0 mt-0.5 text-base-content/70">
+		<div class="shrink-0 mt-0.5 text-base-content/90">
 			<svelte:component this={ToolIcon} class="w-4 h-4" />
 		</div>
 
 		<div class="flex-1 min-w-0">
-			<div class="font-medium text-sm text-base-content">{displayName}</div>
+			<div class="font-medium text-base text-base-content">{displayName}</div>
 			{#if path}
-				<div class="text-xs text-base-content/70 truncate mt-0.5">{path}</div>
+				<div class="text-sm text-base-content/60 truncate mt-0.5">{path}</div>
 			{/if}
-			<div class="text-xs mt-1 {status === 'complete' ? 'text-base-content/70' : status === 'running' ? 'text-warning' : 'text-error'}">
+			<div class="text-sm mt-1 {status === 'complete' ? 'text-base-content/60' : status === 'running' ? 'text-warning' : 'text-error'}">
 				{status === 'running' ? 'Running...' : status === 'complete' ? 'Completed' : 'Error'}
 			</div>
 		</div>
@@ -177,7 +177,7 @@
 			{:else if status === 'complete'}
 				<Check class="w-4 h-4 text-success" />
 			{:else}
-				<span class="text-error text-xs">!</span>
+				<span class="text-error text-sm">!</span>
 			{/if}
 		</div>
 	</div>

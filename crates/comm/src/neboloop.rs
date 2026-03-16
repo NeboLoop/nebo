@@ -15,6 +15,7 @@ use tracing::{debug, info, warn};
 use crate::api::NeboLoopApi;
 use crate::compress;
 use crate::dedup::DedupWindow;
+use crate::devlog::DevLog;
 use crate::frame::{self, Header};
 use crate::ulid::UlidGen;
 use crate::wire;
@@ -41,6 +42,14 @@ pub struct DmPeer {
     pub loop_id: String,
 }
 
+/// Agent space metadata tracked after JOIN responses.
+#[derive(Debug, Clone)]
+pub(crate) struct AgentSpaceMeta {
+    pub agent_id: String,
+    pub agent_slug: String,
+    pub loop_id: String,
+}
+
 struct Inner {
     connected: bool,
     handler: Option<MessageHandler>,
@@ -59,6 +68,8 @@ pub struct NeboLoopPlugin {
     conv_maps: Arc<RwLock<ConvMaps>>,
     /// Monotonic ULID generator for outgoing message IDs.
     ulid_gen: UlidGen,
+    /// Dev log for `tail -f` traffic inspection (set during connect).
+    devlog: RwLock<Option<DevLog>>,
 }
 
 impl NeboLoopPlugin {
@@ -75,6 +86,7 @@ impl NeboLoopPlugin {
             rotated_token: RwLock::new(None),
             conv_maps: Arc::new(RwLock::new(ConvMaps::default())),
             ulid_gen: UlidGen::new(),
+            devlog: RwLock::new(None),
         }
     }
 
@@ -112,6 +124,11 @@ impl NeboLoopPlugin {
     /// Get the DM conversation ID for a peer.
     pub async fn dm_conversation_for_peer(&self, peer_id: &str) -> Option<String> {
         self.conv_maps.read().await.dm_by_peer.get(peer_id).cloned()
+    }
+
+    /// Get the agent space conversation ID for an agent slug.
+    pub async fn agent_space_for_slug(&self, slug: &str) -> Option<String> {
+        self.conv_maps.read().await.agent_space_by_slug.get(slug).cloned()
     }
 
     /// Queue a raw encoded frame for sending.
@@ -262,6 +279,15 @@ impl CommPlugin for NeboLoopPlugin {
         // Store bot_id
         *self.bot_id.write().await = bot_id.clone();
 
+        // Init devlog (truncates on each new connection)
+        if let Some(dir) = config.get("data_dir") {
+            let log_path = std::path::PathBuf::from(dir).join("logs").join("neboloop.log");
+            if let Some(dl) = DevLog::open(&log_path) {
+                dl.event(&format!("CONNECT {} bot={}", gateway, &bot_id));
+                *self.devlog.write().await = Some(dl);
+            }
+        }
+
         // Create API client
         let api = Arc::new(NeboLoopApi::new(api_server, bot_id.clone(), token.clone()));
 
@@ -326,6 +352,10 @@ impl CommPlugin for NeboLoopPlugin {
             }
         }
 
+        if let Some(ref dl) = *self.devlog.read().await {
+            dl.event("AUTH_OK");
+        }
+
         info!(gateway = %gateway, bot_id = %bot_id, "connected to neboloop gateway");
 
         // Set up send channel + cancellation
@@ -356,8 +386,9 @@ impl CommPlugin for NeboLoopPlugin {
         let read_handler = handler.clone();
         let read_cancel = cancel.clone();
         let dedup = DedupWindow::new();
+        let devlog_for_read = self.devlog.read().await.clone();
         tokio::spawn(async move {
-            read_loop(read, read_handler, join_tx, dedup, read_cancel).await;
+            read_loop(read, read_handler, join_tx, dedup, read_cancel, devlog_for_read).await;
         });
 
         // Spawn write loop
@@ -383,6 +414,9 @@ impl CommPlugin for NeboLoopPlugin {
 
         // Subscribe to default bot streams
         for stream_name in &["dm", "installs", "chat", "account", "voice"] {
+            if let Some(ref dl) = *self.devlog.read().await {
+                dl.join_request(stream_name);
+            }
             {
                 let mut maps = self.conv_maps.write().await;
                 maps.pending_joins.push(format!("{}:{}", bot_id, stream_name));
@@ -408,6 +442,9 @@ impl CommPlugin for NeboLoopPlugin {
     }
 
     async fn disconnect(&self) -> Result<(), CommError> {
+        if let Some(ref dl) = *self.devlog.read().await {
+            dl.event("DISCONNECT");
+        }
         let mut inner = self.inner.write().await;
         if let Some(cancel) = inner.cancel.take() {
             cancel.cancel();
@@ -436,18 +473,36 @@ impl CommPlugin for NeboLoopPlugin {
         let conv_id = if !msg.conversation_id.is_empty() {
             msg.conversation_id.clone()
         } else if !msg.to.is_empty() {
-            // Try DM peer lookup from shared conversation maps
+            // Try agent space first, then DM peer lookup
             let maps = self.conv_maps.read().await;
-            maps.dm_by_peer
-                .get(&msg.to)
-                .cloned()
-                .ok_or_else(|| CommError::Other(format!("no conversation for peer {}", msg.to)))?
+            if let Some(conv) = maps.agent_space_by_slug.get(&msg.to) {
+                conv.clone()
+            } else {
+                maps.dm_by_peer
+                    .get(&msg.to)
+                    .cloned()
+                    .ok_or_else(|| CommError::Other(format!("no conversation for {}", msg.to)))?
+            }
         } else {
             return Err(CommError::Other("no conversation_id or recipient".into()));
         };
 
-        let stream = if msg.topic.is_empty() { "dm" } else { &msg.topic };
+        let stream = if msg.topic.is_empty() {
+            // Default to agent_space if we resolved via agent slug, else dm
+            let maps = self.conv_maps.read().await;
+            if !msg.to.is_empty() && maps.agent_space_by_slug.contains_key(&msg.to) {
+                "agent_space"
+            } else {
+                "dm"
+            }
+        } else {
+            &msg.topic
+        };
         let content = serde_json::json!({ "text": msg.content });
+
+        if let Some(ref dl) = *self.devlog.read().await {
+            dl.outbound(stream, &conv_id, &msg.content);
+        }
 
         let payload = serde_json::to_vec(&wire::SendPayload {
             conversation_id: conv_id,
@@ -612,8 +667,9 @@ impl CommPlugin for NeboLoopPlugin {
 /// Join result update sent from read loop to the maps processor.
 enum JoinUpdate {
     BotStream { key: String, conversation_id: String },
-    Channel(ChannelMeta, String),   // meta, conversation_id
-    Dm(DmPeer, String),             // peer, conversation_id
+    Channel(ChannelMeta, String),        // meta, conversation_id
+    Dm(DmPeer, String),                  // peer, conversation_id
+    AgentSpace(AgentSpaceMeta, String),  // meta, conversation_id
 }
 
 /// Shared conversation maps updated by the join processor task.
@@ -626,15 +682,32 @@ struct ConvMaps {
     channel_meta: HashMap<String, ChannelMeta>,
     dm_convs: HashMap<String, DmPeer>,
     dm_by_peer: HashMap<String, String>,
+    agent_space_convs: HashMap<String, AgentSpaceMeta>,  // conv_id → meta
+    agent_space_by_slug: HashMap<String, String>,         // slug → conv_id
+    agent_space_by_id: HashMap<String, String>,            // agent_id → conv_id
 }
 
 impl ConvMaps {
     fn apply(&mut self, update: JoinUpdate) {
         match update {
             JoinUpdate::BotStream { key, conversation_id } => {
-                self.conv_by_key.insert(key, conversation_id);
+                // If key is empty, pop from pending_joins queue (read loop
+                // doesn't know which stream the result belongs to).
+                let resolved_key = if key.is_empty() {
+                    self.pending_joins.pop().unwrap_or_default()
+                } else {
+                    key
+                };
+                if !resolved_key.is_empty() {
+                    self.conv_by_key.insert(resolved_key, conversation_id);
+                }
             }
             JoinUpdate::Channel(meta, conv_id) => {
+                // Deduplicate: skip if this channel is already tracked with
+                // the same conversation_id.
+                if self.channel_convs.get(&meta.channel_id) == Some(&conv_id) {
+                    return;
+                }
                 self.channel_by_conv
                     .insert(conv_id.clone(), meta.channel_id.clone());
                 self.channel_convs
@@ -647,6 +720,13 @@ impl ConvMaps {
                     .insert(peer.peer_id.clone(), conv_id.clone());
                 self.dm_convs.insert(conv_id, peer);
             }
+            JoinUpdate::AgentSpace(meta, conv_id) => {
+                self.agent_space_by_slug
+                    .insert(meta.agent_slug.clone(), conv_id.clone());
+                self.agent_space_by_id
+                    .insert(meta.agent_id.clone(), conv_id.clone());
+                self.agent_space_convs.insert(conv_id, meta);
+            }
         }
     }
 }
@@ -658,6 +738,7 @@ async fn read_loop(
     join_tx: mpsc::Sender<JoinUpdate>,
     dedup: DedupWindow,
     cancel: tokio_util::sync::CancellationToken,
+    devlog: Option<DevLog>,
 ) {
     loop {
         tokio::select! {
@@ -714,15 +795,38 @@ async fn read_loop(
                             Err(_) => continue,
                         };
 
+                        let mut metadata = HashMap::new();
+                        if !delivery.agent_id.is_empty() {
+                            metadata.insert("agent_id".to_string(), delivery.agent_id.clone());
+                        }
+                        if !delivery.agent_slug.is_empty() {
+                            metadata.insert("agent_slug".to_string(), delivery.agent_slug.clone());
+                        }
+                        if !delivery.source_channel_id.is_empty() {
+                            metadata.insert("source_channel_id".to_string(), delivery.source_channel_id.clone());
+                        }
+
+                        let conv_id_str = uuid_from_bytes(&header.conversation_id);
+
+                        if let Some(ref dl) = devlog {
+                            dl.inbound(
+                                &delivery.stream,
+                                &delivery.sender_id,
+                                &delivery.agent_slug,
+                                &conv_id_str,
+                                &delivery.content.to_string(),
+                            );
+                        }
+
                         let msg = CommMessage {
                             id: uuid_from_bytes(&header.msg_id),
                             from: delivery.sender_id.clone(),
                             to: String::new(),
                             topic: delivery.stream.clone(),
-                            conversation_id: uuid_from_bytes(&header.conversation_id),
+                            conversation_id: conv_id_str,
                             msg_type: CommMessageType::Message,
                             content: delivery.content.to_string(),
-                            metadata: HashMap::new(),
+                            metadata,
                             timestamp: 0,
                             human_injected: false,
                             human_id: None,
@@ -744,8 +848,49 @@ async fn read_loop(
                             Err(_) => continue,
                         };
 
-                        if !result.peer_id.is_empty() {
-                            // DM join
+                        if let Some(ref dl) = devlog {
+                            let info = if !result.agent_id.is_empty() {
+                                format!(
+                                    "agent_space agent={} conv={}",
+                                    result.agent_slug,
+                                    &result.conversation_id.get(..8).unwrap_or(&result.conversation_id),
+                                )
+                            } else if !result.channel_id.is_empty() {
+                                format!(
+                                    "channel={} conv={} loop={}",
+                                    result.channel_name,
+                                    &result.conversation_id.get(..8).unwrap_or(&result.conversation_id),
+                                    &result.loop_id.get(..8).unwrap_or(&result.loop_id),
+                                )
+                            } else if !result.peer_id.is_empty() {
+                                format!(
+                                    "dm peer={} conv={}",
+                                    result.peer_id,
+                                    &result.conversation_id.get(..8).unwrap_or(&result.conversation_id),
+                                )
+                            } else {
+                                format!(
+                                    "stream conv={}",
+                                    &result.conversation_id.get(..8).unwrap_or(&result.conversation_id),
+                                )
+                            };
+                            dl.join_result(&info);
+                        }
+
+                        if !result.agent_id.is_empty() {
+                            // Agent space join
+                            let _ = join_tx
+                                .send(JoinUpdate::AgentSpace(
+                                    AgentSpaceMeta {
+                                        agent_id: result.agent_id,
+                                        agent_slug: result.agent_slug,
+                                        loop_id: result.loop_id.clone(),
+                                    },
+                                    result.conversation_id,
+                                ))
+                                .await;
+                        } else if !result.peer_id.is_empty() {
+                            // DM join (still active for gateways that haven't migrated)
                             let _ = join_tx
                                 .send(JoinUpdate::Dm(
                                     DmPeer {

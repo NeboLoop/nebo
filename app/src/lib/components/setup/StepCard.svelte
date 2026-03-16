@@ -22,7 +22,7 @@
 	<div class="card-body">
 		<h2 class="card-title text-2xl">{title}</h2>
 		{#if description}
-			<p class="text-base-content/70">{description}</p>
+			<p class="text-base-content/80">{description}</p>
 		{/if}
 		<div class="mt-4">
 			{@render children()}

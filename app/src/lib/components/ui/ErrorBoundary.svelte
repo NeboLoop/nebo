@@ -54,11 +54,11 @@
 				<AlertTriangle class="w-8 h-8 text-error" />
 			</div>
 			<h3 class="text-lg font-semibold mb-2">Something went wrong</h3>
-			<p class="text-base-content/70 mb-4 max-w-md">
+			<p class="text-base-content/90 mb-4 max-w-md">
 				An unexpected error occurred. Please try again or contact support if the problem persists.
 			</p>
 			{#if errorInfo}
-				<p class="text-xs text-base-content/70 font-mono mb-4">
+				<p class="text-sm text-base-content/90 font-mono mb-4">
 					{error.message}
 				</p>
 			{/if}

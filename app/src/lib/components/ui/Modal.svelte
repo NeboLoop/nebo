@@ -81,7 +81,7 @@
 				<div>
 					<h3 class="font-display text-lg font-bold">{title}</h3>
 					{#if description}
-						<p class="text-sm text-base-content/70 mt-0.5">{description}</p>
+						<p class="text-base text-base-content/90 mt-0.5">{description}</p>
 					{/if}
 				</div>
 				{#if showCloseButton}

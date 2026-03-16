@@ -58,7 +58,7 @@
 					<span class="label-text {disabled ? 'opacity-50' : ''}">{label}</span>
 				{/if}
 				{#if description}
-					<span class="label-text-alt text-base-content/70 {disabled ? 'opacity-50' : ''}">{description}</span>
+					<span class="label-text-alt text-base-content/90 {disabled ? 'opacity-50' : ''}">{description}</span>
 				{/if}
 			</div>
 		{/if}

@@ -617,18 +617,18 @@
 	<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
 		<div class="flex items-center justify-between px-4 h-12">
 			<div class="flex flex-col justify-center">
-				<h2 class="text-sm font-semibold text-base-content leading-tight">{title}</h2>
+				<h2 class="text-base font-semibold text-base-content leading-tight">{title}</h2>
 				{#if subtitle}
-					<p class="text-xs text-base-content/70 leading-tight">{subtitle}</p>
+					<p class="text-sm text-base-content/60 leading-tight">{subtitle}</p>
 				{/if}
 			</div>
 			<div class="flex items-center gap-2 shrink-0">
 				{#if wsConnected}
-					<div class="flex items-center gap-1.5 text-xs text-success px-2">
+					<div class="flex items-center gap-1.5 text-sm text-success px-2">
 						<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
 					</div>
 				{:else}
-					<div class="flex items-center gap-1.5 text-xs text-warning px-2">
+					<div class="flex items-center gap-1.5 text-sm text-warning px-2">
 						<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
 					</div>
 				{/if}
@@ -651,7 +651,7 @@
 						</div>
 						<h3 class="font-display text-lg font-bold text-base-content mb-1">{title}</h3>
 						{#if subtitle}
-							<p class="text-sm text-base-content/70 max-w-md mb-6">{subtitle}</p>
+							<p class="text-base text-base-content/80 max-w-md mb-6">{subtitle}</p>
 						{/if}
 						{#if suggestions.length > 0}
 							<div class="grid grid-cols-1 gap-2 max-w-md w-full">
@@ -659,7 +659,7 @@
 									<button
 										type="button"
 										onclick={() => selectSuggestion(suggestion)}
-										class="text-left px-3 py-2 rounded-lg bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
+										class="text-left px-3 py-2 rounded-lg bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
 										disabled={isLoading}
 									>
 										{suggestion}
@@ -680,7 +680,7 @@
 
 					{#if isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
 						<div class="flex gap-3 mb-4">
-							<div class="w-8 h-8 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-xs bg-base-300 text-base-content/70">
+							<div class="w-8 h-8 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm bg-base-300 text-base-content/60">
 								A
 							</div>
 							<div class="flex flex-col gap-0.5 max-w-[min(900px,calc(100%-60px))] items-start">
@@ -699,7 +699,7 @@
 				<button
 					type="button"
 					onclick={scrollToBottom}
-					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/70 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
+					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/90 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
 					title="Scroll to bottom"
 				>
 					<ArrowDown class="w-4 h-4" />

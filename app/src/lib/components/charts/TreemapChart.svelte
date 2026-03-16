@@ -149,7 +149,7 @@
 <div bind:this={containerRef} class="treemap-chart-container w-full h-full">
 	{#if data.length === 0}
 		<div class="empty-state flex items-center justify-center h-full">
-			<p class="text-base-content/70 text-sm">No data to display</p>
+			<p class="text-base-content/90 text-base">No data to display</p>
 		</div>
 	{:else}
 		<svg width={containerWidth} height={effectiveHeight}>
@@ -176,7 +176,7 @@
 							text-anchor="middle"
 							dominant-baseline="middle"
 							fill={getTextColor(getColor(rect.colorIndex, rect.node))}
-							class="text-sm font-semibold pointer-events-none"
+							class="text-base font-semibold pointer-events-none"
 						>
 							{rect.node.label.length > 12 ? rect.node.label.slice(0, 12) + '..' : rect.node.label}
 						</text>
@@ -189,7 +189,7 @@
 							text-anchor="middle"
 							dominant-baseline="middle"
 							fill={getTextColor(getColor(rect.colorIndex, rect.node))}
-							class="text-xs pointer-events-none opacity-80"
+							class="text-sm pointer-events-none opacity-80"
 						>
 							{formatValue(rect.node.value)}
 						</text>

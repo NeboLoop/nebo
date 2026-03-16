@@ -3,8 +3,6 @@ CREATE TABLE IF NOT EXISTS role_workflows (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
     binding_name TEXT NOT NULL,
-    workflow_ref TEXT NOT NULL,
-    workflow_id TEXT,
     trigger_type TEXT NOT NULL,
     trigger_config TEXT NOT NULL,
     description TEXT,

@@ -23,9 +23,9 @@ export interface AppItem {
 /** Returns the correct URL path for any marketplace item based on its type. */
 export function itemHref(item: AppItem): string {
 	switch (item.type) {
-		case 'workflow': return `/store/workflows/${item.slug}`;
-		case 'role': return `/store/roles/${item.slug}`;
-		default: return `/store/skills/${item.slug}`;
+		case 'workflow': return `/marketplace/workflows/${item.slug}`;
+		case 'role': return `/marketplace/roles/${item.slug}`;
+		default: return `/marketplace/skills/${item.slug}`;
 	}
 }
 

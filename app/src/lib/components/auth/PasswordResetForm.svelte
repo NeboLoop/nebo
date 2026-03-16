@@ -161,11 +161,11 @@
 					</div>
 				</div>
 				<h2 class="card-title justify-center text-xl">Check Your Email</h2>
-				<p class="text-base-content/70 text-sm">
+				<p class="text-base-content/90 text-base">
 					We've sent password reset instructions to <strong>{email}</strong>.
 					Please check your inbox and follow the link to reset your password.
 				</p>
-				<p class="text-base-content/70 text-xs mt-2">
+				<p class="text-base-content/90 text-sm mt-2">
 					Didn't receive the email? Check your spam folder or
 					<button type="button" class="link link-primary" onclick={() => passwordReset.reset()}>
 						try again
@@ -185,7 +185,7 @@
 			<div class="card-body">
 				<div class="text-center mb-4">
 					<h2 class="card-title justify-center text-2xl">Reset Password</h2>
-					<p class="text-base-content/70 text-sm">
+					<p class="text-base-content/90 text-base">
 						Enter your email address and we'll send you instructions to reset your password.
 					</p>
 				</div>
@@ -245,7 +245,7 @@
 
 				{#if onBackToLogin}
 					<div class="divider"></div>
-					<p class="text-center text-sm text-base-content/70">
+					<p class="text-center text-base text-base-content/90">
 						Remember your password?
 						<button
 							type="button"
@@ -275,7 +275,7 @@
 					</div>
 				</div>
 				<h2 class="card-title justify-center text-xl">Password Reset Complete</h2>
-				<p class="text-base-content/70 text-sm">
+				<p class="text-base-content/90 text-base">
 					Your password has been successfully reset. You can now sign in with your new password.
 				</p>
 				{#if onBackToLogin}
@@ -292,7 +292,7 @@
 			<div class="card-body">
 				<div class="text-center mb-4">
 					<h2 class="card-title justify-center text-2xl">Create New Password</h2>
-					<p class="text-base-content/70 text-sm">Enter your new password below.</p>
+					<p class="text-base-content/90 text-base">Enter your new password below.</p>
 				</div>
 
 				{#if storeError}
@@ -355,7 +355,7 @@
 						<!-- Password Requirements -->
 						{#if passwordTouched && passwordValidation.requirements}
 							<div id={passwordHintId} class="mt-2 p-3 bg-base-300 rounded-lg" aria-label="Password requirements">
-								<ul class="text-xs space-y-1">
+								<ul class="text-sm space-y-1">
 									<li class="flex items-center gap-2" class:text-success={passwordValidation.requirements.minLength}>
 										<span>{passwordValidation.requirements.minLength ? '✓' : '○'}</span>
 										At least 8 characters
@@ -375,7 +375,7 @@
 								</ul>
 							</div>
 						{:else}
-							<p class="text-xs text-base-content/70 mt-1" id={passwordHintId}>
+							<p class="text-sm text-base-content/90 mt-1" id={passwordHintId}>
 								Password must be at least 8 characters with uppercase, lowercase, and numbers
 							</p>
 						{/if}
@@ -427,7 +427,7 @@
 
 				{#if onBackToLogin}
 					<div class="divider"></div>
-					<p class="text-center text-sm">
+					<p class="text-center text-base">
 						<button
 							type="button"
 							class="link link-primary"

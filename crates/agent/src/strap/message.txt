@@ -1,5 +1,5 @@
 ### message — Outbound Delivery
-USE THIS when: user wants to send a text, notification, alert, or speak to someone outside NeboLoop.
+USE THIS when: user wants to send a text, notification, or alert to someone outside NeboLoop.
 
 - message(resource: owner, action: notify, text: "Task complete!") — Notify the owner via companion chat
 - message(resource: sms, action: send, to: "+15551234567", body: "Hello!") — Send SMS (macOS)
@@ -8,6 +8,7 @@ USE THIS when: user wants to send a text, notification, alert, or speak to someo
 - message(resource: sms, action: search, query: "meeting") — Search SMS messages
 - message(resource: notify, action: send, title: "Alert", text: "Something happened") — System notification
 - message(resource: notify, action: alert, title: "Warning", text: "...") — Show alert dialog
-- message(resource: notify, action: speak, text: "Hello") — Text-to-speech via system voice
 - message(resource: notify, action: dnd_status) — Check Do Not Disturb status
+
+For text-to-speech: use os(resource: "tts", action: "speak", text: "Hello")
 Use message for outbound delivery to humans outside NeboLoop.

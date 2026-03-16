@@ -137,7 +137,7 @@
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Skills</h2>
-		<p class="text-sm text-base-content/70">Standalone orchestration skills for the agent</p>
+		<p class="text-base text-base-content/80">Standalone orchestration skills for the agent</p>
 	</div>
 	<div class="flex items-center gap-2">
 		<Button type="primary" onclick={openCreate}>
@@ -153,7 +153,7 @@
 
 {#if isLoading}
 	<Card>
-		<div class="py-12 text-center text-base-content/70">
+		<div class="py-12 text-center text-base-content/90">
 			<span class="loading loading-spinner loading-md"></span>
 			<p class="mt-2">Loading skills...</p>
 		</div>
@@ -161,7 +161,7 @@
 {:else}
 	<!-- Installed Skills -->
 	<div class="mb-8">
-		<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/70 mb-4">Installed Skills</h3>
+		<h3 class="text-base font-semibold uppercase tracking-wider text-base-content/60 mb-4">Installed Skills</h3>
 
 		{#if skills.length > 0}
 			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -173,28 +173,28 @@
 					>
 						<div class="flex items-center gap-3 mb-2">
 							<div class="w-9 h-9 rounded-lg {skill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
-								<Zap class="w-4.5 h-4.5 {skill.enabled ? 'text-primary' : 'text-base-content/70'}" />
+								<Zap class="w-4.5 h-4.5 {skill.enabled ? 'text-primary' : 'text-base-content/90'}" />
 							</div>
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2">
-									<span class="font-display font-bold text-sm text-base-content truncate">{skill.name}</span>
-									<span class="text-[10px] text-base-content/70 tabular-nums">v{skill.version}</span>
+									<span class="font-display font-bold text-base text-base-content truncate">{skill.name}</span>
+									<span class="text-sm text-base-content/60 tabular-nums">v{skill.version}</span>
 								</div>
 							</div>
 							{#if skill.source === 'bundled'}
-								<span class="text-[10px] font-medium uppercase tracking-wide text-base-content/70">Bundled</span>
+								<span class="text-sm font-medium uppercase tracking-wide text-base-content/60">Bundled</span>
 							{/if}
 						</div>
-						<p class="text-sm text-base-content/70 line-clamp-2 leading-relaxed">{skill.description}</p>
+						<p class="text-base text-base-content/80 line-clamp-2 leading-relaxed">{skill.description}</p>
 					</button>
 				{/each}
 			</div>
 		{:else}
 			<Card>
-				<div class="py-12 text-center text-base-content/70">
+				<div class="py-12 text-center text-base-content/90">
 					<Zap class="w-12 h-12 mx-auto mb-4 opacity-20" />
 					<p class="font-medium mb-2">No skills found</p>
-					<p class="text-sm">Create a skill or browse the store.</p>
+					<p class="text-base">Create a skill or browse the store.</p>
 				</div>
 			</Card>
 		{/if}
@@ -203,11 +203,11 @@
 	<!-- Skill Store -->
 	{#if neboLoopConnected}
 		<div>
-			<h3 class="text-sm font-semibold uppercase tracking-wider text-base-content/70 mb-4">Skill Store</h3>
+			<h3 class="text-base font-semibold uppercase tracking-wider text-base-content/60 mb-4">Skill Store</h3>
 
 			{#if isLoadingStore}
 				<Card>
-					<div class="py-8 text-center text-base-content/70">
+					<div class="py-8 text-center text-base-content/90">
 						<span class="loading loading-spinner loading-md"></span>
 						<p class="mt-2">Loading store...</p>
 					</div>
@@ -221,12 +221,12 @@
 									{#if skill.icon}
 										<img src={skill.icon} alt={skill.name} class="w-9 h-9 rounded-lg object-cover" />
 									{:else}
-										<Store class="w-4.5 h-4.5 text-base-content/70" />
+										<Store class="w-4.5 h-4.5 text-base-content/90" />
 									{/if}
 								</div>
 								<div class="flex-1 min-w-0">
-									<span class="font-display font-bold text-sm text-base-content truncate block">{skill.name}</span>
-									<span class="text-[10px] text-base-content/70">
+									<span class="font-display font-bold text-base text-base-content truncate block">{skill.name}</span>
+									<span class="text-sm text-base-content/60">
 										by {skill.author.name}
 										{#if skill.author.verified}
 											<Check class="w-2.5 h-2.5 inline text-success" />
@@ -234,9 +234,9 @@
 									</span>
 								</div>
 							</div>
-							<p class="text-sm text-base-content/70 line-clamp-2 leading-relaxed mb-3">{skill.description}</p>
+							<p class="text-base text-base-content/80 line-clamp-2 leading-relaxed mb-3">{skill.description}</p>
 							<div class="flex items-center justify-between">
-								<div class="flex items-center gap-3 text-[10px] text-base-content/70">
+								<div class="flex items-center gap-3 text-sm text-base-content/60">
 									{#if skill.rating > 0}
 										<span class="flex items-center gap-0.5">
 											<Star class="w-3 h-3" />
@@ -282,10 +282,10 @@
 				</div>
 			{:else}
 				<Card>
-					<div class="py-8 text-center text-base-content/70">
+					<div class="py-8 text-center text-base-content/90">
 						<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
 						<p class="font-medium mb-1">No skills available yet</p>
-						<p class="text-sm">Check back later for new skills.</p>
+						<p class="text-base">Check back later for new skills.</p>
 					</div>
 				</Card>
 			{/if}
@@ -300,11 +300,11 @@
 			<!-- Header with icon and status -->
 			<div class="flex items-center gap-4">
 				<div class="w-14 h-14 rounded-2xl {selectedSkill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
-					<Zap class="w-7 h-7 {selectedSkill.enabled ? 'text-primary' : 'text-base-content/70'}" />
+					<Zap class="w-7 h-7 {selectedSkill.enabled ? 'text-primary' : 'text-base-content/90'}" />
 				</div>
 				<div class="flex-1 min-w-0">
 					<div class="flex items-center gap-2 mb-1">
-						<span class="text-sm text-base-content/70 tabular-nums">v{selectedSkill.version}</span>
+						<span class="text-base text-base-content/80 tabular-nums">v{selectedSkill.version}</span>
 						{#if selectedSkill.source === 'bundled'}
 							<span class="badge badge-xs badge-ghost">Bundled</span>
 						{/if}
@@ -312,7 +312,7 @@
 							{selectedSkill.enabled ? 'Enabled' : 'Disabled'}
 						</span>
 					</div>
-					<p class="text-sm text-base-content/70 leading-relaxed">{selectedSkill.description}</p>
+					<p class="text-base text-base-content/80 leading-relaxed">{selectedSkill.description}</p>
 				</div>
 			</div>
 
@@ -320,8 +320,8 @@
 			<div class="divide-y divide-base-200 rounded-xl bg-base-200/30 overflow-hidden">
 				{#if selectedSkill.tools && selectedSkill.tools.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
-						<Wrench class="w-4 h-4 text-base-content/70 shrink-0" />
-						<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Tools</span>
+						<Wrench class="w-4 h-4 text-base-content/90 shrink-0" />
+						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Tools</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.tools as tool}
 								<span class="badge badge-sm badge-outline">{tool}</span>
@@ -332,8 +332,8 @@
 
 				{#if selectedSkill.tags && selectedSkill.tags.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
-						<Tag class="w-4 h-4 text-base-content/70 shrink-0" />
-						<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Tags</span>
+						<Tag class="w-4 h-4 text-base-content/90 shrink-0" />
+						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Tags</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.tags as tag}
 								<span class="badge badge-sm badge-ghost">{tag}</span>
@@ -344,8 +344,8 @@
 
 				{#if selectedSkill.dependencies && selectedSkill.dependencies.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
-						<FileText class="w-4 h-4 text-base-content/70 shrink-0" />
-						<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Deps</span>
+						<FileText class="w-4 h-4 text-base-content/90 shrink-0" />
+						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Deps</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.dependencies as dep}
 								<span class="badge badge-sm badge-outline">{dep}</span>
@@ -355,15 +355,15 @@
 				{/if}
 
 				<div class="flex items-center gap-3 px-4 py-3">
-					<Hash class="w-4 h-4 text-base-content/70 shrink-0" />
-					<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Priority</span>
-					<span class="text-sm text-base-content/70">{selectedSkill.priority}</span>
+					<Hash class="w-4 h-4 text-base-content/90 shrink-0" />
+					<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Priority</span>
+					<span class="text-base text-base-content/80">{selectedSkill.priority}</span>
 				</div>
 
 				<div class="flex items-center gap-3 px-4 py-3">
-					<FolderOpen class="w-4 h-4 text-base-content/70 shrink-0" />
-					<span class="text-sm font-medium text-base-content/70 w-16 shrink-0">Source</span>
-					<span class="text-sm text-base-content/70 truncate">{selectedSkill.filePath || selectedSkill.source}</span>
+					<FolderOpen class="w-4 h-4 text-base-content/90 shrink-0" />
+					<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Source</span>
+					<span class="text-base text-base-content/80 truncate">{selectedSkill.filePath || selectedSkill.source}</span>
 				</div>
 			</div>
 		</div>
@@ -373,14 +373,14 @@
 				<div class="flex items-center gap-2">
 					{#if selectedSkill.editable}
 						<button
-							class="btn btn-sm btn-ghost gap-1.5 text-base-content/70 hover:text-primary"
+							class="btn btn-sm btn-ghost gap-1.5 text-base-content/90 hover:text-primary"
 							onclick={() => openEdit(selectedSkill)}
 						>
 							<Pencil class="w-3.5 h-3.5" />
 							Edit
 						</button>
 						<button
-							class="btn btn-sm btn-ghost gap-1.5 text-base-content/70 hover:text-error"
+							class="btn btn-sm btn-ghost gap-1.5 text-base-content/90 hover:text-error"
 							onclick={() => handleDelete(selectedSkill)}
 							disabled={deletingSkill === selectedSkill.name}
 						>

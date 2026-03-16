@@ -1,9 +1,6 @@
 use ai::ToolDefinition;
 use db::models::ChatMessage;
 
-/// Core tools that are always included regardless of context.
-const CORE_TOOLS: &[&str] = &["os", "web", "agent", "event", "message", "skill", "role"];
-
 /// Contextual tool groups: (context_name, trigger_keywords).
 /// Context names map to STRAP sub-docs and/or tool names.
 /// For "os" sub-contexts (desktop, app, music, etc.), the tool is always registered
@@ -81,8 +78,8 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
 /// Context names that correspond to actual registered tools (not os sub-contexts).
 const TOOL_CONTEXTS: &[&str] = &["web", "event", "loop", "work", "execute", "emit"];
 
-/// Filter tools based on conversation context.
-/// Returns filtered tools AND active context names (for STRAP sub-doc injection).
+/// Detect active contexts based on conversation content.
+/// All tools are always included — contexts only control STRAP sub-doc injection.
 pub fn filter_tools_with_context(
     all_tools: &[ToolDefinition],
     messages: &[ChatMessage],
@@ -92,13 +89,7 @@ pub fn filter_tools_with_context(
         return (vec![], vec![]);
     }
 
-    let mut included_tools = std::collections::HashSet::new();
     let mut active_contexts = Vec::new();
-
-    // Always include core tools
-    for name in CORE_TOOLS {
-        included_tools.insert(name.to_string());
-    }
 
     // Check recent messages (last 5) for contextual keywords
     let recent_text: String = messages
@@ -121,29 +112,11 @@ pub fn filter_tools_with_context(
 
         if matched {
             active_contexts.push(context_name.to_string());
-
-            // If this context is a tool (not an os sub-context), include it
-            if TOOL_CONTEXTS.contains(context_name) {
-                included_tools.insert(context_name.to_string());
-            }
         }
     }
 
-    // Filter tools by included set
-    let result: Vec<ToolDefinition> = all_tools
-        .iter()
-        .filter(|t| included_tools.contains(&t.name))
-        .cloned()
-        .collect();
-
-    // Never return empty — fall back to all tools
-    let tools = if result.is_empty() {
-        all_tools.to_vec()
-    } else {
-        result
-    };
-
-    (tools, active_contexts)
+    // Always return all tools — never filter
+    (all_tools.to_vec(), active_contexts)
 }
 
 /// Backward-compatible filter that discards contexts.
@@ -204,14 +177,14 @@ mod tests {
     }
 
     #[test]
-    fn test_core_tools_always_included() {
-        let tools = vec![make_tool("os"), make_tool("web"), make_tool("agent"), make_tool("role")];
+    fn test_all_tools_always_included() {
+        let tools = vec![
+            make_tool("os"), make_tool("web"), make_tool("agent"),
+            make_tool("role"), make_tool("loop"), make_tool("work"),
+            make_tool("execute"), make_tool("emit"),
+        ];
         let result = filter_tools(&tools, &[], &[]);
-        let names: Vec<&str> = result.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"os"));
-        assert!(names.contains(&"web"));
-        assert!(names.contains(&"agent"));
-        assert!(names.contains(&"role"));
+        assert_eq!(result.len(), tools.len(), "all tools must always be returned");
     }
 
     #[test]
@@ -233,12 +206,11 @@ mod tests {
     }
 
     #[test]
-    fn test_loop_keyword_includes_tool() {
-        let tools = vec![make_tool("os"), make_tool("loop")];
-        let messages = vec![make_msg("user", "Send a dm to the other bot")];
-        let result = filter_tools(&tools, &messages, &[]);
-        let names: Vec<&str> = result.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"loop"));
+    fn test_all_tools_returned_regardless_of_keywords() {
+        let tools = vec![make_tool("os"), make_tool("loop"), make_tool("work"), make_tool("execute")];
+        // No keywords — all tools still returned
+        let result = filter_tools(&tools, &[], &[]);
+        assert_eq!(result.len(), tools.len());
     }
 
     #[test]

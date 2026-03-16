@@ -7,5 +7,5 @@
 {:else if price === 'Get'}
 	<span class="btn-market btn-market-get">{price}</span>
 {:else}
-	<span class="text-xs font-bold text-primary">{price}</span>
+	<span class="text-sm font-bold text-primary">{price}</span>
 {/if}

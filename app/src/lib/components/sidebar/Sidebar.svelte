@@ -1,26 +1,30 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { getWebSocketClient } from '$lib/websocket/client';
-	import { getLoops, getActiveRoles } from '$lib/api/nebo';
+	import { getLoops, getActiveRoles, listRoles, activateRole, deactivateRole, deleteRole, duplicateRole, updateRole } from '$lib/api/nebo';
 	import type { GetLoopsResponse, LoopChannelEntry, LoopEntry } from '$lib/api/neboComponents';
+	import NewBotMenu from '$lib/components/agent/NewBotMenu.svelte';
+	import AlertDialog from '$lib/components/ui/AlertDialog.svelte';
 
-	interface ActiveRoleEntry {
+	interface SidebarRole {
 		roleId: string;
 		name: string;
-		channelId?: string;
-		workflowCount: number;
-		skillCount: number;
+		description?: string;
+		isActive: boolean;
 	}
 
 	let {
 		activeChannelId = $bindable(''),
 		activeRoleId = '',
+		activeView = 'role',
 		onSelectMyChat = () => {},
 		onSelectChannel = (_channelId: string, _channelName: string, _loopName: string) => {},
-		onSelectRole = (_roleId: string, _roleName: string) => {}
+		onSelectRole = (_roleId: string, _roleName: string) => {},
 	}: {
 		activeChannelId?: string;
 		activeRoleId?: string;
+		activeView?: string;
 		onSelectMyChat?: () => void;
 		onSelectChannel?: (channelId: string, channelName: string, loopName: string) => void;
 		onSelectRole?: (roleId: string, roleName: string) => void;
@@ -28,28 +32,59 @@
 
 	let loops: LoopEntry[] = $state([]);
 	let expandedLoops: Set<string> = $state(new Set());
-	let activeRoles: ActiveRoleEntry[] = $state([]);
-	let desktopActive = $state(false);
-	let heartbeatActive = $state(false);
-	let eventsActive = $state(0);
+	let sidebarRoles: SidebarRole[] = $state([]);
 	let notificationCount = $state(0);
+	let showNewBotMenu = $state(false);
+	let menuPos = $state({ top: 0, left: 0 });
 
-	const isMyChatActive = $derived(activeChannelId === '' && activeRoleId === '');
+	// Context menu state
+	let contextMenu = $state<{ visible: boolean; x: number; y: number; role: SidebarRole | null }>({
+		visible: false, x: 0, y: 0, role: null,
+	});
+	let renamingRoleId = $state('');
+	let renameValue = $state('');
+	let renameInputEl: HTMLInputElement | undefined = $state();
+	let showDeleteDialog = $state(false);
+	let deleteTarget = $state<SidebarRole | null>(null);
+
+	const isMyChatActive = $derived(activeView === 'companion');
+
+	const activeCount = $derived(sidebarRoles.filter(r => r.isActive).length);
+
+	const BOT_COLORS = [
+		{ bg: 'bg-blue-500/10', text: 'text-blue-500' },
+		{ bg: 'bg-violet-500/10', text: 'text-violet-500' },
+		{ bg: 'bg-emerald-500/10', text: 'text-emerald-500' },
+		{ bg: 'bg-amber-500/10', text: 'text-amber-500' },
+		{ bg: 'bg-rose-500/10', text: 'text-rose-500' },
+		{ bg: 'bg-cyan-500/10', text: 'text-cyan-500' },
+	];
+
+	function nameHash(name: string): number {
+		let hash = 0;
+		for (let i = 0; i < name.length; i++) {
+			hash = ((hash << 5) - hash) + name.charCodeAt(i);
+			hash |= 0;
+		}
+		return Math.abs(hash);
+	}
+
+	function roleColor(name: string) {
+		return BOT_COLORS[nameHash(name) % BOT_COLORS.length];
+	}
+
+	function roleInitial(name: string): string {
+		return name.charAt(0).toUpperCase();
+	}
 
 	async function loadLoops() {
 		try {
 			const data = await getLoops() as GetLoopsResponse;
 			if (data?.loops) {
 				loops = data.loops;
-				// Auto-expand all loops on first load
 				if (expandedLoops.size === 0) {
 					expandedLoops = new Set(data.loops.map((l) => l.id));
 				}
-			}
-			if (data) {
-				heartbeatActive = data.heartbeatActive ?? false;
-				eventsActive = data.eventsActive ?? 0;
-				desktopActive = data.desktopActive ?? false;
 			}
 		} catch {
 			// NeboLoop not connected — empty is fine
@@ -66,14 +101,52 @@
 		expandedLoops = next;
 	}
 
-	async function loadActiveRoles() {
+	async function loadRoles() {
 		try {
-			const data = await getActiveRoles();
-			if (data?.roles) {
-				activeRoles = data.roles;
+			const [allRes, activeRes] = await Promise.all([
+				listRoles().catch(() => null),
+				getActiveRoles().catch(() => null),
+			]);
+
+			const activeIds = new Set((activeRes?.roles ?? []).map(r => r.roleId));
+			const roles: SidebarRole[] = [];
+
+			// DB roles
+			if (allRes?.roles) {
+				for (const r of allRes.roles) {
+					roles.push({
+						roleId: r.id,
+						name: r.name,
+						description: r.description || undefined,
+						isActive: activeIds.has(r.id),
+					});
+				}
 			}
+
+			// Filesystem-only roles — only show if they have an active UUID
+			if (allRes?.filesystemRoles) {
+				for (const r of allRes.filesystemRoles) {
+					const matchedActive = (activeRes?.roles ?? []).find(a => a.name === r.name);
+					if (matchedActive && !roles.some(existing => existing.name === r.name)) {
+						roles.push({
+							roleId: matchedActive.roleId,
+							name: r.name,
+							description: r.description || undefined,
+							isActive: true,
+						});
+					}
+				}
+			}
+
+			// Sort: active first, then alphabetical
+			roles.sort((a, b) => {
+				if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
+				return a.name.localeCompare(b.name);
+			});
+
+			sidebarRoles = roles;
 		} catch {
-			// No active roles — fine
+			// Fine
 		}
 	}
 
@@ -87,85 +160,299 @@
 		onSelectChannel(channel.channelId, channel.channelName, loopName);
 	}
 
-	function selectRole(role: ActiveRoleEntry) {
+	function selectRole(role: SidebarRole) {
+		if (contextMenu.visible || Date.now() - contextMenuClosedAt < 200) return;
 		onSelectRole(role.roleId, role.name);
+	}
+
+	// ── Context menu ──
+
+	function handleContextMenu(e: MouseEvent, role: SidebarRole) {
+		e.preventDefault();
+		(e.currentTarget as HTMLElement)?.blur();
+		contextMenu = { visible: true, x: e.clientX, y: e.clientY, role };
+	}
+
+	let contextMenuClosedAt = 0;
+
+	function handleWindowKeydown(e: KeyboardEvent) {
+		if (!contextMenu.visible) return;
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			closeContextMenu();
+		} else if (e.key === ' ' || e.key === 'Enter') {
+			e.preventDefault();
+			e.stopPropagation();
+		}
+	}
+
+	function handleWindowKeyup(e: KeyboardEvent) {
+		if (!contextMenu.visible) return;
+		if (e.key === ' ' || e.key === 'Enter') {
+			e.preventDefault();
+			e.stopPropagation();
+		}
+	}
+
+	function closeContextMenu() {
+		contextMenu = { visible: false, x: 0, y: 0, role: null };
+		contextMenuClosedAt = Date.now();
+	}
+
+	async function handleCtxRename() {
+		if (!contextMenu.role) return;
+		const role = contextMenu.role;
+		closeContextMenu();
+		renamingRoleId = role.roleId;
+		renameValue = role.name;
+		await tick();
+		renameInputEl?.select();
+	}
+
+	async function saveRename() {
+		const trimmed = renameValue.trim();
+		const role = sidebarRoles.find(r => r.roleId === renamingRoleId);
+		if (!trimmed || !role || trimmed === role.name) {
+			renamingRoleId = '';
+			return;
+		}
+		try {
+			await updateRole(renamingRoleId, { name: trimmed });
+			// Update local list immediately
+			const idx = sidebarRoles.findIndex(r => r.roleId === renamingRoleId);
+			if (idx >= 0) {
+				sidebarRoles[idx] = { ...sidebarRoles[idx], name: trimmed };
+			}
+		} catch {
+			// revert
+		}
+		renamingRoleId = '';
+	}
+
+	function cancelRename() {
+		renamingRoleId = '';
+	}
+
+	function handleRenameKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			saveRename();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			cancelRename();
+		}
+	}
+
+	async function handleCtxDuplicate() {
+		if (!contextMenu.role) return;
+		const roleId = contextMenu.role.roleId;
+		closeContextMenu();
+		try {
+			const res = await duplicateRole(roleId);
+			if (res?.role) {
+				await loadRoles();
+				onSelectRole(res.role.id, res.role.name);
+				goto(`/agent/role/${res.role.id}/chat`);
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	async function handleCtxToggle() {
+		if (!contextMenu.role) return;
+		const role = contextMenu.role;
+		closeContextMenu();
+		try {
+			if (role.isActive) {
+				await deactivateRole(role.roleId);
+			} else {
+				await activateRole(role.roleId);
+			}
+			await loadRoles();
+		} catch {
+			// ignore
+		}
+	}
+
+	function handleCtxDelete() {
+		if (!contextMenu.role) return;
+		deleteTarget = contextMenu.role;
+		closeContextMenu();
+		showDeleteDialog = true;
+	}
+
+	async function confirmDelete() {
+		if (!deleteTarget) return;
+		showDeleteDialog = false;
+		try {
+			if (deleteTarget.isActive) await deactivateRole(deleteTarget.roleId);
+			await deleteRole(deleteTarget.roleId);
+			if (activeRoleId === deleteTarget.roleId) {
+				goto('/agents');
+			}
+			await loadRoles();
+		} catch {
+			// ignore
+		}
+		deleteTarget = null;
 	}
 
 	onMount(() => {
 		loadLoops();
-		loadActiveRoles();
+		loadRoles();
 
 		const wsClient = getWebSocketClient();
 
-		// Reload loops when agent reconnects (may have new channels)
 		const unsubStatus = wsClient.onStatus((status) => {
 			if (status === 'connected') {
 				loadLoops();
-				loadActiveRoles();
+				loadRoles();
 			}
 		});
 
-		// Listen for desktop activity events
-		const unsubDesktop = wsClient.on<{ active: boolean }>('desktop_activity', (data) => {
-			if (data) desktopActive = data.active;
-		});
-
-		// Listen for notification events
 		const unsubNotify = wsClient.on<{ content: string }>('notification', (data) => {
 			if (data) notificationCount++;
 		});
 
-		// Listen for lane updates to refresh activity indicators
 		const unsubLane = wsClient.on('lane_update', () => {
 			loadLoops();
 		});
 
-		// Reload roles when activated/deactivated
 		const unsubRoleActivated = wsClient.on('role_activated', () => {
-			loadActiveRoles();
+			loadRoles();
 		});
 		const unsubRoleDeactivated = wsClient.on('role_deactivated', () => {
-			loadActiveRoles();
+			loadRoles();
+		});
+		const unsubRoleInstalled = wsClient.on('role_installed', () => {
+			loadRoles();
+		});
+		const unsubRoleUninstalled = wsClient.on('role_uninstalled', () => {
+			loadRoles();
+		});
+		const unsubRoleUpdated = wsClient.on('role_updated', () => {
+			loadRoles();
 		});
 
-		// Periodic refresh (channels can change via NeboLoop)
 		const refreshInterval = setInterval(() => {
 			loadLoops();
-			loadActiveRoles();
+			loadRoles();
 		}, 60000);
 
 		return () => {
 			unsubStatus();
-			unsubDesktop();
 			unsubNotify();
 			unsubLane();
 			unsubRoleActivated();
 			unsubRoleDeactivated();
+			unsubRoleInstalled();
+			unsubRoleUninstalled();
+			unsubRoleUpdated();
 			clearInterval(refreshInterval);
 		};
 	});
 </script>
 
+<svelte:window onkeydown={handleWindowKeydown} onkeyup={handleWindowKeyup} />
+
 <aside class="sidebar-container">
 	<nav class="sidebar-nav">
-		<!-- My Chat — always pinned at top -->
+		<!-- Header with + New button -->
+		<div class="sidebar-header">
+			<div>
+				<div class="sidebar-header-title">Agents</div>
+				{#if sidebarRoles.length > 0}
+					<div class="sidebar-header-subtitle">{activeCount} of {sidebarRoles.length} active</div>
+				{/if}
+			</div>
+			<div class="relative">
+				<button
+					class="sidebar-header-btn"
+					onclick={(e) => { e.stopPropagation(); const rect = (e.currentTarget as HTMLElement).getBoundingClientRect(); menuPos = { top: rect.bottom + 4, left: rect.left }; showNewBotMenu = !showNewBotMenu; }}
+					title="Add new role"
+				>
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<line x1="12" y1="5" x2="12" y2="19" />
+						<line x1="5" y1="12" x2="19" y2="12" />
+					</svg>
+				</button>
+				{#if showNewBotMenu}
+					<NewBotMenu onClose={() => showNewBotMenu = false} />
+				{/if}
+			</div>
+		</div>
+
+		<!-- Assistant — always pinned at top -->
 		<button
-			class="sidebar-item sidebar-my-chat"
+			class="sidebar-bot-card"
 			class:sidebar-item-active={isMyChatActive}
 			onclick={selectMyChat}
 		>
-			<svg class="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-			</svg>
-			<span class="sidebar-label">My Chat</span>
+			<div class="sidebar-bot-icon bg-primary/10">
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-primary">
+					<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+				</svg>
+			</div>
+			<div class="sidebar-bot-info">
+				<span class="sidebar-bot-name font-medium">Assistant</span>
+				<span class="sidebar-bot-role">Personal AI</span>
+			</div>
 			{#if notificationCount > 0}
 				<span class="sidebar-badge">{notificationCount}</span>
 			{/if}
 		</button>
 
-		<!-- Loops with channels + roles -->
+		<!-- Roles -->
+		{#if sidebarRoles.length > 0}
+			<div class="sidebar-divider"></div>
+			{#each sidebarRoles as role (role.roleId)}
+				{@const c = roleColor(role.name)}
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="sidebar-bot-card"
+					class:sidebar-item-active={activeRoleId === role.roleId}
+					class:sidebar-bot-paused={!role.isActive}
+					onclick={() => selectRole(role)}
+					oncontextmenu={(e) => handleContextMenu(e, role)}
+				>
+					<div class="sidebar-bot-icon {c.bg}">
+						<span class="{c.text} font-semibold text-base">{roleInitial(role.name)}</span>
+					</div>
+					<div class="sidebar-bot-info">
+						{#if renamingRoleId === role.roleId}
+							<!-- svelte-ignore a11y_autofocus -->
+							<input
+								bind:this={renameInputEl}
+								bind:value={renameValue}
+								class="sidebar-rename-input"
+								onkeydown={handleRenameKeydown}
+								onblur={saveRename}
+								onclick={(e) => e.stopPropagation()}
+							/>
+						{:else}
+							<span class="sidebar-bot-name">{role.name}</span>
+							{#if role.description}
+								<span class="sidebar-bot-role">{role.description}</span>
+							{/if}
+						{/if}
+					</div>
+					{#if renamingRoleId !== role.roleId}
+						{#if role.isActive}
+							<span class="sidebar-bot-status sidebar-bot-status-online"></span>
+						{:else}
+							<svg class="sidebar-bot-paused-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+								<rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" />
+							</svg>
+						{/if}
+					{/if}
+				</div>
+			{/each}
+		{/if}
+
+		<!-- Loops with channels -->
 		{#if loops.length > 0}
-			<div class="sidebar-section-label">Loops</div>
+			<div class="sidebar-divider"></div>
 			{#each loops as loop (loop.id)}
 				<button
 					class="sidebar-item sidebar-loop-header"
@@ -190,73 +477,60 @@
 							</button>
 						{/each}
 					{/if}
-
-					<!-- Roles within this loop -->
-					{#each activeRoles.filter(r => r.channelId) as role (role.roleId)}
-						<button
-							class="sidebar-item sidebar-role"
-							class:sidebar-item-active={activeRoleId === role.roleId}
-							onclick={() => selectRole(role)}
-						>
-							<span class="sidebar-channel-hash">#</span>
-							<span class="sidebar-label">{role.name.toLowerCase()}</span>
-							<span class="sidebar-role-indicator">&#10038;</span>
-						</button>
-					{/each}
 				{/if}
 			{/each}
 		{/if}
-
-		<!-- Standalone roles (not yet linked to a loop) -->
-		{#if activeRoles.filter(r => !r.channelId).length > 0}
-			<div class="sidebar-section-label">Roles</div>
-			{#each activeRoles.filter(r => !r.channelId) as role (role.roleId)}
-				<button
-					class="sidebar-item sidebar-role"
-					class:sidebar-item-active={activeRoleId === role.roleId}
-					onclick={() => selectRole(role)}
-				>
-					<span class="sidebar-channel-hash">#</span>
-					<span class="sidebar-label">{role.name.toLowerCase()}</span>
-					<span class="sidebar-role-indicator">&#10038;</span>
-				</button>
-			{/each}
-		{/if}
-
-		<!-- Activity section — always visible, pulse dot shows when active -->
-		<div class="sidebar-section-label">Activity</div>
-
-		<div class="sidebar-activity-item" class:sidebar-activity-idle={!heartbeatActive}>
-			<svg class="sidebar-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-			</svg>
-			<span class="sidebar-label-sm">Heartbeat</span>
-			{#if heartbeatActive}
-				<span class="sidebar-pulse"></span>
-			{/if}
-		</div>
-
-		<div class="sidebar-activity-item" class:sidebar-activity-idle={eventsActive === 0}>
-			<svg class="sidebar-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<circle cx="12" cy="12" r="10" />
-				<polyline points="12 6 12 12 16 14" />
-			</svg>
-			<span class="sidebar-label-sm">Events{eventsActive > 0 ? ` (${eventsActive})` : ''}</span>
-			{#if eventsActive > 0}
-				<span class="sidebar-pulse"></span>
-			{/if}
-		</div>
-
-		<div class="sidebar-activity-item" class:sidebar-activity-idle={!desktopActive}>
-			<svg class="sidebar-icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-				<line x1="8" y1="21" x2="16" y2="21" />
-				<line x1="12" y1="17" x2="12" y2="21" />
-			</svg>
-			<span class="sidebar-label-sm">Desktop</span>
-			{#if desktopActive}
-				<span class="sidebar-pulse"></span>
-			{/if}
-		</div>
 	</nav>
 </aside>
+
+<!-- Context menu -->
+{#if contextMenu.visible}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="sidebar-context-backdrop" onclick={closeContextMenu} oncontextmenu={(e) => { e.preventDefault(); closeContextMenu(); }}></div>
+	<div class="sidebar-context-menu" style="left: {contextMenu.x}px; top: {contextMenu.y}px;">
+		<button onclick={handleCtxRename}>
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+			</svg>
+			Rename
+		</button>
+		<button onclick={handleCtxDuplicate}>
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+				<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+			</svg>
+			Duplicate
+		</button>
+		<div class="context-menu-divider"></div>
+		<button onclick={handleCtxToggle}>
+			{#if contextMenu.role?.isActive}
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" />
+				</svg>
+				Pause
+			{:else}
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<polygon points="5 3 19 12 5 21 5 3" />
+				</svg>
+				Resume
+			{/if}
+		</button>
+		<div class="context-menu-divider"></div>
+		<button class="context-menu-danger" onclick={handleCtxDelete}>
+			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<polyline points="3 6 5 6 21 6" />
+				<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+			</svg>
+			Delete
+		</button>
+	</div>
+{/if}
+
+<AlertDialog
+	bind:open={showDeleteDialog}
+	title="Delete Agent"
+	description="Are you sure you want to delete &quot;{deleteTarget?.name}&quot;? This will remove the agent and all its data permanently."
+	actionLabel="Delete"
+	actionType="danger"
+	onAction={confirmDelete}
+/>

@@ -127,7 +127,7 @@
 		switch (status) {
 			case 'connected': return 'bg-success/10 text-success';
 			case 'error': return 'bg-error/10 text-error';
-			default: return 'bg-base-content/10 text-base-content/70';
+			default: return 'bg-base-content/10 text-base-content/90';
 		}
 	}
 
@@ -146,10 +146,10 @@
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Apps</h2>
-		<p class="text-sm text-base-content/70">Installed apps and the marketplace</p>
+		<p class="text-base text-base-content/80">Installed apps and the marketplace</p>
 	</div>
 	<button
-		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5"
+		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5"
 		onclick={loadAll}
 	>
 		<RefreshCw class="w-3.5 h-3.5" />
@@ -158,20 +158,20 @@
 </div>
 
 {#if isLoading}
-	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/70">
+	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/90">
 		<Spinner class="w-5 h-5 mx-auto mb-2" />
-		<p class="text-sm">Loading apps...</p>
+		<p class="text-base">Loading apps...</p>
 	</div>
 {:else}
 	<div class="flex gap-1 mb-2">
 		<button
-			class="h-8 px-3 rounded-lg text-[13px] font-medium transition-colors {activeTab === 'installed' ? 'bg-base-content/10 text-base-content' : 'text-base-content/50 hover:text-base-content/70'}"
+			class="h-8 px-3 rounded-lg text-sm font-medium transition-colors {activeTab === 'installed' ? 'bg-base-content/10 text-base-content' : 'text-base-content/80 hover:text-base-content/60'}"
 			onclick={() => activeTab = 'installed'}
 		>
 			Installed{plugins.length ? ` (${plugins.length})` : ''}
 		</button>
 		<button
-			class="h-8 px-3 rounded-lg text-[13px] font-medium transition-colors {activeTab === 'store' ? 'bg-base-content/10 text-base-content' : 'text-base-content/50 hover:text-base-content/70'}"
+			class="h-8 px-3 rounded-lg text-sm font-medium transition-colors {activeTab === 'store' ? 'bg-base-content/10 text-base-content' : 'text-base-content/80 hover:text-base-content/60'}"
 			onclick={() => activeTab = 'store'}
 		>
 			Marketplace
@@ -197,18 +197,18 @@
 							</div>
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2 mb-0.5">
-									<h3 class="font-display font-bold text-sm text-base-content">{plugin.displayName || plugin.name}</h3>
-									<span class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-base-content/10 text-base-content/70">v{plugin.version}</span>
-									<span class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded {getStatusBadgeClass(plugin.connectionStatus)}">
+									<h3 class="font-display font-bold text-base text-base-content">{plugin.displayName || plugin.name}</h3>
+									<span class="text-sm font-medium px-1.5 py-0.5 rounded bg-base-content/10 text-base-content/60">v{plugin.version}</span>
+									<span class="text-sm font-semibold uppercase px-1.5 py-0.5 rounded {getStatusBadgeClass(plugin.connectionStatus)}">
 										{plugin.connectionStatus}
 									</span>
 								</div>
-								<p class="text-sm text-base-content/70 truncate">{plugin.description}</p>
+								<p class="text-base text-base-content/80 truncate">{plugin.description}</p>
 							</div>
 							<div class="flex items-center gap-2 shrink-0" onclick={(e) => e.stopPropagation()}>
 								{#if hasUI(plugin)}
 									<button
-										class="h-7 px-2.5 rounded-md bg-primary text-primary-content text-[11px] font-semibold flex items-center gap-1 hover:brightness-110 transition-all disabled:opacity-50"
+										class="h-7 px-2.5 rounded-md bg-primary text-primary-content text-sm font-semibold flex items-center gap-1 hover:brightness-110 transition-all disabled:opacity-50"
 										onclick={(e) => handleOpenUI(e, plugin)}
 										disabled={openingApp === plugin.id}
 										title="Open app"
@@ -233,25 +233,25 @@
 					{/each}
 				</div>
 			{:else}
-				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/70">
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/90">
 					<Package class="w-12 h-12 mx-auto mb-4 opacity-20" />
 					<p class="font-medium mb-2">No apps installed</p>
-					<p class="text-sm">Browse the Marketplace to get started.</p>
+					<p class="text-base">Browse the Marketplace to get started.</p>
 				</div>
 			{/if}
 		{:else if activeTab === 'store'}
 			{#if !neboLoopConnected}
-				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/70">
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
 					<WifiOff class="w-10 h-10 mx-auto mb-3 opacity-20" />
 					<p class="font-medium mb-2">Connect to NeboLoop to browse the Marketplace</p>
-					<a href="/settings/status" class="inline-flex h-8 px-4 rounded-full bg-primary text-primary-content text-sm font-bold items-center hover:brightness-110 transition-all mt-2">
+					<a href="/settings/status" class="inline-flex h-8 px-4 rounded-full bg-primary text-primary-content text-base font-bold items-center hover:brightness-110 transition-all mt-2">
 						Go to Status
 					</a>
 				</div>
 			{:else if isLoadingStore}
-				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/70">
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
 					<Spinner class="w-5 h-5 mx-auto mb-2" />
-					<p class="text-sm">Loading store...</p>
+					<p class="text-base">Loading store...</p>
 				</div>
 			{:else if storeApps.length > 0}
 				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -266,21 +266,21 @@
 									{#if app.icon}
 										<img src={app.icon} alt={app.name} class="w-8 h-8 rounded" />
 									{:else}
-										<Store class="w-5 h-5 text-base-content/70" />
+										<Store class="w-5 h-5 text-base-content/90" />
 									{/if}
 								</div>
 								<div class="flex-1 min-w-0">
-									<h3 class="font-display font-bold text-sm text-base-content mb-0.5">{app.name}</h3>
-									<p class="text-[11px] text-base-content/70 mb-1">
+									<h3 class="font-display font-bold text-base text-base-content mb-0.5">{app.name}</h3>
+									<p class="text-sm text-base-content/60 mb-1">
 										by {app.author.name}
 										{#if app.author.verified}
 											<Check class="w-2.5 h-2.5 inline text-success" />
 										{/if}
 									</p>
-									<p class="text-sm text-base-content/70 mb-3 line-clamp-2">{app.description}</p>
+									<p class="text-base text-base-content/80 mb-3 line-clamp-2">{app.description}</p>
 
 									<div class="flex items-center justify-between">
-										<div class="flex items-center gap-3 text-[10px] text-base-content/70">
+										<div class="flex items-center gap-3 text-sm text-base-content/60">
 											{#if app.rating > 0}
 												<span class="flex items-center gap-0.5">
 													<Star class="w-3 h-3" />
@@ -297,7 +297,7 @@
 
 										{#if app.isInstalled || installedAppIds.has(app.slug)}
 											<button
-												class="h-7 px-2.5 rounded-md bg-success/10 text-success text-[11px] font-semibold flex items-center gap-1 hover:bg-success/20 transition-colors disabled:opacity-50"
+												class="h-7 px-2.5 rounded-md bg-success/10 text-success text-sm font-semibold flex items-center gap-1 hover:bg-success/20 transition-colors disabled:opacity-50"
 												onclick={(e) => { e.stopPropagation(); handleUninstall(app); }}
 												disabled={installingApp === app.id}
 											>
@@ -310,7 +310,7 @@
 											</button>
 										{:else}
 											<button
-												class="h-7 px-2.5 rounded-md bg-primary text-primary-content text-[11px] font-semibold flex items-center gap-1 hover:brightness-110 transition-all disabled:opacity-50"
+												class="h-7 px-2.5 rounded-md bg-primary text-primary-content text-sm font-semibold flex items-center gap-1 hover:brightness-110 transition-all disabled:opacity-50"
 												onclick={(e) => { e.stopPropagation(); handleInstall(app); }}
 												disabled={installingApp === app.id}
 											>
@@ -328,10 +328,10 @@
 					{/each}
 				</div>
 			{:else}
-				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/70">
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
 					<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
 					<p class="font-medium mb-1">No apps available yet</p>
-					<p class="text-sm">Check back later for new apps.</p>
+					<p class="text-base">Check back later for new apps.</p>
 				</div>
 			{/if}
 		{/if}

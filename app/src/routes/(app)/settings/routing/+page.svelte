@@ -276,38 +276,38 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Routing</h2>
-	<p class="text-sm text-base-content/70">Which model handles each type of task</p>
+	<p class="text-base text-base-content/80">Which model handles each type of task</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading routing configuration...</span>
+		<span class="text-base text-base-content/80">Loading routing configuration...</span>
 	</div>
 {:else}
 	<div class="space-y-6">
 		{#if error}
-			<div class="rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error">
+			<div class="rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-base text-error">
 				{error}
 			</div>
 		{/if}
 
 		<!-- Task Routing -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Task Routing</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Task Routing</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="space-y-5">
 					{#each routingModes as mode}
 						<div>
 							<div class="flex items-center gap-2 mb-2">
 								<mode.icon class="w-4 h-4 {mode.color} shrink-0" />
-								<span class="text-sm font-medium text-base-content">{mode.label}</span>
-								<span class="text-sm text-base-content/70">{mode.description}</span>
+								<span class="text-base font-medium text-base-content">{mode.label}</span>
+								<span class="text-base text-base-content/80">{mode.description}</span>
 							</div>
 							<div class="grid sm:grid-cols-2 gap-3">
 								<div>
-									<label class="text-sm font-medium text-base-content/70">Main model</label>
-									<select bind:value={routingForm[mode.key]} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors">
+									<label class="text-base font-medium text-base-content/80">Main model</label>
+									<select bind:value={routingForm[mode.key]} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors">
 										<option value="auto">Auto</option>
 										{#each groups as group}
 											<optgroup label={group.label}>
@@ -319,8 +319,8 @@
 									</select>
 								</div>
 								<div>
-									<label class="text-sm font-medium text-base-content/70">Backup</label>
-									<select bind:value={backupForm[mode.key]} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors">
+									<label class="text-base font-medium text-base-content/80">Backup</label>
+									<select bind:value={backupForm[mode.key]} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors">
 										<option value="none">None</option>
 										{#each groups as group}
 											<optgroup label={group.label}>
@@ -340,8 +340,8 @@
 				{#if aliasesForm.filter(a => !['claude', 'codex', 'gemini'].includes(a.alias)).length > 0}
 					<div class="mt-5 pt-5 border-t border-base-content/10">
 						<div class="flex items-center gap-2 mb-3">
-							<Tag class="w-3.5 h-3.5 text-base-content/70" />
-							<span class="text-sm font-medium text-base-content/70">Custom Aliases</span>
+							<Tag class="w-3.5 h-3.5 text-base-content/90" />
+							<span class="text-base font-medium text-base-content/80">Custom Aliases</span>
 						</div>
 						<div class="space-y-3">
 							{#each aliasesForm as aliasEntry, index}
@@ -351,9 +351,9 @@
 											type="text"
 											placeholder="e.g. fast"
 											bind:value={aliasEntry.alias}
-											class="w-40 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+											class="w-40 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 										/>
-										<select bind:value={aliasEntry.modelId} class="flex-1 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors">
+										<select bind:value={aliasEntry.modelId} class="flex-1 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors">
 											<option value="">Select model...</option>
 											{#each groups as group}
 												<optgroup label={group.label}>
@@ -365,11 +365,11 @@
 										</select>
 										<button
 											type="button"
-											class="w-11 h-11 rounded-xl bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/20 transition-colors"
+											class="w-11 h-11 rounded-xl bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/40 transition-colors"
 											onclick={() => removeAlias(index)}
 											aria-label="Remove alias"
 										>
-											<Trash2 class="w-4 h-4 text-base-content/70" />
+											<Trash2 class="w-4 h-4 text-base-content/90" />
 										</button>
 									</div>
 								{/if}
@@ -381,7 +381,7 @@
 				<div class="mt-4">
 					<button
 						type="button"
-						class="flex items-center gap-2 text-sm font-medium text-base-content/70 hover:text-primary transition-colors"
+						class="flex items-center gap-2 text-base font-medium text-base-content/80 hover:text-primary transition-colors"
 						onclick={addAlias}
 					>
 						<Plus class="w-4 h-4" /> Add shortcut
@@ -392,17 +392,17 @@
 
 		<!-- Lane Routing -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-1">Lane Routing</h3>
-			<p class="text-sm text-base-content/70 mb-3">Assign cheaper models to background lanes to reduce costs</p>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-1">Lane Routing</h3>
+			<p class="text-base text-base-content/80 mb-3">Assign cheaper models to background lanes to reduce costs</p>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="space-y-5">
 					{#each laneModes as lane}
 						<div>
 							<div class="flex items-center gap-2 mb-2">
-								<span class="text-sm font-medium text-base-content">{lane.label}</span>
-								<span class="text-sm text-base-content/70">{lane.description}</span>
+								<span class="text-base font-medium text-base-content">{lane.label}</span>
+								<span class="text-base text-base-content/80">{lane.description}</span>
 							</div>
-							<select bind:value={laneRoutingForm[lane.key]} class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors">
+							<select bind:value={laneRoutingForm[lane.key]} class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors">
 								<option value="auto">Auto</option>
 								{#each groups as group}
 									<optgroup label={group.label}>
@@ -423,7 +423,7 @@
 			<button
 				type="button"
 				disabled={isSaving}
-				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
 				onclick={saveAll}
 			>
 				{#if isSaving}

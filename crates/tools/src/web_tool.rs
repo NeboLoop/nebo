@@ -439,7 +439,16 @@ impl WebTool {
             "wait" => "wait",
             "evaluate" => "evaluate",
             "list_tabs" => "list_tabs",
-            "new_tab" => "new_tab",
+            "new_tab" => {
+                let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                if url.is_empty() || url == "about:blank" {
+                    return ToolResult::error(
+                        "new_tab requires a URL. Use navigate to change the current tab, \
+                         or new_tab with a specific URL."
+                    );
+                }
+                "new_tab"
+            }
             "close_tab" | "close" => "close_tab",
             "status" => {
                 return ToolResult::ok(format!(

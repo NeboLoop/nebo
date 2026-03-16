@@ -238,7 +238,7 @@
 						x="0"
 						y="20"
 						text-anchor="middle"
-						class="text-xs fill-text-secondary"
+						class="text-sm fill-text-secondary"
 					>
 						{tick.label}
 					</text>
@@ -249,7 +249,7 @@
 					x={chartWidth / 2}
 					y="50"
 					text-anchor="middle"
-					class="text-sm fill-text font-medium"
+					class="text-base fill-text font-medium"
 				>
 					{xLabel}
 				</text>
@@ -267,7 +267,7 @@
 						y="0"
 						text-anchor="end"
 						dominant-baseline="middle"
-						class="text-xs fill-text-secondary"
+						class="text-sm fill-text-secondary"
 					>
 						{tick.label}
 					</text>
@@ -280,7 +280,7 @@
 					text-anchor="middle"
 					dominant-baseline="middle"
 					transform={`rotate(-90, -50, ${chartHeight / 2})`}
-					class="text-sm fill-text font-medium"
+					class="text-base fill-text font-medium"
 				>
 					{yLabel}
 				</text>
@@ -294,8 +294,8 @@
 				<svg class="mx-auto h-12 w-12 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
 				</svg>
-				<h3 class="mt-2 text-sm font-medium text-text">No data</h3>
-				<p class="mt-1 text-sm text-text-muted">No data points to display</p>
+				<h3 class="mt-2 text-base font-medium text-text">No data</h3>
+				<p class="mt-1 text-base text-text-muted">No data points to display</p>
 			</div>
 		</div>
 	{/if}

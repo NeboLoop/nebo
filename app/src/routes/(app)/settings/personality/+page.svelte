@@ -174,13 +174,13 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Soul</h2>
-	<p class="text-sm text-base-content/70">The core personality and values that define your agent</p>
+	<p class="text-base text-base-content/80">The core personality and values that define your agent</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading personality...</span>
+		<span class="text-base text-base-content/80">Loading personality...</span>
 	</div>
 {:else}
 	<form
@@ -193,10 +193,10 @@
 		<!-- Soul -->
 		<section>
 			<div class="flex items-center justify-between mb-3">
-				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">Soul</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Soul</h3>
 				{#if presets.length > 0}
 					<select
-						class="h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+						class="h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors"
 						onchange={loadPreset}
 					>
 						<option value="" selected disabled>Load a template...</option>
@@ -210,20 +210,20 @@
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<textarea
 					id="personality-prompt"
-					class="w-full rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 font-mono text-sm leading-relaxed resize-none overflow-y-auto focus:outline-none focus:border-primary/50 transition-colors"
+					class="w-full rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 font-mono text-base leading-relaxed resize-none overflow-y-auto focus:outline-none focus:border-primary/50 transition-colors"
 					style="min-height: 6rem; max-height: 60vh; field-sizing: content;"
 					placeholder="Define your agent's personality, behavior, and communication style..."
 					bind:value={customPersonality}
 				></textarea>
 				{#if showRevert}
 					<div class="flex items-center justify-between mt-3 px-4 py-2.5 rounded-xl bg-base-content/5 border border-base-content/10">
-						<span class="text-sm text-base-content/70">Template loaded — replaced your previous soul.</span>
-						<button type="button" class="text-sm font-medium text-primary hover:text-primary/80 transition-colors" onclick={revertSoul}>
+						<span class="text-base text-base-content/80">Template loaded — replaced your previous soul.</span>
+						<button type="button" class="text-base font-medium text-primary hover:text-primary/80 transition-colors" onclick={revertSoul}>
 							Undo
 						</button>
 					</div>
 				{:else}
-					<p class="text-sm text-base-content/70 mt-2">
+					<p class="text-base text-base-content/80 mt-2">
 						This is your agent's core personality prompt — its soul.
 					</p>
 				{/if}
@@ -232,19 +232,19 @@
 
 		<!-- Tuning -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Tuning</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Tuning</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-4">
 				{#each tuningRows as row}
 					<div class="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
-						<span class="text-sm font-medium text-base-content w-24 shrink-0">{row.label}</span>
+						<span class="text-base font-medium text-base-content w-24 shrink-0">{row.label}</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each row.options as option}
 								<button
 									type="button"
-									class="px-3 py-1.5 rounded-lg text-sm font-medium border transition-all
+									class="px-3 py-1.5 rounded-lg text-base font-medium border transition-all
 										{row.value === option.value
 											? 'bg-primary/10 border-primary/30 text-primary'
-											: 'bg-base-content/5 border-transparent text-base-content/70 hover:border-base-content/15'}"
+											: 'bg-base-content/5 border-transparent text-base-content/90 hover:border-base-content/15'}"
 									onclick={() => row.set(option.value)}
 								>
 									{option.label}
@@ -258,7 +258,7 @@
 
 		<!-- Save -->
 		{#if saveMessage}
-			<div class="rounded-xl {saveError ? 'bg-error/10 border border-error/20 text-error' : 'bg-success/10 border border-success/20 text-success'} px-4 py-3 text-sm">
+			<div class="rounded-xl {saveError ? 'bg-error/10 border border-error/20 text-error' : 'bg-success/10 border border-success/20 text-success'} px-4 py-3 text-base">
 				{saveMessage}
 			</div>
 		{/if}
@@ -267,7 +267,7 @@
 			<button
 				type="submit"
 				disabled={isSaving}
-				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
 			>
 				{#if isSaving}
 					<Spinner size={16} />

@@ -46,6 +46,7 @@ notify_crate = { workspace = true }
 workflow = { workspace = true }
 tonic = "0.12"
 sandbox-runtime = { workspace = true }
+rfd = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

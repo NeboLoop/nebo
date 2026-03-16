@@ -48,9 +48,9 @@
 						<li>
 							<a
 								href={item.href}
-								class="text-[15px] font-medium transition-colors {currentPath === item.href
+								class="text-base font-medium transition-colors {currentPath === item.href
 									? 'text-base-content'
-									: 'text-base-content/70 hover:text-base-content'}"
+									: 'text-base-content/80 hover:text-base-content'}"
 							>
 								{item.label}
 							</a>
@@ -93,10 +93,10 @@
 						<li>
 							<a
 								href={item.href}
-								class="block py-2 text-[15px] font-medium transition-colors {currentPath ===
+								class="block py-2 text-base font-medium transition-colors {currentPath ===
 								item.href
 									? 'text-base-content'
-									: 'text-base-content/70 hover:text-base-content'}"
+									: 'text-base-content/80 hover:text-base-content'}"
 								onclick={closeMobileMenu}
 							>
 								{item.label}

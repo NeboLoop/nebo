@@ -118,7 +118,7 @@
 		<Bell class="w-5 h-5" />
 		{#if $hasUnreadNotifications}
 			<span
-				class="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-error text-error-content text-xs font-bold flex items-center justify-center"
+				class="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-error text-error-content text-sm font-bold flex items-center justify-center"
 			>
 				{$unreadNotificationCount > 99 ? '99+' : $unreadNotificationCount}
 			</span>
@@ -149,7 +149,7 @@
 			<!-- Notification List -->
 			<div class="max-h-96 overflow-y-auto">
 				{#if $notifications.length === 0}
-					<div class="px-4 py-8 text-center text-base-content/70">
+					<div class="px-4 py-8 text-center text-base-content/90">
 						<Bell class="w-8 h-8 mx-auto mb-2 opacity-40" />
 						<p>No notifications yet</p>
 					</div>
@@ -171,7 +171,7 @@
 								<!-- Content -->
 								<div class="flex-1 min-w-0">
 									<div class="flex items-start justify-between gap-2">
-										<p class="font-medium text-sm" class:font-bold={!n.readAt}>
+										<p class="font-medium text-base" class:font-bold={!n.readAt}>
 											{n.title}
 										</p>
 										{#if !n.readAt}
@@ -179,11 +179,11 @@
 										{/if}
 									</div>
 									{#if n.body}
-										<p class="text-sm text-base-content/70 line-clamp-2 mt-0.5">
+										<p class="text-base text-base-content/80 line-clamp-2 mt-0.5">
 											{n.body}
 										</p>
 									{/if}
-									<p class="text-xs text-base-content/70 mt-1">
+									<p class="text-sm text-base-content/60 mt-1">
 										{formatTime(n.createdAt)}
 									</p>
 								</div>

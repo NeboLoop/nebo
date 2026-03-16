@@ -227,7 +227,7 @@
 							<div
 								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''}"
 							>
-								<div class="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
+								<div class="prose prose-invert max-w-none leading-relaxed">
 									<Markdown content={block.text} />
 								</div>
 								{#if resolved.message.streaming && block.isLastBlock}
@@ -239,7 +239,7 @@
 									<button
 										type="button"
 										onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
-										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/70 hover:text-base-content"
+										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
 										title="Copy"
 									>
 										{#if copiedId === resolved.id}
@@ -282,7 +282,7 @@
 							{#if resolved.message.streaming && !resolved.cleanContent}
 								<ReadingIndicator />
 							{:else}
-								<div class="prose prose-sm prose-invert max-w-none text-sm leading-relaxed">
+								<div class="prose prose-invert max-w-none leading-relaxed">
 									<Markdown content={resolved.cleanContent} preRenderedHtml={resolved.message.contentHtml} />
 								</div>
 								{#if resolved.message.streaming}
@@ -295,7 +295,7 @@
 								<button
 									type="button"
 									onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
-									class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/70 hover:text-base-content"
+									class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
 									title="Copy"
 								>
 									{#if copiedId === resolved.id}
@@ -320,9 +320,9 @@
 
 		<!-- Footer: sender name + timestamp -->
 		<div class="flex gap-2 items-baseline mt-1.5 {role === 'user' ? 'flex-row-reverse' : ''}">
-			<span class="text-xs font-medium text-base-content/70">{role === 'user' ? 'You' : agentName}</span>
+			<span class="text-sm font-medium text-base-content/60">{role === 'user' ? 'You' : agentName}</span>
 			{#if groupTimestamp}
-				<span class="text-xs text-base-content/70">{formatTime(groupTimestamp)}</span>
+				<span class="text-sm text-base-content/60">{formatTime(groupTimestamp)}</span>
 			{/if}
 		</div>
 	</div>

@@ -87,13 +87,13 @@
 					<p class="card-subtitle truncate">{subtitle}</p>
 				{/if}
 				{#if description}
-					<p class="text-xs text-base-500 mt-1">{description}</p>
+					<p class="text-sm text-base-500 mt-1">{description}</p>
 				{/if}
 			</div>
 
 			<div class="flex items-center gap-2 flex-shrink-0">
 				{#if lastUpdated}
-					<span class="text-xs text-base-500 hidden sm:inline">
+					<span class="text-sm text-base-500 hidden sm:inline">
 						{formatLastUpdated(lastUpdated)}
 					</span>
 				{/if}
@@ -191,7 +191,7 @@
 				<AlertCircle class="w-5 h-5 text-error flex-shrink-0 mt-0.5" />
 				<div class="flex-1">
 					<p class="font-medium text-error">Error loading chart</p>
-					<p class="text-sm text-error/80">{error}</p>
+					<p class="text-base text-error/80">{error}</p>
 				</div>
 				{#if onRefresh}
 					<button
@@ -205,7 +205,7 @@
 		{:else if loading}
 			<div class="flex flex-col items-center justify-center py-12">
 				<span class="loading loading-spinner loading-lg text-primary mb-4"></span>
-				<p class="text-sm text-base-500">Loading chart data...</p>
+				<p class="text-base text-base-500">Loading chart data...</p>
 			</div>
 		{:else}
 			{@render children()}

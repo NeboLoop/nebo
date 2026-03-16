@@ -46,41 +46,41 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Usage</h2>
-	<p class="text-sm text-base-content/70">AI token usage for the current billing period</p>
+	<p class="text-base text-base-content/80">AI token usage for the current billing period</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading usage...</span>
+		<span class="text-base text-base-content/80">Loading usage...</span>
 	</div>
 {:else if !connected}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-		<p class="text-sm text-base-content/70">Connect your NeboLoop account to view usage.</p>
-		<a href="/settings/account" class="inline-block mt-3 text-sm font-medium text-primary hover:brightness-110 transition-all">
+		<p class="text-base text-base-content/80">Connect your NeboLoop account to view usage.</p>
+		<a href="/settings/account" class="inline-block mt-3 text-base font-medium text-primary hover:brightness-110 transition-all">
 			Go to Account
 		</a>
 	</div>
 {:else if !usage}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-		<p class="text-sm text-base-content/70">No usage data available.</p>
+		<p class="text-base text-base-content/80">No usage data available.</p>
 	</div>
 {:else}
 	<div class="space-y-6">
 		<!-- Session Usage -->
 		{#if usage.session.limitTokens > 0}
 			<section>
-				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Session</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Session</h3>
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="flex items-end justify-between mb-3">
 						<div>
 							<p class="text-2xl font-bold text-base-content tabular-nums">{formatTokens(usage.session.usedTokens)}</p>
-							<p class="text-sm text-base-content/70">of {formatTokens(usage.session.limitTokens)} tokens</p>
+							<p class="text-base text-base-content/80">of {formatTokens(usage.session.limitTokens)} tokens</p>
 						</div>
 						<div class="text-right">
-							<p class="text-sm font-medium text-base-content tabular-nums">{usage.session.percentUsed}%</p>
+							<p class="text-base font-medium text-base-content tabular-nums">{usage.session.percentUsed}%</p>
 							{#if usage.session.resetAt}
-								<p class="text-sm text-base-content/70">{timeUntilReset(usage.session.resetAt)}</p>
+								<p class="text-base text-base-content/80">{timeUntilReset(usage.session.resetAt)}</p>
 							{/if}
 						</div>
 					</div>
@@ -97,17 +97,17 @@
 		<!-- Weekly Usage -->
 		{#if usage.weekly.limitTokens > 0}
 			<section>
-				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Weekly</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Weekly</h3>
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="flex items-end justify-between mb-3">
 						<div>
 							<p class="text-2xl font-bold text-base-content tabular-nums">{formatTokens(usage.weekly.usedTokens)}</p>
-							<p class="text-sm text-base-content/70">of {formatTokens(usage.weekly.limitTokens)} tokens</p>
+							<p class="text-base text-base-content/80">of {formatTokens(usage.weekly.limitTokens)} tokens</p>
 						</div>
 						<div class="text-right">
-							<p class="text-sm font-medium text-base-content tabular-nums">{usage.weekly.percentUsed}%</p>
+							<p class="text-base font-medium text-base-content tabular-nums">{usage.weekly.percentUsed}%</p>
 							{#if usage.weekly.resetAt}
-								<p class="text-sm text-base-content/70">{timeUntilReset(usage.weekly.resetAt)}</p>
+								<p class="text-base text-base-content/80">{timeUntilReset(usage.weekly.resetAt)}</p>
 							{/if}
 						</div>
 					</div>
@@ -123,18 +123,18 @@
 
 		<!-- Remaining -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Remaining</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Remaining</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="grid sm:grid-cols-2 gap-4">
 					{#if usage.session.limitTokens > 0}
 						<div>
-							<p class="text-sm text-base-content/70">Session</p>
+							<p class="text-base text-base-content/80">Session</p>
 							<p class="text-lg font-bold text-base-content tabular-nums">{formatTokens(usage.session.remainingTokens)}</p>
 						</div>
 					{/if}
 					{#if usage.weekly.limitTokens > 0}
 						<div>
-							<p class="text-sm text-base-content/70">Weekly</p>
+							<p class="text-base text-base-content/80">Weekly</p>
 							<p class="text-lg font-bold text-base-content tabular-nums">{formatTokens(usage.weekly.remainingTokens)}</p>
 						</div>
 					{/if}

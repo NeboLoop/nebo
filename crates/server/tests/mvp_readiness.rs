@@ -855,8 +855,6 @@ async fn test_cron(server: &TestServer) -> TestResult {
         id: 0,
         role_id: "mvp-role-1".into(),
         binding_name: "daily".into(),
-        workflow_ref: "@nebo/workflows/daily@^1.0.0".into(),
-        workflow_id: Some("wf-uuid-123".into()),
         trigger_type: "schedule".into(),
         trigger_config: "0 7 * * *".into(),
         description: Some("Daily briefing".into()),
@@ -891,19 +889,21 @@ async fn test_events() -> TestResult {
     dispatcher
         .subscribe(workflow::events::EventSubscription {
             pattern: "email.*".into(),
-            workflow_id: "wf-email-handler".into(),
             default_inputs: serde_json::json!({}),
             role_source: "test-role".into(),
             binding_name: "email-watch".into(),
+            definition_json: None,
+            emit_source: None,
         })
         .await;
     dispatcher
         .subscribe(workflow::events::EventSubscription {
             pattern: "email.urgent".into(),
-            workflow_id: "wf-urgent-handler".into(),
             default_inputs: serde_json::json!({}),
             role_source: "test-role".into(),
             binding_name: "urgent-watch".into(),
+            definition_json: None,
+            emit_source: None,
         })
         .await;
 

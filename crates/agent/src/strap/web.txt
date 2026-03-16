@@ -7,6 +7,17 @@ Two modes:
 
 Decision: If you just need an API response or static HTML → fetch. If you need to read a rendered page, interact with elements, or use the user's sessions → browser actions.
 
+**CRITICAL — Browse Like a Human:**
+When using browser actions, you MUST behave like a real person browsing the web:
+- **Read before interacting:** Always read_page first to understand what's on screen before clicking anything
+- **Scroll to explore:** Real people scroll down pages to see more content. NEVER assume you can see everything without scrolling
+- **Click naturally:** Click on links, buttons, and elements as a curious person would. Read → think → click → read again
+- **Navigate within tabs:** Once you open a tab for a task (like YouTube monitoring), stay in that tab and navigate naturally with clicks and scrolling
+- **One tab per task:** Open ONE new tab for each distinct task, then do all your work in that tab before closing it
+- **Timing matters:** After clicking or submitting forms, wait briefly (1-2 seconds) before reading the page again
+- **Follow the flow:** Homepage → search box → type query → Enter → read results → click result → read page → go_back if needed
+Anti-bot sites (Google, Yelp, social media) WILL block you if you don't browse like a human. Scroll, click, read naturally.
+
 Actions:
 - web(action: fetch, url: "https://api.example.com") — Simple HTTP request (no JS rendering)
 - web(action: search, query: "golang tutorials") — Web search

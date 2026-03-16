@@ -18,7 +18,7 @@ impl MessageTool {
     fn infer_resource(&self, action: &str) -> &str {
         match action {
             "notify" => "owner",
-            "alert" | "speak" | "dnd_status" => "notify",
+            "alert" | "dnd_status" => "notify",
             "conversations" | "read" | "search" => "sms",
             _ => "",
         }
@@ -34,12 +34,12 @@ impl DynTool for MessageTool {
         "Send messages, notifications, and SMS to the owner.\n\n\
          Resources and Actions:\n\
          - owner: notify (append message to companion chat + push notification)\n\
-         - notify: send, alert, speak, dnd_status (system notifications, text-to-speech, DND status)\n\
+         - notify: send, alert, dnd_status (system notifications, DND status)\n\
          - sms: send, conversations, read, search (macOS Messages.app integration)\n\n\
+         For text-to-speech use os(resource: \"tts\", action: \"speak\", text: \"...\")\n\n\
          Examples:\n  \
          message(resource: \"owner\", action: \"notify\", text: \"Your task is complete!\")\n  \
          message(action: \"notify\", text: \"Reminder: meeting in 5 minutes\")\n  \
-         message(resource: \"notify\", action: \"speak\", text: \"Hello world\")\n  \
          message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"Disk space low\")\n  \
          message(resource: \"notify\", action: \"dnd_status\")\n  \
          message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")\n  \
@@ -61,7 +61,7 @@ impl DynTool for MessageTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["notify", "send", "alert", "speak", "dnd_status", "conversations", "read", "search"]
+                    "enum": ["notify", "send", "alert", "dnd_status", "conversations", "read", "search"]
                 },
                 "text": { "type": "string", "description": "Message text" },
                 "title": { "type": "string", "description": "Notification or alert title" },
@@ -184,12 +184,7 @@ async fn handle_notify(store: &Store, action: &str, input: &serde_json::Value) -
             handle_alert(title, text).await
         }
         "speak" => {
-            let text = input["text"].as_str().unwrap_or("");
-            if text.is_empty() {
-                return ToolResult::error("text is required for speak");
-            }
-
-            handle_speak(text).await
+            ToolResult::error("speak has moved to the os tool: os(resource: \"tts\", action: \"speak\", text: \"...\")")
         }
         "dnd_status" => {
             handle_dnd_status().await
@@ -236,40 +231,6 @@ async fn handle_alert(title: &str, text: &str) -> ToolResult {
 
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     ToolResult::error("alert not supported on this platform")
-}
-
-// ---------------------------------------------------------------------------
-// Speak (text-to-speech)
-// ---------------------------------------------------------------------------
-
-async fn handle_speak(text: &str) -> ToolResult {
-    #[cfg(target_os = "macos")]
-    {
-        return run_command("say", &[text]).await;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if which_exists("espeak") {
-            return run_command("espeak", &[text]).await;
-        }
-        if which_exists("spd-say") {
-            return run_command("spd-say", &[text]).await;
-        }
-        return ToolResult::error("No TTS engine found. Install espeak or spd-say.");
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let script = format!(
-            r#"Add-Type -AssemblyName System.Speech; $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; $synth.Speak("{}")"#,
-            text.replace('"', "`\""),
-        );
-        return run_powershell(&script).await;
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    ToolResult::error("speak not supported on this platform")
 }
 
 // ---------------------------------------------------------------------------

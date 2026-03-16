@@ -112,7 +112,7 @@ Route every request to a tool call. Whether responding to a user message, execut
 → Only go to web/files if memory doesn't have it
 
 **Scheduling — "every", "remind me", "daily", "in 10 minutes":**
-→ event(action: "create", task_type: "agent", ...) — always agent type so YOU execute it
+→ event(action: "create", cron: "...", task_type: "agent", prompt: "...") — always agent type so YOU execute it
 
 **Unfamiliar request or "Can you...?":**
 → FIRST: skill(action: "catalog") — check available skills before saying no
@@ -154,7 +154,7 @@ Route every request to a tool call. Whether responding to a user message, execut
 
 **Work that spans time (do X now, follow up later):**
 → Do the immediate work with tools, then create an event for the deferred part
-→ event(action: "create", task_type: "agent", message: "what to do", instructions: "how to do it — brief your future self")
+→ event(action: "create", cron: "...", task_type: "agent", prompt: "what to do", instructions: "how to do it — brief your future self")
 → The event run can use agent(resource: "session", action: "query") to pull context from the original conversation"#;
 
 const SECTION_BEHAVIOR: &str = r#"## Tool Execution

@@ -40,10 +40,10 @@
 	{#if label || showPercent}
 		<div class="mb-2 flex items-center justify-between">
 			{#if label}
-				<span class="text-sm font-medium text-base-content/70">{label}</span>
+				<span class="text-base font-medium text-base-content/80">{label}</span>
 			{/if}
 			{#if showPercent}
-				<span class="text-sm font-semibold">{percentage.toFixed(0)}%</span>
+				<span class="text-base font-semibold">{percentage.toFixed(0)}%</span>
 			{/if}
 		</div>
 	{/if}

@@ -50,10 +50,17 @@
 		}
 	},
 	"dependencies": {
+		"@tauri-apps/api": "^2.10.1",
+		"@tiptap/core": "^3.20.1",
+		"@tiptap/extension-placeholder": "^3.20.1",
+		"@tiptap/pm": "^3.20.1",
+		"@tiptap/starter-kit": "^3.20.1",
+		"@tiptap/suggestion": "^3.20.1",
 		"daisyui": "^5.5.14",
 		"lucide-svelte": "^0.562.0",
 		"marked": "^17.0.1",
 		"shiki": "^3.21.0",
+		"tiptap-markdown": "^0.9.0",
 		"turndown": "^7.2.2"
 	}
 }

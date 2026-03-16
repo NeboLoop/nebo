@@ -75,7 +75,7 @@
 							<h2 class="text-2xl sm:text-3xl font-bold tracking-tight">{title}</h2>
 						{/if}
 						{#if subtitle}
-							<p class="mt-2 text-base-content/70 max-w-2xl" class:mx-auto={center}>
+							<p class="mt-2 text-base-content/90 max-w-2xl" class:mx-auto={center}>
 								{subtitle}
 							</p>
 						{/if}

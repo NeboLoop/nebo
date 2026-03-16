@@ -39,6 +39,10 @@ pub struct Activity {
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
+    pub mcps: Vec<String>,
+    #[serde(default)]
+    pub cmds: Vec<String>,
+    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub steps: Vec<String>,

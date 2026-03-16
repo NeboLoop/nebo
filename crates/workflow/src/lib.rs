@@ -33,8 +33,13 @@ pub enum WorkflowError {
     Database(String),
     #[error("provider error: {0}")]
     Provider(String),
+    /// Workflow exited early by agent decision — not a failure.
+    #[error("workflow exited: {0}")]
+    Exited(String),
     #[error("workflow cancelled")]
     Cancelled,
+    #[error("circuit breaker tripped: {0}")]
+    CircuitBreak(String),
     #[error("{0}")]
     Other(String),
 }

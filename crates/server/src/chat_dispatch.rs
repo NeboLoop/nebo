@@ -18,8 +18,30 @@ use tools::Origin;
 
 use crate::state::AppState;
 
+/// An active agent run with its cancellation token and start time.
+pub struct ActiveRun {
+    pub token: CancellationToken,
+    pub started_at: std::time::Instant,
+}
+
 /// Tracks active agent runs so they can be cancelled (e.g., from WebSocket).
-pub type ActiveRuns = Arc<Mutex<HashMap<String, CancellationToken>>>;
+pub type ActiveRuns = Arc<Mutex<HashMap<String, ActiveRun>>>;
+
+/// Guard that removes a session from active_runs on drop (panic-safe cleanup).
+struct ActiveRunGuard {
+    active_runs: Option<ActiveRuns>,
+    session_id: String,
+}
+
+impl Drop for ActiveRunGuard {
+    fn drop(&mut self) {
+        if let Some(ref runs) = self.active_runs {
+            if let Ok(mut guard) = runs.try_lock() {
+                guard.remove(&self.session_id);
+            }
+        }
+    }
+}
 
 /// Configuration for a chat run — decorators that customize behavior
 /// without changing the underlying execution flow.
@@ -38,6 +60,8 @@ pub struct ChatConfig {
     pub comm_reply: Option<CommReplyConfig>,
     /// Per-entity resolved config — permissions, resource grants, model, personality.
     pub entity_config: Option<crate::entity_config::ResolvedEntityConfig>,
+    /// Images attached to the user's message (base64-encoded).
+    pub images: Vec<ai::ImageContent>,
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -68,7 +92,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
 
     // Track for external cancellation if active_runs provided
     if let Some(ref runs) = active_runs {
-        runs.lock().await.insert(sid.clone(), cancel_token.clone());
+        runs.lock().await.insert(sid.clone(), ActiveRun {
+            token: cancel_token.clone(),
+            started_at: std::time::Instant::now(),
+        });
     }
 
     // Broadcast chat_created so frontend can track new conversations
@@ -89,8 +116,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
     let origin = config.origin;
     let comm_reply = config.comm_reply;
     let entity_cfg = config.entity_config;
+    let images = config.images;
 
     let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
+        // Panic-safe cleanup: removes session from active_runs even on panic
+        let _run_guard = ActiveRunGuard {
+            active_runs: active_runs.clone(),
+            session_id: sid.clone(),
+        };
+
         // Extract per-entity overrides from resolved config
         let (permissions, resource_grants, model_preference, personality_snippet) =
             if let Some(ref ec) = entity_cfg {
@@ -117,16 +151,28 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
             resource_grants,
             model_preference,
             personality_snippet,
+            images,
             ..Default::default()
         };
 
         match runner.run(req).await {
             Ok(mut rx) => {
                 let mut full_response = String::new();
+                let mut text_buffer = String::new();
+                let mut last_flush = tokio::time::Instant::now();
+                const COALESCE_MS: u64 = 75;
 
                 loop {
                     let event = tokio::select! {
                         _ = cancel_token.cancelled() => {
+                            // Flush remaining buffer before cancellation
+                            if !text_buffer.is_empty() {
+                                hub.broadcast("chat_stream", serde_json::json!({
+                                    "session_id": sid,
+                                    "content": &text_buffer,
+                                    "role_id": role_id,
+                                }));
+                            }
                             hub.broadcast("chat_cancelled", serde_json::json!({
                                 "session_id": sid,
                                 "role_id": role_id,
@@ -142,11 +188,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                     match event.event_type {
                         StreamEventType::Text => {
                             full_response.push_str(&event.text);
-                            hub.broadcast("chat_stream", serde_json::json!({
-                                "session_id": sid,
-                                "content": event.text,
-                                "role_id": role_id,
-                            }));
+                            text_buffer.push_str(&event.text);
+                            if last_flush.elapsed().as_millis() as u64 >= COALESCE_MS {
+                                hub.broadcast("chat_stream", serde_json::json!({
+                                    "session_id": sid,
+                                    "content": &text_buffer,
+                                    "role_id": role_id,
+                                }));
+                                text_buffer.clear();
+                                last_flush = tokio::time::Instant::now();
+                            }
                         }
                         StreamEventType::Thinking => {
                             hub.broadcast("thinking", serde_json::json!({
@@ -253,6 +304,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                     }
                 }
 
+                // Flush any remaining coalesced text
+                if !text_buffer.is_empty() {
+                    hub.broadcast("chat_stream", serde_json::json!({
+                        "session_id": sid,
+                        "content": &text_buffer,
+                        "role_id": role_id,
+                    }));
+                }
+
                 // Send comm reply if configured
                 if let Some(reply_config) = &comm_reply {
                     if let Some(comm_mgr) = &comm_manager {
@@ -302,10 +362,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
             }
         }
 
-        // Clean up active run tracking
-        if let Some(runs) = active_runs {
-            runs.lock().await.remove(&sid);
-        }
+        // ActiveRunGuard handles cleanup on drop (including panics)
+        drop(_run_guard);
 
         Ok(())
     });

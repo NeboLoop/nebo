@@ -114,7 +114,7 @@
 		<div class="flex flex-col items-center gap-4 py-6">
 			<CircleCheck class="h-12 w-12 text-success" />
 			<p class="text-lg font-medium">Connected to NeboLoop</p>
-			<p class="text-base-content/70">{connectedEmail}</p>
+			<p class="text-base-content/90">{connectedEmail}</p>
 		</div>
 		<StepNavigation showBack onnext={onnext} onback={onback} nextLabel="Continue" />
 	{:else}
@@ -126,7 +126,7 @@
 
 		<div class="flex flex-col items-center gap-6 py-6">
 			<Store class="h-16 w-16 text-primary opacity-80" />
-			<p class="text-base-content/70 text-center text-sm max-w-sm">
+			<p class="text-base-content/80 text-center text-base max-w-sm">
 				Sign in or create a new account on NeboLoop.
 				You can use Google, Apple, or email.
 			</p>
@@ -145,10 +145,10 @@
 				{/if}
 			</button>
 			{#if loading}
-				<p class="text-sm text-base-content/70">Complete sign-in in your browser</p>
+				<p class="text-base text-base-content/80">Complete sign-in in your browser</p>
 				<button
 					type="button"
-					class="text-sm text-base-content/70 hover:text-base-content underline"
+					class="text-base text-base-content/80 hover:text-base-content underline"
 					onclick={() => { cleanup(); loading = false; }}
 				>
 					Cancel

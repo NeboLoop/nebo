@@ -264,7 +264,7 @@
 <div bind:this={containerRef} class="flex flex-col w-full h-full relative">
 	{#if data.length === 0}
 		<div class="flex-1 flex items-center justify-center">
-			<p class="text-base-500 text-sm">No data to display</p>
+			<p class="text-base-500 text-base">No data to display</p>
 		</div>
 	{:else}
 		<svg width={containerWidth} height={effectiveHeight} class="flex-1">
@@ -293,7 +293,7 @@
 								y={item.centerY}
 								text-anchor="middle"
 								dominant-baseline="middle"
-								class="fill-white font-semibold text-sm pointer-events-none"
+								class="fill-white font-semibold text-base pointer-events-none"
 							>
 								{formatValue(item.stage.value)}
 							</text>
@@ -305,7 +305,7 @@
 								x={item.labelX}
 								y={item.centerY - 10}
 								text-anchor="start"
-								class="fill-base-400 text-xs font-medium pointer-events-none"
+								class="fill-base-400 text-sm font-medium pointer-events-none"
 							>
 								{item.stage.label}
 							</text>
@@ -314,7 +314,7 @@
 									x={item.labelX}
 									y={item.centerY + 8}
 									text-anchor="start"
-									class="fill-base-500 text-xs pointer-events-none"
+									class="fill-base-500 text-sm pointer-events-none"
 								>
 									{getPercentage(item.stage.value)} of total - {getConversionRate(i)} conv.
 								</text>
@@ -347,7 +347,7 @@
 								y={effectiveHeight / 2}
 								text-anchor="middle"
 								dominant-baseline="middle"
-								class="fill-white font-semibold text-sm pointer-events-none"
+								class="fill-white font-semibold text-base pointer-events-none"
 							>
 								{formatValue(item.stage.value)}
 							</text>
@@ -359,7 +359,7 @@
 								x={item.centerX}
 								y={item.labelY}
 								text-anchor="middle"
-								class="fill-base-400 text-xs font-medium pointer-events-none"
+								class="fill-base-400 text-sm font-medium pointer-events-none"
 							>
 								{item.stage.label}
 							</text>
@@ -368,7 +368,7 @@
 									x={item.centerX}
 									y={item.labelY + 14}
 									text-anchor="middle"
-									class="fill-base-500 text-xs pointer-events-none"
+									class="fill-base-500 text-sm pointer-events-none"
 								>
 									{getPercentage(item.stage.value)}
 								</text>

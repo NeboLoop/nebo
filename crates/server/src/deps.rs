@@ -384,21 +384,16 @@ async fn install_workflow(
 
 /// Extract dependencies from a role's frontmatter JSON string.
 ///
-/// The frontmatter stored in DB has `workflows`, `skills`, `tools` as simple
-/// string arrays (not the full RoleConfig structure).
+/// Workflows are now inline (no external refs). Only skill dependencies are extracted
+/// from both the top-level `skills` array and from inline activity skill references.
 pub fn extract_role_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef> {
     let mut deps = Vec::new();
+    // Try parsing as full RoleConfig first (has typed workflows with activities)
+    if let Ok(config) = napp::role::parse_role_config(frontmatter_json) {
+        return extract_role_deps(&config);
+    }
+    // Fallback: parse as raw JSON for simpler frontmatter
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(frontmatter_json) {
-        if let Some(workflows) = val["workflows"].as_array() {
-            for w in workflows {
-                if let Some(s) = w.as_str() {
-                    deps.push(DepRef {
-                        dep_type: DepType::Workflow,
-                        reference: s.to_string(),
-                    });
-                }
-            }
-        }
         if let Some(skills) = val["skills"].as_array() {
             for s in skills {
                 if let Some(s) = s.as_str() {
@@ -414,20 +409,26 @@ pub fn extract_role_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef>
 }
 
 /// Extract dependencies from a role config.
+/// Workflows are now inline — only skill dependencies are extracted.
 pub fn extract_role_deps(config: &napp::role::RoleConfig) -> Vec<DepRef> {
     let mut deps = Vec::new();
 
-    for binding in config.workflows.values() {
-        deps.push(DepRef {
-            dep_type: DepType::Workflow,
-            reference: binding.workflow_ref.clone(),
-        });
-    }
     for skill_ref in &config.skills {
         deps.push(DepRef {
             dep_type: DepType::Skill,
             reference: skill_ref.clone(),
         });
+    }
+    // Also extract skill refs from inline activities
+    for binding in config.workflows.values() {
+        for activity in &binding.activities {
+            for skill_name in &activity.skills {
+                deps.push(DepRef {
+                    dep_type: DepType::Skill,
+                    reference: skill_name.clone(),
+                });
+            }
+        }
     }
     deps
 }

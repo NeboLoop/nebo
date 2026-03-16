@@ -191,7 +191,7 @@
 	<div class="card-body">
 		<div class="text-center mb-4">
 			<h2 class="card-title justify-center text-2xl">Create Account</h2>
-			<p class="text-base-content/70 text-sm">Create your account to get started</p>
+			<p class="text-base-content/90 text-base">Create your account to get started</p>
 		</div>
 
 		{#if $authError}
@@ -244,7 +244,7 @@
 					</button>
 				{/if}
 
-				<div class="divider text-xs text-base-content/70">or continue with email</div>
+				<div class="divider text-sm text-base-content/90">or continue with email</div>
 			</div>
 		{/if}
 
@@ -353,7 +353,7 @@
 				<!-- Password Requirements -->
 				{#if touched.password && passwordValidation.requirements}
 					<div id={passwordHintId} class="mt-2 p-3 bg-base-300 rounded-lg" aria-label="Password requirements">
-						<ul class="text-xs space-y-1">
+						<ul class="text-sm space-y-1">
 							<li class="flex items-center gap-2" class:text-success={passwordValidation.requirements.minLength}>
 								<span>{passwordValidation.requirements.minLength ? '✓' : '○'}</span>
 								At least 8 characters
@@ -377,7 +377,7 @@
 						</ul>
 					</div>
 				{:else}
-					<p class="text-xs text-base-content/70 mt-1" id={passwordHintId}>
+					<p class="text-sm text-base-content/60 mt-1" id={passwordHintId}>
 						Password must be at least 8 characters with uppercase, lowercase, and numbers
 					</p>
 				{/if}
@@ -427,7 +427,7 @@
 			</button>
 		</div>
 
-		<p class="text-center text-xs text-base-content/70 mt-4">
+		<p class="text-center text-sm text-base-content/60 mt-4">
 			By creating an account, you agree to our
 			<a href="/terms" class="link link-primary">Terms of Service</a>
 			and
@@ -436,7 +436,7 @@
 
 		{#if onLoginClick}
 			<div class="divider"></div>
-			<p class="text-center text-sm text-base-content/70">
+			<p class="text-center text-base text-base-content/90">
 				Already have an account?
 				<button
 					type="button"

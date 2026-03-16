@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import {
 		Key,
 		Sparkles,
@@ -27,6 +28,8 @@
 	} from '$lib/api';
 	import type * as components from '$lib/api/neboComponents';
 	import Button from '$lib/components/ui/Button.svelte';
+
+	let { onComplete = () => {} }: { onComplete?: () => void } = $props();
 
 	type OnboardingStep =
 		| 'welcome'
@@ -392,8 +395,8 @@
 	}
 
 	async function finishOnboarding() {
-		// Force full page reload to re-check onboarding status in layout
-		window.location.href = '/agent';
+		onComplete();
+		goto('/agent/assistant/chat');
 	}
 
 	function handleProviderChoiceContinue() {
@@ -454,7 +457,7 @@
 					<Sparkles class="w-10 h-10 text-primary" />
 				</div>
 				<h1 class="text-3xl font-bold mb-3">Welcome to Nebo</h1>
-				<p class="text-base-content/70 mb-8 text-lg">
+				<p class="text-base-content/80 mb-8 text-lg">
 					Your personal AI companion. Let's get you set up in just a minute.
 				</p>
 				<Button type="primary" size="lg" onclick={() => (currentStep = 'terms')}>
@@ -473,7 +476,7 @@
 					<Shield class="w-8 h-8 text-warning" />
 				</div>
 				<h2 class="text-2xl font-bold text-center mb-2">Privacy & Terms</h2>
-				<p class="text-base-content/70 text-center mb-6">
+				<p class="text-base-content/80 text-center mb-6">
 					Important information about how Nebo handles your data
 				</p>
 
@@ -483,38 +486,38 @@
 					</div>
 				{/if}
 
-				<div class="bg-base-200 rounded-xl p-5 mb-6 space-y-4 text-sm max-h-64 scrollbar-overlay">
+				<div class="bg-base-200 rounded-xl p-5 mb-6 space-y-4 text-base max-h-64 scrollbar-overlay">
 					<div>
 						<h3 class="font-semibold text-base-content mb-1">Your Data Stays Local</h3>
-						<p class="text-base-content/70">
+						<p class="text-base-content/90">
 							All conversations, memories, and settings are stored locally on your device in a
 							SQLite database. Nothing is sent to Nebo's servers.
 						</p>
 					</div>
 					<div>
 						<h3 class="font-semibold text-base-content mb-1">AI Provider Communication</h3>
-						<p class="text-base-content/70">
+						<p class="text-base-content/90">
 							When you chat, your messages are sent to your chosen AI provider (Anthropic, OpenAI,
 							or Google) for processing. Their privacy policies apply to that data.
 						</p>
 					</div>
 					<div>
 						<h3 class="font-semibold text-base-content mb-1">API Keys</h3>
-						<p class="text-base-content/70">
+						<p class="text-base-content/90">
 							Your API keys are stored locally in your device's database. They are only used to
 							authenticate with your AI provider.
 						</p>
 					</div>
 					<div>
 						<h3 class="font-semibold text-base-content mb-1">System Access</h3>
-						<p class="text-base-content/70">
+						<p class="text-base-content/90">
 							Nebo can access system features (files, shell, contacts, etc.) but only capabilities
 							you explicitly enable. You control what the agent can do.
 						</p>
 					</div>
 					<div>
 						<h3 class="font-semibold text-base-content mb-1">No Analytics or Telemetry</h3>
-						<p class="text-base-content/70">
+						<p class="text-base-content/90">
 							Nebo does not collect usage analytics, telemetry, or crash reports. Your usage is
 							completely private.
 						</p>
@@ -527,7 +530,7 @@
 						class="checkbox checkbox-primary mt-0.5"
 						bind:checked={termsAccepted}
 					/>
-					<span class="text-sm text-base-content/80">
+					<span class="text-base text-base-content/80">
 						I understand that my conversations are sent to my chosen AI provider for processing, and
 						that I control which system capabilities the agent can access.
 					</span>
@@ -559,7 +562,7 @@
 					<Sparkles class="w-8 h-8 text-primary" />
 				</div>
 				<h2 class="text-2xl font-bold text-center mb-2 shrink-0">Connect Your AI</h2>
-				<p class="text-base-content/70 text-center mb-6 shrink-0">Choose how to power Nebo</p>
+				<p class="text-base-content/90 text-center mb-6 shrink-0">Choose how to power Nebo</p>
 
 				{#if error}
 					<div class="alert alert-error mb-4 shrink-0">
@@ -574,7 +577,7 @@
 						class="w-full p-4 rounded-xl border-2 transition-all text-left {providerChoice ===
 						'janus'
 							? 'border-primary bg-primary/5'
-							: 'border-base-300 hover:border-base-content/30'}"
+							: 'border-base-300 hover:border-base-content/40'}"
 						onclick={() => (providerChoice = 'janus')}
 					>
 						<div class="flex items-start gap-3">
@@ -586,7 +589,7 @@
 									<span class="font-semibold">Janus</span>
 									<span class="badge badge-primary badge-sm">Recommended</span>
 								</div>
-								<p class="text-sm text-base-content/70 mt-1">
+								<p class="text-base text-base-content/80 mt-1">
 									AI powered by NeboLoop — no API keys needed
 								</p>
 							</div>
@@ -605,7 +608,7 @@
 					<!-- More options toggle -->
 					<button
 						type="button"
-						class="w-full text-sm text-base-content/70 hover:text-base-content/70 flex items-center justify-center gap-1 py-2"
+						class="w-full text-base text-base-content/90 hover:text-base-content/90 flex items-center justify-center gap-1 py-2"
 						onclick={() => (showMoreProviders = !showMoreProviders)}
 					>
 						Use your own API key or CLI instead
@@ -620,8 +623,8 @@
 					<div class="space-y-3 mb-6 scrollbar-overlay min-h-0">
 						{#if isCheckingCLI}
 							<div class="flex items-center justify-center py-4">
-								<Loader2 class="w-5 h-5 animate-spin text-base-content/70" />
-								<span class="ml-2 text-sm text-base-content/70">Detecting CLI tools...</span>
+								<Loader2 class="w-5 h-5 animate-spin text-base-content/90" />
+								<span class="ml-2 text-base text-base-content/90">Detecting CLI tools...</span>
 							</div>
 						{:else}
 							<!-- Show all authenticated CLIs -->
@@ -633,7 +636,7 @@
 									class="w-full p-4 rounded-xl border-2 transition-all text-left {providerChoice ===
 									info.id
 										? 'border-primary bg-primary/5'
-										: 'border-base-300 hover:border-base-content/30'}"
+										: 'border-base-300 hover:border-base-content/40'}"
 									onclick={() => (providerChoice = info.id as ProviderChoice)}
 								>
 									<div class="flex items-start gap-3">
@@ -645,11 +648,11 @@
 												<span class="font-semibold">{info.name}</span>
 												<span class="badge badge-success badge-sm">Ready</span>
 											</div>
-											<p class="text-sm text-base-content/70 mt-1">
+											<p class="text-base text-base-content/90 mt-1">
 												{info.description}
 											</p>
 											{#if status?.version}
-												<p class="text-xs text-base-content/70 mt-1">
+												<p class="text-sm text-base-content/90 mt-1">
 													v{status.version}
 												</p>
 											{/if}
@@ -686,9 +689,9 @@
 														<span class="font-semibold">{info.name}</span>
 														<span class="badge badge-warning badge-sm">Needs Login</span>
 													</div>
-													<p class="text-sm text-base-content/70 mt-1">
+													<p class="text-base text-base-content/90 mt-1">
 														Installed but not logged in. Run <code
-															class="text-xs bg-base-300 px-1 rounded">{cliKey}</code
+															class="text-sm bg-base-300 px-1 rounded">{cliKey}</code
 														> in terminal to authenticate.
 													</p>
 												</div>
@@ -705,7 +708,7 @@
 							class="w-full p-4 rounded-xl border-2 transition-all text-left {providerChoice ===
 							'api-key'
 								? 'border-primary bg-primary/5'
-								: 'border-base-300 hover:border-base-content/30'}"
+								: 'border-base-300 hover:border-base-content/40'}"
 							onclick={() => (providerChoice = 'api-key')}
 						>
 							<div class="flex items-start gap-3">
@@ -716,7 +719,7 @@
 									<div class="flex items-center gap-2">
 										<span class="font-semibold">Add API Key</span>
 									</div>
-									<p class="text-sm text-base-content/70 mt-1">
+									<p class="text-base text-base-content/90 mt-1">
 										Use an API key from Anthropic, OpenAI, or Google.
 									</p>
 								</div>
@@ -760,7 +763,7 @@
 					<Key class="w-8 h-8 text-secondary" />
 				</div>
 				<h2 class="text-2xl font-bold text-center mb-2">Enter API Key</h2>
-				<p class="text-base-content/70 text-center mb-6">
+				<p class="text-base-content/90 text-center mb-6">
 					Your key is stored securely and never leaves your device.
 				</p>
 
@@ -835,7 +838,7 @@
 
 					<button
 						type="button"
-						class="w-full text-sm text-base-content/70 hover:text-base-content"
+						class="w-full text-base text-base-content/90 hover:text-base-content"
 						onclick={() => (currentStep = 'provider-choice')}
 					>
 						← Back to provider selection
@@ -853,7 +856,7 @@
 					<Shield class="w-8 h-8 text-info" />
 				</div>
 				<h2 class="text-2xl font-bold text-center mb-2">Agent Capabilities</h2>
-				<p class="text-base-content/70 text-center mb-6">
+				<p class="text-base-content/90 text-center mb-6">
 					Choose what Nebo can access. You can change these anytime in Settings.
 				</p>
 
@@ -870,7 +873,7 @@
 							class="w-full p-3 rounded-lg border transition-all text-left
 								{permissions[cap.key]
 								? 'border-primary/30 bg-primary/5'
-								: 'border-base-300 hover:border-base-content/20'}
+								: 'border-base-300 hover:border-base-content/40'}
 								{cap.alwaysOn ? 'opacity-80 cursor-default' : ''}"
 							onclick={() => togglePermission(cap.key)}
 							disabled={cap.alwaysOn}
@@ -880,17 +883,17 @@
 									class="p-1.5 rounded-lg {permissions[cap.key] ? 'bg-primary/20' : 'bg-base-200'}"
 								>
 									<cap.icon
-										class="w-4 h-4 {permissions[cap.key] ? 'text-primary' : 'text-base-content/70'}"
+										class="w-4 h-4 {permissions[cap.key] ? 'text-primary' : 'text-base-content/90'}"
 									/>
 								</div>
 								<div class="flex-1 min-w-0">
 									<div class="flex items-center gap-2">
-										<span class="font-medium text-sm">{cap.label}</span>
+										<span class="font-medium text-base">{cap.label}</span>
 										{#if cap.alwaysOn}
 											<span class="badge badge-neutral badge-xs">Always on</span>
 										{/if}
 									</div>
-									<p class="text-xs text-base-content/70 truncate">{cap.description}</p>
+									<p class="text-sm text-base-content/90 truncate">{cap.description}</p>
 								</div>
 								<input
 									type="checkbox"
@@ -933,7 +936,7 @@
 				<h2 class="text-2xl font-bold text-center mb-2">
 					{cameFromJanus ? 'Connect to NeboLoop' : 'NeboLoop'}
 				</h2>
-				<p class="text-base-content/70 text-center mb-6">
+				<p class="text-base-content/90 text-center mb-6">
 					{cameFromJanus
 						? 'Sign in or create an account on NeboLoop to use Janus AI.'
 						: 'Connect to the NeboLoop marketplace to install apps, skills, and AI providers.'}
@@ -943,7 +946,7 @@
 					<div class="flex flex-col items-center gap-4 py-6 mb-6">
 						<CircleCheck class="h-12 w-12 text-success" />
 						<p class="text-lg font-medium">Connected to NeboLoop</p>
-						<p class="text-base-content/70">{neboLoopEmail}</p>
+						<p class="text-base-content/90">{neboLoopEmail}</p>
 					</div>
 					<Button
 						type="primary"
@@ -967,7 +970,7 @@
 					{/if}
 
 					<div class="flex flex-col items-center gap-4 py-4">
-						<p class="text-base-content/70 text-center text-sm max-w-sm">
+						<p class="text-base-content/90 text-center text-base max-w-sm">
 							Sign in or create a new account on NeboLoop. You can use Google, Apple, or email.
 						</p>
 						<Button
@@ -984,10 +987,10 @@
 							{/if}
 						</Button>
 						{#if neboLoopLoading}
-							<p class="text-sm text-base-content/70">Complete sign-in in your browser</p>
+							<p class="text-base text-base-content/90">Complete sign-in in your browser</p>
 							<button
 								type="button"
-								class="text-sm text-base-content/70 hover:text-base-content underline"
+								class="text-base text-base-content/90 hover:text-base-content underline"
 								onclick={() => {
 									cleanupNeboLoopOAuth();
 									neboLoopLoading = false;
@@ -1001,7 +1004,7 @@
 					<div class="flex justify-between mt-4">
 						<button
 							type="button"
-							class="text-sm text-base-content/70 hover:text-base-content"
+							class="text-base text-base-content/90 hover:text-base-content"
 							onclick={() => {
 								if (cameFromJanus) {
 									cameFromJanus = false;
@@ -1016,7 +1019,7 @@
 						{#if !cameFromJanus}
 							<button
 								type="button"
-								class="text-sm text-base-content/70 hover:text-base-content"
+								class="text-base text-base-content/90 hover:text-base-content"
 								onclick={completeOnboarding}
 							>
 								Skip for now →
@@ -1036,7 +1039,7 @@
 					<Check class="w-10 h-10 text-success" />
 				</div>
 				<h2 class="text-3xl font-bold mb-3">You're all set!</h2>
-				<p class="text-base-content/70 mb-8 text-lg">Nebo is ready to meet you. Let's chat!</p>
+				<p class="text-base-content/90 mb-8 text-lg">Nebo is ready to meet you. Let's chat!</p>
 				<Button type="primary" size="lg" onclick={finishOnboarding}>
 					Start Chatting
 					<ArrowRight class="w-5 h-5 ml-2" />

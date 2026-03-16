@@ -33,7 +33,8 @@ pub async fn execute_workflow(
     cancel_token: Option<&CancellationToken>,
     skill_content: Option<&HashMap<String, String>>,
     event_bus: Option<&tools::EventBus>,
-) -> Result<String, WorkflowError> {
+    emit_source: Option<String>,
+) -> Result<(String, String), WorkflowError> {
     let run_id = match existing_run_id {
         Some(id) => id.to_string(),
         None => {
@@ -53,10 +54,25 @@ pub async fn execute_workflow(
         }
     };
 
+    // Resolve emit source: prefer explicit parameter, fall back to _emit key in inputs
+    let resolved_emit = emit_source.or_else(|| {
+        inputs.get("_emit")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    });
+
     let mut total_tokens: u32 = 0;
     let mut prior_context = String::new();
+    let activity_count = def.activities.len();
 
-    for activity in &def.activities {
+    // Circuit breaker: abort if 3+ consecutive activities fail with the same error pattern
+    const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
+    let mut consecutive_failures: u32 = 0;
+    let mut last_failure_pattern: Option<String> = None;
+
+    for (idx, activity) in def.activities.iter().enumerate() {
+        let is_last = idx == activity_count - 1;
+        let activity_emit = if is_last { resolved_emit.as_deref() } else { None };
         // Check for cancellation before each activity
         if let Some(token) = cancel_token {
             if token.is_cancelled() {
@@ -92,6 +108,10 @@ pub async fn execute_workflow(
             activity_tools.push(emit);
         }
 
+        // Inject exit tool — always available, every activity can stop cleanly
+        let exit_tool_box: Box<dyn DynTool> = Box::new(tools::ExitTool::new());
+        activity_tools.push(&exit_tool_box);
+
         let started_at = chrono::Utc::now().timestamp();
 
         match execute_activity_with_retry(
@@ -101,11 +121,14 @@ pub async fn execute_workflow(
             provider,
             &activity_tools,
             skill_content,
+            activity_emit,
         )
         .await
         {
             Ok((result_text, tokens_used)) => {
                 total_tokens += tokens_used;
+                consecutive_failures = 0;
+                last_failure_pattern = None;
                 prior_context.push_str(&format!(
                     "\n[Activity '{}' result]: {}\n",
                     activity.id, result_text
@@ -125,6 +148,18 @@ pub async fn execute_workflow(
                     warn!(run_id = %run_id, activity = %activity.id, error = %e, "failed to record activity result");
                 }
             }
+            Err(WorkflowError::Exited(reason)) => {
+                let completed_at = chrono::Utc::now().timestamp();
+                let _ = store.create_activity_result(
+                    &run_id, &activity.id, "exited", 0, 1,
+                    Some(&reason), started_at, Some(completed_at),
+                );
+                let _ = store.complete_workflow_run(
+                    &run_id, "exited", total_tokens as i64, Some(&reason), Some(&activity.id), Some(&prior_context),
+                );
+                info!(workflow = def.id.as_str(), run_id = %run_id, reason = %reason, "workflow exited early");
+                return Ok((run_id, prior_context));
+            }
             Err(e) => {
                 let completed_at = chrono::Utc::now().timestamp();
                 let err_msg = e.to_string();
@@ -139,6 +174,30 @@ pub async fn execute_workflow(
                     Some(completed_at),
                 ) {
                     warn!(run_id = %run_id, activity = %activity.id, error = %db_err, "failed to record activity failure");
+                }
+
+                // Circuit breaker: track consecutive failures with same pattern
+                let pattern = extract_error_pattern(&err_msg);
+                if last_failure_pattern.as_deref() == Some(&pattern) {
+                    consecutive_failures += 1;
+                } else {
+                    consecutive_failures = 1;
+                    last_failure_pattern = Some(pattern.clone());
+                }
+
+                if consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD {
+                    let reason = format!(
+                        "{} consecutive activities failed with same error: {}",
+                        consecutive_failures, pattern
+                    );
+                    warn!(workflow = def.id.as_str(), run_id = %run_id, "{}", reason);
+                    if let Err(db_err) = store.complete_workflow_run(
+                        &run_id, "failed", total_tokens as i64,
+                        Some(&reason), Some(&activity.id), None,
+                    ) {
+                        warn!(run_id = %run_id, error = %db_err, "failed to mark workflow run as circuit-broken");
+                    }
+                    return Err(WorkflowError::CircuitBreak(reason));
                 }
 
                 match activity.on_error.fallback {
@@ -157,6 +216,7 @@ pub async fn execute_workflow(
                             total_tokens as i64,
                             Some(&err_msg),
                             Some(&activity.id),
+                            None,
                         ) {
                             warn!(run_id = %run_id, error = %db_err, "failed to mark workflow run as failed");
                         }
@@ -174,6 +234,7 @@ pub async fn execute_workflow(
                 total_tokens as i64,
                 Some("total budget exceeded"),
                 None,
+                None,
             ) {
                 warn!(run_id = %run_id, error = %e, "failed to mark workflow run as budget-exceeded");
             }
@@ -185,7 +246,7 @@ pub async fn execute_workflow(
         }
     }
 
-    if let Err(e) = store.complete_workflow_run(&run_id, "completed", total_tokens as i64, None, None) {
+    if let Err(e) = store.complete_workflow_run(&run_id, "completed", total_tokens as i64, None, None, Some(&prior_context)) {
         warn!(run_id = %run_id, error = %e, "failed to mark workflow run as completed");
     }
 
@@ -196,7 +257,7 @@ pub async fn execute_workflow(
         "workflow completed"
     );
 
-    Ok(run_id)
+    Ok((run_id, prior_context))
 }
 
 /// Execute an activity with retry support.
@@ -207,11 +268,12 @@ async fn execute_activity_with_retry(
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
+    emit_source: Option<&str>,
 ) -> Result<(String, u32), WorkflowError> {
     let max_attempts = activity.on_error.retry.max(1);
 
     for attempt in 0..max_attempts {
-        match execute_activity(activity, prior_context, inputs, provider, tools, skill_content).await {
+        match execute_activity(activity, prior_context, inputs, provider, tools, skill_content, emit_source).await {
             Ok(result) => return Ok(result),
             Err(e) if attempt + 1 < max_attempts => {
                 warn!(
@@ -236,12 +298,18 @@ pub async fn execute_activity(
     provider: &dyn ai::Provider,
     tools: &[&Box<dyn DynTool>],
     skill_content: Option<&HashMap<String, String>>,
+    emit_source: Option<&str>,
 ) -> Result<(String, u32), WorkflowError> {
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
+    let mut consecutive_all_not_found: u32 = 0;
+
+    // Detect if browser tool is available for this activity
+    let has_browser = tools.iter().any(|t| t.name() == "web");
 
     // Build system prompt: skill content + intent + steps (NO steering, NO memory)
-    let system = build_activity_prompt(activity, prior_context, inputs, skill_content);
+    let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
+    let system = build_activity_prompt(activity, prior_context, inputs, skill_content, emit_source, has_browser, &tool_names);
 
     // Build tool definitions
     let tool_defs: Vec<ai::ToolDefinition> = tools
@@ -342,11 +410,39 @@ pub async fn execute_activity(
                 None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
             };
 
+            // Check for exit sentinel
+            if !result.is_error {
+                if let Some(reason) = result.content.strip_prefix(tools::EXIT_SENTINEL) {
+                    return Err(WorkflowError::Exited(reason.to_string()));
+                }
+            }
+
             tool_result_entries.push(serde_json::json!({
                 "tool_call_id": tc.id,
                 "content": result.content,
                 "is_error": result.is_error,
             }));
+        }
+
+        // Early termination: if ALL tool calls failed with "tool not found" for 3
+        // consecutive iterations, bail instead of looping to MAX_ITERATIONS.
+        let all_not_found = tool_result_entries.iter().all(|e| {
+            e.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false)
+                && e.get("content")
+                    .and_then(|v| v.as_str())
+                    .map_or(false, |s| s.contains("tool not found"))
+        });
+        if all_not_found {
+            consecutive_all_not_found += 1;
+            if consecutive_all_not_found >= 3 {
+                let names: Vec<&str> = tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+                return Err(WorkflowError::ActivityFailed(
+                    activity.id.clone(),
+                    format!("repeated tool-not-found for: {}", names.join(", ")),
+                ));
+            }
+        } else {
+            consecutive_all_not_found = 0;
         }
 
         messages.push(ai::Message {
@@ -362,12 +458,15 @@ pub async fn execute_activity(
 
 /// Build the system prompt for an activity (lean — no steering, memory, or personality).
 ///
-/// Spec order: Skills → Task → Steps → Inputs → Prior Results
+/// Spec order: Skills → Task → Steps → Inputs → Prior Results → Browser Guide
 fn build_activity_prompt(
     activity: &Activity,
     prior_context: &str,
     inputs: &serde_json::Value,
     skill_content: Option<&HashMap<String, String>>,
+    emit_source: Option<&str>,
+    has_browser: bool,
+    tool_names: &[String],
 ) -> String {
     let mut prompt = String::new();
 
@@ -387,6 +486,14 @@ fn build_activity_prompt(
         }
     }
 
+    // Available tools — explicit list prevents hallucination
+    if !tool_names.is_empty() {
+        prompt.push_str("## Available Tools\n");
+        prompt.push_str("Your tools (case-sensitive, call ONLY these): ");
+        prompt.push_str(&tool_names.join(", "));
+        prompt.push_str("\nDo NOT call any tool not in this list. Do NOT prefix tool names with mcp__ or any namespace.\n\n");
+    }
+
     // Intent
     prompt.push_str(&format!("## Task\n{}\n\n", activity.intent));
 
@@ -399,11 +506,14 @@ fn build_activity_prompt(
         prompt.push('\n');
     }
 
-    // Inputs
+    // Inputs (exclude _emit — it's an operational key, not a user input)
     if let serde_json::Value::Object(map) = inputs {
-        if !map.is_empty() {
+        let user_inputs: Vec<_> = map.iter()
+            .filter(|(k, _)| !k.starts_with('_'))
+            .collect();
+        if !user_inputs.is_empty() {
             prompt.push_str("## Inputs\n");
-            for (key, val) in map {
+            for (key, val) in user_inputs {
                 prompt.push_str(&format!("- {}: {}\n", key, val));
             }
             prompt.push('\n');
@@ -417,5 +527,68 @@ fn build_activity_prompt(
         prompt.push('\n');
     }
 
+    // Command hints — only mention tools the step actually declares.
+    // If emit_source is set (Path B will handle it specifically), skip the
+    // generic emit hint to avoid redundant/conflicting instructions.
+    let effective_cmds: Vec<&str> = activity.cmds.iter()
+        .filter(|cmd| !(cmd.as_str() == "emit" && emit_source.is_some()))
+        .map(|s| s.as_str())
+        .collect();
+
+    if !effective_cmds.is_empty() {
+        prompt.push_str("\n## Workflow Controls\n");
+        prompt.push_str("You have access to these workflow control tools:\n");
+        for cmd in &effective_cmds {
+            match *cmd {
+                "exit" => prompt.push_str(
+                    "- exit(reason: \"...\") — call this to stop the workflow early if \
+                     the condition in your task is not met or there is nothing to do.\n"
+                ),
+                "emit" => prompt.push_str(
+                    "- emit(source: \"...\", payload: {...}) — call this to announce \
+                     your result to other workflows. Can be called multiple times, \
+                     once per item, if processing a collection.\n"
+                ),
+                _ => {}
+            }
+        }
+        prompt.push('\n');
+    }
+
+    // Browser automation guide — injected when web tool is available
+    if has_browser {
+        prompt.push_str("\n## Browser Automation Guide\n\
+            - Always call read_page FIRST before any click, fill, or navigate action.\n\
+            - Use element refs from the read_page output for click/fill/select — never guess selectors.\n\
+            - After navigate, wait briefly then read_page to see the new content.\n\
+            - For forms: click the field first, then type/fill the value.\n\
+            - If you cannot find an element, scroll down and read_page again.\n\
+            - Do NOT open new_tab unless you need multiple pages simultaneously.\n\
+            - Verify results with a final read_page after completing actions.\n\n");
+    }
+
+    // Emit instruction — injected into last activity only when declared
+    if let Some(source) = emit_source {
+        prompt.push_str(&format!(
+            "\n## Output\nWhen you have completed your work, you MUST call the emit tool with:\n- source: \"{}\"\n- payload: your actual output or result (not a summary of what you did — the content itself)\n\nDo not say \"done\" or \"completed\". Call emit with the real output.\n",
+            source
+        ));
+    }
+
     prompt
+}
+
+/// Extract a normalized error pattern for circuit breaker comparison.
+///
+/// Takes the first segment before `:`, lowercased, max 60 chars.
+fn extract_error_pattern(err: &str) -> String {
+    let seg = err.split(':').next().unwrap_or(err);
+    let pattern = seg.trim().to_lowercase();
+    if pattern.len() > 60 {
+        let mut end = 60;
+        while !pattern.is_char_boundary(end) { end -= 1; }
+        pattern[..end].to_string()
+    } else {
+        pattern
+    }
 }

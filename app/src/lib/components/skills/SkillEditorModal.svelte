@@ -83,7 +83,7 @@ Instructions for the agent when this skill is activated...
 
 <Modal bind:show {title} size="lg" onclose={() => { show = false; onclose(); }}>
 	{#if loading}
-		<div class="py-12 text-center text-base-content/70">
+		<div class="py-12 text-center text-base-content/90">
 			<span class="loading loading-spinner loading-md"></span>
 			<p class="mt-2">Loading skill content...</p>
 		</div>
@@ -107,7 +107,7 @@ Instructions for the agent when this skill is activated...
 					bind:value={slug}
 				/>
 				<label class="label" for="skill-slug">
-					<span class="label-text-alt text-base-content/70">Leave empty to auto-derive from skill name</span>
+					<span class="label-text-alt text-base-content/90">Leave empty to auto-derive from skill name</span>
 				</label>
 			</div>
 		{/if}
@@ -118,7 +118,7 @@ Instructions for the agent when this skill is activated...
 			</label>
 			<textarea
 				id="skill-content"
-				class="textarea textarea-bordered w-full font-mono text-sm leading-relaxed"
+				class="textarea textarea-bordered w-full font-mono text-base leading-relaxed"
 				rows="20"
 				bind:value={content}
 				placeholder="---\nname: my-skill\n..."

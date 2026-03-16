@@ -26,7 +26,7 @@
 
 {#if media.length > 0}
 	<div class="px-5 py-5 border-b border-base-content/5">
-		<h3 class="text-xs font-semibold text-base-content/70 uppercase tracking-wider mb-3">Preview</h3>
+		<h3 class="text-sm font-semibold text-base-content/40 uppercase tracking-wider mb-3">Preview</h3>
 		<div class="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
 			{#each media as item}
 				{#if item.mediaType === 'video'}

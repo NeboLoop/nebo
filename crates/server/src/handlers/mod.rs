@@ -25,8 +25,12 @@ use types::NeboError;
 
 /// Convert a NeboError into an Axum error response tuple.
 pub fn to_error_response(e: NeboError) -> (StatusCode, Json<ErrorResponse>) {
+    let status = StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    if status.is_server_error() {
+        tracing::error!(status = %status, error = %e, "handler error");
+    }
     (
-        StatusCode::from_u16(e.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+        status,
         Json(ErrorResponse {
             error: e.to_string(),
         }),

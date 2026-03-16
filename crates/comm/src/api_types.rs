@@ -711,3 +711,19 @@ pub struct ChannelMessage {
     pub from: String,
     pub content: String,
 }
+
+// ── Agent Types ──────────────────────────────────────────────────────
+
+/// Sent to POST /api/v1/loops/{loopId}/agents — register an agent in a loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivateRequest {
+    pub bot_id: String,
+    #[serde(rename = "name")]
+    pub role_name: String,
+    #[serde(rename = "slug")]
+    pub role_slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+

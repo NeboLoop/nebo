@@ -39,18 +39,18 @@
 				</div>
 				<div>
 					<h3 class="font-semibold text-base-content">Tool Approval Required</h3>
-					<p class="text-sm text-base-content/70">The agent wants to run a tool</p>
+					<p class="text-base text-base-content/90">The agent wants to run a tool</p>
 				</div>
 			</div>
 
 			<div class="p-6 space-y-4">
 				<div class="flex items-center gap-2">
 					<Terminal class="w-4 h-4 text-secondary" />
-					<span class="font-mono text-sm text-secondary">{request.tool}</span>
+					<span class="font-mono text-base text-secondary">{request.tool}</span>
 				</div>
 
 				<div class="bg-base-300 rounded-lg p-4 overflow-auto max-h-48">
-					<pre class="text-sm font-mono text-base-content whitespace-pre-wrap break-all">{getInputDisplay(request.input)}</pre>
+					<pre class="text-base font-mono text-base-content whitespace-pre-wrap break-all">{getInputDisplay(request.input)}</pre>
 				</div>
 
 				<div class="flex gap-3 pt-2">

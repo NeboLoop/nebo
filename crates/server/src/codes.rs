@@ -307,6 +307,18 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
         );
     }
 
+    // Register agent in the owner's personal loop
+    {
+        let st = state.clone();
+        let name = artifact_name.clone();
+        let slug = artifact_name.to_lowercase().replace(' ', "-");
+        tokio::spawn(async move {
+            if let Err(e) = register_agent_in_loop(&st, &name, &slug).await {
+                warn!(role = %name, error = %e, "failed to register agent in loop");
+            }
+        });
+    }
+
     // Cascade: resolve role deps (workflows, skills, tools from frontmatter)
     let state_clone = state.clone();
     let artifact_id_clone = artifact_id.clone();
@@ -552,6 +564,9 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
     config.insert("api_server".into(), state.config.neboloop.api_url.clone());
     config.insert("bot_id".into(), bot_id);
     config.insert("token".into(), token);
+    if let Ok(dir) = config::data_dir() {
+        config.insert("data_dir".into(), dir.to_string_lossy().to_string());
+    }
 
     state
         .comm_manager
@@ -605,6 +620,51 @@ pub async fn redeem_nebo_code(state: &AppState, code: &str) -> Result<String, Ne
     activate_neboloop(state).await?;
 
     Ok(bot_id)
+}
+
+/// Register an agent in the owner's personal loop after role install/activate.
+///
+/// The gateway auto-creates an agent space conversation and subscribes
+/// the bot to it. Errors are non-fatal — logged by callers.
+pub(crate) async fn register_agent_in_loop(
+    state: &AppState,
+    name: &str,
+    slug: &str,
+) -> Result<(), NeboError> {
+    let api = build_api_client(state)?;
+    let loops = api
+        .list_bot_loops()
+        .await
+        .map_err(|e| NeboError::Internal(format!("list loops: {e}")))?;
+    let personal = loops
+        .first()
+        .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
+    api.register_agent(&personal.loop_id, name, slug, None)
+        .await
+        .map_err(|e| NeboError::Internal(format!("register agent: {e}")))?;
+    info!(role = %name, loop_id = %personal.loop_id, "registered agent in loop");
+    Ok(())
+}
+
+/// Deregister an agent from the owner's personal loop.
+pub(crate) async fn deregister_agent_from_loop(
+    state: &AppState,
+    agent_slug: &str,
+) -> Result<(), NeboError> {
+    let api = build_api_client(state)?;
+    let loops = api
+        .list_bot_loops()
+        .await
+        .map_err(|e| NeboError::Internal(format!("list loops: {e}")))?;
+    let personal = loops
+        .first()
+        .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
+    // Use slug as agent_id for deregister — gateway supports both
+    api.deregister_agent(&personal.loop_id, agent_slug)
+        .await
+        .map_err(|e| NeboError::Internal(format!("deregister agent: {e}")))?;
+    info!(agent = %agent_slug, loop_id = %personal.loop_id, "deregistered agent from loop");
+    Ok(())
 }
 
 #[cfg(test)]

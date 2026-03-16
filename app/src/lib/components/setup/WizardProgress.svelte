@@ -38,7 +38,7 @@
 	<ul class="steps steps-horizontal w-full">
 		{#each steps as step, index}
 			<li class={getStepClass(index)} data-content={isCompleted(index) ? '✓' : index + 1}>
-				<span class="text-xs sm:text-sm" class:font-semibold={isCurrent(index)}>
+				<span class="text-sm sm:text-base" class:font-semibold={isCurrent(index)}>
 					{step}
 				</span>
 			</li>

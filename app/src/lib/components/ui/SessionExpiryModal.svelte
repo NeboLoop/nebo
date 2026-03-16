@@ -60,7 +60,7 @@
 			<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
 				<h3 id="session-expiry-title" class="font-display text-lg font-bold">Session Expiring Soon</h3>
 				<button type="button" onclick={handleContinue} class="nebo-modal-close" aria-label="Close">
-					<X class="w-5 h-5 text-base-content/90" />
+					<X class="w-5 h-5 text-base-content/80" />
 				</button>
 			</div>
 
@@ -69,13 +69,13 @@
 				<div class="w-16 h-16 rounded-full bg-warning/20 flex items-center justify-center mx-auto mb-4">
 					<Clock class="w-8 h-8 text-warning" />
 				</div>
-				<p class="text-sm text-base-content/70 mb-4">
+				<p class="text-base text-base-content/90 mb-4">
 					Your session will expire in
 				</p>
 				<div class="text-4xl font-mono font-bold text-warning mb-4">
 					{formattedTime()}
 				</div>
-				<p class="text-sm text-base-content/70">
+				<p class="text-base text-base-content/90">
 					Click "Continue Session" to stay logged in, or you'll be automatically logged out.
 				</p>
 			</div>
@@ -84,7 +84,7 @@
 			<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
 				<button
 					type="button"
-					class="h-10 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors flex items-center gap-2"
+					class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors flex items-center gap-2"
 					onclick={handleLogout}
 				>
 					<LogOut class="w-4 h-4" />
@@ -92,7 +92,7 @@
 				</button>
 				<button
 					type="button"
-					class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all"
+					class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
 					onclick={handleContinue}
 				>
 					Continue Session

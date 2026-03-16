@@ -5,7 +5,6 @@
 		User,
 		Key,
 		Cpu,
-		Heart,
 		Sparkles,
 		Brain,
 		History,
@@ -24,6 +23,7 @@
 	} from 'lucide-svelte';
 	import type { Snippet, Component } from 'svelte';
 	import { updateInfo } from '$lib/stores/update';
+	import { settingsReturnPath } from '$lib/stores/settings';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -50,7 +50,6 @@
 		{ id: 'providers', path: '/settings/providers', label: 'Providers', icon: Key },
 		{ id: 'routing', path: '/settings/routing', label: 'Routing', icon: Cpu },
 		null,
-		{ id: 'heartbeat', path: '/settings/heartbeat', label: 'Heartbeat', icon: Heart },
 		{ id: 'permissions', path: '/settings/permissions', label: 'Permissions', icon: Shield },
 		null,
 		{ id: 'sessions', path: '/settings/sessions', label: 'Sessions', icon: History },
@@ -67,7 +66,9 @@
 	);
 
 	function closeSettings() {
-		goto('/agent');
+		const returnTo = $settingsReturnPath || '/';
+		settingsReturnPath.set('/');
+		goto(returnTo);
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -94,13 +95,13 @@
 			<div class="flex items-center gap-3">
 				<h1 class="font-display text-lg font-bold text-base-content">Settings</h1>
 				{#if $updateInfo}
-					<span class="text-xs text-base-content/70">Nebo {$updateInfo.currentVersion}</span>
+					<span class="text-sm text-base-content/60">Nebo {$updateInfo.currentVersion}</span>
 					{#if $updateInfo.available}
 						<a
 							href={$updateInfo.releaseUrl}
 							target="_blank"
 							rel="noopener noreferrer"
-							class="flex items-center gap-1 text-xs text-info hover:text-info/80 transition-colors"
+							class="flex items-center gap-1 text-sm text-info hover:text-info/80 transition-colors"
 						>
 							<ArrowUpCircle class="w-3 h-3" />
 							<span>{$updateInfo.latestVersion}</span>
@@ -113,7 +114,7 @@
 				onclick={closeSettings}
 				aria-label="Close settings"
 			>
-				<X class="w-4 h-4 text-base-content/70" />
+				<X class="w-4 h-4 text-base-content/90" />
 			</button>
 		</div>
 
@@ -143,10 +144,10 @@
 				<li>
 					<a
 						href={item.path}
-						class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-sm text-left transition-colors whitespace-nowrap
+						class="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-lg text-base text-left transition-colors whitespace-nowrap
 							{activeTab === item.id
 								? 'bg-primary/10 text-primary ring-1 ring-primary/20'
-								: 'text-base-content/70 hover:bg-base-200 hover:text-base-content'}"
+								: 'text-base-content/90 hover:bg-base-200 hover:text-base-content'}"
 						aria-current={activeTab === item.id ? 'page' : undefined}
 					>
 						<item.icon class="w-4 h-4" />

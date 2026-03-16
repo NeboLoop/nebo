@@ -46,12 +46,29 @@ impl GeminiProvider {
         for msg in &req.messages {
             match msg.role.as_str() {
                 "user" => {
+                    if msg.content.is_empty() && msg.images.is_none() {
+                        continue;
+                    }
+                    let mut parts = Vec::new();
                     if !msg.content.is_empty() {
+                        parts.push(GeminiPart::Text {
+                            text: msg.content.clone(),
+                        });
+                    }
+                    if let Some(ref images) = msg.images {
+                        for img in images {
+                            parts.push(GeminiPart::InlineData {
+                                inline_data: GeminiInlineData {
+                                    mime_type: img.media_type.clone(),
+                                    data: img.data.clone(),
+                                },
+                            });
+                        }
+                    }
+                    if !parts.is_empty() {
                         contents.push(GeminiContent {
                             role: "user".to_string(),
-                            parts: vec![GeminiPart::Text {
-                                text: msg.content.clone(),
-                            }],
+                            parts,
                         });
                     }
                 }
@@ -113,6 +130,13 @@ impl GeminiProvider {
                                         response,
                                     },
                                 });
+                                // Include screenshot image inline if present
+                                if let Some(ref image_url) = r.image_url {
+                                    let (mime_type, data) = parse_data_url(image_url);
+                                    parts.push(GeminiPart::InlineData {
+                                        inline_data: GeminiInlineData { mime_type, data },
+                                    });
+                                }
                             }
                             if !parts.is_empty() {
                                 // Function responses go in a "user" role content
@@ -162,6 +186,10 @@ impl GeminiProvider {
 impl Provider for GeminiProvider {
     fn id(&self) -> &str {
         "google"
+    }
+
+    fn supports_tool_result_images(&self) -> bool {
+        true
     }
 
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError> {
@@ -519,6 +547,17 @@ enum GeminiPart {
         #[serde(rename = "functionResponse")]
         function_response: GeminiFunctionResponse,
     },
+    InlineData {
+        #[serde(rename = "inlineData")]
+        inline_data: GeminiInlineData,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeminiInlineData {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    data: String,
 }
 
 impl<'de> Deserialize<'de> for GeminiPart {
@@ -543,6 +582,11 @@ impl<'de> Deserialize<'de> for GeminiPart {
             Ok(GeminiPart::FunctionResponse {
                 function_response: fr,
             })
+        } else if val.get("inlineData").is_some() {
+            let id: GeminiInlineData =
+                serde_json::from_value(val["inlineData"].clone())
+                    .map_err(serde::de::Error::custom)?;
+            Ok(GeminiPart::InlineData { inline_data: id })
         } else {
             // Default to empty text
             Ok(GeminiPart::Text {
@@ -662,6 +706,21 @@ struct SessionToolResult {
     content: String,
     #[serde(default)]
     is_error: bool,
+    #[serde(default)]
+    image_url: Option<String>,
+}
+
+/// Parse a data URL (e.g. `data:image/jpeg;base64,/9j/4AAQ...`) into
+/// (mime_type, base64_data). Falls back to `image/png` if the URL
+/// doesn't match the expected format.
+fn parse_data_url(url: &str) -> (String, String) {
+    if let Some(rest) = url.strip_prefix("data:") {
+        if let Some((header, data)) = rest.split_once(",") {
+            let mime_type = header.strip_suffix(";base64").unwrap_or(header);
+            return (mime_type.to_string(), data.to_string());
+        }
+    }
+    ("image/png".to_string(), url.to_string())
 }
 
 #[cfg(test)]

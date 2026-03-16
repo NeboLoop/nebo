@@ -95,7 +95,7 @@
 		</div>
 	{:else if error}
 		<div class="entity-config-panel-error">
-			<p class="text-error text-sm">{error}</p>
+			<p class="text-error text-base">{error}</p>
 			<button class="btn btn-xs btn-ghost" onclick={load}>Retry</button>
 		</div>
 	{:else if config}
@@ -148,7 +148,7 @@
 									heartbeatWindowEnd: config?.heartbeatWindow?.[1] ?? '23:59'
 								})}
 							/>
-							<span class="text-xs text-base-content/50">to</span>
+							<span class="text-sm text-base-content/80">to</span>
 							<input
 								type="time"
 								class="input input-sm input-bordered"

@@ -14,10 +14,10 @@
 	<div class="flex items-center gap-3 mb-3">
 		<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="md" />
 		<div class="flex-1 min-w-0">
-			<p class="text-sm font-bold truncate">{item.name}</p>
+			<p class="text-base font-bold truncate">{item.name}</p>
 		</div>
 		<PricePill price={item.price} installed={item.installed} />
 	</div>
-	<p class="text-xs text-base-content/70 line-clamp-2 leading-relaxed">{item.description}</p>
+	<p class="text-sm text-base-content/60 line-clamp-2 leading-relaxed">{item.description}</p>
 	<InstallCode code={item.code} inline />
 </a>

@@ -140,7 +140,7 @@
 								<h3 class="text-white font-semibold text-lg">{slide.title}</h3>
 							{/if}
 							{#if slide.description}
-								<p class="text-white/80 text-sm mt-1">{slide.description}</p>
+								<p class="text-white/80 text-base mt-1">{slide.description}</p>
 							{/if}
 						</div>
 					{/if}

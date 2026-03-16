@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use crate::models::{Workflow, WorkflowActivityResult, WorkflowRun, WorkflowToolBinding};
+use crate::models::{RoleWorkflowStats, Workflow, WorkflowActivityResult, WorkflowRun, WorkflowRunError, WorkflowToolBinding};
 use crate::OptionalExt;
 use crate::Store;
 use types::NeboError;
@@ -201,7 +201,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              RETURNING id, workflow_id, trigger_type, trigger_detail, status, inputs,
                        current_activity, total_tokens_used, error, error_activity,
-                       session_key, started_at, completed_at",
+                       session_key, output, started_at, completed_at",
             params![id, workflow_id, trigger_type, trigger_detail, inputs, session_key],
             row_to_workflow_run,
         )
@@ -273,14 +273,15 @@ impl Store {
         total_tokens_used: i64,
         error: Option<&str>,
         error_activity: Option<&str>,
+        output: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
             "UPDATE workflow_runs
              SET status = ?1, total_tokens_used = ?2, error = ?3,
-                 error_activity = ?4, completed_at = unixepoch()
-             WHERE id = ?5",
-            params![status, total_tokens_used, error, error_activity, id],
+                 error_activity = ?4, output = ?5, completed_at = unixepoch()
+             WHERE id = ?6",
+            params![status, total_tokens_used, error, error_activity, output, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -297,7 +298,7 @@ impl Store {
             .prepare(
                 "SELECT id, workflow_id, trigger_type, trigger_detail, status, inputs,
                         current_activity, total_tokens_used, error, error_activity,
-                        session_key, started_at, completed_at
+                        session_key, output, started_at, completed_at
                  FROM workflow_runs WHERE workflow_id = ?1
                  ORDER BY started_at DESC LIMIT ?2 OFFSET ?3",
             )
@@ -324,13 +325,24 @@ impl Store {
         conn.query_row(
             "SELECT id, workflow_id, trigger_type, trigger_detail, status, inputs,
                     current_activity, total_tokens_used, error, error_activity,
-                    session_key, started_at, completed_at
+                    session_key, output, started_at, completed_at
              FROM workflow_runs WHERE id = ?1",
             params![id],
             row_to_workflow_run,
         )
         .optional()
         .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Mark any "running" workflow runs as cancelled (orphaned from previous shutdown).
+    pub fn cleanup_orphaned_runs(&self) -> Result<u64, NeboError> {
+        let conn = self.conn()?;
+        let count = conn.execute(
+            "UPDATE workflow_runs SET status = 'cancelled', error = 'server restart', completed_at = unixepoch()
+             WHERE status = 'running'",
+            [],
+        ).map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(count as u64)
     }
 
     // ── Activity Results ──
@@ -355,6 +367,75 @@ impl Store {
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Aggregate stats for all workflow runs belonging to a role.
+    pub fn role_workflow_stats(&self, role_id: &str) -> Result<RoleWorkflowStats, NeboError> {
+        let conn = self.conn()?;
+        let wf_id = format!("role:{}", role_id);
+        conn.query_row(
+            "SELECT
+                COUNT(*) AS total_runs,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+                COALESCE(SUM(total_tokens_used), 0) AS total_tokens,
+                AVG(CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
+                    THEN completed_at - started_at ELSE NULL END) AS avg_duration,
+                MAX(started_at) AS last_run_at,
+                MAX(CASE WHEN status = 'completed' THEN started_at ELSE NULL END) AS last_success_at,
+                (SELECT error FROM workflow_runs
+                 WHERE workflow_id = ?1 AND status = 'failed'
+                 ORDER BY started_at DESC LIMIT 1) AS last_error
+             FROM workflow_runs WHERE workflow_id = ?1",
+            params![wf_id],
+            |row| {
+                Ok(RoleWorkflowStats {
+                    total_runs: row.get(0)?,
+                    completed: row.get(1)?,
+                    failed: row.get(2)?,
+                    cancelled: row.get(3)?,
+                    running: row.get(4)?,
+                    total_tokens: row.get(5)?,
+                    avg_duration_secs: row.get(6)?,
+                    last_run_at: row.get(7)?,
+                    last_success_at: row.get(8)?,
+                    last_error: row.get(9)?,
+                })
+            },
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Recent failures for a role's workflows (last N errors).
+    pub fn role_recent_errors(
+        &self,
+        role_id: &str,
+        limit: i64,
+    ) -> Result<Vec<WorkflowRunError>, NeboError> {
+        let conn = self.conn()?;
+        let wf_id = format!("role:{}", role_id);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, error, error_activity, started_at
+                 FROM workflow_runs
+                 WHERE workflow_id = ?1 AND status = 'failed' AND error IS NOT NULL
+                 ORDER BY started_at DESC LIMIT ?2",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![wf_id, limit], |row| {
+                Ok(WorkflowRunError {
+                    run_id: row.get(0)?,
+                    error: row.get(1)?,
+                    activity_id: row.get(2)?,
+                    started_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
     }
 
     pub fn list_activity_results(
@@ -419,8 +500,9 @@ fn row_to_workflow_run(row: &rusqlite::Row) -> rusqlite::Result<WorkflowRun> {
         error: row.get(8)?,
         error_activity: row.get(9)?,
         session_key: row.get(10)?,
-        started_at: row.get(11)?,
-        completed_at: row.get(12)?,
+        output: row.get(11)?,
+        started_at: row.get(12)?,
+        completed_at: row.get(13)?,
     })
 }
 

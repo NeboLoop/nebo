@@ -194,23 +194,23 @@
 				<ArrowDown class="w-3.5 h-3.5" />
 			</button>
 		{/if}
-		<span class="text-xs text-base-content/70 flex-shrink-0">
+		<span class="text-sm text-base-content/60 flex-shrink-0">
 			{filteredEvents.length} events
 		</span>
 	</div>
 
 	<!-- Event List -->
 	{#if !appId}
-		<div class="flex flex-col items-center justify-center flex-1 text-base-content/70 gap-2">
+		<div class="flex flex-col items-center justify-center flex-1 text-base-content/90 gap-2">
 			<Activity class="w-8 h-8" />
-			<p class="text-sm">No apps loaded</p>
-			<p class="text-xs">Sideload an app to inspect gRPC traffic</p>
+			<p class="text-base">No apps loaded</p>
+			<p class="text-sm">Sideload an app to inspect gRPC traffic</p>
 		</div>
 	{:else if filteredEvents.length === 0}
-		<div class="flex flex-col items-center justify-center flex-1 text-base-content/70 gap-2">
+		<div class="flex flex-col items-center justify-center flex-1 text-base-content/90 gap-2">
 			<Activity class="w-8 h-8" />
-			<p class="text-sm">No gRPC traffic yet</p>
-			<p class="text-xs">Traffic will appear here as your app communicates with Nebo</p>
+			<p class="text-base">No gRPC traffic yet</p>
+			<p class="text-sm">Traffic will appear here as your app communicates with Nebo</p>
 		</div>
 	{:else}
 		<div
@@ -244,7 +244,7 @@
 							<span class="dev-grpc-dur">{formatDuration(event.durationMs)}</span>
 						{/if}
 						<span class="dev-grpc-time">{formatTime(event.timestamp)}</span>
-						<ChevronDown class="w-3 h-3 text-base-content/70 transition-transform
+						<ChevronDown class="w-3 h-3 text-base-content/90 transition-transform
 							{expandedId === event.id ? 'rotate-180' : ''}" />
 					</button>
 

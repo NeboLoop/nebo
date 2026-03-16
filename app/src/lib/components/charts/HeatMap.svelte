@@ -136,7 +136,7 @@
 					y={i * cellSize + cellSize / 2}
 					text-anchor="end"
 					dominant-baseline="middle"
-					class="text-sm fill-base-500 font-medium"
+					class="text-base fill-base-500 font-medium"
 				>
 					{yLabel}
 				</text>
@@ -152,7 +152,7 @@
 					text-anchor="end"
 					dominant-baseline="middle"
 					transform={`rotate(-45, ${i * cellSize + cellSize / 2}, 0)`}
-					class="text-sm fill-base-500 font-medium"
+					class="text-base fill-base-500 font-medium"
 				>
 					{xLabel}
 				</text>
@@ -191,7 +191,7 @@
 									text-anchor="middle"
 									dominant-baseline="middle"
 									fill={getTextColor(dataPoint.value)}
-									class="text-xs font-semibold pointer-events-none"
+									class="text-sm font-semibold pointer-events-none"
 								>
 									{formatValue(dataPoint.value)}
 								</text>
@@ -218,7 +218,7 @@
 			<text
 				x="0"
 				y="-10"
-				class="text-xs fill-base-500 font-medium"
+				class="text-sm fill-base-500 font-medium"
 			>
 				Scale
 			</text>
@@ -237,7 +237,7 @@
 					y={i * 30 + 12.5}
 					text-anchor="start"
 					dominant-baseline="middle"
-					class="text-xs fill-base-500"
+					class="text-sm fill-base-500"
 				>
 					{formatValue(value)}
 				</text>
@@ -250,10 +250,10 @@
 		<div
 			class="absolute bg-base-900/95 text-white px-3 py-2 rounded-lg shadow-xl border border-base-700 pointer-events-none z-10 top-2.5 right-2.5"
 		>
-			<div class="text-xs text-base-400">{hoveredCell.x} x {hoveredCell.y}</div>
-			<div class="text-sm font-semibold">{formatValue(hoveredCell.value)}</div>
+			<div class="text-sm text-base-400">{hoveredCell.x} x {hoveredCell.y}</div>
+			<div class="text-base font-semibold">{formatValue(hoveredCell.value)}</div>
 			{#if hoveredCell.label}
-				<div class="text-xs text-base-300 mt-1">{hoveredCell.label}</div>
+				<div class="text-sm text-base-300 mt-1">{hoveredCell.label}</div>
 			{/if}
 		</div>
 	{/if}

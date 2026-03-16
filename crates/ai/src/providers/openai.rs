@@ -1,11 +1,13 @@
 use async_openai::types::chat::{
     ChatCompletionMessageToolCall, ChatCompletionMessageToolCalls,
     ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageContent,
-    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
+    ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
+    ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
     ChatCompletionRequestSystemMessageContent, ChatCompletionRequestToolMessage,
     ChatCompletionRequestToolMessageContent, ChatCompletionRequestUserMessage,
-    ChatCompletionRequestUserMessageContent, ChatCompletionTool, ChatCompletionTools,
-    CreateChatCompletionRequest, CreateChatCompletionStreamResponse, FunctionCall, FunctionObject,
+    ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
+    ChatCompletionTool, ChatCompletionTools, CreateChatCompletionRequest,
+    CreateChatCompletionStreamResponse, FunctionCall, FunctionObject, ImageUrl,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -121,17 +123,40 @@ impl OpenAIProvider {
         for msg in &req.messages {
             match msg.role.as_str() {
                 "user" => {
-                    if msg.content.is_empty() {
+                    if msg.content.is_empty() && msg.images.is_none() {
                         continue;
                     }
-                    messages.push(ChatCompletionRequestMessage::User(
-                        ChatCompletionRequestUserMessage {
-                            content: ChatCompletionRequestUserMessageContent::Text(
-                                msg.content.clone(),
-                            ),
-                            name: None,
-                        },
-                    ));
+                    if let Some(ref images) = msg.images {
+                        let mut parts: Vec<ChatCompletionRequestUserMessageContentPart> = Vec::new();
+                        if !msg.content.is_empty() {
+                            parts.push(ChatCompletionRequestUserMessageContentPart::Text(
+                                ChatCompletionRequestMessageContentPartText { text: msg.content.clone() },
+                            ));
+                        }
+                        for img in images {
+                            let url = format!("data:{};base64,{}", img.media_type, img.data);
+                            parts.push(ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                                ChatCompletionRequestMessageContentPartImage {
+                                    image_url: ImageUrl { url, detail: None },
+                                },
+                            ));
+                        }
+                        messages.push(ChatCompletionRequestMessage::User(
+                            ChatCompletionRequestUserMessage {
+                                content: ChatCompletionRequestUserMessageContent::Array(parts),
+                                name: None,
+                            },
+                        ));
+                    } else {
+                        messages.push(ChatCompletionRequestMessage::User(
+                            ChatCompletionRequestUserMessage {
+                                content: ChatCompletionRequestUserMessageContent::Text(
+                                    msg.content.clone(),
+                                ),
+                                name: None,
+                            },
+                        ));
+                    }
                 }
                 "assistant" => {
                     let mut tool_calls = Vec::new();
@@ -733,4 +758,6 @@ struct SessionToolResult {
     content: String,
     #[serde(default)]
     is_error: bool,
+    #[serde(default)]
+    image_url: Option<String>,
 }

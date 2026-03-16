@@ -80,19 +80,19 @@
 	<div class="flex items-center px-4 py-2 justify-between border-b border-border/50 bg-base-300">
 		<div class="flex items-center gap-2">
 			{#if badgeText}
-				<span class={`${badgeColor} text-primary-content text-xs px-1.5 py-0.5 rounded`}>
+				<span class={`${badgeColor} text-primary-content text-sm px-1.5 py-0.5 rounded`}>
 					{badgeText}
 				</span>
 			{/if}
 			{#if title}
-				<span class="text-xs font-medium text-base-content/70">{title}</span>
+				<span class="text-sm font-medium text-base-content/90">{title}</span>
 			{/if}
 		</div>
 		<button
 			type="button"
 			{disabled}
 			onclick={handleCopyCode}
-			class="flex items-center justify-center w-8 h-8 rounded hover:bg-base-content/10 text-base-content/70 hover:text-base-content transition-colors"
+			class="flex items-center justify-center w-8 h-8 rounded hover:bg-base-content/10 text-base-content/90 hover:text-base-content transition-colors"
 		>
 			{#if copied}
 				<Check class="h-4 w-4 text-success" />
@@ -108,9 +108,9 @@
 				{@html highlightedHtml}
 			</div>
 		{:else}
-			<div class="flex text-sm font-mono">
+			<div class="flex text-base font-mono">
 				{#if showLineNumbers}
-					<div class="flex-shrink-0 py-4 pl-4 pr-2 text-right select-none text-base-content/70 border-r border-border/30">
+					<div class="flex-shrink-0 py-4 pl-4 pr-2 text-right select-none text-base-content/90 border-r border-border/30">
 						{#each codeLines as _, i}
 							<div class="leading-6">{i + 1}</div>
 						{/each}
@@ -123,14 +123,14 @@
 							{@html highlightedHtml}
 						</div>
 					{:else}
-						<pre class="p-4 text-base-content/70 leading-6"><code>{code}</code></pre>
+						<pre class="p-4 text-base-content/80 leading-6"><code>{code}</code></pre>
 					{/if}
 				</div>
 			</div>
 		{/if}
 	</div>
 	{#if footer}
-		<div class="px-4 py-2 border-t border-border/50 text-base-content/70 bg-base-300">
+		<div class="px-4 py-2 border-t border-border/50 text-base-content/90 bg-base-300">
 			{@render footer()}
 		</div>
 	{/if}

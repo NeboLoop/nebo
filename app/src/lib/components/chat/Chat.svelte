@@ -13,6 +13,7 @@
 	} from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
+	import { getRole } from '$lib/api/nebo';
 	import { logger } from '$lib/monitoring/logger';
 
 	const log = logger.child({ component: 'Chat' });
@@ -31,6 +32,9 @@
 		ChatInput
 	} from '$lib/components/chat';
 	import EntityConfigPanel from '$lib/components/chat/EntityConfigPanel.svelte';
+	import { parseSlashCommand } from './slash-commands';
+	import { executeSlashCommand, type CommandContext } from './slash-command-executor';
+	import type { SlashCommand } from './slash-commands';
 
 	// ── Mode prop ──────────────────────────────────────────────────────
 	interface ChatMode {
@@ -109,6 +113,7 @@
 	let isLoading = $state(false);
 	let wsConnected = $state(false);
 	let agentName = $state('Nebo');
+	let roleDescription = $state('');
 	let messagesContainer: HTMLDivElement;
 	let currentStreamingMessage = $state<Message | null>(null);
 	let chatLoaded = $state(false);
@@ -117,6 +122,44 @@
 	let autoScrollEnabled = $state(true);
 	let scrollingProgrammatically = false;
 	let draftInitialized = $state(false);
+
+	// ── Slash commands ────────────────────────────────────────────────
+	let verboseMode = $state(false);
+	let thinkingLevel = $state('off');
+	let focusModeEnabled = $state(false);
+
+	function addSystemMessage(content: string) {
+		messages = [...messages, {
+			id: `cmd-${Date.now()}`,
+			role: 'assistant' as const,
+			content,
+			timestamp: new Date()
+		}];
+	}
+
+	function toggleFocusMode() {
+		focusModeEnabled = !focusModeEnabled;
+		window.dispatchEvent(new CustomEvent('nebo:focus-mode', { detail: focusModeEnabled }));
+	}
+
+	async function handleSlashSelect(cmd: SlashCommand) {
+		// Command was auto-executed from menu (no-arg commands)
+		const client = getWebSocketClient();
+		const ctx: CommandContext = {
+			messages, chatId, isLoading,
+			onNewSession: resetChat,
+			onCancel: cancelMessage,
+			onToggleDuplex: undefined,
+			addSystemMessage,
+			clearMessages: () => { messages = []; },
+			setVerboseMode: (on) => { verboseMode = on; },
+			setThinkingLevel: (level) => { thinkingLevel = level; },
+			toggleFocusMode,
+			wsSend: (type, data) => client.send(type, data)
+		};
+		inputValue = '';
+		await executeSlashCommand(cmd.name, '', ctx);
+	}
 
 	// ── Virtual scroll (top-truncation) ───────────────────────────────
 	const VS_WINDOW = 20;
@@ -216,7 +259,7 @@
 		content: string;
 	}
 	let messageQueue = $state<QueuedMessage[]>([]);
-	let chatInputRef: { focus: () => void; handleDrop: (e: DragEvent) => void } | undefined;
+	let chatInputRef: { focus: () => void; handleDrop: (e: DragEvent) => void; insertFilePaths: (paths: string[]) => void } | undefined;
 	let isDraggingOver = $state(false);
 	let dragCounter = 0;
 	let cancelTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -293,6 +336,23 @@
 	onMount(async () => {
 		const client = getWebSocketClient();
 
+		// Tauri native drag-and-drop via Rust eval() → global functions.
+		// Registered FIRST (synchronously) so they're available immediately.
+		(window as any).__NEBO_DRAG_ENTER__ = () => { isDraggingOver = true; };
+		(window as any).__NEBO_DRAG_LEAVE__ = () => { isDraggingOver = false; };
+		(window as any).__NEBO_INSERT_FILES__ = (paths: string[]) => {
+			isDraggingOver = false;
+			if (paths?.length) {
+				const joined = paths.join(' ');
+				inputValue = inputValue.trim() ? `${inputValue.trimEnd()} ${joined} ` : `${joined} `;
+			}
+		};
+		unsubscribers.push(() => {
+			delete (window as any).__NEBO_DRAG_ENTER__;
+			delete (window as any).__NEBO_DRAG_LEAVE__;
+			delete (window as any).__NEBO_INSERT_FILES__;
+		});
+
 		unsubscribers.push(
 			client.onStatus((status: ConnectionStatus) => {
 				wsConnected = status === 'connected';
@@ -328,7 +388,12 @@
 				client.on('code_processing', handleCodeProcessing),
 				client.on('code_result', handleCodeResult),
 				client.on('dep_installed', handleDepInstalled),
-				client.on('dep_cascade_complete', handleDepCascadeComplete)
+				client.on('dep_cascade_complete', handleDepCascadeComplete),
+				client.on('chat_ack', (data: Record<string, unknown>) => {
+					if (data?.session_id === chatId) {
+						log.debug('chat_ack received for session ' + chatId);
+					}
+				})
 			);
 
 			if (isCompanion && browser) {
@@ -343,6 +408,12 @@
 				// Role chat: set chatId to role-scoped session key, load existing messages
 				chatId = `role:${mode.roleId}:web`;
 				agentName = mode.roleName || 'Role';
+				// Fetch role details for empty state display
+				if (mode.roleId) {
+					getRole(mode.roleId).then((data) => {
+						if (data?.role?.description) roleDescription = data.role.description;
+					}).catch(() => {});
+				}
 				await loadRoleChat();
 			} else {
 				await loadCompanionChat();
@@ -1464,6 +1535,42 @@
 
 		const prompt = inputValue.trim();
 
+		// ── Slash command interception ──
+		const parsed = parseSlashCommand(prompt);
+		if (parsed) {
+			inputValue = '';
+			clearDraft();
+			const client = getWebSocketClient();
+			const ctx: CommandContext = {
+				messages, chatId, isLoading,
+				onNewSession: resetChat,
+				onCancel: cancelMessage,
+				onToggleDuplex: undefined,
+				addSystemMessage,
+				clearMessages: () => { messages = []; },
+				setVerboseMode: (on) => { verboseMode = on; },
+				setThinkingLevel: (level) => { thinkingLevel = level; },
+				toggleFocusMode,
+				wsSend: (type, data) => client.send(type, data)
+			};
+			executeSlashCommand(parsed.command, parsed.args, ctx).then((handled) => {
+				if (!handled) {
+					// Not handled locally — send to agent as normal message
+					const userMessage: Message = {
+						id: generateUUID(),
+						role: 'user',
+						content: prompt,
+						timestamp: new Date()
+					};
+					messages = [...messages, userMessage];
+					autoScrollEnabled = true;
+					showScrollButton = false;
+					handleSendPrompt(prompt);
+				}
+			});
+			return;
+		}
+
 		inputValue = '';
 		clearDraft();
 
@@ -2010,7 +2117,7 @@
 <!-- File drop zone for the entire chat area -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="flex flex-col h-full bg-base-100"
+	class="relative flex flex-col h-full bg-base-100"
 	ondragover={(e) => e.preventDefault()}
 	ondragenter={(e) => {
 		e.preventDefault();
@@ -2035,88 +2142,37 @@
 		}
 	}}
 >
+	<!-- Drop overlay -->
+	{#if isDraggingOver}
+		<div class="absolute inset-0 z-50 flex items-center justify-center bg-base-100/80 backdrop-blur-sm border-2 border-dashed border-primary rounded-2xl pointer-events-none">
+			<div class="flex flex-col items-center gap-2 text-primary">
+				<svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="12"/><line x1="15" y1="15" x2="12" y2="12"/></svg>
+				<span class="text-lg font-medium">Drop file to insert path</span>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Header -->
 	{#if isChannel}
 		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
 			<div class="flex items-center justify-between px-6 h-14">
 				<div class="flex items-center">
-					<span class="text-lg font-semibold text-base-content/70 mr-1">#</span>
+					<span class="text-lg font-semibold text-base-content/90 mr-1">#</span>
 					<span class="text-lg font-semibold text-base-content">{mode.channelName}</span>
 					{#if mode.loopName}
-						<span class="mx-2 text-base-content/70">&middot;</span>
-						<span class="text-sm text-base-content/70">{mode.loopName}</span>
+						<span class="mx-2 text-base-content/90">&middot;</span>
+						<span class="text-base text-base-content/80">{mode.loopName}</span>
 					{/if}
 				</div>
 				<div class="flex items-center gap-2 shrink-0">
 					<button class="btn btn-sm btn-ghost" class:btn-active={showConfig} title="Entity settings" onclick={() => showConfig = !showConfig}>
 						<Settings class="w-4 h-4" />
 					</button>
-				</div>
-			</div>
-		</header>
-	{:else if isRole}
-		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
-			<div class="flex items-center justify-between px-6 h-14">
-				<div class="flex items-center gap-3">
-					<svg class="w-5 h-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-						<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-						<circle cx="12" cy="7" r="4" />
-					</svg>
-					<div class="flex flex-col justify-center">
-						<h1 class="text-lg font-semibold text-base-content leading-tight">{mode.roleName}</h1>
-						<p class="text-xs text-base-content/70 leading-tight">Role</p>
-					</div>
-				</div>
-				<div class="flex items-center gap-2 shrink-0">
-					<button class="btn btn-sm btn-ghost" class:btn-active={showConfig} title="Entity settings" onclick={() => showConfig = !showConfig}>
-						<Settings class="w-4 h-4" />
-					</button>
-					{#if wsConnected}
-						<div class="flex items-center gap-1.5 text-xs text-success px-2">
-							<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
-							<span class="hidden sm:inline">Connected</span>
-						</div>
-					{:else}
-						<div class="flex items-center gap-1.5 text-xs text-warning px-2">
-							<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
-							<span class="hidden sm:inline">Offline</span>
-						</div>
-					{/if}
 				</div>
 			</div>
 		</header>
 	{:else}
-		<header class="border-b border-base-300 bg-base-100/80 backdrop-blur-sm shrink-0">
-			<div class="flex items-center justify-between px-6 h-14">
-				<div class="flex flex-col justify-center">
-					<h1 class="text-lg font-semibold text-base-content leading-tight">Chat</h1>
-					<p class="text-xs text-base-content/70 leading-tight">
-						Direct chat session with your AI companion.
-					</p>
-				</div>
-				<div class="flex items-center gap-2 shrink-0">
-					<button class="btn btn-sm btn-ghost" class:btn-active={showConfig} title="Entity settings" onclick={() => showConfig = !showConfig}>
-						<Settings class="w-4 h-4" />
-					</button>
-					{#if wsConnected}
-						<div class="flex items-center gap-1.5 text-xs text-success px-2">
-							<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
-							<span class="hidden sm:inline">Connected</span>
-						</div>
-					{:else}
-						<div class="flex items-center gap-1.5 text-xs text-warning px-2">
-							<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
-							<span class="hidden sm:inline">Offline</span>
-						</div>
-					{/if}
-					<!-- Voice UI hidden — re-enable when phonemizer is fixed (see docs/sme/VOICE_DUPLEX.md) -->
-					<a href="/agent/history" class="btn btn-sm btn-ghost gap-1.5" title="View history">
-						<History class="w-4 h-4" />
-						<span class="hidden sm:inline">History</span>
-					</a>
-				</div>
-			</div>
-		</header>
+		<!-- Header provided by [name]/+layout.svelte for both role and companion -->
 	{/if}
 
 	<!-- Entity Config Panel -->
@@ -2135,9 +2191,10 @@
 				{#if isCompanion && hasMoreHistory}
 					<div class="flex justify-center">
 						<a
-							href="/agent/history"
-							class="flex items-center gap-2 px-4 py-2 rounded-lg bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
+							href="{mode.roleId ? `/agent/role/${mode.roleId}/activity` : '/agent/assistant/activity'}"
+							class="flex items-center gap-2 px-4 py-2 rounded-lg bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
 						>
+
 							<History class="w-4 h-4" />
 							<span>View {totalMessages - messages.length} earlier messages in history</span>
 						</a>
@@ -2145,7 +2202,7 @@
 				{/if}
 				{#if !chatLoaded}
 					<div class="flex items-center justify-center h-full">
-						<Loader2 class="w-6 h-6 text-base-content/70 animate-spin" />
+						<Loader2 class="w-6 h-6 text-base-content/90 animate-spin" />
 					</div>
 				{:else if messages.length === 0}
 					{#if isCompanion}
@@ -2155,7 +2212,7 @@
 								<Bot class="w-8 h-8 text-primary" />
 							</div>
 							<h2 class="font-display text-xl font-bold text-base-content mb-2">Your AI Companion</h2>
-							<p class="text-sm text-base-content/70 max-w-md mb-8">
+							<p class="text-base text-base-content/80 max-w-md mb-8">
 								I'm here to help with tasks like reading files, running commands, searching the web,
 								and more.
 							</p>
@@ -2165,7 +2222,7 @@
 									<button
 										type="button"
 										onclick={() => selectSuggestion(suggestion)}
-										class="text-left px-4 py-3 rounded-xl bg-base-200 text-sm text-base-content/70 hover:bg-base-300 hover:text-base-content transition-colors"
+										class="text-left px-4 py-3 rounded-xl bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
 										disabled={isLoading}
 									>
 										{suggestion}
@@ -2173,9 +2230,41 @@
 								{/each}
 							</div>
 						</div>
+					{:else if isRole}
+						<!-- Role empty state -->
+						<div class="flex flex-col items-center justify-center pt-12 text-center">
+							<div class="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+								<span class="text-2xl font-bold text-primary">{(mode.roleName || 'R').charAt(0).toUpperCase()}</span>
+							</div>
+							<h2 class="font-display text-xl font-bold text-base-content mb-2">{mode.roleName || 'Agent'}</h2>
+							{#if roleDescription}
+								<p class="text-base text-base-content/60 max-w-md mb-8">{roleDescription}</p>
+							{:else}
+								<p class="text-base text-base-content/60 max-w-md mb-8">Start a conversation to get going.</p>
+							{/if}
+
+							<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg w-full">
+								<button
+									type="button"
+									onclick={() => selectSuggestion(`What can you help me with?`)}
+									class="text-left px-4 py-3 rounded-xl bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
+									disabled={isLoading}
+								>
+									What can you help me with?
+								</button>
+								<button
+									type="button"
+									onclick={() => selectSuggestion(`Give me a brief introduction`)}
+									class="text-left px-4 py-3 rounded-xl bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
+									disabled={isLoading}
+								>
+									Give me a brief introduction
+								</button>
+							</div>
+						</div>
 					{:else}
 						<div class="flex items-center justify-center h-full">
-							<p class="text-base-content/70 text-sm">No messages yet</p>
+							<p class="text-base-content/80 text-base">No messages yet</p>
 						</div>
 					{/if}
 				{:else}
@@ -2187,19 +2276,19 @@
 							agentName={group.agentName}
 							onCopy={copyMessage}
 							copiedId={copiedMessageId}
-							onViewToolOutput={isCompanion ? openToolSidebar : undefined}
-							isStreaming={isCompanion && group.role === 'assistant' &&
+							onViewToolOutput={(isCompanion || isRole) ? openToolSidebar : undefined}
+							isStreaming={(isCompanion || isRole) && group.role === 'assistant' &&
 								isLoading &&
 								idx === groupedMessages.length - 1}
-							onAskSubmit={isCompanion ? handleAskSubmit : undefined}
+							onAskSubmit={(isCompanion || isRole) ? handleAskSubmit : undefined}
 						/>
 					{/each}
 
-					<!-- Loading indicator (companion-only) -->
-					{#if isCompanion && isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
+					<!-- Loading indicator -->
+					{#if (isCompanion || isRole) && isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
 						<div class="flex gap-3 mb-4">
 							<div
-								class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-sm bg-base-300 text-base-content/70"
+								class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-base bg-base-300 text-base-content/80"
 							>
 								A
 							</div>
@@ -2208,7 +2297,7 @@
 									<ReadingIndicator />
 								</div>
 								<div class="flex gap-2 items-baseline mt-1.5">
-									<span class="text-xs font-medium text-base-content/70">Assistant</span>
+									<span class="text-sm font-medium text-base-content/60">{agentName}</span>
 								</div>
 							</div>
 						</div>
@@ -2223,7 +2312,7 @@
 				<button
 					type="button"
 					onclick={scrollToBottom}
-					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/70 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
+					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/90 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
 					title="Scroll to bottom"
 				>
 					<ArrowDown class="w-5 h-5" />
@@ -2235,7 +2324,7 @@
 	<!-- Stale warning (companion-only) -->
 	{#if isCompanion && staleWarning}
 		<div class="max-w-4xl mx-auto px-6 pb-2">
-			<div class="alert alert-warning text-sm py-2">
+			<div class="alert alert-warning text-base py-2">
 				<span>No activity for 60s — the agent may be stuck.</span>
 				<button class="btn btn-sm btn-ghost" onclick={cancelMessage}>Force stop</button>
 			</div>
@@ -2268,6 +2357,7 @@
 			onCancelQueued={cancelQueuedMessage}
 			onRecallQueue={recallFromQueue}
 			onNewSession={resetChat}
+			onSlashSelect={handleSlashSelect}
 		/>
 		<!-- Voice UI hidden — re-enable onToggleDuplex={toggleDuplexVoice} when phonemizer is fixed (see docs/sme/VOICE_DUPLEX.md) -->
 	{/if}
@@ -2294,21 +2384,21 @@
 		</div>
 		<!-- Body -->
 		<div class="px-5 py-5">
-			<p class="text-sm text-base-content/70 mb-4">
+			<p class="text-base text-base-content/80 mb-4">
 				Voice models need to be downloaded before first use. This is a one-time download.
 			</p>
 
 			{#if modelDownloadError}
-				<div class="rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error mb-4">
+				<div class="rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-base text-error mb-4">
 					{modelDownloadError}
 				</div>
 			{/if}
 
 			{#each Object.entries(modelDownloadProgress) as [name, prog]}
 				<div class="mb-3">
-					<div class="flex justify-between text-sm mb-1">
-						<span class="font-mono text-xs">{name}</span>
-						<span class="text-xs text-base-content/70">
+					<div class="flex justify-between text-base mb-1">
+						<span class="font-mono text-sm">{name}</span>
+						<span class="text-sm text-base-content/60">
 							{#if prog.done}
 								Done
 							{:else if prog.total > 0}
@@ -2331,14 +2421,14 @@
 		<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
 			<button
 				type="button"
-				class="h-10 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+				class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 				onclick={() => { showModelDownload = false; }}
 			>
 				Cancel
 			</button>
 			<button
 				type="button"
-				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
 				onclick={startModelDownload}
 				disabled={Object.values(modelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
 			>

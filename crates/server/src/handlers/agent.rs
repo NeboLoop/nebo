@@ -47,8 +47,14 @@ pub async fn get_session_messages(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    // Get the chat_id from session scope_id or use session id as chat reference
-    let chat_id = session.scope_id.as_deref().unwrap_or(&id);
+    // Messages are stored under session.name (the session_key / chat_id).
+    // Fall back to scope_id, then session id for legacy data.
+    let chat_id = session
+        .name
+        .as_deref()
+        .filter(|n| !n.is_empty())
+        .or(session.scope_id.as_deref())
+        .unwrap_or(&id);
     let messages = state.store.get_chat_messages(chat_id).map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"messages": messages})))
 }
@@ -253,7 +259,9 @@ pub async fn get_channel_messages(
 
     let messages = match session {
         Some(s) => {
-            let chat_id = s.scope_id.as_deref().unwrap_or(&s.id);
+            let chat_id = s.name.as_deref().filter(|n| !n.is_empty())
+                .or(s.scope_id.as_deref())
+                .unwrap_or(&s.id);
             state.store.get_chat_messages(chat_id).unwrap_or_default()
         }
         None => vec![],

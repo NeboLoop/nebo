@@ -13,7 +13,7 @@
 		<div class="flex items-baseline justify-between mb-3">
 			<h2 class="font-display text-lg font-bold">{title}</h2>
 			{#if seeAllHref}
-				<a href={seeAllHref} class="text-sm text-primary font-medium">See All</a>
+				<a href={seeAllHref} class="text-base text-primary font-medium">See All</a>
 			{/if}
 		</div>
 		<MarketplaceGrid>

@@ -254,7 +254,7 @@
 <div bind:this={containerRef} class="flex flex-col w-full h-full relative overflow-hidden">
 	{#if values.length === 0}
 		<div class="flex-1 flex items-center justify-center">
-			<p class="text-text-muted text-sm">No data to display</p>
+			<p class="text-text-muted text-base">No data to display</p>
 		</div>
 	{:else}
 		<div class="flex-1 flex items-center gap-4 justify-center {isNarrow ? 'flex-col' : 'flex-row'}">
@@ -316,9 +316,9 @@
 							onkeydown={(e) => e.key === 'Enter' && handleSliceClick(slice, i)}
 						>
 							<span class="w-3 h-3 rounded-full" style="background-color: {slice.color}"></span>
-							<span class="text-xs text-text-muted">{slice.label}</span>
+							<span class="text-sm text-text-muted">{slice.label}</span>
 							{#if !isNarrow}
-								<span class="text-xs text-text ml-auto font-medium">{slice.percentage}%</span>
+								<span class="text-sm text-text ml-auto font-medium">{slice.percentage}%</span>
 							{/if}
 						</div>
 					{/each}

@@ -154,9 +154,9 @@
 		{#if showIcon}
 			<div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
 				{#if loading}
-					<Loader2 class="w-4 h-4 text-base-content/70 animate-spin" />
+					<Loader2 class="w-4 h-4 text-base-content/90 animate-spin" />
 				{:else}
-					<Search class="w-4 h-4 text-base-content/70" />
+					<Search class="w-4 h-4 text-base-content/90" />
 				{/if}
 			</div>
 		{/if}
@@ -187,7 +187,7 @@
 				onclick={clear}
 				tabindex="-1"
 			>
-				<X class="w-4 h-4 text-base-content/70 hover:text-base-content/70" />
+				<X class="w-4 h-4 text-base-content/90 hover:text-base-content/90" />
 			</button>
 		{/if}
 	</div>
@@ -198,7 +198,7 @@
 			role="listbox"
 		>
 			{#if filteredOptions().length === 0}
-				<li class="px-4 py-3 text-sm text-base-content/70">
+				<li class="px-4 py-3 text-base text-base-content/90">
 					{emptyMessage}
 				</li>
 			{:else}
@@ -215,12 +215,12 @@
 					>
 						<div class="flex items-center gap-3">
 							{#if option.icon}
-								<svelte:component this={option.icon} class="w-4 h-4 text-base-content/70" />
+								<svelte:component this={option.icon} class="w-4 h-4 text-base-content/90" />
 							{/if}
 							<div class="flex-1 min-w-0">
 								<div class="font-medium truncate">{option.label}</div>
 								{#if option.description}
-									<div class="text-sm text-base-content/70 truncate">
+									<div class="text-base text-base-content/90 truncate">
 										{option.description}
 									</div>
 								{/if}

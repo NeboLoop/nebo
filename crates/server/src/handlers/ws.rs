@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -59,6 +60,35 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
     info!("ws client connected — starting handle_client_ws");
     let mut hub_rx = state.hub.subscribe();
     let active_runs: ActiveRuns = Default::default();
+    let seen_ids: Arc<tokio::sync::Mutex<HashSet<String>>> = Default::default();
+
+    // Spawn periodic cleanup of stale active runs (10 min expiry).
+    // The task stops when the WS connection drops (cleanup_token cancelled).
+    let cleanup_runs = active_runs.clone();
+    let cleanup_token = CancellationToken::new();
+    let cleanup_token_clone = cleanup_token.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = cleanup_token_clone.cancelled() => break,
+                _ = interval.tick() => {
+                    let mut runs = cleanup_runs.lock().await;
+                    let now = std::time::Instant::now();
+                    runs.retain(|session_id, run| {
+                        let age = now.duration_since(run.started_at);
+                        if age > std::time::Duration::from_secs(600) {
+                            warn!(%session_id, ?age, "expiring stale active run");
+                            run.token.cancel();
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                }
+            }
+        }
+    });
 
     // Send initial connection confirmation
     let welcome = serde_json::json!({
@@ -110,6 +140,17 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                             let msg_type = parsed["type"].as_str().unwrap_or("");
                             match msg_type {
                                 "chat" => {
+                                    // Idempotency: skip duplicate messages
+                                    if let Some(msg_id) = parsed.get("message_id").and_then(|v| v.as_str()) {
+                                        let mut seen = seen_ids.lock().await;
+                                        if !seen.insert(msg_id.to_string()) {
+                                            debug!("duplicate message_id {}, skipping", msg_id);
+                                            continue;
+                                        }
+                                        if seen.len() > 1000 {
+                                            seen.clear();
+                                        }
+                                    }
                                     dispatch_chat(&state, &parsed, active_runs.clone()).await;
                                 }
                                 "cancel" => {
@@ -118,8 +159,8 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         .unwrap_or("default")
                                         .to_string();
                                     let runs = active_runs.lock().await;
-                                    if let Some(token) = runs.get(&session_id) {
-                                        token.cancel();
+                                    if let Some(run) = runs.get(&session_id) {
+                                        run.token.cancel();
                                         info!(session_id = %session_id, "cancelled agent run");
                                     }
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
@@ -251,7 +292,58 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
         }
     }
 
+    cleanup_token.cancel();
     info!("ws client disconnected");
+}
+
+/// Scan prompt text for image file paths, read them, and return (cleaned_prompt, images).
+fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
+    use base64::Engine;
+
+    let image_extensions = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"];
+    let mut images = Vec::new();
+    let mut cleaned_parts = Vec::new();
+
+    for token in prompt.split_whitespace() {
+        let path = std::path::Path::new(token);
+        let is_image = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| image_extensions.contains(&ext.to_lowercase().as_str()))
+            .unwrap_or(false);
+
+        if is_image && path.exists() {
+            if let Ok(bytes) = std::fs::read(path) {
+                let media_type = match path.extension().and_then(|e| e.to_str()) {
+                    Some("png") => "image/png",
+                    Some("jpg" | "jpeg") => "image/jpeg",
+                    Some("gif") => "image/gif",
+                    Some("webp") => "image/webp",
+                    Some("bmp") => "image/bmp",
+                    Some("tiff") => "image/tiff",
+                    _ => "image/png",
+                };
+                let data =
+                    base64::engine::general_purpose::STANDARD.encode(&bytes);
+                images.push(ai::ImageContent {
+                    media_type: media_type.to_string(),
+                    data,
+                });
+            }
+        } else {
+            cleaned_parts.push(token);
+        }
+    }
+
+    let cleaned = cleaned_parts.join(" ");
+    // If the entire prompt was just image paths, add a generic prompt
+    let cleaned = if cleaned.trim().is_empty() && !images.is_empty() {
+        "What's in this image?".to_string()
+    } else {
+        cleaned
+    };
+
+    (cleaned, images)
 }
 
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
@@ -274,10 +366,22 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         "dispatch_chat called"
     );
 
+    // Send ACK immediately so the client knows the message was received
+    state.hub.broadcast("chat_ack", serde_json::json!({
+        "session_id": &session_id,
+        "status": "accepted",
+    }));
+
     // Intercept marketplace codes before they reach the agent
     if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
         crate::codes::handle_code(state, code_type, code, &session_id).await;
         return;
+    }
+
+    // Extract images from file paths in the prompt (drag/drop, paste)
+    let (prompt, images) = extract_images_from_prompt(&prompt);
+    if !images.is_empty() {
+        info!(count = images.len(), "extracted images from prompt");
     }
 
     if prompt.is_empty() {
@@ -320,6 +424,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         lane: lanes::MAIN.to_string(),
         comm_reply: None,
         entity_config,
+        images,
     };
 
     run_chat(state, config, Some(active_runs)).await;

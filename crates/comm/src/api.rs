@@ -401,6 +401,45 @@ impl NeboLoopApi {
         Ok(resp.members)
     }
 
+    // ── Agents ──────────────────────────────────────────────────────
+
+    /// Register an agent (running role) in a loop. The gateway auto-creates
+    /// an agent space conversation and subscribes the bot to it.
+    pub async fn register_agent(
+        &self,
+        loop_id: &str,
+        role_name: &str,
+        role_slug: &str,
+        description: Option<&str>,
+    ) -> Result<serde_json::Value, CommError> {
+        let body = AgentActivateRequest {
+            bot_id: self.bot_id.clone(),
+            role_name: role_name.to_string(),
+            role_slug: role_slug.to_string(),
+            description: description.map(|s| s.to_string()),
+        };
+        self.do_json(
+            reqwest::Method::POST,
+            &format!("/api/v1/loops/{}/agents", loop_id),
+            Some(&body),
+        )
+        .await
+    }
+
+    /// Deregister an agent from a loop.
+    pub async fn deregister_agent(
+        &self,
+        loop_id: &str,
+        agent_id: &str,
+    ) -> Result<serde_json::Value, CommError> {
+        self.do_json(
+            reqwest::Method::DELETE,
+            &format!("/api/v1/loops/{}/agents/{}", loop_id, agent_id),
+            None::<&()>,
+        )
+        .await
+    }
+
     // ── Channels ────────────────────────────────────────────────────
 
     /// List all channels this bot belongs to across all loops.

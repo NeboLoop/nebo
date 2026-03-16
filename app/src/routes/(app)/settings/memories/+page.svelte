@@ -27,14 +27,14 @@
 	async function loadMemories() {
 		isLoading = true;
 		try {
-			const params: api.ListMemoriesRequestParams = {
-				page: currentPage,
-				pageSize
+			const params: Record<string, any> = {
+				limit: pageSize,
+				offset: (currentPage - 1) * pageSize
 			};
 			if (selectedNamespace) {
 				params.namespace = selectedNamespace;
 			}
-			const data = await api.listMemories(params);
+			const data = await api.listMemories(params as any);
 			memories = data.memories || [];
 			total = data.total || 0;
 		} catch (error) {
@@ -125,16 +125,16 @@
 		}
 	}
 
-	function selectNamespaceFilter(ns: string) {
-		selectedNamespace = ns === selectedNamespace ? '' : ns;
+	function selectNamespaceFilter(layer: string) {
+		selectedNamespace = layer === selectedNamespace ? '' : layer;
 		currentPage = 1;
 		loadMemories();
 	}
 
 	function getLayerFromNamespace(namespace: string): string {
-		if (namespace.startsWith('tacit.')) return 'tacit';
-		if (namespace.startsWith('daily.')) return 'daily';
-		if (namespace.startsWith('entity.')) return 'entity';
+		if (namespace.startsWith('tacit/') || namespace === 'tacit') return 'tacit';
+		if (namespace.startsWith('daily/') || namespace === 'daily') return 'daily';
+		if (namespace.startsWith('entity/') || namespace === 'entity') return 'entity';
 		return 'other';
 	}
 
@@ -143,13 +143,31 @@
 			case 'tacit': return 'bg-primary/10 text-primary';
 			case 'daily': return 'bg-secondary/10 text-secondary';
 			case 'entity': return 'bg-accent/10 text-accent';
-			default: return 'bg-base-content/5 text-base-content/70';
+			default: return 'bg-base-content/5 text-base-content/90';
 		}
 	}
 
-	function formatDate(dateStr: string): string {
+	function formatDate(dateStr: string | number): string {
 		if (!dateStr) return 'Never';
-		return new Date(dateStr).toLocaleString();
+		const d = new Date(dateStr);
+		if (isNaN(d.getTime())) return 'Never';
+		return d.toLocaleString();
+	}
+
+	function formatShortDate(dateStr: string | number): string {
+		if (!dateStr) return '';
+		const d = new Date(dateStr);
+		if (isNaN(d.getTime())) return '';
+		return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+	}
+
+	/** Derive unique layer names from namespaces for filter pills */
+	function getLayerFilters(namespaces: string[]): string[] {
+		const layers = new Set<string>();
+		for (const ns of namespaces) {
+			layers.add(getLayerFromNamespace(ns));
+		}
+		return [...layers].sort();
 	}
 
 	function handleSearchKeydown(e: KeyboardEvent) {
@@ -170,8 +188,8 @@
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Memories</h2>
 		{#if stats}
-			<p class="text-sm text-base-content/70">
-				<span class="font-medium text-base-content/80">{stats.totalCount}</span> total
+			<p class="text-base text-base-content/80">
+				<span class="font-medium text-base-content/90">{stats.totalCount}</span> total
 				<span class="mx-1">&middot;</span>
 				<span class="text-primary font-medium">{stats.layerCounts?.tacit || 0}</span> tacit
 				<span class="mx-1">&middot;</span>
@@ -180,35 +198,39 @@
 				<span class="text-accent font-medium">{stats.layerCounts?.entity || 0}</span> entity
 			</p>
 		{:else}
-			<p class="text-sm text-base-content/70">Browse and manage what the agent remembers about you</p>
+			<p class="text-base text-base-content/80">Browse and manage what the agent remembers about you</p>
 		{/if}
 	</div>
 	<button
 		type="button"
-		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5"
+		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5"
 		onclick={() => { loadMemories(); loadStats(); }}
 	>
 		<RefreshCw class="w-3.5 h-3.5" />
 	</button>
 </div>
 
-<!-- Namespace filter pills -->
+<!-- Layer filter pills -->
 {#if stats?.namespaces?.length}
+	{@const layers = getLayerFilters(stats.namespaces)}
 	<div class="flex flex-wrap gap-1.5 mb-4">
 		<button
 			type="button"
-			class="px-2.5 py-1 rounded-lg text-[13px] font-medium transition-colors {selectedNamespace === '' ? 'bg-primary/10 text-primary border border-primary/30' : 'bg-base-content/5 text-base-content/70 border border-transparent hover:border-base-content/15'}"
+			class="px-2.5 py-1 rounded-lg text-sm font-medium transition-colors {selectedNamespace === '' ? 'bg-primary/10 text-primary border border-primary/30' : 'bg-base-content/5 text-base-content/60 border border-transparent hover:border-base-content/15'}"
 			onclick={() => selectNamespaceFilter('')}
 		>
 			All
 		</button>
-		{#each stats.namespaces as ns}
+		{#each layers as layer}
 			<button
 				type="button"
-				class="px-2.5 py-1 rounded-lg text-[13px] font-medium transition-colors {selectedNamespace === ns ? 'bg-primary/10 text-primary border border-primary/30' : 'bg-base-content/5 text-base-content/70 border border-transparent hover:border-base-content/15'}"
-				onclick={() => selectNamespaceFilter(ns)}
+				class="px-2.5 py-1 rounded-lg text-sm font-medium transition-colors {selectedNamespace === layer ? getLayerColor(layer) + ' border border-current/30' : 'bg-base-content/5 text-base-content/60 border border-transparent hover:border-base-content/15'}"
+				onclick={() => selectNamespaceFilter(layer)}
 			>
-				{ns}
+				{layer}
+				{#if stats.layerCounts?.[layer]}
+					<span class="ml-1 text-xs opacity-70">{stats.layerCounts[layer]}</span>
+				{/if}
 			</button>
 		{/each}
 	</div>
@@ -216,10 +238,10 @@
 
 <!-- Search -->
 <div class="relative mb-4">
-	<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/40" />
+	<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-base-content/60" />
 	<input
 		type="text"
-		class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 pl-10 pr-10 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+		class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 pl-10 pr-10 text-base focus:outline-none focus:border-primary/50 transition-colors"
 		placeholder="Search memories..."
 		bind:value={searchQuery}
 		onkeydown={handleSearchKeydown}
@@ -227,7 +249,7 @@
 	{#if searchQuery}
 		<button
 			type="button"
-			class="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-base-content/40 hover:text-base-content transition-colors"
+			class="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-base-content/60 hover:text-base-content transition-colors"
 			onclick={handleSearchClear}
 		>
 			<X class="w-4 h-4" />
@@ -239,12 +261,12 @@
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading memories...</span>
+		<span class="text-base text-base-content/80">Loading memories...</span>
 	</div>
 {:else if memories.length === 0}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-12 text-center">
-		<Brain class="w-10 h-10 mx-auto mb-3 text-base-content/30" />
-		<p class="text-sm text-base-content/50">No memories found</p>
+		<Brain class="w-10 h-10 mx-auto mb-3 text-base-content/60" />
+		<p class="text-base text-base-content/80">No memories found</p>
 	</div>
 {:else}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10 max-h-[60vh] overflow-y-auto">
@@ -257,23 +279,26 @@
 				tabindex="0"
 			>
 				<div class="flex items-start justify-between gap-2 mb-1">
-					<span class="text-sm font-medium text-base-content truncate flex-1">{memory.key}</span>
+					<span class="text-base font-medium text-base-content truncate flex-1">{memory.key}</span>
 					<div class="flex items-center gap-1.5 shrink-0">
 						<button
 							type="button"
-							class="p-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity text-base-content/30 hover:text-error hover:bg-error/10"
+							class="p-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity text-base-content/60 hover:text-error hover:bg-error/10"
 							onclick={(e) => { e.stopPropagation(); deleteMemoryHandler(memory); }}
 						>
 							<Trash2 class="w-3.5 h-3.5" />
 						</button>
-						<span class="text-[11px] font-semibold uppercase px-1.5 py-0.5 rounded {getLayerColor(getLayerFromNamespace(memory.namespace))}">
+						<span class="text-sm font-semibold uppercase px-1.5 py-0.5 rounded {getLayerColor(getLayerFromNamespace(memory.namespace))}">
 							{getLayerFromNamespace(memory.namespace)}
 						</span>
 					</div>
 				</div>
-				<p class="text-sm text-base-content/70 line-clamp-2 mb-2">{memory.value}</p>
-				<div class="flex items-center gap-3 text-[13px] text-base-content/50">
+				<p class="text-base text-base-content/80 line-clamp-2 mb-2">{memory.value}</p>
+				<div class="flex items-center gap-3 text-sm text-base-content/80">
 					<span class="truncate">{memory.namespace}</span>
+					{#if memory.createdAt}
+						<span>{formatShortDate(memory.createdAt)}</span>
+					{/if}
 					<span class="flex items-center gap-1">
 						<Eye class="w-3 h-3" />
 						{memory.accessCount}
@@ -288,18 +313,18 @@
 		<div class="flex items-center justify-center gap-3 mt-4">
 			<button
 				type="button"
-				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 transition-colors disabled:opacity-30"
+				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 transition-colors disabled:opacity-30"
 				disabled={currentPage === 1}
 				onclick={() => { currentPage--; loadMemories(); }}
 			>
 				Previous
 			</button>
-			<span class="text-sm text-base-content/50">
+			<span class="text-base text-base-content/80">
 				Page {currentPage} of {Math.ceil(total / pageSize)}
 			</span>
 			<button
 				type="button"
-				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 transition-colors disabled:opacity-30"
+				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 transition-colors disabled:opacity-30"
 				disabled={currentPage >= Math.ceil(total / pageSize)}
 				onclick={() => { currentPage++; loadMemories(); }}
 			>
@@ -316,30 +341,30 @@
 		<div class="space-y-3 mb-5">
 			<div class="grid grid-cols-2 gap-3">
 				<div>
-					<p class="text-[13px] text-base-content/50 mb-0.5">Namespace</p>
-					<p class="text-sm text-base-content">{selectedMemory.namespace}</p>
+					<p class="text-sm text-base-content/80 mb-0.5">Namespace</p>
+					<p class="text-base text-base-content">{selectedMemory.namespace}</p>
 				</div>
 				<div>
-					<p class="text-[13px] text-base-content/50 mb-0.5">Layer</p>
-					<span class="text-[11px] font-semibold uppercase px-1.5 py-0.5 rounded {getLayerColor(getLayerFromNamespace(selectedMemory.namespace))}">
+					<p class="text-sm text-base-content/80 mb-0.5">Layer</p>
+					<span class="text-sm font-semibold uppercase px-1.5 py-0.5 rounded {getLayerColor(getLayerFromNamespace(selectedMemory.namespace))}">
 						{getLayerFromNamespace(selectedMemory.namespace)}
 					</span>
 				</div>
 				<div>
-					<p class="text-[13px] text-base-content/50 mb-0.5">Access Count</p>
-					<p class="text-sm text-base-content">{selectedMemory.accessCount}</p>
+					<p class="text-sm text-base-content/80 mb-0.5">Access Count</p>
+					<p class="text-base text-base-content">{selectedMemory.accessCount}</p>
 				</div>
 				<div>
-					<p class="text-[13px] text-base-content/50 mb-0.5">Last Access</p>
-					<p class="text-sm text-base-content/70">{selectedMemory.accessedAt ? formatDate(selectedMemory.accessedAt) : 'Never'}</p>
+					<p class="text-sm text-base-content/80 mb-0.5">Last Access</p>
+					<p class="text-base text-base-content/80">{selectedMemory.accessedAt ? formatDate(selectedMemory.accessedAt) : 'Never'}</p>
 				</div>
 				<div>
-					<p class="text-[13px] text-base-content/50 mb-0.5">Created</p>
-					<p class="text-sm text-base-content/70">{formatDate(selectedMemory.createdAt)}</p>
+					<p class="text-sm text-base-content/80 mb-0.5">Created</p>
+					<p class="text-base text-base-content/80">{formatDate(selectedMemory.createdAt)}</p>
 				</div>
 				<div>
-					<p class="text-[13px] text-base-content/50 mb-0.5">Updated</p>
-					<p class="text-sm text-base-content/70">{formatDate(selectedMemory.updatedAt)}</p>
+					<p class="text-sm text-base-content/80 mb-0.5">Updated</p>
+					<p class="text-base text-base-content/80">{formatDate(selectedMemory.updatedAt)}</p>
 				</div>
 			</div>
 		</div>
@@ -347,21 +372,21 @@
 		<!-- Tags -->
 		{#if isEditing}
 			<div class="mb-5">
-				<label class="text-sm font-medium text-base-content/70 mb-1.5 block" for="edit-tags">Tags (comma-separated)</label>
+				<label class="text-base font-medium text-base-content/80 mb-1.5 block" for="edit-tags">Tags (comma-separated)</label>
 				<input
 					id="edit-tags"
 					type="text"
-					class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+					class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 					bind:value={editTags}
 					placeholder="tag1, tag2, tag3"
 				/>
 			</div>
 		{:else if selectedMemory.tags?.length}
 			<div class="mb-5">
-				<p class="text-[13px] text-base-content/50 mb-1.5">Tags</p>
+				<p class="text-sm text-base-content/80 mb-1.5">Tags</p>
 				<div class="flex flex-wrap gap-1.5">
 					{#each selectedMemory.tags as tag}
-						<span class="inline-flex items-center gap-1 text-[11px] font-medium bg-base-content/5 text-base-content/70 px-2 py-0.5 rounded">
+						<span class="inline-flex items-center gap-1 text-sm font-medium bg-base-content/5 text-base-content/60 px-2 py-0.5 rounded">
 							<Tag class="w-3 h-3" />
 							{tag}
 						</span>
@@ -372,14 +397,14 @@
 
 		<!-- Value -->
 		<div>
-			<p class="text-[13px] text-base-content/50 mb-1.5">Value</p>
+			<p class="text-sm text-base-content/80 mb-1.5">Value</p>
 			{#if isEditing}
 				<textarea
-					class="w-full rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-sm focus:outline-none focus:border-primary/50 transition-colors resize-none h-48"
+					class="w-full rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none h-48"
 					bind:value={editValue}
 				></textarea>
 			{:else}
-				<div class="rounded-xl bg-base-content/5 border border-base-content/10 p-4 whitespace-pre-wrap text-sm text-base-content/70 max-h-64 overflow-y-auto">
+				<div class="rounded-xl bg-base-content/5 border border-base-content/10 p-4 whitespace-pre-wrap text-base text-base-content/80 max-h-64 overflow-y-auto">
 					{selectedMemory.value}
 				</div>
 			{/if}
@@ -391,14 +416,14 @@
 			{#if isEditing}
 				<button
 					type="button"
-					class="h-9 px-4 rounded-full text-sm font-medium text-base-content/70 hover:bg-base-content/5 transition-colors"
+					class="h-9 px-4 rounded-full text-base font-medium text-base-content/80 hover:bg-base-content/5 transition-colors"
 					onclick={() => isEditing = false}
 				>
 					Cancel
 				</button>
 				<button
 					type="button"
-					class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all flex items-center gap-1.5"
+					class="h-9 px-5 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all flex items-center gap-1.5"
 					onclick={saveEdit}
 				>
 					<Save class="w-4 h-4" />
@@ -408,7 +433,7 @@
 				<div class="flex items-center gap-2">
 					<button
 						type="button"
-						class="h-8 px-3 rounded-lg text-[13px] font-medium text-base-content/70 hover:bg-base-content/5 transition-colors flex items-center gap-1.5"
+						class="h-8 px-3 rounded-lg text-sm font-medium text-base-content/60 hover:bg-base-content/5 transition-colors flex items-center gap-1.5"
 						onclick={startEdit}
 					>
 						<Edit2 class="w-3.5 h-3.5" />
@@ -416,7 +441,7 @@
 					</button>
 					<button
 						type="button"
-						class="h-8 px-3 rounded-lg text-[13px] font-medium text-base-content/70 hover:text-error hover:bg-error/10 transition-colors flex items-center gap-1.5"
+						class="h-8 px-3 rounded-lg text-sm font-medium text-base-content/60 hover:text-error hover:bg-error/10 transition-colors flex items-center gap-1.5"
 						onclick={() => deleteMemoryHandler(selectedMemory!)}
 					>
 						<Trash2 class="w-3.5 h-3.5" />
@@ -425,7 +450,7 @@
 				</div>
 				<button
 					type="button"
-					class="h-9 px-4 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+					class="h-9 px-4 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 					onclick={closeDetail}
 				>
 					Close

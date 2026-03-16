@@ -207,7 +207,7 @@
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Integrations</h2>
-		<p class="text-sm text-base-content/70">Connect to external services and MCP servers</p>
+		<p class="text-base text-base-content/80">Connect to external services and MCP servers</p>
 	</div>
 	<div class="flex gap-2">
 		<Button type="ghost" onclick={loadIntegrations}>
@@ -224,12 +224,12 @@
 <!-- Server List -->
 <Card>
 	{#if isLoading}
-		<div class="py-8 text-center text-base-content/70">Loading servers...</div>
+		<div class="py-8 text-center text-base-content/90">Loading servers...</div>
 	{:else if integrations.length === 0}
 		<div class="py-12 text-center">
-			<Server class="w-12 h-12 mx-auto mb-4 text-base-content/70" />
+			<Server class="w-12 h-12 mx-auto mb-4 text-base-content/90" />
 			<h3 class="font-display font-bold text-base-content mb-2">No integrations connected</h3>
-			<p class="text-base-content/70 mb-4">
+			<p class="text-base-content/90 mb-4">
 				Connect to external MCP servers to extend your agent's capabilities
 			</p>
 			<Button type="primary" onclick={openAddModal}>
@@ -254,15 +254,15 @@
 									{authBadgeLabel(integration.authType)}
 								</Badge>
 							</div>
-							<div class="text-sm text-base-content/70">
+							<div class="text-base text-base-content/80">
 								{integration.serverUrl || integration.serverType}
 							</div>
-							<div class="flex items-center gap-1 text-sm mt-0.5">
+							<div class="flex items-center gap-1 text-base mt-0.5">
 								{#if integration.connectionStatus === 'connected'}
 									<CheckCircle class="w-3 h-3 text-success" />
 									<span class="text-success">Connected</span>
 									{#if integration.toolCount > 0}
-										<span class="text-base-content/70 ml-1"
+										<span class="text-base-content/90 ml-1"
 											>&middot; {integration.toolCount} tools</span
 										>
 									{/if}
@@ -270,8 +270,8 @@
 									<XCircle class="w-3 h-3 text-error" />
 									<span class="text-error">Error</span>
 								{:else}
-									<XCircle class="w-3 h-3 text-base-content/70" />
-									<span class="text-base-content/70">Disconnected</span>
+									<XCircle class="w-3 h-3 text-base-content/90" />
+									<span class="text-base-content/90">Disconnected</span>
 								{/if}
 								{#if integration.lastError}
 									<span class="text-error/60 ml-2">&middot; {integration.lastError}</span>
@@ -302,13 +302,13 @@
 								>
 									<button
 										onclick={() => toggleIntegration(integration)}
-										class="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+										class="w-full text-left px-4 py-2 text-base hover:bg-base-200"
 									>
 										{integration.isEnabled ? 'Disable' : 'Enable'}
 									</button>
 									<button
 										onclick={() => confirmDelete(integration)}
-										class="w-full text-left px-4 py-2 text-sm text-error hover:bg-error/10"
+										class="w-full text-left px-4 py-2 text-base text-error hover:bg-error/10"
 									>
 										Delete
 									</button>
@@ -327,7 +327,7 @@
 	<div class="space-y-4">
 		{#if addStep === 'url'}
 			<div>
-				<label for="server-url" class="block text-sm font-medium mb-1">Server URL</label>
+				<label for="server-url" class="block text-base font-medium mb-1">Server URL</label>
 				<input
 					id="server-url"
 					type="url"
@@ -338,13 +338,13 @@
 						if (e.key === 'Enter' && isUrlValid()) nextStep();
 					}}
 				/>
-				<p class="text-sm text-base-content/70 mt-1">
+				<p class="text-base text-base-content/80 mt-1">
 					The MCP server's endpoint URL (Streamable HTTP)
 				</p>
 			</div>
 		{:else if addStep === 'auth'}
 			<div>
-				<p class="text-sm font-medium mb-3">Authentication</p>
+				<p class="text-base font-medium mb-3">Authentication</p>
 				<div class="space-y-1">
 					<Radio
 						name="auth-type"
@@ -373,7 +373,7 @@
 				</div>
 				{#if newAuthType === 'api_key'}
 					<div class="mt-4">
-						<label for="api-key" class="block text-sm font-medium mb-1">API Key</label>
+						<label for="api-key" class="block text-base font-medium mb-1">API Key</label>
 						<input
 							id="api-key"
 							type="password"
@@ -386,7 +386,7 @@
 			</div>
 		{:else if addStep === 'name'}
 			<div>
-				<label for="server-name" class="block text-sm font-medium mb-1">Name (optional)</label>
+				<label for="server-name" class="block text-base font-medium mb-1">Name (optional)</label>
 				<input
 					id="server-name"
 					type="text"
@@ -394,18 +394,18 @@
 					placeholder={hostnameFromUrl(newServerUrl) || 'MCP Server'}
 					class="input input-bordered w-full"
 				/>
-				<p class="text-sm text-base-content/70 mt-1">
+				<p class="text-base text-base-content/80 mt-1">
 					A friendly name for this server. Defaults to the hostname.
 				</p>
 			</div>
 
-			<div class="bg-base-200 rounded-lg p-3 text-sm space-y-1">
+			<div class="bg-base-200 rounded-lg p-3 text-base space-y-1">
 				<div class="flex justify-between">
-					<span class="text-base-content/70">URL</span>
-					<span class="font-mono text-sm">{newServerUrl}</span>
+					<span class="text-base-content/90">URL</span>
+					<span class="font-mono text-base">{newServerUrl}</span>
 				</div>
 				<div class="flex justify-between">
-					<span class="text-base-content/70">Auth</span>
+					<span class="text-base-content/90">Auth</span>
 					<span>{authBadgeLabel(newAuthType)}</span>
 				</div>
 			</div>

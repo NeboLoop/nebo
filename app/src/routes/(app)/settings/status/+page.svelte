@@ -272,28 +272,28 @@
 <div class="mb-6 flex items-center justify-between">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Agent Status</h2>
-		<p class="text-sm text-base-content/70">Monitor connected agents and system health</p>
+		<p class="text-base text-base-content/80">Monitor connected agents and system health</p>
 	</div>
 	<div class="flex items-center gap-3">
 		{#if wsConnected}
-			<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success">
+			<span class="inline-flex items-center gap-1 text-sm font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success">
 				<Wifi class="w-3 h-3" />
 				Live
 			</span>
 		{:else if wsReconnecting}
-			<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-warning/10 text-warning">
+			<span class="inline-flex items-center gap-1 text-sm font-semibold px-2 py-0.5 rounded-full bg-warning/10 text-warning">
 				<RefreshCw class="w-3 h-3 animate-spin" />
 				Reconnecting
 			</span>
 		{:else}
-			<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-error/10 text-error">
+			<span class="inline-flex items-center gap-1 text-sm font-semibold px-2 py-0.5 rounded-full bg-error/10 text-error">
 				<WifiOff class="w-3 h-3" />
 				Disconnected
 			</span>
 		{/if}
 		<button
 			type="button"
-			class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5"
+			class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5"
 			onclick={loadStatus}
 		>
 			<RefreshCw class="w-3.5 h-3.5" />
@@ -309,8 +309,8 @@
 				<Server class="w-4.5 h-4.5 {systemStatus.mcpServer === 'online' ? 'text-success' : 'text-error'}" />
 			</div>
 			<div>
-				<p class="text-sm text-base-content/70">MCP Server</p>
-				<p class="text-sm font-bold {systemStatus.mcpServer === 'online' ? 'text-success' : 'text-error'}">
+				<p class="text-base text-base-content/80">MCP Server</p>
+				<p class="text-base font-bold {systemStatus.mcpServer === 'online' ? 'text-success' : 'text-error'}">
 					{systemStatus.mcpServer === 'online' ? 'Online' : 'Offline'}
 				</p>
 			</div>
@@ -323,8 +323,8 @@
 				<Database class="w-4.5 h-4.5 {systemStatus.database === 'online' ? 'text-success' : 'text-error'}" />
 			</div>
 			<div>
-				<p class="text-sm text-base-content/70">Database</p>
-				<p class="text-sm font-bold {systemStatus.database === 'online' ? 'text-success' : 'text-error'}">
+				<p class="text-base text-base-content/80">Database</p>
+				<p class="text-base font-bold {systemStatus.database === 'online' ? 'text-success' : 'text-error'}">
 					{systemStatus.database === 'online' ? 'Online' : 'Offline'}
 				</p>
 			</div>
@@ -337,8 +337,8 @@
 				<Wifi class="w-4.5 h-4.5 {systemStatus.websocket === 'online' ? 'text-success' : 'text-error'}" />
 			</div>
 			<div>
-				<p class="text-sm text-base-content/70">WebSocket</p>
-				<p class="text-sm font-bold {systemStatus.websocket === 'online' ? 'text-success' : 'text-error'}">
+				<p class="text-base text-base-content/80">WebSocket</p>
+				<p class="text-base font-bold {systemStatus.websocket === 'online' ? 'text-success' : 'text-error'}">
 					{systemStatus.websocket === 'online' ? 'Connected' : 'Disconnected'}
 				</p>
 			</div>
@@ -351,8 +351,8 @@
 				<Clock class="w-4.5 h-4.5 text-primary" />
 			</div>
 			<div>
-				<p class="text-sm text-base-content/70">Uptime</p>
-				<p class="text-sm font-bold text-base-content">{systemStatus.uptime}</p>
+				<p class="text-base text-base-content/80">Uptime</p>
+				<p class="text-base font-bold text-base-content">{systemStatus.uptime}</p>
 			</div>
 		</div>
 	</div>
@@ -360,27 +360,27 @@
 
 <!-- Updates -->
 <section class="mb-6">
-	<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Updates</h3>
+	<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Updates</h3>
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 		<div class="flex items-center justify-between">
 			<div>
-				<p class="text-sm text-base-content/70">Current Version</p>
-				<p class="text-sm font-bold text-base-content">{updateCheckResult?.currentVersion ?? 'Loading...'}</p>
+				<p class="text-base text-base-content/80">Current Version</p>
+				<p class="text-base font-bold text-base-content">{updateCheckResult?.currentVersion ?? 'Loading...'}</p>
 			</div>
 			<div>
-				<p class="text-sm text-base-content/70">Install Method</p>
-				<p class="text-sm font-bold text-base-content capitalize">{updateCheckResult?.installMethod ?? '—'}</p>
+				<p class="text-base text-base-content/80">Install Method</p>
+				<p class="text-base font-bold text-base-content capitalize">{updateCheckResult?.installMethod ?? '—'}</p>
 			</div>
 			<div>
 				{#if updateCheckResult?.available}
-					<span class="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full bg-warning/10 text-warning">{updateCheckResult.latestVersion} available</span>
+					<span class="inline-flex items-center text-sm font-semibold px-2 py-0.5 rounded-full bg-warning/10 text-warning">{updateCheckResult.latestVersion} available</span>
 				{:else if updateCheckResult}
-					<span class="inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success">Up to date</span>
+					<span class="inline-flex items-center text-sm font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success">Up to date</span>
 				{/if}
 			</div>
 			<button
 				type="button"
-				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5 disabled:opacity-30"
+				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5 disabled:opacity-30"
 				onclick={handleCheckNow}
 				disabled={isCheckingUpdate}
 			>
@@ -391,8 +391,8 @@
 		{#if updateCheckResult?.installMethod === 'direct'}
 			<div class="flex items-center justify-between pt-4 mt-4 border-t border-base-content/10">
 				<div>
-					<p class="text-sm font-medium text-base-content">Auto-update</p>
-					<p class="text-sm text-base-content/70">Automatically download and apply updates</p>
+					<p class="text-base font-medium text-base-content">Auto-update</p>
+					<p class="text-base text-base-content/80">Automatically download and apply updates</p>
 				</div>
 				<input
 					type="checkbox"
@@ -403,11 +403,11 @@
 			</div>
 		{:else if updateCheckResult?.installMethod === 'homebrew'}
 			<div class="pt-4 mt-4 border-t border-base-content/10">
-				<p class="text-sm text-base-content/70">Managed by Homebrew — run <code class="bg-base-content/5 px-1.5 py-0.5 rounded text-sm">brew upgrade nebo</code> to update</p>
+				<p class="text-base text-base-content/80">Managed by Homebrew — run <code class="bg-base-content/5 px-1.5 py-0.5 rounded text-base">brew upgrade nebo</code> to update</p>
 			</div>
 		{:else if updateCheckResult?.installMethod === 'package_manager'}
 			<div class="pt-4 mt-4 border-t border-base-content/10">
-				<p class="text-sm text-base-content/70">Managed by package manager</p>
+				<p class="text-base text-base-content/80">Managed by package manager</p>
 			</div>
 		{/if}
 	</div>
@@ -416,28 +416,28 @@
 <!-- Connected Agents -->
 <section class="mb-6">
 	<div class="flex items-center justify-between mb-3">
-		<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">Connected Agents</h3>
-		<span class="text-sm text-base-content/50">{agents.filter((a) => a.status === 'online').length} online</span>
+		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Connected Agents</h3>
+		<span class="text-base text-base-content/80">{agents.filter((a) => a.status === 'online').length} online</span>
 	</div>
 
 	{#if isLoading}
 		<div class="flex items-center justify-center gap-3 py-16">
 			<Spinner size={20} />
-			<span class="text-sm text-base-content/70">Loading agents...</span>
+			<span class="text-base text-base-content/80">Loading agents...</span>
 		</div>
 	{:else if agents.length === 0}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-12 text-center">
-			<Activity class="w-10 h-10 mx-auto mb-3 text-base-content/30" />
+			<Activity class="w-10 h-10 mx-auto mb-3 text-base-content/60" />
 			<h3 class="font-display font-bold text-base-content mb-1">No agents connected</h3>
-			<p class="text-sm text-base-content/70">
-				Run <code class="bg-base-content/5 px-1.5 py-0.5 rounded text-sm">nebo agent --org your-org</code> to connect
+			<p class="text-base text-base-content/80">
+				Run <code class="bg-base-content/5 px-1.5 py-0.5 rounded text-base">nebo agent --org your-org</code> to connect
 			</p>
 		</div>
 	{:else}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 overflow-hidden">
 			<table class="w-full">
 				<thead>
-					<tr class="text-left text-[13px] text-base-content/50 border-b border-base-content/10">
+					<tr class="text-left text-sm text-base-content/80 border-b border-base-content/10">
 						<th class="px-4 py-3 font-medium">Agent</th>
 						<th class="px-4 py-3 font-medium">Status</th>
 						<th class="px-4 py-3 font-medium">Connected</th>
@@ -451,17 +451,17 @@
 							<td class="px-4 py-3">
 								<div class="flex items-center gap-2">
 									<div class="w-2 h-2 rounded-full {agent.status === 'online' ? 'bg-success' : agent.status === 'busy' ? 'bg-warning' : 'bg-error'}"></div>
-									<span class="text-sm font-medium text-base-content">{agent.name || agent.id}</span>
+									<span class="text-base font-medium text-base-content">{agent.name || agent.id}</span>
 								</div>
 							</td>
 							<td class="px-4 py-3">
-								<span class="text-[11px] font-semibold uppercase px-1.5 py-0.5 rounded {agent.status === 'online' ? 'bg-success/10 text-success' : agent.status === 'busy' ? 'bg-warning/10 text-warning' : 'bg-error/10 text-error'}">
+								<span class="text-sm font-semibold uppercase px-1.5 py-0.5 rounded {agent.status === 'online' ? 'bg-success/10 text-success' : agent.status === 'busy' ? 'bg-warning/10 text-warning' : 'bg-error/10 text-error'}">
 									{agent.status}
 								</span>
 							</td>
-							<td class="px-4 py-3 text-sm text-base-content/70">{formatTime(agent.connected_at)}</td>
-							<td class="px-4 py-3 text-sm text-base-content/70">{formatTime(agent.last_activity)}</td>
-							<td class="px-4 py-3 text-sm text-base-content/70">{agent.current_task || '-'}</td>
+							<td class="px-4 py-3 text-base text-base-content/80">{formatTime(agent.connected_at)}</td>
+							<td class="px-4 py-3 text-base text-base-content/80">{formatTime(agent.last_activity)}</td>
+							<td class="px-4 py-3 text-base text-base-content/80">{agent.current_task || '-'}</td>
 						</tr>
 					{/each}
 				</tbody>
@@ -473,19 +473,19 @@
 <!-- Lane Monitor -->
 <section>
 	<div class="flex items-center justify-between mb-3">
-		<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">Lane Monitor</h3>
+		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Lane Monitor</h3>
 		<button
 			type="button"
-			class="h-7 w-7 rounded-lg bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/20 transition-colors"
+			class="h-7 w-7 rounded-lg bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/40 transition-colors"
 			onclick={loadLanes}
 		>
-			<RefreshCw class="w-3 h-3 text-base-content/70" />
+			<RefreshCw class="w-3 h-3 text-base-content/90" />
 		</button>
 	</div>
 
 	{#if sortedLanes.length === 0}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-8 text-center">
-			<p class="text-sm text-base-content/50">No lane data available</p>
+			<p class="text-base text-base-content/80">No lane data available</p>
 		</div>
 	{:else}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10">
@@ -497,10 +497,10 @@
 				<div class="p-4">
 					<div class="flex items-center justify-between mb-2">
 						<div class="flex items-center gap-2">
-							<div class="w-2 h-2 rounded-full {isActive ? 'bg-success animate-pulse' : 'bg-base-content/20'}"></div>
-							<span class="text-sm font-medium text-base-content">{laneLabels[lane.lane] || lane.lane}</span>
+							<div class="w-2 h-2 rounded-full {isActive ? 'bg-success animate-pulse' : 'bg-base-content/40'}"></div>
+							<span class="text-base font-medium text-base-content">{laneLabels[lane.lane] || lane.lane}</span>
 						</div>
-						<div class="flex items-center gap-3 text-[13px] text-base-content/50">
+						<div class="flex items-center gap-3 text-sm text-base-content/80">
 							<span>{lane.active} active</span>
 							{#if hasQueued}
 								<span class="text-warning">{lane.queued} queued</span>
@@ -519,10 +519,10 @@
 					{#if lane.activeTasks && lane.activeTasks.length > 0}
 						<div class="mt-2 space-y-1">
 							{#each lane.activeTasks as task}
-								<div class="flex items-center justify-between text-[13px] pl-4">
-									<span class="text-base-content/70 truncate">{task.description || task.id}</span>
+								<div class="flex items-center justify-between text-sm pl-4">
+									<span class="text-base-content/80 truncate">{task.description || task.id}</span>
 									{#if task.startedAt}
-										<span class="text-base-content/50 ml-2 shrink-0">{elapsedSince(task.startedAt)}</span>
+										<span class="text-base-content/80 ml-2 shrink-0">{elapsedSince(task.startedAt)}</span>
 									{/if}
 								</div>
 							{/each}
@@ -532,8 +532,8 @@
 					{#if lane.queuedTasks && lane.queuedTasks.length > 0}
 						<div class="mt-1 space-y-1">
 							{#each lane.queuedTasks as task}
-								<div class="flex items-center justify-between text-[13px] pl-4">
-									<span class="text-base-content/50 truncate">{task.description || task.id}</span>
+								<div class="flex items-center justify-between text-sm pl-4">
+									<span class="text-base-content/80 truncate">{task.description || task.id}</span>
 								</div>
 							{/each}
 						</div>

@@ -8,5 +8,5 @@
 </script>
 
 <div class="flex items-center justify-center py-12">
-	<p class="text-base-content/70">Redirecting...</p>
+	<p class="text-base-content/90">Redirecting...</p>
 </div>

@@ -393,7 +393,7 @@
 			{/if}
 
 			<!-- Results count -->
-			<div class="text-xs text-base-500">
+			<div class="text-sm text-base-500">
 				{totalRows} {totalRows === 1 ? 'row' : 'rows'}
 				{#if hasActiveFilters}
 					<span class="text-primary">(filtered)</span>
@@ -425,7 +425,7 @@
 					</button>
 					{#if showColumnMenu}
 						<div class="dropdown-menu mt-1 w-48">
-							<div class="p-2 border-b border-base-200 text-xs font-medium text-base-500">
+							<div class="p-2 border-b border-base-200 text-sm font-medium text-base-500">
 								Toggle Columns
 							</div>
 							<div class="max-h-64 overflow-y-auto p-1">
@@ -497,7 +497,7 @@
 					{#each columns as column}
 						{@const width = columnWidths[column.key]}
 						<th
-							class="group relative select-none {column.sortable !== false ? 'cursor-pointer hover:bg-base-300' : ''} px-4 py-3 text-left text-xs font-medium text-base-600 uppercase tracking-wider"
+							class="group relative select-none {column.sortable !== false ? 'cursor-pointer hover:bg-base-300' : ''} px-4 py-3 text-left text-sm font-medium text-base-600 uppercase tracking-wider"
 							style="text-align: {column.align || 'left'}; {width ? `width: ${width}px; min-width: ${width}px;` : ''}"
 							onclick={() => handleSort(column.key, column.sortable !== false)}
 						>
@@ -598,7 +598,7 @@
 							{@const value = row[column.key]}
 							{@const width = columnWidths[column.key]}
 							<td
-								class="px-4 py-3 text-sm {getCellClass(value, column)}"
+								class="px-4 py-3 text-base {getCellClass(value, column)}"
 								style="text-align: {column.align || 'left'}; {width ? `width: ${width}px; min-width: ${width}px;` : ''}"
 							>
 								<span class="truncate block">{formatCell(value, column)}</span>
@@ -616,7 +616,7 @@
 								</svg>
 								<p class="text-base-600 font-medium mb-1">No data found</p>
 								{#if hasActiveFilters}
-									<p class="text-base-500 text-sm">Try adjusting your search or filters</p>
+									<p class="text-base-500 text-base">Try adjusting your search or filters</p>
 								{/if}
 							</div>
 						</td>
@@ -631,7 +631,7 @@
 		<div class="flex items-center justify-between px-4 py-3 border-t border-base-200 bg-base-100/50">
 			<!-- Page size selector -->
 			<div class="flex items-center gap-2">
-				<span class="text-xs text-base-500">Show</span>
+				<span class="text-sm text-base-500">Show</span>
 				<select
 					bind:value={pageSize}
 					onchange={() => (currentPage = 0)}
@@ -641,11 +641,11 @@
 						<option value={option}>{option}</option>
 					{/each}
 				</select>
-				<span class="text-xs text-base-500">rows</span>
+				<span class="text-sm text-base-500">rows</span>
 			</div>
 
 			<!-- Results info -->
-			<div class="text-xs text-base-500">
+			<div class="text-sm text-base-500">
 				{#if totalRows > 0}
 					{startRow}-{endRow} of {totalRows}
 				{:else}

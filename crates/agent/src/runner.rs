@@ -39,6 +39,18 @@ const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// Max auto-continuations when agent stops mid-task.
 const MAX_AUTO_CONTINUATIONS: usize = 3;
 
+/// JSON shape for tool results stored in the DB. Includes optional image_url
+/// so vision-capable providers can receive screenshots in tool result content.
+#[derive(serde::Serialize)]
+struct ToolResultRow {
+    tool_call_id: String,
+    content: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    is_error: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_url: Option<String>,
+}
+
 /// Input parameters for a run.
 #[derive(Debug, Clone, Default)]
 pub struct RunRequest {
@@ -66,6 +78,8 @@ pub struct RunRequest {
     pub model_preference: Option<String>,
     /// Per-entity personality snippet prepended to system prompt.
     pub personality_snippet: Option<String>,
+    /// Images attached to the user's message (base64-encoded).
+    pub images: Vec<ai::ImageContent>,
 }
 
 /// Per-run mutable state (prevents data races across concurrent runs).
@@ -187,13 +201,18 @@ impl Runner {
         // Append user message
         if !req.prompt.is_empty() {
             info!(session_id = %session_id, prompt_len = req.prompt.len(), "appending user message");
+            let metadata = if !req.images.is_empty() {
+                Some(serde_json::json!({"images": req.images}).to_string())
+            } else {
+                None
+            };
             self.sessions.append_message(
                 &session_id,
                 "user",
                 &req.prompt,
                 None,
                 None,
-                None,
+                metadata.as_deref(),
             ).map_err(|e| {
                 warn!(session_id = %session_id, error = %e, "failed to append user message");
                 ProviderError::Request(format!("failed to store message: {}", e))
@@ -1088,7 +1107,9 @@ async fn run_loop(
                 futures.push(async move {
                     // Acquire tool permit inside the future
                     let _permit = concurrency.acquire_tool_permit().await;
-                    info!(tool = %tc.name, id = %tc.id, "executing tool");
+                    let input_str = tc.input.to_string();
+                    let input_log = if input_str.len() > 500 { &input_str[..500] } else { &input_str };
+                    info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool");
                     let result = tokio::time::timeout(
                         TOOL_EXECUTION_TIMEOUT,
                         tools.execute(&ctx, &tc.name, tc.input.clone()),
@@ -1102,6 +1123,8 @@ async fn run_loop(
                             TOOL_EXECUTION_TIMEOUT.as_secs()
                         )),
                     };
+                    let result_log = if result.content.len() > 300 { &result.content[..300] } else { &result.content };
+                    info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
                     (idx, tc, result)
                 });
             }
@@ -1144,43 +1167,52 @@ async fn run_loop(
                 results[idx] = Some((tc, result));
             }
 
-            // Sidecar vision verification for browser tool results with screenshots
+            // Sidecar vision verification — only for providers that can't include
+            // images directly in tool results. Vision-capable providers (Anthropic,
+            // Gemini) get the raw image passed through instead.
             {
-                let sidecar_provider = {
+                let main_supports_images = {
                     let prov_lock = providers.read().await;
-                    prov_lock.first().cloned()
+                    prov_lock.first().map_or(false, |p| p.supports_tool_result_images())
                 };
-                if let Some(provider) = sidecar_provider {
-                    let mut sidecar_futures = FuturesUnordered::new();
 
-                    for (idx, entry) in results.iter().enumerate() {
-                        if let Some((tc, result)) = entry {
-                            if let Some(ref image_url) = result.image_url {
-                                let image_url = image_url.clone();
-                                let action_ctx = format!("{} — {}", tc.name, result.content);
-                                let prov = provider.clone();
-                                sidecar_futures.push(async move {
-                                    let verification = crate::sidecar::verify_screenshot(
-                                        prov.as_ref(), &image_url, &action_ctx,
-                                    )
-                                    .await;
-                                    (idx, verification)
-                                });
+                if !main_supports_images {
+                    let sidecar_provider = {
+                        let prov_lock = providers.read().await;
+                        prov_lock.first().cloned()
+                    };
+                    if let Some(provider) = sidecar_provider {
+                        let mut sidecar_futures = FuturesUnordered::new();
+
+                        for (idx, entry) in results.iter().enumerate() {
+                            if let Some((tc, result)) = entry {
+                                if let Some(ref image_url) = result.image_url {
+                                    let image_url = image_url.clone();
+                                    let action_ctx = format!("{} — {}", tc.name, result.content);
+                                    let prov = provider.clone();
+                                    sidecar_futures.push(async move {
+                                        let verification = crate::sidecar::verify_screenshot(
+                                            prov.as_ref(), &image_url, &action_ctx,
+                                        )
+                                        .await;
+                                        (idx, verification)
+                                    });
+                                }
                             }
                         }
-                    }
 
-                    while let Some((idx, verification)) = tokio::select! {
-                        _ = cancel_token.cancelled() => {
-                            info!(session_id, "run cancelled during sidecar verification");
-                            return Ok(());
-                        }
-                        next = sidecar_futures.next() => next
-                    } {
-                        if let Some(text) = verification {
-                            if let Some((_, ref mut result)) = results[idx] {
-                                result.content.push_str(&format!("\n\n[Visual: {}]", text));
-                                result.image_url = None;
+                        while let Some((idx, verification)) = tokio::select! {
+                            _ = cancel_token.cancelled() => {
+                                info!(session_id, "run cancelled during sidecar verification");
+                                return Ok(());
+                            }
+                            next = sidecar_futures.next() => next
+                        } {
+                            if let Some(text) = verification {
+                                if let Some((_, ref mut result)) = results[idx] {
+                                    result.content.push_str(&format!("\n\n[Visual: {}]", text));
+                                    result.image_url = None;
+                                }
                             }
                         }
                     }
@@ -1190,12 +1222,13 @@ async fn run_loop(
             // Save all tool results to session in deterministic order
             for entry in results.into_iter().flatten() {
                 let (tc, result) = entry;
-                let tr_json = serde_json::json!([{
-                    "tool_call_id": tc.id,
-                    "content": result.content,
-                    "is_error": result.is_error
-                }])
-                .to_string();
+                let row = ToolResultRow {
+                    tool_call_id: tc.id.clone(),
+                    content: result.content,
+                    is_error: result.is_error,
+                    image_url: result.image_url,
+                };
+                let tr_json = serde_json::json!([row]).to_string();
 
                 let _ = sessions.append_message(
                     session_id,
@@ -1376,12 +1409,19 @@ fn convert_messages(messages: &[ChatMessage]) -> Vec<Message> {
                     }
                 });
 
+            let images = msg
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                .and_then(|v| v.get("images").cloned())
+                .and_then(|v| serde_json::from_value::<Vec<ai::ImageContent>>(v).ok());
+
             Some(Message {
                 role: msg.role.clone(),
                 content: msg.content.clone(),
                 tool_calls,
                 tool_results,
-                images: None,
+                images,
             })
         })
         .collect()

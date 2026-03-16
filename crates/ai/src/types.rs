@@ -266,6 +266,13 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether this provider supports images in tool result content blocks.
+    /// When true, the runner will pass screenshot images directly to the model
+    /// instead of converting them to text via the sidecar vision model.
+    fn supports_tool_result_images(&self) -> bool {
+        false
+    }
+
     /// Send a request and return a channel of streaming events.
     async fn stream(
         &self,

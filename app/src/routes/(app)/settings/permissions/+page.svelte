@@ -218,27 +218,27 @@
 <!-- Header -->
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Permissions</h2>
-	<p class="text-sm text-base-content/70">Control what capabilities your agent has access to and how it handles approvals.</p>
+	<p class="text-base text-base-content/80">Control what capabilities your agent has access to and how it handles approvals.</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading permissions...</span>
+		<span class="text-base text-base-content/80">Loading permissions...</span>
 	</div>
 {:else}
 	<div class="space-y-6">
 		<!-- Autonomous Mode -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Autonomous Mode</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Autonomous Mode</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="flex items-start justify-between">
 					<div class="flex-1 pr-4">
-						<p class="text-sm font-medium text-base-content flex items-center gap-2">
+						<p class="text-base font-medium text-base-content flex items-center gap-2">
 							<AlertTriangle class="w-4 h-4 text-warning" />
 							100% Autonomous
 						</p>
-						<p class="text-sm text-base-content/70 mt-1">
+						<p class="text-base text-base-content/80 mt-1">
 							The agent will execute ALL tools without asking for permission — shell commands, file modifications, and network requests.
 						</p>
 					</div>
@@ -252,8 +252,8 @@
 
 				{#if autonomousMode}
 					<div class="mt-4 rounded-xl bg-warning/10 border border-warning/20 px-4 py-3">
-						<p class="text-sm text-warning font-medium">Autonomous Mode is active</p>
-						<p class="text-sm text-base-content/70 mt-0.5">
+						<p class="text-base text-warning font-medium">Autonomous Mode is active</p>
+						<p class="text-base text-base-content/80 mt-0.5">
 							All approval prompts are bypassed. Make sure you trust the prompts you're sending.
 						</p>
 					</div>
@@ -263,7 +263,7 @@
 
 		<!-- Capabilities -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Capabilities</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Capabilities</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10">
 				{#each capabilityGroups as cap}
 					<button
@@ -275,19 +275,19 @@
 					>
 						<div class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0
 							{permissions[cap.key] ? 'bg-primary/10' : 'bg-base-content/5'}">
-							<cap.icon class="w-4.5 h-4.5 {permissions[cap.key] ? 'text-primary' : 'text-base-content/50'}" />
+							<cap.icon class="w-4.5 h-4.5 {permissions[cap.key] ? 'text-primary' : 'text-base-content/80'}" />
 						</div>
 						<div class="flex-1 min-w-0">
 							<div class="flex items-center gap-2">
-								<span class="text-sm font-medium text-base-content">{cap.label}</span>
+								<span class="text-base font-medium text-base-content">{cap.label}</span>
 								{#if cap.alwaysOn}
-									<span class="text-[11px] font-medium text-base-content/50 bg-base-content/5 px-1.5 py-0.5 rounded">Required</span>
+									<span class="text-sm font-medium text-base-content/80 bg-base-content/5 px-1.5 py-0.5 rounded">Required</span>
 								{/if}
 								{#if autonomousMode && !cap.alwaysOn}
-									<span class="text-[11px] font-medium text-warning bg-warning/10 px-1.5 py-0.5 rounded">Auto</span>
+									<span class="text-sm font-medium text-warning bg-warning/10 px-1.5 py-0.5 rounded">Auto</span>
 								{/if}
 							</div>
-							<p class="text-sm text-base-content/70 mt-0.5">{cap.description}</p>
+							<p class="text-base text-base-content/80 mt-0.5">{cap.description}</p>
 						</div>
 						<input
 							type="checkbox"
@@ -305,12 +305,12 @@
 		<!-- Tool Approval Policy (only when NOT autonomous) -->
 		{#if !autonomousMode}
 			<section>
-				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Tool Approval Policy</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Tool Approval Policy</h3>
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-0 divide-y divide-base-content/10">
 					<div class="flex items-center justify-between py-3 first:pt-0 last:pb-0">
 						<div>
-							<p class="text-sm font-medium text-base-content">Auto-approve File Reads</p>
-							<p class="text-sm text-base-content/70 mt-0.5">Allow reading files without prompting</p>
+							<p class="text-base font-medium text-base-content">Auto-approve File Reads</p>
+							<p class="text-base text-base-content/80 mt-0.5">Allow reading files without prompting</p>
 						</div>
 						<input
 							type="checkbox"
@@ -322,8 +322,8 @@
 
 					<div class="flex items-center justify-between py-3 first:pt-0 last:pb-0">
 						<div>
-							<p class="text-sm font-medium text-base-content">Auto-approve File Writes</p>
-							<p class="text-sm text-base-content/70 mt-0.5">Allow creating and editing files without prompting</p>
+							<p class="text-base font-medium text-base-content">Auto-approve File Writes</p>
+							<p class="text-base text-base-content/80 mt-0.5">Allow creating and editing files without prompting</p>
 						</div>
 						<input
 							type="checkbox"
@@ -335,8 +335,8 @@
 
 					<div class="flex items-center justify-between py-3 first:pt-0 last:pb-0">
 						<div>
-							<p class="text-sm font-medium text-base-content">Auto-approve Shell Commands</p>
-							<p class="text-sm text-base-content/70 mt-0.5">Allow executing bash commands without prompting</p>
+							<p class="text-base font-medium text-base-content">Auto-approve Shell Commands</p>
+							<p class="text-base text-base-content/80 mt-0.5">Allow executing bash commands without prompting</p>
 						</div>
 						<input
 							type="checkbox"
@@ -351,7 +351,7 @@
 
 		<!-- Save Error -->
 		{#if saveError}
-			<div class="rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error">
+			<div class="rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-base text-error">
 				{saveError}
 			</div>
 		{/if}
@@ -370,15 +370,15 @@
 	<div class="space-y-4">
 		<div class="flex items-start gap-3">
 			<AlertTriangle class="w-6 h-6 text-warning shrink-0 mt-0.5" />
-			<p class="text-sm text-base-content">
+			<p class="text-base text-base-content">
 				This will allow your agent to execute all tools — including shell commands, file
 				modifications, and network requests — <strong>without asking for permission</strong>.
 			</p>
 		</div>
 
 		<div class="rounded-xl bg-error/10 border border-error/20 p-4">
-			<p class="text-sm font-semibold text-error mb-2">Risks include:</p>
-			<ul class="text-sm text-base-content/80 space-y-1 list-disc list-inside">
+			<p class="text-base font-semibold text-error mb-2">Risks include:</p>
+			<ul class="text-base text-base-content/80 space-y-1 list-disc list-inside">
 				<li>The agent may modify or delete files on your system</li>
 				<li>The agent may execute arbitrary shell commands</li>
 				<li>The agent may make network requests and access external services</li>
@@ -387,7 +387,7 @@
 		</div>
 
 		<div class="rounded-xl bg-base-200 p-4 max-h-40 overflow-y-auto">
-			<p class="text-sm text-base-content/70 leading-relaxed">
+			<p class="text-base text-base-content/80 leading-relaxed">
 				By enabling Autonomous Mode, you acknowledge and agree that: (1) You assume all risk
 				and responsibility for any actions performed by the agent while operating in
 				autonomous mode. (2) Nebo Labs, Inc. and its affiliates, officers, employees, and
@@ -402,19 +402,19 @@
 
 		<label class="flex items-center gap-3 cursor-pointer">
 			<input type="checkbox" class="checkbox checkbox-warning" bind:checked={termsAccepted} />
-			<span class="text-sm font-medium text-base-content">
+			<span class="text-base font-medium text-base-content">
 				I understand the risks and accept full responsibility
 			</span>
 		</label>
 
 		<div>
-			<label class="block text-sm font-medium text-base-content mb-1" for="confirm-enable">
+			<label class="block text-base font-medium text-base-content mb-1" for="confirm-enable">
 				Type <code class="bg-base-200 px-1.5 py-0.5 rounded text-error font-bold">ENABLE</code> to confirm
 			</label>
 			<input
 				id="confirm-enable"
 				type="text"
-				class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+				class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 				placeholder="Type ENABLE to confirm"
 				bind:value={confirmText}
 				onkeydown={(e) => {
@@ -428,14 +428,14 @@
 		<div class="flex justify-end gap-2 w-full">
 			<button
 				type="button"
-				class="h-9 px-4 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+				class="h-9 px-4 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 				onclick={handleTermsCancel}
 			>
 				Cancel
 			</button>
 			<button
 				type="button"
-				class="h-9 px-4 rounded-full bg-error text-white text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+				class="h-9 px-4 rounded-full bg-error text-white text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
 				onclick={handleTermsConfirm}
 				disabled={!canConfirmTerms}
 			>

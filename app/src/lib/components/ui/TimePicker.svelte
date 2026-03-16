@@ -113,7 +113,7 @@
 	}
 
 	const sizeClasses: Record<string, { wrapper: string; input: string; btn: string }> = {
-		sm: { wrapper: 'gap-1', input: 'w-10 h-8 text-sm', btn: 'w-6 h-6' },
+		sm: { wrapper: 'gap-1', input: 'w-10 h-8 text-base', btn: 'w-6 h-6' },
 		md: { wrapper: 'gap-2', input: 'w-12 h-10', btn: 'w-8 h-8' },
 		lg: { wrapper: 'gap-2', input: 'w-14 h-12 text-lg', btn: 'w-10 h-10' }
 	};
@@ -137,7 +137,7 @@
 		class="flex items-center {sizes.wrapper} p-2 bg-base-100 border border-base-300 rounded-lg"
 		class:opacity-50={disabled}
 	>
-		<Clock class="w-4 h-4 text-base-content/70" />
+		<Clock class="w-4 h-4 text-base-content/90" />
 
 		<!-- Hours -->
 		<div class="flex flex-col items-center">
@@ -169,7 +169,7 @@
 			</button>
 		</div>
 
-		<span class="text-xl font-bold text-base-content/70">:</span>
+		<span class="text-xl font-bold text-base-content/90">:</span>
 
 		<!-- Minutes -->
 		<div class="flex flex-col items-center">

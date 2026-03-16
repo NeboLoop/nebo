@@ -45,6 +45,15 @@ pub struct DeliveryPayload {
     pub sender_id: String,
     pub stream: String,
     pub content: serde_json::Value,
+    /// Agent ID for agent space / @mention deliveries.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_id: String,
+    /// Agent slug for agent space / @mention deliveries.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_slug: String,
+    /// Source channel ID for @mention deliveries routed from a channel.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_channel_id: String,
 }
 
 /// JOIN_CONVERSATION frame payload (client -> server).
@@ -83,6 +92,12 @@ pub struct JoinResultPayload {
     pub peer_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub peer_type: String, // "bot" or "person"
+    /// Agent ID for agent space joins.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_id: String,
+    /// Agent slug for agent space joins.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_slug: String,
 }
 
 /// LEAVE_CONVERSATION frame payload (client -> server).
@@ -131,11 +146,33 @@ mod tests {
             sender_id: "sender-1".into(),
             stream: "chat".into(),
             content: serde_json::json!({"text": "hello"}),
+            agent_id: String::new(),
+            agent_slug: String::new(),
+            source_channel_id: String::new(),
         };
         let json = serde_json::to_string(&p).unwrap();
         let p2: DeliveryPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(p2.sender_id, "sender-1");
         assert_eq!(p2.content["text"], "hello");
+        // Agent fields should be omitted when empty
+        assert!(!json.contains("agentId"));
+    }
+
+    #[test]
+    fn test_delivery_with_agent_fields() {
+        let p = DeliveryPayload {
+            sender_id: "sender-1".into(),
+            stream: "agent_space".into(),
+            content: serde_json::json!({"text": "hello agent"}),
+            agent_id: "agent-123".into(),
+            agent_slug: "atlas".into(),
+            source_channel_id: String::new(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let p2: DeliveryPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(p2.agent_id, "agent-123");
+        assert_eq!(p2.agent_slug, "atlas");
+        assert!(p2.source_channel_id.is_empty());
     }
 
     #[test]
@@ -149,11 +186,38 @@ mod tests {
             loop_id: "loop-1".into(),
             peer_id: String::new(),
             peer_type: String::new(),
+            agent_id: String::new(),
+            agent_slug: String::new(),
         };
         let json = serde_json::to_string(&p).unwrap();
         // Empty fields should be omitted
         assert!(!json.contains("peerId"));
+        assert!(!json.contains("agentId"));
         let p2: JoinResultPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(p2.channel_name, "general");
+    }
+
+    #[test]
+    fn test_join_result_with_agent_fields() {
+        let p = JoinResultPayload {
+            conversation_id: "conv-agent-1".into(),
+            bot_id: String::new(),
+            stream: String::new(),
+            channel_id: String::new(),
+            channel_name: String::new(),
+            loop_id: "loop-1".into(),
+            peer_id: String::new(),
+            peer_type: String::new(),
+            agent_id: "agent-456".into(),
+            agent_slug: "researcher".into(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("agentId"));
+        assert!(json.contains("researcher"));
+        // Backward compat: deserialize without agent fields
+        let minimal = r#"{"conversationId":"conv-1","senderId":"","stream":""}"#;
+        let p2: JoinResultPayload = serde_json::from_str(minimal).unwrap();
+        assert!(p2.agent_id.is_empty());
+        assert!(p2.agent_slug.is_empty());
     }
 }

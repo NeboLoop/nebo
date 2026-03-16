@@ -184,7 +184,7 @@
 			<button
 				type="button"
 				onclick={onClose}
-				class="p-1.5 rounded-lg hover:bg-base-200 text-base-content/70 hover:text-base-content transition-colors"
+				class="p-1.5 rounded-lg hover:bg-base-200 text-base-content/90 hover:text-base-content transition-colors"
 				title="Close"
 			>
 				<X class="w-5 h-5" />
@@ -199,25 +199,25 @@
 			<!-- Command -->
 			{#if command}
 				<div class="mb-4">
-					<div class="text-sm font-medium text-base-content/70 mb-1">Command:</div>
-					<div class="text-sm text-base-content font-mono break-all">{command}</div>
+					<div class="text-base font-medium text-base-content/80 mb-1">Command:</div>
+					<div class="text-base text-base-content font-mono break-all">{command}</div>
 				</div>
 			{/if}
 
 			<!-- Output -->
 			{#if loadingOutput}
-				<div class="flex items-center gap-2 text-base-content/70">
+				<div class="flex items-center gap-2 text-base-content/90">
 					<Loader2 class="w-4 h-4 animate-spin" />
-					<span class="text-sm">Loading output...</span>
+					<span class="text-base">Loading output...</span>
 				</div>
 			{:else if loadError}
-				<p class="text-error text-sm italic">{loadError}</p>
+				<p class="text-error text-base italic">{loadError}</p>
 			{:else if hasOutput}
 				<div class="relative">
 					<button
 						type="button"
 						onclick={copyOutput}
-						class="absolute top-2 right-2 p-1.5 rounded-md bg-base-200 hover:bg-base-300 text-base-content/70 hover:text-base-content transition-colors"
+						class="absolute top-2 right-2 p-1.5 rounded-md bg-base-200 hover:bg-base-300 text-base-content/90 hover:text-base-content transition-colors"
 						title="Copy output"
 					>
 						{#if copied}
@@ -227,11 +227,11 @@
 						{/if}
 					</button>
 					<div class="bg-base-200/50 rounded-lg p-4 pr-12">
-						<pre class="text-sm font-mono text-base-content/80 whitespace-pre-wrap break-all">{displayOutput}</pre>
+						<pre class="text-base font-mono text-base-content/80 whitespace-pre-wrap break-all">{displayOutput}</pre>
 					</div>
 				</div>
 			{:else}
-				<p class="text-base-content/70 italic">No output — tool completed successfully.</p>
+				<p class="text-base-content/90 italic">No output — tool completed successfully.</p>
 			{/if}
 		</div>
 	</div>

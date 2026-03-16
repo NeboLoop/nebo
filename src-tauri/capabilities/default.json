@@ -2,6 +2,9 @@
   "identifier": "default",
   "description": "Default capabilities for the main window",
   "windows": ["main", "prompt"],
+  "remote": {
+    "urls": ["http://localhost:*"]
+  },
   "permissions": [
     "core:default",
     "shell:allow-open",

@@ -49,7 +49,7 @@
 </script>
 
 {#if show}
-	<div class="alert alert-info shadow-lg mx-4 mt-2 mb-0 flex items-center gap-3 py-2 px-4 text-sm">
+	<div class="alert alert-info shadow-lg mx-4 mt-2 mb-0 flex items-center gap-3 py-2 px-4 text-base">
 		{#if $downloadProgress}
 			<!-- Download in progress -->
 			<Download class="w-5 h-5 shrink-0 animate-pulse" />

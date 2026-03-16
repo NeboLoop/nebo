@@ -51,7 +51,7 @@
 			const status = await api.setupStatus();
 			if (status.setupRequired) {
 				// Onboarding now happens conversationally in the agent
-				goto('/agent');
+				goto('/agent/assistant/chat');
 				return;
 			}
 		} catch {
@@ -130,7 +130,7 @@
 	<div class="card-body">
 		<div class="text-center mb-4">
 			<h2 class="card-title justify-center text-2xl">Welcome Back</h2>
-			<p class="text-base-content/70 text-sm">Sign in to your account to continue</p>
+			<p class="text-base-content/90 text-base">Sign in to your account to continue</p>
 		</div>
 
 		{#if $authError}
@@ -183,7 +183,7 @@
 					</button>
 				{/if}
 
-				<div class="divider text-xs text-base-content/70">or continue with email</div>
+				<div class="divider text-sm text-base-content/60">or continue with email</div>
 			</div>
 		{/if}
 
@@ -244,7 +244,7 @@
 				<div class="text-right">
 					<button
 						type="button"
-						class="link link-primary text-sm"
+						class="link link-primary text-base"
 						onclick={onForgotPasswordClick}
 						disabled={$authLoading || oauthLoading !== null}
 					>
@@ -272,7 +272,7 @@
 
 		{#if onRegisterClick}
 			<div class="divider"></div>
-			<p class="text-center text-sm text-base-content/70">
+			<p class="text-center text-base text-base-content/90">
 				Don't have an account?
 				<button
 					type="button"

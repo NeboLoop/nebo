@@ -41,7 +41,7 @@
 </script>
 
 <div class="rounded-xl bg-base-200 px-4 py-3 mb-1 max-w-md">
-	<p class="text-sm font-medium mb-2">{prompt}</p>
+	<p class="text-base font-medium mb-2">{prompt}</p>
 
 	{#if answered}
 		<div class="flex flex-wrap gap-1">
@@ -56,7 +56,7 @@
 	{:else}
 		{#each widgets as widget}
 			{#if widget.label}
-				<p class="text-xs text-base-content/70 mb-1">{widget.label}</p>
+				<p class="text-sm text-base-content/60 mb-1">{widget.label}</p>
 			{/if}
 
 			{#if widget.type === 'buttons' || widget.type === 'confirm'}

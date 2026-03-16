@@ -181,6 +181,7 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             lane: lanes::HEARTBEAT.to_string(),
             comm_reply: None,
             entity_config: Some(resolved.clone()),
+            images: vec![],
         };
 
         run_chat(state, config, None).await;

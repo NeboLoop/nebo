@@ -17,9 +17,13 @@ pub async fn spa_handler(uri: Uri) -> Response {
         return file_response(path, file);
     }
 
-    // Fallback to index.html for SPA routing
-    match Frontend::get("index.html") {
-        Some(file) => file_response("index.html", file),
+    // Fallback to SPA entry point for client-side routing
+    // Try index.html first (prerendered), then 200.html (adapter-static fallback)
+    if let Some(file) = Frontend::get("index.html") {
+        return file_response("index.html", file);
+    }
+    match Frontend::get("200.html") {
+        Some(file) => file_response("200.html", file),
         None => (StatusCode::NOT_FOUND, "frontend not built").into_response(),
     }
 }

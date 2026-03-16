@@ -14,6 +14,7 @@ export interface WebSocketMessage<T = any> {
 	type: string;
 	channel?: string;
 	data?: T;
+	message_id?: string;
 	timestamp?: string;
 }
 
@@ -256,6 +257,7 @@ class WebSocketClient {
 		const message: WebSocketMessage<T> = {
 			type,
 			data,
+			message_id: crypto.randomUUID(),
 			timestamp: new Date().toISOString()
 		};
 		const payload = JSON.stringify(message);

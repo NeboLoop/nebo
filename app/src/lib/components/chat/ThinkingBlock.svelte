@@ -17,11 +17,11 @@
 	}
 </script>
 
-<div class="thinking-block border border-dashed rounded-lg p-3 {isStreaming ? 'border-primary/40 bg-primary/5' : 'border-base-content/20 bg-base-200/30'}">
+<div class="thinking-block border border-dashed rounded-lg p-3 {isStreaming ? 'border-primary/40 bg-primary/5' : 'border-base-content/40 bg-base-200/30'}">
 	<button
 		type="button"
 		onclick={toggle}
-		class="flex items-center gap-2 w-full text-left text-sm text-base-content/70 hover:text-base-content/80 transition-colors"
+		class="flex items-center gap-2 w-full text-left text-base text-base-content/80 hover:text-base-content/80 transition-colors"
 	>
 		{#if isCollapsed}
 			<ChevronRight class="w-4 h-4" />
@@ -37,7 +37,7 @@
 	</button>
 
 	{#if !isCollapsed}
-		<div class="mt-2 pl-6 text-sm text-base-content/70 italic whitespace-pre-wrap">
+		<div class="mt-2 pl-6 text-base text-base-content/80 italic whitespace-pre-wrap">
 			{content}{#if isStreaming}<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>{/if}
 		</div>
 	{/if}

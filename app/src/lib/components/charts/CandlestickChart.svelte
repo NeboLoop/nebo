@@ -126,7 +126,7 @@
 <div bind:this={containerRef} class="w-full h-full">
 	{#if data.length === 0}
 		<div class="flex items-center justify-center h-full">
-			<p class="text-base-500 text-sm">No data to display</p>
+			<p class="text-base-500 text-base">No data to display</p>
 		</div>
 	{:else}
 		<svg width={containerWidth} height={effectiveHeight}>
@@ -221,7 +221,7 @@
 						y={tick.y}
 						text-anchor="end"
 						dominant-baseline="middle"
-						class="text-xs fill-base-500"
+						class="text-sm fill-base-500"
 						font-size="10"
 					>
 						{formatPrice(tick.value)}
@@ -238,7 +238,7 @@
 							x={xScale(i)}
 							y="20"
 							text-anchor="middle"
-							class="text-xs fill-base-500"
+							class="text-sm fill-base-500"
 							font-size="10"
 						>
 							{formatDate(candle.date)}
@@ -252,11 +252,11 @@
 		<div class="flex flex-wrap justify-center gap-4 mt-2">
 			<div class="flex items-center gap-1.5">
 				<span class="w-3 h-3 rounded-full" style="background-color: {bullColor}"></span>
-				<span class="text-xs text-text-muted">Bullish</span>
+				<span class="text-sm text-text-muted">Bullish</span>
 			</div>
 			<div class="flex items-center gap-1.5">
 				<span class="w-3 h-3 rounded-full" style="background-color: {bearColor}"></span>
-				<span class="text-xs text-text-muted">Bearish</span>
+				<span class="text-sm text-text-muted">Bearish</span>
 			</div>
 		</div>
 	{/if}

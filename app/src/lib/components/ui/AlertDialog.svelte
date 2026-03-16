@@ -80,14 +80,14 @@
 					class="nebo-modal-close"
 					aria-label="Close"
 				>
-					<X class="w-5 h-5 text-base-content/90" />
+					<X class="w-5 h-5 text-base-content/80" />
 				</button>
 			</div>
 
 			<!-- Body -->
 			<div class="px-5 py-5">
 				{#if description}
-					<p class="text-sm text-base-content/70 mb-4">{description}</p>
+					<p class="text-base text-base-content/90 mb-4">{description}</p>
 				{/if}
 				{#if children}
 					{@render children()}
@@ -98,14 +98,14 @@
 			<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
 				<button
 					type="button"
-					class="h-10 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+					class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 					onclick={handleCancel}
 				>
 					{cancelLabel}
 				</button>
 				<button
 					type="button"
-					class="h-10 px-6 rounded-full text-sm font-bold transition-all {actionType === 'danger' ? 'bg-error text-white hover:brightness-110' : 'bg-primary text-primary-content hover:brightness-110'}"
+					class="h-10 px-6 rounded-full text-base font-bold transition-all {actionType === 'danger' ? 'bg-error text-white hover:brightness-110' : 'bg-primary text-primary-content hover:brightness-110'}"
 					onclick={handleAction}
 				>
 					{actionLabel}

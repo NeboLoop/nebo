@@ -10,6 +10,19 @@ fn opt_i64_as_bool<S: Serializer>(val: &Option<i64>, s: S) -> Result<S::Ok, S::E
     s.serialize_bool(val.unwrap_or(0) != 0)
 }
 
+/// Serialize an Option<String> that contains a JSON array string as a proper JSON array.
+/// Falls back to null if the string isn't valid JSON array.
+fn json_string_as_array<S: Serializer>(val: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::Serialize;
+    match val {
+        Some(raw) => match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(v) if v.is_array() => v.serialize(s),
+            _ => s.serialize_none(),
+        },
+        None => s.serialize_none(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
@@ -235,6 +248,7 @@ pub struct Memory {
     pub namespace: String,
     pub key: String,
     pub value: String,
+    #[serde(serialize_with = "json_string_as_array")]
     pub tags: Option<String>,
     pub metadata: Option<String>,
     pub created_at: Option<String>,
@@ -516,6 +530,7 @@ pub struct WorkflowRun {
     pub error: Option<String>,
     pub error_activity: Option<String>,
     pub session_key: Option<String>,
+    pub output: Option<String>,
     pub started_at: i64,
     pub completed_at: Option<i64>,
 }
@@ -540,7 +555,7 @@ pub struct WorkflowActivityResult {
 #[serde(rename_all = "camelCase")]
 pub struct Role {
     pub id: String,
-    pub code: Option<String>,
+    pub kind: Option<String>,
     pub name: String,
     pub description: String,
     pub role_md: String,
@@ -561,14 +576,52 @@ pub struct RoleWorkflow {
     pub id: i64,
     pub role_id: String,
     pub binding_name: String,
-    pub workflow_ref: String,
-    pub workflow_id: Option<String>,
     pub trigger_type: String,
     pub trigger_config: String,
     pub description: Option<String>,
     pub inputs: Option<String>,
     #[serde(serialize_with = "i64_as_bool")]
     pub is_active: i64,
+    pub emit: Option<String>,
+    #[serde(skip_deserializing)]
+    pub activities: Option<serde_json::Value>,
+}
+
+// ── Emit Sources ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmitSource {
+    pub emit: String,
+    pub role_name: String,
+    pub binding_name: String,
+    pub description: Option<String>,
+}
+
+// ── Role Workflow Stats ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleWorkflowStats {
+    pub total_runs: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub cancelled: i64,
+    pub running: i64,
+    pub total_tokens: i64,
+    pub avg_duration_secs: Option<i64>,
+    pub last_run_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRunError {
+    pub run_id: String,
+    pub error: String,
+    pub activity_id: Option<String>,
+    pub started_at: i64,
 }
 
 // ── Entity Config ──

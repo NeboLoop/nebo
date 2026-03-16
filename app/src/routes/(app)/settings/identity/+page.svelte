@@ -91,13 +91,13 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Identity</h2>
-	<p class="text-sm text-base-content/70">Your agent's name, avatar, and persona</p>
+	<p class="text-base text-base-content/80">Your agent's name, avatar, and persona</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading identity...</span>
+		<span class="text-base text-base-content/80">Loading identity...</span>
 	</div>
 {:else}
 	<form
@@ -109,7 +109,7 @@
 	>
 		<!-- Avatar -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Avatar</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Avatar</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="flex items-start gap-5">
 					<label class="identity-avatar-trigger w-20 h-20 rounded-2xl bg-base-content/5 flex items-center justify-center overflow-hidden shrink-0 border border-base-content/10 cursor-pointer relative group">
@@ -119,7 +119,7 @@
 							<NeboIcon class="w-14 h-14" />
 						{/if}
 						<div class="identity-avatar-overlay absolute inset-0 rounded-2xl bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-							<span class="text-white text-sm font-medium">Change</span>
+							<span class="text-white text-base font-medium">Change</span>
 						</div>
 						<input
 							type="file"
@@ -133,52 +133,52 @@
 						<h2 class="text-xl font-bold text-base-content truncate">
 							{#if emoji && !avatar}<span class="mr-1.5">{emoji}</span>{/if}{displayName}
 						</h2>
-						<p class="text-sm text-base-content/70">{displayCreature}</p>
+						<p class="text-base text-base-content/80">{displayCreature}</p>
 						{#if displayRole}
-							<p class="text-sm text-base-content/70 mt-0.5">{displayRole}</p>
+							<p class="text-base text-base-content/80 mt-0.5">{displayRole}</p>
 						{/if}
 						{#if displayVibe}
-							<p class="text-sm text-base-content/70 italic mt-1">"{displayVibe}"</p>
+							<p class="text-base text-base-content/80 italic mt-1">"{displayVibe}"</p>
 						{/if}
 					</div>
 				</div>
 				{#if avatar}
 					<div class="flex justify-start mt-3">
-						<button type="button" class="text-sm text-base-content/70 hover:text-error transition-colors" onclick={clearAvatar}>
+						<button type="button" class="text-base text-base-content/80 hover:text-error transition-colors" onclick={clearAvatar}>
 							Remove custom avatar
 						</button>
 					</div>
 				{:else}
-					<p class="text-sm text-base-content/70 mt-3">Click the avatar to upload a custom image</p>
+					<p class="text-base text-base-content/80 mt-3">Click the avatar to upload a custom image</p>
 				{/if}
 			</div>
 		</section>
 
 		<!-- Identity -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Identity</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Identity</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
 				<div class="grid sm:grid-cols-2 gap-4">
 					<div>
-						<label class="text-sm font-medium text-base-content/70" for="agent-name">
+						<label class="text-base font-medium text-base-content/80" for="agent-name">
 							What should your agent be called?
 						</label>
 						<input
 							id="agent-name"
 							type="text"
-							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 							placeholder="Nebo"
 							bind:value={agentName}
 						/>
 					</div>
 					<div>
-						<label class="text-sm font-medium text-base-content/70" for="agent-emoji">
+						<label class="text-base font-medium text-base-content/80" for="agent-emoji">
 							Emoji
 						</label>
 						<input
 							id="agent-emoji"
 							type="text"
-							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 							placeholder="Used in chat bubbles and notifications"
 							bind:value={emoji}
 						/>
@@ -186,13 +186,13 @@
 				</div>
 
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="agent-role">
+					<label class="text-base font-medium text-base-content/80" for="agent-role">
 						What's your relationship dynamic?
 					</label>
 					<input
 						id="agent-role"
 						type="text"
-						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 						placeholder="Friend, Mentor, Coach, COO..."
 						bind:value={role}
 					/>
@@ -202,28 +202,28 @@
 
 		<!-- Persona -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Persona</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Persona</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="agent-creature">
+					<label class="text-base font-medium text-base-content/80" for="agent-creature">
 						What archetype does it embody?
 					</label>
 					<input
 						id="agent-creature"
 						type="text"
-						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 						placeholder="Helpful sidekick, Sarcastic librarian, Rogue diplomat..."
 						bind:value={creature}
 					/>
 				</div>
 
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="agent-vibe">
+					<label class="text-base font-medium text-base-content/80" for="agent-vibe">
 						What's the vibe?
 					</label>
 					<textarea
 						id="agent-vibe"
-						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-sm focus:outline-none focus:border-primary/50 transition-colors resize-none"
+						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none"
 						rows="2"
 						placeholder="chill but opinionated, dry humor"
 						bind:value={vibe}
@@ -243,7 +243,7 @@
 			<button
 				type="submit"
 				disabled={isSaving}
-				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
 			>
 				{#if isSaving}
 					<Spinner size={16} />

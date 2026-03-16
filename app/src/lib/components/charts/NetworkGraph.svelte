@@ -220,7 +220,7 @@
 <div bind:this={containerRef} class="network-graph-container w-full h-full">
 	{#if nodes.length === 0}
 		<div class="empty-state flex items-center justify-center h-full">
-			<p class="text-base-content/70 text-sm">No data to display</p>
+			<p class="text-base-content/90 text-base">No data to display</p>
 		</div>
 	{:else}
 		<svg width={containerWidth} height={effectiveHeight}>
@@ -263,7 +263,7 @@
 								x={midpoint.x}
 								y={midpoint.y - 5}
 								text-anchor="middle"
-								class="text-xs fill-base-content/60"
+								class="text-sm fill-base-content/60"
 								font-size="9"
 							>
 								{edge.label}
@@ -295,7 +295,7 @@
 								x={pos.x + padding}
 								y={pos.y + padding + getNodeSize(node) + 14}
 								text-anchor="middle"
-								class="text-xs fill-base-content/70 pointer-events-none"
+								class="text-sm fill-base-content/80 pointer-events-none"
 								font-size="10"
 							>
 								{node.label.length > 12 ? node.label.slice(0, 12) + '..' : node.label}

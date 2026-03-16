@@ -106,7 +106,7 @@
 					y={height / 2}
 					text-anchor="end"
 					dominant-baseline="middle"
-					class="fill-base-content/70 text-sm font-medium"
+					class="fill-base-content/80 text-base font-medium"
 				>
 					{label}
 				</text>
@@ -158,7 +158,7 @@
 					y={chartHeight / 2}
 					text-anchor="start"
 					dominant-baseline="middle"
-					class="fill-base-content/70 text-sm font-semibold"
+					class="fill-base-content/80 text-base font-semibold"
 				>
 					{formatValue(value)}
 				</text>
@@ -210,7 +210,7 @@
 					x={height / 2}
 					y={containerWidth - 5}
 					text-anchor="middle"
-					class="fill-base-content/70 text-sm font-medium"
+					class="fill-base-content/80 text-base font-medium"
 				>
 					{label}
 				</text>

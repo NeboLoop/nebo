@@ -20,10 +20,12 @@ pub struct RoleWorker {
     pub role_id: String,
     pub name: String,
     cancel: CancellationToken,
+    event_dispatcher: Arc<EventDispatcher>,
+    workflow_manager: Arc<dyn WorkflowManager>,
 }
 
 impl RoleWorker {
-    /// Start the worker: read bindings from DB, spawn trigger tasks.
+    /// Start the worker: read bindings from DB, resolve role config, spawn trigger tasks.
     pub fn start(
         role_id: String,
         name: String,
@@ -37,7 +39,26 @@ impl RoleWorker {
             Ok(b) => b,
             Err(e) => {
                 warn!(role = %role_id, error = %e, "failed to load role workflow bindings");
-                return Self { role_id, name, cancel };
+                return Self { role_id, name, cancel, event_dispatcher, workflow_manager };
+            }
+        };
+
+        // Load role config from DB frontmatter to get inline activities
+        let role_config = match store.get_role(&role_id) {
+            Ok(Some(r)) => match napp::role::parse_role_config(&r.frontmatter) {
+                Ok(cfg) => Some(cfg),
+                Err(e) => {
+                    warn!(role = %role_id, error = %e, "failed to parse role config frontmatter");
+                    None
+                }
+            },
+            Ok(None) => {
+                warn!(role = %role_id, "role not found in DB");
+                None
+            }
+            Err(e) => {
+                warn!(role = %role_id, error = %e, "failed to load role from DB");
+                None
             }
         };
 
@@ -45,6 +66,11 @@ impl RoleWorker {
         workflow::triggers::register_role_triggers(&role_id, &bindings, store);
 
         for binding in &bindings {
+            // Look up the WorkflowBinding from role config to get activities
+            let wf_binding = role_config
+                .as_ref()
+                .and_then(|c| c.workflows.get(&binding.binding_name));
+
             match binding.trigger_type.as_str() {
                 "heartbeat" => {
                     let (duration, window) = parse_heartbeat(&binding.trigger_config);
@@ -57,15 +83,26 @@ impl RoleWorker {
                         );
                         continue;
                     }
-                    let workflow_id = match &binding.workflow_id {
-                        Some(id) if !id.is_empty() => id.clone(),
-                        _ => continue,
+                    // Build inline definition JSON from role config
+                    let def_json = match wf_binding {
+                        Some(wb) if wb.has_activities() => wb.to_workflow_json(&binding.binding_name),
+                        _ => {
+                            warn!(role = %role_id, binding = %binding.binding_name, "no inline activities found, skipping heartbeat");
+                            continue;
+                        }
                     };
                     let inputs: serde_json::Value = binding
                         .inputs
                         .as_ref()
                         .and_then(|s| serde_json::from_str(s).ok())
                         .unwrap_or_default();
+                    // Build emit_source from binding: "{role-slug}.{emit-name}"
+                    let emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| {
+                            let slug = name.to_lowercase().replace(' ', "-");
+                            format!("{}.{}", slug, emit_name)
+                        });
                     let mgr = workflow_manager.clone();
                     let role = role_id.clone();
                     let bname = binding.binding_name.clone();
@@ -86,13 +123,13 @@ impl RoleWorker {
                                         }
                                     }
 
-                                    match mgr.run(&workflow_id, inputs.clone(), "heartbeat").await {
+                                    match mgr.run_inline(def_json.clone(), inputs.clone(), "heartbeat", &role, emit_source.clone()).await {
                                         Ok(run_id) => {
                                             info!(
                                                 role = %role,
                                                 binding = %bname,
                                                 run_id = %run_id,
-                                                "heartbeat triggered workflow"
+                                                "heartbeat triggered inline workflow"
                                             );
                                             notify_crate::send("Nebo", &format!("Heartbeat: {}", bname));
                                         }
@@ -101,7 +138,7 @@ impl RoleWorker {
                                                 role = %role,
                                                 binding = %bname,
                                                 error = %e,
-                                                "heartbeat workflow run failed"
+                                                "heartbeat inline workflow run failed"
                                             );
                                             notify_crate::send("Nebo", &format!("{} failed: {}", bname, e));
                                         }
@@ -121,16 +158,24 @@ impl RoleWorker {
                     );
                 }
                 "event" => {
-                    // Subscribe event patterns to the EventDispatcher
-                    let workflow_id = match &binding.workflow_id {
-                        Some(id) if !id.is_empty() => id.clone(),
-                        _ => continue,
-                    };
+                    // Build inline definition JSON from role config
+                    let def_json = wf_binding
+                        .filter(|wb| wb.has_activities())
+                        .map(|wb| wb.to_workflow_json(&binding.binding_name));
+
                     let inputs: serde_json::Value = binding
                         .inputs
                         .as_ref()
                         .and_then(|s| serde_json::from_str(s).ok())
                         .unwrap_or_default();
+
+                    // Build emit_source from binding: "{role-slug}.{emit-name}"
+                    let event_emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| {
+                            let slug = name.to_lowercase().replace(' ', "-");
+                            format!("{}.{}", slug, emit_name)
+                        });
 
                     for source in binding.trigger_config.split(',') {
                         let pattern = source.trim().to_string();
@@ -140,10 +185,11 @@ impl RoleWorker {
                         let dispatcher = event_dispatcher.clone();
                         let sub = EventSubscription {
                             pattern,
-                            workflow_id: workflow_id.clone(),
                             default_inputs: inputs.clone(),
                             role_source: role_id.clone(),
                             binding_name: binding.binding_name.clone(),
+                            definition_json: def_json.clone(),
+                            emit_source: event_emit_source.clone(),
                         };
                         tokio::spawn(async move {
                             dispatcher.subscribe(sub).await;
@@ -169,13 +215,25 @@ impl RoleWorker {
 
         info!(role = %role_id, name = %name, bindings = bindings.len(), "role worker started");
 
-        Self { role_id, name, cancel }
+        Self { role_id, name, cancel, event_dispatcher, workflow_manager }
     }
 
-    /// Stop the worker: cancel all spawned tasks, clean up cron jobs.
+    /// Stop the worker: cancel all spawned tasks, running workflows, cron jobs and event subscriptions.
     pub fn stop(&self, store: &Store) {
         self.cancel.cancel();
         workflow::triggers::unregister_role_triggers(&self.role_id, store);
+        // Cancel any running workflows spawned by this role
+        let mgr = self.workflow_manager.clone();
+        let role_id_wf = self.role_id.clone();
+        tokio::spawn(async move {
+            mgr.cancel_runs_for_role(&role_id_wf).await;
+        });
+        // Clean up event subscriptions (async, fire-and-forget)
+        let dispatcher = self.event_dispatcher.clone();
+        let role_id = self.role_id.clone();
+        tokio::spawn(async move {
+            dispatcher.unsubscribe_role(&role_id).await;
+        });
         info!(role = %self.role_id, "role worker stopped");
     }
 }

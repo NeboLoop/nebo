@@ -205,10 +205,30 @@ impl DynTool for OsTool {
         props.insert("email".into(), prop("string", "Email address"));
         props.insert("subject".into(), prop("string", "Email subject"));
         props.insert("body".into(), prop("string", "Email/event body"));
-        props.insert("to".into(), prop("string", "Email recipient"));
+        props.insert("to".into(), serde_json::json!({
+            "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+            ],
+            "description": "Email recipient(s)"
+        }));
+        props.insert("cc".into(), serde_json::json!({
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "CC recipient(s)"
+        }));
+        props.insert("mailbox".into(), prop("string", "Mailbox name (e.g. 'INBOX', 'Sent')"));
         props.insert("calendar".into(), prop("string", "Calendar name"));
+        props.insert("date".into(), prop("string", "Start date (e.g. '2025-03-15 10:00', 'tomorrow')"));
+        props.insert("end_date".into(), prop("string", "End date (defaults to start + 1 hour)"));
+        props.insert("location".into(), prop("string", "Event location"));
+        props.insert("days".into(), prop("integer", "Number of days to look ahead (default: 7)"));
         props.insert("list".into(), prop("string", "Reminder list name"));
-        props.insert("date".into(), prop("string", "Date for events"));
+        props.insert("due_date".into(), prop("string", "Due date (e.g. '2025-03-15', 'tomorrow', 'in 3 days')"));
+        props.insert("priority".into(), prop("integer", "Priority: 1-3=high, 4-6=medium, 7-9=low"));
+        props.insert("phone".into(), prop("string", "Contact phone number"));
+        props.insert("company".into(), prop("string", "Contact company/organization"));
+        props.insert("notes".into(), prop("string", "Notes or description"));
 
         serde_json::json!({
             "type": "object",
@@ -280,6 +300,12 @@ impl DynTool for OsTool {
                      notification, ui, menu, dialog, space, shortcut, tts, dock, app, settings, music, \
                      keychain, search, mail, contacts, calendar, reminders"
                 );
+            }
+
+            // Ensure resource is present in input for downstream tools
+            let mut input = input;
+            if !input.get("resource").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
+                input["resource"] = serde_json::Value::String(resource.clone());
             }
 
             match resource.as_str() {

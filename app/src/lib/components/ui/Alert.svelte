@@ -93,7 +93,7 @@
 			{#if title}
 				<h3 class="font-semibold">{title}</h3>
 			{/if}
-			<div class="text-sm">
+			<div class="text-base">
 				{@render children()}
 			</div>
 		</div>

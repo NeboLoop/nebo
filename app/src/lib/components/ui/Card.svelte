@@ -29,7 +29,7 @@
 		{#if title}
 			<h2 class="card-title">{title}</h2>
 			{#if subtitle}
-				<p class="text-base-content/70">{subtitle}</p>
+				<p class="text-base-content/80">{subtitle}</p>
 			{/if}
 		{/if}
 		{@render children()}

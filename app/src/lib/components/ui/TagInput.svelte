@@ -101,7 +101,7 @@
 			onkeydown={handleKeyDown}
 			onblur={handleInputBlur}
 			placeholder={tags.length === 0 ? placeholder : ''}
-			class="flex-1 min-w-[120px] bg-transparent outline-none border-none text-sm focus:outline-none"
+			class="flex-1 min-w-[120px] bg-transparent outline-none border-none text-base focus:outline-none"
 		/>
 	{/if}
 </div>

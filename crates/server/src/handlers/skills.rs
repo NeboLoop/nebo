@@ -12,10 +12,34 @@ fn skills_dir() -> Result<std::path::PathBuf, (axum::http::StatusCode, Json<type
 
 /// GET /api/v1/extensions
 pub async fn list_extensions(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
-    let dir = skills_dir()?;
-    let skills = list_skill_files(&dir);
+    let skills: Vec<serde_json::Value> = state
+        .skill_loader
+        .list()
+        .await
+        .into_iter()
+        .map(|s| {
+            let mut info = serde_json::json!({
+                "name": s.name,
+                "enabled": s.enabled,
+                "source": s.source,
+            });
+            if !s.description.is_empty() {
+                info["description"] = serde_json::json!(s.description);
+            }
+            if !s.version.is_empty() {
+                info["version"] = serde_json::json!(s.version);
+            }
+            if !s.triggers.is_empty() {
+                info["triggers"] = serde_json::json!(s.triggers);
+            }
+            if let Some(ref path) = s.source_path {
+                info["path"] = serde_json::json!(path.to_string_lossy());
+            }
+            info
+        })
+        .collect();
     Ok(Json(serde_json::json!({"extensions": skills})))
 }
 
@@ -150,86 +174,3 @@ pub async fn toggle_skill(
     }
 }
 
-/// List all skill files from a directory, including SKILL.md subdirectories.
-/// Returns metadata including source, description, version, and triggers where available.
-fn list_skill_files(dir: &std::path::Path) -> Vec<serde_json::Value> {
-    let mut skills = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let file_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-
-            // SKILL.md in subdirectory
-            if path.is_dir() && !file_name.ends_with(".disabled") {
-                if let Some(md_path) = find_skill_md_in_dir(&path) {
-                    let mut info = serde_json::json!({
-                        "name": file_name,
-                        "enabled": true,
-                        "path": md_path.to_string_lossy(),
-                        "source": "user",
-                    });
-                    // Parse frontmatter for metadata
-                    if let Ok(data) = std::fs::read(&md_path) {
-                        if let Ok(skill) = tools::skills::parse_skill_md(&data) {
-                            info["description"] = serde_json::json!(skill.description);
-                            info["version"] = serde_json::json!(skill.version);
-                            if !skill.triggers.is_empty() {
-                                info["triggers"] = serde_json::json!(skill.triggers);
-                            }
-                        }
-                    }
-                    skills.push(info);
-                }
-                continue;
-            }
-
-            // Disabled SKILL.md directory
-            if path.is_dir() && file_name.ends_with(".disabled") {
-                let base_name = file_name.trim_end_matches(".disabled");
-                skills.push(serde_json::json!({
-                    "name": base_name,
-                    "enabled": false,
-                    "path": path.to_string_lossy(),
-                    "source": "user",
-                }));
-                continue;
-            }
-
-            // Flat .yaml files
-            if file_name.ends_with(".yaml") && !file_name.ends_with(".disabled") {
-                let name = file_name.trim_end_matches(".yaml");
-                skills.push(serde_json::json!({
-                    "name": name,
-                    "enabled": true,
-                    "path": path.to_string_lossy(),
-                    "source": "user",
-                }));
-            } else if file_name.ends_with(".yaml.disabled") {
-                let name = file_name.trim_end_matches(".yaml.disabled");
-                skills.push(serde_json::json!({
-                    "name": name,
-                    "enabled": false,
-                    "path": path.to_string_lossy(),
-                    "source": "user",
-                }));
-            }
-        }
-    }
-    skills.sort_by(|a, b| {
-        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
-    });
-    skills
-}
-
-/// Find a SKILL.md file in a directory (case-insensitive).
-fn find_skill_md_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.eq_ignore_ascii_case("skill.md") {
-            return Some(entry.path());
-        }
-    }
-    None
-}

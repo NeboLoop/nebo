@@ -23,7 +23,7 @@
 	<div class="card bg-base-100 border border-base-300 mb-4 overflow-hidden" transition:slide={{ duration: 200 }}>
 		<div class="flex items-center justify-between px-4 py-3 border-b border-base-300 bg-base-200">
 			{#if title}
-				<h3 class="text-sm font-semibold">{title}</h3>
+				<h3 class="text-base font-semibold">{title}</h3>
 			{/if}
 			<button onclick={handleClose} class="btn btn-ghost btn-xs btn-circle" aria-label="Close">
 				<X class="h-4 w-4" />

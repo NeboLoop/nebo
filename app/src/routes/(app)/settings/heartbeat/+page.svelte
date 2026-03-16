@@ -3,7 +3,7 @@
 	import { Clock, Info, RotateCcw, Save, Loader2 } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
-	import MarkdownEditor from '$lib/components/ui/MarkdownEditor.svelte';
+	import RichInput from '$lib/components/ui/RichInput.svelte';
 
 	let isLoading = $state(true);
 	let isSaving = $state(false);
@@ -122,7 +122,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 	<div class="shrink-0 mb-4">
 		<div class="mb-4">
 			<h2 class="font-display text-xl font-bold text-base-content mb-1">Heartbeat</h2>
-			<p class="text-sm text-base-content/70">Proactive tasks the agent checks periodically</p>
+			<p class="text-base text-base-content/80">Proactive tasks the agent checks periodically</p>
 		</div>
 
 		<!-- Check Interval -->
@@ -133,14 +133,14 @@ Write tasks in plain language - the agent will interpret and act on them.
 						<Clock class="w-4.5 h-4.5 text-primary" />
 					</div>
 					<div>
-						<p class="text-sm font-medium text-base-content">Check Interval</p>
-						<p class="text-sm text-base-content/70">How often the agent reviews tasks and takes action</p>
+						<p class="text-base font-medium text-base-content">Check Interval</p>
+						<p class="text-base text-base-content/80">How often the agent reviews tasks and takes action</p>
 					</div>
 				</div>
 				<select
 					bind:value={intervalMinutes}
 					onchange={handleIntervalChange}
-					class="h-9 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+					class="h-9 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors"
 					disabled={isLoading}
 				>
 					{#each intervalOptions as opt}
@@ -155,16 +155,16 @@ Write tasks in plain language - the agent will interpret and act on them.
 	{#if isLoading}
 		<div class="flex-1 flex items-center justify-center gap-3 py-16">
 			<Spinner size={20} />
-			<span class="text-sm text-base-content/70">Loading heartbeat tasks...</span>
+			<span class="text-base text-base-content/80">Loading heartbeat tasks...</span>
 		</div>
 	{:else}
-		<MarkdownEditor
+		<RichInput
 			bind:value={content}
+			mode="full"
 			placeholder="Enter your proactive tasks in Markdown..."
-			class="flex-1"
 		/>
 
-		<div class="shrink-0 flex items-center gap-2 text-sm text-base-content/50 mt-2">
+		<div class="shrink-0 flex items-center gap-2 text-base text-base-content/80 mt-2">
 			<Info class="w-3.5 h-3.5" />
 			<span>Saved to: HEARTBEAT.md in your Nebo data directory</span>
 		</div>
@@ -172,13 +172,13 @@ Write tasks in plain language - the agent will interpret and act on them.
 
 	<!-- Feedback -->
 	{#if saveSuccess}
-		<div class="shrink-0 mt-3 rounded-xl bg-success/10 border border-success/20 px-4 py-3 text-sm text-success">
+		<div class="shrink-0 mt-3 rounded-xl bg-success/10 border border-success/20 px-4 py-3 text-base text-success">
 			Heartbeat settings have been updated.
 		</div>
 	{/if}
 
 	{#if saveError}
-		<div class="shrink-0 mt-3 rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error">
+		<div class="shrink-0 mt-3 rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-base text-error">
 			{saveError}
 		</div>
 	{/if}
@@ -187,7 +187,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 	<div class="shrink-0 flex justify-between mt-4">
 		<button
 			type="button"
-			class="h-9 px-4 rounded-xl bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-2 disabled:opacity-30"
+			class="h-9 px-4 rounded-xl bg-base-content/5 border border-base-content/10 text-base font-medium text-base-content/80 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-2 disabled:opacity-30"
 			onclick={handleReset}
 			disabled={isLoading}
 		>
@@ -196,7 +196,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 		</button>
 		<button
 			type="button"
-			class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all flex items-center gap-2 disabled:opacity-30"
+			class="h-9 px-5 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all flex items-center gap-2 disabled:opacity-30"
 			onclick={handleSave}
 			disabled={isSaving || !hasChanges || isLoading}
 		>

@@ -112,7 +112,7 @@
 				<form onsubmit={handleProfileSubmit} aria-label="Update profile form" class="space-y-4">
 					<!-- Email (Read-only) -->
 					<div>
-						<label for={emailId} class="block text-sm font-medium text-base-300 mb-2">Email Address</label>
+						<label for={emailId} class="block text-base font-medium text-base-300 mb-2">Email Address</label>
 						<input
 							id={emailId}
 							type="email"
@@ -122,14 +122,14 @@
 							disabled
 							aria-describedby="email-note"
 						/>
-						<p id="email-note" class="mt-1 text-xs text-base-500">
+						<p id="email-note" class="mt-1 text-sm text-base-500">
 							Email address cannot be changed
 						</p>
 					</div>
 
 					<!-- Name -->
 					<div>
-						<label for={nameId} class="block text-sm font-medium text-base-300 mb-2">
+						<label for={nameId} class="block text-base font-medium text-base-300 mb-2">
 							Full Name
 							<span class="text-error" aria-hidden="true">*</span>
 						</label>
@@ -148,7 +148,7 @@
 							autocomplete="name"
 						/>
 						{#if (!nameValidation.isValid && nameTouched) || nameError}
-							<p id={nameErrorId} class="mt-1 text-sm text-error" role="alert">
+							<p id={nameErrorId} class="mt-1 text-base text-error" role="alert">
 								{nameError || nameValidation.error}
 							</p>
 						{/if}
@@ -179,17 +179,17 @@
 
 				<dl class="space-y-4">
 					<div class="flex justify-between items-center py-2 border-b border-base-700">
-						<dt class="text-sm text-base-400">Account ID</dt>
-						<dd class="text-sm text-base-300 font-mono">{$currentUser.id}</dd>
+						<dt class="text-base text-base-400">Account ID</dt>
+						<dd class="text-base text-base-300 font-mono">{$currentUser.id}</dd>
 					</div>
 					<div class="flex justify-between items-center py-2 border-b border-base-700">
-						<dt class="text-sm text-base-400">Member Since</dt>
-						<dd class="text-sm text-base-300">{formatDate($currentUser.createdAt)}</dd>
+						<dt class="text-base text-base-400">Member Since</dt>
+						<dd class="text-base text-base-300">{formatDate($currentUser.createdAt)}</dd>
 					</div>
 					{#if $currentUser.updatedAt !== $currentUser.createdAt}
 						<div class="flex justify-between items-center py-2">
-							<dt class="text-sm text-base-400">Last Updated</dt>
-							<dd class="text-sm text-base-300">{formatDate($currentUser.updatedAt)}</dd>
+							<dt class="text-base text-base-400">Last Updated</dt>
+							<dd class="text-base text-base-300">{formatDate($currentUser.updatedAt)}</dd>
 						</div>
 					{/if}
 				</dl>
@@ -200,7 +200,7 @@
 		<Card>
 			<section aria-labelledby="session-heading">
 				<h3 id="session-heading" class="text-lg font-semibold text-white mb-2">Session</h3>
-				<p class="text-sm text-base-400 mb-4">
+				<p class="text-base text-base-400 mb-4">
 					Sign out of your account on this device.
 				</p>
 
@@ -217,7 +217,7 @@
 		<Card>
 			<div class="flex flex-col items-center justify-center gap-4 py-8">
 				<Spinner size={32} />
-				<p class="text-sm text-base-400">Loading account...</p>
+				<p class="text-base text-base-400">Loading account...</p>
 			</div>
 		</Card>
 	{:else}

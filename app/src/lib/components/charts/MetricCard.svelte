@@ -85,7 +85,7 @@
 
 <div class="card group relative overflow-hidden">
 	<!-- Title -->
-	<p class="text-sm font-medium text-text-muted mb-2">{title}</p>
+	<p class="text-base font-medium text-text-muted mb-2">{title}</p>
 
 	<!-- Value -->
 	{#if loading}
@@ -98,12 +98,12 @@
 
 	<!-- Description (below value) -->
 	{#if description}
-		<p class="text-xs text-text-muted/70 mt-1">{description}</p>
+		<p class="text-sm text-text-muted/70 mt-1">{description}</p>
 	{/if}
 
 	<!-- Trend -->
 	{#if trend !== undefined}
-		<div class="flex items-center gap-2 text-sm mt-2">
+		<div class="flex items-center gap-2 text-base mt-2">
 			{#if trendDirection === 'up'}
 				<div class="flex items-center gap-1 {trendColor}">
 					<TrendingUp class="w-4 h-4" />
@@ -120,7 +120,7 @@
 					<span class="font-semibold">0%</span>
 				</div>
 			{/if}
-			<span class="text-text-muted text-xs">{trendPeriod}</span>
+			<span class="text-text-muted text-sm">{trendPeriod}</span>
 		</div>
 	{/if}
 

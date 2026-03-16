@@ -2,10 +2,12 @@
 	import type { Snippet } from 'svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import { AppNav } from '$lib/components/navigation';
+	import { beforeNavigate } from '$app/navigation';
+	import { AppNav, SideNav } from '$lib/components/navigation';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { auth } from '$lib/stores/auth';
 	import { get } from 'svelte/store';
+	import { settingsReturnPath } from '$lib/stores/settings';
 	import OnboardingFlow from '$lib/components/onboarding/OnboardingFlow.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import UpdateBanner from '$lib/components/UpdateBanner.svelte';
@@ -21,8 +23,11 @@
 	} from '$lib/stores/update';
 	import type { UpdateCheckResponse } from '$lib/api/neboComponents';
 	import * as api from '$lib/api/nebo';
+	import CommandPalette from '$lib/components/CommandPalette.svelte';
 
 	let { children }: { children: Snippet } = $props();
+
+	let commandPaletteOpen = $state(false);
 
 	// Theme: detect OS preference, allow user override
 	let themePref = $state<'light' | 'dark' | 'system'>('system');
@@ -51,13 +56,20 @@
 
 	// Edge-to-edge routes with their own sidebar (no centering wrapper)
 	const isEdgeToEdgeRoute = $derived(
-		$page.url.pathname.startsWith('/store')
+		$page.url.pathname.startsWith('/marketplace')
 	);
 
 	// Settings renders as a centered modal overlay
 	const isSettingsRoute = $derived(
 		$page.url.pathname.startsWith('/settings')
 	);
+
+	// Capture return path when navigating into settings
+	beforeNavigate(({ from, to }) => {
+		if (to?.url.pathname.startsWith('/settings') && !from?.url.pathname.startsWith('/settings')) {
+			settingsReturnPath.set(from?.url.pathname ?? '/');
+		}
+	});
 
 	onMount(async () => {
 		// Theme: listen to OS preference changes in real time
@@ -165,15 +177,22 @@
 	}
 </script>
 
+<svelte:window onkeydown={(e) => {
+	if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+		e.preventDefault();
+		commandPaletteOpen = !commandPaletteOpen;
+	}
+}} />
+
 <!-- Show onboarding if needed -->
 {#if showOnboarding && !isCheckingOnboarding}
-	<OnboardingFlow />
+	<OnboardingFlow onComplete={() => { showOnboarding = false; }} />
 {:else if isCheckingOnboarding}
 	<!-- Loading state while checking onboarding -->
 	<div class="h-dvh flex items-center justify-center bg-base-100">
 		<div class="loading loading-spinner loading-lg"></div>
 	</div>
-{:else if isFullHeightRoute}
+{:else}
 	<div class="h-dvh flex flex-col overflow-hidden bg-base-100">
 		<AppNav />
 		<UpdateBanner />
@@ -184,53 +203,29 @@
 				</Alert>
 			</div>
 		{/each}
-		<main id="main-content" class="flex-1 flex flex-col min-h-0 overflow-hidden">
-			{@render children()}
-		</main>
-	</div>
-{:else if isSettingsRoute}
-	<div class="layout-app h-full">
-		<AppNav />
-		<UpdateBanner />
-		{#each quarantineNotices as notice (notice.app_id)}
-			<div class="px-6 pt-2">
-				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>
-					Your data is safe. This app was automatically stopped and quarantined by NeboLoop.
-				</Alert>
-			</div>
-		{/each}
-		{@render children()}
-	</div>
-{:else if isEdgeToEdgeRoute}
-	<div class="layout-app h-full">
-		<AppNav />
-		<UpdateBanner />
-		{#each quarantineNotices as notice (notice.app_id)}
-			<div class="px-6 pt-2">
-				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>
-					Your data is safe. This app was automatically stopped and quarantined by NeboLoop.
-				</Alert>
-			</div>
-		{/each}
-		<main id="main-content" class="flex-1 px-6 pt-6">
-			{@render children()}
-		</main>
-	</div>
-{:else}
-	<div class="layout-app h-full">
-		<AppNav />
-		<UpdateBanner />
-		{#each quarantineNotices as notice (notice.app_id)}
-			<div class="px-6 pt-2">
-				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>
-					Your data is safe. This app was automatically stopped and quarantined by NeboLoop.
-				</Alert>
-			</div>
-		{/each}
-		<main id="main-content" class="flex-1 p-6">
-			<div class="max-w-[1400px] mx-auto">
-				{@render children()}
-			</div>
-		</main>
+		<div class="flex flex-1 min-h-0 overflow-hidden">
+			<SideNav />
+			{#if isFullHeightRoute}
+				<main id="main-content" class="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+					{@render children()}
+				</main>
+			{:else if isSettingsRoute}
+				<div class="flex-1 min-w-0 overflow-hidden">
+					{@render children()}
+				</div>
+			{:else if isEdgeToEdgeRoute}
+				<main id="main-content" class="flex-1 min-w-0 px-6 pt-6 overflow-y-auto">
+					{@render children()}
+				</main>
+			{:else}
+				<main id="main-content" class="flex-1 min-w-0 p-6 overflow-y-auto">
+					<div class="max-w-[1400px] mx-auto">
+						{@render children()}
+					</div>
+				</main>
+			{/if}
+		</div>
 	</div>
 {/if}
+
+<CommandPalette bind:open={commandPaletteOpen} onclose={() => commandPaletteOpen = false} />

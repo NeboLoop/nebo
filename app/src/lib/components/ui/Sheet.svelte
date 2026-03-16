@@ -75,7 +75,7 @@
 						<h2 class="text-lg font-semibold">{title}</h2>
 					{/if}
 					{#if description}
-						<p class="text-sm text-base-content/70">{description}</p>
+						<p class="text-base text-base-content/80">{description}</p>
 					{/if}
 				</div>
 			{/if}

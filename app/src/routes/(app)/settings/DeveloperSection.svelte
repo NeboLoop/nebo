@@ -118,7 +118,7 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Developer</h2>
-	<p class="text-sm text-base-content/70">App development tools and settings</p>
+	<p class="text-base text-base-content/80">App development tools and settings</p>
 </div>
 
 <div class="space-y-6">
@@ -126,7 +126,7 @@
 		<Card>
 			<div class="flex flex-col items-center justify-center gap-4 py-8">
 				<Spinner size={32} />
-				<p class="text-sm text-base-content/70">Loading developer settings...</p>
+				<p class="text-base text-base-content/80">Loading developer settings...</p>
 			</div>
 		</Card>
 	{:else}
@@ -135,14 +135,14 @@
 			<div class="flex items-center gap-3 mb-6">
 				<div>
 					<h3 class="text-lg font-semibold text-base-content">Developer Mode</h3>
-					<p class="text-sm text-base-content/70">Enable app development features</p>
+					<p class="text-base text-base-content/80">Enable app development features</p>
 				</div>
 			</div>
 
 			<div class="flex items-center justify-between py-3">
 				<div>
-					<p class="text-sm font-medium text-base-content">Enable Developer Mode</p>
-					<p class="text-sm text-base-content/70">
+					<p class="text-base font-medium text-base-content">Enable Developer Mode</p>
+					<p class="text-base text-base-content/80">
 						Allows sideloading local apps for testing and development
 					</p>
 				</div>
@@ -155,8 +155,8 @@
 			<Card>
 				<div class="flex items-center justify-between">
 					<div>
-						<h3 class="text-sm font-medium text-base-content">Developer Window</h3>
-						<p class="text-sm text-base-content/70">
+						<h3 class="text-base font-medium text-base-content">Developer Window</h3>
+						<p class="text-base text-base-content/80">
 							AI pair programmer + tabbed inspector for app development
 						</p>
 					</div>
@@ -176,7 +176,7 @@
 					</div>
 					<div>
 						<h2 class="text-lg font-semibold text-base-content">Sideloaded Apps</h2>
-						<p class="text-sm text-base-content/70">
+						<p class="text-base text-base-content/80">
 							Load apps from local directories for development
 						</p>
 					</div>
@@ -188,7 +188,7 @@
 						type="text"
 						bind:value={sideloadPath}
 						placeholder="/path/to/your/app/project"
-						class="input input-bordered flex-1 text-sm"
+						class="input input-bordered flex-1 text-base"
 						onkeydown={(e) => {
 							if (e.key === 'Enter') handleSideload();
 						}}
@@ -215,7 +215,7 @@
 							>
 								<div class="flex-1 min-w-0">
 									<div class="flex items-center gap-2">
-										<p class="text-sm font-medium text-base-content truncate">
+										<p class="text-base font-medium text-base-content truncate">
 											{app.name}
 										</p>
 										<span class="badge badge-xs badge-accent">dev</span>
@@ -227,7 +227,7 @@
 											<span class="badge badge-xs badge-ghost">stopped</span>
 										{/if}
 									</div>
-									<p class="text-sm text-base-content/70 truncate mt-0.5">
+									<p class="text-base text-base-content/80 truncate mt-0.5">
 										{app.path}
 									</p>
 								</div>
@@ -246,14 +246,14 @@
 									>
 										<Trash2 class="w-3.5 h-3.5" />
 									</button>
-									<ChevronRight class="w-4 h-4 text-base-content/70" />
+									<ChevronRight class="w-4 h-4 text-base-content/90" />
 								</div>
 							</div>
 						{/each}
 					</div>
 				{:else}
 					<div class="text-center py-6">
-						<p class="text-sm text-base-content/70">
+						<p class="text-base text-base-content/80">
 							No sideloaded apps. Enter a path to your app project above to get started.
 						</p>
 					</div>
@@ -263,8 +263,8 @@
 			<!-- Developer Info -->
 			<Card>
 				<div class="bg-base-200 rounded-lg p-4">
-					<p class="text-sm font-medium text-base-content mb-2">How sideloading works</p>
-					<ul class="text-sm text-base-content/70 space-y-1 list-disc list-inside">
+					<p class="text-base font-medium text-base-content mb-2">How sideloading works</p>
+					<ul class="text-base text-base-content/80 space-y-1 list-disc list-inside">
 						<li>Point to a directory with a <code class="bg-base-300 px-1 rounded">manifest.json</code> and compiled binary</li>
 						<li>Nebo creates a symlink and launches the app immediately</li>
 						<li>Rebuild your binary and the watcher will auto-restart the app</li>
@@ -296,16 +296,16 @@
 
 		<!-- Path -->
 		<div class="mb-4">
-			<span class="text-sm text-base-content/70 block mb-0.5">Path</span>
-			<p class="text-sm text-base-content font-mono bg-base-200 px-3 py-2 rounded-lg break-all">{selectedApp.path}</p>
+			<span class="text-base text-base-content/80 block mb-0.5">Path</span>
+			<p class="text-base text-base-content font-mono bg-base-200 px-3 py-2 rounded-lg break-all">{selectedApp.path}</p>
 		</div>
 
 		<!-- Error -->
 		{#if appErrors[selectedApp.appId]}
 			<div class="mb-4">
-				<span class="text-sm text-base-content/70 block mb-0.5">Error</span>
+				<span class="text-base text-base-content/80 block mb-0.5">Error</span>
 				<div class="bg-error/10 border border-error/20 rounded-lg px-3 py-2">
-					<p class="text-sm text-error font-mono break-all">{appErrors[selectedApp.appId]}</p>
+					<p class="text-base text-error font-mono break-all">{appErrors[selectedApp.appId]}</p>
 				</div>
 			</div>
 		{/if}
@@ -324,7 +324,7 @@
 
 		<!-- Logs -->
 		<div class="border-t border-base-300 pt-4">
-			<h4 class="text-sm font-medium text-base-content mb-2">Logs</h4>
+			<h4 class="text-base font-medium text-base-content mb-2">Logs</h4>
 			<div class="h-72 rounded-lg overflow-hidden border border-base-300">
 				<AppLogs appId={selectedApp.appId} />
 			</div>

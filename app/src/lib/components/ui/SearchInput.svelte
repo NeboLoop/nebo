@@ -52,7 +52,7 @@
 		{#if loading}
 			<span class="loading loading-spinner loading-sm"></span>
 		{:else}
-			<svg class="h-4 w-4 text-base-content/70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<svg class="h-4 w-4 text-base-content/90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 			</svg>
 		{/if}

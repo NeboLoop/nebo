@@ -2,6 +2,7 @@ pub mod api;
 pub mod api_types;
 pub mod compress;
 pub mod dedup;
+pub mod devlog;
 pub mod frame;
 mod loopback;
 mod manager;

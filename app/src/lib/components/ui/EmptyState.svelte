@@ -40,11 +40,11 @@
 
 <div class="p-12 text-center">
 	<div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-base-300">
-		<Icon class="h-8 w-8 text-base-content/70" />
+		<Icon class="h-8 w-8 text-base-content/60" />
 	</div>
-	<p class="text-sm font-medium">{title}</p>
+	<p class="text-base font-medium">{title}</p>
 	{#if displayMessage}
-		<p class="mt-1 text-xs text-base-content/70">{displayMessage}</p>
+		<p class="mt-1 text-sm text-base-content/90">{displayMessage}</p>
 	{/if}
 	{#if children}
 		<div class="mt-4">

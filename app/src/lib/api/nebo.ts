@@ -87,6 +87,20 @@ export function getLoops() {
 }
 
 /**
+ * @description "List all installed roles (active + inactive)"
+ */
+export function listRoles() {
+	return webapi.get<components.ListRolesResponse>(`/api/v1/roles`)
+}
+
+/**
+ * @description "List available event sources from active workflow emits"
+ */
+export function listEventSources() {
+	return webapi.get<components.ListEventSourcesResponse>('/api/v1/roles/event-sources')
+}
+
+/**
  * @description "Get active roles — roles currently running as separate bots"
  */
 export function getActiveRoles() {
@@ -112,6 +126,76 @@ export function deactivateRole(roleId: string) {
  */
 export function chatWithRole(roleId: string, prompt: string) {
 	return webapi.post<components.ChatWithRoleResponse>(`/api/v1/roles/${roleId}/chat`, { prompt })
+}
+
+/**
+ * @description "Create a blank role instance and auto-activate it"
+ */
+export function createBlankRole() {
+	return webapi.post<{ role: { id: string; name: string }; activated: boolean }>(`/api/v1/roles`, { blank: true })
+}
+
+/**
+ * @description "Delete a role"
+ */
+export function deleteRole(roleId: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/roles/${roleId}`)
+}
+
+/**
+ * @description "Update a role's name, description, or roleMd"
+ */
+export function updateRole(roleId: string, data: { name?: string; description?: string; roleMd?: string }) {
+	return webapi.put<{ role: { id: string; name: string; description: string; roleMd: string } }>(`/api/v1/roles/${roleId}`, data)
+}
+
+/**
+ * @description "Duplicate a role"
+ */
+export function duplicateRole(roleId: string) {
+	return webapi.post<{ role: { id: string; name: string }; activated: boolean }>(`/api/v1/roles/${roleId}/duplicate`, {})
+}
+
+/**
+ * @description "Get full role details"
+ */
+export function getRole(roleId: string) {
+	return webapi.get<components.RoleDetailResponse>(`/api/v1/roles/${roleId}`)
+}
+
+/**
+ * @description "Get workflows for a role"
+ */
+export function getRoleWorkflows(roleId: string) {
+	return webapi.get<components.GetRoleWorkflowsResponse>(`/api/v1/roles/${roleId}/workflows`)
+}
+
+/**
+ * @description "Create a new workflow binding for a role"
+ */
+export function createRoleWorkflow(roleId: string, data: components.CreateRoleWorkflowRequest) {
+	return webapi.post<components.RoleWorkflowMutationResponse>(`/api/v1/roles/${roleId}/workflows`, data)
+}
+
+/**
+ * @description "Update an existing workflow binding for a role"
+ */
+export function updateRoleWorkflow(roleId: string, bindingName: string, data: components.UpdateRoleWorkflowRequest) {
+	return webapi.put<components.RoleWorkflowMutationResponse>(`/api/v1/roles/${roleId}/workflows/${bindingName}`, data)
+}
+
+/**
+ * @description "Toggle a workflow binding on/off"
+ */
+export function toggleRoleWorkflow(roleId: string, bindingName: string) {
+	return webapi.post<components.ToggleRoleWorkflowResponse>(`/api/v1/roles/${roleId}/workflows/${bindingName}/toggle`, {})
+}
+
+/**
+ * @description "Delete a workflow binding"
+ */
+export function deleteRoleWorkflow(roleId: string, bindingName: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/roles/${roleId}/workflows/${bindingName}`)
 }
 
 /**
@@ -497,6 +581,13 @@ export function serveFile() {
  */
 export function browseFiles() {
 	return webapi.post<components.BrowseFilesResponse>(`/api/v1/files/browse`)
+}
+
+/**
+ * @description "Pick files via native dialog"
+ */
+export function pickFiles() {
+	return webapi.post<{ paths: string[] }>(`/api/v1/files/pick`)
 }
 
 /**

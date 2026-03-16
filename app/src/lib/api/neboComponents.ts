@@ -470,10 +470,106 @@ export interface GetLoopsResponse {
 export interface ActiveRoleEntry {
 	roleId: string
 	name: string
+	description?: string
 	channelId?: string
 	hasConfig: boolean
 	workflowCount: number
 	skillCount: number
+}
+
+// Role detail — full role from GET /roles/{id}
+export interface RoleDetailResponse {
+	role: {
+		id: string
+		kind?: string
+		name: string
+		description: string
+		roleMd: string
+		frontmatter: string
+		pricingModel?: string
+		pricingCost?: number
+		isEnabled: number
+		installedAt: number
+		updatedAt: number
+		nappPath?: string
+	}
+}
+
+// Role workflow entry — from GET /roles/{id}/workflows
+export interface RoleWorkflowEntry {
+	id: number
+	roleId: string
+	bindingName: string
+	workflowRef: string
+	workflowId?: string
+	triggerType: string
+	triggerConfig: string
+	description?: string
+	inputs?: string
+	isActive: boolean
+	emit?: string
+	activities?: Array<Record<string, unknown>>
+}
+
+export interface GetRoleWorkflowsResponse {
+	workflows: Array<RoleWorkflowEntry>
+	count: number
+}
+
+export interface CreateRoleWorkflowRequest {
+	bindingName: string
+	triggerType: string
+	triggerConfig: Record<string, unknown>
+	description?: string
+	inputs?: Record<string, unknown>
+	activities?: Array<Record<string, unknown>>
+	budget?: Record<string, unknown>
+	emit?: string
+}
+
+export interface UpdateRoleWorkflowRequest {
+	triggerType?: string
+	triggerConfig?: Record<string, unknown>
+	description?: string
+	inputs?: Record<string, unknown>
+	activities?: Array<Record<string, unknown>>
+	budget?: Record<string, unknown>
+	emit?: string | null
+}
+
+export interface RoleWorkflowMutationResponse {
+	workflow: RoleWorkflowEntry
+}
+
+export interface ToggleRoleWorkflowResponse {
+	bindingName: string
+	isActive: boolean
+}
+
+export interface EventSourceOption {
+	value: string
+	label: string
+	roleName: string
+	bindingName: string
+	description?: string
+}
+
+export interface ListEventSourcesResponse {
+	sources: Array<EventSourceOption>
+}
+
+export interface InstalledRole {
+	id: string
+	name: string
+	description: string
+	source: string
+	is_enabled: boolean
+}
+
+export interface ListRolesResponse {
+	roles: Array<InstalledRole>
+	filesystemRoles: Array<{ name: string; description: string; source: string; version: string; isEnabled: boolean }>
+	total: number
 }
 
 export interface GetActiveRolesResponse {
@@ -1244,6 +1340,8 @@ export interface SessionMessage {
 	role: string
 	content?: string
 	createdAt: string
+	toolCalls?: string
+	toolResults?: string
 }
 
 export interface SetupStatusResponse {

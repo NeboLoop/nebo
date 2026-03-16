@@ -88,7 +88,7 @@
 	<div tabindex="0" class="dropdown-content z-50 w-80 bg-base-100 rounded-lg shadow-lg border border-base-300">
 		<!-- Header -->
 		<div class="flex items-center justify-between px-4 py-3 border-b border-base-300">
-			<div class="flex items-center gap-2 text-sm font-medium">
+			<div class="flex items-center gap-2 text-base font-medium">
 				<Calendar size={16} />
 				Date Range
 			</div>
@@ -127,7 +127,7 @@
 			<div class="grid grid-cols-2 gap-3">
 				<div>
 					<label for="from-date" class="label pb-1">
-						<span class="label-text text-xs">From</span>
+						<span class="label-text text-sm">From</span>
 					</label>
 					<input
 						type="date"
@@ -139,7 +139,7 @@
 				</div>
 				<div>
 					<label for="to-date" class="label pb-1">
-						<span class="label-text text-xs">To</span>
+						<span class="label-text text-sm">To</span>
 					</label>
 					<input
 						type="date"

@@ -2,15 +2,14 @@
 USE THIS when: user mentions "every", "remind me", "daily", "weekly", "in X minutes", or any time-based trigger.
 
 For anything recurring or time-based. Prefer task_type: "agent" — this means YOU execute the task when it fires, with full access to all your tools and memory.
-Use "instructions" to tell your future self HOW to accomplish the task. The "message" is the what, "instructions" is the how.
 
-One-time reminders — use "at" (we compute the schedule automatically):
-- event(action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", message: "Remind user to call Kristi")
-- event(action: create, name: "send-sms", at: "in 5 minutes", task_type: "agent", message: "Send text to Kristi", instructions: "Send via the user's preferred messaging channel.")
+One-time reminders — use "at" (relative time, computed automatically):
+- event(action: create, name: "call-kristi", at: "in 10 minutes", task_type: "agent", prompt: "Remind user to call Kristi")
+- event(action: create, name: "say-hi", at: "in 1 minute", task_type: "agent", prompt: "Say hi to the user via TTS using os(resource: tts, action: speak)")
 
-Recurring reminders — use "schedule" (cron expression):
-- event(action: create, name: "morning-brief", schedule: "0 0 8 * * 1-5", task_type: "agent", message: "Check today's calendar and send a summary")
-- event(action: create, name: "weekly-report", schedule: "0 0 17 * * 5", task_type: "agent", message: "Compile this week's completed tasks")
+Recurring tasks — use "cron" (cron expression: second minute hour day month weekday):
+- event(action: create, name: "morning-brief", cron: "0 0 8 * * 1-5", task_type: "agent", prompt: "Check today's calendar and send a summary")
+- event(action: create, name: "weekly-report", cron: "0 0 17 * * 5", task_type: "agent", prompt: "Compile this week's completed tasks")
 
 Management:
 - event(action: list) — List all reminders
@@ -19,5 +18,7 @@ Management:
 - event(action: run, name: "...") — Trigger immediately
 - event(action: history, name: "...") — View execution history
 
-Schedule format (recurring only): "second minute hour day-of-month month day-of-week"
-Examples: "0 0 9 * * 1-5" (9am weekdays), "0 30 8 * * *" (8:30am daily), "0 0 */2 * * *" (every 2 hours)
+Common cron patterns:
+- "0 0 9 * * 1-5" — 9:00 AM weekdays
+- "0 30 8 * * *" — 8:30 AM daily
+- "0 0 */2 * * *" — every 2 hours

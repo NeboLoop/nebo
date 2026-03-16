@@ -134,5 +134,5 @@
 </div>
 
 {#if googleEnabled || githubEnabled}
-	<div class="divider text-xs text-base-content/70 my-4">or continue with email</div>
+	<div class="divider text-sm text-base-content/60 my-4">or continue with email</div>
 {/if}

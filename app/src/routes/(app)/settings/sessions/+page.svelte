@@ -151,21 +151,10 @@
 		const name = session.name || session.id;
 
 		if (name.startsWith('role:')) {
-			// role:<roleId>:<channel> → resolve name via active roles
+			// role:<roleId>:<channel> → navigate to that role's activity tab
 			const parts = name.split(':');
 			const roleId = parts[1];
-			try {
-				const data = await api.getActiveRoles();
-				const role = (data.roles || []).find((r) => r.roleId === roleId);
-				if (role) {
-					goto(`/agent/role/${encodeURIComponent(role.name)}`);
-					return;
-				}
-			} catch (err) {
-				console.error('Failed to resolve role:', err);
-			}
-			// Fallback: role not active, show read-only history
-			goto(`/agent/history?session=${session.id}`);
+			goto(`/agent/role/${roleId}/activity?session=${session.id}`);
 			return;
 		}
 
@@ -175,8 +164,8 @@
 			return;
 		}
 
-		// heartbeat, workflow, companion chat → read-only history
-		goto(`/agent/history?session=${session.id}`);
+		// heartbeat, workflow, companion chat → assistant's activity tab
+		goto(`/agent/assistant/activity?session=${session.id}`);
 	}
 
 	// --- Calendar math ---
@@ -326,7 +315,7 @@
 			<div class="relative">
 				<button
 					type="button"
-					class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5"
+					class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5"
 					onclick={() => showCleanupMenu = !showCleanupMenu}
 				>
 					<Trash2 class="w-3.5 h-3.5" />
@@ -337,13 +326,13 @@
 					<div class="absolute right-0 top-full mt-1 w-52 rounded-xl bg-base-100 border border-base-content/10 shadow-lg z-10 py-1"
 						onmouseleave={() => showCleanupMenu = false}
 					>
-						<button type="button" class="w-full px-3 py-2 text-left text-sm text-base-content/70 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(30)}>
+						<button type="button" class="w-full px-3 py-2 text-left text-base text-base-content/80 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(30)}>
 							Older than 30 days
 						</button>
-						<button type="button" class="w-full px-3 py-2 text-left text-sm text-base-content/70 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(90)}>
+						<button type="button" class="w-full px-3 py-2 text-left text-base text-base-content/80 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(90)}>
 							Older than 90 days
 						</button>
-						<button type="button" class="w-full px-3 py-2 text-left text-sm text-base-content/70 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(180)}>
+						<button type="button" class="w-full px-3 py-2 text-left text-base text-base-content/80 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(180)}>
 							Older than 6 months
 						</button>
 					</div>
@@ -351,14 +340,14 @@
 			</div>
 			<button
 				type="button"
-				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-[13px] font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5"
+				class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5"
 				onclick={loadSessions}
 			>
 				<RefreshCw class="w-3.5 h-3.5" />
 			</button>
 		</div>
 	</div>
-	<p class="text-sm text-base-content/70">
+	<p class="text-base text-base-content/80">
 		{totalSessions.toLocaleString()} sessions &middot; {totalMessages.toLocaleString()} messages
 	</p>
 </div>
@@ -366,7 +355,7 @@
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading sessions...</span>
+		<span class="text-base text-base-content/80">Loading sessions...</span>
 	</div>
 {:else}
 	<!-- Calendar -->
@@ -375,20 +364,20 @@
 			<!-- Month nav -->
 			<div class="flex items-center justify-between mb-3">
 				<button type="button" class="p-1.5 rounded-lg hover:bg-base-content/10 transition-colors" onclick={prevMonth}>
-					<ChevronLeft class="w-4 h-4 text-base-content/70" />
+					<ChevronLeft class="w-4 h-4 text-base-content/90" />
 				</button>
-				<button type="button" class="text-sm font-semibold text-base-content hover:text-primary transition-colors" onclick={goToToday}>
+				<button type="button" class="text-base font-semibold text-base-content hover:text-primary transition-colors" onclick={goToToday}>
 					{MONTHS[viewMonth]} {viewYear}
 				</button>
 				<button type="button" class="p-1.5 rounded-lg hover:bg-base-content/10 transition-colors" onclick={nextMonth}>
-					<ChevronRight class="w-4 h-4 text-base-content/70" />
+					<ChevronRight class="w-4 h-4 text-base-content/90" />
 				</button>
 			</div>
 
 			<!-- Weekday headers -->
 			<div class="grid grid-cols-7 mb-1">
 				{#each WEEKDAYS as day}
-					<div class="text-center text-[11px] font-medium text-base-content/40 py-1">{day}</div>
+					<div class="text-center text-sm font-medium text-base-content/60 py-1">{day}</div>
 				{/each}
 			</div>
 
@@ -401,14 +390,14 @@
 					<button
 						type="button"
 						class="relative flex flex-col items-center justify-center py-1.5 rounded-lg transition-colors
-							{!current ? 'text-base-content/20' : ''}
+							{!current ? 'text-base-content/40' : ''}
 							{isSelected ? 'bg-primary/15 text-primary ring-1 ring-primary/30' : ''}
 							{isToday && !isSelected ? 'font-bold text-primary' : ''}
-							{current && !isSelected && !isToday ? 'text-base-content/70 hover:bg-base-content/5' : ''}
+							{current && !isSelected && !isToday ? 'text-base-content/90 hover:bg-base-content/5' : ''}
 							{count > 0 && current && !isSelected ? 'text-base-content' : ''}"
 						onclick={() => selectDay(dateKey)}
 					>
-						<span class="text-[13px] leading-none">{day}</span>
+						<span class="text-sm leading-none">{day}</span>
 						{#if count > 0}
 							<div class="flex gap-0.5 mt-1">
 								{#if count <= 3}
@@ -418,7 +407,7 @@
 								{:else}
 									<div class="w-1 h-1 rounded-full {isSelected ? 'bg-primary' : 'bg-base-content/40'}"></div>
 									<div class="w-1 h-1 rounded-full {isSelected ? 'bg-primary' : 'bg-base-content/40'}"></div>
-									<span class="text-[9px] leading-none {isSelected ? 'text-primary' : 'text-base-content/40'}">{count}</span>
+									<span class="text-[9px] leading-none {isSelected ? 'text-primary' : 'text-base-content/60'}">{count}</span>
 								{/if}
 							</div>
 						{:else}
@@ -434,13 +423,13 @@
 	{#if selectedDate}
 		<section>
 			<div class="flex items-center justify-between mb-3">
-				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">
 					{formatFullDate(selectedDate)}
 				</h3>
 				{#if selectedSessions.length > 1}
 					<button
 						type="button"
-						class="text-[13px] text-base-content/50 hover:text-error transition-colors"
+						class="text-sm text-base-content/80 hover:text-error transition-colors"
 						onclick={() => confirmDeleteDay(selectedDate!)}
 					>
 						Delete day
@@ -450,7 +439,7 @@
 
 			{#if selectedSessions.length === 0}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-8 text-center">
-					<p class="text-sm text-base-content/70">No sessions on this day</p>
+					<p class="text-base text-base-content/80">No sessions on this day</p>
 				</div>
 			{:else}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10">
@@ -462,13 +451,13 @@
 							onclick={() => navigateToSession(session)}
 						>
 							<!-- Source badge -->
-							<span class="text-[11px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded {sourceColors[source.type] || 'text-base-content/50 bg-base-content/5'}">
+							<span class="text-sm font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded {sourceColors[source.type] || 'text-base-content/80 bg-base-content/5'}">
 								{source.label}
 							</span>
 							<!-- Name + meta -->
 							<div class="flex-1 min-w-0">
-								<p class="text-sm font-medium text-base-content truncate">{sessionDisplayName(session)}</p>
-								<p class="text-[13px] text-base-content/50">
+								<p class="text-base font-medium text-base-content truncate">{sessionDisplayName(session)}</p>
+								<p class="text-sm text-base-content/80">
 									{formatTime(session.updatedAt || session.createdAt)}
 									&middot; {session.messageCount} message{session.messageCount !== 1 ? 's' : ''}
 								</p>
@@ -477,7 +466,7 @@
 							<span
 								role="button"
 								tabindex="0"
-								class="p-1.5 rounded-lg text-base-content/30 hover:text-error hover:bg-error/10 transition-colors shrink-0"
+								class="p-1.5 rounded-lg text-base-content/60 hover:text-error hover:bg-error/10 transition-colors shrink-0"
 								onclick={(e) => { e.stopPropagation(); confirmDeleteSession(session); }}
 								onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); confirmDeleteSession(session); } }}
 							>
@@ -490,8 +479,8 @@
 		</section>
 	{:else}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-8 text-center">
-			<MessageSquare class="w-8 h-8 mx-auto mb-2 text-base-content/20" />
-			<p class="text-sm text-base-content/50">Select a day to view sessions</p>
+			<MessageSquare class="w-8 h-8 mx-auto mb-2 text-base-content/40" />
+			<p class="text-base text-base-content/80">Select a day to view sessions</p>
 		</div>
 	{/if}
 {/if}
@@ -508,14 +497,14 @@
 	<div class="space-y-4">
 		<div class="flex items-start gap-3">
 			<AlertTriangle class="w-5 h-5 text-error shrink-0 mt-0.5" />
-			<div class="text-sm text-base-content">
+			<div class="text-base text-base-content">
 				<p>You are about to permanently delete <strong>{deleteLabel}</strong>.</p>
 			</div>
 		</div>
 
 		<div class="rounded-xl bg-error/10 border border-error/20 p-4">
-			<p class="text-sm font-semibold text-error mb-1">This causes permanent memory loss</p>
-			<p class="text-sm text-base-content/70">
+			<p class="text-base font-semibold text-error mb-1">This causes permanent memory loss</p>
+			<p class="text-base text-base-content/80">
 				Sessions contain the full conversation context that the agent uses for long-term recall.
 				Deleting sessions means the agent will permanently lose detailed memory of those interactions.
 				This cannot be undone.
@@ -523,13 +512,13 @@
 		</div>
 
 		<div>
-			<label class="block text-sm font-medium text-base-content mb-1" for="confirm-delete-sessions">
+			<label class="block text-base font-medium text-base-content mb-1" for="confirm-delete-sessions">
 				Type <code class="bg-base-200 px-1.5 py-0.5 rounded text-error font-bold">DELETE</code> to confirm
 			</label>
 			<input
 				id="confirm-delete-sessions"
 				type="text"
-				class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+				class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 				placeholder="Type DELETE to confirm"
 				bind:value={deleteConfirmText}
 				onkeydown={(e) => { if (e.key === 'Enter' && canDelete) executeDelete(); }}
@@ -541,14 +530,14 @@
 		<div class="flex justify-end gap-2 w-full">
 			<button
 				type="button"
-				class="h-9 px-4 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+				class="h-9 px-4 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 				onclick={() => { showDeleteModal = false; deleteTarget = null; deleteConfirmText = ''; }}
 			>
 				Cancel
 			</button>
 			<button
 				type="button"
-				class="h-9 px-4 rounded-full bg-error text-white text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+				class="h-9 px-4 rounded-full bg-error text-white text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
 				onclick={executeDelete}
 				disabled={!canDelete || isDeleting}
 			>

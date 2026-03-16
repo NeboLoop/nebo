@@ -12,7 +12,7 @@
 		<div class="flex items-baseline justify-between mb-3">
 			<h2 class="font-display text-lg font-bold">{title}</h2>
 			{#if seeAllHref}
-				<a href={seeAllHref} class="text-sm text-primary font-medium">See All</a>
+				<a href={seeAllHref} class="text-base text-primary font-medium">See All</a>
 			{/if}
 		</div>
 		<MarketplaceGrid>
@@ -20,8 +20,8 @@
 				<a href={itemHref(item)} class="flex flex-col gap-3 p-4 rounded-2xl hover:bg-base-content/[0.03] transition-colors">
 					<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="xl" />
 					<div class="min-w-0">
-						<p class="text-sm font-bold truncate">{item.name}</p>
-						<p class="text-xs text-base-content/70 line-clamp-2 leading-relaxed mt-1">{item.description}</p>
+						<p class="text-base font-bold truncate">{item.name}</p>
+						<p class="text-sm text-base-content/80 line-clamp-2 leading-relaxed mt-1">{item.description}</p>
 					</div>
 					<PricePill price={item.price} installed={item.installed} />
 				</a>

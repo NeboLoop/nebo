@@ -267,13 +267,13 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Providers</h2>
-	<p class="text-sm text-base-content/70">AI model providers and API keys</p>
+	<p class="text-base text-base-content/80">AI model providers and API keys</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading providers...</span>
+		<span class="text-base text-base-content/80">Loading providers...</span>
 	</div>
 {:else}
 	<div class="space-y-6">
@@ -283,18 +283,18 @@
 
 		<!-- NeboLoop AI — Primary Provider -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">NeboLoop AI</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">NeboLoop AI</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				{#if janusStatus?.connected}
 					<!-- Provider header — same as Anthropic/DeepSeek -->
-					<p class="text-sm font-medium text-base-content">NeboLoop AI</p>
+					<p class="text-base font-medium text-base-content">NeboLoop AI</p>
 
 					<!-- Usage -->
 					{#if janusStatus.janusProvider && janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
 						<div class="space-y-3 mt-4">
 							{#if janusUsage.session.limitTokens > 0}
 								<div>
-									<div class="flex justify-between text-sm text-base-content/70 mb-1">
+									<div class="flex justify-between text-base text-base-content/80 mb-1">
 										<span>Session</span>
 										<span>{janusUsage.session.percentUsed}% used{#if janusUsage.session.resetAt}{@const reset = new Date(janusUsage.session.resetAt)}{@const now = new Date()}{@const diffMs = reset.getTime() - now.getTime()}{@const diffH = Math.floor(diffMs / 3600000)}{@const diffM = Math.floor((diffMs % 3600000) / 60000)} &middot; resets in {diffH}h {diffM}m{/if}</span>
 									</div>
@@ -308,7 +308,7 @@
 							{/if}
 							{#if janusUsage.weekly.limitTokens > 0}
 								<div>
-									<div class="flex justify-between text-sm text-base-content/70 mb-1">
+									<div class="flex justify-between text-base text-base-content/80 mb-1">
 										<span>Weekly</span>
 										<span>{janusUsage.weekly.percentUsed}% used{#if janusUsage.weekly.resetAt} &middot; resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}{/if}</span>
 									</div>
@@ -328,9 +328,9 @@
 						<div class="mt-3 space-y-1.5">
 							{#each janusModels() as model (model.id)}
 								<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5">
-									<p class="text-sm text-base-content">{janusDisplayName(model)}</p>
+									<p class="text-base text-base-content">{janusDisplayName(model)}</p>
 									<div class="flex items-center gap-3">
-										<span class="text-sm text-base-content/70 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+										<span class="text-base text-base-content/80 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
 										<Toggle
 											checked={model.isActive}
 											onchange={() => toggleModel('janus', model)}
@@ -345,10 +345,10 @@
 					<!-- Not connected -->
 					<div class="flex items-center justify-between">
 						<div>
-							<p class="text-sm font-medium text-base-content">Not connected</p>
-							<p class="text-sm text-base-content/70">Connect your NeboLoop account to use AI models</p>
+							<p class="text-base font-medium text-base-content">Not connected</p>
+							<p class="text-base text-base-content/80">Connect your NeboLoop account to use AI models</p>
 						</div>
-						<a href="/settings/account" class="text-sm font-medium text-primary hover:brightness-110 transition-all">
+						<a href="/settings/account" class="text-base font-medium text-primary hover:brightness-110 transition-all">
 							Connect
 						</a>
 					</div>
@@ -363,8 +363,8 @@
 				class="flex items-center gap-2 w-full text-left mb-3"
 				onclick={() => showMore = !showMore}
 			>
-				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider">More Providers</h3>
-				<ChevronDown class="w-4 h-4 text-base-content/70 transition-transform {showMore ? 'rotate-180' : ''}" />
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">More Providers</h3>
+				<ChevronDown class="w-4 h-4 text-base-content/90 transition-transform {showMore ? 'rotate-180' : ''}" />
 			</button>
 
 			{#if showMore}
@@ -372,13 +372,13 @@
 					<!-- CLI Providers -->
 					{#if cliProviders.length > 0}
 						<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-							<p class="text-sm font-medium text-base-content/70 mb-3">CLI Providers</p>
+							<p class="text-base font-medium text-base-content/80 mb-3">CLI Providers</p>
 							<div class="space-y-2">
 								{#each cliProviders as cli (cli.id)}
 									<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
 										<div>
-											<p class="text-sm font-medium text-base-content">{cli.displayName}</p>
-											<p class="text-sm text-base-content/70"><code class="text-sm">{cli.command}</code></p>
+											<p class="text-base font-medium text-base-content">{cli.displayName}</p>
+											<p class="text-base text-base-content/80"><code class="text-base">{cli.command}</code></p>
 										</div>
 										<Toggle checked={cli.active} onchange={() => toggleCLI(cli)} />
 									</div>
@@ -390,10 +390,10 @@
 					<!-- API Keys -->
 					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 						<div class="flex items-center justify-between mb-4">
-							<p class="text-sm font-medium text-base-content/70">API Keys</p>
+							<p class="text-base font-medium text-base-content/80">API Keys</p>
 							<button
 								type="button"
-								class="flex items-center gap-1.5 text-sm font-medium text-base-content/70 hover:text-primary transition-colors"
+								class="flex items-center gap-1.5 text-base font-medium text-base-content/80 hover:text-primary transition-colors"
 								onclick={() => openAddModal()}
 							>
 								<Plus class="w-4 h-4" /> Add provider
@@ -410,23 +410,23 @@
 											{:else if prov.configured}
 												<div class="w-2 h-2 rounded-full bg-warning"></div>
 											{:else}
-												<div class="w-2 h-2 rounded-full bg-base-content/20"></div>
+												<div class="w-2 h-2 rounded-full bg-base-content/40"></div>
 											{/if}
 											<div>
-												<p class="text-sm font-medium text-base-content">{prov.profile?.name || prov.label}</p>
+												<p class="text-base font-medium text-base-content">{prov.profile?.name || prov.label}</p>
 												{#if prov.profile?.name && prov.profile.name !== prov.label}
-													<p class="text-sm text-base-content/70">{prov.label}</p>
+													<p class="text-base text-base-content/80">{prov.label}</p>
 												{/if}
 											</div>
 										</div>
 										<div class="flex items-center gap-3">
 											{#if prov.configured && prov.profile}
 												{#if testResult?.id === prov.profile.id}
-													<span class="text-sm {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
+													<span class="text-base {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
 												{/if}
 												<button
 													type="button"
-													class="text-sm text-base-content/70 hover:text-primary transition-colors"
+													class="text-base text-base-content/80 hover:text-primary transition-colors"
 													onclick={() => testProvider(prov.profile!.id)}
 													disabled={testingId === prov.profile.id}
 												>
@@ -435,7 +435,7 @@
 												<Toggle checked={prov.profile.isActive} onchange={() => toggleProvider(prov.profile!)} />
 												<button
 													type="button"
-													class="text-sm text-base-content/70 hover:text-error transition-colors"
+													class="text-base text-base-content/80 hover:text-error transition-colors"
 													onclick={() => deleteProvider(prov.profile!.id)}
 												>
 													<Trash2 class="w-4 h-4" />
@@ -443,7 +443,7 @@
 											{:else}
 												<button
 													type="button"
-													class="text-sm text-base-content/70 hover:text-primary transition-colors"
+													class="text-base text-base-content/80 hover:text-primary transition-colors"
 													onclick={() => openAddModal(prov.type)}
 												>
 													Add key
@@ -457,9 +457,9 @@
 										<div class="mt-3 space-y-1.5">
 											{#each prov.models as model (model.id)}
 												<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5 {!prov.configured ? 'opacity-50' : ''}">
-													<p class="text-sm text-base-content">{model.displayName}</p>
+													<p class="text-base text-base-content">{model.displayName}</p>
 													<div class="flex items-center gap-3">
-														<span class="text-sm text-base-content/70 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+														<span class="text-base text-base-content/80 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
 														<Toggle
 															checked={prov.configured ? model.isActive : false}
 															disabled={!prov.configured}
@@ -496,7 +496,7 @@
 			<!-- Body -->
 			<div class="px-5 py-5 space-y-4">
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="provider-type">Provider type</label>
+					<label class="text-base font-medium text-base-content/80" for="provider-type">Provider type</label>
 					<select id="provider-type" bind:value={newProvider.provider} class="select w-full mt-1">
 						{#each providerOptions as opt}
 							<option value={opt.value}>{opt.label}</option>
@@ -504,17 +504,17 @@
 					</select>
 				</div>
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="provider-name">Name</label>
-					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder="My Anthropic Key" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors" />
+					<label class="text-base font-medium text-base-content/80" for="provider-name">Name</label>
+					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder="My Anthropic Key" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
 				</div>
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="api-key">API key</label>
-					<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={newProvider.provider === 'ollama' ? 'Not required for Ollama' : 'sk-...'} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors" />
+					<label class="text-base font-medium text-base-content/80" for="api-key">API key</label>
+					<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={newProvider.provider === 'ollama' ? 'Not required for Ollama' : 'sk-...'} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
 				</div>
 				{#if newProvider.provider === 'ollama'}
 					<div>
-						<label class="text-sm font-medium text-base-content/70" for="base-url">Base URL <span class="font-normal">optional</span></label>
-						<input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder="http://localhost:11434" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors" />
+						<label class="text-base font-medium text-base-content/80" for="base-url">Base URL <span class="font-normal">optional</span></label>
+						<input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder="http://localhost:11434" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
 					</div>
 				{/if}
 				{#if addError}
@@ -525,14 +525,14 @@
 			<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
 				<button
 					type="button"
-					class="h-10 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+					class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 					onclick={closeAddModal}
 				>
 					Cancel
 				</button>
 				<button
 					type="button"
-					class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+					class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
 					onclick={addProvider}
 					disabled={isAdding}
 				>

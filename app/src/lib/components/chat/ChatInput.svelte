@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { AudioLines, ArrowUp, Square, Plus, RotateCcw, X, Clock, FileText } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
+	import SlashCommandMenu from './SlashCommandMenu.svelte';
+	import { getSlashCommandCompletions, type SlashCommand } from './slash-commands';
 
 	interface QueuedMessage {
 		id: string;
@@ -22,6 +24,7 @@
 		onRecallQueue?: () => string | null;
 		onNewSession?: () => void;
 		onToggleDuplex?: () => void;
+		onSlashSelect?: (command: SlashCommand) => void;
 	}
 
 	let {
@@ -38,13 +41,76 @@
 		onCancelQueued,
 		onRecallQueue,
 		onNewSession,
-		onToggleDuplex
+		onToggleDuplex,
+		onSlashSelect
 	}: Props = $props();
 
 	let textareaElement: HTMLTextAreaElement | undefined = $state();
 	let fileInputElement: HTMLInputElement | undefined = $state();
+	let slashMenuRef: SlashCommandMenu | undefined = $state();
+
+	// Slash command menu state
+	let slashMenuVisible = $state(false);
+	let slashMenuQuery = $state('');
+
+	// Detect "/" prefix for slash command menu
+	$effect(() => {
+		if (value.startsWith('/')) {
+			const afterSlash = value.slice(1);
+			const spaceIndex = afterSlash.indexOf(' ');
+			if (spaceIndex === -1) {
+				// Still typing command name
+				slashMenuQuery = afterSlash;
+				slashMenuVisible = getSlashCommandCompletions(afterSlash).length > 0;
+			} else {
+				slashMenuVisible = false;
+			}
+		} else {
+			slashMenuVisible = false;
+		}
+	});
+
+	function handleSlashSelect(cmd: SlashCommand) {
+		// Replace the current "/" input with the full command
+		if (cmd.args) {
+			value = `/${cmd.name} `;
+		} else {
+			value = `/${cmd.name}`;
+			// Auto-execute commands with no args
+			onSlashSelect?.(cmd);
+		}
+		slashMenuVisible = false;
+		textareaElement?.focus();
+	}
 
 	function handleKeydown(e: KeyboardEvent) {
+		// Slash menu keyboard navigation
+		if (slashMenuVisible && slashMenuRef) {
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				slashMenuRef.navigate('down');
+				return;
+			}
+			if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				slashMenuRef.navigate('up');
+				return;
+			}
+			if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+				e.preventDefault();
+				const selected = slashMenuRef.selectCurrent();
+				if (selected) {
+					handleSlashSelect(selected);
+				}
+				return;
+			}
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				slashMenuVisible = false;
+				return;
+			}
+		}
+
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
 			if (value.trim()) {
@@ -83,17 +149,17 @@
 
 	/**
 	 * Extract file paths from dropped files or file input.
-	 * Priority: File.path (Wails) > file:// URIs (Finder drag) > text/plain > filename fallback.
+	 * Priority: File.path (Electron) > file:// URIs > text/plain > filename fallback.
+	 * Note: In Tauri, drag-and-drop is handled via native DragDropEvent custom events
+	 * dispatched directly to Chat.svelte — this function is only for browser mode.
 	 */
 	function extractFilePaths(dataTransfer: DataTransfer | null, files?: FileList | null): string[] {
 		const paths: string[] = [];
 
-		// Primary method: Use File objects if available (works in Wails/Electron)
-		// Do this first since File.path is the most reliable in Wails
+		// Electron/Wails method: File objects have a `path` property with the full path
 		const fileList = files || dataTransfer?.files;
 		if (fileList && fileList.length > 0) {
 			for (const file of fileList) {
-				// In Wails/Electron, File objects have a `path` property with the full path
 				const filePath = (file as File & { path?: string }).path;
 				if (filePath) {
 					paths.push(filePath);
@@ -147,7 +213,7 @@
 
 	async function handleBrowseFiles() {
 		try {
-			const res = await api.browseFiles();
+			const res = await api.pickFiles();
 			if (res.paths && res.paths.length > 0) {
 				insertFilePaths(res.paths);
 				return;
@@ -195,6 +261,8 @@
 		const paths = extractFilePaths(e.dataTransfer);
 		insertFilePaths(paths);
 	}
+
+	export { insertFilePaths };
 </script>
 
 <div class="sticky bottom-0 flex-shrink-0 mt-auto px-4 pb-2 pt-2 z-10">
@@ -203,7 +271,7 @@
 		{#if queuedMessages.length > 0}
 			<div class="flex flex-wrap gap-2 mb-2 px-1">
 				{#each queuedMessages as queued (queued.id)}
-					<div class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-primary/10 border border-primary/20 text-sm text-base-content/70 animate-in fade-in slide-in-from-bottom-1">
+					<div class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-primary/10 border border-primary/20 text-base text-base-content/80 animate-in fade-in slide-in-from-bottom-1">
 						<Clock class="w-3 h-3 text-primary/50 flex-shrink-0" />
 						<span class="truncate max-w-[200px]">{queued.content}</span>
 						{#if onCancelQueued}
@@ -231,16 +299,26 @@
 		/>
 
 		<!-- Input container - modern rounded design -->
+		<div class="relative">
+			<!-- Slash command menu (floats above input) -->
+			<SlashCommandMenu
+				bind:this={slashMenuRef}
+				query={slashMenuQuery}
+				visible={slashMenuVisible}
+				onselect={handleSlashSelect}
+				onclose={() => { slashMenuVisible = false; }}
+			/>
+
 		<div
 			class="bg-base-200 rounded-2xl border transition-colors {isDraggingOver
 				? 'border-primary border-dashed bg-primary/5'
-				: 'border-base-300 focus-within:border-base-content/20'}"
+				: 'border-base-300 focus-within:border-base-content/40'}"
 		>
 			<!-- Drop zone overlay -->
 			{#if isDraggingOver}
 				<div class="flex items-center justify-center gap-2 px-4 pt-3 pb-2 text-primary">
 					<FileText class="w-4 h-4" />
-					<span class="text-sm font-medium">Drop files to add their path</span>
+					<span class="text-base font-medium">Drop files to add their path</span>
 				</div>
 			{:else if duplexActive}
 				<!-- Audio waveform visualizer (replaces textarea during voice session) -->
@@ -253,7 +331,7 @@
 							></div>
 						{/each}
 					</div>
-					<span class="text-xs text-base-content/70 ml-2">Listening...</span>
+					<span class="text-sm text-base-content/60 ml-2">Listening...</span>
 				</div>
 			{:else}
 				<!-- Textarea row -->
@@ -268,7 +346,7 @@
 							: placeholder}
 						disabled={disabled || duplexActive}
 						rows="1"
-						class="w-full bg-transparent border-none outline-none resize-none text-sm leading-relaxed placeholder:text-base-content/70 min-h-[24px] max-h-[200px]"
+						class="w-full bg-transparent border-none outline-none resize-none text-base leading-relaxed placeholder:text-base-content/80 min-h-[24px] max-h-[200px]"
 					></textarea>
 				</div>
 			{/if}
@@ -280,7 +358,7 @@
 					<button
 						type="button"
 						onclick={handleBrowseFiles}
-						class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/70 hover:text-base-content"
+						class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/90 hover:text-base-content"
 						title="Attach file (inserts path)"
 					>
 						<Plus class="w-4 h-4" />
@@ -291,7 +369,7 @@
 						<button
 							type="button"
 							onclick={onNewSession}
-							class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/70 hover:text-base-content"
+							class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/90 hover:text-base-content"
 							{disabled}
 							title="New session"
 						>
@@ -308,7 +386,7 @@
 							onclick={() => onToggleDuplex?.()}
 							class="btn btn-ghost btn-sm btn-square rounded-lg {duplexActive
 								? 'text-success animate-pulse'
-								: 'text-base-content/70 hover:text-base-content'}"
+								: 'text-base-content/90 hover:text-base-content'}"
 							title={duplexActive ? 'End voice session' : 'Voice conversation'}
 						>
 							<AudioLines class="w-4 h-4" />
@@ -332,7 +410,7 @@
 							disabled={!canSend}
 							class="btn btn-sm btn-circle transition-all {canSend
 								? 'btn-primary'
-								: 'btn-ghost bg-base-300 text-base-content/70'}"
+								: 'btn-ghost bg-base-300 text-base-content/90'}"
 							title="Send message"
 						>
 							<ArrowUp class="w-4 h-4" />
@@ -341,9 +419,10 @@
 				</div>
 			</div>
 		</div>
+		</div>
 
 		<!-- Disclaimer -->
-		<p class="text-center text-xs text-base-content/70 mt-2">
+		<p class="text-center text-sm text-base-content/60 mt-2">
 			Nebo can make mistakes. Verify important information.
 		</p>
 	</div>

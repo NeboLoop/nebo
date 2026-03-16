@@ -133,10 +133,10 @@
 <div class="flex items-center justify-between mb-6">
 	<div>
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Account</h2>
-		<p class="text-sm text-base-content/70">NeboLoop AI, marketplace, and cloud channels</p>
+		<p class="text-base text-base-content/80">NeboLoop AI, marketplace, and cloud channels</p>
 	</div>
 	<button
-		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1.5"
+		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-base font-medium text-base-content/80 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5"
 		onclick={() => webapi.get('/api/v1/neboloop/open')}
 	>
 		NeboLoop.com
@@ -147,7 +147,7 @@
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading account...</span>
+		<span class="text-base text-base-content/80">Loading account...</span>
 	</div>
 {:else if accountConnected}
 	<!-- Connected State -->
@@ -161,14 +161,14 @@
 					</div>
 					<div>
 						{#if ownerName || ownerEmail}
-							{#if ownerName}<p class="font-medium text-sm">{ownerName}</p>{/if}
-							{#if ownerEmail}<p class="text-sm text-base-content/70">{ownerEmail}</p>{/if}
+							{#if ownerName}<p class="font-medium text-base">{ownerName}</p>{/if}
+							{#if ownerEmail}<p class="text-base text-base-content/80">{ownerEmail}</p>{/if}
 						{:else}
-							<p class="font-medium text-sm">NeboLoop Account</p>
+							<p class="font-medium text-base">NeboLoop Account</p>
 						{/if}
 					</div>
 				</div>
-				<span class="text-sm font-semibold text-success bg-success/10 px-2.5 py-1 rounded-full">Connected</span>
+				<span class="text-base font-semibold text-success bg-success/10 px-2.5 py-1 rounded-full">Connected</span>
 			</div>
 		</div>
 
@@ -179,17 +179,17 @@
 					<Bot class="w-5 h-5 {botConnected ? 'text-success' : 'text-warning'}" />
 				</div>
 				<div class="flex-1">
-					<p class="font-medium text-sm">Bot Connection</p>
+					<p class="font-medium text-base">Bot Connection</p>
 					{#if botConnected}
-						<p class="text-sm text-base-content/70">{botName || 'NeboLoop'}</p>
+						<p class="text-base text-base-content/80">{botName || 'NeboLoop'}</p>
 						{#if botId}
-							<p class="text-sm text-base-content/70 font-mono">{botId}</p>
+							<p class="text-base text-base-content/80 font-mono">{botId}</p>
 						{/if}
 					{:else}
-						<p class="text-sm text-warning">Waiting for NeboLoop connection</p>
+						<p class="text-base text-warning">Waiting for NeboLoop connection</p>
 					{/if}
 				</div>
-				<span class="text-sm font-semibold px-2.5 py-1 rounded-full {botConnected ? 'text-success bg-success/10' : 'text-warning bg-warning/10'}">
+				<span class="text-base font-semibold px-2.5 py-1 rounded-full {botConnected ? 'text-success bg-success/10' : 'text-warning bg-warning/10'}">
 					{botConnected ? 'Online' : 'Offline'}
 				</span>
 			</div>
@@ -201,10 +201,10 @@
 				<div class="flex items-center gap-3 mb-4">
 					<Zap class="w-5 h-5 text-primary" />
 					<div class="flex-1">
-						<p class="font-medium text-sm">AI Usage</p>
+						<p class="font-medium text-base">AI Usage</p>
 					</div>
 					<button
-						class="h-7 px-2.5 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/70 hover:border-base-content/20 hover:text-base-content transition-colors flex items-center gap-1"
+						class="h-7 px-2.5 rounded-lg bg-base-content/5 border border-base-content/10 text-base font-medium text-base-content/80 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1"
 						onclick={() => webapi.get('/api/v1/neboloop/open', { path: '/app/settings/billing' })}
 					>
 						Manage plan
@@ -214,7 +214,7 @@
 				<div class="flex flex-col gap-3">
 					{#if janusUsage.session.limitTokens > 0}
 						<div>
-							<div class="flex justify-between text-sm text-base-content/70 mb-1.5">
+							<div class="flex justify-between text-base text-base-content/80 mb-1.5">
 								<span>Session: {janusUsage.session.percentUsed}% used</span>
 								{#if janusUsage.session.resetAt}
 									{@const reset = new Date(janusUsage.session.resetAt)}
@@ -235,7 +235,7 @@
 					{/if}
 					{#if janusUsage.weekly.limitTokens > 0}
 						<div>
-							<div class="flex justify-between text-sm text-base-content/70 mb-1.5">
+							<div class="flex justify-between text-base text-base-content/80 mb-1.5">
 								<span>Weekly: {janusUsage.weekly.percentUsed}% used</span>
 								{#if janusUsage.weekly.resetAt}
 									<span>Resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
@@ -257,13 +257,13 @@
 		<div class="pt-2">
 			{#if showDisconnectConfirm}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-					<p class="text-sm text-base-content/70 mb-4">
+					<p class="text-base text-base-content/80 mb-4">
 						This will disconnect your NeboLoop account and stop all cloud services (AI, marketplace, channels).
 					</p>
 					<div class="flex gap-2">
 						<button
 							type="button"
-							class="h-9 px-4 rounded-full bg-error text-white text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30 flex items-center"
+							class="h-9 px-4 rounded-full bg-error text-white text-base font-bold hover:brightness-110 transition-all disabled:opacity-30 flex items-center"
 							onclick={handleDisconnect}
 							disabled={disconnecting}
 						>
@@ -274,7 +274,7 @@
 						</button>
 						<button
 							type="button"
-							class="h-9 px-4 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+							class="h-9 px-4 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 							onclick={() => showDisconnectConfirm = false}
 						>
 							Cancel
@@ -284,7 +284,7 @@
 			{:else}
 				<button
 					type="button"
-					class="flex items-center gap-1.5 text-sm text-base-content/70 hover:text-error transition-colors"
+					class="flex items-center gap-1.5 text-base text-base-content/80 hover:text-error transition-colors"
 					onclick={() => showDisconnectConfirm = true}
 				>
 					<LogOut class="w-4 h-4" />
@@ -297,21 +297,21 @@
 	<!-- Not Connected State -->
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-8">
 		<div class="flex flex-col items-center gap-4">
-			<XCircle class="w-8 h-8 text-base-content/70" />
-			<p class="text-sm text-base-content/70 text-center max-w-sm">
+			<XCircle class="w-8 h-8 text-base-content/90" />
+			<p class="text-base text-base-content/80 text-center max-w-sm">
 				Connect to NeboLoop for AI, the marketplace, and cloud channels.
 				You can use Google, Apple, or email.
 			</p>
 
 			{#if formError}
-				<div class="w-full rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-sm text-error">
+				<div class="w-full rounded-xl bg-error/10 border border-error/20 px-4 py-3 text-base text-error">
 					{formError}
 				</div>
 			{/if}
 
 			<button
 				type="button"
-				class="h-11 px-8 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30 flex items-center"
+				class="h-11 px-8 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30 flex items-center"
 				onclick={startOAuth}
 				disabled={formLoading}
 			>
@@ -323,10 +323,10 @@
 				{/if}
 			</button>
 			{#if formLoading}
-				<p class="text-sm text-base-content/70">Complete sign-in in your browser</p>
+				<p class="text-base text-base-content/80">Complete sign-in in your browser</p>
 				<button
 					type="button"
-					class="text-sm text-base-content/70 hover:text-base-content underline"
+					class="text-base text-base-content/80 hover:text-base-content underline"
 					onclick={() => { cleanup(); formLoading = false; }}
 				>
 					Cancel

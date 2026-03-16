@@ -234,18 +234,18 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Billing</h2>
-	<p class="text-sm text-base-content/70">Manage your subscription and payment method</p>
+	<p class="text-base text-base-content/80">Manage your subscription and payment method</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading billing...</span>
+		<span class="text-base text-base-content/80">Loading billing...</span>
 	</div>
 {:else if !status?.connected}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-		<p class="text-sm text-base-content/70">Connect your NeboLoop account to manage billing.</p>
-		<a href="/settings/account" class="inline-block mt-3 text-sm font-medium text-primary hover:brightness-110 transition-all">
+		<p class="text-base text-base-content/80">Connect your NeboLoop account to manage billing.</p>
+		<a href="/settings/account" class="inline-block mt-3 text-base font-medium text-primary hover:brightness-110 transition-all">
 			Go to Account
 		</a>
 	</div>
@@ -256,9 +256,9 @@
 			<div class="rounded-2xl bg-error/10 border border-error/20 p-4 flex items-start gap-3">
 				<AlertTriangle class="w-5 h-5 text-error shrink-0 mt-0.5" />
 				<div class="flex-1">
-					<p class="text-sm text-error">{actionError}</p>
+					<p class="text-base text-error">{actionError}</p>
 				</div>
-				<button onclick={() => (actionError = '')} class="text-sm text-error/70 hover:text-error">Dismiss</button>
+				<button onclick={() => (actionError = '')} class="text-base text-error/70 hover:text-error">Dismiss</button>
 			</div>
 		{/if}
 
@@ -268,7 +268,7 @@
 				<div class="flex items-center justify-between">
 					<div>
 						<p class="text-lg font-bold text-base-content">{planName} plan</p>
-						<p class="text-sm text-base-content/70 mt-0.5">
+						<p class="text-base text-base-content/80 mt-0.5">
 							{#if currentPriceInfo}
 								{currentPriceInfo.productDescription || currentPriceInfo.productDisplayName}
 							{:else}
@@ -277,7 +277,7 @@
 						</p>
 					</div>
 					<button
-						class="h-9 px-4 rounded-xl border border-base-content/10 text-sm font-medium text-base-content hover:bg-base-content/5 transition-colors"
+						class="h-9 px-4 rounded-xl border border-base-content/10 text-base font-medium text-base-content hover:bg-base-content/5 transition-colors"
 						onclick={() => (showPlans = !showPlans)}
 					>
 						{showPlans ? 'Hide plans' : 'Adjust plan'}
@@ -289,7 +289,7 @@
 					{#if currentPriceInfo?.productFeatures?.length}
 						<ul class="mt-4 space-y-1.5">
 							{#each currentPriceInfo.productFeatures as feature}
-								<li class="flex items-start gap-2 text-sm text-base-content/70">
+								<li class="flex items-start gap-2 text-base text-base-content/80">
 									<Check class="w-4 h-4 text-primary shrink-0 mt-0.5" />
 									{feature}
 								</li>
@@ -298,7 +298,7 @@
 					{:else}
 						<ul class="mt-4 space-y-1.5">
 							{#each currentFallback.features as feature}
-								<li class="flex items-start gap-2 text-sm text-base-content/70">
+								<li class="flex items-start gap-2 text-base text-base-content/80">
 									<Check class="w-4 h-4 text-primary shrink-0 mt-0.5" />
 									{feature}
 								</li>
@@ -316,13 +316,13 @@
 					<!-- Dynamic plans from API -->
 					<div class="grid sm:grid-cols-2 gap-3">
 						{#each otherPrices as price}
-							<div class="rounded-2xl border bg-base-200/50 border-base-content/10 hover:border-base-content/20 p-5 transition-all">
+							<div class="rounded-2xl border bg-base-200/50 border-base-content/10 hover:border-base-content/40 p-5 transition-all">
 								<p class="text-lg font-bold text-base-content">{price.productDisplayName || price.displayName}</p>
-								<p class="text-sm text-base-content/70 mt-0.5">{price.productDescription || ''}</p>
+								<p class="text-base text-base-content/80 mt-0.5">{price.productDescription || ''}</p>
 								<div class="mt-3 mb-4">
 									{#if price.amountCents > 0}
 										<span class="text-2xl font-bold text-base-content">{formatPrice(price.amountCents, price.currency)}</span>
-										<span class="text-sm text-base-content/70">/{price.interval}</span>
+										<span class="text-base text-base-content/80">/{price.interval}</span>
 									{:else}
 										<span class="text-2xl font-bold text-base-content">Free</span>
 									{/if}
@@ -330,7 +330,7 @@
 								<button
 									disabled={actionLoading !== ''}
 									onclick={() => handleCheckout(price.stripePriceId)}
-									class="w-full h-9 flex items-center justify-center rounded-xl text-sm font-bold transition-all
+									class="w-full h-9 flex items-center justify-center rounded-xl text-base font-bold transition-all
 										{isUpgrade(price)
 											? 'bg-primary text-primary-content hover:brightness-110'
 											: 'border border-base-content/10 text-base-content hover:bg-base-content/5'}"
@@ -344,7 +344,7 @@
 								{#if price.productFeatures && price.productFeatures.length > 0}
 									<ul class="mt-4 space-y-2">
 										{#each price.productFeatures as feature}
-											<li class="flex items-start gap-2 text-sm text-base-content/70">
+											<li class="flex items-start gap-2 text-base text-base-content/80">
 												<Check class="w-4 h-4 text-primary shrink-0 mt-0.5" />
 												{feature}
 											</li>
@@ -358,19 +358,19 @@
 					<!-- Fallback plans -->
 					<div class="grid sm:grid-cols-2 gap-3">
 						{#each otherFallbacks as plan}
-							<div class="rounded-2xl border bg-base-200/50 border-base-content/10 hover:border-base-content/20 p-5 transition-all">
+							<div class="rounded-2xl border bg-base-200/50 border-base-content/10 hover:border-base-content/40 p-5 transition-all">
 								<p class="text-lg font-bold text-base-content">{plan.name}</p>
-								<p class="text-sm text-base-content/70 mt-0.5">{plan.description}</p>
+								<p class="text-base text-base-content/80 mt-0.5">{plan.description}</p>
 								<div class="mt-3 mb-4">
 									<span class="text-2xl font-bold text-base-content">{plan.price}</span>
 									{#if plan.period}
-										<span class="text-sm text-base-content/70">{plan.period}</span>
+										<span class="text-base text-base-content/80">{plan.period}</span>
 									{/if}
 								</div>
 								<button
 									disabled={actionLoading !== ''}
 									onclick={handlePortal}
-									class="w-full h-9 flex items-center justify-center rounded-xl text-sm font-bold transition-all
+									class="w-full h-9 flex items-center justify-center rounded-xl text-base font-bold transition-all
 										{isFallbackUpgrade(plan.id)
 											? 'bg-primary text-primary-content hover:brightness-110'
 											: 'border border-base-content/10 text-base-content hover:bg-base-content/5'}"
@@ -383,7 +383,7 @@
 								</button>
 								<ul class="mt-4 space-y-2">
 									{#each plan.features as feature}
-										<li class="flex items-start gap-2 text-sm text-base-content/70">
+										<li class="flex items-start gap-2 text-base text-base-content/80">
 											<Check class="w-4 h-4 text-primary shrink-0 mt-0.5" />
 											{feature}
 										</li>
@@ -398,65 +398,65 @@
 
 		<!-- Payment Methods -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Payment</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Payment</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				{#if paymentMethods.length > 0}
 					<div class="space-y-3 mb-4">
 						{#each paymentMethods as pm}
 							<div class="flex items-center justify-between">
 								<div class="flex items-center gap-3">
-									<CreditCard class="w-5 h-5 text-base-content/50" />
+									<CreditCard class="w-5 h-5 text-base-content/80" />
 									<div>
-										<p class="text-sm font-medium text-base-content">
+										<p class="text-base font-medium text-base-content">
 											{pm.brand || pm.type} ending in {pm.lastFour || '****'}
 										</p>
 										{#if pm.expiresAt}
-											<p class="text-xs text-base-content/50">Expires {pm.expiresAt}</p>
+											<p class="text-sm text-base-content/80">Expires {pm.expiresAt}</p>
 										{/if}
 									</div>
 								</div>
 								{#if pm.isDefault}
-									<span class="text-xs text-primary font-medium">Default</span>
+									<span class="text-sm text-primary font-medium">Default</span>
 								{/if}
 							</div>
 						{/each}
 					</div>
 				{:else}
-					<p class="text-sm text-base-content/70 mb-4">No payment method on file</p>
+					<p class="text-base text-base-content/80 mb-4">No payment method on file</p>
 				{/if}
 				<button
 					disabled={actionLoading === 'portal'}
 					onclick={handlePortal}
-					class="h-9 px-4 rounded-xl border border-base-content/10 text-sm font-medium text-base-content hover:bg-base-content/5 transition-colors flex items-center gap-1.5"
+					class="h-9 px-4 rounded-xl border border-base-content/10 text-base font-medium text-base-content hover:bg-base-content/5 transition-colors flex items-center gap-1.5"
 				>
 					{#if actionLoading === 'portal'}
 						<Spinner size={14} />
 						<span>Opening...</span>
 					{:else}
 						Manage payment
-						<ExternalLink class="w-3.5 h-3.5 text-base-content/50" />
+						<ExternalLink class="w-3.5 h-3.5 text-base-content/80" />
 					{/if}
 				</button>
-				<p class="text-xs text-base-content/50 mt-2">Opens Stripe in your browser</p>
+				<p class="text-sm text-base-content/80 mt-2">Opens Stripe in your browser</p>
 			</div>
 		</section>
 
 		<!-- Invoices -->
 		{#if invoices.length > 0}
 			<section>
-				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Invoices</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Invoices</h3>
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/5">
 					{#each invoices.slice(0, 5) as inv}
 						<div class="flex items-center justify-between p-4">
 							<div class="flex items-center gap-3">
-								<Receipt class="w-4 h-4 text-base-content/50" />
+								<Receipt class="w-4 h-4 text-base-content/80" />
 								<div>
-									<p class="text-sm text-base-content">{inv.description || 'Invoice'}</p>
-									<p class="text-xs text-base-content/50">{formatDate(inv.createdAt)}</p>
+									<p class="text-base text-base-content">{inv.description || 'Invoice'}</p>
+									<p class="text-sm text-base-content/80">{formatDate(inv.createdAt)}</p>
 								</div>
 							</div>
 							<div class="flex items-center gap-3">
-								<span class="text-sm font-medium text-base-content tabular-nums">
+								<span class="text-base font-medium text-base-content tabular-nums">
 									{formatPrice(inv.amountCents, inv.currency)}
 								</span>
 								{#if inv.pdfUrl}
@@ -464,7 +464,7 @@
 										href={inv.pdfUrl}
 										target="_blank"
 										rel="noopener noreferrer"
-										class="text-sm text-primary hover:brightness-110 transition-all flex items-center gap-1"
+										class="text-base text-primary hover:brightness-110 transition-all flex items-center gap-1"
 									>
 										PDF
 										<ExternalLink class="w-3 h-3" />
@@ -480,14 +480,14 @@
 		<!-- Cancel / Delete Account -->
 		<section>
 			{#if currentPlan !== 'free' && subscription?.subscriptions?.length}
-				<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Cancellation</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Cancellation</h3>
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="flex items-center justify-between">
-						<p class="text-sm text-base-content/70">Cancel your {planName} plan</p>
+						<p class="text-base text-base-content/80">Cancel your {planName} plan</p>
 						<button
 							disabled={actionLoading !== ''}
 							onclick={() => handleCancel(subscription!.subscriptions[0].id)}
-							class="text-sm font-medium text-error hover:brightness-110 transition-colors"
+							class="text-base font-medium text-error hover:brightness-110 transition-colors"
 						>
 							{#if actionLoading === 'cancel'}
 								<Spinner size={14} />
@@ -500,10 +500,10 @@
 			{:else}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="flex items-center justify-between">
-						<p class="text-sm text-base-content/70">Want to remove your account and all data?</p>
+						<p class="text-base text-base-content/80">Want to remove your account and all data?</p>
 						<button
 							onclick={openDeleteModal}
-							class="text-sm font-medium text-error hover:brightness-110 transition-colors"
+							class="text-base font-medium text-error hover:brightness-110 transition-colors"
 						>
 							Delete account
 						</button>
@@ -521,8 +521,8 @@
 			<div class="flex gap-3">
 				<AlertTriangle class="w-5 h-5 text-error shrink-0 mt-0.5" />
 				<div>
-					<p class="text-sm font-medium text-error">This action is permanent</p>
-					<p class="text-sm text-error/80 mt-1">
+					<p class="text-base font-medium text-error">This action is permanent</p>
+					<p class="text-base text-error/80 mt-1">
 						Your account, settings, memories, and all associated data will be permanently deleted. This cannot be undone.
 					</p>
 				</div>
@@ -530,13 +530,13 @@
 		</div>
 
 		<div>
-			<label class="block text-sm font-medium text-base-content mb-1" for="confirm-delete">
+			<label class="block text-base font-medium text-base-content mb-1" for="confirm-delete">
 				Type <code class="bg-base-200 px-1.5 py-0.5 rounded text-error font-bold">DELETE</code> to confirm
 			</label>
 			<input
 				id="confirm-delete"
 				type="text"
-				class="input input-bordered w-full text-sm"
+				class="input input-bordered w-full text-base"
 				placeholder="Type DELETE to confirm"
 				bind:value={deleteConfirmText}
 				onkeydown={(e) => {
@@ -549,15 +549,15 @@
 	{#snippet footer()}
 		<button
 			onclick={() => (showDeleteModal = false)}
-			class="h-9 px-4 rounded-xl border border-base-content/10 text-sm font-medium text-base-content hover:bg-base-content/5 transition-colors"
+			class="h-9 px-4 rounded-xl border border-base-content/10 text-base font-medium text-base-content hover:bg-base-content/5 transition-colors"
 		>
 			Cancel
 		</button>
 		<button
 			disabled={!canDelete || deleteLoading}
 			onclick={handleDeleteAccount}
-			class="h-9 px-4 rounded-xl text-sm font-bold transition-all flex items-center gap-2
-				{canDelete ? 'bg-error text-error-content hover:brightness-110' : 'bg-base-content/10 text-base-content/30 cursor-not-allowed'}"
+			class="h-9 px-4 rounded-xl text-base font-bold transition-all flex items-center gap-2
+				{canDelete ? 'bg-error text-error-content hover:brightness-110' : 'bg-base-content/10 text-base-content/60 cursor-not-allowed'}"
 		>
 			{#if deleteLoading}
 				<Spinner size={14} />

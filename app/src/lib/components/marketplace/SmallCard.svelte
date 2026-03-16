@@ -11,6 +11,6 @@
 	class="flex-shrink-0 w-28 flex flex-col items-center gap-2 p-3 rounded-2xl hover:bg-base-content/[0.03] transition-colors"
 >
 	<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="lg" />
-	<p class="text-xs font-semibold text-center truncate w-full">{item.name}</p>
+	<p class="text-sm font-semibold text-center truncate w-full">{item.name}</p>
 	<PricePill price={item.price} installed={item.installed} />
 </a>

@@ -2,16 +2,21 @@
 //!
 //! ROLE.md is pure prose — the agent's job description. No frontmatter required.
 //!
-//! role.json carries the operational structure: which workflows run, when they
-//! fire, and what dependencies the role requires.
+//! role.json carries the operational structure: inline workflow definitions
+//! (activities, budgets, triggers) and what dependencies the role requires.
 //!
 //! role.json format:
 //! ```json
 //! {
 //!   "workflows": {
 //!     "morning-briefing": {
-//!       "ref": "@nebo/workflows/daily-briefing@^1.0.0",
-//!       "trigger": { "type": "schedule", "cron": "0 7 * * *" }
+//!       "trigger": { "type": "schedule", "cron": "0 7 * * *" },
+//!       "description": "Daily morning briefing",
+//!       "activities": [{
+//!         "id": "gather",
+//!         "intent": "Gather news and calendar events"
+//!       }],
+//!       "budget": { "total_per_run": 5000 }
 //!     }
 //!   },
 //!   "skills": ["@nebo/skills/briefing-writer@^1.0.0"],
@@ -45,14 +50,12 @@ pub struct RoleConfig {
     pub defaults: Option<RoleDefaults>,
 }
 
-/// A workflow bound to a role with its trigger.
+/// An inline workflow bound to a role with its trigger.
 ///
-/// The role decides *when* a workflow runs. The workflow is just the procedure.
+/// Activities, budget, and inputs are defined directly in role.json.
+/// No external workflow references — the role owns the full procedure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowBinding {
-    /// Workflow qualified name (@org/workflows/name@version).
-    #[serde(rename = "ref")]
-    pub workflow_ref: String,
     /// When this workflow runs.
     pub trigger: RoleTrigger,
     /// Human-readable description of this binding.
@@ -61,6 +64,129 @@ pub struct WorkflowBinding {
     /// Default inputs passed to the workflow on trigger.
     #[serde(default)]
     pub inputs: HashMap<String, serde_json::Value>,
+    /// Inline activities (the procedure). Empty = chat-only binding.
+    #[serde(default)]
+    pub activities: Vec<RoleActivity>,
+    /// Budget constraints for the entire workflow run.
+    #[serde(default)]
+    pub budget: RoleBudget,
+    /// Event name to emit on completion (e.g. "briefing.ready").
+    /// Namespaced by agent slug at runtime: "agent-name.briefing.ready".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emit: Option<String>,
+}
+
+impl WorkflowBinding {
+    /// Serialize this binding into a workflow definition JSON string
+    /// compatible with `workflow::parser::parse_workflow`.
+    pub fn to_workflow_json(&self, name: &str) -> String {
+        let inputs: HashMap<String, serde_json::Value> = self
+            .inputs
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    serde_json::json!({
+                        "type": "string",
+                        "default": v,
+                    }),
+                )
+            })
+            .collect();
+
+        serde_json::json!({
+            "version": "1.0",
+            "id": name,
+            "name": name,
+            "inputs": inputs,
+            "activities": self.activities,
+            "budget": self.budget,
+            "dependencies": { "skills": [], "workflows": [] },
+        })
+        .to_string()
+    }
+
+    /// Returns true if this binding has inline activities to execute.
+    pub fn has_activities(&self) -> bool {
+        !self.activities.is_empty()
+    }
+}
+
+/// A single activity in a role's inline workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleActivity {
+    pub id: String,
+    pub intent: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub mcps: Vec<String>,
+    #[serde(default)]
+    pub cmds: Vec<String>,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub steps: Vec<String>,
+    #[serde(default)]
+    pub token_budget: RoleTokenBudget,
+    #[serde(default)]
+    pub on_error: RoleOnError,
+}
+
+/// Token budget for an activity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleTokenBudget {
+    #[serde(default = "default_role_token_max")]
+    pub max: u32,
+}
+
+fn default_role_token_max() -> u32 {
+    4096
+}
+
+impl Default for RoleTokenBudget {
+    fn default() -> Self {
+        Self { max: default_role_token_max() }
+    }
+}
+
+/// Error handling policy for an activity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleOnError {
+    #[serde(default = "default_role_retry")]
+    pub retry: u32,
+    #[serde(default = "default_role_fallback")]
+    pub fallback: RoleFallback,
+}
+
+fn default_role_retry() -> u32 { 1 }
+fn default_role_fallback() -> RoleFallback { RoleFallback::NotifyOwner }
+
+impl Default for RoleOnError {
+    fn default() -> Self {
+        Self {
+            retry: default_role_retry(),
+            fallback: default_role_fallback(),
+        }
+    }
+}
+
+/// Fallback strategy when an activity fails after all retries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleFallback {
+    NotifyOwner,
+    Skip,
+    Abort,
+}
+
+/// Budget constraints for the entire workflow run.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RoleBudget {
+    #[serde(default)]
+    pub total_per_run: u32,
+    #[serde(default)]
+    pub cost_estimate: String,
 }
 
 /// Trigger types for role-level workflow scheduling.
@@ -112,55 +238,33 @@ pub fn parse_role_config(json_str: &str) -> Result<RoleConfig, NappError> {
     Ok(config)
 }
 
-/// Check if a string is a valid reference: either a qualified name with the expected
-/// type segment, or an install code (e.g. WORK-XXXX-XXXX, SKIL-XXXX-XXXX).
-///
-/// Qualified format: `@org/type/name` or `@org/type/name@version`
-/// Install code format: `PREFIX-XXXX-XXXX`
-fn is_qualified_ref(s: &str, expected_type: &str) -> bool {
-    // Accept install codes (WORK-XXXX-XXXX, SKIL-XXXX-XXXX, etc.)
-    let code_prefix = match expected_type {
-        "workflows" => "WORK-",
-        "skills" => "SKIL-",
-        "roles" => "ROLE-",
-        _ => "",
-    };
-    if !code_prefix.is_empty() && s.starts_with(code_prefix) {
+/// Check if a string is a valid skill reference: either a qualified name or install code.
+fn is_qualified_skill_ref(s: &str) -> bool {
+    // Accept install codes (SKIL-XXXX-XXXX)
+    if s.starts_with("SKIL-") {
         return true;
     }
 
-    // Accept qualified names
+    // Accept qualified names (@org/skills/name or @org/skills/name@version)
     if !s.starts_with('@') {
         return false;
     }
-    // Strip the leading @ and any trailing @version
     let without_at = &s[1..];
     let name_part = if let Some(idx) = without_at.find('@') {
         &without_at[..idx]
     } else {
         without_at
     };
-    // Must be org/type/name (3 segments)
     let segments: Vec<&str> = name_part.split('/').collect();
     if segments.len() != 3 {
         return false;
     }
-    // Type segment must match expected
-    segments[1] == expected_type
-        && !segments[0].is_empty()
-        && !segments[2].is_empty()
+    segments[1] == "skills" && !segments[0].is_empty() && !segments[2].is_empty()
 }
 
-/// Validate role.json qualified name references and bindings.
+/// Validate role.json bindings.
 fn validate_role_config(config: &RoleConfig) -> Result<(), NappError> {
     for (name, binding) in &config.workflows {
-        // Allow empty ref for inline/ad-hoc workflows (no marketplace reference)
-        if !binding.workflow_ref.is_empty() && !is_qualified_ref(&binding.workflow_ref, "workflows") {
-            return Err(NappError::Manifest(format!(
-                "workflow '{}' ref must be a qualified name (@org/workflows/name) or empty: {}",
-                name, binding.workflow_ref
-            )));
-        }
         // Validate event triggers have at least one source
         if let RoleTrigger::Event { sources } = &binding.trigger {
             if sources.is_empty() {
@@ -170,9 +274,19 @@ fn validate_role_config(config: &RoleConfig) -> Result<(), NappError> {
                 )));
             }
         }
+        // Validate activity IDs are unique within a binding
+        let mut seen = std::collections::HashSet::new();
+        for activity in &binding.activities {
+            if !activity.id.is_empty() && !seen.insert(&activity.id) {
+                return Err(NappError::Manifest(format!(
+                    "workflow '{}' has duplicate activity id: {}",
+                    name, activity.id
+                )));
+            }
+        }
     }
     for ref_str in &config.skills {
-        if !is_qualified_ref(ref_str, "skills") {
+        if !is_qualified_skill_ref(ref_str) {
             return Err(NappError::Manifest(format!(
                 "skill ref must be a qualified name (@org/skills/name): {}",
                 ref_str
@@ -247,31 +361,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_qualified_ref_validation() {
-        assert!(is_qualified_ref("@acme/workflows/lead-qual@^1.0.0", "workflows"));
-        assert!(is_qualified_ref("@nebo/skills/briefing-writer", "skills"));
-        assert!(is_qualified_ref("WORK-ABCD-1234", "workflows"));
-        assert!(!is_qualified_ref("bad-ref", "workflows"));
-        assert!(!is_qualified_ref("@acme/tools/crm", "workflows")); // wrong type
-        assert!(!is_qualified_ref("@/workflows/name", "workflows")); // empty org
-        assert!(!is_qualified_ref("@org/workflows/", "workflows")); // empty name
+    fn test_qualified_skill_ref_validation() {
+        assert!(is_qualified_skill_ref("@nebo/skills/briefing-writer"));
+        assert!(is_qualified_skill_ref("@nebo/skills/briefing-writer@^1.0.0"));
+        assert!(is_qualified_skill_ref("SKIL-ABCD-1234"));
+        assert!(!is_qualified_skill_ref("bad-ref"));
+        assert!(!is_qualified_skill_ref("@acme/tools/crm")); // wrong type
+        assert!(!is_qualified_skill_ref("@/skills/name")); // empty org
+        assert!(!is_qualified_skill_ref("@org/skills/")); // empty name
     }
 
     #[test]
-    fn test_parse_role_config() {
+    fn test_parse_role_config_inline() {
         let json = r#"{
             "workflows": {
                 "morning-briefing": {
-                    "ref": "@nebo/workflows/daily-briefing@^1.0.0",
                     "trigger": { "type": "schedule", "cron": "0 7 * * *" },
-                    "description": "Daily morning briefing"
+                    "description": "Daily morning briefing",
+                    "activities": [{
+                        "id": "gather",
+                        "intent": "Gather news and calendar events",
+                        "model": "sonnet",
+                        "steps": ["Fetch top headlines", "Check today's calendar"]
+                    }],
+                    "budget": { "total_per_run": 5000 }
                 },
                 "day-monitor": {
-                    "ref": "@nebo/workflows/day-monitor@^1.0.0",
                     "trigger": { "type": "heartbeat", "interval": "30m", "window": "08:00-18:00" }
                 },
                 "interrupt": {
-                    "ref": "@nebo/workflows/urgent-interrupt@^1.0.0",
                     "trigger": { "type": "event", "sources": ["calendar.changed", "email.urgent"] }
                 }
             },
@@ -286,12 +404,15 @@ mod tests {
         assert_eq!(config.workflows.len(), 3);
 
         let briefing = &config.workflows["morning-briefing"];
-        assert_eq!(briefing.workflow_ref, "@nebo/workflows/daily-briefing@^1.0.0");
         assert!(matches!(briefing.trigger, RoleTrigger::Schedule { .. }));
         assert_eq!(briefing.description, "Daily morning briefing");
+        assert_eq!(briefing.activities.len(), 1);
+        assert_eq!(briefing.activities[0].id, "gather");
+        assert_eq!(briefing.budget.total_per_run, 5000);
 
         let monitor = &config.workflows["day-monitor"];
         assert!(matches!(monitor.trigger, RoleTrigger::Heartbeat { .. }));
+        assert!(monitor.activities.is_empty()); // chat-only binding
 
         let interrupt = &config.workflows["interrupt"];
         if let RoleTrigger::Event { sources } = &interrupt.trigger {
@@ -316,26 +437,11 @@ mod tests {
         let json = r#"{
             "workflows": {
                 "ad-hoc": {
-                    "ref": "@acme/workflows/ad-hoc@1.0.0",
                     "trigger": { "type": "manual" }
                 }
             }
         }"#;
         let config = parse_role_config(json).unwrap();
-        assert!(matches!(config.workflows["ad-hoc"].trigger, RoleTrigger::Manual));
-    }
-
-    #[test]
-    fn test_bad_workflow_ref() {
-        let json = r#"{"workflows": {"x": {"ref": "BAD-prefix", "trigger": {"type": "manual"}}}}"#;
-        assert!(parse_role_config(json).is_err());
-    }
-
-    #[test]
-    fn test_empty_workflow_ref_allowed() {
-        let json = r#"{"workflows": {"ad-hoc": {"ref": "", "trigger": {"type": "manual"}}}}"#;
-        let config = parse_role_config(json).unwrap();
-        assert_eq!(config.workflows.len(), 1);
         assert!(matches!(config.workflows["ad-hoc"].trigger, RoleTrigger::Manual));
     }
 
@@ -347,7 +453,19 @@ mod tests {
 
     #[test]
     fn test_empty_event_sources() {
-        let json = r#"{"workflows": {"x": {"ref": "@acme/workflows/x@1.0.0", "trigger": {"type": "event", "sources": []}}}}"#;
+        let json = r#"{"workflows": {"x": {"trigger": {"type": "event", "sources": []}}}}"#;
+        assert!(parse_role_config(json).is_err());
+    }
+
+    #[test]
+    fn test_duplicate_activity_ids() {
+        let json = r#"{"workflows": {"x": {
+            "trigger": {"type": "manual"},
+            "activities": [
+                {"id": "step1", "intent": "a"},
+                {"id": "step1", "intent": "b"}
+            ]
+        }}}"#;
         assert!(parse_role_config(json).is_err());
     }
 
@@ -382,7 +500,6 @@ mod tests {
         let json = r#"{
             "workflows": {
                 "daily-report": {
-                    "ref": "@acme/workflows/daily-report@^1.0.0",
                     "trigger": { "type": "schedule", "cron": "0 9 * * *" },
                     "inputs": { "format": "brief", "include_charts": true }
                 }
@@ -392,5 +509,29 @@ mod tests {
         let binding = &config.workflows["daily-report"];
         assert_eq!(binding.inputs.len(), 2);
         assert_eq!(binding.inputs["format"], "brief");
+    }
+
+    #[test]
+    fn test_inline_activities() {
+        let json = r#"{
+            "workflows": {
+                "test-flow": {
+                    "trigger": { "type": "manual" },
+                    "activities": [{
+                        "id": "step1",
+                        "intent": "Do something",
+                        "model": "sonnet",
+                        "steps": ["Step one"]
+                    }],
+                    "budget": { "total_per_run": 3000 }
+                }
+            }
+        }"#;
+        let config = parse_role_config(json).unwrap();
+        let binding = &config.workflows["test-flow"];
+        assert_eq!(binding.activities.len(), 1);
+        assert_eq!(binding.activities[0].id, "step1");
+        assert_eq!(binding.activities[0].intent, "Do something");
+        assert_eq!(binding.budget.total_per_run, 3000);
     }
 }

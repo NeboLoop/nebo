@@ -179,7 +179,7 @@
 <div bind:this={containerRef} class="flex flex-col w-full h-full">
 	{#if labels.length === 0 || datasets.length === 0}
 		<div class="flex-1 flex items-center justify-center">
-			<p class="text-base-500 text-sm">No data to display</p>
+			<p class="text-base-500 text-base">No data to display</p>
 		</div>
 	{:else}
 		<svg viewBox="0 0 {viewBoxWidth} {viewBoxHeight}" preserveAspectRatio="none" class="flex-1 w-full">
@@ -263,7 +263,7 @@
 						y={tick.y}
 						text-anchor="end"
 						dominant-baseline="middle"
-						class="text-xs fill-base-500"
+						class="text-sm fill-base-500"
 						font-size="10"
 					>
 						{formatValue(tick.value)}
@@ -281,7 +281,7 @@
 							y={tick.y}
 							text-anchor="start"
 							dominant-baseline="middle"
-							class="text-xs fill-base-500"
+							class="text-sm fill-base-500"
 							font-size="10"
 						>
 							{formatValue(tick.value)}
@@ -298,7 +298,7 @@
 						x={i * barGroupWidth + barGroupWidth / 2}
 						y="20"
 						text-anchor="middle"
-						class="text-xs fill-base-500"
+						class="text-sm fill-base-500"
 						font-size="10"
 					>
 						{label.length > 10 ? label.slice(0, 10) + '..' : label}
@@ -313,13 +313,13 @@
 				{#each barDatasets as dataset, i}
 					<div class="flex items-center gap-1.5">
 						<span class="w-3 h-3 rounded" style="background-color: {getBarColor(i, dataset)}"></span>
-						<span class="text-xs text-text-muted">{dataset.label || `Bar ${i + 1}`}</span>
+						<span class="text-sm text-text-muted">{dataset.label || `Bar ${i + 1}`}</span>
 					</div>
 				{/each}
 				{#each lineDatasets as dataset, i}
 					<div class="flex items-center gap-1.5">
 						<span class="w-4 h-0.5 rounded" style="background-color: {getLineColor(i, dataset)}"></span>
-						<span class="text-xs text-text-muted">{dataset.label || `Line ${i + 1}`}</span>
+						<span class="text-sm text-text-muted">{dataset.label || `Line ${i + 1}`}</span>
 					</div>
 				{/each}
 			</div>

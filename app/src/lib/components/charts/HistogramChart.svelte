@@ -160,7 +160,7 @@
 <div bind:this={containerRef} class="histogram-chart-container flex flex-col w-full h-full">
 	{#if data.length === 0}
 		<div class="empty-state flex-1 flex items-center justify-center">
-			<p class="text-base-content/70 text-sm">No data to display</p>
+			<p class="text-base-content/90 text-base">No data to display</p>
 		</div>
 	{:else}
 		<svg viewBox="0 0 {viewBoxWidth} {viewBoxHeight}" preserveAspectRatio="xMidYMid meet" class="flex-1 w-full">
@@ -225,7 +225,7 @@ Count: {bin.count}</title>
 						y={tick.y}
 						text-anchor="end"
 						dominant-baseline="middle"
-						class="text-xs fill-base-content/60"
+						class="text-sm fill-base-content/60"
 						font-size="10"
 					>
 						{formatValue(tick.value)}
@@ -237,7 +237,7 @@ Count: {bin.count}</title>
 						y="-45"
 						text-anchor="middle"
 						transform="rotate(-90)"
-						class="text-xs fill-base-content/60"
+						class="text-sm fill-base-content/60"
 						font-size="11"
 					>
 						{yLabel}
@@ -253,7 +253,7 @@ Count: {bin.count}</title>
 						x={tick.x}
 						y="20"
 						text-anchor="middle"
-						class="text-xs fill-base-content/60"
+						class="text-sm fill-base-content/60"
 						font-size="10"
 					>
 						{formatValue(tick.value)}
@@ -264,7 +264,7 @@ Count: {bin.count}</title>
 						x={chartWidth / 2}
 						y="38"
 						text-anchor="middle"
-						class="text-xs fill-base-content/60"
+						class="text-sm fill-base-content/60"
 						font-size="11"
 					>
 						{xLabel}
@@ -274,7 +274,7 @@ Count: {bin.count}</title>
 		</svg>
 
 		<!-- Statistics -->
-		<div class="flex justify-center gap-6 text-xs text-base-content/70 mt-2">
+		<div class="flex justify-center gap-6 text-sm text-base-content/90 mt-2">
 			<span>n = {data.length}</span>
 			<span>μ = {stats.mean.toFixed(2)}</span>
 			<span>σ = {stats.stdDev.toFixed(2)}</span>

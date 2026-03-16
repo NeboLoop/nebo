@@ -72,7 +72,7 @@
 	let cardBorderClass = $derived.by(() => {
 		if (changeType === 'increase') return 'border-success/30 hover:border-success/50';
 		if (changeType === 'decrease') return 'border-error/30 hover:border-error/50';
-		return 'border-base-300 hover:border-base-content/20';
+		return 'border-base-300 hover:border-base-content/40';
 	});
 
 	let changeBadgeClass = $derived.by(() => {
@@ -99,10 +99,10 @@
 		<div class="card bg-base-200 border border-error/30 h-full">
 			<div class="card-body p-4 items-center justify-center text-center">
 				{#if title}
-					<div class="text-[10px] font-semibold text-base-content/70 uppercase tracking-wider mb-2">{title}</div>
+					<div class="text-sm font-semibold text-base-content/90 uppercase tracking-wider mb-2">{title}</div>
 				{/if}
 				<i class="fas fa-exclamation-triangle text-3xl text-error mb-2"></i>
-				<div class="text-xs text-error">{error}</div>
+				<div class="text-sm text-error">{error}</div>
 			</div>
 		</div>
 	{:else}
@@ -110,7 +110,7 @@
 			<div class="card-body p-5 flex flex-col">
 				<!-- Title Row -->
 				{#if title}
-					<div class="text-[10px] font-semibold text-base-content/70 uppercase tracking-wider mb-3">{title}</div>
+					<div class="text-sm font-semibold text-base-content/90 uppercase tracking-wider mb-3">{title}</div>
 				{/if}
 
 				<!-- Main Value & Change -->
@@ -130,12 +130,12 @@
 										<path fill-rule="evenodd" d="M14.707 10.293a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 12.586V5a1 1 0 012 0v7.586l2.293-2.293a1 1 0 011.414 0z" clip-rule="evenodd" />
 									</svg>
 								{/if}
-								<span class="text-xs font-bold">{formatChange(change)}</span>
+								<span class="text-sm font-bold">{formatChange(change)}</span>
 							</div>
 						{/if}
 					</div>
 					{#if subtitle}
-						<div class="text-xs text-base-content/70">{subtitle}</div>
+						<div class="text-sm text-base-content/90">{subtitle}</div>
 					{/if}
 				</div>
 

@@ -274,6 +274,32 @@ fn main() {
                     save_state(window);
                     let _ = window.hide();
                 }
+                tauri::WindowEvent::DragDrop(event) => {
+                    // Tauri intercepts file drops at the OS level — browser ondrop never fires.
+                    // Push dropped paths into the Svelte input via eval() on the webview.
+                    if let Some(wv) = window.app_handle().get_webview_window(window.label()) {
+                        match event {
+                            tauri::DragDropEvent::Enter { .. } => {
+                                let _ = wv.eval("if(window.__NEBO_DRAG_ENTER__)window.__NEBO_DRAG_ENTER__()");
+                            }
+                            tauri::DragDropEvent::Leave => {
+                                let _ = wv.eval("if(window.__NEBO_DRAG_LEAVE__)window.__NEBO_DRAG_LEAVE__()");
+                            }
+                            tauri::DragDropEvent::Drop { paths, .. } => {
+                                let json_paths: Vec<String> = paths
+                                    .iter()
+                                    .filter_map(|p| p.to_str())
+                                    .map(|s| s.to_string())
+                                    .collect();
+                                if let Ok(json) = serde_json::to_string(&json_paths) {
+                                    let js = format!("if(window.__NEBO_INSERT_FILES__)window.__NEBO_INSERT_FILES__({json})");
+                                    let _ = wv.eval(&js);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                     if WINDOW_READY.load(Ordering::SeqCst)
                         && !window.is_minimized().unwrap_or_default()

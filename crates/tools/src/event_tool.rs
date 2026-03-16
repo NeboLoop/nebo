@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use chrono::Local;
 use db::Store;
 use crate::domain::DomainInput;
 use crate::origin::ToolContext;
@@ -39,8 +40,9 @@ impl DynTool for EventTool {
          - run: Immediately trigger a task\n\
          - history: Show execution history for a task\n\n\
          Examples:\n  \
-         event(action: \"create\", name: \"daily-backup\", schedule: \"0 0 2 * * *\", task_type: \"bash\", command: \"./backup.sh\")\n  \
-         event(action: \"create\", name: \"check-in\", schedule: \"0 30 9 * * *\", task_type: \"agent\", prompt: \"Check the server\")\n  \
+         event(action: \"create\", name: \"reminder\", at: \"in 10 minutes\", task_type: \"agent\", prompt: \"Remind user about the meeting\")\n  \
+         event(action: \"create\", name: \"daily-backup\", cron: \"0 0 2 * * *\", task_type: \"bash\", command: \"./backup.sh\")\n  \
+         event(action: \"create\", name: \"check-in\", cron: \"0 30 9 * * *\", task_type: \"agent\", prompt: \"Check the server\")\n  \
          event(action: \"list\")\n  \
          event(action: \"run\", name: \"daily-backup\")"
             .to_string()
@@ -56,7 +58,8 @@ impl DynTool for EventTool {
                     "enum": ["create", "list", "delete", "pause", "resume", "run", "history"]
                 },
                 "name": { "type": "string", "description": "Task name (unique identifier)" },
-                "schedule": { "type": "string", "description": "Cron expression (second minute hour day month weekday)" },
+                "cron": { "type": "string", "description": "Cron expression: second minute hour day month weekday [year] (e.g. \"0 30 9 * * *\" = 9:30 AM daily, \"0 30 9 * * * *\" with year wildcard)" },
+                "at": { "type": "string", "description": "Relative time for one-shot tasks (e.g. \"in 5 minutes\", \"in 1 hour\"). Converted to a cron expression automatically." },
                 "task_type": {
                     "type": "string",
                     "description": "Task type: bash (shell command) or agent (LLM prompt)",
@@ -87,7 +90,8 @@ impl DynTool for EventTool {
             match domain_input.action.as_str() {
                 "create" => {
                     let name = input["name"].as_str().unwrap_or("");
-                    let schedule = input["schedule"].as_str().unwrap_or("");
+                    let cron_val = input["cron"].as_str().unwrap_or("");
+                    let at_val = input["at"].as_str().unwrap_or("");
                     let task_type = input["task_type"].as_str().unwrap_or("bash");
                     let command = input["command"].as_str().unwrap_or("");
                     let prompt = input["prompt"].as_str().unwrap_or("");
@@ -95,9 +99,21 @@ impl DynTool for EventTool {
                     if name.is_empty() {
                         return ToolResult::error("name is required");
                     }
-                    if schedule.is_empty() {
-                        return ToolResult::error("schedule (cron expression) is required");
-                    }
+
+                    // Resolve schedule: prefer `cron`, fall back to `at` (relative time)
+                    let schedule = if !cron_val.is_empty() {
+                        cron_val.to_string()
+                    } else if !at_val.is_empty() {
+                        match parse_relative_time(at_val) {
+                            Some(s) => s,
+                            None => return ToolResult::error(format!(
+                                "Could not parse '{}'. Use format like 'in 5 minutes', 'in 1 hour', 'in 30 seconds'.",
+                                at_val
+                            )),
+                        }
+                    } else {
+                        return ToolResult::error("Either 'cron' or 'at' is required. Use cron: \"0 30 9 * * *\" or at: \"in 5 minutes\".");
+                    };
 
                     let (cmd, msg) = if task_type == "agent" {
                         ("", Some(prompt))
@@ -110,7 +126,7 @@ impl DynTool for EventTool {
 
                     match self.store.create_cron_job(
                         name,
-                        schedule,
+                        &schedule,
                         cmd,
                         task_type,
                         msg,
@@ -302,4 +318,39 @@ impl DynTool for EventTool {
             }
         })
     }
+}
+
+/// Parse relative time strings like "in 5 minutes" into a one-shot cron expression.
+/// Returns a cron string like "0 25 18 14 3 *" (specific second/minute/hour/day/month).
+fn parse_relative_time(input: &str) -> Option<String> {
+    let s = input.trim().to_lowercase();
+    let s = s.strip_prefix("in ").unwrap_or(&s);
+
+    // Extract number and unit
+    let mut parts = s.split_whitespace();
+    let num_str = parts.next()?;
+    let num: i64 = num_str.parse().ok()?;
+    let unit = parts.next().unwrap_or("");
+
+    let duration = if unit.starts_with("second") || unit == "s" || unit == "sec" {
+        chrono::Duration::seconds(num)
+    } else if unit.starts_with("minute") || unit == "m" || unit == "min" {
+        chrono::Duration::minutes(num)
+    } else if unit.starts_with("hour") || unit == "h" || unit == "hr" {
+        chrono::Duration::hours(num)
+    } else {
+        return None;
+    };
+
+    let target = Local::now() + duration;
+    // Cron format: second minute hour day-of-month month day-of-week year (7 fields)
+    Some(format!(
+        "{} {} {} {} {} * {}",
+        target.format("%-S"),
+        target.format("%-M"),
+        target.format("%-H"),
+        target.format("%-d"),
+        target.format("%-m"),
+        target.format("%Y"),
+    ))
 }

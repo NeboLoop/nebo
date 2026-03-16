@@ -4,6 +4,7 @@ pub mod desktop_tool;
 pub mod domain;
 pub mod emit_tool;
 pub mod execute_tool;
+pub mod exit_tool;
 pub mod event_tool;
 pub mod events;
 pub mod loop_tool;
@@ -13,6 +14,7 @@ pub mod keychain_tool;
 pub mod message_tool;
 pub mod music_tool;
 pub mod orchestrator;
+mod organizer;
 pub mod organizer_tool;
 pub mod origin;
 pub mod os_tool;
@@ -53,6 +55,7 @@ pub use workflows::{WorkflowManager, WorkflowInfo, WorkflowRunInfo, WorkTool};
 pub use events::{Event, EventBus};
 pub use emit_tool::EmitTool;
 pub use execute_tool::ExecuteTool;
+pub use exit_tool::{ExitTool, EXIT_SENTINEL};
 pub use app_tool::AppTool;
 pub use keychain_tool::KeychainTool;
 pub use loop_tool::LoopTool;
@@ -215,7 +218,7 @@ pub async fn persist_role_from_api(
     // Persist to DB
     let _ = store.create_role(
         artifact_id,
-        Some(code),
+        Some(code),  // marketplace code stored as `kind`
         name,
         &detail.item.description,
         &manifest_text,

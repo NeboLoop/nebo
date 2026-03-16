@@ -5,7 +5,7 @@ frontend WebSocket through agent runner and back, including all data structures,
 streaming events, session management, lane concurrency, DB schema, codes system,
 NeboLoop comm integration, and frontend rendering.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-03-12
+**Status:** Current (Rust implementation) | **Last updated:** 2026-03-16
 
 ---
 
@@ -25,8 +25,11 @@ NeboLoop comm integration, and frontend rendering.
 12. [Comm Integration](#12-comm-integration)
 13. [Codes System](#13-codes-system)
 14. [Frontend Components](#14-frontend-components)
-15. [End-to-End Event Flow](#15-end-to-end-event-flow)
-16. [Known Issues and Fixes](#16-known-issues-and-fixes)
+15. [Per-Entity Config System](#15-per-entity-config-system)
+16. [End-to-End Event Flow](#16-end-to-end-event-flow)
+17. [Slash Commands](#17-slash-commands)
+18. [File Attachment & Drag-and-Drop](#18-file-attachment--drag-and-drop)
+19. [Known Issues and Fixes](#19-known-issues-and-fixes)
 
 ---
 
@@ -41,6 +44,7 @@ WebSocketClient  ──WS──>  handle_client_ws()
                                 │
                                 ├─ dispatch_chat()
                                 │     builds ChatConfig
+                                │     resolves entity_config (per-entity overrides)
                                 │     calls run_chat()
                                 │
                             run_chat()  (chat_dispatch.rs)
@@ -58,7 +62,7 @@ WebSocketClient  ──WS──>  handle_client_ws()
                                 │  run_loop() (agentic loop, up to 100 iterations)
                                 │     ├─ load & sanitize messages
                                 │     ├─ sliding window + pruning
-                                │     ├─ build system prompt (static + STRAP + dynamic)
+                                │     ├─ build system prompt (static + STRAP + dynamic + model identity)
                                 │     ├─ select model via ModelSelector
                                 │     ├─ acquire LLM permit (ConcurrencyController)
                                 │     ├─ provider.stream() ──> EventReceiver
@@ -168,8 +172,9 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
     // 2. Intercept marketplace codes (NEBO/SKIL/WORK/ROLE/LOOP-XXXX-XXXX)
     // 3. Reject empty prompts
     // 4. Build session_key: if role_id set, use build_role_session_key()
-    // 5. Build ChatConfig with lane=MAIN, origin=User
-    // 6. Call run_chat(state, config, Some(active_runs))
+    // 5. Resolve entity_config via resolve_for_chat() (per-entity overrides)
+    // 6. Build ChatConfig with lane=MAIN, origin=User, entity_config
+    // 7. Call run_chat(state, config, Some(active_runs))
 }
 ```
 
@@ -193,6 +198,7 @@ pub struct ChatConfig {
     pub cancel_token: CancellationToken,
     pub lane: String,             // which lane to enqueue on
     pub comm_reply: Option<CommReplyConfig>,  // reply-back config for NeboLoop
+    pub entity_config: Option<ResolvedEntityConfig>,  // per-entity overrides (see §15)
 }
 
 pub struct CommReplyConfig {
@@ -217,7 +223,8 @@ pub struct CommReplyConfig {
 3. Broadcast `"chat_created"` event
 4. Build `LaneTask` via `make_task()` containing:
    a. Construct `RunRequest` from ChatConfig fields
-   b. Call `runner.run(req)` → get `mpsc::Receiver<StreamEvent>`
+   b. Extract per-entity overrides from `entity_config` into RunRequest (permissions, resource_grants, model_preference, personality_snippet)
+   c. Call `runner.run(req)` → get `mpsc::Receiver<StreamEvent>`
    c. Loop receiving StreamEvents, broadcasting each:
       - `Text` → `"chat_stream"` + accumulate `full_response`
       - `Thinking` → `"thinking"`
@@ -268,6 +275,11 @@ pub struct RunRequest {
     pub max_iterations: usize,
     pub cancel_token: CancellationToken,
     pub role_id: String,
+    // Per-entity overrides (from entity_config system, see §15)
+    pub permissions: Option<HashMap<String, bool>>,      // tool category allow/deny
+    pub resource_grants: Option<HashMap<String, String>>, // screen/browser access
+    pub model_preference: Option<String>,                 // fuzzy model name
+    pub personality_snippet: Option<String>,               // prepended to system prompt
 }
 
 struct RunState {
@@ -328,7 +340,8 @@ Per-iteration:
 8. **Micro-compact** — shrink tool results if near threshold
 9. **Tool filtering** — `tool_filter::filter_tools_with_context()` returns filtered tools + active contexts
 10. **Steering** — generate steering messages + hook: `steering.generate`
-11. **Build system prompt** — `static_system + STRAP section + tools_list + dynamic_suffix`
+11. **Build system prompt** — `static_system + STRAP section + tools_list + dynamic_suffix + model_identity`
+    - **Model identity branding**: Janus/nebo-* models get "you are Nebo, NOT Claude/GPT/Gemini" directive; others get standard `provider/model` line
 12. **Hook: `message.pre_send`** — apps can modify system prompt
 13. **Model selection** — override or `selector.select()` + thinking mode
 14. **Build ChatRequest** — messages + tools + system + model
@@ -385,8 +398,30 @@ If no tool calls but `active_task` is set and response `looks_like_continuation_
 | `looks_like_continuation_pause()` | Detects 25+ "should I continue?" patterns |
 | `convert_messages()` | `ChatMessage` → `ai::Message` conversion |
 | `sanitize_message_order()` | Reorders tool results after their assistant, strips orphans |
-| `build_system_prompt()` | Combines custom system with DB context |
+| `build_system_prompt()` | Combines custom system with DB context + model identity |
 | `detect_objective()` | Background task classification via LLM |
+
+### Model Identity Branding (`crates/agent/src/prompt.rs`)
+
+The system prompt includes a model identity line that varies by provider:
+
+```rust
+// Janus gateway or nebo-* model names → Nebo branding
+if provider_name == "janus" || model_name.starts_with("nebo-") {
+    "Model: neboloop/{model_name} — you are Nebo, NOT Claude, GPT, Gemini, or any other model."
+}
+// No provider/model → generic
+else if provider_name.is_empty() && model_name.is_empty() {
+    "Model: Nebo AI"
+}
+// Standard provider
+else {
+    "Model: {provider_name}/{model_name}"
+}
+```
+
+This ensures the agent identifies as "Nebo" when routed through Janus or using nebo-1
+(the custom model), preventing it from claiming to be Claude/GPT/Gemini.
 
 ---
 
@@ -1076,6 +1111,17 @@ ws.send('chat', {
 - File drag-and-drop (inserts paths into input)
 - Code processing UI (marketplace code status messages)
 
+**Feature parity (companion & role)**:
+The following MessageGroup props apply to both companion and role modes (`isCompanion || isRole`):
+- `isStreaming` — pulsing indicator on the last assistant message during streaming
+- `onViewToolOutput` — click tool card to open ToolOutputSidebar
+- `onAskSubmit` — interactive ask/question widget responses
+
+**Empty state**:
+- **Companion**: Bot icon + "Your AI Companion" heading + 4 suggestion buttons (read README, list files, web search, debug)
+- **Role**: Role initial avatar (first letter, primary color) + role name heading + role description (fetched via `getRole()` on mount, falls back to generic text) + 2 suggestion buttons ("What can you help me with?", "Give me a brief introduction")
+- **Channel**: Plain "No messages yet" text
+
 ### ChatInput.svelte
 
 - Autoresizing textarea (max 200px)
@@ -1086,6 +1132,19 @@ ws.send('chat', {
 - Send/Stop button (switches based on isLoading)
 - New session button
 - Queued message pills with cancel
+
+### EntityConfigPanel.svelte (`app/src/lib/components/chat/EntityConfigPanel.svelte`)
+
+Per-entity configuration UI with 5 sections:
+
+1. **Heartbeat** — toggle, interval (5min→24hr), time window, content textarea
+2. **Permissions** (7 categories) — Web Search, Desktop Control, File System, Shell Commands, Memory Access, Calendar, Email — each: Inherit/Allow/Deny
+3. **Resource Access** — Screen Access, Browser Access — each: Inherit/Allow/Deny
+4. **Model** — text input for model preference (fuzzy resolved)
+5. **Personality** — textarea for personality snippet
+
+Each field shows inherited vs overridden state via `config.overrides` map. Null values
+clear overrides (inherit from defaults). Auto-saves on blur/change.
 
 ### Frontend API (`app/src/lib/api/nebo.ts`)
 
@@ -1107,10 +1166,94 @@ ws.send('chat', {
 | `deleteAgentSession(id)` | `DELETE /api/v1/agent/sessions/{id}` |
 | `getAgentSessionMessages(id)` | `GET /api/v1/agent/sessions/{id}/messages` |
 | `chatWithRole(roleId, prompt)` | `POST /api/v1/roles/{roleId}/chat` |
+| `getEntityConfig(type, id)` | `GET /api/v1/entity-config/{type}/{id}` |
+| `updateEntityConfig(type, id, patch)` | `PUT /api/v1/entity-config/{type}/{id}` |
+| `deleteEntityConfig(type, id)` | `DELETE /api/v1/entity-config/{type}/{id}` |
 
 ---
 
-## 15. End-to-End Event Flow
+## 15. Per-Entity Config System
+
+**Files:** `crates/server/src/entity_config.rs`, `crates/db/src/queries/entity_config.rs`
+
+### Purpose
+
+Allows per-role and per-channel overrides of global agent settings. An entity is
+identified by `(entity_type, entity_id)` where type is `"main"`, `"role"`, or
+`"channel"` and id is the role ID, channel name, or `"main"`.
+
+### Data Structure
+
+```rust
+pub struct ResolvedEntityConfig {
+    pub entity_type: String,
+    pub entity_id: String,
+    pub heartbeat_enabled: bool,
+    pub heartbeat_interval_minutes: i32,
+    pub heartbeat_content: String,
+    pub heartbeat_window: Option<(String, String)>,  // (start, end) HH:MM
+    pub permissions: HashMap<String, bool>,            // tool category allow/deny
+    pub resource_grants: HashMap<String, String>,      // "allow"/"deny"/"inherit"
+    pub model_preference: Option<String>,
+    pub personality_snippet: Option<String>,
+    pub overrides: HashMap<String, bool>,              // which fields are customized (UI hint)
+}
+```
+
+### Resolution (`resolve()`)
+
+1. Loads global defaults from `settings` table + `user_profiles.tool_permissions`
+2. Loads entity-specific row from `entity_config` table
+3. Layers entity values on top of globals — NULL fields inherit defaults
+4. Returns `ResolvedEntityConfig` with `overrides` map showing which fields are customized
+5. `resolve_for_chat()` convenience function: loads defaults + resolves in one call (best-effort, returns None on error)
+
+### DB Schema (migration 0057)
+
+```sql
+CREATE TABLE entity_config (
+    entity_type TEXT NOT NULL,        -- "main" | "role" | "channel"
+    entity_id TEXT NOT NULL,          -- role ID, channel name, or "main"
+    heartbeat_enabled INTEGER,        -- 0/1/NULL (NULL = inherit)
+    heartbeat_interval_minutes INTEGER,
+    heartbeat_content TEXT,
+    heartbeat_window_start TEXT,      -- HH:MM
+    heartbeat_window_end TEXT,        -- HH:MM
+    permissions TEXT,                 -- JSON: {"web": true, "desktop": false, ...}
+    resource_grants TEXT,             -- JSON: {"screen": "allow", "browser": "deny", ...}
+    model_preference TEXT,
+    personality_snippet TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (entity_type, entity_id)
+);
+```
+
+### Mutations (`upsert_entity_config()`)
+
+- Patch-based: only fields in the patch are updated
+- NULL values clear overrides (inherit from defaults)
+- Handles booleans, strings, numbers, JSON objects/arrays
+- Seed: `"main"` entity row created at migration time
+
+### Integration with Chat Pipeline
+
+1. `dispatch_chat()` calls `resolve_for_chat()` → sets `ChatConfig.entity_config`
+2. `run_chat()` extracts overrides into `RunRequest` fields (permissions, resource_grants, model_preference, personality_snippet)
+3. Runner uses `model_preference` for fuzzy model resolution, `personality_snippet` prepended to system prompt
+4. Permission/resource enforcement happens at tool execution time
+
+### REST API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/entity-config/{type}/{id}` | Get resolved config (with inheritance) |
+| `PUT` | `/api/v1/entity-config/{type}/{id}` | Patch-update entity overrides |
+| `DELETE` | `/api/v1/entity-config/{type}/{id}` | Reset entity to inherited defaults |
+
+---
+
+## 16. End-to-End Event Flow
 
 ### User types "Hello" in companion chat:
 
@@ -1153,7 +1296,222 @@ ws.send('chat', {
 
 ---
 
-## 16. Known Issues and Fixes
+## 17. Slash Commands
+
+**Files:** `app/src/lib/components/chat/slash-commands.ts`, `app/src/lib/components/chat/slash-command-executor.ts`, `app/src/lib/components/chat/SlashCommandMenu.svelte`
+
+### Architecture
+
+Slash commands are intercepted **before** a message reaches the agent. When the user
+types `/` in the chat input, a floating autocomplete menu appears above the textarea.
+On submit, `parseSlashCommand()` detects the command and `executeSlashCommand()` either
+handles it locally (returns `true`) or falls through to the agent (returns `false`).
+
+```
+User types "/"
+     │
+     ├─ ChatInput.svelte: detects prefix, shows SlashCommandMenu
+     │   └─ Arrow keys navigate, Tab/Enter selects, Escape closes
+     │
+User submits (Enter)
+     │
+     ├─ Chat.svelte: parseSlashCommand(prompt)
+     │   └─ returns { command, args } or null
+     │
+     ├─ executeSlashCommand(command, args, ctx)
+     │   ├─ returns true  → handled locally (system message shown)
+     │   └─ returns false → sent to agent as normal chat message
+```
+
+### Data Structures
+
+```typescript
+interface SlashCommand {
+    name: string;           // command name (without "/")
+    description: string;    // shown in autocomplete menu
+    category: 'session' | 'model' | 'info' | 'agent';
+    args?: string;          // hint string (e.g., "[name]", "<query>", "on|off")
+    argOptions?: string[];  // fixed options for validation
+    executeLocal: boolean;  // true = handled in frontend, false = sent to agent
+}
+
+interface CommandContext {
+    messages: Message[];
+    chatId: string;
+    isLoading: boolean;
+    onNewSession: () => void;
+    onCancel: () => void;
+    onToggleDuplex: (() => void) | undefined;
+    addSystemMessage: (content: string) => void;
+    clearMessages: () => void;
+    setVerboseMode: (on: boolean) => void;
+    setThinkingLevel: (level: string) => void;
+    toggleFocusMode: () => void;
+    wsSend: (type: string, data?: Record<string, unknown>) => void;
+}
+```
+
+### Command Reference
+
+#### Session Commands
+
+| Command | Args | Execution | Description |
+|---------|------|-----------|-------------|
+| `/new` | — | Local | Start a new chat session (calls `onNewSession`) |
+| `/reset` | — | Local | Reset current session (sends `session_reset` WS message, clears messages + counters) |
+| `/clear` | — | Local | Clear chat display only (messages still in DB) |
+| `/stop` | — | Local | Cancel active generation (calls `onCancel` if `isLoading`) |
+| `/focus` | — | Local | Toggle sidebar visibility (focus mode) |
+| `/compact` | — | Local | Force context compaction (sends `session_reset` — currently equivalent to `/reset`) |
+
+#### Model Commands
+
+| Command | Args | Execution | Description |
+|---------|------|-----------|-------------|
+| `/model` | — | Local | List all available models by provider, with aliases |
+| `/model` | `<name>` | Agent | Switch model (sent to agent for fuzzy resolution, e.g., "sonnet", "gpt4") |
+| `/think` | `off\|low\|medium\|high` | Local | Set extended thinking mode level |
+| `/verbose` | `on\|off` | Local | Toggle verbose tool output detail in chat |
+
+#### Info Commands
+
+| Command | Args | Execution | Description |
+|---------|------|-----------|-------------|
+| `/help` | — | Local | Show all slash commands grouped by category |
+| `/status` | — | Local | Show agent connection status, uptime, and lane summary (calls `getSimpleAgentStatus` + `getLanes` APIs) |
+| `/usage` | — | Local | Show Janus token usage: session + weekly quotas with percentages (calls `neboLoopJanusUsage` API) |
+| `/export` | — | Local | Export current chat as Markdown file (browser download) |
+| `/lanes` | — | Local | Show lane concurrency status for all 8 lanes (calls `getLanes` API) |
+| `/search` | `<query>` | Local | Search chat message history via LIKE query (calls `searchChatMessages` API, shows top 10 results) |
+
+#### Agent Commands
+
+| Command | Args | Execution | Description |
+|---------|------|-----------|-------------|
+| `/skill` | `<name>` | Agent | Activate a skill by name (always sent to agent) |
+| `/memory` | — | Local | List stored memories (top 15, calls `listMemories` API) |
+| `/memory` | `<query>` | Local | Search memories by keyword (top 10, calls `searchMemories` API) |
+| `/heartbeat` | — | Local | Show current heartbeat configuration (calls `getHeartbeat` API) |
+| `/heartbeat` | `wake` | Agent | Trigger an immediate heartbeat (sent to agent) |
+| `/advisors` | — | Local | List all configured advisors with roles and priority (calls `listAdvisors` API) |
+| `/voice` | — | Local | Toggle full-duplex voice conversation (calls `onToggleDuplex`) |
+| `/personality` | — | Local | Show current personality configuration (calls `getPersonality` API) |
+| `/wake` | `[reason]` | Agent | Trigger immediate heartbeat with optional reason (always sent to agent) |
+
+### Menu Behavior
+
+- **Trigger**: Typing `/` as the first character shows the menu
+- **Filtering**: Prefix match on command name as user types (e.g., `/mo` shows `/model`, `/memory`)
+- **Navigation**: Arrow Up/Down to select, Tab or Enter to confirm, Escape to dismiss
+- **Auto-execute**: Commands with no args execute immediately on selection from the menu
+- **Args mode**: Commands with args insert `/<name> ` (with trailing space) and close the menu, letting the user type the argument
+- **Grouping**: Menu items grouped by category (Session → Model → Info → Agent)
+- **Category sort**: Results sorted by category order, not alphabetically
+
+### Execution Flow Details
+
+**Local commands** (`executeLocal: true`): Handled entirely in the frontend. Most call REST APIs to fetch data and display it as a system message. No WS chat message is sent.
+
+**Agent commands** (`executeLocal: false`, or local handler returns `false`): The original `/command args` text is sent to the agent as a normal user message via the standard WS `chat` flow. The agent sees the raw text and processes it.
+
+**Dual-mode commands**: Some commands behave differently based on args:
+- `/model` (no args) → local: lists models. `/model sonnet` → agent: switches model.
+- `/heartbeat` (no args) → local: shows config. `/heartbeat wake` → agent: triggers beat.
+
+---
+
+## 18. File Attachment & Drag-and-Drop
+
+**Files:** `app/src/lib/components/chat/Chat.svelte`, `app/src/lib/components/chat/ChatInput.svelte`, `src-tauri/src/main.rs`, `crates/server/src/handlers/files.rs`
+
+### Purpose
+
+Insert file paths into the chat input so the agent can work with files on the local filesystem. Files are NOT uploaded — only their absolute paths are inserted as text into the textarea.
+
+### Two Entry Points
+
+| Method | UI Element | Behavior |
+|--------|-----------|----------|
+| **Drag-and-drop** | Anywhere on the window | Tauri intercepts OS-level drag, inserts full path via `eval()` |
+| **+ button** | Plus button in input actions row | Opens native file dialog via `rfd`, inserts selected paths |
+
+### Drag-and-Drop Architecture
+
+Tauri v2 intercepts OS-level file drags at the native layer (`dragDropEnabled: true` by default). This means **browser `ondrop` events never fire** for external file drags in the Tauri webview. The solution uses two layers:
+
+**Layer 1 — Rust `on_window_event` (src-tauri/src/main.rs):**
+Catches `WindowEvent::DragDrop`, serializes file paths as JSON, and calls global JS functions via `WebviewWindow::eval()`.
+
+```rust
+WindowEvent::DragDrop(event) => {
+    if let Some(wv) = window.app_handle().get_webview_window(window.label()) {
+        match event {
+            DragDropEvent::Enter { .. } => wv.eval("if(window.__NEBO_DRAG_ENTER__)..."),
+            DragDropEvent::Leave       => wv.eval("if(window.__NEBO_DRAG_LEAVE__)..."),
+            DragDropEvent::Drop { paths, .. } => {
+                let json = serde_json::to_string(&paths)?;
+                wv.eval(&format!("if(window.__NEBO_INSERT_FILES__)window.__NEBO_INSERT_FILES__({json})"));
+            }
+        }
+    }
+}
+```
+
+**Layer 2 — Svelte global functions (Chat.svelte `onMount`):**
+Registers `window.__NEBO_INSERT_FILES__`, `__NEBO_DRAG_ENTER__`, `__NEBO_DRAG_LEAVE__` synchronously at mount time. On drop, appends paths directly to the `inputValue` state variable with a trailing space for continued typing.
+
+```typescript
+(window as any).__NEBO_INSERT_FILES__ = (paths: string[]) => {
+    isDraggingOver = false;
+    if (paths?.length) {
+        const joined = paths.join(' ');
+        inputValue = inputValue.trim() ? `${inputValue.trimEnd()} ${joined} ` : `${joined} `;
+    }
+};
+```
+
+Cleanup in `onDestroy` deletes the globals to prevent stale references.
+
+**Browser fallback (web mode):** Standard HTML5 `ondragenter`/`ondragleave`/`ondrop` handlers remain on the chat container for browser-only mode. These use `ChatInput.extractFilePaths()` which falls through a priority chain: `File.path` (Electron) → `text/uri-list` file:// URIs → `text/plain` paths → `file.name` fallback. Browsers never expose full filesystem paths (security), so only filenames are available — users should use the `+` button instead.
+
+### Key Implementation Details
+
+- **`eval()` requires `WebviewWindow`**: In `on_window_event`, the callback receives `&tauri::Window` which does NOT have `eval()`. Must call `window.app_handle().get_webview_window(window.label())` to get the `WebviewWindow`.
+- **Globals must register synchronously**: The `@tauri-apps/api` `onDragDropEvent()` requires IPC, which can hang for external URLs (`WebviewUrl::External`). Global functions must be registered BEFORE any async Tauri API calls in `onMount` to avoid a race condition.
+- **`__TAURI_INTERNALS__` IS injected for external URLs**: Despite common belief, Tauri v2 unconditionally injects the IPC bridge init scripts (see `tauri-2.10.2/src/manager/webview.rs:160-175`). The `remote.urls` capability (`capabilities/default.json`) grants IPC permission from `http://localhost:*`.
+- **`dragDropEnabled: true` is the default**: No config change needed. Only set it to `false` if you want HTML5 drag events instead (breaks file path access).
+
+### + Button (Native File Picker)
+
+The `+` button calls `POST /api/v1/files/pick` which opens a native file dialog via `rfd`
+on the server. Since the Nebo server always runs locally, this works in both Tauri and
+browser mode.
+
+```
+Frontend                          Server
+────────                          ──────
++ button click
+  → api.pickFiles()
+  → POST /api/v1/files/pick       → rfd::FileDialog::new().pick_files()
+                                   → native OS file picker opens
+                                   → user selects files
+  ← { paths: ["/full/path/..."] } ← returns selected paths
+  → insertFilePaths(paths)
+```
+
+Fallback: If the server API fails (headless mode), falls back to HTML `<input type="file">`
+which only provides filenames (browser security limitation).
+
+### REST Endpoints
+
+| Method | Path | Handler | Description |
+|--------|------|---------|-------------|
+| `POST` | `/api/v1/files/pick` | `files::pick_files` | Open native file dialog, return selected paths |
+| `POST` | `/api/v1/files/browse` | `files::browse` | List directory contents (used by file browser UI) |
+
+---
+
+## 19. Known Issues and Fixes
 
 ### FK Constraint on chat_messages (Fixed 2026-03-12)
 

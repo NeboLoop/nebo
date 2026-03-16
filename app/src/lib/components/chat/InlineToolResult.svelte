@@ -74,21 +74,21 @@
 <div class="rounded-xl border border-base-300 bg-base-200/30 p-4">
 	<!-- Summary text -->
 	{#if displaySummary}
-		<p class="text-sm text-base-content mb-3">{displaySummary}</p>
+		<p class="text-base text-base-content mb-3">{displaySummary}</p>
 	{/if}
 
 	<!-- Tool card inline -->
 	<div class="flex items-center gap-3 px-3 py-2 rounded-lg bg-base-200/50 border border-base-300">
-		<div class="text-base-content/70">
+		<div class="text-base-content/90">
 			<svelte:component this={ToolIcon} class="w-4 h-4" />
 		</div>
-		<span class="font-medium text-sm text-base-content">{displayName}</span>
+		<span class="font-medium text-base text-base-content">{displayName}</span>
 		<div class="flex-1"></div>
 		{#if onView}
 			<button
 				type="button"
 				onclick={onView}
-				class="flex items-center gap-1 text-sm text-primary hover:text-primary/80 transition-colors"
+				class="flex items-center gap-1 text-base text-primary hover:text-primary/80 transition-colors"
 			>
 				View
 				<Check class="w-4 h-4" />
@@ -99,7 +99,7 @@
 	<!-- Short output preview -->
 	{#if tool.output && tool.output.length < 200}
 		<div class="mt-2 px-3 py-2 rounded-lg bg-base-300/30">
-			<pre class="text-xs font-mono text-base-content/70 whitespace-pre-wrap">{tool.output}</pre>
+			<pre class="text-sm font-mono text-base-content/60 whitespace-pre-wrap">{tool.output}</pre>
 		</div>
 	{/if}
 </div>

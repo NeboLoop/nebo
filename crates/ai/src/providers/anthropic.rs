@@ -132,9 +132,24 @@ impl AnthropicProvider {
                                 if !all_tool_call_ids.contains(&r.tool_call_id) || !responded_tool_ids.contains(&r.tool_call_id) {
                                     continue;
                                 }
+                                let content = if let Some(ref image_url) = r.image_url {
+                                    let (media_type, data) = parse_data_url(image_url);
+                                    ToolResultContent::Blocks(vec![
+                                        ToolResultContentBlock::Text { text: r.content.clone() },
+                                        ToolResultContentBlock::Image {
+                                            source: ImageSource {
+                                                source_type: "base64".to_string(),
+                                                media_type,
+                                                data,
+                                            },
+                                        },
+                                    ])
+                                } else {
+                                    ToolResultContent::Text(r.content.clone())
+                                };
                                 blocks.push(ContentBlock::ToolResult {
                                     tool_use_id: r.tool_call_id,
-                                    content: r.content,
+                                    content,
                                     is_error: r.is_error,
                                     cache_control: None,
                                 });
@@ -317,6 +332,10 @@ impl Provider for AnthropicProvider {
         "anthropic"
     }
 
+    fn supports_tool_result_images(&self) -> bool {
+        true
+    }
+
     async fn stream(
         &self,
         req: &ChatRequest,
@@ -487,6 +506,8 @@ struct SessionToolResult {
     content: String,
     #[serde(default)]
     is_error: bool,
+    #[serde(default)]
+    image_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -572,12 +593,31 @@ enum ContentBlock {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: String,
+        content: ToolResultContent,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+}
+
+/// Anthropic tool_result content: a plain string or an array of content blocks
+/// (text + image). The API accepts both formats.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ToolResultContent {
+    Text(String),
+    Blocks(Vec<ToolResultContentBlock>),
+}
+
+/// Content block types allowed inside a tool_result content array.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+enum ToolResultContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: ImageSource },
 }
 
 #[derive(Debug, Serialize)]
@@ -670,4 +710,18 @@ struct AnthropicDelta {
 #[derive(Debug, Deserialize)]
 struct AnthropicError {
     message: String,
+}
+
+/// Parse a data URL (e.g. `data:image/jpeg;base64,/9j/4AAQ...`) into
+/// (media_type, base64_data). Falls back to `image/png` if the URL
+/// doesn't match the expected format.
+fn parse_data_url(url: &str) -> (String, String) {
+    if let Some(rest) = url.strip_prefix("data:") {
+        if let Some((header, data)) = rest.split_once(",") {
+            let media_type = header.strip_suffix(";base64").unwrap_or(header);
+            return (media_type.to_string(), data.to_string());
+        }
+    }
+    // Bare base64 without data URL prefix — assume PNG
+    ("image/png".to_string(), url.to_string())
 }

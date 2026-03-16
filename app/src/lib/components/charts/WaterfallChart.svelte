@@ -153,7 +153,7 @@
 <div bind:this={containerRef} class="waterfall-chart-container flex flex-col w-full h-full">
 	{#if data.length === 0}
 		<div class="empty-state flex-1 flex items-center justify-center">
-			<p class="text-base-content/70 text-sm">No data to display</p>
+			<p class="text-base-content/90 text-base">No data to display</p>
 		</div>
 	{:else}
 		<svg viewBox="0 0 {viewBoxWidth} {viewBoxHeight}" preserveAspectRatio="xMidYMid meet" class="flex-1 w-full">
@@ -236,7 +236,7 @@
 							x={xScale(i)}
 							y={barTop - 8}
 							text-anchor="middle"
-							class="text-xs fill-base-content/70 font-medium"
+							class="text-sm fill-base-content/80 font-medium"
 						>
 							{item.value >= 0 ? '+' : ''}{formatValue(item.value)}
 						</text>
@@ -253,7 +253,7 @@
 						y={tick.y}
 						text-anchor="end"
 						dominant-baseline="middle"
-						class="text-xs fill-base-content/60"
+						class="text-sm fill-base-content/60"
 						font-size="10"
 					>
 						{formatValue(tick.value)}
@@ -269,7 +269,7 @@
 						x={xScale(i)}
 						y="20"
 						text-anchor="middle"
-						class="text-xs fill-base-content/60"
+						class="text-sm fill-base-content/60"
 						font-size="10"
 						transform="rotate(-30, {xScale(i)}, 20)"
 					>

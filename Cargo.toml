@@ -93,6 +93,7 @@ regex = "1"
 semver = "1"
 shellexpand = "3"
 dirs = "6"
+rfd = "0.15"
 
 # Internal crates
 types = { path = "crates/types", package = "nebo-types" }

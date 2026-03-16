@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use crate::models::{Role, RoleWorkflow};
+use crate::models::{EmitSource, Role, RoleWorkflow};
 use crate::OptionalExt;
 use crate::Store;
 use types::NeboError;
@@ -10,7 +10,7 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, code, name, description, role_md, frontmatter,
+                "SELECT id, kind, name, description, role_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
                         napp_path
                  FROM roles ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
@@ -32,7 +32,7 @@ impl Store {
     pub fn get_role(&self, id: &str) -> Result<Option<Role>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, code, name, description, role_md, frontmatter,
+            "SELECT id, kind, name, description, role_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
                     napp_path
              FROM roles WHERE id = ?1",
@@ -46,7 +46,7 @@ impl Store {
     pub fn create_role(
         &self,
         id: &str,
-        code: Option<&str>,
+        kind: Option<&str>,
         name: &str,
         description: &str,
         role_md: &str,
@@ -56,13 +56,13 @@ impl Store {
     ) -> Result<Role, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "INSERT INTO roles (id, code, name, description, role_md, frontmatter,
+            "INSERT INTO roles (id, kind, name, description, role_md, frontmatter,
                     pricing_model, pricing_cost)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             RETURNING id, code, name, description, role_md, frontmatter,
+             RETURNING id, kind, name, description, role_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
                        napp_path",
-            params![id, code, name, description, role_md, frontmatter, pricing_model, pricing_cost],
+            params![id, kind, name, description, role_md, frontmatter, pricing_model, pricing_cost],
             row_to_role,
         )
         .map_err(|e| NeboError::Database(e.to_string()))
@@ -117,33 +117,43 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_role_enabled(&self, id: &str, enabled: bool) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE roles SET is_enabled = ?1, updated_at = unixepoch() WHERE id = ?2",
+            params![enabled as i32, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     // ── Role Workflow Bindings ──
 
     pub fn upsert_role_workflow(
         &self,
         role_id: &str,
         binding_name: &str,
-        workflow_ref: &str,
-        workflow_id: Option<&str>,
         trigger_type: &str,
         trigger_config: &str,
         description: Option<&str>,
         inputs: Option<&str>,
+        emit: Option<&str>,
+        activities: Option<&str>,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO role_workflows (role_id, binding_name, workflow_ref, workflow_id,
-                    trigger_type, trigger_config, description, inputs)
+            "INSERT INTO role_workflows (role_id, binding_name,
+                    trigger_type, trigger_config, description, inputs, emit, activities)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(role_id, binding_name) DO UPDATE SET
-                workflow_ref = excluded.workflow_ref,
-                workflow_id = excluded.workflow_id,
                 trigger_type = excluded.trigger_type,
                 trigger_config = excluded.trigger_config,
                 description = excluded.description,
-                inputs = excluded.inputs",
-            params![role_id, binding_name, workflow_ref, workflow_id,
-                    trigger_type, trigger_config, description, inputs],
+                inputs = excluded.inputs,
+                emit = excluded.emit,
+                activities = excluded.activities",
+            params![role_id, binding_name,
+                    trigger_type, trigger_config, description, inputs, emit, activities],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -153,8 +163,8 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, role_id, binding_name, workflow_ref, workflow_id,
-                        trigger_type, trigger_config, description, inputs, is_active
+                "SELECT id, role_id, binding_name,
+                        trigger_type, trigger_config, description, inputs, is_active, emit, activities
                  FROM role_workflows WHERE role_id = ?1",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -163,6 +173,42 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    pub fn delete_single_role_workflow(
+        &self,
+        role_id: &str,
+        binding_name: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM role_workflows WHERE role_id = ?1 AND binding_name = ?2",
+            params![role_id, binding_name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn toggle_role_workflow(
+        &self,
+        role_id: &str,
+        binding_name: &str,
+    ) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE role_workflows SET is_active = NOT is_active WHERE role_id = ?1 AND binding_name = ?2",
+            params![role_id, binding_name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        // Return new is_active state
+        let is_active: i64 = conn
+            .query_row(
+                "SELECT is_active FROM role_workflows WHERE role_id = ?1 AND binding_name = ?2",
+                params![role_id, binding_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(is_active != 0)
     }
 
     pub fn delete_role_workflows(&self, role_id: &str) -> Result<(), NeboError> {
@@ -179,8 +225,8 @@ impl Store {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT rw.id, rw.role_id, rw.binding_name, rw.workflow_ref, rw.workflow_id,
-                        rw.trigger_type, rw.trigger_config, rw.description, rw.inputs, rw.is_active
+                "SELECT rw.id, rw.role_id, rw.binding_name,
+                        rw.trigger_type, rw.trigger_config, rw.description, rw.inputs, rw.is_active, rw.emit, rw.activities
                  FROM role_workflows rw
                  JOIN roles r ON rw.role_id = r.id
                  WHERE rw.trigger_type = 'event' AND rw.is_active = 1 AND r.is_enabled = 1",
@@ -209,6 +255,30 @@ impl Store {
         Ok(())
     }
 
+    pub fn list_emit_sources(&self) -> Result<Vec<EmitSource>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT rw.emit, r.name, rw.binding_name, rw.description
+                 FROM role_workflows rw
+                 JOIN roles r ON rw.role_id = r.id
+                 WHERE rw.emit IS NOT NULL AND rw.emit != '' AND rw.is_active = 1",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(EmitSource {
+                    emit: row.get(0)?,
+                    role_name: row.get(1)?,
+                    binding_name: row.get(2)?,
+                    description: row.get(3)?,
+                })
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn delete_cron_jobs_by_prefix(&self, prefix: &str) -> Result<i64, NeboError> {
         let conn = self.conn()?;
         let pattern = format!("{}%", prefix);
@@ -223,24 +293,26 @@ impl Store {
 }
 
 fn row_to_role_workflow(row: &rusqlite::Row) -> rusqlite::Result<RoleWorkflow> {
+    let activities_str: Option<String> = row.get(9)?;
+    let activities = activities_str.and_then(|s| serde_json::from_str(&s).ok());
     Ok(RoleWorkflow {
         id: row.get(0)?,
         role_id: row.get(1)?,
         binding_name: row.get(2)?,
-        workflow_ref: row.get(3)?,
-        workflow_id: row.get(4)?,
-        trigger_type: row.get(5)?,
-        trigger_config: row.get(6)?,
-        description: row.get(7)?,
-        inputs: row.get(8)?,
-        is_active: row.get(9)?,
+        trigger_type: row.get(3)?,
+        trigger_config: row.get(4)?,
+        description: row.get(5)?,
+        inputs: row.get(6)?,
+        is_active: row.get(7)?,
+        emit: row.get(8)?,
+        activities,
     })
 }
 
 fn row_to_role(row: &rusqlite::Row) -> rusqlite::Result<Role> {
     Ok(Role {
         id: row.get(0)?,
-        code: row.get(1)?,
+        kind: row.get(1)?,
         name: row.get(2)?,
         description: row.get(3)?,
         role_md: row.get(4)?,

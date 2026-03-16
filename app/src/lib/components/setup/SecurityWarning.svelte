@@ -18,7 +18,7 @@
 	<ShieldAlert class="h-6 w-6 shrink-0" />
 	<div class="flex flex-col gap-2">
 		<h3 class="font-bold">Important: Nebo has powerful capabilities</h3>
-		<div class="text-sm">
+		<div class="text-base">
 			<p class="mb-2">When enabled, Nebo can:</p>
 			<ul class="list-disc list-inside space-y-1 ml-2">
 				<li><strong>File Access</strong> - Read, write, and modify files on your system</li>

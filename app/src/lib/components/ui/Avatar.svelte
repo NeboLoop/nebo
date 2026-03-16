@@ -39,8 +39,8 @@
 	};
 
 	const textSizeClasses: Record<string, string> = {
-		xs: 'text-xs',
-		sm: 'text-sm',
+		xs: 'text-sm',
+		sm: 'text-base',
 		md: 'text-base',
 		lg: 'text-lg',
 		xl: 'text-xl'

@@ -155,13 +155,13 @@
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Profile</h2>
-	<p class="text-sm text-base-content/70">Your preferences and personal information</p>
+	<p class="text-base text-base-content/80">Your preferences and personal information</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-sm text-base-content/70">Loading profile...</span>
+		<span class="text-base text-base-content/80">Loading profile...</span>
 	</div>
 {:else}
 	<form
@@ -173,7 +173,7 @@
 	>
 		<!-- Appearance -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Appearance</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Appearance</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="flex gap-2" role="group" aria-label="Theme selection">
 					{#each themeOptions as option}
@@ -183,31 +183,31 @@
 							class="flex-1 flex items-center justify-center gap-2 h-10 rounded-xl border transition-all
 								{theme === option.id
 									? 'bg-primary/10 border-primary/30 text-primary'
-									: 'bg-base-content/5 border-transparent text-base-content/70 hover:border-base-content/15'}"
+									: 'bg-base-content/5 border-transparent text-base-content/90 hover:border-base-content/15'}"
 						>
 							<option.icon class="w-4 h-4" />
-							<span class="text-sm font-medium">{option.label}</span>
+							<span class="text-base font-medium">{option.label}</span>
 						</button>
 					{/each}
 				</div>
 				{#if themeError}
-					<p class="text-sm text-error mt-2">{themeError}</p>
+					<p class="text-base text-error mt-2">{themeError}</p>
 				{/if}
 			</div>
 		</section>
 
 		<!-- About You -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">About You</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">About You</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="display-name">
+					<label class="text-base font-medium text-base-content/80" for="display-name">
 						What should I call you?
 					</label>
 					<input
 						id="display-name"
 						type="text"
-						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 						placeholder="Your name or nickname"
 						bind:value={displayName}
 					/>
@@ -215,25 +215,25 @@
 
 				<div class="grid sm:grid-cols-2 gap-4">
 					<div>
-						<label class="text-sm font-medium text-base-content/70" for="occupation">
+						<label class="text-base font-medium text-base-content/80" for="occupation">
 							What do you do?
 						</label>
 						<input
 							id="occupation"
 							type="text"
-							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 							placeholder="Your role or profession"
 							bind:value={occupation}
 						/>
 					</div>
 					<div>
-						<label class="text-sm font-medium text-base-content/70" for="location">
+						<label class="text-base font-medium text-base-content/80" for="location">
 							Location
 						</label>
 						<input
 							id="location"
 							type="text"
-							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 							placeholder="City, Country"
 							bind:value={location}
 						/>
@@ -241,7 +241,7 @@
 				</div>
 
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="timezone">
+					<label class="text-base font-medium text-base-content/80" for="timezone">
 						Timezone
 					</label>
 					<div class="flex gap-2 mt-2">
@@ -257,7 +257,7 @@
 						</select>
 						<button
 							type="button"
-							class="h-11 px-4 rounded-xl bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/70 hover:border-base-content/20 transition-colors"
+							class="h-11 px-4 rounded-xl bg-base-content/5 border border-base-content/10 text-base font-medium text-base-content/80 hover:border-base-content/40 transition-colors"
 							onclick={detectTimezone}
 						>
 							Detect
@@ -269,31 +269,31 @@
 
 		<!-- Interests -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-1">Interests</h3>
-			<p class="text-sm text-base-content/70 mb-3">Topics you care about — the agent will tailor responses accordingly</p>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-1">Interests</h3>
+			<p class="text-base text-base-content/80 mb-3">Topics you care about — the agent will tailor responses accordingly</p>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="flex gap-2">
 					<input
 						type="text"
-						class="flex-1 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+						class="flex-1 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 						placeholder="Type an interest and press Enter"
 						bind:value={interestsInput}
 						onkeydown={handleInterestKeydown}
 					/>
 					<button
 						type="button"
-						class="w-11 h-11 rounded-xl bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/20 transition-colors disabled:opacity-30"
+						class="w-11 h-11 rounded-xl bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/40 transition-colors disabled:opacity-30"
 						onclick={addInterest}
 						disabled={!interestsInput.trim()}
 						aria-label="Add interest"
 					>
-						<Plus class="w-4 h-4 text-base-content/70" />
+						<Plus class="w-4 h-4 text-base-content/90" />
 					</button>
 				</div>
 				{#if interests.length > 0}
 					<div class="flex flex-wrap gap-1.5 mt-4">
 						{#each interests as interest}
-							<span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-base-content/5 border border-base-content/10 text-sm">
+							<span class="inline-flex items-center gap-1 px-3 py-1.5 rounded-full bg-base-content/5 border border-base-content/10 text-base">
 								{interest}
 								<button
 									type="button"
@@ -301,28 +301,28 @@
 									onclick={() => removeInterest(interest)}
 									aria-label="Remove {interest}"
 								>
-									<X class="w-3 h-3 text-base-content/70" />
+									<X class="w-3 h-3 text-base-content/90" />
 								</button>
 							</span>
 						{/each}
 					</div>
 				{:else}
-					<p class="text-sm text-base-content/70 mt-3">No interests added yet</p>
+					<p class="text-base text-base-content/80 mt-3">No interests added yet</p>
 				{/if}
 			</div>
 		</section>
 
 		<!-- Goals & Context -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Goals & Context</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Goals & Context</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="goals">
+					<label class="text-base font-medium text-base-content/80" for="goals">
 						What would you like help with?
 					</label>
 					<textarea
 						id="goals"
-						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-sm focus:outline-none focus:border-primary/50 transition-colors resize-none"
+						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none"
 						rows="3"
 						placeholder="What are you trying to accomplish?"
 						bind:value={goals}
@@ -330,13 +330,13 @@
 				</div>
 
 				<div>
-					<label class="text-sm font-medium text-base-content/70" for="context">
+					<label class="text-base font-medium text-base-content/80" for="context">
 						Additional context
-						<span class="font-normal text-base-content/70 ml-1">optional</span>
+						<span class="font-normal text-base-content/90 ml-1">optional</span>
 					</label>
 					<textarea
 						id="context"
-						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-sm focus:outline-none focus:border-primary/50 transition-colors resize-none"
+						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none"
 						rows="3"
 						placeholder="Preferences, constraints, working style, things to avoid..."
 						bind:value={context}
@@ -347,14 +347,14 @@
 
 		<!-- Communication Style -->
 		<section>
-			<h3 class="text-sm font-semibold text-base-content/70 uppercase tracking-wider mb-3">Communication Style</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Communication Style</h3>
 			<div class="grid sm:grid-cols-3 gap-2">
 				{#each communicationStyles as style}
 					<label
 						class="cursor-pointer rounded-xl border p-4 transition-all
 							{communicationStyle === style.value
 								? 'bg-primary/10 border-primary/30'
-								: 'bg-base-200/50 border-base-content/10 hover:border-base-content/20'}"
+								: 'bg-base-200/50 border-base-content/10 hover:border-base-content/40'}"
 					>
 						<input
 							type="radio"
@@ -363,8 +363,8 @@
 							bind:group={communicationStyle}
 							class="hidden"
 						/>
-						<div class="font-medium text-sm">{style.label}</div>
-						<div class="text-sm text-base-content/70 mt-0.5">{style.description}</div>
+						<div class="font-medium text-base">{style.label}</div>
+						<div class="text-base text-base-content/80 mt-0.5">{style.description}</div>
 					</label>
 				{/each}
 			</div>
@@ -381,7 +381,7 @@
 			<button
 				type="submit"
 				disabled={isSaving}
-				class="h-10 px-6 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-30"
+				class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
 			>
 				{#if isSaving}
 					<Spinner size={16} />

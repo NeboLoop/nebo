@@ -158,23 +158,23 @@
 		{/if}
 
 		<!-- Line count -->
-		<span class="text-xs text-base-content/70 flex-shrink-0">
+		<span class="text-sm text-base-content/60 flex-shrink-0">
 			{filteredLines.length} lines
 		</span>
 	</div>
 
 	<!-- Log Content -->
 	{#if !appId}
-		<div class="flex flex-col items-center justify-center flex-1 text-base-content/70 gap-2">
+		<div class="flex flex-col items-center justify-center flex-1 text-base-content/90 gap-2">
 			<Terminal class="w-8 h-8" />
-			<p class="text-sm">No apps loaded</p>
-			<p class="text-xs">Sideload an app in Settings &gt; Developer to see logs</p>
+			<p class="text-base">No apps loaded</p>
+			<p class="text-sm">Sideload an app in Settings &gt; Developer to see logs</p>
 		</div>
 	{:else if filteredLines.length === 0}
-		<div class="flex flex-col items-center justify-center flex-1 text-base-content/70 gap-2">
+		<div class="flex flex-col items-center justify-center flex-1 text-base-content/90 gap-2">
 			<Terminal class="w-8 h-8" />
-			<p class="text-sm">No log output yet</p>
-			<p class="text-xs">Logs will appear here as your app runs</p>
+			<p class="text-base">No log output yet</p>
+			<p class="text-sm">Logs will appear here as your app runs</p>
 		</div>
 	{:else}
 		<div

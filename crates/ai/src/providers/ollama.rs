@@ -369,6 +369,8 @@ struct SessionToolResult {
     content: String,
     #[serde(default)]
     is_error: bool,
+    #[serde(default)]
+    image_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

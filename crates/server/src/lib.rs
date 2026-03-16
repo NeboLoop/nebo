@@ -286,6 +286,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         warn!(error = %e, "FTS health check failed — memory search may be degraded");
     }
 
+    // Clean up orphaned workflow runs from previous shutdown
+    match store.cleanup_orphaned_runs() {
+        Ok(0) => {}
+        Ok(n) => info!(count = n, "cancelled orphaned workflow runs from previous session"),
+        Err(e) => warn!(error = %e, "failed to clean up orphaned workflow runs"),
+    }
+
     // Ensure bot_id exists: file → DB (Go migration) → generate new
     if config::read_bot_id().is_none() {
         // Check DB for bot_id set by the Go version (plugin_settings table)
@@ -993,7 +1000,15 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .merge(http_routes)
         .layer(axum::middleware::from_fn(middleware::security_headers))
         .layer(cors_layer())
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::http::Request<_>| {
+                    tracing::info_span!("http", method = %request.method(), uri = %request.uri())
+                })
+                .on_failure(|error: tower_http::classify::ServerErrorsFailureClass, latency: std::time::Duration, _span: &tracing::Span| {
+                    tracing::error!(%error, latency_ms = latency.as_millis(), "request failed");
+                })
+        )
         .with_state(state);
 
     if !quiet {
@@ -1034,6 +1049,78 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
     }
 
+    // Route agent space messages to the correct role
+    if msg.topic == "agent_space" {
+        let text = extract_message_text(&msg.content);
+        if text.is_empty() {
+            return;
+        }
+
+        let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
+        let role_id = resolve_role_id_from_slug(&state, &agent_slug).await;
+
+        let session_key = agent::keyparser::build_session_key(
+            "neboloop",
+            "agent_space",
+            &format!("{}:{}", agent_slug, msg.conversation_id),
+        );
+
+        // Pre-create chat with friendly title (agent name, not raw session key)
+        let role_name = {
+            let registry = state.role_registry.read().await;
+            registry
+                .get(&role_id)
+                .map(|r| r.name.clone())
+                .unwrap_or_else(|| agent_slug.clone())
+        };
+        let _ = state.store.create_chat(&session_key, &format!("Agent: {}", role_name));
+
+        let preview = if text.len() > 80 { format!("{}...", &text[..80]) } else { text.clone() };
+        notify_crate::send(&format!("Agent space: {}", role_name), &preview);
+
+        let entity_config = entity_config::resolve_for_chat(
+            &state.store,
+            "channel",
+            "agent_space",
+        );
+
+        let config = chat_dispatch::ChatConfig {
+            session_key,
+            prompt: text,
+            system: String::new(),
+            user_id: String::new(),
+            channel: "neboloop".to_string(),
+            origin: tools::Origin::Comm,
+            role_id,
+            cancel_token: tokio_util::sync::CancellationToken::new(),
+            lane: types::constants::lanes::COMM.to_string(),
+            comm_reply: Some(chat_dispatch::CommReplyConfig {
+                topic: "agent_space".to_string(),
+                conversation_id: msg.conversation_id.clone(),
+            }),
+            entity_config,
+            images: vec![],
+        };
+
+        chat_dispatch::run_chat(&state, config, None).await;
+
+        state.event_bus.emit(tools::events::Event {
+            source: format!("neboloop.agent_space.{}", agent_slug),
+            payload: serde_json::json!({
+                "from": msg.from,
+                "content": msg.content,
+                "conversation_id": msg.conversation_id,
+                "agent_slug": agent_slug,
+            }),
+            origin: "neboloop".to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        });
+        return;
+    }
+
     // Route chat and DM messages to the agent runner via unified chat pipeline
     if msg.topic == "chat" || msg.topic == "dm" {
         let text = extract_message_text(&msg.content);
@@ -1058,6 +1145,18 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             &msg.topic,
         );
 
+        // Check for @mention routing — if agent_slug is present, resolve to role_id
+        let role_id = {
+            let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
+            resolve_role_id_from_slug(&state, &agent_slug).await
+        };
+
+        // Pre-create chat with @mention context if applicable
+        if !role_id.is_empty() {
+            let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
+            let _ = state.store.create_chat(&session_key, &format!("@{} (channel)", agent_slug));
+        }
+
         let config = chat_dispatch::ChatConfig {
             session_key,
             prompt: text,
@@ -1065,7 +1164,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             user_id: String::new(),
             channel: "neboloop".to_string(),
             origin: tools::Origin::Comm,
-            role_id: String::new(),
+            role_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -1073,6 +1172,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 conversation_id: msg.conversation_id.clone(),
             }),
             entity_config,
+            images: vec![],
         };
 
         chat_dispatch::run_chat(&state, config, None).await;
@@ -1120,6 +1220,20 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             "topic": msg.topic,
         }),
     );
+}
+
+/// Resolve a role ID from an agent slug by scanning the active role registry.
+async fn resolve_role_id_from_slug(state: &AppState, slug: &str) -> String {
+    if slug.is_empty() {
+        return String::new();
+    }
+    let registry = state.role_registry.read().await;
+    for (id, role) in registry.iter() {
+        if role.name.to_lowercase().replace(' ', "-") == slug {
+            return id.clone();
+        }
+    }
+    String::new()
 }
 
 /// Extract text from a comm message content (JSON or plain text).
@@ -1253,6 +1367,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/update/apply", axum::routing::post(handlers::agent::update_apply))
         // Files
         .route("/files/browse", axum::routing::post(handlers::files::browse))
+        .route("/files/pick", axum::routing::post(handlers::files::pick_files))
         .route("/files/{*path}", axum::routing::get(handlers::files::serve_file))
         // NeboLoop OAuth and account
         .route("/neboloop/oauth/start", axum::routing::get(handlers::neboloop::oauth_start))
@@ -1292,9 +1407,16 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/roles/{id}/toggle", axum::routing::post(handlers::roles::toggle_role))
         .route("/roles/{id}/install-deps", axum::routing::post(handlers::roles::install_deps))
         .route("/roles/active", axum::routing::get(handlers::roles::list_active_roles))
+        .route("/roles/event-sources", axum::routing::get(handlers::roles::list_event_sources))
         .route("/roles/{id}/activate", axum::routing::post(handlers::roles::activate_role))
         .route("/roles/{id}/deactivate", axum::routing::post(handlers::roles::deactivate_role))
+        .route("/roles/{id}/duplicate", axum::routing::post(handlers::roles::duplicate_role))
         .route("/roles/{id}/chat", axum::routing::post(handlers::roles::chat_with_role))
+        .route("/roles/{id}/workflows", axum::routing::get(handlers::roles::list_role_workflows))
+        .route("/roles/{id}/workflows", axum::routing::post(handlers::roles::create_role_workflow))
+        .route("/roles/{id}/workflows/{binding_name}", axum::routing::put(handlers::roles::update_role_workflow))
+        .route("/roles/{id}/workflows/{binding_name}", axum::routing::delete(handlers::roles::delete_role_workflow))
+        .route("/roles/{id}/workflows/{binding_name}/toggle", axum::routing::post(handlers::roles::toggle_role_workflow))
         // Codes (marketplace install via REST)
         .route("/store/apps", axum::routing::get(handlers::store::list_store_apps))
         .route("/store/skills", axum::routing::get(handlers::store::list_store_skills))

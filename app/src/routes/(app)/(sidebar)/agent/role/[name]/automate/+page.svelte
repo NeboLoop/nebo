@@ -1,0 +1,31 @@
+<script lang="ts">
+	import { getContext } from 'svelte';
+	import AutomationsSection from '$lib/components/agent/AutomationsSection.svelte';
+
+	const channelState = getContext<{
+		activeRoleId: string;
+		activeRoleName: string;
+	}>('channelState');
+</script>
+
+<svelte:head>
+	<title>Nebo - {channelState.activeRoleName || 'Automate'} - Automate</title>
+</svelte:head>
+
+<div class="flex-1 flex flex-col min-h-0">
+	<div class="flex-1 overflow-y-auto">
+		<div class="max-w-3xl mx-auto px-6 py-6">
+			{#if channelState.activeRoleId}
+				<AutomationsSection
+					entityType="role"
+					entityId={channelState.activeRoleId}
+					roleId={channelState.activeRoleId}
+				/>
+			{:else}
+				<div class="flex justify-center py-12">
+					<span class="loading loading-spinner loading-md text-primary"></span>
+				</div>
+			{/if}
+		</div>
+	</div>
+</div>

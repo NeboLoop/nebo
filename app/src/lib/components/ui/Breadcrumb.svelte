@@ -21,7 +21,7 @@
 	}: Props = $props();
 </script>
 
-<div class="breadcrumbs text-sm {className}">
+<div class="breadcrumbs text-base {className}">
 	<ul>
 		{#each items as item, index}
 			<li>

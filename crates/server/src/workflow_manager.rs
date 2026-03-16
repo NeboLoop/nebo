@@ -26,6 +26,8 @@ pub struct WorkflowManagerImpl {
     config: config::Config,
     /// Active run cancellation tokens, keyed by run_id.
     active_runs: Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>,
+    /// Maps role_id → list of active run_ids, for cancelling all runs when a role stops.
+    role_runs: Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>,
     /// Event bus for emitting workflow lifecycle events.
     event_bus: Option<tools::EventBus>,
     /// Skill loader for resolving skill_content in workflow execution.
@@ -49,6 +51,7 @@ impl WorkflowManagerImpl {
             hub,
             config,
             active_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            role_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_bus,
             skill_loader,
         }
@@ -82,6 +85,22 @@ impl WorkflowManagerImpl {
                 Ok(())
             }
             None => Err(format!("no active run found: {}", run_id)),
+        }
+    }
+
+    /// Cancel all running workflows associated with a role.
+    async fn cancel_runs_for_role_impl(&self, role_id: &str) {
+        let run_ids = {
+            let runs = self.role_runs.lock().unwrap();
+            runs.get(role_id).cloned().unwrap_or_default()
+        };
+        for run_id in &run_ids {
+            if let Err(e) = self.cancel_run(run_id).await {
+                warn!(role_id, run_id = %run_id, error = %e, "failed to cancel role workflow run");
+            }
+        }
+        if !run_ids.is_empty() {
+            info!(role_id, count = run_ids.len(), "cancelled running workflows for role");
         }
     }
 
@@ -344,11 +363,10 @@ impl WorkflowManager for WorkflowManagerImpl {
                     }
                 };
 
-                // Build tool wrappers from the registry snapshot (exclude MCP proxy tools)
+                // Build tool wrappers from the registry snapshot
                 let tool_defs = tools_registry.list().await;
                 let resolved_tools: Vec<Box<dyn DynTool>> = tool_defs
                     .iter()
-                    .filter(|td| !td.name.starts_with("mcp__"))
                     .map(|td| {
                         Box::new(RegistryTool {
                             tool_name: td.name.clone(),
@@ -398,19 +416,10 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Some(&cancel_token),
                     skill_content.as_ref(),
                     event_bus.as_ref(),
+                    None,
                 ).await {
-                    Ok(_engine_run_id) => {
-                        // Update run record to completed
-                        if let Err(e) = store.update_workflow_run(
-                            &run_id_clone,
-                            Some("completed"),
-                            None,
-                            None,
-                            None,
-                            None,
-                        ) {
-                            warn!(run_id = %run_id_clone, error = %e, "failed to mark workflow run completed");
-                        }
+                    Ok((_engine_run_id, _output)) => {
+                        // Engine already called complete_workflow_run with output
                         hub.broadcast(
                             "workflow_run_completed",
                             serde_json::json!({
@@ -548,9 +557,218 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
+    fn run_inline<'a>(
+        &'a self,
+        definition_json: String,
+        inputs: serde_json::Value,
+        trigger_type: &'a str,
+        role_id: &'a str,
+        emit_source: Option<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let def = workflow::parser::parse_workflow(&definition_json)
+                .map_err(|e| format!("parse inline workflow: {}", e))?;
+
+            // Create run record using role_id for tracking
+            let run_id = uuid::Uuid::new_v4().to_string();
+            let session_key = format!("role-{}-{}", role_id, run_id);
+            self.store.create_workflow_run(
+                &run_id,
+                &format!("role:{}", role_id),
+                trigger_type,
+                None,
+                Some(&inputs.to_string()),
+                Some(&session_key),
+            ).map_err(|e| format!("create_workflow_run: {}", e))?;
+
+            // Create cancellation token
+            let cancel_token = CancellationToken::new();
+            {
+                let mut runs = self.active_runs.lock().unwrap();
+                runs.insert(run_id.clone(), cancel_token.clone());
+            }
+            {
+                let mut role_map = self.role_runs.lock().unwrap();
+                role_map.entry(role_id.to_string()).or_default().push(run_id.clone());
+            }
+
+            // Clone Arcs for the spawned task
+            let store = self.store.clone();
+            let providers = self.providers.clone();
+            let tools_registry = self.tools.clone();
+            let hub = self.hub.clone();
+            let active_runs = self.active_runs.clone();
+            let role_runs = self.role_runs.clone();
+            let event_bus = self.event_bus.clone();
+            let skill_loader = self.skill_loader.clone();
+            let run_id_clone = run_id.clone();
+            let role_id_owned = role_id.to_string();
+            let trigger = trigger_type.to_string();
+            let binding_name = def.name.clone();
+
+            tokio::spawn(async move {
+                // Session key for posting chat messages to the role's conversation
+                let chat_session = format!("role:{}:web", role_id_owned);
+
+                let provider = {
+                    let lock = providers.read().await;
+                    lock.first().cloned()
+                };
+                let provider = match provider {
+                    Some(p) => p,
+                    None => {
+                        let _ = store.update_workflow_run(
+                            &run_id_clone, Some("failed"), None, None,
+                            Some("no AI provider available"), None,
+                        );
+                        // Post failure to role chat
+                        post_automation_message(
+                            &store, &hub, &chat_session,
+                            &format!("**Automation failed** — {} ({}): no AI provider available", binding_name, trigger),
+                        );
+                        hub.broadcast(
+                            "workflow_run_failed",
+                            serde_json::json!({
+                                "roleId": role_id_owned,
+                                "runId": run_id_clone,
+                                "error": "no AI provider available",
+                            }),
+                        );
+                        return;
+                    }
+                };
+
+                let tool_defs = tools_registry.list().await;
+                let resolved_tools: Vec<Box<dyn tools::registry::DynTool>> = tool_defs
+                    .iter()
+                    .filter(|td| !td.name.starts_with("mcp__"))
+                    .map(|td| {
+                        Box::new(RegistryTool {
+                            tool_name: td.name.clone(),
+                            tool_desc: td.description.clone(),
+                            tool_schema: td.input_schema.clone(),
+                            registry: tools_registry.clone(),
+                        }) as Box<dyn tools::registry::DynTool>
+                    })
+                    .collect();
+
+                info!(
+                    role = %role_id_owned,
+                    run_id = %run_id_clone,
+                    trigger = %trigger,
+                    tools = resolved_tools.len(),
+                    "executing inline workflow in background"
+                );
+
+                // Post "started" message to role chat
+                post_automation_message(
+                    &store, &hub, &chat_session,
+                    &format!("**Automation started** — {} ({})", binding_name, trigger),
+                );
+
+                let skill_content = if let Some(ref loader) = skill_loader {
+                    let mut map = HashMap::new();
+                    for activity in &def.activities {
+                        for skill_name in &activity.skills {
+                            if !map.contains_key(skill_name) {
+                                if let Some(skill) = loader.get(skill_name).await {
+                                    if !skill.template.is_empty() {
+                                        map.insert(skill_name.clone(), skill.template.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if map.is_empty() { None } else { Some(map) }
+                } else {
+                    None
+                };
+
+                match workflow::engine::execute_workflow(
+                    &def, inputs, &trigger, None, &store, &*provider,
+                    &resolved_tools, Some(&run_id_clone), Some(&cancel_token),
+                    skill_content.as_ref(), event_bus.as_ref(),
+                    emit_source,
+                ).await {
+                    Ok((_engine_run_id, output)) => {
+                        // Engine already called complete_workflow_run with output
+
+                        // Post completion message with output to role chat
+                        let summary = if output.is_empty() {
+                            format!("**Automation completed** — {} ({})", binding_name, trigger)
+                        } else {
+                            // Truncate output to ~4000 chars to keep chat messages reasonable
+                            let truncated = if output.len() > 4000 {
+                                let mut end = 4000;
+                                while !output.is_char_boundary(end) { end -= 1; }
+                                &output[..end]
+                            } else { &output };
+                            format!("**Automation completed** — {} ({})\n\n{}", binding_name, trigger, truncated)
+                        };
+                        post_automation_message(&store, &hub, &chat_session, &summary);
+
+                        hub.broadcast(
+                            "workflow_run_completed",
+                            serde_json::json!({
+                                "roleId": role_id_owned,
+                                "runId": run_id_clone,
+                            }),
+                        );
+                        info!(role = %role_id_owned, run_id = %run_id_clone, "inline workflow completed");
+                    }
+                    Err(e) => {
+                        let err_msg = e.to_string();
+                        let _ = store.update_workflow_run(
+                            &run_id_clone, Some("failed"), None, None, Some(&err_msg), None,
+                        );
+
+                        // Post failure message to role chat
+                        post_automation_message(
+                            &store, &hub, &chat_session,
+                            &format!("**Automation failed** — {} ({}): {}", binding_name, trigger, err_msg),
+                        );
+
+                        hub.broadcast(
+                            "workflow_run_failed",
+                            serde_json::json!({
+                                "roleId": role_id_owned,
+                                "runId": run_id_clone,
+                                "error": err_msg,
+                            }),
+                        );
+                        warn!(role = %role_id_owned, run_id = %run_id_clone, error = %err_msg, "inline workflow failed");
+                    }
+                }
+
+                // Clean up from active_runs and role_runs
+                {
+                    let mut runs = active_runs.lock().unwrap();
+                    runs.remove(&run_id_clone);
+                }
+                {
+                    let mut role_map = role_runs.lock().unwrap();
+                    if let Some(ids) = role_map.get_mut(&role_id_owned) {
+                        ids.retain(|id| id != &run_id_clone);
+                        if ids.is_empty() {
+                            role_map.remove(&role_id_owned);
+                        }
+                    }
+                }
+            });
+
+            Ok(run_id)
+        })
+    }
+
     fn cancel<'a>(&'a self, run_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
             self.cancel_run(run_id).await
+        })
+    }
+
+    fn cancel_runs_for_role<'a>(&'a self, role_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            self.cancel_runs_for_role_impl(role_id).await
         })
     }
 }
@@ -591,5 +809,26 @@ impl DynTool for RegistryTool {
         Box::pin(async move {
             self.registry.execute(ctx, &self.tool_name, input).await
         })
+    }
+}
+
+/// Post an automation lifecycle message to a role's chat session.
+fn post_automation_message(
+    store: &db::Store,
+    hub: &ClientHub,
+    session_key: &str,
+    content: &str,
+) {
+    let msg_id = uuid::Uuid::new_v4().to_string();
+    match store.create_chat_message_for_runner(&msg_id, session_key, "assistant", content, None, None, None, None) {
+        Ok(_msg) => {
+            hub.broadcast("chat_message", serde_json::json!({
+                "session_id": session_key,
+                "message": { "role": "assistant", "content": content }
+            }));
+        }
+        Err(e) => {
+            warn!(session = %session_key, error = %e, "failed to post automation message to chat");
+        }
     }
 }

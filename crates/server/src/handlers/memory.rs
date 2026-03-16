@@ -71,10 +71,19 @@ pub async fn get_stats(
 ) -> HandlerResult<serde_json::Value> {
     let total = state.store.count_memories().unwrap_or(0);
     let namespaces = state.store.get_distinct_namespaces().unwrap_or_default();
+
+    // Compute layer counts by grouping namespaces by prefix before '/'
+    let mut layer_counts = std::collections::HashMap::<String, i64>::new();
+    for ns in &namespaces {
+        let layer = ns.split('/').next().unwrap_or("other").to_string();
+        let count = state.store.count_memories_by_namespace(ns).unwrap_or(0);
+        *layer_counts.entry(layer).or_insert(0) += count;
+    }
+
     Ok(Json(serde_json::json!({
-        "total": total,
+        "totalCount": total,
+        "layerCounts": layer_counts,
         "namespaces": namespaces,
-        "namespaceCount": namespaces.len(),
     })))
 }
 
@@ -92,7 +101,7 @@ pub async fn get_memory(
     // Increment access count
     let _ = state.store.increment_memory_access(id);
 
-    Ok(Json(serde_json::json!(mem)))
+    Ok(Json(serde_json::json!({"memory": mem})))
 }
 
 /// PUT /api/v1/memories/:id
@@ -101,18 +110,24 @@ pub async fn update_memory(
     Path(id): Path<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
+    // Tags can arrive as a JSON array or a string; store as JSON array string
+    let tags_str = match &body["tags"] {
+        serde_json::Value::Array(_) => Some(body["tags"].to_string()),
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => None,
+    };
     state
         .store
         .update_memory(
             id,
             body["value"].as_str(),
-            body["tags"].as_str(),
+            tags_str.as_deref(),
             body["metadata"].as_str(),
         )
         .map_err(to_error_response)?;
 
     let mem = state.store.get_memory(id).map_err(to_error_response)?;
-    Ok(Json(serde_json::json!(mem)))
+    Ok(Json(serde_json::json!({"memory": mem})))
 }
 
 /// DELETE /api/v1/memories/:id

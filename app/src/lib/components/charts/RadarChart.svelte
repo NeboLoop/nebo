@@ -141,7 +141,7 @@
 <div bind:this={containerRef} class="radar-chart-container flex flex-col items-center justify-center w-full h-full">
 	{#if labels.length === 0 || datasets.length === 0}
 		<div class="empty-state flex items-center justify-center">
-			<p class="text-base-content/70 text-sm">No data to display</p>
+			<p class="text-base-content/90 text-base">No data to display</p>
 		</div>
 	{:else}
 		<svg width={size} height={size} viewBox="0 0 {size} {size}">
@@ -159,7 +159,7 @@
 				<text
 					x={cx + 5}
 					y={cy - circle.radius + 3}
-					class="text-xs fill-base-content/60"
+					class="text-sm fill-base-content/60"
 					font-size="9"
 				>
 					{formatValue(circle.value)}
@@ -182,7 +182,7 @@
 					y={axis.labelY}
 					text-anchor="middle"
 					dominant-baseline="middle"
-					class="text-xs fill-base-content/70"
+					class="text-sm fill-base-content/80"
 					font-size="11"
 				>
 					{axis.label}

@@ -134,20 +134,20 @@
 		<div class="flex items-center justify-between mb-2">
 			<div>
 				<h2 class="font-display text-xl font-bold text-base-content mb-1">Notes</h2>
-				<p class="text-sm text-base-content/70">Environment context for your agent's tools</p>
+				<p class="text-base text-base-content/80">Environment context for your agent's tools</p>
 			</div>
 			{#if saveStatus === 'saving'}
-				<span class="flex items-center gap-1.5 text-sm text-base-content/70">
+				<span class="flex items-center gap-1.5 text-base text-base-content/80">
 					<Spinner size={12} />
 					Saving...
 				</span>
 			{:else if saveStatus === 'saved'}
-				<span class="flex items-center gap-1.5 text-sm text-success">
+				<span class="flex items-center gap-1.5 text-base text-success">
 					<Check class="w-3.5 h-3.5" />
 					Saved
 				</span>
 			{:else if saveStatus === 'error'}
-				<span class="flex items-center gap-1.5 text-sm text-error">
+				<span class="flex items-center gap-1.5 text-base text-error">
 					<AlertCircle class="w-3.5 h-3.5" />
 					Failed to save
 				</span>
@@ -158,7 +158,7 @@
 	{#if isLoading}
 		<div class="flex-1 flex flex-col items-center justify-center gap-4">
 			<Spinner size={32} />
-			<p class="text-sm text-base-content/70">Loading notes...</p>
+			<p class="text-base text-base-content/80">Loading notes...</p>
 		</div>
 	{:else}
 		<div class="flex-1 space-y-3 min-h-0 overflow-y-auto">
@@ -185,7 +185,7 @@
 
 			{#if sections.length === 0 && !showAddSection}
 				<div class="rounded-xl border border-dashed border-base-300 px-6 py-8 text-center">
-					<p class="text-sm text-base-content/70 mb-3">
+					<p class="text-base text-base-content/80 mb-3">
 						Add sections like SSH Hosts, Development, Devices — anything your agent should know about your environment.
 					</p>
 					<button
@@ -217,7 +217,7 @@
 			{:else}
 				<button
 					type="button"
-					class="flex items-center gap-2 text-sm text-base-content/70 hover:text-primary transition-colors px-1 py-2"
+					class="flex items-center gap-2 text-base text-base-content/80 hover:text-primary transition-colors px-1 py-2"
 					onclick={() => (showAddSection = true)}
 				>
 					<Plus class="w-4 h-4" />

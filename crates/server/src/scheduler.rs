@@ -90,6 +90,7 @@ async fn tick(
             "bash" | "shell" | "" => execute_shell(&job.command).await,
             "agent" => execute_agent(runner, hub, job).await,
             "workflow" => execute_workflow_task(workflow_manager, &job.command).await,
+            "role_workflow" => execute_role_workflow_task(workflow_manager, &store, &job.command).await,
             other => (false, String::new(), Some(format!("unknown task type: {}", other))),
         };
 
@@ -198,6 +199,53 @@ async fn execute_workflow_task(
 ) -> (bool, String, Option<String>) {
     match manager.run(workflow_id, serde_json::Value::Null, "cron").await {
         Ok(run_id) => (true, format!("workflow run started: {}", run_id), None),
+        Err(e) => (false, String::new(), Some(e)),
+    }
+}
+
+/// Execute a role's inline workflow. Command format: `role:{role_id}:{binding_name}`
+async fn execute_role_workflow_task(
+    manager: &dyn tools::workflows::WorkflowManager,
+    store: &Store,
+    command: &str,
+) -> (bool, String, Option<String>) {
+    let parts: Vec<&str> = command.splitn(3, ':').collect();
+    if parts.len() != 3 || parts[0] != "role" {
+        return (false, String::new(), Some(format!("invalid role_workflow command: {}", command)));
+    }
+    let role_id = parts[1];
+    let binding_name = parts[2];
+
+    // Load role config from DB
+    let role = match store.get_role(role_id) {
+        Ok(Some(r)) => r,
+        Ok(None) => return (false, String::new(), Some(format!("role not found: {}", role_id))),
+        Err(e) => return (false, String::new(), Some(format!("db error: {}", e))),
+    };
+
+    let config = match napp::role::parse_role_config(&role.frontmatter) {
+        Ok(c) => c,
+        Err(e) => return (false, String::new(), Some(format!("parse role config: {}", e))),
+    };
+
+    let binding = match config.workflows.get(binding_name) {
+        Some(b) => b,
+        None => return (false, String::new(), Some(format!("binding '{}' not found in role", binding_name))),
+    };
+
+    if !binding.has_activities() {
+        return (false, String::new(), Some("binding has no activities".to_string()));
+    }
+
+    let def_json = binding.to_workflow_json(binding_name);
+    let inputs: serde_json::Value = serde_json::to_value(&binding.inputs).unwrap_or_default();
+    let emit_source = binding.emit.as_ref().map(|emit_name| {
+        let slug = role.name.to_lowercase().replace(' ', "-");
+        format!("{}.{}", slug, emit_name)
+    });
+
+    match manager.run_inline(def_json, inputs, "schedule", role_id, emit_source).await {
+        Ok(run_id) => (true, format!("inline workflow run started: {}", run_id), None),
         Err(e) => (false, String::new(), Some(e)),
     }
 }

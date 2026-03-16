@@ -22,7 +22,7 @@
 				<span>{title}</span>
 			</h1>
 			{#if subtitle}
-				<p class="mt-2 text-sm text-base-content/70">{subtitle}</p>
+				<p class="mt-2 text-base text-base-content/90">{subtitle}</p>
 			{/if}
 		</div>
 		{#if actions}

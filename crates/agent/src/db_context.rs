@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+
 use db::models::{AgentProfile, UserProfile};
 use db::Store;
+use tracing::debug;
 
 use crate::memory::{self, ScoredMemory};
 
@@ -201,6 +204,47 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     let mut result = sections.join("\n\n---\n\n");
     result = result.replace("{agent_name}", agent_name);
     result
+}
+
+/// Search for memories relevant to the user's current prompt using FTS.
+/// Returns a formatted string to append to the system prompt, excluding
+/// memories already present in the tacit_memories list.
+pub fn load_prompt_relevant_memories(
+    store: &Store,
+    user_id: &str,
+    prompt: &str,
+    existing_memory_ids: &HashSet<i64>,
+) -> String {
+    if prompt.is_empty() {
+        return String::new();
+    }
+
+    // FTS search against memories table
+    let fts_results = match store.search_memories_fts(prompt, user_id, 10) {
+        Ok(results) => results,
+        Err(_) => return String::new(),
+    };
+
+    // Fetch full memories, filtering out duplicates
+    let mut lines = Vec::new();
+    for (mem_id, _rank) in fts_results {
+        if existing_memory_ids.contains(&mem_id) {
+            continue;
+        }
+        if let Ok(Some(mem)) = store.get_memory(mem_id) {
+            lines.push(format!("- {}: {}", mem.key, mem.value));
+            if lines.len() >= 5 {
+                break;
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    debug!(count = lines.len(), "injected prompt-relevant memories");
+    format!("\n\n## Relevant to This Conversation\n{}", lines.join("\n"))
 }
 
 /// Try to parse as JSON array of strings and format as markdown list,
