@@ -315,10 +315,10 @@ jobs:
       - name: Extract binary and MSI
         shell: bash
         run: |
-          cp target/release/nebo.exe nebo-windows-amd64.exe
+          PKG_VERSION="${GITHUB_REF_NAME#v}"
+          cp target/release/nebo.exe "Nebo-${PKG_VERSION}-setup.exe"
           MSI=$(ls target/release/bundle/msi/*.msi 2>/dev/null || true)
           if [ -n "$MSI" ]; then
-            PKG_VERSION="${GITHUB_REF_NAME#v}"
             cp $MSI "Nebo-${PKG_VERSION}-amd64.msi"
           else
             echo "::warning::No MSI found in target/release/bundle/msi/"
@@ -327,7 +327,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: nebo-windows-amd64
-          path: nebo-windows-amd64.exe
+          path: Nebo-*-setup.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -374,7 +374,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: nebo-windows-amd64-signed
-          path: nebo-windows-amd64.exe
+          path: Nebo-*-setup.exe
 
       - uses: actions/upload-artifact@v4
         with:
@@ -423,7 +423,7 @@ jobs:
             nebo-darwin-arm64 nebo-darwin-amd64 \
             nebo-linux-amd64 nebo-linux-arm64 \
             nebo-linux-amd64-headless nebo-linux-arm64-headless \
-            nebo-windows-amd64.exe \
+            Nebo-*-setup.exe \
             Nebo-*.dmg Nebo-*.msi 2>/dev/null | tee checksums.txt
           echo "Generated checksums:"
           cat checksums.txt
