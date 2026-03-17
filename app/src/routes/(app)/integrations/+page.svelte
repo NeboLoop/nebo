@@ -1,68 +1,60 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
-	import Card from '$lib/components/ui/Card.svelte';
-	import Button from '$lib/components/ui/Button.svelte';
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import AlertDialog from '$lib/components/ui/AlertDialog.svelte';
-	import Badge from '$lib/components/ui/Badge.svelte';
-	import Radio from '$lib/components/ui/Radio.svelte';
+	import Toggle from '$lib/components/ui/Toggle.svelte';
+	import Alert from '$lib/components/ui/Alert.svelte';
+	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import {
 		Plus,
 		CheckCircle,
 		XCircle,
 		RefreshCw,
-		Play,
-		MoreVertical,
-		Server
+		Trash2,
+		Server,
+		X
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { MCPIntegration } from '$lib/api/nebo';
 
 	let integrations = $state<MCPIntegration[]>([]);
 	let isLoading = $state(true);
-	let showAddModal = $state(false);
-	let addStep = $state<'url' | 'auth' | 'name'>('url');
+	let error = $state('');
+	let testingId = $state<string | null>(null);
+	let testResult = $state<{ id: string; success: boolean; message: string } | null>(null);
 
 	// Add form state
+	let showAddForm = $state(false);
+	let addStep = $state<'url' | 'auth' | 'name'>('url');
 	let newServerUrl = $state('');
 	let newAuthType = $state<'oauth' | 'api_key' | 'none'>('oauth');
 	let newApiKey = $state('');
 	let newName = $state('');
 	let isAdding = $state(false);
-
-	// Dropdown state
-	let openDropdown = $state<string | null>(null);
-
-	// Dialog state
-	let showDeleteDialog = $state(false);
-	let deleteTarget = $state<MCPIntegration | null>(null);
-	let showAlertDialog = $state(false);
-	let alertMessage = $state('');
+	let addError = $state('');
 
 	onMount(async () => {
 		await loadIntegrations();
 
 		// Check for OAuth callback success/error
 		const connected = $page.url.searchParams.get('connected');
-		const error = $page.url.searchParams.get('error');
+		const oauthError = $page.url.searchParams.get('error');
 		if (connected) {
 			await loadIntegrations();
 		}
-		if (error) {
-			const desc = $page.url.searchParams.get('error_description') || error;
-			alertMessage = `OAuth error: ${desc}`;
-			showAlertDialog = true;
+		if (oauthError) {
+			const desc = $page.url.searchParams.get('error_description') || oauthError;
+			error = `OAuth error: ${desc}`;
 		}
 	});
 
 	async function loadIntegrations() {
 		isLoading = true;
+		error = '';
 		try {
 			const data = await api.listMCPIntegrations();
 			integrations = data.integrations || [];
-		} catch (error) {
-			console.error('Failed to load integrations:', error);
+		} catch (err: any) {
+			error = err?.message || 'Failed to load integrations';
 		} finally {
 			isLoading = false;
 		}
@@ -83,7 +75,17 @@
 		newName = '';
 		addStep = 'url';
 		isAdding = false;
-		showAddModal = true;
+		addError = '';
+		showAddForm = true;
+	}
+
+	function closeAddModal() {
+		showAddForm = false;
+		newServerUrl = '';
+		newAuthType = 'oauth';
+		newApiKey = '';
+		newName = '';
+		addError = '';
 	}
 
 	function nextStep() {
@@ -107,6 +109,7 @@
 
 	async function addServer() {
 		isAdding = true;
+		addError = '';
 		try {
 			const result = await api.createMCPIntegration({
 				name: newName || hostnameFromUrl(newServerUrl) || 'MCP Server',
@@ -122,75 +125,57 @@
 						window.location.href = oauthResult.authUrl;
 						return;
 					}
-				} catch (e) {
-					console.error('OAuth flow failed:', e);
+				} catch (e: any) {
+					addError = e?.message || 'OAuth flow failed';
+					return;
 				}
 			}
 
 			await loadIntegrations();
-			showAddModal = false;
-		} catch (error) {
-			console.error('Failed to add server:', error);
+			closeAddModal();
+		} catch (err: any) {
+			addError = err?.message || 'Failed to add server';
 		} finally {
 			isAdding = false;
 		}
 	}
 
-	function confirmDelete(integration: MCPIntegration) {
-		deleteTarget = integration;
-		showDeleteDialog = true;
-		openDropdown = null;
-	}
-
-	async function executeDelete() {
-		if (!deleteTarget) return;
+	async function deleteIntegration(integration: MCPIntegration) {
+		if (!confirm(`Remove ${integration.name}? This will disconnect the server and unregister its tools.`)) return;
 		try {
-			await api.deleteMCPIntegration(deleteTarget.id);
-			integrations = integrations.filter((i) => i.id !== deleteTarget!.id);
-		} catch (error) {
-			console.error('Failed to delete integration:', error);
+			await api.deleteMCPIntegration(integration.id);
+			integrations = integrations.filter((i) => i.id !== integration.id);
+		} catch (err: any) {
+			error = err?.message || 'Failed to delete integration';
 		}
-		deleteTarget = null;
 	}
 
-	async function testIntegration(integration: MCPIntegration) {
+	async function testIntegration(id: string) {
+		testingId = id;
+		testResult = null;
 		try {
-			const result = await api.testMCPIntegration(integration.id);
+			const result = await api.testMCPIntegration(id);
+			testResult = { id, success: result.success, message: result.message };
 			if (result.success) {
 				await loadIntegrations();
-			} else {
-				alertMessage = result.message || 'Connection test failed';
-				showAlertDialog = true;
 			}
-		} catch (error) {
-			console.error('Failed to test integration:', error);
+		} catch (err: any) {
+			testResult = { id, success: false, message: err?.message || 'Test failed' };
+		} finally {
+			testingId = null;
 		}
 	}
 
 	async function toggleIntegration(integration: MCPIntegration) {
+		const newEnabled = !integration.isEnabled;
+		integration.isEnabled = newEnabled;
 		try {
-			await api.updateMCPIntegration({ isEnabled: !integration.isEnabled }, integration.id);
+			await api.updateMCPIntegration({ isEnabled: newEnabled }, integration.id);
 			await loadIntegrations();
-		} catch (error) {
-			console.error('Failed to toggle integration:', error);
+		} catch (err: any) {
+			integration.isEnabled = !newEnabled;
+			error = err?.message || 'Failed to update integration';
 		}
-		openDropdown = null;
-	}
-
-	function toggleDropdown(id: string) {
-		openDropdown = openDropdown === id ? null : id;
-	}
-
-	function authBadgeVariant(authType: string): 'info' | 'warning' | 'ghost' {
-		if (authType === 'oauth') return 'info';
-		if (authType === 'api_key') return 'warning';
-		return 'ghost';
-	}
-
-	function authBadgeLabel(authType: string): string {
-		if (authType === 'oauth') return 'OAUTH';
-		if (authType === 'api_key') return 'API KEY';
-		return 'NONE';
 	}
 
 	let isUrlValid = $derived(() => {
@@ -201,263 +186,292 @@
 			return false;
 		}
 	});
+
+	function authLabel(authType: string): string {
+		if (authType === 'oauth') return 'OAuth';
+		if (authType === 'api_key') return 'API Key';
+		return 'None';
+	}
 </script>
 
-<!-- Header -->
-<div class="mb-6 flex items-center justify-between">
-	<div>
+<div class="max-w-3xl">
+	<div class="mb-6">
 		<h2 class="font-display text-xl font-bold text-base-content mb-1">Integrations</h2>
-		<p class="text-base text-base-content/80">Connect to external services and MCP servers</p>
+		<p class="text-base text-base-content/80">Connect to external MCP servers to extend capabilities</p>
 	</div>
-	<div class="flex gap-2">
-		<Button type="ghost" onclick={loadIntegrations}>
-			<RefreshCw class="w-4 h-4 mr-2" />
-			Refresh
-		</Button>
-		<Button type="primary" onclick={openAddModal}>
-			<Plus class="w-4 h-4 mr-2" />
-			Add Server
-		</Button>
-	</div>
-</div>
 
-<!-- Server List -->
-<Card>
 	{#if isLoading}
-		<div class="py-8 text-center text-base-content/90">Loading servers...</div>
-	{:else if integrations.length === 0}
-		<div class="py-12 text-center">
-			<Server class="w-12 h-12 mx-auto mb-4 text-base-content/90" />
-			<h3 class="font-display font-bold text-base-content mb-2">No integrations connected</h3>
-			<p class="text-base-content/90 mb-4">
-				Connect to external MCP servers to extend your agent's capabilities
-			</p>
-			<Button type="primary" onclick={openAddModal}>
-				<Plus class="w-4 h-4 mr-2" />
-				Add Server
-			</Button>
+		<div class="flex items-center justify-center gap-3 py-16">
+			<Spinner size={20} />
+			<span class="text-base text-base-content/80">Loading integrations...</span>
 		</div>
 	{:else}
-		<div class="space-y-2">
-			{#each integrations as integration}
-				<div class="flex items-center justify-between p-4 rounded-lg bg-base-200">
-					<div class="flex items-center gap-3">
-						<div
-							class="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-bold text-lg"
+		<div class="space-y-6">
+			{#if error}
+				<Alert type="error" title="Error">{error}</Alert>
+			{/if}
+
+			<!-- MCP Servers -->
+			<section>
+				<div class="flex items-center justify-between mb-3">
+					<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">MCP Servers</h3>
+					<div class="flex items-center gap-2">
+						<button
+							type="button"
+							class="text-base text-base-content/80 hover:text-primary transition-colors"
+							onclick={loadIntegrations}
+							aria-label="Refresh"
 						>
-							{integration.name.charAt(0).toUpperCase()}
-						</div>
-						<div>
-							<div class="flex items-center gap-2">
-								<span class="font-medium">{integration.name}</span>
-								<Badge variant={authBadgeVariant(integration.authType)} size="xs">
-									{authBadgeLabel(integration.authType)}
-								</Badge>
-							</div>
-							<div class="text-base text-base-content/80">
-								{integration.serverUrl || integration.serverType}
-							</div>
-							<div class="flex items-center gap-1 text-base mt-0.5">
-								{#if integration.connectionStatus === 'connected'}
-									<CheckCircle class="w-3 h-3 text-success" />
-									<span class="text-success">Connected</span>
-									{#if integration.toolCount > 0}
-										<span class="text-base-content/90 ml-1"
-											>&middot; {integration.toolCount} tools</span
-										>
-									{/if}
-								{:else if integration.connectionStatus === 'error'}
-									<XCircle class="w-3 h-3 text-error" />
-									<span class="text-error">Error</span>
-								{:else}
-									<XCircle class="w-3 h-3 text-base-content/90" />
-									<span class="text-base-content/90">Disconnected</span>
-								{/if}
-								{#if integration.lastError}
-									<span class="text-error/60 ml-2">&middot; {integration.lastError}</span>
-								{/if}
-							</div>
-						</div>
-					</div>
-					<div class="flex items-center gap-1">
-						<Button type="ghost" size="sm" onclick={() => testIntegration(integration)}>
-							<Play class="w-3 h-3 mr-1" />
-							Test
-						</Button>
-						<div class="relative">
-							<button
-								onclick={() => toggleDropdown(integration.id)}
-								class="btn btn-ghost btn-sm btn-square"
-							>
-								<MoreVertical class="w-4 h-4" />
-							</button>
-							{#if openDropdown === integration.id}
-								<button
-									class="fixed inset-0 z-40 cursor-default"
-									onclick={() => (openDropdown = null)}
-									aria-label="Close menu"
-								></button>
-								<div
-									class="absolute right-0 top-full mt-1 z-50 bg-base-100 rounded-lg shadow-lg border border-base-300 py-1 min-w-[140px]"
-								>
-									<button
-										onclick={() => toggleIntegration(integration)}
-										class="w-full text-left px-4 py-2 text-base hover:bg-base-200"
-									>
-										{integration.isEnabled ? 'Disable' : 'Enable'}
-									</button>
-									<button
-										onclick={() => confirmDelete(integration)}
-										class="w-full text-left px-4 py-2 text-base text-error hover:bg-error/10"
-									>
-										Delete
-									</button>
-								</div>
-							{/if}
-						</div>
+							<RefreshCw class="w-4 h-4" />
+						</button>
+						<button
+							type="button"
+							class="flex items-center gap-1.5 text-base font-medium text-base-content/80 hover:text-primary transition-colors"
+							onclick={openAddModal}
+						>
+							<Plus class="w-4 h-4" /> Add server
+						</button>
 					</div>
 				</div>
-			{/each}
+
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+					{#if integrations.length === 0}
+						<div class="py-8 text-center">
+							<Server class="w-10 h-10 mx-auto mb-3 text-base-content/40" />
+							<p class="text-base text-base-content/80 mb-4">No MCP servers connected</p>
+							<button
+								type="button"
+								class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
+								onclick={openAddModal}
+							>
+								Add Server
+							</button>
+						</div>
+					{:else}
+						<div class="space-y-2">
+							{#each integrations as integration (integration.id)}
+								<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
+									<div class="flex items-center gap-3 min-w-0">
+										<div class="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-bold text-base shrink-0">
+											{integration.name.charAt(0).toUpperCase()}
+										</div>
+										<div class="min-w-0">
+											<div class="flex items-center gap-2">
+												<p class="text-base font-medium text-base-content truncate">{integration.name}</p>
+												<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-base-content/10 text-base-content/60 shrink-0">
+													{authLabel(integration.authType)}
+												</span>
+											</div>
+											<div class="flex items-center gap-2 mt-0.5">
+												<div class="flex items-center gap-1">
+													{#if integration.connectionStatus === 'connected'}
+														<CheckCircle class="w-3 h-3 text-success" />
+														<span class="text-sm text-success">Connected</span>
+													{:else if integration.connectionStatus === 'error'}
+														<XCircle class="w-3 h-3 text-error" />
+														<span class="text-sm text-error">Error</span>
+													{:else}
+														<XCircle class="w-3 h-3 text-base-content/40" />
+														<span class="text-sm text-base-content/60">Disconnected</span>
+													{/if}
+												</div>
+												{#if integration.connectionStatus === 'connected' && integration.toolCount > 0}
+													<span class="text-sm text-base-content/60">&middot; {integration.toolCount} tools</span>
+												{/if}
+												{#if integration.lastError}
+													<span class="text-sm text-error/70 truncate">&middot; {integration.lastError}</span>
+												{/if}
+											</div>
+										</div>
+									</div>
+									<div class="flex items-center gap-3 shrink-0">
+										{#if testResult?.id === integration.id}
+											<span class="text-base {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
+										{/if}
+										<button
+											type="button"
+											class="text-base text-base-content/80 hover:text-primary transition-colors"
+											onclick={() => testIntegration(integration.id)}
+											disabled={testingId === integration.id}
+										>
+											{#if testingId === integration.id}<Spinner size={14} />{:else}Test{/if}
+										</button>
+										<Toggle checked={integration.isEnabled} onchange={() => toggleIntegration(integration)} />
+										<button
+											type="button"
+											class="text-base text-base-content/80 hover:text-error transition-colors"
+											onclick={() => deleteIntegration(integration)}
+										>
+											<Trash2 class="w-4 h-4" />
+										</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</div>
+			</section>
 		</div>
 	{/if}
-</Card>
+</div>
 
 <!-- Add Server Modal -->
-<Modal bind:show={showAddModal} title="Add Integration" size="md" closeOnBackdrop>
-	<div class="space-y-4">
-		{#if addStep === 'url'}
-			<div>
-				<label for="server-url" class="block text-base font-medium mb-1">Server URL</label>
-				<input
-					id="server-url"
-					type="url"
-					bind:value={newServerUrl}
-					placeholder="https://example.com/mcp"
-					class="input input-bordered w-full"
-					onkeydown={(e) => {
-						if (e.key === 'Enter' && isUrlValid()) nextStep();
-					}}
-				/>
-				<p class="text-base text-base-content/80 mt-1">
-					The MCP server's endpoint URL (Streamable HTTP)
-				</p>
-			</div>
-		{:else if addStep === 'auth'}
-			<div>
-				<p class="text-base font-medium mb-3">Authentication</p>
-				<div class="space-y-1">
-					<Radio
-						name="auth-type"
-						value="oauth"
-						checked={newAuthType === 'oauth'}
-						label="OAuth"
-						description="Authenticate via OAuth 2.1 (recommended)"
-						onchange={() => (newAuthType = 'oauth')}
-					/>
-					<Radio
-						name="auth-type"
-						value="api_key"
-						checked={newAuthType === 'api_key'}
-						label="API Key / Bearer Token"
-						description="Authenticate with a static token"
-						onchange={() => (newAuthType = 'api_key')}
-					/>
-					<Radio
-						name="auth-type"
-						value="none"
-						checked={newAuthType === 'none'}
-						label="None"
-						description="No authentication required"
-						onchange={() => (newAuthType = 'none')}
-					/>
+{#if showAddForm}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="nebo-modal-backdrop" role="dialog" aria-modal="true" tabindex="-1" onkeydown={(e) => e.key === 'Escape' && closeAddModal()}>
+		<button type="button" class="nebo-modal-overlay" onclick={closeAddModal}></button>
+		<div class="nebo-modal-card max-w-lg">
+			<!-- Header -->
+			<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
+				<div>
+					<h3 class="font-display text-lg font-bold">Add MCP Server</h3>
+					<p class="text-base text-base-content/60 mt-0.5">
+						{#if addStep === 'url'}Step 1 of 3 — Server URL{:else if addStep === 'auth'}Step 2 of 3 — Authentication{:else}Step 3 of 3 — Confirm{/if}
+					</p>
 				</div>
-				{#if newAuthType === 'api_key'}
-					<div class="mt-4">
-						<label for="api-key" class="block text-base font-medium mb-1">API Key</label>
+				<button type="button" onclick={closeAddModal} class="nebo-modal-close" aria-label="Close">
+					<X class="w-5 h-5 text-base-content/90" />
+				</button>
+			</div>
+
+			<!-- Body -->
+			<div class="px-5 py-5 space-y-4">
+				{#if addStep === 'url'}
+					<div>
+						<label class="text-base font-medium text-base-content/80" for="server-url">Server URL</label>
 						<input
-							id="api-key"
-							type="password"
-							bind:value={newApiKey}
-							placeholder="Enter API key or bearer token"
-							class="input input-bordered w-full"
+							id="server-url"
+							type="url"
+							bind:value={newServerUrl}
+							placeholder="https://example.com/mcp"
+							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
+							onkeydown={(e) => { if (e.key === 'Enter' && isUrlValid()) nextStep(); }}
 						/>
+						<p class="text-sm text-base-content/60 mt-1.5">The MCP server's endpoint URL (Streamable HTTP)</p>
 					</div>
+				{:else if addStep === 'auth'}
+					<div>
+						<p class="text-base font-medium text-base-content/80 mb-3">Authentication method</p>
+						<div class="space-y-2">
+							{#each [
+								{ value: 'oauth', label: 'OAuth 2.1', desc: 'Recommended — secure token-based auth' },
+								{ value: 'api_key', label: 'API Key / Bearer Token', desc: 'Authenticate with a static token' },
+								{ value: 'none', label: 'None', desc: 'No authentication required' }
+							] as opt}
+								<label
+									class="flex items-start gap-3 p-3 rounded-xl cursor-pointer transition-colors
+										{newAuthType === opt.value ? 'bg-primary/10 ring-1 ring-primary/20' : 'bg-base-content/5 hover:bg-base-content/10'}"
+								>
+									<input
+										type="radio"
+										name="auth-type"
+										value={opt.value}
+										checked={newAuthType === opt.value}
+										onchange={() => (newAuthType = opt.value as any)}
+										class="radio radio-primary radio-sm mt-0.5"
+									/>
+									<div>
+										<p class="text-base font-medium text-base-content">{opt.label}</p>
+										<p class="text-sm text-base-content/60">{opt.desc}</p>
+									</div>
+								</label>
+							{/each}
+						</div>
+						{#if newAuthType === 'api_key'}
+							<div class="mt-4">
+								<label class="text-base font-medium text-base-content/80" for="api-key">API Key</label>
+								<input
+									id="api-key"
+									type="password"
+									bind:value={newApiKey}
+									placeholder="Enter API key or bearer token"
+									class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
+								/>
+							</div>
+						{/if}
+					</div>
+				{:else if addStep === 'name'}
+					<div>
+						<label class="text-base font-medium text-base-content/80" for="server-name">Name (optional)</label>
+						<input
+							id="server-name"
+							type="text"
+							bind:value={newName}
+							placeholder={hostnameFromUrl(newServerUrl) || 'MCP Server'}
+							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
+						/>
+						<p class="text-sm text-base-content/60 mt-1.5">A friendly name for this server. Defaults to the hostname.</p>
+					</div>
+
+					<div class="rounded-xl bg-base-content/5 border border-base-content/10 p-4 space-y-2">
+						<div class="flex justify-between text-base">
+							<span class="text-base-content/60">URL</span>
+							<span class="text-base-content font-mono text-sm truncate ml-4">{newServerUrl}</span>
+						</div>
+						<div class="flex justify-between text-base">
+							<span class="text-base-content/60">Auth</span>
+							<span class="text-base-content">{authLabel(newAuthType)}</span>
+						</div>
+					</div>
+
+					{#if addError}
+						<Alert type="error" title="Error">{addError}</Alert>
+					{/if}
 				{/if}
 			</div>
-		{:else if addStep === 'name'}
-			<div>
-				<label for="server-name" class="block text-base font-medium mb-1">Name (optional)</label>
-				<input
-					id="server-name"
-					type="text"
-					bind:value={newName}
-					placeholder={hostnameFromUrl(newServerUrl) || 'MCP Server'}
-					class="input input-bordered w-full"
-				/>
-				<p class="text-base text-base-content/80 mt-1">
-					A friendly name for this server. Defaults to the hostname.
-				</p>
-			</div>
 
-			<div class="bg-base-200 rounded-lg p-3 text-base space-y-1">
-				<div class="flex justify-between">
-					<span class="text-base-content/90">URL</span>
-					<span class="font-mono text-base">{newServerUrl}</span>
-				</div>
-				<div class="flex justify-between">
-					<span class="text-base-content/90">Auth</span>
-					<span>{authBadgeLabel(newAuthType)}</span>
-				</div>
+			<!-- Footer -->
+			<div class="flex items-center justify-end gap-3 px-5 py-4 border-t border-base-content/10">
+				{#if addStep === 'url'}
+					<button
+						type="button"
+						class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
+						onclick={closeAddModal}
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
+						onclick={nextStep}
+						disabled={!isUrlValid()}
+					>
+						Next
+					</button>
+				{:else if addStep === 'auth'}
+					<button
+						type="button"
+						class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
+						onclick={prevStep}
+					>
+						Back
+					</button>
+					<button
+						type="button"
+						class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
+						onclick={nextStep}
+						disabled={newAuthType === 'api_key' && !newApiKey}
+					>
+						Next
+					</button>
+				{:else}
+					<button
+						type="button"
+						class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
+						onclick={prevStep}
+					>
+						Back
+					</button>
+					<button
+						type="button"
+						class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30"
+						onclick={addServer}
+						disabled={isAdding}
+					>
+						{#if isAdding}<Spinner size={16} /> Connecting...{:else if newAuthType === 'oauth'}Connect with OAuth{:else}Add Server{/if}
+					</button>
+				{/if}
 			</div>
-		{/if}
-	</div>
-
-	{#snippet footer()}
-		<div class="flex gap-2 w-full">
-			{#if addStep === 'url'}
-				<Button type="ghost" class="flex-1" onclick={() => (showAddModal = false)}>Cancel</Button>
-				<Button type="primary" class="flex-1" onclick={nextStep} disabled={!isUrlValid()}>
-					Next
-				</Button>
-			{:else if addStep === 'auth'}
-				<Button type="ghost" class="flex-1" onclick={prevStep}>Back</Button>
-				<Button
-					type="primary"
-					class="flex-1"
-					onclick={nextStep}
-					disabled={newAuthType === 'api_key' && !newApiKey}
-				>
-					Next
-				</Button>
-			{:else}
-				<Button type="ghost" class="flex-1" onclick={prevStep}>Back</Button>
-				<Button type="primary" class="flex-1" onclick={addServer} disabled={isAdding}>
-					{#if newAuthType === 'oauth'}
-						Connect with OAuth
-					{:else}
-						Add Server
-					{/if}
-				</Button>
-			{/if}
 		</div>
-	{/snippet}
-</Modal>
-
-<!-- Delete Confirmation -->
-<AlertDialog
-	bind:open={showDeleteDialog}
-	title="Remove Server"
-	description="Are you sure you want to remove {deleteTarget?.name}? This will disconnect the server and unregister its tools."
-	actionLabel="Remove"
-	actionType="danger"
-	onAction={executeDelete}
-/>
-
-<!-- Alert Dialog -->
-<AlertDialog
-	bind:open={showAlertDialog}
-	title="Error"
-	description={alertMessage}
-	actionLabel="OK"
-	cancelLabel="Dismiss"
-/>
+	</div>
+{/if}

@@ -10,6 +10,7 @@
 	import {
 		Search,
 		Puzzle,
+		Link2,
 		Settings,
 		Menu,
 		X,
@@ -61,7 +62,8 @@
 			<button
 				type="button"
 				class="flex items-center gap-1.5 h-9 px-2.5 rounded-lg transition-colors text-base-content/60 hover:text-base-content hover:bg-base-200"
-				aria-label="Open command palette"
+				aria-label="Search"
+				title="Search"
 				onclick={() => {
 					window.dispatchEvent(
 						new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true })
@@ -74,6 +76,7 @@
 			<!-- Marketplace Link -->
 			<a
 				href="/marketplace"
+				title="Marketplace"
 				class="flex items-center justify-center w-9 h-9 rounded-lg transition-colors {isActive(
 					'/marketplace'
 				)
@@ -83,9 +86,23 @@
 			>
 				<Puzzle class="w-5 h-5" />
 			</a>
+			<!-- Connectors Link -->
+			<a
+				href="/integrations"
+				title="Connectors"
+				class="flex items-center justify-center w-9 h-9 rounded-lg transition-colors {isActive(
+					'/integrations'
+				)
+					? 'text-primary bg-primary/10'
+					: 'text-base-content/90 hover:text-base-content hover:bg-base-200'}"
+				aria-label="Connectors"
+			>
+				<Link2 class="w-5 h-5" />
+			</a>
 			<!-- Settings Link -->
 			<a
 				href="/settings/account"
+				title="Settings"
 				class="flex items-center justify-center w-9 h-9 rounded-lg transition-colors {isActive(
 					'/settings'
 				)
@@ -157,6 +174,15 @@
 				>
 					<Puzzle class="w-[18px] h-[18px]" />
 					Marketplace
+				</a>
+				<a
+					href="/integrations"
+					class="nav-link"
+					class:active={currentPath.startsWith('/integrations')}
+					onclick={closeMobileMenu}
+				>
+					<Link2 class="w-[18px] h-[18px]" />
+					Connectors
 				</a>
 				<a
 					href="/settings/account"

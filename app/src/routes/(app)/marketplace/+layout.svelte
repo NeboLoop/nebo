@@ -3,10 +3,9 @@
 	import type { Snippet } from 'svelte';
 	import {
 		Compass,
-		UserCog,
 		FileText,
-		GitBranch,
 		Grid3x3,
+		PackageCheck,
 		Code2
 	} from 'lucide-svelte';
 
@@ -15,10 +14,11 @@
 	const currentPath = $derived($page.url.pathname);
 
 	const pageTitle = $derived.by(() => {
-		if (currentPath.startsWith('/marketplace/roles')) return 'Roles';
-		if (currentPath.startsWith('/marketplace/workflows')) return 'Workflows';
 		if (currentPath.startsWith('/marketplace/skills')) return 'Skills';
+		if (currentPath.startsWith('/marketplace/installed')) return 'Installed';
 		if (currentPath.startsWith('/marketplace/categories')) return 'Categories';
+		if (currentPath.startsWith('/marketplace/roles')) return 'Skills';
+		if (currentPath.startsWith('/marketplace/workflows')) return 'Skills';
 		return 'Marketplace';
 	});
 
@@ -29,9 +29,8 @@
 
 	const navItems = [
 		{ label: 'Featured', icon: Compass, href: '/marketplace' },
-		{ label: 'Roles', icon: UserCog, href: '/marketplace/roles' },
 		{ label: 'Skills', icon: FileText, href: '/marketplace/skills' },
-		{ label: 'Workflows', icon: GitBranch, href: '/marketplace/workflows' },
+		{ label: 'Installed', icon: PackageCheck, href: '/marketplace/installed' },
 	];
 
 	const utilItems = [
