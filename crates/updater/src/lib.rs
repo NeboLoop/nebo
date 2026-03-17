@@ -225,12 +225,18 @@ pub async fn download(
     Ok(tmp_path)
 }
 
-/// Verify SHA256 checksum of the downloaded binary against checksums.txt from CDN.
+/// Verify SHA256 checksum of the downloaded file against checksums.txt from CDN.
+/// Automatically uses the correct asset name (bare binary for direct, DMG/MSI for app_bundle).
 pub async fn verify_checksum(
     binary_path: &std::path::Path,
     tag: &str,
 ) -> Result<(), UpdateError> {
-    let asset = asset_name();
+    let method = detect_install_method();
+    let asset = if method == "app_bundle" {
+        bundle_asset_name(tag).unwrap_or_else(|| asset_name())
+    } else {
+        asset_name()
+    };
     let url = format!("{}/{}/checksums.txt", RELEASE_DOWNLOAD_URL, tag);
 
     let client = reqwest::Client::builder()
