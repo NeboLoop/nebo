@@ -103,13 +103,14 @@ pub async fn uninstall_store_skill(
 
 /// GET /store/products — unified product listing via `/api/v1/products`.
 /// Query params: type (skill|workflow|role), category, q, page, pageSize.
-/// Returns `{ "skills": [...] }` from NeboLoop's unified products endpoint.
+/// Returns `{ "skills": [...] }` from NeboLoop's unified products endpoint,
+/// enriched with local install state.
 pub async fn list_store_products(
     State(state): State<AppState>,
     Query(params): Query<StoreQuery>,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api
+    let mut resp = api
         .list_products(
             params.artifact_type.as_deref(),
             params.q.as_deref(),
@@ -119,6 +120,10 @@ pub async fn list_store_products(
         )
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("list_products: {e}"))))?;
+
+    // Enrich with local install state — NeboLoop doesn't know what's on this machine
+    enrich_installed_state(&mut resp);
+
     Ok(Json(resp))
 }
 
@@ -183,7 +188,12 @@ pub async fn get_store_product(
         .get_skill(&id)
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("get_product: {e}"))))?;
-    Ok(Json(serde_json::to_value(resp).unwrap_or_default()))
+    let mut val = serde_json::to_value(resp).unwrap_or_default();
+
+    // Enrich single product with local install state
+    enrich_installed_item(&mut val);
+
+    Ok(Json(val))
 }
 
 /// GET /store/products/{id}/reviews — product reviews.
@@ -266,6 +276,60 @@ pub async fn submit_store_product_feedback(
         .await
         .map_err(|e| to_error_response(NeboError::Internal(format!("submit_feedback: {e}"))))?;
     Ok(Json(resp))
+}
+
+// ── Local install state enrichment ─────────────────────────────────
+
+/// Check if a product is installed locally by slug/name, checking both
+/// user and nebo artifact directories for skills and roles.
+fn is_locally_installed(slug: &str, artifact_type: &str) -> bool {
+    let (user_dir, nebo_dir) = match (config::user_dir(), config::nebo_dir()) {
+        (Ok(u), Ok(n)) => (u, n),
+        _ => return false,
+    };
+
+    let subdir = match artifact_type {
+        "role" => "roles",
+        "skill" | _ => "skills",
+    };
+
+    // Check user dir: slug/ or slug.yaml
+    let user_path = user_dir.join(subdir).join(slug);
+    if user_path.exists() {
+        return true;
+    }
+    if user_dir.join(subdir).join(format!("{}.yaml", slug)).exists() {
+        return true;
+    }
+
+    // Check nebo (marketplace) dir: slug/
+    let nebo_path = nebo_dir.join(subdir).join(slug);
+    if nebo_path.exists() {
+        return true;
+    }
+
+    false
+}
+
+/// Enrich a single product JSON value with local install state.
+fn enrich_installed_item(val: &mut serde_json::Value) {
+    if let Some(obj) = val.as_object_mut() {
+        let slug = obj.get("slug").and_then(|v| v.as_str()).unwrap_or("");
+        let artifact_type = obj.get("type").and_then(|v| v.as_str()).unwrap_or("skill");
+        if !slug.is_empty() && is_locally_installed(slug, artifact_type) {
+            obj.insert("installed".to_string(), serde_json::Value::Bool(true));
+        }
+    }
+}
+
+/// Enrich a product list response with local install state.
+/// Looks for `{ "skills": [...] }` structure returned by NeboLoop.
+fn enrich_installed_state(resp: &mut serde_json::Value) {
+    if let Some(items) = resp.get_mut("skills").and_then(|v| v.as_array_mut()) {
+        for item in items.iter_mut() {
+            enrich_installed_item(item);
+        }
+    }
 }
 
 /// POST /store/products/{id}/install — install a product by code/id.

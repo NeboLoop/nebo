@@ -192,10 +192,14 @@ fn main() {
             // Build tray
             let show = MenuItemBuilder::with_id("show", "Show Nebo").build(app)?;
             let hide = MenuItemBuilder::with_id("hide", "Hide").build(app)?;
-            let separator = PredefinedMenuItem::separator(app)?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let check_update = MenuItemBuilder::with_id("check_update", "Check for Updates...").build(app)?;
+            let help = MenuItemBuilder::with_id("help", "Help & Documentation").build(app)?;
+            let feedback = MenuItemBuilder::with_id("feedback", "Send Feedback").build(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit Nebo").build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&show, &hide, &separator, &quit])
+                .items(&[&show, &hide, &sep1, &check_update, &help, &feedback, &sep2, &quit])
                 .build()?;
 
             let tray_icon =
@@ -218,6 +222,20 @@ fn main() {
                         if let Some(w) = app.get_webview_window("main") {
                             let _ = w.hide();
                         }
+                    }
+                    "check_update" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                            let _ = w.eval("if(window.__NEBO_CHECK_UPDATE__)window.__NEBO_CHECK_UPDATE__()");
+                        }
+                    }
+                    "help" => {
+                        open_external("https://neboloop.com/docs");
+                    }
+                    "feedback" => {
+                        open_external("https://github.com/NeboLoop/nebo/issues");
                     }
                     "quit" => {
                         app.exit(0);

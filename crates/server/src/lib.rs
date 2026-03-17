@@ -1362,6 +1362,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/integrations/{id}", axum::routing::put(handlers::integrations::update_integration))
         .route("/integrations/{id}", axum::routing::delete(handlers::integrations::delete_integration))
         .route("/integrations/{id}/test", axum::routing::post(handlers::integrations::test_integration))
+        .route("/integrations/{id}/connect", axum::routing::post(handlers::integrations::connect_integration))
         // Updates
         .route("/update/check", axum::routing::get(handlers::agent::update_check))
         .route("/update/apply", axum::routing::post(handlers::agent::update_apply))

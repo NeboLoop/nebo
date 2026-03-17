@@ -36,7 +36,6 @@
 		{ category: 'Navigation', label: 'Dashboard', icon: 'grid', action: () => goto('/') },
 		{ category: 'Navigation', label: 'Agents', icon: 'cpu', action: () => goto('/agents') },
 		{ category: 'Navigation', label: 'Roles', icon: 'user', action: () => goto('/roles') },
-		{ category: 'Navigation', label: 'Workflows', icon: 'workflow', action: () => goto('/workflows') },
 		{ category: 'Navigation', label: 'Skills', icon: 'zap', action: () => goto('/skills') },
 		{ category: 'Navigation', label: 'Integrations', icon: 'plug', action: () => goto('/integrations') },
 		{ category: 'Navigation', label: 'Events', icon: 'calendar', action: () => goto('/events') },

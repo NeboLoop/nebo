@@ -19,7 +19,8 @@
 		CreditCard,
 		BarChart3,
 		X,
-		ArrowUpCircle
+		ArrowUpCircle,
+		Info
 	} from 'lucide-svelte';
 	import type { Snippet, Component } from 'svelte';
 	import { updateInfo } from '$lib/stores/update';
@@ -57,6 +58,8 @@
 		{ id: 'status', path: '/settings/status', label: 'Status', icon: Activity },
 		null,
 		{ id: 'developer', path: '/settings/developer', label: 'Developer', icon: Code },
+		null,
+		{ id: 'about', path: '/settings/about', label: 'About', icon: Info },
 	];
 
 	const allTabs = $derived(items.filter((i): i is NavItem => i !== null));

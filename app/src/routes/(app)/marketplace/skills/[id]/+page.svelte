@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import webapi from '$lib/api/gocliRequest';
+	import * as api from '$lib/api/nebo';
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
 	import ReviewCard from '$lib/components/marketplace/ReviewCard.svelte';
 	import FeedbackSection from '$lib/components/marketplace/FeedbackSection.svelte';
@@ -70,9 +71,11 @@
 	}
 
 	async function installProduct() {
+		if (skill?.installed) return;
 		installing = true;
 		try {
-			await webapi.post(`/api/v1/store/products/${skillId}/install`);
+			await api.installStoreApp(skillId);
+			if (skill) skill.installed = true;
 		} catch { /* ignore */ }
 		installing = false;
 	}
@@ -137,9 +140,15 @@
 				{#if skill.category}
 					<p class="text-sm text-base-content/60 mt-0.5">{skill.category}</p>
 				{/if}
-				<button type="button" onclick={installProduct} disabled={installing} class="h-9 px-6 rounded-full bg-primary text-primary-content font-bold text-base mt-3 hover:brightness-110 active:scale-[0.97] transition-all inline-flex items-center gap-1.5 disabled:opacity-50">
-					{installing ? 'Installing...' : 'Install'}
-				</button>
+				{#if skill.installed}
+					<span class="h-9 px-6 rounded-full bg-success/15 text-success font-bold text-base mt-3 inline-flex items-center gap-1.5">
+						<Check class="w-4 h-4" /> Installed
+					</span>
+				{:else}
+					<button type="button" onclick={installProduct} disabled={installing} class="h-9 px-6 rounded-full bg-primary text-primary-content font-bold text-base mt-3 hover:brightness-110 active:scale-[0.97] transition-all inline-flex items-center gap-1.5 disabled:opacity-50">
+						{installing ? 'Installing...' : 'Install'}
+					</button>
+				{/if}
 			</div>
 		</div>
 	</div>

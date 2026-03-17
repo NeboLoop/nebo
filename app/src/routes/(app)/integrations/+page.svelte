@@ -21,6 +21,7 @@
 	let error = $state('');
 	let testingId = $state<string | null>(null);
 	let testResult = $state<{ id: string; success: boolean; message: string } | null>(null);
+	let connectingId = $state<string | null>(null);
 
 	// Add form state
 	let showAddForm = $state(false);
@@ -141,7 +142,6 @@
 	}
 
 	async function deleteIntegration(integration: MCPIntegration) {
-		if (!confirm(`Remove ${integration.name}? This will disconnect the server and unregister its tools.`)) return;
 		try {
 			await api.deleteMCPIntegration(integration.id);
 			integrations = integrations.filter((i) => i.id !== integration.id);
@@ -163,6 +163,20 @@
 			testResult = { id, success: false, message: err?.message || 'Test failed' };
 		} finally {
 			testingId = null;
+		}
+	}
+
+	async function connectIntegration(id: string) {
+		connectingId = id;
+		testResult = null;
+		try {
+			const result = await api.connectMCPIntegration(id);
+			testResult = { id, success: result.success, message: result.message };
+			await loadIntegrations();
+		} catch (err: any) {
+			testResult = { id, success: false, message: err?.message || 'Connection failed' };
+		} finally {
+			connectingId = null;
 		}
 	}
 
@@ -250,61 +264,74 @@
 					{:else}
 						<div class="space-y-2">
 							{#each integrations as integration (integration.id)}
-								<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
-									<div class="flex items-center gap-3 min-w-0">
-										<div class="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-bold text-base shrink-0">
-											{integration.name.charAt(0).toUpperCase()}
-										</div>
-										<div class="min-w-0">
-											<div class="flex items-center gap-2">
-												<p class="text-base font-medium text-base-content truncate">{integration.name}</p>
-												<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-base-content/10 text-base-content/60 shrink-0">
-													{authLabel(integration.authType)}
-												</span>
+								<div class="rounded-xl bg-base-content/5 border border-base-content/10 py-2.5 px-4">
+									<div class="flex items-center justify-between">
+										<div class="flex items-center gap-3 min-w-0">
+											<div class="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-bold text-base shrink-0">
+												{integration.name.charAt(0).toUpperCase()}
 											</div>
-											<div class="flex items-center gap-2 mt-0.5">
-												<div class="flex items-center gap-1">
-													{#if integration.connectionStatus === 'connected'}
-														<CheckCircle class="w-3 h-3 text-success" />
-														<span class="text-sm text-success">Connected</span>
-													{:else if integration.connectionStatus === 'error'}
-														<XCircle class="w-3 h-3 text-error" />
-														<span class="text-sm text-error">Error</span>
-													{:else}
-														<XCircle class="w-3 h-3 text-base-content/40" />
-														<span class="text-sm text-base-content/60">Disconnected</span>
+											<div class="min-w-0">
+												<div class="flex items-center gap-2">
+													<p class="text-base font-medium text-base-content truncate">{integration.name}</p>
+													<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-base-content/10 text-base-content/60 shrink-0">
+														{authLabel(integration.authType)}
+													</span>
+												</div>
+												<div class="flex items-center gap-2 mt-0.5">
+													<div class="flex items-center gap-1">
+														{#if integration.connectionStatus === 'connected'}
+															<CheckCircle class="w-3 h-3 text-success" />
+															<span class="text-sm text-success">Connected</span>
+														{:else if integration.connectionStatus === 'error'}
+															<XCircle class="w-3 h-3 text-error" />
+															<span class="text-sm text-error">Error</span>
+														{:else}
+															<XCircle class="w-3 h-3 text-base-content/40" />
+															<span class="text-sm text-base-content/60">Disconnected</span>
+														{/if}
+													</div>
+													{#if integration.connectionStatus === 'connected' && integration.toolCount > 0}
+														<span class="text-sm text-base-content/60">&middot; {integration.toolCount} tools</span>
 													{/if}
 												</div>
-												{#if integration.connectionStatus === 'connected' && integration.toolCount > 0}
-													<span class="text-sm text-base-content/60">&middot; {integration.toolCount} tools</span>
-												{/if}
-												{#if integration.lastError}
-													<span class="text-sm text-error/70 truncate">&middot; {integration.lastError}</span>
-												{/if}
 											</div>
 										</div>
+										<div class="flex items-center gap-3 shrink-0">
+											{#if integration.connectionStatus === 'connected'}
+												<button
+													type="button"
+													class="text-base text-base-content/80 hover:text-primary transition-colors"
+													onclick={() => testIntegration(integration.id)}
+													disabled={testingId === integration.id}
+												>
+													{#if testingId === integration.id}<Spinner size={14} />{:else}Test{/if}
+												</button>
+											{:else}
+												<button
+													type="button"
+													class="h-7 px-4 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-50"
+													onclick={() => connectIntegration(integration.id)}
+													disabled={connectingId === integration.id}
+												>
+													{#if connectingId === integration.id}<Spinner size={12} />{:else}Connect{/if}
+												</button>
+											{/if}
+											<Toggle checked={integration.isEnabled} onchange={() => toggleIntegration(integration)} />
+											<button
+												type="button"
+												class="text-base text-base-content/80 hover:text-error transition-colors"
+												onclick={() => deleteIntegration(integration)}
+											>
+												<Trash2 class="w-4 h-4" />
+											</button>
+										</div>
 									</div>
-									<div class="flex items-center gap-3 shrink-0">
-										{#if testResult?.id === integration.id}
-											<span class="text-base {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
-										{/if}
-										<button
-											type="button"
-											class="text-base text-base-content/80 hover:text-primary transition-colors"
-											onclick={() => testIntegration(integration.id)}
-											disabled={testingId === integration.id}
-										>
-											{#if testingId === integration.id}<Spinner size={14} />{:else}Test{/if}
-										</button>
-										<Toggle checked={integration.isEnabled} onchange={() => toggleIntegration(integration)} />
-										<button
-											type="button"
-											class="text-base text-base-content/80 hover:text-error transition-colors"
-											onclick={() => deleteIntegration(integration)}
-										>
-											<Trash2 class="w-4 h-4" />
-										</button>
-									</div>
+									{#if testResult?.id === integration.id}
+										<p class="text-sm mt-1.5 {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</p>
+									{/if}
+									{#if integration.lastError && testResult?.id !== integration.id}
+										<p class="text-sm text-error/70 mt-1.5">{integration.lastError}</p>
+									{/if}
 								</div>
 							{/each}
 						</div>

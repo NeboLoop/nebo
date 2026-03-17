@@ -196,9 +196,15 @@
 				{#if skill.category}
 					<p class="text-sm text-base-content/60 mt-0.5">{skill.category}</p>
 				{/if}
-				<button type="button" onclick={installProduct} disabled={installing} class="h-9 px-6 rounded-full bg-primary text-primary-content font-bold text-base mt-3 hover:brightness-110 active:scale-[0.97] transition-all inline-flex items-center gap-1.5 disabled:opacity-50">
-					{installing ? 'Installing...' : 'Install'}
-				</button>
+				{#if skill.installed}
+					<span class="h-9 px-6 rounded-full bg-success/15 text-success font-bold text-base mt-3 inline-flex items-center gap-1.5">
+						Installed
+					</span>
+				{:else}
+					<button type="button" onclick={installProduct} disabled={installing} class="h-9 px-6 rounded-full bg-primary text-primary-content font-bold text-base mt-3 hover:brightness-110 active:scale-[0.97] transition-all inline-flex items-center gap-1.5 disabled:opacity-50">
+						{installing ? 'Installing...' : 'Install'}
+					</button>
+				{/if}
 			</div>
 		</div>
 	</div>
@@ -257,11 +263,7 @@
 						<p class="text-sm text-base-content/60 mb-1.5 font-medium">{manifest().workflows.length} Workflows</p>
 						<div class="space-y-1">
 							{#each manifest().workflows as wf}
-								{#if wf.id}
-									<button type="button" onclick={() => goto('/marketplace/workflows/' + wf.id)} class="text-base py-1.5 px-3 rounded-lg bg-base-content/5 w-full text-left hover:bg-primary/10 hover:text-primary transition-colors cursor-pointer">{wf.name || wf}</button>
-								{:else}
-									<div class="text-base py-1.5 px-3 rounded-lg bg-base-content/5">{wf.name || wf}</div>
-								{/if}
+								<div class="text-base py-1.5 px-3 rounded-lg bg-base-content/5">{wf.name || wf}</div>
 							{/each}
 						</div>
 					</div>

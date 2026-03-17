@@ -5,6 +5,26 @@ use tracing::warn;
 use crate::state::AppState;
 use super::{to_error_response, HandlerResult};
 
+/// Fix legacy integrations that were saved as "stdio" but have HTTP URLs.
+fn fix_server_type(state: &AppState) {
+    if let Ok(integrations) = state.store.list_mcp_integrations() {
+        for i in &integrations {
+            if i.server_type == "stdio" {
+                if let Some(ref url) = i.server_url {
+                    if url.starts_with("http://") || url.starts_with("https://") {
+                        let _ = state.store.update_mcp_integration(
+                            &i.id, None, None, None, None,
+                            None,
+                        );
+                        // Direct SQL update for server_type since update_mcp_integration doesn't expose it
+                        let _ = state.store.set_mcp_server_type(&i.id, "http");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Re-sync the MCP bridge after integration changes.
 async fn sync_bridge(state: &AppState) {
     if let Ok(integrations) = state.store.list_mcp_integrations() {
@@ -30,6 +50,8 @@ async fn sync_bridge(state: &AppState) {
 pub async fn list_integrations(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
+    // Auto-fix legacy "stdio" records that have HTTP URLs
+    fix_server_type(&state);
     let integrations = state.store.list_mcp_integrations().map_err(to_error_response)?;
     Ok(Json(serde_json::json!({"integrations": integrations})))
 }
@@ -42,8 +64,19 @@ pub async fn create_integration(
     let name = body["name"]
         .as_str()
         .ok_or_else(|| to_error_response(types::NeboError::Validation("name required".into())))?;
-    let server_type = body["serverType"].as_str().unwrap_or("stdio");
     let server_url = body["serverUrl"].as_str();
+    // Infer server_type from URL if not explicitly provided
+    let server_type = body["serverType"].as_str().unwrap_or_else(|| {
+        if let Some(url) = server_url {
+            if url.starts_with("http://") || url.starts_with("https://") {
+                "http"
+            } else {
+                "stdio"
+            }
+        } else {
+            "stdio"
+        }
+    });
     let auth_type = body["authType"].as_str().unwrap_or("none");
     let metadata = body.get("metadata").map(|v| v.to_string());
 
@@ -53,10 +86,7 @@ pub async fn create_integration(
         .create_mcp_integration(&id, name, server_type, server_url, auth_type, metadata.as_deref())
         .map_err(to_error_response)?;
 
-    // Sync bridge to pick up the new integration
-    sync_bridge(&state).await;
-
-    Ok(Json(serde_json::json!(integration)))
+    Ok(Json(serde_json::json!({"integration": integration})))
 }
 
 /// GET /api/v1/integrations/:id
@@ -119,29 +149,26 @@ pub async fn test_integration(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
-    // Validate based on server type
-    let (success, message) = match integration.server_type.as_str() {
-        "sse" | "http" => {
-            // Try to reach the server URL
-            if let Some(ref url) = integration.server_url {
-                match reqwest::Client::new()
-                    .get(url.as_str())
-                    .timeout(std::time::Duration::from_secs(10))
-                    .send()
-                    .await
-                {
-                    Ok(resp) => (true, format!("Server reachable (HTTP {})", resp.status())),
-                    Err(e) => (false, format!("Cannot reach server: {}", e)),
-                }
-            } else {
-                (false, "No server URL configured".to_string())
+    // If a URL is provided, always try to reach it regardless of server_type
+    let (success, message) = if let Some(ref url) = integration.server_url {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            match reqwest::Client::new()
+                .get(url.as_str())
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await
+            {
+                Ok(resp) => (true, format!("Server reachable (HTTP {})", resp.status())),
+                Err(e) => (false, format!("Cannot reach server: {}", e)),
             }
+        } else {
+            (true, "Configuration looks valid".to_string())
         }
-        "stdio" => {
-            // For stdio servers, validate that the command exists
-            (true, "Configuration looks valid (stdio server will be started on demand)".to_string())
+    } else {
+        match integration.server_type.as_str() {
+            "stdio" => (true, "Configuration looks valid (stdio server will be started on demand)".to_string()),
+            _ => (false, "No server URL configured".to_string()),
         }
-        other => (false, format!("Unknown server type: {}", other)),
     };
 
     Ok(Json(serde_json::json!({
@@ -149,6 +176,62 @@ pub async fn test_integration(
         "integration": integration.name,
         "message": message,
     })))
+}
+
+/// POST /api/v1/integrations/:id/connect — connect to the MCP server and register its tools.
+pub async fn connect_integration(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let integration = state
+        .store
+        .get_mcp_integration(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let server_url = integration.server_url.as_deref().unwrap_or("");
+    if server_url.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "No server URL configured".into(),
+        )));
+    }
+
+    // Try to connect and list tools
+    match state
+        .bridge
+        .connect(&id, &integration.server_type, server_url, None)
+        .await
+    {
+        Ok(tools) => {
+            let tool_count = tools.len();
+            // Update connection status in DB
+            let _ = state.store.update_mcp_integration(
+                &id,
+                None,
+                None,
+                None,
+                None,
+                Some(&serde_json::json!({"connection_status": "connected", "tool_count": tool_count}).to_string()),
+            );
+            // Also update connection_status column directly
+            let _ = state.store.set_mcp_connection_status(&id, "connected", tool_count as i64);
+
+            let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "message": format!("Connected — {} tools registered", tool_count),
+                "toolCount": tool_count,
+                "tools": tool_names,
+            })))
+        }
+        Err(e) => {
+            let _ = state.store.set_mcp_connection_status(&id, "error", 0);
+            Ok(Json(serde_json::json!({
+                "success": false,
+                "message": format!("Connection failed: {}", e),
+            })))
+        }
+    }
 }
 
 /// GET /api/v1/integrations/registry

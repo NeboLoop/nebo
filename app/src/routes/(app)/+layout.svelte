@@ -24,10 +24,20 @@
 	import type { UpdateCheckResponse } from '$lib/api/neboComponents';
 	import * as api from '$lib/api/nebo';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import WhatsNewModal from '$lib/components/WhatsNewModal.svelte';
+	import Toast from '$lib/components/ui/Toast.svelte';
 
 	let { children }: { children: Snippet } = $props();
 
 	let commandPaletteOpen = $state(false);
+
+	// What's New modal state
+	let showWhatsNew = $state(false);
+	let whatsNewVersion = $state('');
+	let whatsNewReleaseUrl = $state<string | undefined>(undefined);
+
+	// Toast state for tray "Check for Updates" when already up-to-date
+	let showUpToDateToast = $state(false);
 
 	// Theme: detect OS preference, allow user override
 	let themePref = $state<'light' | 'dark' | 'system'>('system');
@@ -142,6 +152,31 @@
 			}
 		});
 
+		// What's New: detect version change after update
+		const unsubWhatsNew = updateInfo.subscribe((info) => {
+			if (!info?.currentVersion) return;
+			const lastSeen = localStorage.getItem('nebo_last_seen_version');
+			if (lastSeen === null) {
+				// First install — seed silently, no modal
+				localStorage.setItem('nebo_last_seen_version', info.currentVersion);
+			} else if (lastSeen !== info.currentVersion) {
+				whatsNewVersion = info.currentVersion;
+				whatsNewReleaseUrl = info.releaseUrl;
+				showWhatsNew = true;
+			}
+		});
+
+		// Tray menu: "Check for Updates" handler
+		(window as any).__NEBO_CHECK_UPDATE__ = async () => {
+			resetUpdateState();
+			await checkForUpdate();
+			// If no update available, show "up to date" toast
+			const info = get(updateInfo);
+			if (!info?.available) {
+				showUpToDateToast = true;
+			}
+		};
+
 		// Check if user needs onboarding + load theme preference
 		try {
 			const [response, prefsData] = await Promise.all([
@@ -169,6 +204,8 @@
 			unsubError();
 			unsubPlan();
 			unsubStatus();
+			unsubWhatsNew();
+			delete (window as any).__NEBO_CHECK_UPDATE__;
 		};
 	});
 
@@ -229,3 +266,16 @@
 {/if}
 
 <CommandPalette bind:open={commandPaletteOpen} onclose={() => commandPaletteOpen = false} />
+
+<WhatsNewModal
+	bind:show={showWhatsNew}
+	version={whatsNewVersion}
+	releaseUrl={whatsNewReleaseUrl}
+/>
+
+<Toast
+	bind:show={showUpToDateToast}
+	message="You're running the latest version of Nebo."
+	type="success"
+	duration={3000}
+/>

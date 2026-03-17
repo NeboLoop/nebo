@@ -138,4 +138,24 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
+
+    pub fn set_mcp_server_type(&self, id: &str, server_type: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE mcp_integrations SET server_type = ?1, updated_at = unixepoch() WHERE id = ?2",
+            params![server_type, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn set_mcp_connection_status(&self, id: &str, status: &str, tool_count: i64) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE mcp_integrations SET connection_status = ?1, tool_count = ?2, last_connected_at = unixepoch(), updated_at = unixepoch() WHERE id = ?3",
+            params![status, tool_count, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
 }

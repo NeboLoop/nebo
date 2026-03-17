@@ -3,10 +3,10 @@
 	import type { Snippet } from 'svelte';
 	import {
 		Compass,
+		UserCog,
 		FileText,
 		Grid3x3,
-		PackageCheck,
-		Code2
+		PackageCheck
 	} from 'lucide-svelte';
 
 	let { children }: { children: Snippet } = $props();
@@ -17,8 +17,7 @@
 		if (currentPath.startsWith('/marketplace/skills')) return 'Skills';
 		if (currentPath.startsWith('/marketplace/installed')) return 'Installed';
 		if (currentPath.startsWith('/marketplace/categories')) return 'Categories';
-		if (currentPath.startsWith('/marketplace/roles')) return 'Skills';
-		if (currentPath.startsWith('/marketplace/workflows')) return 'Skills';
+		if (currentPath.startsWith('/marketplace/roles')) return 'Roles';
 		return 'Marketplace';
 	});
 
@@ -29,6 +28,7 @@
 
 	const navItems = [
 		{ label: 'Featured', icon: Compass, href: '/marketplace' },
+		{ label: 'Roles', icon: UserCog, href: '/marketplace/roles' },
 		{ label: 'Skills', icon: FileText, href: '/marketplace/skills' },
 		{ label: 'Installed', icon: PackageCheck, href: '/marketplace/installed' },
 	];
@@ -76,12 +76,13 @@
 			{/each}
 		</nav>
 
-		<div class="marketplace-sidebar-footer">
+		<!-- Publish: hidden until SDK is ready -->
+		<!-- <div class="marketplace-sidebar-footer">
 			<a href="/marketplace" class="marketplace-nav-link">
 				<Code2 class="w-4.5 h-4.5" strokeWidth={1.5} />
 				<span>Publish</span>
 			</a>
-		</div>
+		</div> -->
 	</aside>
 
 	<main class="marketplace-content">

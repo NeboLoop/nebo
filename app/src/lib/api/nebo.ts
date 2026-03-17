@@ -668,6 +668,13 @@ export function testMCPIntegration(id: string) {
 }
 
 /**
+ * @description "Connect m c p integration — establish connection and register tools"
+ */
+export function connectMCPIntegration(id: string) {
+	return webapi.post<{ success: boolean; message: string; toolCount?: number; tools?: string[] }>(`/api/v1/integrations/${id}/connect`)
+}
+
+/**
  * @description "Local models download"
  */
 export function localModelsDownload() {
