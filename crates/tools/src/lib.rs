@@ -28,6 +28,7 @@ pub mod shell_tool;
 pub mod skill_tool;
 pub mod skills;
 pub mod spotlight_tool;
+pub mod mcp_tool;
 pub mod system_tool;
 pub mod sandbox_policy;
 pub mod web_tool;

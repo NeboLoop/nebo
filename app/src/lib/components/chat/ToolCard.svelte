@@ -65,7 +65,12 @@
 		if (parsed) {
 			const action = parsed.action;
 			const resource = parsed.resource;
+			const server = parsed.server;
 			if (typeof action === 'string' && action.length > 0) {
+				// MCP tool: show server→resource:action
+				if (domain === 'mcp' && typeof server === 'string' && typeof resource === 'string') {
+					return `${server}→${resource}:${action}`;
+				}
 				if (typeof resource === 'string' && resource.length > 0) return `${resource}:${action}`;
 					return `${domain}:${action}`;
 			}

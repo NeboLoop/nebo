@@ -123,7 +123,26 @@
 				try {
 					const oauthResult = await api.getMCPOAuthURL(result.integration.id);
 					if (oauthResult.authUrl) {
-						window.location.href = oauthResult.authUrl;
+						// Open OAuth in system browser — don't navigate the Tauri webview away
+						window.open(oauthResult.authUrl, '_blank');
+						closeAddModal();
+						// Poll for completion (callback updates DB status)
+						const integrationId = result.integration.id;
+						const pollInterval = setInterval(async () => {
+							try {
+								const data = await api.listMCPIntegrations();
+								const updated = (data.integrations || []).find((i: any) => i.id === integrationId);
+								if (updated && (updated.connectionStatus === 'connected' || updated.connectionStatus === 'disconnected' && updated.lastConnectedAt)) {
+									clearInterval(pollInterval);
+									await loadIntegrations();
+								}
+							} catch { /* ignore */ }
+						}, 2000);
+						// Stop polling after 3 minutes
+						setTimeout(() => {
+							clearInterval(pollInterval);
+							loadIntegrations();
+						}, 180000);
 						return;
 					}
 				} catch (e: any) {

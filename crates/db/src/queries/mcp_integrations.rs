@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use crate::models::McpIntegration;
+use crate::models::{McpIntegration, McpIntegrationOAuth};
 use crate::Store;
 use types::NeboError;
 
@@ -137,6 +137,116 @@ impl Store {
         conn.execute("DELETE FROM mcp_integrations WHERE id = ?1", params![id])
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    /// Save OAuth flow state (PKCE verifier, endpoints, client creds) during OAuth initiation.
+    pub fn set_mcp_oauth_state(
+        &self,
+        id: &str,
+        state: &str,
+        pkce_verifier: &str,
+        client_id: &str,
+        client_secret: Option<&str>,
+        authorization_endpoint: &str,
+        token_endpoint: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE mcp_integrations SET
+                oauth_state = ?1,
+                oauth_pkce_verifier = ?2,
+                oauth_client_id = ?3,
+                oauth_client_secret = ?4,
+                oauth_authorization_endpoint = ?5,
+                oauth_token_endpoint = ?6,
+                updated_at = unixepoch()
+             WHERE id = ?7",
+            params![state, pkce_verifier, client_id, client_secret, authorization_endpoint, token_endpoint, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Look up an integration by OAuth state parameter (for callback validation).
+    pub fn get_mcp_integration_by_oauth_state(&self, state: &str) -> Result<Option<McpIntegrationOAuth>, NeboError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT id, name, server_url, auth_type, oauth_state, oauth_pkce_verifier,
+                    oauth_client_id, oauth_client_secret, oauth_token_endpoint
+             FROM mcp_integrations WHERE oauth_state = ?1",
+            params![state],
+            |row| {
+                Ok(McpIntegrationOAuth {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    server_url: row.get(2)?,
+                    auth_type: row.get(3)?,
+                    oauth_state: row.get(4)?,
+                    oauth_pkce_verifier: row.get(5)?,
+                    oauth_client_id: row.get(6)?,
+                    oauth_client_secret: row.get(7)?,
+                    oauth_token_endpoint: row.get(8)?,
+                })
+            },
+        ) {
+            Ok(i) => Ok(Some(i)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(NeboError::Database(e.to_string())),
+        }
+    }
+
+    /// Clear OAuth flow state after successful callback (prevent replay).
+    pub fn clear_mcp_oauth_state(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE mcp_integrations SET oauth_state = NULL, oauth_pkce_verifier = NULL, updated_at = unixepoch() WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Store encrypted OAuth tokens in mcp_integration_credentials.
+    pub fn store_mcp_credentials(
+        &self,
+        integration_id: &str,
+        credential_type: &str,
+        credential_value: &str,
+        refresh_token: Option<&str>,
+        expires_at: Option<i64>,
+        scopes: Option<&str>,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let id = uuid::Uuid::new_v4().to_string();
+        // Delete existing credentials of this type for this integration
+        conn.execute(
+            "DELETE FROM mcp_integration_credentials WHERE integration_id = ?1 AND credential_type = ?2",
+            params![integration_id, credential_type],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        conn.execute(
+            "INSERT INTO mcp_integration_credentials (id, integration_id, credential_type, credential_value, refresh_token, expires_at, scopes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, integration_id, credential_type, credential_value, refresh_token, expires_at, scopes],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get OAuth access token for an integration (encrypted).
+    pub fn get_mcp_credential(&self, integration_id: &str, credential_type: &str) -> Result<Option<(String, Option<String>)>, NeboError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT credential_value, refresh_token FROM mcp_integration_credentials
+             WHERE integration_id = ?1 AND credential_type = ?2
+             ORDER BY rowid DESC LIMIT 1",
+            params![integration_id, credential_type],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        ) {
+            Ok(r) => Ok(Some(r)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(NeboError::Database(e.to_string())),
+        }
     }
 
     pub fn set_mcp_server_type(&self, id: &str, server_type: &str) -> Result<(), NeboError> {

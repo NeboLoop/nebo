@@ -1277,7 +1277,7 @@ async fn run_loop(
                 session_id,
                 "user",
                 "<system>Continue with your current objective. Do not ask for permission — use your tools to make progress.</system>",
-                None,
+                Some(&serde_json::json!({"hidden": true}).to_string()),
                 None,
                 None,
             );

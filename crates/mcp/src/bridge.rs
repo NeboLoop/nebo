@@ -9,9 +9,10 @@ use crate::{McpError, McpToolDef, McpToolResult};
 
 /// Tracks a live connection to an external MCP server.
 struct Connection {
-    _integration_id: String,
-    _server_type: String,
-    tool_names: Vec<String>, // namespaced names registered in the tool registry
+    integration_id: String,
+    server_slug: String,
+    tool_names: Vec<String>,     // namespaced: mcp__server__tool
+    original_names: Vec<String>, // original tool names from the server
 }
 
 /// Callback to register/unregister proxy tools in the agent's tool registry.
@@ -53,6 +54,11 @@ impl Bridge {
             client,
             registry,
         }
+    }
+
+    /// Get a reference to the underlying MCP client (for OAuth/encryption operations).
+    pub fn client(&self) -> &McpClient {
+        &self.client
     }
 
     /// Sync all enabled integrations. Disconnects stale, connects new.
@@ -121,27 +127,19 @@ impl Bridge {
             .list_tools(integration_id, server_url, access_token)
             .await?;
 
-        // Register each tool as a proxy
-        let mut tool_names = Vec::with_capacity(tools.len());
-        for tool in &tools {
-            let proxy_name = make_tool_name(server_type, &tool.name);
-            self.registry.register_proxy(
-                &proxy_name,
-                &tool.name,
-                &tool.description,
-                tool.input_schema.clone(),
-                integration_id,
-            );
-            tool_names.push(proxy_name);
-        }
+        // Track connection and tool names (tools are exposed via the mcp STRAP tool,
+        // not as individual proxy tools in the registry)
+        let tool_names: Vec<String> = tools.iter().map(|t| make_tool_name(server_type, &t.name)).collect();
+        let original_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
 
         let mut conns = self.connections.lock().await;
         conns.insert(
             integration_id.to_string(),
             Connection {
-                _integration_id: integration_id.to_string(),
-                _server_type: server_type.to_string(),
+                integration_id: integration_id.to_string(),
+                server_slug: server_type.to_string(),
                 tool_names,
+                original_names,
             },
         );
 
@@ -165,15 +163,39 @@ impl Bridge {
         integration_id: &str,
     ) {
         if let Some(conn) = conns.remove(integration_id) {
-            for name in &conn.tool_names {
-                self.registry.unregister_proxy(name);
-            }
             self.client.close_session(integration_id).await;
             info!(
                 id = integration_id,
                 tools = conn.tool_names.len(),
                 "disconnected MCP integration"
             );
+        }
+    }
+
+    /// List connected servers and their original tool names.
+    /// Returns Vec<(server_slug, Vec<tool_name>)>.
+    pub fn connected_tools(&self) -> Vec<(String, Vec<String>)> {
+        // Use try_lock to avoid blocking — return empty if locked
+        match self.connections.try_lock() {
+            Ok(conns) => conns
+                .values()
+                .map(|c| (c.server_slug.clone(), c.original_names.clone()))
+                .collect(),
+            Err(_) => vec![],
+        }
+    }
+
+    /// Find the integration ID for a server+tool combination.
+    pub fn find_integration_for_tool(&self, server_slug: &str, tool_name: &str) -> Option<String> {
+        match self.connections.try_lock() {
+            Ok(conns) => conns
+                .values()
+                .find(|c| {
+                    (c.server_slug == server_slug || c.server_slug.contains(server_slug))
+                        && c.original_names.iter().any(|t| t == tool_name)
+                })
+                .map(|c| c.integration_id.clone()),
+            Err(_) => None,
         }
     }
 

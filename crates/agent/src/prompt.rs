@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Static inputs populated once per Run() call and reused across iterations.
 #[derive(Debug, Clone, Default)]
@@ -217,6 +217,7 @@ const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
 const STRAP_SKILL: &str = include_str!("strap/skill.txt");
 const STRAP_WORK: &str = include_str!("strap/work.txt");
 const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
+const STRAP_MCP: &str = include_str!("strap/mcp.txt");
 
 // OS base docs (file + shell, platform-specific)
 #[cfg(target_os = "windows")]
@@ -254,6 +255,7 @@ fn strap_doc(tool_name: &str) -> Option<&'static str> {
         "skill" => Some(STRAP_SKILL),
         "work" => Some(STRAP_WORK),
         "execute" => Some(STRAP_EXECUTE),
+        "mcp" => Some(STRAP_MCP),
         _ => None,
     }
 }
@@ -297,6 +299,33 @@ pub fn build_strap_section(tool_names: &[String], active_contexts: &[String]) ->
                 sb.push_str("\n\n");
                 sb.push_str(doc);
             }
+        }
+    }
+
+    // 3. Connected MCP server tools — group by server name
+    let mcp_tools: Vec<&String> = tool_names.iter().filter(|n| n.starts_with("mcp__")).collect();
+    if !mcp_tools.is_empty() {
+        // Group tools by server prefix: mcp__monument_sh__comment → "monument_sh"
+        let mut servers: HashMap<String, Vec<String>> = HashMap::new();
+        for tool_name in &mcp_tools {
+            let parts: Vec<&str> = tool_name.splitn(3, "__").collect();
+            if parts.len() == 3 {
+                servers.entry(parts[1].to_string()).or_default().push(parts[2].to_string());
+            }
+        }
+
+        sb.push_str("\n\n## Connected MCP Servers\n\n");
+        sb.push_str("These are tools from external MCP servers you are connected to. ");
+        sb.push_str("Call them directly by their full name (e.g., mcp__server__tool_name). ");
+        sb.push_str("They are NOT skills — they are live tools available right now.\n");
+
+        for (server, tools) in &servers {
+            let display_name = server.replace('_', ".");
+            sb.push_str(&format!("\n### {} (MCP)\nTools: {}\n", display_name, tools.join(", ")));
+            sb.push_str(&format!("Call like: {}(input)\n", mcp_tools.iter()
+                .find(|t| t.contains(server))
+                .map(|t| t.as_str())
+                .unwrap_or("mcp__server__tool")));
         }
     }
 

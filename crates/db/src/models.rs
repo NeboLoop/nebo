@@ -342,6 +342,20 @@ pub struct McpIntegration {
     pub tool_count: Option<i64>,
 }
 
+/// OAuth flow state for an MCP integration (used during callback).
+#[derive(Debug, Clone)]
+pub struct McpIntegrationOAuth {
+    pub id: String,
+    pub name: String,
+    pub server_url: Option<String>,
+    pub auth_type: String,
+    pub oauth_state: Option<String>,
+    pub oauth_pkce_verifier: Option<String>,
+    pub oauth_client_id: Option<String>,
+    pub oauth_client_secret: Option<String>,
+    pub oauth_token_endpoint: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingTask {

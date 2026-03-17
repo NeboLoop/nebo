@@ -1,0 +1,19 @@
+### mcp — Connected MCP Servers
+
+Call tools on external MCP servers connected through Connectors.
+
+Usage: mcp(server: "<server_name>", resource: "<tool>", action: "<action>", ...params)
+
+Parameters:
+- server: The MCP server name (e.g., "monument.sh")
+- resource: The tool name on that server (e.g., "project", "todo", "comment")
+- action: The action to perform (e.g., "list", "create", "get", "update", "delete")
+- Additional parameters are passed directly to the MCP tool
+
+Examples:
+  mcp(server: "monument.sh", resource: "project", action: "list")
+  mcp(server: "monument.sh", resource: "todo", action: "create", title: "Ship v2", todolist_id: "abc")
+  mcp(server: "monument.sh", resource: "objective", action: "get", id: "xyz")
+
+This is NOT a skill. These are live tools from external servers. Use them directly.
+If you don't know which tools a server provides, call: mcp(server: "<name>", resource: "help")

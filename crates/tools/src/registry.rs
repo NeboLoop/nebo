@@ -239,15 +239,16 @@ impl Registry {
         tool_name: &str,
         input: serde_json::Value,
     ) -> ToolResult {
-        // Strip MCP prefix if needed
-        let name = strip_mcp_prefix(tool_name);
+        // Try full name first (for MCP proxy tools like mcp__monument_sh__project),
+        // then fall back to stripped name (for external MCP clients calling STRAP tools).
+        let name = tool_name;
 
         debug!(tool = %name, "executing tool");
 
         // ── Phase 1: Validate + determine resource permit ──────────
         let permit_kind = {
             let tools = self.tools.read().await;
-            let tool = match tools.get(name) {
+            let tool = match tools.get(name).or_else(|| tools.get(strip_mcp_prefix(name))) {
                 Some(t) => t,
                 None => {
                     warn!(tool = %name, "unknown tool");
@@ -324,7 +325,7 @@ impl Registry {
 
         // ── Phase 3: Re-acquire lock and execute ───────────────────
         let tools = self.tools.read().await;
-        match tools.get(name) {
+        match tools.get(name).or_else(|| tools.get(strip_mcp_prefix(name))) {
             Some(tool) => tool.execute_dyn(ctx, input).await,
             None => ToolResult::error(format!(
                 "Tool '{}' was unregistered during permit acquisition",
@@ -610,15 +611,21 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
             integration_id: integration_id.to_string(),
             bridge: self.bridge.read().unwrap().as_ref().expect("bridge not set").clone(),
         };
-        // Use Handle to bridge sync → async
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.register(Box::new(tool)));
+        // Use block_in_place to bridge sync trait → async registry
+        // (block_on panics inside an async context, block_in_place does not)
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(self.register(Box::new(tool)));
+            });
         }
     }
 
     fn unregister_proxy(&self, name: &str) {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.block_on(self.unregister(name));
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let name = name.to_string();
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(self.unregister(&name));
+            });
         }
     }
 }
@@ -639,11 +646,14 @@ fn tool_category(name: &str) -> &str {
 
 /// Strip MCP namespace prefix from tool names.
 /// `mcp__{server}__{tool}` → `{tool}`
+/// Strip MCP namespace prefix for external client tool calls.
+/// e.g. "mcp__nebo-agent__system" → "system" (for STRAP tools called via JSON-RPC).
+/// Used as a fallback — execute() tries the full name first (for proxy tools),
+/// then falls back to the stripped name (for external clients calling STRAP tools).
 fn strip_mcp_prefix(name: &str) -> &str {
     if !name.starts_with("mcp__") {
         return name;
     }
-    // mcp__{server}__{tool} → tool
     let parts: Vec<&str> = name.splitn(3, "__").collect();
     if parts.len() == 3 {
         parts[2]
@@ -712,7 +722,26 @@ fn tool_correction(name: &str) -> String {
         "workflow" | "automation" | "work_flow" => {
             "INSTEAD USE: work(action: \"list\") to see workflows, work(resource: \"name\", action: \"run\") to run".to_string()
         }
-        _ => "Check your available tools and use the correct name.".to_string(),
+        // Common MCP tool names (monument.sh, basecamp, etc.)
+        "project" | "projects" => {
+            "INSTEAD USE: mcp(server: \"monument.sh\", resource: \"project\", action: \"list\") or similar MCP call".to_string()
+        }
+        "todo" | "todos" | "todolist" => {
+            "INSTEAD USE: mcp(server: \"monument.sh\", resource: \"todo\", action: \"list\") or similar MCP call".to_string()
+        }
+        "comment" | "comments" => {
+            "INSTEAD USE: mcp(server: \"monument.sh\", resource: \"comment\", action: \"list\") or similar MCP call".to_string()
+        }
+        "account" | "accounts" => {
+            "INSTEAD USE: mcp(server: \"basecamp\", resource: \"account\", action: \"list\") or similar MCP call".to_string()
+        }
+        _ => {
+            if name.starts_with("mcp__") {
+                "INSTEAD USE: mcp(server: \"<server>\", resource: \"<tool>\", action: \"<action>\") — call MCP tools via the mcp STRAP tool, not by their namespaced name".to_string()
+            } else {
+                format!("'{}' is not a tool. If this is from an MCP server, use: mcp(server: \"<server_name>\", resource: \"{}\", action: \"list\"). Otherwise check your available tools.", name, name)
+            }
+        }
     }
 }
 

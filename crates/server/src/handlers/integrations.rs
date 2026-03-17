@@ -1,9 +1,22 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Json;
-use tracing::warn;
+use rand::RngCore;
+use sha2::{Digest, Sha256};
+use tracing::{info, warn};
 
 use crate::state::AppState;
 use super::{to_error_response, HandlerResult};
+
+/// Slugify an integration name for use in tool naming.
+/// e.g. "monument.sh" → "monument_sh", "My GitHub" → "my_github"
+fn slugify_name(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
 
 /// Fix legacy integrations that were saved as "stdio" but have HTTP URLs.
 fn fix_server_type(state: &AppState) {
@@ -33,7 +46,7 @@ async fn sync_bridge(state: &AppState) {
             .map(|i| mcp::bridge::IntegrationInfo {
                 id: i.id.clone(),
                 name: i.name.clone(),
-                server_type: i.server_type.clone(),
+                server_type: slugify_name(&i.name),
                 server_url: i.server_url.clone(),
                 auth_type: i.auth_type.clone(),
                 is_enabled: i.is_enabled.unwrap_or(0) != 0,
@@ -196,10 +209,26 @@ pub async fn connect_integration(
         )));
     }
 
+    // Get stored OAuth token if available
+    let access_token = if integration.auth_type == "oauth" {
+        state
+            .store
+            .get_mcp_credential(&id, "oauth_token")
+            .ok()
+            .flatten()
+            .and_then(|(encrypted, _)| state.bridge.client().decrypt_token(&encrypted).ok())
+    } else {
+        None
+    };
+
+    // Use integration name (slugified) as server_type for tool naming
+    // e.g. "monument.sh" → "monument_sh" → tools named mcp__monument_sh__comment
+    let tool_prefix = slugify_name(&integration.name);
+
     // Try to connect and list tools
     match state
         .bridge
-        .connect(&id, &integration.server_type, server_url, None)
+        .connect(&id, &tool_prefix, server_url, access_token.as_deref())
         .await
     {
         Ok(tools) => {
@@ -232,6 +261,379 @@ pub async fn connect_integration(
             })))
         }
     }
+}
+
+// ── PKCE helpers (RFC 7636) ─────────────────────────────────────────
+
+fn generate_code_verifier() -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let mut buf = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut buf);
+    URL_SAFE_NO_PAD.encode(buf)
+}
+
+fn compute_code_challenge(verifier: &str) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let hash = Sha256::digest(verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(hash)
+}
+
+fn generate_state() -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let mut buf = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut buf);
+    URL_SAFE_NO_PAD.encode(buf)
+}
+
+// ── OAuth flow ──────────────────────────────────────────────────────
+
+/// GET /api/v1/integrations/:id/oauth-url — start OAuth flow.
+/// Discovers OAuth metadata, does Dynamic Client Registration, generates PKCE,
+/// stores flow state, and returns the authorization URL.
+pub async fn get_oauth_url(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let integration = state
+        .store
+        .get_mcp_integration(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let server_url = integration
+        .server_url
+        .as_deref()
+        .ok_or_else(|| to_error_response(types::NeboError::Validation("No server URL".into())))?;
+
+    // 1. Discover OAuth metadata
+    let metadata = state
+        .bridge
+        .client()
+        .discover_oauth(server_url)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("OAuth discovery failed: {e}"))))?;
+
+    info!(
+        integration = %id,
+        auth_endpoint = %metadata.authorization_endpoint,
+        token_endpoint = %metadata.token_endpoint,
+        registration = ?metadata.registration_endpoint,
+        "discovered MCP OAuth metadata"
+    );
+
+    // 2. Dynamic Client Registration (if supported)
+    let redirect_uri = format!("http://localhost:{}/api/v1/integrations/oauth/callback", state.config.port);
+    let (client_id, client_secret) = if let Some(ref reg_endpoint) = metadata.registration_endpoint {
+        match do_client_registration(&state, reg_endpoint, &redirect_uri).await {
+            Ok((cid, csec)) => (cid, csec),
+            Err(e) => {
+                warn!("DCR failed, using fallback client_id: {e}");
+                (format!("nebo-agent-{}", id), None)
+            }
+        }
+    } else {
+        (format!("nebo-agent-{}", id), None)
+    };
+
+    // 3. Generate PKCE
+    let code_verifier = generate_code_verifier();
+    let code_challenge = compute_code_challenge(&code_verifier);
+    let oauth_state = generate_state();
+
+    // 4. Encrypt and store flow state in DB
+    let encrypted_verifier = state
+        .bridge
+        .client()
+        .encrypt_token(&code_verifier)
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("encrypt: {e}"))))?;
+    let encrypted_secret = match &client_secret {
+        Some(s) => Some(
+            state
+                .bridge
+                .client()
+                .encrypt_token(s)
+                .map_err(|e| to_error_response(types::NeboError::Internal(format!("encrypt: {e}"))))?
+        ),
+        None => None,
+    };
+
+    state
+        .store
+        .set_mcp_oauth_state(
+            &id,
+            &oauth_state,
+            &encrypted_verifier,
+            &client_id,
+            encrypted_secret.as_deref(),
+            &metadata.authorization_endpoint,
+            &metadata.token_endpoint,
+        )
+        .map_err(to_error_response)?;
+
+    // 5. Build authorization URL
+    let auth_url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=mcp:full",
+        metadata.authorization_endpoint,
+        urlencoding::encode(&client_id),
+        urlencoding::encode(&redirect_uri),
+        urlencoding::encode(&oauth_state),
+        urlencoding::encode(&code_challenge),
+    );
+
+    info!(integration = %id, "MCP OAuth URL generated");
+
+    Ok(Json(serde_json::json!({
+        "authUrl": auth_url,
+    })))
+}
+
+/// Dynamic Client Registration (RFC 7591).
+async fn do_client_registration(
+    state: &AppState,
+    registration_endpoint: &str,
+    redirect_uri: &str,
+) -> Result<(String, Option<String>), String> {
+    let body = serde_json::json!({
+        "client_name": "Nebo Agent",
+        "redirect_uris": [redirect_uri],
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "scope": "mcp:full offline_access"
+    });
+
+    let resp = reqwest::Client::new()
+        .post(registration_endpoint)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("DCR request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("DCR returned {status}: {text}"));
+    }
+
+    #[derive(serde::Deserialize)]
+    struct DcrResponse {
+        client_id: String,
+        client_secret: Option<String>,
+    }
+
+    let dcr: DcrResponse = resp.json().await.map_err(|e| format!("DCR decode: {e}"))?;
+    info!(client_id = %dcr.client_id, "MCP Dynamic Client Registration complete");
+    Ok((dcr.client_id, dcr.client_secret))
+}
+
+/// OAuth callback query params.
+#[derive(serde::Deserialize)]
+pub struct OAuthCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
+}
+
+/// GET /api/v1/integrations/oauth/callback — handle OAuth redirect from MCP server.
+/// Exchanges authorization code for tokens, stores them, connects, and returns
+/// a self-closing HTML page (the browser tab can be closed).
+pub async fn oauth_callback(
+    State(state): State<AppState>,
+    Query(params): Query<OAuthCallbackQuery>,
+) -> axum::response::Html<String> {
+    // Handle error from OAuth server
+    if let Some(ref err) = params.error {
+        let desc = params.error_description.as_deref().unwrap_or(err);
+        warn!("MCP OAuth error: {desc}");
+        return oauth_result_page(false, &format!("OAuth error: {desc}"));
+    }
+
+    let code = params.code.as_deref().unwrap_or("");
+    let oauth_state = params.state.as_deref().unwrap_or("");
+
+    if code.is_empty() || oauth_state.is_empty() {
+        return oauth_result_page(false, "Missing authorization code or state parameter");
+    }
+
+    // 1. Look up integration by state
+    let integration = match state.store.get_mcp_integration_by_oauth_state(oauth_state).unwrap_or(None) {
+        Some(i) => i,
+        None => {
+            warn!("MCP OAuth callback: no integration found for state");
+            return oauth_result_page(false, "Invalid OAuth state — integration not found");
+        }
+    };
+
+    let token_endpoint = integration.oauth_token_endpoint.as_deref().unwrap_or("");
+    let client_id = integration.oauth_client_id.as_deref().unwrap_or("");
+
+    if token_endpoint.is_empty() || client_id.is_empty() {
+        return oauth_result_page(false, "Missing OAuth configuration");
+    }
+
+    // 2. Decrypt PKCE verifier
+    let encrypted_verifier = integration.oauth_pkce_verifier.as_deref().unwrap_or("");
+    let code_verifier = match state.bridge.client().decrypt_token(encrypted_verifier) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("MCP OAuth: failed to decrypt verifier: {e}");
+            return oauth_result_page(false, "Failed to decrypt PKCE verifier");
+        }
+    };
+
+    // Decrypt client_secret if present
+    let client_secret = integration
+        .oauth_client_secret
+        .as_deref()
+        .and_then(|enc| state.bridge.client().decrypt_token(enc).ok());
+
+    let redirect_uri = format!("http://localhost:{}/api/v1/integrations/oauth/callback", state.config.port);
+
+    // 3. Exchange code for tokens
+    let tokens = match exchange_mcp_code(
+        token_endpoint,
+        code,
+        &code_verifier,
+        &redirect_uri,
+        client_id,
+        client_secret.as_deref(),
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("MCP OAuth token exchange failed: {e}");
+            return oauth_result_page(false, &format!("Token exchange failed: {e}"));
+        }
+    };
+
+    info!(integration = %integration.id, "MCP OAuth token exchange successful");
+
+    // 4. Encrypt and store tokens
+    let encrypted_access = match state.bridge.client().encrypt_token(&tokens.access_token) {
+        Ok(v) => v,
+        Err(e) => return oauth_result_page(false, &format!("Encryption failed: {e}")),
+    };
+    let encrypted_refresh = tokens
+        .refresh_token
+        .as_deref()
+        .and_then(|rt| state.bridge.client().encrypt_token(rt).ok());
+
+    let expires_at = tokens.expires_in.map(|secs| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            + secs
+    });
+
+    let _ = state.store.store_mcp_credentials(
+        &integration.id,
+        "oauth_token",
+        &encrypted_access,
+        encrypted_refresh.as_deref(),
+        expires_at,
+        tokens.scope.as_deref(),
+    );
+
+    // 5. Clear flow state
+    let _ = state.store.clear_mcp_oauth_state(&integration.id);
+
+    // 6. Connect immediately with the new token
+    let server_url = integration.server_url.as_deref().unwrap_or("");
+    let tool_prefix = slugify_name(&integration.name);
+    if !server_url.is_empty() {
+        match state
+            .bridge
+            .connect(&integration.id, &tool_prefix, server_url, Some(&tokens.access_token))
+            .await
+        {
+            Ok(tools) => {
+                let _ = state.store.set_mcp_connection_status(
+                    &integration.id,
+                    "connected",
+                    tools.len() as i64,
+                );
+                info!(integration = %integration.id, tools = tools.len(), "MCP connected after OAuth");
+                return oauth_result_page(true, &format!("Connected — {} tools registered", tools.len()));
+            }
+            Err(e) => {
+                warn!("MCP connect after OAuth failed: {e}");
+                // Tokens stored — set as disconnected, user can retry
+                let _ = state.store.set_mcp_connection_status(&integration.id, "disconnected", 0);
+                return oauth_result_page(true, "Authorized — click Connect in Nebo to finish setup");
+            }
+        }
+    }
+
+    oauth_result_page(true, "Authorized — click Connect in Nebo to finish setup")
+}
+
+/// Render a simple HTML page that auto-closes the browser tab.
+fn oauth_result_page(success: bool, message: &str) -> axum::response::Html<String> {
+    let (icon, color) = if success { ("✓", "#22c55e") } else { ("✗", "#ef4444") };
+    axum::response::Html(format!(r#"<!DOCTYPE html>
+<html><head><title>Nebo — OAuth</title>
+<style>body{{font-family:system-ui;background:#1e1e2e;color:#cdd6f4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}}
+.box{{text-align:center;padding:2rem}}.icon{{font-size:3rem;color:{color}}}.msg{{margin-top:1rem;font-size:1.1rem;opacity:0.8}}.hint{{margin-top:1.5rem;font-size:0.85rem;opacity:0.5}}</style>
+</head><body><div class="box"><div class="icon">{icon}</div><div class="msg">{message}</div>
+<div class="hint">You can close this tab and return to Nebo.</div></div>
+<script>setTimeout(function(){{window.close()}},3000)</script></body></html>"#))
+}
+
+#[derive(serde::Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<i64>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// Exchange an OAuth authorization code for tokens at the MCP server's token endpoint.
+async fn exchange_mcp_code(
+    token_endpoint: &str,
+    code: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+    client_id: &str,
+    client_secret: Option<&str>,
+) -> Result<TokenResponse, String> {
+    let mut params = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("redirect_uri", redirect_uri),
+        ("client_id", client_id),
+        ("code_verifier", code_verifier),
+    ];
+    if let Some(secret) = client_secret {
+        params.push(("client_secret", secret));
+    }
+
+    let resp = reqwest::Client::new()
+        .post(token_endpoint)
+        .form(&params)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| format!("token request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("token endpoint returned {status}: {text}"));
+    }
+
+    resp.json::<TokenResponse>()
+        .await
+        .map_err(|e| format!("decode token response: {e}"))
 }
 
 /// GET /api/v1/integrations/registry
