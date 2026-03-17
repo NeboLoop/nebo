@@ -421,6 +421,13 @@ export function getToolOutput(chatId: string, toolCallId: string) {
 }
 
 /**
+ * @description "Edit a chat message and truncate everything after it"
+ */
+export function editChatMessage(messageId: string, content: string) {
+	return webapi.post<{ success: boolean; chatId: string }>(`/api/v1/chats/messages/${messageId}/edit`, { content })
+}
+
+/**
  * @description "List chat days"
  * @param req
  */

@@ -530,26 +530,54 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let bridge = Arc::new(mcp::Bridge::new(mcp_client, tool_registry.clone()));
     tool_registry.set_bridge(bridge.clone());
 
-    // Sync MCP integrations from DB
+    // Register MCP STRAP tool — single tool for all connected MCP servers
+    let mcp_tool = tools::mcp_tool::McpTool::new(bridge.clone(), store.clone());
+    tool_registry.register(Box::new(mcp_tool)).await;
+
+    // Sync MCP integrations from DB — reconnect with stored OAuth tokens
     let bridge_init = bridge.clone();
     let store_init = store.clone();
     tokio::spawn(async move {
         match store_init.list_mcp_integrations() {
             Ok(integrations) => {
-                let infos: Vec<mcp::bridge::IntegrationInfo> = integrations
-                    .iter()
-                    .map(|i| mcp::bridge::IntegrationInfo {
-                        id: i.id.clone(),
-                        name: i.name.clone(),
-                        server_type: i.server_type.clone(),
-                        server_url: i.server_url.clone(),
-                        auth_type: i.auth_type.clone(),
-                        is_enabled: i.is_enabled.unwrap_or(0) != 0,
-                        connection_status: i.connection_status.clone(),
-                    })
-                    .collect();
-                if let Err(e) = bridge_init.sync_all(&infos).await {
-                    warn!("MCP bridge initial sync failed: {}", e);
+                for i in &integrations {
+                    if i.is_enabled.unwrap_or(0) == 0 {
+                        continue;
+                    }
+                    let server_url = match &i.server_url {
+                        Some(u) if !u.is_empty() => u.clone(),
+                        _ => continue,
+                    };
+                    // Skip OAuth integrations that haven't completed auth yet
+                    if i.auth_type == "oauth" && i.connection_status.is_none() {
+                        continue;
+                    }
+                    // Retrieve stored OAuth token
+                    let access_token = if i.auth_type == "oauth" {
+                        store_init
+                            .get_mcp_credential(&i.id, "oauth_token")
+                            .ok()
+                            .flatten()
+                            .and_then(|(encrypted, _)| bridge_init.client().decrypt_token(&encrypted).ok())
+                    } else {
+                        None
+                    };
+                    let tool_prefix = i.name.to_lowercase()
+                        .chars()
+                        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                        .collect::<String>()
+                        .trim_matches('_')
+                        .to_string();
+                    match bridge_init.connect(&i.id, &tool_prefix, &server_url, access_token.as_deref()).await {
+                        Ok(tools) => {
+                            let _ = store_init.set_mcp_connection_status(&i.id, "connected", tools.len() as i64);
+                            info!(name = %i.name, tools = tools.len(), "MCP reconnected on startup");
+                        }
+                        Err(e) => {
+                            let _ = store_init.set_mcp_connection_status(&i.id, "error", 0);
+                            warn!(name = %i.name, error = %e, "MCP reconnect failed on startup");
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -1293,6 +1321,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/chats/{id}", axum::routing::delete(handlers::chat::delete_chat))
         .route("/chats/{id}/messages", axum::routing::get(handlers::chat::get_chat_messages))
         .route("/chats/{chat_id}/tool-output/{tool_call_id}", axum::routing::get(handlers::chat::get_tool_output))
+        .route("/chats/messages/{id}/edit", axum::routing::post(handlers::chat::edit_message))
         // Agent
         .route("/agent/sessions", axum::routing::get(handlers::agent::list_sessions))
         .route("/agent/sessions/{id}", axum::routing::delete(handlers::agent::delete_session))
@@ -1363,6 +1392,8 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/integrations/{id}", axum::routing::delete(handlers::integrations::delete_integration))
         .route("/integrations/{id}/test", axum::routing::post(handlers::integrations::test_integration))
         .route("/integrations/{id}/connect", axum::routing::post(handlers::integrations::connect_integration))
+        .route("/integrations/{id}/oauth-url", axum::routing::get(handlers::integrations::get_oauth_url))
+        .route("/integrations/oauth/callback", axum::routing::get(handlers::integrations::oauth_callback))
         // Updates
         .route("/update/check", axum::routing::get(handlers::agent::update_check))
         .route("/update/apply", axum::routing::post(handlers::agent::update_apply))

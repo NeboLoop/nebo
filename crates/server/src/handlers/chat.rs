@@ -423,6 +423,41 @@ pub async fn get_chat_history_by_day(
     Ok(Json(serde_json::json!({"messages": messages})))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditMessageBody {
+    pub content: String,
+}
+
+/// POST /api/v1/chats/messages/:id/edit
+pub async fn edit_message(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<EditMessageBody>,
+) -> HandlerResult<serde_json::Value> {
+    let msg = state
+        .store
+        .get_chat_message(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+    if msg.role != "user" {
+        return Err(to_error_response(types::NeboError::Validation(
+            "can only edit user messages".into(),
+        )));
+    }
+    state
+        .store
+        .update_chat_message_content(&id, &body.content, None)
+        .map_err(to_error_response)?;
+    state
+        .store
+        .delete_chat_messages_after_id(&msg.chat_id, &id)
+        .map_err(to_error_response)?;
+    Ok(Json(
+        serde_json::json!({ "success": true, "chatId": msg.chat_id }),
+    ))
+}
+
 /// GET /api/v1/chats/:id/messages (used by agent sessions endpoint too)
 pub async fn get_chat_messages(
     State(state): State<AppState>,

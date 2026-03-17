@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Copy, Check } from 'lucide-svelte';
+	import { Copy, Check, Pencil } from 'lucide-svelte';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ToolCard from './ToolCard.svelte';
 	import ThinkingBlock from './ThinkingBlock.svelte';
@@ -72,6 +72,7 @@
 		onViewToolOutput?: (tool: ToolCall) => void;
 		isStreaming?: boolean;
 		onAskSubmit?: (requestId: string, value: string) => void;
+		onEditMessage?: (id: string, content: string) => void;
 	}
 
 	let {
@@ -82,8 +83,38 @@
 		copiedId = null,
 		onViewToolOutput,
 		isStreaming = false,
-		onAskSubmit
+		onAskSubmit,
+		onEditMessage
 	}: Props = $props();
+
+	let editingId = $state<string | null>(null);
+	let editText = $state('');
+
+	function startEdit(id: string, content: string) {
+		editingId = id;
+		editText = content;
+	}
+
+	function cancelEdit() {
+		editingId = null;
+		editText = '';
+	}
+
+	function submitEdit() {
+		if (!editingId || !editText.trim()) return;
+		onEditMessage?.(editingId, editText.trim());
+		editingId = null;
+		editText = '';
+	}
+
+	function handleEditKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' && !e.shiftKey) {
+			e.preventDefault();
+			submitEdit();
+		} else if (e.key === 'Escape') {
+			cancelEdit();
+		}
+	}
 
 	const groupTimestamp = $derived(messages[messages.length - 1]?.timestamp || messages[0]?.timestamp);
 
@@ -224,32 +255,58 @@
 								onSubmit={(id, val) => onAskSubmit?.(id, val)}
 							/>
 						{:else if block.type === 'text' && block.text}
-							<div
-								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''}"
-							>
-								<div class="prose prose-invert max-w-none leading-relaxed">
-									<Markdown content={block.text} />
+							{#if editingId === resolved.id}
+								<div class="w-full mb-1">
+									<textarea
+										class="textarea textarea-bordered w-full min-h-[60px] text-sm resize-y bg-base-200"
+										bind:value={editText}
+										onkeydown={handleEditKeydown}
+									></textarea>
+									<div class="flex gap-2 mt-1.5">
+										<button type="button" class="btn btn-primary btn-sm" onclick={submitEdit}>Resubmit</button>
+										<button type="button" class="btn btn-ghost btn-sm" onclick={cancelEdit}>Cancel</button>
+									</div>
 								</div>
-								{#if resolved.message.streaming && block.isLastBlock}
-									<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
-								{/if}
+							{:else}
+								<div
+									class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''}"
+								>
+									<div class="prose prose-invert max-w-none leading-relaxed">
+										<Markdown content={block.text} />
+									</div>
+									{#if resolved.message.streaming && block.isLastBlock}
+										<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
+									{/if}
 
-								<!-- Copy button on last text block -->
-								{#if !resolved.message.streaming && block.isLastBlock && role === 'assistant'}
-									<button
-										type="button"
-										onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
-										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
-										title="Copy"
-									>
-										{#if copiedId === resolved.id}
-											<Check class="w-3.5 h-3.5 text-success" />
-										{:else}
-											<Copy class="w-3.5 h-3.5" />
-										{/if}
-									</button>
-								{/if}
-							</div>
+									<!-- Copy button on last text block -->
+									{#if !resolved.message.streaming && block.isLastBlock && role === 'assistant'}
+										<button
+											type="button"
+											onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
+											class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
+											title="Copy"
+										>
+											{#if copiedId === resolved.id}
+												<Check class="w-3.5 h-3.5 text-success" />
+											{:else}
+												<Copy class="w-3.5 h-3.5" />
+											{/if}
+										</button>
+									{/if}
+
+									<!-- Edit button on last text block for user messages -->
+									{#if !resolved.message.streaming && !isStreaming && block.isLastBlock && role === 'user' && onEditMessage}
+										<button
+											type="button"
+											onclick={() => startEdit(resolved.id, resolved.cleanContent)}
+											class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
+											title="Edit"
+										>
+											<Pencil class="w-3.5 h-3.5" />
+										</button>
+									{/if}
+								</div>
+							{/if}
 						{/if}
 					{/each}
 
@@ -276,36 +333,62 @@
 					{/if}
 
 					{#if resolved.cleanContent || resolved.message.streaming}
-						<div
-							class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming ? 'animate-pulse-border' : ''}"
-						>
-							{#if resolved.message.streaming && !resolved.cleanContent}
-								<ReadingIndicator />
-							{:else}
-								<div class="prose prose-invert max-w-none leading-relaxed">
-									<Markdown content={resolved.cleanContent} preRenderedHtml={resolved.message.contentHtml} />
+						{#if editingId === resolved.id}
+							<div class="w-full">
+								<textarea
+									class="textarea textarea-bordered w-full min-h-[60px] text-sm resize-y bg-base-200"
+									bind:value={editText}
+									onkeydown={handleEditKeydown}
+								></textarea>
+								<div class="flex gap-2 mt-1.5">
+									<button type="button" class="btn btn-primary btn-sm" onclick={submitEdit}>Resubmit</button>
+									<button type="button" class="btn btn-ghost btn-sm" onclick={cancelEdit}>Cancel</button>
 								</div>
-								{#if resolved.message.streaming}
-									<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
-								{/if}
-							{/if}
-
-							<!-- Copy button -->
-							{#if !resolved.message.streaming && resolved.cleanContent && role === 'assistant'}
-								<button
-									type="button"
-									onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
-									class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
-									title="Copy"
-								>
-									{#if copiedId === resolved.id}
-										<Check class="w-3.5 h-3.5 text-success" />
-									{:else}
-										<Copy class="w-3.5 h-3.5" />
+							</div>
+						{:else}
+							<div
+								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming ? 'animate-pulse-border' : ''}"
+							>
+								{#if resolved.message.streaming && !resolved.cleanContent}
+									<ReadingIndicator />
+								{:else}
+									<div class="prose prose-invert max-w-none leading-relaxed">
+										<Markdown content={resolved.cleanContent} preRenderedHtml={resolved.message.contentHtml} />
+									</div>
+									{#if resolved.message.streaming}
+										<span class="inline-block w-0.5 h-3 bg-primary/60 animate-pulse ml-0.5 align-text-bottom rounded-full"></span>
 									{/if}
-								</button>
-							{/if}
-						</div>
+								{/if}
+
+								<!-- Copy button -->
+								{#if !resolved.message.streaming && resolved.cleanContent && role === 'assistant'}
+									<button
+										type="button"
+										onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
+										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
+										title="Copy"
+									>
+										{#if copiedId === resolved.id}
+											<Check class="w-3.5 h-3.5 text-success" />
+										{:else}
+											<Copy class="w-3.5 h-3.5" />
+										{/if}
+									</button>
+								{/if}
+
+								<!-- Edit button for user messages -->
+								{#if !resolved.message.streaming && !isStreaming && resolved.cleanContent && role === 'user' && onEditMessage}
+									<button
+										type="button"
+										onclick={() => startEdit(resolved.id, resolved.cleanContent)}
+										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
+										title="Edit"
+									>
+										<Pencil class="w-3.5 h-3.5" />
+									</button>
+								{/if}
+							</div>
+						{/if}
 					{/if}
 				{/if}
 			</div>

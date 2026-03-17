@@ -239,6 +239,20 @@ impl Store {
         Ok(())
     }
 
+    pub fn delete_chat_messages_after_id(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM chat_messages WHERE chat_id = ?1 AND rowid > (SELECT rowid FROM chat_messages WHERE id = ?2)",
+            params![chat_id, message_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn delete_chat_messages_by_chat_id(&self, chat_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(

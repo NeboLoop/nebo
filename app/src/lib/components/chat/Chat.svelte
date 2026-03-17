@@ -13,7 +13,7 @@
 	} from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
-	import { getRole } from '$lib/api/nebo';
+	import { getRole, editChatMessage } from '$lib/api/nebo';
 	import { logger } from '$lib/monitoring/logger';
 
 	const log = logger.child({ component: 'Chat' });
@@ -216,6 +216,13 @@
 			if (msg.role === 'system' || (msg.role as string) === 'tool') {
 				currentGroup = null;
 				continue;
+			}
+			// Skip hidden steering messages
+			if (msg.metadata && typeof msg.metadata === 'object' && (msg.metadata as any).hidden) {
+				continue;
+			}
+			if (typeof msg.metadata === 'string') {
+				try { if (JSON.parse(msg.metadata).hidden) continue; } catch {}
 			}
 
 			const role = msg.role as 'user' | 'assistant';
@@ -1525,6 +1532,24 @@
 		sendToAgent(prompt);
 	}
 
+	async function handleEditMessage(messageId: string, newContent: string) {
+		try {
+			await editChatMessage(messageId, newContent);
+			// Truncate local messages after the edited one and update its content
+			const idx = messages.findIndex(m => m.id === messageId);
+			if (idx !== -1) {
+				messages = messages.slice(0, idx + 1);
+				messages[idx] = { ...messages[idx], content: newContent };
+			}
+			// Re-send to agent
+			autoScrollEnabled = true;
+			showScrollButton = false;
+			sendToAgent(newContent);
+		} catch (e) {
+			log.error('Failed to edit message', e);
+		}
+	}
+
 	function sendMessage() {
 		if (isChannel) {
 			sendChannelMsg();
@@ -2281,6 +2306,7 @@
 								isLoading &&
 								idx === groupedMessages.length - 1}
 							onAskSubmit={(isCompanion || isRole) ? handleAskSubmit : undefined}
+							onEditMessage={(isCompanion || isRole) ? handleEditMessage : undefined}
 						/>
 					{/each}
 
