@@ -724,6 +724,8 @@ async fn run_loop(
             model_name: selected_model_name.to_string(),
             active_task: active_task.clone(),
             summary: summary.clone(),
+            neboloop_connected: channel == "neboloop",
+            channel: channel.to_string(),
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 

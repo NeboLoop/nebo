@@ -479,7 +479,7 @@
 						role: (isOwner ? 'user' : 'assistant') as 'user' | 'assistant',
 						content: m.content,
 						contentHtml: m.contentHtml || undefined,
-						timestamp: new Date(m.createdAt),
+						timestamp: new Date(m.createdAt * 1000),
 						senderName: isOwner ? 'You' : resolveNameFromId(m.from)
 					};
 				});
@@ -652,7 +652,7 @@
 					role: m.role as 'user' | 'assistant' | 'system',
 					content,
 					contentHtml: m.contentHtml || undefined,
-					timestamp: new Date(m.createdAt),
+					timestamp: new Date(m.createdAt * 1000),
 					toolCalls: meta.toolCalls,
 					thinking: meta.thinking,
 					contentBlocks
@@ -701,7 +701,7 @@
 					role: m.role as 'user' | 'assistant' | 'system',
 					content,
 					contentHtml: m.contentHtml || undefined,
-					timestamp: new Date(m.createdAt),
+					timestamp: new Date(m.createdAt * 1000),
 					toolCalls: meta.toolCalls,
 					thinking: meta.thinking,
 					contentBlocks

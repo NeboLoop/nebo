@@ -141,6 +141,14 @@ impl Provider for CLIProvider {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Windows: suppress console window flash for GUI app
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
         // Unix: set process group for clean shutdown
         #[cfg(unix)]
         {

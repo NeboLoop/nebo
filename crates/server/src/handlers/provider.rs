@@ -115,14 +115,18 @@ pub(crate) async fn reload_providers(state: &AppState) {
     }
 
     // Add CLI providers from models.yaml config
+    // Re-detect CLIs live instead of using the startup snapshot,
+    // so toggling a CLI provider works even when the app was launched
+    // from Finder/Start Menu with a minimal PATH.
+    let live_cli = config::detect_all_clis();
     for cli_def in &models_cfg.cli_providers {
         if !cli_def.is_active() {
             continue;
         }
         let installed = match cli_def.command.as_str() {
-            "claude" => state.cli_statuses.claude.installed,
-            "codex" => state.cli_statuses.codex.installed,
-            "gemini" => state.cli_statuses.gemini.installed,
+            "claude" => live_cli.claude.installed,
+            "codex" => live_cli.codex.installed,
+            "gemini" => live_cli.gemini.installed,
             _ => false,
         };
         if !installed {

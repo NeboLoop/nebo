@@ -304,6 +304,47 @@ pub fn install_manifest(nebo_binary_path: &str, local_extension_id: &str) -> Res
         ));
     }
 
+    // On Windows, Chrome requires a registry entry pointing to the manifest file.
+    // Without this, Chrome cannot discover the native messaging host.
+    #[cfg(target_os = "windows")]
+    {
+        let registry_keys = windows_native_messaging_registry_keys();
+        for (reg_key, manifest_path) in &registry_keys {
+            // Only register if we wrote a manifest to this browser's directory
+            if !std::path::Path::new(manifest_path).exists() {
+                continue;
+            }
+            let manifest_path_normalized = manifest_path.replace('/', "\\");
+            match std::process::Command::new("reg")
+                .args([
+                    "add",
+                    reg_key,
+                    "/ve",
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &manifest_path_normalized,
+                    "/f",
+                ])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    info!(key = %reg_key, "registered native messaging host in Windows registry");
+                }
+                Ok(output) => {
+                    debug!(
+                        key = %reg_key,
+                        stderr = %String::from_utf8_lossy(&output.stderr),
+                        "failed to register native messaging host in registry"
+                    );
+                }
+                Err(e) => {
+                    debug!(key = %reg_key, error = %e, "failed to run reg command");
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -371,7 +412,37 @@ pub fn needs_manifest_update(nebo_binary_path: &str, local_extension_id: &str) -
         }
     }
 
-    !found_any // No manifests at all — need to install
+    if !found_any {
+        return true; // No manifests at all — need to install
+    }
+
+    // On Windows, also check that registry entries exist
+    #[cfg(target_os = "windows")]
+    {
+        for (reg_key, manifest_path) in &windows_native_messaging_registry_keys() {
+            if !std::path::Path::new(manifest_path).exists() {
+                continue;
+            }
+            // Check if registry key exists and points to the right manifest
+            if let Ok(output) = std::process::Command::new("reg")
+                .args(["query", reg_key, "/ve"])
+                .output()
+            {
+                if !output.status.success() {
+                    info!(key = %reg_key, "native messaging registry key missing");
+                    return true;
+                }
+                let out = String::from_utf8_lossy(&output.stdout);
+                let manifest_normalized = manifest_path.replace('/', "\\");
+                if !out.contains(&manifest_normalized) {
+                    info!(key = %reg_key, "native messaging registry key has wrong path");
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Returns NativeMessagingHosts directories for all supported Chromium browsers.
@@ -409,6 +480,27 @@ fn all_native_messaging_dirs() -> Vec<String> {
     }
 
     dirs
+}
+
+/// Returns (registry_key, manifest_file_path) pairs for all supported Chromium browsers on Windows.
+/// Chrome on Windows discovers native messaging hosts via the registry, not the file system.
+#[cfg(target_os = "windows")]
+fn windows_native_messaging_registry_keys() -> Vec<(String, String)> {
+    let mut entries = Vec::new();
+    if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
+        let browsers = [
+            ("HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\dev.neboloop.nebo",
+             format!("{}\\Google\\Chrome\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json", appdata)),
+            ("HKCU\\Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\dev.neboloop.nebo",
+             format!("{}\\BraveSoftware\\Brave-Browser\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json", appdata)),
+            ("HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\dev.neboloop.nebo",
+             format!("{}\\Microsoft\\Edge\\User Data\\NativeMessagingHosts\\dev.neboloop.nebo.json", appdata)),
+        ];
+        for (key, path) in browsers {
+            entries.push((key.to_string(), path));
+        }
+    }
+    entries
 }
 
 #[cfg(test)]

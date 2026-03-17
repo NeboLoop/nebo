@@ -24,6 +24,10 @@ pub struct DynamicContext {
     pub model_name: String,
     pub active_task: String,
     pub summary: String,
+    /// Whether this message arrived via NeboLoop (comm channel).
+    pub neboloop_connected: bool,
+    /// The channel this message arrived on (e.g., "web", "neboloop", "mcp").
+    pub channel: String,
 }
 
 // --- Prompt section constants ---
@@ -436,7 +440,7 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     };
 
     sb.push_str(&format!(
-        "\n\n[System Context]\n{}\nDate: {}\nTime: {}\nTimezone: {}\nComputer: {}\nOS: {} ({})",
+        "\n\n[System Context]\n{}\nDate: {}\nTime: {}\nTimezone: {}\nComputer: {}\nOS: {} ({})\nNeboLoop: {}",
         model_line,
         now.format("%A, %B %-d, %Y"),
         now.format("%-I:%M %p"),
@@ -444,7 +448,13 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         hostname,
         os_name,
         std::env::consts::ARCH,
+        if dctx.neboloop_connected { "connected" } else { "not connected" },
     ));
+
+    // If this message came through NeboLoop, tell the agent
+    if dctx.channel == "neboloop" {
+        sb.push_str("\nMessage source: NeboLoop (this message was sent to you through the NeboLoop network — you ARE connected and reachable)");
+    }
 
     // 3. Conversation summary
     if !dctx.summary.is_empty() {
@@ -573,6 +583,8 @@ mod tests {
             model_name: "claude-sonnet-4".to_string(),
             active_task: "Build a website".to_string(),
             summary: "User asked about web development".to_string(),
+            neboloop_connected: false,
+            channel: "web".to_string(),
         };
         let result = build_dynamic_suffix(&dctx);
         assert!(result.contains("anthropic/claude-sonnet-4"));
