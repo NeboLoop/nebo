@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 types = { workspace = true }
 ai = { workspace = true }
+auth = { workspace = true }
 db = { workspace = true }
 config = { workspace = true }
 napp = { workspace = true }

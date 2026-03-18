@@ -48,6 +48,8 @@ impl DynTool for SkillTool {
          - update: Update an existing skill\n\
          - delete: Delete a user-created skill\n\
          - install: Install a skill from NeboLoop marketplace (SKIL-XXXX-XXXX code)\n\
+         - configure: Set a secret/API key for a skill (requires name, key, value)\n\
+         - secrets: List configured secrets for a skill (requires name)\n\
          - featured: Show featured skills with high capability counts\n\
          - popular: Show most-used skills sorted by capabilities\n\
          - reviews: Show reviews for a skill (requires name)\n\n\
@@ -58,6 +60,8 @@ impl DynTool for SkillTool {
          skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\")\n  \
          skill(action: \"load\", name: \"coding-assistant\")\n  \
          skill(action: \"install\", code: \"SKIL-XXXX-XXXX\")\n  \
+         skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"BSA...\")\n  \
+         skill(action: \"secrets\", name: \"brave-search\")\n  \
          skill(action: \"featured\")\n  \
          skill(action: \"popular\")\n  \
          skill(action: \"reviews\", name: \"coding-assistant\")"
@@ -71,7 +75,7 @@ impl DynTool for SkillTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["catalog", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "featured", "popular", "reviews"]
+                    "enum": ["catalog", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews"]
                 },
                 "name": {
                     "type": "string",
@@ -88,6 +92,14 @@ impl DynTool for SkillTool {
                 "code": {
                     "type": "string",
                     "description": "Marketplace code for install (e.g. SKIL-XXXX-XXXX)"
+                },
+                "key": {
+                    "type": "string",
+                    "description": "Secret/API key name for configure action (e.g. BRAVE_API_KEY)"
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Secret value for configure action"
                 }
             },
             "required": ["action"]
@@ -508,6 +520,112 @@ impl DynTool for SkillTool {
                             .collect();
                         ToolResult::ok(format!("Popular skills:\n{}", lines.join("\n")))
                     }
+                }
+                "configure" => {
+                    let name = input["name"].as_str().unwrap_or("");
+                    let key = input["key"].as_str().unwrap_or("");
+                    let value = input["value"].as_str().unwrap_or("");
+
+                    if name.is_empty() || key.is_empty() || value.is_empty() {
+                        return ToolResult::error("name, key, and value are required");
+                    }
+
+                    let store = match &self.store {
+                        Some(s) => s,
+                        None => return ToolResult::error("configure not available — store not configured"),
+                    };
+
+                    // Validate key name matches a declared secret in the skill
+                    if let Some(skill) = self.loader.get(name).await {
+                        let declarations = skill.secrets();
+                        if !declarations.is_empty()
+                            && !declarations.iter().any(|d| d.key == key)
+                        {
+                            let valid_keys: Vec<&str> =
+                                declarations.iter().map(|d| d.key.as_str()).collect();
+                            return ToolResult::error(format!(
+                                "Unknown secret '{}' for skill '{}'. Declared secrets: {}",
+                                key,
+                                name,
+                                valid_keys.join(", ")
+                            ));
+                        }
+                    }
+
+                    // Encrypt and store
+                    let encrypted = match auth::credential::encrypt(value) {
+                        Ok(v) => v,
+                        Err(e) => return ToolResult::error(format!("encryption failed: {}", e)),
+                    };
+
+                    match store.set_skill_secret(name, key, &encrypted) {
+                        Ok(()) => ToolResult::ok(format!(
+                            "Configured {} for skill '{}'. The value is stored encrypted.",
+                            key, name
+                        )),
+                        Err(e) => ToolResult::error(format!("failed to save secret: {}", e)),
+                    }
+                }
+                "secrets" => {
+                    let name = input["name"].as_str().unwrap_or("");
+                    if name.is_empty() {
+                        return ToolResult::error("name is required");
+                    }
+
+                    // Show declared secrets and their configuration status
+                    let skill = match self.loader.get(name).await {
+                        Some(s) => s,
+                        None => return ToolResult::error(format!("Skill '{}' not found", name)),
+                    };
+
+                    let declarations = skill.secrets();
+                    if declarations.is_empty() {
+                        return ToolResult::ok(format!(
+                            "Skill '{}' does not declare any secrets.",
+                            name
+                        ));
+                    }
+
+                    let store = match &self.store {
+                        Some(s) => s,
+                        None => return ToolResult::error("secrets not available — store not configured"),
+                    };
+
+                    let stored = store
+                        .list_skill_secrets(name)
+                        .unwrap_or_default();
+                    let stored_keys: std::collections::HashSet<&str> =
+                        stored.iter().map(|(k, _)| k.as_str()).collect();
+
+                    let lines: Vec<String> = declarations
+                        .iter()
+                        .map(|d| {
+                            let status = if stored_keys.contains(d.key.as_str()) {
+                                "configured"
+                            } else if d.required {
+                                "MISSING (required)"
+                            } else {
+                                "not set (optional)"
+                            };
+                            let label = if d.label.is_empty() {
+                                d.key.clone()
+                            } else {
+                                format!("{} ({})", d.label, d.key)
+                            };
+                            let hint = if d.hint.is_empty() {
+                                String::new()
+                            } else {
+                                format!("\n    {}", d.hint)
+                            };
+                            format!("- {} [{}]{}", label, status, hint)
+                        })
+                        .collect();
+
+                    ToolResult::ok(format!(
+                        "Secrets for skill '{}':\n{}",
+                        name,
+                        lines.join("\n")
+                    ))
                 }
                 "install" => {
                     let code = input["code"].as_str().unwrap_or("");

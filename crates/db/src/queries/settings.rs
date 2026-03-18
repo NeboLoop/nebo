@@ -161,6 +161,86 @@ impl Store {
         Ok(())
     }
 
+    /// Ensure a plugin_registry entry exists for a skill so we can store settings.
+    pub fn ensure_skill_plugin(&self, skill_name: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let plugin_id = format!("skill-{}", skill_name);
+        conn.execute(
+            "INSERT OR IGNORE INTO plugin_registry (id, name, plugin_type, display_name, is_installed)
+             VALUES (?1, ?2, 'skill', ?2, 1)",
+            params![plugin_id, skill_name],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get a skill secret (decrypted by caller).
+    pub fn get_skill_secret(&self, skill_name: &str, key: &str) -> Result<Option<String>, NeboError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT ps.setting_value FROM plugin_settings ps
+             JOIN plugin_registry pr ON ps.plugin_id = pr.id
+             WHERE pr.name = ?1 AND ps.setting_key = ?2 AND ps.is_secret = 1",
+            params![skill_name, key],
+            |row| row.get(0),
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(NeboError::Database(e.to_string())),
+        }
+    }
+
+    /// Store a skill secret (caller encrypts before passing).
+    pub fn set_skill_secret(&self, skill_name: &str, key: &str, encrypted_value: &str) -> Result<(), NeboError> {
+        self.ensure_skill_plugin(skill_name)?;
+        let conn = self.conn()?;
+        let plugin_id = format!("skill-{}", skill_name);
+        conn.execute(
+            "INSERT INTO plugin_settings (id, plugin_id, setting_key, setting_value, is_secret)
+             VALUES (hex(randomblob(16)), ?1, ?2, ?3, 1)
+             ON CONFLICT(plugin_id, setting_key) DO UPDATE
+             SET setting_value = excluded.setting_value, updated_at = unixepoch()",
+            params![plugin_id, key, encrypted_value],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Delete a skill secret.
+    pub fn delete_skill_secret(&self, skill_name: &str, key: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        let plugin_id = format!("skill-{}", skill_name);
+        conn.execute(
+            "DELETE FROM plugin_settings WHERE plugin_id = ?1 AND setting_key = ?2 AND is_secret = 1",
+            params![plugin_id, key],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Get all secrets for a skill (returns key → encrypted_value).
+    pub fn list_skill_secrets(&self, skill_name: &str) -> Result<Vec<(String, String)>, NeboError> {
+        let conn = self.conn()?;
+        let plugin_id = format!("skill-{}", skill_name);
+        let mut stmt = conn
+            .prepare(
+                "SELECT setting_key, setting_value FROM plugin_settings
+                 WHERE plugin_id = ?1 AND is_secret = 1
+                 ORDER BY setting_key",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![plugin_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| NeboError::Database(e.to_string()))?);
+        }
+        Ok(results)
+    }
+
     pub fn create_user_preferences(&self, user_id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(

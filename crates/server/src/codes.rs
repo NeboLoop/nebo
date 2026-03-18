@@ -345,10 +345,9 @@ async fn handle_loop_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
         .join_loop(code)
         .await
         .map_err(|e| NeboError::Internal(format!("join_loop: {e}")))?;
-    let name = resp.name.clone();
     Ok(CodeHandlerResult {
-        message: format!("Joined loop: {}", name),
-        artifact_name: Some(name),
+        message: format!("Joined loop {}", resp.loop_id),
+        artifact_name: Some(resp.loop_id),
         checkout_url: None,
     })
 }

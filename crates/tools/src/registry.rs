@@ -459,11 +459,14 @@ impl Registry {
 
         // Execute tool (script execution) — registered when skill_loader and plan_tier are available
         if let (Some(loader), Some(tier)) = (&skill_loader, &plan_tier) {
-            self.register(Box::new(crate::execute_tool::ExecuteTool::new(
-                loader.clone(),
-                tier.clone(),
-                sandbox_manager.clone(),
-            )))
+            self.register(Box::new(
+                crate::execute_tool::ExecuteTool::new(
+                    loader.clone(),
+                    tier.clone(),
+                    sandbox_manager.clone(),
+                )
+                .with_store(store.clone()),
+            ))
             .await;
         }
 

@@ -1,8 +1,96 @@
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::response::Json;
 
 use crate::state::AppState;
 use super::{to_error_response, HandlerResult};
+
+/// GET /api/v1/skills/:name/secrets
+/// Returns declared secrets and their configuration status (never exposes values).
+pub async fn list_skill_secrets(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let skill = state
+        .skill_loader
+        .get(&name)
+        .await
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let declarations = skill.secrets();
+    let stored = state
+        .store
+        .list_skill_secrets(&name)
+        .unwrap_or_default();
+    let stored_keys: std::collections::HashSet<String> =
+        stored.into_iter().map(|(k, _)| k).collect();
+
+    let secrets: Vec<serde_json::Value> = declarations
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "key": d.key,
+                "label": d.label,
+                "hint": d.hint,
+                "required": d.required,
+                "configured": stored_keys.contains(&d.key),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "secrets": secrets })))
+}
+
+/// PUT /api/v1/skills/:name/secrets
+/// Set a secret for a skill. Body: { "key": "BRAVE_API_KEY", "value": "..." }
+pub async fn set_skill_secret(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    let key = body["key"]
+        .as_str()
+        .ok_or_else(|| to_error_response(types::NeboError::Validation("key required".into())))?;
+    let value = body["value"]
+        .as_str()
+        .ok_or_else(|| to_error_response(types::NeboError::Validation("value required".into())))?;
+
+    if value.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "value must not be empty".into(),
+        )));
+    }
+
+    let encrypted = auth::credential::encrypt(value).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(types::api::ErrorResponse {
+                error: format!("encryption failed: {}", e),
+            }),
+        )
+    })?;
+
+    state
+        .store
+        .set_skill_secret(&name, key, &encrypted)
+        .map_err(to_error_response)?;
+
+    Ok(Json(serde_json::json!({ "success": true, "key": key })))
+}
+
+/// DELETE /api/v1/skills/:name/secrets/:key
+/// Remove a configured secret.
+pub async fn delete_skill_secret(
+    State(state): State<AppState>,
+    Path((name, key)): Path<(String, String)>,
+) -> HandlerResult<serde_json::Value> {
+    state
+        .store
+        .delete_skill_secret(&name, &key)
+        .map_err(to_error_response)?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
 
 fn skills_dir() -> Result<std::path::PathBuf, (axum::http::StatusCode, Json<types::api::ErrorResponse>)> {
     config::user_dir()
@@ -36,6 +124,29 @@ pub async fn list_extensions(
             }
             if let Some(ref path) = s.source_path {
                 info["path"] = serde_json::json!(path.to_string_lossy());
+            }
+            // Include secret declarations so the UI knows what needs configuring
+            let declarations = s.secrets();
+            if !declarations.is_empty() {
+                let stored = state.store.list_skill_secrets(&s.name).unwrap_or_default();
+                let stored_keys: std::collections::HashSet<String> =
+                    stored.into_iter().map(|(k, _)| k).collect();
+                let secrets: Vec<serde_json::Value> = declarations
+                    .iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "key": d.key,
+                            "label": d.label,
+                            "hint": d.hint,
+                            "required": d.required,
+                            "configured": stored_keys.contains(&d.key),
+                        })
+                    })
+                    .collect();
+                info["secrets"] = serde_json::json!(secrets);
+                info["needsConfiguration"] = serde_json::json!(
+                    declarations.iter().any(|d| d.required && !stored_keys.contains(&d.key))
+                );
             }
             info
         })

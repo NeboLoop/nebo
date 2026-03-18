@@ -3,6 +3,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// A secret declared in a skill's metadata.secrets array.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecretDeclaration {
+    /// Environment variable name (e.g., "BRAVE_API_KEY").
+    pub key: String,
+    /// Human-readable label for the UI.
+    pub label: String,
+    /// Help text (e.g., URL to get the key).
+    pub hint: String,
+    /// Whether the skill requires this secret to function.
+    pub required: bool,
+}
+
 /// Where a skill was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,6 +139,37 @@ impl Skill {
         self.capabilities
             .iter()
             .any(|c| matches!(c.as_str(), "python" | "typescript"))
+    }
+
+    /// Extract secret declarations from metadata.secrets.
+    ///
+    /// Skills declare required secrets in SKILL.md frontmatter:
+    /// ```yaml
+    /// metadata:
+    ///   secrets:
+    ///     - key: BRAVE_API_KEY
+    ///       label: "Brave Search API Key"
+    ///       hint: "https://brave.com/search/api/"
+    ///       required: true
+    /// ```
+    pub fn secrets(&self) -> Vec<SecretDeclaration> {
+        let Some(secrets_val) = self.metadata.get("secrets") else {
+            return vec![];
+        };
+        let Some(arr) = secrets_val.as_array() else {
+            return vec![];
+        };
+        arr.iter()
+            .filter_map(|v| {
+                let key = v.get("key")?.as_str()?.to_string();
+                Some(SecretDeclaration {
+                    key,
+                    label: v.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    hint: v.get("hint").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    required: v.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
+                })
+            })
+            .collect()
     }
 
     /// List resource files (not SKILL.md itself).
@@ -508,5 +552,55 @@ Process PDFs here.
             let md = format!("---\nname: {}\ndescription: test\n---\nbody", name);
             assert!(parse_skill_md(md.as_bytes()).is_ok(), "should accept name: {}", name);
         }
+    }
+
+    #[test]
+    fn test_secrets_parsing() {
+        let md = r#"---
+name: brave-search
+description: Web search via Brave
+metadata:
+  secrets:
+    - key: BRAVE_API_KEY
+      label: "Brave Search API Key"
+      hint: "https://brave.com/search/api/"
+      required: true
+    - key: BRAVE_REGION
+      label: "Default region"
+      required: false
+---
+
+Search the web.
+"#;
+        let skill = parse_skill_md(md.as_bytes()).unwrap();
+        let secrets = skill.secrets();
+        assert_eq!(secrets.len(), 2);
+        assert_eq!(secrets[0].key, "BRAVE_API_KEY");
+        assert_eq!(secrets[0].label, "Brave Search API Key");
+        assert_eq!(secrets[0].hint, "https://brave.com/search/api/");
+        assert!(secrets[0].required);
+        assert_eq!(secrets[1].key, "BRAVE_REGION");
+        assert!(!secrets[1].required);
+    }
+
+    #[test]
+    fn test_secrets_empty_when_not_declared() {
+        let skill = parse_skill_md(SAMPLE_SKILL.as_bytes()).unwrap();
+        assert!(skill.secrets().is_empty());
+    }
+
+    #[test]
+    fn test_secrets_empty_with_non_array_metadata() {
+        let md = r#"---
+name: test-skill
+description: test
+metadata:
+  secrets: "not an array"
+---
+
+body
+"#;
+        let skill = parse_skill_md(md.as_bytes()).unwrap();
+        assert!(skill.secrets().is_empty());
     }
 }

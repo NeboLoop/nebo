@@ -515,8 +515,10 @@ pub struct JoinLoopRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JoinLoopResponse {
-    pub id: String,
-    pub name: String,
+    pub membership_id: String,
+    pub loop_id: String,
+    #[serde(default)]
+    pub role: String,
 }
 
 // ── Channel Types ────────────────────────────────────────────────────

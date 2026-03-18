@@ -46,7 +46,7 @@
 	<div class="w-full mx-auto flex items-center justify-between gap-4">
 		<div class="flex items-center gap-8">
 			<!-- Logo -->
-			<a href="/" class="flex items-center gap-2 no-underline">
+			<a href="/" class="flex items-center gap-2 no-underline" title="Nebo Home" aria-label="Nebo Home">
 				<NeboIcon class="w-10 h-10" />
 				<div class="flex flex-col leading-none">
 					<span class="font-display text-xl font-bold text-base-content tracking-tight">Nebo</span>
@@ -119,6 +119,7 @@
 			type="button"
 			class="md:hidden flex items-center justify-center w-10 h-10 rounded-lg text-base-content/90 hover:text-base-content hover:bg-base-200 transition-colors"
 			aria-label="Open menu"
+			title="Open menu"
 			onclick={toggleMobileMenu}
 		>
 			<Menu class="w-6 h-6" />
@@ -145,6 +146,7 @@
 					type="button"
 					class="flex items-center justify-center w-8 h-8 rounded-lg text-base-content/90 hover:text-base-content hover:bg-base-200 transition-colors"
 					aria-label="Close menu"
+					title="Close menu"
 					onclick={closeMobileMenu}
 				>
 					<X class="w-5 h-5" />

@@ -34,6 +34,7 @@ pub struct ExecuteTool {
     loader: Arc<Loader>,
     plan_tier: Arc<RwLock<String>>,
     sandbox: Option<Arc<SandboxManager>>,
+    store: Option<Arc<db::Store>>,
 }
 
 impl ExecuteTool {
@@ -46,7 +47,84 @@ impl ExecuteTool {
             loader,
             plan_tier,
             sandbox,
+            store: None,
         }
+    }
+
+    pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Resolve declared secrets from the DB, decrypt, and return as env var pairs.
+    /// Returns Err with a user-facing message if required secrets are missing.
+    fn resolve_secrets(
+        store: &db::Store,
+        skill: &crate::skills::Skill,
+    ) -> Result<Vec<(String, String)>, String> {
+        let declarations = skill.secrets();
+        if declarations.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut env_vars = Vec::new();
+        let mut missing = Vec::new();
+
+        for decl in &declarations {
+            match store.get_skill_secret(&skill.name, &decl.key) {
+                Ok(Some(encrypted_val)) => match auth::credential::decrypt(&encrypted_val) {
+                    Ok(plaintext) => env_vars.push((decl.key.clone(), plaintext)),
+                    Err(e) => {
+                        warn!(skill = %skill.name, key = %decl.key, error = %e, "failed to decrypt secret");
+                        if decl.required {
+                            missing.push(decl.clone());
+                        }
+                    }
+                },
+                Ok(None) => {
+                    if decl.required {
+                        missing.push(decl.clone());
+                    }
+                }
+                Err(e) => {
+                    warn!(skill = %skill.name, key = %decl.key, error = %e, "failed to read secret");
+                    if decl.required {
+                        missing.push(decl.clone());
+                    }
+                }
+            }
+        }
+
+        if !missing.is_empty() {
+            let details: Vec<String> = missing
+                .iter()
+                .map(|m| {
+                    let hint = if m.hint.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", m.hint)
+                    };
+                    let label = if m.label.is_empty() {
+                        m.key.clone()
+                    } else {
+                        m.label.clone()
+                    };
+                    format!("- {}{}", label, hint)
+                })
+                .collect();
+            return Err(format!(
+                "Skill '{}' requires configuration before use.\n\n\
+                 Missing secrets:\n{}\n\n\
+                 Configure with: skill(action: \"configure\", name: \"{}\", key: \"SECRET_NAME\", value: \"your-key\")\n\
+                 Or set them in Settings → Skills → {}",
+                skill.name,
+                details.join("\n"),
+                skill.name,
+                skill.name,
+            ));
+        }
+
+        Ok(env_vars)
     }
 
     /// Detect language from file extension.
@@ -200,6 +278,18 @@ impl ExecuteTool {
         // Pass args as environment variable
         if !args.is_null() {
             cmd.env("SKILL_ARGS", args.to_string());
+        }
+
+        // Inject declared secrets as environment variables
+        if let Some(ref store) = self.store {
+            match Self::resolve_secrets(store, skill) {
+                Ok(secrets) => {
+                    for (key, value) in secrets {
+                        cmd.env(&key, &value);
+                    }
+                }
+                Err(msg) => return ToolResult::error(msg),
+            }
         }
 
         crate::process::hide_window(&mut cmd);
