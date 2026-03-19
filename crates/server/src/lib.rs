@@ -1062,6 +1062,38 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
 /// Handle an incoming NeboLoop message with full access to runner/lanes/comm.
 async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
+    // Route account stream messages (plan changes, token refresh)
+    if msg.topic == "account" {
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&msg.content) {
+            if event.get("type").and_then(|t| t.as_str()) == Some("tokenRefresh") {
+                if let Some(token) = event.get("token").and_then(|t| t.as_str()) {
+                    let plan = event.get("plan").and_then(|p| p.as_str()).unwrap_or("free");
+                    tracing::info!(plan = plan, "Account: plan updated via tokenRefresh");
+
+                    // Persist fresh JWT to SQLite auth_profiles — next Janus request uses it
+                    if let Ok(profiles) = state.store.list_active_auth_profiles_by_provider("neboloop") {
+                        if let Some(profile) = profiles.first() {
+                            let _ = state.store.update_auth_profile(
+                                &profile.id,
+                                &profile.name,
+                                token,
+                                profile.model.as_deref(),
+                                profile.base_url.as_deref(),
+                                profile.priority.unwrap_or(0),
+                                profile.auth_type.as_deref(),
+                                profile.metadata.as_deref(),
+                            );
+                        }
+                    }
+
+                    // Notify UI
+                    state.hub.broadcast("plan_changed", serde_json::json!({"plan": plan}));
+                }
+            }
+        }
+        return;
+    }
+
     // Route install events to napp registry
     if msg.topic == "installs" {
         if let Ok(event) = serde_json::from_str::<napp::InstallEvent>(&msg.content) {
@@ -1418,6 +1450,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/neboloop/billing/subscription", axum::routing::get(handlers::neboloop::billing_subscription))
         .route("/neboloop/billing/checkout", axum::routing::post(handlers::neboloop::billing_checkout))
         .route("/neboloop/billing/portal", axum::routing::post(handlers::neboloop::billing_portal))
+        .route("/neboloop/billing/setup-intent", axum::routing::post(handlers::neboloop::billing_setup_intent))
         .route("/neboloop/billing/cancel", axum::routing::post(handlers::neboloop::billing_cancel))
         .route("/neboloop/billing/invoices", axum::routing::get(handlers::neboloop::billing_invoices))
         .route("/neboloop/billing/payment-methods", axum::routing::get(handlers::neboloop::billing_payment_methods))
