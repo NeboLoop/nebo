@@ -907,6 +907,13 @@ export function neboLoopBillingPaymentMethods() {
 }
 
 /**
+ * @description "Get or create the user's getnebo referral/invite code"
+ */
+export function neboLoopReferralCode() {
+	return webapi.get<components.NeboLoopReferralCodeResponse>(`/api/v1/neboloop/referral-code`)
+}
+
+/**
  * @description "List notifications"
  * @param req
  */
@@ -1135,6 +1142,27 @@ export function getSkillContent(name: string) {
  */
 export function toggleSkill(name: string) {
 	return webapi.post<components.ToggleSkillResponse>(`/api/v1/skills/${name}/toggle`)
+}
+
+/**
+ * @description "List skill secrets and their configuration status"
+ */
+export function listSkillSecrets(name: string) {
+	return webapi.get<{ secrets: Array<{ key: string; label: string; hint: string; required: boolean; configured: boolean }> }>(`/api/v1/skills/${name}/secrets`)
+}
+
+/**
+ * @description "Set a skill secret"
+ */
+export function setSkillSecret(name: string, key: string, value: string) {
+	return webapi.put<{ success: boolean; key: string }>(`/api/v1/skills/${name}/secrets`, { key, value })
+}
+
+/**
+ * @description "Delete a skill secret"
+ */
+export function deleteSkillSecret(name: string, key: string) {
+	return webapi.delete<{ success: boolean }>(`/api/v1/skills/${name}/secrets/${key}`)
 }
 
 /**

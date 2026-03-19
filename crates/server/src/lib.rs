@@ -77,6 +77,7 @@ fn seed_models_from_catalog(store: &db::Store, models_cfg: &config::ModelsConfig
                 capabilities.as_deref(),
                 kind.as_deref(),
                 Some(version),
+                model.is_active(),
             ) {
                 warn!(
                     provider = %provider_name,
@@ -1420,6 +1421,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/neboloop/billing/cancel", axum::routing::post(handlers::neboloop::billing_cancel))
         .route("/neboloop/billing/invoices", axum::routing::get(handlers::neboloop::billing_invoices))
         .route("/neboloop/billing/payment-methods", axum::routing::get(handlers::neboloop::billing_payment_methods))
+        .route("/neboloop/referral-code", axum::routing::get(handlers::neboloop::referral_code))
         // Workflows
         .route("/workflows", axum::routing::get(handlers::workflows::list_workflows))
         .route("/workflows", axum::routing::post(handlers::workflows::create_workflow))

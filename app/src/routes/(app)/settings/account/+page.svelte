@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Cloud, CheckCircle, XCircle, Loader2, LogOut, Bot, ExternalLink, Zap } from 'lucide-svelte';
+	import { Cloud, CheckCircle, XCircle, Loader2, LogOut, Bot, ExternalLink, Zap, AlertTriangle } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import webapi from '$lib/api/gocliRequest';
 	import type * as components from '$lib/api/neboComponents';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import Modal from '$lib/components/ui/Modal.svelte';
+	import GiveNebo from '$lib/components/GiveNebo.svelte';
 
 	let isLoading = $state(true);
 	let accountConnected = $state(false);
@@ -26,6 +28,12 @@
 	// Disconnect
 	let showDisconnectConfirm = $state(false);
 	let disconnecting = $state(false);
+
+	// Delete account
+	let showDeleteModal = $state(false);
+	let deleteConfirmText = $state('');
+	let deleteLoading = $state(false);
+	const canDelete = $derived(deleteConfirmText === 'DELETE');
 
 	async function loadStatus() {
 		try {
@@ -121,6 +129,21 @@
 		}
 	}
 
+	async function handleDeleteAccount() {
+		if (!canDelete) return;
+		deleteLoading = true;
+		try {
+			await api.deleteAccount({ password: '' });
+			await api.neboLoopDisconnect();
+			showDeleteModal = false;
+			window.location.href = '/';
+		} catch (e: any) {
+			console.error('Delete failed:', e);
+		} finally {
+			deleteLoading = false;
+		}
+	}
+
 	onMount(() => {
 		loadStatus();
 		const h = () => loadStatus();
@@ -194,6 +217,11 @@
 				</span>
 			</div>
 		</div>
+
+		<!-- Give Nebo -->
+		{#if accountConnected}
+			<GiveNebo />
+		{/if}
 
 		<!-- Janus Usage -->
 		{#if janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
@@ -292,6 +320,17 @@
 				</button>
 			{/if}
 		</div>
+
+		<!-- Delete Account -->
+		<div class="pt-4">
+			<button
+				type="button"
+				class="text-sm text-base-content/40 hover:text-error transition-colors"
+				onclick={() => { deleteConfirmText = ''; showDeleteModal = true; }}
+			>
+				Delete account
+			</button>
+		</div>
 	</div>
 {:else}
 	<!-- Not Connected State -->
@@ -335,3 +374,52 @@
 		</div>
 	</div>
 {/if}
+
+<!-- Delete Account Modal -->
+<Modal bind:show={showDeleteModal} title="Delete Account" size="sm">
+	<div class="space-y-4">
+		<div class="rounded-xl bg-error/10 border border-error/20 p-4">
+			<div class="flex gap-3">
+				<AlertTriangle class="w-5 h-5 text-error shrink-0 mt-0.5" />
+				<div>
+					<p class="text-base font-medium text-error">This action is permanent</p>
+					<p class="text-sm text-error/80 mt-1">
+						Your account, settings, memories, and all associated data will be permanently deleted. This cannot be undone.
+					</p>
+				</div>
+			</div>
+		</div>
+		<div>
+			<label class="block text-sm font-medium text-base-content/80 mb-1" for="confirm-delete">
+				Type <code class="bg-base-200 px-1.5 py-0.5 rounded text-error font-bold">DELETE</code> to confirm
+			</label>
+			<input
+				id="confirm-delete"
+				type="text"
+				class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
+				placeholder="Type DELETE to confirm"
+				bind:value={deleteConfirmText}
+				onkeydown={(e) => { if (e.key === 'Enter' && canDelete) handleDeleteAccount(); }}
+			/>
+		</div>
+	</div>
+	{#snippet footer()}
+		<button
+			type="button"
+			onclick={() => (showDeleteModal = false)}
+			class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
+		>
+			Cancel
+		</button>
+		<button
+			type="button"
+			disabled={!canDelete || deleteLoading}
+			onclick={handleDeleteAccount}
+			class="h-10 px-5 rounded-full text-base font-bold transition-all flex items-center gap-2
+				{canDelete ? 'bg-error text-error-content hover:brightness-110' : 'bg-base-content/10 text-base-content/40 cursor-not-allowed'}"
+		>
+			{#if deleteLoading}<Spinner size={14} />{/if}
+			Delete my account
+		</button>
+	{/snippet}
+</Modal>

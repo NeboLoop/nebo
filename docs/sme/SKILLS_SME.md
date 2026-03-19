@@ -354,6 +354,8 @@ Tool name: `"skill"`
 | `update` | `name`, `content` | Update existing skill. Rejects installed (marketplace) skills as read-only |
 | `delete` | `name` | Delete user skill (directory + yaml files). Rejects installed skills |
 | `install` | `code` | Install from marketplace (must start with `SKIL-`). Calls NeboLoop API, persists, reloads |
+| `configure` | `name`, `key`, `value` | Set a secret/API key for a skill (encrypted at rest) |
+| `secrets` | `name` | List declared secrets for a skill and their configuration status |
 | `featured` | — | List enabled skills with non-empty capabilities (top 10) |
 | `popular` | — | List enabled skills sorted by capability count (top 10) |
 | `reviews` | `name` | Placeholder — returns "no reviews available" (marketplace API stub) |
@@ -364,11 +366,13 @@ Tool name: `"skill"`
 {
   "type": "object",
   "properties": {
-    "action": { "type": "string", "enum": ["catalog", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "featured", "popular", "reviews"] },
+    "action": { "type": "string", "enum": ["catalog", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews"] },
     "name": { "type": "string", "description": "Skill name (slug)" },
     "content": { "type": "string", "description": "Skill YAML content (for create/update)" },
     "path": { "type": "string", "description": "Relative path for browse filter or resource read" },
-    "code": { "type": "string", "description": "Marketplace code for install (e.g. SKIL-XXXX-XXXX)" }
+    "code": { "type": "string", "description": "Marketplace code for install (e.g. SKIL-XXXX-XXXX)" },
+    "key": { "type": "string", "description": "Secret/API key name for configure action (e.g. BRAVE_API_KEY)" },
+    "value": { "type": "string", "description": "Secret value for configure action" }
   },
   "required": ["action"]
 }
@@ -521,6 +525,83 @@ metadata:
 
 ---
 
+## 9b. Skill Secrets
+
+**Source:** `crates/tools/src/skills/skill.rs`, `crates/tools/src/execute_tool.rs`, `crates/db/src/queries/settings.rs`
+
+Skills can declare required secrets (API keys, tokens) in their SKILL.md frontmatter:
+
+```yaml
+metadata:
+  secrets:
+    - key: BRAVE_API_KEY
+      label: "Brave Search API Key"
+      hint: "https://brave.com/search/api/"
+      required: true
+    - key: BRAVE_REGION
+      label: "Default region"
+      required: false
+```
+
+### SecretDeclaration Struct
+
+```rust
+pub struct SecretDeclaration {
+    pub key: String,       // Environment variable name
+    pub label: String,     // Human-readable label for UI
+    pub hint: String,      // Help text (e.g., URL to get the key)
+    pub required: bool,    // Whether the skill needs this to function
+}
+```
+
+Parsed via `Skill::secrets()` which reads `metadata.secrets` as a JSON array.
+
+### Secret Storage
+
+Secrets are encrypted with AES-256-GCM via `auth::credential::encrypt()` and stored in the `plugin_settings` table with `is_secret = 1`:
+
+```rust
+// Store
+store.set_skill_secret(skill_name, key, encrypted_value)
+// Retrieve
+store.get_skill_secret(skill_name, key) → Option<encrypted_value>
+// List
+store.list_skill_secrets(skill_name) → Vec<(key, encrypted_value)>
+// Delete
+store.delete_skill_secret(skill_name, key)
+```
+
+The `plugin_settings` table uses `plugin_id = "skill-{name}"`, created on-demand via `ensure_skill_plugin()`.
+
+### Secret Injection (ExecuteTool)
+
+When `ExecuteTool` runs a skill's script:
+
+1. `resolve_secrets(store, skill)` reads all declared secrets
+2. Decrypts each via `auth::credential::decrypt()`
+3. Injects as **environment variables** on the child process (`cmd.env(key, value)`)
+4. If any **required** secret is missing → execution is **blocked** with a structured error message listing what's missing and how to configure
+
+### Configuration Methods
+
+**Agent tool:**
+```
+skill(action: "configure", name: "brave-search", key: "BRAVE_API_KEY", value: "BSA...")
+skill(action: "secrets", name: "brave-search")
+```
+
+**REST API:**
+```
+GET    /api/v1/skills/:name/secrets         → list declarations + configured status
+PUT    /api/v1/skills/:name/secrets         → set a secret (body: {key, value})
+DELETE /api/v1/skills/:name/secrets/:key    → remove a secret
+```
+
+**list_extensions enrichment:**
+The `GET /api/v1/extensions` endpoint now includes `secrets` array and `needsConfiguration` boolean for each skill that declares secrets.
+
+---
+
 ## 10. HTTP Endpoints
 
 **Source:** `crates/server/src/handlers/skills.rs`
@@ -537,6 +618,9 @@ All endpoints operate on `user/skills/` directory only (no installed/marketplace
 | DELETE | `/api/v1/skills/:name` | `delete_skill` | Delete skill (directory + yaml files) |
 | POST | `/api/v1/skills/:name/toggle` | `toggle_skill` | Enable/disable (rename dir or yaml file) |
 | POST | `/api/v1/codes` | `submit_code` | Redeem marketplace code (multi-type dispatch) |
+| GET | `/api/v1/skills/:name/secrets` | `list_skill_secrets` | List declared secrets + configured status |
+| PUT | `/api/v1/skills/:name/secrets` | `set_skill_secret` | Store encrypted secret (body: `{key, value}`) |
+| DELETE | `/api/v1/skills/:name/secrets/:key` | `delete_skill_secret` | Remove a configured secret |
 
 ### POST /api/v1/skills (Create)
 
@@ -999,4 +1083,4 @@ const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 ---
 
-*Last updated: 2026-03-10*
+*Last updated: 2026-03-19*

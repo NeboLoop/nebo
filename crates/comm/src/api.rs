@@ -472,6 +472,13 @@ impl NeboLoopApi {
         Ok(resp.normalize())
     }
 
+    // ── Referral ──────────────────────────────────────────────────
+
+    /// Get or create the user's referral/invite code.
+    pub async fn referral_code(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::GET, "/api/v1/owners/me/referral-code", None::<&()>).await
+    }
+
     // ── Billing ────────────────────────────────────────────────────
 
     /// List billing prices/plans.

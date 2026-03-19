@@ -1074,6 +1074,12 @@ export interface BillingPaymentMethodsResponse {
 	methods: PaymentMethodInfo[]
 }
 
+export interface NeboLoopReferralCodeResponse {
+	referral_code: string
+	referral_link: string
+	token_balance: number
+}
+
 export interface NeboLoopAccountStatusResponse {
 	connected: boolean
 	janusProvider: boolean

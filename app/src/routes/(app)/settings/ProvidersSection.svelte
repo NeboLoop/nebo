@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Terminal, Wifi, Zap, ExternalLink, ChevronDown, X } from 'lucide-svelte';
+	import { Key, Plus, Trash2, CheckCircle, XCircle, RefreshCw, Terminal, Wifi, Zap, ExternalLink, X } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import webapi from '$lib/api/gocliRequest';
 	import type * as components from '$lib/api/neboComponents';
@@ -35,8 +35,8 @@
 	// CLI providers from API
 	let cliProviders = $state<components.CLIProviderInfo[]>([]);
 
-	// More section expanded
-	let showMore = $state(false);
+	// Local models status
+	let localModelsStatus = $state<components.LocalModelsStatusResponse | null>(null);
 
 	function openAddModal(providerType?: string) {
 		if (providerType) {
@@ -63,11 +63,16 @@
 		{ value: 'ollama', label: 'Ollama (Local)' }
 	];
 
+	const isLocalProvider = $derived(newProvider.provider === 'ollama');
+
+	const localProviderTypes = new Set(['ollama']);
+
 	let allProviders = $derived(() => {
 		const result: {
 			type: string;
 			label: string;
 			configured: boolean;
+			isLocal: boolean;
 			profile: components.AuthProfile | null;
 			models: components.ModelInfo[];
 		}[] = [];
@@ -83,11 +88,15 @@
 			const label = providerOptions.find(p => p.value === providerType)?.label || providerType;
 			const profile = providers.find(p => p.provider === providerType) || null;
 			const providerModels = models[providerType] || [];
+			const isLocal = localProviderTypes.has(providerType);
+			// Local providers are "configured" if they have detected models — no API key needed
+			const configured = isLocal ? providerModels.length > 0 : !!profile;
 
 			result.push({
 				type: providerType,
 				label,
-				configured: !!profile,
+				configured,
+				isLocal,
 				profile,
 				models: providerModels
 			});
@@ -98,6 +107,9 @@
 			return a.label.localeCompare(b.label);
 		});
 	});
+
+	let localProvs = $derived(allProviders().filter(p => p.isLocal));
+	let apiProvs = $derived(allProviders().filter(p => !p.isLocal));
 
 	// Hide embedding models — they're always on when Nebo AI is enabled
 	let janusModels = $derived(() => {
@@ -114,7 +126,7 @@
 	}
 
 	onMount(async () => {
-		await Promise.all([loadProviders(), loadModels(), loadJanusStatus(), loadJanusUsage()]);
+		await Promise.all([loadProviders(), loadModels(), loadJanusStatus(), loadJanusUsage(), loadLocalModelsStatus()]);
 		const h = () => { loadJanusStatus(); loadJanusUsage(); };
 		window.addEventListener('nebo:plan_changed', h);
 		return () => window.removeEventListener('nebo:plan_changed', h);
@@ -133,6 +145,14 @@
 			janusUsage = await api.neboLoopJanusUsage();
 		} catch {
 			janusUsage = null;
+		}
+	}
+
+	async function loadLocalModelsStatus() {
+		try {
+			localModelsStatus = await api.localModelsStatus();
+		} catch {
+			localModelsStatus = null;
 		}
 	}
 
@@ -241,8 +261,12 @@
 	}
 
 	async function addProvider() {
-		if (!newProvider.name || (!newProvider.apiKey && newProvider.provider !== 'ollama')) {
-			addError = 'Name and API key are required';
+		if (!newProvider.name) {
+			addError = 'Name is required';
+			return;
+		}
+		if (!isLocalProvider && !newProvider.apiKey) {
+			addError = 'API key is required';
 			return;
 		}
 
@@ -252,10 +276,11 @@
 			await api.createAuthProfile({
 				name: newProvider.name,
 				provider: newProvider.provider,
-				apiKey: newProvider.apiKey,
+				apiKey: newProvider.apiKey || '',
 				baseUrl: newProvider.baseUrl || undefined
 			});
 			await loadProviders();
+			await loadModels();
 			closeAddModal();
 		} catch (err: any) {
 			addError = err?.message || 'Failed to add provider';
@@ -356,126 +381,164 @@
 			</div>
 		</section>
 
-		<!-- More Providers (collapsible) -->
-		<section>
-			<button
-				type="button"
-				class="flex items-center gap-2 w-full text-left mb-3"
-				onclick={() => showMore = !showMore}
-			>
-				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">More Providers</h3>
-				<ChevronDown class="w-4 h-4 text-base-content/90 transition-transform {showMore ? 'rotate-180' : ''}" />
-			</button>
+		<!-- CLI Providers -->
+		{#if cliProviders.length > 0}
+			<section>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">CLI Providers</h3>
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+					<div class="space-y-2">
+						{#each cliProviders as cli (cli.id)}
+							<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
+								<div>
+									<div class="flex items-center gap-2">
+										<Terminal class="w-4 h-4 text-base-content/60" />
+										<p class="text-base font-medium text-base-content">{cli.displayName}</p>
+									</div>
+									<p class="text-sm text-base-content/60 mt-0.5 ml-6"><code>{cli.command}</code></p>
+								</div>
+								<Toggle checked={cli.active} onchange={() => toggleCLI(cli)} />
+							</div>
+						{/each}
+					</div>
+				</div>
+			</section>
+		{/if}
 
-			{#if showMore}
-				<div class="space-y-4">
-					<!-- CLI Providers -->
-					{#if cliProviders.length > 0}
-						<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-							<p class="text-base font-medium text-base-content/80 mb-3">CLI Providers</p>
-							<div class="space-y-2">
-								{#each cliProviders as cli (cli.id)}
-									<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
-										<div>
-											<p class="text-base font-medium text-base-content">{cli.displayName}</p>
-											<p class="text-base text-base-content/80"><code class="text-base">{cli.command}</code></p>
+		<!-- Local Models -->
+		{#if localProvs.length > 0}
+			<section>
+				<div class="flex items-center justify-between mb-3">
+					<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Local Models</h3>
+					<button
+						type="button"
+						class="flex items-center gap-1.5 text-sm font-medium text-base-content/60 hover:text-primary transition-colors"
+						onclick={async () => { await loadModels(); }}
+					>
+						<RefreshCw class="w-3.5 h-3.5" /> Discover
+					</button>
+				</div>
+				{#each localProvs as prov (prov.type)}
+					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+						<div class="flex items-center gap-3 mb-1">
+							{#if prov.configured}
+								<div class="w-2 h-2 rounded-full bg-success"></div>
+							{:else}
+								<div class="w-2 h-2 rounded-full bg-base-content/40"></div>
+							{/if}
+							<p class="text-base font-medium text-base-content">{prov.label}</p>
+						</div>
+						{#if prov.configured}
+							<p class="text-sm text-base-content/50 ml-5 mb-3">{prov.models.length} model{prov.models.length !== 1 ? 's' : ''} detected — no API key needed</p>
+						{:else}
+							<p class="text-sm text-base-content/50 ml-5 mb-3">Not detected. Install Ollama and pull a model to get started.</p>
+						{/if}
+						{#if prov.models.length > 0}
+							<div class="space-y-1.5">
+								{#each prov.models as model (model.id)}
+									<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5">
+										<p class="text-base text-base-content">{model.displayName}</p>
+										<div class="flex items-center gap-3">
+											<span class="text-sm text-base-content/60 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+											<Toggle
+												checked={model.isActive}
+												onchange={() => toggleModel(prov.type, model)}
+											/>
 										</div>
-										<Toggle checked={cli.active} onchange={() => toggleCLI(cli)} />
 									</div>
 								{/each}
 							</div>
-						</div>
-					{/if}
+						{/if}
+					</div>
+				{/each}
+			</section>
+		{/if}
 
-					<!-- API Keys -->
-					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-						<div class="flex items-center justify-between mb-4">
-							<p class="text-base font-medium text-base-content/80">API Keys</p>
-							<button
-								type="button"
-								class="flex items-center gap-1.5 text-base font-medium text-base-content/80 hover:text-primary transition-colors"
-								onclick={() => openAddModal()}
-							>
-								<Plus class="w-4 h-4" /> Add provider
-							</button>
-						</div>
+		<!-- API Key Providers -->
+		<section>
+			<div class="flex items-center justify-between mb-3">
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">API Keys</h3>
+				<button
+					type="button"
+					class="flex items-center gap-1.5 text-sm font-medium text-base-content/60 hover:text-primary transition-colors"
+					onclick={() => openAddModal()}
+				>
+					<Plus class="w-4 h-4" /> Add provider
+				</button>
+			</div>
 
-						<div class="space-y-3">
-							{#each allProviders() as prov (prov.type)}
-								<div class="py-3 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
-									<div class="flex items-center justify-between">
-										<div class="flex items-center gap-3">
-											{#if prov.configured && prov.profile?.isActive}
-												<div class="w-2 h-2 rounded-full bg-success"></div>
-											{:else if prov.configured}
-												<div class="w-2 h-2 rounded-full bg-warning"></div>
-											{:else}
-												<div class="w-2 h-2 rounded-full bg-base-content/40"></div>
-											{/if}
-											<div>
-												<p class="text-base font-medium text-base-content">{prov.profile?.name || prov.label}</p>
-												{#if prov.profile?.name && prov.profile.name !== prov.label}
-													<p class="text-base text-base-content/80">{prov.label}</p>
-												{/if}
-											</div>
-										</div>
-										<div class="flex items-center gap-3">
-											{#if prov.configured && prov.profile}
-												{#if testResult?.id === prov.profile.id}
-													<span class="text-base {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
-												{/if}
-												<button
-													type="button"
-													class="text-base text-base-content/80 hover:text-primary transition-colors"
-													onclick={() => testProvider(prov.profile!.id)}
-													disabled={testingId === prov.profile.id}
-												>
-													{#if testingId === prov.profile.id}<Spinner size={14} />{:else}Test{/if}
-												</button>
-												<Toggle checked={prov.profile.isActive} onchange={() => toggleProvider(prov.profile!)} />
-												<button
-													type="button"
-													class="text-base text-base-content/80 hover:text-error transition-colors"
-													onclick={() => deleteProvider(prov.profile!.id)}
-												>
-													<Trash2 class="w-4 h-4" />
-												</button>
-											{:else}
-												<button
-													type="button"
-													class="text-base text-base-content/80 hover:text-primary transition-colors"
-													onclick={() => openAddModal(prov.type)}
-												>
-													Add key
-												</button>
-											{/if}
-										</div>
-									</div>
-
-									<!-- Model toggles -->
-									{#if prov.models.length > 0}
-										<div class="mt-3 space-y-1.5">
-											{#each prov.models as model (model.id)}
-												<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5 {!prov.configured ? 'opacity-50' : ''}">
-													<p class="text-base text-base-content">{model.displayName}</p>
-													<div class="flex items-center gap-3">
-														<span class="text-base text-base-content/80 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
-														<Toggle
-															checked={prov.configured ? model.isActive : false}
-															disabled={!prov.configured}
-															onchange={() => toggleModel(prov.type, model)}
-														/>
-													</div>
-												</div>
-											{/each}
-										</div>
+			<div class="space-y-3">
+				{#each apiProvs as prov (prov.type)}
+					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-3 px-4">
+						<div class="flex items-center justify-between">
+							<div class="flex items-center gap-3">
+								{#if prov.configured && prov.profile?.isActive}
+									<div class="w-2 h-2 rounded-full bg-success"></div>
+								{:else if prov.configured}
+									<div class="w-2 h-2 rounded-full bg-warning"></div>
+								{:else}
+									<div class="w-2 h-2 rounded-full bg-base-content/40"></div>
+								{/if}
+								<div>
+									<p class="text-base font-medium text-base-content">{prov.profile?.name || prov.label}</p>
+									{#if prov.profile?.name && prov.profile.name !== prov.label}
+										<p class="text-sm text-base-content/60">{prov.label}</p>
 									{/if}
 								</div>
-							{/each}
+							</div>
+							<div class="flex items-center gap-3">
+								{#if prov.configured && prov.profile}
+									{#if testResult?.id === prov.profile.id}
+										<span class="text-sm {testResult.success ? 'text-success' : 'text-error'}">{testResult.message}</span>
+									{/if}
+									<button
+										type="button"
+										class="text-sm text-base-content/60 hover:text-primary transition-colors"
+										onclick={() => testProvider(prov.profile!.id)}
+										disabled={testingId === prov.profile.id}
+									>
+										{#if testingId === prov.profile.id}<Spinner size={14} />{:else}Test{/if}
+									</button>
+									<Toggle checked={prov.profile.isActive} onchange={() => toggleProvider(prov.profile!)} />
+									<button
+										type="button"
+										class="text-base-content/40 hover:text-error transition-colors"
+										onclick={() => deleteProvider(prov.profile!.id)}
+									>
+										<Trash2 class="w-4 h-4" />
+									</button>
+								{:else}
+									<button
+										type="button"
+										class="text-sm font-medium text-base-content/60 hover:text-primary transition-colors"
+										onclick={() => openAddModal(prov.type)}
+									>
+										Add key
+									</button>
+								{/if}
+							</div>
 						</div>
+
+						<!-- Model toggles -->
+						{#if prov.models.length > 0}
+							<div class="mt-3 space-y-1.5">
+								{#each prov.models as model (model.id)}
+									<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5 {!prov.configured ? 'opacity-50' : ''}">
+										<p class="text-base text-base-content">{model.displayName}</p>
+										<div class="flex items-center gap-3">
+											<span class="text-sm text-base-content/60 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+											<Toggle
+												checked={prov.configured ? model.isActive : false}
+												disabled={!prov.configured}
+												onchange={() => toggleModel(prov.type, model)}
+											/>
+										</div>
+									</div>
+								{/each}
+							</div>
+						{/if}
 					</div>
-				</div>
-			{/if}
+				{/each}
+			</div>
 		</section>
 	</div>
 {/if}
@@ -505,16 +568,19 @@
 				</div>
 				<div>
 					<label class="text-base font-medium text-base-content/80" for="provider-name">Name</label>
-					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder="My Anthropic Key" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
+					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder={isLocalProvider ? 'My Ollama' : 'My Anthropic Key'} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
 				</div>
-				<div>
-					<label class="text-base font-medium text-base-content/80" for="api-key">API key</label>
-					<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={newProvider.provider === 'ollama' ? 'Not required for Ollama' : 'sk-...'} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
-				</div>
-				{#if newProvider.provider === 'ollama'}
+				{#if !isLocalProvider}
 					<div>
-						<label class="text-base font-medium text-base-content/80" for="base-url">Base URL <span class="font-normal">optional</span></label>
+						<label class="text-base font-medium text-base-content/80" for="api-key">API key</label>
+						<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder="sk-..." class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
+					</div>
+				{/if}
+				{#if isLocalProvider}
+					<div>
+						<label class="text-base font-medium text-base-content/80" for="base-url">Base URL <span class="font-normal text-base-content/50">optional</span></label>
 						<input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder="http://localhost:11434" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
+						<p class="text-sm text-base-content/50 mt-1">Leave blank for the default Ollama address. No API key needed.</p>
 					</div>
 				{/if}
 				{#if addError}

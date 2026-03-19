@@ -608,6 +608,16 @@ pub async fn billing_payment_methods(
     Ok(Json(resp))
 }
 
+/// GET /api/v1/neboloop/referral-code — fetch or create the user's referral/invite code via NeboLoop.
+pub async fn referral_code(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp: serde_json::Value = api.referral_code().await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("referral_code: {e}"))))?;
+    Ok(Json(resp))
+}
+
 // --- HTTP helpers ---
 
 #[derive(serde::Deserialize)]

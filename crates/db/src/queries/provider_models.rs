@@ -119,7 +119,8 @@ impl Store {
     }
 
     /// Upsert a provider model: insert if not exists, update metadata if exists.
-    /// Preserves user's is_active, is_default, and preferred choices.
+    /// Preserves user's is_active, is_default, and preferred choices for existing models.
+    /// New models use the provided `default_active` value from the YAML config.
     pub fn upsert_provider_model(
         &self,
         id: &str,
@@ -132,11 +133,13 @@ impl Store {
         capabilities: Option<&str>,
         kind: Option<&str>,
         seeded_version: Option<&str>,
+        default_active: bool,
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
+        let active_val: i64 = if default_active { 1 } else { 0 };
         conn.execute(
             "INSERT INTO provider_models (id, provider, model_id, display_name, is_active, is_default, context_window, input_price, output_price, capabilities, kind, preferred, seeded_version, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, 1, 0, ?5, ?6, ?7, ?8, ?9, 0, ?10, unixepoch(), unixepoch())
+             VALUES (?1, ?2, ?3, ?4, ?11, 0, ?5, ?6, ?7, ?8, ?9, 0, ?10, unixepoch(), unixepoch())
              ON CONFLICT(provider, model_id) DO UPDATE SET
                  display_name = excluded.display_name,
                  context_window = excluded.context_window,
@@ -146,7 +149,7 @@ impl Store {
                  kind = excluded.kind,
                  seeded_version = excluded.seeded_version,
                  updated_at = unixepoch()",
-            params![id, provider, model_id, display_name, context_window, input_price, output_price, capabilities, kind, seeded_version],
+            params![id, provider, model_id, display_name, context_window, input_price, output_price, capabilities, kind, seeded_version, active_val],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())

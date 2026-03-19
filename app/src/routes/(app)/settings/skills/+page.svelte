@@ -5,7 +5,7 @@
 	import SkillEditorModal from '$lib/components/skills/SkillEditorModal.svelte';
 	import {
 		Zap, RefreshCw, Power, Store, Download, Check, Star, Plus, Pencil, Trash2,
-		Wrench, Tag, FileText, Hash, FolderOpen, Loader2
+		Wrench, Tag, FileText, Hash, FolderOpen, Loader2, Key
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { ExtensionSkill, SkillItem } from '$lib/api/nebo';
@@ -24,6 +24,12 @@
 
 	let selectedSkill = $state<ExtensionSkill | null>(null);
 	let showDetail = $state(false);
+
+	// Secrets state
+	interface SecretInfo { key: string; label: string; hint: string; required: boolean; configured: boolean }
+	let skillSecrets = $state<SecretInfo[]>([]);
+	let settingSecret = $state<string | null>(null);
+	let secretInputs = $state<Record<string, string>>({});
 
 	onMount(async () => {
 		await loadAll();
@@ -103,9 +109,46 @@
 		showEditor = true;
 	}
 
-	function openDetail(skill: ExtensionSkill) {
+	async function openDetail(skill: ExtensionSkill) {
 		selectedSkill = skill;
+		skillSecrets = [];
+		secretInputs = {};
 		showDetail = true;
+		// Load secrets if the skill declares any
+		try {
+			const resp = await api.listSkillSecrets(skill.name);
+			skillSecrets = resp.secrets || [];
+		} catch { /* skill may not have secrets */ }
+	}
+
+	async function saveSecret(skillName: string, key: string) {
+		const value = secretInputs[key];
+		if (!value) return;
+		settingSecret = key;
+		try {
+			await api.setSkillSecret(skillName, key, value);
+			secretInputs[key] = '';
+			// Reload secrets status
+			const resp = await api.listSkillSecrets(skillName);
+			skillSecrets = resp.secrets || [];
+		} catch (err: any) {
+			console.error('Failed to save secret:', err);
+		} finally {
+			settingSecret = null;
+		}
+	}
+
+	async function removeSecret(skillName: string, key: string) {
+		settingSecret = key;
+		try {
+			await api.deleteSkillSecret(skillName, key);
+			const resp = await api.listSkillSecrets(skillName);
+			skillSecrets = resp.secrets || [];
+		} catch (err: any) {
+			console.error('Failed to delete secret:', err);
+		} finally {
+			settingSecret = null;
+		}
 	}
 
 	async function handleInstall(skill: SkillItem) {
@@ -190,6 +233,12 @@
 							{/if}
 						</div>
 						<p class="text-base text-base-content/80 line-clamp-2 leading-relaxed">{skill.description}</p>
+						{#if (skill as any).needsConfiguration}
+							<div class="flex items-center gap-1.5 mt-2">
+								<span class="w-2 h-2 rounded-full bg-warning"></span>
+								<span class="text-xs text-warning font-medium">Needs configuration</span>
+							</div>
+						{/if}
 					</button>
 				{/each}
 			</div>
@@ -364,6 +413,62 @@
 					<span class="text-base text-base-content/80 truncate">{selectedSkill.filePath || selectedSkill.source}</span>
 				</div>
 			</div>
+			<!-- Secrets Configuration -->
+			{#if skillSecrets.length > 0}
+				<div class="mt-5">
+					<h4 class="text-sm font-semibold text-base-content/60 uppercase tracking-wider mb-3">Configuration</h4>
+					<div class="space-y-3">
+						{#each skillSecrets as secret (secret.key)}
+							<div class="rounded-xl bg-base-content/5 border border-base-content/10 p-3">
+								<div class="flex items-center justify-between mb-1">
+									<div class="flex items-center gap-2">
+										<span class="text-sm font-medium text-base-content">{secret.label || secret.key}</span>
+										{#if secret.required}
+											<span class="text-xs text-error/80">required</span>
+										{/if}
+									</div>
+									{#if secret.configured}
+										<div class="flex items-center gap-2">
+											<span class="text-xs font-medium text-success">Configured</span>
+											<button
+												type="button"
+												class="text-xs text-base-content/40 hover:text-error transition-colors"
+												onclick={() => selectedSkill && removeSecret(selectedSkill.name, secret.key)}
+												disabled={settingSecret === secret.key}
+											>
+												Remove
+											</button>
+										</div>
+									{:else}
+										<span class="text-xs font-medium text-warning">Not set</span>
+									{/if}
+								</div>
+								{#if secret.hint}
+									<p class="text-xs text-base-content/50 mb-2">{secret.hint}</p>
+								{/if}
+								{#if !secret.configured}
+									<div class="flex gap-2 mt-2">
+										<input
+											type="password"
+											placeholder={secret.key}
+											bind:value={secretInputs[secret.key]}
+											class="flex-1 h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
+										/>
+										<button
+											type="button"
+											class="h-8 px-3 rounded-lg bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all disabled:opacity-50"
+											onclick={() => selectedSkill && saveSecret(selectedSkill.name, secret.key)}
+											disabled={settingSecret === secret.key || !secretInputs[secret.key]}
+										>
+											{settingSecret === secret.key ? '...' : 'Save'}
+										</button>
+									</div>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
 		</div>
 
 		{#snippet footer()}

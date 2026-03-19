@@ -19,7 +19,7 @@
 	let interestsInput = $state('');
 
 	type Theme = 'light' | 'dark' | 'system';
-	let theme = $state<Theme>('dark');
+	let theme = $state<Theme>('system');
 	let themeError = $state('');
 
 	let displayName = $state('');
@@ -75,7 +75,7 @@
 				goals = profile.goals || '';
 				context = profile.context || '';
 			}
-			theme = (prefsData.preferences?.theme as Theme) || 'dark';
+			theme = (prefsData.preferences?.theme as Theme) || 'system';
 		} catch (error) {
 			console.error('Failed to load profile:', error);
 		} finally {

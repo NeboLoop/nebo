@@ -80,7 +80,8 @@
 	]);
 
 	onMount(async () => {
-		await Promise.all([loadPresets(), loadProfile()]);
+		await loadPresets();
+		await loadProfile();
 	});
 
 	async function loadPresets() {
@@ -111,6 +112,8 @@
 					const preset = presets.find((p) => p.id === selectedPreset);
 					if (preset) customPersonality = preset.systemPrompt;
 				}
+				// Store the loaded personality as the default for revert
+				defaultPersonality = customPersonality;
 			}
 		} catch (error) {
 			console.error('Failed to load profile:', error);
@@ -147,6 +150,7 @@
 	}
 
 	let previousPersonality = $state('');
+	let defaultPersonality = $state('');
 
 	function loadPreset(e: Event) {
 		const select = e.target as HTMLSelectElement;
@@ -165,10 +169,18 @@
 
 	let showRevert = $state(false);
 
+	const hasChangedFromDefault = $derived(
+		defaultPersonality !== '' && customPersonality !== defaultPersonality && !showRevert
+	);
+
 	function revertSoul() {
 		customPersonality = previousPersonality;
 		previousPersonality = '';
 		showRevert = false;
+	}
+
+	function revertToDefault() {
+		customPersonality = defaultPersonality;
 	}
 </script>
 
@@ -220,6 +232,15 @@
 						<span class="text-base text-base-content/80">Template loaded — replaced your previous soul.</span>
 						<button type="button" class="text-base font-medium text-primary hover:text-primary/80 transition-colors" onclick={revertSoul}>
 							Undo
+						</button>
+					</div>
+				{:else if hasChangedFromDefault}
+					<div class="flex items-center justify-between mt-3">
+						<p class="text-base text-base-content/80">
+							This is your agent's core personality prompt — its soul.
+						</p>
+						<button type="button" class="text-sm font-medium text-base-content/50 hover:text-base-content/80 transition-colors" onclick={revertToDefault}>
+							Revert
 						</button>
 					</div>
 				{:else}

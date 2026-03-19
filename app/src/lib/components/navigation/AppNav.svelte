@@ -7,6 +7,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { NeboIcon } from '$lib/components/icons';
+	import { updateInfo } from '$lib/stores/update';
 	import {
 		Search,
 		Puzzle,
@@ -18,6 +19,7 @@
 	} from 'lucide-svelte';
 
 	const currentPath = $derived($page.url.pathname);
+	const hasUpdate = $derived($updateInfo?.available === true);
 
 	let mobileMenuOpen = $state(false);
 
@@ -51,7 +53,7 @@
 				<div class="flex flex-col leading-none">
 					<span class="font-display text-xl font-bold text-base-content tracking-tight">Nebo</span>
 					<span class="text-xs font-semibold uppercase tracking-widest text-base-content/80"
-						>alpha</span
+						>beta</span
 					>
 				</div>
 			</a>
@@ -101,9 +103,9 @@
 			</a>
 			<!-- Settings Link -->
 			<a
-				href="/settings/account"
-				title="Settings"
-				class="flex items-center justify-center w-9 h-9 rounded-lg transition-colors {isActive(
+				href={hasUpdate ? "/settings/about" : "/settings/account"}
+				title={hasUpdate ? "Update available" : "Settings"}
+				class="relative flex items-center justify-center w-9 h-9 rounded-lg transition-colors {isActive(
 					'/settings'
 				)
 					? 'text-primary bg-primary/10'
@@ -111,6 +113,9 @@
 				aria-label="Settings"
 			>
 				<Settings class="w-5 h-5" />
+				{#if hasUpdate}
+					<span class="absolute top-1 right-1 w-2.5 h-2.5 rounded-full bg-info border-2 border-base-100"></span>
+				{/if}
 			</a>
 		</div>
 
