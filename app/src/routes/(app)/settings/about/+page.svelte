@@ -1,20 +1,66 @@
 <script lang="ts">
-	import { updateInfo, checkForUpdate, resetUpdateState } from '$lib/stores/update';
-	import { ExternalLink, RefreshCw } from 'lucide-svelte';
+	import { onMount } from 'svelte';
+	import {
+		updateInfo,
+		checkForUpdate,
+		resetUpdateState,
+		downloadProgress,
+		updateReady,
+		updateError,
+		autoUpdateEnabled,
+		applyUpdate
+	} from '$lib/stores/update';
+	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import { ExternalLink, CheckCircle, ArrowUpCircle, AlertCircle } from 'lucide-svelte';
 
 	let isChecking = $state(false);
+	let isApplying = $state(false);
 	let checkResult = $state<'none' | 'up-to-date' | 'available'>('none');
 
-	async function handleCheckForUpdate() {
+	// Ensure version/install info is loaded when visiting this page
+	onMount(() => {
+		if (!$updateInfo) {
+			checkForUpdate();
+		}
+	});
+
+	// Auto-apply when update is downloaded and auto-update is on
+	$effect(() => {
+		if ($updateReady && $autoUpdateEnabled) {
+			handleApply();
+		}
+	});
+
+	$effect(() => {
+		if ($updateError) isApplying = false;
+	});
+
+	async function handleCheck() {
 		isChecking = true;
 		checkResult = 'none';
 		resetUpdateState();
 		await checkForUpdate();
 		isChecking = false;
-		// After check, see if an update is available
-		const info = $updateInfo;
-		checkResult = info?.available ? 'available' : 'up-to-date';
+		checkResult = $updateInfo?.available ? 'available' : 'up-to-date';
 	}
+
+	async function handleApply() {
+		isApplying = true;
+		await applyUpdate();
+	}
+
+	function handleRetry() {
+		updateError.set(null);
+		checkForUpdate();
+	}
+
+	const resourceLinks = [
+		{ label: 'Learn', href: 'https://getnebo.com/learn' },
+		{ label: 'Marketplace', href: 'https://neboloop.com' },
+		{ label: 'Send Feedback', href: 'https://getnebo.com/support/feedback' },
+		{ label: 'Developers', href: 'https://getnebo.com/developers' },
+		{ label: 'GitHub', href: 'https://github.com/NeboLoop/nebo' }
+	];
 
 	function getPlatform(): string {
 		const ua = navigator.userAgent.toLowerCase();
@@ -25,80 +71,191 @@
 	}
 </script>
 
-<div class="space-y-8">
-	<!-- Header -->
-	<div class="flex items-center gap-4">
-		<div class="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
-			<img src="/nebo-icon.svg" alt="Nebo" class="w-10 h-10" onerror={(e: Event) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
-		</div>
-		<div>
-			<h2 class="text-2xl font-bold text-base-content">Nebo</h2>
-			<p class="text-base-content/60">Personal Desktop AI Companion</p>
-		</div>
-	</div>
+<div class="mb-6">
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">About</h2>
+	<p class="text-base text-base-content/80">Version and update information</p>
+</div>
 
-	<!-- Info table -->
-	<div class="overflow-hidden rounded-lg border border-base-content/10">
-		<table class="table table-sm w-full">
-			<tbody>
-				<tr>
-					<td class="font-medium text-base-content/70 w-40">Version</td>
-					<td class="text-base-content">{$updateInfo?.currentVersion ?? '—'}</td>
-				</tr>
-				<tr>
-					<td class="font-medium text-base-content/70">License</td>
-					<td class="text-base-content">Apache 2.0</td>
-				</tr>
-				<tr>
-					<td class="font-medium text-base-content/70">Copyright</td>
-					<td class="text-base-content">2026 Nebo LLC</td>
-				</tr>
-				<tr>
-					<td class="font-medium text-base-content/70">Install Method</td>
-					<td class="text-base-content capitalize">{$updateInfo?.installMethod ?? '—'}</td>
-				</tr>
-				<tr>
-					<td class="font-medium text-base-content/70">Platform</td>
-					<td class="text-base-content">{getPlatform()}</td>
-				</tr>
-			</tbody>
-		</table>
-	</div>
+<div class="space-y-6">
+	<!-- App Identity -->
+	<section>
+		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+			<div class="flex items-center gap-4">
+				<div class="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center shrink-0">
+					<img
+						src="/nebo-icon.svg"
+						alt="Nebo"
+						class="w-9 h-9"
+						onerror={(e: Event) => {
+							(e.currentTarget as HTMLElement).style.display = 'none';
+						}}
+					/>
+				</div>
+				<div>
+					<h3 class="font-display text-lg font-bold text-base-content">Nebo</h3>
+					<p class="text-sm text-base-content/60">Personal Desktop AI Companion</p>
+				</div>
+			</div>
+			<div class="mt-4 space-y-2">
+				{#each [['Version', $updateInfo?.currentVersion ?? '—'], ['Platform', getPlatform()], ['Install', ($updateInfo?.installMethod ?? '—').replace('_', ' ')], ['License', 'Apache 2.0']] as [label, value]}
+					<div class="flex items-center justify-between py-1">
+						<span class="text-sm text-base-content/60">{label}</span>
+						<span class="text-sm text-base-content font-medium">{value}</span>
+					</div>
+				{/each}
+			</div>
+		</div>
+	</section>
 
-	<!-- Check for Updates -->
-	<div class="space-y-2">
-		<button
-			class="btn btn-outline btn-sm gap-2"
-			onclick={handleCheckForUpdate}
-			disabled={isChecking}
-		>
-			<RefreshCw class="w-4 h-4 {isChecking ? 'animate-spin' : ''}" />
-			{isChecking ? 'Checking...' : 'Check for Updates'}
-		</button>
-		{#if checkResult === 'up-to-date'}
-			<p class="text-sm text-success">You're running the latest version.</p>
-		{:else if checkResult === 'available'}
-			<p class="text-sm text-info">A new version is available — see the banner above.</p>
-		{/if}
-	</div>
+	<!-- Software Update -->
+	<section>
+		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">
+			Software Update
+		</h3>
+		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+			{#if $downloadProgress}
+				<!-- Downloading -->
+				<div class="flex items-center gap-3">
+					<Spinner size={20} />
+					<div class="flex-1 min-w-0">
+						<p class="text-base font-medium text-base-content">Downloading update...</p>
+						<div class="mt-2 h-1.5 rounded-full bg-base-content/10 overflow-hidden">
+							<div
+								class="h-full rounded-full bg-primary transition-all"
+								style="width: {$downloadProgress.percent}%"
+							></div>
+						</div>
+						<p class="text-sm text-base-content/60 mt-1 tabular-nums">
+							{$downloadProgress.percent}%
+						</p>
+					</div>
+				</div>
+			{:else if isApplying}
+				<!-- Applying -->
+				<div class="flex items-center gap-3">
+					<Spinner size={20} />
+					<div>
+						<p class="text-base font-medium text-base-content">Installing update...</p>
+						<p class="text-sm text-base-content/60">Nebo will restart momentarily</p>
+					</div>
+				</div>
+			{:else if $updateError}
+				<!-- Error -->
+				<div class="flex items-center gap-3">
+					<AlertCircle class="w-5 h-5 text-error shrink-0" />
+					<div class="flex-1 min-w-0">
+						<p class="text-base font-medium text-base-content">Update failed</p>
+						<p class="text-sm text-error/80 mt-0.5">{$updateError}</p>
+					</div>
+					<button
+						type="button"
+						class="h-9 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
+						onclick={handleRetry}
+					>
+						Retry
+					</button>
+				</div>
+			{:else if $updateReady}
+				<!-- Ready to install -->
+				<div class="flex items-center gap-3">
+					<ArrowUpCircle class="w-5 h-5 text-info shrink-0" />
+					<div class="flex-1 min-w-0">
+						<p class="text-base font-medium text-base-content">Nebo {$updateReady} is ready</p>
+						<p class="text-sm text-base-content/60">Downloaded and verified</p>
+					</div>
+					<button
+						type="button"
+						class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all"
+						onclick={handleApply}
+					>
+						Restart & Update
+					</button>
+				</div>
+			{:else if $updateInfo?.available}
+				<!-- Update available -->
+				<div class="flex items-center gap-3">
+					<ArrowUpCircle class="w-5 h-5 text-info shrink-0" />
+					<div class="flex-1 min-w-0">
+						<p class="text-base font-medium text-base-content">
+							Nebo {$updateInfo.latestVersion} is available
+						</p>
+						{#if $updateInfo.installMethod === 'homebrew'}
+							<p class="text-sm text-base-content/60">
+								Run <code class="text-sm">brew upgrade nebo</code> to update
+							</p>
+						{:else if $updateInfo.installMethod === 'package_manager'}
+							<p class="text-sm text-base-content/60">
+								Run <code class="text-sm">sudo apt upgrade nebo</code> to update
+							</p>
+						{:else}
+							<p class="text-sm text-base-content/60">A newer version is available</p>
+						{/if}
+					</div>
+					{#if $updateInfo.canAutoUpdate}
+						<button
+							type="button"
+							class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all"
+							onclick={handleApply}
+						>
+							Update Now
+						</button>
+					{/if}
+				</div>
+			{:else if checkResult === 'up-to-date'}
+				<!-- Up to date -->
+				<div class="flex items-center gap-3">
+					<CheckCircle class="w-5 h-5 text-success shrink-0" />
+					<div class="flex-1 min-w-0">
+						<p class="text-base font-medium text-base-content">Nebo is up to date</p>
+						<p class="text-sm text-base-content/60">You're running the latest version</p>
+					</div>
+					<button
+						type="button"
+						class="text-sm text-base-content/60 hover:text-primary transition-colors"
+						onclick={handleCheck}
+						disabled={isChecking}
+					>
+						Check Again
+					</button>
+				</div>
+			{:else}
+				<!-- Default: check for updates -->
+				<div class="flex items-center gap-3">
+					<div class="flex-1 min-w-0">
+						<p class="text-base text-base-content/80">Check if a newer version is available</p>
+					</div>
+					<button
+						type="button"
+						class="h-9 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors disabled:opacity-50"
+						onclick={handleCheck}
+						disabled={isChecking}
+					>
+						{#if isChecking}<Spinner size={14} />{:else}Check for Updates{/if}
+					</button>
+				</div>
+			{/if}
+		</div>
+	</section>
 
 	<!-- Links -->
-	<div class="flex flex-wrap gap-4">
-		{#each [
-			{ label: 'Website', href: 'https://neboloop.com' },
-			{ label: 'GitHub', href: 'https://github.com/NeboLoop/nebo' },
-			{ label: 'Documentation', href: 'https://neboloop.com/docs' },
-			{ label: 'Send Feedback', href: 'https://github.com/NeboLoop/nebo/issues' }
-		] as link}
-			<a
-				href={link.href}
-				target="_blank"
-				rel="noopener noreferrer"
-				class="inline-flex items-center gap-1 text-sm text-primary hover:text-primary/80 transition-colors"
-			>
-				{link.label}
-				<ExternalLink class="w-3 h-3" />
-			</a>
-		{/each}
-	</div>
+	<section>
+		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">
+			Resources
+		</h3>
+		<div
+			class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10"
+		>
+			{#each resourceLinks as link}
+				<a
+					href={link.href}
+					target="_blank"
+					rel="noopener noreferrer"
+					class="flex items-center justify-between px-5 py-3 text-base text-base-content hover:bg-base-content/5 transition-colors"
+				>
+					<span>{link.label}</span>
+					<ExternalLink class="w-4 h-4 text-base-content/40" />
+				</a>
+			{/each}
+		</div>
+	</section>
 </div>

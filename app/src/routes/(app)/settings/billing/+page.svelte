@@ -1,23 +1,29 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ExternalLink, Check, CreditCard, Receipt, AlertTriangle } from 'lucide-svelte';
+	import { goto } from '$app/navigation';
+	import { ExternalLink, Check, CreditCard, Receipt, AlertTriangle, Gift, Copy, Info } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type {
 		NeboLoopAccountStatusResponse,
 		BillingPriceInfo,
 		PaymentMethodInfo,
-		InvoiceInfo
+		InvoiceInfo,
+		NeboLoopJanusUsageResponse
 	} from '$lib/api/neboComponents';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 
 	let isLoading = $state(true);
 	let status = $state<NeboLoopAccountStatusResponse | null>(null);
-	let prices = $state<BillingPriceInfo[]>([]);
 	let subscription = $state<{ plan: string; subscriptions: any[] } | null>(null);
 	let paymentMethods = $state<PaymentMethodInfo[]>([]);
 	let invoices = $state<InvoiceInfo[]>([]);
-	let showPlans = $state(false);
+	let usage = $state<NeboLoopJanusUsageResponse | null>(null);
+	let referralCode = $state('');
+	let referralLink = $state('');
+	let referralCopied = $state(false);
+	let referralLinkCopied = $state(false);
+	let showGiftInfo = $state(false);
 	let actionLoading = $state('');
 	let actionError = $state('');
 
@@ -27,94 +33,24 @@
 	let deleteLoading = $state(false);
 	const canDelete = $derived(deleteConfirmText === 'DELETE');
 
-	// Fallback plans when the API returns nothing
-	interface FallbackPlan {
-		id: string;
-		name: string;
-		description: string;
-		price: string;
-		period: string;
-		features: string[];
-	}
-
-	const fallbackPlans: FallbackPlan[] = [
-		{
-			id: 'free',
-			name: 'Free',
-			description: 'Get started with Nebo',
-			price: 'Pay as you go',
-			period: '',
-			features: ['Basic AI access', 'Community skills', 'Pay per token']
-		},
-		{
-			id: 'pro',
-			name: 'Pro',
-			description: 'For individuals who use Nebo daily',
-			price: '$20',
-			period: '/month',
-			features: [
-				'Everything in Free',
-				'Included usage allocation',
-				'Priority access',
-				'Unlimited roles',
-				'Workflow automation'
-			]
-		},
-		{
-			id: 'max',
-			name: 'Max',
-			description: 'Maximum power for professionals',
-			price: '$100',
-			period: '/month',
-			features: [
-				'Everything in Pro',
-				'5x more usage',
-				'Higher output limits',
-				'Early access to features',
-				'Priority support'
-			]
-		},
-		{
-			id: 'team',
-			name: 'Team',
-			description: 'Collaboration for teams',
-			price: '$200',
-			period: '/month',
-			features: [
-				'Everything in Max',
-				'Team workspace',
-				'Shared roles and skills',
-				'Admin controls',
-				'Dedicated support'
-			]
-		}
-	];
-
-	const useFallback = $derived(prices.length === 0);
-
 	onMount(async () => {
 		try {
 			status = await api.neboLoopAccountStatus();
 			if (status?.connected) {
-				const [pricesResp, subResp, pmResp, invResp] = await Promise.allSettled([
-					api.neboLoopBillingPrices(),
+				const [subResp, pmResp, invResp, usageResp, referralResp] = await Promise.allSettled([
 					api.neboLoopBillingSubscription(),
 					api.neboLoopBillingPaymentMethods(),
-					api.neboLoopBillingInvoices()
+					api.neboLoopBillingInvoices(),
+					api.neboLoopJanusUsage(),
+					api.neboLoopReferralCode()
 				]);
-				if (pricesResp.status === 'fulfilled') {
-					prices = (pricesResp.value?.prices || []).sort(
-						(a: BillingPriceInfo, b: BillingPriceInfo) => a.displayOrder - b.displayOrder
-					);
-				}
-				if (subResp.status === 'fulfilled') {
-					subscription = subResp.value;
-				}
-				if (pmResp.status === 'fulfilled') {
-					paymentMethods = pmResp.value?.methods || [];
-				}
-				if (invResp.status === 'fulfilled') {
-					invoices = invResp.value?.invoices || [];
+				if (subResp.status === 'fulfilled') subscription = subResp.value;
+				if (pmResp.status === 'fulfilled') paymentMethods = pmResp.value?.methods || [];
+				if (invResp.status === 'fulfilled') invoices = invResp.value?.invoices || [];
+				if (usageResp.status === 'fulfilled') usage = usageResp.value;
+				if (referralResp.status === 'fulfilled') {
+					referralCode = referralResp.value.referral_code;
+					referralLink = referralResp.value.referral_link;
 				}
 			}
 		} catch {
@@ -136,13 +72,24 @@
 	const currentPlan = $derived((subscription?.plan || status?.plan || 'free').toLowerCase());
 	const planName = $derived(currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1));
 
-	// Dynamic prices
-	const currentPriceInfo = $derived(prices.find(p => p.productName?.toLowerCase() === currentPlan));
-	const otherPrices = $derived(prices.filter(p => p.productName?.toLowerCase() !== currentPlan));
+	function formatTokens(n: number): string {
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+		if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+		return n.toLocaleString();
+	}
 
-	// Fallback plans
-	const currentFallback = $derived(fallbackPlans.find(p => p.id === currentPlan) || fallbackPlans[0]);
-	const otherFallbacks = $derived(fallbackPlans.filter(p => p.id !== currentPlan));
+	function timeUntilReset(resetAt?: string): string {
+		if (!resetAt) return '';
+		const diff = new Date(resetAt).getTime() - Date.now();
+		if (diff <= 0) return 'resetting...';
+		const h = Math.floor(diff / 3600000);
+		const m = Math.floor((diff % 3600000) / 60000);
+		if (h > 24) {
+			const d = Math.floor(h / 24);
+			return `resets in ${d}d`;
+		}
+		return `resets in ${h}h ${m}m`;
+	}
 
 	function formatPrice(amountCents: number, currency: string): string {
 		return new Intl.NumberFormat('en-US', {
@@ -152,27 +99,12 @@
 		}).format(amountCents / 100);
 	}
 
-	function isUpgrade(price: BillingPriceInfo): boolean {
-		if (!currentPriceInfo) return true;
-		return price.displayOrder > currentPriceInfo.displayOrder;
-	}
-
-	function isFallbackUpgrade(planId: string): boolean {
-		const planIdx = fallbackPlans.findIndex(p => p.id === planId);
-		const currentIdx = fallbackPlans.findIndex(p => p.id === currentPlan);
-		return planIdx > currentIdx;
-	}
-
-	async function handleCheckout(priceId: string) {
-		actionLoading = 'checkout';
-		actionError = '';
-		try {
-			await api.neboLoopBillingCheckout(priceId);
-		} catch (e: any) {
-			actionError = e?.message || 'Failed to open checkout. Please try again.';
-		} finally {
-			actionLoading = '';
-		}
+	function formatDate(dateStr: string): string {
+		return new Date(dateStr).toLocaleDateString('en-US', {
+			month: 'short',
+			day: 'numeric',
+			year: 'numeric'
+		});
 	}
 
 	async function handlePortal() {
@@ -223,18 +155,22 @@
 		showDeleteModal = true;
 	}
 
-	function formatDate(dateStr: string): string {
-		return new Date(dateStr).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			year: 'numeric'
-		});
+	function copyReferralCode() {
+		navigator.clipboard.writeText(referralCode);
+		referralCopied = true;
+		setTimeout(() => referralCopied = false, 2000);
+	}
+
+	function copyReferralLink() {
+		navigator.clipboard.writeText(referralLink);
+		referralLinkCopied = true;
+		setTimeout(() => referralLinkCopied = false, 2000);
 	}
 </script>
 
 <div class="mb-6">
 	<h2 class="font-display text-xl font-bold text-base-content mb-1">Billing</h2>
-	<p class="text-base text-base-content/80">Manage your subscription and payment method</p>
+	<p class="text-base text-base-content/80">Manage your subscription, usage, and payment method</p>
 </div>
 
 {#if isLoading}
@@ -269,132 +205,76 @@
 					<div>
 						<p class="text-lg font-bold text-base-content">{planName} plan</p>
 						<p class="text-base text-base-content/80 mt-0.5">
-							{#if currentPriceInfo}
-								{currentPriceInfo.productDescription || currentPriceInfo.productDisplayName}
+							{#if currentPlan === 'free'}
+								Get started with Nebo
+							{:else if currentPlan === 'pro'}
+								For individuals who use Nebo daily
+							{:else if currentPlan === 'max'}
+								Maximum power for professionals
+							{:else if currentPlan === 'team'}
+								Collaboration for teams
 							{:else}
-								{currentFallback.description}
+								Your current plan
 							{/if}
 						</p>
 					</div>
 					<button
-						class="h-9 px-4 rounded-xl border border-base-content/10 text-base font-medium text-base-content hover:bg-base-content/5 transition-colors"
-						onclick={() => (showPlans = !showPlans)}
+						onclick={() => goto('/upgrade')}
+						class="h-9 px-4 rounded-xl text-base font-bold transition-all
+							{currentPlan === 'free'
+								? 'bg-primary text-primary-content hover:brightness-110'
+								: 'border border-base-content/10 text-base-content hover:bg-base-content/5'}"
 					>
-						{showPlans ? 'Hide plans' : 'Adjust plan'}
+						{currentPlan === 'free' ? 'Upgrade' : 'Change plan'}
 					</button>
 				</div>
-
-				<!-- Current plan features -->
-				{#if !showPlans}
-					{#if currentPriceInfo?.productFeatures?.length}
-						<ul class="mt-4 space-y-1.5">
-							{#each currentPriceInfo.productFeatures as feature}
-								<li class="flex items-start gap-2 text-base text-base-content/80">
-									<Check class="w-4 h-4 text-primary shrink-0 mt-0.5" />
-									{feature}
-								</li>
-							{/each}
-						</ul>
-					{:else}
-						<ul class="mt-4 space-y-1.5">
-							{#each currentFallback.features as feature}
-								<li class="flex items-start gap-2 text-base text-base-content/80">
-									<Check class="w-4 h-4 text-primary shrink-0 mt-0.5" />
-									{feature}
-								</li>
-							{/each}
-						</ul>
-					{/if}
-				{/if}
 			</div>
 		</section>
 
-		<!-- Plan Selection -->
-		{#if showPlans}
-			<section>
-				{#if !useFallback && otherPrices.length > 0}
-					<!-- Dynamic plans from API -->
-					<div class="grid sm:grid-cols-2 gap-3">
-						{#each otherPrices as price}
-							<div class="rounded-2xl border bg-base-200/50 border-base-content/10 hover:border-base-content/40 p-5 transition-all">
-								<p class="text-lg font-bold text-base-content">{price.productDisplayName || price.displayName}</p>
-								<p class="text-base text-base-content/80 mt-0.5">{price.productDescription || ''}</p>
-								<div class="mt-3 mb-4">
-									{#if price.amountCents > 0}
-										<span class="text-2xl font-bold text-base-content">{formatPrice(price.amountCents, price.currency)}</span>
-										<span class="text-base text-base-content/80">/{price.interval}</span>
-									{:else}
-										<span class="text-2xl font-bold text-base-content">Free</span>
-									{/if}
-								</div>
-								<button
-									disabled={actionLoading !== ''}
-									onclick={() => handleCheckout(price.stripePriceId)}
-									class="w-full h-9 flex items-center justify-center rounded-xl text-base font-bold transition-all
-										{isUpgrade(price)
-											? 'bg-primary text-primary-content hover:brightness-110'
-											: 'border border-base-content/10 text-base-content hover:bg-base-content/5'}"
-								>
-									{#if actionLoading === 'checkout'}
-										<Spinner size={14} />
-									{:else}
-										{isUpgrade(price) ? 'Upgrade' : 'Downgrade'}
-									{/if}
-								</button>
-								{#if price.productFeatures && price.productFeatures.length > 0}
-									<ul class="mt-4 space-y-2">
-										{#each price.productFeatures as feature}
-											<li class="flex items-start gap-2 text-base text-base-content/80">
-												<Check class="w-4 h-4 text-primary shrink-0 mt-0.5" />
-												{feature}
-											</li>
-										{/each}
-									</ul>
+		<!-- Usage -->
+		<section>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Usage</h3>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-4 space-y-3">
+				{#if usage?.session}
+					<div>
+						<div class="flex items-center justify-between mb-1.5">
+							<span class="text-sm font-medium text-base-content/80">Session</span>
+							<span class="text-sm text-base-content/60 tabular-nums">
+								{formatTokens(usage.session.usedTokens)} / {formatTokens(usage.session.limitTokens)}
+								{#if usage.session.resetAt}
+									<span class="ml-1">&middot; {timeUntilReset(usage.session.resetAt)}</span>
 								{/if}
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<!-- Fallback plans -->
-					<div class="grid sm:grid-cols-2 gap-3">
-						{#each otherFallbacks as plan}
-							<div class="rounded-2xl border bg-base-200/50 border-base-content/10 hover:border-base-content/40 p-5 transition-all">
-								<p class="text-lg font-bold text-base-content">{plan.name}</p>
-								<p class="text-base text-base-content/80 mt-0.5">{plan.description}</p>
-								<div class="mt-3 mb-4">
-									<span class="text-2xl font-bold text-base-content">{plan.price}</span>
-									{#if plan.period}
-										<span class="text-base text-base-content/80">{plan.period}</span>
-									{/if}
-								</div>
-								<button
-									disabled={actionLoading !== ''}
-									onclick={handlePortal}
-									class="w-full h-9 flex items-center justify-center rounded-xl text-base font-bold transition-all
-										{isFallbackUpgrade(plan.id)
-											? 'bg-primary text-primary-content hover:brightness-110'
-											: 'border border-base-content/10 text-base-content hover:bg-base-content/5'}"
-								>
-									{#if actionLoading === 'portal'}
-										<Spinner size={14} />
-									{:else}
-										{isFallbackUpgrade(plan.id) ? 'Upgrade' : 'Downgrade'}
-									{/if}
-								</button>
-								<ul class="mt-4 space-y-2">
-									{#each plan.features as feature}
-										<li class="flex items-start gap-2 text-base text-base-content/80">
-											<Check class="w-4 h-4 text-primary shrink-0 mt-0.5" />
-											{feature}
-										</li>
-									{/each}
-								</ul>
-							</div>
-						{/each}
+							</span>
+						</div>
+						<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
+							<div
+								class="h-full rounded-full transition-all {usage.session.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
+								style="width: {usage.session.percentUsed}%"
+							></div>
+						</div>
 					</div>
 				{/if}
-			</section>
-		{/if}
+				{#if usage?.weekly}
+					<div>
+						<div class="flex items-center justify-between mb-1.5">
+							<span class="text-sm font-medium text-base-content/80">Weekly</span>
+							<span class="text-sm text-base-content/60 tabular-nums">
+								{formatTokens(usage.weekly.usedTokens)} / {formatTokens(usage.weekly.limitTokens)}
+								{#if usage.weekly.resetAt}
+									<span class="ml-1">&middot; {timeUntilReset(usage.weekly.resetAt)}</span>
+								{/if}
+							</span>
+						</div>
+						<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
+							<div
+								class="h-full rounded-full transition-all {usage.weekly.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
+								style="width: {usage.weekly.percentUsed}%"
+							></div>
+						</div>
+					</div>
+				{/if}
+			</div>
+		</section>
 
 		<!-- Payment Methods -->
 		<section>
@@ -476,6 +356,66 @@
 				</div>
 			</section>
 		{/if}
+
+		<!-- Give Nebo -->
+		<section>
+			<div class="flex items-center justify-between mb-3">
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Give Nebo</h3>
+				<button
+					type="button"
+					onclick={() => (showGiftInfo = true)}
+					class="flex items-center gap-1 text-sm text-base-content/50 hover:text-base-content/80 transition-colors"
+				>
+					<Info class="w-3.5 h-3.5" />
+					<span>How it works</span>
+				</button>
+			</div>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+				<div class="flex items-center gap-3 mb-1">
+					<Gift class="w-5 h-5 text-primary" />
+					<p class="text-base font-medium text-base-content">Give a friend a bonus 1M tokens</p>
+				</div>
+				<p class="text-sm text-base-content/60 mb-4 ml-8">They get 3M tokens on signup plus a bonus 1M from you — 4M total to start. You get 3M when they try it.</p>
+				{#if referralCode}
+					<div class="flex flex-col gap-2">
+						<div class="flex items-center gap-2">
+							<span class="flex-1 font-mono text-base font-bold tracking-widest bg-base-300/60 rounded-xl px-4 py-2.5 text-center text-base-content">
+								{referralCode}
+							</span>
+							<button
+								type="button"
+								onclick={copyReferralCode}
+								class="h-10 w-10 rounded-xl bg-base-300/60 hover:bg-base-content/10 flex items-center justify-center transition-colors shrink-0"
+								title="Copy code"
+							>
+								{#if referralCopied}
+									<Check class="w-4 h-4 text-success" />
+								{:else}
+									<Copy class="w-4 h-4 text-base-content/60" />
+								{/if}
+							</button>
+						</div>
+						<button
+							type="button"
+							onclick={copyReferralLink}
+							class="flex items-center justify-between gap-2 w-full text-left text-base text-base-content/60 hover:text-base-content bg-base-300/40 hover:bg-base-300/60 rounded-xl px-4 py-2.5 transition-colors"
+						>
+							<span class="truncate">{referralLink}</span>
+							{#if referralLinkCopied}
+								<Check class="w-3.5 h-3.5 text-success shrink-0" />
+							{:else}
+								<Copy class="w-3.5 h-3.5 shrink-0" />
+							{/if}
+						</button>
+					</div>
+				{:else}
+					<div class="flex items-center gap-2">
+						<Spinner size={14} />
+						<span class="text-base text-base-content/60">Loading your gift link...</span>
+					</div>
+				{/if}
+			</div>
+		</section>
 
 		<!-- Cancel / Delete Account -->
 		<section>
@@ -565,4 +505,63 @@
 			Delete my account
 		</button>
 	{/snippet}
+</Modal>
+
+<!-- How Gift Works Modal -->
+<Modal bind:show={showGiftInfo} title="How Giving Nebo Works" size="sm">
+	<div class="space-y-5">
+		<div class="space-y-4">
+			<div class="flex gap-3">
+				<div class="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+					<span class="text-sm font-bold text-primary">1</span>
+				</div>
+				<div>
+					<p class="text-base font-medium text-base-content">Share your link</p>
+					<p class="text-sm text-base-content/60">Send your personal link to someone you want to have Nebo.</p>
+				</div>
+			</div>
+			<div class="flex gap-3">
+				<div class="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+					<span class="text-sm font-bold text-primary">2</span>
+				</div>
+				<div>
+					<p class="text-base font-medium text-base-content">They start with 4M tokens</p>
+					<p class="text-sm text-base-content/60">Everyone gets 3M on signup. Your gift adds a bonus 1M — so they start with 4 million tokens.</p>
+				</div>
+			</div>
+			<div class="flex gap-3">
+				<div class="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+					<span class="text-sm font-bold text-primary">3</span>
+				</div>
+				<div>
+					<p class="text-base font-medium text-base-content">You get 3M tokens</p>
+					<p class="text-sm text-base-content/60">Once they try Nebo, you receive 3 million tokens as a thank you.</p>
+				</div>
+			</div>
+		</div>
+
+		<div class="rounded-xl bg-base-200/50 border border-base-content/10 p-4">
+			<p class="text-sm font-medium text-base-content mb-2">Gift Milestones</p>
+			<div class="space-y-1.5">
+				{#each [
+					{ count: 3, tier: 'Guide', reward: '+50M tokens' },
+					{ count: 5, tier: 'Builder', reward: '+100M tokens' },
+					{ count: 10, tier: 'Pathfinder', reward: '+250M tokens' },
+					{ count: 25, tier: 'Benefactor', reward: '+500M tokens' },
+					{ count: 50, tier: 'Patron', reward: '+1B tokens' },
+					{ count: 100, tier: "Founder's Circle", reward: '+2B tokens' }
+				] as milestone}
+					<div class="flex items-center justify-between text-sm">
+						<span class="text-base-content/80">{milestone.count} gifts &rarr; <span class="font-medium text-base-content">{milestone.tier}</span></span>
+						<span class="text-primary font-medium tabular-nums">{milestone.reward}</span>
+					</div>
+				{/each}
+			</div>
+		</div>
+
+		<p class="text-sm text-base-content/50">
+			The more people you bring along, the more tokens you earn. Each milestone unlocks additional perks on your NeboLoop profile. All bonus tokens expire 90 days after they're granted.
+			<a href="https://getnebo.com/legal/gifting-terms" target="_blank" rel="noopener noreferrer" class="text-primary hover:brightness-110 transition-all">Gifting Terms</a>
+		</p>
+	</div>
 </Modal>

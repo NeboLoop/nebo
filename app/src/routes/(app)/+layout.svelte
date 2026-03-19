@@ -10,7 +10,7 @@
 	import { settingsReturnPath } from '$lib/stores/settings';
 	import OnboardingFlow from '$lib/components/onboarding/OnboardingFlow.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
-	import UpdateBanner from '$lib/components/UpdateBanner.svelte';
+
 	import {
 		checkForUpdate,
 		resetUpdateState,
@@ -72,6 +72,11 @@
 	// Settings renders as a centered modal overlay
 	const isSettingsRoute = $derived(
 		$page.url.pathname.startsWith('/settings')
+	);
+
+	// Upgrade funnel renders full-screen, no sidebar
+	const isUpgradeRoute = $derived(
+		$page.url.pathname.startsWith('/upgrade')
 	);
 
 	// Capture return path when navigating into settings
@@ -232,7 +237,6 @@
 {:else}
 	<div class="h-dvh flex flex-col overflow-hidden bg-base-100">
 		<AppNav />
-		<UpdateBanner />
 		{#each quarantineNotices as notice (notice.app_id)}
 			<div class="px-4 pt-2">
 				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>
@@ -242,7 +246,11 @@
 		{/each}
 		<div class="flex flex-1 min-h-0 overflow-hidden">
 			<SideNav />
-			{#if isFullHeightRoute}
+			{#if isUpgradeRoute}
+				<main id="main-content" class="flex-1 min-w-0 overflow-y-auto">
+					{@render children()}
+				</main>
+			{:else if isFullHeightRoute}
 				<main id="main-content" class="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
 					{@render children()}
 				</main>
