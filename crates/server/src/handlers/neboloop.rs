@@ -571,6 +571,16 @@ pub async fn billing_portal(
     Ok(Json(resp))
 }
 
+/// POST /api/v1/neboloop/billing/setup-intent — create Stripe SetupIntent for in-app Elements.
+pub async fn billing_setup_intent(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let resp = api.billing_setup_intent().await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_setup_intent: {e}"))))?;
+    Ok(Json(resp))
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CancelRequest {

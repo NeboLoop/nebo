@@ -886,6 +886,13 @@ export function neboLoopBillingPortal() {
 }
 
 /**
+ * @description "Create Stripe SetupIntent for in-app payment method collection"
+ */
+export function neboLoopBillingSetupIntent() {
+	return webapi.post<{ clientSecret: string; publishableKey: string }>(`/api/v1/neboloop/billing/setup-intent`)
+}
+
+/**
  * @description "Cancel subscription"
  */
 export function neboLoopBillingCancel(subscriptionId: string) {

@@ -501,6 +501,11 @@ impl NeboLoopApi {
         self.do_json(reqwest::Method::POST, "/api/v1/billing/customer-portal", None::<&()>).await
     }
 
+    /// Create a Stripe SetupIntent for in-app payment method collection.
+    pub async fn billing_setup_intent(&self) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/setup-intent", None::<&()>).await
+    }
+
     /// Cancel a subscription.
     pub async fn billing_cancel(&self, subscription_id: &str) -> Result<serde_json::Value, CommError> {
         self.do_json(reqwest::Method::POST, "/api/v1/billing/cancel-subscription", Some(&serde_json::json!({"subscriptionId": subscription_id}))).await
