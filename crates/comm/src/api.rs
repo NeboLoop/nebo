@@ -493,12 +493,12 @@ impl NeboLoopApi {
 
     /// Create a Stripe checkout session for a given price.
     pub async fn billing_checkout(&self, price_id: &str) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/create-checkout-session", Some(&serde_json::json!({"priceId": price_id}))).await
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/checkout", Some(&serde_json::json!({"priceId": price_id}))).await
     }
 
     /// Create a Stripe customer portal session.
     pub async fn billing_portal(&self) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/customer-portal", None::<&()>).await
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/portal", None::<&()>).await
     }
 
     /// Create a Stripe SetupIntent for in-app payment method collection.
