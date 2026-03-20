@@ -80,9 +80,14 @@
 	);
 
 	// Capture return path when navigating into settings
+	// Capture return path when entering settings — but never return to transient routes
+	const transientRoutes = ['/upgrade', '/settings'];
 	beforeNavigate(({ from, to }) => {
 		if (to?.url.pathname.startsWith('/settings') && !from?.url.pathname.startsWith('/settings')) {
-			settingsReturnPath.set(from?.url.pathname ?? '/');
+			const fromPath = from?.url.pathname ?? '/';
+			if (!transientRoutes.some(r => fromPath.startsWith(r))) {
+				settingsReturnPath.set(fromPath);
+			}
 		}
 	});
 

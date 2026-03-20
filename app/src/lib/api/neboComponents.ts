@@ -1023,6 +1023,10 @@ export interface BillingPriceInfo {
 	interval: string
 	stripePriceId: string
 	displayOrder: number
+	category: string
+	description?: string
+	features?: string[]
+	boostPriceId?: string
 }
 
 export interface PaymentMethodInfo {
