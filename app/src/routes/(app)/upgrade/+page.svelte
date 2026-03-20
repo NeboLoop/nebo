@@ -75,13 +75,25 @@
 		}).format(amountCents / 100);
 	}
 
-	async function handleCheckout(priceId: string, boostId?: string) {
-		actionLoading = priceId;
+	async function handleCheckout(mainPriceId: string, boostStripePriceId?: string) {
+		actionLoading = mainPriceId;
 		actionError = '';
 		try {
-			await api.neboLoopBillingCheckout(priceId);
-			if (boostId && boostSelections[priceId]) {
-				await api.neboLoopBillingCheckout(boostId);
+			// Build price list — main plan + boost if checked
+			const priceIds = [mainPriceId];
+			if (boostStripePriceId && boostSelections[mainPriceId]) {
+				priceIds.push(boostStripePriceId);
+			}
+
+			// Single checkout session with all line items
+			const resp = await fetch('/api/v1/neboloop/billing/checkout', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				credentials: 'include',
+				body: JSON.stringify({ priceIds })
+			});
+			if (!resp.ok) {
+				throw new Error('Checkout failed');
 			}
 		} catch (e: any) {
 			actionError = e?.message || 'Failed to open checkout. Please try again.';

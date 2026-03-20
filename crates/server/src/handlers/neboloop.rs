@@ -539,7 +539,10 @@ pub async fn billing_subscription(
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckoutRequest {
+    #[serde(default)]
     pub price_id: String,
+    #[serde(default)]
+    pub price_ids: Vec<String>,
 }
 
 /// POST /api/v1/neboloop/billing/checkout — create Stripe checkout session.
@@ -548,7 +551,13 @@ pub async fn billing_checkout(
     Json(body): Json<CheckoutRequest>,
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
-    let resp = api.billing_checkout(&body.price_id).await
+    // Support single priceId or array of priceIds
+    let price_ids = if !body.price_ids.is_empty() {
+        body.price_ids.clone()
+    } else {
+        vec![body.price_id.clone()]
+    };
+    let resp = api.billing_checkout_multi(&price_ids).await
         .map_err(|e| to_error_response(NeboError::Internal(format!("billing_checkout: {e}"))))?;
     // Open checkout URL in system browser (Stripe CSP blocks iframe embedding)
     if let Some(url) = resp.get("checkoutUrl").and_then(|v| v.as_str()) {
