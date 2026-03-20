@@ -501,6 +501,11 @@ impl NeboLoopApi {
         self.do_json(reqwest::Method::POST, "/api/v1/billing/checkout", Some(&serde_json::json!({"priceIds": price_ids}))).await
     }
 
+    /// Create an inline subscription (returns clientSecret for PaymentElement).
+    pub async fn billing_subscribe(&self, price_ids: &[String]) -> Result<serde_json::Value, CommError> {
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/subscribe", Some(&serde_json::json!({"priceIds": price_ids}))).await
+    }
+
     /// Create a Stripe customer portal session.
     pub async fn billing_portal(&self) -> Result<serde_json::Value, CommError> {
         self.do_json(reqwest::Method::POST, "/api/v1/billing/portal", None::<&()>).await

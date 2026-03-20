@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { Check, Zap, ArrowRight } from 'lucide-svelte';
+	import { onMount, onDestroy } from 'svelte';
+	import { Check, Zap, ArrowRight, X as XIcon, CreditCard } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type {
 		NeboLoopAccountStatusResponse,
@@ -75,31 +75,126 @@
 		}).format(amountCents / 100);
 	}
 
+	// Payment modal state
+	let showPaymentModal = $state(false);
+	let paymentLoading = $state(false);
+	let paymentError = $state('');
+	let paymentSuccess = $state(false);
+	let selectedPlanName = $state('');
+	let stripeInstance: any = $state(null);
+	let elements: any = $state(null);
+	let paymentElement: any = $state(null);
+	let paymentElementMounted = $state(false);
+
+	// Load Stripe.js
+	async function loadStripe(publishableKey: string) {
+		if (stripeInstance) return stripeInstance;
+		if (!(window as any).Stripe) {
+			await new Promise<void>((resolve) => {
+				const script = document.createElement('script');
+				script.src = 'https://js.stripe.com/v3/';
+				script.onload = () => resolve();
+				document.head.appendChild(script);
+			});
+		}
+		stripeInstance = (window as any).Stripe(publishableKey);
+		return stripeInstance;
+	}
+
 	async function handleCheckout(mainPriceId: string, boostStripePriceId?: string) {
 		actionLoading = mainPriceId;
 		actionError = '';
+
 		try {
-			// Build price list — main plan + boost if checked
+			// Build price list
 			const priceIds = [mainPriceId];
 			if (boostStripePriceId && boostSelections[mainPriceId]) {
 				priceIds.push(boostStripePriceId);
 			}
 
-			// Single checkout session with all line items
-			const resp = await fetch('/api/v1/neboloop/billing/checkout', {
+			// Create incomplete subscription — get clientSecret for inline payment
+			const resp = await fetch('/api/v1/neboloop/billing/subscribe', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				credentials: 'include',
 				body: JSON.stringify({ priceIds })
 			});
+
 			if (!resp.ok) {
-				throw new Error('Checkout failed');
+				const err = await resp.json().catch(() => ({}));
+				throw new Error(err.error || 'Failed to create subscription');
+			}
+
+			const data = await resp.json();
+			const { clientSecret, publishableKey } = data;
+
+			if (!clientSecret) {
+				throw new Error('No client secret returned');
+			}
+
+			// Load Stripe and mount PaymentElement
+			const stripe = await loadStripe(publishableKey);
+			elements = stripe.elements({ clientSecret, appearance: { theme: 'flat' } });
+
+			// Find the selected plan name for the modal header
+			const plan = visiblePrices.find(p => p.stripePriceId === mainPriceId);
+			selectedPlanName = plan?.displayName || 'Plan';
+
+			// Show modal — PaymentElement mounts in the next tick
+			showPaymentModal = true;
+			paymentError = '';
+			paymentSuccess = false;
+
+			// Mount PaymentElement after DOM updates
+			await new Promise(r => setTimeout(r, 50));
+			const container = document.getElementById('payment-element');
+			if (container) {
+				paymentElement = elements.create('payment');
+				paymentElement.mount(container);
+				paymentElementMounted = true;
 			}
 		} catch (e: any) {
-			actionError = e?.message || 'Failed to open checkout. Please try again.';
+			actionError = e?.message || 'Failed to start checkout.';
 		} finally {
 			actionLoading = '';
 		}
+	}
+
+	async function confirmPayment() {
+		if (!stripeInstance || !elements) return;
+		paymentLoading = true;
+		paymentError = '';
+
+		const { error } = await stripeInstance.confirmPayment({
+			elements,
+			confirmParams: {
+				return_url: window.location.origin + '/settings/billing?success=true'
+			},
+			redirect: 'if_required'
+		});
+
+		if (error) {
+			paymentError = error.message || 'Payment failed. Please try again.';
+			paymentLoading = false;
+		} else {
+			paymentSuccess = true;
+			paymentLoading = false;
+			// Refresh subscription status after short delay
+			setTimeout(() => {
+				showPaymentModal = false;
+				window.location.href = '/settings/billing?success=true';
+			}, 2000);
+		}
+	}
+
+	function closePaymentModal() {
+		showPaymentModal = false;
+		if (paymentElement) {
+			paymentElement.unmount();
+			paymentElement = null;
+		}
+		elements = null;
+		paymentElementMounted = false;
 	}
 
 	const includedFeatures = [
@@ -303,5 +398,62 @@
 				</div>
 			</div>
 		</section>
+	</div>
+{/if}
+
+<!-- Inline Payment Modal -->
+{#if showPaymentModal}
+	<div class="fixed inset-0 z-[100] flex items-center justify-center p-4">
+		<button type="button" onclick={closePaymentModal} class="absolute inset-0 bg-black/60 backdrop-blur-sm"></button>
+		<div class="relative bg-base-100 rounded-2xl border border-base-content/10 w-full max-w-md overflow-hidden shadow-2xl">
+			<!-- Header -->
+			<div class="flex items-center justify-between px-6 py-4 border-b border-base-content/10">
+				<div class="flex items-center gap-2">
+					<CreditCard class="w-5 h-5 text-primary" />
+					<h2 class="font-display text-lg font-bold text-base-content">Subscribe to {selectedPlanName}</h2>
+				</div>
+				<button type="button" onclick={closePaymentModal} class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors">
+					<XIcon class="w-5 h-5 text-base-content/60" />
+				</button>
+			</div>
+
+			<!-- Payment Element -->
+			<div class="px-6 py-6">
+				{#if paymentSuccess}
+					<div class="text-center py-8">
+						<div class="w-16 h-16 mx-auto mb-4 rounded-full bg-green-100 flex items-center justify-center">
+							<Check class="w-8 h-8 text-green-600" />
+						</div>
+						<h3 class="text-lg font-bold text-base-content mb-1">You're all set!</h3>
+						<p class="text-sm text-base-content/60">Your subscription is now active. Redirecting...</p>
+					</div>
+				{:else}
+					<div id="payment-element" class="min-h-[200px]"></div>
+
+					{#if paymentError}
+						<div class="mt-4 rounded-xl bg-error/10 border border-error/20 p-3">
+							<p class="text-sm text-error">{paymentError}</p>
+						</div>
+					{/if}
+
+					<button
+						disabled={paymentLoading || !paymentElementMounted}
+						onclick={confirmPayment}
+						class="w-full h-12 mt-5 flex items-center justify-center gap-2 rounded-xl text-sm font-bold bg-primary text-primary-content hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+					>
+						{#if paymentLoading}
+							<Spinner size={16} />
+							<span>Processing...</span>
+						{:else}
+							Subscribe now
+						{/if}
+					</button>
+
+					<p class="text-xs text-base-content/30 text-center mt-4">
+						Secure payment powered by Stripe. Cancel anytime.
+					</p>
+				{/if}
+			</div>
+		</div>
 	</div>
 {/if}

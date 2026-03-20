@@ -1449,6 +1449,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/neboloop/billing/prices", axum::routing::get(handlers::neboloop::billing_prices))
         .route("/neboloop/billing/subscription", axum::routing::get(handlers::neboloop::billing_subscription))
         .route("/neboloop/billing/checkout", axum::routing::post(handlers::neboloop::billing_checkout))
+        .route("/neboloop/billing/subscribe", axum::routing::post(handlers::neboloop::billing_subscribe))
         .route("/neboloop/billing/portal", axum::routing::post(handlers::neboloop::billing_portal))
         .route("/neboloop/billing/setup-intent", axum::routing::post(handlers::neboloop::billing_setup_intent))
         .route("/neboloop/billing/cancel", axum::routing::post(handlers::neboloop::billing_cancel))

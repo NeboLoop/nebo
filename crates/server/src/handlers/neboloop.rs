@@ -566,6 +566,22 @@ pub async fn billing_checkout(
     Ok(Json(resp))
 }
 
+/// POST /api/v1/neboloop/billing/subscribe — create inline subscription (returns clientSecret for PaymentElement).
+pub async fn billing_subscribe(
+    State(state): State<AppState>,
+    Json(body): Json<CheckoutRequest>,
+) -> HandlerResult<serde_json::Value> {
+    let api = build_api_client(&state).map_err(to_error_response)?;
+    let price_ids = if !body.price_ids.is_empty() {
+        body.price_ids.clone()
+    } else {
+        vec![body.price_id.clone()]
+    };
+    let resp = api.billing_subscribe(&price_ids).await
+        .map_err(|e| to_error_response(NeboError::Internal(format!("billing_subscribe: {e}"))))?;
+    Ok(Json(resp))
+}
+
 /// POST /api/v1/neboloop/billing/portal — open Stripe customer portal.
 pub async fn billing_portal(
     State(state): State<AppState>,
