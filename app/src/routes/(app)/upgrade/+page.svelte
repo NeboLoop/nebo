@@ -13,7 +13,7 @@
 	let status = $state<NeboLoopAccountStatusResponse | null>(null);
 	let allPrices = $state<BillingPriceInfo[]>([]);
 	let subscription = $state<{ plan: string; subscriptions: any[] } | null>(null);
-	let activeTab = $state<'personal' | 'business'>('personal');
+	let billingInterval = $state<'month' | 'year'>('month');
 	let boostSelections = $state<Record<string, boolean>>({});
 
 	// Checkout flow: 'plans' | 'summary' | 'payment' | 'success'
@@ -36,15 +36,21 @@
 
 	const currentPlan = $derived((subscription?.plan || status?.plan || 'free').toLowerCase());
 
-	const personalPrices = $derived(
-		allPrices.filter((p) => p.category === 'personal').sort((a, b) => a.displayOrder - b.displayOrder)
-	);
-	const businessPrices = $derived(
-		allPrices.filter((p) => p.category === 'business').sort((a, b) => a.displayOrder - b.displayOrder)
+	// Personal prices only, filtered by billing interval
+	const visiblePrices = $derived(
+		allPrices
+			.filter((p) => p.category === 'personal' && p.interval === billingInterval)
+			.sort((a, b) => a.displayOrder - b.displayOrder)
 	);
 	const boostPrices = $derived(allPrices.filter((p) => p.category === 'boost'));
-	const visiblePrices = $derived(activeTab === 'personal' ? personalPrices : businessPrices);
 	const popularIndex = $derived(Math.floor(visiblePrices.length / 2));
+
+	// Annual savings helper
+	function monthlySavings(annualCents: number, monthlyNickname: string): number {
+		const monthly = allPrices.find(p => p.nickname === monthlyNickname && p.interval === 'month');
+		if (!monthly) return 0;
+		return (monthly.amountCents * 12) - annualCents;
+	}
 
 	function getBoostPrice(id: string | undefined): BillingPriceInfo | undefined {
 		if (!id) return undefined;
@@ -201,8 +207,11 @@
 
 		<div class="flex justify-center">
 			<div class="inline-flex rounded-full bg-base-200/80 p-1">
-				<button onclick={() => (activeTab = 'personal')} class="px-6 py-2 rounded-full text-sm font-semibold transition-all {activeTab === 'personal' ? 'bg-base-100 text-base-content shadow-sm' : 'text-base-content/40 hover:text-base-content/60'}">Personal</button>
-				<button onclick={() => (activeTab = 'business')} class="px-6 py-2 rounded-full text-sm font-semibold transition-all {activeTab === 'business' ? 'bg-base-100 text-base-content shadow-sm' : 'text-base-content/40 hover:text-base-content/60'}">Business</button>
+				<button onclick={() => (billingInterval = 'month')} class="px-6 py-2 rounded-full text-sm font-semibold transition-all {billingInterval === 'month' ? 'bg-base-100 text-base-content shadow-sm' : 'text-base-content/40 hover:text-base-content/60'}">Monthly</button>
+				<button onclick={() => (billingInterval = 'year')} class="px-6 py-2 rounded-full text-sm font-semibold transition-all {billingInterval === 'year' ? 'bg-base-100 text-base-content shadow-sm' : 'text-base-content/40 hover:text-base-content/60'}">
+					Annual
+					<span class="ml-1 text-xs font-bold text-green-600">Save 17%</span>
+				</button>
 			</div>
 		</div>
 
@@ -222,8 +231,14 @@
 						{#if price.description}<p class="text-sm text-base-content/50 mt-1">{price.description}</p>{/if}
 
 						<div class="mt-5 mb-5">
-							<span class="text-4xl font-bold text-base-content tracking-tight">{fmt(price.amountCents, price.currency)}</span>
-							<span class="text-sm text-base-content/40 ml-1">/{price.interval}</span>
+							{#if price.interval === 'year'}
+								<span class="text-4xl font-bold text-base-content tracking-tight">{fmt(Math.round(price.amountCents / 12), price.currency)}</span>
+								<span class="text-sm text-base-content/40 ml-1">/mo</span>
+								<p class="text-xs text-base-content/40 mt-1">{fmt(price.amountCents, price.currency)} billed annually</p>
+							{:else}
+								<span class="text-4xl font-bold text-base-content tracking-tight">{fmt(price.amountCents, price.currency)}</span>
+								<span class="text-sm text-base-content/40 ml-1">/mo</span>
+							{/if}
 						</div>
 
 						{#if price.features && price.features.length > 0}
@@ -246,7 +261,13 @@
 										<span class="text-xs font-bold text-base-content uppercase tracking-wide">Advanced Compute</span>
 									</div>
 									<p class="text-xs text-base-content/50 mt-1">{boost.description || '3x access to frontier models.'}</p>
-									<p class="text-xs font-bold text-amber-600 mt-1">+{fmt(boost.amountCents, boost.currency)}/mo</p>
+									<p class="text-xs font-bold text-amber-600 mt-1">
+										{#if boost.interval === 'year'}
+											+{fmt(Math.round(boost.amountCents / 12), boost.currency)}/mo ({fmt(boost.amountCents, boost.currency)}/yr)
+										{:else}
+											+{fmt(boost.amountCents, boost.currency)}/mo
+										{/if}
+									</p>
 								</div>
 							</label>
 						{/if}
@@ -254,7 +275,7 @@
 						{#if isCurrent}
 							<button disabled class="w-full h-11 rounded-xl text-sm font-bold bg-base-content/10 text-base-content/40 cursor-not-allowed">Current plan</button>
 						{:else}
-							<button onclick={() => selectPlan(price)} class="w-full h-11 flex items-center justify-center gap-2 rounded-xl text-sm font-bold transition-all mt-auto {isPopular ? 'bg-primary text-primary-content hover:brightness-110 shadow-md shadow-primary/20' : activeTab === 'personal' ? 'bg-primary text-primary-content hover:brightness-110' : 'bg-base-content text-base-100 hover:brightness-110'}">
+							<button onclick={() => selectPlan(price)} class="w-full h-11 flex items-center justify-center gap-2 rounded-xl text-sm font-bold transition-all mt-auto {isPopular ? 'bg-primary text-primary-content hover:brightness-110 shadow-md shadow-primary/20' : 'bg-primary text-primary-content hover:brightness-110'}">
 								Get started <ArrowRight class="w-4 h-4" />
 							</button>
 						{/if}
@@ -292,9 +313,15 @@
 				<div class="flex items-center justify-between">
 					<div>
 						<p class="font-semibold text-base-content">{selectedPrice.displayName}</p>
-						<p class="text-sm text-base-content/50">Billed monthly</p>
+						<p class="text-sm text-base-content/50">Billed {selectedPrice.interval === 'year' ? 'annually' : 'monthly'}</p>
 					</div>
-					<p class="font-semibold text-base-content">{fmt(selectedPrice.amountCents, selectedPrice.currency)}/mo</p>
+					<p class="font-semibold text-base-content">
+						{#if selectedPrice.interval === 'year'}
+							{fmt(selectedPrice.amountCents, selectedPrice.currency)}/yr
+						{:else}
+							{fmt(selectedPrice.amountCents, selectedPrice.currency)}/mo
+						{/if}
+					</p>
 				</div>
 
 				{#if selectedBoost}
@@ -306,7 +333,13 @@
 								<p class="text-xs text-base-content/50">3x frontier model access</p>
 							</div>
 						</div>
-						<p class="font-semibold text-base-content">+{fmt(selectedBoost.amountCents, selectedBoost.currency)}/mo</p>
+						<p class="font-semibold text-base-content">
+							{#if selectedBoost.interval === 'year'}
+								+{fmt(selectedBoost.amountCents, selectedBoost.currency)}/yr
+							{:else}
+								+{fmt(selectedBoost.amountCents, selectedBoost.currency)}/mo
+							{/if}
+						</p>
 					</div>
 				{/if}
 			</div>
@@ -323,7 +356,7 @@
 				</div>
 				<div class="flex justify-between text-base font-bold text-base-content pt-2 border-t border-base-content/10">
 					<span>Due today</span>
-					<span>{fmt((selectedPrice?.amountCents || 0) + (selectedBoost?.amountCents || 0), selectedPrice.currency)}/mo</span>
+					<span>{fmt((selectedPrice?.amountCents || 0) + (selectedBoost?.amountCents || 0), selectedPrice.currency)}{selectedPrice.interval === 'year' ? '' : '/mo'}</span>
 				</div>
 			</div>
 		</div>
