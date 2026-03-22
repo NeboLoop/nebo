@@ -45,6 +45,7 @@
 			</div>
 			<div class="agent-tab-bar-inline">
 				<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>Chat</a>
+				<a href="{basePath}/role" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('role')}>Role</a>
 				<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>Automate</a>
 				<a href="{basePath}/activity" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('activity')}>Activity</a>
 				<a href="{basePath}/settings" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('settings')}>Settings</a>

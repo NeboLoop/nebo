@@ -81,6 +81,21 @@ pub async fn pick_files() -> HandlerResult<serde_json::Value> {
     Ok(Json(serde_json::json!({ "paths": paths })))
 }
 
+/// POST /api/v1/files/pick-folder — Open native folder dialog and return selected path
+pub async fn pick_folder() -> HandlerResult<serde_json::Value> {
+    let result = tokio::task::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Select folder")
+            .pick_folder()
+    })
+    .await
+    .map_err(|e| to_error_response(types::NeboError::Internal(e.to_string())))?;
+
+    let path = result.and_then(|p| p.to_str().map(|s| s.to_string()));
+
+    Ok(Json(serde_json::json!({ "path": path })))
+}
+
 /// GET /api/v1/files/*path
 pub async fn serve_file(
     State(_state): State<AppState>,

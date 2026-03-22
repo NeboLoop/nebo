@@ -127,6 +127,44 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Get the most recent N messages for a chat. If `before` is provided, fetch messages older
+    /// than that message ID (for "load more" pagination). Returns messages in ascending order.
+    pub fn get_chat_messages_paginated(&self, chat_id: &str, limit: i64, before: Option<&str>) -> Result<Vec<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        let messages = if let Some(before_id) = before {
+            // Get the created_at of the cursor message
+            let cursor_ts: i64 = conn.query_row(
+                "SELECT created_at FROM chat_messages WHERE id = ?1",
+                params![before_id],
+                |row| row.get(0),
+            ).map_err(|e| NeboError::Database(e.to_string()))?;
+
+            let mut stmt = conn.prepare(
+                "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
+                 ORDER BY created_at DESC, rowid DESC LIMIT ?3"
+            ).map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt.query_map(params![chat_id, cursor_ts, limit], row_to_chat_message)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            let mut msgs: Vec<ChatMessage> = rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            msgs.reverse(); // back to ascending order
+            msgs
+        } else {
+            // Get the last N messages (most recent)
+            let mut stmt = conn.prepare(
+                "SELECT * FROM (
+                    SELECT * FROM chat_messages WHERE chat_id = ?1
+                    ORDER BY created_at DESC, rowid DESC LIMIT ?2
+                ) ORDER BY created_at ASC, rowid ASC"
+            ).map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt.query_map(params![chat_id, limit], row_to_chat_message)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| NeboError::Database(e.to_string()))?
+        };
+        Ok(messages)
+    }
+
     pub fn get_chat_message(&self, id: &str) -> Result<Option<ChatMessage>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(

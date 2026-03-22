@@ -1436,6 +1436,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         // Files
         .route("/files/browse", axum::routing::post(handlers::files::browse))
         .route("/files/pick", axum::routing::post(handlers::files::pick_files))
+        .route("/files/pick-folder", axum::routing::post(handlers::files::pick_folder))
         .route("/files/{*path}", axum::routing::get(handlers::files::serve_file))
         // NeboLoop OAuth and account
         .route("/neboloop/oauth/start", axum::routing::get(handlers::neboloop::oauth_start))
@@ -1488,6 +1489,13 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/roles/{id}/workflows/{binding_name}", axum::routing::put(handlers::roles::update_role_workflow))
         .route("/roles/{id}/workflows/{binding_name}", axum::routing::delete(handlers::roles::delete_role_workflow))
         .route("/roles/{id}/workflows/{binding_name}/toggle", axum::routing::post(handlers::roles::toggle_role_workflow))
+        .route("/roles/{id}/inputs", axum::routing::put(handlers::roles::update_role_inputs))
+        .route("/roles/{id}/setup", axum::routing::post(handlers::roles::trigger_role_setup))
+        .route("/roles/{id}/reload", axum::routing::post(handlers::roles::reload_role))
+        .route("/roles/{id}/check-update", axum::routing::post(handlers::roles::check_role_update))
+        .route("/roles/{id}/apply-update", axum::routing::post(handlers::roles::apply_role_update))
+        .route("/roles/{id}/stats", axum::routing::get(handlers::roles::role_stats))
+        .route("/roles/{id}/runs", axum::routing::get(handlers::roles::list_role_runs))
         // Codes (marketplace install via REST)
         .route("/store/apps", axum::routing::get(handlers::store::list_store_apps))
         .route("/store/skills", axum::routing::get(handlers::store::list_store_skills))

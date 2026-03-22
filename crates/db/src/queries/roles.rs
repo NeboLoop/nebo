@@ -12,7 +12,7 @@ impl Store {
             .prepare(
                 "SELECT id, kind, name, description, role_md, frontmatter,
                         pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                        napp_path
+                        napp_path, input_values
                  FROM roles ORDER BY installed_at DESC LIMIT ?1 OFFSET ?2",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -34,7 +34,7 @@ impl Store {
         conn.query_row(
             "SELECT id, kind, name, description, role_md, frontmatter,
                     pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                    napp_path
+                    napp_path, input_values
              FROM roles WHERE id = ?1",
             params![id],
             row_to_role,
@@ -61,7 +61,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              RETURNING id, kind, name, description, role_md, frontmatter,
                        pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
-                       napp_path",
+                       napp_path, input_values",
             params![id, kind, name, description, role_md, frontmatter, pricing_model, pricing_cost],
             row_to_role,
         )
@@ -102,6 +102,16 @@ impl Store {
         conn.execute(
             "UPDATE roles SET napp_path = ?1, updated_at = unixepoch() WHERE id = ?2",
             params![napp_path, id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    pub fn update_role_input_values(&self, id: &str, input_values: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE roles SET input_values = ?1, updated_at = unixepoch() WHERE id = ?2",
+            params![input_values, id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -164,7 +174,7 @@ impl Store {
         let mut stmt = conn
             .prepare(
                 "SELECT id, role_id, binding_name,
-                        trigger_type, trigger_config, description, inputs, is_active, emit, activities
+                        trigger_type, trigger_config, description, inputs, is_active, emit, activities, last_fired
                  FROM role_workflows WHERE role_id = ?1",
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -306,6 +316,7 @@ fn row_to_role_workflow(row: &rusqlite::Row) -> rusqlite::Result<RoleWorkflow> {
         is_active: row.get(7)?,
         emit: row.get(8)?,
         activities,
+        last_fired: row.get(10)?,
     })
 }
 
@@ -323,5 +334,6 @@ fn row_to_role(row: &rusqlite::Row) -> rusqlite::Result<Role> {
         installed_at: row.get(9)?,
         updated_at: row.get(10)?,
         napp_path: row.get(11)?,
+        input_values: row.get::<_, Option<String>>(12)?.unwrap_or_else(|| "{}".to_string()),
     })
 }

@@ -37,8 +37,7 @@ export async function executeSlashCommand(
 			return true;
 
 		case 'reset':
-			ctx.wsSend('session_reset', { session_id: ctx.chatId });
-			ctx.addSystemMessage('Session reset.');
+			ctx.onNewSession();
 			return true;
 
 		case 'clear':
@@ -58,8 +57,8 @@ export async function executeSlashCommand(
 			return true;
 
 		case 'compact':
-			ctx.wsSend('session_reset', { session_id: ctx.chatId });
-			ctx.addSystemMessage('Context compacted (session reset).');
+			ctx.wsSend('session_compact', { session_id: ctx.chatId });
+			ctx.addSystemMessage('Compacting conversation — summarizing and clearing old messages...');
 			return true;
 
 		// ── Model ──

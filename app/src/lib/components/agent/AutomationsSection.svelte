@@ -1,9 +1,12 @@
 <script lang="ts">
+	import { onMount, onDestroy } from 'svelte';
 	import { getEntityConfig, updateEntityConfig, getRoleWorkflows, createRoleWorkflow, toggleRoleWorkflow, deleteRoleWorkflow } from '$lib/api/nebo';
 	import type { RoleWorkflowEntry } from '$lib/api/neboComponents';
 	import AutomationEditor from './AutomationEditor.svelte';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
-	import { Plus, Pencil, Trash2, Store, Copy, MoreHorizontal } from 'lucide-svelte';
+	import { Plus, Pencil, Trash2, Store, Copy, MoreHorizontal, X } from 'lucide-svelte';
+	import { fly } from 'svelte/transition';
+	import { getWebSocketClient } from '$lib/websocket/client';
 
 	let {
 		entityType,
@@ -39,6 +42,7 @@
 	let confirmDelete: string | null = $state(null);
 	let toggling: string | null = $state(null);
 	let overflowMenu: string | null = $state(null);
+	let previewWorkflow: RoleWorkflowEntry | null = $state(null);
 
 	const intervalOptions = [
 		{ value: 1, label: '1 minute' },
@@ -142,6 +146,18 @@
 		const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
 		if (m === 0) return `${h12}${ampm}`;
 		return `${h12}:${m.toString().padStart(2, '0')}${ampm}`;
+	}
+
+	function lastFiredAgo(iso: string): string {
+		const diff = Date.now() - new Date(iso).getTime();
+		const mins = Math.floor(diff / 60000);
+		if (mins < 1) return 'just now';
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		const days = Math.floor(hrs / 24);
+		if (days < 7) return `${days}d ago`;
+		return new Date(iso).toLocaleDateString();
 	}
 
 	// --- Emit helpers ---
@@ -348,6 +364,26 @@
 		modeInitialized = false;
 		loadAll();
 	});
+
+	// Live-update lastFired via WS
+	let wsUnsubs: Array<() => void> = [];
+	onMount(() => {
+		const ws = getWebSocketClient();
+		wsUnsubs.push(
+			ws.on('workflow_run_started', (data: { roleId: string }) => {
+				if (roleId && data.roleId === roleId) loadWorkflows();
+			}),
+			ws.on('workflow_run_completed', (data: { roleId: string }) => {
+				if (roleId && data.roleId === roleId) loadWorkflows();
+			}),
+			ws.on('workflow_run_failed', (data: { roleId: string }) => {
+				if (roleId && data.roleId === roleId) loadWorkflows();
+			}),
+		);
+	});
+	onDestroy(() => {
+		wsUnsubs.forEach(fn => fn());
+	});
 </script>
 
 <svelte:window onclick={handleWindowClick} />
@@ -360,104 +396,12 @@
 		</div>
 
 	{:else if !readonly}
-		<!-- Mode selector (radio only) -->
-		<div class="flex flex-col gap-2">
-			<label
-				class="flex items-start gap-3 rounded-xl border p-4 transition-colors cursor-pointer
-					{mode === 'heartbeat'
-						? 'border-primary/30 bg-primary/5'
-						: 'border-base-content/10 hover:border-base-content/20'}"
-			>
-				<input
-					type="radio"
-					name="automation-mode"
-					class="radio radio-sm radio-primary mt-0.5 shrink-0"
-					checked={mode === 'heartbeat'}
-					onchange={() => switchMode('heartbeat')}
-				/>
-				<div class="flex-1 min-w-0">
-					<p class="text-sm font-medium {mode === 'heartbeat' ? 'text-primary' : 'text-base-content'}">Proactive check-ins</p>
-					<p class="text-xs text-base-content/50 mt-0.5">Wake up on a schedule and check in using its own judgment</p>
-				</div>
-			</label>
-
-			<label
-				class="flex items-start gap-3 rounded-xl border p-4 transition-colors cursor-pointer
-					{mode === 'automations'
-						? 'border-primary/30 bg-primary/5'
-						: 'border-base-content/10 hover:border-base-content/20'}"
-			>
-				<input
-					type="radio"
-					name="automation-mode"
-					class="radio radio-sm radio-primary mt-0.5 shrink-0"
-					checked={mode === 'automations'}
-					onchange={() => switchMode('automations')}
-				/>
-				<div class="flex-1 min-w-0">
-					<p class="text-sm font-medium {mode === 'automations' ? 'text-primary' : 'text-base-content'}">Automations</p>
-					<p class="text-xs text-base-content/50 mt-0.5">Run defined sequences of steps on a trigger</p>
-				</div>
-			</label>
-		</div>
-
-		<!-- Heartbeat config -->
-		{#if mode === 'heartbeat'}
-			<div class="flex flex-col gap-4 rounded-xl border border-base-content/10 p-4">
-				<div class="flex items-center justify-between">
-					<span class="text-sm text-base-content/70">Check every</span>
-					<select
-						class="h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
-						value={heartbeatInterval}
-						onchange={updateInterval}
-					>
-						{#each intervalOptions as opt}
-							<option value={opt.value}>{opt.label}</option>
-						{/each}
-					</select>
-				</div>
-
-				<div class="flex items-center justify-between">
-					<span class="text-sm text-base-content/70">Active window</span>
-					<div class="flex items-center gap-2">
-						<input
-							type="time"
-							class="h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-2 text-sm focus:outline-none focus:border-primary/50 transition-colors"
-							value={heartbeatWindow?.[0] ?? ''}
-							onchange={updateWindowStart}
-						/>
-						<span class="text-sm text-base-content/40">to</span>
-						<input
-							type="time"
-							class="h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-2 text-sm focus:outline-none focus:border-primary/50 transition-colors"
-							value={heartbeatWindow?.[1] ?? ''}
-							onchange={updateWindowEnd}
-						/>
-					</div>
-				</div>
-
-				<div>
-					<label class="text-sm text-base-content/70 block mb-2">What should I check?</label>
-					<RichInput
-						bind:value={heartbeatContent}
-						mode="full"
-						placeholder="What should this agent check? e.g. Check email for urgent items, review calendar, monitor deadlines... Type / to mention an MCP, skill, or agent."
-						onchange={(val) => handleContentChange(val)}
-					/>
-					{#if saving}
-						<div class="text-xs text-base-content/40 mt-1">Saving...</div>
-					{/if}
-				</div>
-			</div>
-		{/if}
-
 		<!-- Automations list -->
-		{#if mode === 'automations'}
 			<div class="flex flex-col gap-3">
-				<div class="flex items-center justify-between">
-					<span class="text-xs text-base-content/60 uppercase tracking-wider font-semibold">Your automations</span>
+				<div class="flex items-center justify-between min-h-8">
+					<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Automations</h2>
 					{#if roleId}
-						<button type="button" class="btn btn-xs btn-ghost text-primary gap-1" onclick={openCreate}>
+						<button type="button" class="btn btn-sm btn-ghost text-primary gap-1.5" onclick={openCreate}>
 							<Plus class="w-3.5 h-3.5" />
 							New
 						</button>
@@ -468,10 +412,11 @@
 					{@const triggeredBy = getTriggeredBy(wf)}
 					{#if triggeredBy}
 						<div class="flex items-center gap-2 pl-5 -my-1">
-							<span class="text-xs text-base-content/30">&#8627; triggered by: {triggeredBy}</span>
+							<span class="text-xs text-base-content/80">&#8627; triggered by: {triggeredBy}</span>
 						</div>
 					{/if}
-					<div class="rounded-xl border border-base-content/10 p-4">
+					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+					<div class="rounded-xl border border-base-content/10 p-4 cursor-pointer hover:border-base-content/20 transition-colors" onclick={() => previewWorkflow = wf}>
 						<div class="flex items-center justify-between">
 							<div class="flex items-center gap-3 min-w-0 flex-1">
 								<div class="w-8 h-8 rounded-lg bg-base-content/5 flex items-center justify-center shrink-0 text-base">
@@ -479,11 +424,14 @@
 								</div>
 								<div class="min-w-0">
 									<p class="text-sm font-medium truncate">{wf.description || wf.bindingName}</p>
-									<p class="text-xs text-base-content/50 truncate">
+									<p class="text-xs text-base-content/70 truncate">
 										{summarizeTrigger(wf)}{#if wf.activities && wf.activities.length > 0}{' '}&middot; {wf.activities.length} step{wf.activities.length !== 1 ? 's' : ''}{/if}
 									</p>
+									{#if wf.lastFired}
+										<p class="text-xs text-base-content/70 truncate mt-0.5">Last run: {lastFiredAgo(wf.lastFired)}</p>
+									{/if}
 									{#if wf.emit}
-										<p class="text-xs text-base-content/40 truncate mt-0.5">&#8594; announces: {wf.emit}</p>
+										<p class="text-xs text-base-content/70 truncate mt-0.5">&#8594; announces: {wf.emit}</p>
 									{/if}
 								</div>
 							</div>
@@ -491,7 +439,7 @@
 								<div class="relative">
 									<button
 										type="button"
-										class="btn btn-xs btn-ghost btn-square text-base-content/50 hover:text-base-content/80"
+										class="btn btn-xs btn-ghost btn-square text-base-content/70 hover:text-base-content/80"
 										onclick={(e) => { e.stopPropagation(); overflowMenu = overflowMenu === wf.bindingName ? null : wf.bindingName; }}
 									>
 										<MoreHorizontal class="w-3.5 h-3.5" />
@@ -526,6 +474,7 @@
 									class="toggle toggle-sm toggle-primary"
 									checked={wf.isActive}
 									disabled={toggling === wf.bindingName}
+									onclick={(e) => e.stopPropagation()}
 									onchange={() => handleToggle(wf)}
 								/>
 							</div>
@@ -535,11 +484,11 @@
 
 				{#if workflows.length === 0}
 					<div class="flex flex-col items-center py-8 text-center">
-						<svg class="w-8 h-8 text-base-content/15 mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+						<svg class="w-8 h-8 text-base-content/80 mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
 							<circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
 						</svg>
-						<p class="text-sm text-base-content/50">No automations yet</p>
-						<p class="text-xs text-base-content/40 mt-1 mb-3">Add one to put this agent on autopilot.</p>
+						<p class="text-sm text-base-content/70">No automations yet</p>
+						<p class="text-xs text-base-content/70 mt-1 mb-3">Add one to put this agent on autopilot.</p>
 						<button type="button" class="btn btn-sm btn-primary gap-1" onclick={openCreate}>
 							<Plus class="w-3.5 h-3.5" />
 							New Automation
@@ -547,18 +496,102 @@
 					</div>
 				{/if}
 			</div>
-		{/if}
 
 	{:else}
 		<!-- Assistant readonly -->
 		<div class="flex flex-col items-center py-6 text-center">
-			<Store class="w-6 h-6 text-base-content/20 mb-2" />
-			<p class="text-sm text-base-content/50">Workflow automations are available on installed agents.</p>
-			<p class="text-xs text-base-content/40 mt-1">Browse the marketplace to add agents with built-in automations.</p>
+			<Store class="w-6 h-6 text-base-content/80 mb-2" />
+			<p class="text-sm text-base-content/70">Workflow automations are available on installed agents.</p>
+			<p class="text-xs text-base-content/70 mt-1">Browse the marketplace to add agents with built-in automations.</p>
 		</div>
 	{/if}
 
 </section>
+
+{#if previewWorkflow}
+	{@const pw = previewWorkflow}
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+	<div
+		class="fixed inset-0 z-[60] flex flex-col bg-base-100"
+		transition:fly={{ y: 20, duration: 200 }}
+	>
+		<header class="flex items-center justify-between px-6 h-14 border-b border-base-content/10 shrink-0">
+			<div class="flex items-center gap-3 min-w-0">
+				<button type="button" class="btn btn-sm btn-ghost btn-square" onclick={() => previewWorkflow = null}>
+					<X class="w-4 h-4" />
+				</button>
+				<h2 class="text-base font-semibold truncate">{pw.description || pw.bindingName}</h2>
+			</div>
+			<button
+				type="button"
+				class="btn btn-sm btn-primary gap-1.5"
+				onclick={() => { const wf = pw; previewWorkflow = null; openEdit(wf); }}
+			>
+				<Pencil class="w-3.5 h-3.5" />
+				Edit
+			</button>
+		</header>
+
+		<div class="flex-1 overflow-y-auto">
+			<div class="max-w-3xl mx-auto px-6 py-8">
+				<!-- Trigger -->
+				<div class="mb-6">
+					<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">Trigger</span>
+					<div class="flex items-center gap-2 mt-2">
+						<span class="text-lg">{triggerIcons[pw.triggerType] || '▶'}</span>
+						<span class="text-sm">{summarizeTrigger(pw)}</span>
+					</div>
+				</div>
+
+				<!-- Steps -->
+				{#if pw.activities && pw.activities.length > 0}
+					<div class="mb-6">
+						<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">Steps</span>
+						<ol class="mt-3 flex flex-col gap-3">
+							{#each pw.activities as activity, i}
+								<li class="flex gap-3">
+									<div class="w-6 h-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-semibold shrink-0 mt-0.5">
+										{i + 1}
+									</div>
+									<div class="min-w-0">
+										<p class="text-sm font-medium">{activity.intent || activity.id || `Step ${i + 1}`}</p>
+										{#if activity.skills && (activity.skills as string[]).length > 0}
+											<p class="text-xs text-base-content/70 mt-0.5">Skills: {(activity.skills as string[]).join(', ')}</p>
+										{/if}
+										{#if activity.steps && (activity.steps as string[]).length > 0}
+											<ul class="mt-1.5 flex flex-col gap-1">
+												{#each activity.steps as step}
+													<li class="text-xs text-base-content/80 flex items-start gap-1.5">
+														<span class="text-base-content/80 mt-px">&#8226;</span>
+														<span>{step}</span>
+													</li>
+												{/each}
+											</ul>
+										{/if}
+									</div>
+								</li>
+							{/each}
+						</ol>
+					</div>
+				{/if}
+
+				<!-- Emit -->
+				{#if pw.emit}
+					<div class="mb-6">
+						<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">On completion</span>
+						<p class="text-sm mt-2">Announces: <span class="font-medium">{pw.emit}</span></p>
+					</div>
+				{/if}
+
+				<!-- Status -->
+				<div>
+					<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">Status</span>
+					<p class="text-sm mt-2">{pw.isActive ? 'Active' : 'Paused'}</p>
+				</div>
+			</div>
+		</div>
+	</div>
+{/if}
 
 {#if showEditor && roleId}
 	<AutomationEditor

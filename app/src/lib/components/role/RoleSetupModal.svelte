@@ -1,12 +1,14 @@
 <script lang="ts">
-	import { installStoreApp, listRoles, activateRole, updateRoleWorkflow, getRoleWorkflows } from '$lib/api/nebo';
+	import { installStoreApp, listRoles, activateRole, getRole, updateRoleInputs, getRoleWorkflows, updateRoleWorkflow } from '$lib/api/nebo';
+	import type { RoleInputField, RoleWorkflowEntry } from '$lib/api/neboComponents';
+	import RoleInputForm from '$lib/components/agent/RoleInputForm.svelte';
 	import { X } from 'lucide-svelte';
 
 	let {
 		appId,
 		roleName,
 		roleDescription,
-		inputs,
+		inputs = {},
 		onComplete,
 		onCancel,
 	}: {
@@ -18,29 +20,62 @@
 		onCancel: () => void;
 	} = $props();
 
-	let values: Record<string, string> = $state({});
-	let installing = $state(false);
+	// Wizard steps
+	type Step = 'inputs' | 'schedule' | 'installing' | 'done';
+	let step = $state<Step>('inputs');
 	let error = $state('');
 
-	// Pre-fill from defaults
+	// Role data (loaded after install)
+	let roleId = $state('');
+	let inputFields = $state<RoleInputField[]>([]);
+	let inputValues = $state<Record<string, unknown>>({});
+	let workflows = $state<RoleWorkflowEntry[]>([]);
+
+	// Schedule overrides (binding name → user-chosen interval label)
+	let scheduleOverrides = $state<Record<string, string>>({});
+
+	// Legacy fallback: if old-style flat inputs, convert to values
 	for (const [key, val] of Object.entries(inputs)) {
-		values[key] = typeof val === 'string' ? val : JSON.stringify(val);
+		inputValues[key] = val;
 	}
 
-	function prettifyKey(key: string): string {
-		return key
-			.replace(/[_-]/g, ' ')
-			.replace(/\b\w/g, c => c.toUpperCase());
+	const hasInputFields = $derived(inputFields.length > 0);
+	const hasSchedules = $derived(workflows.some(w =>
+		w.isActive && (w.triggerType === 'schedule' || w.triggerType === 'heartbeat')
+	));
+
+	const intervalOptions = [
+		{ value: '5m', label: 'Every 5 minutes' },
+		{ value: '10m', label: 'Every 10 minutes' },
+		{ value: '15m', label: 'Every 15 minutes' },
+		{ value: '30m', label: 'Every 30 minutes' },
+		{ value: '1h', label: 'Every hour' },
+		{ value: '2h', label: 'Every 2 hours' },
+		{ value: '4h', label: 'Every 4 hours' },
+		{ value: '8h', label: 'Every 8 hours' },
+		{ value: '24h', label: 'Every 24 hours' },
+	];
+
+	function summarizeTrigger(wf: RoleWorkflowEntry): string {
+		if (wf.triggerType === 'heartbeat') {
+			const interval = wf.triggerConfig.split('|')[0] || '30m';
+			const match = intervalOptions.find(o => o.value === interval);
+			return match?.label || `Every ${interval}`;
+		}
+		if (wf.triggerType === 'schedule') {
+			return `Scheduled: ${wf.triggerConfig}`;
+		}
+		return wf.triggerType;
 	}
 
 	async function handleInstall() {
-		installing = true;
+		step = 'installing';
 		error = '';
 		try {
-			// 1. Install the app
+			// 1. Install
 			await installStoreApp(appId);
 
-			// 2. Find the newly installed role
+			// 2. Find the role
 			const rolesRes = await listRoles();
 			const allRoles = rolesRes?.roles || [];
 			const matchedRole = allRoles.find(
@@ -48,52 +83,98 @@
 			) || allRoles[allRoles.length - 1];
 
 			if (!matchedRole) {
-				error = 'Role installed but could not be found. Check the Agents panel.';
-				installing = false;
+				error = 'Role installed but could not be found.';
+				step = 'inputs';
 				return;
 			}
 
-			const roleId = matchedRole.id;
+			roleId = matchedRole.id;
 
-			// 3. Update workflow inputs if any
+			// 3. Load input schema from frontmatter
+			try {
+				const roleRes = await getRole(roleId);
+				if (roleRes?.role?.frontmatter) {
+					const fm = JSON.parse(roleRes.role.frontmatter);
+					inputFields = fm.inputs || [];
+				}
+			} catch { /* ignore */ }
+
+			// 4. Load workflows for schedule config
 			try {
 				const wfRes = await getRoleWorkflows(roleId);
-				if (wfRes?.workflows) {
-					for (const wf of wfRes.workflows) {
-						await updateRoleWorkflow(roleId, wf.bindingName, { inputs: values });
-					}
-				}
-			} catch {
-				// Non-critical — inputs can be configured later
+				workflows = wfRes?.workflows || [];
+			} catch { /* ignore */ }
+
+			// 5. Save input values
+			if (Object.keys(inputValues).length > 0) {
+				await updateRoleInputs(roleId, inputValues).catch(() => {});
 			}
 
-			// 4. Activate the role
-			await activateRole(roleId);
-
-			// 5. Done
-			onComplete(roleId);
+			// If there are schedules to configure, go to schedule step
+			if (hasSchedules) {
+				step = 'schedule';
+			} else {
+				await finalize();
+			}
 		} catch (e: any) {
 			error = e?.error || e?.message || 'Failed to install role';
-		} finally {
-			installing = false;
+			step = 'inputs';
 		}
 	}
 
-	const inputKeys = $derived(Object.keys(inputs));
+	async function handleScheduleDone() {
+		step = 'installing';
+		try {
+			// Apply schedule overrides
+			for (const [bindingName, interval] of Object.entries(scheduleOverrides)) {
+				const wf = workflows.find(w => w.bindingName === bindingName);
+				if (!wf) continue;
+
+				if (wf.triggerType === 'heartbeat') {
+					const parts = wf.triggerConfig.split('|');
+					const newConfig = parts.length > 1 ? `${interval}|${parts[1]}` : interval;
+					await updateRoleWorkflow(roleId, bindingName, {
+						triggerType: 'heartbeat',
+						triggerConfig: { interval, ...(parts[1] ? { window: parts[1] } : {}) },
+					}).catch(() => {});
+				}
+			}
+			await finalize();
+		} catch (e: any) {
+			error = e?.error || e?.message || 'Failed to configure schedules';
+			step = 'schedule';
+		}
+	}
+
+	async function finalize() {
+		await activateRole(roleId);
+		step = 'done';
+		setTimeout(() => onComplete(roleId), 800);
+	}
 </script>
 
 <div class="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-8">
 	<div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
 
-	<div class="relative w-full max-w-md rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden">
-		{#if installing}
+	<div class="relative w-full max-w-lg rounded-2xl bg-base-100 border border-base-content/10 shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
+		{#if step === 'installing'}
 			<div class="flex flex-col items-center justify-center py-16 px-6">
 				<span class="loading loading-spinner loading-lg text-primary"></span>
 				<p class="text-base font-medium mt-4">Setting up {roleName}...</p>
-				<p class="text-sm text-base-content/50 mt-1">This just takes a moment</p>
+				<p class="text-sm text-base-content/70 mt-1">This just takes a moment</p>
 			</div>
-		{:else}
-			<!-- Header -->
+
+		{:else if step === 'done'}
+			<div class="flex flex-col items-center justify-center py-16 px-6">
+				<svg class="w-12 h-12 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+				</svg>
+				<p class="text-base font-medium mt-4">{roleName} is ready!</p>
+				<p class="text-sm text-base-content/70 mt-1">Your agent is now active and working.</p>
+			</div>
+
+		{:else if step === 'schedule'}
+			<!-- Schedule configuration -->
 			<div class="flex items-center justify-between px-6 pt-6 pb-2">
 				<div></div>
 				<button
@@ -102,16 +183,80 @@
 					onclick={onCancel}
 					aria-label="Close"
 				>
-					<X class="w-4 h-4 text-base-content/60" />
+					<X class="w-4 h-4 text-base-content/70" />
 				</button>
 			</div>
 
-			<div class="px-6 pb-6">
-				<!-- Title -->
+			<div class="px-6 pb-6 overflow-y-auto">
+				<div class="text-center mb-6">
+					<h2 class="font-display text-xl font-bold">How often should it run?</h2>
+					<p class="text-sm text-base-content/70 mt-1">You can change these anytime in the Automate tab.</p>
+				</div>
+
+				{#if error}
+					<div class="text-sm text-error bg-error/10 rounded-lg px-3 py-2 mb-4">{error}</div>
+				{/if}
+
+				<div class="flex flex-col gap-4 mb-6">
+					{#each workflows.filter(w => w.isActive && (w.triggerType === 'schedule' || w.triggerType === 'heartbeat')) as wf}
+						<div class="rounded-xl border border-base-content/10 p-4">
+							<p class="text-sm font-medium mb-1">{wf.description || wf.bindingName}</p>
+							<p class="text-xs text-base-content/70 mb-3">Currently: {summarizeTrigger(wf)}</p>
+
+							{#if wf.triggerType === 'heartbeat'}
+								<select
+									class="select select-bordered select-sm w-full"
+									value={scheduleOverrides[wf.bindingName] || wf.triggerConfig.split('|')[0] || '30m'}
+									onchange={(e) => scheduleOverrides[wf.bindingName] = (e.target as HTMLSelectElement).value}
+								>
+									{#each intervalOptions as opt}
+										<option value={opt.value}>{opt.label}</option>
+									{/each}
+								</select>
+							{:else}
+								<p class="text-xs text-base-content/70">This runs on a fixed schedule.</p>
+							{/if}
+						</div>
+					{/each}
+				</div>
+
+				<div class="flex gap-3">
+					<button
+						type="button"
+						class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
+						onclick={() => { step = 'inputs'; }}
+					>
+						Back
+					</button>
+					<button
+						type="button"
+						class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
+						onclick={handleScheduleDone}
+					>
+						Start working
+					</button>
+				</div>
+			</div>
+
+		{:else}
+			<!-- Step 1: Inputs -->
+			<div class="flex items-center justify-between px-6 pt-6 pb-2">
+				<div></div>
+				<button
+					type="button"
+					class="p-1.5 rounded-full hover:bg-base-content/10 transition-colors"
+					onclick={onCancel}
+					aria-label="Close"
+				>
+					<X class="w-4 h-4 text-base-content/70" />
+				</button>
+			</div>
+
+			<div class="px-6 pb-6 overflow-y-auto">
 				<div class="text-center mb-6">
 					<h2 class="font-display text-xl font-bold">Set up {roleName}</h2>
 					{#if roleDescription}
-						<p class="text-sm text-base-content/60 mt-1 line-clamp-2">{roleDescription}</p>
+						<p class="text-sm text-base-content/70 mt-1 line-clamp-2">{roleDescription}</p>
 					{/if}
 				</div>
 
@@ -119,39 +264,46 @@
 					<div class="text-sm text-error bg-error/10 rounded-lg px-3 py-2 mb-4">{error}</div>
 				{/if}
 
-				{#if inputKeys.length > 0}
+				{#if inputFields.length > 0}
 					<div class="border-t border-base-content/10 pt-4 mb-6">
-						<p class="text-sm text-base-content/60 mb-4">
+						<p class="text-sm text-base-content/70 mb-4">
+							Before {roleName} gets to work, tell it a bit about you.
+						</p>
+						<RoleInputForm
+							fields={inputFields}
+							bind:values={inputValues}
+							onchange={(v) => inputValues = v}
+						/>
+					</div>
+				{:else if Object.keys(inputs).length > 0}
+					<!-- Legacy fallback: flat key-value inputs -->
+					<div class="border-t border-base-content/10 pt-4 mb-6">
+						<p class="text-sm text-base-content/70 mb-4">
 							Before {roleName} gets to work, tell it a bit about you.
 						</p>
 						<div class="flex flex-col gap-4">
-							{#each inputKeys as key}
+							{#each Object.keys(inputs) as key}
 								<div>
 									<label class="text-sm font-medium text-base-content/80 block mb-1.5" for="setup-{key}">
-										{prettifyKey(key)}
+										{key.replace(/[_-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
 									</label>
-									{#if (values[key] || '').length > 60}
-										<textarea
-											id="setup-{key}"
-											class="w-full rounded-lg bg-base-content/5 border border-base-content/10 px-3 py-2 text-sm focus:outline-none focus:border-primary/50 transition-colors resize-none"
-											rows="2"
-											bind:value={values[key]}
-										></textarea>
-									{:else}
-										<input
-											id="setup-{key}"
-											type="text"
-											class="w-full h-10 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-sm focus:outline-none focus:border-primary/50 transition-colors"
-											bind:value={values[key]}
-										/>
-									{/if}
+									<input
+										id="setup-{key}"
+										type="text"
+										class="input input-bordered w-full text-sm"
+										value={inputValues[key] != null ? String(inputValues[key]) : ''}
+										oninput={(e) => inputValues = { ...inputValues, [key]: (e.target as HTMLInputElement).value }}
+									/>
 								</div>
 							{/each}
 						</div>
 					</div>
+				{:else}
+					<p class="text-sm text-base-content/70 text-center mb-6">
+						No configuration needed — {roleName} is ready to go!
+					</p>
 				{/if}
 
-				<!-- Actions -->
 				<div class="flex gap-3">
 					<button
 						type="button"
@@ -165,7 +317,7 @@
 						class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
 						onclick={handleInstall}
 					>
-						Start working
+						{hasInputFields || Object.keys(inputs).length > 0 ? 'Next' : 'Install & Start'}
 					</button>
 				</div>
 			</div>

@@ -209,6 +209,122 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                     };
                                     state.hub.broadcast("session_reset", reply["data"].clone());
                                 }
+                                "session_compact" => {
+                                    let session_id = parsed["data"]["session_id"]
+                                        .as_str()
+                                        .unwrap_or("default")
+                                        .to_string();
+
+                                    let state_clone = state.clone();
+                                    let sid = session_id.clone();
+                                    tokio::spawn(async move {
+                                        // 1. Get current messages
+                                        let messages = match state_clone.runner.sessions().get_messages(&sid) {
+                                            Ok(msgs) => msgs,
+                                            Err(_) => {
+                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                    "session_id": sid, "success": false, "error": "failed to load messages"
+                                                }));
+                                                return;
+                                            }
+                                        };
+
+                                        if messages.len() < 4 {
+                                            state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                "session_id": sid, "success": false, "error": "conversation too short to compact"
+                                            }));
+                                            return;
+                                        }
+
+                                        // 2. Build summary prompt from messages
+                                        let mut transcript = String::new();
+                                        for msg in &messages {
+                                            let role = match msg.role.as_str() {
+                                                "user" => "User",
+                                                "assistant" => "Assistant",
+                                                _ => continue,
+                                            };
+                                            if !msg.content.is_empty() {
+                                                transcript.push_str(&format!("{}: {}\n\n", role, msg.content));
+                                            }
+                                        }
+
+                                        // 3. Call LLM to summarize
+                                        let providers = state_clone.runner.providers();
+                                        let providers = providers.read().await;
+                                        let provider = match providers.first() {
+                                            Some(p) => p.clone(),
+                                            None => {
+                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                    "session_id": sid, "success": false, "error": "no AI provider available"
+                                                }));
+                                                return;
+                                            }
+                                        };
+                                        drop(providers);
+
+                                        let summary_prompt = format!(
+                                            "Summarize this conversation concisely. Capture all key decisions, facts, requests, and context. \
+                                             This summary will replace the full conversation so nothing important should be lost.\n\n---\n\n{}",
+                                            transcript
+                                        );
+
+                                        let req = ai::ChatRequest {
+                                            messages: vec![ai::Message {
+                                                role: "user".into(),
+                                                content: summary_prompt,
+                                                ..Default::default()
+                                            }],
+                                            tools: vec![],
+                                            max_tokens: 2000,
+                                            temperature: 0.0,
+                                            system: "You are a conversation summarizer. Produce a concise summary that preserves all important context.".into(),
+                                            static_system: String::new(),
+                                            model: String::new(),
+                                            enable_thinking: false,
+                                            metadata: None,
+                                        };
+
+                                        let mut rx = match provider.stream(&req).await {
+                                            Ok(rx) => rx,
+                                            Err(e) => {
+                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                    "session_id": sid, "success": false, "error": format!("LLM error: {}", e)
+                                                }));
+                                                return;
+                                            }
+                                        };
+
+                                        let mut summary = String::new();
+                                        while let Some(event) = rx.recv().await {
+                                            if event.event_type == ai::StreamEventType::Text {
+                                                summary.push_str(&event.text);
+                                            }
+                                        }
+
+                                        if summary.is_empty() {
+                                            state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                "session_id": sid, "success": false, "error": "empty summary generated"
+                                            }));
+                                            return;
+                                        }
+
+                                        // 4. Reset session and insert summary as first message
+                                        let _ = state_clone.runner.sessions().reset(&sid);
+                                        let chat_id = state_clone.runner.sessions().resolve_session_key(&sid)
+                                            .unwrap_or_else(|_| sid.clone());
+                                        let msg_id = uuid::Uuid::new_v4().to_string();
+                                        let _ = state_clone.store.create_chat_message(
+                                            &msg_id, &chat_id, "assistant",
+                                            &format!("**Conversation Summary**\n\n{}", summary),
+                                            None,
+                                        );
+
+                                        state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                            "session_id": sid, "success": true, "summary_length": summary.len()
+                                        }));
+                                    });
+                                }
                                 "check_stream" => {
                                     let session_id = parsed["data"]["session_id"]
                                         .as_str()

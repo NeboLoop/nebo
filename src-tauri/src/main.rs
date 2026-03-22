@@ -23,6 +23,20 @@ static WINDOW_READY: AtomicBool = AtomicBool::new(false);
 /// Dedup external URL opens — on_navigation and on_new_window can both fire for the same URL.
 static LAST_OPENED_URL: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 
+/// Domains that Stripe's PaymentElement, Link, hCaptcha, and 3D-Secure need to load inside the webview.
+fn is_stripe_domain(host: &str) -> bool {
+    host.ends_with(".stripe.com")
+        || host == "stripe.com"
+        || host.ends_with(".stripecdn.com")
+        || host == "stripecdn.com"
+        || host.ends_with(".stripe.network")
+        || host == "stripe.network"
+        || host.ends_with(".hcaptcha.com")
+        || host == "hcaptcha.com"
+        || host.ends_with(".link.co")
+        || host == "link.co"
+}
+
 // ── Window state: always stored as logical pixels ──────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -167,15 +181,18 @@ fn main() {
             .min_inner_size(800.0, 600.0)
             .visible(false)
             .on_navigation(|url| {
-                if url.host_str() == Some("localhost")
-                    || url.host_str() == Some("127.0.0.1")
-                {
+                let host = url.host_str().unwrap_or("");
+                if host == "localhost" || host == "127.0.0.1" || is_stripe_domain(host) {
                     return true;
                 }
                 open_external(url.as_str());
                 false
             })
             .on_new_window(|url, _features| {
+                let host = url.host_str().unwrap_or("");
+                if is_stripe_domain(host) {
+                    return NewWindowResponse::Allow;
+                }
                 open_external(url.as_str());
                 NewWindowResponse::Deny
             })

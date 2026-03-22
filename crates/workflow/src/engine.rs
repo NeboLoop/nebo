@@ -21,6 +21,14 @@ const MAX_ITERATIONS: u32 = 20;
 /// `cancel_token` — checked before each activity; if cancelled, returns `WorkflowError::Cancelled`.
 /// `skill_content` — maps skill qualified name → SKILL.md body text, injected into activity prompts.
 /// `event_bus` — if provided, an `emit` tool is injected into every activity's tool set.
+/// Progress event emitted during workflow execution.
+#[derive(Debug, Clone)]
+pub struct WorkflowProgress {
+    pub activity_id: String,
+    pub activity_index: usize,
+    pub total_activities: usize,
+}
+
 pub async fn execute_workflow(
     def: &WorkflowDef,
     inputs: serde_json::Value,
@@ -34,6 +42,7 @@ pub async fn execute_workflow(
     skill_content: Option<&HashMap<String, String>>,
     event_bus: Option<&tools::EventBus>,
     emit_source: Option<String>,
+    progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
 ) -> Result<(String, String), WorkflowError> {
     let run_id = match existing_run_id {
         Some(id) => id.to_string(),
@@ -85,6 +94,15 @@ pub async fn execute_workflow(
             activity = activity.id.as_str(),
             "executing activity"
         );
+
+        // Send progress event
+        if let Some(ref tx) = progress_tx {
+            let _ = tx.send(WorkflowProgress {
+                activity_id: activity.id.clone(),
+                activity_index: idx,
+                total_activities: activity_count,
+            });
+        }
 
         // Update current activity
         if let Err(e) = store.update_workflow_run(

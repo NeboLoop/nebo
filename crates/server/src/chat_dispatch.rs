@@ -137,6 +137,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
             } else {
                 (None, None, None, None)
             };
+        let allowed_paths = entity_cfg.as_ref().map(|ec| ec.allowed_paths.clone()).unwrap_or_default();
 
         let req = RunRequest {
             session_key: sid.clone(),
@@ -152,6 +153,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
             model_preference,
             personality_snippet,
             images,
+            allowed_paths,
             ..Default::default()
         };
 

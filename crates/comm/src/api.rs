@@ -358,6 +358,43 @@ impl NeboLoopApi {
         self.do_void(reqwest::Method::DELETE, &format!("/api/v1/roles/{}/install/{}", id, self.bot_id), None::<&()>).await
     }
 
+    // ── Publishing ────────────────────────────────────────────────
+
+    /// Create or update a skill artifact on NeboLoop.
+    pub async fn publish_skill(&self, name: &str, description: &str, manifest_content: &str, version: &str, visibility: &str) -> Result<serde_json::Value, CommError> {
+        let body = serde_json::json!({
+            "name": name,
+            "description": description,
+            "type": "skill",
+            "manifestContent": manifest_content,
+            "version": version,
+            "visibility": visibility,
+        });
+        self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body)).await
+    }
+
+    /// Create or update a role artifact on NeboLoop.
+    pub async fn publish_role(&self, name: &str, description: &str, manifest_content: &str, version: &str, visibility: &str, role_json: Option<&str>) -> Result<serde_json::Value, CommError> {
+        let mut body = serde_json::json!({
+            "name": name,
+            "description": description,
+            "type": "role",
+            "manifestContent": manifest_content,
+            "version": version,
+            "visibility": visibility,
+        });
+        if let Some(rj) = role_json {
+            body["typeConfig"] = serde_json::from_str(rj).unwrap_or(serde_json::json!({}));
+        }
+        self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body)).await
+    }
+
+    /// Submit an artifact for marketplace review.
+    pub async fn submit_for_review(&self, artifact_id: &str, version: &str) -> Result<serde_json::Value, CommError> {
+        let body = serde_json::json!({ "version": version });
+        self.do_json(reqwest::Method::POST, &format!("/api/v1/skills/{}/submit", artifact_id), Some(&body)).await
+    }
+
     // ── Bot Identity ────────────────────────────────────────────────
 
     /// Push bot name and role to NeboLoop.
@@ -497,8 +534,13 @@ impl NeboLoopApi {
     }
 
     /// Create a Stripe checkout session with multiple prices (plan + boost).
-    pub async fn billing_checkout_multi(&self, price_ids: &[String]) -> Result<serde_json::Value, CommError> {
-        self.do_json(reqwest::Method::POST, "/api/v1/billing/checkout", Some(&serde_json::json!({"priceIds": price_ids}))).await
+    /// Pass `ui_mode` = "embedded" to get a clientSecret for embedded checkout instead of a redirect URL.
+    pub async fn billing_checkout_multi(&self, price_ids: &[String], ui_mode: Option<&str>) -> Result<serde_json::Value, CommError> {
+        let mut body = serde_json::json!({"priceIds": price_ids});
+        if let Some(mode) = ui_mode {
+            body["uiMode"] = serde_json::json!(mode);
+        }
+        self.do_json(reqwest::Method::POST, "/api/v1/billing/checkout", Some(&body)).await
     }
 
     /// Create an inline subscription (returns clientSecret for PaymentElement).

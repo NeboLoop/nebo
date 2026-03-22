@@ -376,10 +376,10 @@ impl Store {
         conn.query_row(
             "SELECT
                 COUNT(*) AS total_runs,
-                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
-                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled,
-                SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) AS completed,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+                COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled,
+                COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running,
                 COALESCE(SUM(total_tokens_used), 0) AS total_tokens,
                 AVG(CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
                     THEN completed_at - started_at ELSE NULL END) AS avg_duration,

@@ -543,6 +543,8 @@ pub struct CheckoutRequest {
     pub price_id: String,
     #[serde(default)]
     pub price_ids: Vec<String>,
+    #[serde(default)]
+    pub ui_mode: Option<String>,
 }
 
 /// POST /api/v1/neboloop/billing/checkout — create Stripe checkout session.
@@ -552,16 +554,24 @@ pub async fn billing_checkout(
 ) -> HandlerResult<serde_json::Value> {
     let api = build_api_client(&state).map_err(to_error_response)?;
     // Support single priceId or array of priceIds
-    let price_ids = if !body.price_ids.is_empty() {
-        body.price_ids.clone()
-    } else {
+    let price_ids: Vec<String> = if !body.price_ids.is_empty() {
+        body.price_ids.iter().filter(|s| !s.is_empty()).cloned().collect()
+    } else if !body.price_id.is_empty() {
         vec![body.price_id.clone()]
+    } else {
+        vec![]
     };
-    let resp = api.billing_checkout_multi(&price_ids).await
+    if price_ids.is_empty() {
+        return Err(to_error_response(NeboError::Validation("priceId or priceIds is required".into())));
+    }
+    let ui_mode = body.ui_mode.as_deref();
+    let resp = api.billing_checkout_multi(&price_ids, ui_mode).await
         .map_err(|e| to_error_response(NeboError::Internal(format!("billing_checkout: {e}"))))?;
-    // Open checkout URL in system browser (Stripe CSP blocks iframe embedding)
-    if let Some(url) = resp.get("checkoutUrl").and_then(|v| v.as_str()) {
-        let _ = open::that(url);
+    // For redirect-based checkout, open in system browser; embedded mode returns clientSecret instead
+    if ui_mode.is_none() || ui_mode == Some("hosted") {
+        if let Some(url) = resp.get("checkoutUrl").and_then(|v| v.as_str()) {
+            let _ = open::that(url);
+        }
     }
     Ok(Json(resp))
 }

@@ -417,6 +417,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     skill_content.as_ref(),
                     event_bus.as_ref(),
                     None,
+                    None,
                 ).await {
                     Ok((_engine_run_id, _output)) => {
                         // Engine already called complete_workflow_run with output
@@ -569,6 +570,21 @@ impl WorkflowManager for WorkflowManagerImpl {
             let def = workflow::parser::parse_workflow(&definition_json)
                 .map_err(|e| format!("parse inline workflow: {}", e))?;
 
+            // Merge role-level input_values into workflow inputs
+            let inputs = {
+                let mut merged = inputs;
+                if let Ok(Some(role)) = self.store.get_role(role_id) {
+                    if let Ok(role_inputs) = serde_json::from_str::<serde_json::Value>(&role.input_values) {
+                        if let (Some(m), Some(r)) = (merged.as_object_mut(), role_inputs.as_object()) {
+                            for (k, v) in r {
+                                m.entry(k.clone()).or_insert_with(|| v.clone());
+                            }
+                        }
+                    }
+                }
+                merged
+            };
+
             // Create run record using role_id for tracking
             let run_id = uuid::Uuid::new_v4().to_string();
             let session_key = format!("role-{}-{}", role_id, run_id);
@@ -631,9 +647,12 @@ impl WorkflowManager for WorkflowManagerImpl {
                             serde_json::json!({
                                 "roleId": role_id_owned,
                                 "runId": run_id_clone,
+                                "bindingName": binding_name,
                                 "error": "no AI provider available",
                             }),
                         );
+                        let now = chrono::Utc::now().to_rfc3339();
+                        let _ = store.update_role_workflow_last_fired(&role_id_owned, &binding_name, &now);
                         return;
                     }
                 };
@@ -641,7 +660,6 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let tool_defs = tools_registry.list().await;
                 let resolved_tools: Vec<Box<dyn tools::registry::DynTool>> = tool_defs
                     .iter()
-                    .filter(|td| !td.name.starts_with("mcp__"))
                     .map(|td| {
                         Box::new(RegistryTool {
                             tool_name: td.name.clone(),
@@ -666,6 +684,20 @@ impl WorkflowManager for WorkflowManagerImpl {
                     &format!("**Automation started** — {} ({})", binding_name, trigger),
                 );
 
+                // Record last_fired timestamp
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = store.update_role_workflow_last_fired(&role_id_owned, &binding_name, &now);
+
+                hub.broadcast(
+                    "workflow_run_started",
+                    serde_json::json!({
+                        "roleId": role_id_owned,
+                        "runId": run_id_clone,
+                        "bindingName": binding_name,
+                        "triggerType": trigger,
+                    }),
+                );
+
                 let skill_content = if let Some(ref loader) = skill_loader {
                     let mut map = HashMap::new();
                     for activity in &def.activities {
@@ -684,11 +716,35 @@ impl WorkflowManager for WorkflowManagerImpl {
                     None
                 };
 
+                // Create progress channel for live activity updates
+                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<workflow::WorkflowProgress>();
+                {
+                    let hub = hub.clone();
+                    let role_id = role_id_owned.clone();
+                    let run_id = run_id_clone.clone();
+                    let binding = binding_name.clone();
+                    tokio::spawn(async move {
+                        while let Some(progress) = progress_rx.recv().await {
+                            hub.broadcast(
+                                "workflow_activity_update",
+                                serde_json::json!({
+                                    "roleId": role_id,
+                                    "runId": run_id,
+                                    "bindingName": binding,
+                                    "activityId": progress.activity_id,
+                                    "step": progress.activity_index + 1,
+                                    "totalSteps": progress.total_activities,
+                                }),
+                            );
+                        }
+                    });
+                }
+
                 match workflow::engine::execute_workflow(
                     &def, inputs, &trigger, None, &store, &*provider,
                     &resolved_tools, Some(&run_id_clone), Some(&cancel_token),
                     skill_content.as_ref(), event_bus.as_ref(),
-                    emit_source,
+                    emit_source, Some(progress_tx),
                 ).await {
                     Ok((_engine_run_id, output)) => {
                         // Engine already called complete_workflow_run with output
@@ -712,6 +768,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             serde_json::json!({
                                 "roleId": role_id_owned,
                                 "runId": run_id_clone,
+                                "bindingName": binding_name,
                             }),
                         );
                         info!(role = %role_id_owned, run_id = %run_id_clone, "inline workflow completed");
@@ -733,6 +790,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             serde_json::json!({
                                 "roleId": role_id_owned,
                                 "runId": run_id_clone,
+                                "bindingName": binding_name,
                                 "error": err_msg,
                             }),
                         );
@@ -822,9 +880,11 @@ fn post_automation_message(
     let msg_id = uuid::Uuid::new_v4().to_string();
     match store.create_chat_message_for_runner(&msg_id, session_key, "assistant", content, None, None, None, None) {
         Ok(_msg) => {
-            hub.broadcast("chat_message", serde_json::json!({
-                "session_id": session_key,
-                "message": { "role": "assistant", "content": content }
+            // Broadcast as chat_complete so the chat UI picks it up in real time
+            hub.broadcast("chat_complete", serde_json::json!({
+                "chatId": session_key,
+                "content": content,
+                "role": "assistant",
             }));
         }
         Err(e) => {

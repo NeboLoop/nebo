@@ -5,7 +5,7 @@ pub mod engine;
 pub mod triggers;
 
 pub use parser::{WorkflowDef, Activity};
-pub use engine::{execute_workflow, execute_activity};
+pub use engine::{execute_workflow, execute_activity, WorkflowProgress};
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkflowError {

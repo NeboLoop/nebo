@@ -6,12 +6,14 @@
 	import type { GetLoopsResponse, LoopChannelEntry, LoopEntry } from '$lib/api/neboComponents';
 	import NewBotMenu from '$lib/components/agent/NewBotMenu.svelte';
 	import AlertDialog from '$lib/components/ui/AlertDialog.svelte';
+	import RoleSetupModal from '$lib/components/role/RoleSetupModal.svelte';
 
 	interface SidebarRole {
 		roleId: string;
 		name: string;
 		description?: string;
 		isActive: boolean;
+		nextFireAt?: number;
 	}
 
 	let {
@@ -37,6 +39,12 @@
 	let showNewBotMenu = $state(false);
 	let menuPos = $state({ top: 0, left: 0 });
 
+	// Setup wizard state
+	let showSetupWizard = $state(false);
+	let setupRoleId = $state('');
+	let setupRoleName = $state('');
+	let setupRoleDescription = $state('');
+
 	// Context menu state
 	let contextMenu = $state<{ visible: boolean; x: number; y: number; role: SidebarRole | null }>({
 		visible: false, x: 0, y: 0, role: null,
@@ -50,6 +58,34 @@
 	const isMyChatActive = $derived(activeView === 'companion');
 
 	const activeCount = $derived(sidebarRoles.filter(r => r.isActive).length);
+
+	// Live countdown ticker
+	let nowMs = $state(Date.now());
+	let runningRoles = $state<Record<string, string>>({}); // roleId → status text
+
+	function formatCountdown(nextFireAt: number): string {
+		const remaining = Math.max(0, nextFireAt * 1000 - nowMs);
+		if (remaining <= 0) return '';
+		const totalSecs = Math.floor(remaining / 1000);
+		const hrs = Math.floor(totalSecs / 3600);
+		const mins = Math.floor((totalSecs % 3600) / 60);
+		const secs = totalSecs % 60;
+		if (hrs > 0) return `⏱ ${hrs}h ${mins}m`;
+		if (mins > 0) return `⏱ ${mins}m ${secs}s`;
+		return `⏱ ${secs}s`;
+	}
+
+	function roleSubtitle(role: SidebarRole): string {
+		if (!role.isActive) return 'Paused';
+		const running = runningRoles[role.roleId];
+		if (running) return running; // "running" or "Step 2 of 3"
+		if (role.nextFireAt) {
+			const cd = formatCountdown(role.nextFireAt);
+			if (cd) return cd;
+			// Countdown expired but no running state — show description while we wait for refresh
+		}
+		return role.description || '';
+	}
 
 	const BOT_COLORS = [
 		{ bg: 'bg-blue-500/10', text: 'text-blue-500' },
@@ -108,17 +144,20 @@
 				getActiveRoles().catch(() => null),
 			]);
 
-			const activeIds = new Set((activeRes?.roles ?? []).map(r => r.roleId));
+			const activeRoles = activeRes?.roles ?? [];
+			const activeMap = new Map(activeRoles.map(r => [r.roleId, r]));
 			const roles: SidebarRole[] = [];
 
 			// DB roles
 			if (allRes?.roles) {
 				for (const r of allRes.roles) {
+					const active = activeMap.get(r.id);
 					roles.push({
 						roleId: r.id,
 						name: r.name,
 						description: r.description || undefined,
-						isActive: activeIds.has(r.id),
+						isActive: !!active,
+						nextFireAt: (active as any)?.nextFireAt ?? undefined,
 					});
 				}
 			}
@@ -126,13 +165,14 @@
 			// Filesystem-only roles — only show if they have an active UUID
 			if (allRes?.filesystemRoles) {
 				for (const r of allRes.filesystemRoles) {
-					const matchedActive = (activeRes?.roles ?? []).find(a => a.name === r.name);
+					const matchedActive = activeRoles.find(a => a.name === r.name);
 					if (matchedActive && !roles.some(existing => existing.name === r.name)) {
 						roles.push({
 							roleId: matchedActive.roleId,
 							name: r.name,
 							description: r.description || undefined,
 							isActive: true,
+							nextFireAt: (matchedActive as any)?.nextFireAt ?? undefined,
 						});
 					}
 				}
@@ -334,11 +374,67 @@
 		const unsubRoleUpdated = wsClient.on('role_updated', () => {
 			loadRoles();
 		});
+		const unsubRoleSetup = wsClient.on('role_setup', (data: { roleId: string; roleName: string; roleDescription: string }) => {
+			setupRoleId = data.roleId;
+			setupRoleName = data.roleName;
+			setupRoleDescription = data.roleDescription || '';
+			showSetupWizard = true;
+		});
+		const unsubRunStarted = wsClient.on('workflow_run_started', (data: { roleId: string }) => {
+			if (data.roleId) {
+				runningRoles = { ...runningRoles, [data.roleId]: 'running' };
+			}
+		});
+		const unsubActivityUpdate = wsClient.on('workflow_activity_update', (data: { roleId: string; step: number; totalSteps: number }) => {
+			if (data.roleId) {
+				runningRoles = { ...runningRoles, [data.roleId]: `Step ${data.step} of ${data.totalSteps}` };
+			}
+		});
+		const unsubRunCompleted = wsClient.on('workflow_run_completed', (data: { roleId: string }) => {
+			if (data.roleId) {
+				const { [data.roleId]: _, ...rest } = runningRoles;
+				runningRoles = rest;
+			}
+			loadRoles();
+		});
+		const unsubRunFailed = wsClient.on('workflow_run_failed', (data: { roleId: string }) => {
+			if (data.roleId) {
+				const { [data.roleId]: _, ...rest } = runningRoles;
+				runningRoles = rest;
+			}
+			loadRoles();
+		});
 
 		const refreshInterval = setInterval(() => {
 			loadLoops();
 			loadRoles();
 		}, 60000);
+
+		// 1-second ticker for countdown display + wake detection
+		let lastTick = Date.now();
+		const tickInterval = setInterval(() => {
+			const now = Date.now();
+			const gap = now - lastTick;
+			lastTick = now;
+			nowMs = now;
+
+			// If gap > 5s, computer likely woke from sleep — refresh everything
+			if (gap > 5000) {
+				runningRoles = {}; // clear stale running states
+				loadRoles();
+				loadLoops();
+			}
+		}, 1000);
+
+		// Also refresh on visibility change (tab/window refocus)
+		function handleVisibility() {
+			if (document.visibilityState === 'visible') {
+				nowMs = Date.now();
+				runningRoles = {};
+				loadRoles();
+			}
+		}
+		document.addEventListener('visibilitychange', handleVisibility);
 
 		return () => {
 			unsubStatus();
@@ -349,7 +445,14 @@
 			unsubRoleInstalled();
 			unsubRoleUninstalled();
 			unsubRoleUpdated();
+			unsubRoleSetup();
+			unsubRunStarted();
+			unsubActivityUpdate();
+			unsubRunCompleted();
+			unsubRunFailed();
 			clearInterval(refreshInterval);
+			clearInterval(tickInterval);
+			document.removeEventListener('visibilitychange', handleVisibility);
 		};
 	});
 </script>
@@ -432,8 +535,14 @@
 							/>
 						{:else}
 							<span class="sidebar-bot-name">{role.name}</span>
-							{#if role.description}
-								<span class="sidebar-bot-role">{role.description}</span>
+							{@const subtitle = roleSubtitle(role)}
+							{#if subtitle === 'running' || subtitle?.startsWith('Step ')}
+								<span class="sidebar-bot-role flex items-center gap-1">
+									<span class="loading loading-spinner loading-xs"></span>
+									{subtitle === 'running' ? 'Running...' : subtitle}
+								</span>
+							{:else if subtitle}
+								<span class="sidebar-bot-role">{subtitle}</span>
 							{/if}
 						{/if}
 					</div>
@@ -534,3 +643,18 @@
 	actionType="danger"
 	onAction={confirmDelete}
 />
+
+{#if showSetupWizard}
+	<RoleSetupModal
+		appId={setupRoleId}
+		roleName={setupRoleName}
+		roleDescription={setupRoleDescription}
+		inputs={{}}
+		onComplete={(roleId) => {
+			showSetupWizard = false;
+			loadRoles();
+			onSelectRole(roleId, setupRoleName);
+		}}
+		onCancel={() => { showSetupWizard = false; }}
+	/>
+{/if}

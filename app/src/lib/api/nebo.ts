@@ -199,6 +199,55 @@ export function deleteRoleWorkflow(roleId: string, bindingName: string) {
 }
 
 /**
+ * @description "Update user-supplied input values for a role"
+ */
+export function updateRoleInputs(roleId: string, values: Record<string, unknown>) {
+	return webapi.put<{ ok: boolean }>(`/api/v1/roles/${roleId}/inputs`, values)
+}
+
+/**
+ * @description "Trigger role setup wizard"
+ */
+export function triggerRoleSetup(roleId: string) {
+	return webapi.post<{ ok: boolean }>(`/api/v1/roles/${roleId}/setup`, {})
+}
+
+/**
+ * @description "Reload role from filesystem (ROLE.md + role.json)"
+ */
+export function reloadRole(roleId: string) {
+	return webapi.post<{ ok: boolean; reloaded?: string[]; role?: components.RoleDetailResponse['role'] }>(`/api/v1/roles/${roleId}/reload`, {})
+}
+
+/**
+ * @description "Check if a marketplace role has an update available"
+ */
+export function checkRoleUpdate(roleId: string) {
+	return webapi.post<{ hasUpdate: boolean; localVersion?: string; remoteVersion?: string; error?: string }>(`/api/v1/roles/${roleId}/check-update`, {})
+}
+
+/**
+ * @description "Apply marketplace update to a role"
+ */
+export function applyRoleUpdate(roleId: string) {
+	return webapi.post<{ ok: boolean; role?: components.RoleDetailResponse['role'] }>(`/api/v1/roles/${roleId}/apply-update`, {})
+}
+
+/**
+ * @description "Get workflow run stats for a role"
+ */
+export function getRoleStats(roleId: string) {
+	return webapi.get<components.RoleStatsResponse>(`/api/v1/roles/${roleId}/stats`)
+}
+
+/**
+ * @description "List workflow runs for a role"
+ */
+export function listRoleRuns(roleId: string, limit = 20, offset = 0) {
+	return webapi.get<components.ListRoleRunsResponse>(`/api/v1/roles/${roleId}/runs?limit=${limit}&offset=${offset}`)
+}
+
+/**
  * @description "List personality presets"
  */
 export function listPersonalityPresets() {
@@ -238,8 +287,10 @@ export function deleteAgentSession(id: string) {
 /**
  * @description "Get agent session messages"
  */
-export function getAgentSessionMessages(id: string) {
-	return webapi.get<components.GetAgentSessionMessagesResponse>(`/api/v1/agent/sessions/${id}/messages`)
+export function getAgentSessionMessages(id: string, limit = 50, before?: string) {
+	const params = new URLSearchParams({ limit: String(limit) });
+	if (before) params.set('before', before);
+	return webapi.get<components.GetAgentSessionMessagesResponse>(`/api/v1/agent/sessions/${id}/messages?${params}`)
 }
 
 /**
@@ -598,6 +649,13 @@ export function pickFiles() {
 }
 
 /**
+ * @description "Pick a folder via native dialog"
+ */
+export function pickFolder() {
+	return webapi.post<{ path: string | null }>(`/api/v1/files/pick-folder`, {})
+}
+
+/**
  * @description "List m c p integrations"
  */
 export function listMCPIntegrations() {
@@ -872,10 +930,10 @@ export function neboLoopBillingSubscription() {
 }
 
 /**
- * @description "Create Stripe checkout session"
+ * @description "Create Stripe checkout session (hosted or embedded)"
  */
-export function neboLoopBillingCheckout(priceId: string) {
-	return webapi.post<components.BillingCheckoutResponse>(`/api/v1/neboloop/billing/checkout`, { priceId })
+export function neboLoopBillingCheckout(priceIds: string[], uiMode?: 'hosted' | 'embedded') {
+	return webapi.post<components.BillingCheckoutResponse>(`/api/v1/neboloop/billing/checkout`, { priceIds, uiMode })
 }
 
 /**
@@ -1491,6 +1549,7 @@ export interface ResolvedEntityConfig {
 	modelPreference: string | null;
 	personalitySnippet: string | null;
 	overrides: Record<string, boolean>;
+	allowedPaths: string[];
 }
 
 export function getEntityConfig(entityType: string, entityId: string) {

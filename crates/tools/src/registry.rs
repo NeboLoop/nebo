@@ -267,6 +267,12 @@ impl Registry {
                 return ToolResult::error(err);
             }
 
+            // Path scope guard — restrict file/shell to allowed directories
+            if let Some(err) = safeguard::check_path_scope(name, &input, &ctx.allowed_paths) {
+                warn!(tool = %name, error = %err, "path scope blocked");
+                return ToolResult::error(err);
+            }
+
             // Check origin-based deny list
             let resource = input
                 .get("resource")
@@ -483,7 +489,8 @@ impl Registry {
             let role_reg = active_role.unwrap_or_else(|| {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
             });
-            self.register(Box::new(crate::role_tool::RoleTool::new(store, role_reg))).await;
+            self.register(Box::new(crate::role_tool::RoleTool::new(store.clone(), role_reg))).await;
+            self.register(Box::new(crate::publisher_tool::PublisherTool::new(store.clone()))).await;
         }
 
         // Loop tool (NeboLoop comms: dm, channel, group, topic) — requires "loop" permission + comm plugin

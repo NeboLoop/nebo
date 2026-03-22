@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { Check, Zap, ArrowRight, ArrowLeft, X as XIcon, CreditCard, ShieldCheck } from 'lucide-svelte';
+	import { onMount, onDestroy } from 'svelte';
+	import { Check, Zap, ArrowRight, ArrowLeft } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type {
 		NeboLoopAccountStatusResponse,
@@ -16,23 +16,17 @@
 	let billingInterval = $state<'month' | 'year'>('month');
 	let boostSelections = $state<Record<string, boolean>>({});
 
-	// Checkout flow: 'plans' | 'summary' | 'payment' | 'success'
-	let step = $state<'plans' | 'summary' | 'payment' | 'success'>('plans');
+	// Checkout flow: 'plans' | 'checkout' | 'success'
+	let step = $state<'plans' | 'checkout' | 'success'>('plans');
 	let checkoutLoading = $state(false);
 	let checkoutError = $state('');
 
-	// Selected plan for checkout
+	// Selected plan
 	let selectedPrice = $state<BillingPriceInfo | null>(null);
 	let selectedBoost = $state<BillingPriceInfo | null>(null);
 
-	// Stripe subscription data (from /billing/subscribe)
-	let invoiceData = $state<any>(null);
-	let stripeInstance = $state<any>(null);
-	let elements = $state<any>(null);
-	let paymentElement = $state<any>(null);
-	let paymentMounted = $state(false);
-	let paymentLoading = $state(false);
-	let paymentError = $state('');
+	// Stripe Embedded Checkout instance
+	let embeddedCheckout = $state<any>(null);
 
 	const currentPlan = $derived((subscription?.plan || status?.plan || 'free').toLowerCase());
 
@@ -44,13 +38,6 @@
 	);
 	const boostPrices = $derived(allPrices.filter((p) => p.category === 'boost'));
 	const popularIndex = $derived(Math.floor(visiblePrices.length / 2));
-
-	// Annual savings helper
-	function monthlySavings(annualCents: number, monthlyNickname: string): number {
-		const monthly = allPrices.find(p => p.nickname === monthlyNickname && p.interval === 'month');
-		if (!monthly) return 0;
-		return (monthly.amountCents * 12) - annualCents;
-	}
 
 	function getBoostPrice(id: string | undefined): BillingPriceInfo | undefined {
 		if (!id) return undefined;
@@ -79,70 +66,76 @@
 		return () => window.removeEventListener('nebo:plan_changed', handler);
 	});
 
+	onDestroy(() => {
+		if (embeddedCheckout) {
+			embeddedCheckout.destroy();
+			embeddedCheckout = null;
+		}
+	});
+
 	function fmt(cents: number, currency = 'usd'): string {
 		return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 0 }).format(cents / 100);
 	}
 
-	// Step 1 → Step 2: Select plan, show summary
-	function selectPlan(price: BillingPriceInfo) {
+	// Select plan → mount Stripe Embedded Checkout
+	async function selectPlan(price: BillingPriceInfo) {
 		selectedPrice = price;
 		selectedBoost = boostSelections[price.id] ? getBoostPrice(price.boostPriceId) || null : null;
-		step = 'summary';
-		checkoutError = '';
-	}
-
-	// Step 2 → Step 3: Create subscription, show payment
-	async function proceedToPayment() {
-		if (!selectedPrice) return;
+		step = 'checkout';
 		checkoutLoading = true;
 		checkoutError = '';
 
 		try {
-			const priceIds = [selectedPrice.stripePriceId];
+			// Load Stripe.js if needed
+			if (!(window as any).Stripe) {
+				await new Promise<void>((resolve, reject) => {
+					const s = document.createElement('script');
+					s.src = 'https://js.stripe.com/v3/';
+					s.onload = () => resolve();
+					s.onerror = () => reject(new Error('Failed to load Stripe'));
+					document.head.appendChild(s);
+				});
+			}
+
+			const priceIds = [price.stripePriceId];
 			if (selectedBoost) priceIds.push(selectedBoost.stripePriceId);
 
-			const resp = await fetch('/api/v1/neboloop/billing/subscribe', {
+			// Create embedded checkout session
+			const resp = await fetch('/api/v1/neboloop/billing/checkout', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				credentials: 'include',
-				body: JSON.stringify({ priceIds })
+				body: JSON.stringify({ priceIds, uiMode: 'embedded' })
 			});
 
 			if (!resp.ok) {
 				const err = await resp.json().catch(() => ({}));
-				throw new Error(err.error || 'Failed to create subscription');
+				throw new Error(err.error || 'Failed to create checkout session');
 			}
 
-			invoiceData = await resp.json();
+			const data = await resp.json();
+			console.log('[upgrade] checkout response:', JSON.stringify(data));
 
-			if (!invoiceData.clientSecret) {
-				throw new Error('Payment setup failed — no client secret returned');
+			if (!data.clientSecret) {
+				throw new Error('The NeboLoop backend needs to support ui_mode: "embedded" on the checkout endpoint. Got: ' + JSON.stringify(Object.keys(data)));
 			}
 
-			// Load Stripe.js
-			if (!(window as any).Stripe) {
-				await new Promise<void>((resolve) => {
-					const s = document.createElement('script');
-					s.src = 'https://js.stripe.com/v3/';
-					s.onload = () => resolve();
-					document.head.appendChild(s);
-				});
-			}
-			stripeInstance = (window as any).Stripe(invoiceData.publishableKey);
-			elements = stripeInstance.elements({
-				clientSecret: invoiceData.clientSecret,
-				appearance: { theme: 'flat' }
+			const stripe = (window as any).Stripe(data.publishableKey);
+
+			// Mount embedded checkout — Stripe handles Link, address, tax, payment
+			embeddedCheckout = await stripe.initEmbeddedCheckout({
+				clientSecret: data.clientSecret,
+				onComplete: () => {
+					step = 'success';
+					setTimeout(() => { window.location.href = '/settings/billing?success=true'; }, 2500);
+				}
 			});
 
-			step = 'payment';
-
-			// Mount after DOM update
+			// Wait for DOM update then mount
 			await new Promise(r => setTimeout(r, 50));
-			const container = document.getElementById('payment-element');
+			const container = document.getElementById('stripe-checkout');
 			if (container) {
-				paymentElement = elements.create('payment');
-				paymentElement.mount(container);
-				paymentMounted = true;
+				embeddedCheckout.mount(container);
 			}
 		} catch (e: any) {
 			checkoutError = e?.message || 'Something went wrong.';
@@ -151,31 +144,15 @@
 		}
 	}
 
-	// Step 3 → Step 4: Confirm payment
-	async function confirmPayment() {
-		if (!stripeInstance || !elements) return;
-		paymentLoading = true;
-		paymentError = '';
-
-		const { error } = await stripeInstance.confirmPayment({
-			elements,
-			confirmParams: { return_url: window.location.origin + '/settings/billing?success=true' },
-			redirect: 'if_required'
-		});
-
-		if (error) {
-			paymentError = error.message || 'Payment failed.';
-			paymentLoading = false;
-		} else {
-			step = 'success';
-			paymentLoading = false;
-			setTimeout(() => { window.location.href = '/settings/billing?success=true'; }, 2500);
-		}
-	}
-
 	function goBack() {
-		if (step === 'summary') { step = 'plans'; selectedPrice = null; selectedBoost = null; }
-		else if (step === 'payment') { step = 'summary'; if (paymentElement) { paymentElement.unmount(); paymentElement = null; } paymentMounted = false; }
+		if (embeddedCheckout) {
+			embeddedCheckout.destroy();
+			embeddedCheckout = null;
+		}
+		step = 'plans';
+		selectedPrice = null;
+		selectedBoost = null;
+		checkoutError = '';
 	}
 
 	const includedFeatures = ['Runs on your machine', 'Your data stays local', 'Skills & roles marketplace', 'Desktop automation', 'MCP integrations', 'Memory system'];
@@ -297,69 +274,13 @@
 	</div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- STEP 2: ORDER SUMMARY -->
+<!-- STEP 2: STRIPE EMBEDDED CHECKOUT -->
 <!-- ═══════════════════════════════════════════════════════════ -->
-{:else if step === 'summary' && selectedPrice}
-	<div class="max-w-lg mx-auto space-y-6">
+{:else if step === 'checkout'}
+	<div class="max-w-2xl mx-auto space-y-4">
 		<button onclick={goBack} class="flex items-center gap-2 text-sm text-base-content/50 hover:text-base-content transition-colors">
 			<ArrowLeft class="w-4 h-4" /> Back to plans
 		</button>
-
-		<h1 class="font-display text-2xl font-bold text-base-content">Your order</h1>
-
-		<div class="rounded-2xl border border-base-content/10 overflow-hidden">
-			<!-- Line items -->
-			<div class="p-5 space-y-4">
-				<div class="flex items-center justify-between">
-					<div>
-						<p class="font-semibold text-base-content">{selectedPrice.displayName}</p>
-						<p class="text-sm text-base-content/50">Billed {selectedPrice.interval === 'year' ? 'annually' : 'monthly'}</p>
-					</div>
-					<p class="font-semibold text-base-content">
-						{#if selectedPrice.interval === 'year'}
-							{fmt(selectedPrice.amountCents, selectedPrice.currency)}/yr
-						{:else}
-							{fmt(selectedPrice.amountCents, selectedPrice.currency)}/mo
-						{/if}
-					</p>
-				</div>
-
-				{#if selectedBoost}
-					<div class="flex items-center justify-between">
-						<div class="flex items-center gap-2">
-							<Zap class="w-4 h-4 text-amber-500" />
-							<div>
-								<p class="font-semibold text-base-content">Advanced Compute</p>
-								<p class="text-xs text-base-content/50">3x frontier model access</p>
-							</div>
-						</div>
-						<p class="font-semibold text-base-content">
-							{#if selectedBoost.interval === 'year'}
-								+{fmt(selectedBoost.amountCents, selectedBoost.currency)}/yr
-							{:else}
-								+{fmt(selectedBoost.amountCents, selectedBoost.currency)}/mo
-							{/if}
-						</p>
-					</div>
-				{/if}
-			</div>
-
-			<!-- Totals -->
-			<div class="border-t border-base-content/10 p-5 bg-base-200/30 space-y-2">
-				<div class="flex justify-between text-sm text-base-content/60">
-					<span>Subtotal</span>
-					<span>{fmt((selectedPrice?.amountCents || 0) + (selectedBoost?.amountCents || 0), selectedPrice.currency)}</span>
-				</div>
-				<div class="flex justify-between text-sm text-base-content/60">
-					<span>Tax</span>
-					<span class="text-base-content/40">Calculated at payment</span>
-				</div>
-				<div class="flex justify-between text-base font-bold text-base-content pt-2 border-t border-base-content/10">
-					<span>Due today</span>
-					<span>{fmt((selectedPrice?.amountCents || 0) + (selectedBoost?.amountCents || 0), selectedPrice.currency)}{selectedPrice.interval === 'year' ? '' : '/mo'}</span>
-				</div>
-			</div>
-		</div>
 
 		{#if checkoutError}
 			<div class="rounded-xl bg-error/10 border border-error/20 p-3">
@@ -367,75 +288,19 @@
 			</div>
 		{/if}
 
-		<button
-			disabled={checkoutLoading}
-			onclick={proceedToPayment}
-			class="w-full h-12 flex items-center justify-center gap-2 rounded-xl text-sm font-bold bg-primary text-primary-content hover:brightness-110 transition-all disabled:opacity-50"
-		>
-			{#if checkoutLoading}
-				<Spinner size={16} /> Setting up payment...
-			{:else}
-				Continue to payment <ArrowRight class="w-4 h-4" />
-			{/if}
-		</button>
-
-		<p class="text-xs text-base-content/30 text-center">Cancel anytime. No commitments.</p>
-	</div>
-
-<!-- ═══════════════════════════════════════════════════════════ -->
-<!-- STEP 3: PAYMENT -->
-<!-- ═══════════════════════════════════════════════════════════ -->
-{:else if step === 'payment' && selectedPrice}
-	<div class="max-w-lg mx-auto space-y-6">
-		<button onclick={goBack} class="flex items-center gap-2 text-sm text-base-content/50 hover:text-base-content transition-colors">
-			<ArrowLeft class="w-4 h-4" /> Back to summary
-		</button>
-
-		<h1 class="font-display text-2xl font-bold text-base-content">Payment details</h1>
-
-		<!-- Compact order recap -->
-		<div class="rounded-xl bg-base-200/30 border border-base-content/5 p-4 flex items-center justify-between">
-			<div>
-				<p class="text-sm font-semibold text-base-content">{selectedPrice.displayName}{selectedBoost ? ' + Advanced Compute' : ''}</p>
-				<p class="text-xs text-base-content/50">Billed monthly</p>
-			</div>
-			<p class="text-lg font-bold text-base-content">
-				{fmt((invoiceData?.total || (selectedPrice.amountCents + (selectedBoost?.amountCents || 0))), selectedPrice.currency)}<span class="text-xs text-base-content/40 font-normal">/mo</span>
-			</p>
-		</div>
-
-		<!-- Stripe PaymentElement -->
-		<div class="rounded-2xl border border-base-content/10 p-5">
-			<div id="payment-element" class="min-h-[180px]"></div>
-		</div>
-
-		{#if paymentError}
-			<div class="rounded-xl bg-error/10 border border-error/20 p-3">
-				<p class="text-sm text-error">{paymentError}</p>
+		{#if checkoutLoading}
+			<div class="flex items-center justify-center gap-3 py-24">
+				<Spinner size={20} />
+				<span class="text-base text-base-content/80">Loading checkout...</span>
 			</div>
 		{/if}
 
-		<button
-			disabled={paymentLoading || !paymentMounted}
-			onclick={confirmPayment}
-			class="w-full h-12 flex items-center justify-center gap-2 rounded-xl text-sm font-bold bg-primary text-primary-content hover:brightness-110 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-		>
-			{#if paymentLoading}
-				<Spinner size={16} /> Processing...
-			{:else}
-				<ShieldCheck class="w-4 h-4" /> Subscribe now
-			{/if}
-		</button>
-
-		<div class="flex items-center justify-center gap-4 text-xs text-base-content/30">
-			<span>Powered by Stripe</span>
-			<span>·</span>
-			<span>Cancel anytime</span>
-		</div>
+		<!-- Stripe mounts its full checkout experience here: email, Link, address, tax, payment -->
+		<div id="stripe-checkout"></div>
 	</div>
 
 <!-- ═══════════════════════════════════════════════════════════ -->
-<!-- STEP 4: SUCCESS -->
+<!-- STEP 3: SUCCESS -->
 <!-- ═══════════════════════════════════════════════════════════ -->
 {:else if step === 'success'}
 	<div class="max-w-lg mx-auto text-center py-16 space-y-4">

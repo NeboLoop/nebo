@@ -20,6 +20,7 @@ pub mod origin;
 pub mod os_tool;
 pub mod policy;
 pub mod process;
+pub mod publisher_tool;
 pub mod registry;
 pub mod role_tool;
 pub mod safeguard;

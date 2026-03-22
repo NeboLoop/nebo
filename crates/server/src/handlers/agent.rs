@@ -35,10 +35,11 @@ pub async fn delete_session(
     Ok(Json(serde_json::json!({"success": true})))
 }
 
-/// GET /api/v1/agent/sessions/:id/messages
+/// GET /api/v1/agent/sessions/:id/messages?limit=20&before=<msg_id>
 pub async fn get_session_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(q): Query<SessionMessagesQuery>,
 ) -> HandlerResult<serde_json::Value> {
     // Session has a scope/scope_id that maps to a chat
     let session = state
@@ -55,8 +56,37 @@ pub async fn get_session_messages(
         .filter(|n| !n.is_empty())
         .or(session.scope_id.as_deref())
         .unwrap_or(&id);
-    let messages = state.store.get_chat_messages(chat_id).map_err(to_error_response)?;
-    Ok(Json(serde_json::json!({"messages": messages})))
+
+    let limit = q.limit.unwrap_or(50).min(200) as usize;
+    let all_messages = state.store.get_chat_messages(chat_id).map_err(to_error_response)?;
+
+    if let Some(ref before_id) = q.before {
+        // Find cursor position and return messages before it
+        let cursor_pos = all_messages.iter().position(|m| m.id == *before_id).unwrap_or(0);
+        let start = cursor_pos.saturating_sub(limit);
+        let slice = &all_messages[start..cursor_pos];
+        let has_more = start > 0;
+        Ok(Json(serde_json::json!({
+            "messages": slice,
+            "hasMore": has_more,
+        })))
+    } else {
+        // Return the last N messages
+        let total = all_messages.len();
+        let start = total.saturating_sub(limit);
+        let slice = &all_messages[start..];
+        let has_more = start > 0;
+        Ok(Json(serde_json::json!({
+            "messages": slice,
+            "hasMore": has_more,
+        })))
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SessionMessagesQuery {
+    pub limit: Option<i64>,
+    pub before: Option<String>,
 }
 
 /// GET /api/v1/agent/settings

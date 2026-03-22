@@ -298,7 +298,20 @@ pub async fn get_role(
         .get_role(&id)
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
-    Ok(Json(serde_json::json!({ "role": role })))
+
+    // Read local version from manifest.json if it exists
+    let version = role.napp_path.as_ref()
+        .and_then(|p| {
+            let manifest_path = std::path::PathBuf::from(p).join("manifest.json");
+            std::fs::read_to_string(manifest_path).ok()
+        })
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["version"].as_str().map(|s| s.to_string()));
+
+    Ok(Json(serde_json::json!({
+        "role": role,
+        "version": version,
+    })))
 }
 
 /// PUT /roles/{id}
@@ -672,6 +685,8 @@ pub async fn list_active_roles(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
     let registry = state.role_registry.read().await;
+    let now = chrono::Utc::now();
+
     let roles: Vec<serde_json::Value> = registry.values().map(|role| {
         // Fetch description from DB if available
         let description = state.store.get_role(&role.role_id)
@@ -679,6 +694,10 @@ pub async fn list_active_roles(
             .flatten()
             .map(|r| r.description)
             .unwrap_or_default();
+
+        // Compute nextFireAt: earliest next fire across all active bindings
+        let next_fire_at = compute_next_fire(&state.store, &role.role_id, &now);
+
         serde_json::json!({
             "roleId": role.role_id,
             "name": role.name,
@@ -687,6 +706,7 @@ pub async fn list_active_roles(
             "hasConfig": role.config.is_some(),
             "workflowCount": role.config.as_ref().map(|c| c.workflows.len()).unwrap_or(0),
             "skillCount": role.config.as_ref().map(|c| c.skills.len()).unwrap_or(0),
+            "nextFireAt": next_fire_at,
         })
     }).collect();
 
@@ -694,6 +714,77 @@ pub async fn list_active_roles(
         "roles": roles,
         "count": roles.len(),
     })))
+}
+
+/// Compute the earliest next fire timestamp across all active bindings for a role.
+fn compute_next_fire(store: &db::Store, role_id: &str, now: &chrono::DateTime<chrono::Utc>) -> Option<i64> {
+    let bindings = store.list_role_workflows(role_id).ok()?;
+    let mut earliest: Option<i64> = None;
+    let now_ts = now.timestamp();
+
+    for binding in &bindings {
+        if binding.is_active == 0 {
+            continue;
+        }
+
+        let next_ts = match binding.trigger_type.as_str() {
+            "schedule" => {
+                // Parse cron and find the next fire time that's in the future
+                let schedule: cron::Schedule = match binding.trigger_config.parse() {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                // Always compute from now to get the next future fire time
+                schedule.after(now).next().map(|t| t.timestamp())
+            }
+            "heartbeat" => {
+                // Parse interval, compute next fire from last_fired
+                let parts: Vec<&str> = binding.trigger_config.split('|').collect();
+                let interval_str = parts.first().copied().unwrap_or("30m");
+                let interval_secs = parse_interval_secs(interval_str);
+                let last_fired = parse_last_fired(binding.last_fired.as_deref());
+                let mut next = last_fired.timestamp() + interval_secs;
+
+                // If next is in the past, advance to the next future interval
+                while next <= now_ts {
+                    next += interval_secs;
+                }
+
+                Some(next)
+            }
+            _ => None, // event/manual — no scheduled fire
+        };
+
+        if let Some(ts) = next_ts {
+            earliest = Some(earliest.map_or(ts, |e: i64| e.min(ts)));
+        }
+    }
+
+    earliest
+}
+
+fn parse_last_fired(s: Option<&str>) -> chrono::DateTime<chrono::Utc> {
+    s.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .or_else(|| {
+            s.and_then(|s| s.parse::<i64>().ok())
+                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        })
+        .unwrap_or(chrono::DateTime::UNIX_EPOCH)
+}
+
+fn parse_interval_secs(s: &str) -> i64 {
+    let s = s.trim();
+    if let Some(rest) = s.strip_suffix('s') {
+        rest.parse().unwrap_or(60)
+    } else if let Some(rest) = s.strip_suffix('m') {
+        rest.parse::<i64>().unwrap_or(30) * 60
+    } else if let Some(rest) = s.strip_suffix('h') {
+        rest.parse::<i64>().unwrap_or(1) * 3600
+    } else {
+        // Bare number = minutes
+        s.parse::<i64>().unwrap_or(30) * 60
+    }
 }
 
 /// GET /roles/{id}/workflows — returns workflow bindings for a role.
@@ -712,6 +803,246 @@ pub async fn list_role_workflows(
     Ok(Json(serde_json::json!({
         "workflows": workflows,
         "count": workflows.len(),
+    })))
+}
+
+/// POST /roles/{id}/check-update — check if a newer version is available on NeboLoop.
+pub async fn check_role_update(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let role = state.store.get_role(&id).map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let kind = role.kind.as_deref().unwrap_or("");
+    if kind.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "hasUpdate": false,
+            "message": "User-created role — no marketplace updates available",
+        })));
+    }
+
+    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+    match api.get_skill(&id).await {
+        Ok(detail) => {
+            let remote_version = &detail.item.version;
+            let local_version = role.napp_path.as_ref()
+                .and_then(|p| {
+                    let manifest_path = std::path::PathBuf::from(p).join("manifest.json");
+                    std::fs::read_to_string(manifest_path).ok()
+                })
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let has_update = !remote_version.is_empty() && remote_version != &local_version;
+            Ok(Json(serde_json::json!({
+                "hasUpdate": has_update,
+                "localVersion": local_version,
+                "remoteVersion": remote_version,
+            })))
+        }
+        Err(e) => Ok(Json(serde_json::json!({
+            "hasUpdate": false,
+            "error": e.to_string(),
+        }))),
+    }
+}
+
+/// POST /roles/{id}/apply-update — download and apply the latest version from NeboLoop.
+pub async fn apply_role_update(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let role = state.store.get_role(&id).map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let kind = role.kind.as_deref().unwrap_or("");
+    if kind.is_empty() {
+        return Err(to_error_response(types::NeboError::Validation(
+            "Cannot update a user-created role from marketplace".to_string()
+        )));
+    }
+
+    let api = crate::codes::build_api_client(&state).map_err(to_error_response)?;
+    match tools::persist_role_from_api(&api, &id, &role.name, kind, &state.store).await {
+        Ok(_) => {
+            // Re-read updated role
+            let updated = state.store.get_role(&id).map_err(to_error_response)?
+                .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+            // Update live registry
+            if let Some(config) = if !updated.frontmatter.is_empty() {
+                napp::role::parse_role_config(&updated.frontmatter).ok()
+            } else { None } {
+                let active = tools::ActiveRole {
+                    role_id: id.clone(),
+                    name: updated.name.clone(),
+                    role_md: updated.role_md.clone(),
+                    config: Some(config),
+                    channel_id: None,
+                };
+                state.role_registry.write().await.insert(id.clone(), active);
+            }
+
+            Ok(Json(serde_json::json!({
+                "ok": true,
+                "role": updated,
+            })))
+        }
+        Err(e) => Err(to_error_response(types::NeboError::Internal(format!("Update failed: {}", e)))),
+    }
+}
+
+/// POST /roles/{id}/reload — re-read ROLE.md + role.json from filesystem and sync to DB.
+pub async fn reload_role(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let role = state.store.get_role(&id).map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let role_dir = role.napp_path.as_ref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            data.join("user").join("roles").join(&role.name)
+        });
+
+    if !role_dir.exists() {
+        return Err(to_error_response(types::NeboError::NotFound));
+    }
+
+    let mut changes = Vec::new();
+    let mut current_md = role.role_md.clone();
+    let mut current_fm = role.frontmatter.clone();
+
+    // Reload ROLE.md
+    let md_path = role_dir.join("ROLE.md");
+    if md_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&md_path) {
+            if content != current_md {
+                current_md = content;
+                changes.push("ROLE.md");
+            }
+        }
+    }
+
+    // Reload role.json
+    let json_path = role_dir.join("role.json");
+    if json_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&json_path) {
+            if content.trim() != current_fm.trim() {
+                if napp::role::parse_role_config(&content).is_ok() {
+                    current_fm = content;
+                    changes.push("role.json");
+                }
+            }
+        }
+    }
+
+    if changes.is_empty() {
+        return Ok(Json(serde_json::json!({ "ok": true, "message": "Already in sync" })));
+    }
+
+    // Persist
+    state.store.update_role(&id, &role.name, &role.description, &current_md, &current_fm, role.pricing_model.as_deref(), role.pricing_cost)
+        .map_err(to_error_response)?;
+
+    // Re-register triggers if role.json changed
+    if changes.contains(&"role.json") {
+        if let Ok(config) = napp::role::parse_role_config(&current_fm) {
+            let _ = state.store.delete_cron_jobs_by_prefix(&format!("role-{}-", id));
+            let _ = state.store.delete_role_workflows(&id);
+            process_role_bindings(&id, &config, &state).await;
+        }
+    }
+
+    // Update live registry
+    if let Some(active) = state.role_registry.write().await.get_mut(&id) {
+        active.role_md = current_md;
+        active.config = napp::role::parse_role_config(&current_fm).ok();
+    }
+
+    let updated = state.store.get_role(&id).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "reloaded": changes,
+        "role": updated,
+    })))
+}
+
+/// POST /roles/{id}/setup — broadcast a setup event to open the wizard on the frontend.
+pub async fn trigger_role_setup(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let role = state.store.get_role(&id).map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    state.hub.broadcast("role_setup", serde_json::json!({
+        "roleId": role.id,
+        "roleName": role.name,
+        "roleDescription": role.description,
+    }));
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// PUT /roles/{id}/inputs — update user-supplied input values for a role.
+pub async fn update_role_inputs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> HandlerResult<serde_json::Value> {
+    state
+        .store
+        .get_role(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let values_str = body.to_string();
+    state.store.update_role_input_values(&id, &values_str).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// GET /roles/{id}/stats — aggregate workflow run stats for a role.
+pub async fn role_stats(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    state
+        .store
+        .get_role(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let stats = state.store.role_workflow_stats(&id).map_err(to_error_response)?;
+    let errors = state.store.role_recent_errors(&id, 5).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({
+        "stats": stats,
+        "recentErrors": errors,
+    })))
+}
+
+/// GET /roles/{id}/runs — list workflow runs for a role.
+pub async fn list_role_runs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ListQuery>,
+) -> HandlerResult<serde_json::Value> {
+    state
+        .store
+        .get_role(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    let wf_id = format!("role:{}", id);
+    let runs = state.store.list_workflow_runs(&wf_id, q.limit, q.offset).map_err(to_error_response)?;
+    let total = state.store.count_workflow_runs(&wf_id).map_err(to_error_response)?;
+    Ok(Json(serde_json::json!({
+        "runs": runs,
+        "total": total,
     })))
 }
 

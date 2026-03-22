@@ -80,6 +80,9 @@ pub struct RunRequest {
     pub personality_snippet: Option<String>,
     /// Images attached to the user's message (base64-encoded).
     pub images: Vec<ai::ImageContent>,
+    /// Allowed filesystem paths — restricts file writes and shell commands to these directories.
+    /// Empty = unrestricted.
+    pub allowed_paths: Vec<String>,
 }
 
 /// Per-run mutable state (prevents data races across concurrent runs).
@@ -271,6 +274,7 @@ impl Runner {
         let entity_permissions = req.permissions.clone();
         let entity_resource_grants = req.resource_grants.clone();
         let personality_snippet = req.personality_snippet.clone();
+        let allowed_paths = req.allowed_paths.clone();
 
         // Set MCP context so CLI providers can access tools with the right session info
         if let Some(ref mcp_ctx) = self.mcp_context {
@@ -312,6 +316,7 @@ impl Runner {
                 &user_prompt,
                 &force_skill,
                 skill_loader.as_deref(),
+                &allowed_paths,
             )
             .await;
 
@@ -410,6 +415,7 @@ async fn run_loop(
     user_prompt: &str,
     force_skill: &str,
     skill_loader: Option<&tools::skills::Loader>,
+    allowed_paths: &[String],
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
@@ -1092,6 +1098,7 @@ async fn run_loop(
                 user_id: user_id.to_string(),
                 entity_permissions: entity_permissions.cloned(),
                 resource_grants: entity_resource_grants.cloned(),
+                allowed_paths: allowed_paths.to_vec(),
             };
 
             // Track tool names for filter

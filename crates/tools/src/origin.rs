@@ -31,6 +31,9 @@ pub struct ToolContext {
     pub entity_permissions: Option<std::collections::HashMap<String, bool>>,
     /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
     pub resource_grants: Option<std::collections::HashMap<String, String>>,
+    /// Allowed filesystem paths — if set, file writes and shell commands are restricted
+    /// to these directories and their children. Empty = unrestricted.
+    pub allowed_paths: Vec<String>,
 }
 
 impl ToolContext {

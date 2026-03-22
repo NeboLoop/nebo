@@ -21,6 +21,9 @@ pub struct ResolvedEntityConfig {
     pub personality_snippet: Option<String>,
     /// Which fields are overridden (not inherited) — for UI display.
     pub overrides: HashMap<String, bool>,
+    /// Allowed filesystem paths — restricts file writes and shell to these directories.
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
 }
 
 /// Resolve entity config by layering overrides on global defaults.
@@ -122,6 +125,15 @@ pub fn resolve(
         _ => None,
     };
 
+    // Allowed paths: restrict file/shell to these directories
+    let allowed_paths = entity
+        .and_then(|e| e.allowed_paths.clone())
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
+    if !allowed_paths.is_empty() {
+        overrides.insert("allowedPaths".into(), true);
+    }
+
     ResolvedEntityConfig {
         entity_type: entity_type.to_string(),
         entity_id: entity_id.to_string(),
@@ -134,6 +146,7 @@ pub fn resolve(
         model_preference,
         personality_snippet,
         overrides,
+        allowed_paths,
     }
 }
 

@@ -404,6 +404,7 @@ export interface GetAdvisorResponse {
 export interface GetAgentSessionMessagesResponse {
 	messages: Array<SessionMessage>
 	total: number
+	hasMore?: boolean
 }
 
 export interface GetAgentSessionRequest {
@@ -492,6 +493,7 @@ export interface RoleDetailResponse {
 		installedAt: number
 		updatedAt: number
 		nappPath?: string
+		inputValues: string
 	}
 }
 
@@ -509,6 +511,65 @@ export interface RoleWorkflowEntry {
 	isActive: boolean
 	emit?: string
 	activities?: Array<Record<string, unknown>>
+	lastFired?: string
+}
+
+export interface RoleInputField {
+	key: string
+	label: string
+	description?: string
+	type: 'text' | 'textarea' | 'number' | 'select' | 'checkbox' | 'radio' | 'path' | 'file'
+	required?: boolean
+	default?: unknown
+	placeholder?: string
+	options?: Array<{ value: string; label: string }>
+}
+
+export interface RoleWorkflowStats {
+	totalRuns: number
+	completed: number
+	failed: number
+	cancelled: number
+	running: number
+	totalTokens: number
+	avgDurationSecs?: number
+	lastRunAt?: number
+	lastSuccessAt?: number
+	lastError?: string
+}
+
+export interface WorkflowRunError {
+	id: string
+	error: string
+	errorActivity?: string
+	startedAt: number
+}
+
+export interface RoleStatsResponse {
+	stats: RoleWorkflowStats
+	recentErrors: Array<WorkflowRunError>
+}
+
+export interface WorkflowRun {
+	id: string
+	workflowId: string
+	triggerType: string
+	triggerDetail?: string
+	status: string
+	inputs?: string
+	currentActivity?: string
+	totalTokensUsed?: number
+	error?: string
+	errorActivity?: string
+	sessionKey?: string
+	output?: string
+	startedAt: number
+	completedAt?: number
+}
+
+export interface ListRoleRunsResponse {
+	runs: Array<WorkflowRun>
+	total: number
 }
 
 export interface GetRoleWorkflowsResponse {
@@ -1059,7 +1120,9 @@ export interface BillingSubscriptionResponse {
 }
 
 export interface BillingCheckoutResponse {
-	checkoutUrl: string
+	checkoutUrl?: string
+	clientSecret?: string
+	publishableKey?: string
 }
 
 export interface BillingPortalResponse {

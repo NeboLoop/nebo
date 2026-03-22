@@ -18,6 +18,7 @@ fn row_to_entity_config(row: &rusqlite::Row) -> rusqlite::Result<EntityConfig> {
         resource_grants: row.get("resource_grants")?,
         model_preference: row.get("model_preference")?,
         personality_snippet: row.get("personality_snippet")?,
+        allowed_paths: row.get("allowed_paths")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -68,6 +69,7 @@ impl Store {
             ("resource_grants", "resourceGrants"),
             ("model_preference", "modelPreference"),
             ("personality_snippet", "personalitySnippet"),
+            ("allowed_paths", "allowedPaths"),
         ];
 
         for (col, json_key) in &columns {

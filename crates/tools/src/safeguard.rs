@@ -11,6 +11,96 @@ pub fn check_safeguard(tool_name: &str, input: &serde_json::Value) -> Option<Str
     }
 }
 
+/// Check if a tool call respects the allowed_paths restriction.
+/// If allowed_paths is empty, all paths are allowed (unrestricted).
+/// File reads are always allowed. Only writes/edits/deletes are restricted.
+/// Shell commands are restricted to running within allowed directories.
+pub fn check_path_scope(tool_name: &str, input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
+    if allowed_paths.is_empty() {
+        return None;
+    }
+
+    match tool_name {
+        "system" | "file" => check_file_path_scope(input, allowed_paths),
+        "shell" => check_shell_path_scope(input, allowed_paths),
+        _ => None,
+    }
+}
+
+fn check_file_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
+    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Only restrict destructive actions — reads are always allowed
+    if action != "write" && action != "edit" && action != "delete" && action != "move" && action != "copy" {
+        return None;
+    }
+
+    if path.is_empty() {
+        return None;
+    }
+
+    let abs_path = match std::path::absolute(Path::new(path)) {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => path.to_string(),
+    };
+
+    if is_within_allowed(&abs_path, allowed_paths) {
+        return None;
+    }
+
+    Some(format!(
+        "BLOCKED: cannot {} {:?} — this agent is restricted to: {}. \
+         Ask the owner to update the allowed directories in the Configure tab.",
+        action, path,
+        allowed_paths.join(", ")
+    ))
+}
+
+fn check_shell_path_scope(input: &serde_json::Value, allowed_paths: &[String]) -> Option<String> {
+    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    let cwd = input.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+
+    if !resource.is_empty() && resource != "bash" {
+        return None;
+    }
+    if action != "exec" || command.is_empty() {
+        return None;
+    }
+
+    // If cwd is specified, it must be within allowed paths
+    if !cwd.is_empty() {
+        let abs_cwd = match std::path::absolute(Path::new(cwd)) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => cwd.to_string(),
+        };
+        if !is_within_allowed(&abs_cwd, allowed_paths) {
+            return Some(format!(
+                "BLOCKED: cannot execute shell command in {:?} — this agent is restricted to: {}",
+                cwd,
+                allowed_paths.join(", ")
+            ));
+        }
+    }
+
+    None
+}
+
+fn is_within_allowed(abs_path: &str, allowed_paths: &[String]) -> bool {
+    for allowed in allowed_paths {
+        let allowed_abs = match std::path::absolute(Path::new(allowed)) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => allowed.clone(),
+        };
+        if abs_path == allowed_abs || abs_path.starts_with(&format!("{}/", allowed_abs)) {
+            return true;
+        }
+    }
+    false
+}
+
 fn check_file_safeguard(input: &serde_json::Value) -> Option<String> {
     let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
     let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("");

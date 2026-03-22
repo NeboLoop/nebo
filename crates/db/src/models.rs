@@ -581,6 +581,13 @@ pub struct Role {
     pub updated_at: i64,
     /// Path to .napp archive or user directory on filesystem.
     pub napp_path: Option<String>,
+    /// User-supplied input values as JSON (separate from the schema in frontmatter).
+    #[serde(default = "default_input_values")]
+    pub input_values: String,
+}
+
+fn default_input_values() -> String {
+    "{}".to_string()
 }
 
 /// A workflow binding owned by a role, with trigger configuration.
@@ -599,6 +606,7 @@ pub struct RoleWorkflow {
     pub emit: Option<String>,
     #[serde(skip_deserializing)]
     pub activities: Option<serde_json::Value>,
+    pub last_fired: Option<String>,
 }
 
 // ── Emit Sources ──
@@ -655,6 +663,7 @@ pub struct EntityConfig {
     pub resource_grants: Option<String>,
     pub model_preference: Option<String>,
     pub personality_snippet: Option<String>,
+    pub allowed_paths: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

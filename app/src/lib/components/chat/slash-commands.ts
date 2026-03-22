@@ -15,11 +15,11 @@ export interface SlashCommand {
 export const SLASH_COMMANDS: SlashCommand[] = [
 	// ── Session ──
 	{ name: 'new', description: 'Start new chat session', category: 'session', executeLocal: true },
-	{ name: 'reset', description: 'Reset current session', category: 'session', executeLocal: true },
+	{ name: 'reset', description: 'Start fresh (new session)', category: 'session', executeLocal: true },
 	{ name: 'clear', description: 'Clear chat display', category: 'session', executeLocal: true },
 	{ name: 'stop', description: 'Stop current generation', category: 'session', executeLocal: true },
 	{ name: 'focus', description: 'Toggle sidebar', category: 'session', executeLocal: true },
-	{ name: 'compact', description: 'Force context compaction', category: 'session', executeLocal: true },
+	{ name: 'compact', description: 'Summarize conversation and clear old messages', category: 'session', executeLocal: true },
 
 	// ── Model ──
 	{ name: 'model', description: 'Show or switch model', category: 'model', args: '[name]', executeLocal: true },

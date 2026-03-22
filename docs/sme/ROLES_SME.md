@@ -1562,8 +1562,545 @@ Two operating modes, selected via radio buttons:
 | `CommandCenter.svelte` | Role listing dashboard showing active roles and recent sessions |
 | `NewBotMenu.svelte` | Menu for creating new bots/roles |
 | `SkillsList.svelte` | List of available skills |
-| `RoleSetupModal.svelte` | Installation modal for marketplace roles (install, configure inputs, activate) |
+| `RoleSetupModal.svelte` | Multi-step setup wizard for roles (inputs → schedule → install → activate) |
+| `RoleInputForm.svelte` | Generic dynamic form component for all 8 input field types |
 
 ---
 
-*Last updated: 2026-03-16*
+## 22. Role Input Schema (Dynamic Configuration)
+
+**Source:** `crates/napp/src/role.rs`
+
+### RoleInputField
+
+Roles declare typed input fields in `role.json`. These render as a dynamic form on the Configure tab and their values are injected into every workflow execution.
+
+```rust
+pub struct RoleInputField {
+    pub key: String,              // Unique key, used as workflow input name
+    pub label: String,            // Display label
+    pub description: Option<String>, // Help text below the field
+    pub field_type: String,       // "text", "textarea", "number", "select", "checkbox", "radio", "path", "file"
+    pub required: bool,
+    pub default: Option<serde_json::Value>,
+    pub placeholder: Option<String>,
+    pub options: Vec<RoleInputOption>, // For select/radio fields
+}
+```
+
+**Field types:**
+| Type | Renders as | Native support |
+|------|-----------|----------------|
+| `text` | Text input | — |
+| `textarea` | Multi-line text | — |
+| `number` | Number input | — |
+| `select` | Dropdown | — |
+| `checkbox` | Toggle | — |
+| `radio` | Radio group | — |
+| `path` | Text input + folder picker button | Opens native folder dialog via `rfd` in Tauri |
+| `file` | Text input + file picker button | Opens native file dialog via `rfd` in Tauri |
+
+pub struct RoleInputOption {
+    pub value: String,
+    pub label: String,
+}
+```
+
+Added to `RoleConfig`:
+```rust
+pub struct RoleConfig {
+    pub workflows: HashMap<String, WorkflowBinding>,
+    pub skills: Vec<String>,
+    pub pricing: Option<RolePricing>,
+    pub defaults: Option<RoleDefaults>,
+    pub inputs: Vec<RoleInputField>,  // ← NEW
+}
+```
+
+### Example role.json
+
+```json
+{
+  "inputs": [
+    {
+      "key": "sites",
+      "label": "Sites to analyze",
+      "description": "Enter domains to track, one per line",
+      "type": "textarea",
+      "required": true
+    },
+    {
+      "key": "frequency",
+      "label": "Report frequency",
+      "type": "select",
+      "options": [
+        { "value": "daily", "label": "Daily" },
+        { "value": "weekly", "label": "Weekly" }
+      ],
+      "default": "weekly"
+    },
+    {
+      "key": "include_competitors",
+      "label": "Include competitor analysis",
+      "type": "checkbox",
+      "default": false
+    }
+  ],
+  "workflows": { ... }
+}
+```
+
+### Storage
+
+- **Schema** lives in `frontmatter` JSON (part of `RoleConfig`)
+- **User values** stored in `roles.input_values` TEXT column (migration 0064)
+- API: `PUT /api/v1/roles/{id}/inputs` saves user-supplied values
+- DB: `store.update_role_input_values(id, json_string)`
+
+### Input Value Injection (Automatic)
+
+Values flow seamlessly into workflow execution with **zero manual wiring**:
+
+1. `WorkflowManagerImpl::run_inline()` loads `role.input_values` from DB
+2. Merges into workflow `inputs` (binding-level inputs take priority via `entry().or_insert()`)
+3. `execute_workflow()` passes merged inputs to each `execute_activity()` call
+4. `build_activity_prompt()` renders all inputs as `## Inputs` section in the activity system prompt:
+   ```
+   ## Inputs
+   - sites: example.com, test.org
+   - frequency: weekly
+   - include_competitors: true
+   ```
+5. Keys prefixed with `_` are excluded from the prompt (operational keys like `_emit`)
+
+### Frontend
+
+- **`RoleInputForm.svelte`** — Generic dynamic form component, renders all 8 field types from schema
+  - `path` and `file` types show a browse button that opens the native folder/file dialog via `POST /api/v1/files/pick-folder` / `POST /api/v1/files/pick`
+  - In headless (browser) mode, the button silently fails — user can still type the path manually
+- **Configure tab** — Shows "Inputs" section with dynamic form + "Allowed directories" with folder picker
+- Explicit Save button (no auto-save — inputs affect workflow execution)
+
+---
+
+## 23. Workflow Activity Reporting
+
+### WebSocket Events
+
+Three events broadcast during workflow execution (wired in `workflow_manager.rs`):
+
+| Event | Payload | When |
+|-------|---------|------|
+| `workflow_run_started` | `{ roleId, runId, bindingName, triggerType }` | After run record created, before execution |
+| `workflow_run_completed` | `{ roleId, runId, bindingName }` | On successful completion |
+| `workflow_run_failed` | `{ roleId, runId, bindingName, error }` | On failure |
+
+### HTTP Endpoints
+
+| Method | Path | Handler | Purpose |
+|--------|------|---------|---------|
+| GET | `/roles/{id}/stats` | `role_stats` | Aggregate run metrics + recent errors |
+| GET | `/roles/{id}/runs` | `list_role_runs` | Paginated workflow run history |
+| PUT | `/roles/{id}/inputs` | `update_role_inputs` | Save user-supplied input values |
+
+### last_fired Tracking
+
+- `update_role_workflow_last_fired()` called in `run_inline()` after "started" message
+- Fires on every trigger type (schedule, heartbeat, event)
+- Stored as ISO timestamp in `role_workflows.last_fired`
+- Exposed in `RoleWorkflow` model as `lastFired` field
+- Frontend shows "Last run: Xm ago" on each automation card
+
+### Activity Tab (Frontend)
+
+**File:** `app/src/routes/(app)/(sidebar)/agent/role/[name]/activity/+page.svelte`
+
+Shows:
+- **Stats overview** — 4-column grid: total runs, completed, failed, avg duration
+- **Running indicator** — count of currently executing workflows
+- **Workflow runs** — recent runs with status dot, trigger type, duration, error preview
+- **Recent errors** — dedicated section with error messages and step identification
+- **Chat history** — session list with inline message viewer
+- **Memories** — role-scoped memory entries
+- **Live updates** — WS subscriptions auto-refresh on run events
+
+### Automate Tab Updates
+
+- Heartbeat/automations radio toggle removed — shows automations directly
+- Each automation card shows `lastFired` timestamp
+- Click card → full-page preview with trigger, steps, emit, status
+- Preview has Edit button to switch to AutomationEditor
+- WS subscriptions refresh workflow list on run events
+
+---
+
+## 24. Role Tab (Persona Editor)
+
+**Route:** `/agent/role/[name]/role` (also `/agent/assistant/role` for the assistant)
+
+Tab bar order: Chat | **Role** | **Configure** | Automate | Activity | Settings
+
+### Role Agent Version
+
+- **File:** `app/src/routes/(app)/(sidebar)/agent/role/[name]/role/+page.svelte`
+- Loads `roleMd` from `getRole()`, saves via `updateRole({ roleMd })`
+- Full-height `RichInput` (mode="full") with `rich-input-expand` CSS for flex fill
+- Undo/redo with debounced history snapshots (500ms)
+- Explicit Save button (always visible, disabled when no changes)
+- Markdown rendered via Tailwind `prose prose-sm` classes
+
+### Assistant Version
+
+- **File:** `app/src/routes/(app)/(sidebar)/agent/assistant/role/+page.svelte`
+- Loads/saves `customPersonality` from `getAgentProfile()` / `updateAgentProfile()`
+- Same editor UX as role version
+
+---
+
+## 25. Configure Tab
+
+**Route:** `/agent/role/[name]/configure`
+
+**File:** `app/src/routes/(app)/(sidebar)/agent/role/[name]/configure/+page.svelte`
+
+Two sections:
+
+### Inputs
+- Dynamic form rendered from `RoleConfig.inputs` schema
+- `path` and `file` types show native folder/file picker buttons (Tauri) with text fallback (browser)
+- Explicit Save button — no auto-save
+
+### Allowed Directories
+- Per-agent filesystem scope restriction
+- Folder list with native folder picker ("Add folder" button) + remove (X) buttons
+- Collapsible "Edit paths manually" textarea for technical users
+- Stored in `entity_config.allowed_paths` (JSON array)
+- Enforced by `safeguard::check_path_scope()` — blocks file writes/edits/deletes and shell cwd outside allowed dirs
+- Reads always allowed (agent can read anywhere)
+- Empty = unrestricted
+
+### Enforcement Pipeline
+
+```
+ToolContext.allowed_paths (from entity_config)
+  → safeguard::check_path_scope(tool_name, input, allowed_paths)
+    → check_file_path_scope: blocks write/edit/delete/move/copy outside allowed dirs
+    → check_shell_path_scope: blocks shell cwd outside allowed dirs
+```
+
+---
+
+## 26. Migrations
+
+### 0064 — Role Input Values
+
+```sql
+ALTER TABLE roles ADD COLUMN input_values TEXT NOT NULL DEFAULT '{}';
+```
+
+### 0065 — Entity Config Allowed Paths
+
+```sql
+ALTER TABLE entity_config ADD COLUMN allowed_paths TEXT;
+```
+
+---
+
+## 27. Role Reload & Marketplace Updates
+
+### Role Tool Actions
+
+| Action | Parameters | Purpose |
+|--------|-----------|---------|
+| `reload` | `name` | Re-read ROLE.md + role.json from filesystem (`napp_path`) and sync to DB. Re-registers triggers. |
+| `reload` | `name`, `check_update: true` | Check NeboLoop for a newer version (marketplace roles only). Does not modify. |
+| `reload` | `name`, `apply_update: true` | Download and apply latest version from NeboLoop. Re-persists to DB + filesystem. |
+
+### HTTP Endpoints
+
+| Method | Path | Handler | Purpose |
+|--------|------|---------|---------|
+| POST | `/roles/{id}/reload` | `reload_role` | Re-read from filesystem, sync to DB, re-register triggers |
+| POST | `/roles/{id}/check-update` | `check_role_update` | Check NeboLoop for newer version (marketplace roles) |
+| POST | `/roles/{id}/apply-update` | `apply_role_update` | Download + apply latest from NeboLoop |
+
+### Settings Tab — Version Section
+
+- Displays local version (from `manifest.json`) + source (marketplace vs user-created)
+- **Reload** button — re-reads from filesystem, syncs DB
+- **Check for updates** button (marketplace only) — queries NeboLoop
+- **Update to X.X.X** button — appears when update available
+
+### File Picker Endpoint
+
+`POST /api/v1/files/pick-folder` — opens native folder dialog via `rfd::FileDialog::pick_folder()`. Returns `{ path: string | null }`.
+
+---
+
+## 28. UI Contrast Standard
+
+All new role UI follows these contrast rules for dark mode readability:
+
+| Element | Class | Opacity |
+|---------|-------|---------|
+| Section headings | `text-base-content/80` | 80% |
+| Body text, descriptions, labels | `text-base-content/70` | 70% |
+| Hints, secondary info | `text-base-content/60` | 60% (minimum for readable text) |
+| Icon buttons (default state) | `text-base-content/40` hover `text-base-content/70` | Intentional dim → visible on hover |
+| **Never** use below `/60` for text that must be read | — | — |
+
+These apply to: Configure, Activity, Settings, Automate, and Role tabs.
+
+---
+
+## 29. Role Setup Wizard
+
+**File:** `app/src/lib/components/role/RoleSetupModal.svelte`
+
+Multi-step wizard that opens automatically when a role is installed from the marketplace or triggered via `role:setup`.
+
+### Steps
+
+1. **Inputs** — Dynamic form rendered from `RoleConfig.inputs` schema via `RoleInputForm.svelte`. Supports all 8 field types (text, textarea, number, select, checkbox, radio, path, file). Falls back to legacy flat key-value inputs for old-format roles. Shows "No configuration needed" if no inputs defined.
+
+2. **Schedule** (conditional — only if role has schedule/heartbeat triggers) — Shows each timed automation with current interval and a dropdown to change it. Non-technical language: "How often should it run?"
+
+3. **Installing** — Spinner while the role installs, input values save, schedules update, and role activates.
+
+4. **Done** — Success checkmark, auto-redirects to the role chat after 800ms.
+
+### Data Flow
+
+1. `installStoreApp(appId)` → installs the role
+2. `getRole(roleId)` → loads `RoleConfig.inputs` schema from frontmatter
+3. `getRoleWorkflows(roleId)` → loads workflow bindings for schedule configuration
+4. `updateRoleInputs(roleId, values)` → saves user-supplied input values
+5. `updateRoleWorkflow(roleId, bindingName, { triggerConfig })` → applies schedule overrides
+6. `activateRole(roleId)` → starts the role
+
+### Callers
+
+- `app/src/lib/components/marketplace/LargeCard.svelte` — marketplace install button
+- `app/src/routes/(app)/marketplace/roles/[id]/+page.svelte` — role detail page install
+- `POST /roles/{id}/setup` REST endpoint — broadcasts `role_setup` WS event
+- Role tool `setup` action — returns structured result, frontend can also call REST endpoint
+
+### Triggering Setup
+
+Three ways to open the wizard:
+
+1. **Marketplace install** — callers pass props directly to `RoleSetupModal`
+2. **REST API** — `POST /api/v1/roles/{id}/setup` broadcasts `role_setup` WS event → Sidebar listener opens wizard
+3. **Role tool** — `role(action: "setup", name: "role-name")` returns structured JSON with `__roleSetup: true` for frontend detection
+
+**WS event:** `role_setup` with payload `{ roleId, roleName, roleDescription }`
+**Listener:** `Sidebar.svelte` subscribes to `role_setup`, opens `RoleSetupModal` with the role data
+
+---
+
+## 30. Sidebar Countdown Timer
+
+### Backend: `nextFireAt` in Active Roles API
+
+`GET /roles/active` now returns `nextFireAt: number | null` for each role — the unix timestamp of the earliest next fire across all active bindings.
+
+**Computation** (`compute_next_fire()` in `handlers/roles.rs`):
+- Schedule triggers: parse cron → `schedule.after(&last_fired).next()`
+- Heartbeat triggers: `last_fired + interval_duration`
+- Event/manual: skip (no scheduled fire)
+- Returns the minimum across all bindings
+
+### Frontend: Live Countdown in Sidebar
+
+**File:** `app/src/lib/components/sidebar/Sidebar.svelte`
+
+- 1-second `setInterval` updates `nowMs` for countdown display
+- `roleSubtitle(role)` returns:
+  - `⏱ 23m 45s` — countdown to next fire
+  - `Paused` — role is inactive
+  - Role description — no scheduled triggers
+- Auto-refreshes on `workflow_run_started/completed/failed` WS events
+
+---
+
+## 31. Role File Spec (Definitive Reference)
+
+A role consists of three files. This is the canonical spec.
+
+### ROLE.md
+
+Pure prose persona document. Replaces the default agent identity in the system prompt.
+
+```markdown
+# {Role Title}
+
+You are the {Role Title} — {one sentence purpose}.
+
+{1-2 paragraphs: personality, approach, what makes this agent valuable}
+
+## Communication Style
+- {Tone}
+- {Formality}
+- {What they lead with}
+
+## Boundaries
+- {What they never do without permission}
+- {Scope limits}
+```
+
+**Rules:**
+- Second person ("You are...")
+- No frontmatter
+- No jargon — written for non-technical users
+- Under 200 lines
+- Template variables supported: `{{key}}` references input field values from role.json
+
+### role.json
+
+Operational config — inputs, workflows, skills, pricing.
+
+```json
+{
+  "inputs": [
+    {
+      "key": "site_url",
+      "label": "Your website URL",
+      "description": "The primary site this agent will analyze",
+      "type": "text|textarea|number|select|checkbox|radio|path|file",
+      "required": true,
+      "default": "https://example.com",
+      "placeholder": "https://...",
+      "options": [
+        { "value": "daily", "label": "Daily" }
+      ]
+    }
+  ],
+  "workflows": {
+    "binding-name": {
+      "trigger": {
+        "type": "schedule|heartbeat|event|manual",
+        "cron": "0 9 * * 1",
+        "interval": "30m",
+        "window": "08:00-18:00",
+        "sources": ["event.name"]
+      },
+      "description": "Human-readable label",
+      "inputs": {},
+      "activities": [
+        {
+          "id": "unique-step-id",
+          "intent": "What this step should accomplish",
+          "skills": ["@nebo/skills/name@^1.0.0"],
+          "mcps": [],
+          "cmds": [],
+          "model": "sonnet|haiku",
+          "steps": [
+            "Step 1 instruction",
+            "Step 2 instruction"
+          ],
+          "token_budget": { "max": 4096 },
+          "on_error": { "retry": 1, "fallback": "NotifyOwner|Skip|Abort" }
+        }
+      ],
+      "budget": { "total_per_run": 8192, "cost_estimate": "$0.02" },
+      "emit": "event.name.on.completion"
+    }
+  },
+  "skills": ["@nebo/skills/name@^1.0.0"],
+  "pricing": { "model": "monthly_fixed|per_run|free", "cost": 0.0 },
+  "defaults": {
+    "timezone": "user_local",
+    "configurable": ["workflows.binding-name.trigger.cron"]
+  }
+}
+```
+
+**Field types** (for `inputs[].type`):
+
+| Type | Renders as | Native support |
+|------|-----------|----------------|
+| `text` | Text input | — |
+| `textarea` | Multi-line text | — |
+| `number` | Number input | — |
+| `select` | Dropdown (requires `options`) | — |
+| `checkbox` | Toggle | — |
+| `radio` | Radio group (requires `options`) | — |
+| `path` | Text input + folder picker | Native `rfd` dialog in Tauri |
+| `file` | Text input + file picker | Native `rfd` dialog in Tauri |
+
+**Trigger types:**
+
+| Type | Required fields | Example |
+|------|----------------|---------|
+| `schedule` | `cron` (5 or 7 field) | `"0 9 * * 1"` — Monday 9am |
+| `heartbeat` | `interval`, optional `window` | `"30m"`, `"08:00-18:00"` |
+| `event` | `sources` (array) | `["email.urgent", "calendar.changed"]` |
+| `manual` | none | User-triggered only |
+
+**Activity fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `id` | yes | Unique within binding |
+| `intent` | yes | User message sent to the LLM |
+| `skills` | no | Qualified names: `@nebo/skills/{name}@^1.0.0` |
+| `model` | no | `"sonnet"` (complex) or `"haiku"` (simple) |
+| `steps` | no | Numbered instructions in system prompt |
+| `token_budget.max` | no | Default 4096. Keep 2000-4000 |
+| `on_error.retry` | no | Default 1 |
+| `on_error.fallback` | no | `"NotifyOwner"` (default), `"Skip"`, `"Abort"` |
+| `mcps` | no | MCP server refs |
+| `cmds` | no | Shell commands to enable |
+
+**Emit chains:** A binding's `emit` field namespaces at runtime as `{role-slug}.{emit-name}`. Other bindings with `event` triggers on that source will fire.
+
+### manifest.json
+
+Marketplace metadata. Required for published roles, optional for user-created.
+
+```json
+{
+  "type": "role",
+  "name": "Marketing Manager",
+  "version": "1.0.0",
+  "description": "Your AI marketing team lead",
+  "tags": ["marketing", "seo", "content"],
+  "author": "NeboLoop"
+}
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | yes | Always `"role"` |
+| `name` | yes | Display name |
+| `version` | yes | Semver (e.g. `"1.0.0"`) |
+| `description` | yes | One-line marketplace description |
+| `tags` | no | Category tags for search |
+| `author` | no | Publisher name |
+
+### Input Value Injection
+
+User-supplied input values (from Configure tab) are automatically injected into every workflow activity's system prompt:
+
+```
+## Inputs
+- site_url: https://example.com
+- frequency: weekly
+- include_competitors: true
+```
+
+Keys prefixed with `_` are excluded (operational keys like `_emit`).
+
+### Validation Rules
+
+- Skill refs must be `@org/skills/name` or `@org/skills/name@version` or `SKIL-XXXX-XXXX`
+- Activity IDs must be unique within a binding
+- Event triggers must have at least one source
+- Empty config `{}` is valid (no workflows or skills)
+- `inputs` array is optional (roles without user-specific config)
+
+---
+
+*Last updated: 2026-03-22*

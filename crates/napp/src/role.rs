@@ -48,6 +48,51 @@ pub struct RoleConfig {
     pub pricing: Option<RolePricing>,
     #[serde(default)]
     pub defaults: Option<RoleDefaults>,
+    /// Input field definitions — rendered as a dynamic form during setup.
+    /// User-supplied values are stored and injected into workflow execution.
+    #[serde(default)]
+    pub inputs: Vec<RoleInputField>,
+}
+
+/// A single input field the role needs from the user.
+///
+/// Defines the schema for a dynamic form field rendered during role setup.
+/// Supported types: text, textarea, number, select, checkbox, radio.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleInputField {
+    /// Unique key used to reference this value in workflows.
+    pub key: String,
+    /// Display label shown to the user.
+    pub label: String,
+    /// Optional help text shown below the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Field type: text, textarea, number, select, checkbox, radio.
+    #[serde(rename = "type", default = "default_input_type")]
+    pub field_type: String,
+    /// Whether the field must be filled before saving.
+    #[serde(default)]
+    pub required: bool,
+    /// Default value (string, number, or bool depending on type).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
+    /// Placeholder text for text/textarea/number fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// Options for select/radio fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<RoleInputOption>,
+}
+
+/// An option in a select or radio field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleInputOption {
+    pub value: String,
+    pub label: String,
+}
+
+fn default_input_type() -> String {
+    "text".to_string()
 }
 
 /// An inline workflow bound to a role with its trigger.

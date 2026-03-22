@@ -2393,6 +2393,24 @@
 	overflow-y: auto;
 }
 
+/* Expanded full mode — fills available flex space */
+.rich-input-expand .rich-input-wrapper {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+.rich-input-expand .rich-input-wrapper > div {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+.rich-input-expand .rich-input-full {
+	flex: 1;
+	max-height: none;
+}
+
 .rich-input-full .is-empty::before,
 .rich-input-full.is-editor-empty .is-empty:first-child::before {
 	content: attr(data-placeholder);
@@ -2403,80 +2421,9 @@
 	font-style: italic;
 }
 
-/* Full mode — WYSIWYG markdown styling */
-.rich-input-full h1 {
-	font-size: 1.5rem;
-	font-weight: 700;
-	margin: 0.75rem 0 0.25rem;
-}
-
-.rich-input-full h2 {
-	font-size: 1.25rem;
-	font-weight: 600;
-	margin: 0.5rem 0 0.25rem;
-}
-
-.rich-input-full h3 {
-	font-size: 1.1rem;
-	font-weight: 600;
-	margin: 0.5rem 0 0.25rem;
-}
-
-.rich-input-full strong {
-	font-weight: 700;
-}
-
-.rich-input-full em {
-	font-style: italic;
-}
-
-.rich-input-full ul,
-.rich-input-full ol {
-	padding-left: 1.5rem;
-	margin: 0.25rem 0;
-}
-
-.rich-input-full ul {
-	list-style-type: disc;
-}
-
-.rich-input-full ol {
-	list-style-type: decimal;
-}
-
-.rich-input-full li {
-	margin: 0.125rem 0;
-}
-
-.rich-input-full blockquote {
-	border-left: 3px solid oklch(var(--bc) / 0.2);
-	padding-left: 0.75rem;
-	margin: 0.25rem 0;
-	color: oklch(var(--bc) / 0.7);
-}
-
-.rich-input-full pre {
-	background: oklch(var(--bc) / 0.08);
-	border-radius: 0.375rem;
-	padding: 0.5rem 0.75rem;
-	font-family: monospace;
-	font-size: 0.8125rem;
-	margin: 0.25rem 0;
-	overflow-x: auto;
-}
-
-.rich-input-full code {
-	background: oklch(var(--bc) / 0.08);
-	border-radius: 0.25rem;
-	padding: 0.125rem 0.25rem;
-	font-family: monospace;
-	font-size: 0.8125rem;
-}
-
-.rich-input-full hr {
-	border: none;
-	border-top: 1px solid oklch(var(--bc) / 0.15);
-	margin: 0.5rem 0;
+/* Full mode — use Tailwind prose for markdown styling */
+.rich-input-full {
+	@apply prose prose-sm max-w-none;
 }
 
 /* Slash picker dropdown */

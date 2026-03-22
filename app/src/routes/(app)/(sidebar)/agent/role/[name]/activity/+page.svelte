@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { onMount, getContext } from 'svelte';
+	import { onMount, onDestroy, getContext } from 'svelte';
 	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
-	import { listAgentSessions, listMemories, getRoleWorkflows, getActiveRoles, getAgentSessionMessages } from '$lib/api/nebo';
-	import type { AgentSession, MemoryItem, RoleWorkflowEntry, SessionMessage } from '$lib/api/neboComponents';
+	import { listAgentSessions, listMemories, getRoleWorkflows, getActiveRoles, getAgentSessionMessages, getRoleStats, listRoleRuns } from '$lib/api/nebo';
+	import type { AgentSession, MemoryItem, RoleWorkflowEntry, SessionMessage, RoleWorkflowStats, WorkflowRun, WorkflowRunError } from '$lib/api/neboComponents';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ToolCard from '$lib/components/chat/ToolCard.svelte';
+	import { getWebSocketClient } from '$lib/websocket/client';
 
 	interface ToolCall {
 		id?: string;
@@ -53,11 +53,24 @@
 	let isActive = $state(false);
 	let loading = $state(true);
 
+	// Workflow run state
+	let stats: RoleWorkflowStats | null = $state(null);
+	let recentErrors: WorkflowRunError[] = $state([]);
+	let runs: WorkflowRun[] = $state([]);
+	let runsTotal = $state(0);
+
+	const hasActivityAbove = $derived(
+		(stats != null && stats.totalRuns > 0) || runs.length > 0 || recentErrors.length > 0
+	);
+
 	// Inline session viewer state
 	let selectedSessionId = $state<string | null>(null);
 	let selectedSessionLabel = $state('');
 	let sessionMessages: SessionMessage[] = $state([]);
 	let loadingMessages = $state(false);
+
+	// WS subscriptions
+	let unsubs: Array<() => void> = [];
 
 	function toDate(v: string | number): Date {
 		const n = typeof v === 'number' ? v : Number(v);
@@ -80,72 +93,116 @@
 		return toDate(dateStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 	}
 
-	interface ActivityEntry {
-		time: string;
-		sortTime: number;
-		event: string;
-		type: 'info' | 'completed' | 'pending' | 'failed';
+	function formatDuration(secs: number): string {
+		if (secs < 60) return `${secs}s`;
+		const mins = Math.floor(secs / 60);
+		const rem = secs % 60;
+		if (mins < 60) return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`;
+		const hrs = Math.floor(mins / 60);
+		return `${hrs}h ${mins % 60}m`;
 	}
 
-	const recentActivity = $derived.by<ActivityEntry[]>(() => {
-		const entries: ActivityEntry[] = [];
+	function runDuration(run: WorkflowRun): string {
+		if (!run.completedAt) return 'running...';
+		const secs = run.completedAt - run.startedAt;
+		return formatDuration(secs);
+	}
 
-		for (const s of sessions.slice(0, 5)) {
-			entries.push({
-				time: timeAgo(s.updatedAt),
-				sortTime: new Date(s.updatedAt).getTime(),
-				event: s.summary || `Chat session${s.messageCount > 0 ? ` — ${s.messageCount} messages` : ''}`,
-				type: 'completed',
-			});
+	// Group runs by day
+	interface DayGroup {
+		label: string;
+		date: string;
+		runs: WorkflowRun[];
+		completed: number;
+		failed: number;
+		running: number;
+	}
+
+	const groupedRuns = $derived.by<DayGroup[]>(() => {
+		const groups = new Map<string, DayGroup>();
+		const today = new Date().toLocaleDateString();
+		const yesterday = new Date(Date.now() - 86400000).toLocaleDateString();
+
+		for (const run of runs) {
+			const date = toDate(run.startedAt).toLocaleDateString();
+			let group = groups.get(date);
+			if (!group) {
+				let label = date;
+				if (date === today) label = 'Today';
+				else if (date === yesterday) label = 'Yesterday';
+				group = { label, date, runs: [], completed: 0, failed: 0, running: 0 };
+				groups.set(date, group);
+			}
+			group.runs.push(run);
+			if (run.status === 'completed') group.completed++;
+			else if (run.status === 'failed') group.failed++;
+			else if (run.status === 'running') group.running++;
 		}
 
-		if (isActive) {
-			entries.push({
-				time: 'Active now',
-				sortTime: Date.now(),
-				event: 'Role activated and running',
-				type: 'info',
-			});
-		}
-
-		if (workflows.length > 0) {
-			entries.push({
-				time: 'on activate',
-				sortTime: Date.now() - 1000,
-				event: `${workflows.length} workflow${workflows.length !== 1 ? 's' : ''} registered`,
-				type: 'info',
-			});
-		}
-
-		entries.sort((a, b) => b.sortTime - a.sortTime);
-		return entries.slice(0, 8);
+		return Array.from(groups.values());
 	});
 
-	const typeBg: Record<string, string> = {
-		completed: 'bg-success/10',
-		pending: 'bg-warning/10',
-		failed: 'bg-error/10',
-		info: 'bg-info/10',
+	// Track which day groups are expanded
+	let expandedDays = $state<Set<string>>(new Set(['Today']));
+
+	function toggleDay(label: string) {
+		const next = new Set(expandedDays);
+		if (next.has(label)) next.delete(label);
+		else next.add(label);
+		expandedDays = next;
+	}
+
+	const statusColor: Record<string, string> = {
+		completed: 'bg-success',
+		failed: 'bg-error',
+		running: 'bg-warning',
+		cancelled: 'bg-base-content/30',
 	};
 
-	const typeColor: Record<string, string> = {
-		completed: 'text-success',
-		pending: 'text-warning',
-		failed: 'text-error',
-		info: 'text-info',
+	const statusLabel: Record<string, string> = {
+		completed: 'Completed',
+		failed: 'Failed',
+		running: 'Running',
+		cancelled: 'Cancelled',
 	};
+
+	let hasMoreMessages = $state(false);
+	let loadingMore = $state(false);
+	let messagesEndEl: HTMLDivElement | undefined = $state();
 
 	async function openSession(session: AgentSession) {
 		selectedSessionId = session.id;
 		selectedSessionLabel = session.summary || session.name || 'Chat session';
 		loadingMessages = true;
 		try {
-			const res = await getAgentSessionMessages(session.id);
+			const res = await getAgentSessionMessages(session.id, 50);
 			sessionMessages = res.messages || [];
+			hasMoreMessages = res.hasMore ?? false;
 		} catch {
 			sessionMessages = [];
+			hasMoreMessages = false;
 		} finally {
 			loadingMessages = false;
+			// Auto-scroll to bottom after render
+			requestAnimationFrame(() => {
+				messagesEndEl?.scrollIntoView();
+			});
+		}
+	}
+
+	async function loadOlderMessages() {
+		if (!selectedSessionId || loadingMore || !hasMoreMessages || sessionMessages.length === 0) return;
+		loadingMore = true;
+		try {
+			const oldestId = sessionMessages[0].id;
+			const res = await getAgentSessionMessages(selectedSessionId, 50, oldestId);
+			const older = res.messages || [];
+			sessionMessages = [...older, ...sessionMessages];
+			hasMoreMessages = res.hasMore ?? false;
+		} catch {
+			// ignore
+		} finally {
+			loadingMore = false;
 		}
 	}
 
@@ -160,22 +217,28 @@
 	async function loadData() {
 		loading = true;
 		try {
-			const [sessRes, memRes, wfRes, activeRes] = await Promise.all([
+			const [sessRes, memRes, wfRes, activeRes, statsRes, runsRes] = await Promise.all([
 				listAgentSessions().catch(() => null),
 				hasRoleId ? listMemories({ namespace: `role:${channelState.activeRoleId}`, page: 1, pageSize: 10 }).catch(() => null) : null,
 				hasRoleId ? getRoleWorkflows(channelState.activeRoleId).catch(() => null) : null,
 				hasRoleId ? getActiveRoles().catch(() => null) : null,
+				hasRoleId ? getRoleStats(channelState.activeRoleId).catch(() => null) : null,
+				hasRoleId ? listRoleRuns(channelState.activeRoleId, 100).catch(() => null) : null,
 			]);
 			isActive = activeRes?.roles?.some(r => r.roleId === channelState.activeRoleId) ?? false;
 			if (sessRes?.sessions) {
 				const roleLower = channelState.activeRoleName.toLowerCase();
 				sessions = sessRes.sessions.filter(s => s.name?.toLowerCase().includes(roleLower));
 			}
-			if (memRes?.memories) {
-				memories = memRes.memories;
+			if (memRes?.memories) memories = memRes.memories;
+			if (wfRes?.workflows) workflows = wfRes.workflows;
+			if (statsRes) {
+				stats = statsRes.stats;
+				recentErrors = statsRes.recentErrors || [];
 			}
-			if (wfRes?.workflows) {
-				workflows = wfRes.workflows;
+			if (runsRes) {
+				runs = runsRes.runs || [];
+				runsTotal = runsRes.total;
 			}
 		} catch {
 			// ignore
@@ -190,31 +253,54 @@
 			if (match) {
 				openSession(match);
 			} else {
-				// Session exists but may not be in filtered list — try loading directly
 				selectedSessionId = sid;
 				selectedSessionLabel = 'Session';
 				loadingMessages = true;
 				try {
-					const res = await getAgentSessionMessages(sid);
+					const res = await getAgentSessionMessages(sid, 50);
 					sessionMessages = res.messages || [];
+					hasMoreMessages = res.hasMore ?? false;
 				} catch {
 					sessionMessages = [];
+					hasMoreMessages = false;
 				} finally {
 					loadingMessages = false;
+					requestAnimationFrame(() => messagesEndEl?.scrollIntoView());
 				}
 			}
 		}
 	}
 
-	onMount(() => loadData());
+	onMount(() => {
+		loadData();
+
+		// Subscribe to WS events for live updates
+		const ws = getWebSocketClient();
+		unsubs.push(
+			ws.on('workflow_run_started', (data: { roleId: string }) => {
+				if (data.roleId === channelState.activeRoleId) loadData();
+			}),
+			ws.on('workflow_run_completed', (data: { roleId: string }) => {
+				if (data.roleId === channelState.activeRoleId) loadData();
+			}),
+			ws.on('workflow_run_failed', (data: { roleId: string }) => {
+				if (data.roleId === channelState.activeRoleId) loadData();
+			}),
+		);
+	});
+
+	onDestroy(() => {
+		unsubs.forEach(fn => fn());
+	});
 </script>
 
 <svelte:head>
 	<title>Nebo - {channelState.activeRoleName || 'Activity'} - Activity</title>
 </svelte:head>
 
-<div class="flex-1 overflow-y-auto">
-	<div class="max-w-3xl mx-auto px-6 py-6">
+<div class="flex-1 flex flex-col min-h-0">
+	<div class="flex-1 overflow-y-auto">
+		<div class="max-w-3xl mx-auto px-6 py-6">
 		{#if loading}
 			<div class="flex justify-center py-12">
 				<span class="loading loading-spinner loading-md text-primary"></span>
@@ -240,10 +326,21 @@
 				</div>
 			{:else if sessionMessages.length === 0}
 				<div class="flex flex-col items-center py-12 text-center">
-					<p class="text-sm text-base-content/50">No messages in this session.</p>
+					<p class="text-sm text-base-content/70">No messages in this session.</p>
 				</div>
 			{:else}
 				{@const toolOutputMap = buildToolOutputMap(sessionMessages)}
+				{#if hasMoreMessages}
+					<div class="flex justify-center mb-4">
+						<button
+							class="btn btn-sm btn-ghost text-base-content/70"
+							disabled={loadingMore}
+							onclick={loadOlderMessages}
+						>
+							{loadingMore ? 'Loading...' : 'Load older messages'}
+						</button>
+					</div>
+				{/if}
 				<div class="flex flex-col gap-4">
 					{#each sessionMessages as msg (msg.id)}
 						{#if msg.role === 'tool'}
@@ -252,7 +349,7 @@
 						<div class="flex gap-4 {msg.role === 'user' ? 'justify-end' : ''}">
 							{#if msg.role === 'user'}
 								<div class="max-w-[80%]">
-									<div class="text-sm text-base-content/60 text-right mb-1">
+									<div class="text-sm text-base-content/80 text-right mb-1">
 										{formatTime(msg.createdAt)}
 									</div>
 									<div class="rounded-2xl bg-primary px-4 py-3">
@@ -261,14 +358,14 @@
 								</div>
 							{:else if msg.role === 'system'}
 								<div class="w-full flex justify-center">
-									<div class="bg-base-200 rounded-lg px-3 py-2 text-sm text-base-content/60">
+									<div class="bg-base-200 rounded-lg px-3 py-2 text-sm text-base-content/80">
 										{msg.content || ''}
 									</div>
 								</div>
 							{:else}
 								{@const tools = parseToolCalls(msg.toolCalls)}
 								<div class="max-w-[90%]">
-									<div class="text-sm text-base-content/60 mb-1">
+									<div class="text-sm text-base-content/80 mb-1">
 										{formatTime(msg.createdAt)}
 									</div>
 									{#if tools.length}
@@ -295,50 +392,137 @@
 						</div>
 						{/if}
 					{/each}
+					<div bind:this={messagesEndEl}></div>
 				</div>
 			{/if}
 		{:else}
-			<!-- Recent activity timeline -->
-			{#if recentActivity.length > 0}
+			<!-- Stats overview -->
+			{#if stats && stats.totalRuns > 0}
 				<section class="pb-6">
-					<h2 class="text-sm text-base-content/60 uppercase tracking-wider font-semibold mb-3">Recent activity</h2>
-					<div class="flex flex-col">
-						{#each recentActivity as entry, i}
-							<div class="flex items-start gap-2.5 py-2 {i < recentActivity.length - 1 ? 'border-b border-base-content/5' : ''}">
-								<div class="shrink-0 w-5 h-5 rounded-full {typeBg[entry.type]} flex items-center justify-center mt-0.5">
-									{#if entry.type === 'completed'}
-										<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{typeColor[entry.type]}">
-											<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-										</svg>
-									{:else if entry.type === 'pending'}
-										<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{typeColor[entry.type]}">
-											<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-										</svg>
-									{:else if entry.type === 'failed'}
-										<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{typeColor[entry.type]}">
-											<circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-										</svg>
+					<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Overview</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+
+					<div class="grid grid-cols-4 gap-3">
+						<div class="rounded-xl border border-base-content/10 p-3 text-center">
+							<p class="text-2xl font-bold">{stats.totalRuns}</p>
+							<p class="text-xs text-base-content/70">Total runs</p>
+						</div>
+						<div class="rounded-xl border border-base-content/10 p-3 text-center">
+							<p class="text-2xl font-bold text-success">{stats.completed}</p>
+							<p class="text-xs text-base-content/70">Completed</p>
+						</div>
+						<div class="rounded-xl border border-base-content/10 p-3 text-center">
+							<p class="text-2xl font-bold text-error">{stats.failed}</p>
+							<p class="text-xs text-base-content/70">Failed</p>
+						</div>
+						<div class="rounded-xl border border-base-content/10 p-3 text-center">
+							<p class="text-2xl font-bold">{stats.avgDurationSecs != null ? formatDuration(stats.avgDurationSecs) : '—'}</p>
+							<p class="text-xs text-base-content/70">Avg duration</p>
+						</div>
+					</div>
+					{#if stats.running > 0}
+						<div class="mt-2 flex items-center gap-2 text-sm text-warning">
+							<span class="loading loading-spinner loading-xs"></span>
+							{stats.running} running now
+						</div>
+					{/if}
+				</section>
+			{/if}
+
+			<!-- Workflow runs grouped by day -->
+			{#if groupedRuns.length > 0}
+				<section class="pb-6 {stats && stats.totalRuns > 0 ? 'border-t border-base-content/10 pt-4 mt-2' : ''}">
+					<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Workflow runs</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+					<div class="flex flex-col gap-2">
+						{#each groupedRuns as group}
+							<!-- Day header -->
+							<button
+								type="button"
+								class="flex items-center justify-between w-full px-3 py-2 rounded-lg hover:bg-base-content/5 transition-colors text-left"
+								onclick={() => toggleDay(group.label)}
+							>
+								<div class="flex items-center gap-2">
+									<svg class="w-3 h-3 text-base-content/70 transition-transform {expandedDays.has(group.label) ? 'rotate-90' : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<polyline points="9 18 15 12 9 6" />
+									</svg>
+									<span class="text-sm font-medium">{group.label}</span>
+								</div>
+								<div class="flex items-center gap-2 text-xs">
+									{#if group.running > 0}
+										<span class="text-warning">{group.running} running</span>
+									{/if}
+									{#if group.failed > 0}
+										<span class="text-error">{group.failed} failed</span>
+									{/if}
+									<span class="text-base-content/70">{group.completed} completed</span>
+								</div>
+							</button>
+
+							<!-- Expanded: show individual runs (failed first, then recent) -->
+							{#if expandedDays.has(group.label)}
+								<div class="flex flex-col gap-0.5 ml-5 border-l border-base-content/10 pl-3">
+									{#each group.runs.filter(r => r.status === 'failed') as run (run.id)}
+										<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-base-content/5 transition-colors">
+											<div class="w-2 h-2 rounded-full shrink-0 {statusColor[run.status]}"></div>
+											<div class="flex-1 min-w-0">
+												<div class="flex items-center gap-2">
+													<span class="text-sm font-medium text-error">Failed</span>
+													<span class="text-xs text-base-content/70">{run.triggerType}</span>
+												</div>
+												{#if run.error}
+													<p class="text-xs text-error/70 truncate mt-0.5">{run.error}</p>
+												{/if}
+											</div>
+											<div class="text-right shrink-0">
+												<p class="text-xs text-base-content/70">{formatTime(run.startedAt)}</p>
+												<p class="text-xs text-base-content/70">{runDuration(run)}</p>
+											</div>
+										</div>
+									{/each}
+									{#each group.runs.filter(r => r.status === 'running') as run (run.id)}
+										<div class="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-base-content/5 transition-colors">
+											<div class="w-2 h-2 rounded-full shrink-0 bg-warning"></div>
+											<div class="flex-1 min-w-0">
+												<div class="flex items-center gap-2">
+													<span class="text-sm font-medium text-warning">Running</span>
+													{#if run.currentActivity}
+														<span class="text-xs text-base-content/70">{run.currentActivity}</span>
+													{/if}
+												</div>
+											</div>
+											<div class="text-right shrink-0">
+												<p class="text-xs text-base-content/70">{formatTime(run.startedAt)}</p>
+											</div>
+										</div>
+									{/each}
+									{#if group.completed > 5}
+										<div class="px-3 py-1.5 text-xs text-base-content/70">
+											{group.completed} completed runs
+										</div>
 									{:else}
-										<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="{typeColor[entry.type]}">
-											<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-										</svg>
+										{#each group.runs.filter(r => r.status === 'completed') as run (run.id)}
+											<div class="flex items-center gap-3 px-3 py-1.5 text-xs text-base-content/70">
+												<div class="w-1.5 h-1.5 rounded-full shrink-0 bg-success"></div>
+												<span>Completed</span>
+												<span>{run.triggerType}</span>
+												<span class="ml-auto">{formatTime(run.startedAt)} · {runDuration(run)}</span>
+											</div>
+										{/each}
 									{/if}
 								</div>
-								<div class="flex-1 min-w-0">
-									<p class="text-base text-base-content/80">{entry.event}</p>
-									<span class="text-sm text-base-content/60">{entry.time}</span>
-								</div>
-							</div>
+							{/if}
 						{/each}
 					</div>
+					{#if runsTotal > runs.length}
+						<p class="text-xs text-base-content/70 text-center mt-3">{runsTotal - runs.length} older runs not shown</p>
+					{/if}
 				</section>
 			{/if}
 
 			<!-- Chat history -->
-			<section class="pb-6 border-t border-base-content/10 pt-4">
-				<h2 class="text-sm text-base-content/60 uppercase tracking-wider font-semibold mb-3">Chat history</h2>
+			<section class="pb-6 {hasActivityAbove ? 'border-t border-base-content/10 pt-4 mt-2' : ''}">
+				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Chat history</h2><span class="btn btn-sm invisible">&#8203;</span></div>
 				{#if sessions.length === 0}
-					<p class="text-sm text-base-content/50">No chat history with {channelState.activeRoleName} yet.</p>
+					<p class="text-sm text-base-content/70">No chat history with {channelState.activeRoleName} yet.</p>
 				{:else}
 					<div class="flex flex-col gap-1">
 						{#each sessions as session (session.id)}
@@ -348,7 +532,7 @@
 							>
 								<div class="flex-1 min-w-0">
 									<p class="text-sm font-medium truncate">{session.summary || session.name || 'Chat session'}</p>
-									<p class="text-xs text-base-content/50 mt-0.5">
+									<p class="text-xs text-base-content/70 mt-0.5">
 										{session.messageCount} message{session.messageCount !== 1 ? 's' : ''}
 										{' · '}{timeAgo(session.updatedAt)}
 									</p>
@@ -361,24 +545,27 @@
 
 			<!-- Memories -->
 			{#if memories.length > 0}
-				<section class="pb-12 border-t border-base-content/10 pt-4">
-					<h2 class="text-sm text-base-content/60 uppercase tracking-wider font-semibold mb-3 flex items-center gap-1.5">
-						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-							<path d="M12 2a9 9 0 0 1 9 9c0 3.88-3.08 7.13-5.5 9.36a2.06 2.06 0 0 1-2.82.08A27 27 0 0 1 3 11a9 9 0 0 1 9-9z" />
-							<circle cx="12" cy="11" r="3" />
-						</svg>
-						Memories
-					</h2>
+				<section class="pb-12 border-t border-base-content/10 pt-4 mt-2">
+					<div class="flex items-center justify-between mb-3">
+						<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold flex items-center gap-1.5">
+							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<path d="M12 2a9 9 0 0 1 9 9c0 3.88-3.08 7.13-5.5 9.36a2.06 2.06 0 0 1-2.82.08A27 27 0 0 1 3 11a9 9 0 0 1 9-9z" />
+								<circle cx="12" cy="11" r="3" />
+							</svg>
+							Memories
+						</h2>
+						<span class="btn btn-sm invisible">&#8203;</span>
+					</div>
 					<div class="flex flex-col gap-2">
 						{#each memories as mem}
 							<div class="rounded-lg border border-base-content/5 p-3">
 								<div class="flex items-center gap-1.5 mb-1">
 									<span class="text-sm font-semibold text-primary">{mem.key}</span>
 									{#if mem.tags && mem.tags.length > 0}
-										<span class="text-sm text-base-content/40">{mem.tags.join(', ')}</span>
+										<span class="text-sm text-base-content/80">{mem.tags.join(', ')}</span>
 									{/if}
 								</div>
-								<p class="text-sm text-base-content/60">{mem.value}</p>
+								<p class="text-sm text-base-content/80">{mem.value}</p>
 							</div>
 						{/each}
 					</div>
@@ -386,12 +573,13 @@
 			{/if}
 
 			<!-- Empty state if absolutely nothing -->
-			{#if recentActivity.length === 0 && sessions.length === 0 && memories.length === 0}
+			{#if (!stats || stats.totalRuns === 0) && runs.length === 0 && sessions.length === 0 && memories.length === 0}
 				<div class="flex flex-col items-center py-12 text-center">
-					<p class="text-sm text-base-content/50">No activity yet for {channelState.activeRoleName}.</p>
-					<p class="text-xs text-base-content/40 mt-1">Chat with the agent to get started.</p>
+					<p class="text-sm text-base-content/70">No activity yet for {channelState.activeRoleName}.</p>
+					<p class="text-xs text-base-content/80 mt-1">Chat with the agent or set up automations to get started.</p>
 				</div>
 			{/if}
 		{/if}
+		</div>
 	</div>
 </div>

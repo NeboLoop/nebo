@@ -510,6 +510,145 @@ impl RoleTool {
             }
         }
 
+        // Update input_values (user-supplied configuration values)
+        if let Some(vals) = input.get("input_values") {
+            if vals.is_object() {
+                let vals_str = vals.to_string();
+                match self.store.update_role_input_values(role_id, &vals_str) {
+                    Ok(_) => changes.push("input values updated".to_string()),
+                    Err(e) => changes.push(format!("failed to update input values: {}", e)),
+                }
+            }
+        }
+
+        // Update input schema (field definitions in role.json)
+        if let Some(schema) = input.get("inputs") {
+            if schema.is_array() {
+                let mut fm: serde_json::Value = serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
+                fm["inputs"] = schema.clone();
+                current_frontmatter = fm.to_string();
+                let role_dir = self.user_dir.join(&current_name);
+                if role_dir.exists() {
+                    let _ = std::fs::write(role_dir.join("role.json"), &current_frontmatter);
+                }
+                changes.push("input field schema updated".to_string());
+            }
+        }
+
+        // toggle_automation: toggle a single binding on/off
+        if let Some(binding_name) = input["toggle_automation"].as_str() {
+            match self.store.toggle_role_workflow(role_id, binding_name) {
+                Ok(new_state) => {
+                    let state_str = if new_state { "enabled" } else { "disabled" };
+                    changes.push(format!("automation '{}' {}", binding_name, state_str));
+                }
+                Err(e) => changes.push(format!("failed to toggle '{}': {}", binding_name, e)),
+            }
+        }
+
+        // update_automation: update a single binding by name (non-destructive)
+        if let Some(update_obj) = input.get("update_automation") {
+            if let Some(binding_name) = update_obj["name"].as_str() {
+                let mut fm: serde_json::Value = serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
+
+                if let Some(existing_binding) = fm.get_mut("workflows").and_then(|w| w.get_mut(binding_name)) {
+                    // Merge individual fields into the existing binding
+                    if let Some(desc) = update_obj["description"].as_str() {
+                        existing_binding["description"] = serde_json::Value::String(desc.to_string());
+                    }
+                    if let Some(emit) = update_obj.get("emit") {
+                        existing_binding["emit"] = emit.clone();
+                    }
+                    if let Some(steps) = update_obj["steps"].as_array() {
+                        let activities: Vec<serde_json::Value> = steps.iter().enumerate().map(|(i, step)| {
+                            let intent = step.as_str().unwrap_or("Execute step");
+                            serde_json::json!({ "id": format!("step-{}", i + 1), "intent": intent })
+                        }).collect();
+                        existing_binding["activities"] = serde_json::Value::Array(activities);
+                    }
+
+                    // Update trigger if any trigger field is provided
+                    let has_trigger_change = update_obj["schedule"].is_string()
+                        || update_obj["interval"].is_string()
+                        || !update_obj["sources"].is_null()
+                        || update_obj["trigger"].is_string();
+                    if has_trigger_change {
+                        let trigger_type = if update_obj["schedule"].is_string() {
+                            "schedule"
+                        } else if update_obj["interval"].is_string() {
+                            "heartbeat"
+                        } else if !update_obj["sources"].is_null() {
+                            "event"
+                        } else {
+                            update_obj["trigger"].as_str().unwrap_or("manual")
+                        };
+                        let trigger = match trigger_type {
+                            "schedule" => {
+                                let raw = update_obj["schedule"].as_str().unwrap_or("0 9 * * *");
+                                let cron = Self::normalize_cron(raw);
+                                serde_json::json!({ "type": "schedule", "cron": cron })
+                            }
+                            "heartbeat" => {
+                                let interval = update_obj["interval"].as_str().unwrap_or("30m");
+                                let mut t = serde_json::json!({ "type": "heartbeat", "interval": interval });
+                                if let Some(window) = update_obj["window"].as_str() {
+                                    t["window"] = serde_json::Value::String(window.to_string());
+                                }
+                                t
+                            }
+                            "event" => {
+                                let sources: Vec<serde_json::Value> = if let Some(arr) = update_obj["sources"].as_array() {
+                                    arr.clone()
+                                } else if let Some(s) = update_obj["sources"].as_str() {
+                                    s.split(',').map(|s| serde_json::Value::String(s.trim().to_string())).collect()
+                                } else {
+                                    vec![]
+                                };
+                                serde_json::json!({ "type": "event", "sources": sources })
+                            }
+                            _ => serde_json::json!({ "type": "manual" }),
+                        };
+                        existing_binding["trigger"] = trigger;
+
+                        // Re-register trigger for this binding
+                        let cron_name = format!("role-{}-{}", role_id, binding_name);
+                        let _ = self.store.delete_cron_job_by_name(&cron_name);
+                    }
+
+                    current_frontmatter = fm.to_string();
+                    let role_dir = self.user_dir.join(&current_name);
+                    if role_dir.exists() {
+                        let _ = std::fs::write(role_dir.join("role.json"), &current_frontmatter);
+                    }
+
+                    // Re-register triggers for the updated config
+                    if let Ok(config) = napp::role::parse_role_config(&current_frontmatter) {
+                        self.register_config_triggers(role_id, &config);
+                    }
+
+                    // Upsert the workflow binding row in DB
+                    if let Ok(config) = napp::role::parse_role_config(&current_frontmatter) {
+                        if let Some(binding) = config.workflows.get(binding_name) {
+                            let (trigger_type, trigger_config) = Self::flatten_trigger(&binding.trigger);
+                            let activities_json = serde_json::to_string(&binding.activities).ok();
+                            let inputs_json = if binding.inputs.is_empty() { None } else {
+                                serde_json::to_string(&binding.inputs).ok()
+                            };
+                            let _ = self.store.upsert_role_workflow(
+                                role_id, binding_name, &trigger_type, &trigger_config,
+                                Some(&binding.description), inputs_json.as_deref(),
+                                binding.emit.as_deref(), activities_json.as_deref(),
+                            );
+                        }
+                    }
+
+                    changes.push(format!("updated automation '{}'", binding_name));
+                } else {
+                    changes.push(format!("automation '{}' not found — use add_automations to create it", binding_name));
+                }
+            }
+        }
+
         // Handle automations changes
         let mut automations_changed = false;
 
@@ -713,6 +852,170 @@ impl RoleTool {
             }
             Err(e) => ToolResult::error(format!("install failed: {}", e)),
         }
+    }
+
+    async fn handle_reload(&self, input: &serde_json::Value) -> ToolResult {
+        let name = input["name"].as_str().unwrap_or("");
+        if name.is_empty() {
+            return ToolResult::error("'name' is required to identify the role to reload");
+        }
+        let check_update = input["check_update"].as_bool().unwrap_or(false);
+        let apply_update = input["apply_update"].as_bool().unwrap_or(false);
+
+        // Find the role in DB
+        let db_role = match self.store.list_roles(500, 0) {
+            Ok(roles) => {
+                let lower = name.to_lowercase();
+                roles.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+            }
+            Err(e) => return ToolResult::error(format!("Failed to query roles: {}", e)),
+        };
+        let db_role = match db_role {
+            Some(r) => r,
+            None => return ToolResult::error(format!("Role '{}' not found.", name)),
+        };
+
+        let role_id = &db_role.id;
+        let mut changes = Vec::new();
+        let mut current_md = db_role.role_md.clone();
+        let mut current_frontmatter = db_role.frontmatter.clone();
+        let mut current_name = db_role.name.clone();
+        let mut current_desc = db_role.description.clone();
+
+        // --- Marketplace update check ---
+        if (check_update || apply_update) && db_role.kind.is_some() {
+            match crate::build_neboloop_api(&self.store) {
+                Ok(api) => {
+                    match api.get_skill(role_id).await {
+                        Ok(detail) => {
+                            let remote_version = &detail.item.version;
+                            // Get local version from manifest.json if it exists
+                            let local_version = db_role.napp_path.as_ref()
+                                .and_then(|p| {
+                                    let manifest_path = std::path::PathBuf::from(p).join("manifest.json");
+                                    std::fs::read_to_string(manifest_path).ok()
+                                })
+                                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                                .and_then(|v| v["version"].as_str().map(|s| s.to_string()))
+                                .unwrap_or_else(|| "unknown".to_string());
+
+                            if remote_version != &local_version && !remote_version.is_empty() {
+                                if apply_update {
+                                    // Re-fetch and apply the update
+                                    match crate::persist_role_from_api(&api, role_id, &db_role.name, db_role.kind.as_deref().unwrap_or(""), &self.store).await {
+                                        Ok(_) => {
+                                            // Re-read from DB after persist
+                                            if let Ok(Some(updated)) = self.store.get_role(role_id) {
+                                                current_md = updated.role_md;
+                                                current_frontmatter = updated.frontmatter;
+                                                current_name = updated.name;
+                                                current_desc = updated.description;
+                                            }
+                                            changes.push(format!("upgraded from {} → {}", local_version, remote_version));
+                                        }
+                                        Err(e) => changes.push(format!("upgrade failed: {}", e)),
+                                    }
+                                } else {
+                                    changes.push(format!("update available: {} → {} (use apply_update: true to upgrade)", local_version, remote_version));
+                                }
+                            } else {
+                                changes.push(format!("up to date (version {})", local_version));
+                            }
+                        }
+                        Err(e) => changes.push(format!("failed to check for updates: {}", e)),
+                    }
+                }
+                Err(_) => changes.push("NeboLoop not connected — cannot check for updates".to_string()),
+            }
+
+            if check_update && !apply_update {
+                // Just checking, don't reload from filesystem
+                return ToolResult::ok(format!("Role '{}':\n- {}", db_role.name, changes.join("\n- ")));
+            }
+        }
+
+        // --- Filesystem reload ---
+        let role_dir = if let Some(ref napp_path) = db_role.napp_path {
+            std::path::PathBuf::from(napp_path)
+        } else {
+            self.user_dir.join(&db_role.name)
+        };
+
+        if !role_dir.exists() {
+            if changes.is_empty() {
+                return ToolResult::error(format!(
+                    "Filesystem directory not found: {}. Cannot reload.",
+                    role_dir.display()
+                ));
+            }
+            // Had marketplace changes but no filesystem — still report
+        } else {
+            // Reload ROLE.md
+            let role_md_path = role_dir.join("ROLE.md");
+            if role_md_path.exists() {
+                match std::fs::read_to_string(&role_md_path) {
+                    Ok(content) => {
+                        if content != current_md {
+                            current_md = content;
+                            changes.push("ROLE.md reloaded".to_string());
+                        }
+                    }
+                    Err(e) => changes.push(format!("failed to read ROLE.md: {}", e)),
+                }
+            }
+
+            // Reload role.json
+            let role_json_path = role_dir.join("role.json");
+            if role_json_path.exists() {
+                match std::fs::read_to_string(&role_json_path) {
+                    Ok(content) => {
+                        if content.trim() != current_frontmatter.trim() {
+                            match napp::role::parse_role_config(&content) {
+                                Ok(config) => {
+                                    current_frontmatter = content;
+
+                                    let cron_prefix = format!("role-{}-", role_id);
+                                    let _ = self.store.delete_cron_jobs_by_prefix(&cron_prefix);
+                                    let _ = self.store.delete_role_workflows(role_id);
+                                    self.register_config_triggers(role_id, &config);
+
+                                    changes.push(format!(
+                                        "role.json reloaded ({} workflows, {} inputs)",
+                                        config.workflows.len(),
+                                        config.inputs.len()
+                                    ));
+                                }
+                                Err(e) => changes.push(format!("role.json invalid, skipped: {}", e)),
+                            }
+                        }
+                    }
+                    Err(e) => changes.push(format!("failed to read role.json: {}", e)),
+                }
+            }
+        }
+
+        if changes.is_empty() {
+            return ToolResult::ok(format!("Role '{}' is already in sync.", db_role.name));
+        }
+
+        // Persist to DB
+        if let Err(e) = self.store.update_role(
+            role_id, &current_name, &current_desc, &current_md,
+            &current_frontmatter, db_role.pricing_model.as_deref(), db_role.pricing_cost,
+        ) {
+            return ToolResult::error(format!("Failed to update DB: {}", e));
+        }
+
+        // Update live registry
+        let mut registry = self.role_registry.write().await;
+        if let Some(active) = registry.get_mut(role_id) {
+            active.name = current_name.clone();
+            active.role_md = current_md;
+            active.config = napp::role::parse_role_config(&current_frontmatter).ok();
+            changes.push("live role updated".to_string());
+        }
+
+        ToolResult::ok(format!("Role '{}':\n- {}", current_name, changes.join("\n- ")))
     }
 
     async fn handle_repair(&self, input: &serde_json::Value) -> ToolResult {
@@ -1092,6 +1395,22 @@ impl RoleTool {
         ("0".to_string(), "0".to_string())
     }
 
+    /// Convert a parsed RoleTrigger into flat (type, config) strings for DB storage.
+    fn flatten_trigger(trigger: &napp::role::RoleTrigger) -> (String, String) {
+        match trigger {
+            napp::role::RoleTrigger::Schedule { cron } => ("schedule".to_string(), cron.clone()),
+            napp::role::RoleTrigger::Heartbeat { interval, window } => {
+                let config = match window {
+                    Some(w) => format!("{}|{}", interval, w),
+                    None => interval.clone(),
+                };
+                ("heartbeat".to_string(), config)
+            }
+            napp::role::RoleTrigger::Event { sources } => ("event".to_string(), sources.join(",")),
+            napp::role::RoleTrigger::Manual => ("manual".to_string(), String::new()),
+        }
+    }
+
     fn build_role_json_from_automations(automations: &[serde_json::Value]) -> serde_json::Value {
         let mut workflows = serde_json::Map::new();
 
@@ -1264,6 +1583,32 @@ impl RoleTool {
         ToolResult::ok(out)
     }
 
+    async fn handle_setup(&self, input: &serde_json::Value) -> ToolResult {
+        let name = input["name"].as_str().unwrap_or("");
+        if name.is_empty() {
+            return ToolResult::error("'name' is required to set up a role");
+        }
+
+        let db_role = match self.store.list_roles(500, 0) {
+            Ok(roles) => {
+                let lower = name.to_lowercase();
+                roles.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+            }
+            Err(e) => return ToolResult::error(format!("Failed to query roles: {}", e)),
+        };
+        let db_role = match db_role {
+            Some(r) => r,
+            None => return ToolResult::error(format!("Role '{}' not found.", name)),
+        };
+
+        // Return a structured result the frontend can act on
+        ToolResult::ok(format!(
+            "{{\"__roleSetup\": true, \"roleId\": \"{}\", \"roleName\": \"{}\", \"roleDescription\": \"{}\"}}\n\n\
+             The setup wizard for **{}** is ready. The user can configure inputs and schedules in the Configure tab.",
+            db_role.id, db_role.name, db_role.description, db_role.name
+        ))
+    }
+
     /// Find a role by name across filesystem locations and DB.
     fn find_role(&self, name: &str) -> Option<napp::role_loader::LoadedRole> {
         // Check user roles first (more likely to be edited)
@@ -1327,9 +1672,11 @@ impl DynTool for RoleTool {
          - deactivate: drop a role by name (or all roles if no name given)\n\
          - info: show role details (workflows, skills, triggers, persona)\n\
          - create: create a new role with structured automations (preferred) or raw role_md/role_json\n\
-         - update: edit any aspect of an existing role (description, persona, automations, name)\n\
+         - update: edit any aspect of an existing role — supports granular, non-destructive edits\n\
          - delete: permanently remove a role (DB, filesystem, registry, cron jobs)\n\
          - install: install a role from marketplace (ROLE-XXXX-XXXX)\n\
+         - setup: open the setup wizard for a role (configure inputs and schedules)\n\
+         - reload: re-read ROLE.md + role.json from filesystem and sync to DB (use after editing files on disk)\n\
          - repair: fix invalid cron expressions, orphan cron jobs, and sync triggers (optional: name to target one role)\n\
          - stats: show workflow run statistics for a role (total/completed/failed runs, tokens, errors)\n\n\
          AUTOMATIONS (for create and update):\n\
@@ -1364,7 +1711,23 @@ impl DynTool for RoleTool {
          role(action: \"delete\", name: \"morning-briefing\")\n  \
          role(action: \"repair\")  — fix all roles\n  \
          role(action: \"repair\", name: \"trading-bot\")  — fix one role\n  \
-         role(action: \"install\", code: \"ROLE-ABCD-1234\")"
+         role(action: \"install\", code: \"ROLE-ABCD-1234\")\n\n\
+         GRANULAR UPDATE (non-destructive — change one thing without affecting the rest):\n\n\
+         Update a SINGLE automation (change only what you specify):\n  \
+         role(action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
+           \"name\": \"weekly-audit\", \"schedule\": \"0 8 * * 1\", \"description\": \"New label\"})\n  \
+         role(action: \"update\", name: \"seo-auditor\", update_automation: {\n    \
+           \"name\": \"weekly-audit\", \"steps\": [\"Step 1\", \"Step 2\", \"Step 3\"]})\n\n\
+         Toggle a single automation on/off:\n  \
+         role(action: \"update\", name: \"seo-auditor\", toggle_automation: \"weekly-audit\")\n\n\
+         Set user-supplied input values (feeds into every workflow run):\n  \
+         role(action: \"update\", name: \"seo-auditor\", input_values: {\n    \
+           \"site_url\": \"https://example.com\", \"report_frequency\": \"weekly\"})\n\n\
+         Update input field schema (dynamic form shown on Settings tab):\n  \
+         role(action: \"update\", name: \"seo-auditor\", inputs: [\n    \
+           {\"key\": \"site_url\", \"label\": \"Your website\", \"type\": \"text\", \"required\": true},\n    \
+           {\"key\": \"frequency\", \"label\": \"Report frequency\", \"type\": \"select\",\n     \
+             \"options\": [{\"value\": \"daily\", \"label\": \"Daily\"}, {\"value\": \"weekly\", \"label\": \"Weekly\"}]}])"
             .to_string()
     }
 
@@ -1375,7 +1738,7 @@ impl DynTool for RoleTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "repair", "stats"]
+                    "enum": ["list", "activate", "deactivate", "info", "create", "update", "delete", "install", "reload", "repair", "setup", "stats"]
                 },
                 "name": {
                     "type": "string",
@@ -1418,6 +1781,47 @@ impl DynTool for RoleTool {
                     "description": "Remove specific automations by name (for update only).",
                     "items": { "type": "string" }
                 },
+                "update_automation": {
+                    "type": "object",
+                    "description": "Update a SINGLE existing automation by name without affecting others (for update only). Provide only the fields you want to change.",
+                    "properties": {
+                        "name": { "type": "string", "description": "Binding name to update (required)" },
+                        "description": { "type": "string", "description": "New description" },
+                        "steps": { "type": "array", "items": { "type": "string" }, "description": "Replace activity steps" },
+                        "schedule": { "type": "string", "description": "New cron schedule (changes trigger to schedule)" },
+                        "interval": { "type": "string", "description": "New interval (changes trigger to heartbeat)" },
+                        "window": { "type": "string", "description": "Time window for heartbeat" },
+                        "sources": { "type": "array", "items": { "type": "string" }, "description": "Event sources (changes trigger to event)" },
+                        "emit": { "type": "string", "description": "Event to emit on completion" }
+                    },
+                    "required": ["name"]
+                },
+                "toggle_automation": {
+                    "type": "string",
+                    "description": "Toggle a single automation on/off by binding name (for update only)"
+                },
+                "input_values": {
+                    "type": "object",
+                    "description": "Set user-supplied input values for the role (for update only). Key-value pairs matching the role's input schema."
+                },
+                "inputs": {
+                    "type": "array",
+                    "description": "Update the input field schema (for update only). Array of field definitions with key, label, type (text/textarea/number/select/checkbox/radio), description, required, default, placeholder, options.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": { "type": "string" },
+                            "label": { "type": "string" },
+                            "type": { "type": "string", "enum": ["text", "textarea", "number", "select", "checkbox", "radio", "path", "file"] },
+                            "description": { "type": "string" },
+                            "required": { "type": "boolean" },
+                            "default": {},
+                            "placeholder": { "type": "string" },
+                            "options": { "type": "array", "items": { "type": "object", "properties": { "value": { "type": "string" }, "label": { "type": "string" } } } }
+                        },
+                        "required": ["key", "label"]
+                    }
+                },
                 "role_md": {
                     "type": "string",
                     "description": "ROLE.md persona content (for create/update — optional if description is provided on create)"
@@ -1429,6 +1833,14 @@ impl DynTool for RoleTool {
                 "code": {
                     "type": "string",
                     "description": "Marketplace code (for install, e.g. ROLE-ABCD-1234)"
+                },
+                "check_update": {
+                    "type": "boolean",
+                    "description": "For reload: check if a newer version is available on NeboLoop (marketplace roles only)"
+                },
+                "apply_update": {
+                    "type": "boolean",
+                    "description": "For reload: download and apply the latest version from NeboLoop (marketplace roles only)"
                 }
             },
             "required": ["action"]
@@ -1456,10 +1868,12 @@ impl DynTool for RoleTool {
                 "update" => self.handle_update(&input).await,
                 "delete" => self.handle_delete(&input).await,
                 "install" => self.handle_install(&input).await,
+                "reload" => self.handle_reload(&input).await,
                 "repair" => self.handle_repair(&input).await,
+                "setup" => self.handle_setup(&input).await,
                 "stats" => self.handle_stats(&input).await,
                 _ => ToolResult::error(format!(
-                    "Unknown action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, repair, stats",
+                    "Unknown action '{}'. Available: list, activate, deactivate, info, create, update, delete, install, reload, repair, setup, stats",
                     action
                 )),
             }
