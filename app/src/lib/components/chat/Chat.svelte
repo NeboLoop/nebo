@@ -851,11 +851,16 @@
 					);
 				}
 			}
-			currentStreamingMessage.content += chunk;
+			// Ensure separator when text follows a tool result
 			if (!currentStreamingMessage.contentBlocks) {
 				currentStreamingMessage.contentBlocks = [];
 			}
 			const blocks = currentStreamingMessage.contentBlocks;
+			const lastBlockType = blocks.length > 0 ? blocks[blocks.length - 1].type : 'text';
+			if (lastBlockType !== 'text' && currentStreamingMessage.content.length > 0 && !currentStreamingMessage.content.endsWith('\n')) {
+				currentStreamingMessage.content += '\n';
+			}
+			currentStreamingMessage.content += chunk;
 			if (blocks.length === 0 || blocks[blocks.length - 1].type !== 'text') {
 				blocks.push({ type: 'text', text: chunk });
 			} else {

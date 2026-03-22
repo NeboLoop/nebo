@@ -161,6 +161,14 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             continue;
         }
 
+        // Skip deactivated roles — check the live registry
+        if entity.entity_type == "role" {
+            let registry = state.role_registry.read().await;
+            if !registry.contains_key(&entity.entity_id) {
+                continue;
+            }
+        }
+
         info!(entity = key, "firing heartbeat");
 
         let session_key = format!("heartbeat-{}-{}", entity.entity_type, entity.entity_id);
