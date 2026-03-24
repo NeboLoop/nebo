@@ -910,7 +910,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
-    // Spawn background update checker
+    // Spawn background update checker (skip in debug/dev builds)
+    if cfg!(debug_assertions) {
+        tracing::debug!("skipping background update checker in dev build");
+    } else {
     let update_hub = state.hub.clone();
     let download_hub = state.hub.clone();
     let update_store = state.store.clone();
@@ -992,6 +995,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         let cancel = tokio_util::sync::CancellationToken::new();
         checker.run(cancel).await;
     });
+    } // end if !debug_assertions
 
     // Spawn cron scheduler
     scheduler::spawn(
@@ -1071,7 +1075,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                     tracing::info!(plan = plan, "Account: plan updated via tokenRefresh");
 
                     // Persist fresh JWT to SQLite auth_profiles — next Janus request uses it
-                    if let Ok(profiles) = state.store.list_active_auth_profiles_by_provider("neboloop") {
+                    if let Ok(profiles) = state.store.list_all_active_auth_profiles_by_provider("neboloop") {
                         if let Some(profile) = profiles.first() {
                             let _ = state.store.update_auth_profile(
                                 &profile.id,
@@ -1445,6 +1449,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/neboloop/account", axum::routing::delete(handlers::neboloop::account_disconnect))
         .route("/neboloop/status", axum::routing::get(handlers::neboloop::bot_status))
         .route("/neboloop/janus/usage", axum::routing::get(handlers::neboloop::janus_usage))
+        .route("/neboloop/janus/usage/refresh", axum::routing::post(handlers::neboloop::janus_usage_refresh))
         .route("/neboloop/open", axum::routing::get(handlers::neboloop::open_neboloop))
         .route("/neboloop/connect", axum::routing::post(handlers::neboloop::connect_handler))
         .route("/neboloop/billing/prices", axum::routing::get(handlers::neboloop::billing_prices))
@@ -1496,13 +1501,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/roles/{id}/apply-update", axum::routing::post(handlers::roles::apply_role_update))
         .route("/roles/{id}/stats", axum::routing::get(handlers::roles::role_stats))
         .route("/roles/{id}/runs", axum::routing::get(handlers::roles::list_role_runs))
-        // Codes (marketplace install via REST)
-        .route("/store/apps", axum::routing::get(handlers::store::list_store_apps))
-        .route("/store/skills", axum::routing::get(handlers::store::list_store_skills))
-        .route("/store/skills/{id}/install", axum::routing::post(handlers::store::install_store_skill))
-        .route("/store/skills/{id}/install", axum::routing::delete(handlers::store::uninstall_store_skill))
-        .route("/store/workflows", axum::routing::get(handlers::store::list_store_workflows))
-        // Marketplace proxy endpoints
+        // Marketplace (unified on /store/products with ?type= filter)
         .route("/store/products", axum::routing::get(handlers::store::list_store_products))
         .route("/store/products/top", axum::routing::get(handlers::store::list_store_products_top))
         .route("/store/featured", axum::routing::get(handlers::store::list_store_featured))
@@ -1513,7 +1512,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/store/products/{id}/similar", axum::routing::get(handlers::store::get_store_product_similar))
         .route("/store/products/{id}/media", axum::routing::get(handlers::store::get_store_product_media))
         .route("/store/products/{id}/feedback", axum::routing::get(handlers::store::get_store_product_feedback).post(handlers::store::submit_store_product_feedback))
-        .route("/store/products/{id}/install", axum::routing::post(handlers::store::install_store_product))
+        .route("/store/products/{id}/install", axum::routing::post(handlers::store::install_store_product).delete(handlers::store::uninstall_store_product))
 
         // Entity Config (per-entity settings)
         .route("/entity-config/{entity_type}/{entity_id}", axum::routing::get(handlers::entity_config::get_entity_config))

@@ -23,8 +23,10 @@
 	} from '$lib/stores/update';
 	import type { UpdateCheckResponse } from '$lib/api/neboComponents';
 	import * as api from '$lib/api/nebo';
+	import { goto } from '$app/navigation';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
 	import WhatsNewModal from '$lib/components/WhatsNewModal.svelte';
+	import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
 	import Toast from '$lib/components/ui/Toast.svelte';
 
 	let { children }: { children: Snippet } = $props();
@@ -38,6 +40,10 @@
 
 	// Toast state for tray "Check for Updates" when already up-to-date
 	let showUpToDateToast = $state(false);
+
+	// Upgrade success modal state (triggered by plan_changed WS event)
+	let showUpgradeSuccess = $state(false);
+	let upgradedPlan = $state('');
 
 	// Theme: detect OS preference, allow user override
 	let themePref = $state<'light' | 'dark' | 'system'>('system');
@@ -149,6 +155,8 @@
 		const unsubPlan = wsClient.on<{ plan: string }>('plan_changed', (data) => {
 			if (data) {
 				window.dispatchEvent(new CustomEvent('nebo:plan_changed', { detail: data }));
+				upgradedPlan = data.plan;
+				showUpgradeSuccess = true;
 			}
 		});
 
@@ -284,6 +292,17 @@
 	bind:show={showWhatsNew}
 	version={whatsNewVersion}
 	releaseUrl={whatsNewReleaseUrl}
+/>
+
+<UpgradeSuccessModal
+	bind:show={showUpgradeSuccess}
+	plan={upgradedPlan}
+	onclose={() => {
+		showUpgradeSuccess = false;
+		if ($page.url.pathname.startsWith('/upgrade')) {
+			goto('/');
+		}
+	}}
 />
 
 <Toast

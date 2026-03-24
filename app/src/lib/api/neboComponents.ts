@@ -1107,6 +1107,8 @@ export interface InvoiceInfo {
 	description: string
 	status: string
 	pdfUrl?: string
+	hostedUrl?: string
+	receiptUrl?: string
 	createdAt: string
 }
 
@@ -1177,6 +1179,7 @@ export interface NeboLoopDisconnectResponse {
 export interface NeboLoopJanusUsageResponse {
 	session: NeboLoopJanusWindowUsage
 	weekly: NeboLoopJanusWindowUsage
+	updatedAt?: string
 }
 
 export interface NeboLoopJanusWindowUsage {

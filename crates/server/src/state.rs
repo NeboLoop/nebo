@@ -16,7 +16,7 @@ use serde::Serialize;
 use crate::handlers::ws::ClientHub;
 use crate::workflow_manager::WorkflowManagerImpl;
 
-/// Janus AI usage stats stored in memory, updated from rate limit headers.
+/// Janus AI usage stats stored in memory, updated from rate limit headers or direct API call.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JanusUsage {
@@ -26,6 +26,9 @@ pub struct JanusUsage {
     pub weekly_limit_tokens: u64,
     pub weekly_remaining_tokens: u64,
     pub weekly_reset_at: String,
+    /// ISO 8601 timestamp of when this data was last updated
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub updated_at: String,
 }
 
 /// Shared application state passed to all handlers via Axum extractors.

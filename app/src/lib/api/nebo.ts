@@ -869,6 +869,13 @@ export function neboLoopJanusUsage() {
 }
 
 /**
+ * @description "Force-refresh janus usage from Janus gateway"
+ */
+export function neboLoopJanusUsageRefresh() {
+	return webapi.post<components.NeboLoopJanusUsageResponse>(`/api/v1/neboloop/janus/usage/refresh`)
+}
+
+/**
  * @description "Nebo loop login"
  * @param req
  */
@@ -1233,57 +1240,15 @@ export function deleteSkillSecret(name: string, key: string) {
 /**
  * @description "List store apps"
  */
-export function listStoreApps() {
-	return webapi.get<components.ListStoreAppsResponse>(`/api/v1/store/apps`)
+export function installStoreProduct(id: string) {
+	return webapi.post<components.MessageResponse>(`/api/v1/store/products/${id}/install`)
 }
 
 /**
- * @description "Get store app"
+ * @description "Uninstall store product"
  */
-export function getStoreApp(id: string) {
-	return webapi.get<components.GetStoreAppResponse>(`/api/v1/store/apps/${id}`)
-}
-
-/**
- * @description "Uninstall store app"
- */
-export function uninstallStoreApp(id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/store/apps/${id}/install`)
-}
-
-/**
- * @description "Install store app"
- */
-export function installStoreApp(id: string) {
-	return webapi.post<components.InstallStoreAppResponse>(`/api/v1/store/apps/${id}/install`)
-}
-
-/**
- * @description "Get store app reviews"
- */
-export function getStoreAppReviews(id: string) {
-	return webapi.get<components.GetStoreAppReviewsResponse>(`/api/v1/store/apps/${id}/reviews`)
-}
-
-/**
- * @description "List store skills"
- */
-export function listStoreSkills() {
-	return webapi.get<components.ListStoreSkillsResponse>(`/api/v1/store/skills`)
-}
-
-/**
- * @description "Uninstall store skill"
- */
-export function uninstallStoreSkill(id: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/store/skills/${id}/install`)
-}
-
-/**
- * @description "Install store skill"
- */
-export function installStoreSkill(id: string) {
-	return webapi.post<components.InstallStoreSkillResponse>(`/api/v1/store/skills/${id}/install`)
+export function uninstallStoreProduct(id: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/store/products/${id}/install`)
 }
 
 /**

@@ -264,11 +264,11 @@
 					</button>
 				</div>
 
-				<!-- Invoices -->
+				<!-- Receipts -->
 				<div class="flex items-center justify-between p-5">
 					<div class="flex items-center gap-3">
 						<Receipt class="w-4 h-4 text-base-content/60" />
-						<span class="text-base text-base-content">{invoices.length} invoice{invoices.length !== 1 ? 's' : ''}</span>
+						<span class="text-base text-base-content">{invoices.length} receipt{invoices.length !== 1 ? 's' : ''}</span>
 					</div>
 					{#if invoices.length > 0}
 						<button
@@ -366,8 +366,8 @@
 	</div>
 {/if}
 
-<!-- Invoices Modal -->
-<Modal bind:show={showInvoices} title="Invoices" size="md">
+<!-- Receipts Modal -->
+<Modal bind:show={showInvoices} title="Receipts" size="md">
 	<div class="divide-y divide-base-content/10">
 		{#each invoices as inv}
 			<div class="flex items-center justify-between py-3">
@@ -382,9 +382,9 @@
 						{formatPrice(inv.amountCents, inv.currency)}
 					</span>
 					<span class="text-sm text-base-content/50">{inv.status === 'paid' ? 'Paid' : inv.status}</span>
-					{#if inv.pdfUrl}
+					{#if inv.hostedUrl || inv.pdfUrl}
 						<a
-							href={inv.pdfUrl}
+							href={inv.hostedUrl || inv.pdfUrl}
 							target="_blank"
 							rel="noopener noreferrer"
 							class="text-sm text-primary hover:brightness-110 transition-all"

@@ -349,7 +349,7 @@ pub async fn account_status(
 ) -> HandlerResult<AccountStatusResponse> {
     let profiles = state
         .store
-        .list_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboloop")
         .unwrap_or_default();
 
     if profiles.is_empty() {
@@ -401,7 +401,7 @@ pub async fn bot_status(
 ) -> HandlerResult<serde_json::Value> {
     let profiles = state
         .store
-        .list_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboloop")
         .unwrap_or_default();
 
     let ws_connected = state.comm_manager.is_connected().await;
@@ -417,63 +417,143 @@ pub async fn bot_status(
 
 // --- Janus AI usage ---
 
+/// Fetch usage directly from Janus GET /v1/usage and update the in-memory cache.
+async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage, NeboError> {
+    let janus_url = &state.config.neboloop.janus_url;
+    let profiles = state
+        .store
+        .list_all_active_auth_profiles_by_provider("neboloop")
+        .unwrap_or_default();
+    let token = profiles
+        .first()
+        .map(|p| p.api_key.clone())
+        .unwrap_or_default();
+    if token.is_empty() {
+        return Err(NeboError::Internal("no neboloop token for janus usage".into()));
+    }
+    let bot_id = config::read_bot_id().unwrap_or_default();
+
+    let resp = reqwest::Client::new()
+        .get(format!("{janus_url}/v1/usage"))
+        .bearer_auth(&token)
+        .header("X-Bot-ID", &bot_id)
+        .send()
+        .await
+        .map_err(|e| NeboError::Internal(format!("janus usage fetch: {e}")))?;
+
+    if !resp.status().is_success() {
+        return Err(NeboError::Internal(format!("janus usage: HTTP {}", resp.status())));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| NeboError::Internal(format!("janus usage parse: {e}")))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // Map Janus response to our JanusUsage struct.
+    // Janus returns: all_models.{session_used, session_limit, session_reset_seconds, weekly_*}
+    let am = &body["all_models"];
+    let session_limit = am["session_limit"].as_u64().unwrap_or(0);
+    let session_used = am["session_used"].as_u64().unwrap_or(0);
+    let session_reset_secs = am["session_reset_seconds"].as_i64().unwrap_or(0);
+    let weekly_limit = am["weekly_limit"].as_u64().unwrap_or(0);
+    let weekly_used = am["weekly_used"].as_u64().unwrap_or(0);
+    let weekly_reset_secs = am["weekly_reset_seconds"].as_i64().unwrap_or(0);
+
+    let session_reset_at = if session_reset_secs > 0 {
+        (chrono::Utc::now() + chrono::Duration::seconds(session_reset_secs)).to_rfc3339()
+    } else {
+        String::new()
+    };
+    let weekly_reset_at = if weekly_reset_secs > 0 {
+        (chrono::Utc::now() + chrono::Duration::seconds(weekly_reset_secs)).to_rfc3339()
+    } else {
+        String::new()
+    };
+
+    let usage = crate::state::JanusUsage {
+        session_limit_tokens: session_limit,
+        session_remaining_tokens: session_limit.saturating_sub(session_used),
+        session_reset_at,
+        weekly_limit_tokens: weekly_limit,
+        weekly_remaining_tokens: weekly_limit.saturating_sub(weekly_used),
+        weekly_reset_at,
+        updated_at: now,
+    };
+
+    // Update in-memory cache
+    *state.janus_usage.write().await = Some(usage.clone());
+
+    Ok(usage)
+}
+
+/// Build the JSON response from a JanusUsage struct.
+fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::Value {
+    let session_used = u.session_limit_tokens.saturating_sub(u.session_remaining_tokens);
+    let session_pct = if u.session_limit_tokens > 0 {
+        ((session_used as f64 / u.session_limit_tokens as f64) * 100.0).round() as u64
+    } else {
+        0
+    };
+    let weekly_used = u.weekly_limit_tokens.saturating_sub(u.weekly_remaining_tokens);
+    let weekly_pct = if u.weekly_limit_tokens > 0 {
+        ((weekly_used as f64 / u.weekly_limit_tokens as f64) * 100.0).round() as u64
+    } else {
+        0
+    };
+
+    serde_json::json!({
+        "session": {
+            "limitTokens": u.session_limit_tokens,
+            "remainingTokens": u.session_remaining_tokens,
+            "usedTokens": session_used,
+            "percentUsed": session_pct,
+            "resetAt": if u.session_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.session_reset_at.clone()) },
+        },
+        "weekly": {
+            "limitTokens": u.weekly_limit_tokens,
+            "remainingTokens": u.weekly_remaining_tokens,
+            "usedTokens": weekly_used,
+            "percentUsed": weekly_pct,
+            "resetAt": if u.weekly_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.weekly_reset_at.clone()) },
+        },
+        "updatedAt": if u.updated_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.updated_at.clone()) },
+    })
+}
+
 /// GET /api/v1/neboloop/janus/usage — Janus usage stats.
-/// Returns real data from in-memory rate limit headers when available.
+/// Returns cached data if available, otherwise fetches directly from Janus.
 pub async fn janus_usage(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
-    let usage = state.janus_usage.read().await;
-    let (session, weekly) = match usage.as_ref() {
-        Some(u) => {
-            let session_used = u.session_limit_tokens.saturating_sub(u.session_remaining_tokens);
-            let session_pct = if u.session_limit_tokens > 0 {
-                ((session_used as f64 / u.session_limit_tokens as f64) * 100.0).round() as u64
-            } else {
-                0
-            };
-            let weekly_used = u.weekly_limit_tokens.saturating_sub(u.weekly_remaining_tokens);
-            let weekly_pct = if u.weekly_limit_tokens > 0 {
-                ((weekly_used as f64 / u.weekly_limit_tokens as f64) * 100.0).round() as u64
-            } else {
-                0
-            };
-            (
-                serde_json::json!({
-                    "limitTokens": u.session_limit_tokens,
-                    "remainingTokens": u.session_remaining_tokens,
-                    "usedTokens": session_used,
-                    "percentUsed": session_pct,
-                    "resetAt": if u.session_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.session_reset_at.clone()) },
-                }),
-                serde_json::json!({
-                    "limitTokens": u.weekly_limit_tokens,
-                    "remainingTokens": u.weekly_remaining_tokens,
-                    "usedTokens": weekly_used,
-                    "percentUsed": weekly_pct,
-                    "resetAt": if u.weekly_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.weekly_reset_at.clone()) },
-                }),
-            )
-        }
-        None => (
-            serde_json::json!({
-                "limitTokens": 0,
-                "remainingTokens": 0,
-                "usedTokens": 0,
-                "percentUsed": 0,
-            }),
-            serde_json::json!({
-                "limitTokens": 0,
-                "remainingTokens": 0,
-                "usedTokens": 0,
-                "percentUsed": 0,
-            }),
-        ),
-    };
+    // Try in-memory cache first
+    let cached = state.janus_usage.read().await.clone();
+    if let Some(ref u) = cached {
+        return Ok(Json(janus_usage_response(u)));
+    }
 
-    Ok(Json(serde_json::json!({
-        "session": session,
-        "weekly": weekly,
-    })))
+    // No cache — fetch from Janus directly
+    match fetch_janus_usage(&state).await {
+        Ok(u) => Ok(Json(janus_usage_response(&u))),
+        Err(e) => {
+            warn!("failed to fetch janus usage: {e}");
+            // Return zeros rather than error so the page still renders
+            Ok(Json(serde_json::json!({
+                "session": { "limitTokens": 0, "remainingTokens": 0, "usedTokens": 0, "percentUsed": 0 },
+                "weekly": { "limitTokens": 0, "remainingTokens": 0, "usedTokens": 0, "percentUsed": 0 },
+            })))
+        }
+    }
+}
+
+/// POST /api/v1/neboloop/janus/usage/refresh — Force-refresh usage from Janus.
+pub async fn janus_usage_refresh(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let u = fetch_janus_usage(&state).await.map_err(to_error_response)?;
+    Ok(Json(janus_usage_response(&u)))
 }
 
 // --- Open NeboLoop in browser ---
@@ -500,7 +580,7 @@ pub async fn account_disconnect(
 ) -> HandlerResult<DisconnectResponse> {
     let profiles = state
         .store
-        .list_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboloop")
         .unwrap_or_default();
 
     for profile in &profiles {
@@ -749,7 +829,7 @@ pub(crate) fn store_neboloop_profile(
 ) -> Result<(), String> {
     let profiles = app_state
         .store
-        .list_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboloop")
         .unwrap_or_default();
 
     // Default to janus enabled — it's the primary reason users connect to NeboLoop.

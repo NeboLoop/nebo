@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { Check, Zap, ArrowRight, ArrowLeft } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type {
@@ -16,8 +17,8 @@
 	let billingInterval = $state<'month' | 'year'>('month');
 	let boostSelections = $state<Record<string, boolean>>({});
 
-	// Checkout flow: 'plans' | 'checkout' | 'success'
-	let step = $state<'plans' | 'checkout' | 'success'>('plans');
+	// Checkout flow: 'plans' | 'checkout'
+	let step = $state<'plans' | 'checkout'>('plans');
 	let checkoutLoading = $state(false);
 	let checkoutError = $state('');
 
@@ -126,8 +127,12 @@
 			embeddedCheckout = await stripe.initEmbeddedCheckout({
 				clientSecret: data.clientSecret,
 				onComplete: () => {
-					step = 'success';
-					setTimeout(() => { window.location.href = '/settings/billing?success=true'; }, 2500);
+					if (embeddedCheckout) {
+						embeddedCheckout.destroy();
+						embeddedCheckout = null;
+					}
+					// Navigate to main screen; plan_changed WS event will show success modal
+					goto('/');
 				}
 			});
 
@@ -299,16 +304,4 @@
 		<div id="stripe-checkout"></div>
 	</div>
 
-<!-- ═══════════════════════════════════════════════════════════ -->
-<!-- STEP 3: SUCCESS -->
-<!-- ═══════════════════════════════════════════════════════════ -->
-{:else if step === 'success'}
-	<div class="max-w-lg mx-auto text-center py-16 space-y-4">
-		<div class="w-20 h-20 mx-auto rounded-full bg-green-100 flex items-center justify-center">
-			<Check class="w-10 h-10 text-green-600" />
-		</div>
-		<h1 class="font-display text-2xl font-bold text-base-content">You're all set!</h1>
-		<p class="text-base text-base-content/60">Your {selectedPrice?.displayName} plan is now active. Redirecting to your account...</p>
-		<Spinner size={20} />
-	</div>
 {/if}

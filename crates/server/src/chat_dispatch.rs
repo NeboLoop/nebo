@@ -297,6 +297,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                             .weekly_reset_at
                                             .clone()
                                             .unwrap_or_default(),
+                                        updated_at: chrono::Utc::now().to_rfc3339(),
                                     };
                                     *janus_usage.write().await = Some(usage);
                                 }
