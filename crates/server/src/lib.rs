@@ -1090,6 +1090,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                         }
                     }
 
+                    // Update in-memory plan tier so account_status reads the fresh value
+                    *state.plan_tier.write().await = plan.to_string();
+
                     // Notify UI
                     state.hub.broadcast("plan_changed", serde_json::json!({"plan": plan}));
                 }
