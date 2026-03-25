@@ -736,9 +736,9 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
             continue;
         }
         if !local_slugs.contains(&agent.slug) {
-            info!(agent_slug = %agent.slug, "reconcile: deregistering stale agent");
-            if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.slug).await {
-                warn!(agent_slug = %agent.slug, error = %e, "reconcile: failed to deregister");
+            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering stale agent");
+            if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.id).await {
+                warn!(agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
             }
         }
     }
