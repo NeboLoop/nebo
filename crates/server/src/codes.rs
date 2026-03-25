@@ -617,11 +617,14 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
         .store
         .list_all_active_auth_profiles_by_provider("neboloop")
         .unwrap_or_default();
-    let token = profiles
+    let profile = profiles
         .first()
-        .map(|p| p.api_key.clone())
-        .filter(|t| !t.is_empty())
         .ok_or_else(|| NeboError::Internal("no NeboLoop credentials".into()))?;
+    let token = if profile.api_key.is_empty() {
+        return Err(NeboError::Internal("empty NeboLoop token".into()));
+    } else {
+        profile.api_key.clone()
+    };
 
     let mut config = HashMap::new();
     config.insert("gateway".into(), state.config.neboloop.comms_url.clone());
@@ -637,17 +640,132 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
         .set_active("neboloop")
         .await
         .map_err(|e| NeboError::Internal(format!("set_active: {e}")))?;
-    state
-        .comm_manager
-        .connect_active(config)
-        .await
-        .map_err(|e| NeboError::Internal(format!("connect: {e}")))?;
+
+    let connect_result = state.comm_manager.connect_active(config.clone()).await;
+
+    // If connect fails with stale token, try refreshing via OAuth
+    if let Err(ref e) = connect_result {
+        let err_msg = e.to_string();
+        if err_msg.contains("stale token") || err_msg.contains("auth failed") {
+            info!("NeboLoop token stale, attempting OAuth refresh");
+            if let Some(new_token) = refresh_neboloop_token(state, profile).await {
+                // Retry connect with fresh token
+                let mut retry_config = config;
+                retry_config.insert("token".into(), new_token);
+                state
+                    .comm_manager
+                    .connect_active(retry_config)
+                    .await
+                    .map_err(|e| NeboError::Internal(format!("connect after refresh: {e}")))?;
+            } else {
+                return Err(NeboError::Internal(format!("connect: {err_msg} (refresh failed)")));
+            }
+        } else {
+            return Err(NeboError::Internal(format!("connect: {err_msg}")));
+        }
+    }
+
+    // Persist rotated JWT so next reconnect uses the fresh token
+    if let Some(new_token) = state.comm_manager.take_rotated_token().await {
+        if let Ok(profs) = state.store.list_all_active_auth_profiles_by_provider("neboloop") {
+            if let Some(p) = profs.first() {
+                let _ = state.store.update_auth_profile(
+                    &p.id,
+                    &p.name,
+                    &new_token,
+                    p.model.as_deref(),
+                    p.base_url.as_deref(),
+                    p.priority.unwrap_or(0),
+                    p.auth_type.as_deref(),
+                    p.metadata.as_deref(),
+                );
+                info!("persisted rotated NeboLoop token");
+            }
+        }
+    }
 
     state.hub.broadcast(
         "settings_updated",
         serde_json::json!({"commEnabled": true}),
     );
     Ok(())
+}
+
+/// Try to refresh the NeboLoop OAuth token using the stored refresh_token.
+/// Returns the new access_token if successful, or None.
+async fn refresh_neboloop_token(
+    state: &AppState,
+    profile: &db::models::AuthProfile,
+) -> Option<String> {
+    // Extract refresh_token from profile metadata
+    let metadata: HashMap<String, String> = profile
+        .metadata
+        .as_deref()
+        .and_then(|m| serde_json::from_str(m).ok())
+        .unwrap_or_default();
+    let refresh_token = metadata.get("refresh_token").filter(|t| !t.is_empty())?;
+
+    let api_url = &state.config.neboloop.api_url;
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": "nbl_nebo_desktop",
+    });
+
+    let resp = match reqwest::Client::new()
+        .post(format!("{api_url}/oauth/token"))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "OAuth refresh request failed");
+            return None;
+        }
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        warn!(status = %status, body = %text, "OAuth refresh failed");
+        return None;
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RefreshResponse {
+        access_token: String,
+        #[serde(default)]
+        refresh_token: Option<String>,
+    }
+
+    let token_resp: RefreshResponse = match resp.json().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "OAuth refresh response parse failed");
+            return None;
+        }
+    };
+
+    // Persist the new tokens
+    let new_refresh = token_resp.refresh_token.as_deref().unwrap_or(refresh_token);
+    let mut new_metadata = metadata.clone();
+    new_metadata.insert("refresh_token".to_string(), new_refresh.to_string());
+    let metadata_json = serde_json::to_string(&new_metadata).unwrap_or_default();
+
+    let _ = state.store.update_auth_profile(
+        &profile.id,
+        &profile.name,
+        &token_resp.access_token,
+        profile.model.as_deref(),
+        profile.base_url.as_deref(),
+        profile.priority.unwrap_or(0),
+        profile.auth_type.as_deref(),
+        Some(&metadata_json),
+    );
+    info!("NeboLoop OAuth token refreshed successfully");
+
+    Some(token_resp.access_token)
 }
 
 /// Core NEBO code redemption logic. Called by both:

@@ -180,6 +180,26 @@ impl PluginManager {
             .unwrap_or(false)
     }
 
+    /// Retrieve and consume a rotated auth token from the active plugin.
+    pub async fn take_rotated_token(&self) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.take_rotated_token().await
+        } else {
+            None
+        }
+    }
+
+    /// Look up the agent slug for a conversation ID (agent_space detection).
+    pub async fn agent_slug_for_conv(&self, conv_id: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.agent_slug_for_conv(conv_id).await
+        } else {
+            None
+        }
+    }
+
     /// Disconnect all plugins.
     pub async fn shutdown(&self) {
         let mut inner = self.inner.write().await;

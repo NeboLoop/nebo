@@ -15,7 +15,7 @@ use std::time::SystemTime;
 pub struct DevLog(Arc<Mutex<BufWriter<File>>>);
 
 impl DevLog {
-    /// Create a new devlog, truncating the file. Returns `None` if the path
+    /// Create a new devlog, appending to the file. Returns `None` if the path
     /// cannot be created or opened.
     pub fn open(path: &Path) -> Option<Self> {
         if let Some(parent) = path.parent() {
@@ -24,7 +24,7 @@ impl DevLog {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
-            .truncate(true)
+            .append(true)
             .open(path)
             .ok()?;
         Some(Self(Arc::new(Mutex::new(BufWriter::new(file)))))
@@ -58,6 +58,11 @@ impl DevLog {
             stream, from, agent_part, short_id(conv_id)
         ));
         self.write_line(&format!("            \"{}\"", truncated));
+    }
+
+    /// Log an error.
+    pub fn error(&self, msg: &str) {
+        self.write_line(&format!("!! ERROR {}", msg));
     }
 
     /// Log an outbound send.

@@ -279,10 +279,11 @@ impl CommPlugin for NeboLoopPlugin {
         // Store bot_id
         *self.bot_id.write().await = bot_id.clone();
 
-        // Init devlog (truncates on each new connection)
+        // Init devlog (appends with session separator)
         if let Some(dir) = config.get("data_dir") {
             let log_path = std::path::PathBuf::from(dir).join("logs").join("neboloop.log");
             if let Some(dl) = DevLog::open(&log_path) {
+                dl.event("────────────────────────────────────────");
                 dl.event(&format!("CONNECT {} bot={}", gateway, &bot_id));
                 *self.devlog.write().await = Some(dl);
             }
@@ -335,10 +336,16 @@ impl CommPlugin for NeboLoopPlugin {
         if auth_header.frame_type == frame::TYPE_AUTH_FAIL {
             let result: wire::AuthResultPayload =
                 serde_json::from_slice(auth_payload).unwrap_or_default();
+            if let Some(ref dl) = *self.devlog.read().await {
+                dl.error(&format!("AUTH_FAIL: {}", result.reason));
+            }
             return Err(CommError::Other(format!("auth failed: {}", result.reason)));
         }
 
         if auth_header.frame_type != frame::TYPE_AUTH_OK {
+            if let Some(ref dl) = *self.devlog.read().await {
+                dl.error(&format!("unexpected frame type {} during auth", auth_header.frame_type));
+            }
             return Err(CommError::Other(format!(
                 "unexpected frame type {}",
                 auth_header.frame_type
@@ -660,6 +667,17 @@ impl CommPlugin for NeboLoopPlugin {
             })
             .collect())
     }
+
+    async fn take_rotated_token(&self) -> Option<String> {
+        self.rotated_token.write().await.take()
+    }
+
+    async fn agent_slug_for_conv(&self, conv_id: &str) -> Option<String> {
+        let maps = self.conv_maps.read().await;
+        maps.agent_space_convs
+            .get(conv_id)
+            .map(|meta| meta.agent_slug.clone())
+    }
 }
 
 // ── Background tasks ─────────────────────────────────────────────────
@@ -747,15 +765,28 @@ async fn read_loop(
                     Some(Ok(m)) => m,
                     Some(Err(e)) => {
                         warn!(error = %e, "neboloop read error");
+                        if let Some(ref dl) = devlog {
+                            dl.error(&format!("read error: {}", e));
+                        }
                         break;
                     }
-                    None => break,
+                    None => {
+                        if let Some(ref dl) = devlog {
+                            dl.event("DISCONNECTED (stream ended)");
+                        }
+                        break;
+                    }
                 };
 
                 let data = match msg {
                     WsMessage::Binary(d) => d.to_vec(),
                     WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
-                    WsMessage::Close(_) => break,
+                    WsMessage::Close(reason) => {
+                        if let Some(ref dl) = devlog {
+                            dl.event(&format!("CLOSE frame received: {:?}", reason));
+                        }
+                        break;
+                    }
                     _ => continue,
                 };
 
@@ -763,6 +794,9 @@ async fn read_loop(
                     Ok(r) => r,
                     Err(e) => {
                         debug!(error = %e, "bad frame");
+                        if let Some(ref dl) = devlog {
+                            dl.error(&format!("bad frame: {}", e));
+                        }
                         continue;
                     }
                 };
@@ -787,12 +821,20 @@ async fn read_loop(
                         // Skip duplicate messages (same msg_id seen within sliding window)
                         if dedup.is_duplicate(header.msg_id) {
                             debug!("duplicate message, skipping");
+                            if let Some(ref dl) = devlog {
+                                dl.event("── DEDUP skip (duplicate msg_id)");
+                            }
                             continue;
                         }
 
                         let delivery: wire::DeliveryPayload = match serde_json::from_slice(payload) {
                             Ok(d) => d,
-                            Err(_) => continue,
+                            Err(e) => {
+                                if let Some(ref dl) = devlog {
+                                    dl.error(&format!("delivery parse failed: {}", e));
+                                }
+                                continue;
+                            }
                         };
 
                         let mut metadata = HashMap::new();

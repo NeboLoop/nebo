@@ -75,4 +75,16 @@ pub trait CommPlugin: Send + Sync {
     ) -> Result<Vec<ChannelMemberItem>, CommError> {
         Err(CommError::Other("not supported".into()))
     }
+
+    /// Retrieve and consume a rotated auth token (if the gateway issued one).
+    /// Returns `None` for plugins that don't support token rotation.
+    async fn take_rotated_token(&self) -> Option<String> {
+        None
+    }
+
+    /// Look up the agent slug for a conversation ID (agent_space detection).
+    /// Returns the slug if this conversation belongs to a registered agent space.
+    async fn agent_slug_for_conv(&self, _conv_id: &str) -> Option<String> {
+        None
+    }
 }

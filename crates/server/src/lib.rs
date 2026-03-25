@@ -1066,6 +1066,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
 /// Handle an incoming NeboLoop message with full access to runner/lanes/comm.
 async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
+    tracing::info!(
+        topic = %msg.topic,
+        from = %msg.from,
+        conv_id = %msg.conversation_id,
+        content_len = msg.content.len(),
+        "handle_comm_message"
+    );
+
     // Route account stream messages (plan changes, token refresh)
     if msg.topic == "account" {
         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&msg.content) {
@@ -1121,11 +1129,18 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     if msg.topic == "agent_space" {
         let text = extract_message_text(&msg.content);
         if text.is_empty() {
+            tracing::warn!(conv_id = %msg.conversation_id, "agent_space message with empty text, skipping");
             return;
         }
 
         let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
         let role_id = resolve_role_id_from_slug(&state, &agent_slug).await;
+        tracing::info!(
+            agent_slug = %agent_slug,
+            role_id = %role_id,
+            text_len = text.len(),
+            "agent_space: routing to role"
+        );
 
         let session_key = agent::keyparser::build_session_key(
             "neboloop",
@@ -1191,6 +1206,81 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
     // Route chat and DM messages to the agent runner via unified chat pipeline
     if msg.topic == "chat" || msg.topic == "dm" {
+        // Check if this conversation is actually an agent_space (gateway sends stream=dm for these)
+        if let Some(agent_slug) = state.comm_manager.agent_slug_for_conv(&msg.conversation_id).await {
+            let text = extract_message_text(&msg.content);
+            if text.is_empty() {
+                return;
+            }
+            let role_id = resolve_role_id_from_slug(&state, &agent_slug).await;
+            tracing::info!(
+                agent_slug = %agent_slug,
+                role_id = %role_id,
+                conv_id = %msg.conversation_id,
+                "dm→agent_space reroute: conv belongs to agent space"
+            );
+
+            let session_key = agent::keyparser::build_session_key(
+                "neboloop",
+                "agent_space",
+                &format!("{}:{}", agent_slug, msg.conversation_id),
+            );
+
+            let role_name = {
+                let registry = state.role_registry.read().await;
+                registry
+                    .get(&role_id)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| agent_slug.clone())
+            };
+            let _ = state.store.create_chat(&session_key, &format!("Agent: {}", role_name));
+
+            let preview = if text.len() > 80 { format!("{}...", &text[..80]) } else { text.clone() };
+            notify_crate::send(&format!("Agent space: {}", role_name), &preview);
+
+            let entity_config = entity_config::resolve_for_chat(
+                &state.store,
+                "channel",
+                "agent_space",
+            );
+
+            let config = chat_dispatch::ChatConfig {
+                session_key,
+                prompt: text,
+                system: String::new(),
+                user_id: String::new(),
+                channel: "neboloop".to_string(),
+                origin: tools::Origin::Comm,
+                role_id,
+                cancel_token: tokio_util::sync::CancellationToken::new(),
+                lane: types::constants::lanes::COMM.to_string(),
+                comm_reply: Some(chat_dispatch::CommReplyConfig {
+                    topic: msg.topic.clone(),
+                    conversation_id: msg.conversation_id.clone(),
+                }),
+                entity_config,
+                images: vec![],
+            };
+
+            chat_dispatch::run_chat(&state, config, None).await;
+
+            state.event_bus.emit(tools::events::Event {
+                source: format!("neboloop.agent_space.{}", agent_slug),
+                payload: serde_json::json!({
+                    "from": msg.from,
+                    "content": msg.content,
+                    "conversation_id": msg.conversation_id,
+                    "agent_slug": agent_slug,
+                }),
+                origin: "neboloop".to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            });
+            return;
+        }
+
         let text = extract_message_text(&msg.content);
         if text.is_empty() {
             return;

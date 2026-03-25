@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 
 use agent::lanes::make_task;
 use agent::RunRequest;
@@ -320,6 +320,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                 if let Some(reply_config) = &comm_reply {
                     if let Some(comm_mgr) = &comm_manager {
                         if !full_response.is_empty() {
+                            info!(
+                                topic = %reply_config.topic,
+                                conv_id = %reply_config.conversation_id,
+                                response_len = full_response.len(),
+                                "sending comm reply"
+                            );
                             let reply = comm::CommMessage {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 from: String::new(),
@@ -341,6 +347,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                             if let Err(e) = comm_mgr.send(reply).await {
                                 warn!(error = %e, "failed to send comm reply");
                             }
+                        } else {
+                            warn!(
+                                topic = %reply_config.topic,
+                                conv_id = %reply_config.conversation_id,
+                                "comm reply skipped: empty response from agent"
+                            );
                         }
                     }
                 }
