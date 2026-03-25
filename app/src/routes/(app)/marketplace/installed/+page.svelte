@@ -13,6 +13,9 @@
 	let installed = $state<AppItem[]>([]);
 	let uninstallingId = $state<string | null>(null);
 
+	let installedRoles = $derived(installed.filter(i => i.type === 'role' || i.type === 'workflow'));
+	let installedSkills = $derived(installed.filter(i => i.type === 'skill'));
+
 	onMount(async () => {
 		await loadInstalled();
 	});
@@ -36,7 +39,7 @@
 
 			installed = all.filter(item => item.installed);
 		} catch (err: any) {
-			error = err?.message || 'Failed to load installed skills';
+			error = err?.message || 'Failed to load installed items';
 		} finally {
 			isLoading = false;
 		}
@@ -60,7 +63,7 @@
 	<div class="mb-6 flex items-center justify-between">
 		<div>
 			<h2 class="font-display text-2xl font-bold text-base-content">Installed</h2>
-			<p class="text-base text-base-content/80 mt-1">Skills installed on your Nebo</p>
+			<p class="text-base text-base-content/80 mt-1">Roles and skills installed on your Nebo</p>
 		</div>
 		<button
 			type="button"
@@ -87,7 +90,7 @@
 				<div class="py-10 text-center">
 					<PackageCheck class="w-10 h-10 mx-auto mb-3 text-base-content/40" />
 					<p class="text-base font-medium text-base-content/80 mb-1">Nothing installed yet</p>
-					<p class="text-sm text-base-content/60 mb-4">Browse the marketplace to find skills for your Nebo</p>
+					<p class="text-sm text-base-content/60 mb-4">Browse the marketplace to find roles and skills for your Nebo</p>
 					<a
 						href="/marketplace"
 						class="inline-block h-10 px-6 leading-10 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
@@ -97,47 +100,97 @@
 				</div>
 			</div>
 		{:else}
-			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-				<div class="space-y-2">
-					{#each installed as item (item.id)}
-						<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
-							<a href={itemHref(item)} class="flex items-center gap-3 min-w-0 no-underline group">
-								<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="sm" />
-								<div class="min-w-0">
-									<p class="text-base font-medium text-base-content group-hover:text-primary transition-colors truncate">
-										{item.name}
-									</p>
-									<p class="text-sm text-base-content/60 truncate">{item.description}</p>
+			{#if installedRoles.length > 0}
+				<div class="mb-6">
+					<h3 class="text-lg font-semibold text-base-content mb-3">Roles</h3>
+					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+						<div class="space-y-2">
+							{#each installedRoles as item (item.id)}
+								<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
+									<a href={itemHref(item)} class="flex items-center gap-3 min-w-0 no-underline group">
+										<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="sm" />
+										<div class="min-w-0">
+											<p class="text-base font-medium text-base-content group-hover:text-primary transition-colors truncate">
+												{item.name}
+											</p>
+											<p class="text-sm text-base-content/60 truncate">{item.description}</p>
+										</div>
+									</a>
+									<div class="flex items-center gap-3 shrink-0 ml-3">
+										<a
+											href={itemHref(item)}
+											class="text-base text-base-content/80 hover:text-primary transition-colors"
+											title="View details"
+										>
+											<ExternalLink class="w-4 h-4" />
+										</a>
+										<button
+											type="button"
+											class="text-base text-base-content/80 hover:text-error transition-colors"
+											title="Uninstall"
+											onclick={() => uninstall(item)}
+											disabled={uninstallingId === item.id}
+										>
+											{#if uninstallingId === item.id}
+												<Spinner size={14} />
+											{:else}
+												<Trash2 class="w-4 h-4" />
+											{/if}
+										</button>
+									</div>
 								</div>
-							</a>
-							<div class="flex items-center gap-3 shrink-0 ml-3">
-								<a
-									href={itemHref(item)}
-									class="text-base text-base-content/80 hover:text-primary transition-colors"
-									title="View details"
-								>
-									<ExternalLink class="w-4 h-4" />
-								</a>
-								<button
-									type="button"
-									class="text-base text-base-content/80 hover:text-error transition-colors"
-									title="Uninstall"
-									onclick={() => uninstall(item)}
-									disabled={uninstallingId === item.id}
-								>
-									{#if uninstallingId === item.id}
-										<Spinner size={14} />
-									{:else}
-										<Trash2 class="w-4 h-4" />
-									{/if}
-								</button>
-							</div>
+							{/each}
 						</div>
-					{/each}
+					</div>
+					<p class="text-sm text-base-content/40 mt-2 text-center">{installedRoles.length} role{installedRoles.length !== 1 ? 's' : ''} installed</p>
 				</div>
-			</div>
+			{/if}
 
-			<p class="text-sm text-base-content/40 mt-3 text-center">{installed.length} skill{installed.length !== 1 ? 's' : ''} installed</p>
+			{#if installedSkills.length > 0}
+				<div class="mb-6">
+					<h3 class="text-lg font-semibold text-base-content mb-3">Skills</h3>
+					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+						<div class="space-y-2">
+							{#each installedSkills as item (item.id)}
+								<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
+									<a href={itemHref(item)} class="flex items-center gap-3 min-w-0 no-underline group">
+										<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="sm" />
+										<div class="min-w-0">
+											<p class="text-base font-medium text-base-content group-hover:text-primary transition-colors truncate">
+												{item.name}
+											</p>
+											<p class="text-sm text-base-content/60 truncate">{item.description}</p>
+										</div>
+									</a>
+									<div class="flex items-center gap-3 shrink-0 ml-3">
+										<a
+											href={itemHref(item)}
+											class="text-base text-base-content/80 hover:text-primary transition-colors"
+											title="View details"
+										>
+											<ExternalLink class="w-4 h-4" />
+										</a>
+										<button
+											type="button"
+											class="text-base text-base-content/80 hover:text-error transition-colors"
+											title="Uninstall"
+											onclick={() => uninstall(item)}
+											disabled={uninstallingId === item.id}
+										>
+											{#if uninstallingId === item.id}
+												<Spinner size={14} />
+											{:else}
+												<Trash2 class="w-4 h-4" />
+											{/if}
+										</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+					<p class="text-sm text-base-content/40 mt-2 text-center">{installedSkills.length} skill{installedSkills.length !== 1 ? 's' : ''} installed</p>
+				</div>
+			{/if}
 		{/if}
 	{/if}
 </div>
