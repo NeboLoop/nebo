@@ -349,20 +349,10 @@ pub async fn execute_activity(
         if iterations >= MAX_ITERATIONS {
             return Err(WorkflowError::MaxIterations(activity.id.clone()));
         }
-        if tokens_used >= activity.token_budget.max {
-            return Err(WorkflowError::BudgetExceeded {
-                activity_id: activity.id.clone(),
-                used: tokens_used,
-                limit: activity.token_budget.max,
-            });
-        }
-
-        let remaining = activity.token_budget.max.saturating_sub(tokens_used);
-
         let req = ChatRequest {
             messages: messages.clone(),
             tools: tool_defs.clone(),
-            max_tokens: remaining as i32,
+            max_tokens: 16384,
             temperature: 0.0,
             system: system.clone(),
             static_system: String::new(),
