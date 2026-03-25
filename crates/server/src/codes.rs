@@ -689,17 +689,41 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
         serde_json::json!({"commEnabled": true}),
     );
 
-    // Reconcile agents in background (non-blocking)
+    // Reconcile agents + sync bot identity in background (non-blocking)
     {
         let st = state.clone();
         tokio::spawn(async move {
             if let Err(e) = reconcile_agents(&st).await {
                 warn!(error = %e, "agent reconciliation failed");
             }
+            // Sync bot identity (name) to NeboLoop
+            sync_bot_identity(&st).await;
         });
     }
 
     Ok(())
+}
+
+/// Sync the bot's display name to NeboLoop from the local agent profile.
+pub(crate) async fn sync_bot_identity(state: &AppState) {
+    let name = state
+        .store
+        .get_agent_profile()
+        .ok()
+        .flatten()
+        .map(|p| p.name)
+        .unwrap_or_default();
+    if name.is_empty() {
+        return;
+    }
+    let api = match build_api_client(state) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    match api.update_bot_identity(&name, "").await {
+        Ok(_) => info!(name = %name, "synced bot identity to NeboLoop"),
+        Err(e) => warn!(error = %e, "failed to sync bot identity"),
+    }
 }
 
 /// Reconcile agents: deregister stale agents from NeboLoop that no longer

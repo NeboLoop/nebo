@@ -508,7 +508,13 @@ impl CommPlugin for NeboLoopPlugin {
         } else {
             &msg.topic
         };
-        let content = serde_json::json!({ "text": msg.content });
+        let mut content = serde_json::json!({ "text": msg.content });
+        // Include metadata fields (e.g. senderName) in the content JSON
+        if let serde_json::Value::Object(ref mut map) = content {
+            for (k, v) in &msg.metadata {
+                map.insert(k.clone(), serde_json::Value::String(v.clone()));
+            }
+        }
 
         if let Some(ref dl) = *self.devlog.read().await {
             dl.outbound(stream, &conv_id, &msg.content);

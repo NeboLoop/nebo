@@ -162,6 +162,15 @@ pub async fn update_profile(
         .map_err(to_error_response)?;
 
     let profile = state.store.get_agent_profile().map_err(to_error_response)?;
+
+    // Sync name to NeboLoop in background (non-blocking)
+    if body["name"].as_str().is_some() {
+        let st = state.clone();
+        tokio::spawn(async move {
+            crate::codes::sync_bot_identity(&st).await;
+        });
+    }
+
     Ok(Json(serde_json::json!(profile)))
 }
 

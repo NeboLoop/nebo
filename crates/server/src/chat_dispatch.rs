@@ -85,6 +85,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
         None
     };
 
+    // Resolve agent display name for outbound comm messages
+    let agent_display_name = if !config.role_id.is_empty() {
+        let registry = state.role_registry.read().await;
+        registry.get(&config.role_id).map(|r| r.name.clone()).unwrap_or_default()
+    } else {
+        state.store.get_agent_profile().ok().flatten()
+            .map(|p| p.name)
+            .unwrap_or_default()
+    };
+
     let sid = config.session_key.clone();
     let role_id = config.role_id.clone();
     let cancel_token = config.cancel_token.clone();
@@ -210,6 +220,10 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                 comm_buffer.push_str(&event.text);
                                 if last_comm_flush.elapsed().as_millis() as u64 >= COMM_COALESCE_MS {
                                     if let (Some(cfg), Some(mgr)) = (&comm_reply, &comm_manager) {
+                                        let mut chunk_meta = std::collections::HashMap::new();
+                                        if !agent_display_name.is_empty() {
+                                            chunk_meta.insert("senderName".to_string(), agent_display_name.clone());
+                                        }
                                         let chunk = comm::CommMessage {
                                             id: uuid::Uuid::new_v4().to_string(),
                                             from: String::new(),
@@ -218,7 +232,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                             conversation_id: cfg.conversation_id.clone(),
                                             msg_type: comm::CommMessageType::Stream,
                                             content: comm_buffer.clone(),
-                                            metadata: std::collections::HashMap::new(),
+                                            metadata: chunk_meta,
                                             timestamp: 0,
                                             human_injected: false,
                                             human_id: None,
@@ -356,6 +370,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                 if let Some(reply_config) = &comm_reply {
                     if let Some(comm_mgr) = &comm_manager {
                         if !full_response.is_empty() {
+                            // Build metadata with agent name for all outbound messages
+                            let mut reply_meta = std::collections::HashMap::new();
+                            if !agent_display_name.is_empty() {
+                                reply_meta.insert("senderName".to_string(), agent_display_name.clone());
+                            }
+
                             // Flush any remaining streamed text
                             if !comm_buffer.is_empty() {
                                 let chunk = comm::CommMessage {
@@ -366,7 +386,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                     conversation_id: reply_config.conversation_id.clone(),
                                     msg_type: comm::CommMessageType::Stream,
                                     content: comm_buffer,
-                                    metadata: std::collections::HashMap::new(),
+                                    metadata: reply_meta.clone(),
                                     timestamp: 0,
                                     human_injected: false,
                                     human_id: None,
@@ -396,7 +416,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                 conversation_id: reply_config.conversation_id.clone(),
                                 msg_type: comm::CommMessageType::Message,
                                 content: full_response,
-                                metadata: std::collections::HashMap::new(),
+                                metadata: reply_meta,
                                 timestamp: 0,
                                 human_injected: false,
                                 human_id: None,
