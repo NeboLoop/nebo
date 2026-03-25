@@ -177,6 +177,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                 // Comm streaming: send chunks to NeboLoop as they arrive
                 let mut comm_buffer = String::new();
                 let mut last_comm_flush = tokio::time::Instant::now();
+                let mut comm_streamed = false;
                 const COMM_COALESCE_MS: u64 = 500;
 
                 loop {
@@ -245,6 +246,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                         if let Err(e) = mgr.send(chunk).await {
                                             warn!(error = %e, "failed to send comm stream chunk");
                                         }
+                                        comm_streamed = true;
                                         comm_buffer.clear();
                                         last_comm_flush = tokio::time::Instant::now();
                                     }
@@ -401,33 +403,38 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                 }
                             }
 
-                            // Send complete message (gateway uses this as the final record)
-                            info!(
-                                topic = %reply_config.topic,
-                                conv_id = %reply_config.conversation_id,
-                                response_len = full_response.len(),
-                                "sending comm reply (complete)"
-                            );
-                            let reply = comm::CommMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                from: String::new(),
-                                to: String::new(),
-                                topic: reply_config.topic.clone(),
-                                conversation_id: reply_config.conversation_id.clone(),
-                                msg_type: comm::CommMessageType::Message,
-                                content: full_response,
-                                metadata: reply_meta,
-                                timestamp: 0,
-                                human_injected: false,
-                                human_id: None,
-                                task_id: None,
-                                correlation_id: None,
-                                task_status: None,
-                                artifacts: vec![],
-                                error: None,
-                            };
-                            if let Err(e) = comm_mgr.send(reply).await {
-                                warn!(error = %e, "failed to send comm reply");
+                            // If we streamed chunks, don't send the full response again
+                            // (it would appear as a duplicate message in the Loop).
+                            // Only send the complete message if no chunks were streamed
+                            // (e.g., very short responses that finished before the first flush).
+                            if !comm_streamed {
+                                info!(
+                                    topic = %reply_config.topic,
+                                    conv_id = %reply_config.conversation_id,
+                                    response_len = full_response.len(),
+                                    "sending comm reply (complete, no stream)"
+                                );
+                                let reply = comm::CommMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    from: String::new(),
+                                    to: String::new(),
+                                    topic: reply_config.topic.clone(),
+                                    conversation_id: reply_config.conversation_id.clone(),
+                                    msg_type: comm::CommMessageType::Message,
+                                    content: full_response,
+                                    metadata: reply_meta,
+                                    timestamp: 0,
+                                    human_injected: false,
+                                    human_id: None,
+                                    task_id: None,
+                                    correlation_id: None,
+                                    task_status: None,
+                                    artifacts: vec![],
+                                    error: None,
+                                };
+                                if let Err(e) = comm_mgr.send(reply).await {
+                                    warn!(error = %e, "failed to send comm reply");
+                                }
                             }
                         } else {
                             warn!(
