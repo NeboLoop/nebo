@@ -20,6 +20,7 @@
 	let actionLoading = $state('');
 	let actionError = $state('');
 	let showInvoices = $state(false);
+	let showCancelConfirm = $state(false);
 	let showPaymentModal = $state(false);
 	let stripeLoading = $state(false);
 	let stripeError = $state('');
@@ -293,10 +294,10 @@
 						<p class="text-base text-base-content/60">Cancel plan</p>
 						<button
 							disabled={actionLoading !== ''}
-							onclick={() => handleCancel(subscription!.subscriptions[0].id)}
+							onclick={() => (showCancelConfirm = true)}
 							class="text-sm text-error/70 hover:text-error transition-colors"
 						>
-							{#if actionLoading === 'cancel'}<Spinner size={14} />{:else}Cancel{/if}
+							Cancel
 						</button>
 					</div>
 				</div>
@@ -396,4 +397,36 @@
 			</div>
 		{/each}
 	</div>
+</Modal>
+
+<!-- Cancel Confirmation Modal -->
+<Modal bind:show={showCancelConfirm} title="Cancel your plan?" size="sm">
+	<div class="space-y-3">
+		<p class="text-base text-base-content/80">Are you sure you want to cancel your <strong>{planName}</strong> plan? You'll lose access to your current token limits at the end of the billing period.</p>
+		{#if actionError}
+			<div class="rounded-xl bg-error/10 border border-error/20 p-3">
+				<p class="text-sm text-error">{actionError}</p>
+			</div>
+		{/if}
+	</div>
+
+	{#snippet footer()}
+		<button
+			class="btn btn-ghost"
+			onclick={() => { showCancelConfirm = false; actionError = ''; }}
+			disabled={actionLoading === 'cancel'}
+		>
+			Keep plan
+		</button>
+		<button
+			class="btn btn-error"
+			disabled={actionLoading === 'cancel'}
+			onclick={async () => {
+				await handleCancel(subscription!.subscriptions[0].id);
+				if (!actionError) showCancelConfirm = false;
+			}}
+		>
+			{#if actionLoading === 'cancel'}<Spinner size={14} />{:else}Yes, cancel{/if}
+		</button>
+	{/snippet}
 </Modal>
