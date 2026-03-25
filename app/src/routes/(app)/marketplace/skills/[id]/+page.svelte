@@ -14,7 +14,7 @@
 	let reviewText = $state('');
 	let codeCopied = $state(false);
 
-	import { type AppItem, toAppItem, itemHref } from '$lib/types/marketplace';
+	import { type AppItem, toAppItem, itemHref, gradients } from '$lib/types/marketplace';
 	import InstallCode from '$lib/components/InstallCode.svelte';
 
 	let skill: any = $state(null);
@@ -74,7 +74,7 @@
 		if (skill?.installed) return;
 		installing = true;
 		try {
-			await api.installStoreApp(skillId);
+			await api.installStoreProduct(skillId);
 			if (skill) skill.installed = true;
 		} catch { /* ignore */ }
 		installing = false;
@@ -98,6 +98,15 @@
 	}
 
 	const avgRating = $derived(skill?.ratingAvg && Number(skill.ratingAvg) > 0 ? Number(skill.ratingAvg).toFixed(1) : null);
+
+	const iconGradient = $derived(() => {
+		const s = skill?.slug || skill?.name || '';
+		let hash = 0;
+		for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+		return gradients[Math.abs(hash) % gradients.length];
+	});
+
+	const iconIsUrl = $derived(skill?.icon && (skill.icon.startsWith('http') || skill.icon.startsWith('/')));
 </script>
 
 <!-- Header -->
@@ -125,11 +134,11 @@
 	<!-- Hero: icon + name + install button -->
 	<div class="px-5 pt-6 pb-5">
 		<div class="flex items-start gap-5">
-			<div class="w-28 h-28 rounded-[22px] bg-gradient-to-br from-base-content/5 to-base-content/10 flex items-center justify-center shrink-0">
-				{#if skill.icon}
+			<div class="w-28 h-28 rounded-[22px] {iconIsUrl ? 'bg-gradient-to-br from-base-content/5 to-base-content/10' : iconGradient()} flex items-center justify-center shrink-0 shadow-lg">
+				{#if iconIsUrl}
 					<img src={skill.icon} alt="" class="w-28 h-28 rounded-[22px]" />
 				{:else}
-					<img src="/images/default-skill.svg" alt="" class="w-20 h-20" />
+					<span class="text-4xl font-bold text-white drop-shadow-md">{(skill.name || '').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}</span>
 				{/if}
 			</div>
 			<div class="flex-1 min-w-0 pt-1">

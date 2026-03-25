@@ -231,10 +231,7 @@ fn is_skill_installed(reference: &str) -> bool {
         let user_skills = user_dir.join("skills");
         let nebo_skills = nebo_dir.join("skills");
 
-        // Check user dir: name.yaml or name/SKILL.md
-        if user_skills.join(format!("{}.yaml", simple_name)).exists() {
-            return true;
-        }
+        // Check user dir: name/SKILL.md
         if user_skills.join(simple_name).join("SKILL.md").exists() {
             return true;
         }
@@ -341,22 +338,49 @@ async fn install_dep(state: &AppState, dep: &DepRef) -> Result<Vec<DepRef>, Stri
     let api = build_api_client(state).map_err(|e| e.to_string())?;
 
     match dep.dep_type {
-        DepType::Skill => install_skill(&api, &dep.reference).await,
+        DepType::Skill => install_skill(state, &api, &dep.reference).await,
         DepType::Workflow => install_workflow(state, &api, &dep.reference).await,
     }
 }
 
 async fn install_skill(
+    state: &AppState,
     api: &NeboLoopApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
-    api.install_skill(reference)
+    // Redeem the code with NeboLoop to register the install
+    let resp = api.install_skill(reference)
         .await
         .map_err(|e| format!("install_skill: {}", e))?;
 
-    // After install, try to load the skill and extract its deps
-    // Skill deps (tools[]) are typically simple built-in names, not marketplace refs
-    // So we return empty — they'll pass the is_installed check or be marked Unresolvable
+    let artifact_id = resp.artifact.id.clone();
+    let name = resp.artifact.name.clone();
+
+    // Persist to disk (download .napp or write loose files)
+    let skill_dir = match tools::persist_skill_from_api(api, &artifact_id, &name, reference).await {
+        Ok(dir) => {
+            tracing::info!(reference, name = %name, dir = %dir.display(), "cascade: persisted skill");
+            Some(dir)
+        }
+        Err(e) => {
+            tracing::warn!(reference, error = %e, "cascade: failed to persist skill");
+            None
+        }
+    };
+
+    // Reload skill loader so it appears immediately
+    state.skill_loader.load_all().await;
+
+    // Extract child deps from the newly installed skill
+    if let Some(skill_dir) = skill_dir {
+        let skill_path = skill_dir.join("SKILL.md");
+        if let Ok(data) = std::fs::read(&skill_path) {
+            if let Ok(skill) = tools::skills::parse_skill_md(&data) {
+                return Ok(extract_skill_deps(&skill));
+            }
+        }
+    }
+
     Ok(vec![])
 }
 

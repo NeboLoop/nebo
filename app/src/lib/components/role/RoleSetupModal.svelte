@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { installStoreApp, listRoles, activateRole, getRole, updateRoleInputs, getRoleWorkflows, updateRoleWorkflow } from '$lib/api/nebo';
+	import { installStoreProduct, listRoles, activateRole, getRole, updateRoleInputs, getRoleWorkflows, updateRoleWorkflow } from '$lib/api/nebo';
 	import type { RoleInputField, RoleWorkflowEntry } from '$lib/api/neboComponents';
 	import RoleInputForm from '$lib/components/agent/RoleInputForm.svelte';
 	import { X } from 'lucide-svelte';
@@ -34,9 +34,25 @@
 	// Schedule overrides (binding name → user-chosen interval label)
 	let scheduleOverrides = $state<Record<string, string>>({});
 
-	// Legacy fallback: if old-style flat inputs, convert to values
-	for (const [key, val] of Object.entries(inputs)) {
-		inputValues[key] = val;
+	// If inputs is an array of field definitions, normalize to RoleInputField format
+	if (Array.isArray(inputs)) {
+		inputFields = inputs.map((f: any) => ({
+			key: f.key || f.name || '',
+			label: f.label || (f.name || '').replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+			description: f.description || '',
+			type: f.type || 'text',
+			required: f.required || false,
+			default: f.default,
+			placeholder: f.placeholder || '',
+			options: Array.isArray(f.options) ? f.options.map((o: any) =>
+			typeof o === 'string' ? { value: o, label: o.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) } : o
+		) : f.options,
+		}));
+	} else {
+		// Legacy fallback: if old-style flat inputs, convert to values
+		for (const [key, val] of Object.entries(inputs)) {
+			inputValues[key] = val;
+		}
 	}
 
 	const hasInputFields = $derived(inputFields.length > 0);
@@ -73,14 +89,14 @@
 		error = '';
 		try {
 			// 1. Install
-			await installStoreApp(appId);
+			await installStoreProduct(appId);
 
 			// 2. Find the role
 			const rolesRes = await listRoles();
 			const allRoles = rolesRes?.roles || [];
 			const matchedRole = allRoles.find(
 				(r: any) => r.name?.toLowerCase() === roleName.toLowerCase()
-			) || allRoles[allRoles.length - 1];
+			);
 
 			if (!matchedRole) {
 				error = 'Role installed but could not be found.';
@@ -90,12 +106,11 @@
 
 			roleId = matchedRole.id;
 
-			// 3. Load input schema from frontmatter
+			// 3. Load normalized input fields from backend
 			try {
 				const roleRes = await getRole(roleId);
-				if (roleRes?.role?.frontmatter) {
-					const fm = JSON.parse(roleRes.role.frontmatter);
-					inputFields = fm.inputs || [];
+				if (roleRes?.inputFields) {
+					inputFields = roleRes.inputFields;
 				}
 			} catch { /* ignore */ }
 

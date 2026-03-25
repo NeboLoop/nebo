@@ -58,7 +58,7 @@
 	async function loadStoreSkills() {
 		isLoadingStore = true;
 		try {
-			const resp = await api.listStoreSkills();
+			const resp = await api.listStoreProducts({ type: "skill" } as any);
 			storeSkills = resp.skills || [];
 		} catch (error) {
 			console.error('Failed to load store skills:', error);
@@ -154,7 +154,7 @@
 	async function handleInstall(skill: SkillItem) {
 		installingSkill = skill.id;
 		try {
-			await api.installStoreSkill(skill.id);
+			await api.installStoreProduct(skill.id);
 			await loadAll();
 		} catch (error) {
 			console.error('Failed to install skill:', error);
@@ -166,7 +166,7 @@
 	async function handleUninstall(skill: SkillItem) {
 		installingSkill = skill.id;
 		try {
-			await api.uninstallStoreSkill(skill.id);
+			await api.uninstallStoreProduct(skill.id);
 			await loadAll();
 		} catch (error) {
 			console.error('Failed to uninstall skill:', error);

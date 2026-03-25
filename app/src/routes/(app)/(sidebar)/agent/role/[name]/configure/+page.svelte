@@ -44,12 +44,8 @@
 			]);
 
 			if (roleRes?.role) {
-				try {
-					const fm = JSON.parse(roleRes.role.frontmatter || '{}');
-					inputFields = fm.inputs || [];
-				} catch {
-					inputFields = [];
-				}
+				// Use pre-normalized inputFields from backend
+				inputFields = roleRes.inputFields || [];
 				try {
 					inputValues = JSON.parse(roleRes.role.inputValues || '{}');
 					savedInputValues = JSON.stringify(inputValues);

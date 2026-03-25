@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import {
 		updateInfo,
 		checkForUpdate,
@@ -10,19 +10,32 @@
 		autoUpdateEnabled,
 		applyUpdate
 	} from '$lib/stores/update';
+	import { getWebSocketClient } from '$lib/websocket/client';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import { ExternalLink, CheckCircle, ArrowUpCircle, AlertCircle } from 'lucide-svelte';
 
 	let isChecking = $state(false);
 	let isApplying = $state(false);
 	let checkResult = $state<'none' | 'up-to-date' | 'available'>('none');
+	let unsubs: Array<() => void> = [];
 
 	// Ensure version/install info is loaded when visiting this page
 	onMount(() => {
 		if (!$updateInfo) {
 			checkForUpdate();
 		}
+
+		// Listen for update errors from the backend
+		const ws = getWebSocketClient();
+		unsubs.push(
+			ws.on('update_error', (data: { error: string }) => {
+				updateError.set(data.error || 'Update failed');
+				isApplying = false;
+			}),
+		);
 	});
+
+	onDestroy(() => unsubs.forEach(fn => fn()));
 
 	// Auto-apply when update is downloaded and auto-update is on
 	$effect(() => {

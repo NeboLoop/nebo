@@ -22,7 +22,7 @@
 		if (!usage?.weekly) return '';
 		const used = Math.round(usage.weekly.usedTokens / 1000);
 		const limit = Math.round(usage.weekly.limitTokens / 1000);
-		return `${used}k / ${limit}k tokens this week`;
+		return `${used}k / ${limit}k credits this week`;
 	});
 	let sessionCount = $derived(chats.length);
 </script>
@@ -41,7 +41,7 @@
 		loading={isLoading}
 	/>
 	<MetricCard
-		title="Token Budget"
+		title="Credit Budget"
 		value={tokenPercent / 100}
 		format="percentage"
 		precision={0}

@@ -303,6 +303,39 @@ impl NeboLoopApi {
         self.redeem_code(code).await
     }
 
+    /// Install a product (skill/role/workflow) for this bot by product ID.
+    /// NeboLoop may return JSON or an empty body on success.
+    pub async fn install_product(&self, id: &str) -> Result<serde_json::Value, CommError> {
+        let body = serde_json::json!({ "botId": self.bot_id });
+        let url = format!("{}/api/v1/products/{}/install", self.api_server, id);
+        let resp = self.client.post(&url)
+            .bearer_auth(self.token())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| CommError::Other(format!("request failed: {}", e)))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(CommError::Other(format!("NeboLoop returned {}: {}", status, text)));
+        }
+
+        let text = resp.text().await.unwrap_or_default();
+        if text.is_empty() {
+            Ok(serde_json::json!({ "success": true }))
+        } else {
+            Ok(serde_json::from_str(&text)
+                .unwrap_or_else(|_| serde_json::json!({ "success": true })))
+        }
+    }
+
+    /// Uninstall a product for this bot by product ID.
+    pub async fn uninstall_product(&self, id: &str) -> Result<(), CommError> {
+        let body = serde_json::json!({ "botId": self.bot_id });
+        self.do_void(reqwest::Method::DELETE, &format!("/api/v1/products/{}/install", id), Some(&body)).await
+    }
+
     /// Download a sealed .napp archive from a URL.
     ///
     /// The URL can be absolute (CDN) or relative (API path like `/api/v1/artifacts/{id}/download`).

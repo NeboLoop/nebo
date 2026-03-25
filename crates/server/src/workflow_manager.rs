@@ -107,7 +107,7 @@ impl WorkflowManagerImpl {
     fn build_api_client(&self) -> Result<comm::api::NeboLoopApi, String> {
         let bot_id = config::read_bot_id()
             .ok_or_else(|| "no bot_id configured".to_string())?;
-        let profiles = match self.store.list_active_auth_profiles_by_provider("neboloop") {
+        let profiles = match self.store.list_all_active_auth_profiles_by_provider("neboloop") {
             Ok(p) => p,
             Err(e) => {
                 warn!(error = %e, "failed to list auth profiles for neboloop");

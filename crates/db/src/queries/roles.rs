@@ -90,6 +90,19 @@ impl Store {
         Ok(())
     }
 
+    /// Check if a role is installed by matching its name (case-insensitive).
+    pub fn role_installed_by_name(&self, name: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM roles WHERE LOWER(name) = LOWER(?1)",
+                params![name],
+                |row| row.get(0),
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(count > 0)
+    }
+
     pub fn delete_role(&self, id: &str) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM roles WHERE id = ?1", params![id])

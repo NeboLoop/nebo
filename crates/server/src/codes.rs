@@ -264,26 +264,91 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
 
 async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
-    let resp = api
-        .install_role(code)
-        .await
-        .map_err(|e| NeboError::Internal(format!("install_role: {e}")))?;
 
-    if resp.status == "payment_required" {
-        let name = resp.artifact.name.clone();
-        return Ok(CodeHandlerResult {
-            message: format!("Role requires payment: {}", name),
-            artifact_name: Some(name),
-            checkout_url: Some(resp.checkout_url.unwrap_or_default()),
-        });
+    // Try to redeem code — may fail if already redeemed (re-install)
+    let redeem_result = api.install_role(code).await;
+
+    if let Ok(ref resp) = redeem_result {
+        if resp.status == "payment_required" {
+            let name = resp.artifact.name.clone();
+            return Ok(CodeHandlerResult {
+                message: format!("Role requires payment: {}", name),
+                artifact_name: Some(name),
+                checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+            });
+        }
     }
 
-    let artifact_id = resp.artifact.id.clone();
-    let artifact_name = resp.artifact.name.clone();
+    let artifact_id;
+    let artifact_name;
+
+    if let Ok(ref resp) = redeem_result {
+        artifact_id = resp.artifact.id.clone();
+        artifact_name = resp.artifact.name.clone();
+    } else {
+        // Redemption failed (likely already redeemed) — look up by code in local DB
+        // or fetch detail from NeboLoop to get the artifact ID
+        warn!(code, "redeem failed, attempting to look up artifact by code");
+        // Search products to find the artifact by code
+        let products = api.list_products(Some("role"), None, None, None, None).await
+            .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
+        let items = products.get("results").and_then(|v| v.as_array())
+            .or_else(|| products.get("skills").and_then(|v| v.as_array()));
+        let found = items.and_then(|arr| arr.iter().find(|item| {
+            item.get("code").and_then(|c| c.as_str()) == Some(code)
+        }));
+        if let Some(item) = found {
+            artifact_id = item["id"].as_str().unwrap_or("").to_string();
+            artifact_name = item["name"].as_str().unwrap_or("").to_string();
+        } else {
+            return Err(NeboError::Internal(format!("install_role: code not found: {code}")));
+        }
+    }
 
     // Fetch artifact content from NeboLoop and persist to DB + filesystem
-    if let Err(e) = tools::persist_role_from_api(&api, &artifact_id, &artifact_name, code, &state.store).await {
-        warn!(code, error = %e, "failed to persist role artifact after redeem");
+    let persist_result = match tools::persist_role_from_api(&api, &artifact_id, &artifact_name, code, &state.store).await {
+        Ok(result) => Some(result),
+        Err(e) => {
+            warn!(code, error = %e, "failed to persist role artifact after redeem");
+            None
+        }
+    };
+
+    // Process workflow bindings — from persist result or from existing frontmatter in DB
+    let mut bindings_processed = false;
+    if let Some(ref result) = persist_result {
+        if let Some(ref tc) = result.type_config {
+            let tc_str = serde_json::to_string(tc).unwrap_or_default();
+            match napp::role::parse_role_config(&tc_str) {
+                Ok(role_config) => {
+                    info!(role = %artifact_name, workflows = role_config.workflows.len(), "processing workflow bindings from typeConfig");
+                    let _ = crate::handlers::roles::process_role_bindings(&artifact_id, &role_config, state).await;
+                    bindings_processed = true;
+                }
+                Err(e) => {
+                    warn!(role = %artifact_name, error = %e, "failed to parse role config from typeConfig");
+                }
+            }
+        } else {
+            info!(role = %artifact_name, "persist result has no type_config");
+        }
+    }
+
+    // Fallback: process from existing frontmatter in DB (covers re-install case)
+    if !bindings_processed {
+        if let Ok(Some(role)) = state.store.get_role(&artifact_id) {
+            if !role.frontmatter.is_empty() {
+                match napp::role::parse_role_config(&role.frontmatter) {
+                    Ok(role_config) => {
+                        info!(role = %artifact_name, workflows = role_config.workflows.len(), "processing workflow bindings from DB frontmatter (fallback)");
+                        let _ = crate::handlers::roles::process_role_bindings(&artifact_id, &role_config, state).await;
+                    }
+                    Err(e) => {
+                        warn!(role = %artifact_name, error = %e, "failed to parse role config from DB frontmatter");
+                    }
+                }
+            }
+        }
     }
 
     // Auto-activate the role so it appears in the sidebar immediately
@@ -419,7 +484,7 @@ pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboErro
         .ok_or_else(|| NeboError::Internal("no bot_id configured".into()))?;
     let profiles = state
         .store
-        .list_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboloop")
         .unwrap_or_default();
     let profile = profiles
         .first()
@@ -550,7 +615,7 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
         .ok_or_else(|| NeboError::Internal("no bot_id".into()))?;
     let profiles = state
         .store
-        .list_active_auth_profiles_by_provider("neboloop")
+        .list_all_active_auth_profiles_by_provider("neboloop")
         .unwrap_or_default();
     let token = profiles
         .first()

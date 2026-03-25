@@ -2,8 +2,8 @@
 	import { onMount } from 'svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import { Package, RefreshCw, Store, Download, Check, WifiOff, Star, ExternalLink, Loader2 } from 'lucide-svelte';
-	import * as api from '$lib/api/nebo';
-	import type { PluginItem, AppItem } from '$lib/api/nebo';
+	import * as api from '$lib/api';
+	import type { PluginItem, AppItem } from '$lib/api';
 	import AppDetailModal from './AppDetailModal.svelte';
 
 	let plugins = $state<PluginItem[]>([]);
@@ -49,7 +49,7 @@
 	async function loadStoreApps() {
 		isLoadingStore = true;
 		try {
-			const resp = await api.listStoreApps();
+			const resp = await api.listStoreProducts();
 			storeApps = resp.apps || [];
 		} catch (error) {
 			console.error('Failed to load store apps:', error);
@@ -90,7 +90,7 @@
 	async function handleInstall(app: AppItem) {
 		installingApp = app.id;
 		try {
-			await api.installStoreApp(app.id);
+			await api.installStoreProduct(app.id);
 			await loadAll();
 		} catch (error) {
 			console.error('Failed to install app:', error);
@@ -102,7 +102,7 @@
 	async function handleUninstall(app: AppItem) {
 		installingApp = app.id;
 		try {
-			await api.uninstallStoreApp(app.id);
+			await api.uninstallStoreProduct(app.id);
 			await loadAll();
 		} catch (error) {
 			console.error('Failed to uninstall app:', error);

@@ -46,7 +46,7 @@
 		if (!confirm(`Uninstall ${item.name}?`)) return;
 		uninstallingId = item.id;
 		try {
-			await api.uninstallStoreSkill(item.id);
+			await api.uninstallStoreProduct(item.id);
 			installed = installed.filter(i => i.id !== item.id);
 		} catch (err: any) {
 			error = err?.message || 'Failed to uninstall';

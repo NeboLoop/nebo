@@ -697,7 +697,7 @@ fn test_install_flow() -> TestResult {
     }"#;
     let config = napp::role::parse_role_config(role_json).unwrap();
     let deps = extract_role_deps(&config);
-    assert_eq!(deps.len(), 3, "2 workflows + 1 skill = 3 deps");
+    assert_eq!(deps.len(), 1, "1 skill dep (workflow refs are inline, not extracted)");
 
     // extract_workflow_deps
     let wf_json = r#"{
@@ -860,6 +860,9 @@ async fn test_cron(server: &TestServer) -> TestResult {
         description: Some("Daily briefing".into()),
         inputs: None,
         is_active: 1,
+        emit: None,
+        activities: None,
+        last_fired: None,
     }];
 
     let count_before_role = store.count_cron_jobs().unwrap();

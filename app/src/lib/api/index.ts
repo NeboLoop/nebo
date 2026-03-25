@@ -126,17 +126,18 @@ export function togglePlugin(id: string, req: TogglePluginRequest): Promise<GetP
 
 // NeboLoop Marketplace — query-param variants (generated API lacks param support)
 
-export function listStoreApps(params?: Record<string, string | number>): Promise<components.ListStoreAppsResponse> {
-	return webapi.get<components.ListStoreAppsResponse>('/api/v1/store/apps', params);
+export function listStoreProducts(params?: Record<string, string | number>): Promise<components.ListStoreAppsResponse> {
+	return webapi.get<components.ListStoreAppsResponse>('/api/v1/store/products', params);
 }
 
-export function listStoreSkills(params?: Record<string, string | number>): Promise<components.ListStoreSkillsResponse> {
-	return webapi.get<components.ListStoreSkillsResponse>('/api/v1/store/skills', params);
+export function getStoreProduct(id: string): Promise<components.GetStoreAppResponse> {
+	return webapi.get<components.GetStoreAppResponse>(`/api/v1/store/products/${id}`);
 }
 
-export function listStoreWorkflows(params?: Record<string, string | number>): Promise<components.ListStoreWorkflowsResponse> {
-	return webapi.get<components.ListStoreWorkflowsResponse>('/api/v1/store/workflows', params);
+export function getStoreProductReviews(id: string): Promise<components.GetStoreAppReviewsResponse> {
+	return webapi.get<components.GetStoreAppReviewsResponse>(`/api/v1/store/products/${id}/reviews`);
 }
+
 
 // NeboLoop OAuth with Janus opt-in
 import type * as components from './neboComponents';

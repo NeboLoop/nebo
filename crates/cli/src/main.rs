@@ -183,13 +183,13 @@ async fn main() -> anyhow::Result<()> {
                 println!("{:<20}  {:<8}  {}", "Name", "Status", "Path");
                 println!("{}", "-".repeat(60));
                 for entry in std::fs::read_dir(&skills_dir)?.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() { continue; }
                     let name = entry.file_name().to_string_lossy().to_string();
-                    if name.ends_with(".yaml") && !name.ends_with(".disabled") {
-                        let skill = name.trim_end_matches(".yaml");
-                        println!("{:<20}  {:<8}  {}", skill, "enabled", entry.path().display());
-                    } else if name.ends_with(".yaml.disabled") {
-                        let skill = name.trim_end_matches(".yaml.disabled");
-                        println!("{:<20}  {:<8}  {}", skill, "disabled", entry.path().display());
+                    if path.join("SKILL.md").exists() {
+                        println!("{:<20}  {:<8}  {}", name, "enabled", path.display());
+                    } else if path.join("SKILL.md.disabled").exists() {
+                        println!("{:<20}  {:<8}  {}", name, "disabled", path.display());
                     }
                 }
             }
@@ -294,8 +294,8 @@ fn run_doctor(cfg: &config::Config) -> anyhow::Result<()> {
     if skills_dir.exists() {
         let count = std::fs::read_dir(&skills_dir)
             .map(|d| d.flatten().filter(|e| {
-                let n = e.file_name().to_string_lossy().to_string();
-                n.ends_with(".yaml") || n.ends_with(".yaml.disabled")
+                let p = e.path();
+                p.is_dir() && (p.join("SKILL.md").exists() || p.join("SKILL.md.disabled").exists())
             }).count())
             .unwrap_or(0);
         println!("Skills dir: {} ({count} skills)", skills_dir.display());

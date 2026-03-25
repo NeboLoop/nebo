@@ -14,6 +14,7 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Outcome of an update check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CheckResult {
     pub available: bool,
     pub current_version: String,

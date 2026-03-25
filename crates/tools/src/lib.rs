@@ -204,30 +204,54 @@ fn generate_minimal_skill_md(name: &str, description: &str) -> String {
 /// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
 /// and stores it at `nebo/roles/{slug}/{version}.napp`, then extracts it.
 /// Otherwise falls back to writing loose ROLE.md + manifest.json files.
+/// Result of persisting a role from the API, including type_config for
+/// downstream workflow binding processing.
+pub struct PersistRoleResult {
+    /// The typeConfig JSON from NeboLoop (contains workflow bindings, triggers, etc.)
+    pub type_config: Option<serde_json::Value>,
+}
+
 pub async fn persist_role_from_api(
     api: &comm::api::NeboLoopApi,
     artifact_id: &str,
     name: &str,
     code: &str,
     store: &db::Store,
-) -> Result<(), String> {
+) -> Result<PersistRoleResult, String> {
     let detail = api.get_skill(artifact_id).await
         .map_err(|e| format!("fetch role detail: {e}"))?;
 
     let manifest_text = extract_manifest_text(&detail)
         .unwrap_or_else(|| generate_minimal_role_md(name, &detail.item.description));
 
-    // Persist to DB
-    let _ = store.create_role(
-        artifact_id,
-        Some(code),  // marketplace code stored as `kind`
-        name,
-        &detail.item.description,
-        &manifest_text,
-        "",
-        None,
-        None,
-    ).map_err(|e| format!("create_role: {e}"))?;
+    // Store typeConfig as frontmatter so workflow bindings are preserved
+    let frontmatter_str = detail.type_config.as_ref()
+        .map(|tc| serde_json::to_string(tc).unwrap_or_default())
+        .unwrap_or_default();
+
+    // Persist to DB — create or update if already exists (re-install)
+    if store.get_role(artifact_id).ok().flatten().is_some() {
+        let _ = store.update_role(
+            artifact_id,
+            name,
+            &detail.item.description,
+            &manifest_text,
+            &frontmatter_str,
+            None,
+            None,
+        );
+    } else {
+        let _ = store.create_role(
+            artifact_id,
+            Some(code),
+            name,
+            &detail.item.description,
+            &manifest_text,
+            &frontmatter_str,
+            None,
+            None,
+        ).map_err(|e| format!("create_role: {e}"))?;
+    }
 
     // Marketplace artifacts go to nebo/ namespace (installed)
     let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
@@ -252,7 +276,7 @@ pub async fn persist_role_from_api(
                 match napp::reader::extract_napp_alongside(&napp_path) {
                     Ok(extract_dir) => {
                         tracing::info!(role = name, dir = %extract_dir.display(), "extracted .napp");
-                        return Ok(());
+                        return Ok(PersistRoleResult { type_config: detail.type_config });
                     }
                     Err(e) => {
                         tracing::warn!(role = name, error = %e, "failed to extract .napp; falling back to loose files");
@@ -265,12 +289,22 @@ pub async fn persist_role_from_api(
         }
     }
 
-    // Fallback: write loose ROLE.md + manifest.json
+    // Fallback: write loose ROLE.md + role.json + manifest.json
     let role_dir = nebo_dir.join("roles").join(dir_name);
     std::fs::create_dir_all(&role_dir).map_err(|e| format!("create role dir: {e}"))?;
 
     if let Err(e) = std::fs::write(role_dir.join("ROLE.md"), &manifest_text) {
         tracing::warn!(role = name, error = %e, "failed to write ROLE.md");
+    }
+
+    // Write role.json from typeConfig (contains workflow bindings, triggers)
+    if let Some(ref tc) = detail.type_config {
+        if let Err(e) = std::fs::write(
+            role_dir.join("role.json"),
+            serde_json::to_string_pretty(tc).unwrap_or_default(),
+        ) {
+            tracing::warn!(role = name, error = %e, "failed to write role.json");
+        }
     }
 
     let manifest_json = serde_json::json!({
@@ -288,7 +322,7 @@ pub async fn persist_role_from_api(
     }
 
     tracing::info!(role = name, dir = %role_dir.display(), "persisted role artifact (loose)");
-    Ok(())
+    Ok(PersistRoleResult { type_config: detail.type_config })
 }
 
 /// Generate a minimal ROLE.md from metadata.

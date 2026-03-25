@@ -62,6 +62,8 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// List active auth profiles by provider, filtering out profiles in cooldown.
+    /// Use this for **request-level profile selection** (choosing which profile handles a request).
     pub fn list_active_auth_profiles_by_provider(
         &self,
         provider: &str,
@@ -72,6 +74,29 @@ impl Store {
                 "SELECT * FROM auth_profiles
                  WHERE provider = ?1 AND is_active = 1
                  AND (cooldown_until IS NULL OR cooldown_until < unixepoch())
+                 ORDER BY
+                     CASE auth_type WHEN 'oauth' THEN 0 WHEN 'token' THEN 1 ELSE 2 END,
+                     priority DESC, last_used_at ASC, error_count ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![provider], row_to_auth_profile)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// List active auth profiles by provider, ignoring cooldown.
+    /// Use this for **loading providers** (building API clients, marketplace queries).
+    pub fn list_all_active_auth_profiles_by_provider(
+        &self,
+        provider: &str,
+    ) -> Result<Vec<AuthProfile>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM auth_profiles
+                 WHERE provider = ?1 AND is_active = 1
                  ORDER BY
                      CASE auth_type WHEN 'oauth' THEN 0 WHEN 'token' THEN 1 ELSE 2 END,
                      priority DESC, last_used_at ASC, error_count ASC",

@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import webapi from '$lib/api/gocliRequest';
-	import { installStoreApp, listRoles, activateRole } from '$lib/api/nebo';
+	import { installStoreProduct, listRoles, activateRole } from '$lib/api/nebo';
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
 	import ReviewCard from '$lib/components/marketplace/ReviewCard.svelte';
 	import FeedbackSection from '$lib/components/marketplace/FeedbackSection.svelte';
@@ -15,7 +15,7 @@
 	let reviewText = $state('');
 	let codeCopied = $state(false);
 
-	import { type AppItem, toAppItem, itemHref } from '$lib/types/marketplace';
+	import { type AppItem, toAppItem, itemHref, gradients } from '$lib/types/marketplace';
 	import InstallCode from '$lib/components/InstallCode.svelte';
 
 	let skill: any = $state(null);
@@ -40,27 +40,25 @@
 		return map;
 	});
 
-	// Parse typeConfig (preferred) or manifest for dependency lists
-	const manifest = $derived(() => {
-		const empty = { workflows: [] as any[], tools: [] as any[], skills: [] as any[] };
-		// Prefer structured typeConfig
-		const tc = skill?.typeConfig;
-		if (tc?.dependencies) {
-			return {
-				workflows: tc.dependencies.workflows ?? [],
-				tools: tc.dependencies.tools ?? [],
-				skills: tc.dependencies.skills ?? []
-			};
-		}
-		if (!skill?.manifest) return empty;
-		try {
-			const m = typeof skill.manifest === 'string' ? JSON.parse(skill.manifest) : skill.manifest;
-			return {
-				workflows: m?.workflows ?? [],
-				tools: m?.tools ?? [],
-				skills: m?.skills ?? []
-			};
-		} catch { return empty; }
+	// Parse capabilities from API response (safe summary, no IP exposed)
+	interface AutomationSummary {
+		name: string;
+		description: string;
+		triggerType: string;
+		stepCount: number;
+	}
+
+	const roleIncludes = $derived(() => {
+		const empty = { automations: [] as AutomationSummary[], skills: [] as string[], triggerTypes: [] as string[], hasPersona: false };
+		const caps = skill?.capabilities;
+		if (!caps) return empty;
+
+		return {
+			automations: caps.automations || [],
+			skills: caps.skillDependencies || [],
+			triggerTypes: caps.triggerTypes || [],
+			hasPersona: caps.hasPersona || false
+		};
 	});
 
 	onMount(async () => {
@@ -109,14 +107,14 @@
 			}
 
 			// No inputs — install directly
-			await installStoreApp(roleId);
+			await installStoreProduct(roleId);
 
 			// Find and activate the role
 			const rolesRes = await listRoles();
 			const allRoles = rolesRes?.roles || [];
 			const matched = allRoles.find(
 				(r: any) => r.name?.toLowerCase() === skill?.name?.toLowerCase()
-			) || allRoles[allRoles.length - 1];
+			);
 
 			if (matched) {
 				await activateRole(matched.id);
@@ -154,6 +152,16 @@
 	}
 
 	const avgRating = $derived(skill?.ratingAvg && Number(skill.ratingAvg) > 0 ? Number(skill.ratingAvg).toFixed(1) : null);
+
+	// Deterministic gradient from slug so the icon color is consistent across pages
+	const iconGradient = $derived(() => {
+		const s = skill?.slug || skill?.name || '';
+		let hash = 0;
+		for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+		return gradients[Math.abs(hash) % gradients.length];
+	});
+
+	const iconIsUrl = $derived(skill?.icon && (skill.icon.startsWith('http') || skill.icon.startsWith('/')));
 </script>
 
 <!-- Header -->
@@ -181,11 +189,11 @@
 	<!-- Hero: icon + name + install button -->
 	<div class="px-5 pt-6 pb-5">
 		<div class="flex items-start gap-5">
-			<div class="w-28 h-28 rounded-[22px] bg-gradient-to-br from-base-content/5 to-base-content/10 flex items-center justify-center shrink-0">
-				{#if skill.icon}
+			<div class="w-28 h-28 rounded-[22px] {iconIsUrl ? 'bg-gradient-to-br from-base-content/5 to-base-content/10' : iconGradient()} flex items-center justify-center shrink-0 shadow-lg">
+				{#if iconIsUrl}
 					<img src={skill.icon} alt="" class="w-28 h-28 rounded-[22px]" />
 				{:else}
-					<img src="/images/default-skill.svg" alt="" class="w-20 h-20" />
+					<span class="text-4xl font-bold text-white drop-shadow-md">{(skill.name || '').split(' ').map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}</span>
 				{/if}
 			</div>
 			<div class="flex-1 min-w-0 pt-1">
@@ -197,9 +205,14 @@
 					<p class="text-sm text-base-content/60 mt-0.5">{skill.category}</p>
 				{/if}
 				{#if skill.installed}
-					<span class="h-9 px-6 rounded-full bg-success/15 text-success font-bold text-base mt-3 inline-flex items-center gap-1.5">
-						Installed
-					</span>
+					<div class="flex items-center gap-2 mt-3">
+						<span class="h-9 px-6 rounded-full bg-success/15 text-success font-bold text-base inline-flex items-center gap-1.5">
+							Installed
+						</span>
+						<button type="button" onclick={() => { setupInputs = skill?.typeConfig?.inputs || []; showSetupModal = true; }} class="h-9 px-5 rounded-full border border-base-content/15 text-base font-medium hover:bg-base-content/5 transition-colors inline-flex items-center">
+							Configure
+						</button>
+					</div>
 				{:else}
 					<button type="button" onclick={installProduct} disabled={installing} class="h-9 px-6 rounded-full bg-primary text-primary-content font-bold text-base mt-3 hover:brightness-110 active:scale-[0.97] transition-all inline-flex items-center gap-1.5 disabled:opacity-50">
 						{installing ? 'Installing...' : 'Install'}
@@ -253,45 +266,43 @@
 		</div>
 	{/if}
 
-	<!-- Includes -->
-	{#if manifest().workflows.length > 0 || manifest().tools.length > 0 || manifest().skills.length > 0}
+	<!-- What's Included -->
+	{#if roleIncludes().automations.length > 0 || roleIncludes().skills.length > 0 || roleIncludes().hasPersona}
 		<div class="px-5 py-5 border-b border-base-content/5">
-			<h3 class="font-display text-lg font-bold mb-4">Includes</h3>
-			<div class="space-y-3">
-				{#if manifest().workflows.length > 0}
+			<h3 class="font-display text-lg font-bold mb-4">What You Get</h3>
+			<div class="space-y-5">
+				{#if roleIncludes().hasPersona}
+					<div class="flex items-center gap-2">
+						<span class="text-sm font-medium px-3 py-1.5 rounded-full bg-primary/10 text-primary">Custom Persona</span>
+					</div>
+				{/if}
+				{#if roleIncludes().automations.length > 0}
 					<div>
-						<p class="text-sm text-base-content/60 mb-1.5 font-medium">{manifest().workflows.length} Workflows</p>
-						<div class="space-y-1">
-							{#each manifest().workflows as wf}
-								<div class="text-base py-1.5 px-3 rounded-lg bg-base-content/5">{wf.name || wf}</div>
+						<p class="text-sm text-base-content/60 mb-2 font-medium uppercase tracking-wider">{roleIncludes().automations.length} Automation{roleIncludes().automations.length > 1 ? 's' : ''}</p>
+						<div class="space-y-2">
+							{#each roleIncludes().automations as auto}
+								<div class="rounded-xl bg-base-content/[0.03] border border-base-content/5 p-3">
+									<div class="flex items-center justify-between">
+										<p class="text-base font-semibold capitalize">{auto.name}</p>
+										<span class="text-xs font-medium px-2 py-0.5 rounded-full bg-base-content/10 text-base-content/70">{auto.triggerType}</span>
+									</div>
+									{#if auto.description}
+										<p class="text-sm text-base-content/70 mt-1">{auto.description}</p>
+									{/if}
+									{#if auto.stepCount > 0}
+										<p class="text-xs text-base-content/50 mt-2">{auto.stepCount} step{auto.stepCount > 1 ? 's' : ''}</p>
+									{/if}
+								</div>
 							{/each}
 						</div>
 					</div>
 				{/if}
-				{#if manifest().tools.length > 0}
+				{#if roleIncludes().skills.length > 0}
 					<div>
-						<p class="text-sm text-base-content/60 mb-1.5 font-medium">{manifest().tools.length} Tools</p>
-						<div class="space-y-1">
-							{#each manifest().tools as tool}
-								{#if tool.id}
-									<button type="button" onclick={() => goto('/marketplace/skills/' + tool.id)} class="text-base py-1.5 px-3 rounded-lg bg-base-content/5 w-full text-left hover:bg-secondary/10 hover:text-secondary transition-colors cursor-pointer">{tool.name || tool}</button>
-								{:else}
-									<div class="text-base py-1.5 px-3 rounded-lg bg-base-content/5">{tool.name || tool}</div>
-								{/if}
-							{/each}
-						</div>
-					</div>
-				{/if}
-				{#if manifest().skills.length > 0}
-					<div>
-						<p class="text-sm text-base-content/60 mb-1.5 font-medium">{manifest().skills.length} Skills</p>
-						<div class="space-y-1">
-							{#each manifest().skills as sk}
-								{#if sk.id}
-									<button type="button" onclick={() => goto('/marketplace/skills/' + sk.id)} class="text-base py-1.5 px-3 rounded-lg bg-base-content/5 w-full text-left hover:bg-info/10 hover:text-info transition-colors cursor-pointer">{sk.name || sk}</button>
-								{:else}
-									<div class="text-base py-1.5 px-3 rounded-lg bg-base-content/5">{sk.name || sk}</div>
-								{/if}
+						<p class="text-sm text-base-content/60 mb-2 font-medium uppercase tracking-wider">Required Skills</p>
+						<div class="flex flex-wrap gap-2">
+							{#each roleIncludes().skills as sk}
+								<span class="text-sm font-medium px-3 py-1.5 rounded-full bg-info/10 text-info">{sk}</span>
 							{/each}
 						</div>
 					</div>

@@ -101,7 +101,6 @@ impl Registry {
     async fn discover_installed_tools(&self) -> Result<(), NappError> {
         let dir = &self.config.installed_tools_dir;
         if !dir.exists() {
-            std::fs::create_dir_all(dir)?;
             return Ok(());
         }
 
@@ -174,7 +173,6 @@ impl Registry {
     async fn discover_user_tools(&self) -> Result<(), NappError> {
         let dir = &self.config.user_tools_dir;
         if !dir.exists() {
-            std::fs::create_dir_all(dir)?;
             return Ok(());
         }
 

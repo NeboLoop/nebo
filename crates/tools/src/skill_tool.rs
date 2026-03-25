@@ -210,15 +210,9 @@ impl DynTool for SkillTool {
                                 Ok(d) => d,
                                 Err(e) => return ToolResult::error(e),
                             };
-                            let yaml_path = dir.join(format!("{}.yaml", name));
-                            let disabled_path = dir.join(format!("{}.yaml.disabled", name));
                             let skill_md_path = dir.join(name).join("SKILL.md");
                             let skill_md_disabled = dir.join(name).join("SKILL.md.disabled");
-                            let path = if yaml_path.exists() {
-                                yaml_path
-                            } else if disabled_path.exists() {
-                                disabled_path
-                            } else if skill_md_path.exists() {
+                            let path = if skill_md_path.exists() {
                                 skill_md_path
                             } else if skill_md_disabled.exists() {
                                 skill_md_disabled
@@ -309,19 +303,11 @@ impl DynTool for SkillTool {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
-                    let disabled_path = dir.join(format!("{}.yaml.disabled", name));
-                    let enabled_path = dir.join(format!("{}.yaml", name));
                     let skill_dir = dir.join(name);
 
                     if self.loader.get(name).await.is_some_and(|s| s.enabled) {
                         ToolResult::ok(format!("Skill '{}' is already enabled.", name))
-                    } else if disabled_path.exists() {
-                        match std::fs::rename(&disabled_path, &enabled_path) {
-                            Ok(_) => ToolResult::ok(format!("Skill '{}' enabled.", name)),
-                            Err(e) => ToolResult::error(format!("Failed to enable skill: {}", e)),
-                        }
                     } else if skill_dir.join("SKILL.md.disabled").exists() {
-                        // SKILL.md subdirectory format — rename SKILL.md.disabled back to SKILL.md
                         match std::fs::rename(
                             skill_dir.join("SKILL.md.disabled"),
                             skill_dir.join("SKILL.md"),
@@ -342,19 +328,11 @@ impl DynTool for SkillTool {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
-                    let enabled_path = dir.join(format!("{}.yaml", name));
-                    let disabled_path = dir.join(format!("{}.yaml.disabled", name));
                     let skill_dir = dir.join(name);
 
-                    if disabled_path.exists() || skill_dir.join("SKILL.md.disabled").exists() {
+                    if skill_dir.join("SKILL.md.disabled").exists() {
                         ToolResult::ok(format!("Skill '{}' is already disabled.", name))
-                    } else if enabled_path.exists() {
-                        match std::fs::rename(&enabled_path, &disabled_path) {
-                            Ok(_) => ToolResult::ok(format!("Skill '{}' disabled.", name)),
-                            Err(e) => ToolResult::error(format!("Failed to disable skill: {}", e)),
-                        }
                     } else if skill_dir.join("SKILL.md").exists() {
-                        // SKILL.md subdirectory format — rename SKILL.md to SKILL.md.disabled
                         match std::fs::rename(
                             skill_dir.join("SKILL.md"),
                             skill_dir.join("SKILL.md.disabled"),
@@ -382,26 +360,21 @@ impl DynTool for SkillTool {
                         Err(e) => return ToolResult::error(e),
                     };
 
-                    // Create as a SKILL.md directory if content has frontmatter, else .yaml
-                    if content.trim_start().starts_with("---") {
-                        let skill_dir = dir.join(name);
-                        if let Err(e) = std::fs::create_dir_all(&skill_dir) {
-                            return ToolResult::error(format!("Failed to create skill dir: {}", e));
-                        }
-                        let path = skill_dir.join("SKILL.md");
-                        match std::fs::write(&path, content) {
-                            Ok(_) => ToolResult::ok(format!("Created skill '{}' at {}", name, path.display())),
-                            Err(e) => ToolResult::error(format!("Failed to write skill: {}", e)),
-                        }
+                    // Always write as {name}/SKILL.md per Agent Skills spec
+                    let final_content = if content.trim_start().starts_with("---") {
+                        content.clone()
                     } else {
-                        if let Err(e) = std::fs::create_dir_all(&dir) {
-                            return ToolResult::error(format!("Failed to create skills dir: {}", e));
-                        }
-                        let path = dir.join(format!("{}.yaml", name));
-                        match std::fs::write(&path, content) {
-                            Ok(_) => ToolResult::ok(format!("Created skill '{}' at {}", name, path.display())),
-                            Err(e) => ToolResult::error(format!("Failed to write skill: {}", e)),
-                        }
+                        format!("---\nname: {}\ndescription: {}\n---\n{}", name, name, content)
+                    };
+
+                    let skill_dir = dir.join(name);
+                    if let Err(e) = std::fs::create_dir_all(&skill_dir) {
+                        return ToolResult::error(format!("Failed to create skill dir: {}", e));
+                    }
+                    let path = skill_dir.join("SKILL.md");
+                    match std::fs::write(&path, final_content) {
+                        Ok(_) => ToolResult::ok(format!("Created skill '{}' at {}", name, path.display())),
+                        Err(e) => ToolResult::error(format!("Failed to write skill: {}", e)),
                     }
                 }
                 "update" => {
@@ -433,11 +406,11 @@ impl DynTool for SkillTool {
                         Ok(d) => d,
                         Err(e) => return ToolResult::error(e),
                     };
-                    let path = dir.join(format!("{}.yaml", name));
-                    if !path.exists() {
+                    let skill_md = dir.join(name).join("SKILL.md");
+                    if !skill_md.exists() {
                         return ToolResult::error(format!("Skill '{}' not found", name));
                     }
-                    match std::fs::write(&path, content) {
+                    match std::fs::write(&skill_md, content) {
                         Ok(_) => ToolResult::ok(format!("Updated skill '{}'", name)),
                         Err(e) => ToolResult::error(format!("Failed to update: {}", e)),
                     }
@@ -463,25 +436,10 @@ impl DynTool for SkillTool {
                         Err(e) => return ToolResult::error(e),
                     };
 
-                    // Delete SKILL.md directory
                     let skill_dir = dir.join(name);
                     if skill_dir.is_dir() {
                         if let Err(e) = std::fs::remove_dir_all(&skill_dir) {
                             tracing::warn!(skill = %name, error = %e, "failed to remove skill directory");
-                        }
-                    }
-
-                    // Delete .yaml files
-                    let yaml_path = dir.join(format!("{}.yaml", name));
-                    let disabled_path = dir.join(format!("{}.yaml.disabled", name));
-                    if yaml_path.exists() {
-                        if let Err(e) = std::fs::remove_file(&yaml_path) {
-                            tracing::warn!(path = %yaml_path.display(), error = %e, "failed to remove skill yaml");
-                        }
-                    }
-                    if disabled_path.exists() {
-                        if let Err(e) = std::fs::remove_file(&disabled_path) {
-                            tracing::warn!(path = %disabled_path.display(), error = %e, "failed to remove disabled skill yaml");
                         }
                     }
 

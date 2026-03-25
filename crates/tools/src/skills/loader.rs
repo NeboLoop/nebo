@@ -59,13 +59,6 @@ impl Loader {
             }
         }
 
-        // Also load flat .yaml / .yaml.disabled files for backward compatibility
-        for skill in load_yaml_skills(&self.user_dir) {
-            if !loaded.contains_key(&skill.name) {
-                loaded.insert(skill.name.clone(), skill);
-            }
-        }
-
         // Verify dependencies — skip skills with missing deps
         verify_dependencies(&mut loaded);
 
@@ -169,8 +162,6 @@ impl Loader {
                         let relevant = event.paths.iter().any(|p| {
                             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             name.eq_ignore_ascii_case("skill.md")
-                                || name.ends_with(".yaml")
-                                || name.ends_with(".yaml.disabled")
                                 || name.ends_with(".napp")
                                 // Trigger reload when resource files change
                                 || p.ancestors().any(|a| {
@@ -222,12 +213,6 @@ impl Loader {
                             }
                         }
 
-                        for skill in load_yaml_skills(&user_dir) {
-                            if !loaded.contains_key(&skill.name) {
-                                loaded.insert(skill.name.clone(), skill);
-                            }
-                        }
-
                         verify_dependencies(&mut loaded);
 
                         let count = loaded.len();
@@ -252,65 +237,47 @@ impl Loader {
         &self.installed_dir
     }
 
-    /// Write a skill to the user skills directory.
-    ///
-    /// If content starts with `---` (YAML frontmatter), writes as `{name}/SKILL.md`.
-    /// Otherwise writes as `{name}.yaml`.
-    /// Returns the path written to.
+    /// Write a skill to the user skills directory as `{name}/SKILL.md`.
     pub fn write_skill(&self, name: &str, content: &str) -> Result<PathBuf, String> {
         write_skill(&self.user_dir, name, content)
     }
 
     /// Resolve the path of a user skill by name.
-    /// Checks SKILL.md in directory, then .yaml, then .yaml.disabled.
     pub fn resolve_user_skill_path(&self, name: &str) -> Option<PathBuf> {
         resolve_skill_path(&self.user_dir, name)
     }
 }
 
-/// Write a skill file to a directory.
+/// Write a skill file to a directory as `{name}/SKILL.md` per Agent Skills spec.
 ///
-/// If content starts with `---` (YAML frontmatter), writes as `{name}/SKILL.md`.
-/// Otherwise writes as `{name}.yaml`.
+/// If content doesn't have frontmatter, wraps it with minimal `---` frontmatter.
 pub fn write_skill(skills_dir: &Path, name: &str, content: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(skills_dir)
         .map_err(|e| format!("failed to create skills dir: {}", e))?;
 
-    if content.trim_start().starts_with("---") {
-        let skill_dir = skills_dir.join(name);
-        std::fs::create_dir_all(&skill_dir)
-            .map_err(|e| format!("failed to create skill dir: {}", e))?;
-        let path = skill_dir.join("SKILL.md");
-        std::fs::write(&path, content)
-            .map_err(|e| format!("failed to write SKILL.md: {}", e))?;
-        Ok(path)
+    let skill_dir = skills_dir.join(name);
+    std::fs::create_dir_all(&skill_dir)
+        .map_err(|e| format!("failed to create skill dir: {}", e))?;
+
+    let final_content = if content.trim_start().starts_with("---") {
+        content.to_string()
     } else {
-        let path = skills_dir.join(format!("{}.yaml", name));
-        std::fs::write(&path, content)
-            .map_err(|e| format!("failed to write skill yaml: {}", e))?;
-        Ok(path)
-    }
+        format!("---\nname: {}\ndescription: {}\n---\n{}", name, name, content)
+    };
+
+    let path = skill_dir.join("SKILL.md");
+    std::fs::write(&path, &final_content)
+        .map_err(|e| format!("failed to write SKILL.md: {}", e))?;
+    Ok(path)
 }
 
 /// Resolve the path of a skill in a directory by name.
-/// Checks: directory with SKILL.md, then .yaml, then .yaml.disabled.
 pub fn resolve_skill_path(skills_dir: &Path, name: &str) -> Option<PathBuf> {
-    // Check SKILL.md in subdirectory
     let dir_path = skills_dir.join(name);
     if dir_path.is_dir() {
         if let Some(md_path) = find_skill_md(&dir_path) {
             return Some(md_path);
         }
-    }
-    // Check flat .yaml
-    let yaml_path = skills_dir.join(format!("{}.yaml", name));
-    if yaml_path.exists() {
-        return Some(yaml_path);
-    }
-    // Check .yaml.disabled
-    let disabled_path = skills_dir.join(format!("{}.yaml.disabled", name));
-    if disabled_path.exists() {
-        return Some(disabled_path);
     }
     None
 }
@@ -452,56 +419,6 @@ fn verify_dependencies(loaded: &mut HashMap<String, Skill>) {
     });
 }
 
-/// Load flat .yaml / .yaml.disabled skill files for backward compatibility.
-fn load_yaml_skills(dir: &Path) -> Vec<Skill> {
-    let mut skills = Vec::new();
-    if !dir.exists() {
-        return skills;
-    }
-
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return skills,
-    };
-
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        let (slug, enabled) = if name.ends_with(".yaml.disabled") {
-            (name.trim_end_matches(".yaml.disabled").to_string(), false)
-        } else if name.ends_with(".yaml") {
-            (name.trim_end_matches(".yaml").to_string(), true)
-        } else {
-            continue;
-        };
-
-        if let Ok(content) = std::fs::read_to_string(entry.path()) {
-            skills.push(Skill {
-                name: slug,
-                description: "YAML skill (legacy format)".to_string(),
-                version: "1.0.0".into(),
-                license: String::new(),
-                compatibility: String::new(),
-                allowed_tools: String::new(),
-                author: String::new(),
-                dependencies: vec![],
-                tags: vec![],
-                platform: vec![],
-                triggers: vec![],
-                capabilities: vec![],
-                priority: 0,
-                max_turns: 0,
-                metadata: HashMap::new(),
-                template: content,
-                enabled,
-                source_path: Some(entry.path()),
-                source: SkillSource::User,
-                base_dir: None,
-            });
-        }
-    }
-
-    skills
-}
 
 #[cfg(test)]
 mod tests {
@@ -683,31 +600,4 @@ Windows specific instructions.
         assert_eq!(list[1].name, "low");
     }
 
-    #[tokio::test]
-    async fn test_yaml_backward_compat() {
-        let installed = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("legacy.yaml"),
-            "name: legacy\ncontent: old format",
-        )
-        .unwrap();
-        std::fs::write(
-            tmp.path().join("disabled.yaml.disabled"),
-            "name: disabled",
-        )
-        .unwrap();
-
-        let bundled = TempDir::new().unwrap();
-        let loader = Loader::new(bundled.path().to_path_buf(), installed.path().to_path_buf(), tmp.path().to_path_buf());
-        loader.load_all().await;
-
-        let legacy = loader.get("legacy").await.unwrap();
-        assert!(legacy.enabled);
-        assert!(legacy.template.contains("old format"));
-        assert_eq!(legacy.source, SkillSource::User);
-
-        let disabled = loader.get("disabled").await.unwrap();
-        assert!(!disabled.enabled);
-    }
 }

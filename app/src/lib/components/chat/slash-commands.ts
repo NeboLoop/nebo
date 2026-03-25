@@ -29,7 +29,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
 	// ── Info ──
 	{ name: 'help', description: 'Show all commands', category: 'info', executeLocal: true },
 	{ name: 'status', description: 'Show agent & system status', category: 'info', executeLocal: true },
-	{ name: 'usage', description: 'Show token usage', category: 'info', executeLocal: true },
+	{ name: 'usage', description: 'Show credit usage', category: 'info', executeLocal: true },
 	{ name: 'export', description: 'Export chat as Markdown', category: 'info', executeLocal: true },
 	{ name: 'lanes', description: 'Show lane concurrency status', category: 'info', executeLocal: true },
 	{ name: 'search', description: 'Search chat history', category: 'info', args: '<query>', executeLocal: true },

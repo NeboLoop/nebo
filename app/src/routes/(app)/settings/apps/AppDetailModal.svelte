@@ -1,8 +1,8 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Shield, Link2, Info, Unplug, ExternalLink, Star, Download, Globe, Lock, ChevronRight, Check, Clock, User, Layers, Monitor, Smartphone, ChevronDown, ChevronUp, MessageSquare, ThumbsUp } from 'lucide-svelte';
-	import * as api from '$lib/api/nebo';
-	import type { PluginItem, AppOAuthGrant, AppItem, StoreAppDetail, Review, GetStoreAppReviewsResponse } from '$lib/api/nebo';
+	import * as api from '$lib/api';
+	import type { PluginItem, AppOAuthGrant, AppItem, StoreAppDetail, Review, GetStoreAppReviewsResponse } from '$lib/api';
 
 	interface Props {
 		plugin?: PluginItem | null;
@@ -67,7 +67,7 @@
 	async function loadStoreDetail(id: string) {
 		loadingDetail = true;
 		try {
-			const resp = await api.getStoreApp(id);
+			const resp = await api.getStoreProduct(id);
 			appDetail = resp.app;
 		} catch (error) {
 			console.error('Failed to load app detail:', error);
@@ -79,7 +79,7 @@
 	async function loadReviews(id: string) {
 		loadingReviews = true;
 		try {
-			reviews = await api.getStoreAppReviews(id);
+			reviews = await api.getStoreProductReviews(id);
 		} catch {
 			reviews = null;
 		} finally {
@@ -92,7 +92,7 @@
 		if (!id) return;
 		installing = true;
 		try {
-			await api.installStoreApp(id);
+			await api.installStoreProduct(id);
 			if (appDetail) appDetail = { ...appDetail, isInstalled: true };
 			if (storeApp) storeApp = { ...storeApp, isInstalled: true };
 			onupdated();
@@ -108,7 +108,7 @@
 		if (!id) return;
 		installing = true;
 		try {
-			await api.uninstallStoreApp(id);
+			await api.uninstallStoreProduct(id);
 			if (appDetail) appDetail = { ...appDetail, isInstalled: false };
 			if (storeApp) storeApp = { ...storeApp, isInstalled: false };
 			onupdated();

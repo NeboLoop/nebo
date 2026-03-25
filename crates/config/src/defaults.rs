@@ -94,7 +94,7 @@ pub fn user_dir() -> Result<PathBuf, NeboError> {
 }
 
 /// Artifact type subdirectories.
-const ARTIFACT_TYPES: &[&str] = &["skills", "tools", "workflows", "roles"];
+const ARTIFACT_TYPES: &[&str] = &["skills", "roles"];
 
 /// Returns the `bundled/` directory for skills shipped with the app.
 pub fn bundled_skills_dir() -> Result<PathBuf, NeboError> {

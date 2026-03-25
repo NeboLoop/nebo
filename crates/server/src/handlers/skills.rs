@@ -225,23 +225,20 @@ pub async fn delete_skill(
     State(_state): State<AppState>,
     Path(name): Path<String>,
 ) -> HandlerResult<serde_json::Value> {
-    let dir = skills_dir()?;
-
-    // Delete SKILL.md directory if exists
-    let skill_dir = dir.join(&name);
-    if skill_dir.is_dir() {
-        std::fs::remove_dir_all(&skill_dir)
-            .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+    // Delete from user/skills/
+    if let Ok(user_dir) = config::user_dir() {
+        let dir = user_dir.join("skills").join(&name);
+        if dir.is_dir() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
-    // Delete .yaml / .yaml.disabled files if they exist
-    let yaml_path = dir.join(format!("{}.yaml", name));
-    if yaml_path.exists() {
-        let _ = std::fs::remove_file(&yaml_path);
-    }
-    let disabled_path = dir.join(format!("{}.yaml.disabled", name));
-    if disabled_path.exists() {
-        let _ = std::fs::remove_file(&disabled_path);
+    // Delete from nebo/skills/ (marketplace installs)
+    if let Ok(nebo_dir) = config::nebo_dir() {
+        let dir = nebo_dir.join("skills").join(&name);
+        if dir.is_dir() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     Ok(Json(serde_json::json!({"success": true})))
@@ -268,20 +265,20 @@ pub async fn toggle_skill(
         return Ok(Json(serde_json::json!({"name": name, "enabled": true})));
     }
 
-    // Fall back to .yaml toggle
-    let enabled_path = dir.join(format!("{}.yaml", name));
-    let disabled_path = dir.join(format!("{}.yaml.disabled", name));
-
-    if enabled_path.exists() {
-        std::fs::rename(&enabled_path, &disabled_path)
+    // Check SKILL.md inside directory for enable/disable via rename
+    let skill_md = skill_dir.join("SKILL.md");
+    let skill_md_disabled = skill_dir.join("SKILL.md.disabled");
+    if skill_md.exists() {
+        std::fs::rename(&skill_md, &skill_md_disabled)
             .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
-        Ok(Json(serde_json::json!({"name": name, "enabled": false})))
-    } else if disabled_path.exists() {
-        std::fs::rename(&disabled_path, &enabled_path)
-            .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
-        Ok(Json(serde_json::json!({"name": name, "enabled": true})))
-    } else {
-        Err(to_error_response(types::NeboError::NotFound))
+        return Ok(Json(serde_json::json!({"name": name, "enabled": false})));
     }
+    if skill_md_disabled.exists() {
+        std::fs::rename(&skill_md_disabled, &skill_md)
+            .map_err(|e| to_error_response(types::NeboError::Io(e)))?;
+        return Ok(Json(serde_json::json!({"name": name, "enabled": true})));
+    }
+
+    Err(to_error_response(types::NeboError::NotFound))
 }
 

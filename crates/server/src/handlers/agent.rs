@@ -508,10 +508,39 @@ pub async fn update_apply(
     };
 
     // Respond first, then apply — so the client sees the success response
+    let hub = state.hub.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        if let Err(e) = updater::apply_update(&binary_path) {
-            tracing::error!("update apply failed: {}", e);
+
+        // Run apply in a blocking thread with a timeout
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            tokio::task::spawn_blocking(move || updater::apply_update(&binary_path)),
+        ).await;
+
+        match result {
+            Ok(Ok(Ok(()))) => {
+                // apply_update calls process::exit or execve — we shouldn't reach here
+                tracing::info!("update applied successfully");
+            }
+            Ok(Ok(Err(e))) => {
+                tracing::error!("update apply failed: {}", e);
+                hub.broadcast("update_error", serde_json::json!({
+                    "error": e.to_string(),
+                }));
+            }
+            Ok(Err(e)) => {
+                tracing::error!("update apply panicked: {}", e);
+                hub.broadcast("update_error", serde_json::json!({
+                    "error": format!("apply task panicked: {}", e),
+                }));
+            }
+            Err(_) => {
+                tracing::error!("update apply timed out after 60s");
+                hub.broadcast("update_error", serde_json::json!({
+                    "error": "Update timed out. Please restart Nebo manually.",
+                }));
+            }
         }
     });
 

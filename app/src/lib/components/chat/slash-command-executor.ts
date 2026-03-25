@@ -230,7 +230,7 @@ async function handleUsage(ctx: CommandContext): Promise<boolean> {
 			return `${used}K / ${limit}K (${pct}%)`;
 		};
 		const lines = [
-			'**Token Usage**\n',
+			'**Credit Usage**\n',
 			`Session: ${fmt(res.session)}`,
 			`Weekly: ${fmt(res.weekly)}`
 		];

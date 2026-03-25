@@ -5,7 +5,7 @@
 	import ArtifactIcon from './ArtifactIcon.svelte';
 	import RoleSetupModal from '$lib/components/role/RoleSetupModal.svelte';
 	import { type AppItem, itemHref } from '$lib/types/marketplace';
-	import { installStoreApp, listRoles, activateRole } from '$lib/api/nebo';
+	import { installStoreProduct, listRoles, activateRole } from '$lib/api/nebo';
 	import webapi from '$lib/api/gocliRequest';
 	import { CheckCircle } from 'lucide-svelte';
 
@@ -38,7 +38,7 @@
 			}
 
 			// No inputs or not a role — install directly
-			await installStoreApp(item.id);
+			await installStoreProduct(item.id);
 
 			if (item.type === 'role') {
 				// Find and activate the role
@@ -46,7 +46,7 @@
 				const allRoles = rolesRes?.roles || [];
 				const matched = allRoles.find(
 					(r: any) => r.name?.toLowerCase() === item.name.toLowerCase()
-				) || allRoles[allRoles.length - 1];
+				);
 
 				if (matched) {
 					await activateRole(matched.id);
@@ -84,7 +84,9 @@
 			<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="xl" />
 			<div class="flex-1 min-w-0">
 				<h3 class="font-display text-lg font-bold leading-tight">{item.name}</h3>
+				{#if item.description}
 				<p class="text-sm text-base-content/80 mt-1 line-clamp-2 leading-relaxed">{item.description}</p>
+			{/if}
 				<div class="flex items-center gap-1.5 mt-2">
 					{#if item.author}
 						<span class="text-sm text-base-content/80 truncate">{item.author}</span>
