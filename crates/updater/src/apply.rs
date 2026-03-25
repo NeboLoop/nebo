@@ -140,10 +140,22 @@ fn apply_app_bundle(dmg_path: &Path) -> Result<(), UpdateError> {
     // 6. Clean temp
     let _ = std::fs::remove_file(dmg_path);
 
-    // 7. Relaunch the app
-    let _ = Command::new("open")
-        .args(["-n"])
-        .arg(&dest_app)
+    // 7. Relaunch the app after this process exits.
+    // We spawn a background shell that waits for our PID to die, then opens the new app.
+    // This avoids the race where `open -n` fires while the old process is still alive.
+    let pid = std::process::id();
+    let app_path = dest_app.to_string_lossy().to_string();
+    let _ = Command::new("sh")
+        .args([
+            "-c",
+            &format!(
+                "while kill -0 {} 2>/dev/null; do sleep 0.2; done; open {:?}",
+                pid, app_path
+            ),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn();
 
     std::process::exit(0);
@@ -156,13 +168,26 @@ fn apply_app_bundle(msi_path: &Path) -> Result<(), UpdateError> {
 
     run_pre_apply();
 
-    // msiexec /i Nebo.msi /quiet /norestart
-    Command::new("msiexec")
-        .args(["/i"])
-        .arg(msi_path)
-        .args(["/quiet", "/norestart"])
+    // msiexec /i Nebo.msi /quiet /norestart, then relaunch after install completes.
+    // We use cmd /c to chain: run msiexec (wait), then start the new exe.
+    let current_exe = std::env::current_exe()
+        .map_err(|e| UpdateError::Other(format!("resolve executable: {}", e)))?;
+    let exe_path = current_exe.to_string_lossy().to_string();
+    let msi_str = msi_path.to_string_lossy().to_string();
+
+    Command::new("cmd")
+        .args([
+            "/C",
+            &format!(
+                "msiexec /i \"{}\" /quiet /norestart && start \"\" \"{}\"",
+                msi_str, exe_path
+            ),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| UpdateError::Other(format!("msiexec: {}", e)))?;
+        .map_err(|e| UpdateError::Other(format!("msiexec+relaunch: {}", e)))?;
 
     std::process::exit(0);
 }
