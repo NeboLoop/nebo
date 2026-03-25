@@ -61,9 +61,16 @@ pub struct RoleConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleInputField {
     /// Unique key used to reference this value in workflows.
+    /// Falls back to `name` if not provided (NeboLoop uses `name`).
+    #[serde(default)]
     pub key: String,
     /// Display label shown to the user.
+    /// Falls back to empty (populated from `name` in post-processing).
+    #[serde(default)]
     pub label: String,
+    /// NeboLoop uses `name` instead of `key` — accepted as alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Optional help text shown below the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -85,10 +92,54 @@ pub struct RoleInputField {
 }
 
 /// An option in a select or radio field.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Accepts both `{ "value": "x", "label": "X" }` and plain `"x"` strings.
+#[derive(Debug, Clone, Serialize)]
 pub struct RoleInputOption {
     pub value: String,
     pub label: String,
+}
+
+impl<'de> serde::Deserialize<'de> for RoleInputOption {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct OptionVisitor;
+
+        impl<'de> de::Visitor<'de> for OptionVisitor {
+            type Value = RoleInputOption;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string or { value, label } object")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<RoleInputOption, E> {
+                let label = v.replace('_', " ").replace('-', " ");
+                Ok(RoleInputOption {
+                    value: v.to_string(),
+                    label,
+                })
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<RoleInputOption, M::Error> {
+                #[derive(Deserialize)]
+                struct Helper {
+                    value: String,
+                    #[serde(default)]
+                    label: Option<String>,
+                }
+                let h = Helper::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(RoleInputOption {
+                    label: h.label.unwrap_or_else(|| h.value.clone()),
+                    value: h.value,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(OptionVisitor)
+    }
 }
 
 fn default_input_type() -> String {
@@ -220,8 +271,11 @@ impl Default for RoleOnError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoleFallback {
+    #[serde(alias = "NotifyOwner")]
     NotifyOwner,
+    #[serde(alias = "Skip")]
     Skip,
+    #[serde(alias = "Abort")]
     Abort,
 }
 
@@ -277,8 +331,39 @@ pub struct RoleDefaults {
 
 /// Parse a role.json file into a `RoleConfig`.
 pub fn parse_role_config(json_str: &str) -> Result<RoleConfig, NappError> {
-    let config: RoleConfig = serde_json::from_str(json_str)
+    let mut config: RoleConfig = serde_json::from_str(json_str)
         .map_err(|e| NappError::Manifest(format!("role.json: {}", e)))?;
+
+    // Normalize input fields: NeboLoop uses `name` instead of `key`/`label`
+    for field in &mut config.inputs {
+        if field.key.is_empty() {
+            if let Some(ref name) = field.name {
+                field.key = name.clone();
+            }
+        }
+        if field.label.is_empty() {
+            let source = field.name.as_deref().unwrap_or(&field.key);
+            field.label = source.replace('_', " ").replace('-', " ");
+            // Capitalize first letter of each word
+            field.label = field.label.split_whitespace()
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+    }
+
+    // Normalize options: NeboLoop may send plain strings instead of {value, label} objects
+    for field in &mut config.inputs {
+        // Options are already typed as Vec<RoleInputOption> — if they parsed, they're fine.
+        // Plain string arrays would fail serde, so they're handled by the caller.
+    }
+
     validate_role_config(&config)?;
     Ok(config)
 }
@@ -332,10 +417,7 @@ fn validate_role_config(config: &RoleConfig) -> Result<(), NappError> {
     }
     for ref_str in &config.skills {
         if !is_qualified_skill_ref(ref_str) {
-            return Err(NappError::Manifest(format!(
-                "skill ref must be a qualified name (@org/skills/name): {}",
-                ref_str
-            )));
+            tracing::warn!(skill_ref = %ref_str, "skill ref is not a qualified name — cascade install may skip it");
         }
     }
     Ok(())
@@ -491,9 +573,10 @@ mod tests {
     }
 
     #[test]
-    fn test_bad_skill_ref() {
+    fn test_bad_skill_ref_warns_but_succeeds() {
+        // Non-qualified skill refs warn but don't reject the config
         let json = r#"{"skills": ["BAD-prefix"]}"#;
-        assert!(parse_role_config(json).is_err());
+        assert!(parse_role_config(json).is_ok());
     }
 
     #[test]

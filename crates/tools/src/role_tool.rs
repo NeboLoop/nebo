@@ -1230,7 +1230,7 @@ impl RoleTool {
     ///   - Human-readable: "every 30 seconds", "every 2 minutes", "daily at 7am"
     ///
     /// This function handles all these cases.
-    fn normalize_cron(expr: &str) -> String {
+    pub fn normalize_cron(expr: &str) -> String {
         let trimmed = expr.trim();
 
         // Handle human-readable expressions like "every 30 seconds", "every 2 minutes", etc.
@@ -1255,7 +1255,7 @@ impl RoleTool {
     ///
     /// LLMs write "0 9:30 * * 1-5" meaning "at 9:30, weekdays".
     /// This converts the H:MM to proper minute and hour fields.
-    fn fix_time_notation(expr: &str) -> String {
+    pub fn fix_time_notation(expr: &str) -> String {
         let fields: Vec<&str> = expr.split_whitespace().collect();
         let mut result: Vec<String> = Vec::new();
         let mut i = 0;
@@ -1293,7 +1293,7 @@ impl RoleTool {
     ///
     /// Handles: "every N seconds/minutes/hours", "daily at Ham/Hpm",
     ///          "hourly", "weekly", "every weekday at H:MM"
-    fn human_to_cron(expr: &str) -> String {
+    pub fn human_to_cron(expr: &str) -> String {
         let lower = expr.trim().to_lowercase();
 
         // "every N seconds" → */N * * * * * *
@@ -1343,14 +1343,14 @@ impl RoleTool {
     }
 
     /// Extract the first number from a string.
-    fn extract_number(s: &str) -> Option<u32> {
+    pub fn extract_number(s: &str) -> Option<u32> {
         s.split_whitespace()
             .find_map(|word| word.parse::<u32>().ok())
     }
 
     /// Extract hour and minute from a human-readable time expression.
     /// Returns (hour, minute) as strings for cron fields.
-    fn extract_time(s: &str) -> (String, String) {
+    pub fn extract_time(s: &str) -> (String, String) {
         // Look for H:MM pattern
         for word in s.split_whitespace() {
             let clean = word.trim_end_matches(|c: char| !c.is_ascii_digit());

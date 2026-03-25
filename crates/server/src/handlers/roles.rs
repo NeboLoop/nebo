@@ -308,9 +308,70 @@ pub async fn get_role(
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v["version"].as_str().map(|s| s.to_string()));
 
+    // Parse and normalize inputFields from frontmatter so frontend doesn't have to
+    let input_fields: Vec<serde_json::Value> = if !role.frontmatter.is_empty() {
+        serde_json::from_str::<serde_json::Value>(&role.frontmatter)
+            .ok()
+            .and_then(|fm| fm.get("inputs").and_then(|v| v.as_array().cloned()))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| {
+                let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let key = f.get("key").and_then(|v| v.as_str()).unwrap_or(name);
+                let label = f.get("label").and_then(|v| v.as_str()).map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        name.replace('_', " ").replace('-', " ")
+                            .split_whitespace()
+                            .map(|w| {
+                                let mut c = w.chars();
+                                match c.next() {
+                                    None => String::new(),
+                                    Some(ch) => ch.to_uppercase().to_string() + c.as_str(),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    });
+                // Normalize options: plain strings → { value, label }
+                let options = f.get("options").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter().map(|o| {
+                        if let Some(s) = o.as_str() {
+                            serde_json::json!({ "value": s, "label": s.replace('_', " ").replace('-', " ") })
+                        } else {
+                            o.clone()
+                        }
+                    }).collect::<Vec<_>>()
+                });
+
+                let mut field = serde_json::json!({
+                    "key": if key.is_empty() { name } else { key },
+                    "label": label,
+                    "type": f.get("type").and_then(|v| v.as_str()).unwrap_or("text"),
+                    "required": f.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
+                });
+                if let Some(desc) = f.get("description").and_then(|v| v.as_str()) {
+                    field["description"] = serde_json::json!(desc);
+                }
+                if let Some(ph) = f.get("placeholder").and_then(|v| v.as_str()) {
+                    field["placeholder"] = serde_json::json!(ph);
+                }
+                if let Some(def) = f.get("default") {
+                    field["default"] = def.clone();
+                }
+                if let Some(opts) = options {
+                    field["options"] = serde_json::json!(opts);
+                }
+                field
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
     Ok(Json(serde_json::json!({
         "role": role,
         "version": version,
+        "inputFields": input_fields,
     })))
 }
 
@@ -433,13 +494,24 @@ pub async fn delete_role(
     // role_workflows are cascade-deleted via FK when role is deleted
     state.store.delete_role(&id).map_err(to_error_response)?;
 
-    // Clean up filesystem directory if it exists
+    // Clean up filesystem — check napp_path, nebo/roles/, and user/roles/
+    let slug = role.name.to_lowercase().replace(' ', "-");
     if let Some(ref napp_path) = role.napp_path {
         let path = std::path::Path::new(napp_path);
         if path.exists() {
-            if let Err(e) = std::fs::remove_dir_all(path) {
-                warn!(role_id = %id, path = %napp_path, error = %e, "failed to remove role directory");
-            }
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+    if let Ok(nebo_dir) = config::nebo_dir() {
+        let dir = nebo_dir.join("roles").join(&slug);
+        if dir.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+    if let Ok(user_dir) = config::user_dir() {
+        let dir = user_dir.join("roles").join(&slug);
+        if dir.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
@@ -498,7 +570,7 @@ pub async fn install_deps(
 }
 
 /// Process workflow bindings from role.json: upsert to DB and register triggers.
-async fn process_role_bindings(
+pub async fn process_role_bindings(
     role_id: &str,
     config: &napp::role::RoleConfig,
     state: &AppState,
@@ -507,7 +579,7 @@ async fn process_role_bindings(
 
     for (binding_name, binding) in &config.workflows {
         let (trigger_type, trigger_config) = match &binding.trigger {
-            napp::role::RoleTrigger::Schedule { cron } => ("schedule", cron.clone()),
+            napp::role::RoleTrigger::Schedule { cron } => ("schedule", tools::RoleTool::normalize_cron(cron)),
             napp::role::RoleTrigger::Heartbeat { interval, window } => {
                 let cfg = match window {
                     Some(w) => format!("{}|{}", interval, w),
@@ -1324,7 +1396,10 @@ fn build_trigger_json(trigger_type: &str, trigger_config: &serde_json::Value) ->
 /// Flatten trigger config for DB storage (flat string).
 fn flatten_trigger_config(trigger_type: &str, trigger_config: &serde_json::Value) -> String {
     match trigger_type {
-        "schedule" => trigger_config.get("cron").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        "schedule" => {
+            let raw = trigger_config.get("cron").and_then(|v| v.as_str()).unwrap_or("");
+            tools::RoleTool::normalize_cron(raw)
+        }
         "heartbeat" => {
             let interval = trigger_config.get("interval").and_then(|v| v.as_str()).unwrap_or("30m");
             match trigger_config.get("window").and_then(|v| v.as_str()) {

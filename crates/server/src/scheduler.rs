@@ -54,10 +54,12 @@ async fn tick(
     let now = Utc::now();
 
     for job in &jobs {
-        let schedule: Schedule = match job.schedule.parse() {
+        // Normalize schedule at read time — handles stale 5-field expressions in DB
+        let normalized = tools::RoleTool::normalize_cron(&job.schedule);
+        let schedule: Schedule = match normalized.parse() {
             Ok(s) => s,
             Err(e) => {
-                warn!(job = job.name.as_str(), error = %e, "invalid cron expression");
+                warn!(job = job.name.as_str(), schedule = %normalized, error = %e, "invalid cron expression");
                 continue;
             }
         };
