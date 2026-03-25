@@ -422,7 +422,8 @@
 			class="btn btn-error"
 			disabled={actionLoading === 'cancel'}
 			onclick={async () => {
-				await handleCancel(subscription!.subscriptions[0].id);
+				const sub = subscription!.subscriptions[0];
+				await handleCancel(sub.stripeSubscriptionId || sub.id);
 				if (!actionError) showCancelConfirm = false;
 			}}
 		>
