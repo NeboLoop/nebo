@@ -164,6 +164,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                 let mut last_flush = tokio::time::Instant::now();
                 const COALESCE_MS: u64 = 75;
 
+                // Comm streaming: send chunks to NeboLoop as they arrive
+                let mut comm_buffer = String::new();
+                let mut last_comm_flush = tokio::time::Instant::now();
+                const COMM_COALESCE_MS: u64 = 500;
+
                 loop {
                     let event = tokio::select! {
                         _ = cancel_token.cancelled() => {
@@ -199,6 +204,37 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                 }));
                                 text_buffer.clear();
                                 last_flush = tokio::time::Instant::now();
+                            }
+                            // Stream chunks to NeboLoop comm channel
+                            if comm_reply.is_some() {
+                                comm_buffer.push_str(&event.text);
+                                if last_comm_flush.elapsed().as_millis() as u64 >= COMM_COALESCE_MS {
+                                    if let (Some(cfg), Some(mgr)) = (&comm_reply, &comm_manager) {
+                                        let chunk = comm::CommMessage {
+                                            id: uuid::Uuid::new_v4().to_string(),
+                                            from: String::new(),
+                                            to: String::new(),
+                                            topic: cfg.topic.clone(),
+                                            conversation_id: cfg.conversation_id.clone(),
+                                            msg_type: comm::CommMessageType::Stream,
+                                            content: comm_buffer.clone(),
+                                            metadata: std::collections::HashMap::new(),
+                                            timestamp: 0,
+                                            human_injected: false,
+                                            human_id: None,
+                                            task_id: None,
+                                            correlation_id: None,
+                                            task_status: None,
+                                            artifacts: vec![],
+                                            error: None,
+                                        };
+                                        if let Err(e) = mgr.send(chunk).await {
+                                            warn!(error = %e, "failed to send comm stream chunk");
+                                        }
+                                        comm_buffer.clear();
+                                        last_comm_flush = tokio::time::Instant::now();
+                                    }
+                                }
                             }
                         }
                         StreamEventType::Thinking => {
@@ -316,15 +352,41 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                     }));
                 }
 
-                // Send comm reply if configured
+                // Send final comm reply — flush remaining stream buffer + complete message
                 if let Some(reply_config) = &comm_reply {
                     if let Some(comm_mgr) = &comm_manager {
                         if !full_response.is_empty() {
+                            // Flush any remaining streamed text
+                            if !comm_buffer.is_empty() {
+                                let chunk = comm::CommMessage {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    from: String::new(),
+                                    to: String::new(),
+                                    topic: reply_config.topic.clone(),
+                                    conversation_id: reply_config.conversation_id.clone(),
+                                    msg_type: comm::CommMessageType::Stream,
+                                    content: comm_buffer,
+                                    metadata: std::collections::HashMap::new(),
+                                    timestamp: 0,
+                                    human_injected: false,
+                                    human_id: None,
+                                    task_id: None,
+                                    correlation_id: None,
+                                    task_status: None,
+                                    artifacts: vec![],
+                                    error: None,
+                                };
+                                if let Err(e) = comm_mgr.send(chunk).await {
+                                    warn!(error = %e, "failed to send comm stream flush");
+                                }
+                            }
+
+                            // Send complete message (gateway uses this as the final record)
                             info!(
                                 topic = %reply_config.topic,
                                 conv_id = %reply_config.conversation_id,
                                 response_len = full_response.len(),
-                                "sending comm reply"
+                                "sending comm reply (complete)"
                             );
                             let reply = comm::CommMessage {
                                 id: uuid::Uuid::new_v4().to_string(),

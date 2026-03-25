@@ -287,6 +287,21 @@ pub struct RoleDetail {
     pub role_md: Option<String>,
 }
 
+/// Agent registered in a NeboLoop loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentInfo {
+    pub id: String,
+    pub bot_id: String,
+    pub loop_id: String,
+    pub name: String,
+    pub slug: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub status: String,
+}
+
 /// Paginated list response for roles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

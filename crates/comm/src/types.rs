@@ -24,6 +24,7 @@ pub type MessageHandler = Arc<dyn Fn(CommMessage) + Send + Sync>;
 #[serde(rename_all = "snake_case")]
 pub enum CommMessageType {
     Message,
+    Stream,
     Mention,
     Proposal,
     Command,

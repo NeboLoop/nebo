@@ -466,7 +466,10 @@ impl CommPlugin for NeboLoopPlugin {
         // Use try_read to avoid blocking; return false if locked
         self.inner
             .try_read()
-            .map(|inner| inner.connected)
+            .map(|inner| {
+                inner.connected
+                    && inner.cancel.as_ref().map_or(false, |c| !c.is_cancelled())
+            })
             .unwrap_or(false)
     }
 
@@ -980,6 +983,8 @@ async fn read_loop(
             _ = cancel.cancelled() => break,
         }
     }
+    // Signal disconnection so is_connected() returns false and reconnect watcher kicks in
+    cancel.cancel();
     debug!("neboloop read loop exited");
 }
 

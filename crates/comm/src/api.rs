@@ -496,6 +496,31 @@ impl NeboLoopApi {
         .await
     }
 
+    /// List agents registered by this bot in a loop.
+    pub async fn list_agents(
+        &self,
+        loop_id: &str,
+    ) -> Result<Vec<AgentInfo>, CommError> {
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            agents: Vec<AgentInfo>,
+        }
+        let resp: Resp = self
+            .do_json(
+                reqwest::Method::GET,
+                &format!("/api/v1/loops/{}/agents", loop_id),
+                None::<&()>,
+            )
+            .await?;
+        // Filter to only this bot's agents
+        let mine: Vec<AgentInfo> = resp
+            .agents
+            .into_iter()
+            .filter(|a| a.bot_id == self.bot_id)
+            .collect();
+        Ok(mine)
+    }
+
     /// Deregister an agent from a loop.
     pub async fn deregister_agent(
         &self,
