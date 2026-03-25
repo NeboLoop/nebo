@@ -4,7 +4,7 @@ Comprehensive Subject Matter Expert document covering the full Nebo automation
 pipeline: proactive heartbeats, cron scheduling, workflow execution, event-driven
 triggers, role workers, and frontend UI.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-03-16
+**Status:** Current (Rust implementation) | **Last updated:** 2026-03-25
 
 ---
 
@@ -184,7 +184,9 @@ Uses `entity_config::resolve()` — layers entity-specific overrides on top of
 global Settings defaults:
 
 ```rust
-pub struct ResolvedConfig {
+pub struct ResolvedEntityConfig {
+    pub entity_type: String,
+    pub entity_id: String,
     pub heartbeat_enabled: bool,
     pub heartbeat_interval_minutes: i64,
     pub heartbeat_content: String,
@@ -193,6 +195,8 @@ pub struct ResolvedConfig {
     pub resource_grants: HashMap<String, String>,
     pub model_preference: Option<String>,
     pub personality_snippet: Option<String>,
+    pub overrides: HashMap<String, bool>,            // Which fields are overridden (not inherited)
+    pub allowed_paths: Vec<String>,                  // Restricts file writes and shell to these dirs
 }
 ```
 
@@ -369,7 +373,8 @@ pub async fn execute_workflow(
     def: &WorkflowDef,
     inputs: Value,
     trigger_type: &str,
-    store: &Store,
+    trigger_detail: Option<&str>,
+    store: &Arc<Store>,
     provider: &dyn Provider,
     resolved_tools: &[Box<dyn DynTool>],
     existing_run_id: Option<&str>,
@@ -377,7 +382,8 @@ pub async fn execute_workflow(
     skill_content: Option<&HashMap<String, String>>,
     event_bus: Option<&EventBus>,
     emit_source: Option<String>,
-) -> Result<String, WorkflowError>
+    progress_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowProgress>>,
+) -> Result<(String, String), WorkflowError>
 ```
 
 ### Activity Loop
@@ -421,17 +427,18 @@ pub async fn execute_activity(
 6. Continue loop
 
 **Auto-injected tools:** `emit_tool` and `exit_tool` are always available, even if
-not declared in `activity.tools`.
+not declared in the activity definition.
 
 ### WorkflowDef Structure
 
 ```rust
 pub struct WorkflowDef {
+    pub version: String,
     pub id: String,
     pub name: String,
-    pub description: String,
-    pub version: String,
+    pub inputs: HashMap<String, InputParam>,
     pub activities: Vec<Activity>,
+    pub dependencies: Dependencies,
     pub budget: Budget,
 }
 
@@ -439,24 +446,24 @@ pub struct Activity {
     pub id: String,
     pub intent: String,          // Task description
     pub skills: Vec<String>,     // Skill references
-    pub steps: Vec<String>,
-    pub tools: Vec<String>,      // Tool declarations
-    pub cmds: Vec<String>,       // Workflow controls (exit, emit)
+    pub mcps: Vec<String>,       // MCP server references
+    pub cmds: Vec<String>,       // Command references
     pub model: String,           // Model override
+    pub steps: Vec<String>,
     pub token_budget: TokenBudget,
-    pub on_error: ErrorHandler,
+    pub on_error: OnError,
 }
 
-pub struct Budget { pub total_per_run: u32, pub per_activity: u32 }
-pub struct TokenBudget { pub max: u32, pub high_water_mark: u32 }
-pub struct ErrorHandler { pub fallback: Fallback, pub retry: u32 }
-pub enum Fallback { Skip, Abort, NotifyOwner }
+pub struct Budget { pub total_per_run: u32, pub cost_estimate: String }
+pub struct TokenBudget { pub max: u32 }
+pub struct OnError { pub retry: u32, pub fallback: Fallback }
+pub enum Fallback { NotifyOwner, Skip, Abort }
 ```
 
 ### EXIT_SENTINEL
 
 ```rust
-pub const EXIT_SENTINEL: &str = "__EXIT__:";
+pub const EXIT_SENTINEL: &str = "__WORKFLOW_EXIT__:";
 ```
 
 When a tool result starts with this prefix, the workflow exits early with the
@@ -583,7 +590,7 @@ CREATE TABLE cron_jobs (
     last_run DATETIME,
     run_count INTEGER DEFAULT 0,
     last_error TEXT,
-    instructions TEXT,                   -- System prompt for agent tasks
+    instructions TEXT,                   -- System prompt for agent tasks (added in migration 0042)
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
@@ -660,8 +667,9 @@ CREATE TABLE role_workflows (
 
 ```sql
 CREATE TABLE entity_config (
-    entity_type TEXT NOT NULL,           -- main, role, channel
-    entity_id TEXT NOT NULL,
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('main', 'role', 'channel')),
+    entity_id   TEXT NOT NULL,
     heartbeat_enabled INTEGER,           -- NULL=inherit, 0/1
     heartbeat_interval_minutes INTEGER,
     heartbeat_content TEXT,
@@ -671,9 +679,9 @@ CREATE TABLE entity_config (
     resource_grants TEXT,                -- JSON: {"screen": "allow", ...}
     model_preference TEXT,
     personality_snippet TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (entity_type, entity_id)
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(entity_type, entity_id)
 );
 ```
 

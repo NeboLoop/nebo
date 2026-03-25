@@ -7,7 +7,7 @@
 > marketplace installation, persistence, dependency cascade, and
 > agent integration.
 
-**Canonical spec:** [platform-taxonomy.md](platform-taxonomy.md)
+**Canonical spec:** [platform-taxonomy.md](../.archive/platform-taxonomy.md)
 
 ---
 
@@ -167,7 +167,7 @@ pub struct Skill {
 }
 
 pub enum SkillSource {
-    Installed,    // NeboLoop marketplace (sealed .napp)
+    Installed,    // Bundled skills + NeboLoop marketplace (sealed .napp)
     User,         // User-created (loose files)
 }
 ```
@@ -1079,8 +1079,8 @@ const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 | NeboLoop API client | `crates/comm/src/api.rs` |
 
 **Canonical specification:**
-- [platform-taxonomy.md](platform-taxonomy.md) — Authoritative ROLE/WORK/SKILL hierarchy definition
+- [platform-taxonomy.md](../.archive/platform-taxonomy.md) — Authoritative ROLE/WORK/SKILL hierarchy definition
 
 ---
 
-*Last updated: 2026-03-19*
+*Last updated: 2026-03-25*

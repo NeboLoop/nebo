@@ -350,12 +350,25 @@ pub async fn uninstall_store_product(
 
     // Clean up local DB
     if let Some(ref role) = local_role {
+        // Stop role worker
+        state.role_workers.stop_role(&id).await;
         // Deactivate from live registry
         state.role_registry.write().await.remove(&id);
         // Remove workflow bindings and triggers
         workflow::triggers::unregister_role_triggers(&id, &state.store);
+        state.event_dispatcher.unsubscribe_role(&id).await;
         let _ = state.store.delete_role_workflows(&id);
         let _ = state.store.delete_role(&id);
+        // Deregister agent from NeboLoop (non-blocking)
+        {
+            let st = state.clone();
+            let agent_slug = slug.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &agent_slug).await {
+                    tracing::warn!(agent = %agent_slug, error = %e, "failed to deregister agent from loop on uninstall");
+                }
+            });
+        }
         state.hub.broadcast(
             "role_deactivated",
             serde_json::json!({ "roleId": id, "name": role.name }),

@@ -5,7 +5,7 @@ frontend WebSocket through agent runner and back, including all data structures,
 streaming events, session management, lane concurrency, DB schema, codes system,
 NeboLoop comm integration, and frontend rendering.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-03-16
+**Status:** Current (Rust implementation) | **Last updated:** 2026-03-25
 
 ---
 
@@ -156,10 +156,15 @@ pub struct HubEvent {
 ### ActiveRuns
 
 ```rust
-pub type ActiveRuns = Arc<Mutex<HashMap<String, CancellationToken>>>;
+pub struct ActiveRun {
+    pub token: CancellationToken,
+    pub started_at: std::time::Instant,
+}
+
+pub type ActiveRuns = Arc<Mutex<HashMap<String, ActiveRun>>>;
 ```
-Tracks which session_ids have active agent runs. Used by `cancel` WS message to
-cooperatively stop the agentic loop.
+Tracks which session_ids have active agent runs (with their cancellation token and
+start time). Used by `cancel` WS message to cooperatively stop the agentic loop.
 
 ### dispatch_chat()
 
@@ -280,6 +285,8 @@ pub struct RunRequest {
     pub resource_grants: Option<HashMap<String, String>>, // screen/browser access
     pub model_preference: Option<String>,                 // fuzzy model name
     pub personality_snippet: Option<String>,               // prepended to system prompt
+    pub images: Vec<ai::ImageContent>,                    // base64-encoded image attachments
+    pub allowed_paths: Vec<String>,                       // restrict file writes/shell to these dirs (empty = unrestricted)
 }
 
 struct RunState {
@@ -298,6 +305,7 @@ pub struct Runner {
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
     role_registry: tools::RoleRegistry,
+    skill_loader: Option<Arc<tools::skills::Loader>>,
 }
 ```
 
@@ -305,7 +313,7 @@ pub struct Runner {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new()` | `(store, tools, providers, selector, concurrency, hooks, mcp_context, role_registry) -> Self` | Constructor |
+| `new()` | `(store, tools, providers, selector, concurrency, hooks, mcp_context, role_registry, skill_loader) -> Self` | Constructor |
 | `run()` | `(&self, RunRequest) -> Result<mpsc::Receiver<StreamEvent>, ProviderError>` | Main entry: spawns agentic loop, returns event stream |
 | `chat()` | `(&self, &str) -> Result<String, ProviderError>` | One-shot convenience (no tools, no session) |
 | `reload_providers()` | `(&self, Vec<Arc<dyn Provider>>)` | Hot-swap provider list |

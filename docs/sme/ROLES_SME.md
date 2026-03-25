@@ -126,6 +126,8 @@ struct RoleFrontmatter {
 
 This extracts dependency refs directly from ROLE.md frontmatter, which are merged with role.json refs during role creation.
 
+> **Design inconsistency:** The HTTP handler's `parse_role_md()` in `crates/server/src/handlers/roles.rs` **rejects** ROLE.md content that does not start with `---` frontmatter (returns `NeboError::Validation`). However, the napp-level `parse_role()` in `crates/napp/src/role.rs` **accepts pure prose** without any frontmatter, returning a `RoleDef` with empty identity fields and the full content as `body`. This means roles loaded from the filesystem (via the napp parser) can be pure prose, but roles created or updated through the REST API must include YAML frontmatter.
+
 ---
 
 ## 3. Role Configuration (role.json)
@@ -1490,16 +1492,18 @@ All agent routes live under the `(sidebar)` layout group:
 │   └── settings/+page.svelte → Links to /settings/personality + /settings/providers
 ├── channel/[name]/+page.svelte → NeboLoop channel view
 └── role/[name]/
-    ├── +layout.svelte        → Header with inline-editable role name + 4-tab bar
-    ├── +page.svelte          → redirects to /agent/role/[name]/chat
-    ├── chat/+page.svelte     → Chat.svelte (mode='role')
-    ├── automate/+page.svelte → AutomationsSection with roleId
-    ├── activity/+page.svelte → Activity log for this role
-    └── settings/+page.svelte → Role settings (pause, resume, delete)
+    ├── +layout.svelte           → Header with inline-editable role name + 6-tab bar
+    ├── +page.svelte             → redirects to /agent/role/[name]/chat
+    ├── chat/+page.svelte        → Chat.svelte (mode='role')
+    ├── role/+page.svelte        → Role persona / ROLE.md editor
+    ├── configure/+page.svelte   → Role configuration (inputs, triggers, bindings)
+    ├── automate/+page.svelte    → AutomationsSection with roleId
+    ├── activity/+page.svelte    → Activity log for this role
+    └── settings/+page.svelte    → Role settings (pause, resume, delete)
 ```
 
 **Layout:** `app/src/routes/(app)/(sidebar)/agent/role/[name]/+layout.svelte`
-- Header with inline-editable role name + tab bar (Chat | Automate | Activity | Settings)
+- Header with inline-editable role name + tab bar (Chat | Role | Configure | Automate | Activity | Settings)
 - Resolves role via `getActiveRoles()` → sets `channelState` context
 - Role name editable in-place (click to edit, Enter to save, Escape to cancel)
 - Shows 404 if role not found, loading spinner while fetching
@@ -2103,4 +2107,4 @@ Keys prefixed with `_` are excluded (operational keys like `_emit`).
 
 ---
 
-*Last updated: 2026-03-22*
+*Last updated: 2026-03-25*

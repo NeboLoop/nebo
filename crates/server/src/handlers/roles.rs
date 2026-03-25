@@ -488,14 +488,24 @@ pub async fn delete_role(
         .map_err(to_error_response)?
         .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
 
+    let slug = role.name.to_lowercase().replace(' ', "-");
+
+    // Stop role worker (cancels heartbeat, event, schedule triggers)
+    state.role_workers.stop_role(&id).await;
+
+    // Remove from live registry
+    state.role_registry.write().await.remove(&id);
+
     // Unregister triggers (cron jobs with role-{id} prefix)
     workflow::triggers::unregister_role_triggers(&id, &state.store);
+
+    // Unsubscribe event triggers from dispatcher
+    state.event_dispatcher.unsubscribe_role(&id).await;
 
     // role_workflows are cascade-deleted via FK when role is deleted
     state.store.delete_role(&id).map_err(to_error_response)?;
 
     // Clean up filesystem — check napp_path, nebo/roles/, and user/roles/
-    let slug = role.name.to_lowercase().replace(' ', "-");
     if let Some(ref napp_path) = role.napp_path {
         let path = std::path::Path::new(napp_path);
         if path.exists() {
@@ -513,6 +523,17 @@ pub async fn delete_role(
         if dir.exists() {
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    // Deregister agent from NeboLoop (non-blocking, best-effort)
+    {
+        let st = state.clone();
+        let agent_slug = slug.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::codes::deregister_agent_from_loop(&st, &agent_slug).await {
+                warn!(agent = %agent_slug, error = %e, "failed to deregister agent from loop");
+            }
+        });
     }
 
     state.hub.broadcast(
