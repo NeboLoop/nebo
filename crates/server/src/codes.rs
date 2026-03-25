@@ -726,8 +726,8 @@ pub(crate) async fn sync_bot_identity(state: &AppState) {
     }
 }
 
-/// Reconcile agents: deregister stale agents from NeboLoop that no longer
-/// exist locally, and register any local roles missing from the loop.
+/// Reconcile agents: sync all local roles (enabled AND disabled) to NeboLoop.
+/// Only deregister agents that are truly deleted locally, not just paused.
 async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     let api = build_api_client(state)?;
     let loops = api
@@ -744,40 +744,44 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .await
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
 
-    // Build set of active local role slugs
-    let local_slugs: std::collections::HashSet<String> = {
-        let registry = state.role_registry.read().await;
-        registry
-            .values()
-            .map(|r| r.name.to_lowercase().replace(' ', "-"))
-            .collect()
-    };
+    // Build map of ALL local roles (enabled + disabled) by slug
+    let local_roles: std::collections::HashMap<String, bool> =
+        if let Ok(roles) = state.store.list_roles(1000, 0) {
+            roles
+                .iter()
+                .map(|r| {
+                    let slug = r.name.to_lowercase().replace(' ', "-");
+                    let enabled = r.is_enabled != 0;
+                    (slug, enabled)
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
 
-    // Deregister remote agents that don't exist locally
+    // Deregister remote agents that are truly deleted locally (not in DB at all)
     for agent in &remote_agents {
         // Skip the default bot agent (slug starts with "bot_")
         if agent.slug.starts_with("bot_") {
             continue;
         }
-        if !local_slugs.contains(&agent.slug) {
-            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering stale agent");
+        if !local_roles.contains_key(&agent.slug) {
+            info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering deleted agent");
             if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.id).await {
                 warn!(agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
             }
         }
     }
 
-    // Register local roles missing from remote
+    // Register local roles missing from remote (both enabled and disabled)
     let remote_slugs: std::collections::HashSet<String> =
         remote_agents.iter().map(|a| a.slug.clone()).collect();
     if let Ok(roles) = state.store.list_roles(1000, 0) {
         for role in &roles {
-            if role.is_enabled == 0 {
-                continue;
-            }
             let slug = role.name.to_lowercase().replace(' ', "-");
             if !remote_slugs.contains(&slug) {
-                info!(role = %role.name, slug = %slug, "reconcile: registering missing agent");
+                let status = if role.is_enabled != 0 { "active" } else { "paused" };
+                info!(role = %role.name, slug = %slug, status = %status, "reconcile: registering missing agent");
                 if let Err(e) = api
                     .register_agent(&personal.loop_id, &role.name, &slug, None)
                     .await
