@@ -120,7 +120,7 @@ pub struct HubEvent {
 | Endpoint | Handler | Purpose |
 |----------|---------|---------|
 | `GET /ws` | `client_ws_handler` | Main client (frontend) WebSocket |
-| `GET /api/v1/agent/ws` | `agent_ws_handler` | Agent-to-server communication (forwards events to hub) |
+| `GET /agent/ws` | `agent_ws_handler` | Agent-to-server communication (forwards events to hub) |
 | `GET /ws/extension` | `extension_ws_handler` | Chrome extension bridge (native messaging relay) |
 
 ### Client WS Message Types (Inbound)
@@ -132,6 +132,7 @@ pub struct HubEvent {
 | `"auth"` / `"connect"` | optional `token` | Responds with `auth_ok` |
 | `"ping"` | — | Responds with `pong` |
 | `"session_reset"` | `session_id` | Clears session messages and counters |
+| `"session_compact"` | `session_id` | Triggers conversation compaction/summarization |
 | `"check_stream"` | `session_id` | Returns `stream_status` (running/idle) |
 | `"approval_response"` | `request_id`, `approved` | Resolves pending tool approval oneshot |
 | `"ask_response"` | `request_id`, `value` | Resolves pending ask request oneshot |
@@ -204,6 +205,7 @@ pub struct ChatConfig {
     pub lane: String,             // which lane to enqueue on
     pub comm_reply: Option<CommReplyConfig>,  // reply-back config for NeboLoop
     pub entity_config: Option<ResolvedEntityConfig>,  // per-entity overrides (see §15)
+    pub images: Vec<ai::ImageContent>,  // base64-encoded image attachments
 }
 
 pub struct CommReplyConfig {
@@ -224,9 +226,10 @@ pub struct CommReplyConfig {
 ### run_chat() Flow
 
 1. Clone hub, runner, janus_usage from AppState
-2. Track cancel token in ActiveRuns (if provided)
-3. Broadcast `"chat_created"` event
-4. Build `LaneTask` via `make_task()` containing:
+2. Resolve agent display name for comm replies
+3. Track cancel token in ActiveRuns (if provided)
+4. Broadcast `"chat_created"` event
+5. Build `LaneTask` via `make_task()` containing:
    a. Construct `RunRequest` from ChatConfig fields
    b. Extract per-entity overrides from `entity_config` into RunRequest (permissions, resource_grants, model_preference, personality_snippet)
    c. Call `runner.run(req)` → get `mpsc::Receiver<StreamEvent>`
@@ -239,13 +242,13 @@ pub struct CommReplyConfig {
       - `Usage` → `"usage"`
       - `ApprovalRequest` → `"approval_request"`
       - `AskRequest` → `"ask_request"` (with optional widgets)
-      - `RateLimit` → update `janus_usage` in-memory
+      - `RateLimit` → update `janus_usage` in-memory + broadcast `"quota_warning"` if text present
       - `Done` → no-op
-   d. If `comm_reply` configured: send `full_response` back via `comm_manager.send()`
+   d. If `comm_reply` configured: stream chunks during reception (500ms coalesced), then send final message via `comm_manager.send()` (dedup: skips final if chunks were already streamed)
    e. Always broadcast `"chat_complete"` at end
    f. On error: broadcast `"chat_error"` then `"chat_complete"`
    g. Clean up ActiveRuns entry
-5. Enqueue task via `state.lanes.enqueue_async(&lane, lane_task)`
+6. Enqueue task via `state.lanes.enqueue_async(&lane, lane_task)`
 
 ---
 
@@ -347,7 +350,7 @@ Per-iteration:
 7. **Context thresholds** — `ContextThresholds::from_context_window()`
 8. **Micro-compact** — shrink tool results if near threshold
 9. **Tool filtering** — `tool_filter::filter_tools_with_context()` returns filtered tools + active contexts
-10. **Steering** — generate steering messages + hook: `steering.generate`
+10. **Steering** — 13 generators (IdentityGuard, ChannelAdapter, ToolNudge, DateTimeRefresh, MemoryNudge, TaskParameterNudge, ObjectiveTaskNudge, PendingTaskAction, TaskProgress, ActiveObjectiveReminder, LoopDetector, ProgressNudge, JanusQuotaWarning) + hook: `steering.generate`
 11. **Build system prompt** — `static_system + STRAP section + tools_list + dynamic_suffix + model_identity`
     - **Model identity branding**: Janus/nebo-* models get "you are Nebo, NOT Claude/GPT/Gemini" directive; others get standard `provider/model` line
 12. **Hook: `message.pre_send`** — apps can modify system prompt
@@ -659,6 +662,7 @@ pub struct ChatMessage {
     pub tool_calls: Option<String>,     // JSON array
     pub tool_results: Option<String>,   // JSON array
     pub token_estimate: Option<i64>,
+    // NOTE: is_compacted column exists in DB (migration 0048) but is NOT mapped in this struct
 }
 ```
 
@@ -718,7 +722,7 @@ pub struct LaneManager {
 | `events` | `lanes::EVENTS` | 0 (unlimited) | Event-triggered |
 | `subagent` | `lanes::SUBAGENT` | 0 (unlimited) | Sub-agent tasks |
 | `nested` | `lanes::NESTED` | 0 (unlimited) | Nested calls |
-| `heartbeat` | `lanes::HEARTBEAT` | 1 | Sequential proactive ticks |
+| `heartbeat` | `lanes::HEARTBEAT` | 0 (unlimited) | Proactive ticks (governed by ConcurrencyController) |
 | `comm` | `lanes::COMM` | 0 (unlimited) | NeboLoop messages |
 | `dev` | `lanes::DEV` | 0 (unlimited) | Developer assistant |
 | `desktop` | `lanes::DESKTOP` | 1 | One screen, one mouse |
@@ -786,6 +790,7 @@ pub struct StreamEvent {
     pub usage: Option<UsageInfo>,
     pub rate_limit: Option<RateLimitMeta>,
     pub widgets: Option<serde_json::Value>,  // AskRequest UI widgets
+    pub provider_metadata: Option<HashMap<String, String>>,  // provider-specific metadata
 }
 ```
 
@@ -800,7 +805,7 @@ pub struct UsageInfo { pub input_tokens: i32, pub output_tokens: i32, pub cache_
 pub struct RateLimitMeta { remaining_requests, remaining_tokens, reset_after_secs, retry_after_secs, session_limit_tokens, session_remaining_tokens, session_reset_at, weekly_limit_tokens, weekly_remaining_tokens, weekly_reset_at }
 pub struct ToolDefinition { pub name: String, pub description: String, pub input_schema: serde_json::Value }
 pub struct Message { pub role: String, pub content: String, pub tool_calls: Option<Value>, pub tool_results: Option<Value>, pub images: Option<Vec<ImageContent>> }
-pub struct ChatRequest { pub messages: Vec<Message>, pub tools: Vec<ToolDefinition>, pub max_tokens: i32, pub temperature: f64, pub system: String, pub static_system: String, pub model: String, pub enable_thinking: bool }
+pub struct ChatRequest { pub messages: Vec<Message>, pub tools: Vec<ToolDefinition>, pub max_tokens: i32, pub temperature: f64, pub system: String, pub static_system: String, pub model: String, pub enable_thinking: bool, pub metadata: Option<HashMap<String, String>> }
 ```
 
 ### Provider Trait
@@ -810,8 +815,12 @@ pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
     fn profile_id(&self) -> &str { "" }
     fn handles_tools(&self) -> bool { false }
+    fn supports_tool_result_images(&self) -> bool { false }
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError>;
 }
+
+pub trait ConnectionResetter: Send + Sync { /* reset provider connections */ }
+pub trait ProfileTracker: Send + Sync { /* track auth profile state */ }
 ```
 
 ### ProviderError
@@ -1205,6 +1214,7 @@ pub struct ResolvedEntityConfig {
     pub model_preference: Option<String>,
     pub personality_snippet: Option<String>,
     pub overrides: HashMap<String, bool>,              // which fields are customized (UI hint)
+    pub allowed_paths: Vec<String>,                    // restrict file/shell to these dirs
 }
 ```
 
@@ -1216,7 +1226,7 @@ pub struct ResolvedEntityConfig {
 4. Returns `ResolvedEntityConfig` with `overrides` map showing which fields are customized
 5. `resolve_for_chat()` convenience function: loads defaults + resolves in one call (best-effort, returns None on error)
 
-### DB Schema (migration 0057)
+### DB Schema (migration 0057 + 0065)
 
 ```sql
 CREATE TABLE entity_config (
@@ -1233,6 +1243,7 @@ CREATE TABLE entity_config (
     personality_snippet TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    allowed_paths TEXT,               -- 0065: JSON array of allowed file/shell paths
     PRIMARY KEY (entity_type, entity_id)
 );
 ```

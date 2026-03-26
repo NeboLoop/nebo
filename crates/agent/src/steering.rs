@@ -35,6 +35,8 @@ pub struct Context {
     pub iteration: usize,
     pub work_tasks: Vec<WorkTask>,
     pub quota_warning: Option<String>,
+    /// Number of consecutive iterations where ALL tool calls returned errors.
+    pub consecutive_error_iterations: usize,
 }
 
 /// A steering message generator.
@@ -222,6 +224,126 @@ fn count_consecutive_same_tool_calls(messages: &[ChatMessage]) -> (String, usize
     }
 
     (last_tool, count)
+}
+
+/// Count consecutive iterations (assistant+tool pairs) where ALL tool results
+/// were errors. This catches loops where the agent calls different failing tools
+/// each time (not just the same tool repeatedly).
+fn count_consecutive_all_error_rounds(messages: &[ChatMessage]) -> usize {
+    let mut count = 0usize;
+
+    // Walk backwards through messages looking for tool-result / assistant pairs
+    let mut i = messages.len();
+    while i > 0 {
+        i -= 1;
+        let msg = &messages[i];
+
+        // Skip non-tool messages until we find a tool result
+        if msg.role != "tool" {
+            continue;
+        }
+
+        // Collect all consecutive tool results for this round
+        let mut all_error = true;
+        let mut found_tool = false;
+        while i < messages.len() && messages[i].role == "tool" {
+            found_tool = true;
+            if let Some(ref tr_json) = messages[i].tool_results {
+                if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
+                    for r in &results {
+                        if !r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            all_error = false;
+                        }
+                    }
+                }
+            }
+            if i == 0 { break; }
+            i -= 1;
+        }
+
+        if !found_tool {
+            break;
+        }
+
+        if all_error {
+            count += 1;
+        } else {
+            break; // Found a round with at least one successful tool call
+        }
+
+        // Skip the assistant message that preceded these tool results
+        while i > 0 && messages[i].role == "assistant" {
+            if i == 0 { break; }
+            i -= 1;
+        }
+    }
+
+    count
+}
+
+/// Detect if recent user messages contain stop/cancel/abort requests.
+fn user_requested_stop(messages: &[ChatMessage]) -> bool {
+    let stop_patterns = [
+        "stop", "cancel", "abort", "halt", "quit",
+        "enough", "break out", "stop stop",
+    ];
+    // Check last 3 user messages
+    let recent_user: Vec<&ChatMessage> = messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == "user" && !m.content.starts_with("<system>"))
+        .take(3)
+        .collect();
+
+    for msg in &recent_user {
+        let lower = msg.content.to_lowercase();
+        // Short messages that are clearly stop commands (not long messages that happen
+        // to contain the word "stop" in a different context)
+        if lower.len() < 80 {
+            for p in &stop_patterns {
+                if lower.contains(p) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if the loop should be force-broken. Called by the runner BEFORE
+/// making the next LLM call. Returns Some(reason) if the loop must stop.
+pub fn should_force_break(ctx: &Context) -> Option<String> {
+    // 1. Consecutive error iterations — hard limit
+    if ctx.consecutive_error_iterations >= 5 {
+        return Some(format!(
+            "Circuit breaker: {} consecutive iterations where all tool calls failed. \
+             Breaking loop to prevent runaway execution.",
+            ctx.consecutive_error_iterations,
+        ));
+    }
+
+    // 2. Same-tool loop at extreme count — the LLM is ignoring steering
+    let (tool_name, count) = count_consecutive_same_tool_calls(&ctx.messages);
+    if !tool_name.is_empty() && count >= 8 {
+        return Some(format!(
+            "Circuit breaker: '{}' called {} times consecutively. \
+             The agent is stuck in a loop and steering was ignored.",
+            tool_name, count,
+        ));
+    }
+
+    // 3. User explicitly asked to stop but the loop is still running
+    if user_requested_stop(&ctx.messages) && ctx.iteration > 2 {
+        // Check if tool errors are also happening (user said stop AND things are failing)
+        let error_rounds = count_consecutive_all_error_rounds(&ctx.messages);
+        if error_rounds >= 2 {
+            return Some(
+                "Circuit breaker: user requested stop and recent tool calls are failing.".to_string()
+            );
+        }
+    }
+
+    None
 }
 
 fn last_n_user_messages_contain(messages: &[ChatMessage], n: usize, patterns: &[&str]) -> bool {
@@ -494,30 +616,52 @@ struct LoopDetector;
 impl Generator for LoopDetector {
     fn name(&self) -> &str { "loop_detector" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
+        let mut msgs = Vec::new();
+
+        // A. Same-tool repetition detection (original logic)
         let (tool_name, count) = count_consecutive_same_tool_calls(&ctx.messages);
-        if tool_name.is_empty() || count < 4 {
-            return vec![];
+        if !tool_name.is_empty() && count >= 4 {
+            let content = if count >= 6 {
+                format!(
+                    "CRITICAL: You have called '{}' {} times consecutively. \
+                     You are in an infinite loop. You MUST stop calling tools entirely. \
+                     Respond with text only — tell the user what happened and what you cannot do. \
+                     Do NOT call any tool in your next response.",
+                    tool_name, count
+                )
+            } else {
+                format!(
+                    "WARNING: You have called '{}' {} times in a row. \
+                     Pause and report your findings. Identify what's missing before continuing.",
+                    tool_name, count
+                )
+            };
+            msgs.push(SteeringMessage { content, position: Position::End });
         }
 
-        let content = if count >= 6 {
-            format!(
-                "STOP: You have called '{}' {} times consecutively. \
-                 This indicates a loop. STOP calling this tool, deliver your results, \
-                 and update your work tasks.",
-                tool_name, count
-            )
-        } else {
-            format!(
-                "You have called '{}' {} times in a row. \
-                 Pause and report your findings. Identify what's missing before continuing.",
-                tool_name, count
-            )
-        };
+        // B. All-error iteration detection (catches varied-tool loops)
+        if ctx.consecutive_error_iterations >= 3 {
+            let content = format!(
+                "CRITICAL: The last {} iterations all had failing tool calls. \
+                 You are stuck. STOP calling tools. Tell the user what you tried, \
+                 what failed, and what they can do to unblock you. \
+                 Do NOT make any more tool calls.",
+                ctx.consecutive_error_iterations
+            );
+            msgs.push(SteeringMessage { content, position: Position::End });
+        }
 
-        vec![SteeringMessage {
-            content,
-            position: Position::End,
-        }]
+        // C. User stop detection
+        if user_requested_stop(&ctx.messages) {
+            msgs.push(SteeringMessage {
+                content: "The user has asked you to STOP. Cease all tool calls immediately. \
+                         Respond with a brief summary of what happened and stop."
+                    .to_string(),
+                position: Position::End,
+            });
+        }
+
+        msgs
     }
 }
 
@@ -643,6 +787,7 @@ mod tests {
             iteration: 1,
             work_tasks: vec![],
             quota_warning: None,
+            consecutive_error_iterations: 0,
         };
         let result = guard.generate(&ctx);
         assert_eq!(result.len(), 1);

@@ -181,6 +181,16 @@ const SECTION_BEHAVIOR: &str = r#"## Tool Execution
 - Pick ONE approach and execute it. Do not oscillate between researching, planning, building, and documenting. If the user asks you to do something: do it, report the result, stop. Do not loop back to "explore" or "plan" after you've already started doing it.
 - When you finish a task, state the outcome concisely and stop. Do not start follow-up work the user didn't ask for.
 
+## Single Conversation Awareness
+This is a persistent, single conversation. The user talks to you about many different topics over time — work, personal tasks, research, casual chat. Each new message may be a completely new task with no relation to what came before.
+
+**Rules for long conversations:**
+- The user's MOST RECENT message is always the primary context. Treat every message as potentially the start of a new task.
+- Do NOT reference, continue, or finish previous work unless the user explicitly asks you to.
+- The conversation summary and background objective are HISTORY, not instructions. They exist so you can answer "what were we doing earlier?" — not so you can keep doing it.
+- If the user asks about something new, respond to that. Don't say "before we move on, should I finish X?" — they moved on, so you move on.
+- Context from earlier in the conversation is useful ONLY when the user references it. Don't proactively bring up old topics.
+
 ## Code
 - Reuse and edit existing code. Read the codebase first, find what exists, modify it.
 - Only create new files when nothing suitable exists.
@@ -487,19 +497,26 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
 
     // 3. Conversation summary
     if !dctx.summary.is_empty() {
-        sb.push_str("\n\n---\n[Previous Conversation Summary]\n");
-        sb.push_str("This is a single chronological summary of this session, from oldest to most recent. Only the most recent section reflects current state.\n\n");
+        sb.push_str("\n\n---\n[Conversation History — Reference Only]\n");
+        sb.push_str("This summarizes PAST conversation topics, oldest to newest. It is NOT a to-do list. The user may have moved on from everything below. Only reference this history if the user asks about previous work.\n\n");
         sb.push_str(&dctx.summary);
         sb.push_str("\n---");
     }
 
     // 4. Background objective
     if !dctx.active_task.is_empty() {
-        sb.push_str("\n\n---\n## Background Objective\n");
-        sb.push_str("Ongoing work: ");
+        sb.push_str("\n\n---\n## Previous Objective (may be stale)\n");
+        sb.push_str("Earlier in this session, the user was working on: ");
         sb.push_str(&dctx.active_task);
-        sb.push_str("\nThis is context about previous work in this session. The user's latest message ALWAYS takes priority over this objective. Only continue this work if the user explicitly asks to resume (e.g., \"keep going\", \"continue\", \"back to that\").");
-        sb.push_str("\nFor multi-step work, use agent(resource: \"task\", action: \"create\") to track steps, then update them as you go.");
+        sb.push_str(r#"
+
+**CRITICAL — Task switching rules:**
+- The user's LATEST message defines what they want NOW. Not this objective.
+- People switch tasks without announcing it. They don't say "I'm done with the old task." They just start talking about something new.
+- If the latest message is about a DIFFERENT topic than this objective, the user has moved on. Follow their lead.
+- ONLY continue this objective if the user explicitly references it (e.g., "keep going", "continue with that", "back to the thing we were doing").
+- When in doubt: respond to what the user just said, not what they said 20 messages ago.
+- For multi-step work, use agent(resource: "task", action: "create") to track steps."#);
         sb.push_str("\n---");
     }
 
@@ -618,15 +635,15 @@ mod tests {
         let result = build_dynamic_suffix(&dctx);
         assert!(result.contains("anthropic/claude-sonnet-4"));
         assert!(result.contains("Build a website"));
-        assert!(result.contains("Background Objective"));
-        assert!(result.contains("Previous Conversation Summary"));
+        assert!(result.contains("Previous Objective"));
+        assert!(result.contains("Conversation History"));
     }
 
     #[test]
     fn test_build_dynamic_no_task() {
         let dctx = DynamicContext::default();
         let result = build_dynamic_suffix(&dctx);
-        assert!(!result.contains("Background Objective"));
+        assert!(!result.contains("Previous Objective"));
     }
 
     #[test]

@@ -90,6 +90,10 @@ struct RunState {
     prompt_overhead: usize,
     last_input_tokens: usize,
     thresholds: Option<ContextThresholds>,
+    /// Janus quota warning string, populated when session or weekly usage exceeds 80%.
+    quota_warning: Option<String>,
+    /// Whether a quota warning WS event has already been sent this run (fire once).
+    quota_warning_sent: bool,
 }
 
 impl RunState {
@@ -98,6 +102,8 @@ impl RunState {
             prompt_overhead: 0,
             last_input_tokens: 0,
             thresholds: None,
+            quota_warning: None,
+            quota_warning_sent: false,
         }
     }
 }
@@ -425,6 +431,7 @@ async fn run_loop(
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
     let mut auto_continuations = 0usize;
+    let mut consecutive_error_iterations = 0usize;
 
     // Resolve role from registry if role_id is set
     let active_role_entry = if !role_id.is_empty() {
@@ -654,8 +661,30 @@ async fn run_loop(
             agent_name: "Nebo".to_string(),
             iteration,
             work_tasks,
-            quota_warning: None,
+            quota_warning: state.quota_warning.clone(),
+            consecutive_error_iterations,
         };
+
+        // Circuit-breaker: check if the loop must be force-broken before making the next LLM call
+        if let Some(reason) = steering::should_force_break(&steering_ctx) {
+            warn!(session_id, iteration, reason = %reason, "circuit breaker triggered");
+            let _ = tx.send(StreamEvent {
+                event_type: StreamEventType::Text,
+                text: format!(
+                    "\n\nI got stuck in a loop and the circuit breaker stopped me. {}\n\n\
+                     I apologize for the repeated attempts. Please let me know how you'd like to proceed.",
+                    reason
+                ),
+                tool_call: None,
+                error: None,
+                usage: None,
+                rate_limit: None,
+                widgets: None,
+                provider_metadata: None,
+            }).await;
+            break;
+        }
+
         let steering_messages = steering_pipeline.generate(&steering_ctx);
 
         // Hook: steering.generate — let apps inject additional steering messages
@@ -924,6 +953,63 @@ async fn run_loop(
                 StreamEventType::RateLimit => {
                     if let Some(ref meta) = event.rate_limit {
                         concurrency.report_success(Some(meta));
+
+                        // Check Janus session/weekly usage and generate quota warning at >80%
+                        let mut warnings = Vec::new();
+                        if let (Some(limit), Some(remaining)) =
+                            (meta.session_limit_tokens, meta.session_remaining_tokens)
+                        {
+                            if limit > 0 {
+                                let used_pct =
+                                    ((limit.saturating_sub(remaining)) as f64 / limit as f64) * 100.0;
+                                if used_pct >= 80.0 {
+                                    warnings.push(format!(
+                                        "Session usage at {:.0}% ({} of {} tokens remaining, resets at {})",
+                                        used_pct,
+                                        remaining,
+                                        limit,
+                                        meta.session_reset_at.as_deref().unwrap_or("unknown"),
+                                    ));
+                                }
+                            }
+                        }
+                        if let (Some(limit), Some(remaining)) =
+                            (meta.weekly_limit_tokens, meta.weekly_remaining_tokens)
+                        {
+                            if limit > 0 {
+                                let used_pct =
+                                    ((limit.saturating_sub(remaining)) as f64 / limit as f64) * 100.0;
+                                if used_pct >= 80.0 {
+                                    warnings.push(format!(
+                                        "Weekly usage at {:.0}% ({} of {} tokens remaining, resets at {})",
+                                        used_pct,
+                                        remaining,
+                                        limit,
+                                        meta.weekly_reset_at.as_deref().unwrap_or("unknown"),
+                                    ));
+                                }
+                            }
+                        }
+                        if !warnings.is_empty() {
+                            let warning_text = warnings.join(". ");
+                            state.quota_warning = Some(warning_text.clone());
+
+                            // Forward the rate limit event with warning text once per run
+                            // so chat_dispatch can broadcast a quota_warning WS event.
+                            if !state.quota_warning_sent {
+                                state.quota_warning_sent = true;
+                                let _ = tx.send(StreamEvent {
+                                    event_type: StreamEventType::RateLimit,
+                                    text: warning_text,
+                                    tool_call: None,
+                                    error: None,
+                                    usage: None,
+                                    rate_limit: event.rate_limit.clone(),
+                                    widgets: None,
+                                    provider_metadata: None,
+                                }).await;
+                            }
+                        }
                     }
                 }
                 StreamEventType::Done => {
@@ -1229,8 +1315,15 @@ async fn run_loop(
             }
 
             // Save all tool results to session in deterministic order
+            // and track whether ALL results in this iteration were errors
+            let mut all_errors_this_iteration = true;
+            let mut had_results = false;
             for entry in results.into_iter().flatten() {
                 let (tc, result) = entry;
+                had_results = true;
+                if !result.is_error {
+                    all_errors_this_iteration = false;
+                }
                 let row = ToolResultRow {
                     tool_call_id: tc.id.clone(),
                     content: result.content,
@@ -1247,6 +1340,18 @@ async fn run_loop(
                     Some(&tr_json),
                     None,
                 );
+            }
+
+            // Update consecutive error iteration counter
+            if had_results && all_errors_this_iteration {
+                consecutive_error_iterations += 1;
+                warn!(
+                    session_id, iteration,
+                    consecutive_error_iterations,
+                    "all tool calls failed this iteration"
+                );
+            } else {
+                consecutive_error_iterations = 0;
             }
 
             // agent.turn action — notify apps after tool execution
@@ -1279,11 +1384,15 @@ async fn run_loop(
                 "auto-continuing: agent paused mid-task"
             );
 
-            // Inject a synthetic continuation message
+            // Inject a synthetic continuation message — scoped to the CURRENT task only
+            let continuation_msg = format!(
+                "<system>Continue with the task you were just working on: {}. Do not ask for permission — use your tools to make progress. If you have completed this task, say so and stop.</system>",
+                active_task
+            );
             let _ = sessions.append_message(
                 session_id,
                 "user",
-                "<system>Continue with your current objective. Do not ask for permission — use your tools to make progress.</system>",
+                &continuation_msg,
                 Some(&serde_json::json!({"hidden": true}).to_string()),
                 None,
                 None,
@@ -1588,28 +1697,68 @@ async fn detect_objective(
         current_objective.clone()
     };
 
+    // Gather recent conversation context (last 6 messages) for better classification
+    let recent_context = sessions.get_messages(session_id)
+        .ok()
+        .map(|msgs| {
+            let recent: Vec<String> = msgs.iter()
+                .rev()
+                .take(6)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .filter(|m| m.role == "user" || m.role == "assistant")
+                .map(|m| {
+                    let content = if m.content.len() > 200 {
+                        format!("{}...", &m.content[..200])
+                    } else {
+                        m.content.clone()
+                    };
+                    format!("[{}]: {}", m.role, content)
+                })
+                .collect();
+            recent.join("\n")
+        })
+        .unwrap_or_default();
+
     let classify_prompt = format!(
-        r#"Classify this user message relative to the current working objective.
+        r#"You are classifying whether a user has started a NEW task or is continuing their current one.
 
-Current objective: {}
-User message: {}
+Current objective: {obj}
+Recent conversation:
+{context}
+Latest user message: {msg}
 
-Respond with ONLY one JSON line, no markdown:
+Respond with ONLY one JSON line, no markdown fences:
 {{"action": "set", "objective": "concise 1-sentence objective"}}
-OR {{"action": "update", "objective": "refined objective"}}
+OR {{"action": "update", "objective": "refined objective incorporating the addition"}}
 OR {{"action": "clear"}}
 OR {{"action": "keep"}}
 
-Rules:
-- "set": User stated a new, distinct objective (e.g., "let's build X", "create Y", "fix Z")
-- "update": User is refining or adding to the current objective (e.g., "also add tests", "and make it async")
-- "clear": User is done or moving on without a new goal (e.g., "thanks", "looks good", "never mind")
-- "keep": No change needed (questions, feedback, corrections about the CURRENT objective)
-- Short messages (<15 words) that are CONVERSATIONAL with no action verb → "keep"
-- Short messages (<15 words) that contain an ACTION or REQUEST → "set"
-- If the message asks for something DIFFERENT from the current objective, use "set"
-- If unsure, use "keep""#,
-        obj_display, user_prompt
+## Decision rules (in priority order):
+
+1. **TOPIC CHANGE → "set"**: If the user's message introduces a DIFFERENT subject, domain, or goal than the current objective, this is a new task. People don't announce "I'm starting a new task" — they just start talking about something else.
+   - Current: "fix the login bug" → User: "can you help me write tests for the API" → **set** (different area)
+   - Current: "build the dashboard" → User: "let's work on the deployment pipeline" → **set** (different system)
+   - Current: "optimize the search query" → User: "I need to update the README" → **set** (different task entirely)
+
+2. **CONTINUATION / REFINEMENT → "update"**: The user is adding scope or adjusting the SAME objective.
+   - Current: "build user auth" → User: "also add password reset" → **update** (same domain, added scope)
+   - Current: "fix the API" → User: "and add rate limiting while you're at it" → **update** (same area, added requirement)
+
+3. **COMPLETION SIGNALS → "clear"**: The user signals the task is done with no new goal.
+   - "thanks", "looks good", "perfect", "that's it", "never mind", "done"
+
+4. **SAME TASK INTERACTION → "keep"**: Questions, feedback, or corrections that are clearly ABOUT the current objective.
+   - Current: "fix the login bug" → User: "what's causing the null pointer?" → **keep** (investigating same bug)
+   - Current: "build the dashboard" → User: "use a bar chart instead" → **keep** (feedback on same work)
+
+5. **When objective is "none"**: Any message with an action or request → **"set"**. Pure greetings or questions with no task → **"keep"**.
+
+## Key principle: When in doubt between "set" and "keep", prefer "set". A stale objective that doesn't match what the user actually wants is MORE harmful than resetting. The user can always continue the old task, but they can't unstick an agent that's persisting on a finished objective."#,
+        obj = obj_display,
+        context = if recent_context.is_empty() { "(no prior messages)".to_string() } else { recent_context },
+        msg = user_prompt
     );
 
     let req = ChatRequest {
