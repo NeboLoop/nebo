@@ -16,6 +16,9 @@
 		dark;
 }
 
+/* SvelteFlow (canvas library) */
+@import '@xyflow/svelte/dist/style.css';
+
 /* Light mode: white text on primary for strong contrast */
 [data-theme="light"] {
 	--color-primary-content: oklch(98% 0.01 260);
@@ -2456,4 +2459,228 @@
 	background: linear-gradient(to bottom, transparent, var(--color-base-100));
 	pointer-events: none;
 	border-radius: 0 0 0.75rem 0.75rem;
+}
+
+/* ===== Commander Canvas ===== */
+
+.commander-canvas-wrapper {
+	width: 100%;
+	height: 100%;
+	position: relative;
+}
+
+/* Override SvelteFlow background to match Nebo theme */
+.commander-canvas-wrapper .svelte-flow {
+	background: var(--color-base-100);
+}
+
+.commander-canvas-wrapper .svelte-flow__background {
+	opacity: 0.3;
+}
+
+/* Agent node card */
+.commander-node {
+	background: var(--color-base-200);
+	border: 1px solid oklch(var(--bc) / 0.1);
+	border-radius: 0.75rem;
+	min-width: 180px;
+	cursor: pointer;
+	transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.commander-node:hover {
+	border-color: oklch(var(--bc) / 0.2);
+	box-shadow: 0 2px 8px oklch(var(--bc) / 0.08);
+}
+
+.commander-node--running {
+	border-color: oklch(var(--wa) / 0.4);
+}
+
+/* Main bot node */
+.commander-main-node {
+	background: var(--color-base-200);
+	border: 2px solid oklch(var(--p) / 0.3);
+	border-radius: 0.75rem;
+	min-width: 240px;
+	box-shadow: 0 2px 12px oklch(var(--p) / 0.08);
+}
+
+/* Team group container */
+.commander-team-group {
+	width: 100%;
+	height: 100%;
+	border: 2px dashed;
+	border-radius: 1rem;
+	background: oklch(var(--bc) / 0.02);
+	position: relative;
+	padding-top: 2rem;
+}
+
+.commander-team-label {
+	position: absolute;
+	top: 0.5rem;
+	left: 0.75rem;
+	font-size: 0.7rem;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	opacity: 0.7;
+}
+
+/* Event edge dashed style (auto-computed from emit chains) */
+.commander-edge-event {
+	stroke-dasharray: 6 4;
+}
+
+/* Selected edge highlight — click to select, then Backspace to delete */
+.commander-canvas-wrapper .svelte-flow__edge.selected path {
+	stroke: #ef4444 !important;
+	stroke-width: 3 !important;
+}
+
+/* Reporting edge solid style (org hierarchy) */
+.commander-edge-reports_to {
+	stroke: oklch(var(--bc) / 0.25);
+	stroke-width: 2;
+}
+
+.commander-edge-coordinates_with {
+	stroke: oklch(var(--s) / 0.4);
+	stroke-dasharray: 4 4;
+}
+
+/* Edge label */
+.commander-edge-label {
+	font-size: 0.65rem;
+	color: oklch(var(--bc) / 0.5);
+	background: var(--color-base-100);
+	padding: 1px 6px;
+	border-radius: 4px;
+	border: 1px solid oklch(var(--bc) / 0.08);
+	white-space: nowrap;
+}
+
+/* Toolbar */
+.commander-toolbar {
+	position: absolute;
+	top: 0.75rem;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 10;
+	display: flex;
+	align-items: center;
+	gap: 0.25rem;
+	background: var(--color-base-200);
+	border: 1px solid oklch(var(--bc) / 0.1);
+	border-radius: 0.5rem;
+	padding: 0.25rem;
+	box-shadow: 0 2px 8px oklch(var(--bc) / 0.06);
+}
+
+/* Detail side panel */
+.commander-detail-panel {
+	position: absolute;
+	right: 0;
+	top: 0;
+	bottom: 0;
+	width: 280px;
+	background: var(--color-base-200);
+	border-left: 1px solid oklch(var(--bc) / 0.1);
+	z-index: 20;
+	overflow-y: auto;
+}
+
+/* Pulse animation for running workflows */
+.commander-pulse {
+	animation: commander-pulse-anim 1.5s ease-in-out infinite;
+}
+
+@keyframes commander-pulse-anim {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.4; }
+}
+
+/*
+ * SvelteFlow handle fixes — Tailwind's preflight resets border-style/width
+ * and pointer-events, breaking SvelteFlow's handle interaction model.
+ * These restore the behavior SvelteFlow expects.
+ */
+.commander-canvas-wrapper .svelte-flow__handle {
+	width: 10px;
+	height: 10px;
+	background: oklch(var(--bc) / 0.15);
+	border-style: solid;
+	border-width: 2px;
+	border-color: oklch(var(--bc) / 0.25);
+	border-radius: 100%;
+	transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Connectable source handles are always interactive (start a drag) */
+.commander-canvas-wrapper .svelte-flow__handle.connectable.connectablestart {
+	pointer-events: all;
+	cursor: crosshair;
+}
+
+/* Target handles become interactive when a connection drag is in progress */
+.commander-canvas-wrapper .svelte-flow__handle.connectionindicator {
+	pointer-events: all;
+	cursor: crosshair;
+}
+
+.commander-canvas-wrapper .svelte-flow__handle:hover {
+	width: 14px;
+	height: 14px;
+	background: oklch(var(--p) / 0.5);
+	border-color: oklch(var(--p) / 0.7);
+	box-shadow: 0 0 8px oklch(var(--p) / 0.3);
+}
+
+/* Connection line while dragging — force visible over Tailwind resets */
+.commander-canvas-wrapper .svelte-flow__connection-path {
+	stroke: #7c3aed !important;
+	stroke-width: 2 !important;
+	fill: none !important;
+}
+
+.commander-canvas-wrapper svg.svelte-flow__connectionline {
+	z-index: 1001;
+	overflow: visible;
+	position: absolute;
+}
+
+.commander-canvas-wrapper .svelte-flow {
+	--xy-connectionline-stroke: #7c3aed;
+	--xy-connectionline-stroke-width: 2;
+	--xy-edge-stroke: oklch(var(--bc) / 0.3);
+	--xy-edge-stroke-width: 1.5;
+}
+
+/* Ensure visible edge paths aren't reset by Tailwind preflight */
+.commander-canvas-wrapper .svelte-flow__edge-path {
+	fill: none;
+}
+
+/* Interaction path — wide invisible stroke area for clicking edges */
+.commander-canvas-wrapper .svelte-flow__edge-interaction {
+	fill: none;
+	pointer-events: stroke !important;
+	cursor: pointer;
+	stroke-width: 20px;
+}
+
+/* Edges must be clickable */
+.commander-canvas-wrapper .svelte-flow__edge {
+	pointer-events: visibleStroke;
+	cursor: pointer;
+}
+
+.commander-canvas-wrapper .svelte-flow__edge.selectable {
+	cursor: pointer;
+}
+
+/* Hide attribution (MIT license, no requirement to display) */
+.commander-canvas-wrapper .svelte-flow__attribution {
+	display: none;
 }

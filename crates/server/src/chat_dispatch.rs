@@ -354,6 +354,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                     *janus_usage.write().await = Some(usage);
                                 }
                             }
+                            // If the runner forwarded a quota warning (text is non-empty),
+                            // broadcast to the frontend so it can show a warning banner.
+                            if !event.text.is_empty() {
+                                hub.broadcast("quota_warning", serde_json::json!({
+                                    "session_id": sid,
+                                    "message": event.text,
+                                    "role_id": role_id,
+                                }));
+                            }
                         }
                         StreamEventType::Done => {}
                     }

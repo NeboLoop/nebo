@@ -85,6 +85,11 @@
 		$page.url.pathname.startsWith('/upgrade')
 	);
 
+	// Canvas routes need full height with no padding (canvas handles its own viewport)
+	const isCanvasRoute = $derived(
+		$page.url.pathname.startsWith('/commander')
+	);
+
 	// Capture return path when navigating into settings
 	// Capture return path when entering settings — but never return to transient routes
 	const transientRoutes = ['/upgrade', '/settings'];
@@ -259,7 +264,11 @@
 		{/each}
 		<div class="flex flex-1 min-h-0 overflow-hidden">
 			<SideNav />
-			{#if isUpgradeRoute}
+			{#if isCanvasRoute}
+				<main id="main-content" class="flex-1 min-w-0 overflow-hidden">
+					{@render children()}
+				</main>
+			{:else if isUpgradeRoute}
 				<main id="main-content" class="flex-1 min-w-0 overflow-y-auto">
 					{@render children()}
 				</main>

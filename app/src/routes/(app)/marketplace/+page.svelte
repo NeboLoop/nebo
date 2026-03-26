@@ -23,8 +23,8 @@
 				skillsRes,
 				featuredSkillRes
 			] = await Promise.all([
-				webapi.get<any>('/api/v1/store/products', { type: 'role' }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'skill' }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'role', pageSize: 100 }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ skills: [] })),
 				webapi.get<any>('/api/v1/store/featured', { type: 'skill' }).catch(() => ({ apps: [] }))
 			]);
 

@@ -17,6 +17,7 @@ pub mod tasks;
 pub mod user;
 pub mod workflows;
 pub mod ws;
+pub mod commander;
 
 use axum::http::StatusCode;
 use axum::response::Json;

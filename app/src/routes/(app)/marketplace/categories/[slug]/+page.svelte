@@ -5,26 +5,39 @@
 	import { ChevronLeft, Check, Sparkles } from 'lucide-svelte';
 	import webapi from '$lib/api/gocliRequest';
 	import { type AppItem, toAppItem, itemHref } from '$lib/types/marketplace';
-	import { categoryBySlug, categoryByName } from '$lib/data/categories';
+	import { slugify } from '$lib/data/categories';
 
 	let loading = $state(true);
 	let skills: AppItem[] = $state([]);
 	let workflows: AppItem[] = $state([]);
 	let roles: AppItem[] = $state([]);
-	let catMeta: { name: string; slug: string; emoji: string; gradient: string } | null = $state(null);
+	let catMeta: { name: string; slug: string; emoji: string } | null = $state(null);
 
 	const slug = $derived($page.params.slug);
-	const fallback = $derived(categoryBySlug(slug) || categoryByName(decodeURIComponent(slug)));
-	const cat = $derived(catMeta || fallback);
+	const cat = $derived(catMeta);
 
 	onMount(async () => {
-		if (!cat) {
+		// Fetch category metadata from API
+		try {
+			const res = await webapi.get<any>('/api/v1/store/categories');
+			const apiCats: any[] = res.categories || [];
+			const match = apiCats.find((c: any) => c.slug === slug || slugify(c.name) === slug);
+			if (match) {
+				catMeta = {
+					name: match.name,
+					slug: match.slug || slugify(match.name),
+					emoji: match.emoji || '📦'
+				};
+			}
+		} catch { /* ignore */ }
+
+		if (!catMeta) {
 			loading = false;
 			return;
 		}
 
 		try {
-			const productsRes = await webapi.get<any>('/api/v1/store/products', { category: cat.name }).catch(() => ({ skills: [] }));
+			const productsRes = await webapi.get<any>('/api/v1/store/products', { category: catMeta.name, pageSize: 100 }).catch(() => ({ skills: [] }));
 
 			const rawProducts = productsRes.skills || [];
 
@@ -74,7 +87,7 @@
 {:else}
 	<!-- Hero -->
 	<div class="flex flex-col items-center pt-10 pb-8 px-6 text-center max-w-2xl mx-auto">
-		<div class="w-20 h-20 rounded-3xl bg-gradient-to-br {cat.gradient} flex items-center justify-center mb-5 shadow-lg">
+		<div class="w-20 h-20 rounded-3xl bg-base-200/50 border border-base-content/10 flex items-center justify-center mb-5">
 			<span class="text-4xl">{cat.emoji}</span>
 		</div>
 		<h1 class="font-display text-2xl font-bold">{cat.name}</h1>

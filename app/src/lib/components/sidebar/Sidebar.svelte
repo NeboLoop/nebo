@@ -469,6 +469,16 @@
 					<div class="sidebar-header-subtitle">{activeCount} of {sidebarRoles.length} active</div>
 				{/if}
 			</div>
+			<div class="flex items-center gap-1">
+				<button
+					class="sidebar-header-btn"
+					onclick={() => goto('/commander')}
+					title="Commander — visual agent coordination"
+				>
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<rect x="1" y="1" width="8" height="8" rx="1" /><rect x="15" y="1" width="8" height="8" rx="1" /><rect x="8" y="15" width="8" height="8" rx="1" /><path d="M5 9v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" /><path d="M12 13v2" />
+					</svg>
+				</button>
 			<div class="relative">
 				<button
 					class="sidebar-header-btn"
@@ -483,6 +493,7 @@
 				{#if showNewBotMenu}
 					<NewBotMenu onClose={() => showNewBotMenu = false} />
 				{/if}
+			</div>
 			</div>
 		</div>
 

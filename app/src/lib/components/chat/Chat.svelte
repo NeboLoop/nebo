@@ -416,6 +416,12 @@
 					warningMessage = (data?.message as string) || 'The AI service is temporarily busy. Retrying...';
 					warningToast = true;
 				}),
+				client.on('quota_warning', (data: Record<string, unknown>) => {
+					if (data?.session_id === chatId) {
+						warningMessage = (data?.message as string) || 'You are approaching your usage limit.';
+						warningToast = true;
+					}
+				}),
 				client.on('code_processing', handleCodeProcessing),
 				client.on('code_result', handleCodeResult),
 				client.on('dep_installed', handleDepInstalled),

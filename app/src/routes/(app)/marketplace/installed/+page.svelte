@@ -26,9 +26,9 @@
 		try {
 			// Fetch all products and filter to installed
 			const [skillsRes, rolesRes, workflowsRes] = await Promise.all([
-				webapi.get<any>('/api/v1/store/products', { type: 'skill' }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'role' }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'workflow' }).catch(() => ({ skills: [] }))
+				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'role', pageSize: 100 }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'workflow', pageSize: 100 }).catch(() => ({ skills: [] }))
 			]);
 
 			const all = [

@@ -17,3 +17,4 @@ mod provider_models;
 mod workflows;
 mod roles;
 mod entity_config;
+mod commander;

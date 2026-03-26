@@ -15,7 +15,7 @@
 	onMount(async () => {
 		try {
 			const [productsRes, featuredRes] = await Promise.all([
-				webapi.get<any>('/api/v1/store/products', { type: 'role' }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'role', pageSize: 100 }).catch(() => ({ skills: [] })),
 				webapi.get<any>('/api/v1/store/featured', { type: 'role' }).catch(() => ({ apps: [] }))
 			]);
 

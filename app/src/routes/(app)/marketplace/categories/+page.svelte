@@ -2,8 +2,6 @@
 	import { onMount } from 'svelte';
 	import { Grid3x3 } from 'lucide-svelte';
 	import webapi from '$lib/api/gocliRequest';
-	import { categories as fallbackCategories } from '$lib/data/categories';
-
 	interface CategoryItem {
 		name: string;
 		slug: string;
@@ -22,15 +20,7 @@
 		try {
 			const res = await webapi.get<any>('/api/v1/store/categories');
 			categories = res.categories || [];
-		} catch {
-			categories = fallbackCategories.map((c) => ({
-				...c,
-				skillCount: 0,
-				workflowCount: 0,
-				roleCount: 0,
-				toolCount: 0
-			}));
-		}
+		} catch { /* ignore */ }
 		loading = false;
 	});
 </script>
@@ -60,11 +50,11 @@
 	<div class="px-6 pb-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
 		{#each categories as cat}
 			{@const total = (cat.skillCount || 0) + (cat.workflowCount || 0) + (cat.roleCount || 0) + (cat.toolCount || 0)}
-			<a href="/marketplace/categories/{cat.slug}" class="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-gradient-to-br {cat.gradient} hover:scale-[1.03] transition-all duration-200">
-				<span class="text-4xl drop-shadow-lg">{cat.emoji}</span>
-				<span class="text-base font-bold text-white text-center drop-shadow-sm">{cat.name}</span>
+			<a href="/marketplace/categories/{cat.slug}" class="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-base-200/50 border border-base-content/10 hover:border-primary/30 hover:bg-base-200 transition-all duration-200">
+				<span class="text-4xl">{cat.emoji || '📦'}</span>
+				<span class="text-base font-bold text-base-content text-center">{cat.name}</span>
 				{#if total > 0}
-					<span class="text-sm font-medium text-white/80">{total} {total === 1 ? 'item' : 'items'}</span>
+					<span class="text-sm font-medium text-base-content/60">{total} {total === 1 ? 'item' : 'items'}</span>
 				{/if}
 			</a>
 		{/each}
