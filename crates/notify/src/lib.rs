@@ -2,14 +2,12 @@ use std::process::Command;
 use tracing::warn;
 
 /// Send a native OS notification. Falls back silently if unavailable.
-pub fn send(title: &str, body: &str) {
-    let title = sanitize(title);
-    let body = sanitize(body);
-
-    let result = send_platform(&title, &body);
-    if let Err(e) = result {
-        warn!("failed to send notification: {}", e);
-    }
+///
+/// Currently disabled — OS notifications are not deep-linked so clicking
+/// them does nothing useful. Re-enable once tauri-plugin-notification is
+/// wired up with action handling.
+pub fn send(_title: &str, _body: &str) {
+    // TODO: replace with tauri-plugin-notification for deep-linked notifications
 }
 
 #[cfg(target_os = "macos")]
