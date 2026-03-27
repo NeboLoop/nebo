@@ -227,13 +227,9 @@
 				await toggleJanus(true);
 			}
 			await api.updateModel({ active: newActive }, providerType, model.id);
-			// Auto-disable Janus provider when all Janus models are off
-			if (providerType === 'janus' && !newActive && janusStatus?.janusProvider) {
-				const anyActive = janusModels().some(m => m.isActive);
-				if (!anyActive) {
-					await toggleJanus(false);
-				}
-			}
+			// NeboLoop connection stays active even when all Janus models are off.
+			// The backend reload_providers() skips the Janus AI provider when no
+			// models are active, but the NeboLoop comms/marketplace keep working.
 		} catch (err: any) {
 			model.isActive = !newActive;
 			error = err?.message || $t('settingsProviders.updateFailed');

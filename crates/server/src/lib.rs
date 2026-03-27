@@ -178,17 +178,12 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                     .and_then(|v| v.as_str())
                     == Some("true");
                 if is_janus {
-                    // Skip Janus if user has disabled all Janus chat models
-                    // (embedding-only models don't count — they can't handle chat)
+                    // Skip Janus if user has disabled all Janus chat models.
+                    // Fail-safe: if DB query fails, skip Janus (don't burn tokens).
                     let has_active_models = store
                         .list_active_provider_models("janus")
-                        .map(|models| models.iter().any(|m| {
-                            // A chat model has capabilities beyond just "embeddings"
-                            m.capabilities.as_ref().map_or(true, |caps| {
-                                !caps.contains("embeddings") || caps.contains("tools") || caps.contains("streaming")
-                            })
-                        }))
-                        .unwrap_or(true);
+                        .map(|models| !models.is_empty())
+                        .unwrap_or(false);
                     if !has_active_models {
                         info!("janus provider has no active models in catalog, skipping");
                         None

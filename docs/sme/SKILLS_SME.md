@@ -477,6 +477,264 @@ For paid tiers (pro/team/enterprise): `POST {janus_url}/v1/execute` — not yet 
 
 ---
 
+## 8b. Binary/Executable Skills
+
+**Source:** `crates/tools/src/execute_tool.rs`, `crates/napp/src/napp.rs`, `crates/napp/src/reader.rs`
+
+Nebo supports skills that bundle **pre-compiled native executables**. The agent calls these binaries according to the skill's SKILL.md instructions, passing arguments via environment variables and capturing stdout/stderr.
+
+### Concept
+
+A binary skill is a standard skill (SKILL.md + resources) that additionally includes a native executable. The SKILL.md markdown body instructs the agent *when* and *how* to call the binary. The execute tool handles the actual invocation.
+
+```
+SKILL.md              → Agent instructions (when to call, what args to pass)
+binary (or bin/*)     → Pre-compiled native executable
+scripts/              → Optional helper scripts
+references/           → Optional reference data
+```
+
+> **Design principle:** The SKILL.md is the *brain* — it teaches the agent the domain knowledge. The binary is the *muscle* — it performs computation the LLM cannot do (PDF generation, image processing, data crunching). The agent reads the SKILL.md instructions, decides when to invoke the binary, constructs the args, and interprets the output.
+
+### .napp Binary Packaging
+
+Binary skills are distributed as sealed `.napp` archives (tar.gz). The archive enforces strict content rules:
+
+**Allowed files in .napp** (`crates/napp/src/napp.rs:16-31`):
+
+```
+manifest.json         — Required. Package identity + metadata
+binary                — Native executable (root-level, legacy convention)
+app                   — Alternative binary name (root-level)
+bin/*                 — Binary directory (new convention, multiple executables)
+scripts/*             — Executable scripts (.py, .ts, .js)
+signatures.json       — ED25519 signatures for verification
+SKILL.md              — Skill definition
+ui/*                  — UI assets (5MB max per file)
+```
+
+**Size limits:**
+
+| Entry | Max Size |
+|-------|----------|
+| `binary` / `app` | 500 MB |
+| `ui/*` files | 5 MB each |
+| All other metadata | 1 MB |
+
+**Security enforcement (`napp.rs:54-80`):**
+- Path traversal rejected (`..` or leading `/`)
+- Symlinks and hardlinks rejected (tar entry type check)
+- Only ALLOWED_FILES entries permitted (unexpected files → extraction error)
+- Canonical path verification (escape detection)
+
+### Binary Format Validation
+
+Native executables are validated at extraction time via magic byte checks (`napp.rs:161-188`):
+
+| Format | Magic Bytes | Platform |
+|--------|------------|----------|
+| ELF | `7F 45 4C 46` | Linux |
+| Mach-O 32-bit | `FE ED FA CE` | macOS |
+| Mach-O 64-bit | `FE ED FA CF` | macOS |
+| Mach-O 32 (swapped) | `CE FA ED FE` | macOS |
+| Mach-O 64 (swapped) | `CF FA ED FE` | macOS |
+| Universal (FAT) | `CA FE BA BE` | macOS (multi-arch) |
+| PE/COFF | `4D 5A` | Windows |
+
+**Rejected:**
+- Shebang scripts (`#!`) → error: "shebang scripts not allowed — compiled binaries only"
+- Unknown formats → error: "unrecognized binary format — only native executables allowed"
+- Files < 4 bytes → error: "binary too small"
+
+### Binary Extraction & Permissions
+
+When a `.napp` is extracted (`reader.rs:85-110`, `reader.rs:157-217`):
+
+1. Binary content is written to disk
+2. On Unix: permissions set to `0o755` (owner rwx, group rx, others rx)
+3. Applies to entries named: `binary`, `app`, `bin/*`, `scripts/*`
+4. Extraction is idempotent via `extract_napp_alongside()` — skips if directory already exists
+
+### Binary Locations in Skill Directory
+
+After .napp extraction, binaries reside in the skill's `base_dir`:
+
+```
+# New convention (preferred): bin/ directory
+nebo/skills/@acme/skills/pdf-tool/1.0.0/
+├── SKILL.md
+├── manifest.json
+├── bin/
+│   └── nebo-pdf          ← binary at bin/nebo-pdf
+└── references/
+    └── templates/
+
+# Legacy convention: root-level "binary"
+nebo/skills/@acme/skills/xlsx-proc/1.0.0/
+├── SKILL.md
+├── manifest.json
+└── binary                ← binary at root
+```
+
+### Platform Filtering
+
+Skills declare target platforms in SKILL.md frontmatter:
+
+```yaml
+platform: [macos, linux]    # Only load on macOS and Linux
+platform: []                # Empty = all platforms (default)
+```
+
+The loader checks `skill.matches_platform()` at load time. Skills for the wrong platform are silently skipped — they never appear in the catalog.
+
+For cross-platform binary skills, publishers create separate `.napp` archives per platform (each containing the correct native binary) and upload them to the marketplace tagged by platform.
+
+### Binary Execution Pipeline
+
+**Entry point:** `ExecuteTool.execute_dyn()` (`execute_tool.rs:392-493`)
+
+```
+Agent calls: execute(skill: "pdf-tool", script: "bin/nebo-pdf", args: {...})
+  │
+  ├─[1] Lookup skill by name from Loader
+  │
+  ├─[2] Binary detection (lines 416-417):
+  │     script_path == "binary" OR script_path.starts_with("bin/")
+  │
+  ├─[3] Binary lookup (lines 419-442):
+  │     ├─ Try: skill.base_dir / script_path   (e.g., base_dir/bin/nebo-pdf)
+  │     ├─ Fallback: skill.base_dir / "binary" (only if script_path == "binary")
+  │     └─ If neither exists → error: "no binary at '...' for this platform"
+  │
+  └─[4] execute_local(RuntimeKind::Binary, ...) (lines 219-345):
+        ├─ Create temp directory
+        ├─ Extract ALL skill resources into temp dir
+        │   (binary may need reference files, templates, data)
+        ├─ Verify script exists in temp dir
+        ├─ Build command: raw binary path (no runtime launcher)
+        │   RuntimeKind::Binary → script_path.to_string() (line 213)
+        ├─ Sandbox wrapping (if SandboxManager available):
+        │   ├─ build_sandbox_config(skill, tmp_dir)
+        │   ├─ wrap_with_sandbox_opts(cmd)
+        │   └─ Fallback to bare execution on sandbox error
+        ├─ Inject SKILL_ARGS env var (JSON-encoded arguments)
+        ├─ Inject declared secrets as env vars
+        ├─ Execute via sh -c with:
+        │   ├─ cwd = temp directory
+        │   ├─ stdout piped
+        │   ├─ stderr piped
+        │   └─ timeout (default 30s, configurable)
+        ├─ Post-execution sandbox cleanup
+        └─ Return: stdout as success, or exit code + stderr as error
+```
+
+### Binary Communication Protocol
+
+Binaries communicate with the agent through a simple stdio protocol:
+
+| Channel | Direction | Purpose |
+|---------|-----------|---------|
+| **SKILL_ARGS** env var | Agent → Binary | JSON-encoded arguments object |
+| **Secret env vars** | Agent → Binary | Decrypted API keys (e.g., `BRAVE_API_KEY`) |
+| **stdout** | Binary → Agent | Result content (text, JSON, file paths) |
+| **stderr** | Binary → Agent | Diagnostics, warnings, progress (appended to result) |
+| **exit code** | Binary → Agent | 0 = success, non-zero = error |
+
+The agent passes arguments via the `SKILL_ARGS` environment variable as a JSON string. The binary reads this, performs its work, and writes results to stdout. The agent receives the stdout content and interprets it according to the SKILL.md instructions.
+
+### Example: Binary Skill SKILL.md
+
+```markdown
+---
+name: pdf-generator
+description: Generate and manipulate PDF documents
+version: "1.0.0"
+platform: [macos, linux]
+capabilities: [storage]
+triggers:
+  - create pdf
+  - generate pdf
+  - pdf document
+metadata:
+  secrets:
+    - key: LICENCE_KEY
+      label: "PDF Engine License"
+      required: false
+---
+# PDF Generator
+
+You have access to a PDF generation binary. Use it to create professional
+PDF documents from structured specifications.
+
+## How to Call
+
+Use the execute tool with this skill's binary:
+
+```
+execute(skill: "pdf-generator", script: "bin/nebo-pdf", args: {
+  "command": "create",
+  "title": "Document Title",
+  "content": [
+    {"type": "heading", "text": "Section 1"},
+    {"type": "paragraph", "text": "Body text here..."},
+    {"type": "table", "headers": ["Col A", "Col B"], "rows": [["1", "2"]]}
+  ],
+  "output": "report.pdf"
+})
+```
+
+## Commands
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `create` | title, content[], output | Create new PDF |
+| `merge` | files[], output | Merge multiple PDFs |
+| `extract` | file, pages | Extract page range |
+
+## Output
+
+The binary writes the output file to the working directory and returns
+the filename on stdout. Use this path to reference the generated file.
+```
+
+### Sandbox Behavior for Binaries
+
+Binary execution is subject to the same sandbox policy as script execution:
+
+- **Filesystem:** Always denied: `~/.ssh`, `~/.gnupg`, `~/.aws/credentials`, `~/.config/gcloud`. Always allowed: temp work dir, `/dev/stdout`, `/dev/stderr`, `/tmp/nebo`. If capability `storage`: also writable data dir.
+- **Network:** Blocked unless capability `network` is declared. If declared: package registries + `metadata.allowed_domains`.
+- **Fallback:** If sandbox wrapping fails, binary runs unsandboxed with a warning log.
+
+### Key Differences: Binary vs Script Skills
+
+| Aspect | Script Skill | Binary Skill |
+|--------|-------------|-------------|
+| **Runtime** | Requires Python/Node.js/Bun | Self-contained native executable |
+| **Detection** | `.py`, `.ts`, `.js` extension | `"binary"` or `"bin/*"` path |
+| **Launcher** | `uv run`, `bun run`, `python` | Direct execution (no launcher) |
+| **Portability** | Cross-platform (interpreted) | Platform-specific (compile per OS) |
+| **Size** | Typically KB | Up to 500 MB |
+| **Validation** | Extension-based language detection | Magic byte format verification |
+| **Dependencies** | May need package install (pip/npm) | Statically linked, zero deps |
+| **Performance** | Interpreter overhead | Native speed |
+
+### Current Limitations
+
+1. **No `bin/` in .napp ALLOWED_FILES:** The secure extractor (`napp.rs:16-31`) only allows `binary`, `app`, and `ui/*`. The `bin/` directory pattern is supported by `reader.rs` (extract_all sets +x on `bin/*`) and `execute_tool.rs` (detects `bin/` prefix), but the strict `extract_napp()` allowlist does NOT include `bin/*`. This means:
+   - `.napp` archives using the secure extractor cannot contain `bin/` directories
+   - The `bin/` convention works with `extract_all()` / `extract_napp_alongside()` (used by skill install path)
+   - **TODO:** Add `bin/*` to ALLOWED_FILES in `napp.rs` for full consistency
+
+2. **Single binary per .napp (secure path):** The secure extractor allows exactly one binary (`binary` or `app`). Multiple executables require the `bin/` directory convention (via extract_all path only).
+
+3. **No platform-specific binary naming:** The archive contains a single `binary` — there's no `binary.darwin-arm64` convention. Platform targeting is handled by publishing separate `.napp` archives per platform.
+
+4. **No stdin pipe:** Binaries receive input only via env vars. No streaming stdin support.
+
+5. **Cloud sandbox not wired:** `POST {janus_url}/v1/execute` is stubbed (execute_tool.rs:467). Binary skills currently require local execution only.
+
+---
+
 ## 9. Sandbox Policy
 
 **Source:** `crates/tools/src/sandbox_policy.rs`
