@@ -14,7 +14,9 @@ pub fn sanitize_memory_key(key: &str) -> String {
         .filter(|c| !c.is_control() || *c == '\n')
         .collect();
     if cleaned.len() > MAX_KEY_LENGTH {
-        cleaned[..MAX_KEY_LENGTH].to_string()
+        let mut end = MAX_KEY_LENGTH;
+        while !cleaned.is_char_boundary(end) { end -= 1; }
+        cleaned[..end].to_string()
     } else {
         cleaned
     }
@@ -27,7 +29,9 @@ pub fn sanitize_memory_value(value: &str) -> String {
         .filter(|c| !c.is_control() || *c == '\n')
         .collect();
     if cleaned.len() > MAX_VALUE_LENGTH {
-        cleaned[..MAX_VALUE_LENGTH].to_string()
+        let mut end = MAX_VALUE_LENGTH;
+        while !cleaned.is_char_boundary(end) { end -= 1; }
+        cleaned[..end].to_string()
     } else {
         cleaned
     }

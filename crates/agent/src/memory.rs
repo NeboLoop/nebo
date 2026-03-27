@@ -423,7 +423,11 @@ fn build_conversation_text(messages: &[ChatMessage]) -> String {
         }
 
         let content = if msg.content.len() > MAX_CONTENT_PER_MESSAGE {
-            format!("{}...", &msg.content[..MAX_CONTENT_PER_MESSAGE])
+            let mut end = MAX_CONTENT_PER_MESSAGE;
+            while !msg.content.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}...", &msg.content[..end])
         } else {
             msg.content.clone()
         };

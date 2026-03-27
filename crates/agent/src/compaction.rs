@@ -141,12 +141,16 @@ fn normalize_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<&str>>().join(" ")
 }
 
-/// Truncate with "..." suffix.
+/// Truncate with "..." suffix (char-boundary safe).
 fn truncate_text(text: &str, max_chars: usize) -> String {
     if text.len() <= max_chars {
         text.to_string()
     } else {
-        format!("{}...", &text[..max_chars.saturating_sub(3)])
+        let mut end = max_chars.saturating_sub(3);
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &text[..end])
     }
 }
 

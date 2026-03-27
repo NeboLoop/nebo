@@ -509,8 +509,16 @@ async fn run_loop(
         None
     };
 
+    // Scope memory by role: each role gets its own memory namespace to prevent cross-contamination.
+    // Main bot uses the raw user_id; roles use "user_id:role:role_id".
+    let memory_user_id = if !role_id.is_empty() {
+        format!("{}:role:{}", user_id, role_id)
+    } else {
+        user_id.to_string()
+    };
+
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
-    let db_ctx = db_context::load_db_context(store, user_id);
+    let db_ctx = db_context::load_db_context(store, &memory_user_id);
 
     // If running as a role, use the role name as agent_name
     let agent_name = if let Some(ref role) = active_role_entry {
@@ -529,7 +537,7 @@ async fn run_loop(
         let existing_ids: std::collections::HashSet<i64> =
             db_ctx.tacit_memories.iter().map(|sm| sm.memory.id).collect();
         let relevant = db_context::load_prompt_relevant_memories(
-            store, user_id, user_prompt, &existing_ids,
+            store, &memory_user_id, user_prompt, &existing_ids,
         );
         if !relevant.is_empty() {
             db_context_formatted.push_str(&relevant);
@@ -1521,7 +1529,7 @@ async fn run_loop(
 
             let providers = providers.clone();
             let store = store.clone();
-            let user_id = user_id.to_string();
+            let mem_uid = memory_user_id.clone();
             let session_id_owned = session_id.to_string();
 
             debouncer.schedule(session_id, move || async move {
@@ -1531,7 +1539,7 @@ async fn run_loop(
                 };
                 if let Some(provider) = provider {
                     if let Some(facts) = memory::extract_facts(provider.as_ref(), &all_msgs).await {
-                        memory::store_facts(&store, &facts, &user_id);
+                        memory::store_facts(&store, &facts, &mem_uid);
                         debug!(session_id = session_id_owned, "extracted and stored memory facts");
                     }
                 }
