@@ -11,6 +11,19 @@ mod scheduler;
 mod spa;
 mod state;
 
+/// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
+/// UTF-8 character.
+pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 use std::net::TcpListener;
 use std::sync::Arc;
 
@@ -1181,7 +1194,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         };
         let _ = state.store.create_chat(&session_key, &format!("Agent: {}", role_name));
 
-        let preview = if text.len() > 80 { format!("{}...", &text[..80]) } else { text.clone() };
+        let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
         notify_crate::send(&format!("Agent space: {}", role_name), &preview);
 
         let entity_config = entity_config::resolve_for_chat(
@@ -1258,7 +1271,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             };
             let _ = state.store.create_chat(&session_key, &format!("Agent: {}", role_name));
 
-            let preview = if text.len() > 80 { format!("{}...", &text[..80]) } else { text.clone() };
+            let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
             notify_crate::send(&format!("Agent space: {}", role_name), &preview);
 
             let entity_config = entity_config::resolve_for_chat(
@@ -1310,7 +1323,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
 
         // Notify the user about the inbound message
-        let preview = if text.len() > 80 { format!("{}...", &text[..80]) } else { text.clone() };
+        let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
         notify_crate::send(&format!("Message from {}", msg.from), &preview);
 
         let session_key = agent::keyparser::build_session_key(
@@ -1467,6 +1480,7 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/chats/days", axum::routing::get(handlers::chat::list_chat_days))
         .route("/chats/history/{day}", axum::routing::get(handlers::chat::get_chat_history_by_day))
         .route("/chats/companion", axum::routing::get(handlers::chat::get_companion_chat))
+        .route("/chats/companion/new", axum::routing::post(handlers::chat::create_companion_chat))
         .route("/chats/search", axum::routing::get(handlers::chat::search_messages))
         .route("/chats/message", axum::routing::post(handlers::chat::send_message))
         .route("/chats/{id}", axum::routing::get(handlers::chat::get_chat))

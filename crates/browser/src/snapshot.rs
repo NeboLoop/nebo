@@ -125,7 +125,13 @@ pub fn annotate_with_role_ids(snapshot: &str) -> (String, Vec<AnnotatedElement>)
             let element_id = format!("{}{}", prefix, counter);
 
             let label = if name.len() > 40 {
-                format!("{}...", &name[..37])
+                {
+                    let mut end = 37;
+                    while end > 0 && !name.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{}...", &name[..end])
+                }
             } else {
                 name.to_string()
             };

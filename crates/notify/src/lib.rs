@@ -64,7 +64,12 @@ fn sanitize(s: &str) -> String {
     let s = s.replace('\\', "");
     let s = s.replace('"', "\u{201C}"); // curly double quote
     if s.len() > 256 {
-        format!("{}...", &s[..256])
+        // Find a valid char boundary at or before byte 256
+        let mut end = 256;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
     } else {
         s
     }

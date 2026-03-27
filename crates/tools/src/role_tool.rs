@@ -233,7 +233,7 @@ impl RoleTool {
             let mut lines = Vec::new();
             for (id, role) in registry.iter() {
                 let preview = if role.role_md.len() > 200 {
-                    format!("{}...", &role.role_md[..200])
+                    format!("{}...", crate::truncate_str(&role.role_md, 200))
                 } else {
                     role.role_md.clone()
                 };
@@ -291,7 +291,7 @@ impl RoleTool {
                 // Show ROLE.md body preview
                 let body = &loaded.role_def.body;
                 let preview = if body.len() > 500 {
-                    format!("{}...", &body[..500])
+                    format!("{}...", crate::truncate_str(body, 500))
                 } else {
                     body.clone()
                 };

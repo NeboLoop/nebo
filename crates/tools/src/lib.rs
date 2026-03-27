@@ -35,6 +35,19 @@ pub mod sandbox_policy;
 pub mod web_tool;
 pub mod workflows;
 
+/// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
+/// UTF-8 character.
+pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 pub use domain::*;
 pub use file_tool::FileTool;
 pub use orchestrator::{

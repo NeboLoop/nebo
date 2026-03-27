@@ -273,7 +273,7 @@ fn search_file(
         let line = line_result?;
         if re.is_match(&line) {
             let content = if line.len() > 500 {
-                format!("{}...", &line[..500])
+                format!("{}...", crate::truncate_str(&line, 500))
             } else {
                 line
             };

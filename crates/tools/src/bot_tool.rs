@@ -667,7 +667,7 @@ impl AgentTool {
                             .rev()
                             .map(|m| {
                                 let preview = if m.content.len() > 200 {
-                                    format!("{}...", &m.content[..200])
+                                    format!("{}...", crate::truncate_str(&m.content, 200))
                                 } else {
                                     m.content.clone()
                                 };
@@ -709,7 +709,7 @@ impl AgentTool {
                                 for msg in msgs {
                                     if msg.content.to_lowercase().contains(&query_text.to_lowercase()) {
                                         let preview = if msg.content.len() > 150 {
-                                            format!("{}...", &msg.content[..150])
+                                            format!("{}...", crate::truncate_str(&msg.content, 150))
                                         } else {
                                             msg.content.clone()
                                         };
@@ -754,7 +754,7 @@ impl AgentTool {
                             .find(|m| m.role == "user")
                             .map(|m| {
                                 if m.content.len() > 100 {
-                                    format!("{}...", &m.content[..100])
+                                    format!("{}...", crate::truncate_str(&m.content, 100))
                                 } else {
                                     m.content.clone()
                                 }

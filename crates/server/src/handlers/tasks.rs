@@ -209,7 +209,7 @@ pub async fn run_task(
             serde_json::json!({
                 "task": task_name,
                 "success": success,
-                "output": if output.len() > 500 { &output[..500] } else { &output },
+                "output": crate::truncate_str(&output, 500),
             }),
         );
     });

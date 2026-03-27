@@ -285,7 +285,7 @@ pub fn build_quick_fallback_summary(messages: &[ChatMessage], active_objective: 
     for msg in messages {
         if msg.role == "user" && !msg.content.is_empty() {
             let truncated = if msg.content.len() > 200 {
-                format!("{}...", &msg.content[..200])
+                format!("{}...", crate::runner::truncate_str(&msg.content, 200))
             } else {
                 msg.content.clone()
             };

@@ -87,7 +87,7 @@ impl PublisherTool {
                             .take_while(|l| !l.trim().is_empty())
                             .collect::<Vec<_>>()
                             .join(" ");
-                        let desc = if desc.len() > 200 { desc[..200].to_string() } else { desc };
+                        let desc = if desc.len() > 200 { format!("{}...", crate::truncate_str(&desc, 200)) } else { desc };
                         found = Some((content, desc));
                         break;
                     }

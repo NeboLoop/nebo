@@ -430,7 +430,7 @@ impl ShellTool {
             result.push_str("**Running Sessions:**\n");
             for s in &running {
                 let cmd_display = if s.command.len() > 50 {
-                    format!("{}...", &s.command[..50])
+                    format!("{}...", crate::truncate_str(&s.command, 50))
                 } else {
                     s.command.clone()
                 };
@@ -449,7 +449,7 @@ impl ShellTool {
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "?".to_string());
                 let cmd_display = if s.command.len() > 50 {
-                    format!("{}...", &s.command[..50])
+                    format!("{}...", crate::truncate_str(&s.command, 50))
                 } else {
                     s.command.clone()
                 };

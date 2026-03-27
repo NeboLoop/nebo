@@ -1291,7 +1291,7 @@ async fn run_loop(
                     // Acquire tool permit inside the future
                     let _permit = concurrency.acquire_tool_permit().await;
                     let input_str = tc.input.to_string();
-                    let input_log = if input_str.len() > 500 { &input_str[..500] } else { &input_str };
+                    let input_log = truncate_str(&input_str, 500);
                     info!(tool = %tc.name, id = %tc.id, input = %input_log, "executing tool");
                     let result = tokio::time::timeout(
                         TOOL_EXECUTION_TIMEOUT,
@@ -1306,7 +1306,7 @@ async fn run_loop(
                             TOOL_EXECUTION_TIMEOUT.as_secs()
                         )),
                     };
-                    let result_log = if result.content.len() > 300 { &result.content[..300] } else { &result.content };
+                    let result_log = truncate_str(&result.content, 300);
                     info!(tool = %tc.name, id = %tc.id, is_error = result.is_error, result = %result_log, "tool result");
                     (idx, tc, result)
                 });
@@ -1540,6 +1540,20 @@ async fn run_loop(
     }
 
     Ok(())
+}
+
+/// Truncate a string to at most `max_bytes` bytes without splitting a multi-byte
+/// UTF-8 character. Returns a `&str` that is always valid UTF-8.
+pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    // Walk backwards from max_bytes to find a char boundary
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// Detect if the assistant's response looks like a "should I continue?" pause
@@ -1798,7 +1812,7 @@ async fn detect_objective(
                 .filter(|m| m.role == "user" || m.role == "assistant")
                 .map(|m| {
                     let content = if m.content.len() > 200 {
-                        format!("{}...", &m.content[..200])
+                        format!("{}...", truncate_str(&m.content, 200))
                     } else {
                         m.content.clone()
                     };

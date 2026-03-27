@@ -135,7 +135,7 @@ impl FileTool {
             }
 
             let display_line = if line.len() > 2000 {
-                format!("{}...", &line[..2000])
+                format!("{}...", crate::truncate_str(&line, 2000))
             } else {
                 line
             };
