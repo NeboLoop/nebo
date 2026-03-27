@@ -916,6 +916,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 match codes::activate_neboloop(&reconnect_state).await {
                     Ok(()) => {
                         info!("neboloop: reconnected to gateway");
+                        // Persist rotated JWT so next reconnect uses the fresh token
+                        if let Some(new_token) = reconnect_state.comm_manager.take_rotated_token().await {
+                            if let Err(e) = reconnect_state.store.update_auth_profile_token_by_provider("neboloop", &new_token) {
+                                warn!("neboloop: failed to persist rotated token: {}", e);
+                            }
+                        }
                         backoff_secs = 30;
                     }
                     Err(_) => {

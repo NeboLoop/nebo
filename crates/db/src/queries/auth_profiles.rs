@@ -199,6 +199,22 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
+
+    /// Update only the api_key (token) for auth profiles matching a provider.
+    /// Used for NeboLoop JWT rotation — gateway rotates the token on each AUTH_OK.
+    pub fn update_auth_profile_token_by_provider(
+        &self,
+        provider: &str,
+        api_key: &str,
+    ) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE auth_profiles SET api_key = ?2, updated_at = unixepoch() WHERE provider = ?1",
+            params![provider, api_key],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 fn row_to_auth_profile(row: &rusqlite::Row) -> rusqlite::Result<AuthProfile> {

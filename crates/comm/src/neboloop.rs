@@ -259,6 +259,24 @@ impl CommPlugin for NeboLoopPlugin {
     }
 
     async fn connect(&self, config: HashMap<String, String>) -> Result<(), CommError> {
+        // Tear down existing connection first to avoid ghost connections.
+        // Without this, the old read/write loops keep running (the write loop
+        // continues sending pings even after its send channel closes), creating
+        // duplicate WebSocket connections to the gateway.
+        if self.is_connected() {
+            self.disconnect().await.ok();
+        } else {
+            // Even if is_connected() returns false, clean up any stale state
+            // (e.g., cancelled token, dead send channel) so the new connection
+            // starts fresh.
+            let mut inner = self.inner.write().await;
+            if let Some(cancel) = inner.cancel.take() {
+                cancel.cancel();
+            }
+            inner.send_tx = None;
+            inner.connected = false;
+        }
+
         let gateway = config
             .get("gateway")
             .ok_or_else(|| CommError::Other("gateway config required".into()))?
@@ -986,12 +1004,17 @@ async fn read_loop(
                     }
                 }
             }
-            _ = cancel.cancelled() => break,
+            _ = cancel.cancelled() => {
+                if let Some(ref dl) = devlog {
+                    dl.event("CANCELLED (token cancelled)");
+                }
+                break;
+            }
         }
     }
     // Signal disconnection so is_connected() returns false and reconnect watcher kicks in
     cancel.cancel();
-    debug!("neboloop read loop exited");
+    info!("neboloop read loop exited");
 }
 
 /// Write loop — sends queued frames and periodic pings.
@@ -1005,10 +1028,20 @@ async fn write_loop(
 
     loop {
         tokio::select! {
-            Some(data) = send_rx.recv() => {
-                if let Err(e) = write.send(WsMessage::Binary(data.into())).await {
-                    warn!(error = %e, "neboloop write error");
-                    break;
+            msg = send_rx.recv() => {
+                match msg {
+                    Some(data) => {
+                        if let Err(e) = write.send(WsMessage::Binary(data.into())).await {
+                            warn!(error = %e, "neboloop write error");
+                            break;
+                        }
+                    }
+                    None => {
+                        // Send channel closed (disconnect or replaced by new connect).
+                        // Exit cleanly so we don't keep pinging a ghost connection.
+                        debug!("neboloop send channel closed, exiting write loop");
+                        break;
+                    }
                 }
             }
             _ = ping_interval.tick() => {
