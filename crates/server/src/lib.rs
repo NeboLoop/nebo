@@ -506,6 +506,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Create shared role registry — multiple roles can be active concurrently, each with isolated persona
     let active_role_state: tools::RoleRegistry = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
+    // Create broadcaster closure for tools to emit WS events
+    let hub_for_tools = hub.clone();
+    let broadcaster: tools::web_tool::Broadcaster = Arc::new(move |event_type, payload| {
+        hub_for_tools.broadcast(event_type, payload);
+    });
+
     tool_registry
         .register_all_with_permissions(
             store.clone(),
@@ -520,6 +526,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             sandbox_manager,
             None, // comm_plugin — set later when NeboLoop connects
             Some(active_role_state.clone()),
+            Some(broadcaster),
         )
         .await;
 

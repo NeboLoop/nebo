@@ -184,6 +184,14 @@
 		"once": "Jednorazowo",
 		"always": "Zawsze"
 	},
+	"browserExtension": {
+		"title": "Wymagane rozszerzenie przeglądarki",
+		"notConnected": "Rozszerzenie przeglądarki Nebo nie jest zainstalowane lub nie działa.",
+		"reconnecting": "Rozszerzenie przeglądarki utraciło połączenie. Może wkrótce ponownie się połączyć.",
+		"instructions": "Zainstaluj rozszerzenie przeglądarki Nebo dla Chrome lub Brave, aby umożliwić przeglądanie internetu. Po instalacji upewnij się, że przeglądarka jest otwarta.",
+		"install": "Zainstaluj rozszerzenie",
+		"retry": "Ponów połączenie"
+	},
 	"commandPalette": {
 		"placeholder": "Szukaj stron, ustawień, umiejętności...",
 		"navigation": "Nawigacja",

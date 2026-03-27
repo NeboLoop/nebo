@@ -184,6 +184,14 @@
 		"once": "Once",
 		"always": "Always"
 	},
+	"browserExtension": {
+		"title": "Browser Extension Required",
+		"notConnected": "The Nebo browser extension is not installed or not running.",
+		"reconnecting": "The browser extension lost connection. It may reconnect shortly.",
+		"instructions": "Install the Nebo browser extension for Chrome or Brave to enable web browsing. After installing, make sure your browser is open.",
+		"install": "Install Extension",
+		"retry": "Retry Connection"
+	},
 	"commandPalette": {
 		"placeholder": "Search pages, settings, skills...",
 		"navigation": "Navigation",

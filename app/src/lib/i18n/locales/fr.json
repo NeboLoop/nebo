@@ -184,6 +184,14 @@
 		"once": "Une fois",
 		"always": "Toujours"
 	},
+	"browserExtension": {
+		"title": "Extension de navigateur requise",
+		"notConnected": "L'extension de navigateur Nebo n'est pas installée ou n'est pas en cours d'exécution.",
+		"reconnecting": "L'extension du navigateur a perdu la connexion. Elle pourrait se reconnecter sous peu.",
+		"instructions": "Installez l'extension de navigateur Nebo pour Chrome ou Brave pour activer la navigation web. Après l'installation, assurez-vous que votre navigateur est ouvert.",
+		"install": "Installer l'extension",
+		"retry": "Réessayer la connexion"
+	},
 	"commandPalette": {
 		"placeholder": "Rechercher des pages, paramètres, skills...",
 		"navigation": "Navigation",

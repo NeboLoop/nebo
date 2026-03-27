@@ -184,6 +184,14 @@
 		"once": "Bir kez",
 		"always": "Her zaman"
 	},
+	"browserExtension": {
+		"title": "Tarayıcı Eklentisi Gerekli",
+		"notConnected": "Nebo tarayıcı eklentisi yüklü değil veya çalışmıyor.",
+		"reconnecting": "Tarayıcı eklentisinin bağlantısı kesildi. Kısa süre içinde yeniden bağlanabilir.",
+		"instructions": "Web taramayı etkinleştirmek için Chrome veya Brave için Nebo tarayıcı eklentisini yükleyin. Yükledikten sonra tarayıcınızın açık olduğundan emin olun.",
+		"install": "Eklentiyi Yükle",
+		"retry": "Bağlantıyı Yeniden Dene"
+	},
 	"commandPalette": {
 		"placeholder": "Sayfa, ayar, beceri ara...",
 		"navigation": "Gezinti",

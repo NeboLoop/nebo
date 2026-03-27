@@ -4,11 +4,15 @@ use crate::domain::DomainInput;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ResourceKind, ToolResult};
 
+/// Callback type for broadcasting events to connected WebSocket clients.
+pub type Broadcaster = Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 /// WebTool consolidates web operations: HTTP fetch, search, and browser automation.
 pub struct WebTool {
     client: reqwest::Client,
     browser: Option<Arc<browser::Manager>>,
     store: Option<Arc<db::Store>>,
+    broadcaster: Option<Broadcaster>,
 }
 
 impl WebTool {
@@ -23,6 +27,7 @@ impl WebTool {
             client,
             browser: None,
             store: None,
+            broadcaster: None,
         }
     }
 
@@ -33,6 +38,11 @@ impl WebTool {
 
     pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    pub fn with_broadcaster(mut self, broadcaster: Broadcaster) -> Self {
+        self.broadcaster = Some(broadcaster);
         self
     }
 
@@ -303,7 +313,16 @@ impl WebTool {
         }
     }
 
-    async fn handle_browser(&self, input: &serde_json::Value) -> ToolResult {
+    fn broadcast_extension_disconnected(&self, reason: &str, session_id: &str) {
+        if let Some(ref broadcast) = self.broadcaster {
+            broadcast("browser_extension_disconnected", serde_json::json!({
+                "reason": reason,
+                "session_id": session_id,
+            }));
+        }
+    }
+
+    async fn handle_browser(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
         let action = input
             .get("action")
             .and_then(|v| v.as_str())
@@ -344,11 +363,13 @@ impl WebTool {
             let grace = std::time::Duration::from_secs(3);
             if executor.was_recently_connected(grace).await {
                 if !executor.wait_for_connection(grace).await {
+                    self.broadcast_extension_disconnected("reconnecting", session_id);
                     return ToolResult::error(
                         "Browser extension reconnecting — try again in a moment."
                     );
                 }
             } else {
+                self.broadcast_extension_disconnected("not_connected", session_id);
                 return ToolResult::error(
                     "Browser extension not connected. Install the Nebo Chrome/Brave extension \
                      and make sure Nebo is running."
@@ -360,7 +381,7 @@ impl WebTool {
     }
 
     /// Handle devtools actions via the Chrome extension (CDP bridge).
-    async fn handle_devtools(&self, input: &serde_json::Value) -> ToolResult {
+    async fn handle_devtools(&self, input: &serde_json::Value, session_id: &str) -> ToolResult {
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
         let manager = match &self.browser {
@@ -380,6 +401,7 @@ impl WebTool {
         };
 
         if !executor.is_connected() {
+            self.broadcast_extension_disconnected("not_connected", session_id);
             return ToolResult::error("Browser extension not connected.");
         }
 
@@ -683,7 +705,7 @@ impl DynTool for WebTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -704,11 +726,12 @@ impl DynTool for WebTool {
                 );
             }
 
+            let session_id = &ctx.session_id;
             match resource.as_str() {
                 "http" => self.handle_http(&input).await,
                 "search" => self.handle_search(&input).await,
-                "browser" => self.handle_browser(&input).await,
-                "devtools" => self.handle_devtools(&input).await,
+                "browser" => self.handle_browser(&input, session_id).await,
+                "devtools" => self.handle_devtools(&input, session_id).await,
                 other => ToolResult::error(format!(
                     "Resource {:?} not available. Available: http, search, browser, devtools",
                     other

@@ -24,6 +24,7 @@
 	import type { ChannelMessage, GetChannelMessagesResponse } from '$lib/api/neboComponents';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ApprovalModal from '$lib/components/ui/ApprovalModal.svelte';
+	import BrowserExtensionModal from '$lib/components/ui/BrowserExtensionModal.svelte';
 	import Toast from '$lib/components/ui/Toast.svelte';
 	import { generateUUID } from '$lib/utils';
 	import { VoiceSession, type VoiceState as DuplexVoiceState } from '$lib/voice/VoiceSession';
@@ -349,6 +350,12 @@
 	let warningToast = $state(false);
 	let warningMessage = $state('');
 
+	// Browser extension modal state
+	let showBrowserExtModal = $state(false);
+	let browserExtReason = $state<'not_connected' | 'reconnecting'>('not_connected');
+	let lastBrowserExtModalTime = 0;
+	const BROWSER_EXT_MODAL_COOLDOWN = 30_000;
+
 	const suggestionKeys = [
 		'chat.suggestion1',
 		'chat.suggestion2',
@@ -470,6 +477,14 @@
 							addSystemMessage('Compaction failed: ' + (data?.error || 'unknown error'));
 						}
 					}
+				}),
+				client.on('browser_extension_disconnected', (data: Record<string, unknown>) => {
+					if (chatId && data?.session_id !== chatId) return;
+					const now = Date.now();
+					if (now - lastBrowserExtModalTime < BROWSER_EXT_MODAL_COOLDOWN) return;
+					lastBrowserExtModalTime = now;
+					browserExtReason = data?.reason === 'reconnecting' ? 'reconnecting' : 'not_connected';
+					showBrowserExtModal = true;
 				})
 			);
 
@@ -2616,6 +2631,13 @@
 	onApprove={handleApprove}
 	onApproveAlways={handleApproveAlways}
 	onDeny={handleDeny}
+/>
+
+<BrowserExtensionModal
+	bind:show={showBrowserExtModal}
+	reason={browserExtReason}
+	onRetry={() => { showBrowserExtModal = false; }}
+	onDismiss={() => { showBrowserExtModal = false; }}
 />
 
 {#if showModelDownload}

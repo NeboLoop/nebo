@@ -184,6 +184,14 @@
 		"once": "Eenmalig",
 		"always": "Altijd"
 	},
+	"browserExtension": {
+		"title": "Browserextensie vereist",
+		"notConnected": "De Nebo-browserextensie is niet geïnstalleerd of niet actief.",
+		"reconnecting": "De browserextensie heeft de verbinding verloren. Mogelijk wordt er binnenkort opnieuw verbonden.",
+		"instructions": "Installeer de Nebo-browserextensie voor Chrome of Brave om webbrowsen mogelijk te maken. Zorg er na installatie voor dat uw browser geopend is.",
+		"install": "Extensie installeren",
+		"retry": "Verbinding opnieuw proberen"
+	},
 	"commandPalette": {
 		"placeholder": "Zoek pagina's, instellingen, skills...",
 		"navigation": "Navigatie",

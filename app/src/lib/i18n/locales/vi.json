@@ -184,6 +184,14 @@
 		"once": "Một lần",
 		"always": "Luôn luôn"
 	},
+	"browserExtension": {
+		"title": "Cần tiện ích mở rộng trình duyệt",
+		"notConnected": "Tiện ích mở rộng trình duyệt Nebo chưa được cài đặt hoặc không hoạt động.",
+		"reconnecting": "Tiện ích mở rộng trình duyệt bị mất kết nối. Nó có thể kết nối lại trong giây lát.",
+		"instructions": "Cài đặt tiện ích mở rộng trình duyệt Nebo cho Chrome hoặc Brave để bật tính năng duyệt web. Sau khi cài đặt, hãy đảm bảo trình duyệt của bạn đang mở.",
+		"install": "Cài đặt tiện ích",
+		"retry": "Thử kết nối lại"
+	},
 	"commandPalette": {
 		"placeholder": "Tìm trang, cài đặt, kỹ năng...",
 		"navigation": "Điều hướng",

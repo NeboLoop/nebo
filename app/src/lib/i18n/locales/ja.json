@@ -184,6 +184,14 @@
 		"once": "今回のみ",
 		"always": "常に許可"
 	},
+	"browserExtension": {
+		"title": "ブラウザ拡張機能が必要です",
+		"notConnected": "Neboブラウザ拡張機能がインストールされていないか、実行されていません。",
+		"reconnecting": "ブラウザ拡張機能の接続が切断されました。まもなく再接続される可能性があります。",
+		"instructions": "ウェブブラウジングを有効にするには、ChromeまたはBrave用のNeboブラウザ拡張機能をインストールしてください。インストール後、ブラウザが開いていることを確認してください。",
+		"install": "拡張機能をインストール",
+		"retry": "接続を再試行"
+	},
 	"commandPalette": {
 		"placeholder": "ページ、設定、スキルを検索...",
 		"navigation": "ナビゲーション",

@@ -184,6 +184,14 @@
 		"once": "Einmal",
 		"always": "Immer"
 	},
+	"browserExtension": {
+		"title": "Browser-Erweiterung erforderlich",
+		"notConnected": "Die Nebo-Browser-Erweiterung ist nicht installiert oder nicht aktiv.",
+		"reconnecting": "Die Browser-Erweiterung hat die Verbindung verloren. Sie wird möglicherweise in Kürze wieder verbunden.",
+		"instructions": "Installieren Sie die Nebo-Browser-Erweiterung für Chrome oder Brave, um das Surfen im Web zu ermöglichen. Stellen Sie nach der Installation sicher, dass Ihr Browser geöffnet ist.",
+		"install": "Erweiterung installieren",
+		"retry": "Verbindung erneut versuchen"
+	},
 	"commandPalette": {
 		"placeholder": "Seiten, Einstellungen, Skills durchsuchen...",
 		"navigation": "Navigation",

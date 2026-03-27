@@ -390,6 +390,7 @@ impl Registry {
             None, // sandbox_manager
             None, // comm_plugin
             None, // active_role
+            None, // broadcaster
         )
         .await;
     }
@@ -411,6 +412,7 @@ impl Registry {
         sandbox_manager: Option<Arc<sandbox_runtime::SandboxManager>>,
         comm_plugin: Option<Arc<dyn comm::CommPlugin>>,
         active_role: Option<crate::role_tool::ActiveRoleState>,
+        broadcaster: Option<crate::web_tool::Broadcaster>,
     ) {
         let allowed = |category: &str| -> bool {
             match permissions {
@@ -429,6 +431,9 @@ impl Registry {
             let mut web_tool = crate::web_tool::WebTool::new().with_store(store.clone());
             if let Some(mgr) = browser_manager {
                 web_tool = web_tool.with_browser(mgr);
+            }
+            if let Some(ref bc) = broadcaster {
+                web_tool = web_tool.with_broadcaster(bc.clone());
             }
             self.register(Box::new(web_tool)).await;
         }

@@ -184,6 +184,14 @@
 		"once": "僅此一次",
 		"always": "永遠允許"
 	},
+	"browserExtension": {
+		"title": "需要瀏覽器擴充功能",
+		"notConnected": "Nebo 瀏覽器擴充功能未安裝或未執行。",
+		"reconnecting": "瀏覽器擴充功能連線已中斷。可能很快會重新連線。",
+		"instructions": "安裝適用於 Chrome 或 Brave 的 Nebo 瀏覽器擴充功能以啟用網頁瀏覽。安裝後，請確保您的瀏覽器已開啟。",
+		"install": "安裝擴充功能",
+		"retry": "重試連線"
+	},
 	"commandPalette": {
 		"placeholder": "搜尋頁面、設定、技能...",
 		"navigation": "導覽",
