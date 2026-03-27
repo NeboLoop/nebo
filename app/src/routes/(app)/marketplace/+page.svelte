@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import {
 		Code,
 		Sparkles
@@ -44,24 +45,24 @@
 	<!-- Hero -->
 	<div class="px-6 pt-8 pb-2">
 		<h2 class="font-display text-3xl sm:text-4xl font-black leading-tight">
-			Marketplace
+			{$t('marketplace.title')}
 		</h2>
 		<p class="text-base text-base-content/90 mt-2 max-w-xl">
-			Roles, skills, and tools for your desktop AI companion.
+			{$t('marketplace.subtitle')}
 		</p>
 	</div>
 
 	<!-- Featured Skills -->
-	<SectionEditorial title="Featured Skills" items={featuredSkills} />
+	<SectionEditorial title={$t('marketplace.featuredSkills')} items={featuredSkills} />
 
 	<!-- Roles — LargeCard grid -->
 	<div class="pt-8 pb-2">
 		<div class="flex items-baseline justify-between px-6 mb-4">
 			<div>
-				<h3 class="font-display text-xl font-bold">Roles</h3>
-				<p class="text-sm text-base-content/60 mt-0.5">Job profiles that put Nebo to work</p>
+				<h3 class="font-display text-xl font-bold">{$t('marketplace.roles')}</h3>
+				<p class="text-sm text-base-content/60 mt-0.5">{$t('marketplace.rolesDesc')}</p>
 			</div>
-			<a href="/marketplace/roles" class="text-base text-primary font-medium">Browse All</a>
+			<a href="/marketplace/roles" class="text-base text-primary font-medium">{$t('marketplace.browseAll')}</a>
 		</div>
 		{#if loading}
 			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 px-6">
@@ -80,17 +81,17 @@
 		{:else}
 			<div class="flex flex-col items-center justify-center py-12 text-center px-6">
 				<Sparkles class="w-8 h-8 text-base-content/40 mb-2" />
-				<p class="text-base text-base-content/80">No roles available yet</p>
+				<p class="text-base text-base-content/80">{$t('marketplace.noRoles')}</p>
 			</div>
 		{/if}
 	</div>
 
 	<!-- Skills -->
-	<SectionListGrid title="Skills" seeAllHref="/marketplace/skills" items={skillItems} />
+	<SectionListGrid title={$t('marketplace.skills')} seeAllHref="/marketplace/skills" items={skillItems} />
 	{#if !loading && skillItems.length === 0}
 		<div class="flex flex-col items-center justify-center py-12 text-center px-6">
 			<Sparkles class="w-8 h-8 text-base-content/40 mb-2" />
-			<p class="text-base text-base-content/80">No skills available yet</p>
+			<p class="text-base text-base-content/80">{$t('marketplace.skillsPage.noSkills')}</p>
 		</div>
 	{/if}
 
@@ -102,9 +103,9 @@
 			>
 				<Code class="w-7 h-7 text-primary" />
 			</div>
-			<h3 class="font-display text-2xl font-bold">Build for Nebo</h3>
+			<h3 class="font-display text-2xl font-bold">{$t('marketplace.buildForNebo')}</h3>
 			<p class="text-base text-base-content/80 mt-2 max-w-md mx-auto">
-				Create roles and skills. Publish to the marketplace.
+				{$t('marketplace.buildDesc')}
 			</p>
 		</div>
 	</div>

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import { getAgentProfile, updateAgentProfile } from '$lib/api/nebo';
@@ -48,12 +49,12 @@
 				vibe,
 				avatar
 			});
-			saveMessage = 'Identity saved';
+			saveMessage = $t('settingsIdentity.identitySaved');
 			saveError = false;
 			setTimeout(() => (saveMessage = ''), 3000);
 		} catch (error) {
 			console.error('Failed to save identity:', error);
-			saveMessage = 'Failed to save';
+			saveMessage = $t('settingsIdentity.saveFailed');
 			saveError = true;
 		} finally {
 			isSaving = false;
@@ -66,7 +67,7 @@
 		if (!file) return;
 
 		if (file.size > 512 * 1024) {
-			saveMessage = 'Avatar too large (max 512KB)';
+			saveMessage = $t('settingsIdentity.avatarTooLarge');
 			saveError = true;
 			setTimeout(() => (saveMessage = ''), 4000);
 			return;
@@ -90,14 +91,14 @@
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">Identity</h2>
-	<p class="text-base text-base-content/80">Your agent's name, avatar, and persona</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsIdentity.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsIdentity.description')}</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading identity...</span>
+		<span class="text-base text-base-content/80">{$t('settingsIdentity.loadingIdentity')}</span>
 	</div>
 {:else}
 	<form
@@ -109,7 +110,7 @@
 	>
 		<!-- Avatar -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Avatar</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsIdentity.avatar')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="flex items-start gap-5">
 					<label class="identity-avatar-trigger w-20 h-20 rounded-2xl bg-base-content/5 flex items-center justify-center overflow-hidden shrink-0 border border-base-content/10 cursor-pointer relative group">
@@ -119,7 +120,7 @@
 							<NeboIcon class="w-14 h-14" />
 						{/if}
 						<div class="identity-avatar-overlay absolute inset-0 rounded-2xl bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-							<span class="text-white text-base font-medium">Change</span>
+							<span class="text-white text-base font-medium">{$t('settingsIdentity.change')}</span>
 						</div>
 						<input
 							type="file"
@@ -145,41 +146,41 @@
 				{#if avatar}
 					<div class="flex justify-start mt-3">
 						<button type="button" class="text-base text-base-content/80 hover:text-error transition-colors" onclick={clearAvatar}>
-							Remove custom avatar
+							{$t('settingsIdentity.removeAvatar')}
 						</button>
 					</div>
 				{:else}
-					<p class="text-base text-base-content/80 mt-3">Click the avatar to upload a custom image</p>
+					<p class="text-base text-base-content/80 mt-3">{$t('settingsIdentity.uploadHint')}</p>
 				{/if}
 			</div>
 		</section>
 
 		<!-- Identity -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Identity</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsIdentity.title')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
 				<div class="grid sm:grid-cols-2 gap-4">
 					<div>
 						<label class="text-base font-medium text-base-content/80" for="agent-name">
-							What should your agent be called?
+							{$t('settingsIdentity.nameLabel')}
 						</label>
 						<input
 							id="agent-name"
 							type="text"
 							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-							placeholder="Nebo"
+							placeholder={$t('settingsIdentity.namePlaceholder')}
 							bind:value={agentName}
 						/>
 					</div>
 					<div>
 						<label class="text-base font-medium text-base-content/80" for="agent-emoji">
-							Emoji
+							{$t('settingsIdentity.emojiLabel')}
 						</label>
 						<input
 							id="agent-emoji"
 							type="text"
 							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-							placeholder="Used in chat bubbles and notifications"
+							placeholder={$t('settingsIdentity.emojiPlaceholder')}
 							bind:value={emoji}
 						/>
 					</div>
@@ -187,13 +188,13 @@
 
 				<div>
 					<label class="text-base font-medium text-base-content/80" for="agent-role">
-						What's your relationship dynamic?
+						{$t('settingsIdentity.relationshipLabel')}
 					</label>
 					<input
 						id="agent-role"
 						type="text"
 						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-						placeholder="Friend, Mentor, Coach, COO..."
+						placeholder={$t('settingsIdentity.relationshipPlaceholder')}
 						bind:value={role}
 					/>
 				</div>
@@ -202,30 +203,30 @@
 
 		<!-- Persona -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Persona</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsIdentity.persona')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
 				<div>
 					<label class="text-base font-medium text-base-content/80" for="agent-creature">
-						What archetype does it embody?
+						{$t('settingsIdentity.archetypeLabel')}
 					</label>
 					<input
 						id="agent-creature"
 						type="text"
 						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-						placeholder="Helpful sidekick, Sarcastic librarian, Rogue diplomat..."
+						placeholder={$t('settingsIdentity.archetypePlaceholder')}
 						bind:value={creature}
 					/>
 				</div>
 
 				<div>
 					<label class="text-base font-medium text-base-content/80" for="agent-vibe">
-						What's the vibe?
+						{$t('settingsIdentity.vibeLabel')}
 					</label>
 					<textarea
 						id="agent-vibe"
 						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none"
 						rows="2"
-						placeholder="chill but opinionated, dry humor"
+						placeholder={$t('settingsIdentity.vibePlaceholder')}
 						bind:value={vibe}
 					></textarea>
 				</div>
@@ -234,7 +235,7 @@
 
 		<!-- Save -->
 		{#if saveMessage}
-			<Alert type={saveError ? 'error' : 'success'} title={saveError ? 'Error' : 'Saved'}>
+			<Alert type={saveError ? 'error' : 'success'} title={saveError ? $t('common.error') : $t('common.saved')}>
 				{saveMessage}
 			</Alert>
 		{/if}
@@ -247,9 +248,9 @@
 			>
 				{#if isSaving}
 					<Spinner size={16} />
-					Saving...
+					{$t('common.saving')}
 				{:else}
-					Save Identity
+					{$t('settingsIdentity.saveIdentity')}
 				{/if}
 			</button>
 		</div>

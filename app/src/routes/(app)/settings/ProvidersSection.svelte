@@ -7,6 +7,7 @@
 	import Toggle from '$lib/components/ui/Toggle.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import { t } from 'svelte-i18n';
 
 	let isLoading = $state(true);
 	let providers = $state<components.AuthProfile[]>([]);
@@ -163,7 +164,7 @@
 			await api.updateAuthProfile({ metadata: { janus_provider: enabled ? 'true' : 'false' } }, janusStatus.profileId);
 			await loadJanusStatus();
 		} catch (err: any) {
-			error = err?.message || 'Failed to toggle provider';
+			error = err?.message || $t('settingsProviders.toggleFailed');
 		} finally {
 			isTogglingJanus = false;
 		}
@@ -176,7 +177,7 @@
 			const response = await api.listAuthProfiles();
 			providers = response.profiles || [];
 		} catch (err: any) {
-			error = err?.message || 'Failed to load providers';
+			error = err?.message || $t('settingsProviders.loadFailed');
 		} finally {
 			isLoading = false;
 		}
@@ -213,7 +214,7 @@
 			await api.updateAuthProfile({ isActive: newActive }, provider.id);
 		} catch (err: any) {
 			provider.isActive = !newActive;
-			error = err?.message || 'Failed to update provider';
+			error = err?.message || $t('settingsProviders.toggleFailed');
 		}
 	}
 
@@ -235,7 +236,7 @@
 			}
 		} catch (err: any) {
 			model.isActive = !newActive;
-			error = err?.message || 'Failed to update model';
+			error = err?.message || $t('settingsProviders.updateFailed');
 		}
 	}
 
@@ -246,27 +247,27 @@
 			await api.updateCLIProvider({ active: newActive }, cli.id);
 		} catch (err: any) {
 			cli.active = !newActive;
-			error = err?.message || 'Failed to update CLI provider';
+			error = err?.message || $t('settingsProviders.cliUpdateFailed');
 		}
 	}
 
 	async function deleteProvider(id: string) {
-		if (!confirm('Are you sure you want to delete this provider?')) return;
+		if (!confirm($t('settingsProviders.deleteConfirm'))) return;
 		try {
 			await api.deleteAuthProfile(id);
 			await loadProviders();
 		} catch (err: any) {
-			error = err?.message || 'Failed to delete provider';
+			error = err?.message || $t('settingsProviders.deleteFailed');
 		}
 	}
 
 	async function addProvider() {
 		if (!newProvider.name) {
-			addError = 'Name is required';
+			addError = $t('settingsProviders.nameRequired');
 			return;
 		}
 		if (!isLocalProvider && !newProvider.apiKey) {
-			addError = 'API key is required';
+			addError = $t('settingsProviders.apiKeyRequired');
 			return;
 		}
 
@@ -283,7 +284,7 @@
 			await loadModels();
 			closeAddModal();
 		} catch (err: any) {
-			addError = err?.message || 'Failed to add provider';
+			addError = err?.message || $t('settingsProviders.addFailed');
 		} finally {
 			isAdding = false;
 		}
@@ -291,28 +292,28 @@
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">Providers</h2>
-	<p class="text-base text-base-content/80">AI model providers and API keys</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsProviders.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsProviders.description')}</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading providers...</span>
+		<span class="text-base text-base-content/80">{$t('settingsProviders.loadingProviders')}</span>
 	</div>
 {:else}
 	<div class="space-y-6">
 		{#if error}
-			<Alert type="error" title="Error">{error}</Alert>
+			<Alert type="error" title={$t('common.error')}>{error}</Alert>
 		{/if}
 
 		<!-- NeboLoop AI — Primary Provider -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">NeboLoop AI</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsProviders.neboloopAI')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				{#if janusStatus?.connected}
 					<!-- Provider header — same as Anthropic/DeepSeek -->
-					<p class="text-base font-medium text-base-content">NeboLoop AI</p>
+					<p class="text-base font-medium text-base-content">{$t('settingsProviders.neboloopAI')}</p>
 
 					<!-- Usage -->
 					{#if janusStatus.janusProvider && janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
@@ -320,7 +321,7 @@
 							{#if janusUsage.session.limitTokens > 0}
 								<div>
 									<div class="flex justify-between text-base text-base-content/80 mb-1">
-										<span>Session</span>
+										<span>{$t('settingsProviders.session')}</span>
 										<span>{janusUsage.session.percentUsed}% used{#if janusUsage.session.resetAt}{@const reset = new Date(janusUsage.session.resetAt)}{@const now = new Date()}{@const diffMs = reset.getTime() - now.getTime()}{@const diffH = Math.floor(diffMs / 3600000)}{@const diffM = Math.floor((diffMs % 3600000) / 60000)} &middot; resets in {diffH}h {diffM}m{/if}</span>
 									</div>
 									<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
@@ -334,7 +335,7 @@
 							{#if janusUsage.weekly.limitTokens > 0}
 								<div>
 									<div class="flex justify-between text-base text-base-content/80 mb-1">
-										<span>Weekly</span>
+										<span>{$t('settingsProviders.weekly')}</span>
 										<span>{janusUsage.weekly.percentUsed}% used{#if janusUsage.weekly.resetAt} &middot; resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}{/if}</span>
 									</div>
 									<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
@@ -355,7 +356,7 @@
 								<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5">
 									<p class="text-base text-base-content">{janusDisplayName(model)}</p>
 									<div class="flex items-center gap-3">
-										<span class="text-base text-base-content/80 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+										<span class="text-base text-base-content/80 tabular-nums">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow?.toLocaleString() || '?' } })}</span>
 										<Toggle
 											checked={model.isActive}
 											onchange={() => toggleModel('janus', model)}
@@ -370,11 +371,11 @@
 					<!-- Not connected -->
 					<div class="flex items-center justify-between">
 						<div>
-							<p class="text-base font-medium text-base-content">Not connected</p>
-							<p class="text-base text-base-content/80">Connect your NeboLoop account to use AI models</p>
+							<p class="text-base font-medium text-base-content">{$t('settingsProviders.notConnected')}</p>
+							<p class="text-base text-base-content/80">{$t('settingsProviders.connectDescription')}</p>
 						</div>
 						<a href="/settings/account" class="text-base font-medium text-primary hover:brightness-110 transition-all">
-							Connect
+							{$t('oauth.connect')}
 						</a>
 					</div>
 				{/if}
@@ -384,7 +385,7 @@
 		<!-- CLI Providers -->
 		{#if cliProviders.length > 0}
 			<section>
-				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">CLI Providers</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsProviders.cliProviders')}</h3>
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="space-y-2">
 						{#each cliProviders as cli (cli.id)}
@@ -408,13 +409,13 @@
 		{#if localProvs.length > 0}
 			<section>
 				<div class="flex items-center justify-between mb-3">
-					<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Local Models</h3>
+					<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">{$t('settingsProviders.localModels')}</h3>
 					<button
 						type="button"
 						class="flex items-center gap-1.5 text-sm font-medium text-base-content/60 hover:text-primary transition-colors"
 						onclick={async () => { await loadModels(); }}
 					>
-						<RefreshCw class="w-3.5 h-3.5" /> Discover
+						<RefreshCw class="w-3.5 h-3.5" /> {$t('settingsProviders.discover')}
 					</button>
 				</div>
 				{#each localProvs as prov (prov.type)}
@@ -428,9 +429,9 @@
 							<p class="text-base font-medium text-base-content">{prov.label}</p>
 						</div>
 						{#if prov.configured}
-							<p class="text-sm text-base-content/50 ml-5 mb-3">{prov.models.length} model{prov.models.length !== 1 ? 's' : ''} detected — no API key needed</p>
+							<p class="text-sm text-base-content/50 ml-5 mb-3">{$t('settingsProviders.modelsDetected', { values: { count: prov.models.length } })}</p>
 						{:else}
-							<p class="text-sm text-base-content/50 ml-5 mb-3">Not detected. Install Ollama and pull a model to get started.</p>
+							<p class="text-sm text-base-content/50 ml-5 mb-3">{$t('settingsProviders.ollamaNotDetected')}</p>
 						{/if}
 						{#if prov.models.length > 0}
 							<div class="space-y-1.5">
@@ -438,7 +439,7 @@
 									<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5">
 										<p class="text-base text-base-content">{model.displayName}</p>
 										<div class="flex items-center gap-3">
-											<span class="text-sm text-base-content/60 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+											<span class="text-sm text-base-content/60 tabular-nums">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow?.toLocaleString() || '?' } })}</span>
 											<Toggle
 												checked={model.isActive}
 												onchange={() => toggleModel(prov.type, model)}
@@ -456,13 +457,13 @@
 		<!-- API Key Providers -->
 		<section>
 			<div class="flex items-center justify-between mb-3">
-				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">API Keys</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">{$t('settingsProviders.apiKeys')}</h3>
 				<button
 					type="button"
 					class="flex items-center gap-1.5 text-sm font-medium text-base-content/60 hover:text-primary transition-colors"
 					onclick={() => openAddModal()}
 				>
-					<Plus class="w-4 h-4" /> Add provider
+					<Plus class="w-4 h-4" /> {$t('settingsProviders.addProvider')}
 				</button>
 			</div>
 
@@ -496,7 +497,7 @@
 										onclick={() => testProvider(prov.profile!.id)}
 										disabled={testingId === prov.profile.id}
 									>
-										{#if testingId === prov.profile.id}<Spinner size={14} />{:else}Test{/if}
+										{#if testingId === prov.profile.id}<Spinner size={14} />{:else}{$t('settingsProviders.test')}{/if}
 									</button>
 									<Toggle checked={prov.profile.isActive} onchange={() => toggleProvider(prov.profile!)} />
 									<button
@@ -512,7 +513,7 @@
 										class="text-sm font-medium text-base-content/60 hover:text-primary transition-colors"
 										onclick={() => openAddModal(prov.type)}
 									>
-										Add key
+										{$t('settingsProviders.addKey')}
 									</button>
 								{/if}
 							</div>
@@ -525,7 +526,7 @@
 									<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5 {!prov.configured ? 'opacity-50' : ''}">
 										<p class="text-base text-base-content">{model.displayName}</p>
 										<div class="flex items-center gap-3">
-											<span class="text-sm text-base-content/60 tabular-nums">{model.contextWindow?.toLocaleString() || '?'} ctx</span>
+											<span class="text-sm text-base-content/60 tabular-nums">{$t('settingsProviders.contextWindow', { values: { count: model.contextWindow?.toLocaleString() || '?' } })}</span>
 											<Toggle
 												checked={prov.configured ? model.isActive : false}
 												disabled={!prov.configured}
@@ -551,15 +552,15 @@
 		<div class="nebo-modal-card max-w-lg">
 			<!-- Header -->
 			<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-				<h3 class="font-display text-lg font-bold">Add Provider</h3>
-				<button type="button" onclick={closeAddModal} class="nebo-modal-close" aria-label="Close">
+				<h3 class="font-display text-lg font-bold">{$t('settingsProviders.addProviderModal')}</h3>
+				<button type="button" onclick={closeAddModal} class="nebo-modal-close" aria-label={$t('common.close')}>
 					<X class="w-5 h-5 text-base-content/90" />
 				</button>
 			</div>
 			<!-- Body -->
 			<div class="px-5 py-5 space-y-4">
 				<div>
-					<label class="text-base font-medium text-base-content/80" for="provider-type">Provider type</label>
+					<label class="text-base font-medium text-base-content/80" for="provider-type">{$t('settingsProviders.providerType')}</label>
 					<select id="provider-type" bind:value={newProvider.provider} class="select w-full mt-1">
 						{#each providerOptions as opt}
 							<option value={opt.value}>{opt.label}</option>
@@ -567,24 +568,24 @@
 					</select>
 				</div>
 				<div>
-					<label class="text-base font-medium text-base-content/80" for="provider-name">Name</label>
-					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder={isLocalProvider ? 'My Ollama' : 'My Anthropic Key'} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
+					<label class="text-base font-medium text-base-content/80" for="provider-name">{$t('settingsProviders.nameLabel')}</label>
+					<input id="provider-name" type="text" bind:value={newProvider.name} placeholder={$t('settingsProviders.namePlaceholder')} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
 				</div>
 				{#if !isLocalProvider}
 					<div>
-						<label class="text-base font-medium text-base-content/80" for="api-key">API key</label>
-						<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder="sk-..." class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
+						<label class="text-base font-medium text-base-content/80" for="api-key">{$t('settingsProviders.apiKeyLabel')}</label>
+						<input id="api-key" type="password" bind:value={newProvider.apiKey} placeholder={$t('settingsProviders.apiKeyPlaceholder')} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
 					</div>
 				{/if}
 				{#if isLocalProvider}
 					<div>
-						<label class="text-base font-medium text-base-content/80" for="base-url">Base URL <span class="font-normal text-base-content/50">optional</span></label>
-						<input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder="http://localhost:11434" class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
-						<p class="text-sm text-base-content/50 mt-1">Leave blank for the default Ollama address. No API key needed.</p>
+						<label class="text-base font-medium text-base-content/80" for="base-url">{$t('settingsProviders.baseUrlLabel')} <span class="font-normal text-base-content/50">{$t('common.optional')}</span></label>
+						<input id="base-url" type="text" bind:value={newProvider.baseUrl} placeholder={$t('settingsProviders.baseUrlPlaceholder')} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors" />
+						<p class="text-sm text-base-content/50 mt-1">{$t('settingsProviders.ollamaHint')}</p>
 					</div>
 				{/if}
 				{#if addError}
-					<Alert type="error" title="Error">{addError}</Alert>
+					<Alert type="error" title={$t('common.error')}>{addError}</Alert>
 				{/if}
 			</div>
 			<!-- Footer -->
@@ -594,7 +595,7 @@
 					class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 					onclick={closeAddModal}
 				>
-					Cancel
+					{$t('common.cancel')}
 				</button>
 				<button
 					type="button"
@@ -602,7 +603,7 @@
 					onclick={addProvider}
 					disabled={isAdding}
 				>
-					{#if isAdding}<Spinner size={16} /> Adding...{:else}Add Provider{/if}
+					{#if isAdding}<Spinner size={16} /> {$t('settingsProviders.adding')}{:else}{$t('settingsProviders.addProviderModal')}{/if}
 				</button>
 			</div>
 		</div>

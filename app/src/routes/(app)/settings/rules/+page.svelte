@@ -5,6 +5,7 @@
 	import { generateUUID } from '$lib/utils';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import RuleSection from '$lib/components/settings/RuleSection.svelte';
+	import { t } from 'svelte-i18n';
 
 	interface RuleItem {
 		id: string;
@@ -205,30 +206,30 @@
 	<div class="shrink-0 mb-4">
 		<div class="flex items-center justify-between mb-2">
 			<div>
-				<h2 class="font-display text-xl font-bold text-base-content mb-1">Rules</h2>
-				<p class="text-base text-base-content/80">Define how your agent should behave</p>
+				<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsRules.title')}</h2>
+				<p class="text-base text-base-content/80">{$t('settingsRules.description')}</p>
 			</div>
 			<div class="flex items-center gap-3">
 				{#if saveStatus === 'saving'}
 					<span class="flex items-center gap-1.5 text-base text-base-content/80">
 						<Spinner size={12} />
-						Saving...
+						{$t('common.saving')}
 					</span>
 				{:else if saveStatus === 'saved'}
 					<span class="flex items-center gap-1.5 text-base text-success">
 						<Check class="w-3.5 h-3.5" />
-						Saved
+						{$t('common.saved')}
 					</span>
 				{:else if saveStatus === 'error'}
 					<span class="flex items-center gap-1.5 text-base text-error">
 						<AlertCircle class="w-3.5 h-3.5" />
-						Failed to save
+						{$t('settingsRules.failedToSave')}
 					</span>
 				{/if}
 				<button
 					type="button"
 					class="p-1.5 rounded-lg text-base-content/90 hover:text-base-content/90 hover:bg-base-content/5 transition-colors"
-					title="Reset to defaults"
+					title={$t('settingsRules.resetToDefaults')}
 					onclick={handleReset}
 				>
 					<RotateCcw class="w-4 h-4" />
@@ -240,7 +241,7 @@
 	{#if isLoading}
 		<div class="flex-1 flex flex-col items-center justify-center gap-4">
 			<Spinner size={32} />
-			<p class="text-base text-base-content/80">Loading rules...</p>
+			<p class="text-base text-base-content/80">{$t('settingsRules.loadingRules')}</p>
 		</div>
 	{:else}
 		<div class="flex-1 space-y-3 min-h-0 overflow-y-auto">
@@ -258,7 +259,7 @@
 					<!-- svelte-ignore a11y_autofocus -->
 					<input
 						class="flex-1 h-9 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-						placeholder="Section name..."
+						placeholder={$t('settingsRules.sectionPlaceholder')}
 						bind:value={addingSectionName}
 						onkeydown={handleAddSectionKeydown}
 						onblur={() => {
@@ -275,7 +276,7 @@
 					onclick={() => (showAddSection = true)}
 				>
 					<Plus class="w-4 h-4" />
-					Add Section
+					{$t('settingsRules.addSection')}
 				</button>
 			{/if}
 		</div>

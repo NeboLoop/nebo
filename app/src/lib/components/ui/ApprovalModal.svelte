@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { AlertTriangle, Terminal, Check, X, CheckCheck } from 'lucide-svelte';
 
 	interface ApprovalRequest {
@@ -38,8 +39,8 @@
 					<AlertTriangle class="w-5 h-5 text-warning" />
 				</div>
 				<div>
-					<h3 class="font-semibold text-base-content">Tool Approval Required</h3>
-					<p class="text-base text-base-content/90">The agent wants to run a tool</p>
+					<h3 class="font-semibold text-base-content">{$t('approval.title')}</h3>
+					<p class="text-base text-base-content/90">{$t('approval.description')}</p>
 				</div>
 			</div>
 
@@ -60,7 +61,7 @@
 						class="btn btn-outline gap-2"
 					>
 						<X class="w-4 h-4" />
-						Deny
+						{$t('approval.deny')}
 					</button>
 					<button
 						type="button"
@@ -68,7 +69,7 @@
 						class="btn btn-primary flex-1 gap-2"
 					>
 						<Check class="w-4 h-4" />
-						Once
+						{$t('approval.once')}
 					</button>
 					<button
 						type="button"
@@ -76,7 +77,7 @@
 						class="btn btn-success flex-1 gap-2"
 					>
 						<CheckCheck class="w-4 h-4" />
-						Always
+						{$t('approval.always')}
 					</button>
 				</div>
 			</div>

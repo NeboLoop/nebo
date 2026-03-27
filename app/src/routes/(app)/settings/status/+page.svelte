@@ -17,6 +17,7 @@
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { auth } from '$lib/stores/auth';
 	import * as api from '$lib/api/nebo';
+	import { t } from 'svelte-i18n';
 
 	let wsConnected = $state(false);
 	let wsReconnecting = $state(false);
@@ -80,14 +81,14 @@
 	let unsubscribers: (() => void)[] = [];
 
 	const laneOrder = ['main', 'events', 'subagent', 'heartbeat', 'comm', 'nested'];
-	const laneLabels: Record<string, string> = {
-		main: 'Main',
-		events: 'Events',
-		subagent: 'Sub-agents',
-		heartbeat: 'Heartbeat',
-		comm: 'Communication',
-		nested: 'Nested'
-	};
+	const laneLabels = $derived<Record<string, string>>({
+		main: $t('settingsStatus.laneNames.main'),
+		events: $t('settingsStatus.laneNames.events'),
+		subagent: $t('settingsStatus.laneNames.subagents'),
+		heartbeat: $t('settingsStatus.laneNames.heartbeat'),
+		comm: $t('settingsStatus.laneNames.communication'),
+		nested: $t('settingsStatus.laneNames.nested')
+	});
 
 	const sortedLanes = $derived(
 		laneOrder
@@ -218,7 +219,7 @@
 	}
 
 	function formatTime(dateStr?: string): string {
-		if (!dateStr) return 'N/A';
+		if (!dateStr) return $t('common.na');
 		return new Date(dateStr).toLocaleString();
 	}
 
@@ -271,24 +272,24 @@
 
 <div class="mb-6 flex items-center justify-between">
 	<div>
-		<h2 class="font-display text-xl font-bold text-base-content mb-1">Agent Status</h2>
-		<p class="text-base text-base-content/80">Monitor connected agents and system health</p>
+		<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsStatus.title')}</h2>
+		<p class="text-base text-base-content/80">{$t('settingsStatus.description')}</p>
 	</div>
 	<div class="flex items-center gap-3">
 		{#if wsConnected}
 			<span class="inline-flex items-center gap-1 text-sm font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success">
 				<Wifi class="w-3 h-3" />
-				Live
+				{$t('common.live')}
 			</span>
 		{:else if wsReconnecting}
 			<span class="inline-flex items-center gap-1 text-sm font-semibold px-2 py-0.5 rounded-full bg-warning/10 text-warning">
 				<RefreshCw class="w-3 h-3 animate-spin" />
-				Reconnecting
+				{$t('common.reconnecting')}
 			</span>
 		{:else}
 			<span class="inline-flex items-center gap-1 text-sm font-semibold px-2 py-0.5 rounded-full bg-error/10 text-error">
 				<WifiOff class="w-3 h-3" />
-				Disconnected
+				{$t('common.disconnected')}
 			</span>
 		{/if}
 		<button
@@ -309,9 +310,9 @@
 				<Server class="w-4.5 h-4.5 {systemStatus.mcpServer === 'online' ? 'text-success' : 'text-error'}" />
 			</div>
 			<div>
-				<p class="text-base text-base-content/80">MCP Server</p>
+				<p class="text-base text-base-content/80">{$t('settingsStatus.mcpServer')}</p>
 				<p class="text-base font-bold {systemStatus.mcpServer === 'online' ? 'text-success' : 'text-error'}">
-					{systemStatus.mcpServer === 'online' ? 'Online' : 'Offline'}
+					{systemStatus.mcpServer === 'online' ? $t('common.online') : $t('common.offline')}
 				</p>
 			</div>
 		</div>
@@ -323,9 +324,9 @@
 				<Database class="w-4.5 h-4.5 {systemStatus.database === 'online' ? 'text-success' : 'text-error'}" />
 			</div>
 			<div>
-				<p class="text-base text-base-content/80">Database</p>
+				<p class="text-base text-base-content/80">{$t('settingsStatus.database')}</p>
 				<p class="text-base font-bold {systemStatus.database === 'online' ? 'text-success' : 'text-error'}">
-					{systemStatus.database === 'online' ? 'Online' : 'Offline'}
+					{systemStatus.database === 'online' ? $t('common.online') : $t('common.offline')}
 				</p>
 			</div>
 		</div>
@@ -337,9 +338,9 @@
 				<Wifi class="w-4.5 h-4.5 {systemStatus.websocket === 'online' ? 'text-success' : 'text-error'}" />
 			</div>
 			<div>
-				<p class="text-base text-base-content/80">WebSocket</p>
+				<p class="text-base text-base-content/80">{$t('settingsStatus.webSocket')}</p>
 				<p class="text-base font-bold {systemStatus.websocket === 'online' ? 'text-success' : 'text-error'}">
-					{systemStatus.websocket === 'online' ? 'Connected' : 'Disconnected'}
+					{systemStatus.websocket === 'online' ? $t('common.connected') : $t('common.disconnected')}
 				</p>
 			</div>
 		</div>
@@ -351,7 +352,7 @@
 				<Clock class="w-4.5 h-4.5 text-primary" />
 			</div>
 			<div>
-				<p class="text-base text-base-content/80">Uptime</p>
+				<p class="text-base text-base-content/80">{$t('settingsStatus.uptime')}</p>
 				<p class="text-base font-bold text-base-content">{systemStatus.uptime}</p>
 			</div>
 		</div>
@@ -360,22 +361,22 @@
 
 <!-- Updates -->
 <section class="mb-6">
-	<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Updates</h3>
+	<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsStatus.updates')}</h3>
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 		<div class="flex items-center justify-between">
 			<div>
-				<p class="text-base text-base-content/80">Current Version</p>
-				<p class="text-base font-bold text-base-content">{updateCheckResult?.currentVersion ?? 'Loading...'}</p>
+				<p class="text-base text-base-content/80">{$t('settingsStatus.currentVersion')}</p>
+				<p class="text-base font-bold text-base-content">{updateCheckResult?.currentVersion ?? $t('common.loading')}</p>
 			</div>
 			<div>
-				<p class="text-base text-base-content/80">Install Method</p>
+				<p class="text-base text-base-content/80">{$t('settingsStatus.installMethod')}</p>
 				<p class="text-base font-bold text-base-content capitalize">{updateCheckResult?.installMethod ?? '—'}</p>
 			</div>
 			<div>
 				{#if updateCheckResult?.available}
-					<span class="inline-flex items-center text-sm font-semibold px-2 py-0.5 rounded-full bg-warning/10 text-warning">{updateCheckResult.latestVersion} available</span>
+					<span class="inline-flex items-center text-sm font-semibold px-2 py-0.5 rounded-full bg-warning/10 text-warning">{$t('settingsStatus.versionAvailable', { values: { version: updateCheckResult.latestVersion } })}</span>
 				{:else if updateCheckResult}
-					<span class="inline-flex items-center text-sm font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success">Up to date</span>
+					<span class="inline-flex items-center text-sm font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success">{$t('settingsStatus.upToDate')}</span>
 				{/if}
 			</div>
 			<button
@@ -385,14 +386,14 @@
 				disabled={isCheckingUpdate}
 			>
 				<RefreshCw class="w-3.5 h-3.5 {isCheckingUpdate ? 'animate-spin' : ''}" />
-				Check Now
+				{$t('settingsStatus.checkNow')}
 			</button>
 		</div>
 		{#if updateCheckResult?.installMethod === 'direct'}
 			<div class="flex items-center justify-between pt-4 mt-4 border-t border-base-content/10">
 				<div>
-					<p class="text-base font-medium text-base-content">Auto-update</p>
-					<p class="text-base text-base-content/80">Automatically download and apply updates</p>
+					<p class="text-base font-medium text-base-content">{$t('settingsStatus.autoUpdate')}</p>
+					<p class="text-base text-base-content/80">{$t('settingsStatus.autoUpdateDesc')}</p>
 				</div>
 				<input
 					type="checkbox"
@@ -403,11 +404,11 @@
 			</div>
 		{:else if updateCheckResult?.installMethod === 'homebrew'}
 			<div class="pt-4 mt-4 border-t border-base-content/10">
-				<p class="text-base text-base-content/80">Managed by Homebrew — run <code class="bg-base-content/5 px-1.5 py-0.5 rounded text-base">brew upgrade nebo</code> to update</p>
+				<p class="text-base text-base-content/80">{$t('settingsStatus.brewManaged')}</p>
 			</div>
 		{:else if updateCheckResult?.installMethod === 'package_manager'}
 			<div class="pt-4 mt-4 border-t border-base-content/10">
-				<p class="text-base text-base-content/80">Managed by package manager</p>
+				<p class="text-base text-base-content/80">{$t('settingsStatus.packageManaged')}</p>
 			</div>
 		{/if}
 	</div>
@@ -416,21 +417,21 @@
 <!-- Connected Agents -->
 <section class="mb-6">
 	<div class="flex items-center justify-between mb-3">
-		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Connected Agents</h3>
-		<span class="text-base text-base-content/80">{agents.filter((a) => a.status === 'online').length} online</span>
+		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">{$t('settingsStatus.connectedAgents')}</h3>
+		<span class="text-base text-base-content/80">{$t('settingsStatus.countOnline', { values: { count: agents.filter((a) => a.status === 'online').length } })}</span>
 	</div>
 
 	{#if isLoading}
 		<div class="flex items-center justify-center gap-3 py-16">
 			<Spinner size={20} />
-			<span class="text-base text-base-content/80">Loading agents...</span>
+			<span class="text-base text-base-content/80">{$t('settingsStatus.loadingAgents')}</span>
 		</div>
 	{:else if agents.length === 0}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-12 text-center">
 			<Activity class="w-10 h-10 mx-auto mb-3 text-base-content/60" />
-			<h3 class="font-display font-bold text-base-content mb-1">No agents connected</h3>
+			<h3 class="font-display font-bold text-base-content mb-1">{$t('settingsStatus.noAgents')}</h3>
 			<p class="text-base text-base-content/80">
-				Run <code class="bg-base-content/5 px-1.5 py-0.5 rounded text-base">nebo agent --org your-org</code> to connect
+				{$t('settingsStatus.runAgent')}
 			</p>
 		</div>
 	{:else}
@@ -438,11 +439,11 @@
 			<table class="w-full">
 				<thead>
 					<tr class="text-left text-sm text-base-content/80 border-b border-base-content/10">
-						<th class="px-4 py-3 font-medium">Agent</th>
-						<th class="px-4 py-3 font-medium">Status</th>
-						<th class="px-4 py-3 font-medium">Connected</th>
-						<th class="px-4 py-3 font-medium">Last Activity</th>
-						<th class="px-4 py-3 font-medium">Current Task</th>
+						<th class="px-4 py-3 font-medium">{$t('settingsStatus.tableAgent')}</th>
+						<th class="px-4 py-3 font-medium">{$t('settingsStatus.tableStatus')}</th>
+						<th class="px-4 py-3 font-medium">{$t('settingsStatus.tableConnected')}</th>
+						<th class="px-4 py-3 font-medium">{$t('settingsStatus.tableLastActivity')}</th>
+						<th class="px-4 py-3 font-medium">{$t('settingsStatus.tableCurrentTask')}</th>
 					</tr>
 				</thead>
 				<tbody class="divide-y divide-base-content/10">
@@ -473,7 +474,7 @@
 <!-- Lane Monitor -->
 <section>
 	<div class="flex items-center justify-between mb-3">
-		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Lane Monitor</h3>
+		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">{$t('settingsStatus.laneMonitor')}</h3>
 		<button
 			type="button"
 			class="h-7 w-7 rounded-lg bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/40 transition-colors"
@@ -485,7 +486,7 @@
 
 	{#if sortedLanes.length === 0}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-8 text-center">
-			<p class="text-base text-base-content/80">No lane data available</p>
+			<p class="text-base text-base-content/80">{$t('settingsStatus.noLaneData')}</p>
 		</div>
 	{:else}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10">
@@ -501,11 +502,11 @@
 							<span class="text-base font-medium text-base-content">{laneLabels[lane.lane] || lane.lane}</span>
 						</div>
 						<div class="flex items-center gap-3 text-sm text-base-content/80">
-							<span>{lane.active} active</span>
+							<span>{$t('settingsStatus.laneActive', { values: { count: lane.active } })}</span>
 							{#if hasQueued}
-								<span class="text-warning">{lane.queued} queued</span>
+								<span class="text-warning">{$t('settingsStatus.laneQueued', { values: { count: lane.queued } })}</span>
 							{/if}
-							<span>max {lane.maxConcurrent === 0 ? '∞' : lane.maxConcurrent}</span>
+							<span>{$t('settingsStatus.laneMax', { values: { count: lane.maxConcurrent === 0 ? '∞' : lane.maxConcurrent } })}</span>
 						</div>
 					</div>
 

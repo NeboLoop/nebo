@@ -4,6 +4,7 @@
 	import type { RoleInputField, ResolvedEntityConfig } from '$lib/api/neboComponents';
 	import RoleInputForm from '$lib/components/agent/RoleInputForm.svelte';
 	import { FolderOpen } from 'lucide-svelte';
+	import { t } from 'svelte-i18n';
 
 	const channelState = getContext<{
 		activeRoleId: string;
@@ -122,7 +123,7 @@
 </script>
 
 <svelte:head>
-	<title>Nebo - {channelState.activeRoleName || 'Configure'} - Configure</title>
+	<title>Nebo - {channelState.activeRoleName || $t('agent.configure')} - {$t('agent.configure')}</title>
 </svelte:head>
 
 <div class="flex-1 flex flex-col min-h-0">
@@ -137,17 +138,17 @@
 			{#if inputFields.length > 0}
 				<section class="pb-6">
 					<div class="flex items-center justify-between mb-3 min-h-8">
-						<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Inputs</h2>
+						<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentConfigure.inputs')}</h2>
 						<button
 							class="btn btn-sm btn-primary"
 							class:opacity-50={saving}
 							disabled={saving || !hasChanges}
 							onclick={handleSave}
 						>
-							{saving ? 'Saving...' : 'Save'}
+							{saving ? $t('common.saving') : $t('common.save')}
 						</button>
 					</div>
-					<p class="text-xs text-base-content/70 mb-4">These values are provided to every automation run.</p>
+					<p class="text-xs text-base-content/70 mb-4">{$t('agentConfigure.inputsDesc')}</p>
 					<RoleInputForm
 						fields={inputFields}
 						bind:values={inputValues}
@@ -159,17 +160,17 @@
 			<!-- Allowed Paths -->
 			<section class="pb-6 {inputFields.length > 0 ? 'border-t border-base-content/10 pt-4' : ''}">
 				<div class="flex items-center justify-between mb-3 min-h-8">
-					<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Allowed directories</h2>
+					<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentConfigure.allowedDirs')}</h2>
 					<button
 						type="button"
 						class="btn btn-sm btn-ghost text-primary gap-1.5"
 						onclick={handleAddFolder}
 					>
 						<FolderOpen class="w-3.5 h-3.5" />
-						Add folder
+						{$t('agentConfigure.addFolder')}
 					</button>
 				</div>
-				<p class="text-xs text-base-content/70 mb-4">Restrict file writes and shell commands to these directories. Leave empty for unrestricted access.</p>
+				<p class="text-xs text-base-content/70 mb-4">{$t('agentConfigure.allowedDirsDesc')}</p>
 
 				<!-- Folder list -->
 				{#if folders.length > 0}
@@ -192,18 +193,18 @@
 					</div>
 				{:else}
 					<div class="rounded-lg border border-dashed border-base-content/15 px-4 py-6 text-center mb-3">
-						<p class="text-sm text-base-content/70">No restrictions — this agent can access all directories.</p>
-						<p class="text-xs text-base-content/70 mt-1">Add a folder to restrict where this agent can write files and run commands.</p>
+						<p class="text-sm text-base-content/70">{$t('agentConfigure.noRestrictions')}</p>
+						<p class="text-xs text-base-content/70 mt-1">{$t('agentConfigure.addFolderHint')}</p>
 					</div>
 				{/if}
 
 				<!-- Hidden textarea for manual editing / fallback -->
 				<details class="text-xs">
-					<summary class="text-base-content/70 cursor-pointer hover:text-base-content/70">Edit paths manually</summary>
+					<summary class="text-base-content/70 cursor-pointer hover:text-base-content/70">{$t('agentConfigure.editPaths')}</summary>
 					<textarea
 						class="textarea textarea-bordered w-full text-sm font-mono mt-2"
 						rows="3"
-						placeholder="/path/to/directory"
+						placeholder={$t('agentConfigure.pathPlaceholder')}
 						value={allowedPathsText}
 						oninput={(e) => allowedPathsText = (e.target as HTMLTextAreaElement).value}
 					></textarea>

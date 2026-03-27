@@ -3,6 +3,7 @@
 	import { Shield, Link2, Info, Unplug, ExternalLink, Star, Download, Globe, Lock, ChevronRight, Check, Clock, User, Layers, Monitor, Smartphone, ChevronDown, ChevronUp, MessageSquare, ThumbsUp } from 'lucide-svelte';
 	import * as api from '$lib/api';
 	import type { PluginItem, AppOAuthGrant, AppItem, StoreAppDetail, Review, GetStoreAppReviewsResponse } from '$lib/api';
+	import { t } from 'svelte-i18n';
 
 	interface Props {
 		plugin?: PluginItem | null;
@@ -210,7 +211,7 @@
 	<!-- Custom header with close button -->
 	<div class="flex items-center justify-between -mt-4 pb-4 border-b border-base-300 mb-6">
 		<button onclick={handleClose} class="btn btn-sm btn-ghost">
-			← Back
+			{$t('settingsApps.backButton')}
 		</button>
 		<div class="flex items-center gap-2">
 			{#if pluginHasUI}
@@ -223,7 +224,7 @@
 						<span class="loading loading-spinner loading-xs"></span>
 					{:else}
 						<ExternalLink class="w-4 h-4" />
-						Open
+						{$t('common.open')}
 					{/if}
 				</button>
 			{/if}
@@ -238,7 +239,7 @@
 							<span class="loading loading-spinner loading-xs"></span>
 						{:else}
 							<Check class="w-4 h-4" />
-							Installed
+							{$t('common.installed')}
 						{/if}
 					</button>
 				{:else}
@@ -250,7 +251,7 @@
 						{#if installing}
 							<span class="loading loading-spinner loading-xs"></span>
 						{:else}
-							Get
+							{$t('common.install')}
 						{/if}
 					</button>
 				{/if}
@@ -261,7 +262,7 @@
 	{#if loadingDetail && !appDetail && !plugin}
 		<div class="py-20 text-center text-base-content/90">
 			<span class="loading loading-spinner loading-lg"></span>
-			<p class="mt-4">Loading app details...</p>
+			<p class="mt-4">{$t('common.loading')}</p>
 		</div>
 	{:else}
 		<!-- Hero Section -->
@@ -302,41 +303,41 @@
 			<div class="flex items-center gap-0 overflow-x-auto mb-8">
 				{#if appRating > 0}
 					<div class="flex flex-col items-center px-4 min-w-[5rem] border-r border-base-300">
-						<span class="text-base text-base-content/60 uppercase mb-1">{appReviewCount} Ratings</span>
+						<span class="text-base text-base-content/60 uppercase mb-1">{$t('settingsApps.ratings', { values: { count: appReviewCount } })}</span>
 						<span class="text-xl font-bold text-base-content">{appRating.toFixed(1)}</span>
 						<span class="text-base text-warning">{renderStars(appRating)}</span>
 					</div>
 				{/if}
 				{#if appDetail?.ageRating}
 					<div class="flex flex-col items-center px-4 min-w-[5rem] border-r border-base-300">
-						<span class="text-base text-base-content/60 uppercase mb-1">Age</span>
+						<span class="text-base text-base-content/60 uppercase mb-1">{$t('settingsApps.age')}</span>
 						<span class="text-xl font-bold text-base-content">{appDetail.ageRating}</span>
-						<span class="text-base text-base-content/80">Years Old</span>
+						<span class="text-base text-base-content/80">{$t('settingsApps.yearsOld')}</span>
 					</div>
 				{/if}
 				{#if appCategory}
 					<div class="flex flex-col items-center px-4 min-w-[5rem] border-r border-base-300">
-						<span class="text-base text-base-content/60 uppercase mb-1">Category</span>
+						<span class="text-base text-base-content/60 uppercase mb-1">{$t('settingsApps.category')}</span>
 						<Layers class="w-5 h-5 text-base-content mb-0.5" />
 						<span class="text-base text-base-content/80">{appCategory}</span>
 					</div>
 				{/if}
 				{#if totalSize()}
 					<div class="flex flex-col items-center px-4 min-w-[5rem] border-r border-base-300">
-						<span class="text-base text-base-content/60 uppercase mb-1">Size</span>
+						<span class="text-base text-base-content/60 uppercase mb-1">{$t('settingsApps.size')}</span>
 						<span class="text-xl font-bold text-base-content">{formatBytes(totalSize()!)}</span>
 					</div>
 				{/if}
 				{#if appDetail?.language}
 					<div class="flex flex-col items-center px-4 min-w-[5rem]">
-						<span class="text-base text-base-content/60 uppercase mb-1">Language</span>
+						<span class="text-base text-base-content/60 uppercase mb-1">{$t('settingsApps.language')}</span>
 						<span class="text-xl font-bold text-base-content">{appDetail.language.toUpperCase().slice(0, 2)}</span>
 						<span class="text-base text-base-content/80">{appDetail.language}</span>
 					</div>
 				{/if}
 				{#if appInstallCount > 0}
 					<div class="flex flex-col items-center px-4 min-w-[5rem] border-l border-base-300">
-						<span class="text-base text-base-content/60 uppercase mb-1">Downloads</span>
+						<span class="text-base text-base-content/60 uppercase mb-1">{$t('settingsApps.downloads')}</span>
 						<span class="text-xl font-bold text-base-content">{formatCount(appInstallCount)}</span>
 					</div>
 				{/if}
@@ -350,7 +351,7 @@
 					{#each appDetail.screenshots as screenshot}
 						<img
 							src={screenshot}
-							alt="Screenshot"
+							alt={$t('settingsApps.screenshot')}
 							class="h-48 rounded-lg object-cover shrink-0 bg-base-200"
 						/>
 					{/each}
@@ -370,7 +371,7 @@
 							class="text-base text-primary font-medium mt-1 flex items-center gap-1"
 							onclick={() => descriptionExpanded = !descriptionExpanded}
 						>
-							{descriptionExpanded ? 'Less' : 'More'}
+							{descriptionExpanded ? $t('settingsApps.less') : $t('settingsApps.more')}
 							{#if descriptionExpanded}
 								<ChevronUp class="w-4 h-4" />
 							{:else}
@@ -385,9 +386,9 @@
 		<!-- What's New -->
 		{#if latestChangelog}
 			<div class="mb-8">
-				<h3 class="text-lg font-bold text-base-content mb-3">What's New</h3>
+				<h3 class="text-lg font-bold text-base-content mb-3">{$t('settingsApps.whatsNew')}</h3>
 				<div class="flex items-center gap-2 mb-2">
-					<span class="text-base text-base-content/80">Version {latestChangelog.version}</span>
+					<span class="text-base text-base-content/80">{$t('settingsApps.versionLabel', { values: { version: latestChangelog.version } })}</span>
 					{#if latestChangelog.date}
 						<span class="text-base text-base-content/80">&middot; {latestChangelog.date}</span>
 					{/if}
@@ -399,7 +400,7 @@
 		<!-- Ratings & Reviews -->
 		{#if (isAppItem || storeApp) && (appRating > 0 || reviews)}
 			<div class="mb-8">
-				<h3 class="text-lg font-bold text-base-content mb-3">Ratings & Reviews</h3>
+				<h3 class="text-lg font-bold text-base-content mb-3">{$t('settingsApps.ratingsAndReviews')}</h3>
 
 				{#if reviews}
 					<div class="flex gap-8 mb-6">
@@ -407,7 +408,7 @@
 						<div class="text-center shrink-0">
 							<div class="text-5xl font-bold text-base-content">{reviews.average.toFixed(1)}</div>
 							<div class="text-base text-warning mt-1">{renderStars(reviews.average)}</div>
-							<div class="text-base text-base-content/80 mt-1">{formatCount(reviews.totalCount)} Ratings</div>
+							<div class="text-base text-base-content/80 mt-1">{$t('settingsApps.ratings', { values: { count: formatCount(reviews.totalCount) } })}</div>
 						</div>
 
 						<!-- Distribution bars -->
@@ -451,7 +452,7 @@
 									{#if review.helpful > 0}
 										<div class="flex items-center gap-1 mt-2 text-base text-base-content/80">
 											<ThumbsUp class="w-3 h-3" />
-											{review.helpful} found helpful
+											{$t('settingsApps.foundHelpful', { values: { count: review.helpful } })}
 										</div>
 									{/if}
 								</div>
@@ -462,7 +463,7 @@
 								class="btn btn-ghost btn-sm mt-3"
 								onclick={() => showAllReviews = !showAllReviews}
 							>
-								{showAllReviews ? 'Show Less' : `See All ${reviews.totalCount} Reviews`}
+								{showAllReviews ? $t('settingsApps.showLess') : $t('settingsApps.seeAllReviews', { values: { count: reviews.totalCount } })}
 								<ChevronRight class="w-4 h-4" />
 							</button>
 						{/if}
@@ -478,46 +479,46 @@
 		<!-- Information Grid -->
 		{#if isAppItem || storeApp}
 			<div class="mb-8">
-				<h3 class="text-lg font-bold text-base-content mb-3">Information</h3>
+				<h3 class="text-lg font-bold text-base-content mb-3">{$t('settingsApps.information')}</h3>
 				<div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-base">
 					{#if appAuthor}
 						<div>
-							<span class="text-base-content/90 block mb-0.5">Provider</span>
+							<span class="text-base-content/90 block mb-0.5">{$t('settingsApps.provider')}</span>
 							<p class="font-medium text-base-content">{appAuthor.name}</p>
 						</div>
 					{/if}
 					{#if totalSize()}
 						<div>
-							<span class="text-base-content/90 block mb-0.5">Size</span>
+							<span class="text-base-content/90 block mb-0.5">{$t('settingsApps.size')}</span>
 							<p class="font-medium text-base-content">{formatBytes(totalSize()!)}</p>
 						</div>
 					{/if}
 					{#if appCategory}
 						<div>
-							<span class="text-base-content/90 block mb-0.5">Category</span>
+							<span class="text-base-content/90 block mb-0.5">{$t('settingsApps.category')}</span>
 							<p class="font-medium text-base-content">{appCategory}</p>
 						</div>
 					{/if}
 					{#if appDetail?.platforms && appDetail.platforms.length > 0}
 						<div>
-							<span class="text-base-content/90 block mb-0.5">Platforms</span>
+							<span class="text-base-content/90 block mb-0.5">{$t('settingsApps.platforms')}</span>
 							<p class="font-medium text-base-content">{appDetail.platforms.join(', ')}</p>
 						</div>
 					{/if}
 					{#if appDetail?.language}
 						<div>
-							<span class="text-base-content/90 block mb-0.5">Language</span>
+							<span class="text-base-content/90 block mb-0.5">{$t('settingsApps.language')}</span>
 							<p class="font-medium text-base-content">{appDetail.language}</p>
 						</div>
 					{/if}
 					{#if appDetail?.ageRating}
 						<div>
-							<span class="text-base-content/90 block mb-0.5">Age Rating</span>
+							<span class="text-base-content/90 block mb-0.5">{$t('settingsApps.ageRating')}</span>
 							<p class="font-medium text-base-content">{appDetail.ageRating}</p>
 						</div>
 					{/if}
 					<div>
-						<span class="text-base-content/90 block mb-0.5">Version</span>
+						<span class="text-base-content/90 block mb-0.5">{$t('settingsAbout.version')}</span>
 						<p class="font-medium text-base-content">{appVersion}</p>
 					</div>
 				</div>
@@ -527,17 +528,17 @@
 					<div class="flex gap-4 mt-4">
 						{#if appDetail?.websiteUrl}
 							<a href={appDetail.websiteUrl} target="_blank" rel="noopener noreferrer" class="text-base text-primary flex items-center gap-1">
-								<Globe class="w-3.5 h-3.5" /> Website
+								<Globe class="w-3.5 h-3.5" /> {$t('settingsApps.website')}
 							</a>
 						{/if}
 						{#if appDetail?.privacyUrl}
 							<a href={appDetail.privacyUrl} target="_blank" rel="noopener noreferrer" class="text-base text-primary flex items-center gap-1">
-								<Lock class="w-3.5 h-3.5" /> Privacy Policy
+								<Lock class="w-3.5 h-3.5" /> {$t('settingsApps.privacyPolicy')}
 							</a>
 						{/if}
 						{#if appDetail?.supportUrl}
 							<a href={appDetail.supportUrl} target="_blank" rel="noopener noreferrer" class="text-base text-primary flex items-center gap-1">
-								<MessageSquare class="w-3.5 h-3.5" /> Support
+								<MessageSquare class="w-3.5 h-3.5" /> {$t('settingsApps.support')}
 							</a>
 						{/if}
 					</div>
@@ -556,7 +557,7 @@
 						class:tab-active={activeTab === 'info'}
 						onclick={() => activeTab = 'info'}
 					>
-						Info
+						{$t('settingsApps.infoTab')}
 					</button>
 					<button
 						role="tab"
@@ -564,7 +565,7 @@
 						class:tab-active={activeTab === 'connections'}
 						onclick={() => activeTab = 'connections'}
 					>
-						Connections
+						{$t('settingsApps.connectionsTab')}
 					</button>
 				</div>
 
@@ -574,7 +575,7 @@
 						{#if loadingGrants}
 							<div class="py-6 text-center text-base-content/90">
 								<span class="loading loading-spinner loading-sm"></span>
-								<p class="mt-2 text-base">Loading connections...</p>
+								<p class="mt-2 text-base">{$t('settingsApps.loadingConnections')}</p>
 							</div>
 						{:else if oauthGrants.length > 0}
 							{#each oauthGrants as grant}
@@ -584,7 +585,7 @@
 										<div>
 											<p class="font-medium text-base capitalize">{grant.provider}</p>
 											<p class="text-base text-base-content/80">
-												{grant.connectionStatus === 'connected' ? 'Connected' : grant.connectionStatus}
+												{grant.connectionStatus === 'connected' ? $t('common.connected') : grant.connectionStatus}
 												{#if grant.scopes}
 													 &middot; {grant.scopes}
 												{/if}
@@ -602,7 +603,7 @@
 													<span class="loading loading-spinner loading-xs"></span>
 												{:else}
 													<Unplug class="w-3 h-3" />
-													Disconnect
+													{$t('settingsAccount.disconnect')}
 												{/if}
 											</button>
 										{:else}
@@ -611,7 +612,7 @@
 												onclick={() => connectOAuth(grant.provider)}
 											>
 												<ExternalLink class="w-3 h-3" />
-												Connect
+												{$t('oauth.connect')}
 											</button>
 										{/if}
 									</div>
@@ -620,7 +621,7 @@
 						{:else}
 							<div class="py-6 text-center text-base-content/90">
 								<Link2 class="w-8 h-8 mx-auto mb-2 opacity-20" />
-								<p class="text-base">No OAuth connections configured for this app.</p>
+								<p class="text-base">{$t('settingsApps.noOAuthConnections')}</p>
 							</div>
 						{/if}
 					</div>
@@ -628,14 +629,14 @@
 					<div class="space-y-4">
 						{#if plugin.description}
 							<div>
-								<h4 class="text-base font-medium text-base-content/80 mb-1">Description</h4>
+								<h4 class="text-base font-medium text-base-content/80 mb-1">{$t('settingsApps.descriptionTab')}</h4>
 								<p class="text-base text-base-content">{plugin.description}</p>
 							</div>
 						{/if}
 
 						{#if plugin.capabilities && plugin.capabilities.length > 0}
 							<div>
-								<h4 class="text-base font-medium text-base-content/80 mb-2">Capabilities</h4>
+								<h4 class="text-base font-medium text-base-content/80 mb-2">{$t('settingsApps.capabilities')}</h4>
 								<div class="flex flex-wrap gap-2">
 									{#each plugin.capabilities as cap}
 										<span class="badge badge-sm badge-primary badge-outline">{cap}</span>
@@ -646,7 +647,7 @@
 
 						{#if plugin.permissions && plugin.permissions.length > 0}
 							<div>
-								<h4 class="text-base font-medium text-base-content/80 mb-2">Permissions</h4>
+								<h4 class="text-base font-medium text-base-content/80 mb-2">{$t('settingsApps.permissions')}</h4>
 								<div class="flex flex-wrap gap-2">
 									{#each plugin.permissions as perm}
 										<span class="badge badge-sm badge-warning badge-outline">
@@ -660,20 +661,20 @@
 
 						<div class="grid grid-cols-2 gap-3 text-base">
 							<div>
-								<span class="text-base-content/90">Type</span>
+								<span class="text-base-content/90">{$t('settingsApps.type')}</span>
 								<p class="font-medium">{plugin.pluginType}</p>
 							</div>
 							<div>
-								<span class="text-base-content/90">Version</span>
+								<span class="text-base-content/90">{$t('settingsAbout.version')}</span>
 								<p class="font-medium">{plugin.version}</p>
 							</div>
 							<div>
-								<span class="text-base-content/90">Installed</span>
+								<span class="text-base-content/90">{$t('common.installed')}</span>
 								<p class="font-medium">{plugin.createdAt}</p>
 							</div>
 							{#if plugin.lastConnectedAt}
 								<div>
-									<span class="text-base-content/90">Last Connected</span>
+									<span class="text-base-content/90">{$t('settingsApps.lastConnected')}</span>
 									<p class="font-medium">{plugin.lastConnectedAt}</p>
 								</div>
 							{/if}

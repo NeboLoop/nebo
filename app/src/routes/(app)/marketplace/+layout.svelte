@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { t } from 'svelte-i18n';
 	import type { Snippet } from 'svelte';
 	import {
 		Compass,
@@ -14,11 +15,11 @@
 	const currentPath = $derived($page.url.pathname);
 
 	const pageTitle = $derived.by(() => {
-		if (currentPath.startsWith('/marketplace/skills')) return 'Skills';
-		if (currentPath.startsWith('/marketplace/installed')) return 'Installed';
-		if (currentPath.startsWith('/marketplace/categories')) return 'Categories';
-		if (currentPath.startsWith('/marketplace/roles')) return 'Roles';
-		return 'Marketplace';
+		if (currentPath.startsWith('/marketplace/skills')) return $t('marketplace.skills');
+		if (currentPath.startsWith('/marketplace/installed')) return $t('marketplace.installed');
+		if (currentPath.startsWith('/marketplace/categories')) return $t('marketplace.categories');
+		if (currentPath.startsWith('/marketplace/roles')) return $t('marketplace.roles');
+		return $t('marketplace.title');
 	});
 
 	function isActive(href: string): boolean {
@@ -26,16 +27,16 @@
 		return currentPath === href || currentPath.startsWith(href + '/');
 	}
 
-	const navItems = [
-		{ label: 'Featured', icon: Compass, href: '/marketplace' },
-		{ label: 'Roles', icon: UserCog, href: '/marketplace/roles' },
-		{ label: 'Skills', icon: FileText, href: '/marketplace/skills' },
-		{ label: 'Installed', icon: PackageCheck, href: '/marketplace/installed' },
-	];
+	const navItems = $derived([
+		{ label: $t('marketplace.featured'), icon: Compass, href: '/marketplace' },
+		{ label: $t('marketplace.roles'), icon: UserCog, href: '/marketplace/roles' },
+		{ label: $t('marketplace.skills'), icon: FileText, href: '/marketplace/skills' },
+		{ label: $t('marketplace.installed'), icon: PackageCheck, href: '/marketplace/installed' },
+	]);
 
-	const utilItems = [
-		{ label: 'Categories', icon: Grid3x3, href: '/marketplace/categories' },
-	];
+	const utilItems = $derived([
+		{ label: $t('marketplace.categories'), icon: Grid3x3, href: '/marketplace/categories' },
+	]);
 </script>
 
 <svelte:head>
@@ -45,7 +46,7 @@
 <div class="marketplace-layout">
 	<aside class="marketplace-sidebar">
 		<div class="marketplace-sidebar-header">
-			<h2 class="marketplace-sidebar-title">Marketplace</h2>
+			<h2 class="marketplace-sidebar-title">{$t('marketplace.title')}</h2>
 		</div>
 
 		<nav class="marketplace-sidebar-nav">

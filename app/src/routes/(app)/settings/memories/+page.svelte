@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Brain, Trash2, Edit2, RefreshCw, X, Save, Tag, Eye, Search } from 'lucide-svelte';
@@ -112,7 +113,7 @@
 	}
 
 	async function deleteMemoryHandler(memory: MemoryItem) {
-		if (!confirm(`Delete memory "${memory.key}"?`)) return;
+		if (!confirm($t('settingsMemories.deleteConfirm', { values: { key: memory.key } }))) return;
 		try {
 			await api.deleteMemory(String(memory.id));
 			memories = memories.filter(m => m.id !== memory.id);
@@ -148,9 +149,9 @@
 	}
 
 	function formatDate(dateStr: string | number): string {
-		if (!dateStr) return 'Never';
+		if (!dateStr) return $t('time.never');
 		const d = new Date(dateStr);
-		if (isNaN(d.getTime())) return 'Never';
+		if (isNaN(d.getTime())) return $t('time.never');
 		return d.toLocaleString();
 	}
 
@@ -186,7 +187,7 @@
 <!-- Header -->
 <div class="mb-4 flex items-center justify-between">
 	<div>
-		<h2 class="font-display text-xl font-bold text-base-content mb-1">Memories</h2>
+		<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsMemories.title')}</h2>
 		{#if stats}
 			<p class="text-base text-base-content/80">
 				<span class="font-medium text-base-content/90">{stats.totalCount}</span> total
@@ -198,7 +199,7 @@
 				<span class="text-accent font-medium">{stats.layerCounts?.entity || 0}</span> entity
 			</p>
 		{:else}
-			<p class="text-base text-base-content/80">Browse and manage what the agent remembers about you</p>
+			<p class="text-base text-base-content/80">{$t('settingsMemories.description')}</p>
 		{/if}
 	</div>
 	<button
@@ -219,7 +220,7 @@
 			class="px-2.5 py-1 rounded-lg text-sm font-medium transition-colors {selectedNamespace === '' ? 'bg-primary/10 text-primary border border-primary/30' : 'bg-base-content/5 text-base-content/60 border border-transparent hover:border-base-content/15'}"
 			onclick={() => selectNamespaceFilter('')}
 		>
-			All
+			{$t('settingsMemories.all')}
 		</button>
 		{#each layers as layer}
 			<button
@@ -242,7 +243,7 @@
 	<input
 		type="text"
 		class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 pl-10 pr-10 text-base focus:outline-none focus:border-primary/50 transition-colors"
-		placeholder="Search memories..."
+		placeholder={$t('settingsMemories.searchPlaceholder')}
 		bind:value={searchQuery}
 		onkeydown={handleSearchKeydown}
 	/>
@@ -261,12 +262,12 @@
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading memories...</span>
+		<span class="text-base text-base-content/80">{$t('settingsMemories.loadingMemories')}</span>
 	</div>
 {:else if memories.length === 0}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-12 text-center">
 		<Brain class="w-10 h-10 mx-auto mb-3 text-base-content/60" />
-		<p class="text-base text-base-content/80">No memories found</p>
+		<p class="text-base text-base-content/80">{$t('settingsMemories.noMemories')}</p>
 	</div>
 {:else}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10 max-h-[60vh] overflow-y-auto">
@@ -317,10 +318,10 @@
 				disabled={currentPage === 1}
 				onclick={() => { currentPage--; loadMemories(); }}
 			>
-				Previous
+				{$t('common.previous')}
 			</button>
 			<span class="text-base text-base-content/80">
-				Page {currentPage} of {Math.ceil(total / pageSize)}
+				{$t('settingsMemories.pageOf', { values: { current: currentPage, total: Math.ceil(total / pageSize) } })}
 			</span>
 			<button
 				type="button"
@@ -328,7 +329,7 @@
 				disabled={currentPage >= Math.ceil(total / pageSize)}
 				onclick={() => { currentPage++; loadMemories(); }}
 			>
-				Next
+				{$t('common.next')}
 			</button>
 		</div>
 	{/if}
@@ -341,29 +342,29 @@
 		<div class="space-y-3 mb-5">
 			<div class="grid grid-cols-2 gap-3">
 				<div>
-					<p class="text-sm text-base-content/80 mb-0.5">Namespace</p>
+					<p class="text-sm text-base-content/80 mb-0.5">{$t('settingsMemories.namespace')}</p>
 					<p class="text-base text-base-content">{selectedMemory.namespace}</p>
 				</div>
 				<div>
-					<p class="text-sm text-base-content/80 mb-0.5">Layer</p>
+					<p class="text-sm text-base-content/80 mb-0.5">{$t('settingsMemories.layer')}</p>
 					<span class="text-sm font-semibold uppercase px-1.5 py-0.5 rounded {getLayerColor(getLayerFromNamespace(selectedMemory.namespace))}">
 						{getLayerFromNamespace(selectedMemory.namespace)}
 					</span>
 				</div>
 				<div>
-					<p class="text-sm text-base-content/80 mb-0.5">Access Count</p>
+					<p class="text-sm text-base-content/80 mb-0.5">{$t('settingsMemories.accessCount')}</p>
 					<p class="text-base text-base-content">{selectedMemory.accessCount}</p>
 				</div>
 				<div>
-					<p class="text-sm text-base-content/80 mb-0.5">Last Access</p>
-					<p class="text-base text-base-content/80">{selectedMemory.accessedAt ? formatDate(selectedMemory.accessedAt) : 'Never'}</p>
+					<p class="text-sm text-base-content/80 mb-0.5">{$t('settingsMemories.lastAccess')}</p>
+					<p class="text-base text-base-content/80">{selectedMemory.accessedAt ? formatDate(selectedMemory.accessedAt) : $t('time.never')}</p>
 				</div>
 				<div>
-					<p class="text-sm text-base-content/80 mb-0.5">Created</p>
+					<p class="text-sm text-base-content/80 mb-0.5">{$t('settingsMemories.created')}</p>
 					<p class="text-base text-base-content/80">{formatDate(selectedMemory.createdAt)}</p>
 				</div>
 				<div>
-					<p class="text-sm text-base-content/80 mb-0.5">Updated</p>
+					<p class="text-sm text-base-content/80 mb-0.5">{$t('settingsMemories.updated')}</p>
 					<p class="text-base text-base-content/80">{formatDate(selectedMemory.updatedAt)}</p>
 				</div>
 			</div>
@@ -372,18 +373,18 @@
 		<!-- Tags -->
 		{#if isEditing}
 			<div class="mb-5">
-				<label class="text-base font-medium text-base-content/80 mb-1.5 block" for="edit-tags">Tags (comma-separated)</label>
+				<label class="text-base font-medium text-base-content/80 mb-1.5 block" for="edit-tags">{$t('settingsMemories.tagsLabel')}</label>
 				<input
 					id="edit-tags"
 					type="text"
 					class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 					bind:value={editTags}
-					placeholder="tag1, tag2, tag3"
+					placeholder={$t('settingsMemories.tagsPlaceholder')}
 				/>
 			</div>
 		{:else if selectedMemory.tags?.length}
 			<div class="mb-5">
-				<p class="text-sm text-base-content/80 mb-1.5">Tags</p>
+				<p class="text-sm text-base-content/80 mb-1.5">{$t('settingsMemories.tags')}</p>
 				<div class="flex flex-wrap gap-1.5">
 					{#each selectedMemory.tags as tag}
 						<span class="inline-flex items-center gap-1 text-sm font-medium bg-base-content/5 text-base-content/60 px-2 py-0.5 rounded">
@@ -397,7 +398,7 @@
 
 		<!-- Value -->
 		<div>
-			<p class="text-sm text-base-content/80 mb-1.5">Value</p>
+			<p class="text-sm text-base-content/80 mb-1.5">{$t('settingsMemories.value')}</p>
 			{#if isEditing}
 				<textarea
 					class="w-full rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none h-48"
@@ -419,7 +420,7 @@
 					class="h-9 px-4 rounded-full text-base font-medium text-base-content/80 hover:bg-base-content/5 transition-colors"
 					onclick={() => isEditing = false}
 				>
-					Cancel
+					{$t('common.cancel')}
 				</button>
 				<button
 					type="button"
@@ -427,7 +428,7 @@
 					onclick={saveEdit}
 				>
 					<Save class="w-4 h-4" />
-					Save
+					{$t('common.save')}
 				</button>
 			{:else}
 				<div class="flex items-center gap-2">
@@ -437,7 +438,7 @@
 						onclick={startEdit}
 					>
 						<Edit2 class="w-3.5 h-3.5" />
-						Edit
+						{$t('common.edit')}
 					</button>
 					<button
 						type="button"
@@ -445,7 +446,7 @@
 						onclick={() => deleteMemoryHandler(selectedMemory!)}
 					>
 						<Trash2 class="w-3.5 h-3.5" />
-						Delete
+						{$t('common.delete')}
 					</button>
 				</div>
 				<button
@@ -453,7 +454,7 @@
 					class="h-9 px-4 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 					onclick={closeDetail}
 				>
-					Close
+					{$t('common.close')}
 				</button>
 			{/if}
 		</div>

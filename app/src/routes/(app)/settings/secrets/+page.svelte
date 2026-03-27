@@ -4,6 +4,7 @@
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import { CheckCircle, AlertCircle, Trash2, Lock, Zap } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
+	import { t } from 'svelte-i18n';
 
 	interface SecretInfo {
 		key: string;
@@ -53,7 +54,7 @@
 			}
 			skills = withSecrets;
 		} catch (err: any) {
-			error = err?.message || 'Failed to load secrets';
+			error = err?.message || $t('settingsSecrets.loadFailed');
 		} finally {
 			isLoading = false;
 		}
@@ -68,11 +69,11 @@
 		try {
 			await api.setSkillSecret(skillName, key, value);
 			secretInputs[inputKey] = '';
-			successMsg = `${key} saved for ${skillName}`;
+			successMsg = $t('settingsSecrets.secretSaved', { values: { key, skill: skillName } });
 			await loadSecrets();
 			setTimeout(() => successMsg = '', 3000);
 		} catch (err: any) {
-			error = err?.message || 'Failed to save secret';
+			error = err?.message || $t('settingsSecrets.saveFailed');
 		} finally {
 			settingSecret = null;
 		}
@@ -85,7 +86,7 @@
 			await api.deleteSkillSecret(skillName, key);
 			await loadSecrets();
 		} catch (err: any) {
-			error = err?.message || 'Failed to remove secret';
+			error = err?.message || $t('settingsSecrets.removeFailed');
 		} finally {
 			settingSecret = null;
 		}
@@ -93,36 +94,36 @@
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">Secrets</h2>
-	<p class="text-base text-base-content/80">API keys and credentials for skills</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsSecrets.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsSecrets.description')}</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading...</span>
+		<span class="text-base text-base-content/80">{$t('common.loading')}</span>
 	</div>
 {:else}
 	<div class="space-y-6">
 		{#if error}
-			<Alert type="error" title="Error">{error}</Alert>
+			<Alert type="error" title={$t('common.error')}>{error}</Alert>
 		{/if}
 
 		{#if successMsg}
-			<Alert type="success" title="Saved">{successMsg}</Alert>
+			<Alert type="success" title={$t('common.saved')}>{successMsg}</Alert>
 		{/if}
 
 		{#if skills.length === 0}
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="py-8 text-center">
 					<Lock class="w-10 h-10 mx-auto mb-3 text-base-content/40" />
-					<p class="text-base font-medium text-base-content/80 mb-1">No secrets to configure</p>
-					<p class="text-sm text-base-content/60 mb-4">Install skills that require API keys to see them here</p>
+					<p class="text-base font-medium text-base-content/80 mb-1">{$t('settingsSecrets.noSecrets')}</p>
+					<p class="text-sm text-base-content/60 mb-4">{$t('settingsSecrets.noSecretsDesc')}</p>
 					<a
 						href="/marketplace/skills"
 						class="inline-block h-10 px-6 leading-10 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
 					>
-						Browse Skills
+						{$t('settingsSecrets.browseSkills')}
 					</a>
 				</div>
 			</div>
@@ -133,7 +134,7 @@
 						<Zap class="w-4 h-4 text-primary" />
 						<h3 class="text-base font-semibold text-base-content">{skill.name}</h3>
 						{#if !skill.enabled}
-							<span class="text-xs text-base-content/40">disabled</span>
+							<span class="text-xs text-base-content/40">{$t('common.disabled')}</span>
 						{/if}
 					</div>
 					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-3">
@@ -143,7 +144,7 @@
 									<div class="flex items-center gap-2 mb-0.5">
 										<span class="text-base font-medium text-base-content">{secret.label || secret.key}</span>
 										{#if secret.required}
-											<span class="text-xs text-error/80">required</span>
+											<span class="text-xs text-error/80">{$t('common.required')}</span>
 										{/if}
 										{#if secret.configured}
 											<CheckCircle class="w-3.5 h-3.5 text-success" />
@@ -157,7 +158,7 @@
 
 									{#if secret.configured}
 										<div class="flex items-center gap-2 mt-2">
-											<span class="text-sm text-success/80">Configured</span>
+											<span class="text-sm text-success/80">{$t('common.configured')}</span>
 											<button
 												type="button"
 												class="text-sm text-base-content/40 hover:text-error transition-colors"
@@ -181,7 +182,7 @@
 												onclick={() => saveSecret(skill.name, secret.key)}
 												disabled={settingSecret === `${skill.name}:${secret.key}` || !secretInputs[`${skill.name}:${secret.key}`]}
 											>
-												{settingSecret === `${skill.name}:${secret.key}` ? '...' : 'Save'}
+												{settingSecret === `${skill.name}:${secret.key}` ? '...' : $t('common.save')}
 											</button>
 										</div>
 									{/if}

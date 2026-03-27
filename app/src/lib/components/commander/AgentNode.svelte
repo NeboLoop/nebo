@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Handle, Position } from '@xyflow/svelte';
+	import { t } from 'svelte-i18n';
 
 	const BOT_COLORS = [
 		{ bg: 'bg-blue-500/10', text: 'text-blue-500' },
@@ -39,7 +40,7 @@
 		<div class="min-w-0">
 			<div class="text-sm font-medium text-base-content/80 truncate">{data.name}</div>
 			{#if data.workflowCount}
-				<div class="text-xs text-base-content/50">{data.workflowCount} workflow{data.workflowCount !== 1 ? 's' : ''}</div>
+				<div class="text-xs text-base-content/50">{$t('commander.workflowCount', { values: { count: data.workflowCount } })}</div>
 			{/if}
 		</div>
 		<div class="ml-auto shrink-0">

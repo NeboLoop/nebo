@@ -4,6 +4,8 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
+
 	interface Props {
 		open?: boolean;
 		side?: 'top' | 'bottom' | 'left' | 'right';
@@ -54,7 +56,7 @@
 
 	<div class="drawer-side">
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-		<label for={sheetId} aria-label="close sidebar" class="drawer-overlay" onclick={close}></label>
+		<label for={sheetId} aria-label={$t('drawer.closeSidebar')} class="drawer-overlay" onclick={close}></label>
 		<div class="bg-base-100 text-base-content min-h-full {sideClasses[side]} p-6 relative">
 			<!-- Close button -->
 			<button
@@ -65,7 +67,7 @@
 				<svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
 				</svg>
-				<span class="sr-only">Close</span>
+				<span class="sr-only">{$t('common.close')}</span>
 			</button>
 
 			<!-- Header -->

@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { getActiveRoles, getRole, updateRole, activateRole, deactivateRole, deleteRole, reloadRole, checkRoleUpdate, applyRoleUpdate } from '$lib/api/nebo';
 	import AlertDialog from '$lib/components/ui/AlertDialog.svelte';
+	import { t } from 'svelte-i18n';
 
 	const channelState = getContext<{
 		activeRoleId: string;
@@ -144,7 +145,7 @@
 </script>
 
 <svelte:head>
-	<title>Nebo - {channelState.activeRoleName || 'Settings'} - Settings</title>
+	<title>Nebo - {channelState.activeRoleName || $t('agent.settingsTab')} - {$t('agent.settingsTab')}</title>
 </svelte:head>
 
 <div class="flex-1 flex flex-col min-h-0">
@@ -155,27 +156,27 @@
 				<div class="loading loading-spinner loading-md"></div>
 			</div>
 		{:else}
-			<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">General</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+			<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentSettings.general')}</h2><span class="btn btn-sm invisible">&#8203;</span></div>
 
 			<!-- Name -->
 			<div class="py-4 border-b border-base-content/10">
-				<label class="block text-sm font-medium mb-1" for="role-name">Name</label>
+				<label class="block text-sm font-medium mb-1" for="role-name">{$t('agentSettings.nameLabel')}</label>
 				<input
 					id="role-name"
 					class="input input-bordered w-full max-w-md"
 					bind:value={nameValue}
-					placeholder="Agent name"
+					placeholder={$t('agentSettings.namePlaceholder')}
 				/>
 			</div>
 
 			<!-- Description -->
 			<div class="py-4 border-b border-base-content/10">
-				<label class="block text-sm font-medium mb-1" for="role-desc">Description</label>
+				<label class="block text-sm font-medium mb-1" for="role-desc">{$t('agentSettings.descriptionLabel')}</label>
 				<input
 					id="role-desc"
 					class="input input-bordered w-full max-w-md"
 					bind:value={descriptionValue}
-					placeholder="Short description (optional)"
+					placeholder={$t('agentSettings.descriptionPlaceholder')}
 				/>
 			</div>
 
@@ -187,18 +188,18 @@
 						disabled={saving || !nameValue.trim()}
 						onclick={handleSave}
 					>
-						{saving ? 'Saving...' : 'Save'}
+						{saving ? $t('common.saving') : $t('common.save')}
 					</button>
 				</div>
 			{/if}
 
 			<!-- Version & Updates -->
 			<div class="py-4 border-t border-base-content/10 mt-4">
-				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Version</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentSettings.versionSection')}</h2><span class="btn btn-sm invisible">&#8203;</span></div>
 				<div class="flex items-center justify-between">
 					<div>
 						<p class="text-sm text-base-content/80">
-							{version || 'Local'}{isMarketplace ? ' (marketplace)' : ' (user-created)'}
+							{version || $t('agentSettings.local')}{isMarketplace ? ' ' + $t('agentSettings.marketplaceCreated') : ' ' + $t('agentSettings.userCreated')}
 						</p>
 					</div>
 					<div class="flex items-center gap-2">
@@ -210,7 +211,7 @@
 							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 								<path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
 							</svg>
-							{reloading ? 'Reloading...' : 'Reload'}
+							{reloading ? $t('agentSettings.reloading') : $t('agentSettings.reload')}
 						</button>
 						{#if isMarketplace}
 							{#if updateAvailable}
@@ -219,7 +220,7 @@
 									disabled={applyingUpdate}
 									onclick={handleApplyUpdate}
 								>
-									{applyingUpdate ? 'Updating...' : `Update to ${remoteVersion}`}
+									{applyingUpdate ? $t('agentSettings.updating') : $t('agentSettings.updateTo', { values: { version: remoteVersion } })}
 								</button>
 							{:else}
 								<button
@@ -227,7 +228,7 @@
 									disabled={checkingUpdate}
 									onclick={handleCheckUpdate}
 								>
-									{checkingUpdate ? 'Checking...' : 'Check for updates'}
+									{checkingUpdate ? $t('agentSettings.checking') : $t('agentSettings.checkForUpdates')}
 								</button>
 							{/if}
 						{/if}
@@ -237,10 +238,10 @@
 
 			<!-- Status -->
 			<div class="py-4 border-t border-base-content/10 mt-4">
-				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Status</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentSettings.statusSection')}</h2><span class="btn btn-sm invisible">&#8203;</span></div>
 				<div class="flex items-center justify-between">
 					<p class="text-sm text-base-content/70">
-						{isActive ? 'This agent is active and running.' : 'This agent is paused.'}
+						{isActive ? $t('agentSettings.agentActive') : $t('agentSettings.agentPaused')}
 					</p>
 				{#if isActive}
 					<button
@@ -252,7 +253,7 @@
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							<rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" />
 						</svg>
-						{pausing ? 'Pausing...' : 'Pause'}
+						{pausing ? $t('agentSettings.pausing') : $t('sidebar.pause')}
 					</button>
 				{:else}
 					<button
@@ -264,7 +265,7 @@
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 							<polygon points="5 3 19 12 5 21 5 3" />
 						</svg>
-						{resuming ? 'Resuming...' : 'Resume'}
+						{resuming ? $t('agentSettings.resuming') : $t('sidebar.resume')}
 					</button>
 				{/if}
 				</div>
@@ -272,16 +273,16 @@
 
 			<!-- Danger zone -->
 			<div class="py-4 border-t border-base-content/10 mt-4">
-				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-error/80 uppercase tracking-wider font-semibold">Danger zone</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-error/80 uppercase tracking-wider font-semibold">{$t('agentSettings.dangerZone')}</h2><span class="btn btn-sm invisible">&#8203;</span></div>
 				<div class="flex items-center justify-between">
-					<p class="text-sm text-base-content/70">Permanently remove this agent and all its data.</p>
+					<p class="text-sm text-base-content/70">{$t('agentSettings.dangerDesc')}</p>
 				<button
 					class="btn btn-sm btn-error btn-outline gap-1.5"
 					class:opacity-50={deleting}
 					disabled={deleting}
 					onclick={() => showDeleteDialog = true}
 				>
-					{deleting ? 'Deleting...' : 'Delete'}
+					{deleting ? $t('agentSettings.deleting') : $t('common.delete')}
 				</button>
 				</div>
 			</div>
@@ -292,9 +293,9 @@
 
 <AlertDialog
 	bind:open={showDeleteDialog}
-	title="Delete Agent"
-	description="Are you sure you want to delete &quot;{channelState.activeRoleName}&quot;? This will remove the agent and all its data permanently."
-	actionLabel="Delete"
+	title={$t('agentSettings.deleteAgent')}
+	description={$t('agentSettings.deleteConfirm', { values: { name: channelState.activeRoleName } })}
+	actionLabel={$t('common.delete')}
 	actionType="danger"
 	onAction={handleDelete}
 />

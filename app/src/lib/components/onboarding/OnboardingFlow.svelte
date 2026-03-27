@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { t, locale } from 'svelte-i18n';
 	import {
 		Key,
 		Sparkles,
@@ -32,6 +33,7 @@
 	let { onComplete = () => {} }: { onComplete?: () => void } = $props();
 
 	type OnboardingStep =
+		| 'language'
 		| 'welcome'
 		| 'terms'
 		| 'provider-choice'
@@ -41,8 +43,9 @@
 		| 'complete';
 	type ProviderChoice = 'janus' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'api-key';
 
-	let currentStep = $state<OnboardingStep>('welcome');
+	let currentStep = $state<OnboardingStep>('language');
 	let error = $state('');
+	let selectedLanguage = $state('en');
 	let providerChoice = $state<ProviderChoice | null>(null);
 	let cameFromJanus = $state(false);
 	let showMoreProviders = $state(false);
@@ -83,54 +86,93 @@
 	let neboLoopPendingState = $state('');
 	let neboLoopPollTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
+	const onboardingLanguages = [
+		{ value: 'en', label: 'English' },
+		{ value: 'de', label: 'Deutsch' },
+		{ value: 'es', label: 'Español' },
+		{ value: 'fr', label: 'Français' },
+		{ value: 'it', label: 'Italiano' },
+		{ value: 'pt-BR', label: 'Português (Brasil)' },
+		{ value: 'nl', label: 'Nederlands' },
+		{ value: 'pl', label: 'Polski' },
+		{ value: 'tr', label: 'Türkçe' },
+		{ value: 'uk', label: 'Українська' },
+		{ value: 'vi', label: 'Tiếng Việt' },
+		{ value: 'ar', label: 'العربية' },
+		{ value: 'hi', label: 'हिन्दी' },
+		{ value: 'ja', label: '日本語' },
+		{ value: 'ko', label: '한국어' },
+		{ value: 'zh-CN', label: '中文 (简体)' },
+		{ value: 'zh-TW', label: '中文 (繁體)' }
+	];
+
+	function selectLanguage(lang: string) {
+		selectedLanguage = lang;
+		locale.set(lang);
+		localStorage.setItem('nebo_locale', lang);
+		if (typeof document !== 'undefined') {
+			document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+			document.documentElement.lang = lang;
+		}
+	}
+
+	async function saveLanguageAndContinue() {
+		try {
+			await api.updatePreferences({ language: selectedLanguage, emailNotifications: false, marketingEmails: false });
+		} catch {
+			// Non-blocking — continue even if save fails
+		}
+		currentStep = 'welcome';
+	}
+
 	const capabilityGroups = [
 		{
 			key: 'chat',
-			label: 'Chat & Memory',
-			description: 'Conversations, memory storage, scheduled tasks',
+			labelKey: 'onboarding.capabilityNames.chat',
+			descKey: 'onboarding.capabilityNames.chatDesc',
 			icon: MessageCircle,
 			alwaysOn: true
 		},
 		{
 			key: 'file',
-			label: 'File System',
-			description: 'Read, write, and edit files on your computer',
+			labelKey: 'onboarding.capabilityNames.filesystem',
+			descKey: 'onboarding.capabilityNames.filesystemDesc',
 			icon: FileText
 		},
 		{
 			key: 'shell',
-			label: 'Shell & Terminal',
-			description: 'Run commands and manage processes',
+			labelKey: 'onboarding.capabilityNames.shell',
+			descKey: 'onboarding.capabilityNames.shellDesc',
 			icon: Terminal
 		},
 		{
 			key: 'web',
-			label: 'Web Browsing',
-			description: 'Fetch web pages, search the internet, browser automation',
+			labelKey: 'onboarding.capabilityNames.web',
+			descKey: 'onboarding.capabilityNames.webDesc',
 			icon: Globe
 		},
 		{
 			key: 'contacts',
-			label: 'Contacts & Calendar',
-			description: 'Access contacts, calendar, reminders, and mail',
+			labelKey: 'onboarding.capabilityNames.contacts',
+			descKey: 'onboarding.capabilityNames.contactsDesc',
 			icon: Users
 		},
 		{
 			key: 'desktop',
-			label: 'Desktop Control',
-			description: 'Window management, accessibility, clipboard',
+			labelKey: 'onboarding.capabilityNames.desktop',
+			descKey: 'onboarding.capabilityNames.desktopDesc',
 			icon: Monitor
 		},
 		{
 			key: 'media',
-			label: 'Media & Capture',
-			description: 'Screenshots, image analysis, music, text-to-speech',
+			labelKey: 'onboarding.capabilityNames.media',
+			descKey: 'onboarding.capabilityNames.mediaDesc',
 			icon: Camera
 		},
 		{
 			key: 'system',
-			label: 'System',
-			description: 'Spotlight search, keychain, shortcuts, system info',
+			labelKey: 'onboarding.capabilityNames.system',
+			descKey: 'onboarding.capabilityNames.systemDesc',
 			icon: Cpu
 		}
 	];
@@ -155,7 +197,7 @@
 
 	// CLI provider info loaded from models.yaml via API (no hardcoded model IDs)
 	let cliProviderInfo = $state<
-		Record<string, { id: string; name: string; description: string; model: string }>
+		Record<string, { id: string; name: string; descriptionKey: string; model: string }>
 	>({});
 
 	// Get list of authenticated CLIs
@@ -177,6 +219,7 @@
 
 	// Progress dots - steps visible to user
 	const progressSteps = [
+		'language',
 		'welcome',
 		'terms',
 		'provider-choice',
@@ -185,14 +228,22 @@
 		'complete'
 	];
 
-	// CLI command → description (static, not model-dependent)
-	const cliDescriptions: Record<string, string> = {
-		claude: 'Use your existing Claude subscription',
-		codex: 'Use your ChatGPT/OpenAI subscription',
-		gemini: 'Use your Google AI subscription (FREE)'
+	// CLI command → i18n key (static, not model-dependent)
+	const cliDescriptionKeys: Record<string, string> = {
+		claude: 'onboarding.provider.cliClaude',
+		codex: 'onboarding.provider.cliCodex',
+		gemini: 'onboarding.provider.cliGemini'
 	};
 
 	onMount(async () => {
+		// Auto-detect language from browser/OS
+		const browserLang = navigator.language?.split('-')[0];
+		const match = onboardingLanguages.find(l => l.value === navigator.language) ||
+			onboardingLanguages.find(l => l.value.startsWith(browserLang));
+		if (match) {
+			selectLanguage(match.value);
+		}
+
 		// Check CLI statuses and load CLI provider config from models.yaml
 		try {
 			const response = await api.listModels();
@@ -202,7 +253,7 @@
 			if (response.cliProviders) {
 				const info: Record<
 					string,
-					{ id: string; name: string; description: string; model: string }
+					{ id: string; name: string; descriptionKey: string; model: string }
 				> = {};
 				for (const cp of response.cliProviders) {
 					// defaultModel comes from models.yaml cli_providers section
@@ -210,7 +261,7 @@
 					info[cp.command] = {
 						id: cp.id,
 						name: cp.displayName,
-						description: cliDescriptions[cp.command] ?? `Use ${cp.displayName}`,
+						descriptionKey: cliDescriptionKeys[cp.command] ?? 'onboarding.cliProviderUse',
 						model: defaultModel ? `${cp.id}/${defaultModel}` : cp.id
 					};
 				}
@@ -230,7 +281,7 @@
 			await api.acceptTerms();
 			currentStep = 'provider-choice';
 		} catch (err: any) {
-			error = err?.message || 'Failed to accept terms';
+			error = err?.message || $t('onboarding.termsFailed');
 		} finally {
 			isAcceptingTerms = false;
 		}
@@ -249,7 +300,7 @@
 
 			currentStep = 'capabilities';
 		} catch (err: any) {
-			error = err?.message || `Failed to configure ${cliProviderInfo[cliKey].name}`;
+			error = err?.message || $t('onboarding.configFailed', { values: { name: cliProviderInfo[cliKey].name } });
 		} finally {
 			isSettingUpCLI = false;
 		}
@@ -257,7 +308,7 @@
 
 	async function testAndSaveApiKey() {
 		if (!apiKey.trim()) {
-			error = 'Please enter an API key';
+			error = $t('onboarding.apiKey.pleaseEnterKey');
 			return;
 		}
 
@@ -282,12 +333,12 @@
 					currentStep = 'capabilities';
 				}, 500);
 			} else {
-				error = testResponse.message || 'API key validation failed';
+				error = testResponse.message || $t('onboarding.apiKey.validationFailed');
 				// Delete the invalid profile
 				await api.deleteAuthProfile(profileResponse.profile.id);
 			}
 		} catch (err: any) {
-			error = err?.message || 'Failed to save API key';
+			error = err?.message || $t('onboarding.apiKey.saveFailed');
 		} finally {
 			isTestingKey = false;
 		}
@@ -308,7 +359,7 @@
 				checkNeboLoopStatus();
 			}
 		} catch (err: any) {
-			error = err?.message || 'Failed to save permissions';
+			error = err?.message || $t('onboarding.permissionsFailed');
 		} finally {
 			isSavingPermissions = false;
 		}
@@ -339,7 +390,7 @@
 				() => {
 					if (neboLoopLoading) {
 						cleanupNeboLoopOAuth();
-						neboLoopError = 'Sign-in timed out. Please try again.';
+						neboLoopError = $t('onboarding.neboloop.signInTimeout');
 						neboLoopLoading = false;
 					}
 				},
@@ -359,12 +410,12 @@
 					} else if (result.status === 'error') {
 						clearTimeout(timeout);
 						cleanupNeboLoopOAuth();
-						neboLoopError = result.error ?? 'Sign-in failed';
+						neboLoopError = result.error ?? $t('onboarding.neboloop.signInFailed');
 						neboLoopLoading = false;
 					} else if (result.status === 'expired') {
 						clearTimeout(timeout);
 						cleanupNeboLoopOAuth();
-						neboLoopError = 'Sign-in expired. Please try again.';
+						neboLoopError = $t('onboarding.neboloop.signInExpired');
 						neboLoopLoading = false;
 					}
 				} catch {
@@ -372,7 +423,7 @@
 				}
 			}, 2000);
 		} catch (e: any) {
-			neboLoopError = e?.message || 'Failed to start sign-in';
+			neboLoopError = e?.message || $t('onboarding.neboloop.startFailed');
 			neboLoopLoading = false;
 		}
 	}
@@ -448,6 +499,38 @@
 			{/each}
 		</div>
 
+		<!-- Language Step -->
+		{#if currentStep === 'language'}
+			<div class="text-center animate-in fade-in duration-300">
+				<div class="w-20 h-20 rounded-full bg-primary/20 flex items-center justify-center mx-auto mb-6">
+					<Globe class="w-10 h-10 text-primary" />
+				</div>
+				<h1 class="text-3xl font-bold mb-3">{$t('onboarding.language.title')}</h1>
+				<p class="text-base-content/80 mb-6 text-lg">{$t('onboarding.language.description')}</p>
+				<div class="grid grid-cols-2 gap-2 max-w-md mx-auto mb-8 max-h-72 overflow-y-auto px-1">
+					{#each onboardingLanguages as lang}
+						<button
+							type="button"
+							onclick={() => selectLanguage(lang.value)}
+							class="flex items-center justify-between gap-2 px-4 py-3 rounded-xl border transition-all text-left
+								{selectedLanguage === lang.value
+									? 'bg-primary/10 border-primary/30 text-primary'
+									: 'bg-base-content/5 border-transparent text-base-content/90 hover:border-base-content/15'}"
+						>
+							<span class="text-base font-medium">{lang.label}</span>
+							{#if selectedLanguage === lang.value}
+								<Check class="w-4 h-4 shrink-0" />
+							{/if}
+						</button>
+					{/each}
+				</div>
+				<Button type="primary" size="lg" onclick={saveLanguageAndContinue}>
+					{$t('common.continue')}
+					<ArrowRight class="w-5 h-5 ml-2" />
+				</Button>
+			</div>
+		{/if}
+
 		<!-- Welcome Step -->
 		{#if currentStep === 'welcome'}
 			<div class="text-center animate-in fade-in duration-300">
@@ -456,12 +539,12 @@
 				>
 					<Sparkles class="w-10 h-10 text-primary" />
 				</div>
-				<h1 class="text-3xl font-bold mb-3">Welcome to Nebo</h1>
+				<h1 class="text-3xl font-bold mb-3">{$t('onboarding.welcome.title')}</h1>
 				<p class="text-base-content/80 mb-8 text-lg">
-					Your personal AI companion. Let's get you set up in just a minute.
+					{$t('onboarding.welcome.description')}
 				</p>
 				<Button type="primary" size="lg" onclick={() => (currentStep = 'terms')}>
-					Get Started
+					{$t('onboarding.welcome.getStarted')}
 					<ArrowRight class="w-5 h-5 ml-2" />
 				</Button>
 			</div>
@@ -475,9 +558,9 @@
 				>
 					<Shield class="w-8 h-8 text-warning" />
 				</div>
-				<h2 class="text-2xl font-bold text-center mb-2">Privacy & Terms</h2>
+				<h2 class="text-2xl font-bold text-center mb-2">{$t('onboarding.terms.title')}</h2>
 				<p class="text-base-content/80 text-center mb-6">
-					Important information about how Nebo handles your data
+					{$t('onboarding.terms.description')}
 				</p>
 
 				{#if error}
@@ -488,38 +571,33 @@
 
 				<div class="bg-base-200 rounded-xl p-5 mb-6 space-y-4 text-base max-h-64 scrollbar-overlay">
 					<div>
-						<h3 class="font-semibold text-base-content mb-1">Your Data Stays Local</h3>
+						<h3 class="font-semibold text-base-content mb-1">{$t('onboarding.terms.dataLocal')}</h3>
 						<p class="text-base-content/90">
-							All conversations, memories, and settings are stored locally on your device in a
-							SQLite database. Nothing is sent to Nebo's servers.
+							{$t('onboarding.terms.dataLocalDesc')}
 						</p>
 					</div>
 					<div>
-						<h3 class="font-semibold text-base-content mb-1">AI Provider Communication</h3>
+						<h3 class="font-semibold text-base-content mb-1">{$t('onboarding.terms.aiProvider')}</h3>
 						<p class="text-base-content/90">
-							When you chat, your messages are sent to your chosen AI provider (Anthropic, OpenAI,
-							or Google) for processing. Their privacy policies apply to that data.
+							{$t('onboarding.terms.aiProviderDesc')}
 						</p>
 					</div>
 					<div>
-						<h3 class="font-semibold text-base-content mb-1">API Keys</h3>
+						<h3 class="font-semibold text-base-content mb-1">{$t('onboarding.terms.apiKeys')}</h3>
 						<p class="text-base-content/90">
-							Your API keys are stored locally in your device's database. They are only used to
-							authenticate with your AI provider.
+							{$t('onboarding.terms.apiKeysDesc')}
 						</p>
 					</div>
 					<div>
-						<h3 class="font-semibold text-base-content mb-1">System Access</h3>
+						<h3 class="font-semibold text-base-content mb-1">{$t('onboarding.terms.systemAccess')}</h3>
 						<p class="text-base-content/90">
-							Nebo can access system features (files, shell, contacts, etc.) but only capabilities
-							you explicitly enable. You control what the agent can do.
+							{$t('onboarding.terms.systemAccessDesc')}
 						</p>
 					</div>
 					<div>
-						<h3 class="font-semibold text-base-content mb-1">No Analytics or Telemetry</h3>
+						<h3 class="font-semibold text-base-content mb-1">{$t('onboarding.terms.noAnalytics')}</h3>
 						<p class="text-base-content/90">
-							Nebo does not collect usage analytics, telemetry, or crash reports. Your usage is
-							completely private.
+							{$t('onboarding.terms.noAnalyticsDesc')}
 						</p>
 					</div>
 				</div>
@@ -531,8 +609,7 @@
 						bind:checked={termsAccepted}
 					/>
 					<span class="text-base text-base-content/80">
-						I understand that my conversations are sent to my chosen AI provider for processing, and
-						that I control which system capabilities the agent can access.
+						{$t('onboarding.terms.consent')}
 					</span>
 				</label>
 
@@ -544,9 +621,9 @@
 				>
 					{#if isAcceptingTerms}
 						<Loader2 class="w-5 h-5 mr-2 animate-spin" />
-						Saving...
+						{$t('common.saving')}
 					{:else}
-						Continue
+						{$t('common.continue')}
 						<ArrowRight class="w-5 h-5 ml-2" />
 					{/if}
 				</Button>
@@ -561,8 +638,8 @@
 				>
 					<Sparkles class="w-8 h-8 text-primary" />
 				</div>
-				<h2 class="text-2xl font-bold text-center mb-2 shrink-0">Connect Your AI</h2>
-				<p class="text-base-content/90 text-center mb-6 shrink-0">Choose how to power Nebo</p>
+				<h2 class="text-2xl font-bold text-center mb-2 shrink-0">{$t('onboarding.provider.title')}</h2>
+				<p class="text-base-content/90 text-center mb-6 shrink-0">{$t('onboarding.provider.subtitle')}</p>
 
 				{#if error}
 					<div class="alert alert-error mb-4 shrink-0">
@@ -586,11 +663,11 @@
 							</div>
 							<div class="flex-1">
 								<div class="flex items-center gap-2">
-									<span class="font-semibold">Janus</span>
-									<span class="badge badge-primary badge-sm">Recommended</span>
+									<span class="font-semibold">{$t('onboarding.provider.janus')}</span>
+									<span class="badge badge-primary badge-sm">{$t('onboarding.provider.recommended')}</span>
 								</div>
 								<p class="text-base text-base-content/80 mt-1">
-									AI powered by NeboLoop — no API keys needed
+									{$t('onboarding.provider.janusDesc')}
 								</p>
 							</div>
 							<div class="mt-1">
@@ -611,7 +688,7 @@
 						class="w-full text-base text-base-content/90 hover:text-base-content/90 flex items-center justify-center gap-1 py-2"
 						onclick={() => (showMoreProviders = !showMoreProviders)}
 					>
-						Use your own API key or CLI instead
+						{$t('onboarding.provider.useOwnKey')}
 						<ChevronDown
 							class="w-4 h-4 transition-transform {showMoreProviders ? 'rotate-180' : ''}"
 						/>
@@ -624,7 +701,7 @@
 						{#if isCheckingCLI}
 							<div class="flex items-center justify-center py-4">
 								<Loader2 class="w-5 h-5 animate-spin text-base-content/90" />
-								<span class="ml-2 text-base text-base-content/90">Detecting CLI tools...</span>
+								<span class="ml-2 text-base text-base-content/90">{$t('onboarding.provider.detectingCli')}</span>
 							</div>
 						{:else}
 							<!-- Show all authenticated CLIs -->
@@ -646,10 +723,10 @@
 										<div class="flex-1">
 											<div class="flex items-center gap-2">
 												<span class="font-semibold">{info.name}</span>
-												<span class="badge badge-success badge-sm">Ready</span>
+												<span class="badge badge-success badge-sm">{$t('onboarding.provider.ready')}</span>
 											</div>
 											<p class="text-base text-base-content/90 mt-1">
-												{info.description}
+												{$t(info.descriptionKey, { values: { name: info.name } })}
 											</p>
 											{#if status?.version}
 												<p class="text-sm text-base-content/90 mt-1">
@@ -687,12 +764,10 @@
 												<div class="flex-1">
 													<div class="flex items-center gap-2">
 														<span class="font-semibold">{info.name}</span>
-														<span class="badge badge-warning badge-sm">Needs Login</span>
+														<span class="badge badge-warning badge-sm">{$t('onboarding.provider.needsLogin')}</span>
 													</div>
 													<p class="text-base text-base-content/90 mt-1">
-														Installed but not logged in. Run <code
-															class="text-sm bg-base-300 px-1 rounded">{cliKey}</code
-														> in terminal to authenticate.
+														{$t('onboarding.provider.needsLoginDesc', { values: { cliKey } })}
 													</p>
 												</div>
 											</div>
@@ -717,10 +792,10 @@
 								</div>
 								<div class="flex-1">
 									<div class="flex items-center gap-2">
-										<span class="font-semibold">Add API Key</span>
+										<span class="font-semibold">{$t('onboarding.provider.addApiKey')}</span>
 									</div>
 									<p class="text-base text-base-content/90 mt-1">
-										Use an API key from Anthropic, OpenAI, or Google.
+										{$t('onboarding.provider.addApiKeyDesc')}
 									</p>
 								</div>
 								<div class="mt-1">
@@ -745,9 +820,9 @@
 				>
 					{#if isSettingUpCLI}
 						<Loader2 class="w-5 h-5 mr-2 animate-spin" />
-						Setting up...
+						{$t('onboarding.provider.settingUp')}
 					{:else}
-						Continue
+						{$t('common.continue')}
 						<ArrowRight class="w-5 h-5 ml-2" />
 					{/if}
 				</Button>
@@ -762,9 +837,9 @@
 				>
 					<Key class="w-8 h-8 text-secondary" />
 				</div>
-				<h2 class="text-2xl font-bold text-center mb-2">Enter API Key</h2>
+				<h2 class="text-2xl font-bold text-center mb-2">{$t('onboarding.apiKey.title')}</h2>
 				<p class="text-base-content/90 text-center mb-6">
-					Your key is stored securely and never leaves your device.
+					{$t('onboarding.apiKey.description')}
 				</p>
 
 				{#if error}
@@ -776,14 +851,14 @@
 				{#if keyValid}
 					<div class="alert alert-success mb-4">
 						<Check class="w-5 h-5" />
-						<span>API key verified successfully!</span>
+						<span>{$t('onboarding.apiKey.verified')}</span>
 					</div>
 				{/if}
 
 				<div class="space-y-4">
 					<div>
 						<label class="label" for="provider-select">
-							<span class="label-text">Provider</span>
+							<span class="label-text">{$t('onboarding.apiKey.providerLabel')}</span>
 						</label>
 						<select
 							id="provider-select"
@@ -791,15 +866,15 @@
 							bind:value={provider}
 							disabled={isTestingKey}
 						>
-							<option value="anthropic">Anthropic (Claude) - Recommended</option>
-							<option value="openai">OpenAI (GPT)</option>
-							<option value="google">Google (Gemini)</option>
+							<option value="anthropic">{$t('onboarding.apiKey.anthropic')}</option>
+							<option value="openai">{$t('onboarding.apiKey.openai')}</option>
+							<option value="google">{$t('onboarding.apiKey.google')}</option>
 						</select>
 					</div>
 
 					<div>
 						<label class="label" for="api-key-input">
-							<span class="label-text">API Key</span>
+							<span class="label-text">{$t('onboarding.apiKey.apiKeyLabel')}</span>
 						</label>
 						<input
 							id="api-key-input"
@@ -816,7 +891,7 @@
 								rel="noopener noreferrer"
 								class="label-text-alt link link-primary"
 							>
-								Get an API key
+								{$t('onboarding.apiKey.getKey')}
 							</a>
 						</label>
 					</div>
@@ -829,9 +904,9 @@
 					>
 						{#if isTestingKey}
 							<Loader2 class="w-5 h-5 mr-2 animate-spin" />
-							Verifying...
+							{$t('onboarding.apiKey.verifying')}
 						{:else}
-							Continue
+							{$t('common.continue')}
 							<ArrowRight class="w-5 h-5 ml-2" />
 						{/if}
 					</Button>
@@ -841,7 +916,7 @@
 						class="w-full text-base text-base-content/90 hover:text-base-content"
 						onclick={() => (currentStep = 'provider-choice')}
 					>
-						← Back to provider selection
+						{$t('onboarding.apiKey.backToProvider')}
 					</button>
 				</div>
 			</div>
@@ -855,9 +930,9 @@
 				>
 					<Shield class="w-8 h-8 text-info" />
 				</div>
-				<h2 class="text-2xl font-bold text-center mb-2">Agent Capabilities</h2>
+				<h2 class="text-2xl font-bold text-center mb-2">{$t('onboarding.capabilities.title')}</h2>
 				<p class="text-base-content/90 text-center mb-6">
-					Choose what Nebo can access. You can change these anytime in Settings.
+					{$t('onboarding.capabilities.description')}
 				</p>
 
 				{#if error}
@@ -888,12 +963,12 @@
 								</div>
 								<div class="flex-1 min-w-0">
 									<div class="flex items-center gap-2">
-										<span class="font-medium text-base">{cap.label}</span>
+										<span class="font-medium text-base">{$t(cap.labelKey)}</span>
 										{#if cap.alwaysOn}
-											<span class="badge badge-neutral badge-xs">Always on</span>
+											<span class="badge badge-neutral badge-xs">{$t('onboarding.capabilities.alwaysOn')}</span>
 										{/if}
 									</div>
-									<p class="text-sm text-base-content/90 truncate">{cap.description}</p>
+									<p class="text-sm text-base-content/90 truncate">{$t(cap.descKey)}</p>
 								</div>
 								<input
 									type="checkbox"
@@ -916,9 +991,9 @@
 				>
 					{#if isSavingPermissions}
 						<Loader2 class="w-5 h-5 mr-2 animate-spin" />
-						Saving...
+						{$t('common.saving')}
 					{:else}
-						Continue
+						{$t('common.continue')}
 						<ArrowRight class="w-5 h-5 ml-2" />
 					{/if}
 				</Button>
@@ -934,18 +1009,18 @@
 					<Store class="w-8 h-8 text-accent" />
 				</div>
 				<h2 class="text-2xl font-bold text-center mb-2">
-					{cameFromJanus ? 'Connect to NeboLoop' : 'NeboLoop'}
+					{cameFromJanus ? $t('onboarding.neboloop.connectTitle') : $t('onboarding.neboloop.title')}
 				</h2>
 				<p class="text-base-content/90 text-center mb-6">
 					{cameFromJanus
-						? 'Sign in or create an account on NeboLoop to use Janus AI.'
-						: 'Connect to the NeboLoop marketplace to install apps, skills, and AI providers.'}
+						? $t('onboarding.neboloop.janusDesc')
+						: $t('onboarding.neboloop.marketplaceDesc')}
 				</p>
 
 				{#if neboLoopConnected}
 					<div class="flex flex-col items-center gap-4 py-6 mb-6">
 						<CircleCheck class="h-12 w-12 text-success" />
-						<p class="text-lg font-medium">Connected to NeboLoop</p>
+						<p class="text-lg font-medium">{$t('onboarding.neboloop.connected')}</p>
 						<p class="text-base-content/90">{neboLoopEmail}</p>
 					</div>
 					<Button
@@ -959,7 +1034,7 @@
 							}
 						}}
 					>
-						Continue
+						{$t('common.continue')}
 						<ArrowRight class="w-5 h-5 ml-2" />
 					</Button>
 				{:else}
@@ -971,7 +1046,7 @@
 
 					<div class="flex flex-col items-center gap-4 py-4">
 						<p class="text-base-content/90 text-center text-base max-w-sm">
-							Sign in or create a new account on NeboLoop. You can use Google, Apple, or email.
+							{$t('onboarding.neboloop.signInDesc')}
 						</p>
 						<Button
 							type="primary"
@@ -981,13 +1056,13 @@
 						>
 							{#if neboLoopLoading}
 								<Loader2 class="w-5 h-5 mr-2 animate-spin" />
-								Waiting for sign-in...
+								{$t('onboarding.neboloop.waitingForSignIn')}
 							{:else}
-								Continue with NeboLoop
+								{$t('onboarding.neboloop.continueWithNeboLoop')}
 							{/if}
 						</Button>
 						{#if neboLoopLoading}
-							<p class="text-base text-base-content/90">Complete sign-in in your browser</p>
+							<p class="text-base text-base-content/90">{$t('onboarding.neboloop.completeInBrowser')}</p>
 							<button
 								type="button"
 								class="text-base text-base-content/90 hover:text-base-content underline"
@@ -996,7 +1071,7 @@
 									neboLoopLoading = false;
 								}}
 							>
-								Cancel
+								{$t('common.cancel')}
 							</button>
 						{/if}
 					</div>
@@ -1014,7 +1089,7 @@
 								}
 							}}
 						>
-							← Back
+							{$t('common.back')}
 						</button>
 						{#if !cameFromJanus}
 							<button
@@ -1022,7 +1097,7 @@
 								class="text-base text-base-content/90 hover:text-base-content"
 								onclick={completeOnboarding}
 							>
-								Skip for now →
+								{$t('onboarding.neboloop.skipForNow')}
 							</button>
 						{/if}
 					</div>
@@ -1038,10 +1113,10 @@
 				>
 					<Check class="w-10 h-10 text-success" />
 				</div>
-				<h2 class="text-3xl font-bold mb-3">You're all set!</h2>
-				<p class="text-base-content/90 mb-8 text-lg">Nebo is ready to meet you. Let's chat!</p>
+				<h2 class="text-3xl font-bold mb-3">{$t('onboarding.complete.title')}</h2>
+				<p class="text-base-content/90 mb-8 text-lg">{$t('onboarding.complete.description')}</p>
 				<Button type="primary" size="lg" onclick={finishOnboarding}>
-					Start Chatting
+					{$t('onboarding.complete.startChatting')}
 					<ArrowRight class="w-5 h-5 ml-2" />
 				</Button>
 			</div>

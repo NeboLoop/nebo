@@ -10,6 +10,8 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
+
 	interface Props {
 		value?: string[];
 		placeholder?: string;
@@ -20,7 +22,7 @@
 
 	let {
 		value = $bindable([]),
-		placeholder = 'Type and press Enter...',
+		placeholder = $t('tagInput.placeholder'),
 		class: extraClass = '',
 		disabled = false,
 		transformInput
@@ -83,7 +85,7 @@
 					type="button"
 					onclick={() => removeTag(index)}
 					class="btn btn-ghost btn-xs p-0 h-auto min-h-0"
-					aria-label="Remove {tag}"
+					aria-label={$t('tagInput.remove', { values: { tag } })}
 				>
 					<svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />

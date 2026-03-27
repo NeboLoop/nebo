@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import { Code, FolderOpen, Trash2, RefreshCw, Plus, ExternalLink, AlertCircle, ChevronRight } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type * as components from '$lib/api/neboComponents';
@@ -86,7 +87,7 @@
 				selectedApp = null;
 			}
 		} catch (err: any) {
-			appErrors[appId] = err?.message || 'Failed to unload app';
+			appErrors[appId] = err?.message || $t('settingsDeveloper.unloadFailed');
 		}
 	}
 
@@ -98,7 +99,7 @@
 			const appsRes = await api.listDevApps();
 			devApps = appsRes.apps ?? [];
 		} catch (err: any) {
-			appErrors[appId] = err?.message || 'Failed to relaunch app';
+			appErrors[appId] = err?.message || $t('settingsDeveloper.relaunchFailed');
 		}
 	}
 
@@ -117,8 +118,8 @@
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">Developer</h2>
-	<p class="text-base text-base-content/80">App development tools and settings</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsDeveloper.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsDeveloper.description')}</p>
 </div>
 
 <div class="space-y-6">
@@ -126,7 +127,7 @@
 		<Card>
 			<div class="flex flex-col items-center justify-center gap-4 py-8">
 				<Spinner size={32} />
-				<p class="text-base text-base-content/80">Loading developer settings...</p>
+				<p class="text-base text-base-content/80">{$t('settingsDeveloper.loadingSettings')}</p>
 			</div>
 		</Card>
 	{:else}
@@ -134,16 +135,16 @@
 		<Card>
 			<div class="flex items-center gap-3 mb-6">
 				<div>
-					<h3 class="text-lg font-semibold text-base-content">Developer Mode</h3>
-					<p class="text-base text-base-content/80">Enable app development features</p>
+					<h3 class="text-lg font-semibold text-base-content">{$t('settingsDeveloper.devMode')}</h3>
+					<p class="text-base text-base-content/80">{$t('settingsDeveloper.devModeDesc')}</p>
 				</div>
 			</div>
 
 			<div class="flex items-center justify-between py-3">
 				<div>
-					<p class="text-base font-medium text-base-content">Enable Developer Mode</p>
+					<p class="text-base font-medium text-base-content">{$t('settingsDeveloper.enableDevMode')}</p>
 					<p class="text-base text-base-content/80">
-						Allows sideloading local apps for testing and development
+						{$t('settingsDeveloper.enableDevModeDesc')}
 					</p>
 				</div>
 				<Toggle bind:checked={developerMode} onchange={handleToggle} />
@@ -175,9 +176,9 @@
 						<FolderOpen class="w-5 h-5 text-primary" />
 					</div>
 					<div>
-						<h2 class="text-lg font-semibold text-base-content">Sideloaded Apps</h2>
+						<h2 class="text-lg font-semibold text-base-content">{$t('settingsDeveloper.sideloadedApps')}</h2>
 						<p class="text-base text-base-content/80">
-							Load apps from local directories for development
+							{$t('settingsDeveloper.sideloadedDesc')}
 						</p>
 					</div>
 				</div>
@@ -187,7 +188,7 @@
 					<input
 						type="text"
 						bind:value={sideloadPath}
-						placeholder="/path/to/your/app/project"
+						placeholder={$t('settingsDeveloper.pathPlaceholder')}
 						class="input input-bordered flex-1 text-base"
 						onkeydown={(e) => {
 							if (e.key === 'Enter') handleSideload();
@@ -200,7 +201,7 @@
 						{:else}
 							<Plus class="w-4 h-4" />
 						{/if}
-						Load
+						{$t('settingsDeveloper.load')}
 					</Button>
 				</div>
 
@@ -218,13 +219,13 @@
 										<p class="text-base font-medium text-base-content truncate">
 											{app.name}
 										</p>
-										<span class="badge badge-xs badge-accent">dev</span>
+										<span class="badge badge-xs badge-accent">{$t('common.dev')}</span>
 										{#if appErrors[app.appId]}
 											<AlertCircle class="w-3.5 h-3.5 text-error shrink-0" />
 										{:else if app.running}
-											<span class="badge badge-xs badge-success">running</span>
+											<span class="badge badge-xs badge-success">{$t('common.running')}</span>
 										{:else}
-											<span class="badge badge-xs badge-ghost">stopped</span>
+											<span class="badge badge-xs badge-ghost">{$t('settingsDeveloper.stopped')}</span>
 										{/if}
 									</div>
 									<p class="text-base text-base-content/80 truncate mt-0.5">
@@ -234,14 +235,14 @@
 								<div class="flex items-center gap-1 ml-3">
 									<button
 										class="btn btn-ghost btn-xs"
-										title="Relaunch"
+										title={$t('settingsDeveloper.relaunch')}
 										onclick={(e) => handleRelaunch(e, app.appId)}
 									>
 										<RefreshCw class="w-3.5 h-3.5" />
 									</button>
 									<button
 										class="btn btn-ghost btn-xs text-error"
-										title="Unload"
+										title={$t('settingsDeveloper.unload')}
 										onclick={(e) => handleUnsideload(e, app.appId)}
 									>
 										<Trash2 class="w-3.5 h-3.5" />
@@ -254,7 +255,7 @@
 				{:else}
 					<div class="text-center py-6">
 						<p class="text-base text-base-content/80">
-							No sideloaded apps. Enter a path to your app project above to get started.
+							{$t('settingsDeveloper.noSideloaded')}
 						</p>
 					</div>
 				{/if}
@@ -263,12 +264,12 @@
 			<!-- Developer Info -->
 			<Card>
 				<div class="bg-base-200 rounded-lg p-4">
-					<p class="text-base font-medium text-base-content mb-2">How sideloading works</p>
+					<p class="text-base font-medium text-base-content mb-2">{$t('settingsDeveloper.howItWorks')}</p>
 					<ul class="text-base text-base-content/80 space-y-1 list-disc list-inside">
-						<li>Point to a directory with a <code class="bg-base-300 px-1 rounded">manifest.json</code> and compiled binary</li>
-						<li>Nebo creates a symlink and launches the app immediately</li>
-						<li>Rebuild your binary and the watcher will auto-restart the app</li>
-						<li>Unloading removes the symlink but keeps your project files intact</li>
+						<li>{$t('settingsDeveloper.howStep1')}</li>
+						<li>{$t('settingsDeveloper.howStep2')}</li>
+						<li>{$t('settingsDeveloper.howStep3')}</li>
+						<li>{$t('settingsDeveloper.howStep4')}</li>
 					</ul>
 				</div>
 			</Card>
@@ -281,13 +282,13 @@
 	<Modal bind:show={showDetailModal} title={selectedApp.name} size="lg" onclose={() => { selectedApp = null; }} closeOnBackdrop={true}>
 		<!-- Status -->
 		<div class="flex items-center gap-2 mb-4">
-			<span class="badge badge-sm badge-accent">dev</span>
+			<span class="badge badge-sm badge-accent">{$t('common.dev')}</span>
 			{#if appErrors[selectedApp.appId]}
-				<span class="badge badge-sm badge-error">error</span>
+				<span class="badge badge-sm badge-error">{$t('common.error')}</span>
 			{:else if selectedApp.running}
-				<span class="badge badge-sm badge-success">running</span>
+				<span class="badge badge-sm badge-success">{$t('common.running')}</span>
 			{:else}
-				<span class="badge badge-sm badge-ghost">stopped</span>
+				<span class="badge badge-sm badge-ghost">{$t('settingsDeveloper.stopped')}</span>
 			{/if}
 			{#if selectedApp.version}
 				<span class="badge badge-sm badge-outline">v{selectedApp.version}</span>
@@ -296,14 +297,14 @@
 
 		<!-- Path -->
 		<div class="mb-4">
-			<span class="text-base text-base-content/80 block mb-0.5">Path</span>
+			<span class="text-base text-base-content/80 block mb-0.5">{$t('settingsDeveloper.path')}</span>
 			<p class="text-base text-base-content font-mono bg-base-200 px-3 py-2 rounded-lg break-all">{selectedApp.path}</p>
 		</div>
 
 		<!-- Error -->
 		{#if appErrors[selectedApp.appId]}
 			<div class="mb-4">
-				<span class="text-base text-base-content/80 block mb-0.5">Error</span>
+				<span class="text-base text-base-content/80 block mb-0.5">{$t('common.error')}</span>
 				<div class="bg-error/10 border border-error/20 rounded-lg px-3 py-2">
 					<p class="text-base text-error font-mono break-all">{appErrors[selectedApp.appId]}</p>
 				</div>
@@ -312,19 +313,19 @@
 
 		<!-- Actions -->
 		<div class="flex gap-2 mb-4">
-			<Button type="primary" size="sm" onclick={() => { delete appErrors[selectedApp!.appId]; api.relaunchDevApp(selectedApp!.appId).then(async () => { const r = await api.listDevApps(); devApps = r.apps ?? []; }).catch((err: any) => { appErrors[selectedApp!.appId] = err?.message || 'Failed to relaunch'; }); }}>
+			<Button type="primary" size="sm" onclick={() => { delete appErrors[selectedApp!.appId]; api.relaunchDevApp(selectedApp!.appId).then(async () => { const r = await api.listDevApps(); devApps = r.apps ?? []; }).catch((err: any) => { appErrors[selectedApp!.appId] = err?.message || $t('settingsDeveloper.relaunchFailed'); }); }}>
 				<RefreshCw class="w-4 h-4" />
-				Relaunch
+				{$t('settingsDeveloper.relaunch')}
 			</Button>
-			<Button type="ghost" size="sm" onclick={() => { api.unsideload(selectedApp!.appId).then(() => { devApps = devApps.filter(a => a.appId !== selectedApp!.appId); delete appErrors[selectedApp!.appId]; showDetailModal = false; selectedApp = null; }).catch((err: any) => { appErrors[selectedApp!.appId] = err?.message || 'Failed to unload'; }); }}>
+			<Button type="ghost" size="sm" onclick={() => { api.unsideload(selectedApp!.appId).then(() => { devApps = devApps.filter(a => a.appId !== selectedApp!.appId); delete appErrors[selectedApp!.appId]; showDetailModal = false; selectedApp = null; }).catch((err: any) => { appErrors[selectedApp!.appId] = err?.message || $t('settingsDeveloper.unloadFailed'); }); }}>
 				<Trash2 class="w-4 h-4" />
-				Unload
+				{$t('settingsDeveloper.unload')}
 			</Button>
 		</div>
 
 		<!-- Logs -->
 		<div class="border-t border-base-300 pt-4">
-			<h4 class="text-base font-medium text-base-content mb-2">Logs</h4>
+			<h4 class="text-base font-medium text-base-content mb-2">{$t('settingsDeveloper.logs')}</h4>
 			<div class="h-72 rounded-lg overflow-hidden border border-base-300">
 				<AppLogs appId={selectedApp.appId} />
 			</div>

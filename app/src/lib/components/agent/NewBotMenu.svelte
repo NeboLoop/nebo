@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { createBlankRole } from '$lib/api/nebo';
+	import { t } from 'svelte-i18n';
 
 	let {
 		onClose = () => {},
@@ -41,8 +42,8 @@
 			</svg>
 		</div>
 		<div class="flex flex-col">
-			<span class="font-medium text-base-content">Browse Marketplace</span>
-			<span class="text-sm text-base-content/60">Find pre-built roles</span>
+			<span class="font-medium text-base-content">{$t('newBot.browseMarketplace')}</span>
+			<span class="text-sm text-base-content/60">{$t('newBot.findPrebuilt')}</span>
 		</div>
 	</button>
 	<button class="new-bot-menu-item" onclick={createNew} disabled={creating}>
@@ -52,8 +53,8 @@
 			</svg>
 		</div>
 		<div class="flex flex-col">
-			<span class="font-medium text-base-content">New Agent</span>
-			<span class="text-sm text-base-content/60">Create a blank agent</span>
+			<span class="font-medium text-base-content">{$t('newBot.newAgent')}</span>
+			<span class="text-sm text-base-content/60">{$t('newBot.createBlank')}</span>
 		</div>
 	</button>
 </div>

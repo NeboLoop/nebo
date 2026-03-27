@@ -13,6 +13,7 @@
 	import * as api from '$lib/api/nebo';
 	import type { AdvisorItem } from '$lib/api/neboComponents';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import { t } from 'svelte-i18n';
 
 	let isLoading = $state(true);
 	let advisors = $state<AdvisorItem[]>([]);
@@ -67,7 +68,7 @@
 			const res = await api.listAdvisors();
 			advisors = res.advisors || [];
 		} catch (err: any) {
-			error = err?.message || 'Failed to load advisors';
+			error = err?.message || $t('settingsAdvisors.loadFailed');
 		} finally {
 			isLoading = false;
 		}
@@ -90,9 +91,9 @@
 			advisors = [...advisors, res.advisor].sort((a, b) => b.priority - a.priority);
 			resetCreateForm();
 			showCreate = false;
-			showSuccess('Advisor created');
+			showSuccess($t('settingsAdvisors.created'));
 		} catch (err: any) {
-			error = err?.message || 'Failed to create advisor';
+			error = err?.message || $t('settingsAdvisors.createFailed');
 		} finally {
 			isCreating = false;
 		}
@@ -103,7 +104,7 @@
 			const res = await api.updateAdvisor({ enabled: !advisor.enabled }, advisor.name);
 			advisors = advisors.map((a) => (a.name === advisor.name ? res.advisor : a));
 		} catch (err: any) {
-			error = err?.message || 'Failed to update advisor';
+			error = err?.message || $t('settingsAdvisors.updateFailed');
 		}
 	}
 
@@ -112,7 +113,7 @@
 			const res = await api.updateAdvisor({ [field]: value }, advisor.name);
 			advisors = advisors.map((a) => (a.name === advisor.name ? res.advisor : a));
 		} catch (err: any) {
-			error = err?.message || 'Failed to update advisor';
+			error = err?.message || $t('settingsAdvisors.updateFailed');
 		}
 	}
 
@@ -121,9 +122,9 @@
 			await api.deleteAdvisor(name);
 			advisors = advisors.filter((a) => a.name !== name);
 			deleteConfirm = null;
-			showSuccess('Advisor deleted');
+			showSuccess($t('settingsAdvisors.deleted'));
 		} catch (err: any) {
-			error = err?.message || 'Failed to delete advisor';
+			error = err?.message || $t('settingsAdvisors.deleteFailed');
 		}
 	}
 
@@ -149,9 +150,9 @@
 
 <div class="mb-6 flex items-center justify-between">
 	<div>
-		<h2 class="font-display text-xl font-bold text-base-content mb-1">Advisors</h2>
+		<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsAdvisors.title')}</h2>
 		<p class="text-base text-base-content/80">
-			Internal voices that deliberate before the agent responds
+			{$t('settingsAdvisors.description')}
 		</p>
 	</div>
 	<button
@@ -159,7 +160,7 @@
 		onclick={() => (showCreate = !showCreate)}
 	>
 		<Plus class="w-4 h-4" />
-		New Advisor
+		{$t('settingsAdvisors.newAdvisor')}
 	</button>
 </div>
 
@@ -177,23 +178,23 @@
 <!-- Create Form -->
 {#if showCreate}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-4 mb-6">
-		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Create Advisor</h3>
+		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">{$t('settingsAdvisors.createTitle')}</h3>
 		<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 			<div>
 				<label class="text-base font-medium text-base-content/80" for="advisor-name">
-					Name (slug)
+					{$t('settingsAdvisors.nameLabel')}
 				</label>
 				<input
 					id="advisor-name"
 					type="text"
 					bind:value={newName}
-					placeholder="e.g. skeptic"
+					placeholder={$t('settingsAdvisors.namePlaceholder')}
 					class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 				/>
 			</div>
 			<div>
 				<label class="text-base font-medium text-base-content/80" for="advisor-role">
-					Role
+					{$t('settingsAdvisors.roleLabel')}
 				</label>
 				<select
 					id="advisor-role"
@@ -207,7 +208,7 @@
 			</div>
 			<div>
 				<label class="text-base font-medium text-base-content/80" for="advisor-priority">
-					Priority (higher = speaks first)
+					{$t('settingsAdvisors.priorityLabel')}
 				</label>
 				<input
 					id="advisor-priority"
@@ -220,7 +221,7 @@
 			</div>
 			<div>
 				<label class="text-base font-medium text-base-content/80" for="advisor-timeout">
-					Timeout
+					{$t('settingsAdvisors.timeoutLabel')}
 				</label>
 				<select
 					id="advisor-timeout"
@@ -235,13 +236,13 @@
 		</div>
 		<div>
 			<label class="text-base font-medium text-base-content/80" for="advisor-description">
-				Description
+				{$t('settingsAdvisors.descriptionLabel')}
 			</label>
 			<input
 				id="advisor-description"
 				type="text"
 				bind:value={newDescription}
-				placeholder="What does this advisor do?"
+				placeholder={$t('settingsAdvisors.descriptionPlaceholder')}
 				class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 			/>
 		</div>
@@ -253,17 +254,17 @@
 				class="toggle toggle-sm toggle-primary"
 			/>
 			<label class="text-base font-medium text-base-content/80 cursor-pointer" for="advisor-memory">
-				Memory Access
+				{$t('settingsAdvisors.memoryAccess')}
 			</label>
 		</div>
 		<div>
 			<label class="text-base font-medium text-base-content/80" for="advisor-persona">
-				Persona (system prompt)
+				{$t('settingsAdvisors.personaLabel')}
 			</label>
 			<textarea
 				id="advisor-persona"
 				bind:value={newPersona}
-				placeholder="You are the Skeptic. Your role is to challenge ideas and find flaws..."
+				placeholder={$t('settingsAdvisors.personaPlaceholder')}
 				class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none h-32"
 			></textarea>
 		</div>
@@ -275,7 +276,7 @@
 					resetCreateForm();
 				}}
 			>
-				Cancel
+				{$t('common.cancel')}
 			</button>
 			<button
 				class="h-9 px-5 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30 flex items-center gap-1.5"
@@ -284,9 +285,9 @@
 			>
 				{#if isCreating}
 					<Spinner size={14} />
-					Creating...
+					{$t('settingsAdvisors.creating')}
 				{:else}
-					Create
+					{$t('settingsAdvisors.create')}
 				{/if}
 			</button>
 		</div>
@@ -297,19 +298,19 @@
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading advisors...</span>
+		<span class="text-base text-base-content/80">{$t('settingsAdvisors.loadingAdvisors')}</span>
 	</div>
 {:else if advisors.length === 0}
 	<div class="flex flex-col items-center justify-center py-16 gap-3 text-base-content/90">
 		<MessagesSquare class="w-12 h-12" />
-		<p class="font-medium">No advisors configured</p>
-		<p class="text-base">Advisors provide internal perspectives before the agent responds</p>
+		<p class="font-medium">{$t('settingsAdvisors.noAdvisors')}</p>
+		<p class="text-base">{$t('settingsAdvisors.noAdvisorsDesc')}</p>
 		<button
 			class="h-9 px-4 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all flex items-center gap-1.5 mt-2"
 			onclick={() => (showCreate = true)}
 		>
 			<Plus class="w-4 h-4" />
-			Create your first advisor
+			{$t('settingsAdvisors.createFirst')}
 		</button>
 	</div>
 {:else}
@@ -343,7 +344,7 @@
 								<span class="font-semibold text-base-content">{advisor.name}</span>
 								<span class="inline-flex items-center px-2 py-0.5 rounded-full text-sm font-semibold {style.pill}">{advisor.role}</span>
 								{#if advisor.memoryAccess}
-									<Brain class="w-3.5 h-3.5 text-primary" title="Has memory access" />
+									<Brain class="w-3.5 h-3.5 text-primary" title={$t('settingsAdvisors.memoryAccess')} />
 								{/if}
 							</div>
 							{#if advisor.description}
@@ -358,7 +359,7 @@
 								</span>
 								<span class="flex items-center gap-1">
 									<ArrowUpDown class="w-3 h-3" />
-									Priority {advisor.priority}
+									{$t('settingsAdvisors.priorityMeta', { values: { priority: advisor.priority } })}
 								</span>
 							</div>
 						</div>
@@ -380,7 +381,7 @@
 						<div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4">
 							<div>
 								<label class="text-base font-medium text-base-content/80" for="edit-role-{advisor.name}">
-									Role
+									{$t('settingsAdvisors.roleLabel')}
 								</label>
 								<select
 									id="edit-role-{advisor.name}"
@@ -395,7 +396,7 @@
 							</div>
 							<div>
 								<label class="text-base font-medium text-base-content/80" for="edit-timeout-{advisor.name}">
-									Timeout
+									{$t('settingsAdvisors.timeoutLabel')}
 								</label>
 								<select
 									id="edit-timeout-{advisor.name}"
@@ -410,7 +411,7 @@
 							</div>
 							<div>
 								<label class="text-base font-medium text-base-content/80" for="edit-priority-{advisor.name}">
-									Priority
+									{$t('settingsAdvisors.priorityLabel')}
 								</label>
 								<input
 									id="edit-priority-{advisor.name}"
@@ -426,7 +427,7 @@
 
 						<div>
 							<label class="text-base font-medium text-base-content/80" for="edit-desc-{advisor.name}">
-								Description
+								{$t('settingsAdvisors.descriptionLabel')}
 							</label>
 							<input
 								id="edit-desc-{advisor.name}"
@@ -446,13 +447,13 @@
 								class="toggle toggle-sm toggle-primary"
 							/>
 							<label class="text-base font-medium text-base-content/80 cursor-pointer" for="edit-memory-{advisor.name}">
-								Memory Access
+								{$t('settingsAdvisors.memoryAccess')}
 							</label>
 						</div>
 
 						<div>
 							<label class="text-base font-medium text-base-content/80" for="edit-persona-{advisor.name}">
-								Persona
+								{$t('settingsAdvisors.personaLabel')}
 							</label>
 							<textarea
 								id="edit-persona-{advisor.name}"
@@ -465,18 +466,18 @@
 						<div class="flex justify-end pt-1">
 							{#if deleteConfirm === advisor.name}
 								<div class="flex items-center gap-2">
-									<span class="text-base text-error">Delete this advisor?</span>
+									<span class="text-base text-error">{$t('settingsAdvisors.deleteConfirm')}</span>
 									<button
 										class="h-7 px-3 rounded-full bg-error text-error-content text-sm font-bold hover:brightness-110 transition-all"
 										onclick={() => handleDelete(advisor.name)}
 									>
-										Confirm
+										{$t('common.confirm')}
 									</button>
 									<button
 										class="h-7 px-3 rounded-full text-sm font-medium text-base-content/60 hover:bg-base-content/5 transition-colors"
 										onclick={() => (deleteConfirm = null)}
 									>
-										Cancel
+										{$t('common.cancel')}
 									</button>
 								</div>
 							{:else}
@@ -485,7 +486,7 @@
 									onclick={() => (deleteConfirm = advisor.name)}
 								>
 									<Trash2 class="w-3.5 h-3.5" />
-									Delete
+									{$t('common.delete')}
 								</button>
 							{/if}
 						</div>

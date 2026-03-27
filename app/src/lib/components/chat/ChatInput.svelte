@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { AudioLines, ArrowUp, Square, Plus, RotateCcw, X, Clock, FileText } from 'lucide-svelte';
+	import { t } from 'svelte-i18n';
 	import * as api from '$lib/api/nebo';
 	import SlashCommandMenu from './SlashCommandMenu.svelte';
 	import { getSlashCommandCompletions, type SlashCommand } from './slash-commands';
@@ -29,7 +30,7 @@
 
 	let {
 		value = $bindable(),
-		placeholder = 'Reply...',
+		placeholder = '',
 		disabled = false,
 		isLoading = false,
 		duplexActive = false,
@@ -279,7 +280,7 @@
 								type="button"
 								onclick={() => onCancelQueued?.(queued.id)}
 								class="p-0.5 rounded hover:bg-error/20 hover:text-error transition-colors flex-shrink-0"
-								title="Cancel queued message"
+								title={$t('chatInput.cancelQueued')}
 							>
 								<X class="w-3 h-3" />
 							</button>
@@ -318,7 +319,7 @@
 			{#if isDraggingOver}
 				<div class="flex items-center justify-center gap-2 px-4 pt-3 pb-2 text-primary">
 					<FileText class="w-4 h-4" />
-					<span class="text-base font-medium">Drop files to add their path</span>
+					<span class="text-base font-medium">{$t('chat.dropFilesToAdd')}</span>
 				</div>
 			{:else if duplexActive}
 				<!-- Audio waveform visualizer (replaces textarea during voice session) -->
@@ -331,7 +332,7 @@
 							></div>
 						{/each}
 					</div>
-					<span class="text-sm text-base-content/60 ml-2">Listening...</span>
+					<span class="text-sm text-base-content/60 ml-2">{$t('chatInput.listening')}</span>
 				</div>
 			{:else}
 				<!-- Textarea row -->
@@ -342,8 +343,8 @@
 						onkeydown={handleKeydown}
 						oninput={adjustHeight}
 						placeholder={isLoading
-							? 'Type to queue your next message...'
-							: placeholder}
+							? $t('chatInput.loadingPlaceholder')
+							: (placeholder || $t('chatInput.placeholder'))}
 						disabled={disabled || duplexActive}
 						rows="1"
 						class="w-full bg-transparent border-none outline-none resize-none text-base leading-relaxed placeholder:text-base-content/80 min-h-[24px] max-h-[200px]"
@@ -359,7 +360,7 @@
 						type="button"
 						onclick={handleBrowseFiles}
 						class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/90 hover:text-base-content"
-						title="Attach file (inserts path)"
+						title={$t('chatInput.attachFile')}
 					>
 						<Plus class="w-4 h-4" />
 					</button>
@@ -371,7 +372,7 @@
 							onclick={onNewSession}
 							class="btn btn-ghost btn-sm btn-square rounded-lg text-base-content/90 hover:text-base-content"
 							{disabled}
-							title="New session"
+							title={$t('chatInput.newSession')}
 						>
 							<RotateCcw class="w-4 h-4" />
 						</button>
@@ -387,7 +388,7 @@
 							class="btn btn-ghost btn-sm btn-square rounded-lg {duplexActive
 								? 'text-success animate-pulse'
 								: 'text-base-content/90 hover:text-base-content'}"
-							title={duplexActive ? 'End voice session' : 'Voice conversation'}
+							title={duplexActive ? $t('chatInput.endVoiceSession') : $t('chatInput.voiceConversation')}
 						>
 							<AudioLines class="w-4 h-4" />
 						</button>
@@ -399,7 +400,7 @@
 							type="button"
 							onclick={onCancel}
 							class="btn btn-sm btn-circle btn-error transition-all"
-							title="Stop generation"
+							title={$t('chatInput.stopGeneration')}
 						>
 							<Square class="w-3.5 h-3.5 fill-current" />
 						</button>
@@ -411,7 +412,7 @@
 							class="btn btn-sm btn-circle transition-all {canSend
 								? 'btn-primary'
 								: 'btn-ghost bg-base-300 text-base-content/90'}"
-							title="Send message"
+							title={$t('chatInput.sendMessage')}
 						>
 							<ArrowUp class="w-4 h-4" />
 						</button>
@@ -423,7 +424,7 @@
 
 		<!-- Disclaimer -->
 		<p class="text-center text-sm text-base-content/60 mt-2">
-			Nebo can make mistakes. Verify important information.
+			{$t('chat.disclaimer')}
 		</p>
 	</div>
 </div>

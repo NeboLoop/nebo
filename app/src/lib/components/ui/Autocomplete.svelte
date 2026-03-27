@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Search, X, Loader2 } from 'lucide-svelte';
 
 	interface Option {
@@ -36,7 +37,7 @@
 	let {
 		value = $bindable(''),
 		options = [],
-		placeholder = 'Search...',
+		placeholder = $t('autocomplete.placeholder'),
 		label,
 		size = 'md',
 		disabled = false,
@@ -45,7 +46,7 @@
 		showIcon = true,
 		minChars = 1,
 		maxResults = 10,
-		emptyMessage = 'No results found',
+		emptyMessage = $t('autocomplete.empty'),
 		class: extraClass = '',
 		onselect,
 		onsearch,

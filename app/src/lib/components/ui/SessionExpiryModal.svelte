@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Clock, LogOut, X } from 'lucide-svelte';
 
 	interface Props {
@@ -58,8 +59,8 @@
 		<div class="nebo-modal-card max-w-md">
 			<!-- Header -->
 			<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-				<h3 id="session-expiry-title" class="font-display text-lg font-bold">Session Expiring Soon</h3>
-				<button type="button" onclick={handleContinue} class="nebo-modal-close" aria-label="Close">
+				<h3 id="session-expiry-title" class="font-display text-lg font-bold">{$t('sessionExpiry.title')}</h3>
+				<button type="button" onclick={handleContinue} class="nebo-modal-close" aria-label={$t('common.close')}>
 					<X class="w-5 h-5 text-base-content/80" />
 				</button>
 			</div>
@@ -70,13 +71,13 @@
 					<Clock class="w-8 h-8 text-warning" />
 				</div>
 				<p class="text-base text-base-content/90 mb-4">
-					Your session will expire in
+					{$t('sessionExpiry.description')}
 				</p>
 				<div class="text-4xl font-mono font-bold text-warning mb-4">
 					{formattedTime()}
 				</div>
 				<p class="text-base text-base-content/90">
-					Click "Continue Session" to stay logged in, or you'll be automatically logged out.
+					{$t('sessionExpiry.instruction')}
 				</p>
 			</div>
 
@@ -88,14 +89,14 @@
 					onclick={handleLogout}
 				>
 					<LogOut class="w-4 h-4" />
-					Log Out Now
+					{$t('sessionExpiry.logOut')}
 				</button>
 				<button
 					type="button"
 					class="h-10 px-6 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
 					onclick={handleContinue}
 				>
-					Continue Session
+					{$t('sessionExpiry.continueSession')}
 				</button>
 			</div>
 		</div>

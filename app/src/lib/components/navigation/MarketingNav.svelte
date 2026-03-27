@@ -5,6 +5,7 @@
 
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { t } from 'svelte-i18n';
 	import { Button } from '$lib/components/ui';
 
 	interface NavItem {
@@ -32,7 +33,7 @@
 </script>
 
 <header class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-	<nav class="flex items-center justify-between py-6" aria-label="Main navigation">
+	<nav class="flex items-center justify-between py-6" aria-label={$t('nav.mainNavigation')}>
 		<a
 			href="/"
 			class="font-display text-2xl font-black text-base-content tracking-tight hover:opacity-90 transition-opacity"
@@ -59,8 +60,8 @@
 				</ul>
 			{/if}
 			<div class="flex items-center gap-3">
-				<Button type="ghost" size="sm" href="/auth/login">Login</Button>
-				<Button type="primary" size="sm" href="/auth/register">Get Started</Button>
+				<Button type="ghost" size="sm" href="/auth/login">{$t('nav.login')}</Button>
+				<Button type="primary" size="sm" href="/auth/register">{$t('nav.getStarted')}</Button>
 			</div>
 		</div>
 
@@ -68,7 +69,7 @@
 		<button
 			type="button"
 			class="md:hidden flex items-center justify-center w-10 h-10 rounded-lg text-base-content/80 hover:text-base-content hover:bg-base-content/10 transition-colors"
-			aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+			aria-label={mobileMenuOpen ? $t('nav.closeMenu') : $t('nav.openMenu')}
 			aria-expanded={mobileMenuOpen}
 			onclick={toggleMobileMenu}
 		>
@@ -106,8 +107,8 @@
 				</ul>
 			{/if}
 			<div class="flex flex-col gap-3">
-				<Button type="ghost" href="/auth/login" class="w-full">Login</Button>
-				<Button type="primary" href="/auth/register" class="w-full">Get Started</Button>
+				<Button type="ghost" href="/auth/login" class="w-full">{$t('nav.login')}</Button>
+				<Button type="primary" href="/auth/register" class="w-full">{$t('nav.getStarted')}</Button>
 			</div>
 		</div>
 	{/if}

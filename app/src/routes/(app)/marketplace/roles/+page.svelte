@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import { Sparkles } from 'lucide-svelte';
 	import SectionFeaturedPair from '$lib/components/marketplace/sections/SectionFeaturedPair.svelte';
 	import SectionTopRanked from '$lib/components/marketplace/sections/SectionTopRanked.svelte';
@@ -42,23 +43,23 @@
 	</div>
 {:else}
 	<!-- Featured -->
-	<SectionFeaturedPair items={featured} label="FEATURED ROLE" />
+	<SectionFeaturedPair items={featured} label={$t('marketplace.rolesPage.featuredRole')} />
 
 	<!-- Description -->
 	<div class="px-6 py-6 border-b border-base-content/10 max-w-2xl">
-		<h2 class="font-display text-lg font-bold mb-2">About Roles</h2>
-		<p class="text-base text-base-content/80 leading-relaxed">A job description that bundles workflows, tools, and skills a position needs. Install a role and your bot gets everything to do that job.</p>
+		<h2 class="font-display text-lg font-bold mb-2">{$t('marketplace.rolesPage.aboutRoles')}</h2>
+		<p class="text-base text-base-content/80 leading-relaxed">{$t('marketplace.rolesPage.aboutRolesDesc')}</p>
 	</div>
 
 	<!-- Top Roles -->
 	{#if allRoles.length > 0}
-		<SectionTopRanked title="Top Roles" items={allRoles.slice(0, 21)} />
+		<SectionTopRanked title={$t('marketplace.rolesPage.topRoles')} items={allRoles.slice(0, 21)} />
 	{:else}
 		<div class="px-6 py-6">
-			<h2 class="font-display text-lg font-bold mb-4">Top Roles</h2>
+			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.rolesPage.topRoles')}</h2>
 			<div class="flex flex-col items-center justify-center py-12 text-center">
 				<Sparkles class="w-10 h-10 text-base-content/40 mb-3" />
-				<p class="text-base text-base-content/80">No roles available yet</p>
+				<p class="text-base text-base-content/80">{$t('marketplace.rolesPage.noRoles')}</p>
 			</div>
 		</div>
 	{/if}

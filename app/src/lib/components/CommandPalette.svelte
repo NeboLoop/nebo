@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { goto } from '$app/navigation';
 	import { listExtensions } from '$lib/api/nebo';
 	import type { ExtensionSkill } from '$lib/api/neboComponents';
@@ -32,36 +33,36 @@
 		action: () => void;
 	}
 
-	const navItems: PaletteItem[] = [
-		{ category: 'Navigation', label: 'Dashboard', icon: 'grid', action: () => goto('/') },
-		{ category: 'Navigation', label: 'Agents', icon: 'cpu', action: () => goto('/agents') },
-		{ category: 'Navigation', label: 'Roles', icon: 'user', action: () => goto('/roles') },
-		{ category: 'Navigation', label: 'Skills', icon: 'zap', action: () => goto('/skills') },
-		{ category: 'Navigation', label: 'Integrations', icon: 'plug', action: () => goto('/integrations') },
-		{ category: 'Navigation', label: 'Events', icon: 'calendar', action: () => goto('/events') },
-		{ category: 'Navigation', label: 'Marketplace', icon: 'store', action: () => goto('/marketplace') }
-	];
+	const navItems: PaletteItem[] = $derived([
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.dashboard'), icon: 'grid', action: () => goto('/') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.agents'), icon: 'cpu', action: () => goto('/agents') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.roles'), icon: 'user', action: () => goto('/roles') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.skills'), icon: 'zap', action: () => goto('/skills') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.integrations'), icon: 'plug', action: () => goto('/integrations') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.events'), icon: 'calendar', action: () => goto('/events') },
+		{ category: $t('commandPalette.navigation'), label: $t('commandPalette.marketplace'), icon: 'store', action: () => goto('/marketplace') }
+	]);
 
-	const settingsItems: PaletteItem[] = [
-		{ category: 'Settings', label: 'Account', icon: 'settings', action: () => goto('/settings/account') },
-		{ category: 'Settings', label: 'Profile', icon: 'settings', action: () => goto('/settings/profile') },
-		{ category: 'Settings', label: 'Identity', icon: 'settings', action: () => goto('/settings/identity') },
-		{ category: 'Settings', label: 'Personality', icon: 'settings', action: () => goto('/settings/soul') },
-		{ category: 'Settings', label: 'Models', icon: 'settings', action: () => goto('/settings/providers') },
-		{ category: 'Settings', label: 'Permissions', icon: 'settings', action: () => goto('/settings/permissions') },
-		{ category: 'Settings', label: 'Heartbeat', icon: 'settings', action: () => goto('/settings/heartbeat') },
-		{ category: 'Settings', label: 'Sessions', icon: 'settings', action: () => goto('/settings/sessions') },
-		{ category: 'Settings', label: 'Developer', icon: 'settings', action: () => goto('/settings/developer') }
-	];
+	const settingsItems: PaletteItem[] = $derived([
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.account'), icon: 'settings', action: () => goto('/settings/account') },
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.profile'), icon: 'settings', action: () => goto('/settings/profile') },
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.identity'), icon: 'settings', action: () => goto('/settings/identity') },
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.personality'), icon: 'settings', action: () => goto('/settings/soul') },
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.models'), icon: 'settings', action: () => goto('/settings/providers') },
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.permissions'), icon: 'settings', action: () => goto('/settings/permissions') },
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.heartbeat'), icon: 'settings', action: () => goto('/settings/heartbeat') },
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.sessions'), icon: 'settings', action: () => goto('/settings/sessions') },
+		{ category: $t('commandPalette.settingsCategory'), label: $t('commandPalette.developer'), icon: 'settings', action: () => goto('/settings/developer') }
+	]);
 
-	const actionItems: PaletteItem[] = [
-		{ category: 'Actions', label: 'New Chat', icon: 'plus', action: () => goto('/agent/assistant/chat') },
-		{ category: 'Actions', label: 'Check for Updates', icon: 'refresh', action: () => { checkForUpdate(); } }
-	];
+	const actionItems: PaletteItem[] = $derived([
+		{ category: $t('commandPalette.actions'), label: $t('commandPalette.newChat'), icon: 'plus', action: () => goto('/agent/assistant/chat') },
+		{ category: $t('commandPalette.actions'), label: $t('commandPalette.checkForUpdates'), icon: 'refresh', action: () => { checkForUpdate(); } }
+	]);
 
 	const skillItems = $derived<PaletteItem[]>(
 		skills.map((s) => ({
-			category: 'Skills',
+			category: $t('commandPalette.skills'),
 			label: s.name,
 			description: s.description,
 			icon: 'zap',
@@ -196,7 +197,7 @@
 			<div class="px-4 pt-4 pb-3">
 				<SearchInput
 					bind:value={query}
-					placeholder="Search pages, settings, skills..."
+					placeholder={$t('commandPalette.placeholder')}
 					size="md"
 					onkeydown={handleKeydown}
 				/>
@@ -243,15 +244,15 @@
 
 				{#if groupedResults().length === 0 && !skillsLoading}
 					<div class="px-4 py-8 text-center text-base text-base-content/60">
-						No results found
+						{$t('common.noResultsFound')}
 					</div>
 				{/if}
 			</div>
 
 			<div class="command-palette-footer">
-				<span><kbd class="kbd kbd-xs">&#8593;&#8595;</kbd> navigate</span>
-				<span><kbd class="kbd kbd-xs">&#8629;</kbd> select</span>
-				<span><kbd class="kbd kbd-xs">esc</kbd> close</span>
+				<span><kbd class="kbd kbd-xs">&#8593;&#8595;</kbd> {$t('commandPalette.navigateHint')}</span>
+				<span><kbd class="kbd kbd-xs">&#8629;</kbd> {$t('commandPalette.selectHint')}</span>
+				<span><kbd class="kbd kbd-xs">esc</kbd> {$t('commandPalette.closeHint')}</span>
 			</div>
 		</div>
 	</div>

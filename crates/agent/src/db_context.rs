@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use db::models::{AgentProfile, UserProfile};
+use db::models::{AgentProfile, UserPreference, UserProfile};
 use db::Store;
 use tracing::debug;
 
@@ -10,6 +10,7 @@ use crate::memory::{self, ScoredMemory};
 pub struct DBContext {
     pub agent: Option<AgentProfile>,
     pub user: Option<UserProfile>,
+    pub preferences: Option<UserPreference>,
     pub personality_directive: Option<String>,
     pub tacit_memories: Vec<ScoredMemory>,
 }
@@ -18,6 +19,7 @@ pub struct DBContext {
 pub fn load_db_context(store: &Store, user_id: &str) -> DBContext {
     let agent = store.get_agent_profile().ok().flatten();
     let user = store.get_user_profile().ok().flatten();
+    let preferences = store.get_user_preferences().ok().flatten();
 
     // Load personality directive from tacit/personality/directive
     let personality_directive = store
@@ -32,6 +34,7 @@ pub fn load_db_context(store: &Store, user_id: &str) -> DBContext {
     DBContext {
         agent,
         user,
+        preferences,
         personality_directive,
         tacit_memories,
     }
@@ -92,28 +95,42 @@ pub fn format_for_system_prompt(ctx: &DBContext, agent_name: &str) -> String {
     }
 
     // 4. Communication style
-    if let Some(ref agent) = ctx.agent {
+    {
         let mut parts = Vec::new();
-        if let Some(ref voice) = agent.voice_style {
-            if !voice.is_empty() {
-                parts.push(format!("Voice: {}", voice));
+
+        // Language preference from user preferences
+        if let Some(ref prefs) = ctx.preferences {
+            if !prefs.language.is_empty() && prefs.language != "en" {
+                parts.push(format!(
+                    "Language: The user's preferred language is {}. Always respond in this language unless the user explicitly writes in a different language.",
+                    language_display_name(&prefs.language)
+                ));
             }
         }
-        if let Some(ref formality) = agent.formality {
-            if !formality.is_empty() {
-                parts.push(format!("Formality: {}", formality));
+
+        if let Some(ref agent) = ctx.agent {
+            if let Some(ref voice) = agent.voice_style {
+                if !voice.is_empty() {
+                    parts.push(format!("Voice: {}", voice));
+                }
+            }
+            if let Some(ref formality) = agent.formality {
+                if !formality.is_empty() {
+                    parts.push(format!("Formality: {}", formality));
+                }
+            }
+            if let Some(ref length) = agent.response_length {
+                if !length.is_empty() {
+                    parts.push(format!("Response length: {}", length));
+                }
+            }
+            if let Some(ref emoji_usage) = agent.emoji_usage {
+                if !emoji_usage.is_empty() {
+                    parts.push(format!("Emoji usage: {}", emoji_usage));
+                }
             }
         }
-        if let Some(ref length) = agent.response_length {
-            if !length.is_empty() {
-                parts.push(format!("Response length: {}", length));
-            }
-        }
-        if let Some(ref emoji_usage) = agent.emoji_usage {
-            if !emoji_usage.is_empty() {
-                parts.push(format!("Emoji usage: {}", emoji_usage));
-            }
-        }
+
         if !parts.is_empty() {
             sections.push(format!("# Communication Style\n{}", parts.join("\n")));
         }
@@ -280,6 +297,29 @@ fn format_structured_or_raw(text: &str, _label: &str) -> String {
     text.to_string()
 }
 
+/// Map language code to display name for the system prompt.
+fn language_display_name(code: &str) -> &'static str {
+    match code {
+        "de" => "German (Deutsch)",
+        "es" => "Spanish (Español)",
+        "fr" => "French (Français)",
+        "it" => "Italian (Italiano)",
+        "pt-BR" => "Brazilian Portuguese (Português do Brasil)",
+        "nl" => "Dutch (Nederlands)",
+        "pl" => "Polish (Polski)",
+        "tr" => "Turkish (Türkçe)",
+        "uk" => "Ukrainian (Українська)",
+        "vi" => "Vietnamese (Tiếng Việt)",
+        "ar" => "Arabic (العربية)",
+        "hi" => "Hindi (हिन्दी)",
+        "ja" => "Japanese (日本語)",
+        "ko" => "Korean (한국어)",
+        "zh-CN" => "Simplified Chinese (简体中文)",
+        "zh-TW" => "Traditional Chinese (繁體中文)",
+        _ => "English",
+    }
+}
+
 /// Map personality preset names to prompt text.
 fn personality_preset_prompt(preset: Option<&str>) -> Option<&'static str> {
     match preset? {
@@ -301,6 +341,7 @@ mod tests {
         let ctx = DBContext {
             agent: None,
             user: None,
+            preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
         };
@@ -336,6 +377,7 @@ mod tests {
         let ctx = DBContext {
             agent: Some(agent),
             user: None,
+            preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
         };
@@ -373,6 +415,7 @@ mod tests {
         let ctx = DBContext {
             agent: None,
             user: Some(user),
+            preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
         };
@@ -389,6 +432,7 @@ mod tests {
         let ctx = DBContext {
             agent: None,
             user: None,
+            preferences: None,
             personality_directive: Some("Be concise and direct.".to_string()),
             tacit_memories: vec![],
         };
@@ -417,6 +461,7 @@ mod tests {
         let ctx = DBContext {
             agent: None,
             user: None,
+            preferences: None,
             personality_directive: None,
             tacit_memories: vec![ScoredMemory {
                 memory: mem,
@@ -480,6 +525,7 @@ mod tests {
         let ctx = DBContext {
             agent: Some(agent),
             user: None,
+            preferences: None,
             personality_directive: None,
             tacit_memories: vec![],
         };

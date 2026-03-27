@@ -9,6 +9,7 @@
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { ExtensionSkill, SkillItem } from '$lib/api/nebo';
+	import { t } from 'svelte-i18n';
 
 	let skills = $state<ExtensionSkill[]>([]);
 	let storeSkills = $state<SkillItem[]>([]);
@@ -84,7 +85,7 @@
 	}
 
 	async function handleDelete(skill: ExtensionSkill) {
-		if (!confirm(`Delete skill "${skill.name}"? This cannot be undone.`)) return;
+		if (!confirm($t('settingsSkills.deleteConfirm', { values: { name: skill.name } }))) return;
 		deletingSkill = skill.name;
 		try {
 			await api.deleteSkill(skill.name);
@@ -178,8 +179,8 @@
 
 <div class="mb-6 flex items-center justify-between">
 	<div>
-		<h2 class="font-display text-xl font-bold text-base-content mb-1">Skills</h2>
-		<p class="text-base text-base-content/80">Standalone orchestration skills for the agent</p>
+		<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsSkills.title')}</h2>
+		<p class="text-base text-base-content/80">{$t('settingsSkills.description')}</p>
 	</div>
 	<div class="flex items-center gap-2">
 		<button
@@ -188,7 +189,7 @@
 			onclick={openCreate}
 		>
 			<Plus class="w-4 h-4" />
-			Create Skill
+			{$t('settingsSkills.createSkill')}
 		</button>
 		<button
 			type="button"
@@ -203,12 +204,12 @@
 {#if isLoading}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/90">
 		<Spinner class="w-5 h-5 mx-auto mb-2" />
-		<p class="text-base">Loading skills...</p>
+		<p class="text-base">{$t('settingsSkills.loadingSkills')}</p>
 	</div>
 {:else}
 	<!-- Installed Skills -->
 	<div class="mb-8">
-		<h3 class="text-base font-semibold uppercase tracking-wider text-base-content/60 mb-4">Installed Skills</h3>
+		<h3 class="text-base font-semibold uppercase tracking-wider text-base-content/60 mb-4">{$t('settingsSkills.installedSkills')}</h3>
 
 		{#if skills.length > 0}
 			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -229,14 +230,14 @@
 								</div>
 							</div>
 							{#if skill.source === 'bundled'}
-								<span class="text-sm font-medium uppercase tracking-wide text-base-content/60">Bundled</span>
+								<span class="text-sm font-medium uppercase tracking-wide text-base-content/60">{$t('settingsSkills.bundled')}</span>
 							{/if}
 						</div>
 						<p class="text-base text-base-content/80 line-clamp-2 leading-relaxed">{skill.description}</p>
 						{#if (skill as any).needsConfiguration}
 							<div class="flex items-center gap-1.5 mt-2">
 								<span class="w-2 h-2 rounded-full bg-warning"></span>
-								<span class="text-xs text-warning font-medium">Needs configuration</span>
+								<span class="text-xs text-warning font-medium">{$t('settingsSkills.needsConfig')}</span>
 							</div>
 						{/if}
 					</button>
@@ -245,8 +246,8 @@
 		{:else}
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/90">
 				<Zap class="w-12 h-12 mx-auto mb-4 opacity-20" />
-				<p class="font-medium mb-2">No skills found</p>
-				<p class="text-base">Create a skill or browse the store.</p>
+				<p class="font-medium mb-2">{$t('settingsSkills.noSkills')}</p>
+				<p class="text-base">{$t('settingsSkills.noSkillsDesc')}</p>
 			</div>
 		{/if}
 	</div>
@@ -254,12 +255,12 @@
 	<!-- Skill Store -->
 	{#if neboLoopConnected}
 		<div>
-			<h3 class="text-base font-semibold uppercase tracking-wider text-base-content/60 mb-4">Skill Store</h3>
+			<h3 class="text-base font-semibold uppercase tracking-wider text-base-content/60 mb-4">{$t('settingsSkills.skillStore')}</h3>
 
 			{#if isLoadingStore}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
 					<Spinner class="w-5 h-5 mx-auto mb-2" />
-					<p class="text-base">Loading store...</p>
+					<p class="text-base">{$t('settingsSkills.loadingStore')}</p>
 				</div>
 			{:else if storeSkills.length > 0}
 				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -276,7 +277,7 @@
 								<div class="flex-1 min-w-0">
 									<span class="font-display font-bold text-base text-base-content truncate block">{skill.name}</span>
 									<span class="text-sm text-base-content/60">
-										by {skill.author.name}
+										{$t('settingsSkills.byAuthor', { values: { name: skill.author.name } })}
 										{#if skill.author.verified}
 											<Check class="w-2.5 h-2.5 inline text-success" />
 										{/if}
@@ -309,7 +310,7 @@
 											<Loader2 class="w-3 h-3 animate-spin" />
 										{:else}
 											<Check class="w-3 h-3" />
-											Installed
+											{$t('common.installed')}
 										{/if}
 									</button>
 								{:else}
@@ -321,7 +322,7 @@
 										{#if installingSkill === skill.id}
 											<Loader2 class="w-3 h-3 animate-spin" />
 										{:else}
-											Install
+											{$t('common.install')}
 										{/if}
 									</button>
 								{/if}
@@ -332,8 +333,8 @@
 			{:else}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
 					<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
-					<p class="font-medium mb-1">No skills available yet</p>
-					<p class="text-base">Check back later for new skills.</p>
+					<p class="font-medium mb-1">{$t('settingsSkills.noSkillsAvailable')}</p>
+					<p class="text-base">{$t('settingsSkills.checkBackLater')}</p>
 				</div>
 			{/if}
 		</div>
@@ -353,10 +354,10 @@
 					<div class="flex items-center gap-2 mb-1">
 						<span class="text-base text-base-content/80 tabular-nums">v{selectedSkill.version}</span>
 						{#if selectedSkill.source === 'bundled'}
-							<span class="text-sm font-semibold uppercase px-1.5 py-0.5 rounded bg-base-content/10 text-base-content/60">Bundled</span>
+							<span class="text-sm font-semibold uppercase px-1.5 py-0.5 rounded bg-base-content/10 text-base-content/60">{$t('settingsSkills.bundled')}</span>
 						{/if}
 						<span class="text-sm font-semibold uppercase px-1.5 py-0.5 rounded {selectedSkill.enabled ? 'bg-success/10 text-success' : 'bg-base-content/10 text-base-content/60'}">
-							{selectedSkill.enabled ? 'Enabled' : 'Disabled'}
+							{selectedSkill.enabled ? $t('common.enabled') : $t('common.disabled')}
 						</span>
 					</div>
 					<p class="text-base text-base-content/80 leading-relaxed">{selectedSkill.description}</p>
@@ -368,7 +369,7 @@
 				{#if selectedSkill.tools && selectedSkill.tools.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
 						<Wrench class="w-4 h-4 text-base-content/90 shrink-0" />
-						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Tools</span>
+						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">{$t('settingsSkills.tools')}</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.tools as tool}
 								<span class="text-sm font-medium px-2 py-0.5 rounded-md bg-base-content/5 border border-base-content/10 text-base-content/60">{tool}</span>
@@ -380,7 +381,7 @@
 				{#if selectedSkill.tags && selectedSkill.tags.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
 						<Tag class="w-4 h-4 text-base-content/90 shrink-0" />
-						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Tags</span>
+						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">{$t('settingsMemories.tags')}</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.tags as tag}
 								<span class="text-sm font-medium px-2 py-0.5 rounded-md bg-base-content/5 text-base-content/60">{tag}</span>
@@ -392,7 +393,7 @@
 				{#if selectedSkill.dependencies && selectedSkill.dependencies.length > 0}
 					<div class="flex items-center gap-3 px-4 py-3">
 						<FileText class="w-4 h-4 text-base-content/90 shrink-0" />
-						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Deps</span>
+						<span class="text-base font-medium text-base-content/80 w-16 shrink-0">{$t('settingsSkills.deps')}</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each selectedSkill.dependencies as dep}
 								<span class="text-sm font-medium px-2 py-0.5 rounded-md bg-base-content/5 border border-base-content/10 text-base-content/60">{dep}</span>
@@ -403,20 +404,20 @@
 
 				<div class="flex items-center gap-3 px-4 py-3">
 					<Hash class="w-4 h-4 text-base-content/90 shrink-0" />
-					<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Priority</span>
+					<span class="text-base font-medium text-base-content/80 w-16 shrink-0">{$t('settingsSkills.priority')}</span>
 					<span class="text-base text-base-content/80">{selectedSkill.priority}</span>
 				</div>
 
 				<div class="flex items-center gap-3 px-4 py-3">
 					<FolderOpen class="w-4 h-4 text-base-content/90 shrink-0" />
-					<span class="text-base font-medium text-base-content/80 w-16 shrink-0">Source</span>
+					<span class="text-base font-medium text-base-content/80 w-16 shrink-0">{$t('settingsSkills.source')}</span>
 					<span class="text-base text-base-content/80 truncate">{selectedSkill.filePath || selectedSkill.source}</span>
 				</div>
 			</div>
 			<!-- Secrets Configuration -->
 			{#if skillSecrets.length > 0}
 				<div class="mt-5">
-					<h4 class="text-sm font-semibold text-base-content/60 uppercase tracking-wider mb-3">Configuration</h4>
+					<h4 class="text-sm font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsSkills.configuration')}</h4>
 					<div class="space-y-3">
 						{#each skillSecrets as secret (secret.key)}
 							<div class="rounded-xl bg-base-content/5 border border-base-content/10 p-3">
@@ -424,23 +425,23 @@
 									<div class="flex items-center gap-2">
 										<span class="text-sm font-medium text-base-content">{secret.label || secret.key}</span>
 										{#if secret.required}
-											<span class="text-xs text-error/80">required</span>
+											<span class="text-xs text-error/80">{$t('common.required')}</span>
 										{/if}
 									</div>
 									{#if secret.configured}
 										<div class="flex items-center gap-2">
-											<span class="text-xs font-medium text-success">Configured</span>
+											<span class="text-xs font-medium text-success">{$t('common.configured')}</span>
 											<button
 												type="button"
 												class="text-xs text-base-content/40 hover:text-error transition-colors"
 												onclick={() => selectedSkill && removeSecret(selectedSkill.name, secret.key)}
 												disabled={settingSecret === secret.key}
 											>
-												Remove
+												{$t('common.remove')}
 											</button>
 										</div>
 									{:else}
-										<span class="text-xs font-medium text-warning">Not set</span>
+										<span class="text-xs font-medium text-warning">{$t('common.notSet')}</span>
 									{/if}
 								</div>
 								{#if secret.hint}
@@ -460,7 +461,7 @@
 											onclick={() => selectedSkill && saveSecret(selectedSkill.name, secret.key)}
 											disabled={settingSecret === secret.key || !secretInputs[secret.key]}
 										>
-											{settingSecret === secret.key ? '...' : 'Save'}
+											{settingSecret === secret.key ? '...' : $t('common.save')}
 										</button>
 									</div>
 								{/if}
@@ -480,7 +481,7 @@
 							onclick={() => openEdit(selectedSkill)}
 						>
 							<Pencil class="w-3.5 h-3.5" />
-							Edit
+							{$t('common.edit')}
 						</button>
 						<button
 							class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-error/30 hover:text-error transition-colors flex items-center gap-1.5 disabled:opacity-50"
@@ -492,7 +493,7 @@
 							{:else}
 								<Trash2 class="w-3.5 h-3.5" />
 							{/if}
-							Delete
+							{$t('common.delete')}
 						</button>
 					{/if}
 				</div>
@@ -506,7 +507,7 @@
 					{:else}
 						<Power class="w-3.5 h-3.5" />
 					{/if}
-					{selectedSkill.enabled ? 'Enabled' : 'Enable'}
+					{selectedSkill.enabled ? $t('common.enabled') : $t('settingsSkills.enable')}
 				</button>
 			</div>
 		{/snippet}

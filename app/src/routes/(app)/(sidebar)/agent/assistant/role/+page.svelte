@@ -3,6 +3,7 @@
 	import { getAgentProfile, updateAgentProfile } from '$lib/api/nebo';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
 	import { Undo2, Redo2 } from 'lucide-svelte';
+	import { t } from 'svelte-i18n';
 
 	let loading = $state(true);
 	let saving = $state(false);
@@ -87,14 +88,14 @@
 			</div>
 		{:else}
 			<div class="flex items-center justify-between mb-3 min-h-8 shrink-0">
-				<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Role</h2>
+				<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentRole.title')}</h2>
 				<div class="flex items-center gap-1.5">
 					<button
 						type="button"
 						class="btn btn-xs btn-ghost btn-square text-base-content/40 hover:text-base-content/70"
 						disabled={!canUndo}
 						onclick={undo}
-						title="Undo"
+						title={$t('agentRole.undo')}
 					>
 						<Undo2 class="w-3.5 h-3.5" />
 					</button>
@@ -103,7 +104,7 @@
 						class="btn btn-xs btn-ghost btn-square text-base-content/40 hover:text-base-content/70"
 						disabled={!canRedo}
 						onclick={redo}
-						title="Redo"
+						title={$t('agentRole.redo')}
 					>
 						<Redo2 class="w-3.5 h-3.5" />
 					</button>
@@ -113,7 +114,7 @@
 						disabled={saving || !hasChanges}
 						onclick={handleSave}
 					>
-						{saving ? 'Saving...' : 'Save'}
+						{saving ? $t('common.saving') : $t('common.save')}
 					</button>
 				</div>
 			</div>
@@ -121,7 +122,7 @@
 				<RichInput
 					bind:value={roleMdValue}
 					mode="full"
-					placeholder="Define the assistant's personality, role, and behavioral guidelines. e.g. You are a personal companion who helps manage daily tasks... Type / to mention an MCP, skill, or agent."
+					placeholder={$t('agentRole.assistantPlaceholder')}
 					onchange={(val) => handleChange(val)}
 				/>
 			</div>

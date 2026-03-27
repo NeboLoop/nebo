@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Info, CheckCircle, AlertTriangle, XCircle, X } from 'lucide-svelte';
 
 	interface Props {
@@ -63,7 +64,7 @@
 				type="button"
 				onclick={handleClose}
 				class="btn btn-sm btn-ghost btn-circle"
-				aria-label="Close notification"
+				aria-label={$t('notifications.closeNotification')}
 			>
 				<X class="h-4 w-4" />
 			</button>

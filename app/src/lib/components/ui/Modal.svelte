@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { X } from 'lucide-svelte';
 
 	interface Props {
@@ -89,7 +90,7 @@
 						type="button"
 						onclick={closeModal}
 						class="nebo-modal-close"
-						aria-label="Close"
+						aria-label={$t('common.close')}
 					>
 						<X class="w-5 h-5 text-base-content/90" />
 					</button>

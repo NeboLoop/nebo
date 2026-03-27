@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { X } from 'lucide-svelte';
 
 	interface Props {
@@ -24,8 +25,8 @@
 		open = $bindable(false),
 		title = '',
 		description = '',
-		actionLabel = 'Continue',
-		cancelLabel = 'Cancel',
+		actionLabel = $t('alertDialog.continue'),
+		cancelLabel = $t('alertDialog.cancel'),
 		actionType = 'primary',
 		children,
 		onAction,
@@ -78,7 +79,7 @@
 					type="button"
 					onclick={close}
 					class="nebo-modal-close"
-					aria-label="Close"
+					aria-label={$t('common.close')}
 				>
 					<X class="w-5 h-5 text-base-content/80" />
 				</button>

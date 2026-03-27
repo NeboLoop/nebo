@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import { Sparkles } from 'lucide-svelte';
 	import SectionEditorial from '$lib/components/marketplace/sections/SectionEditorial.svelte';
 	import SectionTopRanked from '$lib/components/marketplace/sections/SectionTopRanked.svelte';
@@ -51,21 +52,21 @@
 
 	<!-- Description -->
 	<div class="px-6 py-6 border-b border-base-content/10 max-w-2xl">
-		<h2 class="font-display text-lg font-bold mb-2">About Skills</h2>
-		<p class="text-base text-base-content/80 leading-relaxed">Markdown instructions that give bots new abilities -- no code required. Install to any bot instantly and teach it new behaviors.</p>
+		<h2 class="font-display text-lg font-bold mb-2">{$t('marketplace.skillsPage.aboutSkills')}</h2>
+		<p class="text-base text-base-content/80 leading-relaxed">{$t('marketplace.skillsPage.aboutSkillsDesc')}</p>
 	</div>
 
 	<!-- Top Skills -->
 	{#if topSkills.length > 0}
-		<SectionTopRanked title="Top Skills" items={topSkills} />
+		<SectionTopRanked title={$t('marketplace.skillsPage.topSkills')} items={topSkills} />
 	{:else if allSkills.length > 0}
-		<SectionTopRanked title="Top Skills" items={allSkills.slice(0, 21)} />
+		<SectionTopRanked title={$t('marketplace.skillsPage.topSkills')} items={allSkills.slice(0, 21)} />
 	{:else}
 		<div class="px-6 py-6">
-			<h2 class="font-display text-lg font-bold mb-4">Top Skills</h2>
+			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.skillsPage.topSkills')}</h2>
 			<div class="flex flex-col items-center justify-center py-12 text-center">
 				<Sparkles class="w-10 h-10 text-base-content/40 mb-3" />
-				<p class="text-base text-base-content/80">No skills available yet</p>
+				<p class="text-base text-base-content/80">{$t('marketplace.skillsPage.noSkills')}</p>
 			</div>
 		</div>
 	{/if}

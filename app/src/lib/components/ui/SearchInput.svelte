@@ -4,6 +4,8 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
+
 	interface Props {
 		value?: string;
 		placeholder?: string;
@@ -18,7 +20,7 @@
 
 	let {
 		value = $bindable(''),
-		placeholder = 'Search...',
+		placeholder = $t('searchInput.placeholder'),
 		disabled = false,
 		loading = false,
 		size = 'md',
@@ -71,7 +73,7 @@
 			type="button"
 			onclick={handleClear}
 			class="btn btn-ghost btn-sm btn-circle absolute inset-y-0 right-1 my-auto"
-			aria-label="Clear search"
+			aria-label={$t('searchInput.clear')}
 		>
 			<svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />

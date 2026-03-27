@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
+
 	interface Column {
 		key: string;
 		label: string;
@@ -137,15 +139,15 @@
 	{#if loading}
 		<div class="flex items-center justify-center p-12">
 			<span class="loading loading-spinner loading-md"></span>
-			<span class="ml-2 text-base text-base-content/90">Loading...</span>
+			<span class="ml-2 text-base text-base-content/90">{$t('dataTable.loading')}</span>
 		</div>
 	{:else if error}
 		<div class="flex items-center justify-center p-12">
-			<span class="text-base text-error">Error: {error}</span>
+			<span class="text-base text-error">{$t('dataTable.error', { values: { error } })}</span>
 		</div>
 	{:else if data.length === 0}
 		<div class="flex items-center justify-center p-12">
-			<span class="text-base text-base-content/90">No data available</span>
+			<span class="text-base text-base-content/90">{$t('dataTable.noData')}</span>
 		</div>
 	{:else}
 		<table class={tableClass}>
@@ -198,20 +200,14 @@
 		{#if showPagination && totalPages > 1}
 			<div class="flex items-center justify-between border-t border-base-300 px-4 py-3">
 				<div class="text-base text-base-content/90">
-					Showing
-					<span class="font-medium">{(currentPage - 1) * pageSize + 1}</span>
-					to
-					<span class="font-medium">{Math.min(currentPage * pageSize, sortedData.length)}</span>
-					of
-					<span class="font-medium">{sortedData.length}</span>
-					results
+					{$t('dataTable.showing', { values: { start: (currentPage - 1) * pageSize + 1, end: Math.min(currentPage * pageSize, sortedData.length), total: sortedData.length } })}
 				</div>
 				<div class="join">
 					<button
 						onclick={() => goToPage(currentPage - 1)}
 						disabled={currentPage === 1}
 						class="join-item btn btn-sm"
-						aria-label="Previous page"
+						aria-label={$t('dataTable.previousPage')}
 					>
 						<svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
 							<path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" />
@@ -239,7 +235,7 @@
 						onclick={() => goToPage(currentPage + 1)}
 						disabled={currentPage === totalPages}
 						class="join-item btn btn-sm"
-						aria-label="Next page"
+						aria-label={$t('dataTable.nextPage')}
 					>
 						<svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
 							<path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" />

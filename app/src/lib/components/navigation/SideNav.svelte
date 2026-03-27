@@ -7,6 +7,7 @@
 
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { t } from 'svelte-i18n';
 	import {
 		LayoutDashboard,
 		PanelLeftClose,
@@ -20,7 +21,7 @@
 	}
 
 	const navItems: NavItem[] = [
-		{ label: 'Chat', href: '/', icon: LayoutDashboard }
+		{ label: 'nav.chat', href: '/', icon: LayoutDashboard }
 	];
 
 	const currentPath = $derived($page.url.pathname);
@@ -50,18 +51,18 @@
 	<!-- Nav Items -->
 	<nav
 		class="flex flex-col gap-0.5 flex-1 py-3 {collapsed ? 'items-center w-full px-1' : ''}"
-		aria-label="Page navigation"
+		aria-label={$t('nav.pageNavigation')}
 	>
 		{#each navItems as item}
 			<a
 				href={item.href}
 				class="nav-link {collapsed ? 'justify-center px-0 w-10 h-10' : ''}"
 				class:active={isActive(item.href)}
-				title={collapsed ? item.label : undefined}
+				title={collapsed ? $t(item.label) : undefined}
 			>
 				<item.icon class="w-[18px] h-[18px] shrink-0" />
 				{#if !collapsed}
-					{item.label}
+					{$t(item.label)}
 				{/if}
 			</a>
 		{/each}
@@ -72,14 +73,14 @@
 		<button
 			type="button"
 			class="nav-link {collapsed ? 'justify-center px-0 w-10 h-10' : ''}"
-			title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+			title={collapsed ? $t('nav.expandSidebar') : $t('nav.collapseSidebar')}
 			onclick={toggleCollapse}
 		>
 			{#if collapsed}
 				<PanelLeft class="w-[18px] h-[18px] shrink-0" />
 			{:else}
 				<PanelLeftClose class="w-[18px] h-[18px] shrink-0" />
-				<span class="flex-1">Collapse</span>
+				<span class="flex-1">{$t('common.collapse')}</span>
 			{/if}
 		</button>
 	</div>

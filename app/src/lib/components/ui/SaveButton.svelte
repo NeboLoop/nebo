@@ -7,15 +7,16 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import Button from './Button.svelte';
 	import Spinner from './Spinner.svelte';
 
 	let {
 		saving = false,
 		saved = false,
-		label = 'Save',
-		savingLabel = 'Saving...',
-		savedLabel = 'Saved',
+		label = $t('saveButton.save'),
+		savingLabel = $t('saveButton.saving'),
+		savedLabel = $t('saveButton.saved'),
 		type = 'primary',
 		size = 'md',
 		disabled = false,

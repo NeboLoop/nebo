@@ -7,6 +7,7 @@
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import GiveNebo from '$lib/components/GiveNebo.svelte';
+	import { t } from 'svelte-i18n';
 
 	let isLoading = $state(true);
 	let accountConnected = $state(false);
@@ -73,7 +74,7 @@
 			const timeout = setTimeout(() => {
 				if (formLoading) {
 					cleanup();
-					formError = 'Sign-in timed out. Please try again.';
+					formError = $t('settingsAccount.signInTimeout');
 					formLoading = false;
 				}
 			}, 3 * 60 * 1000);
@@ -90,12 +91,12 @@
 					} else if (result.status === 'error') {
 						clearTimeout(timeout);
 						cleanup();
-						formError = result.error ?? 'Sign-in failed';
+						formError = result.error ?? $t('settingsAccount.signInFailed');
 						formLoading = false;
 					} else if (result.status === 'expired') {
 						clearTimeout(timeout);
 						cleanup();
-						formError = 'Sign-in expired. Please try again.';
+						formError = $t('settingsAccount.signInExpired');
 						formLoading = false;
 					}
 				} catch {
@@ -103,7 +104,7 @@
 				}
 			}, 2000);
 		} catch (e: any) {
-			formError = e?.message || 'Failed to start sign-in';
+			formError = e?.message || $t('settingsAccount.startFailed');
 			formLoading = false;
 		}
 	}
@@ -155,14 +156,14 @@
 <!-- Header -->
 <div class="flex items-center justify-between mb-6">
 	<div>
-		<h2 class="font-display text-xl font-bold text-base-content mb-1">Account</h2>
-		<p class="text-base text-base-content/80">NeboLoop AI, marketplace, and cloud channels</p>
+		<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsAccount.title')}</h2>
+		<p class="text-base text-base-content/80">{$t('settingsAccount.description')}</p>
 	</div>
 	<button
 		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-base font-medium text-base-content/80 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5"
 		onclick={() => webapi.get('/api/v1/neboloop/open')}
 	>
-		NeboLoop.com
+		{$t('settingsAccount.neboloopCom')}
 		<ExternalLink class="w-3.5 h-3.5" />
 	</button>
 </div>
@@ -170,7 +171,7 @@
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading account...</span>
+		<span class="text-base text-base-content/80">{$t('settingsAccount.loadingAccount')}</span>
 	</div>
 {:else if accountConnected}
 	<!-- Connected State -->
@@ -187,11 +188,11 @@
 							{#if ownerName}<p class="font-medium text-base">{ownerName}</p>{/if}
 							{#if ownerEmail}<p class="text-base text-base-content/80">{ownerEmail}</p>{/if}
 						{:else}
-							<p class="font-medium text-base">NeboLoop Account</p>
+							<p class="font-medium text-base">{$t('settingsAccount.neboloopAccount')}</p>
 						{/if}
 					</div>
 				</div>
-				<span class="text-base font-semibold text-success bg-success/10 px-2.5 py-1 rounded-full">Connected</span>
+				<span class="text-base font-semibold text-success bg-success/10 px-2.5 py-1 rounded-full">{$t('common.connected')}</span>
 			</div>
 		</div>
 
@@ -202,18 +203,18 @@
 					<Bot class="w-5 h-5 {botConnected ? 'text-success' : 'text-warning'}" />
 				</div>
 				<div class="flex-1">
-					<p class="font-medium text-base">Bot Connection</p>
+					<p class="font-medium text-base">{$t('settingsAccount.botConnection')}</p>
 					{#if botConnected}
 						<p class="text-base text-base-content/80">{botName || 'NeboLoop'}</p>
 						{#if botId}
 							<p class="text-base text-base-content/80 font-mono">{botId}</p>
 						{/if}
 					{:else}
-						<p class="text-base text-warning">Waiting for NeboLoop connection</p>
+						<p class="text-base text-warning">{$t('settingsAccount.waitingForConnection')}</p>
 					{/if}
 				</div>
 				<span class="text-base font-semibold px-2.5 py-1 rounded-full {botConnected ? 'text-success bg-success/10' : 'text-warning bg-warning/10'}">
-					{botConnected ? 'Online' : 'Offline'}
+					{botConnected ? $t('common.online') : $t('common.offline')}
 				</span>
 			</div>
 		</div>
@@ -229,13 +230,13 @@
 				<div class="flex items-center gap-3 mb-4">
 					<Zap class="w-5 h-5 text-primary" />
 					<div class="flex-1">
-						<p class="font-medium text-base">AI Usage</p>
+						<p class="font-medium text-base">{$t('settingsAccount.aiUsage')}</p>
 					</div>
 					<button
 						class="h-7 px-2.5 rounded-lg bg-base-content/5 border border-base-content/10 text-base font-medium text-base-content/80 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1"
 						onclick={() => webapi.get('/api/v1/neboloop/open', { path: '/app/settings/billing' })}
 					>
-						Manage plan
+						{$t('settingsAccount.managePlan')}
 						<ExternalLink class="w-3 h-3" />
 					</button>
 				</div>
@@ -243,14 +244,14 @@
 					{#if janusUsage.session.limitTokens > 0}
 						<div>
 							<div class="flex justify-between text-base text-base-content/80 mb-1.5">
-								<span>Session: {janusUsage.session.percentUsed}% used</span>
+								<span>{$t('settingsAccount.sessionUsed', { values: { percent: janusUsage.session.percentUsed } })}</span>
 								{#if janusUsage.session.resetAt}
 									{@const reset = new Date(janusUsage.session.resetAt)}
 									{@const now = new Date()}
 									{@const diffMs = reset.getTime() - now.getTime()}
 									{@const diffH = Math.floor(diffMs / 3600000)}
 									{@const diffM = Math.floor((diffMs % 3600000) / 60000)}
-									<span>Resets in {diffH}h {diffM}m</span>
+									<span>{$t('settingsAccount.resetsInTime', { values: { hours: diffH, minutes: diffM } })}</span>
 								{/if}
 							</div>
 							<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
@@ -264,9 +265,9 @@
 					{#if janusUsage.weekly.limitTokens > 0}
 						<div>
 							<div class="flex justify-between text-base text-base-content/80 mb-1.5">
-								<span>Weekly: {janusUsage.weekly.percentUsed}% used</span>
+								<span>{$t('settingsAccount.weeklyUsed', { values: { percent: janusUsage.weekly.percentUsed } })}</span>
 								{#if janusUsage.weekly.resetAt}
-									<span>Resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+									<span>{$t('settingsAccount.resetsDate', { values: { date: new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) } })}</span>
 								{/if}
 							</div>
 							<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
@@ -286,7 +287,7 @@
 			{#if showDisconnectConfirm}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<p class="text-base text-base-content/80 mb-4">
-						This will disconnect your NeboLoop account and stop all cloud services (AI, marketplace, channels).
+						{$t('settingsAccount.disconnectWarning')}
 					</p>
 					<div class="flex gap-2">
 						<button
@@ -298,14 +299,14 @@
 							{#if disconnecting}
 								<Loader2 class="w-4 h-4 animate-spin mr-1.5" />
 							{/if}
-							Disconnect
+							{$t('settingsAccount.disconnect')}
 						</button>
 						<button
 							type="button"
 							class="h-9 px-4 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 							onclick={() => showDisconnectConfirm = false}
 						>
-							Cancel
+							{$t('common.cancel')}
 						</button>
 					</div>
 				</div>
@@ -316,7 +317,7 @@
 					onclick={() => showDisconnectConfirm = true}
 				>
 					<LogOut class="w-4 h-4" />
-					Disconnect Account
+					{$t('settingsAccount.disconnectAccount')}
 				</button>
 			{/if}
 		</div>
@@ -328,7 +329,7 @@
 				class="text-sm text-base-content/40 hover:text-error transition-colors"
 				onclick={() => { deleteConfirmText = ''; showDeleteModal = true; }}
 			>
-				Delete account
+				{$t('settingsAccount.deleteAccount')}
 			</button>
 		</div>
 	</div>
@@ -338,8 +339,7 @@
 		<div class="flex flex-col items-center gap-4">
 			<XCircle class="w-8 h-8 text-base-content/90" />
 			<p class="text-base text-base-content/80 text-center max-w-sm">
-				Connect to NeboLoop for AI, the marketplace, and cloud channels.
-				You can use Google, Apple, or email.
+				{$t('settingsAccount.connectDescription')}
 			</p>
 
 			{#if formError}
@@ -356,19 +356,19 @@
 			>
 				{#if formLoading}
 					<Loader2 class="w-5 h-5 mr-2 animate-spin" />
-					Waiting for sign-in...
+					{$t('settingsAccount.waitingForSignIn')}
 				{:else}
-					Continue with NeboLoop
+					{$t('settingsAccount.continueWithNeboLoop')}
 				{/if}
 			</button>
 			{#if formLoading}
-				<p class="text-base text-base-content/80">Complete sign-in in your browser</p>
+				<p class="text-base text-base-content/80">{$t('settingsAccount.completeInBrowser')}</p>
 				<button
 					type="button"
 					class="text-base text-base-content/80 hover:text-base-content underline"
 					onclick={() => { cleanup(); formLoading = false; }}
 				>
-					Cancel
+					{$t('common.cancel')}
 				</button>
 			{/if}
 		</div>
@@ -376,28 +376,28 @@
 {/if}
 
 <!-- Delete Account Modal -->
-<Modal bind:show={showDeleteModal} title="Delete Account" size="sm">
+<Modal bind:show={showDeleteModal} title={$t('settingsAccount.deleteModal.title')} size="sm">
 	<div class="space-y-4">
 		<div class="rounded-xl bg-error/10 border border-error/20 p-4">
 			<div class="flex gap-3">
 				<AlertTriangle class="w-5 h-5 text-error shrink-0 mt-0.5" />
 				<div>
-					<p class="text-base font-medium text-error">This action is permanent</p>
+					<p class="text-base font-medium text-error">{$t('settingsAccount.deleteModal.permanent')}</p>
 					<p class="text-sm text-error/80 mt-1">
-						Your account, settings, memories, and all associated data will be permanently deleted. This cannot be undone.
+						{$t('settingsAccount.deleteModal.description')}
 					</p>
 				</div>
 			</div>
 		</div>
 		<div>
 			<label class="block text-sm font-medium text-base-content/80 mb-1" for="confirm-delete">
-				Type <code class="bg-base-200 px-1.5 py-0.5 rounded text-error font-bold">DELETE</code> to confirm
+				{$t('settingsAccount.deleteModal.typeToConfirm')}
 			</label>
 			<input
 				id="confirm-delete"
 				type="text"
 				class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-				placeholder="Type DELETE to confirm"
+				placeholder={$t('settingsAccount.deleteModal.typeToConfirm')}
 				bind:value={deleteConfirmText}
 				onkeydown={(e) => { if (e.key === 'Enter' && canDelete) handleDeleteAccount(); }}
 			/>
@@ -409,7 +409,7 @@
 			onclick={() => (showDeleteModal = false)}
 			class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 		>
-			Cancel
+			{$t('common.cancel')}
 		</button>
 		<button
 			type="button"
@@ -419,7 +419,7 @@
 				{canDelete ? 'bg-error text-error-content hover:brightness-110' : 'bg-base-content/10 text-base-content/40 cursor-not-allowed'}"
 		>
 			{#if deleteLoading}<Spinner size={14} />{/if}
-			Delete my account
+			{$t('settingsAccount.deleteModal.deleteMyAccount')}
 		</button>
 	{/snippet}
 </Modal>

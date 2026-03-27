@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
 	import AutomationsSection from '$lib/components/agent/AutomationsSection.svelte';
+	import { t } from 'svelte-i18n';
 
 	const channelState = getContext<{
 		activeRoleId: string;
@@ -9,7 +10,7 @@
 </script>
 
 <svelte:head>
-	<title>Nebo - {channelState.activeRoleName || 'Automate'} - Automate</title>
+	<title>Nebo - {channelState.activeRoleName || $t('agent.automate')} - {$t('agent.automate')}</title>
 </svelte:head>
 
 <div class="flex-1 flex flex-col min-h-0">

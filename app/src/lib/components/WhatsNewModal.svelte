@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { CheckCircle, ExternalLink } from 'lucide-svelte';
 
@@ -28,15 +29,15 @@
 	}
 </script>
 
-<Modal bind:show title="What's New" {onclose}>
+<Modal bind:show title={$t('whatsNew.title')} {onclose}>
 	<div class="flex flex-col items-center text-center gap-4 py-4">
 		<div class="w-16 h-16 rounded-full bg-success/15 flex items-center justify-center">
 			<CheckCircle class="w-8 h-8 text-success" />
 		</div>
 
 		<div>
-			<h3 class="text-lg font-bold text-base-content">Nebo has been updated</h3>
-			<p class="text-base-content/70 mt-1">You're now running <span class="font-semibold">v{version}</span></p>
+			<h3 class="text-lg font-bold text-base-content">{$t('whatsNew.heading')}</h3>
+			<p class="text-base-content/70 mt-1">{$t('whatsNew.versionInfo', { values: { version } })}</p>
 		</div>
 
 		{#if releaseUrl}
@@ -46,7 +47,7 @@
 				rel="noopener noreferrer"
 				class="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary/80 transition-colors"
 			>
-				View release notes
+				{$t('whatsNew.viewReleaseNotes')}
 				<ExternalLink class="w-3.5 h-3.5" />
 			</a>
 		{/if}
@@ -54,7 +55,7 @@
 
 	{#snippet footer()}
 		<button class="btn btn-primary" onclick={handleClose}>
-			Got it
+			{$t('common.gotIt')}
 		</button>
 	{/snippet}
 </Modal>

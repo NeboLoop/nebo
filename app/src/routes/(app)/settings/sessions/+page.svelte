@@ -6,6 +6,7 @@
 	import type { AgentSession } from '$lib/api/nebo';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { t } from 'svelte-i18n';
 
 	let sessions = $state<AgentSession[]>([]);
 	let isLoading = $state(true);
@@ -24,8 +25,10 @@
 	// Bulk cleanup
 	let showCleanupMenu = $state(false);
 
-	const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-	const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+	const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+	const MONTH_KEYS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'] as const;
+	const WEEKDAYS = $derived(WEEKDAY_KEYS.map(k => $t(`weekdays.${k}`)));
+	const MONTHS = $derived(MONTH_KEYS.map(k => $t(`months.${k}`)));
 
 	onMount(async () => {
 		await loadSessions();
@@ -74,12 +77,12 @@
 		const now = new Date();
 		const diffMs = now.getTime() - d.getTime();
 		const diffMins = Math.floor(diffMs / 60000);
-		if (diffMins < 1) return 'just now';
-		if (diffMins < 60) return `${diffMins}m ago`;
+		if (diffMins < 1) return $t('time.justNow');
+		if (diffMins < 60) return $t('time.minutesAgo', { values: { n: diffMins } });
 		const diffHrs = Math.floor(diffMins / 60);
-		if (diffHrs < 24) return `${diffHrs}h ago`;
+		if (diffHrs < 24) return $t('time.hoursAgo', { values: { n: diffHrs } });
 		const diffDays = Math.floor(diffHrs / 24);
-		if (diffDays < 7) return `${diffDays}d ago`;
+		if (diffDays < 7) return $t('time.daysAgo', { values: { n: diffDays } });
 		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 	}
 
@@ -113,11 +116,11 @@
 	/** Parse session source from name prefix */
 	function sessionSource(s: AgentSession): { type: string; label: string } {
 		const name = s.name || s.id;
-		if (name.startsWith('role:')) return { type: 'role', label: 'Role' };
-		if (name.startsWith('channel:')) return { type: 'channel', label: 'Channel' };
-		if (name.startsWith('heartbeat')) return { type: 'heartbeat', label: 'Heartbeat' };
-		if (name.startsWith('workflow:')) return { type: 'workflow', label: 'Workflow' };
-		return { type: 'chat', label: 'Chat' };
+		if (name.startsWith('role:')) return { type: 'role', label: $t('settingsSessions.sources.role') };
+		if (name.startsWith('channel:')) return { type: 'channel', label: $t('settingsSessions.sources.channel') };
+		if (name.startsWith('heartbeat')) return { type: 'heartbeat', label: $t('settingsSessions.sources.heartbeat') };
+		if (name.startsWith('workflow:')) return { type: 'workflow', label: $t('settingsSessions.sources.workflow') };
+		return { type: 'chat', label: $t('settingsSessions.sources.chat') };
 	}
 
 	function sessionDisplayName(s: AgentSession): string {
@@ -309,7 +312,7 @@
 <!-- Header -->
 <div class="mb-6">
 	<div class="flex items-center justify-between mb-1">
-		<h2 class="font-display text-xl font-bold text-base-content">Sessions</h2>
+		<h2 class="font-display text-xl font-bold text-base-content">{$t('settingsSessions.title')}</h2>
 		<div class="flex items-center gap-2">
 			<!-- Cleanup dropdown -->
 			<div class="relative">
@@ -319,7 +322,7 @@
 					onclick={() => showCleanupMenu = !showCleanupMenu}
 				>
 					<Trash2 class="w-3.5 h-3.5" />
-					Cleanup
+					{$t('settingsSessions.cleanup')}
 				</button>
 				{#if showCleanupMenu}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -327,13 +330,13 @@
 						onmouseleave={() => showCleanupMenu = false}
 					>
 						<button type="button" class="w-full px-3 py-2 text-left text-base text-base-content/80 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(30)}>
-							Older than 30 days
+							{$t('settingsSessions.olderThan30')}
 						</button>
 						<button type="button" class="w-full px-3 py-2 text-left text-base text-base-content/80 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(90)}>
-							Older than 90 days
+							{$t('settingsSessions.olderThan90')}
 						</button>
 						<button type="button" class="w-full px-3 py-2 text-left text-base text-base-content/80 hover:bg-base-content/5 transition-colors" onclick={() => confirmDeleteOlder(180)}>
-							Older than 6 months
+							{$t('settingsSessions.olderThan6Months')}
 						</button>
 					</div>
 				{/if}
@@ -348,14 +351,14 @@
 		</div>
 	</div>
 	<p class="text-base text-base-content/80">
-		{totalSessions.toLocaleString()} sessions &middot; {totalMessages.toLocaleString()} messages
+		{$t('settingsSessions.stats', { values: { sessions: totalSessions.toLocaleString(), messages: totalMessages.toLocaleString() } })}
 	</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading sessions...</span>
+		<span class="text-base text-base-content/80">{$t('settingsSessions.loadingSessions')}</span>
 	</div>
 {:else}
 	<!-- Calendar -->
@@ -432,14 +435,14 @@
 						class="text-sm text-base-content/80 hover:text-error transition-colors"
 						onclick={() => confirmDeleteDay(selectedDate!)}
 					>
-						Delete day
+						{$t('settingsSessions.deleteDay')}
 					</button>
 				{/if}
 			</div>
 
 			{#if selectedSessions.length === 0}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-8 text-center">
-					<p class="text-base text-base-content/80">No sessions on this day</p>
+					<p class="text-base text-base-content/80">{$t('settingsSessions.noSessions')}</p>
 				</div>
 			{:else}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10">
@@ -459,7 +462,7 @@
 								<p class="text-base font-medium text-base-content truncate">{sessionDisplayName(session)}</p>
 								<p class="text-sm text-base-content/80">
 									{formatTime(session.updatedAt || session.createdAt)}
-									&middot; {session.messageCount} message{session.messageCount !== 1 ? 's' : ''}
+									&middot; {$t('settingsSessions.messageCount', { values: { count: session.messageCount } })}
 								</p>
 							</div>
 							<!-- Delete -->
@@ -480,7 +483,7 @@
 	{:else}
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-8 text-center">
 			<MessageSquare class="w-8 h-8 mx-auto mb-2 text-base-content/40" />
-			<p class="text-base text-base-content/80">Select a day to view sessions</p>
+			<p class="text-base text-base-content/80">{$t('settingsSessions.selectDay')}</p>
 		</div>
 	{/if}
 {/if}
@@ -488,7 +491,7 @@
 <!-- Delete confirmation modal -->
 <Modal
 	bind:show={showDeleteModal}
-	title="Delete Sessions"
+	title={$t('settingsSessions.deleteTitle')}
 	size="md"
 	closeOnBackdrop={false}
 	showCloseButton={false}
@@ -498,28 +501,26 @@
 		<div class="flex items-start gap-3">
 			<AlertTriangle class="w-5 h-5 text-error shrink-0 mt-0.5" />
 			<div class="text-base text-base-content">
-				<p>You are about to permanently delete <strong>{deleteLabel}</strong>.</p>
+				<p>{$t('settingsSessions.deleteDescription', { values: { label: deleteLabel } })}</p>
 			</div>
 		</div>
 
 		<div class="rounded-xl bg-error/10 border border-error/20 p-4">
-			<p class="text-base font-semibold text-error mb-1">This causes permanent memory loss</p>
+			<p class="text-base font-semibold text-error mb-1">{$t('settingsSessions.permanentMemoryLoss')}</p>
 			<p class="text-base text-base-content/80">
-				Sessions contain the full conversation context that the agent uses for long-term recall.
-				Deleting sessions means the agent will permanently lose detailed memory of those interactions.
-				This cannot be undone.
+				{$t('settingsSessions.deleteExplanation')}
 			</p>
 		</div>
 
 		<div>
 			<label class="block text-base font-medium text-base-content mb-1" for="confirm-delete-sessions">
-				Type <code class="bg-base-200 px-1.5 py-0.5 rounded text-error font-bold">DELETE</code> to confirm
+				{$t('settingsSessions.typeDeleteConfirm')}
 			</label>
 			<input
 				id="confirm-delete-sessions"
 				type="text"
 				class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-				placeholder="Type DELETE to confirm"
+				placeholder={$t('settingsSessions.typeDeleteConfirm')}
 				bind:value={deleteConfirmText}
 				onkeydown={(e) => { if (e.key === 'Enter' && canDelete) executeDelete(); }}
 			/>
@@ -533,7 +534,7 @@
 				class="h-9 px-4 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 				onclick={() => { showDeleteModal = false; deleteTarget = null; deleteConfirmText = ''; }}
 			>
-				Cancel
+				{$t('common.cancel')}
 			</button>
 			<button
 				type="button"
@@ -541,7 +542,7 @@
 				onclick={executeDelete}
 				disabled={!canDelete || isDeleting}
 			>
-				{#if isDeleting}Deleting...{:else}Delete Permanently{/if}
+				{#if isDeleting}{$t('settingsSessions.deleting')}{:else}{$t('settingsSessions.deletePermanently')}{/if}
 			</button>
 		</div>
 	{/snippet}

@@ -13,6 +13,7 @@
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import { ExternalLink, CheckCircle, ArrowUpCircle, AlertCircle } from 'lucide-svelte';
+	import { t } from 'svelte-i18n';
 
 	let isChecking = $state(false);
 	let isApplying = $state(false);
@@ -29,7 +30,7 @@
 		const ws = getWebSocketClient();
 		unsubs.push(
 			ws.on('update_error', (data: { error: string }) => {
-				updateError.set(data.error || 'Update failed');
+				updateError.set(data.error || $t('settingsAbout.updateFailed'));
 				isApplying = false;
 			}),
 		);
@@ -68,11 +69,11 @@
 	}
 
 	const resourceLinks = [
-		{ label: 'Learn', href: 'https://getnebo.com/learn' },
-		{ label: 'Marketplace', href: 'https://neboloop.com' },
-		{ label: 'Send Feedback', href: 'https://getnebo.com/support/feedback' },
-		{ label: 'Developers', href: 'https://getnebo.com/developers' },
-		{ label: 'GitHub', href: 'https://github.com/NeboLoop/nebo' }
+		{ label: 'settingsAbout.learn', href: 'https://getnebo.com/learn' },
+		{ label: 'nav.marketplace', href: 'https://neboloop.com' },
+		{ label: 'settingsAbout.sendFeedback', href: 'https://getnebo.com/support/feedback' },
+		{ label: 'settingsAbout.developers', href: 'https://getnebo.com/developers' },
+		{ label: 'settingsAbout.github', href: 'https://github.com/NeboLoop/nebo' }
 	];
 
 	function getPlatform(): string {
@@ -85,8 +86,8 @@
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">About</h2>
-	<p class="text-base text-base-content/80">Version and update information</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsAbout.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsAbout.description')}</p>
 </div>
 
 <div class="space-y-6">
@@ -106,11 +107,11 @@
 				</div>
 				<div>
 					<h3 class="font-display text-lg font-bold text-base-content">Nebo</h3>
-					<p class="text-sm text-base-content/60">Personal Desktop AI Companion</p>
+					<p class="text-sm text-base-content/60">{$t('settingsAbout.personalDesktopAI')}</p>
 				</div>
 			</div>
 			<div class="mt-4 space-y-2">
-				{#each [['Version', $updateInfo?.currentVersion ?? '—'], ['Platform', getPlatform()], ['Install', ($updateInfo?.installMethod ?? '—').replace('_', ' ')], ['License', 'Apache 2.0']] as [label, value]}
+				{#each [[`${$t('settingsAbout.version')}`, $updateInfo?.currentVersion ?? '—'], [$t('settingsAbout.platform'), getPlatform()], [$t('settingsAbout.installMethod'), ($updateInfo?.installMethod ?? '—').replace('_', ' ')], [$t('settingsAbout.license'), $t('settingsAbout.apache')]] as [label, value]}
 					<div class="flex items-center justify-between py-1">
 						<span class="text-sm text-base-content/60">{label}</span>
 						<span class="text-sm text-base-content font-medium">{value}</span>
@@ -123,7 +124,7 @@
 	<!-- Software Update -->
 	<section>
 		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">
-			Software Update
+			{$t('settingsAbout.softwareUpdate')}
 		</h3>
 		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 			{#if $downloadProgress}
@@ -131,7 +132,7 @@
 				<div class="flex items-center gap-3">
 					<Spinner size={20} />
 					<div class="flex-1 min-w-0">
-						<p class="text-base font-medium text-base-content">Downloading update...</p>
+						<p class="text-base font-medium text-base-content">{$t('settingsAbout.downloadingUpdate')}</p>
 						<div class="mt-2 h-1.5 rounded-full bg-base-content/10 overflow-hidden">
 							<div
 								class="h-full rounded-full bg-primary transition-all"
@@ -139,7 +140,7 @@
 							></div>
 						</div>
 						<p class="text-sm text-base-content/60 mt-1 tabular-nums">
-							{$downloadProgress.percent}%
+							{$t('settingsAbout.percent', { values: { percent: $downloadProgress.percent } })}
 						</p>
 					</div>
 				</div>
@@ -148,8 +149,8 @@
 				<div class="flex items-center gap-3">
 					<Spinner size={20} />
 					<div>
-						<p class="text-base font-medium text-base-content">Installing update...</p>
-						<p class="text-sm text-base-content/60">Nebo will restart momentarily</p>
+						<p class="text-base font-medium text-base-content">{$t('settingsAbout.installingUpdate')}</p>
+						<p class="text-sm text-base-content/60">{$t('settingsAbout.restartMomentarily')}</p>
 					</div>
 				</div>
 			{:else if $updateError}
@@ -157,7 +158,7 @@
 				<div class="flex items-center gap-3">
 					<AlertCircle class="w-5 h-5 text-error shrink-0" />
 					<div class="flex-1 min-w-0">
-						<p class="text-base font-medium text-base-content">Update failed</p>
+						<p class="text-base font-medium text-base-content">{$t('settingsAbout.updateFailed')}</p>
 						<p class="text-sm text-error/80 mt-0.5">{$updateError}</p>
 					</div>
 					<button
@@ -165,7 +166,7 @@
 						class="h-9 px-5 rounded-full border border-base-content/10 text-sm font-medium hover:bg-base-content/5 transition-colors"
 						onclick={handleRetry}
 					>
-						Retry
+						{$t('common.retry')}
 					</button>
 				</div>
 			{:else if $updateReady}
@@ -173,15 +174,15 @@
 				<div class="flex items-center gap-3">
 					<ArrowUpCircle class="w-5 h-5 text-info shrink-0" />
 					<div class="flex-1 min-w-0">
-						<p class="text-base font-medium text-base-content">Nebo {$updateReady} is ready</p>
-						<p class="text-sm text-base-content/60">Downloaded and verified</p>
+						<p class="text-base font-medium text-base-content">{$t('settingsAbout.updateReady', { values: { version: $updateReady } })}</p>
+						<p class="text-sm text-base-content/60">{$t('settingsAbout.downloadedVerified')}</p>
 					</div>
 					<button
 						type="button"
 						class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all"
 						onclick={handleApply}
 					>
-						Restart & Update
+						{$t('settingsAbout.restartUpdate')}
 					</button>
 				</div>
 			{:else if $updateInfo?.available}
@@ -190,18 +191,18 @@
 					<ArrowUpCircle class="w-5 h-5 text-info shrink-0" />
 					<div class="flex-1 min-w-0">
 						<p class="text-base font-medium text-base-content">
-							Nebo {$updateInfo.latestVersion} is available
+							{$t('settingsAbout.updateAvailable', { values: { version: $updateInfo.latestVersion } })}
 						</p>
 						{#if $updateInfo.installMethod === 'homebrew'}
 							<p class="text-sm text-base-content/60">
-								Run <code class="text-sm">brew upgrade nebo</code> to update
+								{$t('settingsAbout.brewUpgrade')}
 							</p>
 						{:else if $updateInfo.installMethod === 'package_manager'}
 							<p class="text-sm text-base-content/60">
-								Run <code class="text-sm">sudo apt upgrade nebo</code> to update
+								{$t('settingsAbout.aptUpgrade')}
 							</p>
 						{:else}
-							<p class="text-sm text-base-content/60">A newer version is available</p>
+							<p class="text-sm text-base-content/60">{$t('settingsAbout.newerAvailable')}</p>
 						{/if}
 					</div>
 					{#if $updateInfo.canAutoUpdate}
@@ -210,7 +211,7 @@
 							class="h-9 px-5 rounded-full bg-primary text-primary-content text-sm font-bold hover:brightness-110 transition-all"
 							onclick={handleApply}
 						>
-							Update Now
+							{$t('settingsAbout.updateNow')}
 						</button>
 					{/if}
 				</div>
@@ -219,8 +220,8 @@
 				<div class="flex items-center gap-3">
 					<CheckCircle class="w-5 h-5 text-success shrink-0" />
 					<div class="flex-1 min-w-0">
-						<p class="text-base font-medium text-base-content">Nebo is up to date</p>
-						<p class="text-sm text-base-content/60">You're running the latest version</p>
+						<p class="text-base font-medium text-base-content">{$t('settingsAbout.upToDate')}</p>
+						<p class="text-sm text-base-content/60">{$t('settingsAbout.runningLatest')}</p>
 					</div>
 					<button
 						type="button"
@@ -228,14 +229,14 @@
 						onclick={handleCheck}
 						disabled={isChecking}
 					>
-						Check Again
+						{$t('settingsAbout.checkAgain')}
 					</button>
 				</div>
 			{:else}
 				<!-- Default: check for updates -->
 				<div class="flex items-center gap-3">
 					<div class="flex-1 min-w-0">
-						<p class="text-base text-base-content/80">Check if a newer version is available</p>
+						<p class="text-base text-base-content/80">{$t('settingsAbout.checkDescription')}</p>
 					</div>
 					<button
 						type="button"
@@ -243,7 +244,7 @@
 						onclick={handleCheck}
 						disabled={isChecking}
 					>
-						{#if isChecking}<Spinner size={14} />{:else}Check for Updates{/if}
+						{#if isChecking}<Spinner size={14} />{:else}{$t('settingsAbout.checkForUpdates')}{/if}
 					</button>
 				</div>
 			{/if}
@@ -253,7 +254,7 @@
 	<!-- Links -->
 	<section>
 		<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">
-			Resources
+			{$t('settingsAbout.resources')}
 		</h3>
 		<div
 			class="rounded-2xl bg-base-200/50 border border-base-content/10 divide-y divide-base-content/10"
@@ -265,7 +266,7 @@
 					rel="noopener noreferrer"
 					class="flex items-center justify-between px-5 py-3 text-base text-base-content hover:bg-base-content/5 transition-colors"
 				>
-					<span>{link.label}</span>
+					<span>{$t(link.label)}</span>
 					<ExternalLink class="w-4 h-4 text-base-content/40" />
 				</a>
 			{/each}

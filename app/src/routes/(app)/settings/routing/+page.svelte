@@ -4,6 +4,7 @@
 	import * as api from '$lib/api/nebo';
 	import type * as components from '$lib/api/neboComponents';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
+	import { t } from 'svelte-i18n';
 
 	let isLoading = $state(true);
 	let error = $state('');
@@ -49,20 +50,20 @@
 		{ value: 'ollama', label: 'Ollama (Local)' }
 	];
 
-	const routingModes = [
-		{ key: 'general' as const, label: 'All Purpose', description: 'Chat, Q&A, everyday tasks', icon: Sparkles, color: 'text-primary' },
-		{ key: 'reasoning' as const, label: 'Reasoning', description: 'Analysis, problem solving', icon: Brain, color: 'text-secondary' },
-		{ key: 'code' as const, label: 'Advanced Tasks', description: 'Code, PDFs, documents', icon: Code, color: 'text-accent' },
-		{ key: 'vision' as const, label: 'Vision', description: 'Images, screenshots', icon: Eye, color: 'text-info' },
-		{ key: 'audio' as const, label: 'Audio', description: 'Voice, transcription', icon: Volume2, color: 'text-warning' }
-	];
+	const routingModes = $derived([
+		{ key: 'general' as const, label: $t('settingsRouting.modes.allPurpose'), description: $t('settingsRouting.modes.allPurposeDesc'), icon: Sparkles, color: 'text-primary' },
+		{ key: 'reasoning' as const, label: $t('settingsRouting.modes.reasoning'), description: $t('settingsRouting.modes.reasoningDesc'), icon: Brain, color: 'text-secondary' },
+		{ key: 'code' as const, label: $t('settingsRouting.modes.advanced'), description: $t('settingsRouting.modes.advancedDesc'), icon: Code, color: 'text-accent' },
+		{ key: 'vision' as const, label: $t('settingsRouting.modes.vision'), description: $t('settingsRouting.modes.visionDesc'), icon: Eye, color: 'text-info' },
+		{ key: 'audio' as const, label: $t('settingsRouting.modes.audio'), description: $t('settingsRouting.modes.audioDesc'), icon: Volume2, color: 'text-warning' }
+	]);
 
-	const laneModes = [
-		{ key: 'heartbeat' as const, label: 'Heartbeat', description: 'Proactive check-ins' },
-		{ key: 'events' as const, label: 'Scheduled Tasks', description: 'Cron jobs, reminders' },
-		{ key: 'comm' as const, label: 'Communication', description: 'Inter-agent messages' },
-		{ key: 'subagent' as const, label: 'Sub-agents', description: 'Background workers' }
-	];
+	const laneModes = $derived([
+		{ key: 'heartbeat' as const, label: $t('settingsRouting.lanes.heartbeat'), description: $t('settingsRouting.lanes.heartbeatDesc') },
+		{ key: 'events' as const, label: $t('settingsRouting.lanes.scheduled'), description: $t('settingsRouting.lanes.scheduledDesc') },
+		{ key: 'comm' as const, label: $t('settingsRouting.lanes.communication'), description: $t('settingsRouting.lanes.communicationDesc') },
+		{ key: 'subagent' as const, label: $t('settingsRouting.lanes.subagents'), description: $t('settingsRouting.lanes.subagentsDesc') }
+	]);
 
 	onMount(async () => {
 		await loadData();
@@ -139,7 +140,7 @@
 				cliProviderInfo = info;
 			}
 		} catch (err: any) {
-			error = err?.message || 'Failed to load routing data';
+			error = err?.message || $t('settingsRouting.loadFailed');
 		} finally {
 			isLoading = false;
 		}
@@ -250,7 +251,7 @@
 			});
 			await loadData();
 		} catch (err: any) {
-			error = err?.message || 'Failed to save routing';
+			error = err?.message || $t('settingsRouting.saveFailed');
 		} finally {
 			isSaving = false;
 		}
@@ -275,14 +276,14 @@
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">Routing</h2>
-	<p class="text-base text-base-content/80">Which model handles each type of task</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsRouting.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsRouting.description')}</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading routing configuration...</span>
+		<span class="text-base text-base-content/80">{$t('settingsRouting.loadingRouting')}</span>
 	</div>
 {:else}
 	<div class="space-y-6">
@@ -294,7 +295,7 @@
 
 		<!-- Task Routing -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Task Routing</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsRouting.taskRouting')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="space-y-5">
 					{#each routingModes as mode}
@@ -306,9 +307,9 @@
 							</div>
 							<div class="grid sm:grid-cols-2 gap-3">
 								<div>
-									<label class="text-base font-medium text-base-content/80">Main model</label>
+									<label class="text-base font-medium text-base-content/80">{$t('settingsRouting.mainModel')}</label>
 									<select bind:value={routingForm[mode.key]} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors">
-										<option value="auto">Auto</option>
+										<option value="auto">{$t('settingsRouting.auto')}</option>
 										{#each groups as group}
 											<optgroup label={group.label}>
 												{#each group.models as opt}
@@ -319,9 +320,9 @@
 									</select>
 								</div>
 								<div>
-									<label class="text-base font-medium text-base-content/80">Backup</label>
+									<label class="text-base font-medium text-base-content/80">{$t('settingsRouting.backup')}</label>
 									<select bind:value={backupForm[mode.key]} class="w-full h-11 mt-1 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors">
-										<option value="none">None</option>
+										<option value="none">{$t('settingsRouting.none')}</option>
 										{#each groups as group}
 											<optgroup label={group.label}>
 												{#each group.models as opt}
@@ -341,7 +342,7 @@
 					<div class="mt-5 pt-5 border-t border-base-content/10">
 						<div class="flex items-center gap-2 mb-3">
 							<Tag class="w-3.5 h-3.5 text-base-content/90" />
-							<span class="text-base font-medium text-base-content/80">Custom Aliases</span>
+							<span class="text-base font-medium text-base-content/80">{$t('settingsRouting.customAliases')}</span>
 						</div>
 						<div class="space-y-3">
 							{#each aliasesForm as aliasEntry, index}
@@ -349,12 +350,12 @@
 									<div class="flex items-center gap-3">
 										<input
 											type="text"
-											placeholder="e.g. fast"
+											placeholder={$t('settingsRouting.aliasPlaceholder')}
 											bind:value={aliasEntry.alias}
 											class="w-40 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 										/>
 										<select bind:value={aliasEntry.modelId} class="flex-1 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors">
-											<option value="">Select model...</option>
+											<option value="">{$t('settingsRouting.selectModel')}</option>
 											{#each groups as group}
 												<optgroup label={group.label}>
 													{#each group.models as opt}
@@ -367,7 +368,7 @@
 											type="button"
 											class="w-11 h-11 rounded-xl bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/40 transition-colors"
 											onclick={() => removeAlias(index)}
-											aria-label="Remove alias"
+											aria-label={$t('settingsRouting.removeAlias')}
 										>
 											<Trash2 class="w-4 h-4 text-base-content/90" />
 										</button>
@@ -384,7 +385,7 @@
 						class="flex items-center gap-2 text-base font-medium text-base-content/80 hover:text-primary transition-colors"
 						onclick={addAlias}
 					>
-						<Plus class="w-4 h-4" /> Add shortcut
+						<Plus class="w-4 h-4" /> {$t('settingsRouting.addShortcut')}
 					</button>
 				</div>
 			</div>
@@ -392,8 +393,8 @@
 
 		<!-- Lane Routing -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-1">Lane Routing</h3>
-			<p class="text-base text-base-content/80 mb-3">Assign cheaper models to background lanes to reduce costs</p>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-1">{$t('settingsRouting.laneRouting')}</h3>
+			<p class="text-base text-base-content/80 mb-3">{$t('settingsRouting.laneRoutingDesc')}</p>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 					<div class="space-y-5">
 					{#each laneModes as lane}
@@ -403,7 +404,7 @@
 								<span class="text-base text-base-content/80">{lane.description}</span>
 							</div>
 							<select bind:value={laneRoutingForm[lane.key]} class="w-full h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors">
-								<option value="auto">Auto</option>
+								<option value="auto">{$t('settingsRouting.auto')}</option>
 								{#each groups as group}
 									<optgroup label={group.label}>
 										{#each group.models as opt}
@@ -428,9 +429,9 @@
 			>
 				{#if isSaving}
 					<Spinner size={16} />
-					Saving...
+					{$t('common.saving')}
 				{:else}
-					Save Routing
+					{$t('settingsRouting.saveRouting')}
 				{/if}
 			</button>
 		</div>

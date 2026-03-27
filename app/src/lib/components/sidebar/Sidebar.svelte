@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { t } from 'svelte-i18n';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { getLoops, getActiveRoles, listRoles, activateRole, deactivateRole, deleteRole, duplicateRole, updateRole } from '$lib/api/nebo';
 	import type { GetLoopsResponse, LoopChannelEntry, LoopEntry } from '$lib/api/neboComponents';
@@ -76,7 +77,7 @@
 	}
 
 	function roleSubtitle(role: SidebarRole): string {
-		if (!role.isActive) return 'Paused';
+		if (!role.isActive) return $t('common.paused');
 		const running = runningRoles[role.roleId];
 		if (running) return running; // "running" or "Step 2 of 3"
 		if (role.nextFireAt) {
@@ -387,7 +388,7 @@
 		});
 		const unsubActivityUpdate = wsClient.on('workflow_activity_update', (data: { roleId: string; step: number; totalSteps: number }) => {
 			if (data.roleId) {
-				runningRoles = { ...runningRoles, [data.roleId]: `Step ${data.step} of ${data.totalSteps}` };
+				runningRoles = { ...runningRoles, [data.roleId]: $t('sidebar.stepProgress', { values: { step: data.step, total: data.totalSteps } }) };
 			}
 		});
 		const unsubRunCompleted = wsClient.on('workflow_run_completed', (data: { roleId: string }) => {
@@ -464,16 +465,16 @@
 		<!-- Header with + New button -->
 		<div class="sidebar-header">
 			<div>
-				<div class="sidebar-header-title">Agents</div>
+				<div class="sidebar-header-title">{$t('sidebar.agents')}</div>
 				{#if sidebarRoles.length > 0}
-					<div class="sidebar-header-subtitle">{activeCount} of {sidebarRoles.length} active</div>
+					<div class="sidebar-header-subtitle">{$t('sidebar.activeCount', { values: { active: activeCount, total: sidebarRoles.length } })}</div>
 				{/if}
 			</div>
 			<div class="flex items-center gap-1">
 				<button
 					class="sidebar-header-btn"
 					onclick={() => goto('/commander')}
-					title="Commander — visual agent coordination"
+					title={$t('sidebar.commander')}
 				>
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<rect x="1" y="1" width="8" height="8" rx="1" /><rect x="15" y="1" width="8" height="8" rx="1" /><rect x="8" y="15" width="8" height="8" rx="1" /><path d="M5 9v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" /><path d="M12 13v2" />
@@ -483,7 +484,7 @@
 				<button
 					class="sidebar-header-btn"
 					onclick={(e) => { e.stopPropagation(); const rect = (e.currentTarget as HTMLElement).getBoundingClientRect(); menuPos = { top: rect.bottom + 4, left: rect.left }; showNewBotMenu = !showNewBotMenu; }}
-					title="Add new role"
+					title={$t('sidebar.addNewRole')}
 				>
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<line x1="12" y1="5" x2="12" y2="19" />
@@ -509,8 +510,8 @@
 				</svg>
 			</div>
 			<div class="sidebar-bot-info">
-				<span class="sidebar-bot-name font-medium">Assistant</span>
-				<span class="sidebar-bot-role">Personal AI</span>
+				<span class="sidebar-bot-name font-medium">{$t('sidebar.assistant')}</span>
+				<span class="sidebar-bot-role">{$t('sidebar.personalAI')}</span>
 			</div>
 			{#if notificationCount > 0}
 				<span class="sidebar-badge">{notificationCount}</span>
@@ -547,10 +548,10 @@
 						{:else}
 							<span class="sidebar-bot-name">{role.name}</span>
 							{@const subtitle = roleSubtitle(role)}
-							{#if subtitle === 'running' || subtitle?.startsWith('Step ')}
+							{#if runningRoles[role.roleId]}
 								<span class="sidebar-bot-role flex items-center gap-1">
 									<span class="loading loading-spinner loading-xs"></span>
-									{subtitle === 'running' ? 'Running...' : subtitle}
+									{runningRoles[role.roleId] === 'running' ? $t('common.running') : subtitle}
 								</span>
 							{:else if subtitle}
 								<span class="sidebar-bot-role">{subtitle}</span>
@@ -612,14 +613,14 @@
 			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 				<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
 			</svg>
-			Rename
+			{$t('sidebar.rename')}
 		</button>
 		<button onclick={handleCtxDuplicate}>
 			<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 				<rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
 				<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
 			</svg>
-			Duplicate
+			{$t('sidebar.duplicate')}
 		</button>
 		<div class="context-menu-divider"></div>
 		<button onclick={handleCtxToggle}>
@@ -627,12 +628,12 @@
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" />
 				</svg>
-				Pause
+				{$t('sidebar.pause')}
 			{:else}
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<polygon points="5 3 19 12 5 21 5 3" />
 				</svg>
-				Resume
+				{$t('sidebar.resume')}
 			{/if}
 		</button>
 		<div class="context-menu-divider"></div>
@@ -641,16 +642,16 @@
 				<polyline points="3 6 5 6 21 6" />
 				<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
 			</svg>
-			Delete
+			{$t('common.delete')}
 		</button>
 	</div>
 {/if}
 
 <AlertDialog
 	bind:open={showDeleteDialog}
-	title="Delete Agent"
-	description="Are you sure you want to delete &quot;{deleteTarget?.name}&quot;? This will remove the agent and all its data permanently."
-	actionLabel="Delete"
+	title={$t('sidebar.deleteAgent')}
+	description={$t('sidebar.deleteAgentConfirm', { values: { name: deleteTarget?.name ?? '' } })}
+	actionLabel={$t('common.delete')}
 	actionType="danger"
 	onAction={confirmDelete}
 />

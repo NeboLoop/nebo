@@ -3,6 +3,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import webapi from '$lib/api/gocliRequest';
 	import * as api from '$lib/api/nebo';
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
@@ -128,7 +129,7 @@
 	</div>
 {:else if !skill}
 	<div class="flex flex-col items-center justify-center py-24 text-center">
-		<p class="text-base text-base-content/80">Skill not found</p>
+		<p class="text-base text-base-content/80">{$t('marketplace.detail.skillNotFound')}</p>
 	</div>
 {:else}
 	<!-- Hero: icon + name + install button -->
@@ -151,11 +152,11 @@
 				{/if}
 				{#if skill.installed}
 					<span class="h-9 px-6 rounded-full bg-success/15 text-success font-bold text-base mt-3 inline-flex items-center gap-1.5">
-						<Check class="w-4 h-4" /> Installed
+						<Check class="w-4 h-4" /> {$t('common.installed')}
 					</span>
 				{:else}
 					<button type="button" onclick={installProduct} disabled={installing} class="h-9 px-6 rounded-full bg-primary text-primary-content font-bold text-base mt-3 hover:brightness-110 active:scale-[0.97] transition-all inline-flex items-center gap-1.5 disabled:opacity-50">
-						{installing ? 'Installing...' : 'Install'}
+						{installing ? $t('marketplace.detail.installing') : $t('common.install')}
 					</button>
 				{/if}
 			</div>
@@ -171,24 +172,24 @@
 						<span class="text-base font-bold text-base-content/90">{avgRating}</span>
 						<Star class="w-3.5 h-3.5 text-base-content/90" />
 					</div>
-					<span class="text-sm text-base-content/60">{skill.ratingCount} Ratings</span>
+					<span class="text-sm text-base-content/60">{$t('marketplace.detail.ratings', { values: { count: skill.ratingCount } })}</span>
 				{:else}
 					<span class="text-base font-bold text-base-content/90">--</span>
-					<span class="text-sm text-base-content/60">No Ratings</span>
+					<span class="text-sm text-base-content/60">{$t('marketplace.detail.noRatings')}</span>
 				{/if}
 			</div>
 			<div class="flex-1 flex flex-col items-center gap-0.5 py-1">
 				<span class="text-base font-bold text-base-content/90">{formatNumber(skill.installCount)}</span>
-				<span class="text-sm text-base-content/60">Installs</span>
+				<span class="text-sm text-base-content/60">{$t('marketplace.detail.installs')}</span>
 			</div>
 			<div class="flex-1 flex flex-col items-center gap-0.5 py-1">
-				<span class="text-base font-bold text-success">Free</span>
-				<span class="text-sm text-base-content/60">Price</span>
+				<span class="text-base font-bold text-success">{$t('common.free')}</span>
+				<span class="text-sm text-base-content/60">{$t('marketplace.detail.price')}</span>
 			</div>
 			{#if skill.category}
 				<div class="flex-1 flex flex-col items-center gap-0.5 py-1">
 					<span class="text-base font-bold text-base-content/80 truncate max-w-full">{skill.category}</span>
-					<span class="text-sm text-base-content/60">Category</span>
+					<span class="text-sm text-base-content/60">{$t('marketplace.detail.category')}</span>
 				</div>
 			{/if}
 		</div>
@@ -207,9 +208,9 @@
 	<!-- Ratings & Reviews -->
 	<div class="px-5 py-5 border-b border-base-content/5">
 		<div class="flex items-center justify-between mb-4">
-			<h3 class="font-display text-lg font-bold">Ratings & Reviews</h3>
+			<h3 class="font-display text-lg font-bold">{$t('marketplace.detail.ratingsAndReviews')}</h3>
 			{#if reviews.length > 0}
-				<button type="button" onclick={() => showReview = true} class="text-base text-primary font-medium">See All</button>
+				<button type="button" onclick={() => showReview = true} class="text-base text-primary font-medium">{$t('marketplace.detail.seeAll')}</button>
 			{/if}
 		</div>
 
@@ -217,14 +218,14 @@
 			<!-- Big rating number -->
 			<div class="shrink-0 flex flex-col items-center">
 				<span class="text-5xl font-bold leading-none">{avgRating ?? '--'}</span>
-				<span class="text-sm text-base-content/60 mt-1">out of 5</span>
+				<span class="text-sm text-base-content/60 mt-1">{$t('marketplace.detail.outOf5')}</span>
 				{#if skill.ratingCount > 0}
 					<div class="flex items-center gap-0.5 mt-2">
 						{#each renderStars(Math.round(skill.ratingAvg)) as filled}
 							<Star class="w-3.5 h-3.5 {filled ? 'text-warning fill-warning' : 'text-base-content/40'}" />
 						{/each}
 					</div>
-					<span class="text-sm text-base-content/60 mt-1">{skill.ratingCount} Ratings</span>
+					<span class="text-sm text-base-content/60 mt-1">{$t('marketplace.detail.ratings', { values: { count: skill.ratingCount } })}</span>
 				{/if}
 			</div>
 
@@ -236,13 +237,13 @@
 					{/each}
 					<button type="button" onclick={() => showReview = true} class="shrink-0 w-48 rounded-2xl border-2 border-dashed border-base-content/10 flex flex-col items-center justify-center gap-2 hover:border-primary/30 hover:bg-primary/5 transition-colors">
 						<Star class="w-6 h-6 text-base-content/40" />
-						<span class="text-sm font-medium text-base-content/60">Write a Review</span>
+						<span class="text-sm font-medium text-base-content/60">{$t('marketplace.detail.writeReview')}</span>
 					</button>
 				</div>
 			{:else}
 				<div class="flex-1 flex flex-col items-center justify-center py-4">
-					<p class="text-base text-base-content/80">No reviews yet</p>
-					<button type="button" onclick={() => showReview = true} class="text-base text-primary font-medium mt-2">Be the first to review</button>
+					<p class="text-base text-base-content/80">{$t('marketplace.detail.noReviews')}</p>
+					<button type="button" onclick={() => showReview = true} class="text-base text-primary font-medium mt-2">{$t('marketplace.detail.beFirst')}</button>
 				</div>
 			{/if}
 		</div>
@@ -254,7 +255,7 @@
 	<!-- You Might Also Like -->
 	{#if similarItems.length > 0}
 		<div class="px-5 py-5 border-b border-base-content/5">
-			<h3 class="font-display text-lg font-bold mb-4">You Might Also Like</h3>
+			<h3 class="font-display text-lg font-bold mb-4">{$t('marketplace.detail.youMightLike')}</h3>
 			<div class="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
 				{#each similarItems as item}
 					<a href={itemHref(item)} class="flex-shrink-0 w-36 flex flex-col items-center gap-2 p-4 rounded-2xl bg-base-content/[0.03] hover:bg-base-content/[0.06] transition-colors">
@@ -269,34 +270,34 @@
 
 	<!-- Information grid -->
 	<div class="px-5 py-5 border-b border-base-content/5">
-		<h3 class="font-display text-lg font-bold mb-4">Information</h3>
+		<h3 class="font-display text-lg font-bold mb-4">{$t('marketplace.detail.information')}</h3>
 		<div class="grid grid-cols-2 gap-y-4 gap-x-8">
 			{#if skill.authorName}
 				<div>
-					<p class="text-sm text-base-content/60 mb-0.5">Developer</p>
+					<p class="text-sm text-base-content/60 mb-0.5">{$t('marketplace.detail.developer')}</p>
 					<p class="text-base font-medium">{skill.authorName}</p>
 				</div>
 			{/if}
 			{#if skill.version}
 				<div>
-					<p class="text-sm text-base-content/60 mb-0.5">Version</p>
+					<p class="text-sm text-base-content/60 mb-0.5">{$t('marketplace.detail.version')}</p>
 					<p class="text-base font-medium">{skill.version}</p>
 				</div>
 			{/if}
 			{#if skill.category}
 				<div>
-					<p class="text-sm text-base-content/60 mb-0.5">Category</p>
+					<p class="text-sm text-base-content/60 mb-0.5">{$t('marketplace.detail.category')}</p>
 					<p class="text-base font-medium">{skill.category}</p>
 				</div>
 			{/if}
 			{#if skill.type}
 				<div>
-					<p class="text-sm text-base-content/60 mb-0.5">Type</p>
+					<p class="text-sm text-base-content/60 mb-0.5">{$t('marketplace.detail.type')}</p>
 					<p class="text-base font-medium capitalize">{skill.type}</p>
 				</div>
 			{/if}
 			<div>
-				<p class="text-sm text-base-content/60 mb-0.5">Installs</p>
+				<p class="text-sm text-base-content/60 mb-0.5">{$t('marketplace.detail.installs')}</p>
 				<p class="text-base font-medium">{formatNumber(skill.installCount)}</p>
 			</div>
 		</div>
@@ -308,14 +309,14 @@
 			<button type="button" class="absolute inset-0 bg-black/60 backdrop-blur-sm" onclick={() => showReview = false}></button>
 			<div class="relative bg-base-100 rounded-2xl border border-base-content/10 w-full max-w-sm mx-4 p-6">
 				<div class="flex items-center justify-between mb-4">
-					<h3 class="font-display text-lg font-bold">Review {skill.name}</h3>
+					<h3 class="font-display text-lg font-bold">{$t('marketplace.detail.reviewTitle', { values: { name: skill.name } })}</h3>
 					<button type="button" onclick={() => showReview = false} class="p-1.5 rounded-full hover:bg-base-content/5 transition-colors">
 						<X class="w-4 h-4 text-base-content/90" />
 					</button>
 				</div>
 				<div class="space-y-4">
 					<div>
-						<p class="text-sm font-semibold text-base-content/60 uppercase tracking-wider mb-2">Rating</p>
+						<p class="text-sm font-semibold text-base-content/60 uppercase tracking-wider mb-2">{$t('marketplace.detail.rating')}</p>
 						<div class="flex gap-1">
 							{#each [1, 2, 3, 4, 5] as n}
 								<button type="button" onclick={() => reviewRating = n}>
@@ -325,14 +326,14 @@
 						</div>
 					</div>
 					<div>
-						<label for="rev-text" class="text-sm font-semibold text-base-content/60 uppercase tracking-wider">Your Review</label>
-						<textarea id="rev-text" bind:value={reviewText} rows="4" class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base placeholder:text-base-content/80 focus:outline-none focus:border-primary/50 transition-colors resize-none" placeholder="Share your experience with this skill..."></textarea>
+						<label for="rev-text" class="text-sm font-semibold text-base-content/60 uppercase tracking-wider">{$t('marketplace.detail.yourReview')}</label>
+						<textarea id="rev-text" bind:value={reviewText} rows="4" class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base placeholder:text-base-content/80 focus:outline-none focus:border-primary/50 transition-colors resize-none" placeholder={$t('marketplace.detail.reviewPlaceholderSkill')}></textarea>
 					</div>
 				</div>
 				<div class="flex gap-2 mt-5">
-					<button type="button" onclick={() => showReview = false} class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors">Cancel</button>
+					<button type="button" onclick={() => showReview = false} class="flex-1 h-11 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors">{$t('common.cancel')}</button>
 					<button type="button" disabled={!reviewText || submittingReview} onclick={submitReview} class="flex-1 h-11 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all disabled:opacity-30">
-						{submittingReview ? 'Submitting...' : 'Submit Review'}
+						{submittingReview ? $t('marketplace.detail.submitting') : $t('marketplace.detail.submitReview')}
 					</button>
 				</div>
 			</div>

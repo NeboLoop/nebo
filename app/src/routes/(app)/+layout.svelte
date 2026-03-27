@@ -10,6 +10,8 @@
 	import { settingsReturnPath } from '$lib/stores/settings';
 	import OnboardingFlow from '$lib/components/onboarding/OnboardingFlow.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
+	import { locale } from 'svelte-i18n';
+	import { t } from 'svelte-i18n';
 
 	import {
 		checkForUpdate,
@@ -211,6 +213,14 @@
 			if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
 				themePref = savedTheme;
 			}
+			// Set i18n locale from user preferences
+			const savedLang = prefsData.preferences?.language;
+			if (savedLang) {
+				locale.set(savedLang);
+				localStorage.setItem('nebo_locale', savedLang);
+				document.documentElement.dir = savedLang === 'ar' ? 'rtl' : 'ltr';
+				document.documentElement.lang = savedLang;
+			}
 		} catch (err) {
 			// If we can't get profile, show onboarding
 			showOnboarding = true;
@@ -257,8 +267,8 @@
 		<AppNav />
 		{#each quarantineNotices as notice (notice.app_id)}
 			<div class="px-4 pt-2">
-				<Alert type="warning" title="{notice.app_name} was removed due to a security concern." dismissible onclose={() => dismissQuarantine(notice.app_id)}>
-					Your data is safe. This app was automatically stopped and quarantined by NeboLoop.
+				<Alert type="warning" title={$t('layout.quarantineTitle', { values: { name: notice.app_name } })} dismissible onclose={() => dismissQuarantine(notice.app_id)}>
+					{$t('layout.quarantineDesc')}
 				</Alert>
 			</div>
 		{/each}
@@ -316,7 +326,7 @@
 
 <Toast
 	bind:show={showUpToDateToast}
-	message="You're running the latest version of Nebo."
+	message={$t('layout.upToDate')}
 	type="success"
 	duration={3000}
 />

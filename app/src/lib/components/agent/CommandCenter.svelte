@@ -5,6 +5,7 @@
 	import type { ActiveRoleEntry, AgentSession } from '$lib/api/neboComponents';
 	import type { WorkflowRun } from '$lib/api/nebo';
 	import { getWebSocketClient } from '$lib/websocket/client';
+	import { t } from 'svelte-i18n';
 
 	const channelState = getContext<{
 		activeView: string;
@@ -43,12 +44,12 @@
 		const then = new Date(dateStr).getTime();
 		const diff = now - then;
 		const mins = Math.floor(diff / 60000);
-		if (mins < 1) return 'just now';
-		if (mins < 60) return `${mins}m ago`;
+		if (mins < 1) return $t('time.justNow');
+		if (mins < 60) return $t('time.minutesAgo', { values: { n: mins } });
 		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h ago`;
+		if (hrs < 24) return $t('time.hoursAgo', { values: { n: hrs } });
 		const days = Math.floor(hrs / 24);
-		return `${days}d ago`;
+		return $t('time.daysAgo', { values: { n: days } });
 	}
 
 	let roles: ActiveRoleEntry[] = $state([]);
@@ -158,7 +159,7 @@
 	{:else}
 		<!-- Role cards -->
 		<div class="mb-6">
-			<h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60 mb-3">Agents</h2>
+			<h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60 mb-3">{$t('sidebar.agents')}</h2>
 			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
 				<!-- Companion card -->
 				<button
@@ -172,9 +173,9 @@
 					</div>
 					<div class="flex-1 min-w-0">
 						<div class="flex items-center gap-2">
-							<span class="text-base font-semibold text-base-content">Assistant</span>
+							<span class="text-base font-semibold text-base-content">{$t('agent.assistant')}</span>
 						</div>
-						<p class="text-sm text-base-content/60 mt-0.5">Your personal AI assistant</p>
+						<p class="text-sm text-base-content/60 mt-0.5">{$t('agent.yourPersonalAI')}</p>
 					</div>
 				</button>
 
@@ -197,10 +198,10 @@
 							{/if}
 							<div class="flex items-center gap-3 mt-1.5">
 								{#if role.workflowCount > 0}
-									<span class="text-sm text-base-content/60">{role.workflowCount} workflow{role.workflowCount !== 1 ? 's' : ''}</span>
+									<span class="text-sm text-base-content/60">{$t('commander.workflowCount', { values: { count: role.workflowCount } })}</span>
 								{/if}
 								{#if role.skillCount > 0}
-									<span class="text-sm text-base-content/60">{role.skillCount} skill{role.skillCount !== 1 ? 's' : ''}</span>
+									<span class="text-sm text-base-content/60">{$t('agent.skillCount', { values: { count: role.skillCount } })}</span>
 								{/if}
 							</div>
 						</div>
@@ -215,7 +216,7 @@
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
 					</svg>
-					<span class="text-base">Add a role</span>
+					<span class="text-base">{$t('agent.addRole')}</span>
 				</a>
 			</div>
 		</div>
@@ -223,7 +224,7 @@
 		<!-- Activity feed -->
 		<div>
 			<div class="flex items-center justify-between mb-3">
-				<h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60">Recent activity</h2>
+				<h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60">{$t('agent.recentActivity')}</h2>
 			</div>
 
 			{#if feed.length === 0}
@@ -231,8 +232,8 @@
 					<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="text-base-content/40 mb-3">
 						<polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
 					</svg>
-					<p class="text-base text-base-content/60">No activity yet</p>
-					<p class="text-sm text-base-content/40 mt-1">Start chatting or activate workflows to see activity here</p>
+					<p class="text-base text-base-content/60">{$t('agent.noActivity')}</p>
+					<p class="text-sm text-base-content/40 mt-1">{$t('agent.noActivityHint')}</p>
 				</div>
 			{:else}
 				<div class="flex flex-col">

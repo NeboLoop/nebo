@@ -6,6 +6,7 @@
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ToolCard from '$lib/components/chat/ToolCard.svelte';
 	import { getWebSocketClient } from '$lib/websocket/client';
+	import { t } from 'svelte-i18n';
 
 	interface ToolCall {
 		id?: string;
@@ -80,12 +81,12 @@
 	function timeAgo(dateStr: string | number): string {
 		const diff = Date.now() - toDate(dateStr).getTime();
 		const mins = Math.floor(diff / 60000);
-		if (mins < 1) return 'just now';
-		if (mins < 60) return `${mins}m ago`;
+		if (mins < 1) return $t('time.justNow');
+		if (mins < 60) return $t('time.minutesAgo', { values: { n: mins } });
 		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h ago`;
+		if (hrs < 24) return $t('time.hoursAgo', { values: { n: hrs } });
 		const days = Math.floor(hrs / 24);
-		if (days < 7) return `${days}d ago`;
+		if (days < 7) return $t('time.daysAgo', { values: { n: days } });
 		return toDate(dateStr).toLocaleDateString();
 	}
 
@@ -94,16 +95,16 @@
 	}
 
 	function formatDuration(secs: number): string {
-		if (secs < 60) return `${secs}s`;
+		if (secs < 60) return $t('time.seconds', { values: { n: secs } });
 		const mins = Math.floor(secs / 60);
 		const rem = secs % 60;
-		if (mins < 60) return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`;
+		if (mins < 60) return rem > 0 ? $t('time.minutesSeconds', { values: { mins, secs: rem } }) : $t('time.minutes', { values: { mins } });
 		const hrs = Math.floor(mins / 60);
-		return `${hrs}h ${mins % 60}m`;
+		return $t('time.hoursMinutes', { values: { hrs, mins: mins % 60 } });
 	}
 
 	function runDuration(run: WorkflowRun): string {
-		if (!run.completedAt) return 'running...';
+		if (!run.completedAt) return $t('common.running');
 		const secs = run.completedAt - run.startedAt;
 		return formatDuration(secs);
 	}
@@ -128,8 +129,8 @@
 			let group = groups.get(date);
 			if (!group) {
 				let label = date;
-				if (date === today) label = 'Today';
-				else if (date === yesterday) label = 'Yesterday';
+				if (date === today) label = $t('agentActivity.today');
+				else if (date === yesterday) label = $t('agentActivity.yesterday');
 				group = { label, date, runs: [], completed: 0, failed: 0, running: 0 };
 				groups.set(date, group);
 			}
@@ -143,7 +144,7 @@
 	});
 
 	// Track which day groups are expanded
-	let expandedDays = $state<Set<string>>(new Set(['Today']));
+	let expandedDays = $state<Set<string>>(new Set([$t('agentActivity.today')]));
 
 	function toggleDay(label: string) {
 		const next = new Set(expandedDays);
@@ -159,12 +160,15 @@
 		cancelled: 'bg-base-content/30',
 	};
 
-	const statusLabel: Record<string, string> = {
-		completed: 'Completed',
-		failed: 'Failed',
-		running: 'Running',
-		cancelled: 'Cancelled',
-	};
+	function getStatusLabel(status: string): string {
+		switch (status) {
+			case 'completed': return $t('common.completed');
+			case 'failed': return $t('common.failed');
+			case 'running': return $t('common.running');
+			case 'cancelled': return $t('common.cancelled');
+			default: return status;
+		}
+	}
 
 	let hasMoreMessages = $state(false);
 	let loadingMore = $state(false);
@@ -172,7 +176,7 @@
 
 	async function openSession(session: AgentSession) {
 		selectedSessionId = session.id;
-		selectedSessionLabel = session.summary || session.name || 'Chat session';
+		selectedSessionLabel = session.summary || session.name || $t('agent.chatSession');
 		loadingMessages = true;
 		try {
 			const res = await getAgentSessionMessages(session.id, 50);
@@ -254,7 +258,7 @@
 				openSession(match);
 			} else {
 				selectedSessionId = sid;
-				selectedSessionLabel = 'Session';
+				selectedSessionLabel = $t('agent.chatSession');
 				loadingMessages = true;
 				try {
 					const res = await getAgentSessionMessages(sid, 50);
@@ -295,7 +299,7 @@
 </script>
 
 <svelte:head>
-	<title>Nebo - {channelState.activeRoleName || 'Activity'} - Activity</title>
+	<title>Nebo - {channelState.activeRoleName || $t('agent.activity')} - {$t('agent.activity')}</title>
 </svelte:head>
 
 <div class="flex-1 flex flex-col min-h-0">
@@ -315,7 +319,7 @@
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<path d="M19 12H5" /><polyline points="12 19 5 12 12 5" />
 					</svg>
-					Back
+					{$t('common.back')}
 				</button>
 				<h2 class="text-sm font-semibold truncate">{selectedSessionLabel}</h2>
 			</div>
@@ -326,7 +330,7 @@
 				</div>
 			{:else if sessionMessages.length === 0}
 				<div class="flex flex-col items-center py-12 text-center">
-					<p class="text-sm text-base-content/70">No messages in this session.</p>
+					<p class="text-sm text-base-content/70">{$t('agent.noMessages')}</p>
 				</div>
 			{:else}
 				{@const toolOutputMap = buildToolOutputMap(sessionMessages)}
@@ -337,7 +341,7 @@
 							disabled={loadingMore}
 							onclick={loadOlderMessages}
 						>
-							{loadingMore ? 'Loading...' : 'Load older messages'}
+							{loadingMore ? $t('common.loading') : $t('agent.loadOlderMessages')}
 						</button>
 					</div>
 				{/if}
@@ -399,30 +403,30 @@
 			<!-- Stats overview -->
 			{#if stats && stats.totalRuns > 0}
 				<section class="pb-6">
-					<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Overview</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+					<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentActivity.overview')}</h2><span class="btn btn-sm invisible">&#8203;</span></div>
 
 					<div class="grid grid-cols-4 gap-3">
 						<div class="rounded-xl border border-base-content/10 p-3 text-center">
 							<p class="text-2xl font-bold">{stats.totalRuns}</p>
-							<p class="text-xs text-base-content/70">Total runs</p>
+							<p class="text-xs text-base-content/70">{$t('agentActivity.totalRuns')}</p>
 						</div>
 						<div class="rounded-xl border border-base-content/10 p-3 text-center">
 							<p class="text-2xl font-bold text-success">{stats.completed}</p>
-							<p class="text-xs text-base-content/70">Completed</p>
+							<p class="text-xs text-base-content/70">{$t('common.completed')}</p>
 						</div>
 						<div class="rounded-xl border border-base-content/10 p-3 text-center">
 							<p class="text-2xl font-bold text-error">{stats.failed}</p>
-							<p class="text-xs text-base-content/70">Failed</p>
+							<p class="text-xs text-base-content/70">{$t('common.failed')}</p>
 						</div>
 						<div class="rounded-xl border border-base-content/10 p-3 text-center">
 							<p class="text-2xl font-bold">{stats.avgDurationSecs != null ? formatDuration(stats.avgDurationSecs) : '—'}</p>
-							<p class="text-xs text-base-content/70">Avg duration</p>
+							<p class="text-xs text-base-content/70">{$t('agentActivity.avgDuration')}</p>
 						</div>
 					</div>
 					{#if stats.running > 0}
 						<div class="mt-2 flex items-center gap-2 text-sm text-warning">
 							<span class="loading loading-spinner loading-xs"></span>
-							{stats.running} running now
+							{$t('agentActivity.runningNow', { values: { count: stats.running } })}
 						</div>
 					{/if}
 				</section>
@@ -431,7 +435,7 @@
 			<!-- Workflow runs grouped by day -->
 			{#if groupedRuns.length > 0}
 				<section class="pb-6 {stats && stats.totalRuns > 0 ? 'border-t border-base-content/10 pt-4 mt-2' : ''}">
-					<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Workflow runs</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+					<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentActivity.workflowRuns')}</h2><span class="btn btn-sm invisible">&#8203;</span></div>
 					<div class="flex flex-col gap-2">
 						{#each groupedRuns as group}
 							<!-- Day header -->
@@ -448,12 +452,12 @@
 								</div>
 								<div class="flex items-center gap-2 text-xs">
 									{#if group.running > 0}
-										<span class="text-warning">{group.running} running</span>
+										<span class="text-warning">{$t('agentActivity.runningCount', { values: { count: group.running } })}</span>
 									{/if}
 									{#if group.failed > 0}
-										<span class="text-error">{group.failed} failed</span>
+										<span class="text-error">{$t('agentActivity.failedCount', { values: { count: group.failed } })}</span>
 									{/if}
-									<span class="text-base-content/70">{group.completed} completed</span>
+									<span class="text-base-content/70">{$t('agentActivity.completedCount', { values: { count: group.completed } })}</span>
 								</div>
 							</button>
 
@@ -465,7 +469,7 @@
 											<div class="w-2 h-2 rounded-full shrink-0 {statusColor[run.status]}"></div>
 											<div class="flex-1 min-w-0">
 												<div class="flex items-center gap-2">
-													<span class="text-sm font-medium text-error">Failed</span>
+													<span class="text-sm font-medium text-error">{$t('common.failed')}</span>
 													<span class="text-xs text-base-content/70">{run.triggerType}</span>
 												</div>
 												{#if run.error}
@@ -483,7 +487,7 @@
 											<div class="w-2 h-2 rounded-full shrink-0 bg-warning"></div>
 											<div class="flex-1 min-w-0">
 												<div class="flex items-center gap-2">
-													<span class="text-sm font-medium text-warning">Running</span>
+													<span class="text-sm font-medium text-warning">{$t('common.running')}</span>
 													{#if run.currentActivity}
 														<span class="text-xs text-base-content/70">{run.currentActivity}</span>
 													{/if}
@@ -496,13 +500,13 @@
 									{/each}
 									{#if group.completed > 5}
 										<div class="px-3 py-1.5 text-xs text-base-content/70">
-											{group.completed} completed runs
+											{$t('agentActivity.completedCount', { values: { count: group.completed } })}
 										</div>
 									{:else}
 										{#each group.runs.filter(r => r.status === 'completed') as run (run.id)}
 											<div class="flex items-center gap-3 px-3 py-1.5 text-xs text-base-content/70">
 												<div class="w-1.5 h-1.5 rounded-full shrink-0 bg-success"></div>
-												<span>Completed</span>
+												<span>{$t('common.completed')}</span>
 												<span>{run.triggerType}</span>
 												<span class="ml-auto">{formatTime(run.startedAt)} · {runDuration(run)}</span>
 											</div>
@@ -513,16 +517,16 @@
 						{/each}
 					</div>
 					{#if runsTotal > runs.length}
-						<p class="text-xs text-base-content/70 text-center mt-3">{runsTotal - runs.length} older runs not shown</p>
+						<p class="text-xs text-base-content/70 text-center mt-3">{$t('agentActivity.olderRuns', { values: { count: runsTotal - runs.length } })}</p>
 					{/if}
 				</section>
 			{/if}
 
 			<!-- Chat history -->
 			<section class="pb-6 {hasActivityAbove ? 'border-t border-base-content/10 pt-4 mt-2' : ''}">
-				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Chat history</h2><span class="btn btn-sm invisible">&#8203;</span></div>
+				<div class="flex items-center justify-between mb-3"><h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agent.chatHistory')}</h2><span class="btn btn-sm invisible">&#8203;</span></div>
 				{#if sessions.length === 0}
-					<p class="text-sm text-base-content/70">No chat history with {channelState.activeRoleName} yet.</p>
+					<p class="text-sm text-base-content/70">{$t('agent.noChatHistoryWith', { values: { name: channelState.activeRoleName } })}</p>
 				{:else}
 					<div class="flex flex-col gap-1">
 						{#each sessions as session (session.id)}
@@ -531,9 +535,9 @@
 								onclick={() => openSession(session)}
 							>
 								<div class="flex-1 min-w-0">
-									<p class="text-sm font-medium truncate">{session.summary || session.name || 'Chat session'}</p>
+									<p class="text-sm font-medium truncate">{session.summary || session.name || $t('agent.chatSession')}</p>
 									<p class="text-xs text-base-content/70 mt-0.5">
-										{session.messageCount} message{session.messageCount !== 1 ? 's' : ''}
+										{$t('agent.messageCount', { values: { count: session.messageCount } })}
 										{' · '}{timeAgo(session.updatedAt)}
 									</p>
 								</div>
@@ -552,7 +556,7 @@
 								<path d="M12 2a9 9 0 0 1 9 9c0 3.88-3.08 7.13-5.5 9.36a2.06 2.06 0 0 1-2.82.08A27 27 0 0 1 3 11a9 9 0 0 1 9-9z" />
 								<circle cx="12" cy="11" r="3" />
 							</svg>
-							Memories
+							{$t('agentActivity.memories')}
 						</h2>
 						<span class="btn btn-sm invisible">&#8203;</span>
 					</div>
@@ -575,8 +579,8 @@
 			<!-- Empty state if absolutely nothing -->
 			{#if (!stats || stats.totalRuns === 0) && runs.length === 0 && sessions.length === 0 && memories.length === 0}
 				<div class="flex flex-col items-center py-12 text-center">
-					<p class="text-sm text-base-content/70">No activity yet for {channelState.activeRoleName}.</p>
-					<p class="text-xs text-base-content/80 mt-1">Chat with the agent or set up automations to get started.</p>
+					<p class="text-sm text-base-content/70">{$t('agent.noActivityFor', { values: { name: channelState.activeRoleName } })}</p>
+					<p class="text-xs text-base-content/80 mt-1">{$t('agent.noActivityHintRole')}</p>
 				</div>
 			{/if}
 		{/if}

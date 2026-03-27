@@ -121,6 +121,11 @@ pub fn ensure_artifact_dirs() -> Result<(), NeboError> {
         NeboError::DataDir(format!("failed to create bundled/skills directory: {e}"))
     })?;
 
+    // Ensure files/large_inputs directory for large input offloading
+    fs::create_dir_all(data.join("files").join("large_inputs")).map_err(|e| {
+        NeboError::DataDir(format!("failed to create files/large_inputs directory: {e}"))
+    })?;
+
     // Create nebo/ and user/ subdirectories
     for namespace in &["nebo", "user"] {
         for artifact_type in ARTIFACT_TYPES {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t, locale } from 'svelte-i18n';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import {
@@ -22,6 +23,28 @@
 	let theme = $state<Theme>('system');
 	let themeError = $state('');
 
+	let language = $state('en');
+
+	const languages = [
+		{ value: 'en', label: 'English' },
+		{ value: 'de', label: 'Deutsch' },
+		{ value: 'es', label: 'Español' },
+		{ value: 'fr', label: 'Français' },
+		{ value: 'it', label: 'Italiano' },
+		{ value: 'pt-BR', label: 'Português (Brasil)' },
+		{ value: 'nl', label: 'Nederlands' },
+		{ value: 'pl', label: 'Polski' },
+		{ value: 'tr', label: 'Türkçe' },
+		{ value: 'uk', label: 'Українська' },
+		{ value: 'vi', label: 'Tiếng Việt' },
+		{ value: 'ar', label: 'العربية' },
+		{ value: 'hi', label: 'हिन्दी' },
+		{ value: 'ja', label: '日本語' },
+		{ value: 'ko', label: '한국어' },
+		{ value: 'zh-CN', label: '中文 (简体)' },
+		{ value: 'zh-TW', label: '中文 (繁體)' }
+	];
+
 	let displayName = $state('');
 	let location = $state('');
 	let timezone = $state('');
@@ -32,30 +55,30 @@
 	let context = $state('');
 
 	const timezones = [
-		{ value: 'America/New_York', label: 'Eastern Time (US)' },
-		{ value: 'America/Chicago', label: 'Central Time (US)' },
-		{ value: 'America/Denver', label: 'Mountain Time (US)' },
-		{ value: 'America/Los_Angeles', label: 'Pacific Time (US)' },
-		{ value: 'America/Phoenix', label: 'Arizona (US)' },
-		{ value: 'Europe/London', label: 'London (UK)' },
-		{ value: 'Europe/Paris', label: 'Paris (CET)' },
-		{ value: 'Europe/Berlin', label: 'Berlin (CET)' },
-		{ value: 'Asia/Tokyo', label: 'Tokyo (Japan)' },
-		{ value: 'Asia/Shanghai', label: 'Shanghai (China)' },
-		{ value: 'Asia/Singapore', label: 'Singapore' },
-		{ value: 'Australia/Sydney', label: 'Sydney (Australia)' }
+		{ value: 'America/New_York', labelKey: 'settingsProfile.timezones.eastern' },
+		{ value: 'America/Chicago', labelKey: 'settingsProfile.timezones.central' },
+		{ value: 'America/Denver', labelKey: 'settingsProfile.timezones.mountain' },
+		{ value: 'America/Los_Angeles', labelKey: 'settingsProfile.timezones.pacific' },
+		{ value: 'America/Phoenix', labelKey: 'settingsProfile.timezones.arizona' },
+		{ value: 'Europe/London', labelKey: 'settingsProfile.timezones.london' },
+		{ value: 'Europe/Paris', labelKey: 'settingsProfile.timezones.paris' },
+		{ value: 'Europe/Berlin', labelKey: 'settingsProfile.timezones.berlin' },
+		{ value: 'Asia/Tokyo', labelKey: 'settingsProfile.timezones.tokyo' },
+		{ value: 'Asia/Shanghai', labelKey: 'settingsProfile.timezones.shanghai' },
+		{ value: 'Asia/Singapore', labelKey: 'settingsProfile.timezones.singapore' },
+		{ value: 'Australia/Sydney', labelKey: 'settingsProfile.timezones.sydney' }
 	];
 
 	const themeOptions = [
-		{ id: 'light' as Theme, label: 'Light', icon: Sun },
-		{ id: 'dark' as Theme, label: 'Dark', icon: Moon },
-		{ id: 'system' as Theme, label: 'System', icon: Monitor }
+		{ id: 'light' as Theme, labelKey: 'theme.light', icon: Sun },
+		{ id: 'dark' as Theme, labelKey: 'theme.dark', icon: Moon },
+		{ id: 'system' as Theme, labelKey: 'theme.system', icon: Monitor }
 	];
 
 	const communicationStyles = [
-		{ value: 'casual', label: 'Casual', description: 'Friendly and informal' },
-		{ value: 'professional', label: 'Professional', description: 'Structured and precise' },
-		{ value: 'adaptive', label: 'Adaptive', description: 'Mirrors your tone' }
+		{ value: 'casual', labelKey: 'settingsProfile.casual', descriptionKey: 'settingsProfile.casualDesc' },
+		{ value: 'professional', labelKey: 'settingsProfile.professional', descriptionKey: 'settingsProfile.professionalDesc' },
+		{ value: 'adaptive', labelKey: 'settingsProfile.adaptive', descriptionKey: 'settingsProfile.adaptiveDesc' }
 	];
 
 	onMount(async () => {
@@ -76,6 +99,9 @@
 				context = profile.context || '';
 			}
 			theme = (prefsData.preferences?.theme as Theme) || 'system';
+			language = prefsData.preferences?.language || 'en';
+			locale.set(language);
+			localStorage.setItem('nebo_locale', language);
 		} catch (error) {
 			console.error('Failed to load profile:', error);
 		} finally {
@@ -95,10 +121,25 @@
 			}
 		}
 		try {
-			await api.updatePreferences({ theme: newTheme, emailNotifications: false, marketingEmails: false });
+			await api.updatePreferences({ theme: newTheme });
 		} catch (err: any) {
-			themeError = err?.message || 'Failed to save theme';
+			themeError = err?.message || $t('settingsProfile.themeSaveFailed');
 			setTimeout(() => { themeError = ''; }, 4000);
+		}
+	}
+
+	async function setLanguage(newLang: string) {
+		language = newLang;
+		locale.set(newLang);
+		localStorage.setItem('nebo_locale', newLang);
+		if (typeof document !== 'undefined') {
+			document.documentElement.dir = newLang === 'ar' ? 'rtl' : 'ltr';
+			document.documentElement.lang = newLang;
+		}
+		try {
+			await api.updatePreferences({ language: newLang });
+		} catch (err: any) {
+			console.error('Failed to save language:', err);
 		}
 	}
 
@@ -117,12 +158,12 @@
 				goals,
 				context
 			});
-			saveMessage = 'Profile saved';
+			saveMessage = $t('settingsProfile.profileSaved');
 			saveError = false;
 			setTimeout(() => (saveMessage = ''), 3000);
 		} catch (error) {
 			console.error('Failed to save profile:', error);
-			saveMessage = 'Failed to save profile';
+			saveMessage = $t('settingsProfile.saveFailed');
 			saveError = true;
 		} finally {
 			isSaving = false;
@@ -154,14 +195,14 @@
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">Profile</h2>
-	<p class="text-base text-base-content/80">Your preferences and personal information</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsProfile.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsProfile.description')}</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading profile...</span>
+		<span class="text-base text-base-content/80">{$t('settingsProfile.loadingProfile')}</span>
 	</div>
 {:else}
 	<form
@@ -173,9 +214,9 @@
 	>
 		<!-- Appearance -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Appearance</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsProfile.appearance')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-				<div class="flex gap-2" role="group" aria-label="Theme selection">
+				<div class="flex gap-2" role="group" aria-label={$t('settingsProfile.themeSelection')}>
 					{#each themeOptions as option}
 						<button
 							type="button"
@@ -186,7 +227,7 @@
 									: 'bg-base-content/5 border-transparent text-base-content/90 hover:border-base-content/15'}"
 						>
 							<option.icon class="w-4 h-4" />
-							<span class="text-base font-medium">{option.label}</span>
+							<span class="text-base font-medium">{$t(option.labelKey)}</span>
 						</button>
 					{/each}
 				</div>
@@ -196,19 +237,39 @@
 			</div>
 		</section>
 
+		<!-- Language -->
+		<section>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsProfile.language')}</h3>
+			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+				<label class="text-base font-medium text-base-content/80" for="language-select">
+					{$t('settingsProfile.languageLabel')}
+				</label>
+				<select
+					id="language-select"
+					class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
+					bind:value={language}
+					onchange={() => setLanguage(language)}
+				>
+					{#each languages as lang}
+						<option value={lang.value}>{lang.label}</option>
+					{/each}
+				</select>
+			</div>
+		</section>
+
 		<!-- About You -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">About You</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsProfile.aboutYou')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
 				<div>
 					<label class="text-base font-medium text-base-content/80" for="display-name">
-						What should I call you?
+						{$t('settingsProfile.nameLabel')}
 					</label>
 					<input
 						id="display-name"
 						type="text"
 						class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-						placeholder="Your name or nickname"
+						placeholder={$t('settingsProfile.namePlaceholder')}
 						bind:value={displayName}
 					/>
 				</div>
@@ -216,25 +277,25 @@
 				<div class="grid sm:grid-cols-2 gap-4">
 					<div>
 						<label class="text-base font-medium text-base-content/80" for="occupation">
-							What do you do?
+							{$t('settingsProfile.roleLabel')}
 						</label>
 						<input
 							id="occupation"
 							type="text"
 							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-							placeholder="Your role or profession"
+							placeholder={$t('settingsProfile.rolePlaceholder')}
 							bind:value={occupation}
 						/>
 					</div>
 					<div>
 						<label class="text-base font-medium text-base-content/80" for="location">
-							Location
+							{$t('settingsProfile.locationLabel')}
 						</label>
 						<input
 							id="location"
 							type="text"
 							class="w-full h-11 mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-							placeholder="City, Country"
+							placeholder={$t('settingsProfile.locationPlaceholder')}
 							bind:value={location}
 						/>
 					</div>
@@ -242,17 +303,17 @@
 
 				<div>
 					<label class="text-base font-medium text-base-content/80" for="timezone">
-						Timezone
+						{$t('settingsProfile.timezoneLabel')}
 					</label>
 					<div class="flex gap-2 mt-2">
 						<select
 							id="timezone"
-							class="select flex-1"
+							class="flex-1 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
 							bind:value={timezone}
 						>
-							<option value="">Select timezone</option>
+							<option value="">{$t('settingsProfile.timezonePlaceholder')}</option>
 							{#each timezones as tz}
-								<option value={tz.value}>{tz.label}</option>
+								<option value={tz.value}>{$t(tz.labelKey)}</option>
 							{/each}
 						</select>
 						<button
@@ -260,7 +321,7 @@
 							class="h-11 px-4 rounded-xl bg-base-content/5 border border-base-content/10 text-base font-medium text-base-content/80 hover:border-base-content/40 transition-colors"
 							onclick={detectTimezone}
 						>
-							Detect
+							{$t('settingsProfile.detect')}
 						</button>
 					</div>
 				</div>
@@ -269,14 +330,14 @@
 
 		<!-- Interests -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-1">Interests</h3>
-			<p class="text-base text-base-content/80 mb-3">Topics you care about — the agent will tailor responses accordingly</p>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-1">{$t('settingsProfile.interests')}</h3>
+			<p class="text-base text-base-content/80 mb-3">{$t('settingsProfile.interestsHint')}</p>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="flex gap-2">
 					<input
 						type="text"
 						class="flex-1 h-11 rounded-xl bg-base-content/5 border border-base-content/10 px-4 text-base focus:outline-none focus:border-primary/50 transition-colors"
-						placeholder="Type an interest and press Enter"
+						placeholder={$t('settingsProfile.interestsPlaceholder')}
 						bind:value={interestsInput}
 						onkeydown={handleInterestKeydown}
 					/>
@@ -285,7 +346,7 @@
 						class="w-11 h-11 rounded-xl bg-base-content/5 border border-base-content/10 flex items-center justify-center hover:border-base-content/40 transition-colors disabled:opacity-30"
 						onclick={addInterest}
 						disabled={!interestsInput.trim()}
-						aria-label="Add interest"
+						aria-label={$t('settingsProfile.addInterest')}
 					>
 						<Plus class="w-4 h-4 text-base-content/90" />
 					</button>
@@ -299,7 +360,7 @@
 									type="button"
 									class="ml-0.5 p-0.5 rounded-full hover:bg-base-content/10 transition-colors"
 									onclick={() => removeInterest(interest)}
-									aria-label="Remove {interest}"
+									aria-label={$t('settingsProfile.removeInterest', { values: { interest } })}
 								>
 									<X class="w-3 h-3 text-base-content/90" />
 								</button>
@@ -307,38 +368,38 @@
 						{/each}
 					</div>
 				{:else}
-					<p class="text-base text-base-content/80 mt-3">No interests added yet</p>
+					<p class="text-base text-base-content/80 mt-3">{$t('settingsProfile.noInterests')}</p>
 				{/if}
 			</div>
 		</section>
 
 		<!-- Goals & Context -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Goals & Context</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsProfile.goalsContext')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-5">
 				<div>
 					<label class="text-base font-medium text-base-content/80" for="goals">
-						What would you like help with?
+						{$t('settingsProfile.goalsLabel')}
 					</label>
 					<textarea
 						id="goals"
 						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none"
 						rows="3"
-						placeholder="What are you trying to accomplish?"
+						placeholder={$t('settingsProfile.goalsPlaceholder')}
 						bind:value={goals}
 					></textarea>
 				</div>
 
 				<div>
 					<label class="text-base font-medium text-base-content/80" for="context">
-						Additional context
-						<span class="font-normal text-base-content/90 ml-1">optional</span>
+						{$t('settingsProfile.contextLabel')}
+						<span class="font-normal text-base-content/90 ml-1">{$t('common.optional')}</span>
 					</label>
 					<textarea
 						id="context"
 						class="w-full mt-2 rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 text-base focus:outline-none focus:border-primary/50 transition-colors resize-none"
 						rows="3"
-						placeholder="Preferences, constraints, working style, things to avoid..."
+						placeholder={$t('settingsProfile.contextPlaceholder')}
 						bind:value={context}
 					></textarea>
 				</div>
@@ -347,7 +408,7 @@
 
 		<!-- Communication Style -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Communication Style</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsProfile.communicationStyle')}</h3>
 			<div class="grid sm:grid-cols-3 gap-2">
 				{#each communicationStyles as style}
 					<label
@@ -363,8 +424,8 @@
 							bind:group={communicationStyle}
 							class="hidden"
 						/>
-						<div class="font-medium text-base">{style.label}</div>
-						<div class="text-base text-base-content/80 mt-0.5">{style.description}</div>
+						<div class="font-medium text-base">{$t(style.labelKey)}</div>
+						<div class="text-base text-base-content/80 mt-0.5">{$t(style.descriptionKey)}</div>
 					</label>
 				{/each}
 			</div>
@@ -372,7 +433,7 @@
 
 		<!-- Save -->
 		{#if saveMessage}
-			<Alert type={saveError ? 'error' : 'success'} title={saveError ? 'Error' : 'Saved'}>
+			<Alert type={saveError ? 'error' : 'success'} title={saveError ? $t('common.error') : $t('common.saved')}>
 				{saveMessage}
 			</Alert>
 		{/if}
@@ -385,9 +446,9 @@
 			>
 				{#if isSaving}
 					<Spinner size={16} />
-					Saving...
+					{$t('common.saving')}
 				{:else}
-					Save Profile
+					{$t('settingsProfile.saveProfile')}
 				{/if}
 			</button>
 		</div>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 
 	// Redirect to Account tab by default
 	onMount(() => {
@@ -9,5 +10,5 @@
 </script>
 
 <div class="flex items-center justify-center py-12">
-	<p class="text-base-400">Redirecting...</p>
+	<p class="text-base-400">{$t('common.redirecting')}</p>
 </div>

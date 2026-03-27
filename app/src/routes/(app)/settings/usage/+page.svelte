@@ -4,6 +4,7 @@
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import * as api from '$lib/api/nebo';
 	import type { NeboLoopJanusUsageResponse, NeboLoopAccountStatusResponse } from '$lib/api/neboComponents';
+	import { t } from 'svelte-i18n';
 
 	let isLoading = $state(true);
 	let refreshing = $state(false);
@@ -55,9 +56,9 @@
 		const m = Math.floor((diff % 3600000) / 60000);
 		if (h > 24) {
 			const d = Math.floor(h / 24);
-			return `Resets in ${d}d`;
+			return $t('settingsUsage.resetsInDays', { values: { days: d } });
 		}
-		return `Resets in ${h}h ${m}m`;
+		return $t('settingsUsage.resetsInTime', { values: { hours: h, minutes: m } });
 	}
 
 	function formatUpdatedAt(iso?: string): string {
@@ -65,28 +66,28 @@
 		const d = new Date(iso);
 		const now = Date.now();
 		const diff = now - d.getTime();
-		if (diff < 60000) return 'just now';
-		if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-		if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-		return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+		if (diff < 60000) return $t('time.justNow');
+		if (diff < 3600000) return $t('time.minutesAgo', { values: { n: Math.floor(diff / 60000) } });
+		if (diff < 86400000) return $t('time.hoursAgo', { values: { n: Math.floor(diff / 3600000) } });
+		return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 	}
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">Usage</h2>
-	<p class="text-base text-base-content/80">Plan usage limits and credit consumption</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsUsage.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsUsage.description')}</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading usage...</span>
+		<span class="text-base text-base-content/80">{$t('settingsUsage.loadingUsage')}</span>
 	</div>
 {:else if !connected}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-		<p class="text-base text-base-content/80">Connect your NeboLoop account to see usage.</p>
+		<p class="text-base text-base-content/80">{$t('settingsUsage.connectForUsage')}</p>
 		<a href="/settings/account" class="inline-block mt-3 text-base font-medium text-primary hover:brightness-110 transition-all">
-			Go to Account
+			{$t('settingsUsage.goToAccount')}
 		</a>
 	</div>
 {:else}
@@ -96,15 +97,15 @@
 			<section>
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 flex items-center justify-between">
 					<div>
-						<p class="text-base font-medium text-base-content">{planName} plan</p>
+						<p class="text-base font-medium text-base-content">{$t('settingsUsage.planName', { values: { plan: planName } })}</p>
 						{#if subscription?.subscriptions?.length}
 							{@const sub = subscription.subscriptions[0]}
 							{#if sub.amountCents}
-								<p class="text-sm text-base-content/50">${Math.round(sub.amountCents / 100)}/{sub.interval === 'year' ? 'yr' : 'mo'}</p>
+								<p class="text-sm text-base-content/50">{$t('settingsUsage.price', { values: { amount: Math.round(sub.amountCents / 100), interval: sub.interval === 'year' ? 'yr' : 'mo' } })}</p>
 							{/if}
 						{/if}
 					</div>
-					<a href="/upgrade" class="text-sm text-primary font-medium hover:brightness-110 transition-all">Change plan</a>
+					<a href="/upgrade" class="text-sm text-primary font-medium hover:brightness-110 transition-all">{$t('settingsUsage.changePlan')}</a>
 				</div>
 			</section>
 		{/if}
@@ -112,10 +113,10 @@
 		<!-- Plan Usage Limits -->
 		<section>
 			<div class="flex items-center justify-between mb-3">
-				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Plan Usage Limits</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">{$t('settingsUsage.planLimits')}</h3>
 				<div class="flex items-center gap-2">
 					{#if usage?.updatedAt}
-						<span class="text-xs text-base-content/40">Updated {formatUpdatedAt(usage.updatedAt)}</span>
+						<span class="text-xs text-base-content/40">{$t('settingsUsage.updated', { values: { time: formatUpdatedAt(usage.updatedAt) } })}</span>
 					{/if}
 					<button
 						onclick={refresh}
@@ -133,12 +134,12 @@
 					<div>
 						<div class="flex items-center justify-between mb-2">
 							<div>
-								<span class="text-base font-medium text-base-content">Session</span>
+								<span class="text-base font-medium text-base-content">{$t('settingsUsage.session')}</span>
 								{#if usage.session.resetAt}
 									<span class="text-sm text-base-content/50 ml-2">{timeUntilReset(usage.session.resetAt)}</span>
 								{/if}
 							</div>
-							<span class="text-sm text-base-content/60 tabular-nums">{usage.session.percentUsed}% used</span>
+							<span class="text-sm text-base-content/60 tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: usage.session.percentUsed } })}</span>
 						</div>
 						<div class="h-2 rounded-full bg-base-content/10 overflow-hidden mb-1">
 							<div
@@ -146,7 +147,7 @@
 								style="width: {Math.min(usage.session.percentUsed, 100)}%"
 							></div>
 						</div>
-						<span class="text-sm text-base-content/40 tabular-nums">{formatTokens(usage.session.usedTokens)} / {formatTokens(usage.session.limitTokens)}</span>
+						<span class="text-sm text-base-content/40 tabular-nums">{$t('settingsUsage.usageCount', { values: { used: formatTokens(usage.session.usedTokens), limit: formatTokens(usage.session.limitTokens) } })}</span>
 					</div>
 				{/if}
 
@@ -155,12 +156,12 @@
 					<div>
 						<div class="flex items-center justify-between mb-2">
 							<div>
-								<span class="text-base font-medium text-base-content">Weekly</span>
+								<span class="text-base font-medium text-base-content">{$t('settingsUsage.weekly')}</span>
 								{#if usage.weekly.resetAt}
 									<span class="text-sm text-base-content/50 ml-2">{timeUntilReset(usage.weekly.resetAt)}</span>
 								{/if}
 							</div>
-							<span class="text-sm text-base-content/60 tabular-nums">{usage.weekly.percentUsed}% used</span>
+							<span class="text-sm text-base-content/60 tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: usage.weekly.percentUsed } })}</span>
 						</div>
 						<div class="h-2 rounded-full bg-base-content/10 overflow-hidden mb-1">
 							<div
@@ -168,25 +169,25 @@
 								style="width: {Math.min(usage.weekly.percentUsed, 100)}%"
 							></div>
 						</div>
-						<span class="text-sm text-base-content/40 tabular-nums">{formatTokens(usage.weekly.usedTokens)} / {formatTokens(usage.weekly.limitTokens)}</span>
+						<span class="text-sm text-base-content/40 tabular-nums">{$t('settingsUsage.usageCount', { values: { used: formatTokens(usage.weekly.usedTokens), limit: formatTokens(usage.weekly.limitTokens) } })}</span>
 					</div>
 				{/if}
 
 				{#if !usage?.session && !usage?.weekly}
-					<p class="text-base text-base-content/60">No usage data available yet. Usage tracking starts when you use Nebo AI.</p>
+					<p class="text-base text-base-content/60">{$t('settingsUsage.noUsageData')}</p>
 				{/if}
 			</div>
 		</section>
 
 		<!-- Extra Usage -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Extra Usage</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsUsage.extraUsage')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<p class="text-base text-base-content/80">
-					When you hit your plan limit, extra usage keeps you going. Credits are deducted automatically.
+					{$t('settingsUsage.extraUsageDesc')}
 				</p>
 				<p class="text-sm text-base-content/50 mt-2">
-					Manage credits in <a href="/settings/billing" class="text-primary hover:brightness-110">Billing</a>.
+					{$t('settingsUsage.manageCredits')}
 				</p>
 			</div>
 		</section>

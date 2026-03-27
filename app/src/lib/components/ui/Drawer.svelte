@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { X } from 'lucide-svelte';
 
 	interface Props {
@@ -48,7 +49,7 @@
 
 	<div class="drawer-side">
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-		<label for={drawerId} aria-label="close sidebar" class="drawer-overlay" onclick={handleClose}></label>
+		<label for={drawerId} aria-label={$t('drawer.closeSidebar')} class="drawer-overlay" onclick={handleClose}></label>
 		<div class="menu bg-base-200 text-base-content min-h-full {sizeClasses[size]} p-0">
 			<!-- Header -->
 			{#if title}
@@ -58,7 +59,7 @@
 						type="button"
 						onclick={handleClose}
 						class="btn btn-ghost btn-sm btn-circle"
-						aria-label="Close drawer"
+						aria-label={$t('drawer.closeDrawer')}
 					>
 						<X class="h-5 w-5" />
 					</button>

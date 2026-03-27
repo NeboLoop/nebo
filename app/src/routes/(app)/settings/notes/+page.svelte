@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import { StickyNote, Plus, Check, AlertCircle } from 'lucide-svelte';
 	import { getAgentProfile, updateAgentProfile, getSystemInfo } from '$lib/api/nebo';
 	import { generateUUID } from '$lib/utils';
@@ -133,23 +134,23 @@
 	<div class="shrink-0 mb-4">
 		<div class="flex items-center justify-between mb-2">
 			<div>
-				<h2 class="font-display text-xl font-bold text-base-content mb-1">Notes</h2>
-				<p class="text-base text-base-content/80">Environment context for your agent's tools</p>
+				<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsNotes.title')}</h2>
+				<p class="text-base text-base-content/80">{$t('settingsNotes.description')}</p>
 			</div>
 			{#if saveStatus === 'saving'}
 				<span class="flex items-center gap-1.5 text-base text-base-content/80">
 					<Spinner size={12} />
-					Saving...
+					{$t('common.saving')}
 				</span>
 			{:else if saveStatus === 'saved'}
 				<span class="flex items-center gap-1.5 text-base text-success">
 					<Check class="w-3.5 h-3.5" />
-					Saved
+					{$t('common.saved')}
 				</span>
 			{:else if saveStatus === 'error'}
 				<span class="flex items-center gap-1.5 text-base text-error">
 					<AlertCircle class="w-3.5 h-3.5" />
-					Failed to save
+					{$t('settingsNotes.failedToSave')}
 				</span>
 			{/if}
 		</div>
@@ -158,7 +159,7 @@
 	{#if isLoading}
 		<div class="flex-1 flex flex-col items-center justify-center gap-4">
 			<Spinner size={32} />
-			<p class="text-base text-base-content/80">Loading notes...</p>
+			<p class="text-base text-base-content/80">{$t('settingsNotes.loadingNotes')}</p>
 		</div>
 	{:else}
 		<div class="flex-1 space-y-3 min-h-0 overflow-y-auto">
@@ -186,7 +187,7 @@
 			{#if sections.length === 0 && !showAddSection}
 				<div class="rounded-xl border border-dashed border-base-300 px-6 py-8 text-center">
 					<p class="text-base text-base-content/80 mb-3">
-						Add sections like SSH Hosts, Development, Devices — anything your agent should know about your environment.
+						{$t('settingsNotes.hint')}
 					</p>
 					<button
 						type="button"
@@ -194,7 +195,7 @@
 						onclick={() => (showAddSection = true)}
 					>
 						<Plus class="w-4 h-4 mr-1" />
-						Add your first section
+						{$t('settingsNotes.addFirstSection')}
 					</button>
 				</div>
 			{/if}
@@ -204,7 +205,7 @@
 					<!-- svelte-ignore a11y_autofocus -->
 					<input
 						class="input input-bordered input-sm flex-1"
-						placeholder="Section name..."
+						placeholder={$t('settingsNotes.sectionPlaceholder')}
 						bind:value={addingSectionName}
 						onkeydown={handleAddSectionKeydown}
 						onblur={() => {
@@ -221,7 +222,7 @@
 					onclick={() => (showAddSection = true)}
 				>
 					<Plus class="w-4 h-4" />
-					Add Section
+					{$t('settingsNotes.addSection')}
 				</button>
 			{/if}
 		</div>

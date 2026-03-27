@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import { Grid3x3 } from 'lucide-svelte';
 	import webapi from '$lib/api/gocliRequest';
 	interface CategoryItem {
@@ -27,7 +28,7 @@
 
 <div class="sticky top-0 z-20 bg-base-100/80 backdrop-blur-xl border-b border-base-content/10">
 	<div class="flex items-center px-6 h-14">
-		<h1 class="font-display text-xl font-bold">Categories</h1>
+		<h1 class="font-display text-xl font-bold">{$t('marketplace.categories')}</h1>
 	</div>
 </div>
 
@@ -37,8 +38,8 @@
 	<div class="w-20 h-20 rounded-3xl bg-gradient-to-br from-base-content/10 to-base-content/40 flex items-center justify-center mb-5">
 		<Grid3x3 class="w-10 h-10 text-base-content/90" />
 	</div>
-	<h2 class="font-display text-2xl font-bold">Browse by Category</h2>
-	<p class="text-base text-base-content/80 mt-1">Find skills, workflows, and roles organized by industry and function.</p>
+	<h2 class="font-display text-2xl font-bold">{$t('marketplace.browseByCategory')}</h2>
+	<p class="text-base text-base-content/80 mt-1">{$t('marketplace.browseByCategoryDesc')}</p>
 </div>
 
 {#if loading}
@@ -54,7 +55,7 @@
 				<span class="text-4xl">{cat.emoji || '📦'}</span>
 				<span class="text-base font-bold text-base-content text-center">{cat.name}</span>
 				{#if total > 0}
-					<span class="text-sm font-medium text-base-content/60">{total} {total === 1 ? 'item' : 'items'}</span>
+					<span class="text-sm font-medium text-base-content/60">{total === 1 ? $t('marketplace.itemCountSingular', { values: { total } }) : $t('marketplace.itemCount', { values: { total } })}</span>
 				{/if}
 			</a>
 		{/each}

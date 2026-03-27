@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Loader2 } from 'lucide-svelte';
 
 	interface Props {
@@ -32,9 +33,9 @@
 	let githubLoading = $state(false);
 
 	const actionText = $derived({
-		login: 'Sign in with',
-		register: 'Sign up with',
-		connect: 'Connect'
+		login: $t('oauth.signInWith'),
+		register: $t('oauth.signUpWith'),
+		connect: $t('oauth.connect')
 	}[mode]);
 
 	async function handleGoogleClick() {
@@ -134,5 +135,5 @@
 </div>
 
 {#if googleEnabled || githubEnabled}
-	<div class="divider text-sm text-base-content/60 my-4">or continue with email</div>
+	<div class="divider text-sm text-base-content/60 my-4">{$t('oauth.continueWithEmail')}</div>
 {/if}

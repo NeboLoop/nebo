@@ -4,33 +4,34 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import Tooltip from './Tooltip.svelte';
 
 	// Status config based on backend status definitions - maps to DaisyUI badge variants
-	const statusConfig = {
+	const statusConfig = $derived({
 		// Collection statuses
-		"ACTIVE": { variant: "badge-success", label: "Active" },
-		"active": { variant: "badge-success", label: "Active" },
-		"ERROR": { variant: "badge-error", label: "Error" },
-		"error": { variant: "badge-error", label: "Error" },
-		"NEEDS SOURCE": { variant: "badge-ghost", label: "Needs Source" },
-		"needs source": { variant: "badge-ghost", label: "Needs Source" },
+		"ACTIVE": { variant: "badge-success", label: $t('statusBadge.active') },
+		"active": { variant: "badge-success", label: $t('statusBadge.active') },
+		"ERROR": { variant: "badge-error", label: $t('common.error') },
+		"error": { variant: "badge-error", label: $t('common.error') },
+		"NEEDS SOURCE": { variant: "badge-ghost", label: $t('statusBadge.needsSource') },
+		"needs source": { variant: "badge-ghost", label: $t('statusBadge.needsSource') },
 		// Source connection statuses
-		"IN_PROGRESS": { variant: "badge-info", label: "Syncing" },
-		"in_progress": { variant: "badge-info", label: "In Progress" },
-		"failing": { variant: "badge-error", label: "Failing" },
+		"IN_PROGRESS": { variant: "badge-info", label: $t('statusBadge.syncing') },
+		"in_progress": { variant: "badge-info", label: $t('statusBadge.inProgress') },
+		"failing": { variant: "badge-error", label: $t('statusBadge.failing') },
 		// Sync job statuses
-		"pending": { variant: "badge-warning", label: "Pending" },
-		"completed": { variant: "badge-success", label: "Completed" },
-		"failed": { variant: "badge-error", label: "Failed" },
-		"cancelled": { variant: "badge-error", label: "Cancelled" },
+		"pending": { variant: "badge-warning", label: $t('common.pending') },
+		"completed": { variant: "badge-success", label: $t('common.completed') },
+		"failed": { variant: "badge-error", label: $t('common.failed') },
+		"cancelled": { variant: "badge-error", label: $t('common.cancelled') },
 		// API Key statuses
-		"EXPIRED": { variant: "badge-error", label: "Expired" },
-		"EXPIRING_SOON": { variant: "badge-warning", label: "Expiring Soon" },
-		"UNKNOWN": { variant: "badge-ghost", label: "Unknown" },
+		"EXPIRED": { variant: "badge-error", label: $t('statusBadge.expired') },
+		"EXPIRING_SOON": { variant: "badge-warning", label: $t('statusBadge.expiringSoon') },
+		"UNKNOWN": { variant: "badge-ghost", label: $t('common.unknown') },
 		// Fallback for unknown statuses
-		"default": { variant: "badge-ghost", label: "Unknown" }
-	};
+		"default": { variant: "badge-ghost", label: $t('common.unknown') }
+	});
 
 	type TooltipContext = "collection" | "apiKey";
 
@@ -64,7 +65,7 @@
 		}
 
 		// Return default if no match
-		const formatted = statusKey ? statusKey.charAt(0).toUpperCase() + statusKey.slice(1).toLowerCase() : "Unknown";
+		const formatted = statusKey ? statusKey.charAt(0).toUpperCase() + statusKey.slice(1).toLowerCase() : $t('common.unknown');
 		return {
 			...statusConfig["default"],
 			label: formatted
@@ -77,17 +78,17 @@
 
 		// Collection-specific descriptions
 		const collectionDescriptions: Record<string, string> = {
-			"ACTIVE": "At least one source connection has completed a sync or is currently syncing. Your collection has data and is ready for queries.",
-			"ERROR": "All source connections have failed their last sync. Check your connections and authentication to resolve sync issues.",
-			"NEEDS SOURCE": "This collection has no authenticated connections, or connections exist but haven't successfully synced yet. Configure a source or wait for the initial sync to complete."
+			"ACTIVE": $t('statusBadge.collectionActive'),
+			"ERROR": $t('statusBadge.collectionError'),
+			"NEEDS SOURCE": $t('statusBadge.collectionNeedsSource')
 		};
 
 		// API key-specific descriptions
 		const apiKeyDescriptions: Record<string, string> = {
-			"ACTIVE": "This API key is valid and can be used to authenticate requests. It will remain active until its expiration date.",
-			"EXPIRING_SOON": "This API key will expire within 7 days. Create a new key before expiration to avoid service interruption.",
-			"EXPIRED": "This API key has expired and can no longer be used. Delete this key and create a new one to continue using the API.",
-			"UNKNOWN": "Unable to determine the status of this API key. Please verify the expiration date."
+			"ACTIVE": $t('statusBadge.apiKeyActive'),
+			"EXPIRING_SOON": $t('statusBadge.apiKeyExpiring'),
+			"EXPIRED": $t('statusBadge.apiKeyExpired'),
+			"UNKNOWN": $t('statusBadge.apiKeyUnknown')
 		};
 
 		// Select description based on context

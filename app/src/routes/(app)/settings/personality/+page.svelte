@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import { Save } from 'lucide-svelte';
 	import {
@@ -26,53 +27,53 @@
 
 	const tuningRows = $derived([
 		{
-			label: 'Voice',
+			labelKey: 'settingsPersonality.voice',
 			options: [
-				{ value: 'neutral', label: 'Neutral' },
-				{ value: 'warm', label: 'Warm' },
-				{ value: 'professional', label: 'Professional' },
-				{ value: 'enthusiastic', label: 'Enthusiastic' }
+				{ value: 'neutral', labelKey: 'settingsPersonality.voiceOptions.neutral' },
+				{ value: 'warm', labelKey: 'settingsPersonality.voiceOptions.warm' },
+				{ value: 'professional', labelKey: 'settingsPersonality.voiceOptions.professional' },
+				{ value: 'enthusiastic', labelKey: 'settingsPersonality.voiceOptions.enthusiastic' }
 			],
 			value: voiceStyle,
 			set: (v: string) => (voiceStyle = v)
 		},
 		{
-			label: 'Length',
+			labelKey: 'settingsPersonality.length',
 			options: [
-				{ value: 'concise', label: 'Concise' },
-				{ value: 'adaptive', label: 'Adaptive' },
-				{ value: 'detailed', label: 'Detailed' }
+				{ value: 'concise', labelKey: 'settingsPersonality.lengthOptions.concise' },
+				{ value: 'adaptive', labelKey: 'settingsPersonality.lengthOptions.adaptive' },
+				{ value: 'detailed', labelKey: 'settingsPersonality.lengthOptions.detailed' }
 			],
 			value: responseLength,
 			set: (v: string) => (responseLength = v)
 		},
 		{
-			label: 'Emojis',
+			labelKey: 'settingsPersonality.emojis',
 			options: [
-				{ value: 'none', label: 'None' },
-				{ value: 'minimal', label: 'Minimal' },
-				{ value: 'moderate', label: 'Moderate' },
-				{ value: 'frequent', label: 'Frequent' }
+				{ value: 'none', labelKey: 'settingsPersonality.emojiOptions.none' },
+				{ value: 'minimal', labelKey: 'settingsPersonality.emojiOptions.minimal' },
+				{ value: 'moderate', labelKey: 'settingsPersonality.emojiOptions.moderate' },
+				{ value: 'frequent', labelKey: 'settingsPersonality.emojiOptions.frequent' }
 			],
 			value: emojiUsage,
 			set: (v: string) => (emojiUsage = v)
 		},
 		{
-			label: 'Formality',
+			labelKey: 'settingsPersonality.formality',
 			options: [
-				{ value: 'casual', label: 'Casual' },
-				{ value: 'adaptive', label: 'Adaptive' },
-				{ value: 'formal', label: 'Formal' }
+				{ value: 'casual', labelKey: 'settingsPersonality.formalityOptions.casual' },
+				{ value: 'adaptive', labelKey: 'settingsPersonality.formalityOptions.adaptive' },
+				{ value: 'formal', labelKey: 'settingsPersonality.formalityOptions.formal' }
 			],
 			value: formality,
 			set: (v: string) => (formality = v)
 		},
 		{
-			label: 'Proactivity',
+			labelKey: 'settingsPersonality.proactivity',
 			options: [
-				{ value: 'low', label: 'Reactive' },
-				{ value: 'moderate', label: 'Moderate' },
-				{ value: 'high', label: 'Proactive' }
+				{ value: 'low', labelKey: 'settingsPersonality.proactivityOptions.reactive' },
+				{ value: 'moderate', labelKey: 'settingsPersonality.proactivityOptions.moderate' },
+				{ value: 'high', labelKey: 'settingsPersonality.proactivityOptions.proactive' }
 			],
 			value: proactivity,
 			set: (v: string) => (proactivity = v)
@@ -137,12 +138,12 @@
 				formality,
 				proactivity
 			});
-			saveMessage = 'Soul saved';
+			saveMessage = $t('settingsPersonality.soulSaved');
 			saveError = false;
 			setTimeout(() => (saveMessage = ''), 3000);
 		} catch (error) {
 			console.error('Failed to save profile:', error);
-			saveMessage = 'Failed to save';
+			saveMessage = $t('settingsPersonality.saveFailed');
 			saveError = true;
 		} finally {
 			isSaving = false;
@@ -185,14 +186,14 @@
 </script>
 
 <div class="mb-6">
-	<h2 class="font-display text-xl font-bold text-base-content mb-1">Soul</h2>
-	<p class="text-base text-base-content/80">The core personality and values that define your agent</p>
+	<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsPersonality.title')}</h2>
+	<p class="text-base text-base-content/80">{$t('settingsPersonality.description')}</p>
 </div>
 
 {#if isLoading}
 	<div class="flex items-center justify-center gap-3 py-16">
 		<Spinner size={20} />
-		<span class="text-base text-base-content/80">Loading personality...</span>
+		<span class="text-base text-base-content/80">{$t('settingsPersonality.loadingPersonality')}</span>
 	</div>
 {:else}
 	<form
@@ -205,13 +206,13 @@
 		<!-- Soul -->
 		<section>
 			<div class="flex items-center justify-between mb-3">
-				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">Soul</h3>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider">{$t('settingsPersonality.soulSection')}</h3>
 				{#if presets.length > 0}
 					<select
 						class="h-8 rounded-lg bg-base-content/5 border border-base-content/10 px-3 text-base focus:outline-none focus:border-primary/50 transition-colors"
 						onchange={loadPreset}
 					>
-						<option value="" selected disabled>Load a template...</option>
+						<option value="" selected disabled>{$t('settingsPersonality.loadTemplate')}</option>
 						{#each presets.filter((p) => p.id !== 'custom') as preset}
 							<option value={preset.id}>{preset.icon} {preset.name}</option>
 						{/each}
@@ -224,28 +225,28 @@
 					id="personality-prompt"
 					class="w-full rounded-xl bg-base-content/5 border border-base-content/10 px-4 py-3 font-mono text-base leading-relaxed resize-none overflow-y-auto focus:outline-none focus:border-primary/50 transition-colors"
 					style="min-height: 6rem; max-height: 60vh; field-sizing: content;"
-					placeholder="Define your agent's personality, behavior, and communication style..."
+					placeholder={$t('settingsPersonality.placeholder')}
 					bind:value={customPersonality}
 				></textarea>
 				{#if showRevert}
 					<div class="flex items-center justify-between mt-3 px-4 py-2.5 rounded-xl bg-base-content/5 border border-base-content/10">
-						<span class="text-base text-base-content/80">Template loaded — replaced your previous soul.</span>
+						<span class="text-base text-base-content/80">{$t('settingsPersonality.templateLoaded')}</span>
 						<button type="button" class="text-base font-medium text-primary hover:text-primary/80 transition-colors" onclick={revertSoul}>
-							Undo
+							{$t('settingsPersonality.undo')}
 						</button>
 					</div>
 				{:else if hasChangedFromDefault}
 					<div class="flex items-center justify-between mt-3">
 						<p class="text-base text-base-content/80">
-							This is your agent's core personality prompt — its soul.
+							{$t('settingsPersonality.hint')}
 						</p>
 						<button type="button" class="text-sm font-medium text-base-content/50 hover:text-base-content/80 transition-colors" onclick={revertToDefault}>
-							Revert
+							{$t('settingsPersonality.revert')}
 						</button>
 					</div>
 				{:else}
 					<p class="text-base text-base-content/80 mt-2">
-						This is your agent's core personality prompt — its soul.
+						{$t('settingsPersonality.hint')}
 					</p>
 				{/if}
 			</div>
@@ -253,11 +254,11 @@
 
 		<!-- Tuning -->
 		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">Tuning</h3>
+			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsPersonality.tuning')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 space-y-4">
 				{#each tuningRows as row}
 					<div class="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
-						<span class="text-base font-medium text-base-content w-24 shrink-0">{row.label}</span>
+						<span class="text-base font-medium text-base-content w-24 shrink-0">{$t(row.labelKey)}</span>
 						<div class="flex flex-wrap gap-1.5">
 							{#each row.options as option}
 								<button
@@ -268,7 +269,7 @@
 											: 'bg-base-content/5 border-transparent text-base-content/90 hover:border-base-content/15'}"
 									onclick={() => row.set(option.value)}
 								>
-									{option.label}
+									{$t(option.labelKey)}
 								</button>
 							{/each}
 						</div>
@@ -292,9 +293,9 @@
 			>
 				{#if isSaving}
 					<Spinner size={16} />
-					Saving...
+					{$t('common.saving')}
 				{:else}
-					Save Soul
+					{$t('settingsPersonality.saveSoul')}
 				{/if}
 			</button>
 		</div>

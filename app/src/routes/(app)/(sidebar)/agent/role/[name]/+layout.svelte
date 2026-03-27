@@ -3,6 +3,7 @@
 	import { page } from '$app/stores';
 	import { tick, getContext, untrack } from 'svelte';
 	import { getActiveRoles, updateRole } from '$lib/api/nebo';
+	import { t } from 'svelte-i18n';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -125,8 +126,8 @@
 			<line x1="9" y1="9" x2="9.01" y2="9" />
 			<line x1="15" y1="9" x2="15.01" y2="9" />
 		</svg>
-		<p class="text-sm">Role not found or not active</p>
-		<a href="/agents" class="btn btn-sm btn-ghost">Back to Agents</a>
+		<p class="text-sm">{$t('agent.roleNotFound')}</p>
+		<a href="/agents" class="btn btn-sm btn-ghost">{$t('agent.backToAgents')}</a>
 	</div>
 {:else}
 	<div class="flex flex-col flex-1 min-h-0">
@@ -151,12 +152,12 @@
 					{/if}
 				</div>
 				<div class="agent-tab-bar-inline">
-					<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>Chat</a>
-					<a href="{basePath}/role" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('role')}>Role</a>
-					<a href="{basePath}/configure" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('configure')}>Configure</a>
-					<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>Automate</a>
-					<a href="{basePath}/activity" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('activity')}>Activity</a>
-					<a href="{basePath}/settings" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('settings')}>Settings</a>
+					<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>{$t('agent.chatTab')}</a>
+					<a href="{basePath}/role" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('role')}>{$t('agent.roleTab')}</a>
+					<a href="{basePath}/configure" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('configure')}>{$t('agent.configure')}</a>
+					<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>{$t('agent.automate')}</a>
+					<a href="{basePath}/activity" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('activity')}>{$t('agent.activity')}</a>
+					<a href="{basePath}/settings" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('settings')}>{$t('agent.settingsTab')}</a>
 				</div>
 			</div>
 		</header>

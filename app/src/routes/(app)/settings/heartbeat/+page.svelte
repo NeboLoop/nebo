@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import { Clock, Info, RotateCcw, Save, Loader2 } from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
@@ -14,15 +15,15 @@
 	let intervalMinutes = $state(30);
 
 	const intervalOptions = [
-		{ value: 5, label: '5 minutes' },
-		{ value: 10, label: '10 minutes' },
-		{ value: 15, label: '15 minutes' },
-		{ value: 30, label: '30 minutes' },
-		{ value: 60, label: '1 hour' },
-		{ value: 120, label: '2 hours' },
-		{ value: 240, label: '4 hours' },
-		{ value: 480, label: '8 hours' },
-		{ value: 1440, label: '24 hours' }
+		{ value: 5, labelKey: 'settingsHeartbeat.intervals.5min' },
+		{ value: 10, labelKey: 'settingsHeartbeat.intervals.10min' },
+		{ value: 15, labelKey: 'settingsHeartbeat.intervals.15min' },
+		{ value: 30, labelKey: 'settingsHeartbeat.intervals.30min' },
+		{ value: 60, labelKey: 'settingsHeartbeat.intervals.1h' },
+		{ value: 120, labelKey: 'settingsHeartbeat.intervals.2h' },
+		{ value: 240, labelKey: 'settingsHeartbeat.intervals.4h' },
+		{ value: 480, labelKey: 'settingsHeartbeat.intervals.8h' },
+		{ value: 1440, labelKey: 'settingsHeartbeat.intervals.24h' }
 	];
 
 	const defaultTemplate = `# Proactive Tasks
@@ -86,7 +87,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 			currentSettings = { ...currentSettings, heartbeatIntervalMinutes: intervalMinutes };
 		} catch (err: any) {
 			console.error('Failed to save interval:', err);
-			saveError = err?.message || 'Failed to save interval';
+			saveError = err?.message || $t('settingsHeartbeat.intervalSaveFailed');
 		}
 	}
 
@@ -100,7 +101,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 			originalContent = content;
 			setTimeout(() => (saveSuccess = false), 3000);
 		} catch (err: any) {
-			saveError = err?.message || 'Failed to save heartbeat settings';
+			saveError = err?.message || $t('settingsHeartbeat.saveFailed');
 		} finally {
 			isSaving = false;
 		}
@@ -121,8 +122,8 @@ Write tasks in plain language - the agent will interpret and act on them.
 	<!-- Header -->
 	<div class="shrink-0 mb-4">
 		<div class="mb-4">
-			<h2 class="font-display text-xl font-bold text-base-content mb-1">Heartbeat</h2>
-			<p class="text-base text-base-content/80">Proactive tasks the agent checks periodically</p>
+			<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsHeartbeat.title')}</h2>
+			<p class="text-base text-base-content/80">{$t('settingsHeartbeat.description')}</p>
 		</div>
 
 		<!-- Check Interval -->
@@ -133,8 +134,8 @@ Write tasks in plain language - the agent will interpret and act on them.
 						<Clock class="w-4.5 h-4.5 text-primary" />
 					</div>
 					<div>
-						<p class="text-base font-medium text-base-content">Check Interval</p>
-						<p class="text-base text-base-content/80">How often the agent reviews tasks and takes action</p>
+						<p class="text-base font-medium text-base-content">{$t('settingsHeartbeat.checkInterval')}</p>
+						<p class="text-base text-base-content/80">{$t('settingsHeartbeat.checkIntervalDesc')}</p>
 					</div>
 				</div>
 				<select
@@ -144,7 +145,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 					disabled={isLoading}
 				>
 					{#each intervalOptions as opt}
-						<option value={opt.value}>{opt.label}</option>
+						<option value={opt.value}>{$t(opt.labelKey)}</option>
 					{/each}
 				</select>
 			</div>
@@ -155,25 +156,25 @@ Write tasks in plain language - the agent will interpret and act on them.
 	{#if isLoading}
 		<div class="flex-1 flex items-center justify-center gap-3 py-16">
 			<Spinner size={20} />
-			<span class="text-base text-base-content/80">Loading heartbeat tasks...</span>
+			<span class="text-base text-base-content/80">{$t('settingsHeartbeat.loadingTasks')}</span>
 		</div>
 	{:else}
 		<RichInput
 			bind:value={content}
 			mode="full"
-			placeholder="Enter your proactive tasks in Markdown..."
+			placeholder={$t('settingsHeartbeat.placeholder')}
 		/>
 
 		<div class="shrink-0 flex items-center gap-2 text-base text-base-content/80 mt-2">
 			<Info class="w-3.5 h-3.5" />
-			<span>Saved to: HEARTBEAT.md in your Nebo data directory</span>
+			<span>{$t('settingsHeartbeat.savedTo')}</span>
 		</div>
 	{/if}
 
 	<!-- Feedback -->
 	{#if saveSuccess}
 		<div class="shrink-0 mt-3 rounded-xl bg-success/10 border border-success/20 px-4 py-3 text-base text-success">
-			Heartbeat settings have been updated.
+			{$t('settingsHeartbeat.updated')}
 		</div>
 	{/if}
 
@@ -192,7 +193,7 @@ Write tasks in plain language - the agent will interpret and act on them.
 			disabled={isLoading}
 		>
 			<RotateCcw class="w-4 h-4" />
-			Reset to Template
+			{$t('settingsHeartbeat.resetToTemplate')}
 		</button>
 		<button
 			type="button"
@@ -202,10 +203,10 @@ Write tasks in plain language - the agent will interpret and act on them.
 		>
 			{#if isSaving}
 				<Loader2 class="w-4 h-4 animate-spin" />
-				Saving...
+				{$t('common.saving')}
 			{:else}
 				<Save class="w-4 h-4" />
-				Save Settings
+				{$t('settingsHeartbeat.saveSettings')}
 			{/if}
 		</button>
 	</div>

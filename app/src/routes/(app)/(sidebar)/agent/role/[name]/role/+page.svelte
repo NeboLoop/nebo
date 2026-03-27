@@ -3,6 +3,7 @@
 	import { getRole, updateRole } from '$lib/api/nebo';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
 	import { Undo2, Redo2 } from 'lucide-svelte';
+	import { t } from 'svelte-i18n';
 
 	const channelState = getContext<{
 		activeRoleId: string;
@@ -82,7 +83,7 @@
 </script>
 
 <svelte:head>
-	<title>Nebo - {channelState.activeRoleName || 'Role'} - Role</title>
+	<title>Nebo - {channelState.activeRoleName || $t('agent.role')} - {$t('agent.role')}</title>
 </svelte:head>
 
 <div class="flex-1 flex flex-col min-h-0">
@@ -93,14 +94,14 @@
 			</div>
 		{:else}
 			<div class="flex items-center justify-between mb-3 min-h-8 shrink-0">
-				<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Role</h2>
+				<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentRole.title')}</h2>
 				<div class="flex items-center gap-1.5">
 					<button
 						type="button"
 						class="btn btn-xs btn-ghost btn-square text-base-content/40 hover:text-base-content/70"
 						disabled={!canUndo}
 						onclick={undo}
-						title="Undo"
+						title={$t('agentRole.undo')}
 					>
 						<Undo2 class="w-3.5 h-3.5" />
 					</button>
@@ -109,7 +110,7 @@
 						class="btn btn-xs btn-ghost btn-square text-base-content/40 hover:text-base-content/70"
 						disabled={!canRedo}
 						onclick={redo}
-						title="Redo"
+						title={$t('agentRole.redo')}
 					>
 						<Redo2 class="w-3.5 h-3.5" />
 					</button>
@@ -119,7 +120,7 @@
 						disabled={saving || !hasChanges}
 						onclick={handleSave}
 					>
-						{saving ? 'Saving...' : 'Save'}
+						{saving ? $t('common.saving') : $t('common.save')}
 					</button>
 				</div>
 			</div>
@@ -127,7 +128,7 @@
 				<RichInput
 					bind:value={roleMdValue}
 					mode="full"
-					placeholder="Define this agent's personality, role, and behavioral guidelines. e.g. You are a chief of staff who manages the executive's daily rhythm... Type / to mention an MCP, skill, or agent."
+					placeholder={$t('agentRole.rolePlaceholder')}
 					onchange={(val) => handleChange(val)}
 				/>
 			</div>

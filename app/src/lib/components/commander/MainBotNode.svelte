@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Handle, Position } from '@xyflow/svelte';
+	import { t } from 'svelte-i18n';
 
 	let { data } = $props<{ data: { name: string } }>();
 </script>
@@ -13,7 +14,7 @@
 		</div>
 		<div class="min-w-0">
 			<div class="text-sm font-semibold text-base-content/90">{data.name}</div>
-			<div class="text-xs text-base-content/50">Primary Coordinator</div>
+			<div class="text-xs text-base-content/50">{$t('commander.primaryCoordinator')}</div>
 		</div>
 	</div>
 

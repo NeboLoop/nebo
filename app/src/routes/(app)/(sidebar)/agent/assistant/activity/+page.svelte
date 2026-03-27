@@ -5,6 +5,7 @@
 	import type { AgentSession, SessionMessage } from '$lib/api/neboComponents';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ToolCard from '$lib/components/chat/ToolCard.svelte';
+	import { t } from 'svelte-i18n';
 
 	interface ToolCall {
 		id?: string;
@@ -60,12 +61,12 @@
 	function timeAgo(dateStr: string | number): string {
 		const diff = Date.now() - toDate(dateStr).getTime();
 		const mins = Math.floor(diff / 60000);
-		if (mins < 1) return 'just now';
-		if (mins < 60) return `${mins}m ago`;
+		if (mins < 1) return $t('time.justNow');
+		if (mins < 60) return $t('time.minutesAgo', { values: { n: mins } });
 		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h ago`;
+		if (hrs < 24) return $t('time.hoursAgo', { values: { n: hrs } });
 		const days = Math.floor(hrs / 24);
-		if (days < 7) return `${days}d ago`;
+		if (days < 7) return $t('time.daysAgo', { values: { n: days } });
 		return toDate(dateStr).toLocaleDateString();
 	}
 
@@ -75,7 +76,7 @@
 
 	async function openSession(session: AgentSession) {
 		selectedSessionId = session.id;
-		selectedSessionLabel = session.summary || session.name || 'Chat session';
+		selectedSessionLabel = session.summary || session.name || $t('agent.chatSession');
 		loadingMessages = true;
 		try {
 			const res = await getAgentSessionMessages(session.id);
@@ -119,7 +120,7 @@
 			} else {
 				// Session exists but may not be in filtered list — try loading directly
 				selectedSessionId = sid;
-				selectedSessionLabel = 'Session';
+				selectedSessionLabel = $t('agent.chatSession');
 				loadingMessages = true;
 				try {
 					const res = await getAgentSessionMessages(sid);
@@ -137,7 +138,7 @@
 </script>
 
 <svelte:head>
-	<title>Nebo - Assistant - Activity</title>
+	<title>Nebo - {$t('agent.assistant')} - {$t('agent.activity')}</title>
 </svelte:head>
 
 <div class="flex-1 overflow-y-auto">
@@ -156,7 +157,7 @@
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<path d="M19 12H5" /><polyline points="12 19 5 12 12 5" />
 					</svg>
-					Back
+					{$t('common.back')}
 				</button>
 				<h2 class="text-sm font-semibold truncate">{selectedSessionLabel}</h2>
 			</div>
@@ -167,7 +168,7 @@
 				</div>
 			{:else if sessionMessages.length === 0}
 				<div class="flex flex-col items-center py-12 text-center">
-					<p class="text-sm text-base-content/50">No messages in this session.</p>
+					<p class="text-sm text-base-content/50">{$t('agent.noMessages')}</p>
 				</div>
 			{:else}
 				{@const toolOutputMap = buildToolOutputMap(sessionMessages)}
@@ -227,9 +228,9 @@
 		{:else}
 			<!-- Chat history -->
 			<section>
-				<h2 class="text-sm text-base-content/60 uppercase tracking-wider font-semibold mb-3">Chat history</h2>
+				<h2 class="text-sm text-base-content/60 uppercase tracking-wider font-semibold mb-3">{$t('agent.chatHistory')}</h2>
 				{#if sessions.length === 0}
-					<p class="text-sm text-base-content/50">No chat history yet.</p>
+					<p class="text-sm text-base-content/50">{$t('agent.noChatHistory')}</p>
 				{:else}
 					<div class="flex flex-col gap-1">
 						{#each sessions as session (session.id)}
@@ -238,9 +239,9 @@
 								onclick={() => openSession(session)}
 							>
 								<div class="flex-1 min-w-0">
-									<p class="text-sm font-medium truncate">{session.summary || session.name || 'Chat session'}</p>
+									<p class="text-sm font-medium truncate">{session.summary || session.name || $t('agent.chatSession')}</p>
 									<p class="text-xs text-base-content/50 mt-0.5">
-										{session.messageCount} message{session.messageCount !== 1 ? 's' : ''}
+										{$t('agent.messageCount', { values: { count: session.messageCount } })}
 										{' · '}{timeAgo(session.updatedAt)}
 									</p>
 								</div>

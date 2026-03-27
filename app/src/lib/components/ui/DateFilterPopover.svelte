@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Filter, Calendar, X } from 'lucide-svelte';
 
 	interface DateRange {
@@ -14,28 +15,28 @@
 
 	let { dateRange = $bindable(), presets = [], onchange }: Props = $props();
 
-	const defaultPresets = [
+	const defaultPresets = $derived([
 		{
-			label: 'Last 7 days',
+			label: $t('dateFilter.last7Days'),
 			from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
 			to: new Date().toISOString().split('T')[0]
 		},
 		{
-			label: 'Last 30 days',
+			label: $t('dateFilter.last30Days'),
 			from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
 			to: new Date().toISOString().split('T')[0]
 		},
 		{
-			label: 'Last 90 days',
+			label: $t('dateFilter.last90Days'),
 			from: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
 			to: new Date().toISOString().split('T')[0]
 		},
 		{
-			label: 'This month',
+			label: $t('dateFilter.thisMonth'),
 			from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
 			to: new Date().toISOString().split('T')[0]
 		}
-	];
+	]);
 
 	const allPresets = $derived(presets.length > 0 ? presets : defaultPresets);
 
@@ -90,7 +91,7 @@
 		<div class="flex items-center justify-between px-4 py-3 border-b border-base-300">
 			<div class="flex items-center gap-2 text-base font-medium">
 				<Calendar size={16} />
-				Date Range
+				{$t('dateFilter.dateRange')}
 			</div>
 			<button
 				type="button"
@@ -127,7 +128,7 @@
 			<div class="grid grid-cols-2 gap-3">
 				<div>
 					<label for="from-date" class="label pb-1">
-						<span class="label-text text-sm">From</span>
+						<span class="label-text text-sm">{$t('dateFilter.from')}</span>
 					</label>
 					<input
 						type="date"
@@ -139,7 +140,7 @@
 				</div>
 				<div>
 					<label for="to-date" class="label pb-1">
-						<span class="label-text text-sm">To</span>
+						<span class="label-text text-sm">{$t('dateFilter.to')}</span>
 					</label>
 					<input
 						type="date"

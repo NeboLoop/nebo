@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { tick } from 'svelte';
 	import type { Resource } from '$lib/utils/resources';
 
@@ -15,7 +16,12 @@
 	} = $props();
 
 	const typeIcon: Record<string, string> = { mcp: '🔌', skill: '📄', agent: '🤖', cmd: '⚡' };
-	const typeLabel: Record<string, string> = { mcp: 'MCP', skill: 'Skill', agent: 'Agent', cmd: 'Command' };
+	const typeLabel: Record<string, string> = $derived({
+		mcp: $t('slashPicker.mcp'),
+		skill: $t('slashPicker.skill'),
+		agent: $t('slashPicker.agent'),
+		cmd: $t('slashPicker.command')
+	});
 
 	const filtered = $derived.by(() => {
 		const q = query.toLowerCase();
@@ -60,7 +66,7 @@
 	>
 		<div class="px-3 py-2 border-b border-base-content/10 flex items-center gap-2">
 			<span class="text-xs text-base-content/40 font-mono">/</span>
-			<span class="text-xs text-base-content/40 flex-1 truncate">{query || 'Commands, MCPs, Skills, Agents...'}</span>
+			<span class="text-xs text-base-content/40 flex-1 truncate">{query || $t('slashPicker.placeholder')}</span>
 			<span class="text-xs text-base-content/25">{filtered.length}</span>
 		</div>
 
@@ -89,7 +95,7 @@
 									<span>{typeIcon[type]}</span>
 									<span class="flex-1 truncate">{resource.name}</span>
 									{#if resource.status === 'warn'}
-										<span class="text-xs text-warning/70 shrink-0">not connected</span>
+										<span class="text-xs text-warning/70 shrink-0">{$t('slashPicker.notConnected')}</span>
 									{/if}
 								</button>
 							{/each}
@@ -105,7 +111,7 @@
 		</div>
 
 		<div class="px-3 py-1.5 border-t border-base-content/10">
-			<p class="text-xs text-base-content/25">&#8593;&#8595; navigate &middot; Enter select &middot; Esc cancel</p>
+			<p class="text-xs text-base-content/25">{$t('slashPicker.keyboardHint')}</p>
 		</div>
 	</div>
 {/if}

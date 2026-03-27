@@ -4,6 +4,8 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
+
 	interface Props {
 		children: any;
 		header: any;
@@ -23,7 +25,7 @@
 		onToggle,
 		class: className = '',
 		onCopy,
-		copyTooltip = "Copy",
+		copyTooltip = $t('collapsibleCard.copy'),
 		autoExpandOnSearch = false,
 		statusRibbon
 	}: Props = $props();
@@ -83,7 +85,7 @@
 									<path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
 								</svg>
 							{/if}
-							Copy
+							{$t('collapsibleCard.copy')}
 						</button>
 					{/if}
 
@@ -91,8 +93,8 @@
 					<button
 						type="button"
 						onclick={handleToggle}
-						title={isExpanded ? "Collapse" : "Expand"}
-						aria-label={isExpanded ? "Collapse" : "Expand"}
+						title={isExpanded ? $t('common.collapse') : $t('common.expand')}
+						aria-label={isExpanded ? $t('common.collapse') : $t('common.expand')}
 						class="btn btn-ghost btn-sm btn-square"
 					>
 						<svg

@@ -146,7 +146,7 @@ pub async fn get_preferences(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
     let prefs = state.store.get_user_preferences().map_err(to_error_response)?;
-    Ok(Json(serde_json::json!(prefs)))
+    Ok(Json(serde_json::json!({"preferences": prefs})))
 }
 
 /// PUT /api/v1/user/me/preferences

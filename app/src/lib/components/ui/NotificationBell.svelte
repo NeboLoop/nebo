@@ -4,6 +4,7 @@
 -->
 
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { Bell, Check, CheckCheck, Trash2, ExternalLink } from 'lucide-svelte';
 	import { goto } from '$app/navigation';
 	import { notification, notifications, unreadNotificationCount, hasUnreadNotifications } from '$lib/stores/notification';
@@ -78,10 +79,10 @@
 		const diffHours = Math.floor(diffMs / 3600000);
 		const diffDays = Math.floor(diffMs / 86400000);
 
-		if (diffMins < 1) return 'Just now';
-		if (diffMins < 60) return `${diffMins}m ago`;
-		if (diffHours < 24) return `${diffHours}h ago`;
-		if (diffDays < 7) return `${diffDays}d ago`;
+		if (diffMins < 1) return $t('time.justNow');
+		if (diffMins < 60) return $t('time.minutesAgo', { values: { n: diffMins } });
+		if (diffHours < 24) return $t('time.hoursAgo', { values: { n: diffHours } });
+		if (diffDays < 7) return $t('time.daysAgo', { values: { n: diffDays } });
 		return date.toLocaleDateString();
 	}
 
@@ -111,7 +112,7 @@
 		type="button"
 		class="btn btn-ghost btn-circle relative"
 		onclick={toggleDropdown}
-		aria-label="Notifications"
+		aria-label={$t('notifications.title')}
 		aria-expanded={isOpen}
 		aria-haspopup="true"
 	>
@@ -120,7 +121,7 @@
 			<span
 				class="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-error text-error-content text-sm font-bold flex items-center justify-center"
 			>
-				{$unreadNotificationCount > 99 ? '99+' : $unreadNotificationCount}
+				{$unreadNotificationCount > 99 ? $t('notifications.overflow') : $unreadNotificationCount}
 			</span>
 		{/if}
 	</button>
@@ -133,7 +134,7 @@
 		>
 			<!-- Header -->
 			<div class="flex items-center justify-between px-4 py-3 border-b border-base-300">
-				<h3 class="font-semibold">Notifications</h3>
+				<h3 class="font-semibold">{$t('notifications.title')}</h3>
 				{#if $hasUnreadNotifications}
 					<button
 						type="button"
@@ -141,7 +142,7 @@
 						onclick={handleMarkAllAsRead}
 					>
 						<CheckCheck class="w-3 h-3" />
-						Mark all read
+						{$t('notifications.markAllRead')}
 					</button>
 				{/if}
 			</div>
@@ -151,7 +152,7 @@
 				{#if $notifications.length === 0}
 					<div class="px-4 py-8 text-center text-base-content/90">
 						<Bell class="w-8 h-8 mx-auto mb-2 opacity-40" />
-						<p>No notifications yet</p>
+						<p>{$t('notifications.noNotifications')}</p>
 					</div>
 				{:else}
 					{#each $notifications as n}
@@ -196,7 +197,7 @@
 										type="button"
 										class="btn btn-ghost btn-xs btn-circle"
 										onclick={(e) => { e.stopPropagation(); handleMarkAsRead(n.id); }}
-										title="Mark as read"
+										title={$t('notifications.markAsRead')}
 									>
 										<Check class="w-3 h-3" />
 									</button>
@@ -205,7 +206,7 @@
 									type="button"
 									class="btn btn-ghost btn-xs btn-circle text-error"
 									onclick={(e) => { e.stopPropagation(); handleDelete(n.id); }}
-									title="Delete"
+									title={$t('common.delete')}
 								>
 									<Trash2 class="w-3 h-3" />
 								</button>
@@ -223,7 +224,7 @@
 						class="btn btn-ghost btn-sm btn-block gap-1"
 						onclick={closeDropdown}
 					>
-						View all notifications
+						{$t('notifications.viewAll')}
 						<ExternalLink class="w-3 h-3" />
 					</a>
 				</div>

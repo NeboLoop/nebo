@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { t } from 'svelte-i18n';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import Alert from '$lib/components/ui/Alert.svelte';
 	import ArtifactIcon from '$lib/components/marketplace/ArtifactIcon.svelte';
@@ -46,7 +47,7 @@
 	}
 
 	async function uninstall(item: AppItem) {
-		if (!confirm(`Uninstall ${item.name}?`)) return;
+		if (!confirm($t('marketplace.installedPage.uninstallConfirm', { values: { name: item.name } }))) return;
 		uninstallingId = item.id;
 		try {
 			await api.uninstallStoreProduct(item.id);
@@ -62,14 +63,14 @@
 <div class="max-w-3xl mx-auto px-6 pt-8">
 	<div class="mb-6 flex items-center justify-between">
 		<div>
-			<h2 class="font-display text-2xl font-bold text-base-content">Installed</h2>
-			<p class="text-base text-base-content/80 mt-1">Roles and skills installed on your Nebo</p>
+			<h2 class="font-display text-2xl font-bold text-base-content">{$t('marketplace.installedPage.title')}</h2>
+			<p class="text-base text-base-content/80 mt-1">{$t('marketplace.installedPage.subtitle')}</p>
 		</div>
 		<button
 			type="button"
 			class="text-base text-base-content/80 hover:text-primary transition-colors"
 			onclick={loadInstalled}
-			aria-label="Refresh"
+			aria-label={$t('common.refresh')}
 		>
 			<RefreshCw class="w-4 h-4" />
 		</button>
@@ -78,31 +79,31 @@
 	{#if isLoading}
 		<div class="flex items-center justify-center gap-3 py-16">
 			<Spinner size={20} />
-			<span class="text-base text-base-content/80">Loading...</span>
+			<span class="text-base text-base-content/80">{$t('common.loading')}</span>
 		</div>
 	{:else}
 		{#if error}
-			<Alert type="error" title="Error">{error}</Alert>
+			<Alert type="error" title={$t('common.error')}>{error}</Alert>
 		{/if}
 
 		{#if installed.length === 0}
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				<div class="py-10 text-center">
 					<PackageCheck class="w-10 h-10 mx-auto mb-3 text-base-content/40" />
-					<p class="text-base font-medium text-base-content/80 mb-1">Nothing installed yet</p>
-					<p class="text-sm text-base-content/60 mb-4">Browse the marketplace to find roles and skills for your Nebo</p>
+					<p class="text-base font-medium text-base-content/80 mb-1">{$t('marketplace.installedPage.nothingInstalled')}</p>
+					<p class="text-sm text-base-content/60 mb-4">{$t('marketplace.installedPage.browseDescription')}</p>
 					<a
 						href="/marketplace"
 						class="inline-block h-10 px-6 leading-10 rounded-full bg-primary text-primary-content text-base font-bold hover:brightness-110 transition-all"
 					>
-						Browse Marketplace
+						{$t('marketplace.installedPage.browseMarketplace')}
 					</a>
 				</div>
 			</div>
 		{:else}
 			{#if installedRoles.length > 0}
 				<div class="mb-6">
-					<h3 class="text-lg font-semibold text-base-content mb-3">Roles</h3>
+					<h3 class="text-lg font-semibold text-base-content mb-3">{$t('marketplace.roles')}</h3>
 					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 						<div class="space-y-2">
 							{#each installedRoles as item (item.id)}
@@ -120,14 +121,14 @@
 										<a
 											href={itemHref(item)}
 											class="text-base text-base-content/80 hover:text-primary transition-colors"
-											title="View details"
+											title={$t('marketplace.installedPage.viewDetails')}
 										>
 											<ExternalLink class="w-4 h-4" />
 										</a>
 										<button
 											type="button"
 											class="text-base text-base-content/80 hover:text-error transition-colors"
-											title="Uninstall"
+											title={$t('common.uninstall')}
 											onclick={() => uninstall(item)}
 											disabled={uninstallingId === item.id}
 										>
@@ -142,13 +143,13 @@
 							{/each}
 						</div>
 					</div>
-					<p class="text-sm text-base-content/40 mt-2 text-center">{installedRoles.length} role{installedRoles.length !== 1 ? 's' : ''} installed</p>
+					<p class="text-sm text-base-content/40 mt-2 text-center">{$t('marketplace.installedPage.rolesInstalled', { values: { count: installedRoles.length } })}</p>
 				</div>
 			{/if}
 
 			{#if installedSkills.length > 0}
 				<div class="mb-6">
-					<h3 class="text-lg font-semibold text-base-content mb-3">Skills</h3>
+					<h3 class="text-lg font-semibold text-base-content mb-3">{$t('marketplace.skills')}</h3>
 					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 						<div class="space-y-2">
 							{#each installedSkills as item (item.id)}
@@ -166,14 +167,14 @@
 										<a
 											href={itemHref(item)}
 											class="text-base text-base-content/80 hover:text-primary transition-colors"
-											title="View details"
+											title={$t('marketplace.installedPage.viewDetails')}
 										>
 											<ExternalLink class="w-4 h-4" />
 										</a>
 										<button
 											type="button"
 											class="text-base text-base-content/80 hover:text-error transition-colors"
-											title="Uninstall"
+											title={$t('common.uninstall')}
 											onclick={() => uninstall(item)}
 											disabled={uninstallingId === item.id}
 										>
@@ -188,7 +189,7 @@
 							{/each}
 						</div>
 					</div>
-					<p class="text-sm text-base-content/40 mt-2 text-center">{installedSkills.length} skill{installedSkills.length !== 1 ? 's' : ''} installed</p>
+					<p class="text-sm text-base-content/40 mt-2 text-center">{$t('marketplace.installedPage.skillsInstalled', { values: { count: installedSkills.length } })}</p>
 				</div>
 			{/if}
 		{/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { t } from 'svelte-i18n';
 	import { createEventDispatcher } from 'svelte';
 
 	interface DateRange {
@@ -17,28 +18,28 @@
 		change: DateRange;
 	}>();
 
-	const defaultPresets = [
+	const defaultPresets = $derived([
 		{
-			label: 'Last 7 days',
+			label: $t('dateFilter.last7Days'),
 			from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
 			to: new Date().toISOString().split('T')[0]
 		},
 		{
-			label: 'Last 30 days',
+			label: $t('dateFilter.last30Days'),
 			from: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
 			to: new Date().toISOString().split('T')[0]
 		},
 		{
-			label: 'Last 90 days',
+			label: $t('dateFilter.last90Days'),
 			from: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
 			to: new Date().toISOString().split('T')[0]
 		},
 		{
-			label: 'This month',
+			label: $t('dateFilter.thisMonth'),
 			from: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
 			to: new Date().toISOString().split('T')[0]
 		}
-	];
+	]);
 
 	const allPresets = $derived(presets.length > 0 ? presets : defaultPresets);
 
@@ -76,7 +77,7 @@
 
 	<div class="flex space-x-4">
 		<div class="flex-1">
-			<label for="from-date" class="label pb-1"><span class="label-text">From</span></label>
+			<label for="from-date" class="label pb-1"><span class="label-text">{$t('dateFilter.from')}</span></label>
 			<input
 				type="date"
 				id="from-date"
@@ -86,7 +87,7 @@
 			/>
 		</div>
 		<div class="flex-1">
-			<label for="to-date" class="label pb-1"><span class="label-text">To</span></label>
+			<label for="to-date" class="label pb-1"><span class="label-text">{$t('dateFilter.to')}</span></label>
 			<input
 				type="date"
 				id="to-date"
@@ -97,4 +98,3 @@
 		</div>
 	</div>
 </div>
-

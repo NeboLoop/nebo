@@ -7,6 +7,7 @@
 	import { Plus, Pencil, Trash2, Store, Copy, MoreHorizontal, X } from 'lucide-svelte';
 	import { fly } from 'svelte/transition';
 	import { getWebSocketClient } from '$lib/websocket/client';
+	import { t } from 'svelte-i18n';
 
 	let {
 		entityType,
@@ -75,9 +76,9 @@
 				case 'heartbeat':
 					return intervalConfigToHuman(cfg);
 				case 'event':
-					return cfg ? `When ${cfg} fires` : 'On event';
+					return cfg ? $t('automations.whenFires', { values: { event: cfg } }) : $t('automations.onEvent');
 				case 'manual':
-					return 'Run manually';
+					return $t('automations.runManually');
 				default:
 					return wf.triggerType;
 			}
@@ -87,18 +88,18 @@
 	}
 
 	function cronToHuman(cron: string): string {
-		if (!cron) return 'Scheduled';
+		if (!cron) return $t('automations.scheduled');
 		const parts = cron.trim().split(/\s+/);
 		if (parts.length !== 5) return cron;
 		const [min, hour, , , dow] = parts;
 		if (min === '*' || hour === '*') return cron;
 		const time = formatTime(parseInt(hour), parseInt(min));
-		if (dow === '*') return `Daily at ${time}`;
-		if (dow === '1-5') return `Weekdays at ${time}`;
-		if (dow === '0,6' || dow === '6,0') return `Weekends at ${time}`;
-		const dayMap = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-		if (dow === '1') return `Mondays at ${time}`;
-		if (dow === '5') return `Fridays at ${time}`;
+		if (dow === '*') return $t('automations.dailyAt', { values: { time } });
+		if (dow === '1-5') return $t('automations.weekdaysAt', { values: { time } });
+		if (dow === '0,6' || dow === '6,0') return $t('automations.weekendsAt', { values: { time } });
+		const dayMap = [$t('weekdays.sun'), $t('weekdays.mon'), $t('weekdays.tue'), $t('weekdays.wed'), $t('weekdays.thu'), $t('weekdays.fri'), $t('weekdays.sat')];
+		if (dow === '1') return $t('automations.mondaysAt', { values: { time } });
+		if (dow === '5') return $t('automations.fridaysAt', { values: { time } });
 		const dayNums = dow.split(',').map(Number).filter(n => !isNaN(n));
 		if (dayNums.length > 0) {
 			return `${dayNums.map(d => dayMap[d] || d).join(', ')} at ${time}`;
@@ -107,7 +108,7 @@
 	}
 
 	function intervalConfigToHuman(cfg: string): string {
-		if (!cfg) return 'Interval';
+		if (!cfg) return $t('automations.interval');
 		const parts = cfg.split('|');
 		const interval = parts[0];
 		const window = parts[1];
@@ -120,16 +121,16 @@
 	}
 
 	function intervalToHuman(interval: string): string {
-		if (interval === '5m') return 'Every 5 minutes';
-		if (interval === '10m') return 'Every 10 minutes';
-		if (interval === '15m') return 'Every 15 minutes';
-		if (interval === '30m') return 'Every 30 minutes';
-		if (interval === '1h') return 'Every hour';
-		if (interval === '2h') return 'Every 2 hours';
-		if (interval === '4h') return 'Every 4 hours';
-		if (interval === '8h') return 'Every 8 hours';
-		if (interval === '24h') return 'Every 24 hours';
-		return `Every ${interval}`;
+		if (interval === '5m') return $t('automations.every5min');
+		if (interval === '10m') return $t('automations.every10min');
+		if (interval === '15m') return $t('automations.every15min');
+		if (interval === '30m') return $t('automations.every30min');
+		if (interval === '1h') return $t('automations.everyHour');
+		if (interval === '2h') return $t('automations.every2h');
+		if (interval === '4h') return $t('automations.every4h');
+		if (interval === '8h') return $t('automations.every8h');
+		if (interval === '24h') return $t('automations.every24h');
+		return $t('automations.everyInterval', { values: { interval } });
 	}
 
 	function formatTime(hour: number, min: number): string {
@@ -151,12 +152,12 @@
 	function lastFiredAgo(iso: string): string {
 		const diff = Date.now() - new Date(iso).getTime();
 		const mins = Math.floor(diff / 60000);
-		if (mins < 1) return 'just now';
-		if (mins < 60) return `${mins}m ago`;
+		if (mins < 1) return $t('time.justNow');
+		if (mins < 60) return $t('time.minutesAgo', { values: { n: mins } });
 		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h ago`;
+		if (hrs < 24) return $t('time.hoursAgo', { values: { n: hrs } });
 		const days = Math.floor(hrs / 24);
-		if (days < 7) return `${days}d ago`;
+		if (days < 7) return $t('time.daysAgo', { values: { n: days } });
 		return new Date(iso).toLocaleDateString();
 	}
 
@@ -399,11 +400,11 @@
 		<!-- Automations list -->
 			<div class="flex flex-col gap-3">
 				<div class="flex items-center justify-between min-h-8">
-					<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">Automations</h2>
+					<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('automations.title')}</h2>
 					{#if roleId}
 						<button type="button" class="btn btn-sm btn-ghost text-primary gap-1.5" onclick={openCreate}>
 							<Plus class="w-3.5 h-3.5" />
-							New
+							{$t('automations.new')}
 						</button>
 					{/if}
 				</div>
@@ -412,7 +413,7 @@
 					{@const triggeredBy = getTriggeredBy(wf)}
 					{#if triggeredBy}
 						<div class="flex items-center gap-2 pl-5 -my-1">
-							<span class="text-xs text-base-content/80">&#8627; triggered by: {triggeredBy}</span>
+							<span class="text-xs text-base-content/80">{$t('automations.triggeredBy', { values: { trigger: triggeredBy } })}</span>
 						</div>
 					{/if}
 					<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -425,13 +426,13 @@
 								<div class="min-w-0">
 									<p class="text-sm font-medium truncate">{wf.description || wf.bindingName}</p>
 									<p class="text-xs text-base-content/70 truncate">
-										{summarizeTrigger(wf)}{#if wf.activities && wf.activities.length > 0}{' '}&middot; {wf.activities.length} step{wf.activities.length !== 1 ? 's' : ''}{/if}
+										{summarizeTrigger(wf)}{#if wf.activities && wf.activities.length > 0}{' '}&middot; {$t('automations.stepCount', { values: { count: wf.activities.length } })}{/if}
 									</p>
 									{#if wf.lastFired}
-										<p class="text-xs text-base-content/70 truncate mt-0.5">Last run: {lastFiredAgo(wf.lastFired)}</p>
+										<p class="text-xs text-base-content/70 truncate mt-0.5">{$t('automations.lastRun', { values: { time: lastFiredAgo(wf.lastFired) } })}</p>
 									{/if}
 									{#if wf.emit}
-										<p class="text-xs text-base-content/70 truncate mt-0.5">&#8594; announces: {wf.emit}</p>
+										<p class="text-xs text-base-content/70 truncate mt-0.5">{$t('automations.announces', { values: { event: wf.emit } })}</p>
 									{/if}
 								</div>
 							</div>
@@ -451,19 +452,19 @@
 											onclick={(e) => e.stopPropagation()}
 										>
 											<button type="button" class="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-base-content/80 hover:bg-base-content/5 transition-colors" onclick={() => openEdit(wf)}>
-												<Pencil class="w-3.5 h-3.5" /> Edit
+												<Pencil class="w-3.5 h-3.5" /> {$t('common.edit')}
 											</button>
 											<button type="button" class="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-base-content/80 hover:bg-base-content/5 transition-colors" onclick={() => handleDuplicate(wf)}>
-												<Copy class="w-3.5 h-3.5" /> Duplicate
+												<Copy class="w-3.5 h-3.5" /> {$t('sidebar.duplicate')}
 											</button>
 											<div class="border-t border-base-content/10 my-1"></div>
 											{#if confirmDelete === wf.bindingName}
 												<button type="button" class="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-error hover:bg-error/5 transition-colors" onclick={() => handleDelete(wf.bindingName)}>
-													<Trash2 class="w-3.5 h-3.5" /> Confirm delete
+													<Trash2 class="w-3.5 h-3.5" /> {$t('automations.confirmDelete')}
 												</button>
 											{:else}
 												<button type="button" class="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-error/70 hover:bg-error/5 hover:text-error transition-colors" onclick={(e) => { e.stopPropagation(); confirmDelete = wf.bindingName; }}>
-													<Trash2 class="w-3.5 h-3.5" /> Delete
+													<Trash2 class="w-3.5 h-3.5" /> {$t('common.delete')}
 												</button>
 											{/if}
 										</div>
@@ -487,11 +488,11 @@
 						<svg class="w-8 h-8 text-base-content/80 mb-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
 							<circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
 						</svg>
-						<p class="text-sm text-base-content/70">No automations yet</p>
-						<p class="text-xs text-base-content/70 mt-1 mb-3">Add one to put this agent on autopilot.</p>
+						<p class="text-sm text-base-content/70">{$t('automations.noAutomations')}</p>
+						<p class="text-xs text-base-content/70 mt-1 mb-3">{$t('automations.noAutomationsHint')}</p>
 						<button type="button" class="btn btn-sm btn-primary gap-1" onclick={openCreate}>
 							<Plus class="w-3.5 h-3.5" />
-							New Automation
+							{$t('automations.newAutomation')}
 						</button>
 					</div>
 				{/if}
@@ -501,8 +502,8 @@
 		<!-- Assistant readonly -->
 		<div class="flex flex-col items-center py-6 text-center">
 			<Store class="w-6 h-6 text-base-content/80 mb-2" />
-			<p class="text-sm text-base-content/70">Workflow automations are available on installed agents.</p>
-			<p class="text-xs text-base-content/70 mt-1">Browse the marketplace to add agents with built-in automations.</p>
+			<p class="text-sm text-base-content/70">{$t('automations.marketplaceOnly')}</p>
+			<p class="text-xs text-base-content/70 mt-1">{$t('automations.browseHint')}</p>
 		</div>
 	{/if}
 
@@ -528,7 +529,7 @@
 				onclick={() => { const wf = pw; previewWorkflow = null; openEdit(wf); }}
 			>
 				<Pencil class="w-3.5 h-3.5" />
-				Edit
+				{$t('common.edit')}
 			</button>
 		</header>
 
@@ -536,7 +537,7 @@
 			<div class="max-w-3xl mx-auto px-6 py-8">
 				<!-- Trigger -->
 				<div class="mb-6">
-					<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">Trigger</span>
+					<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">{$t('automations.trigger')}</span>
 					<div class="flex items-center gap-2 mt-2">
 						<span class="text-lg">{triggerIcons[pw.triggerType] || '▶'}</span>
 						<span class="text-sm">{summarizeTrigger(pw)}</span>
@@ -546,7 +547,7 @@
 				<!-- Steps -->
 				{#if pw.activities && pw.activities.length > 0}
 					<div class="mb-6">
-						<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">Steps</span>
+						<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">{$t('automations.steps')}</span>
 						<ol class="mt-3 flex flex-col gap-3">
 							{#each pw.activities as activity, i}
 								<li class="flex gap-3">
@@ -578,15 +579,15 @@
 				<!-- Emit -->
 				{#if pw.emit}
 					<div class="mb-6">
-						<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">On completion</span>
-						<p class="text-sm mt-2">Announces: <span class="font-medium">{pw.emit}</span></p>
+						<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">{$t('automations.onCompletion')}</span>
+						<p class="text-sm mt-2">{$t('automations.announces', { values: { event: pw.emit } })}</p>
 					</div>
 				{/if}
 
 				<!-- Status -->
 				<div>
-					<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">Status</span>
-					<p class="text-sm mt-2">{pw.isActive ? 'Active' : 'Paused'}</p>
+					<span class="text-xs text-base-content/70 uppercase tracking-wider font-semibold">{$t('automations.status')}</span>
+					<p class="text-sm mt-2">{pw.isActive ? $t('common.active') : $t('common.paused')}</p>
 				</div>
 			</div>
 		</div>

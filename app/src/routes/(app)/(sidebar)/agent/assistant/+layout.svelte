@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
 	import { getContext } from 'svelte';
+	import { t } from 'svelte-i18n';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -41,14 +42,14 @@
 				<svg class="w-5 h-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
 				</svg>
-				<h1 class="text-base font-semibold text-base-content leading-tight">Assistant</h1>
+				<h1 class="text-base font-semibold text-base-content leading-tight">{$t('agent.assistant')}</h1>
 			</div>
 			<div class="agent-tab-bar-inline">
-				<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>Chat</a>
-				<a href="{basePath}/role" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('role')}>Role</a>
-				<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>Automate</a>
-				<a href="{basePath}/activity" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('activity')}>Activity</a>
-				<a href="{basePath}/settings" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('settings')}>Settings</a>
+				<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>{$t('agent.chatTab')}</a>
+				<a href="{basePath}/role" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('role')}>{$t('agent.roleTab')}</a>
+				<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>{$t('agent.automate')}</a>
+				<a href="{basePath}/activity" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('activity')}>{$t('agent.activity')}</a>
+				<a href="{basePath}/settings" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('settings')}>{$t('agent.settingsTab')}</a>
 			</div>
 		</div>
 	</header>

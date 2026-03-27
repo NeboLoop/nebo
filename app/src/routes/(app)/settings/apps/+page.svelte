@@ -5,6 +5,7 @@
 	import * as api from '$lib/api';
 	import type { PluginItem, AppItem } from '$lib/api';
 	import AppDetailModal from './AppDetailModal.svelte';
+	import { t } from 'svelte-i18n';
 
 	let plugins = $state<PluginItem[]>([]);
 	let storeApps = $state<AppItem[]>([]);
@@ -145,22 +146,22 @@
 
 <div class="mb-6 flex items-center justify-between">
 	<div>
-		<h2 class="font-display text-xl font-bold text-base-content mb-1">Apps</h2>
-		<p class="text-base text-base-content/80">Installed apps and the marketplace</p>
+		<h2 class="font-display text-xl font-bold text-base-content mb-1">{$t('settingsApps.title')}</h2>
+		<p class="text-base text-base-content/80">{$t('settingsApps.description')}</p>
 	</div>
 	<button
 		class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1.5"
 		onclick={loadAll}
 	>
 		<RefreshCw class="w-3.5 h-3.5" />
-		Refresh
+		{$t('common.refresh')}
 	</button>
 </div>
 
 {#if isLoading}
 	<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/90">
 		<Spinner class="w-5 h-5 mx-auto mb-2" />
-		<p class="text-base">Loading apps...</p>
+		<p class="text-base">{$t('settingsApps.loadingApps')}</p>
 	</div>
 {:else}
 	<div class="flex gap-1 mb-2">
@@ -168,13 +169,13 @@
 			class="h-8 px-3 rounded-lg text-sm font-medium transition-colors {activeTab === 'installed' ? 'bg-base-content/10 text-base-content' : 'text-base-content/80 hover:text-base-content/60'}"
 			onclick={() => activeTab = 'installed'}
 		>
-			Installed{plugins.length ? ` (${plugins.length})` : ''}
+			{plugins.length ? $t('settingsApps.installedCount', { values: { count: plugins.length } }) : $t('settingsApps.installedTab')}
 		</button>
 		<button
 			class="h-8 px-3 rounded-lg text-sm font-medium transition-colors {activeTab === 'store' ? 'bg-base-content/10 text-base-content' : 'text-base-content/80 hover:text-base-content/60'}"
 			onclick={() => activeTab = 'store'}
 		>
-			Marketplace
+			{$t('settingsApps.marketplaceTab')}
 		</button>
 	</div>
 
@@ -211,13 +212,13 @@
 										class="h-7 px-2.5 rounded-md bg-primary text-primary-content text-sm font-semibold flex items-center gap-1 hover:brightness-110 transition-all disabled:opacity-50"
 										onclick={(e) => handleOpenUI(e, plugin)}
 										disabled={openingApp === plugin.id}
-										title="Open app"
+										title={$t('common.open')}
 									>
 										{#if openingApp === plugin.id}
 											<Loader2 class="w-3 h-3 animate-spin" />
 										{:else}
 											<ExternalLink class="w-3.5 h-3.5" />
-											Open
+											{$t('common.open')}
 										{/if}
 									</button>
 								{/if}
@@ -235,23 +236,23 @@
 			{:else}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/90">
 					<Package class="w-12 h-12 mx-auto mb-4 opacity-20" />
-					<p class="font-medium mb-2">No apps installed</p>
-					<p class="text-base">Browse the Marketplace to get started.</p>
+					<p class="font-medium mb-2">{$t('settingsApps.noApps')}</p>
+					<p class="text-base">{$t('settingsApps.browseToStart')}</p>
 				</div>
 			{/if}
 		{:else if activeTab === 'store'}
 			{#if !neboLoopConnected}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
 					<WifiOff class="w-10 h-10 mx-auto mb-3 opacity-20" />
-					<p class="font-medium mb-2">Connect to NeboLoop to browse the Marketplace</p>
+					<p class="font-medium mb-2">{$t('settingsApps.connectForMarketplace')}</p>
 					<a href="/settings/status" class="inline-flex h-8 px-4 rounded-full bg-primary text-primary-content text-base font-bold items-center hover:brightness-110 transition-all mt-2">
-						Go to Status
+						{$t('settingsApps.goToStatus')}
 					</a>
 				</div>
 			{:else if isLoadingStore}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
 					<Spinner class="w-5 h-5 mx-auto mb-2" />
-					<p class="text-base">Loading store...</p>
+					<p class="text-base">{$t('settingsApps.loadingStore')}</p>
 				</div>
 			{:else if storeApps.length > 0}
 				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -272,7 +273,7 @@
 								<div class="flex-1 min-w-0">
 									<h3 class="font-display font-bold text-base text-base-content mb-0.5">{app.name}</h3>
 									<p class="text-sm text-base-content/60 mb-1">
-										by {app.author.name}
+										{$t('settingsApps.byAuthor', { values: { name: app.author.name } })}
 										{#if app.author.verified}
 											<Check class="w-2.5 h-2.5 inline text-success" />
 										{/if}
@@ -305,7 +306,7 @@
 													<Loader2 class="w-3 h-3 animate-spin" />
 												{:else}
 													<Check class="w-3 h-3" />
-													Installed
+													{$t('common.installed')}
 												{/if}
 											</button>
 										{:else}
@@ -317,7 +318,7 @@
 												{#if installingApp === app.id}
 													<Loader2 class="w-3 h-3 animate-spin" />
 												{:else}
-													Install
+													{$t('common.install')}
 												{/if}
 											</button>
 										{/if}
@@ -330,8 +331,8 @@
 			{:else}
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
 					<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
-					<p class="font-medium mb-1">No apps available yet</p>
-					<p class="text-base">Check back later for new apps.</p>
+					<p class="font-medium mb-1">{$t('settingsApps.noAppsAvailable')}</p>
+					<p class="text-base">{$t('settingsApps.checkBackLater')}</p>
 				</div>
 			{/if}
 		{/if}
