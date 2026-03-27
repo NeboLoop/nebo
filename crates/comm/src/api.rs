@@ -631,6 +631,36 @@ impl NeboLoopApi {
         self.do_json(reqwest::Method::GET, "/api/v1/owners/me/payment-methods", None::<&()>).await
     }
 
+    // ── Plugins ─────────────────────────────────────────────────────
+
+    /// Get plugin manifest from NeboLoop for a specific platform.
+    ///
+    /// Returns the full `PluginManifest` which includes per-platform binary entries.
+    pub async fn get_plugin(
+        &self,
+        slug: &str,
+        platform: &str,
+    ) -> Result<napp::plugin::PluginManifest, CommError> {
+        let path = format!(
+            "/api/v1/plugins/{}?platform={}",
+            urlencoding::encode(slug),
+            urlencoding::encode(platform),
+        );
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
+    /// Download a plugin binary from a URL.
+    ///
+    /// The URL can be absolute (CDN) or relative (API path).
+    pub async fn download_plugin_binary(&self, url: &str) -> Result<Vec<u8>, CommError> {
+        let full_url = if url.starts_with("http://") || url.starts_with("https://") {
+            url.to_string()
+        } else {
+            format!("{}{}", self.api_server, url)
+        };
+        self.fetch_raw(&full_url).await
+    }
+
     // ── Raw Fetch ───────────────────────────────────────────────────
 
     /// Download raw content from a URL using the client's auth header.

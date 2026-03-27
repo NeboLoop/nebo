@@ -1,6 +1,7 @@
 pub mod hooks;
 pub mod manifest;
 pub mod napp;
+pub mod plugin;
 pub mod reader;
 pub mod registry;
 pub mod role;
@@ -43,6 +44,12 @@ pub enum NappError {
     Http(#[from] reqwest::Error),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("plugin '{0}' not found")]
+    PluginNotFound(String),
+    #[error("plugin '{plugin}' has no binary for platform '{platform}'")]
+    PluginPlatformUnavailable { plugin: String, platform: String },
+    #[error("plugin download failed: {0}")]
+    PluginDownloadFailed(String),
     #[error("{0}")]
     Other(String),
 }

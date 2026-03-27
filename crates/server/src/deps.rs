@@ -22,6 +22,7 @@ use crate::state::AppState;
 pub enum DepType {
     Skill,
     Workflow,
+    Plugin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +215,7 @@ pub fn is_marketplace_ref(reference: &str) -> bool {
         || reference.starts_with("SKIL-")
         || reference.starts_with("WORK-")
         || reference.starts_with("ROLE-")
+        || reference.starts_with("PLUG-")
 }
 
 // ── Presence Detection ──────────────────────────────────────────────
@@ -222,6 +224,7 @@ async fn is_installed(state: &AppState, dep: &DepRef) -> bool {
     match dep.dep_type {
         DepType::Skill => is_skill_installed(&dep.reference),
         DepType::Workflow => is_workflow_installed(state, &dep.reference),
+        DepType::Plugin => state.plugin_store.resolve(&dep.reference, "*").is_some(),
     }
 }
 
@@ -340,6 +343,7 @@ async fn install_dep(state: &AppState, dep: &DepRef) -> Result<Vec<DepRef>, Stri
     match dep.dep_type {
         DepType::Skill => install_skill(state, &api, &dep.reference).await,
         DepType::Workflow => install_workflow(state, &api, &dep.reference).await,
+        DepType::Plugin => install_plugin(state, &api, &dep.reference).await,
     }
 }
 
@@ -401,6 +405,42 @@ async fn install_workflow(
         }
     }
 
+    Ok(vec![])
+}
+
+async fn install_plugin(
+    state: &AppState,
+    _api: &NeboLoopApi,
+    reference: &str,
+) -> Result<Vec<DepRef>, String> {
+    let slug = extract_simple_name(reference).to_string();
+
+    // Use PluginStore.ensure() with a download callback that queries NeboLoop
+    let api_for_download = build_api_client(state).map_err(|e| e.to_string())?;
+    state
+        .plugin_store
+        .ensure(&slug, "*", |slug, platform| async move {
+            let detail = api_for_download
+                .get_plugin(&slug, &platform)
+                .await
+                .map_err(|e| napp::NappError::PluginDownloadFailed(format!("get_plugin: {e}")))?;
+            let platform_binary = detail
+                .platforms
+                .get(&platform)
+                .ok_or_else(|| napp::NappError::PluginPlatformUnavailable {
+                    plugin: slug.clone(),
+                    platform: platform.clone(),
+                })?;
+            let binary_data = api_for_download
+                .download_plugin_binary(&platform_binary.download_url)
+                .await
+                .map_err(|e| napp::NappError::PluginDownloadFailed(format!("download: {e}")))?;
+            Ok((detail, binary_data))
+        })
+        .await
+        .map_err(|e| format!("plugin install: {e}"))?;
+
+    // Plugins don't have child dependencies
     Ok(vec![])
 }
 
@@ -495,7 +535,7 @@ pub fn extract_workflow_deps(def: &workflow::parser::WorkflowDef) -> Vec<DepRef>
     deps
 }
 
-/// Extract dependencies from a skill.
+/// Extract dependencies from a skill (inter-skill deps + plugin deps).
 pub fn extract_skill_deps(skill: &tools::skills::Skill) -> Vec<DepRef> {
     let mut deps = Vec::new();
 
@@ -504,6 +544,16 @@ pub fn extract_skill_deps(skill: &tools::skills::Skill) -> Vec<DepRef> {
             dep_type: DepType::Skill,
             reference: dep_name.clone(),
         });
+    }
+
+    // Extract plugin dependencies (non-optional only)
+    for plugin in &skill.plugins {
+        if !plugin.optional {
+            deps.push(DepRef {
+                dep_type: DepType::Plugin,
+                reference: plugin.name.clone(),
+            });
+        }
     }
 
     deps

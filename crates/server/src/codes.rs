@@ -22,6 +22,7 @@ pub enum CodeType {
     Work,
     Role,
     Loop,
+    Plugin,
 }
 
 /// Crockford Base32 charset (no I, L, O, U).
@@ -49,6 +50,8 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
         ("ROLE-", CodeType::Role)
     } else if upper.starts_with("LOOP-") {
         ("LOOP-", CodeType::Loop)
+    } else if upper.starts_with("PLUG-") {
+        ("PLUG-", CodeType::Plugin)
     } else {
         return None;
     };
@@ -88,6 +91,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Work => ("workflow", "Installing workflow..."),
         CodeType::Role => ("role", "Installing role..."),
         CodeType::Loop => ("loop", "Joining loop..."),
+        CodeType::Plugin => ("plugin", "Installing plugin..."),
     };
 
     state.hub.broadcast(
@@ -106,6 +110,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Work => handle_work_code(state, code).await,
         CodeType::Role => handle_role_code(state, code).await,
         CodeType::Loop => handle_loop_code(state, code).await,
+        CodeType::Plugin => handle_plugin_code(state, code).await,
     };
 
     match result {
@@ -417,6 +422,94 @@ async fn handle_loop_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     })
 }
 
+async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+    let api = build_api_client(state)?;
+
+    // Redeem the plugin code with NeboLoop
+    let resp = api
+        .install_skill(code) // plugins use the same install endpoint
+        .await
+        .map_err(|e| NeboError::Internal(format!("install_plugin: {e}")))?;
+
+    if resp.status == "payment_required" {
+        let name = resp.artifact.name.clone();
+        return Ok(CodeHandlerResult {
+            message: format!("Plugin requires payment: {}", name),
+            artifact_name: Some(name),
+            checkout_url: Some(resp.checkout_url.unwrap_or_default()),
+        });
+    }
+
+    let artifact_id = resp.artifact.id.clone();
+    let name = resp.artifact.name.clone();
+    let platform = napp::plugin::current_platform_key();
+
+    // Broadcast installing event
+    state.hub.broadcast(
+        "plugin_installing",
+        serde_json::json!({
+            "plugin": name,
+            "platform": platform,
+        }),
+    );
+
+    // Download and install via PluginStore
+    let plugin_store = state.plugin_store.clone();
+    let api_clone = build_api_client(state)?;
+    let slug = name.to_lowercase().replace(' ', "-");
+
+    match plugin_store
+        .ensure(&slug, "*", |slug, platform| async move {
+            let detail = api_clone
+                .get_plugin(&slug, &platform)
+                .await
+                .map_err(|e| napp::NappError::PluginDownloadFailed(format!("get_plugin: {e}")))?;
+            let platform_binary = detail
+                .platforms
+                .get(&platform)
+                .ok_or_else(|| napp::NappError::PluginPlatformUnavailable {
+                    plugin: slug.clone(),
+                    platform: platform.clone(),
+                })?;
+            let binary_data = api_clone
+                .download_plugin_binary(&platform_binary.download_url)
+                .await
+                .map_err(|e| napp::NappError::PluginDownloadFailed(format!("download: {e}")))?;
+            Ok((detail, binary_data))
+        })
+        .await
+    {
+        Ok(path) => {
+            state.hub.broadcast(
+                "plugin_installed",
+                serde_json::json!({
+                    "plugin": name,
+                }),
+            );
+            info!(code, plugin = %name, artifact_id = %artifact_id, path = %path.display(), "installed plugin");
+        }
+        Err(e) => {
+            state.hub.broadcast(
+                "plugin_error",
+                serde_json::json!({
+                    "plugin": name,
+                    "error": e.to_string(),
+                }),
+            );
+            return Err(NeboError::Internal(format!("plugin install failed: {e}")));
+        }
+    }
+
+    // Reload skill loader so skills with this plugin dep can activate
+    state.skill_loader.load_all().await;
+
+    Ok(CodeHandlerResult {
+        message: format!("Installed plugin: {}", name),
+        artifact_name: Some(name),
+        checkout_url: None,
+    })
+}
+
 // ── REST Endpoint ───────────────────────────────────────────────────
 
 /// POST /api/v1/codes — submit a marketplace code via REST.
@@ -456,6 +549,7 @@ pub async fn submit_code(
         CodeType::Work => handle_work_code(&state, validated_code).await,
         CodeType::Role => handle_role_code(&state, validated_code).await,
         CodeType::Loop => handle_loop_code(&state, validated_code).await,
+        CodeType::Plugin => handle_plugin_code(&state, validated_code).await,
     };
 
     match result {
@@ -965,6 +1059,7 @@ mod tests {
         assert!(matches!(detect_code("WORK-1234-5678"), Some((CodeType::Work, _))));
         assert!(matches!(detect_code("ROLE-9999-AAAA"), Some((CodeType::Role, _))));
         assert!(matches!(detect_code("LOOP-QRST-VWXY"), Some((CodeType::Loop, _))));
+        assert!(matches!(detect_code("PLUG-A1B2-C3D4"), Some((CodeType::Plugin, _))));
     }
 
     #[test]

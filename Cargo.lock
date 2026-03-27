@@ -3569,6 +3569,7 @@ dependencies = [
  "async-trait",
  "futures",
  "getrandom 0.2.17",
+ "nebo-napp",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

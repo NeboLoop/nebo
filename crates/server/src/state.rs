@@ -81,4 +81,6 @@ pub struct AppState {
     pub role_workers: Arc<agent::RoleWorkerRegistry>,
     /// Janus AI usage stats (session/weekly token limits), updated from rate limit headers
     pub janus_usage: Arc<tokio::sync::RwLock<Option<JanusUsage>>>,
+    /// Plugin store for shared binary management (plugins downloaded once, shared across skills)
+    pub plugin_store: Arc<napp::plugin::PluginStore>,
 }

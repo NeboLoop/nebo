@@ -102,6 +102,7 @@ mod tests {
             capabilities: capabilities.into_iter().map(String::from).collect(),
             priority: 0,
             max_turns: 0,
+            plugins: vec![],
             metadata,
             template: String::new(),
             enabled: true,

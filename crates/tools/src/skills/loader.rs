@@ -18,6 +18,8 @@ pub struct Loader {
     installed_dir: PathBuf,
     /// Loaded skills keyed by name.
     skills: Arc<RwLock<HashMap<String, Skill>>>,
+    /// Optional plugin store for verifying plugin dependencies.
+    plugin_store: Option<Arc<napp::plugin::PluginStore>>,
 }
 
 impl Loader {
@@ -27,7 +29,14 @@ impl Loader {
             user_dir,
             installed_dir,
             skills: Arc::new(RwLock::new(HashMap::new())),
+            plugin_store: None,
         }
+    }
+
+    /// Set the plugin store for verifying plugin dependencies during load.
+    pub fn with_plugin_store(mut self, store: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugin_store = Some(store);
+        self
     }
 
     /// Load all skills from bundled, installed (.napp) and user (loose files) directories.
@@ -59,8 +68,8 @@ impl Loader {
             }
         }
 
-        // Verify dependencies — skip skills with missing deps
-        verify_dependencies(&mut loaded);
+        // Verify dependencies — skip skills with missing deps or required plugins
+        verify_dependencies(&mut loaded, self.plugin_store.as_deref());
 
         let count = loaded.len();
         *self.skills.write().await = loaded;
@@ -110,6 +119,7 @@ impl Loader {
         let user_dir = self.user_dir.clone();
         let installed_dir = self.installed_dir.clone();
         let skills = self.skills.clone();
+        let plugin_store = self.plugin_store.clone();
 
         tokio::spawn(async move {
             use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -213,7 +223,7 @@ impl Loader {
                             }
                         }
 
-                        verify_dependencies(&mut loaded);
+                        verify_dependencies(&mut loaded, plugin_store.as_deref());
 
                         let count = loaded.len();
                         *skills.write().await = loaded;
@@ -405,14 +415,30 @@ fn find_skill_md_disabled(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Verify skill dependencies — drop skills with missing deps.
-fn verify_dependencies(loaded: &mut HashMap<String, Skill>) {
+/// Verify skill dependencies — drop skills with missing deps or required plugins.
+fn verify_dependencies(
+    loaded: &mut HashMap<String, Skill>,
+    plugin_store: Option<&napp::plugin::PluginStore>,
+) {
     let names: HashSet<String> = loaded.keys().cloned().collect();
     loaded.retain(|name, skill| {
+        // Check inter-skill dependencies
         for dep in &skill.dependencies {
             if !names.contains(dep) {
                 warn!(skill = %name, missing_dep = %dep, "skill skipped: missing dependency");
                 return false;
+            }
+        }
+        // Check plugin dependencies (only required ones)
+        if let Some(store) = plugin_store {
+            for p in &skill.plugins {
+                if p.optional {
+                    continue;
+                }
+                if store.resolve(&p.name, &p.version).is_none() {
+                    warn!(skill = %name, plugin = %p.name, version = %p.version, "skill skipped: missing required plugin");
+                    return false;
+                }
             }
         }
         true

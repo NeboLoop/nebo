@@ -16,6 +16,32 @@ pub struct SecretDeclaration {
     pub required: bool,
 }
 
+/// A plugin dependency declared in a skill's frontmatter.
+///
+/// ```yaml
+/// plugins:
+///   - name: gws
+///     version: ">=1.2.0"
+///   - name: ffmpeg
+///     version: ">=5.0.0"
+///     optional: true
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginDependency {
+    /// Plugin slug (matches the plugin's registered name in NeboLoop).
+    pub name: String,
+    /// Semver version range. Defaults to `"*"` (any version).
+    #[serde(default = "default_version_range")]
+    pub version: String,
+    /// If true, the skill loads even without this plugin installed.
+    #[serde(default)]
+    pub optional: bool,
+}
+
+fn default_version_range() -> String {
+    "*".to_string()
+}
+
 /// Where a skill was loaded from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +94,9 @@ pub struct Skill {
     pub priority: i32,
     #[serde(default)]
     pub max_turns: i32,
+    /// Shared plugin binaries this skill depends on.
+    #[serde(default)]
+    pub plugins: Vec<PluginDependency>,
     /// The markdown body (not from YAML — parsed from the content after frontmatter).
     #[serde(skip)]
     pub template: String,
@@ -377,6 +406,7 @@ You are a research specialist. When activated, focus on:
             capabilities: vec![],
             priority: 0,
             max_turns: 0,
+            plugins: vec![],
             metadata: HashMap::new(),
             template: String::new(),
             enabled: true,

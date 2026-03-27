@@ -418,6 +418,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Extract sealed .napp archives to sibling directories (one-time)
     migration::migrate_napp_extraction(&data_dir);
 
+    // Initialize plugin store for shared binary management
+    let plugins_dir = data_dir.join("nebo").join("plugins");
+    let _ = std::fs::create_dir_all(&plugins_dir);
+    let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, None));
+
     // Initialize skill loader (bundled + extracted dirs from nebo/skills/ + loose files from user/skills/)
     let bundled_skills_dir = config::bundled_skills_dir().unwrap_or_else(|_| data_dir.join("bundled").join("skills"));
     let installed_skills_dir = data_dir.join("nebo").join("skills");
@@ -427,7 +432,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         bundled_skills_dir,
         installed_skills_dir,
         user_skills_dir,
-    ));
+    ).with_plugin_store(plugin_store.clone()));
     skill_loader.load_all().await;
     skill_loader.watch();
 
@@ -875,6 +880,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         role_registry: active_role_state,
         role_workers,
         janus_usage: Arc::new(tokio::sync::RwLock::new(None)),
+        plugin_store,
     };
 
     // Replace comm message handler with full version that routes chat/DM to agent runner

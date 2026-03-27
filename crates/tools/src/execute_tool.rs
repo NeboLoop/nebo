@@ -35,6 +35,7 @@ pub struct ExecuteTool {
     plan_tier: Arc<RwLock<String>>,
     sandbox: Option<Arc<SandboxManager>>,
     store: Option<Arc<db::Store>>,
+    plugin_store: Option<Arc<napp::plugin::PluginStore>>,
 }
 
 impl ExecuteTool {
@@ -48,11 +49,17 @@ impl ExecuteTool {
             plan_tier,
             sandbox,
             store: None,
+            plugin_store: None,
         }
     }
 
     pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    pub fn with_plugin_store(mut self, store: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugin_store = Some(store);
         self
     }
 
@@ -289,6 +296,16 @@ impl ExecuteTool {
                     }
                 }
                 Err(msg) => return ToolResult::error(msg),
+            }
+        }
+
+        // Inject plugin binary paths as environment variables (e.g., GWS_BIN=/path/to/gws)
+        if let Some(ref plugin_store) = self.plugin_store {
+            for p in &skill.plugins {
+                if let Some(binary_path) = plugin_store.resolve(&p.name, &p.version) {
+                    let env_name = napp::plugin::plugin_env_var(&p.name);
+                    cmd.env(&env_name, binary_path.to_string_lossy().as_ref());
+                }
             }
         }
 
