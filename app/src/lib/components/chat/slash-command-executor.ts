@@ -10,6 +10,7 @@ export interface CommandContext {
 	messages: { role: string; content: string; timestamp: Date }[];
 	chatId: string;
 	isLoading: boolean;
+	onNewChat: () => void;
 	onNewSession: () => void;
 	onCancel: () => void;
 	onToggleDuplex: (() => void) | undefined;
@@ -33,7 +34,7 @@ export async function executeSlashCommand(
 	switch (command) {
 		// ── Session ──
 		case 'new':
-			ctx.onNewSession();
+			ctx.onNewChat();
 			return true;
 
 		case 'reset':
@@ -341,7 +342,32 @@ async function handleMemory(query: string, ctx: CommandContext): Promise<boolean
 async function handleHeartbeat(ctx: CommandContext): Promise<boolean> {
 	try {
 		const res = await api.getHeartbeat();
-		ctx.addSystemMessage(`**Heartbeat**\n\n${res.content || 'No heartbeat configured.'}`);
+		const lines: string[] = ['**Heartbeat**\n'];
+		lines.push(res.content || 'No heartbeat configured.');
+
+		// Show heartbeat schedule info
+		if (res.enabled) {
+			lines.push('');
+			lines.push('**Schedule**');
+			lines.push(`Interval: every ${res.intervalMinutes}min`);
+			if (res.window) {
+				lines.push(`Window: ${res.window.start} — ${res.window.end}`);
+			}
+		}
+
+		// Show cron automations
+		if (res.crons?.length) {
+			lines.push('');
+			lines.push('**Automations**');
+			for (const cron of res.crons) {
+				const next = cron.nextRun ? new Date(cron.nextRun).toLocaleString() : 'unknown';
+				lines.push(`- **${cron.name}** — next: ${next} (\`${cron.schedule}\`)`);
+			}
+		} else if (!res.enabled) {
+			lines.push('\nNo automations scheduled.');
+		}
+
+		ctx.addSystemMessage(lines.join('\n'));
 	} catch {
 		ctx.addSystemMessage('Failed to fetch heartbeat.');
 	}

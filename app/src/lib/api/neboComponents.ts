@@ -447,8 +447,19 @@ export interface GetChatResponse {
 	totalMessages: number // Total messages in chat (may be more than returned)
 }
 
+export interface HeartbeatCron {
+	name: string
+	schedule: string
+	nextRun?: string
+	lastRun?: string
+}
+
 export interface GetHeartbeatResponse {
 	content: string
+	enabled?: boolean
+	intervalMinutes?: number
+	window?: { start: string; end: string }
+	crons?: HeartbeatCron[]
 }
 
 export interface GetHistoryByDayRequest {

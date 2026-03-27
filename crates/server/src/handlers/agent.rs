@@ -460,12 +460,59 @@ pub async fn delete_advisor(
 
 /// GET /api/v1/agent/heartbeat
 pub async fn get_heartbeat(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
     let data_dir = config::data_dir().map_err(to_error_response)?;
     let path = data_dir.join("HEARTBEAT.md");
     let content = std::fs::read_to_string(&path).unwrap_or_default();
-    Ok(Json(serde_json::json!({"content": content})))
+
+    // Resolve main heartbeat schedule
+    let settings = state.store.get_settings().ok().flatten();
+    let interval_minutes = settings.as_ref().map(|s| s.heartbeat_interval_minutes).unwrap_or(0);
+    let enabled = interval_minutes > 0;
+
+    let main_config = state.store.get_entity_config("main", "main").ok().flatten();
+    let window = main_config.as_ref().and_then(|c| {
+        match (c.heartbeat_window_start.as_ref(), c.heartbeat_window_end.as_ref()) {
+            (Some(start), Some(end)) => Some(serde_json::json!({"start": start, "end": end})),
+            _ => None,
+        }
+    });
+
+    // Collect enabled cron jobs with next run times
+    let crons: Vec<serde_json::Value> = state
+        .store
+        .list_enabled_cron_jobs()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|job| {
+            let normalized = tools::RoleTool::normalize_cron(&job.schedule);
+            let schedule: cron::Schedule = normalized.parse().ok()?;
+            let last_run_ts = job.last_run.as_deref()
+                .and_then(|s| s.parse::<i64>().ok()
+                    .or_else(|| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
+                        .map(|dt| dt.and_utc().timestamp())))
+                .unwrap_or(0);
+            let last_run = chrono::DateTime::from_timestamp(last_run_ts, 0)
+                .unwrap_or(chrono::DateTime::UNIX_EPOCH);
+            let next_run = schedule.after(&last_run).next()
+                .map(|t| t.to_rfc3339());
+            Some(serde_json::json!({
+                "name": job.name,
+                "schedule": job.schedule,
+                "nextRun": next_run,
+                "lastRun": job.last_run,
+            }))
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "content": content,
+        "enabled": enabled,
+        "intervalMinutes": interval_minutes,
+        "window": window,
+        "crons": crons,
+    })))
 }
 
 /// PUT /api/v1/agent/heartbeat

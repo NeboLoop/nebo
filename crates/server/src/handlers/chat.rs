@@ -297,14 +297,14 @@ pub async fn get_companion_chat(
     State(state): State<AppState>,
     Query(query): Query<CompanionQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    // Use "companion-default" as user_id (matches Go behavior)
+    // Get the most recent companion chat, or create one if none exists
     let chat = if let Ok(Some(chat)) = state.store.get_companion_chat_by_user(COMPANION_USER_ID) {
         chat
     } else {
         let id = uuid::Uuid::new_v4().to_string();
         state
             .store
-            .get_or_create_companion_chat(&id, COMPANION_USER_ID)
+            .create_companion_chat(&id, COMPANION_USER_ID)
             .map_err(to_error_response)?
     };
 
@@ -320,6 +320,23 @@ pub async fn get_companion_chat(
         "chat": chat,
         "messages": messages,
         "totalMessages": total,
+    })))
+}
+
+/// POST /api/v1/chats/companion/new — create a fresh companion session
+pub async fn create_companion_chat(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let chat = state
+        .store
+        .create_companion_chat(&id, COMPANION_USER_ID)
+        .map_err(to_error_response)?;
+
+    Ok(Json(serde_json::json!({
+        "chat": chat,
+        "messages": [],
+        "totalMessages": 0,
     })))
 }
 

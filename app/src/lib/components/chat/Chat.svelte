@@ -13,7 +13,7 @@
 		X
 	} from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
-	import { getCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
+	import { getCompanionChat, createNewCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
 	import { goto } from '$app/navigation';
 	import { getRole, editChatMessage } from '$lib/api/nebo';
 	import { logger } from '$lib/monitoring/logger';
@@ -163,6 +163,7 @@
 		const client = getWebSocketClient();
 		const ctx: CommandContext = {
 			messages, chatId, isLoading,
+			onNewChat: newChat,
 			onNewSession: resetChat,
 			onCancel: cancelMessage,
 			onToggleDuplex: undefined,
@@ -379,6 +380,13 @@
 	onMount(async () => {
 		const client = getWebSocketClient();
 
+		// Sync focus mode from external sources (e.g. sidebar expand button)
+		function handleFocusSync(e: Event) {
+			focusModeEnabled = (e as CustomEvent).detail;
+		}
+		window.addEventListener('nebo:focus-mode', handleFocusSync);
+		unsubscribers.push(() => window.removeEventListener('nebo:focus-mode', handleFocusSync));
+
 		// Load marketplace roles for empty state (no tokens — pure UI)
 		if (isCompanion) loadMarketplaceRoles();
 
@@ -447,6 +455,20 @@
 				client.on('chat_ack', (data: Record<string, unknown>) => {
 					if (data?.session_id === chatId) {
 						log.debug('chat_ack received for session ' + chatId);
+					}
+				}),
+				client.on('session_reset', (data: Record<string, unknown>) => {
+					if (data?.session_id === chatId && data?.success) {
+						loadCompanionChat();
+					}
+				}),
+				client.on('session_compact', (data: Record<string, unknown>) => {
+					if (data?.session_id === chatId) {
+						if (data?.success) {
+							loadCompanionChat();
+						} else {
+							addSystemMessage('Compaction failed: ' + (data?.error || 'unknown error'));
+						}
 					}
 				})
 			);
@@ -1727,6 +1749,7 @@
 			const client = getWebSocketClient();
 			const ctx: CommandContext = {
 				messages, chatId, isLoading,
+				onNewChat: newChat,
 				onNewSession: resetChat,
 				onCancel: cancelMessage,
 				onToggleDuplex: undefined,
@@ -1893,6 +1916,22 @@
 		inputValue = '';
 		renderStart = 0;
 		clearDraft();
+	}
+
+	async function newChat() {
+		try {
+			const res = await createNewCompanionChat();
+			chatId = res.chat.id;
+			messages = [];
+			currentStreamingMessage = null;
+			inputValue = '';
+			renderStart = 0;
+			clearDraft();
+			log.debug('Created new companion chat: ' + chatId);
+		} catch (err) {
+			log.error('Failed to create new chat', err);
+			addSystemMessage('Failed to create new session.');
+		}
 	}
 
 	// ── TTS (companion-only) ───────────────────────────────────────────

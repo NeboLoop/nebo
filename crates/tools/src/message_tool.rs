@@ -107,7 +107,7 @@ impl DynTool for MessageTool {
                         Ok(Some(chat)) => Ok(chat),
                         _ => {
                             let chat_id = uuid::Uuid::new_v4().to_string();
-                            self.store.get_or_create_companion_chat(&chat_id, "")
+                            self.store.create_companion_chat(&chat_id, "")
                         }
                     };
 

@@ -349,7 +349,8 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    pub fn get_or_create_companion_chat(
+    /// Create a new companion chat for the given user_id.
+    pub fn create_companion_chat(
         &self,
         id: &str,
         user_id: &str,
@@ -358,7 +359,6 @@ impl Store {
         conn.query_row(
             "INSERT INTO chats (id, user_id, title, created_at, updated_at)
              VALUES (?1, ?2, 'Companion', unixepoch(), unixepoch())
-             ON CONFLICT(user_id) DO UPDATE SET updated_at = unixepoch()
              RETURNING *",
             params![id, user_id],
             row_to_chat,
@@ -366,10 +366,11 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Get the most recent companion chat for a user, or None.
     pub fn get_companion_chat_by_user(&self, user_id: &str) -> Result<Option<Chat>, NeboError> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT * FROM chats WHERE user_id = ?1 LIMIT 1",
+            "SELECT * FROM chats WHERE user_id = ?1 ORDER BY updated_at DESC LIMIT 1",
             params![user_id],
             row_to_chat,
         )

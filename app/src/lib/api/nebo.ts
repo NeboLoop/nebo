@@ -465,6 +465,13 @@ export function getCompanionChat() {
 }
 
 /**
+ * @description "Create a new companion chat session"
+ */
+export function createNewCompanionChat() {
+	return webapi.post<components.GetChatResponse>(`/api/v1/chats/companion/new`, {})
+}
+
+/**
  * @description "Get tool output lazily by tool_call_id"
  */
 export function getToolOutput(chatId: string, toolCallId: string) {

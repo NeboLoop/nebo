@@ -1245,13 +1245,45 @@
 	@apply text-sm font-semibold uppercase tracking-wider text-base-content/60 px-4 pt-3 pb-1;
 }
 
-/* Focus mode sidebar */
-.sidebar-hidden {
-	width: 0 !important;
-	min-width: 0 !important;
-	overflow: hidden !important;
-	opacity: 0;
-	transition: width 0.2s ease, opacity 0.15s ease;
+/* Focus mode sidebar — collapsed rail */
+.sidebar-rail .sidebar-container {
+	width: 64px !important;
+	min-width: 64px !important;
+	overflow: hidden;
+	transition: width 0.2s ease;
+}
+.sidebar-rail .sidebar-header-title,
+.sidebar-rail .sidebar-header-subtitle,
+.sidebar-rail .sidebar-bot-info,
+.sidebar-rail .sidebar-bot-name,
+.sidebar-rail .sidebar-bot-role,
+.sidebar-rail .sidebar-label,
+.sidebar-rail .sidebar-header-btn,
+.sidebar-rail .sidebar-badge,
+.sidebar-rail .sidebar-divider,
+.sidebar-rail .sidebar-channel-item,
+.sidebar-rail .sidebar-loop-header {
+	display: none !important;
+}
+.sidebar-rail .sidebar-header {
+	justify-content: center;
+	padding: 0.5rem 0;
+}
+.sidebar-rail .sidebar-bot-card {
+	justify-content: center;
+	padding: 0.5rem 0;
+	margin: 0;
+	width: 100%;
+	gap: 0;
+}
+.sidebar-rail .sidebar-bot-icon {
+	margin: 0 auto;
+}
+.sidebar-rail .sidebar-bot-status {
+	display: none;
+}
+.sidebar-rail .sidebar-expand-btn {
+	display: flex;
 }
 
 /* ===== Command Palette ===== */
@@ -1352,6 +1384,22 @@
 		@apply flex flex-col border-r border-base-content/10 overflow-y-auto bg-base-200 h-full;
 		width: 240px;
 		min-width: 240px;
+		transition: width 0.2s ease, min-width 0.2s ease;
+	}
+	.sidebar-expand-btn {
+		display: none;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		padding: 0.5rem 0;
+		cursor: pointer;
+		border: none;
+		background: none;
+		color: var(--color-base-content);
+		opacity: 0.5;
+	}
+	.sidebar-expand-btn:hover {
+		opacity: 1;
 	}
 
 	.sidebar-nav {
