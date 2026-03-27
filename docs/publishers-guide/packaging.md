@@ -5,6 +5,7 @@ This guide covers the packaging format for all Nebo marketplace artifacts, artif
 For artifact-specific specs, see:
 
 - [Skills](skills.md)
+- [Plugins](plugins.md)
 - [Platform Capabilities](platform-capabilities.md)
 - [Workflows](workflows.md)
 - [Roles](roles.md)
@@ -90,6 +91,7 @@ Format: `PREFIX-XXXX-XXXX` — Crockford Base32 (`0123456789ABCDEFGHJKMNPQRSTVWX
 | `WORK` | Install a workflow | `WORK-5TG2-XBJK` |
 | `ROLE` | Install a role | `ROLE-9DCE-4MPA` |
 | `LOOP` | Join bot to a Loop | `LOOP-7YSR-6WN3` |
+| `PLUG` | Install a plugin | `PLUG-4HVT-8KRP` |
 
 Install codes always resolve to `@latest`. They are detected case-insensitively in chat messages and dispatched automatically.
 
@@ -288,4 +290,4 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 
 `PREFIX-XXXX-XXXX` — Crockford Base32, case-insensitive. Always resolves to `@latest`.
 
-Prefixes: `NEBO`, `SKIL`, `WORK`, `ROLE`, `LOOP`
+Prefixes: `NEBO`, `SKIL`, `WORK`, `ROLE`, `LOOP`, `PLUG`
