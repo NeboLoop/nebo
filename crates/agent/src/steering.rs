@@ -192,6 +192,9 @@ fn count_consecutive_same_tool_calls(messages: &[ChatMessage]) -> (String, usize
     let mut count = 0usize;
 
     for msg in messages.iter().rev() {
+        if msg.role == "user" {
+            break; // A new user message resets the consecutive tool call count
+        }
         if msg.role != "assistant" {
             continue;
         }
