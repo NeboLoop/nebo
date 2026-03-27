@@ -228,12 +228,3 @@ pub fn build_replacement(
     }
 }
 
-// ── Sidecar model resolution ─────────────────────────────────────────
-
-/// Resolve the cheapest model for summarisation.  Delegates to the same
-/// `models.yaml` sidecar_model() used by `sidecar.rs`.
-pub fn sidecar_model() -> String {
-    config::ModelsConfig::load()
-        .sidecar_model()
-        .unwrap_or_else(|| "claude-haiku-4-5-20251001".into())
-}
