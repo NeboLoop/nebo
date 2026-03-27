@@ -358,6 +358,7 @@ impl AgentTool {
                     parent_session_key: ctx.session_key.clone(),
                     user_id: ctx.user_id.clone(),
                     wait,
+                    parent_cancel: Some(ctx.cancel_token.clone()),
                 };
 
                 match orch.spawn(req).await {
@@ -389,7 +390,7 @@ impl AgentTool {
                     None => return ToolResult::error("Sub-agent orchestrator not ready"),
                 };
 
-                match orch.execute_dag(task_prompt, "", &ctx.session_id).await {
+                match orch.execute_dag(task_prompt, "", &ctx.session_id, Some(ctx.cancel_token.clone())).await {
                     Ok(result) => {
                         if result.success {
                             ToolResult::ok(format!(
@@ -461,10 +462,22 @@ impl AgentTool {
 
                 // Fall back to DB lookup
                 match self.store.get_pending_task(task_id) {
-                    Ok(Some(task)) => ToolResult::ok(format!(
-                        "Task: {}\nType: {}\nStatus: {}",
-                        task.id, task.task_type, task.status
-                    )),
+                    Ok(Some(task)) => {
+                        let mut result = format!(
+                            "Task: {}\nType: {}\nStatus: {}\nDescription: {}",
+                            task.id,
+                            task.task_type,
+                            task.status,
+                            task.description.as_deref().unwrap_or("-"),
+                        );
+                        if let Some(ref output) = task.output {
+                            result.push_str(&format!("\nOutput:\n{}", output));
+                        }
+                        if let Some(ref err) = task.last_error {
+                            result.push_str(&format!("\nError: {}", err));
+                        }
+                        ToolResult::ok(result)
+                    }
                     Ok(None) => ToolResult::error(format!("Task '{}' not found", task_id)),
                     Err(e) => ToolResult::error(format!("Failed to get status: {}", e)),
                 }
@@ -505,17 +518,23 @@ impl AgentTool {
                 }
             }
             "list" => {
-                match self.store.get_pending_tasks_by_status("pending") {
+                match self.store.get_active_and_recent_tasks() {
                     Ok(tasks) => {
                         if tasks.is_empty() {
-                            ToolResult::ok("No pending tasks.")
+                            ToolResult::ok("No active tasks.")
                         } else {
                             let lines: Vec<String> = tasks
                                 .iter()
                                 .map(|t| {
+                                    let desc = t.description.as_deref().unwrap_or(&t.prompt);
+                                    let output_hint = if t.status == "completed" && t.output.is_some() {
+                                        " [has output]"
+                                    } else {
+                                        ""
+                                    };
                                     format!(
-                                        "- [{}] {} — {} ({})",
-                                        t.id, t.prompt, t.task_type, t.status
+                                        "- [{}] {} — {} ({}){}",
+                                        t.id, desc, t.task_type, t.status, output_hint
                                     )
                                 })
                                 .collect();

@@ -244,12 +244,28 @@ impl Store {
         Ok(())
     }
 
+    /// Check if a role workflow is active AND its parent role is enabled.
+    pub fn is_role_workflow_active(&self, role_id: &str, binding_name: &str) -> Result<bool, NeboError> {
+        let conn = self.conn()?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM role_workflows rw
+                 JOIN roles r ON rw.role_id = r.id
+                 WHERE rw.role_id = ?1 AND rw.binding_name = ?2
+                   AND rw.is_active = 1 AND r.is_enabled = 1",
+                params![role_id, binding_name],
+                |row| row.get(0),
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(count > 0)
+    }
+
     pub fn list_active_event_triggers(&self) -> Result<Vec<RoleWorkflow>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT rw.id, rw.role_id, rw.binding_name,
-                        rw.trigger_type, rw.trigger_config, rw.description, rw.inputs, rw.is_active, rw.emit, rw.activities
+                        rw.trigger_type, rw.trigger_config, rw.description, rw.inputs, rw.is_active, rw.emit, rw.activities, rw.last_fired
                  FROM role_workflows rw
                  JOIN roles r ON rw.role_id = r.id
                  WHERE rw.trigger_type = 'event' AND rw.is_active = 1 AND r.is_enabled = 1",

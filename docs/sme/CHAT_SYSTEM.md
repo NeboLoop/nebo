@@ -5,7 +5,7 @@ frontend WebSocket through agent runner and back, including all data structures,
 streaming events, session management, lane concurrency, DB schema, codes system,
 NeboLoop comm integration, and frontend rendering.
 
-**Status:** Current (Rust implementation) | **Last updated:** 2026-03-25
+**Status:** Current (Rust implementation) | **Last updated:** 2026-03-26
 
 ---
 
@@ -87,7 +87,22 @@ ClientHub.broadcast() ──> all connected WS clients
   ├─ "approval_request"  (tool approval gate)
   ├─ "ask_request"       (interactive question)
   ├─ "chat_complete"     (terminal event)
-  └─ "chat_cancelled"    (user cancel)
+  ├─ "chat_cancelled"    (user cancel)
+  │
+  │  Additional lifecycle/status events (not from runner):
+  ├─ "connected"         (WS handshake welcome)
+  ├─ "chat_ack"          (message accepted)
+  ├─ "chat_created"      (run started)
+  ├─ "quota_warning"     (Janus usage >80%)
+  ├─ "stream_status"     (running/idle probe reply)
+  ├─ "session_reset"     (session reset result)
+  ├─ "session_compact"   (compact result)
+  ├─ "code_processing"   (marketplace code handling)
+  ├─ "code_result"       (marketplace code outcome)
+  ├─ "dep_installed"     (dependency cascade step)
+  ├─ "dep_cascade_complete" (dependency cascade done)
+  ├─ "tool_quarantined"  (tool disabled at runtime)
+  └─ "tool_error"        (tool registration error)
 ```
 
 ### Design Principle
@@ -166,6 +181,26 @@ pub type ActiveRuns = Arc<Mutex<HashMap<String, ActiveRun>>>;
 ```
 Tracks which session_ids have active agent runs (with their cancellation token and
 start time). Used by `cancel` WS message to cooperatively stop the agentic loop.
+
+A background cleanup task (spawned per-connection) polls every 60s and expires runs
+older than **600 seconds (10 minutes)** — cancelling their token and removing them
+from the map. This prevents stale entries from accumulating if a run completes without
+proper cleanup.
+
+### Message Idempotency
+
+Chat messages support optional `message_id` for deduplication. When present, the WS
+handler checks against an in-memory `HashSet<String>` (per-connection, max 1000 entries).
+Duplicate `message_id` values are silently dropped. The set is cleared entirely when it
+exceeds 1000 entries. This is **per-connection only** — reconnecting resets the dedup set.
+
+### Image Extraction from Prompts
+
+Before dispatch, `extract_images_from_prompt()` scans the prompt for whitespace-separated
+file paths with image extensions (png, jpg, jpeg, gif, webp, bmp, tiff). Matching files
+are read, base64-encoded into `ai::ImageContent` structs, and removed from the prompt text.
+If the entire prompt consisted of image paths, the cleaned text defaults to `"What's in
+this image?"`. The extracted images are passed via `ChatConfig.images` → `RunRequest.images`.
 
 ### dispatch_chat()
 
@@ -296,6 +331,8 @@ struct RunState {
     prompt_overhead: usize,
     last_input_tokens: usize,
     thresholds: Option<ContextThresholds>,
+    quota_warning: Option<String>,     // Janus >80% usage warning string
+    quota_warning_sent: bool,          // fire once per run
 }
 
 pub struct Runner {
@@ -304,6 +341,7 @@ pub struct Runner {
     tools: Arc<Registry>,
     store: Arc<Store>,
     selector: Arc<ModelSelector>,
+    _steering: steering::Pipeline,          // steering generator pipeline (unused directly, held for lifetime)
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,

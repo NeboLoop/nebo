@@ -34,6 +34,9 @@ pub struct ToolContext {
     /// Allowed filesystem paths — if set, file writes and shell commands are restricted
     /// to these directories and their children. Empty = unrestricted.
     pub allowed_paths: Vec<String>,
+    /// Cancellation token from the parent run — propagated to sub-agents so that
+    /// cancelling the parent also cancels any spawned children.
+    pub cancel_token: tokio_util::sync::CancellationToken,
 }
 
 impl ToolContext {

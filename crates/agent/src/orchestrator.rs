@@ -59,7 +59,10 @@ impl Orchestrator {
 
         let task_id = format!("sa-{}", uuid::Uuid::new_v4());
         let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
-        let cancel = CancellationToken::new();
+        // Derive a child token from the parent so cancelling the parent cascades.
+        let cancel = req.parent_cancel.as_ref()
+            .map(|p| p.child_token())
+            .unwrap_or_else(CancellationToken::new);
 
         // Persist to pending_tasks
         let _ = self.store.create_pending_task(
@@ -110,7 +113,7 @@ impl Orchestrator {
 
             match result {
                 Ok(output) => {
-                    let _ = self.store.update_task_completed(&task_id);
+                    let _ = self.store.update_task_completed(&task_id, Some(&output));
                     Ok(SpawnResult {
                         task_id,
                         success: true,
@@ -139,27 +142,20 @@ impl Orchestrator {
             let user_id = req.user_id.clone();
             let concurrency = self.concurrency.clone();
 
+            let bg_session_key = format!("subagent:{}:{}", req.parent_session_key, task_id_clone);
+
             tokio::spawn(async move {
                 let _permit = concurrency.acquire_llm_permit().await;
 
-                let run_req = RunRequest {
-                    session_key: format!("subagent:{}:{}", req.parent_session_key, task_id_clone),
-                    prompt,
-                    system,
-                    model_override,
-                    user_id,
-                    skip_memory_extract: true,
-                    origin: tools::Origin::System,
-                    channel: "subagent".to_string(),
-                    force_skill: String::new(),
-                    ..Default::default()
-                };
+                let run_req = build_subagent_request(
+                    &bg_session_key, &prompt, &system, &model_override, &user_id, &cancel,
+                );
 
                 let result = run_and_collect(&runner, run_req, cancel).await;
 
                 match result {
-                    Ok(_) => {
-                        let _ = store.update_task_completed(&task_id_clone);
+                    Ok(output) => {
+                        let _ = store.update_task_completed(&task_id_clone, Some(&output));
                     }
                     Err(e) => {
                         let _ = store.update_task_failed(&task_id_clone, &e);
@@ -198,19 +194,7 @@ impl Orchestrator {
             format!("{}\n\n{}", dep_context, prompt)
         };
 
-        let req = RunRequest {
-            session_key: session_key.to_string(),
-            prompt: full_prompt,
-            system: system_prompt.to_string(),
-            model_override: model_override.to_string(),
-            user_id: user_id.to_string(),
-            skip_memory_extract: true,
-            origin: tools::Origin::System,
-            channel: "subagent".to_string(),
-            force_skill: String::new(),
-            ..Default::default()
-        };
-
+        let req = build_subagent_request(session_key, &full_prompt, system_prompt, model_override, user_id, &cancel);
         run_and_collect(&self.runner, req, cancel).await
     }
 
@@ -220,6 +204,7 @@ impl Orchestrator {
         prompt: &str,
         user_id: &str,
         parent_session_id: &str,
+        parent_cancel: Option<CancellationToken>,
     ) -> Result<SpawnResult, String> {
         // 1. Decompose task into sub-tasks
         info!("Decomposing task into sub-tasks");
@@ -238,6 +223,7 @@ impl Orchestrator {
                 parent_session_key: parent_session_id.to_string(),
                 user_id: user_id.to_string(),
                 wait: true,
+                parent_cancel: parent_cancel.clone(),
             };
             return self.spawn_internal(req).await;
         }
@@ -266,8 +252,11 @@ impl Orchestrator {
             0,
         );
 
-        // 4. Shared cancellation for the entire DAG
-        let dag_cancel = CancellationToken::new();
+        // 4. Shared cancellation for the entire DAG — derived from parent so
+        //    cancelling the parent cascades to all DAG tasks.
+        let dag_cancel = parent_cancel.as_ref()
+            .map(|p| p.child_token())
+            .unwrap_or_else(CancellationToken::new);
 
         // 5. Reactive scheduling loop
         let mut running: FuturesUnordered<
@@ -321,24 +310,15 @@ impl Orchestrator {
                         format!("{}\n\n{}", dep_context, prompt)
                     };
 
-                    let req = RunRequest {
-                        session_key,
-                        prompt: full_prompt,
-                        system,
-                        model_override,
-                        user_id,
-                        skip_memory_extract: true,
-                        origin: tools::Origin::System,
-                        channel: "subagent".to_string(),
-                        force_skill: String::new(),
-                        ..Default::default()
-                    };
+                    let req = build_subagent_request(
+                        &session_key, &full_prompt, &system, &model_override, &user_id, &cancel,
+                    );
 
                     let result = run_and_collect(&runner, req, cancel).await;
 
                     match &result {
-                        Ok(_) => {
-                            let _ = store.update_task_completed(&child_task_id);
+                        Ok(output) => {
+                            let _ = store.update_task_completed(&child_task_id, Some(output.as_str()));
                         }
                         Err(e) => {
                             let _ = store.update_task_failed(&child_task_id, e);
@@ -377,7 +357,7 @@ impl Orchestrator {
         let success = !graph.has_failures();
 
         let _ = if success {
-            self.store.update_task_completed(&parent_task_id)
+            self.store.update_task_completed(&parent_task_id, Some(&output))
         } else {
             self.store
                 .update_task_failed(&parent_task_id, "One or more sub-tasks failed")
@@ -433,13 +413,22 @@ impl Orchestrator {
 
         // Fall back to database
         match self.store.get_pending_task(task_id) {
-            Ok(Some(task)) => Ok(format!(
-                "Task: {}\nType: {}\nStatus: {}\nDescription: {}",
-                task.id,
-                task.task_type,
-                task.status,
-                task.description.unwrap_or_default()
-            )),
+            Ok(Some(task)) => {
+                let mut result = format!(
+                    "Task: {}\nType: {}\nStatus: {}\nDescription: {}",
+                    task.id,
+                    task.task_type,
+                    task.status,
+                    task.description.as_deref().unwrap_or("")
+                );
+                if let Some(ref output) = task.output {
+                    result.push_str(&format!("\nOutput:\n{}", output));
+                }
+                if let Some(ref err) = task.last_error {
+                    result.push_str(&format!("\nError: {}", err));
+                }
+                Ok(result)
+            }
             Ok(None) => Err(format!("Task '{}' not found", task_id)),
             Err(e) => Err(format!("Failed to get task status: {}", e)),
         }
@@ -510,7 +499,7 @@ impl Orchestrator {
             // Check completion heuristic — if session looks complete, mark done
             if self.check_task_completion(&task.session_key) {
                 info!(task_id = %task.id, "Task session appears complete, marking completed");
-                let _ = self.store.update_task_completed(&task.id);
+                let _ = self.store.update_task_completed(&task.id, None);
                 continue;
             }
 
@@ -540,8 +529,8 @@ impl Orchestrator {
 
                 let cancel = CancellationToken::new();
                 match run_and_collect(&runner, req, cancel).await {
-                    Ok(_) => {
-                        let _ = store.update_task_completed(&task_id);
+                    Ok(output) => {
+                        let _ = store.update_task_completed(&task_id, Some(&output));
                     }
                     Err(e) => {
                         let _ = store.update_task_failed(&task_id, &e);
@@ -590,6 +579,29 @@ fn check_completion_heuristic(messages: &[db::models::ChatMessage]) -> bool {
     }
 
     false
+}
+
+/// Build a RunRequest for a sub-agent. Single source of truth for sub-agent request construction.
+fn build_subagent_request(
+    session_key: &str,
+    prompt: &str,
+    system: &str,
+    model_override: &str,
+    user_id: &str,
+    cancel: &CancellationToken,
+) -> RunRequest {
+    RunRequest {
+        session_key: session_key.to_string(),
+        prompt: prompt.to_string(),
+        system: system.to_string(),
+        model_override: model_override.to_string(),
+        user_id: user_id.to_string(),
+        skip_memory_extract: true,
+        origin: tools::Origin::System,
+        channel: "subagent".to_string(),
+        cancel_token: cancel.clone(),
+        ..Default::default()
+    }
 }
 
 /// Run a RunRequest via the Runner and collect text output from the stream.
@@ -704,12 +716,13 @@ impl SubAgentOrchestrator for Orchestrator {
         prompt: &str,
         user_id: &str,
         parent_session_id: &str,
+        parent_cancel: Option<CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>> {
         let prompt = prompt.to_string();
         let user_id = user_id.to_string();
         let parent_session_id = parent_session_id.to_string();
         Box::pin(async move {
-            self.execute_dag_internal(&prompt, &user_id, &parent_session_id)
+            self.execute_dag_internal(&prompt, &user_id, &parent_session_id, parent_cancel)
                 .await
         })
     }

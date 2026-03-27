@@ -2,6 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
+use tokio_util::sync::CancellationToken;
+
 /// Request to spawn a single sub-agent or execute a DAG.
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
@@ -13,6 +15,9 @@ pub struct SpawnRequest {
     pub parent_session_key: String,
     pub user_id: String,
     pub wait: bool,
+    /// Parent's cancellation token — sub-agents derive a child token from this
+    /// so that cancelling the parent cascades to all children.
+    pub parent_cancel: Option<CancellationToken>,
 }
 
 /// Result from a sub-agent or DAG execution.
@@ -39,6 +44,7 @@ pub trait SubAgentOrchestrator: Send + Sync {
         prompt: &str,
         user_id: &str,
         parent_session_id: &str,
+        parent_cancel: Option<CancellationToken>,
     ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
     /// Cancel a running sub-agent or DAG task.

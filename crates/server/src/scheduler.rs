@@ -218,6 +218,20 @@ async fn execute_role_workflow_task(
     let role_id = parts[1];
     let binding_name = parts[2];
 
+    // Guard: skip if automation is disabled or role is disabled
+    match store.is_role_workflow_active(role_id, binding_name) {
+        Ok(false) => {
+            info!(role_id, binding_name, "skipping disabled role workflow");
+            return (false, String::new(), Some("automation is disabled".to_string()));
+        }
+        Err(e) => {
+            warn!(role_id, binding_name, error = %e, "failed to check role workflow status");
+            // Fail closed: don't execute if we can't verify it's active
+            return (false, String::new(), Some(format!("failed to check active status: {}", e)));
+        }
+        Ok(true) => {} // proceed
+    }
+
     // Load role config from DB
     let role = match store.get_role(role_id) {
         Ok(Some(r)) => r,

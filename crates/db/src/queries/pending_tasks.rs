@@ -140,11 +140,11 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_task_completed(&self, id: &str) -> Result<(), NeboError> {
+    pub fn update_task_completed(&self, id: &str, output: Option<&str>) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
-            "UPDATE pending_tasks SET status = 'completed', completed_at = unixepoch() WHERE id = ?1",
-            params![id],
+            "UPDATE pending_tasks SET status = 'completed', completed_at = unixepoch(), output = ?2 WHERE id = ?1",
+            params![id, output],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
@@ -185,6 +185,26 @@ impl Store {
         Ok(())
     }
 
+    /// Returns all pending/running tasks plus recently completed tasks (within the last hour).
+    pub fn get_active_and_recent_tasks(&self) -> Result<Vec<PendingTask>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM pending_tasks
+                 WHERE status IN ('pending', 'running')
+                    OR (status = 'completed' AND completed_at > unixepoch() - 3600)
+                 ORDER BY
+                    CASE status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
+                    created_at DESC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], row_to_pending_task)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     pub fn delete_completed_tasks(&self) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -216,6 +236,7 @@ fn row_to_pending_task(row: &rusqlite::Row) -> rusqlite::Result<PendingTask> {
         started_at: row.get("started_at")?,
         completed_at: row.get("completed_at")?,
         parent_task_id: row.get("parent_task_id")?,
+        output: row.get("output")?,
     })
 }
 

@@ -39,7 +39,7 @@ pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
 /// For event triggers: stored in role_workflows table, consumed by EventDispatcher.
 pub fn register_role_triggers(role_id: &str, bindings: &[db::models::RoleWorkflow], store: &Store) {
     for binding in bindings {
-        if binding.trigger_type == "schedule" {
+        if binding.trigger_type == "schedule" && binding.is_active == 1 {
             let name = format!("role-{}-{}", role_id, binding.binding_name);
             // Command encodes role_id:binding_name for scheduler to resolve inline def
             let command = format!("role:{}:{}", role_id, binding.binding_name);

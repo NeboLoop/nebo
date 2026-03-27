@@ -661,10 +661,10 @@ pub async fn process_role_bindings(
     if let Ok(bindings) = state.store.list_role_workflows(role_id) {
         workflow::triggers::register_role_triggers(role_id, &bindings, &state.store);
 
-        // Register event subscriptions with the dispatcher
+        // Register event subscriptions with the dispatcher (only active bindings)
         let event_subs: Vec<_> = bindings
             .iter()
-            .filter(|b| b.trigger_type == "event")
+            .filter(|b| b.trigger_type == "event" && b.is_active == 1)
             .flat_map(|b| {
                 // Look up the WorkflowBinding from config to get inline def
                 let def_json = config

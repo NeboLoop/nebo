@@ -376,6 +376,7 @@ pub struct PendingTask {
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
     pub parent_task_id: Option<String>,
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

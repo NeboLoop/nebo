@@ -178,6 +178,21 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                     .and_then(|v| v.as_str())
                     == Some("true");
                 if is_janus {
+                    // Skip Janus if user has disabled all Janus chat models
+                    // (embedding-only models don't count — they can't handle chat)
+                    let has_active_models = store
+                        .list_active_provider_models("janus")
+                        .map(|models| models.iter().any(|m| {
+                            // A chat model has capabilities beyond just "embeddings"
+                            m.capabilities.as_ref().map_or(true, |caps| {
+                                !caps.contains("embeddings") || caps.contains("tools") || caps.contains("streaming")
+                            })
+                        }))
+                        .unwrap_or(true);
+                    if !has_active_models {
+                        info!("janus provider has no active models in catalog, skipping");
+                        None
+                    } else {
                     // Janus URL comes from config (NeboLoop.JanusURL), NOT auth_profile base_url
                     let janus_url = &cfg.neboloop.janus_url;
                     let model = profile.model.clone().unwrap_or_else(|| "nebo-1".into());
@@ -204,6 +219,7 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                         p.set_bot_id(bot_id);
                     }
                     Some(Arc::new(p))
+                    }
                 } else {
                     info!(
                         profile_id = %profile.id,

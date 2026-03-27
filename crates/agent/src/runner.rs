@@ -812,14 +812,18 @@ async fn run_loop(
                 return Err("No AI providers available".to_string());
             }
 
-            // Find provider by selected_provider_id, fall back to round-robin
-            let idx = if !selected_provider_id.is_empty() {
+            // Find provider: use model-based lookup on first attempt,
+            // but after retries (provider_idx > 0) use round-robin so we
+            // actually fall through to the next provider (e.g. CLI agent).
+            let idx = if provider_idx > 0 {
+                provider_idx % prov_lock.len()
+            } else if !selected_provider_id.is_empty() {
                 prov_lock
                     .iter()
                     .position(|p| p.id() == selected_provider_id)
-                    .unwrap_or(provider_idx % prov_lock.len())
+                    .unwrap_or(0)
             } else {
-                provider_idx % prov_lock.len()
+                0
             };
 
             info!(
@@ -836,6 +840,14 @@ async fn run_loop(
             );
             prov_lock[idx].clone()
         };
+
+        // If we fell through to a different provider (e.g. CLI after Janus rate limit),
+        // clear the model so the fallback provider uses its own default.
+        let mut chat_req = chat_req;
+        if provider.id() != selected_provider_id {
+            chat_req.model = String::new();
+        }
+
         let stream_result = provider.stream(&chat_req).await;
 
         let mut rx = match stream_result {
@@ -1185,6 +1197,7 @@ async fn run_loop(
                 entity_permissions: entity_permissions.cloned(),
                 resource_grants: entity_resource_grants.cloned(),
                 allowed_paths: allowed_paths.to_vec(),
+                cancel_token: cancel_token.clone(),
             };
 
             // Track tool names for filter
