@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { browser } from '$app/environment';
+	import { t } from 'svelte-i18n';
 	import {
 		Bot,
 		Loader2,
@@ -88,8 +89,18 @@
 		status?: 'running' | 'complete' | 'error';
 	}
 
+	interface SubagentState {
+		taskId: string;
+		description: string;
+		agentType: string;
+		status: 'pending' | 'running' | 'complete' | 'error';
+		toolCount: number;
+		tokenCount: number;
+		currentOperation: string;
+	}
+
 	interface ContentBlock {
-		type: 'text' | 'tool' | 'image' | 'ask';
+		type: 'text' | 'tool' | 'image' | 'ask' | 'subagent_tree';
 		text?: string;
 		toolCallIndex?: number;
 		imageData?: string;
@@ -104,6 +115,7 @@
 			default?: string;
 		}>;
 		askResponse?: string;
+		subagents?: SubagentState[];
 	}
 
 	// ── Shared state ───────────────────────────────────────────────────
@@ -123,6 +135,9 @@
 	let autoScrollEnabled = $state(true);
 	let scrollingProgrammatically = false;
 	let draftInitialized = $state(false);
+
+	// ── Subagent tracking ────────────────────────────────────────────
+	let activeSubagents = $state<Map<string, SubagentState>>(new Map());
 
 	// ── Slash commands ────────────────────────────────────────────────
 	let verboseMode = $state(false);
@@ -206,7 +221,7 @@
 
 	function resolveChannelName(msg: Message): string {
 		if (msg.senderName) return msg.senderName;
-		return 'Unknown';
+		return $t('common.unknown');
 	}
 
 	const groupedMessages = $derived.by((): MessageGroupType[] => {
@@ -227,7 +242,7 @@
 			}
 
 			const role = msg.role as 'user' | 'assistant';
-			const name = isChannel ? resolveChannelName(msg) : (role === 'assistant' ? agentName : 'You');
+			const name = isChannel ? resolveChannelName(msg) : (role === 'assistant' ? agentName : $t('common.you'));
 			const hasTools = (msg.toolCalls?.length ?? 0) > 0;
 			const prevHasTools = (currentGroup?.messages.at(-1)?.toolCalls?.length ?? 0) > 0;
 
@@ -333,11 +348,11 @@
 	let warningToast = $state(false);
 	let warningMessage = $state('');
 
-	const suggestions = [
-		'What can you help me with?',
-		'Find me an agent for marketing',
-		'Help me get organized',
-		'Search the web for something'
+	const suggestionKeys = [
+		'chat.suggestion1',
+		'chat.suggestion2',
+		'chat.suggestion3',
+		'chat.suggestion4'
 	];
 
 	// Marketplace roles for empty state (loaded once, no tokens — pure UI)
@@ -412,13 +427,16 @@
 				client.on('reminder_complete', handleReminderComplete),
 				client.on('dm_user_message', handleDMUserMessage),
 				client.on('ask_request', handleAskRequest),
+				client.on('subagent_start', handleSubagentStart),
+				client.on('subagent_progress', handleSubagentProgress),
+				client.on('subagent_complete', handleSubagentComplete),
 				client.on('agent_warning', (data: Record<string, unknown>) => {
-					warningMessage = (data?.message as string) || 'The AI service is temporarily busy. Retrying...';
+					warningMessage = (data?.message as string) || $t('chat.retryWarning');
 					warningToast = true;
 				}),
 				client.on('quota_warning', (data: Record<string, unknown>) => {
 					if (data?.session_id === chatId) {
-						warningMessage = (data?.message as string) || 'You are approaching your usage limit.';
+						warningMessage = (data?.message as string) || $t('chat.quotaWarning');
 						warningToast = true;
 					}
 				}),
@@ -444,7 +462,7 @@
 			if (isRole) {
 				// Role chat: set chatId to role-scoped session key, load existing messages
 				chatId = `role:${mode.roleId}:web`;
-				agentName = mode.roleName || 'Role';
+				agentName = mode.roleName || $t('common.agent');
 				// Fetch role details for empty state display
 				if (mode.roleId) {
 					getRole(mode.roleId).then((data) => {
@@ -517,7 +535,7 @@
 						content: m.content,
 						contentHtml: m.contentHtml || undefined,
 						timestamp: new Date(m.createdAt * 1000),
-						senderName: isOwner ? 'You' : resolveNameFromId(m.from)
+						senderName: isOwner ? $t('common.you') : resolveNameFromId(m.from)
 					};
 				});
 			}
@@ -539,7 +557,7 @@
 	}
 
 	function resolveNameFromId(senderId: string): string {
-		if (senderId === 'You') return 'You';
+		if (senderId === 'You') return $t('common.you');
 		if (senderId === 'bot') return agentName;
 		return channelMemberNames[senderId] || senderId.substring(0, 8) + '\u2026';
 	}
@@ -584,7 +602,7 @@
 				role: 'user',
 				content: text,
 				timestamp: new Date(),
-				senderName: 'You'
+				senderName: $t('common.you')
 			}
 		];
 		inputValue = '';
@@ -1049,9 +1067,9 @@
 				if (currentStreamingMessage) {
 					currentStreamingMessage.streaming = false;
 					if (currentStreamingMessage.content) {
-						currentStreamingMessage.content += '\n\n*[Generation cancelled]*';
+						currentStreamingMessage.content += `\n\n${$t('chat.generationCancelled')}`;
 					} else {
-						currentStreamingMessage.content = '*[Generation cancelled]*';
+						currentStreamingMessage.content = $t('chat.generationCancelled');
 					}
 					if (currentStreamingMessage.toolCalls?.length) {
 						currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
@@ -1079,9 +1097,9 @@
 		if (currentStreamingMessage) {
 			currentStreamingMessage.streaming = false;
 			if (currentStreamingMessage.content) {
-				currentStreamingMessage.content += '\n\n*[Generation cancelled]*';
+				currentStreamingMessage.content += `\n\n${$t('chat.generationCancelled')}`;
 			} else {
-				currentStreamingMessage.content = '*[Generation cancelled]*';
+				currentStreamingMessage.content = $t('chat.generationCancelled');
 			}
 			if (currentStreamingMessage.toolCalls?.length) {
 				currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
@@ -1278,6 +1296,112 @@
 				thinking: thinkingContent
 			};
 			messages = [...messages, currentStreamingMessage];
+		}
+	}
+
+	function handleSubagentStart(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+		resetLoadingTimeout();
+
+		const taskId = (data?.task_id as string) || '';
+		const description = (data?.description as string) || '';
+		const agentType = (data?.agent_type as string) || 'general';
+
+		const agent: SubagentState = {
+			taskId,
+			description,
+			agentType,
+			status: 'running',
+			toolCount: 0,
+			tokenCount: 0,
+			currentOperation: ''
+		};
+
+		activeSubagents = new Map(activeSubagents).set(taskId, agent);
+
+		if (currentStreamingMessage) {
+			// Find or create subagent_tree block
+			if (!currentStreamingMessage.contentBlocks) {
+				currentStreamingMessage.contentBlocks = [];
+			}
+			let treeBlock = currentStreamingMessage.contentBlocks.find(
+				(b) => b.type === 'subagent_tree'
+			);
+			if (!treeBlock) {
+				treeBlock = { type: 'subagent_tree' as const, subagents: [] };
+				currentStreamingMessage.contentBlocks = [
+					...currentStreamingMessage.contentBlocks,
+					treeBlock
+				];
+			}
+			treeBlock.subagents = [...activeSubagents.values()];
+			replaceMessageById({ ...currentStreamingMessage });
+		}
+	}
+
+	function handleSubagentProgress(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+		resetLoadingTimeout();
+
+		const taskId = (data?.task_id as string) || '';
+		const existing = activeSubagents.get(taskId);
+		if (!existing) return;
+
+		const updated: SubagentState = {
+			...existing,
+			toolCount: (data?.tool_count as number) || existing.toolCount,
+			tokenCount: (data?.token_count as number) || existing.tokenCount,
+			currentOperation: (data?.current_operation as string) || existing.currentOperation
+		};
+
+		activeSubagents = new Map(activeSubagents).set(taskId, updated);
+
+		if (currentStreamingMessage) {
+			const treeBlock = currentStreamingMessage.contentBlocks?.find(
+				(b) => b.type === 'subagent_tree'
+			);
+			if (treeBlock) {
+				treeBlock.subagents = [...activeSubagents.values()];
+				replaceMessageById({ ...currentStreamingMessage });
+			}
+		}
+	}
+
+	function handleSubagentComplete(data: Record<string, unknown>) {
+		if (chatId && data?.session_id !== chatId) return;
+		resetLoadingTimeout();
+
+		const taskId = (data?.task_id as string) || '';
+		const success = data?.success !== false;
+		const existing = activeSubagents.get(taskId);
+		if (!existing) return;
+
+		const updated: SubagentState = {
+			...existing,
+			status: success ? 'complete' : 'error',
+			toolCount: (data?.tool_count as number) || existing.toolCount,
+			tokenCount: (data?.token_count as number) || existing.tokenCount,
+			currentOperation: ''
+		};
+
+		activeSubagents = new Map(activeSubagents).set(taskId, updated);
+
+		if (currentStreamingMessage) {
+			const treeBlock = currentStreamingMessage.contentBlocks?.find(
+				(b) => b.type === 'subagent_tree'
+			);
+			if (treeBlock) {
+				treeBlock.subagents = [...activeSubagents.values()];
+				replaceMessageById({ ...currentStreamingMessage });
+			}
+		}
+
+		// Clear activeSubagents when all are done
+		const allDone = [...activeSubagents.values()].every(
+			(a) => a.status === 'complete' || a.status === 'error'
+		);
+		if (allDone) {
+			activeSubagents = new Map();
 		}
 	}
 
@@ -2207,7 +2331,7 @@
 		<div class="absolute inset-0 z-50 flex items-center justify-center bg-base-100/80 backdrop-blur-sm border-2 border-dashed border-primary rounded-2xl pointer-events-none">
 			<div class="flex flex-col items-center gap-2 text-primary">
 				<svg xmlns="http://www.w3.org/2000/svg" class="w-10 h-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="12"/><line x1="15" y1="15" x2="12" y2="12"/></svg>
-				<span class="text-lg font-medium">Drop file to insert path</span>
+				<span class="text-lg font-medium">{$t('chat.dropFileToInsert')}</span>
 			</div>
 		</div>
 	{/if}
@@ -2225,7 +2349,7 @@
 					{/if}
 				</div>
 				<div class="flex items-center gap-2 shrink-0">
-					<button class="btn btn-sm btn-ghost" class:btn-active={showConfig} title="Entity settings" onclick={() => showConfig = !showConfig}>
+					<button class="btn btn-sm btn-ghost" class:btn-active={showConfig} title={$t('nav.settings')} onclick={() => showConfig = !showConfig}>
 						<Settings class="w-4 h-4" />
 					</button>
 				</div>
@@ -2256,7 +2380,7 @@
 						>
 
 							<History class="w-4 h-4" />
-							<span>View {totalMessages - messages.length} earlier messages in history</span>
+							<span>{$t('chat.viewEarlierMessages', { values: { count: totalMessages - messages.length } })}</span>
 						</a>
 					</div>
 				{/if}
@@ -2271,27 +2395,27 @@
 							<div class="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
 								<Bot class="w-8 h-8 text-primary" />
 							</div>
-							<h2 class="font-display text-xl font-bold text-base-content mb-2">Your AI Companion</h2>
+							<h2 class="font-display text-xl font-bold text-base-content mb-2">{$t('chat.yourAICompanion')}</h2>
 							<p class="text-base text-base-content/80 max-w-md mb-6">
-								Tell me what you need, or activate one of your agents below.
+								{$t('chat.tellMeWhatYouNeed')}
 							</p>
 
 							<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg w-full mb-8">
-								{#each suggestions as suggestion}
+								{#each suggestionKeys as key}
 									<button
 										type="button"
-										onclick={() => selectSuggestion(suggestion)}
+										onclick={() => selectSuggestion($t(key))}
 										class="text-left px-4 py-3 rounded-xl bg-base-200 text-sm text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
 										disabled={isLoading}
 									>
-										{suggestion}
+										{$t(key)}
 									</button>
 								{/each}
 							</div>
 
 							{#if marketplaceRoles.length > 0}
 								<div class="w-full max-w-lg">
-									<p class="text-xs text-base-content/70 uppercase tracking-wider font-semibold mb-3 text-left">Available agents</p>
+									<p class="text-xs text-base-content/70 uppercase tracking-wider font-semibold mb-3 text-left">{$t('chat.availableAgents')}</p>
 									<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
 										{#each marketplaceRoles as role}
 											<button
@@ -2309,7 +2433,7 @@
 											</button>
 										{/each}
 									</div>
-									<a href="/marketplace" class="text-xs text-primary hover:brightness-110 mt-3 inline-block">Browse all agents &rarr;</a>
+									<a href="/marketplace" class="text-xs text-primary hover:brightness-110 mt-3 inline-block">{$t('chat.browseAllAgents')}</a>
 								</div>
 							{/if}
 						</div>
@@ -2319,35 +2443,35 @@
 							<div class="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
 								<span class="text-2xl font-bold text-primary">{(mode.roleName || 'R').charAt(0).toUpperCase()}</span>
 							</div>
-							<h2 class="font-display text-xl font-bold text-base-content mb-2">{mode.roleName || 'Agent'}</h2>
+							<h2 class="font-display text-xl font-bold text-base-content mb-2">{mode.roleName || $t('common.agent')}</h2>
 							{#if roleDescription}
 								<p class="text-base text-base-content/60 max-w-md mb-8">{roleDescription}</p>
 							{:else}
-								<p class="text-base text-base-content/60 max-w-md mb-8">Start a conversation to get going.</p>
+								<p class="text-base text-base-content/60 max-w-md mb-8">{$t('chat.startConversation')}</p>
 							{/if}
 
 							<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-lg w-full">
 								<button
 									type="button"
-									onclick={() => selectSuggestion(`What can you help me with?`)}
+									onclick={() => selectSuggestion($t('chat.roleSuggestion1'))}
 									class="text-left px-4 py-3 rounded-xl bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
 									disabled={isLoading}
 								>
-									What can you help me with?
+									{$t('chat.roleSuggestion1')}
 								</button>
 								<button
 									type="button"
-									onclick={() => selectSuggestion(`Give me a brief introduction`)}
+									onclick={() => selectSuggestion($t('chat.roleSuggestion2'))}
 									class="text-left px-4 py-3 rounded-xl bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
 									disabled={isLoading}
 								>
-									Give me a brief introduction
+									{$t('chat.roleSuggestion2')}
 								</button>
 							</div>
 						</div>
 					{:else}
 						<div class="flex items-center justify-center h-full">
-							<p class="text-base-content/80 text-base">No messages yet</p>
+							<p class="text-base-content/80 text-base">{$t('chat.noMessagesYet')}</p>
 						</div>
 					{/if}
 				{:else}
@@ -2397,7 +2521,7 @@
 					type="button"
 					onclick={scrollToBottom}
 					class="p-2 rounded-full bg-base-200 border border-base-300 text-base-content/90 hover:bg-base-300 hover:text-base-content transition-all shadow-lg"
-					title="Scroll to bottom"
+					title={$t('chat.scrollToBottom')}
 				>
 					<ArrowDown class="w-5 h-5" />
 				</button>
@@ -2409,8 +2533,8 @@
 	{#if isCompanion && staleWarning}
 		<div class="max-w-4xl mx-auto px-6 pb-2">
 			<div class="alert alert-warning text-base py-2">
-				<span>No activity for 60s — the agent may be stuck.</span>
-				<button class="btn btn-sm btn-ghost" onclick={cancelMessage}>Force stop</button>
+				<span>{$t('chat.staleWarning')}</span>
+				<button class="btn btn-sm btn-ghost" onclick={cancelMessage}>{$t('chat.forceStop')}</button>
 			</div>
 		</div>
 	{/if}
@@ -2422,7 +2546,7 @@
 				<ChatInput
 					bind:value={inputValue}
 					onSend={sendMessage}
-					placeholder="Message #{mode.channelName}..."
+					placeholder={$t('chat.messageChannel', { values: { channel: mode.channelName } })}
 					disabled={channelSending}
 				/>
 			</div>
@@ -2461,15 +2585,15 @@
 	<div class="nebo-modal-card max-w-md">
 		<!-- Header -->
 		<div class="flex items-center justify-between px-5 py-4 border-b border-base-content/10">
-			<h3 class="font-display text-lg font-bold">Download Voice Models</h3>
-			<button type="button" onclick={() => { showModelDownload = false; }} class="nebo-modal-close" aria-label="Close">
+			<h3 class="font-display text-lg font-bold">{$t('voiceDownload.title')}</h3>
+			<button type="button" onclick={() => { showModelDownload = false; }} class="nebo-modal-close" aria-label={$t('common.close')}>
 				<X class="w-5 h-5 text-base-content/90" />
 			</button>
 		</div>
 		<!-- Body -->
 		<div class="px-5 py-5">
 			<p class="text-base text-base-content/80 mb-4">
-				Voice models need to be downloaded before first use. This is a one-time download.
+				{$t('voiceDownload.description')}
 			</p>
 
 			{#if modelDownloadError}
@@ -2484,11 +2608,11 @@
 						<span class="font-mono text-sm">{name}</span>
 						<span class="text-sm text-base-content/60">
 							{#if prog.done}
-								Done
+								{$t('common.done')}
 							{:else if prog.total > 0}
 								{Math.round((prog.downloaded / prog.total) * 100)}%
 							{:else}
-								Starting...
+								{$t('voiceDownload.starting')}
 							{/if}
 						</span>
 					</div>
@@ -2508,7 +2632,7 @@
 				class="h-10 px-5 rounded-full border border-base-content/10 text-base font-medium hover:bg-base-content/5 transition-colors"
 				onclick={() => { showModelDownload = false; }}
 			>
-				Cancel
+				{$t('common.cancel')}
 			</button>
 			<button
 				type="button"
@@ -2518,9 +2642,9 @@
 			>
 				{#if Object.values(modelDownloadProgress).some(p => !p.done && p.downloaded > 0)}
 					<Loader2 class="w-4 h-4 animate-spin" />
-					Downloading...
+					{$t('voiceDownload.downloading')}
 				{:else}
-					Download
+					{$t('voiceDownload.download')}
 				{/if}
 			</button>
 		</div>

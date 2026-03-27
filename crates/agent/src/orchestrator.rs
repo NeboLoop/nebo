@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -151,7 +151,7 @@ impl Orchestrator {
                     &bg_session_key, &prompt, &system, &model_override, &user_id, &cancel,
                 );
 
-                let result = run_and_collect(&runner, run_req, cancel).await;
+                let result = run_and_collect(&runner, run_req, cancel, None).await;
 
                 match result {
                     Ok(output) => {
@@ -195,7 +195,7 @@ impl Orchestrator {
         };
 
         let req = build_subagent_request(session_key, &full_prompt, system_prompt, model_override, user_id, &cancel);
-        run_and_collect(&self.runner, req, cancel).await
+        run_and_collect(&self.runner, req, cancel, None).await
     }
 
     /// Execute a DAG of sub-tasks with reactive scheduling.
@@ -314,7 +314,7 @@ impl Orchestrator {
                         &session_key, &full_prompt, &system, &model_override, &user_id, &cancel,
                     );
 
-                    let result = run_and_collect(&runner, req, cancel).await;
+                    let result = run_and_collect(&runner, req, cancel, None).await;
 
                     match &result {
                         Ok(output) => {
@@ -449,6 +449,194 @@ impl Orchestrator {
             .collect()
     }
 
+    /// Spawn multiple sub-agents in parallel and wait for all to complete.
+    /// Sends SubagentStart/Progress/Complete events via progress_tx.
+    async fn spawn_parallel_internal(
+        &self,
+        requests: Vec<SpawnRequest>,
+        progress_tx: mpsc::Sender<ai::StreamEvent>,
+    ) -> Result<SpawnResult, String> {
+        use ai::StreamEvent;
+
+        let parent_task_id = format!("batch-{}", uuid::Uuid::new_v4());
+        let total = requests.len();
+
+        // Internal channel for progress from all sub-agents
+        let (prog_tx, mut prog_rx) = mpsc::channel::<SubagentProgress>(64);
+
+        // Spawn all sub-agents
+        let mut running: FuturesUnordered<Pin<Box<dyn Future<Output = (String, String, Result<String, String>, usize, i32)> + Send>>> = FuturesUnordered::new();
+
+        for req in requests {
+            let task_id = format!("sa-{}", uuid::Uuid::new_v4());
+            let session_key = format!("subagent:{}:{}", req.parent_session_key, task_id);
+            let cancel = req.parent_cancel.as_ref()
+                .map(|p| p.child_token())
+                .unwrap_or_else(CancellationToken::new);
+
+            let system = system_prompt_for_type(&AgentType::from_str(&req.agent_type));
+            let description = req.description.clone();
+
+            // Persist to DB
+            let _ = self.store.create_pending_task(
+                &task_id, "subagent", &session_key,
+                Some(&req.user_id), &req.prompt,
+                Some(&system), Some(&description),
+                Some("subagent"), 0,
+            );
+
+            // Register active
+            {
+                let mut active = self.active.write().await;
+                active.insert(task_id.clone(), ActiveAgent {
+                    task_id: task_id.clone(),
+                    description: description.clone(),
+                    status: "running".to_string(),
+                    cancel: cancel.clone(),
+                });
+            }
+
+            // Send SubagentStart event
+            let _ = progress_tx.send(StreamEvent {
+                event_type: StreamEventType::SubagentStart,
+                text: description.clone(),
+                tool_call: None,
+                error: Some(task_id.clone()),
+                usage: None,
+                rate_limit: None,
+                widgets: Some(serde_json::json!({
+                    "task_id": task_id,
+                    "description": description,
+                    "agent_type": req.agent_type,
+                    "total_count": total,
+                })),
+                provider_metadata: None,
+            }).await;
+
+            let runner = self.runner.clone();
+            let store = self.store.clone();
+            let concurrency = self.concurrency.clone();
+            let active = self.active.clone();
+            let tid = task_id.clone();
+            let desc = description.clone();
+            let prog_tx_clone = prog_tx.clone();
+
+            let run_req = build_subagent_request(
+                &session_key, &req.prompt, &system, &req.model_override, &req.user_id, &cancel,
+            );
+
+            running.push(Box::pin(async move {
+                let _permit = concurrency.acquire_llm_permit().await;
+                let result = run_and_collect(
+                    &runner, run_req, cancel,
+                    Some((tid.clone(), prog_tx_clone)),
+                ).await;
+
+                let (tool_count, token_count) = (0usize, 0i32); // final counts come from progress events
+                match &result {
+                    Ok(output) => {
+                        let _ = store.update_task_completed(&tid, Some(output.as_str()));
+                    }
+                    Err(e) => {
+                        let _ = store.update_task_failed(&tid, e);
+                    }
+                }
+                active.write().await.remove(&tid);
+
+                (tid, desc, result, tool_count, token_count)
+            }));
+        }
+
+        // Drop our copy so prog_rx closes when all sub-agents finish
+        drop(prog_tx);
+
+        // Collect results and forward progress events
+        let mut results: Vec<(String, String, Result<String, String>)> = Vec::new();
+        let mut agent_metrics: HashMap<String, (usize, i32)> = HashMap::new();
+
+        loop {
+            tokio::select! {
+                // Forward progress from sub-agents
+                prog = prog_rx.recv() => {
+                    if let Some(p) = prog {
+                        agent_metrics.insert(p.task_id.clone(), (p.tool_count, p.token_count));
+                        let _ = progress_tx.send(StreamEvent {
+                            event_type: StreamEventType::SubagentProgress,
+                            text: p.current_operation.clone(),
+                            tool_call: None,
+                            error: Some(p.task_id.clone()),
+                            usage: None,
+                            rate_limit: None,
+                            widgets: Some(serde_json::json!({
+                                "task_id": p.task_id,
+                                "tool_count": p.tool_count,
+                                "token_count": p.token_count,
+                                "current_operation": p.current_operation,
+                            })),
+                            provider_metadata: None,
+                        }).await;
+                    }
+                }
+                // Collect completed sub-agents
+                completed = running.next() => {
+                    match completed {
+                        Some((tid, desc, result, _, _)) => {
+                            let (tool_count, token_count) = agent_metrics.get(&tid).copied().unwrap_or((0, 0));
+                            let success = result.is_ok();
+                            let _ = progress_tx.send(StreamEvent {
+                                event_type: StreamEventType::SubagentComplete,
+                                text: desc.clone(),
+                                tool_call: None,
+                                error: Some(tid.clone()),
+                                usage: None,
+                                rate_limit: None,
+                                widgets: Some(serde_json::json!({
+                                    "task_id": tid,
+                                    "success": success,
+                                    "tool_count": tool_count,
+                                    "token_count": token_count,
+                                })),
+                                provider_metadata: None,
+                            }).await;
+                            results.push((tid, desc, result));
+                        }
+                        None => break, // All done
+                    }
+                }
+            }
+        }
+
+        // Synthesize combined output
+        let mut output_parts = Vec::new();
+        let mut all_success = true;
+        for (_, desc, result) in &results {
+            match result {
+                Ok(text) => {
+                    output_parts.push(format!("## {}\n\n{}", desc, text));
+                }
+                Err(e) => {
+                    all_success = false;
+                    output_parts.push(format!("## {} (FAILED)\n\n{}", desc, e));
+                }
+            }
+        }
+
+        let combined = format!(
+            "{} sub-agents completed ({} succeeded, {} failed):\n\n{}",
+            results.len(),
+            results.iter().filter(|(_, _, r)| r.is_ok()).count(),
+            results.iter().filter(|(_, _, r)| r.is_err()).count(),
+            output_parts.join("\n\n---\n\n"),
+        );
+
+        Ok(SpawnResult {
+            task_id: parent_task_id,
+            success: all_success,
+            output: combined,
+            error: if all_success { None } else { Some("One or more sub-agents failed".to_string()) },
+        })
+    }
+
     /// Check whether a task's session appears complete based on message heuristics.
     fn check_task_completion(&self, session_key: &str) -> bool {
         let messages = match self.store.get_chat_messages(session_key) {
@@ -528,7 +716,7 @@ impl Orchestrator {
                 };
 
                 let cancel = CancellationToken::new();
-                match run_and_collect(&runner, req, cancel).await {
+                match run_and_collect(&runner, req, cancel, None).await {
                     Ok(output) => {
                         let _ = store.update_task_completed(&task_id, Some(&output));
                     }
@@ -604,11 +792,22 @@ fn build_subagent_request(
     }
 }
 
+/// Progress update emitted during sub-agent execution.
+#[derive(Debug, Clone)]
+pub struct SubagentProgress {
+    pub task_id: String,
+    pub tool_count: usize,
+    pub token_count: i32,
+    pub current_operation: String,
+}
+
 /// Run a RunRequest via the Runner and collect text output from the stream.
+/// Accepts an optional progress sender for tracking tool counts and current operations.
 async fn run_and_collect(
     runner: &Arc<Runner>,
     req: RunRequest,
     cancel: CancellationToken,
+    progress_tx: Option<(String, mpsc::Sender<SubagentProgress>)>,
 ) -> Result<String, String> {
     let mut rx = runner
         .run(req)
@@ -616,6 +815,8 @@ async fn run_and_collect(
         .map_err(|e| format!("Failed to start sub-agent: {}", e))?;
 
     let mut output = String::new();
+    let mut tool_count: usize = 0;
+    let mut token_count: i32 = 0;
 
     loop {
         tokio::select! {
@@ -627,13 +828,42 @@ async fn run_and_collect(
                     Some(e) => {
                         match e.event_type {
                             StreamEventType::Text => output.push_str(&e.text),
+                            StreamEventType::ToolCall => {
+                                if let Some((ref tid, ref tx)) = progress_tx {
+                                    let op = e.tool_call.as_ref()
+                                        .map(|tc| format!("{}", tc.name))
+                                        .unwrap_or_default();
+                                    let _ = tx.send(SubagentProgress {
+                                        task_id: tid.clone(),
+                                        tool_count,
+                                        token_count,
+                                        current_operation: op,
+                                    }).await;
+                                }
+                            }
+                            StreamEventType::ToolResult => {
+                                tool_count += 1;
+                                if let Some((ref tid, ref tx)) = progress_tx {
+                                    let _ = tx.send(SubagentProgress {
+                                        task_id: tid.clone(),
+                                        tool_count,
+                                        token_count,
+                                        current_operation: String::new(),
+                                    }).await;
+                                }
+                            }
+                            StreamEventType::Usage => {
+                                if let Some(ref usage) = e.usage {
+                                    token_count += usage.input_tokens + usage.output_tokens;
+                                }
+                            }
                             StreamEventType::Error => {
                                 if let Some(err) = e.error {
                                     return Err(err);
                                 }
                             }
                             StreamEventType::Done => break,
-                            _ => {} // ToolCall, ToolResult, Usage, etc — handled internally by runner
+                            _ => {}
                         }
                     }
                     None => break, // Channel closed
@@ -643,7 +873,6 @@ async fn run_and_collect(
     }
 
     if output.is_empty() {
-        // Check if there are results in the session messages
         Ok("Sub-agent completed (no text output).".to_string())
     } else {
         Ok(output)
@@ -747,6 +976,14 @@ impl SubAgentOrchestrator for Orchestrator {
         &self,
     ) -> Pin<Box<dyn Future<Output = Vec<(String, String, String)>> + Send + '_>> {
         Box::pin(async move { self.list_active_internal().await })
+    }
+
+    fn spawn_parallel(
+        &self,
+        requests: Vec<SpawnRequest>,
+        progress_tx: mpsc::Sender<ai::StreamEvent>,
+    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>> {
+        Box::pin(async move { self.spawn_parallel_internal(requests, progress_tx).await })
     }
 
     fn recover(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {

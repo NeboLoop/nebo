@@ -2,6 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 /// Request to spawn a single sub-agent or execute a DAG.
@@ -63,6 +64,14 @@ pub trait SubAgentOrchestrator: Send + Sync {
     fn list_active(
         &self,
     ) -> Pin<Box<dyn Future<Output = Vec<(String, String, String)>> + Send + '_>>;
+
+    /// Spawn multiple sub-agents in parallel and wait for all to complete.
+    /// Progress updates are sent via the progress_tx channel.
+    fn spawn_parallel(
+        &self,
+        requests: Vec<SpawnRequest>,
+        progress_tx: mpsc::Sender<ai::StreamEvent>,
+    ) -> Pin<Box<dyn Future<Output = Result<SpawnResult, String>> + Send + '_>>;
 
     /// Recover incomplete tasks from a previous crash.
     fn recover(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;

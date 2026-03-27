@@ -207,18 +207,86 @@ impl Runner {
         let session_id = session.id.clone();
         info!(session_id = %session_id, "session ready");
 
-        // Append user message
+        // Append user message — large inputs are offloaded to a temp file and
+        // replaced with an LLM-generated summary so the full document never
+        // enters the main chat context.
         if !req.prompt.is_empty() {
-            info!(session_id = %session_id, prompt_len = req.prompt.len(), "appending user message");
-            let metadata = if !req.images.is_empty() {
-                Some(serde_json::json!({"images": req.images}).to_string())
+            let (effective_content, metadata) = if crate::large_input::is_large(&req.prompt) {
+                info!(
+                    session_id = %session_id,
+                    prompt_len = req.prompt.len(),
+                    "large input detected — saving to file and summarising"
+                );
+
+                let msg_id = uuid::Uuid::new_v4().to_string();
+
+                // 1. Save full content to disk
+                let file_path = crate::large_input::save_to_file(&req.prompt, &msg_id)
+                    .map_err(|e| ProviderError::Request(format!("large input save: {e}")))?;
+                let file_path_str = file_path.to_string_lossy().to_string();
+
+                // 2. Detect content type for prompt tuning
+                let content_type = crate::large_input::detect_content_type(&req.prompt);
+
+                // 3. Summarise in an ISOLATED context (sidecar pattern).
+                //    Acquire provider, drop lock, then call — the full text
+                //    never touches the session or DB.
+                let cheap_model = self.selector.get_cheapest_model();
+                let summary = {
+                    let prov = self.providers.read().await.first().cloned();
+                    match prov {
+                        Some(p) => {
+                            crate::large_input::summarize(
+                                p.as_ref(),
+                                &req.prompt,
+                                content_type,
+                                &cheap_model,
+                            )
+                            .await
+                            .unwrap_or_else(|e| {
+                                warn!(error = %e, "large input summarisation failed, using fallback");
+                                crate::large_input::fallback_summary(&req.prompt)
+                            })
+                        }
+                        None => crate::large_input::fallback_summary(&req.prompt),
+                    }
+                };
+
+                // 4. Build replacement content + metadata
+                let result = crate::large_input::build_replacement(
+                    &req.prompt, &summary, &file_path_str, content_type,
+                );
+
+                // Merge with image metadata when both are present
+                let mut meta_value: serde_json::Value =
+                    serde_json::from_str(&result.metadata_json).unwrap_or_default();
+                if !req.images.is_empty() {
+                    meta_value["images"] = serde_json::json!(req.images);
+                }
+
+                info!(
+                    session_id = %session_id,
+                    summary_len = result.content.len(),
+                    file = %file_path_str,
+                    "large input replaced with summary"
+                );
+
+                (result.content, Some(meta_value.to_string()))
             } else {
-                None
+                // Normal-sized prompt — pass through as-is
+                let metadata = if !req.images.is_empty() {
+                    Some(serde_json::json!({"images": req.images}).to_string())
+                } else {
+                    None
+                };
+                (req.prompt.clone(), metadata)
             };
+
+            info!(session_id = %session_id, prompt_len = effective_content.len(), "appending user message");
             self.sessions.append_message(
                 &session_id,
                 "user",
-                &req.prompt,
+                &effective_content,
                 None,
                 None,
                 metadata.as_deref(),
@@ -1034,6 +1102,12 @@ async fn run_loop(
                 | StreamEventType::ApprovalRequest | StreamEventType::AskRequest => {
                     // ToolResult/Approval/Ask: only sent by runner, not received from provider.
                 }
+                StreamEventType::SubagentStart
+                | StreamEventType::SubagentProgress
+                | StreamEventType::SubagentComplete => {
+                    // Forwarded from sub-agent orchestrator via stream_tx; relay to parent.
+                    let _ = tx.send(event).await;
+                }
             }
         }
 
@@ -1198,6 +1272,7 @@ async fn run_loop(
                 resource_grants: entity_resource_grants.cloned(),
                 allowed_paths: allowed_paths.to_vec(),
                 cancel_token: cancel_token.clone(),
+                stream_tx: Some(tx.clone()),
             };
 
             // Track tool names for filter

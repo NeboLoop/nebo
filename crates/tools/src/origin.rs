@@ -37,6 +37,9 @@ pub struct ToolContext {
     /// Cancellation token from the parent run — propagated to sub-agents so that
     /// cancelling the parent also cancels any spawned children.
     pub cancel_token: tokio_util::sync::CancellationToken,
+    /// Stream sender from the parent run — used by spawn_parallel to forward
+    /// sub-agent progress events to the caller's event stream.
+    pub stream_tx: Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>,
 }
 
 impl ToolContext {

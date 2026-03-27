@@ -35,6 +35,9 @@ pub enum StreamEventType {
     RateLimit,
     ApprovalRequest,
     AskRequest,
+    SubagentStart,
+    SubagentProgress,
+    SubagentComplete,
 }
 
 /// Token usage statistics from a streaming response.

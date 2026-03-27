@@ -9,6 +9,7 @@ pub mod decompose;
 pub mod dedupe;
 pub mod fuzzy;
 pub mod keyparser;
+pub mod large_input;
 pub mod memory;
 pub mod memory_debounce;
 pub mod memory_flush;

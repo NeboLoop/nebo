@@ -364,6 +364,42 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                 }));
                             }
                         }
+                        StreamEventType::SubagentStart => {
+                            let mut payload = serde_json::json!({
+                                "session_id": sid,
+                                "role_id": role_id,
+                            });
+                            if let Some(ref w) = event.widgets {
+                                for (k, v) in w.as_object().into_iter().flatten() {
+                                    payload[k] = v.clone();
+                                }
+                            }
+                            hub.broadcast("subagent_start", payload);
+                        }
+                        StreamEventType::SubagentProgress => {
+                            let mut payload = serde_json::json!({
+                                "session_id": sid,
+                                "role_id": role_id,
+                            });
+                            if let Some(ref w) = event.widgets {
+                                for (k, v) in w.as_object().into_iter().flatten() {
+                                    payload[k] = v.clone();
+                                }
+                            }
+                            hub.broadcast("subagent_progress", payload);
+                        }
+                        StreamEventType::SubagentComplete => {
+                            let mut payload = serde_json::json!({
+                                "session_id": sid,
+                                "role_id": role_id,
+                            });
+                            if let Some(ref w) = event.widgets {
+                                for (k, v) in w.as_object().into_iter().flatten() {
+                                    payload[k] = v.clone();
+                                }
+                            }
+                            hub.broadcast("subagent_complete", payload);
+                        }
                         StreamEventType::Done => {}
                     }
                 }

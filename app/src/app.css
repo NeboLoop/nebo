@@ -2684,3 +2684,103 @@
 .commander-canvas-wrapper .svelte-flow__attribution {
 	display: none;
 }
+
+/* ── SubagentTree ─────────────────────────────────────────── */
+.subagent-tree {
+	font-family: 'DM Sans', var(--font-sans);
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	margin-bottom: 0.5rem;
+}
+
+.subagent-tree-header {
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	cursor: pointer;
+	padding: 0.375rem 0.75rem;
+	border-radius: 0.5rem;
+	background: var(--b2, oklch(0.25 0 0));
+	border: none;
+	color: var(--bc, inherit);
+	font-size: 0.8125rem;
+	width: 100%;
+	text-align: left;
+}
+
+.subagent-tree-header:hover {
+	background: var(--b3, oklch(0.3 0 0));
+}
+
+.subagent-tree-title {
+	font-weight: 500;
+}
+
+.subagent-tree-list {
+	padding-left: 1rem;
+	margin-top: 0.25rem;
+}
+
+.subagent-tree-node {
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	padding: 0.125rem 0;
+}
+
+.subagent-tree-connector,
+.subagent-tree-connector-cont {
+	font-family: monospace;
+	color: var(--bc, inherit);
+	opacity: 0.3;
+	flex-shrink: 0;
+}
+
+.subagent-tree-desc {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.subagent-tree-metrics {
+	color: var(--bc, inherit);
+	opacity: 0.5;
+	flex-shrink: 0;
+	font-size: 0.75rem;
+}
+
+.subagent-tree-progress {
+	display: flex;
+	align-items: center;
+	gap: 0.375rem;
+	padding: 0 0 0.125rem 0;
+}
+
+.subagent-tree-progress-text {
+	color: var(--bc, inherit);
+	opacity: 0.5;
+	font-size: 0.75rem;
+}
+
+.subagent-tree-done-text {
+	color: var(--su, oklch(0.7 0.15 160));
+	font-size: 0.75rem;
+}
+
+.subagent-tree-spinner {
+	animation: spin 1s linear infinite;
+	color: var(--wa, oklch(0.8 0.15 85));
+	flex-shrink: 0;
+}
+
+.subagent-tree-icon-done {
+	color: var(--su, oklch(0.7 0.15 160));
+	flex-shrink: 0;
+}
+
+.subagent-tree-icon-error {
+	color: var(--er, oklch(0.65 0.2 25));
+	flex-shrink: 0;
+}

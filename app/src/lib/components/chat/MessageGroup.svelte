@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { Copy, Check, Pencil } from 'lucide-svelte';
+	import { t } from 'svelte-i18n';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ToolCard from './ToolCard.svelte';
 	import ThinkingBlock from './ThinkingBlock.svelte';
 	import ReadingIndicator from './ReadingIndicator.svelte';
 	import AskWidget from './AskWidget.svelte';
 	import type { AskWidgetDef } from './AskWidget.svelte';
+	import SubagentTree from './SubagentTree.svelte';
+	import type { SubagentState } from './SubagentTree.svelte';
 
 	interface ToolCall {
 		name: string;
@@ -15,7 +18,7 @@
 	}
 
 	interface ContentBlock {
-		type: 'text' | 'tool' | 'image' | 'ask';
+		type: 'text' | 'tool' | 'image' | 'ask' | 'subagent_tree';
 		text?: string;
 		toolCallIndex?: number;
 		imageData?: string;
@@ -25,11 +28,12 @@
 		askPrompt?: string;
 		askWidgets?: AskWidgetDef[];
 		askResponse?: string;
+		subagents?: SubagentState[];
 	}
 
 	// A resolved content block with tool data pre-resolved (no indirect lookup)
 	interface ResolvedBlock {
-		type: 'text' | 'tool' | 'image' | 'ask';
+		type: 'text' | 'tool' | 'image' | 'ask' | 'subagent_tree';
 		key: string;
 		text?: string;
 		tool?: ToolCall;
@@ -40,6 +44,7 @@
 		askPrompt?: string;
 		askWidgets?: AskWidgetDef[];
 		askResponse?: string;
+		subagents?: SubagentState[];
 		isLastBlock: boolean;
 	}
 
@@ -165,6 +170,13 @@
 							askResponse: block.askResponse,
 							isLastBlock: isLast
 						});
+					} else if (block.type === 'subagent_tree' && block.subagents?.length) {
+						blocks.push({
+							type: 'subagent_tree',
+							key: `subagent-tree-${i}-${block.subagents.length}`,
+							subagents: block.subagents,
+							isLastBlock: isLast
+						});
 					}
 				}
 			}
@@ -241,7 +253,7 @@
 							<a href={imgSrc} target="_blank" rel="noopener" class="block rounded-xl overflow-hidden mb-1 max-w-sm cursor-zoom-in">
 								<img
 									src={imgSrc}
-									alt="Shared content"
+									alt={$t('chat.sharedContent')}
 									class="max-w-full h-auto rounded-xl"
 								/>
 							</a>
@@ -254,6 +266,10 @@
 								disabled={!resolved.message.streaming}
 								onSubmit={(id, val) => onAskSubmit?.(id, val)}
 							/>
+						{:else if block.type === 'subagent_tree' && block.subagents?.length}
+							<div class="mb-2 max-w-lg">
+								<SubagentTree agents={block.subagents} />
+							</div>
 						{:else if block.type === 'text' && block.text}
 							{#if editingId === resolved.id}
 								<div class="w-full mb-1">
@@ -263,8 +279,8 @@
 										onkeydown={handleEditKeydown}
 									></textarea>
 									<div class="flex gap-2 mt-1.5">
-										<button type="button" class="btn btn-primary btn-sm" onclick={submitEdit}>Resubmit</button>
-										<button type="button" class="btn btn-ghost btn-sm" onclick={cancelEdit}>Cancel</button>
+										<button type="button" class="btn btn-primary btn-sm" onclick={submitEdit}>{$t('chat.resubmit')}</button>
+										<button type="button" class="btn btn-ghost btn-sm" onclick={cancelEdit}>{$t('common.cancel')}</button>
 									</div>
 								</div>
 							{:else}
@@ -284,7 +300,7 @@
 											type="button"
 											onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
 											class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
-											title="Copy"
+											title={$t('common.copy')}
 										>
 											{#if copiedId === resolved.id}
 												<Check class="w-3.5 h-3.5 text-success" />
@@ -300,7 +316,7 @@
 											type="button"
 											onclick={() => startEdit(resolved.id, resolved.cleanContent)}
 											class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
-											title="Edit"
+											title={$t('common.edit')}
 										>
 											<Pencil class="w-3.5 h-3.5" />
 										</button>
@@ -341,8 +357,8 @@
 									onkeydown={handleEditKeydown}
 								></textarea>
 								<div class="flex gap-2 mt-1.5">
-									<button type="button" class="btn btn-primary btn-sm" onclick={submitEdit}>Resubmit</button>
-									<button type="button" class="btn btn-ghost btn-sm" onclick={cancelEdit}>Cancel</button>
+									<button type="button" class="btn btn-primary btn-sm" onclick={submitEdit}>{$t('chat.resubmit')}</button>
+									<button type="button" class="btn btn-ghost btn-sm" onclick={cancelEdit}>{$t('common.cancel')}</button>
 								</div>
 							</div>
 						{:else}
@@ -366,7 +382,7 @@
 										type="button"
 										onclick={() => handleCopy(resolved.id, resolved.cleanContent)}
 										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
-										title="Copy"
+										title={$t('common.copy')}
 									>
 										{#if copiedId === resolved.id}
 											<Check class="w-3.5 h-3.5 text-success" />
@@ -382,7 +398,7 @@
 										type="button"
 										onclick={() => startEdit(resolved.id, resolved.cleanContent)}
 										class="absolute top-1.5 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-base-100 hover:bg-base-300 text-base-content/90 hover:text-base-content"
-										title="Edit"
+										title={$t('common.edit')}
 									>
 										<Pencil class="w-3.5 h-3.5" />
 									</button>
@@ -403,7 +419,7 @@
 
 		<!-- Footer: sender name + timestamp -->
 		<div class="flex gap-2 items-baseline mt-1.5 {role === 'user' ? 'flex-row-reverse' : ''}">
-			<span class="text-sm font-medium text-base-content/60">{role === 'user' ? 'You' : agentName}</span>
+			<span class="text-sm font-medium text-base-content/60">{role === 'user' ? $t('common.you') : agentName}</span>
 			{#if groupTimestamp}
 				<span class="text-sm text-base-content/60">{formatTime(groupTimestamp)}</span>
 			{/if}

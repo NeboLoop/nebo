@@ -63,7 +63,7 @@ impl AgentTool {
     fn infer_resource(&self, action: &str) -> &str {
         match action {
             "store" | "recall" | "search" => "memory",
-            "spawn" | "orchestrate" | "status" | "cancel" | "create" | "update" | "delete" => "task",
+            "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create" | "update" | "delete" => "task",
             "history" | "query" => "session",
             "reset" | "compact" | "summary" => "context",
             "deliberate" => "advisors",
@@ -379,6 +379,66 @@ impl AgentTool {
                     Err(e) => ToolResult::error(format!("Failed to spawn sub-agent: {}", e)),
                 }
             }
+            "spawn_parallel" => {
+                let tasks = match input["tasks"].as_array() {
+                    Some(arr) => arr,
+                    None => return ToolResult::error("tasks array is required for spawn_parallel"),
+                };
+
+                if tasks.is_empty() {
+                    return ToolResult::error("tasks array must not be empty");
+                }
+
+                let orch = match self.orchestrator.get() {
+                    Some(o) => o,
+                    None => return ToolResult::error("Sub-agent orchestrator not ready"),
+                };
+
+                let stream_tx = match ctx.stream_tx {
+                    Some(ref tx) => tx.clone(),
+                    None => return ToolResult::error("Stream sender not available for progress events"),
+                };
+
+                let requests: Vec<crate::orchestrator::SpawnRequest> = tasks
+                    .iter()
+                    .map(|t| {
+                        let prompt = t["prompt"].as_str().unwrap_or("").to_string();
+                        let description = t["description"].as_str()
+                            .unwrap_or(&prompt[..prompt.len().min(80)])
+                            .to_string();
+                        crate::orchestrator::SpawnRequest {
+                            prompt,
+                            description,
+                            agent_type: t["agent_type"].as_str().unwrap_or("general").to_string(),
+                            model_override: t["model_override"].as_str().unwrap_or("").to_string(),
+                            parent_session_id: ctx.session_id.clone(),
+                            parent_session_key: ctx.session_key.clone(),
+                            user_id: ctx.user_id.clone(),
+                            wait: true, // spawn_parallel always waits for all
+                            parent_cancel: Some(ctx.cancel_token.clone()),
+                        }
+                    })
+                    .collect();
+
+                match orch.spawn_parallel(requests, stream_tx).await {
+                    Ok(result) => {
+                        if result.success {
+                            ToolResult::ok(format!(
+                                "Parallel execution [{}] completed:\n\n{}",
+                                result.task_id, result.output
+                            ))
+                        } else {
+                            ToolResult::error(format!(
+                                "Parallel execution [{}] had failures:\n\n{}\n\nError: {}",
+                                result.task_id,
+                                result.output,
+                                result.error.unwrap_or_default()
+                            ))
+                        }
+                    }
+                    Err(e) => ToolResult::error(format!("Failed to spawn parallel agents: {}", e)),
+                }
+            }
             "orchestrate" => {
                 let task_prompt = input["prompt"].as_str().unwrap_or("");
                 if task_prompt.is_empty() {
@@ -559,7 +619,7 @@ impl AgentTool {
                 }
             }
             _ => ToolResult::error(format!(
-                "Unknown task action: {}. Available: spawn, orchestrate, status, cancel, create, update, list, delete",
+                "Unknown task action: {}. Available: spawn, spawn_parallel, orchestrate, status, cancel, create, update, list, delete",
                 action
             )),
         }
