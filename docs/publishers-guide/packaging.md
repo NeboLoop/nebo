@@ -8,27 +8,27 @@ For artifact-specific specs, see:
 - [Plugins](plugins.md)
 - [Platform Capabilities](platform-capabilities.md)
 - [Workflows](workflows.md)
-- [Roles](roles.md)
+- [Agents](agents.md)
 - [MCP Integrations](mcp.md)
 
 ## Hierarchy
 
 ```
-ROLE  >  WORK  >  SKILL
+AGENT  >  WORK  >  SKILL
 (job)   (procedure) (knowledge + actions)
 ```
 
-This is the **design direction** — the order in which you think about building. Start with knowledge and actions (Skill), chain those into procedures (Workflow), then compose procedures into a job (Role). The `>` represents conceptual priority, not a runtime dependency.
+This is the **design direction** — the order in which you think about building. Start with knowledge and actions (Skill), chain those into procedures (Workflow), then compose procedures into a job (Agent). The `>` represents conceptual priority, not a runtime dependency.
 
 Each layer auto-installs its dependencies downward:
 
-- **Role** → installs Workflows and Skills declared in `role.json`
+- **Agent** → installs Workflows and Skills declared in `agent.json`
 - **Workflow** → installs Skills declared in `workflow.json` dependencies
 - **Skill** → leaf node. No dependencies to auto-install.
 
 **Platform Capabilities** (storage, network, vision, calendar, email, browser) are provided by Nebo itself — they are infrastructure, not marketplace artifacts. Skills declare which capabilities they need; the platform provides them. See [Platform Capabilities](platform-capabilities.md).
 
-**Design direction:** Start with what the agent needs to *know* and *do* (Skill), chain skills into repeatable procedures (Workflow), and compose procedures into a job (Role). Skills are the universal unit — a folder with a SKILL.md file, optionally bundling scripts, reference docs, and assets. This is the same format used by the broader Agent Skills ecosystem (agentskills.io), so skills from Anthropic, OpenAI, OpenClaw, and other compatible platforms work in Nebo without modification.
+**Design direction:** Start with what the agent needs to *know* and *do* (Skill), chain skills into repeatable procedures (Workflow), and compose procedures into a job (Agent). Skills are the universal unit — a folder with a SKILL.md file, optionally bundling scripts, reference docs, and assets. This is the same format used by the broader Agent Skills ecosystem (agentskills.io), so skills from Anthropic, OpenAI, OpenClaw, and other compatible platforms work in Nebo without modification.
 
 ---
 
@@ -46,7 +46,7 @@ Format: `@org/type/name@version`
 @acme/skills/sales-qualification@1.0.0
 @acme/skills/crm-lookup@1.0.0
 @acme/workflows/lead-qualification@2.1.0
-@nebo/roles/chief-of-staff@1.0.0
+@nebo/agents/chief-of-staff@1.0.0
 ```
 
 Read left to right: who published it, what kind of artifact it is, what it's called, what version.
@@ -54,7 +54,7 @@ Read left to right: who published it, what kind of artifact it is, what it's cal
 | Segment | Description | Rules |
 |---------|-------------|-------|
 | `@org` | Publisher org (scoped) | Lowercase, alphanumeric + hyphens |
-| `type` | Artifact type | `skills`, `workflows`, `roles` |
+| `type` | Artifact type | `skills`, `workflows`, `agents` |
 | `name` | Artifact name | Lowercase, alphanumeric + hyphens |
 | `@version` | Semver version (optional) | Omit for latest; supports semver ranges |
 
@@ -89,13 +89,13 @@ Format: `PREFIX-XXXX-XXXX` — Crockford Base32 (`0123456789ABCDEFGHJKMNPQRSTVWX
 | `NEBO` | Link bot to NeboLoop account | `NEBO-A1B2-C3D4` |
 | `SKIL` | Install a skill | `SKIL-R7KP-2M9V` |
 | `WORK` | Install a workflow | `WORK-5TG2-XBJK` |
-| `ROLE` | Install a role | `ROLE-9DCE-4MPA` |
+| `AGNT` | Install an agent | `AGNT-9DCE-4MPA` |
 | `LOOP` | Join bot to a Loop | `LOOP-7YSR-6WN3` |
 | `PLUG` | Install a plugin | `PLUG-4HVT-8KRP` |
 
 Install codes always resolve to `@latest`. They are detected case-insensitively in chat messages and dispatched automatically.
 
-**Install codes are marketing artifacts. Qualified names are engineering identifiers.** Inside `workflow.json`, `role.json`, dependency declarations, and all structured data — use qualified names. Install codes are for users, not for code.
+**Install codes are marketing artifacts. Qualified names are engineering identifiers.** Inside `workflow.json`, `agent.json`, dependency declarations, and all structured data — use qualified names. Install codes are for users, not for code.
 
 ---
 
@@ -120,9 +120,9 @@ Skills from Anthropic, OpenAI, OpenClaw, and other Agent Skills-compatible platf
 
 **User/development path:** During development, place a skill directory directly in `user/skills/` and iterate. Hot-reload picks up changes with a 1-second debounce.
 
-### Workflows and Roles — .napp Archive
+### Workflows and Agents — .napp Archive
 
-Workflows and roles are distributed as `.napp` files — signed `tar.gz` archives.
+Workflows and agents are distributed as `.napp` files — signed `tar.gz` archives.
 
 ```
 @acme/workflows/lead-qualification-1.0.0.napp
@@ -130,21 +130,21 @@ Workflows and roles are distributed as `.napp` files — signed `tar.gz` archive
   → workflow.json
   → WORKFLOW.md
 
-@nebo/roles/chief-of-staff-1.0.0.napp
+@nebo/agents/chief-of-staff-1.0.0.napp
   → manifest.json
-  → role.json
-  → ROLE.md
+  → agent.json
+  → AGENT.md
 ```
 
 ### Sealed Archives
 
-For workflows and roles, the `.napp` is **never extracted**. Nebo reads files directly from the archive at runtime. The signed archive is the running artifact — if someone tampers with the file, the next read fails signature verification. This provides continuous integrity, not just point-in-time verification at install.
+For workflows and agents, the `.napp` is **never extracted**. Nebo reads files directly from the archive at runtime. The signed archive is the running artifact — if someone tampers with the file, the next read fails signature verification. This provides continuous integrity, not just point-in-time verification at install.
 
 | Artifact | Storage | Integrity Model |
 |----------|---------|-----------------|
 | Skill | Directory on disk (marketplace: sealed `.napp`) | Frontmatter is source of truth; marketplace archives are signed |
 | Workflow | `.napp` sealed | Archive is the signed artifact — continuous integrity |
-| Role | `.napp` sealed | Archive is the signed artifact — continuous integrity |
+| Agent | `.napp` sealed | Archive is the signed artifact — continuous integrity |
 
 ### Versioned Storage
 
@@ -159,8 +159,8 @@ nebo/                                    # From NeboLoop marketplace
   workflows/
     @acme/workflows/lead-qualification/
       1.0.0.napp
-  roles/
-    @nebo/roles/chief-of-staff/
+  agents/
+    @nebo/agents/chief-of-staff/
       1.0.0.napp
 
 user/                                    # User-created (dev/sideload path)
@@ -173,10 +173,10 @@ user/                                    # User-created (dev/sideload path)
     my-workflow/
       workflow.json
       WORKFLOW.md
-  roles/
-    my-role/
-      role.json
-      ROLE.md
+  agents/
+    my-agent/
+      agent.json
+      AGENT.md
 ```
 
 **Marketplace artifacts** (`nebo/`) are sealed `.napp` files. Signed, versioned, read from archive at runtime.
@@ -192,7 +192,7 @@ When a qualified name with a version range is referenced (e.g., `@acme/skills/sa
 3. If nothing matches, fetch from NeboLoop marketplace
 4. If fetch fails and nothing is installed, error
 
-This resolution applies everywhere a versioned qualified name appears — workflow `dependencies`, activity `skills` arrays, role `workflows` refs, and role-level `skills` arrays.
+This resolution applies everywhere a versioned qualified name appears — workflow `dependencies`, activity `skills` arrays, agent `workflows` refs, and agent-level `skills` arrays.
 
 ### Reading from Archives
 
@@ -202,13 +202,13 @@ Nebo reads `.napp` entries by name at runtime using a thin reader:
 fn read_napp_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>>
 ```
 
-The skill loader reads `SKILL.md` from marketplace archives. The workflow engine calls `read_napp_entry(path, "workflow.json")`. The role loader calls `read_napp_entry(path, "role.json")` and `read_napp_entry(path, "ROLE.md")`. One function, used everywhere.
+The skill loader reads `SKILL.md` from marketplace archives. The workflow engine calls `read_napp_entry(path, "workflow.json")`. The agent loader calls `read_napp_entry(path, "agent.json")` and `read_napp_entry(path, "AGENT.md")`. One function, used everywhere.
 
 ---
 
-## manifest.json — Workflows and Roles Only
+## manifest.json — Workflows and Agents Only
 
-Workflows and roles ship a `manifest.json` as their marketplace identity envelope. **Skills do not use manifest.json** — their identity comes from SKILL.md frontmatter.
+Workflows and agents ship a `manifest.json` as their marketplace identity envelope. **Skills do not use manifest.json** — their identity comes from SKILL.md frontmatter.
 
 ```json
 {
@@ -248,11 +248,11 @@ The `name` field is the canonical identifier. The org, type, and artifact name a
 }
 ```
 
-**Role:**
+**Agent:**
 
 ```json
 {
-  "name": "@nebo/roles/chief-of-staff",
+  "name": "@nebo/agents/chief-of-staff",
   "version": "1.0.0",
   "description": "Never be blindsided again — morning briefing, day monitoring, evening wrap"
 }
@@ -266,7 +266,7 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 
 - **Skills** — `SKILL.md` frontmatter (identity + runtime config) + body (knowledge) + optional bundled resources (scripts, references, assets). No manifest.json. Frontmatter is the source of truth. Compatible with the Agent Skills standard.
 - **Workflows** — `manifest.json` (marketplace identity) + `workflow.json` (procedure definition) + `WORKFLOW.md` (agent docs). Marketplace identity lives in the manifest; the workflow.json carries its own `id` for the local engine (REST API, run records, the `work` tool). Sealed archive.
-- **Roles** — `manifest.json` (marketplace identity) + `role.json` (event bindings, pricing, defaults) + `ROLE.md` (persona prose). Sealed archive.
+- **Agents** — `manifest.json` (marketplace identity) + `agent.json` (event bindings, pricing, defaults) + `AGENT.md` (persona prose). Sealed archive.
 
 ---
 
@@ -284,10 +284,10 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 
 ### Qualified Name Format
 
-`@org/type/name@version` — org and name are lowercase alphanumeric + hyphens. Type is one of: `skills`, `workflows`, `roles`. Version follows semver.
+`@org/type/name@version` — org and name are lowercase alphanumeric + hyphens. Type is one of: `skills`, `workflows`, `agents`. Version follows semver.
 
 ### Install Code Format
 
 `PREFIX-XXXX-XXXX` — Crockford Base32, case-insensitive. Always resolves to `@latest`.
 
-Prefixes: `NEBO`, `SKIL`, `WORK`, `ROLE`, `LOOP`, `PLUG`
+Prefixes: `NEBO`, `SKIL`, `WORK`, `AGNT`, `LOOP`, `PLUG`

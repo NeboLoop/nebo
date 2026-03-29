@@ -1,4 +1,4 @@
-//! Event dispatcher — matches incoming events against role-owned subscriptions
+//! Event dispatcher — matches incoming events against agent-owned subscriptions
 //! and triggers workflow runs.
 
 use std::sync::Arc;
@@ -9,18 +9,18 @@ use tracing::{info, warn};
 use tools::events::Event;
 use tools::workflows::WorkflowManager;
 
-/// An event subscription registered by a role.
+/// An event subscription registered by an agent.
 #[derive(Debug, Clone)]
 pub struct EventSubscription {
     /// Pattern to match against event source, e.g. "email.urgent" or "email.*".
     pub pattern: String,
     /// Default inputs to pass to the workflow.
     pub default_inputs: serde_json::Value,
-    /// Role that owns this subscription.
-    pub role_source: String,
-    /// Binding name within the role.
+    /// Agent that owns this subscription.
+    pub agent_source: String,
+    /// Binding name within the agent.
     pub binding_name: String,
-    /// Inline workflow definition JSON (from role.json binding).
+    /// Inline workflow definition JSON (from agent.json binding).
     pub definition_json: Option<String>,
     /// Namespaced emit source for the last activity (e.g. "chief-of-staff.briefing.ready").
     pub emit_source: Option<String>,
@@ -50,16 +50,16 @@ impl EventDispatcher {
         lock.push(sub);
     }
 
-    /// Remove subscriptions for a single role binding.
-    pub async fn unsubscribe_binding(&self, role_id: &str, binding_name: &str) {
+    /// Remove subscriptions for a single agent binding.
+    pub async fn unsubscribe_binding(&self, agent_id: &str, binding_name: &str) {
         let mut lock = self.subscriptions.write().await;
-        lock.retain(|sub| !(sub.role_source == role_id && sub.binding_name == binding_name));
+        lock.retain(|sub| !(sub.agent_source == agent_id && sub.binding_name == binding_name));
     }
 
-    /// Remove all subscriptions for a role.
-    pub async fn unsubscribe_role(&self, role_id: &str) {
+    /// Remove all subscriptions for an agent.
+    pub async fn unsubscribe_agent(&self, agent_id: &str) {
         let mut lock = self.subscriptions.write().await;
-        lock.retain(|sub| sub.role_source != role_id);
+        lock.retain(|sub| sub.agent_source != agent_id);
     }
 
     /// Clear all subscriptions.
@@ -96,12 +96,12 @@ impl EventDispatcher {
                         map.insert("_event_origin".to_string(), serde_json::json!(event.origin));
                     }
 
-                    // Use run_inline with the inline definition from role.json
+                    // Use run_inline with the inline definition from agent.json
                     if let Some(ref def_json) = sub.definition_json {
-                        match manager.run_inline(def_json.clone(), inputs, "event", &sub.role_source, sub.emit_source.clone()).await {
+                        match manager.run_inline(def_json.clone(), inputs, "event", &sub.agent_source, sub.emit_source.clone()).await {
                             Ok(run_id) => {
                                 info!(
-                                    role = %sub.role_source,
+                                    agent = %sub.agent_source,
                                     binding = %sub.binding_name,
                                     run_id = %run_id,
                                     event_source = %event.source,
@@ -110,7 +110,7 @@ impl EventDispatcher {
                             }
                             Err(e) => {
                                 warn!(
-                                    role = %sub.role_source,
+                                    agent = %sub.agent_source,
                                     binding = %sub.binding_name,
                                     event_source = %event.source,
                                     error = %e,
@@ -120,7 +120,7 @@ impl EventDispatcher {
                         }
                     } else {
                         warn!(
-                            role = %sub.role_source,
+                            agent = %sub.agent_source,
                             binding = %sub.binding_name,
                             event_source = %event.source,
                             "event subscription has no inline definition, skipping"

@@ -1,22 +1,22 @@
 <script lang="ts">
 	import MetricCard from '$lib/components/ui/MetricCard.svelte';
-	import type { ActiveRoleEntry, SimpleAgentStatusResponse, NeboLoopJanusUsageResponse, Chat } from '$lib/api/neboComponents';
+	import type { ActiveRoleEntry as ActiveAgentEntry, SimpleAgentStatusResponse, NeboLoopJanusUsageResponse, Chat } from '$lib/api/neboComponents';
 
 	let {
-		roles = [],
+		agents = [],
 		agentStatus = null,
 		usage = null,
 		chats = [],
 		isLoading = true
 	}: {
-		roles: ActiveRoleEntry[];
+		agents: ActiveAgentEntry[];
 		agentStatus: SimpleAgentStatusResponse | null;
 		usage: NeboLoopJanusUsageResponse | null;
 		chats: Chat[];
 		isLoading: boolean;
 	} = $props();
 
-	let activeAgents = $derived(roles.length + 1);
+	let activeAgents = $derived(agents.length + 1);
 	let tokenPercent = $derived(usage?.weekly?.percentUsed ?? 0);
 	let tokenSubtitle = $derived.by(() => {
 		if (!usage?.weekly) return '';
@@ -35,9 +35,9 @@
 		loading={isLoading}
 	/>
 	<MetricCard
-		title="Active Roles"
-		value={roles.length}
-		subtitle="Installed roles running"
+		title="Active Agents"
+		value={agents.length}
+		subtitle="Installed agents running"
 		loading={isLoading}
 	/>
 	<MetricCard

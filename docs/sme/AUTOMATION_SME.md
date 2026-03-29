@@ -2,7 +2,7 @@
 
 Comprehensive Subject Matter Expert document covering the full Nebo automation
 pipeline: proactive heartbeats, cron scheduling, workflow execution, event-driven
-triggers, role workers, and frontend UI.
+triggers, agent workers, and frontend UI.
 
 **Status:** Current (Rust implementation) | **Last updated:** 2026-03-25
 
@@ -17,7 +17,7 @@ triggers, role workers, and frontend UI.
 5. [Event System](#5-event-system)
 6. [Workflow Manager](#6-workflow-manager)
 7. [Workflow Engine](#7-workflow-engine)
-8. [Role Workers](#8-role-workers)
+8. [Agent Workers](#8-agent-workers)
 9. [Trigger Registration](#9-trigger-registration)
 10. [DB Schema](#10-db-schema)
 11. [REST Endpoints](#11-rest-endpoints)
@@ -80,7 +80,7 @@ chains.
 
 | Pattern | Source | Tick | Execution | Lane |
 |---------|--------|------|-----------|------|
-| **Cron** | `scheduler.rs` | 60s | Shell, agent, workflow, or role_workflow | Varies |
+| **Cron** | `scheduler.rs` | 60s | Shell, agent, workflow, or agent_workflow | Varies |
 | **Heartbeat** | `heartbeat.rs` | 60s | `run_chat()` with heartbeat content | `HEARTBEAT` |
 | **Event** | `EventDispatcher` | Real-time | `WorkflowManager.run_inline()` | Spawned |
 
@@ -91,7 +91,7 @@ All three coexist as independent `tokio::spawn` loops started during server boot
 2. `scheduler::spawn()` — 10s delay, then 60s tick
 3. `heartbeat::spawn()` — 15s delay, then 60s tick
 4. `EventDispatcher::spawn()` — immediate, consumes from EventBus channel
-5. `RoleWorkerRegistry` — starts workers for each active role
+5. `AgentWorkerRegistry` — starts workers for each active agent
 
 ---
 
@@ -123,7 +123,7 @@ pub fn spawn(
 | `"bash"` / `"shell"` / `""` | Shell command | `sh -c {command}` subprocess |
 | `"agent"` | Prompt text | `runner.run()` with `Origin::System`, session `"cron-{name}"` |
 | `"workflow"` | Workflow ID | `manager.run(id, null, "cron")` |
-| `"role_workflow"` | `"role:{role_id}:{binding}"` | Parse → load role → `manager.run_inline()` |
+| `"agent_workflow"` | `"agent:{agent_id}:{binding}"` | Parse → load agent → `manager.run_inline()` |
 
 ### Cron Resolution
 
@@ -136,15 +136,15 @@ if next > now { continue; }  // Not due
 
 Timestamp parsing: tries `i64` Unix → `NaiveDateTime` format → defaults to epoch 0.
 
-### Role Workflow Execution
+### Agent Workflow Execution
 
-When `task_type == "role_workflow"`:
-1. Parse command: `"role:{role_id}:{binding_name}"`
-2. Load role from DB → parse `RoleConfig` from frontmatter
+When `task_type == "agent_workflow"`:
+1. Parse command: `"agent:{agent_id}:{binding_name}"`
+2. Load agent from DB → parse `AgentConfig` from frontmatter
 3. Lookup binding → check `has_activities()` (skip chat-only bindings)
 4. Convert to inline definition via `binding.to_workflow_json()`
-5. Build emit_source: `"{role-slug}.{emit-name}"`
-6. Call `manager.run_inline(def_json, inputs, "schedule", role_id, emit_source)`
+5. Build emit_source: `"{agent-slug}.{emit-name}"`
+6. Call `manager.run_inline(def_json, inputs, "schedule", agent_id, emit_source)`
 
 ### History Tracking
 
@@ -175,7 +175,7 @@ Each tick loads heartbeat-eligible entities:
 let mut entities = state.store.list_heartbeat_entities()?;
 ```
 
-Entity types: `"main"` (global), `"role"`, `"channel"`. The main entity is
+Entity types: `"main"` (global), `"agent"`, `"channel"`. The main entity is
 auto-included if global `heartbeat_interval_minutes > 0` and not explicitly disabled.
 
 ### Configuration Resolution
@@ -232,7 +232,7 @@ ChatConfig {
     origin: Origin::System,
     channel: "heartbeat",
     lane: lanes::HEARTBEAT,
-    role_id,  // Set if entity_type == "role"
+    agent_id,  // Set if entity_type == "agent"
     entity_config: Some(resolved),
     ..
 }
@@ -277,7 +277,7 @@ engine adds it directly.
 pub struct EventSubscription {
     pub pattern: String,                   // "email.*" or "email.urgent"
     pub default_inputs: serde_json::Value,
-    pub role_source: String,               // Role ID
+    pub agent_source: String,              // Agent ID
     pub binding_name: String,
     pub definition_json: Option<String>,   // Inline workflow JSON
     pub emit_source: Option<String>,
@@ -297,7 +297,7 @@ while let Some(event) = rx.recv().await {
         inputs["_event_source"] = json!(event.source);
         inputs["_event_payload"] = event.payload.clone();
         inputs["_event_origin"] = json!(event.origin);
-        manager.run_inline(def_json, inputs, "event", &sub.role_source, ...).await;
+        manager.run_inline(def_json, inputs, "event", &sub.agent_source, ...).await;
     }
 }
 ```
@@ -317,7 +317,7 @@ while let Some(event) = rx.recv().await {
 ```rust
 pub trait WorkflowManager: Send + Sync {
     fn run(&self, id, inputs, trigger_type) -> Result<String>;      // Standalone
-    fn run_inline(&self, def_json, inputs, trigger, role_id, emit) -> Result<String>;  // Role inline
+    fn run_inline(&self, def_json, inputs, trigger, agent_id, emit) -> Result<String>;  // Agent inline
     fn cancel(&self, run_id) -> Result<()>;
     fn list(&self) -> Vec<WorkflowInfo>;
     fn run_status(&self, run_id) -> Result<WorkflowRunInfo>;
@@ -343,12 +343,12 @@ pub trait WorkflowManager: Send + Sync {
    - Broadcast WebSocket events
 6. Return `run_id` immediately
 
-### run_inline() — Role Workflow
+### run_inline() — Agent Workflow
 
 Same as `run()` but:
 - Definition parsed directly from JSON string (not from DB)
-- `workflow_id` = `"role:{role_id}"`
-- Session key = `"role-{role_id}-{run_id}"`
+- `workflow_id` = `"agent:{agent_id}"`
+- Session key = `"agent-{agent_id}-{run_id}"`
 - Passes `emit_source` to engine
 
 ### cancel_run()
@@ -471,24 +471,24 @@ remainder as the reason. Status = `"exited"` (distinct from "completed" or "fail
 
 ---
 
-## 8. Role Workers
+## 8. Agent Workers
 
-**File:** `crates/agent/src/role_worker.rs`
+**File:** `crates/agent/src/agent_worker.rs`
 
-### RoleWorker
+### AgentWorker
 
 ```rust
-pub struct RoleWorker {
-    pub role_id: String,
+pub struct AgentWorker {
+    pub agent_id: String,
     pub name: String,
     cancel: CancellationToken,
 }
 ```
 
 **start():**
-1. Load role workflow bindings from DB
-2. Parse `RoleConfig` from role frontmatter
-3. Register cron triggers via `register_role_triggers()`
+1. Load agent workflow bindings from DB
+2. Parse `AgentConfig` from agent frontmatter
+3. Register cron triggers via `register_agent_triggers()`
 4. For each binding, spawn trigger task by type:
 
 | trigger_type | Worker behavior |
@@ -500,7 +500,7 @@ pub struct RoleWorker {
 
 **stop():**
 - Cancel token → stops all spawned tasks
-- `unregister_role_triggers()` → removes cron jobs
+- `unregister_agent_triggers()` → removes cron jobs
 
 ### Heartbeat Worker Detail
 
@@ -517,7 +517,7 @@ tokio::spawn(async move {
                 if let Some((start, end)) = &window {
                     if now < start || now > end { continue; }
                 }
-                mgr.run_inline(def_json, inputs, "heartbeat", &role, emit_source).await;
+                mgr.run_inline(def_json, inputs, "heartbeat", &agent, emit_source).await;
             }
             _ = token.cancelled() => break,
         }
@@ -525,19 +525,19 @@ tokio::spawn(async move {
 });
 ```
 
-### RoleWorkerRegistry
+### AgentWorkerRegistry
 
 ```rust
-pub struct RoleWorkerRegistry {
-    workers: RwLock<HashMap<String, RoleWorker>>,
+pub struct AgentWorkerRegistry {
+    workers: RwLock<HashMap<String, AgentWorker>>,
     store: Arc<Store>,
     workflow_manager: Arc<dyn WorkflowManager>,
     event_dispatcher: Arc<EventDispatcher>,
 }
 ```
 
-Methods: `start_role()`, `stop_role()`, `stop_all()`.
-`start_role()` stops existing worker first (clean re-registration).
+Methods: `start_agent()`, `stop_agent()`, `stop_all()`.
+`start_agent()` stops existing worker first (clean re-registration).
 
 ---
 
@@ -552,21 +552,21 @@ pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store)
 // Creates cron_job: name="workflow-{id}", task_type="workflow", command=workflow_id
 ```
 
-### Role Workflows
+### Agent Workflows
 
 ```rust
-pub fn register_role_triggers(role_id: &str, bindings: &[RoleWorkflow], store: &Store)
+pub fn register_agent_triggers(agent_id: &str, bindings: &[AgentWorkflow], store: &Store)
 // For schedule bindings:
-//   Creates cron_job: name="role-{role_id}-{binding}", task_type="role_workflow",
-//   command="role:{role_id}:{binding}"
+//   Creates cron_job: name="agent-{agent_id}-{binding}", task_type="agent_workflow",
+//   command="agent:{agent_id}:{binding}"
 ```
 
 ### Unregistration
 
 ```rust
 pub fn unregister_triggers(workflow_id: &str, store: &Store)        // By workflow
-pub fn unregister_role_triggers(role_id: &str, store: &Store)       // All role triggers
-pub fn unregister_single_role_trigger(role_id, binding, store)      // Single binding
+pub fn unregister_agent_triggers(agent_id: &str, store: &Store)     // All agent triggers
+pub fn unregister_single_agent_trigger(agent_id, binding, store)    // Single binding
 ```
 
 All use DB deletion by cron_job name pattern.
@@ -582,8 +582,8 @@ CREATE TABLE cron_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL,
     schedule TEXT NOT NULL,              -- Cron expression
-    command TEXT DEFAULT '',             -- Shell cmd / workflow ID / "role:id:binding"
-    task_type TEXT DEFAULT 'bash',       -- bash, shell, agent, workflow, role_workflow
+    command TEXT DEFAULT '',             -- Shell cmd / workflow ID / "agent:id:binding"
+    task_type TEXT DEFAULT 'bash',       -- bash, shell, agent, workflow, agent_workflow
     message TEXT DEFAULT '',             -- Agent prompt
     deliver TEXT DEFAULT '',
     enabled INTEGER DEFAULT 1,
@@ -614,7 +614,7 @@ CREATE TABLE cron_history (
 ```sql
 CREATE TABLE workflow_runs (
     id TEXT PRIMARY KEY,
-    workflow_id TEXT NOT NULL,           -- or "role:{role_id}" for inline
+    workflow_id TEXT NOT NULL,           -- or "agent:{agent_id}" for inline
     trigger_type TEXT NOT NULL,          -- schedule, event, manual, cron, heartbeat
     trigger_detail TEXT,
     status TEXT NOT NULL DEFAULT 'running',  -- running, completed, failed, cancelled, exited
@@ -645,12 +645,12 @@ CREATE TABLE workflow_activity_results (
 );
 ```
 
-### role_workflows
+### agent_workflows
 
 ```sql
-CREATE TABLE role_workflows (
+CREATE TABLE agent_workflows (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     binding_name TEXT NOT NULL,
     trigger_type TEXT NOT NULL,          -- schedule, heartbeat, event, manual
     trigger_config TEXT NOT NULL,        -- Cron / "30m|08:00-18:00" / "email.*,cal.changed"
@@ -659,7 +659,7 @@ CREATE TABLE role_workflows (
     is_active INTEGER NOT NULL DEFAULT 1,
     emit TEXT,                           -- Event to announce on completion
     activities TEXT,                     -- JSON of activity definitions
-    UNIQUE(role_id, binding_name)
+    UNIQUE(agent_id, binding_name)
 );
 ```
 
@@ -668,7 +668,7 @@ CREATE TABLE role_workflows (
 ```sql
 CREATE TABLE entity_config (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL CHECK(entity_type IN ('main', 'role', 'channel')),
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('main', 'agent', 'channel')),
     entity_id   TEXT NOT NULL,
     heartbeat_enabled INTEGER,           -- NULL=inherit, 0/1
     heartbeat_interval_minutes INTEGER,
@@ -688,7 +688,7 @@ CREATE TABLE entity_config (
 ### Key Relationships
 
 ```
-roles (1) ──→ (many) role_workflows
+agents (1) ──→ (many) agent_workflows
 workflows (1) ──→ (many) workflow_runs ──→ (many) workflow_activity_results
 cron_jobs (1) ──→ (many) cron_history
 entity_config — standalone per (type, id) pair
@@ -726,15 +726,15 @@ entity_config — standalone per (type, id) pair
 | GET | `/api/v1/workflows/{id}/runs/{runId}` | Run status |
 | POST | `/api/v1/workflows/{id}/runs/{runId}/cancel` | Cancel run |
 
-### Role Workflows — `/api/v1/roles/{id}/workflows`
+### Agent Workflows — `/api/v1/agents/{id}/workflows`
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/roles/{id}/workflows` | List bindings |
-| POST | `/api/v1/roles/{id}/workflows` | Create binding |
-| PUT | `/api/v1/roles/{id}/workflows/{binding}` | Update binding |
-| DELETE | `/api/v1/roles/{id}/workflows/{binding}` | Delete binding |
-| POST | `/api/v1/roles/{id}/workflows/{binding}/toggle` | Toggle active |
+| GET | `/api/v1/agents/{id}/workflows` | List bindings |
+| POST | `/api/v1/agents/{id}/workflows` | Create binding |
+| PUT | `/api/v1/agents/{id}/workflows/{binding}` | Update binding |
+| DELETE | `/api/v1/agents/{id}/workflows/{binding}` | Delete binding |
+| POST | `/api/v1/agents/{id}/workflows/{binding}/toggle` | Toggle active |
 
 ### Entity Config — `/api/v1/entity-config`
 
@@ -748,7 +748,7 @@ entity_config — standalone per (type, id) pair
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/roles/event-sources` | Available emit sources from active bindings |
+| GET | `/api/v1/agents/event-sources` | Available emit sources from active bindings |
 
 ---
 
@@ -760,9 +760,9 @@ entity_config — standalone per (type, id) pair
 
 ```typescript
 {
-    entityType: string;    // 'role' | 'main'
-    entityId: string;      // Role ID or 'main'
-    roleId?: string;       // Required for workflow CRUD
+    entityType: string;    // 'agent' | 'main'
+    entityId: string;      // Agent ID or 'main'
+    agentId?: string;      // Required for workflow CRUD
     readonly?: boolean;    // true for assistant (disables editing)
 }
 ```
@@ -778,7 +778,7 @@ Radio button selector:
 
 **Mode persistence:** Initial mode auto-selected on first load (automations if any
 exist, else heartbeat). User's manual selection preserved across data reloads — only
-reset when navigating to a different role (via `modeInitialized` flag).
+reset when navigating to a different agent (via `modeInitialized` flag).
 
 ### Heartbeat Config (mode = heartbeat)
 
@@ -829,9 +829,9 @@ Reloads when `entityType` or `entityId` changes (via `$effect`).
 
 ### Route Integration
 
-**Role automate:** `app/src/routes/(app)/(sidebar)/agent/role/[name]/automate/+page.svelte`
+**Agent automate:** `app/src/routes/(app)/(sidebar)/agent/persona/[name]/automate/+page.svelte`
 ```svelte
-<AutomationsSection entityType="role" entityId={activeRoleId} roleId={activeRoleId} />
+<AutomationsSection entityType="agent" entityId={activeAgentId} agentId={activeAgentId} />
 ```
 
 **Assistant automate:** `app/src/routes/(app)/(sidebar)/agent/assistant/automate/+page.svelte`
@@ -851,8 +851,8 @@ Full-page modal for creating and editing workflow bindings.
 
 ```typescript
 {
-    roleId: string;
-    existing: RoleWorkflowEntry | null;  // null = create, object = edit
+    agentId: string;
+    existing: AgentWorkflowEntry | null;  // null = create, object = edit
     onclose: () => void;
     onsave: () => void;
 }
@@ -955,12 +955,12 @@ NULL values clear overrides (inherit from defaults).
 
 ## 15. Frontend — Types & API
 
-### RoleWorkflowEntry
+### AgentWorkflowEntry
 
 ```typescript
-interface RoleWorkflowEntry {
+interface AgentWorkflowEntry {
     id: number;
-    roleId: string;
+    agentId: string;
     bindingName: string;
     workflowRef: string;
     workflowId?: string;
@@ -996,12 +996,12 @@ interface ResolvedEntityConfig {
 
 | Function | Method | Endpoint |
 |----------|--------|----------|
-| `getRoleWorkflows(roleId)` | GET | `/api/v1/roles/{id}/workflows` |
-| `createRoleWorkflow(roleId, data)` | POST | `/api/v1/roles/{id}/workflows` |
-| `updateRoleWorkflow(roleId, binding, data)` | PUT | `/api/v1/roles/{id}/workflows/{binding}` |
-| `deleteRoleWorkflow(roleId, binding)` | DELETE | `/api/v1/roles/{id}/workflows/{binding}` |
-| `toggleRoleWorkflow(roleId, binding)` | POST | `/api/v1/roles/{id}/workflows/{binding}/toggle` |
-| `listEventSources()` | GET | `/api/v1/roles/event-sources` |
+| `getAgentWorkflows(agentId)` | GET | `/api/v1/agents/{id}/workflows` |
+| `createAgentWorkflow(agentId, data)` | POST | `/api/v1/agents/{id}/workflows` |
+| `updateAgentWorkflow(agentId, binding, data)` | PUT | `/api/v1/agents/{id}/workflows/{binding}` |
+| `deleteAgentWorkflow(agentId, binding)` | DELETE | `/api/v1/agents/{id}/workflows/{binding}` |
+| `toggleAgentWorkflow(agentId, binding)` | POST | `/api/v1/agents/{id}/workflows/{binding}/toggle` |
+| `listEventSources()` | GET | `/api/v1/agents/event-sources` |
 | `getEntityConfig(type, id)` | GET | `/api/v1/entity-config/{type}/{id}` |
 | `updateEntityConfig(type, id, patch)` | PUT | `/api/v1/entity-config/{type}/{id}` |
 | `deleteEntityConfig(type, id)` | DELETE | `/api/v1/entity-config/{type}/{id}` |
@@ -1010,14 +1010,14 @@ interface ResolvedEntityConfig {
 
 ## 16. End-to-End Flows
 
-### User Creates Heartbeat for a Role
+### User Creates Heartbeat for an Agent
 
-1. **Frontend:** User opens role → Automate tab → selects "Proactive check-ins"
+1. **Frontend:** User opens agent → Automate tab → selects "Proactive check-ins"
 2. Sets interval to 30 min, window 9am–6pm, content "Check email for urgent items"
-3. **API:** `PUT /entity-config/role/{id}` → saves to `entity_config` table
+3. **API:** `PUT /entity-config/agent/{id}` → saves to `entity_config` table
 4. **Heartbeat tick (60s):** Loads entity, resolves config, checks LastFired + window
 5. **When due:** Builds `ChatConfig` → `run_chat()` on HEARTBEAT lane
-6. **Runner:** Creates session `"heartbeat-role-{id}"`, runs agentic loop with content as prompt
+6. **Runner:** Creates session `"heartbeat-agent-{id}"`, runs agentic loop with content as prompt
 7. Agent checks email using tools, responds
 8. Response broadcast via WebSocket to frontend
 
@@ -1025,10 +1025,10 @@ interface ResolvedEntityConfig {
 
 1. **Frontend:** Automate tab → "Automations" → "+ New"
 2. AutomationEditor: name "Morning Briefing", 2 steps, schedule 7:30 AM weekdays
-3. **API:** `POST /roles/{id}/workflows` → creates `role_workflows` row
-4. **Server:** Restarts role worker → `register_role_triggers()` creates cron_job
-5. **Scheduler tick (60s):** Finds job due → `execute_role_workflow_task()`
-6. Parses `"role:{role_id}:{binding}"` → loads role config → `run_inline()`
+3. **API:** `POST /agents/{id}/workflows` → creates `agent_workflows` row
+4. **Server:** Restarts agent worker → `register_agent_triggers()` creates cron_job
+5. **Scheduler tick (60s):** Finds job due → `execute_agent_workflow_task()`
+6. Parses `"agent:{agent_id}:{binding}"` → loads agent config → `run_inline()`
 7. **Engine:** Executes activity 1 → passes result → executes activity 2
 8. If emit configured: `emit_tool` fires → EventBus → EventDispatcher
 
@@ -1135,15 +1135,15 @@ pub enum Fallback {
 
 ## 19. Known Issues
 
-### Heartbeat vs Role Worker Heartbeat
+### Heartbeat vs Agent Worker Heartbeat
 
 Two independent heartbeat mechanisms exist:
 1. **`heartbeat.rs`** — server-level, entity_config-driven, uses `run_chat()`
-2. **`role_worker.rs`** — role-level, `tokio::interval`-driven, uses `run_inline()`
+2. **`agent_worker.rs`** — agent-level, `tokio::interval`-driven, uses `run_inline()`
 
-These can potentially overlap if both are configured for the same role. The
+These can potentially overlap if both are configured for the same agent. The
 entity_config heartbeat uses HEARTBEAT lane (max_concurrent=1), providing natural
-dedup for server-level heartbeats, but role worker heartbeats are not gated by the
+dedup for server-level heartbeats, but agent worker heartbeats are not gated by the
 same mechanism.
 
 ### Event Channel Unbounded

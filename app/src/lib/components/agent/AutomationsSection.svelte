@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { getEntityConfig, updateEntityConfig, getRoleWorkflows, createRoleWorkflow, toggleRoleWorkflow, deleteRoleWorkflow } from '$lib/api/nebo';
-	import type { RoleWorkflowEntry } from '$lib/api/neboComponents';
+	import { getEntityConfig, updateEntityConfig, getRoleWorkflows as getAgentWorkflows, createRoleWorkflow as createAgentWorkflow, toggleRoleWorkflow as toggleAgentWorkflow, deleteRoleWorkflow as deleteAgentWorkflow } from '$lib/api/nebo';
+	import type { RoleWorkflowEntry as AgentWorkflowEntry } from '$lib/api/neboComponents';
 	import AutomationEditor from './AutomationEditor.svelte';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
 	import { Plus, Pencil, Trash2, Store, Copy, MoreHorizontal, X } from 'lucide-svelte';
@@ -37,13 +37,13 @@
 	let automationsEnabled = $state(false);
 
 	// Workflow bindings state
-	let workflows = $state<RoleWorkflowEntry[]>([]);
+	let workflows = $state<AgentWorkflowEntry[]>([]);
 	let showEditor = $state(false);
-	let editingWorkflow: RoleWorkflowEntry | null = $state(null);
+	let editingWorkflow: AgentWorkflowEntry | null = $state(null);
 	let confirmDelete: string | null = $state(null);
 	let toggling: string | null = $state(null);
 	let overflowMenu: string | null = $state(null);
-	let previewWorkflow: RoleWorkflowEntry | null = $state(null);
+	let previewWorkflow: AgentWorkflowEntry | null = $state(null);
 
 	const intervalOptions = [
 		{ value: 1, label: '1 minute' },
@@ -67,7 +67,7 @@
 
 	// --- Trigger summary helpers ---
 
-	function summarizeTrigger(wf: RoleWorkflowEntry): string {
+	function summarizeTrigger(wf: AgentWorkflowEntry): string {
 		const cfg = wf.triggerConfig || '';
 		try {
 			switch (wf.triggerType) {
@@ -171,7 +171,7 @@
 		return map;
 	});
 
-	function getTriggeredBy(wf: RoleWorkflowEntry): string | null {
+	function getTriggeredBy(wf: AgentWorkflowEntry): string | null {
 		if (wf.triggerType !== 'event') return null;
 		const cfg = wf.triggerConfig || '';
 		return emitMap[cfg] || null;
@@ -237,13 +237,13 @@
 		showEditor = true;
 	}
 
-	function openEdit(wf: RoleWorkflowEntry) {
+	function openEdit(wf: AgentWorkflowEntry) {
 		editingWorkflow = wf;
 		showEditor = true;
 		overflowMenu = null;
 	}
 
-	async function handleDuplicate(wf: RoleWorkflowEntry) {
+	async function handleDuplicate(wf: AgentWorkflowEntry) {
 		if (!roleId) return;
 		overflowMenu = null;
 		try {
@@ -261,7 +261,7 @@
 					}
 				}
 			})() : {};
-			await createRoleWorkflow(roleId, {
+			await createAgentWorkflow(roleId, {
 				bindingName: wf.bindingName + '-copy',
 				triggerType: wf.triggerType,
 				triggerConfig,
@@ -275,11 +275,11 @@
 		}
 	}
 
-	async function handleToggle(wf: RoleWorkflowEntry) {
+	async function handleToggle(wf: AgentWorkflowEntry) {
 		if (!roleId) return;
 		toggling = wf.bindingName;
 		try {
-			await toggleRoleWorkflow(roleId, wf.bindingName);
+			await toggleAgentWorkflow(roleId, wf.bindingName);
 			await loadWorkflows();
 		} catch {
 			// ignore
@@ -291,7 +291,7 @@
 	async function handleDelete(bindingName: string) {
 		if (!roleId) return;
 		try {
-			await deleteRoleWorkflow(roleId, bindingName);
+			await deleteAgentWorkflow(roleId, bindingName);
 			confirmDelete = null;
 			overflowMenu = null;
 			await loadWorkflows();
@@ -316,7 +316,7 @@
 	async function loadWorkflows() {
 		if (!roleId) return;
 		try {
-			const res = await getRoleWorkflows(roleId);
+			const res = await getAgentWorkflows(roleId);
 			if (res?.workflows) workflows = res.workflows;
 		} catch {
 			// ignore
@@ -327,7 +327,7 @@
 		loading = true;
 		try {
 			const configPromise = getEntityConfig(entityType, entityId).catch(() => null);
-			const wfPromise = roleId ? getRoleWorkflows(roleId).catch(() => null) : Promise.resolve(null);
+			const wfPromise = roleId ? getAgentWorkflows(roleId).catch(() => null) : Promise.resolve(null);
 			const [configRes, wfRes] = await Promise.all([configPromise, wfPromise]);
 			if (configRes?.config) {
 				heartbeatEnabled = configRes.config.heartbeatEnabled ?? false;

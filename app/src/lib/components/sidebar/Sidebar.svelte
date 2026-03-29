@@ -3,14 +3,14 @@
 	import { goto } from '$app/navigation';
 	import { t } from 'svelte-i18n';
 	import { getWebSocketClient } from '$lib/websocket/client';
-	import { getLoops, getActiveRoles, listRoles, activateRole, deactivateRole, deleteRole, duplicateRole, updateRole } from '$lib/api/nebo';
+	import { getLoops, getActiveRoles as getActiveAgents, listRoles as listAgents, activateRole as activateAgent, deactivateRole as deactivateAgent, deleteRole as deleteAgent, duplicateRole as duplicateAgent, updateRole as updateAgent } from '$lib/api/nebo';
 	import type { GetLoopsResponse, LoopChannelEntry, LoopEntry } from '$lib/api/neboComponents';
 	import NewBotMenu from '$lib/components/agent/NewBotMenu.svelte';
 	import AlertDialog from '$lib/components/ui/AlertDialog.svelte';
-	import RoleSetupModal from '$lib/components/role/RoleSetupModal.svelte';
+	import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
 
-	interface SidebarRole {
-		roleId: string;
+	interface SidebarAgent {
+		agentId: string;
 		name: string;
 		description?: string;
 		isActive: boolean;
@@ -19,50 +19,50 @@
 
 	let {
 		activeChannelId = $bindable(''),
-		activeRoleId = '',
-		activeView = 'role',
+		activeAgentId = '',
+		activeView = 'agent',
 		onSelectMyChat = () => {},
 		onSelectChannel = (_channelId: string, _channelName: string, _loopName: string) => {},
-		onSelectRole = (_roleId: string, _roleName: string) => {},
+		onSelectAgent = (_agentId: string, _agentName: string) => {},
 	}: {
 		activeChannelId?: string;
-		activeRoleId?: string;
+		activeAgentId?: string;
 		activeView?: string;
 		onSelectMyChat?: () => void;
 		onSelectChannel?: (channelId: string, channelName: string, loopName: string) => void;
-		onSelectRole?: (roleId: string, roleName: string) => void;
+		onSelectAgent?: (agentId: string, agentName: string) => void;
 	} = $props();
 
 	let loops: LoopEntry[] = $state([]);
 	let expandedLoops: Set<string> = $state(new Set());
-	let sidebarRoles: SidebarRole[] = $state([]);
+	let sidebarAgents: SidebarAgent[] = $state([]);
 	let notificationCount = $state(0);
 	let showNewBotMenu = $state(false);
 	let menuPos = $state({ top: 0, left: 0 });
 
 	// Setup wizard state
 	let showSetupWizard = $state(false);
-	let setupRoleId = $state('');
-	let setupRoleName = $state('');
-	let setupRoleDescription = $state('');
+	let setupAgentId = $state('');
+	let setupAgentName = $state('');
+	let setupAgentDescription = $state('');
 
 	// Context menu state
-	let contextMenu = $state<{ visible: boolean; x: number; y: number; role: SidebarRole | null }>({
-		visible: false, x: 0, y: 0, role: null,
+	let contextMenu = $state<{ visible: boolean; x: number; y: number; agent: SidebarAgent | null }>({
+		visible: false, x: 0, y: 0, agent: null,
 	});
-	let renamingRoleId = $state('');
+	let renamingAgentId = $state('');
 	let renameValue = $state('');
 	let renameInputEl: HTMLInputElement | undefined = $state();
 	let showDeleteDialog = $state(false);
-	let deleteTarget = $state<SidebarRole | null>(null);
+	let deleteTarget = $state<SidebarAgent | null>(null);
 
 	const isMyChatActive = $derived(activeView === 'companion');
 
-	const activeCount = $derived(sidebarRoles.filter(r => r.isActive).length);
+	const activeCount = $derived(sidebarAgents.filter(r => r.isActive).length);
 
 	// Live countdown ticker
 	let nowMs = $state(Date.now());
-	let runningRoles = $state<Record<string, string>>({}); // roleId → status text
+	let runningAgents = $state<Record<string, string>>({}); // agentId → status text
 
 	function formatCountdown(nextFireAt: number): string {
 		const remaining = Math.max(0, nextFireAt * 1000 - nowMs);
@@ -76,16 +76,16 @@
 		return `⏱ ${secs}s`;
 	}
 
-	function roleSubtitle(role: SidebarRole): string {
-		if (!role.isActive) return $t('common.paused');
-		const running = runningRoles[role.roleId];
+	function agentSubtitle(agent: SidebarAgent): string {
+		if (!agent.isActive) return $t('common.paused');
+		const running = runningAgents[agent.agentId];
 		if (running) return running; // "running" or "Step 2 of 3"
-		if (role.nextFireAt) {
+		if (agent.nextFireAt) {
 			const cd = formatCountdown(role.nextFireAt);
 			if (cd) return cd;
 			// Countdown expired but no running state — show description while we wait for refresh
 		}
-		return role.description || '';
+		return agent.description || '';
 	}
 
 	const BOT_COLORS = [
@@ -106,11 +106,11 @@
 		return Math.abs(hash);
 	}
 
-	function roleColor(name: string) {
+	function agentColor(name: string) {
 		return BOT_COLORS[nameHash(name) % BOT_COLORS.length];
 	}
 
-	function roleInitial(name: string): string {
+	function agentInitial(name: string): string {
 		return name.charAt(0).toUpperCase();
 	}
 
@@ -138,23 +138,23 @@
 		expandedLoops = next;
 	}
 
-	async function loadRoles() {
+	async function loadAgents() {
 		try {
 			const [allRes, activeRes] = await Promise.all([
-				listRoles().catch(() => null),
-				getActiveRoles().catch(() => null),
+				listAgents().catch(() => null),
+				getActiveAgents().catch(() => null),
 			]);
 
-			const activeRoles = activeRes?.roles ?? [];
-			const activeMap = new Map(activeRoles.map(r => [r.roleId, r]));
-			const roles: SidebarRole[] = [];
+			const activeAgentList = activeRes?.roles ?? [];
+			const activeMap = new Map(activeAgentList.map(r => [r.roleId, r]));
+			const agents: SidebarAgent[] = [];
 
-			// DB roles
+			// DB agents
 			if (allRes?.roles) {
 				for (const r of allRes.roles) {
 					const active = activeMap.get(r.id);
-					roles.push({
-						roleId: r.id,
+					agents.push({
+						agentId: r.id,
 						name: r.name,
 						description: r.description || undefined,
 						isActive: !!active,
@@ -163,13 +163,13 @@
 				}
 			}
 
-			// Filesystem-only roles — only show if they have an active UUID
+			// Filesystem-only agents — only show if they have an active UUID
 			if (allRes?.filesystemRoles) {
 				for (const r of allRes.filesystemRoles) {
-					const matchedActive = activeRoles.find(a => a.name === r.name);
-					if (matchedActive && !roles.some(existing => existing.name === r.name)) {
-						roles.push({
-							roleId: matchedActive.roleId,
+					const matchedActive = activeAgentList.find(a => a.name === r.name);
+					if (matchedActive && !agents.some(existing => existing.name === r.name)) {
+						agents.push({
+							agentId: matchedActive.roleId,
 							name: r.name,
 							description: r.description || undefined,
 							isActive: true,
@@ -180,12 +180,12 @@
 			}
 
 			// Sort: active first, then alphabetical
-			roles.sort((a, b) => {
+			agents.sort((a, b) => {
 				if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
 				return a.name.localeCompare(b.name);
 			});
 
-			sidebarRoles = roles;
+			sidebarAgents = agents;
 		} catch {
 			// Fine
 		}
@@ -201,17 +201,17 @@
 		onSelectChannel(channel.channelId, channel.channelName, loopName);
 	}
 
-	function selectRole(role: SidebarRole) {
+	function selectRole(agent: SidebarAgent) {
 		if (contextMenu.visible || Date.now() - contextMenuClosedAt < 200) return;
-		onSelectRole(role.roleId, role.name);
+		onSelectAgent(agent.agentId, agent.name);
 	}
 
 	// ── Context menu ──
 
-	function handleContextMenu(e: MouseEvent, role: SidebarRole) {
+	function handleContextMenu(e: MouseEvent, agent: SidebarAgent) {
 		e.preventDefault();
 		(e.currentTarget as HTMLElement)?.blur();
-		contextMenu = { visible: true, x: e.clientX, y: e.clientY, role };
+		contextMenu = { visible: true, x: e.clientX, y: e.clientY, agent };
 	}
 
 	let contextMenuClosedAt = 0;
@@ -236,42 +236,42 @@
 	}
 
 	function closeContextMenu() {
-		contextMenu = { visible: false, x: 0, y: 0, role: null };
+		contextMenu = { visible: false, x: 0, y: 0, agent: null };
 		contextMenuClosedAt = Date.now();
 	}
 
 	async function handleCtxRename() {
-		if (!contextMenu.role) return;
-		const role = contextMenu.role;
+		if (!contextMenu.agent) return;
+		const agent = contextMenu.agent;
 		closeContextMenu();
-		renamingRoleId = role.roleId;
-		renameValue = role.name;
+		renamingAgentId = agent.agentId;
+		renameValue = agent.name;
 		await tick();
 		renameInputEl?.select();
 	}
 
 	async function saveRename() {
 		const trimmed = renameValue.trim();
-		const role = sidebarRoles.find(r => r.roleId === renamingRoleId);
-		if (!trimmed || !role || trimmed === role.name) {
-			renamingRoleId = '';
+		const agent = sidebarAgents.find(r => r.agentId === renamingAgentId);
+		if (!trimmed || !agent || trimmed === agent.name) {
+			renamingAgentId = '';
 			return;
 		}
 		try {
-			await updateRole(renamingRoleId, { name: trimmed });
+			await updateAgent(renamingAgentId, { name: trimmed });
 			// Update local list immediately
-			const idx = sidebarRoles.findIndex(r => r.roleId === renamingRoleId);
+			const idx = sidebarAgents.findIndex(r => r.agentId === renamingAgentId);
 			if (idx >= 0) {
-				sidebarRoles[idx] = { ...sidebarRoles[idx], name: trimmed };
+				sidebarAgents[idx] = { ...sidebarAgents[idx], name: trimmed };
 			}
 		} catch {
 			// revert
 		}
-		renamingRoleId = '';
+		renamingAgentId = '';
 	}
 
 	function cancelRename() {
-		renamingRoleId = '';
+		renamingAgentId = '';
 	}
 
 	function handleRenameKeydown(e: KeyboardEvent) {
@@ -285,15 +285,15 @@
 	}
 
 	async function handleCtxDuplicate() {
-		if (!contextMenu.role) return;
-		const roleId = contextMenu.role.roleId;
+		if (!contextMenu.agent) return;
+		const agentId = contextMenu.agent.agentId;
 		closeContextMenu();
 		try {
-			const res = await duplicateRole(roleId);
+			const res = await duplicateAgent(agentId);
 			if (res?.role) {
-				await loadRoles();
-				onSelectRole(res.role.id, res.role.name);
-				goto(`/agent/role/${res.role.id}/chat`);
+				await loadAgents();
+				onSelectAgent(res.role.id, res.role.name);
+				goto(`/agent/persona/${res.role.id}/chat`);
 			}
 		} catch {
 			// ignore
@@ -301,24 +301,24 @@
 	}
 
 	async function handleCtxToggle() {
-		if (!contextMenu.role) return;
-		const role = contextMenu.role;
+		if (!contextMenu.agent) return;
+		const agent = contextMenu.agent;
 		closeContextMenu();
 		try {
-			if (role.isActive) {
-				await deactivateRole(role.roleId);
+			if (agent.isActive) {
+				await deactivateAgent(agent.agentId);
 			} else {
-				await activateRole(role.roleId);
+				await activateAgent(agent.agentId);
 			}
-			await loadRoles();
+			await loadAgents();
 		} catch {
 			// ignore
 		}
 	}
 
 	function handleCtxDelete() {
-		if (!contextMenu.role) return;
-		deleteTarget = contextMenu.role;
+		if (!contextMenu.agent) return;
+		deleteTarget = contextMenu.agent;
 		closeContextMenu();
 		showDeleteDialog = true;
 	}
@@ -327,12 +327,12 @@
 		if (!deleteTarget) return;
 		showDeleteDialog = false;
 		try {
-			if (deleteTarget.isActive) await deactivateRole(deleteTarget.roleId);
-			await deleteRole(deleteTarget.roleId);
-			if (activeRoleId === deleteTarget.roleId) {
+			if (deleteTarget.isActive) await deactivateAgent(deleteTarget.agentId);
+			await deleteAgent(deleteTarget.agentId);
+			if (activeAgentId === deleteTarget.agentId) {
 				goto('/agents');
 			}
-			await loadRoles();
+			await loadAgents();
 		} catch {
 			// ignore
 		}
@@ -341,14 +341,14 @@
 
 	onMount(() => {
 		loadLoops();
-		loadRoles();
+		loadAgents();
 
 		const wsClient = getWebSocketClient();
 
 		const unsubStatus = wsClient.onStatus((status) => {
 			if (status === 'connected') {
 				loadLoops();
-				loadRoles();
+				loadAgents();
 			}
 		});
 
@@ -360,55 +360,55 @@
 			loadLoops();
 		});
 
-		const unsubRoleActivated = wsClient.on('role_activated', () => {
-			loadRoles();
+		const unsubAgentActivated = wsClient.on('agent_activated', () => {
+			loadAgents();
 		});
-		const unsubRoleDeactivated = wsClient.on('role_deactivated', () => {
-			loadRoles();
+		const unsubAgentDeactivated = wsClient.on('agent_deactivated', () => {
+			loadAgents();
 		});
-		const unsubRoleInstalled = wsClient.on('role_installed', () => {
-			loadRoles();
+		const unsubAgentInstalled = wsClient.on('agent_installed', () => {
+			loadAgents();
 		});
-		const unsubRoleUninstalled = wsClient.on('role_uninstalled', () => {
-			loadRoles();
+		const unsubAgentUninstalled = wsClient.on('agent_uninstalled', () => {
+			loadAgents();
 		});
-		const unsubRoleUpdated = wsClient.on('role_updated', () => {
-			loadRoles();
+		const unsubAgentUpdated = wsClient.on('agent_updated', () => {
+			loadAgents();
 		});
-		const unsubRoleSetup = wsClient.on('role_setup', (data: { roleId: string; roleName: string; roleDescription: string }) => {
-			setupRoleId = data.roleId;
-			setupRoleName = data.roleName;
-			setupRoleDescription = data.roleDescription || '';
+		const unsubAgentSetup = wsClient.on('agent_setup', (data: { roleId: string; roleName: string; roleDescription: string }) => {
+			setupAgentId = data.roleId;
+			setupAgentName = data.roleName;
+			setupAgentDescription = data.roleDescription || '';
 			showSetupWizard = true;
 		});
 		const unsubRunStarted = wsClient.on('workflow_run_started', (data: { roleId: string }) => {
 			if (data.roleId) {
-				runningRoles = { ...runningRoles, [data.roleId]: 'running' };
+				runningAgents = { ...runningAgents, [data.roleId]: 'running' };
 			}
 		});
 		const unsubActivityUpdate = wsClient.on('workflow_activity_update', (data: { roleId: string; step: number; totalSteps: number }) => {
 			if (data.roleId) {
-				runningRoles = { ...runningRoles, [data.roleId]: $t('sidebar.stepProgress', { values: { step: data.step, total: data.totalSteps } }) };
+				runningAgents = { ...runningAgents, [data.roleId]: $t('sidebar.stepProgress', { values: { step: data.step, total: data.totalSteps } }) };
 			}
 		});
 		const unsubRunCompleted = wsClient.on('workflow_run_completed', (data: { roleId: string }) => {
 			if (data.roleId) {
-				const { [data.roleId]: _, ...rest } = runningRoles;
-				runningRoles = rest;
+				const { [data.roleId]: _, ...rest } = runningAgents;
+				runningAgents = rest;
 			}
-			loadRoles();
+			loadAgents();
 		});
 		const unsubRunFailed = wsClient.on('workflow_run_failed', (data: { roleId: string }) => {
 			if (data.roleId) {
-				const { [data.roleId]: _, ...rest } = runningRoles;
-				runningRoles = rest;
+				const { [data.roleId]: _, ...rest } = runningAgents;
+				runningAgents = rest;
 			}
-			loadRoles();
+			loadAgents();
 		});
 
 		const refreshInterval = setInterval(() => {
 			loadLoops();
-			loadRoles();
+			loadAgents();
 		}, 60000);
 
 		// 1-second ticker for countdown display + wake detection
@@ -421,8 +421,8 @@
 
 			// If gap > 5s, computer likely woke from sleep — refresh everything
 			if (gap > 5000) {
-				runningRoles = {}; // clear stale running states
-				loadRoles();
+				runningAgents = {}; // clear stale running states
+				loadAgents();
 				loadLoops();
 			}
 		}, 1000);
@@ -431,8 +431,8 @@
 		function handleVisibility() {
 			if (document.visibilityState === 'visible') {
 				nowMs = Date.now();
-				runningRoles = {};
-				loadRoles();
+				runningAgents = {};
+				loadAgents();
 			}
 		}
 		document.addEventListener('visibilitychange', handleVisibility);
@@ -441,12 +441,12 @@
 			unsubStatus();
 			unsubNotify();
 			unsubLane();
-			unsubRoleActivated();
-			unsubRoleDeactivated();
-			unsubRoleInstalled();
-			unsubRoleUninstalled();
-			unsubRoleUpdated();
-			unsubRoleSetup();
+			unsubAgentActivated();
+			unsubAgentDeactivated();
+			unsubAgentInstalled();
+			unsubAgentUninstalled();
+			unsubAgentUpdated();
+			unsubAgentSetup();
 			unsubRunStarted();
 			unsubActivityUpdate();
 			unsubRunCompleted();
@@ -472,8 +472,8 @@
 		<div class="sidebar-header">
 			<div>
 				<div class="sidebar-header-title">{$t('sidebar.agents')}</div>
-				{#if sidebarRoles.length > 0}
-					<div class="sidebar-header-subtitle">{$t('sidebar.activeCount', { values: { active: activeCount, total: sidebarRoles.length } })}</div>
+				{#if sidebarAgents.length > 0}
+					<div class="sidebar-header-subtitle">{$t('sidebar.activeCount', { values: { active: activeCount, total: sidebarAgents.length } })}</div>
 				{/if}
 			</div>
 			<div class="flex items-center gap-1">
@@ -517,31 +517,31 @@
 			</div>
 			<div class="sidebar-bot-info">
 				<span class="sidebar-bot-name font-medium">{$t('sidebar.assistant')}</span>
-				<span class="sidebar-bot-role">{$t('sidebar.personalAI')}</span>
+				<span class="sidebar-bot-agent">{$t('sidebar.personalAI')}</span>
 			</div>
 			{#if notificationCount > 0}
 				<span class="sidebar-badge">{notificationCount}</span>
 			{/if}
 		</button>
 
-		<!-- Roles -->
-		{#if sidebarRoles.length > 0}
+		<!-- Agents -->
+		{#if sidebarAgents.length > 0}
 			<div class="sidebar-divider"></div>
-			{#each sidebarRoles as role (role.roleId)}
-				{@const c = roleColor(role.name)}
+			{#each sidebarAgents as agent (agent.agentId)}
+				{@const c = agentColor(agent.name)}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
 					class="sidebar-bot-card"
-					class:sidebar-item-active={activeRoleId === role.roleId}
-					class:sidebar-bot-paused={!role.isActive}
-					onclick={() => selectRole(role)}
-					oncontextmenu={(e) => handleContextMenu(e, role)}
+					class:sidebar-item-active={activeAgentId === agent.agentId}
+					class:sidebar-bot-paused={!agent.isActive}
+					onclick={() => selectRole(agent)}
+					oncontextmenu={(e) => handleContextMenu(e, agent)}
 				>
 					<div class="sidebar-bot-icon {c.bg}">
-						<span class="{c.text} font-semibold text-base">{roleInitial(role.name)}</span>
+						<span class="{c.text} font-semibold text-base">{agentInitial(agent.name)}</span>
 					</div>
 					<div class="sidebar-bot-info">
-						{#if renamingRoleId === role.roleId}
+						{#if renamingAgentId === agent.agentId}
 							<!-- svelte-ignore a11y_autofocus -->
 							<input
 								bind:this={renameInputEl}
@@ -552,20 +552,20 @@
 								onclick={(e) => e.stopPropagation()}
 							/>
 						{:else}
-							<span class="sidebar-bot-name">{role.name}</span>
-							{@const subtitle = roleSubtitle(role)}
-							{#if runningRoles[role.roleId]}
-								<span class="sidebar-bot-role flex items-center gap-1">
+							<span class="sidebar-bot-name">{agent.name}</span>
+							{@const subtitle = agentSubtitle(agent)}
+							{#if runningAgents[agent.agentId]}
+								<span class="sidebar-bot-agent flex items-center gap-1">
 									<span class="loading loading-spinner loading-xs"></span>
-									{runningRoles[role.roleId] === 'running' ? $t('common.running') : subtitle}
+									{runningAgents[agent.agentId] === 'running' ? $t('common.running') : subtitle}
 								</span>
 							{:else if subtitle}
-								<span class="sidebar-bot-role">{subtitle}</span>
+								<span class="sidebar-bot-agent">{subtitle}</span>
 							{/if}
 						{/if}
 					</div>
-					{#if renamingRoleId !== role.roleId}
-						{#if role.isActive}
+					{#if renamingAgentId !== agent.agentId}
+						{#if agent.isActive}
 							<span class="sidebar-bot-status sidebar-bot-status-online"></span>
 						{:else}
 							<svg class="sidebar-bot-paused-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -630,7 +630,7 @@
 		</button>
 		<div class="context-menu-divider"></div>
 		<button onclick={handleCtxToggle}>
-			{#if contextMenu.role?.isActive}
+			{#if contextMenu.agent?.isActive}
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" />
 				</svg>
@@ -663,15 +663,15 @@
 />
 
 {#if showSetupWizard}
-	<RoleSetupModal
-		appId={setupRoleId}
-		roleName={setupRoleName}
-		roleDescription={setupRoleDescription}
+	<AgentSetupModal
+		appId={setupAgentId}
+		agentName={setupAgentName}
+		agentDescription={setupAgentDescription}
 		inputs={{}}
-		onComplete={(roleId) => {
+		onComplete={(agentId) => {
 			showSetupWizard = false;
-			loadRoles();
-			onSelectRole(roleId, setupRoleName);
+			loadAgents();
+			onSelectAgent(agentId, setupAgentName);
 		}}
 		onCancel={() => { showSetupWizard = false; }}
 	/>

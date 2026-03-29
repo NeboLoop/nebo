@@ -142,7 +142,7 @@ pub struct HubEvent {
 
 | Type | Fields | Behavior |
 |------|--------|----------|
-| `"chat"` | `session_id`, `prompt`, `system`, `user_id`, `channel`, `role_id` | Dispatches to `dispatch_chat()` |
+| `"chat"` | `session_id`, `prompt`, `system`, `user_id`, `channel`, `agent_id` | Dispatches to `dispatch_chat()` |
 | `"cancel"` | `session_id` | Cancels active run via CancellationToken |
 | `"auth"` / `"connect"` | optional `token` | Responds with `auth_ok` |
 | `"ping"` | — | Responds with `pong` |
@@ -209,10 +209,10 @@ builds `ChatConfig`, and calls `run_chat()`:
 
 ```rust
 async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: ActiveRuns) {
-    // 1. Extract session_id, prompt, system, user_id, channel, role_id from data
-    // 2. Intercept marketplace codes (NEBO/SKIL/WORK/ROLE/LOOP-XXXX-XXXX)
+    // 1. Extract session_id, prompt, system, user_id, channel, agent_id from data
+    // 2. Intercept marketplace codes (NEBO/SKIL/WORK/AGNT/LOOP-XXXX-XXXX)
     // 3. Reject empty prompts
-    // 4. Build session_key: if role_id set, use build_role_session_key()
+    // 4. Build session_key: if agent_id set, use build_persona_session_key()
     // 5. Resolve entity_config via resolve_for_chat() (per-entity overrides)
     // 6. Build ChatConfig with lane=MAIN, origin=User, entity_config
     // 7. Call run_chat(state, config, Some(active_runs))
@@ -235,7 +235,7 @@ pub struct ChatConfig {
     pub user_id: String,          // owner for scoping
     pub channel: String,          // "web", "neboloop", etc.
     pub origin: Origin,           // Origin::User, Origin::Comm, etc.
-    pub role_id: String,          // role isolation (empty = main agent)
+    pub agent_id: String,         // agent isolation (empty = main agent)
     pub cancel_token: CancellationToken,
     pub lane: String,             // which lane to enqueue on
     pub comm_reply: Option<CommReplyConfig>,  // reply-back config for NeboLoop
@@ -254,8 +254,8 @@ pub struct CommReplyConfig {
 | Source | session_key | lane | origin | comm_reply |
 |--------|-------------|------|--------|------------|
 | WebSocket (companion) | companion chat UUID | `MAIN` | `User` | `None` |
-| WebSocket (role) | `role:<roleId>:web` | `MAIN` | `User` | `None` |
-| REST `/roles/:id/chat` | `role:<roleId>:web` | `MAIN` | `User` | `None` |
+| WebSocket (agent) | `persona:<agentId>:web` | `MAIN` | `User` | `None` |
+| REST `/agents/:id/chat` | `persona:<agentId>:web` | `MAIN` | `User` | `None` |
 | NeboLoop comm | `neboloop:<type>:<convId>` | `COMM` | `Comm` | `Some(...)` |
 
 ### run_chat() Flow
@@ -317,7 +317,7 @@ pub struct RunRequest {
     pub force_skill: String,
     pub max_iterations: usize,
     pub cancel_token: CancellationToken,
-    pub role_id: String,
+    pub agent_id: String,
     // Per-entity overrides (from entity_config system, see §15)
     pub permissions: Option<HashMap<String, bool>>,      // tool category allow/deny
     pub resource_grants: Option<HashMap<String, String>>, // screen/browser access
@@ -345,7 +345,7 @@ pub struct Runner {
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
-    role_registry: tools::RoleRegistry,
+    role_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
 }
 ```
@@ -488,7 +488,7 @@ pub struct SessionManager {
 ```
 
 The `session_keys` cache maps internal `session_id` (UUID) to the `session_key`
-(the frontend-visible identifier like `"companion-default"`, `"role:researcher:web"`).
+(the frontend-visible identifier like `"companion-default"`, `"persona:researcher:web"`).
 The `session_key` IS the `chat_id` used for message storage.
 
 ### Public Methods
@@ -544,7 +544,7 @@ via `INSERT OR IGNORE` before inserting the message, satisfying the FK constrain
 ### Session Key Formats
 
 ```
-role:<roleId>:<channel>          — Role-scoped session
+persona:<agentId>:<channel>      — Agent-scoped session
 agent:<agentId>:<rest>           — Agent-scoped session
 subagent:<parentId>:<childId>    — Sub-agent session
 acp:<sessionId>                  — ACP session
@@ -570,7 +570,7 @@ pub struct SessionKeyInfo {
     pub is_topic: bool,
     pub parent_key: String,
     pub rest: String,
-    pub role_id: String,
+    pub agent_id: String,
 }
 ```
 
@@ -583,15 +583,15 @@ pub struct SessionKeyInfo {
 | `build_subagent_session_key(parent, child)` | `"subagent:parent:child"` |
 | `build_thread_session_key(parent, thread)` | `"discord:group:123:thread:t1"` |
 | `build_topic_session_key(parent, topic)` | `"slack:channel:abc:topic:t2"` |
-| `build_role_session_key(role_id, channel)` | `"role:researcher:web"` |
+| `build_persona_session_key(agent_id, channel)` | `"persona:researcher:web"` |
 
 ### Predicate Functions
 
-`is_subagent_key()`, `is_acp_key()`, `is_agent_key()`, `is_role_key()`
+`is_subagent_key()`, `is_acp_key()`, `is_agent_key()`, `is_persona_key()`
 
 ### Extraction Functions
 
-`extract_agent_id()`, `extract_role_id()`, `resolve_thread_parent_key()`
+`extract_agent_id()`, `extract_persona_id()`, `resolve_thread_parent_key()`
 
 ---
 
@@ -995,7 +995,7 @@ NeboLoop Gateway ──WS──> NeboLoopPlugin ──> PluginManager.message_ha
      - `lane: lanes::COMM`
      - `comm_reply: Some(CommReplyConfig { topic, conversation_id })`
    - Call `run_chat(&state, config, None)`
-   - Emit into event bus for role triggers
+   - Emit into event bus for agent triggers
 3. **Other topics**: Emit into event bus + broadcast to frontend as `"comm_message"`
 
 ### Reply Path
@@ -1014,12 +1014,12 @@ and after completion sends it back via `comm_manager.send()` as a `CommMessage`.
 ```
 PREFIX-XXXX-XXXX
 ```
-Where PREFIX is NEBO/SKIL/WORK/ROLE/LOOP and XXXX is 4 Crockford Base32 characters.
+Where PREFIX is NEBO/SKIL/WORK/AGNT/LOOP and XXXX is 4 Crockford Base32 characters.
 
 ### Code Types
 
 ```rust
-pub enum CodeType { Nebo, Skill, Work, Role, Loop }
+pub enum CodeType { Nebo, Skill, Work, Agent, Loop }
 ```
 
 ### Detection
@@ -1044,7 +1044,7 @@ if let Some((code_type, code)) = crate::codes::detect_code(&prompt) {
    - **NEBO**: `redeem_nebo_code()` → store bot_id + token → activate NeboLoop
    - **SKILL**: `install_skill()` → persist to filesystem → reload skill loader → cascade deps
    - **WORK**: `install_workflow()` → persist to DB + filesystem → cascade deps
-   - **ROLE**: `install_role()` → persist to DB + filesystem → auto-activate → cascade deps
+   - **AGNT**: `install_agent()` → persist to DB + filesystem → auto-activate → cascade deps
    - **LOOP**: `join_loop()` → register membership
 3. Broadcast `"code_result"` with success/error + artifact_name + checkout_url
 4. Always broadcast `"chat_complete"` (resets frontend loading state)
@@ -1092,12 +1092,12 @@ Multi-mode component supporting three modes:
 
 ```typescript
 interface ChatMode {
-    type: 'companion' | 'channel' | 'role';
+    type: 'companion' | 'channel' | 'agent';
     channelId?: string;
     channelName?: string;
     loopName?: string;
-    roleId?: string;
-    roleName?: string;
+    agentId?: string;
+    agentName?: string;
 }
 ```
 
@@ -1128,7 +1128,7 @@ interface ContentBlock {
 }
 ```
 
-**WebSocket event subscriptions (companion/role)**:
+**WebSocket event subscriptions (companion/agent)**:
 - `chat_stream` — append text to streaming message
 - `chat_complete` — finalize message, drain queue, extract memories
 - `chat_response` — single complete response
@@ -1145,20 +1145,20 @@ interface ContentBlock {
 - `code_result` — code install result
 - `dep_installed` / `dep_cascade_complete` — dependency installation
 
-**Sending a message (companion/role)**:
+**Sending a message (companion/agent)**:
 ```typescript
 ws.send('chat', {
     session_id: chatId,
     prompt: text,
     user_id: '',
     channel: 'web',
-    role_id: mode.roleId || ''  // role isolation
+    agent_id: mode.agentId || ''  // agent isolation
 });
 ```
 
 **Features**:
 - Virtual scroll (top-truncation, 20-message window, load-more)
-- Message grouping by role + tool presence
+- Message grouping by message role + tool presence
 - Draft persistence in localStorage
 - Message queue during loading (queued messages shown as pills)
 - Stream staleness detection (10min timeout)
@@ -1166,15 +1166,15 @@ ws.send('chat', {
 - File drag-and-drop (inserts paths into input)
 - Code processing UI (marketplace code status messages)
 
-**Feature parity (companion & role)**:
-The following MessageGroup props apply to both companion and role modes (`isCompanion || isRole`):
+**Feature parity (companion & agent)**:
+The following MessageGroup props apply to both companion and agent modes (`isCompanion || isAgent`):
 - `isStreaming` — pulsing indicator on the last assistant message during streaming
 - `onViewToolOutput` — click tool card to open ToolOutputSidebar
 - `onAskSubmit` — interactive ask/question widget responses
 
 **Empty state**:
 - **Companion**: Bot icon + "Your AI Companion" heading + 4 suggestion buttons (read README, list files, web search, debug)
-- **Role**: Role initial avatar (first letter, primary color) + role name heading + role description (fetched via `getRole()` on mount, falls back to generic text) + 2 suggestion buttons ("What can you help me with?", "Give me a brief introduction")
+- **Agent**: Agent initial avatar (first letter, primary color) + agent name heading + agent description (fetched via `getAgent()` on mount, falls back to generic text) + 2 suggestion buttons ("What can you help me with?", "Give me a brief introduction")
 - **Channel**: Plain "No messages yet" text
 
 ### ChatInput.svelte
@@ -1220,7 +1220,7 @@ clear overrides (inherit from defaults). Auto-saves on blur/change.
 | `listAgentSessions()` | `GET /api/v1/agent/sessions` |
 | `deleteAgentSession(id)` | `DELETE /api/v1/agent/sessions/{id}` |
 | `getAgentSessionMessages(id)` | `GET /api/v1/agent/sessions/{id}/messages` |
-| `chatWithRole(roleId, prompt)` | `POST /api/v1/roles/{roleId}/chat` |
+| `chatWithAgent(agentId, prompt)` | `POST /api/v1/agents/{agentId}/chat` |
 | `getEntityConfig(type, id)` | `GET /api/v1/entity-config/{type}/{id}` |
 | `updateEntityConfig(type, id, patch)` | `PUT /api/v1/entity-config/{type}/{id}` |
 | `deleteEntityConfig(type, id)` | `DELETE /api/v1/entity-config/{type}/{id}` |
@@ -1233,9 +1233,9 @@ clear overrides (inherit from defaults). Auto-saves on blur/change.
 
 ### Purpose
 
-Allows per-role and per-channel overrides of global agent settings. An entity is
-identified by `(entity_type, entity_id)` where type is `"main"`, `"role"`, or
-`"channel"` and id is the role ID, channel name, or `"main"`.
+Allows per-agent and per-channel overrides of global agent settings. An entity is
+identified by `(entity_type, entity_id)` where type is `"main"`, `"agent"`, or
+`"channel"` and id is the agent ID, channel name, or `"main"`.
 
 ### Data Structure
 
@@ -1268,8 +1268,8 @@ pub struct ResolvedEntityConfig {
 
 ```sql
 CREATE TABLE entity_config (
-    entity_type TEXT NOT NULL,        -- "main" | "role" | "channel"
-    entity_id TEXT NOT NULL,          -- role ID, channel name, or "main"
+    entity_type TEXT NOT NULL,        -- "main" | "agent" | "channel"
+    entity_id TEXT NOT NULL,          -- agent ID, channel name, or "main"
     heartbeat_enabled INTEGER,        -- 0/1/NULL (NULL = inherit)
     heartbeat_interval_minutes INTEGER,
     heartbeat_content TEXT,
@@ -1342,13 +1342,13 @@ CREATE TABLE entity_config (
 6. Broadcasts `"chat_complete"`
 7. **Frontend**: Shows code processing/result UI, resets loading state
 
-### User sends message to role "Researcher":
+### User sends message to agent "Researcher":
 
-1. **Frontend**: `ws.send('chat', {session_id: 'role:35672fb4:web', prompt: 'Hello', role_id: '35672fb4', channel: 'web'})`
-2. **dispatch_chat()**: role_id is set → `session_key = build_role_session_key(role_id, "web")` = `"role:35672fb4:web"`
-3. **run_chat()**: Same as companion but `session_key = "role:35672fb4:web"`, `role_id = "35672fb4"`
-4. **Runner.run()**: Creates session with `name = "role:35672fb4:web"`, auto-creates `chats` row with same ID
-5. **run_loop()**: Resolves role from `role_registry`, injects ROLE.md into system prompt, uses role's declared tools
+1. **Frontend**: `ws.send('chat', {session_id: 'persona:35672fb4:web', prompt: 'Hello', agent_id: '35672fb4', channel: 'web'})`
+2. **dispatch_chat()**: agent_id is set → `session_key = build_persona_session_key(agent_id, "web")` = `"persona:35672fb4:web"`
+3. **run_chat()**: Same as companion but `session_key = "persona:35672fb4:web"`, `agent_id = "35672fb4"`
+4. **Runner.run()**: Creates session with `name = "persona:35672fb4:web"`, auto-creates `chats` row with same ID
+5. **run_loop()**: Resolves agent from `agent_registry`, injects AGENT.md into system prompt, uses agent's declared tools
 6. Rest of flow identical to companion chat
 
 ---
@@ -1574,7 +1574,7 @@ which only provides filenames (browser security limitation).
 
 **Problem:** `chat_messages.chat_id` has a `FOREIGN KEY` referencing `chats.id`, and
 `PRAGMA foreign_keys = ON` is set on every connection. Companion chat works because
-`get_or_create_companion_chat()` creates the `chats` row. Role/channel sessions had
+`get_or_create_companion_chat()` creates the `chats` row. Agent/channel sessions had
 no equivalent, causing `FOREIGN KEY constraint failed` on `INSERT INTO chat_messages`.
 
 **Root cause:** `runner.run()` only warned on `append_message` failure and continued,
@@ -1590,4 +1590,4 @@ The system uses `session_key` as both the session name AND the `chat_id` for mes
 storage. This coupling means:
 - Changing a session key format requires migrating existing messages
 - The session key must be a valid identifier (no special characters beyond what's already used)
-- Frontend must know the exact session key format to load history (e.g., `role:<id>:web`)
+- Frontend must know the exact session key format to load history (e.g., `persona:<id>:web`)

@@ -10,7 +10,7 @@ pub async fn get_graph(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
     // 1. Active roles from the in-memory registry
-    let registry = state.role_registry.read().await;
+    let registry = state.agent_registry.read().await;
     let mut nodes: Vec<serde_json::Value> = Vec::new();
 
     // Main bot node
@@ -20,12 +20,12 @@ pub async fn get_graph(
         "name": "Nebo",
     }));
 
-    // Role nodes
-    let role_ids: Vec<String> = registry.keys().cloned().collect();
+    // Agent nodes
+    let agent_ids: Vec<String> = registry.keys().cloned().collect();
     for role in registry.values() {
         let description = state
             .store
-            .get_role(&role.role_id)
+            .get_agent(&role.agent_id)
             .ok()
             .flatten()
             .map(|r| r.description)
@@ -37,7 +37,7 @@ pub async fn get_graph(
             .unwrap_or(0);
 
         nodes.push(serde_json::json!({
-            "id": role.role_id,
+            "id": role.agent_id,
             "type": "agent",
             "name": role.name,
             "description": description,
@@ -47,7 +47,7 @@ pub async fn get_graph(
     }
     drop(registry);
 
-    // 2. Default hierarchy edges: main bot → each role (unless user-drawn edges override)
+    // 2. Default hierarchy edges: main bot → each agent (unless user-drawn edges override)
     let user_edges_db = state
         .store
         .list_commander_edges()
@@ -56,7 +56,7 @@ pub async fn get_graph(
     let mut edges: Vec<serde_json::Value> = Vec::new();
 
     // Compute event edges from emit chains (auto-detected, not user-drawn)
-    edges.extend(compute_event_edges(&state, &role_ids));
+    edges.extend(compute_event_edges(&state, &agent_ids));
 
     // 3. User-drawn edges (reporting/coordination)
     for ue in &user_edges_db {
@@ -85,7 +85,7 @@ pub async fn get_graph(
             let member_ids: Vec<&str> = members_db
                 .iter()
                 .filter(|m| m.team_id == t.id)
-                .map(|m| m.role_id.as_str())
+                .map(|m| m.agent_id.as_str())
                 .collect();
             serde_json::json!({
                 "id": t.id,
@@ -125,7 +125,7 @@ pub async fn get_graph(
 /// Compute event edges by matching emit sources to event trigger subscriptions.
 fn compute_event_edges(
     state: &AppState,
-    active_role_ids: &[String],
+    active_agent_ids: &[String],
 ) -> Vec<serde_json::Value> {
     let mut edges = Vec::new();
 
@@ -139,21 +139,21 @@ fn compute_event_edges(
         Err(_) => return edges,
     };
 
-    // Build slug -> role_id map
-    let role_name_to_id: std::collections::HashMap<String, String> = {
+    // Build slug -> agent_id map
+    let agent_name_to_id: std::collections::HashMap<String, String> = {
         let mut map = std::collections::HashMap::new();
-        for role_id in active_role_ids {
-            if let Ok(Some(role)) = state.store.get_role(role_id) {
+        for agent_id in active_agent_ids {
+            if let Ok(Some(role)) = state.store.get_agent(agent_id) {
                 let slug = role.name.to_lowercase().replace(' ', "-");
-                map.insert(slug, role_id.clone());
+                map.insert(slug, agent_id.clone());
             }
         }
         map
     };
 
     for es in &emit_sources {
-        let emitter_slug = es.role_name.to_lowercase().replace(' ', "-");
-        let emitter_role_id = match role_name_to_id.get(&emitter_slug) {
+        let emitter_slug = es.agent_name.to_lowercase().replace(' ', "-");
+        let emitter_agent_id = match agent_name_to_id.get(&emitter_slug) {
             Some(id) => id,
             None => continue,
         };
@@ -161,7 +161,7 @@ fn compute_event_edges(
         let full_event = format!("{}.{}", emitter_slug, es.emit);
 
         for trigger in &event_triggers {
-            if !active_role_ids.contains(&trigger.role_id) {
+            if !active_agent_ids.contains(&trigger.agent_id) {
                 continue;
             }
 
@@ -170,9 +170,9 @@ fn compute_event_edges(
                 let pattern = pattern.trim();
                 if matches_event_pattern(pattern, &full_event) {
                     edges.push(serde_json::json!({
-                        "id": format!("emit-{}-{}-{}", emitter_role_id, trigger.role_id, es.emit),
-                        "source": emitter_role_id,
-                        "target": trigger.role_id,
+                        "id": format!("emit-{}-{}-{}", emitter_agent_id, trigger.agent_id, es.emit),
+                        "source": emitter_agent_id,
+                        "target": trigger.agent_id,
                         "type": "event",
                         "label": es.emit,
                     }));

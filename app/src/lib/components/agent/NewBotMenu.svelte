@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { createBlankRole } from '$lib/api/nebo';
+	import { createBlankRole as createBlankAgent } from '$lib/api/nebo';
 	import { t } from 'svelte-i18n';
 
 	let {
@@ -13,7 +13,7 @@
 
 	function browseMarketplace() {
 		onClose();
-		goto('/marketplace?type=role');
+		goto('/marketplace?type=agent');
 	}
 
 	async function createNew() {
@@ -21,10 +21,10 @@
 		creating = true;
 		onClose();
 		try {
-			const res = await createBlankRole();
-			goto(`/agent/role/${res.role.id}/chat`);
+			const res = await createBlankAgent();
+			goto(`/agent/persona/${res.role.id}/chat`);
 		} catch (e) {
-			console.error('Failed to create blank role:', e);
+			console.error('Failed to create blank agent:', e);
 			creating = false;
 		}
 	}

@@ -19,7 +19,7 @@ fn row_to_team(row: &rusqlite::Row) -> rusqlite::Result<CommanderTeam> {
 fn row_to_member(row: &rusqlite::Row) -> rusqlite::Result<CommanderTeamMember> {
     Ok(CommanderTeamMember {
         team_id: row.get(0)?,
-        role_id: row.get(1)?,
+        agent_id: row.get(1)?,
     })
 }
 

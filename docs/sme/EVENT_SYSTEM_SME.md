@@ -186,7 +186,7 @@ while event = rx.recv():
     for sub in matches:
         merge _event_source, _event_payload, _event_origin into sub.default_inputs
         if sub.definition_json exists:
-            manager.run_inline(def, inputs, "event", sub.role_source, sub.emit_source)
+            manager.run_inline(def, inputs, "event", sub.agent_source, sub.emit_source)
         else:
             warn "no inline definition, skipping"
 ```
@@ -197,8 +197,8 @@ while event = rx.recv():
 |--------|-------------|
 | `set_subscriptions(subs)` | Replace all (used during bulk reload) |
 | `subscribe(sub)` | Add one subscription |
-| `unsubscribe_binding(role_id, binding_name)` | Remove by role + binding |
-| `unsubscribe_role(role_id)` | Remove all for a role |
+| `unsubscribe_binding(agent_id, binding_name)` | Remove by agent + binding |
+| `unsubscribe_agent(agent_id)` | Remove all for an agent |
 | `clear()` | Remove everything |
 | `match_event(event)` | Find matching subscriptions (read lock) |
 
@@ -246,26 +246,26 @@ fn source_matches(pattern: &str, source: &str) -> bool {
 pub struct EventSubscription {
     pub pattern: String,                   // "email.*" or "email.urgent"
     pub default_inputs: serde_json::Value, // Merged with event data
-    pub role_source: String,               // Role ID that owns this
+    pub agent_source: String,              // Agent ID that owns this
     pub binding_name: String,              // Workflow binding name
     pub definition_json: Option<String>,   // Inline workflow JSON
-    pub emit_source: Option<String>,       // "{role-slug}.{emit-name}" for chaining
+    pub emit_source: Option<String>,       // "{agent-slug}.{emit-name}" for chaining
 }
 ```
 
 | Field | Source |
 |-------|--------|
 | `pattern` | From `trigger_config` (comma-split, one subscription per source) |
-| `default_inputs` | From `role_workflows.inputs` JSON column |
-| `role_source` | Role ID |
+| `default_inputs` | From `agent_workflows.inputs` JSON column |
+| `agent_source` | Agent ID |
 | `binding_name` | Workflow binding name |
-| `definition_json` | Generated via `WorkflowBinding::to_workflow_json()` from role.json |
-| `emit_source` | Built as `"{role-slug}.{emit-name}"` if binding has `emit` field |
+| `definition_json` | Generated via `WorkflowBinding::to_workflow_json()` from agent.json |
+| `emit_source` | Built as `"{agent-slug}.{emit-name}"` if binding has `emit` field |
 
 Subscriptions are **in-memory only**. They are rebuilt from the database on:
-- Server boot (via `process_role_bindings`)
-- Role install/update
-- Role worker start
+- Server boot (via `process_agent_bindings`)
+- Agent install/update
+- Agent worker start
 - Binding create/update/toggle
 
 ---
@@ -277,27 +277,27 @@ Subscriptions are **in-memory only**. They are rebuilt from the database on:
 There are three independent paths that register event subscriptions. All converge on
 `EventDispatcher::subscribe()`.
 
-#### Path 1: Role Install/Update via `process_role_bindings`
+#### Path 1: Agent Install/Update via `process_agent_bindings`
 
-**File:** `crates/server/src/handlers/roles.rs:572`
+**File:** `crates/server/src/handlers/agents.rs:572`
 
-Called when a role is installed or its config is re-processed. Iterates all bindings
-from the parsed `RoleConfig`, upserts to `role_workflows` table, then:
+Called when an agent is installed or its config is re-processed. Iterates all bindings
+from the parsed `AgentConfig`, upserts to `agent_workflows` table, then:
 
 ```
 for each binding where trigger_type == "event":
     parse WorkflowBinding from config
     build definition_json via to_workflow_json()
-    build emit_source from "{role-slug}.{emit-name}"
+    build emit_source from "{agent-slug}.{emit-name}"
     split trigger_config by comma → one EventSubscription per source pattern
     dispatcher.subscribe(sub)
 ```
 
 #### Path 2: Single Binding CRUD via `register_binding_triggers`
 
-**File:** `crates/server/src/handlers/roles.rs:1434`
+**File:** `crates/server/src/handlers/agents.rs:1434`
 
-Called from `create_role_workflow`, `update_role_workflow`, and `toggle_role_workflow`
+Called from `create_agent_workflow`, `update_agent_workflow`, and `toggle_agent_workflow`
 HTTP handlers. Registers a single binding's triggers:
 
 ```
@@ -310,21 +310,21 @@ elif trigger_type == "event":
         dispatcher.subscribe(EventSubscription { ... })
 ```
 
-#### Path 3: Role Worker Start
+#### Path 3: Agent Worker Start
 
-**File:** `crates/agent/src/role_worker.rs`
+**File:** `crates/agent/src/agent_worker.rs`
 
-When a RoleWorker starts for a role, it registers event subscriptions as part of
-its lifecycle setup. Uses `process_role_bindings` internally.
+When an AgentWorker starts for an agent, it registers event subscriptions as part of
+its lifecycle setup. Uses `process_agent_bindings` internally.
 
 ### Subscription Cleanup
 
 | Event | Cleanup Method |
 |-------|---------------|
-| Role uninstall | `dispatcher.unsubscribe_role(role_id)` |
-| Binding delete | `dispatcher.unsubscribe_binding(role_id, binding)` |
+| Agent uninstall | `dispatcher.unsubscribe_agent(agent_id)` |
+| Binding delete | `dispatcher.unsubscribe_binding(agent_id, binding)` |
 | Trigger type change | `unsubscribe_binding()` then re-register |
-| Role worker stop | `dispatcher.unsubscribe_role(role_id)` |
+| Agent worker stop | `dispatcher.unsubscribe_agent(agent_id)` |
 | Binding toggle off | `unsubscribe_binding()` |
 
 ---
@@ -352,7 +352,7 @@ manager.run_inline(
     def_json,           // from WorkflowBinding::to_workflow_json()
     inputs,             // merged event data + defaults
     "event",            // trigger_type
-    &sub.role_source,   // role_id
+    &sub.agent_source,  // agent_id
     sub.emit_source,    // for chaining
 ).await
 ```
@@ -367,8 +367,8 @@ the `run_id` immediately. The background task:
 1. Loads AI provider
 2. Resolves tools from the registry
 3. Calls `workflow::engine::execute_workflow()`
-4. Posts automation status messages to the role's chat session
-5. Updates `last_fired` on the `role_workflows` row
+4. Posts automation status messages to the agent's chat session
+5. Updates `last_fired` on the `agent_workflows` row
 6. Records completion/failure in `workflow_runs`
 7. Broadcasts WebSocket status events
 
@@ -388,7 +388,7 @@ Each activity in the workflow definition runs sequentially:
 Workflow A can trigger Workflow B through events:
 
 ```
-  Role: Chief of Staff              Role: Content Writer
+  Agent: Chief of Staff             Agent: Content Writer
   ┌──────────────────┐              ┌──────────────────┐
   │ morning-briefing │              │ draft-summary    │
   │                  │              │                  │
@@ -403,16 +403,16 @@ Workflow A can trigger Workflow B through events:
 
 ### Emit Source Namespacing
 
-The `emit` field in role.json is a short name (e.g. `"done"`). At runtime it's
-namespaced with the role slug:
+The `emit` field in agent.json is a short name (e.g. `"done"`). At runtime it's
+namespaced with the agent slug:
 
 ```
-emit_source = "{role-slug}.{emit-name}"
+emit_source = "{agent-slug}.{emit-name}"
             = "chief-of-staff.done"
 ```
 
 This becomes the `source` field of the emitted event, matching the subscribing
-role's pattern (`"chief-of-*"` or `"chief-of-staff.done"`).
+agent's pattern (`"chief-of-*"` or `"chief-of-staff.done"`).
 
 ### Chain Depth
 
@@ -449,7 +449,7 @@ payload: { from, content, conversation_id },
 origin: "neboloop",
 ```
 
-Fired after the message has been dispatched to `run_chat()`. This allows role
+Fired after the message has been dispatched to `run_chat()`. This allows agent
 event triggers to react to inbound NeboLoop messages.
 
 ### NeboLoop Other Topic Messages (line 1263)
@@ -471,7 +471,7 @@ Catch-all for non-chat message types (e.g. webhooks, notifications).
 | `neboloop.dm` | DM from NeboLoop |
 | `neboloop.{topic}` | Any other NeboLoop topic |
 
-Role event triggers can subscribe to these patterns. Example:
+Agent event triggers can subscribe to these patterns. Example:
 ```json
 {
     "trigger": { "type": "event", "sources": ["neboloop.chat"] }
@@ -519,14 +519,14 @@ not the EventBus.
 
 ## 14. Event Sources Discovery API
 
-**Endpoint:** `GET /api/v1/roles/event-sources`
+**Endpoint:** `GET /api/v1/agents/event-sources`
 
-Returns all emit sources from active role workflow bindings:
+Returns all emit sources from active agent workflow bindings:
 
 ```sql
-SELECT rw.emit, r.name, rw.binding_name, rw.description
-FROM role_workflows rw
-JOIN roles r ON rw.role_id = r.id
+SELECT rw.emit, a.name, rw.binding_name, rw.description
+FROM agent_workflows rw
+JOIN agents a ON rw.agent_id = a.id
 WHERE rw.emit IS NOT NULL AND rw.emit != '' AND rw.is_active = 1;
 ```
 
@@ -534,7 +534,7 @@ WHERE rw.emit IS NOT NULL AND rw.emit != '' AND rw.is_active = 1;
 ```rust
 pub struct EmitSource {
     pub emit: String,           // "briefing.ready"
-    pub role_name: String,      // "Chief of Staff"
+    pub agent_name: String,     // "Chief of Staff"
     pub binding_name: String,   // "morning-briefing"
     pub description: Option<String>,
 }
@@ -554,7 +554,7 @@ event triggers. Helps users discover what events other workflows emit.
 When trigger type = "Event":
 - `TagInput` component for entering source patterns
 - Lazy-loads available event sources via `listEventSources()` API
-- Shows "emitted by: {role-name} / {binding-name}" annotations
+- Shows "emitted by: {agent-name} / {binding-name}" annotations
 - Multiple sources supported (stored as comma-separated in `trigger_config`)
 
 ### Automations List — Chain Visualization
@@ -576,12 +576,12 @@ When trigger type = "Event":
 
 ## 16. Database Schema
 
-### role_workflows (event triggers stored here)
+### agent_workflows (event triggers stored here)
 
 ```sql
-CREATE TABLE role_workflows (
+CREATE TABLE agent_workflows (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
     binding_name TEXT NOT NULL,
     trigger_type TEXT NOT NULL,       -- "schedule" | "heartbeat" | "event" | "manual"
     trigger_config TEXT NOT NULL,     -- For events: "email.urgent,email.*" (comma-separated)
@@ -591,29 +591,29 @@ CREATE TABLE role_workflows (
     emit TEXT,                        -- Event name emitted on completion (short, unnamespaced)
     activities TEXT,                  -- JSON inline activity definitions
     last_fired TEXT,                  -- ISO timestamp of last execution
-    UNIQUE(role_id, binding_name)
+    UNIQUE(agent_id, binding_name)
 );
 ```
 
 **Event-specific columns:**
 - `trigger_config`: Comma-separated source patterns for event type
-- `emit`: Short event name (namespaced to `{role-slug}.{emit}` at runtime)
+- `emit`: Short event name (namespaced to `{agent-slug}.{emit}` at runtime)
 - `is_active`: Checked during subscription registration (inactive = not subscribed)
 
 **Note:** Event subscriptions are NOT persisted in their own table. They are derived
-from `role_workflows` rows and held in-memory in the EventDispatcher.
+from `agent_workflows` rows and held in-memory in the EventDispatcher.
 
 ### Key queries
 
 ```sql
 -- Load all active event triggers on startup
-SELECT * FROM role_workflows rw
-JOIN roles r ON rw.role_id = r.id
-WHERE rw.trigger_type = 'event' AND rw.is_active = 1 AND r.is_enabled = 1;
+SELECT * FROM agent_workflows rw
+JOIN agents a ON rw.agent_id = a.id
+WHERE rw.trigger_type = 'event' AND rw.is_active = 1 AND a.is_enabled = 1;
 
 -- List emit sources for discovery
-SELECT rw.emit, r.name, rw.binding_name, rw.description
-FROM role_workflows rw JOIN roles r ON rw.role_id = r.id
+SELECT rw.emit, a.name, rw.binding_name, rw.description
+FROM agent_workflows rw JOIN agents a ON rw.agent_id = a.id
 WHERE rw.emit IS NOT NULL AND rw.emit != '' AND rw.is_active = 1;
 ```
 
@@ -625,8 +625,8 @@ WHERE rw.emit IS NOT NULL AND rw.emit != '' AND rw.is_active = 1;
 2. **`lib.rs:734`** — `EventDispatcher::new()` creates empty subscription list
 3. **`lib.rs:737`** — `EmitTool::new(event_bus.clone())` registered in tool registry
 4. **`lib.rs:806`** — `EventDispatcher::spawn(rx, manager)` starts consumer loop
-5. **Role workers start** — For each active role:
-   - `process_role_bindings()` upserts `role_workflows` rows
+5. **Agent workers start** — For each active agent:
+   - `process_agent_bindings()` upserts `agent_workflows` rows
    - Event-type bindings create `EventSubscription` objects
    - Each source pattern in `trigger_config` becomes a separate subscription
    - Subscriptions registered via `dispatcher.subscribe()`
@@ -640,12 +640,12 @@ subscriptions.
 
 | Path | When | File:Line |
 |------|------|-----------|
-| `process_role_bindings()` | Role install, config re-process | `handlers/roles.rs:572` |
-| `register_binding_triggers()` | Binding CRUD (create, update, toggle) | `handlers/roles.rs:1434` |
-| `RoleTool::register_config_triggers()` | CLI/agent role install | `tools/role_tool.rs:1147` |
-| `register_role_triggers()` | Cron job registration (schedule only) | `workflow/triggers.rs:40` |
+| `process_agent_bindings()` | Agent install, config re-process | `handlers/agents.rs:572` |
+| `register_binding_triggers()` | Binding CRUD (create, update, toggle) | `handlers/agents.rs:1434` |
+| `PersonaTool::register_config_triggers()` | CLI/agent install | `tools/agent_tool.rs:1147` |
+| `register_agent_triggers()` | Cron job registration (schedule only) | `workflow/triggers.rs:40` |
 
-**Critical note:** `register_role_triggers()` in `triggers.rs` only handles **schedule**
+**Critical note:** `register_agent_triggers()` in `triggers.rs` only handles **schedule**
 triggers (cron jobs). Event triggers are registered separately via the EventDispatcher
 in the calling code.
 
@@ -675,9 +675,9 @@ in the calling code.
 - `neboloop.{topic}` — NeboLoop message events
 - `neboloop.agent_space.{slug}` — Agent-to-agent messages
 
-**Emit sources (role-namespaced):**
-- `{role-slug}.{emit-name}` — e.g. `"chief-of-staff.briefing.ready"`
-- Built at runtime: `role_name.to_lowercase().replace(' ', '-')` + `.` + emit field
+**Emit sources (agent-namespaced):**
+- `{agent-slug}.{emit-name}` — e.g. `"chief-of-staff.briefing.ready"`
+- Built at runtime: `agent_name.to_lowercase().replace(' ', '-')` + `.` + emit field
 
 ### Subscription Patterns
 
@@ -725,7 +725,7 @@ out of memory.
 
 ### Subscriptions are In-Memory
 
-Event subscriptions are rebuilt from `role_workflows` on each relevant lifecycle event
+Event subscriptions are rebuilt from `agent_workflows` on each relevant lifecycle event
 (boot, install, toggle). If a subscription is lost from memory (e.g., due to a bug
 in cleanup), it won't fire until the next rebuild.
 
@@ -749,8 +749,8 @@ format required by the `cron` crate v0.12. The other two paths
 (`flatten_trigger_config` and `process_role_bindings`) passed raw 5-field
 expressions through, causing "Invalid cron expression" errors at runtime.
 
-**Fix:** Both `flatten_trigger_config` and `process_role_bindings` now call
-`RoleTool::normalize_cron()`.
+**Fix:** Both `flatten_trigger_config` and `process_agent_bindings` now call
+`PersonaTool::normalize_cron()`.
 
 ---
 
@@ -785,7 +785,7 @@ they are UI notifications only.
 
 NeboLoop is both a consumer and producer:
 - **Producer:** Inbound NeboLoop messages emit events into the EventBus
-- **Consumer:** Roles can subscribe to `neboloop.*` patterns to react to messages
+- **Consumer:** Agents can subscribe to `neboloop.*` patterns to react to messages
 
 ---
 
@@ -797,15 +797,15 @@ NeboLoop is both a consumer and producer:
 | `crates/tools/src/emit_tool.rs` | Workflow emit tool | `EmitTool` |
 | `crates/tools/src/event_tool.rs` | Cron job management tool (NOT events) | `EventTool` |
 | `crates/workflow/src/events.rs` | Dispatcher, matching, subscriptions | `EventDispatcher`, `EventSubscription` |
-| `crates/workflow/src/triggers.rs` | Trigger registration helpers | `register_role_triggers()` |
+| `crates/workflow/src/triggers.rs` | Trigger registration helpers | `register_agent_triggers()` |
 | `crates/workflow/src/engine.rs` | Workflow execution, emit injection | `execute_workflow()` |
 | `crates/server/src/lib.rs` | Boot wiring, system event emitters | Lines 733-806, 1172-1275 |
-| `crates/server/src/handlers/roles.rs` | Binding CRUD, subscription registration | `process_role_bindings()`, `register_binding_triggers()` |
+| `crates/server/src/handlers/agents.rs` | Binding CRUD, subscription registration | `process_agent_bindings()`, `register_binding_triggers()` |
 | `crates/server/src/handlers/mcp_server.rs` | MCP event emission | `emit_event` handler |
 | `crates/server/src/workflow_manager.rs` | `run_inline()` execution | `WorkflowManagerImpl` |
-| `crates/agent/src/role_worker.rs` | Role worker lifecycle | `RoleWorker`, `RoleWorkerRegistry` |
-| `crates/napp/src/role.rs` | Trigger types, WorkflowBinding | `RoleTrigger::Event`, `WorkflowBinding` |
-| `crates/db/src/queries/roles.rs` | Event-related DB queries | `list_event_triggers()`, `list_emit_sources()` |
+| `crates/agent/src/agent_worker.rs` | Agent worker lifecycle | `AgentWorker`, `AgentWorkerRegistry` |
+| `crates/napp/src/agent.rs` | Trigger types, WorkflowBinding | `AgentTrigger::Event`, `WorkflowBinding` |
+| `crates/db/src/queries/agents.rs` | Event-related DB queries | `list_event_triggers()`, `list_emit_sources()` |
 
 ---
 

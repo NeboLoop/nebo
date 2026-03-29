@@ -1256,7 +1256,7 @@
 .sidebar-rail .sidebar-header-subtitle,
 .sidebar-rail .sidebar-bot-info,
 .sidebar-rail .sidebar-bot-name,
-.sidebar-rail .sidebar-bot-role,
+.sidebar-rail .sidebar-bot-agent,
 .sidebar-rail .sidebar-label,
 .sidebar-rail .sidebar-header-btn,
 .sidebar-rail .sidebar-badge,
@@ -1555,7 +1555,7 @@
 		@apply text-sm font-medium truncate;
 	}
 
-	.sidebar-bot-role {
+	.sidebar-bot-agent {
 		@apply text-sm text-base-content/60 truncate;
 	}
 
@@ -1585,7 +1585,7 @@
 		@apply text-base-content/60;
 	}
 
-	.sidebar-bot-paused .sidebar-bot-role {
+	.sidebar-bot-paused .sidebar-bot-agent {
 		@apply text-base-content/50;
 	}
 
@@ -1613,8 +1613,8 @@
 		@apply bg-primary/10 text-primary;
 	}
 
-	/* ===== Role Inline Rename ===== */
-	.role-name-inline-btn {
+	/* ===== Agent Inline Rename ===== */
+	.agent-name-inline-btn {
 		@apply text-base font-semibold text-base-content leading-tight cursor-text;
 		@apply rounded px-1 -mx-1;
 		@apply hover:bg-base-200 transition-colors;
@@ -1622,7 +1622,7 @@
 		border: none;
 	}
 
-	.role-name-inline-input {
+	.agent-name-inline-input {
 		@apply text-base font-semibold text-base-content leading-tight;
 		@apply bg-transparent border-0 border-b-2 border-primary outline-none;
 		@apply px-1 -mx-1 py-0;

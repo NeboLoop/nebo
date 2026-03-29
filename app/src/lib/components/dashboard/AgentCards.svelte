@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { Bot, MessageSquare, Store } from 'lucide-svelte';
-	import type { ActiveRoleEntry, SimpleAgentStatusResponse } from '$lib/api/neboComponents';
+	import type { ActiveRoleEntry as ActiveAgentEntry, SimpleAgentStatusResponse } from '$lib/api/neboComponents';
 
 	let {
-		roles = [],
+		agents = [],
 		agentStatus = null,
 		isLoading = true
 	}: {
-		roles: ActiveRoleEntry[];
+		agents: ActiveAgentEntry[];
 		agentStatus: SimpleAgentStatusResponse | null;
 		isLoading: boolean;
 	} = $props();
@@ -51,8 +51,8 @@
 			</div>
 		</div>
 
-		<!-- Active roles -->
-		{#each roles as role (role.roleId)}
+		<!-- Active agents -->
+		{#each agents as agent (agent.roleId)}
 			<div class="card bg-base-200 border border-base-300 hover:border-base-content/40 transition-all duration-200">
 				<div class="card-body p-5">
 					<div class="flex items-center gap-3 mb-3">
@@ -60,7 +60,7 @@
 							<Bot class="w-5 h-5 text-secondary" />
 						</div>
 						<div class="flex-1 min-w-0">
-							<div class="font-bold text-base truncate">{role.name}</div>
+							<div class="font-bold text-base truncate">{agent.name}</div>
 							<div class="flex items-center gap-1.5 mt-0.5">
 								<span class="dashboard-status-dot bg-success"></span>
 								<span class="text-sm text-base-content/60">Active</span>
@@ -68,7 +68,7 @@
 						</div>
 					</div>
 					<div class="flex items-center gap-2">
-						<button class="btn btn-secondary btn-sm btn-outline gap-1.5" onclick={() => goto(`/agent/role/${role.roleId}/chat`)}>
+						<button class="btn btn-secondary btn-sm btn-outline gap-1.5" onclick={() => goto(`/agent/persona/${agent.roleId}/chat`)}>
 							<MessageSquare class="w-3.5 h-3.5" /> Chat
 						</button>
 					</div>
@@ -77,12 +77,12 @@
 		{/each}
 
 		<!-- Empty state hint -->
-		{#if roles.length === 0}
+		{#if agents.length === 0}
 			<div class="card bg-base-200 border border-base-300 border-dashed">
 				<div class="card-body p-5 items-center justify-center text-center">
 					<Store class="w-6 h-6 text-base-content/60 mb-1" />
 					<p class="text-sm text-base-content/80">
-						<a href="/marketplace" class="link link-primary">Install roles from the Marketplace</a>
+						<a href="/marketplace" class="link link-primary">Install agents from the Marketplace</a>
 					</p>
 				</div>
 			</div>

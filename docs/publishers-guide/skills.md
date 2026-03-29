@@ -183,7 +183,7 @@ Triggers are matched by **case-insensitive substring** against the user's messag
 
 The `description` field is the primary trigger mechanism. The `triggers` field in frontmatter provides additional phrase-matching as a Nebo extension.
 
-> **Note on "triggers":** Skill triggers are NLP phrase-matching — case-insensitive substring matching against the user's message. This is a completely different mechanism from Role triggers (schedule, heartbeat, event), which are event bindings. Same word, different systems.
+> **Note on "triggers":** Skill triggers are NLP phrase-matching — case-insensitive substring matching against the user's message. This is a completely different mechanism from Agent triggers (schedule, heartbeat, event), which are event bindings. Same word, different systems.
 
 ---
 

@@ -3,9 +3,9 @@ use tracing::{info, warn};
 
 /// Register schedule triggers for a workflow from cron_jobs in the DB.
 ///
-/// Triggers are now owned by Roles (via role.json). This function only
+/// Triggers are now owned by Agents (via agent.json). This function only
 /// handles schedule-based cron job registration when called explicitly
-/// (e.g., from role install cascade).
+/// (e.g., from agent install cascade).
 pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
     let name = format!("workflow-{}", workflow_id);
     match store.upsert_cron_job(
@@ -31,77 +31,77 @@ pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
     }
 }
 
-/// Register all triggers from a role's workflow bindings.
+/// Register all triggers from an agent's workflow bindings.
 ///
-/// For schedule triggers: creates cron_job with name `role-{role_id}-{binding}`.
-/// The command field stores `role:{role_id}:{binding_name}` so the scheduler
+/// For schedule triggers: creates cron_job with name `role-{agent_id}-{binding}`.
+/// The command field stores `role:{agent_id}:{binding_name}` so the scheduler
 /// can resolve the inline definition at execution time.
-/// For event triggers: stored in role_workflows table, consumed by EventDispatcher.
-pub fn register_role_triggers(role_id: &str, bindings: &[db::models::RoleWorkflow], store: &Store) {
+/// For event triggers: stored in agent_workflows table, consumed by EventDispatcher.
+pub fn register_agent_triggers(agent_id: &str, bindings: &[db::models::AgentWorkflow], store: &Store) {
     for binding in bindings {
         if binding.trigger_type == "schedule" && binding.is_active == 1 {
-            let name = format!("role-{}-{}", role_id, binding.binding_name);
-            // Command encodes role_id:binding_name for scheduler to resolve inline def
-            let command = format!("role:{}:{}", role_id, binding.binding_name);
+            let name = format!("role-{}-{}", agent_id, binding.binding_name);
+            // Command encodes agent_id:binding_name for scheduler to resolve inline def
+            let command = format!("role:{}:{}", agent_id, binding.binding_name);
             match store.upsert_cron_job(
                 &name,
                 &binding.trigger_config,
                 &command,
-                "role_workflow",
+                "agent_workflow",
                 None,
                 None,
                 None,
                 true,
             ) {
                 Ok(_) => info!(
-                    role = role_id,
+                    agent = agent_id,
                     binding = %binding.binding_name,
                     cron = %binding.trigger_config,
-                    "registered role schedule trigger"
+                    "registered agent schedule trigger"
                 ),
                 Err(e) => warn!(
-                    role = role_id,
+                    agent = agent_id,
                     binding = %binding.binding_name,
                     error = %e,
-                    "failed to register role schedule trigger"
+                    "failed to register agent schedule trigger"
                 ),
             }
         }
-        // Event triggers are stored in role_workflows and consumed by EventDispatcher
+        // Event triggers are stored in agent_workflows and consumed by EventDispatcher
     }
 }
 
-/// Unregister a single role trigger (cron job named `role-{role_id}-{binding_name}`).
-pub fn unregister_single_role_trigger(role_id: &str, binding_name: &str, store: &Store) {
-    let name = format!("role-{}-{}", role_id, binding_name);
+/// Unregister a single agent trigger (cron job named `role-{agent_id}-{binding_name}`).
+pub fn unregister_single_agent_trigger(agent_id: &str, binding_name: &str, store: &Store) {
+    let name = format!("role-{}-{}", agent_id, binding_name);
     match store.delete_cron_job_by_name(&name) {
         Ok(count) => {
             if count > 0 {
-                info!(role = role_id, binding = binding_name, "unregistered single role trigger");
+                info!(agent = agent_id, binding = binding_name, "unregistered single agent trigger");
             }
         }
         Err(e) => warn!(
-            role = role_id,
+            agent = agent_id,
             binding = binding_name,
             error = %e,
-            "failed to unregister single role trigger"
+            "failed to unregister single agent trigger"
         ),
     }
 }
 
-/// Unregister all triggers for a role (cron jobs with role-{role_id} prefix).
-pub fn unregister_role_triggers(role_id: &str, store: &Store) {
-    let prefix = format!("role-{}-", role_id);
+/// Unregister all triggers for an agent (cron jobs with role-{agent_id} prefix).
+pub fn unregister_agent_triggers(agent_id: &str, store: &Store) {
+    let prefix = format!("role-{}-", agent_id);
     match store.delete_cron_jobs_by_prefix(&prefix) {
         Ok(count) => {
             if count > 0 {
-                info!(role = role_id, deleted = count, "unregistered role triggers");
+                info!(agent = agent_id, deleted = count, "unregistered agent triggers");
             }
         }
         Err(e) => warn!(
-            role = role_id,
+            agent = agent_id,
             error = %e,
-            "failed to unregister role triggers"
+            "failed to unregister agent triggers"
         ),
     }
 }

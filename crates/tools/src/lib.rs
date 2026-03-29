@@ -22,7 +22,7 @@ pub mod policy;
 pub mod process;
 pub mod publisher_tool;
 pub mod registry;
-pub mod role_tool;
+pub mod agent_tool;
 pub mod safeguard;
 pub mod settings_tool;
 pub mod shell_tool;
@@ -60,7 +60,7 @@ pub use registry::{Registry, ResourceKind, ToolResult};
 pub use shell_tool::ShellTool;
 pub use system_tool::SystemTool;
 pub use os_tool::OsTool;
-pub use role_tool::{RoleTool, ActiveRoleState, ActiveRole, RoleRegistry};
+pub use agent_tool::{PersonaTool, ActiveAgentState, ActiveAgent, AgentRegistry};
 pub use web_tool::WebTool;
 pub use bot_tool::{AdvisorDeliberator, AgentTool, HybridSearchResult, HybridSearcher};
 pub use event_tool::EventTool;
@@ -96,7 +96,7 @@ pub(crate) fn build_neboloop_api(store: &db::Store) -> Result<comm::api::NeboLoo
 // After redeem_code() registers the install in NeboLoop, these fetch
 // the actual content and write it to the local filesystem.
 
-/// Extract the manifest text (SKILL.md/WORKFLOW.md/ROLE.md) from a SkillDetail.
+/// Extract the manifest text (SKILL.md/WORKFLOW.md/AGENT.md) from a SkillDetail.
 /// Tries `manifest` field first, then falls back to `content_md`.
 pub fn extract_manifest_text(detail: &comm::api_types::SkillDetail) -> Option<String> {
     // Primary: manifest field (can be JSON string or object)
@@ -212,30 +212,30 @@ fn generate_minimal_skill_md(name: &str, description: &str) -> String {
     )
 }
 
-/// Fetch role content from NeboLoop and persist to DB + nebo/ namespace.
+/// Fetch agent content from NeboLoop and persist to DB + nebo/ namespace.
 ///
 /// If the API provides a `downloadUrl`, downloads the sealed `.napp` archive
-/// and stores it at `nebo/roles/{slug}/{version}.napp`, then extracts it.
-/// Otherwise falls back to writing loose ROLE.md + manifest.json files.
-/// Result of persisting a role from the API, including type_config for
+/// and stores it at `nebo/agents/{slug}/{version}.napp`, then extracts it.
+/// Otherwise falls back to writing loose AGENT.md + manifest.json files.
+/// Result of persisting an agent from the API, including type_config for
 /// downstream workflow binding processing.
-pub struct PersistRoleResult {
+pub struct PersistAgentResult {
     /// The typeConfig JSON from NeboLoop (contains workflow bindings, triggers, etc.)
     pub type_config: Option<serde_json::Value>,
 }
 
-pub async fn persist_role_from_api(
+pub async fn persist_agent_from_api(
     api: &comm::api::NeboLoopApi,
     artifact_id: &str,
     name: &str,
     code: &str,
     store: &db::Store,
-) -> Result<PersistRoleResult, String> {
+) -> Result<PersistAgentResult, String> {
     let detail = api.get_skill(artifact_id).await
-        .map_err(|e| format!("fetch role detail: {e}"))?;
+        .map_err(|e| format!("fetch agent detail: {e}"))?;
 
     let manifest_text = extract_manifest_text(&detail)
-        .unwrap_or_else(|| generate_minimal_role_md(name, &detail.item.description));
+        .unwrap_or_else(|| generate_minimal_agent_md(name, &detail.item.description));
 
     // Store typeConfig as frontmatter so workflow bindings are preserved
     let frontmatter_str = detail.type_config.as_ref()
@@ -243,8 +243,8 @@ pub async fn persist_role_from_api(
         .unwrap_or_default();
 
     // Persist to DB — create or update if already exists (re-install)
-    if store.get_role(artifact_id).ok().flatten().is_some() {
-        let _ = store.update_role(
+    if store.get_agent(artifact_id).ok().flatten().is_some() {
+        let _ = store.update_agent(
             artifact_id,
             name,
             &detail.item.description,
@@ -254,7 +254,7 @@ pub async fn persist_role_from_api(
             None,
         );
     } else {
-        let _ = store.create_role(
+        let _ = store.create_agent(
             artifact_id,
             Some(code),
             name,
@@ -263,7 +263,7 @@ pub async fn persist_role_from_api(
             &frontmatter_str,
             None,
             None,
-        ).map_err(|e| format!("create_role: {e}"))?;
+        ).map_err(|e| format!("create_agent: {e}"))?;
     }
 
     // Marketplace artifacts go to nebo/ namespace (installed)
@@ -276,70 +276,70 @@ pub async fn persist_role_from_api(
     let download_url = detail.download_url.clone()
         .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
     if let Some(ref download_url) = download_url {
-        let napp_dir = nebo_dir.join("roles").join(dir_name);
-        std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create role dir: {e}"))?;
+        let napp_dir = nebo_dir.join("agents").join(dir_name);
+        std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create agent dir: {e}"))?;
         let napp_path = napp_dir.join(format!("{}.napp", version));
 
         match api.download_napp(download_url).await {
             Ok(data) => {
                 std::fs::write(&napp_path, &data)
                     .map_err(|e| format!("write .napp: {e}"))?;
-                tracing::info!(role = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
+                tracing::info!(agent = name, path = %napp_path.display(), size = data.len(), "stored sealed .napp");
 
                 match napp::reader::extract_napp_alongside(&napp_path) {
                     Ok(extract_dir) => {
-                        tracing::info!(role = name, dir = %extract_dir.display(), "extracted .napp");
-                        return Ok(PersistRoleResult { type_config: detail.type_config });
+                        tracing::info!(agent = name, dir = %extract_dir.display(), "extracted .napp");
+                        return Ok(PersistAgentResult { type_config: detail.type_config });
                     }
                     Err(e) => {
-                        tracing::warn!(role = name, error = %e, "failed to extract .napp; falling back to loose files");
+                        tracing::warn!(agent = name, error = %e, "failed to extract .napp; falling back to loose files");
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(role = name, error = %e, "failed to download .napp; falling back to loose files");
+                tracing::warn!(agent = name, error = %e, "failed to download .napp; falling back to loose files");
             }
         }
     }
 
-    // Fallback: write loose ROLE.md + role.json + manifest.json
-    let role_dir = nebo_dir.join("roles").join(dir_name);
-    std::fs::create_dir_all(&role_dir).map_err(|e| format!("create role dir: {e}"))?;
+    // Fallback: write loose AGENT.md + agent.json + manifest.json
+    let agent_dir = nebo_dir.join("agents").join(dir_name);
+    std::fs::create_dir_all(&agent_dir).map_err(|e| format!("create agent dir: {e}"))?;
 
-    if let Err(e) = std::fs::write(role_dir.join("ROLE.md"), &manifest_text) {
-        tracing::warn!(role = name, error = %e, "failed to write ROLE.md");
+    if let Err(e) = std::fs::write(agent_dir.join("AGENT.md"), &manifest_text) {
+        tracing::warn!(agent = name, error = %e, "failed to write AGENT.md");
     }
 
-    // Write role.json from typeConfig (contains workflow bindings, triggers)
+    // Write agent.json from typeConfig (contains workflow bindings, triggers)
     if let Some(ref tc) = detail.type_config {
         if let Err(e) = std::fs::write(
-            role_dir.join("role.json"),
+            agent_dir.join("agent.json"),
             serde_json::to_string_pretty(tc).unwrap_or_default(),
         ) {
-            tracing::warn!(role = name, error = %e, "failed to write role.json");
+            tracing::warn!(agent = name, error = %e, "failed to write agent.json");
         }
     }
 
     let manifest_json = serde_json::json!({
         "name": name,
         "version": detail.item.version,
-        "type": "role",
+        "type": "agent",
         "code": code,
         "description": detail.item.description,
     });
     if let Err(e) = std::fs::write(
-        role_dir.join("manifest.json"),
+        agent_dir.join("manifest.json"),
         serde_json::to_string_pretty(&manifest_json).unwrap_or_default(),
     ) {
-        tracing::warn!(role = name, error = %e, "failed to write manifest.json");
+        tracing::warn!(agent = name, error = %e, "failed to write manifest.json");
     }
 
-    tracing::info!(role = name, dir = %role_dir.display(), "persisted role artifact (loose)");
-    Ok(PersistRoleResult { type_config: detail.type_config })
+    tracing::info!(agent = name, dir = %agent_dir.display(), "persisted agent artifact (loose)");
+    Ok(PersistAgentResult { type_config: detail.type_config })
 }
 
-/// Generate a minimal ROLE.md from metadata.
-fn generate_minimal_role_md(name: &str, description: &str) -> String {
+/// Generate a minimal AGENT.md from metadata.
+fn generate_minimal_agent_md(name: &str, description: &str) -> String {
     format!(
         "---\nname: {}\ndescription: {}\n---\n{}\n",
         name,

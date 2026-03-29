@@ -13,8 +13,8 @@ pub struct PromptContext {
     /// Rich DB context formatted via db_context::format_for_system_prompt.
     /// When set, replaces the simple memory_context in the prompt.
     pub db_context: Option<String>,
-    /// Active role ROLE.md body, injected before identity when set.
-    pub active_role: Option<String>,
+    /// Active agent AGENT.md body, injected before identity when set.
+    pub active_agent: Option<String>,
 }
 
 /// Per-iteration inputs that change between agentic loop iterations.
@@ -122,8 +122,8 @@ Route every request to a tool call. Whether responding to a user message, execut
 → FIRST: skill(action: "catalog") — check available skills before saying no
 → Then try your built-in tools
 
-**Roles — switch persona, list roles:**
-→ role(action: "list"|"activate"|"deactivate"|"info")
+**Agents — switch persona, list agents:**
+→ persona(action: "list"|"activate"|"deactivate"|"info")
 
 **Send a message or post to a channel:**
 → Human outside NeboLoop: message(resource: "sms"|"owner"|"notify", ...)
@@ -220,7 +220,7 @@ You share this computer with a real person. Be a courteous roommate:
 // Core tool docs (always loaded when tool is active)
 const STRAP_WEB: &str = include_str!("strap/web.txt");
 const STRAP_AGENT: &str = include_str!("strap/agent.txt");
-const STRAP_ROLE: &str = include_str!("strap/role.txt");
+const STRAP_PERSONA: &str = include_str!("strap/persona.txt");
 const STRAP_LOOP: &str = include_str!("strap/loop.txt");
 const STRAP_EVENT: &str = include_str!("strap/event.txt");
 const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
@@ -258,7 +258,7 @@ fn strap_doc(tool_name: &str) -> Option<&'static str> {
         "os" => Some(STRAP_OS),
         "web" => Some(STRAP_WEB),
         "agent" => Some(STRAP_AGENT),
-        "role" => Some(STRAP_ROLE),
+        "persona" => Some(STRAP_PERSONA),
         "loop" => Some(STRAP_LOOP),
         "event" => Some(STRAP_EVENT),
         "message" => Some(STRAP_MESSAGE),
@@ -374,11 +374,11 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // 2. Separator
     parts.push("---".to_string());
 
-    // 3. Identity: role body REPLACES the default identity when set.
-    //    The role IS the bot's identity. Standard capability sections still append.
-    if let Some(ref role_md) = pctx.active_role {
-        if !role_md.is_empty() {
-            parts.push(role_md.clone());
+    // 3. Identity: agent body REPLACES the default identity when set.
+    //    The agent IS the bot's identity. Standard capability sections still append.
+    if let Some(ref agent_md) = pctx.active_agent {
+        if !agent_md.is_empty() {
+            parts.push(agent_md.clone());
         } else {
             parts.push(SECTION_IDENTITY.to_string());
         }

@@ -15,7 +15,7 @@ export interface AppItem {
 	installed: boolean;
 	iconBg: string;
 	iconEmoji: string;
-	type: 'skill' | 'workflow' | 'role';
+	type: 'skill' | 'workflow' | 'agent';
 	price: string;
 	priceCents: number;
 }
@@ -23,8 +23,8 @@ export interface AppItem {
 /** Returns the correct URL path for any marketplace item based on its type. */
 export function itemHref(item: AppItem): string {
 	switch (item.type) {
-		case 'workflow': return `/marketplace/roles/${item.id}`;
-		case 'role': return `/marketplace/roles/${item.id}`;
+		case 'workflow': return `/marketplace/agents/${item.id}`;
+		case 'agent': return `/marketplace/agents/${item.id}`;
 		default: return `/marketplace/skills/${item.id}`;
 	}
 }
@@ -70,7 +70,7 @@ export function toAppItem(raw: any, i: number): AppItem {
 		installed: raw.installed || false,
 		iconBg: gradients[i % gradients.length],
 		iconEmoji: raw.iconEmoji || raw.icon || '\u{1F4E6}',
-		type: raw.type || 'skill',
+		type: raw.type === 'role' ? 'agent' : (raw.type || 'skill'),
 		price: formatPrice(priceCents),
 		priceCents: priceCents || 0
 	};

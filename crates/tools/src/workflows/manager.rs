@@ -71,22 +71,22 @@ pub trait WorkflowManager: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<WorkflowInfo, String>> + Send + 'a>>;
 
     /// Run an inline workflow from a JSON definition (no DB/filesystem lookup).
-    /// Used by role workers for inline workflow bindings defined in role.json.
+    /// Used by agent workers for inline workflow bindings defined in agent.json.
     /// `emit_source` — if set, the last activity will be instructed to emit its output.
     fn run_inline<'a>(
         &'a self,
         definition_json: String,
         inputs: serde_json::Value,
         trigger_type: &'a str,
-        role_id: &'a str,
+        agent_id: &'a str,
         emit_source: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
     /// Cancel a running workflow by run_id.
     fn cancel<'a>(&'a self, run_id: &'a str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
-    /// Cancel all running workflows for a given role. Default no-op.
-    fn cancel_runs_for_role<'a>(&'a self, _role_id: &'a str) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    /// Cancel all running workflows for a given agent. Default no-op.
+    fn cancel_runs_for_agent<'a>(&'a self, _agent_id: &'a str) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
 }

@@ -4,7 +4,7 @@ use crate::NappError;
 
 /// Parsed qualified name: `@org/type/name`.
 ///
-/// Valid types: `skills`, `workflows`, `roles`.
+/// Valid types: `skills`, `workflows`, `agents`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QualifiedName {
     pub org: String,
@@ -28,9 +28,9 @@ impl QualifiedName {
         }
 
         let artifact_type = parts[1];
-        if !["skills", "workflows", "roles"].contains(&artifact_type) {
+        if !["skills", "workflows", "agents"].contains(&artifact_type) {
             return Err(NappError::Manifest(format!(
-                "invalid artifact type '{}' in qualified name (expected skills/workflows/roles)",
+                "invalid artifact type '{}' in qualified name (expected skills/workflows/agents)",
                 artifact_type
             )));
         }
@@ -50,7 +50,7 @@ impl QualifiedName {
 
 /// Package manifest (manifest.json) — universal envelope for all artifact types.
 ///
-/// Every artifact (skill, tool, workflow, role) includes a manifest.json with
+/// Every artifact (skill, tool, workflow, agent) includes a manifest.json with
 /// identity fields (id, name, version, type, description). Tool-specific fields
 /// (provides, permissions, implements, etc.) default to empty for non-tool artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +58,7 @@ pub struct Manifest {
     pub id: String,
     pub name: String,
     pub version: String,
-    /// Artifact type: "skill", "tool", "workflow", or "role".
+    /// Artifact type: "skill", "tool", "workflow", or "agent".
     #[serde(rename = "type", default)]
     pub artifact_type: String,
     #[serde(default)]

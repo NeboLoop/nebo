@@ -123,7 +123,7 @@ impl NeboLoopApi {
 
     // ── Products (unified) ─────────────────────────────────────────
 
-    /// List products from NeboLoop catalog (roles, skills, workflows).
+    /// List products from NeboLoop catalog (agents, skills, workflows).
     /// Returns `{ "skills": [...] }` regardless of type.
     pub async fn list_products(
         &self,
@@ -289,7 +289,7 @@ impl NeboLoopApi {
 
     // ── Universal Code Redemption ────────────────────────────────────
 
-    /// Redeem any marketplace code (SKIL-*, WORK-*, ROLE-*) via the universal endpoint.
+    /// Redeem any marketplace code (SKIL-*, WORK-*, ROLE-*/AGNT-*) via the universal endpoint.
     pub async fn redeem_code(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
         let body = serde_json::json!({
             "code": code,
@@ -303,7 +303,7 @@ impl NeboLoopApi {
         self.redeem_code(code).await
     }
 
-    /// Install a product (skill/role/workflow) for this bot by product ID.
+    /// Install a product (skill/agent/workflow) for this bot by product ID.
     /// NeboLoop may return JSON or an empty body on success.
     pub async fn install_product(&self, id: &str) -> Result<serde_json::Value, CommError> {
         let body = serde_json::json!({ "botId": self.bot_id });
@@ -379,15 +379,15 @@ impl NeboLoopApi {
         self.do_json(reqwest::Method::GET, &path, None::<&()>).await
     }
 
-    // ── Roles ───────────────────────────────────────────────────────
+    // ── Agents (marketplace) ────────────────────────────────────────
 
-    /// Install a role for this bot via universal code redemption.
-    pub async fn install_role(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
+    /// Install an agent for this bot via universal code redemption.
+    pub async fn install_agent(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
         self.redeem_code(code).await
     }
 
-    /// Uninstall a role for this bot.
-    pub async fn uninstall_role(&self, id: &str) -> Result<(), CommError> {
+    /// Uninstall an agent for this bot.
+    pub async fn uninstall_agent(&self, id: &str) -> Result<(), CommError> {
         self.do_void(reqwest::Method::DELETE, &format!("/api/v1/roles/{}/install/{}", id, self.bot_id), None::<&()>).await
     }
 
@@ -406,18 +406,18 @@ impl NeboLoopApi {
         self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body)).await
     }
 
-    /// Create or update a role artifact on NeboLoop.
-    pub async fn publish_role(&self, name: &str, description: &str, manifest_content: &str, version: &str, visibility: &str, role_json: Option<&str>) -> Result<serde_json::Value, CommError> {
+    /// Create or update an agent artifact on NeboLoop.
+    pub async fn publish_agent(&self, name: &str, description: &str, manifest_content: &str, version: &str, visibility: &str, agent_json: Option<&str>) -> Result<serde_json::Value, CommError> {
         let mut body = serde_json::json!({
             "name": name,
             "description": description,
-            "type": "role",
+            "type": "agent",
             "manifestContent": manifest_content,
             "version": version,
             "visibility": visibility,
         });
-        if let Some(rj) = role_json {
-            body["typeConfig"] = serde_json::from_str(rj).unwrap_or(serde_json::json!({}));
+        if let Some(aj) = agent_json {
+            body["typeConfig"] = serde_json::from_str(aj).unwrap_or(serde_json::json!({}));
         }
         self.do_json(reqwest::Method::POST, "/api/v1/skills", Some(&body)).await
     }
@@ -430,7 +430,7 @@ impl NeboLoopApi {
 
     // ── Bot Identity ────────────────────────────────────────────────
 
-    /// Push bot name and role to NeboLoop.
+    /// Push bot name and agent info to NeboLoop.
     pub async fn update_bot_identity(&self, name: &str, role: &str) -> Result<(), CommError> {
         let body = UpdateBotIdentityRequest {
             name: name.into(),
@@ -473,19 +473,19 @@ impl NeboLoopApi {
 
     // ── Agents ──────────────────────────────────────────────────────
 
-    /// Register an agent (running role) in a loop. The gateway auto-creates
+    /// Register an agent in a loop. The gateway auto-creates
     /// an agent space conversation and subscribes the bot to it.
     pub async fn register_agent(
         &self,
         loop_id: &str,
-        role_name: &str,
-        role_slug: &str,
+        agent_name: &str,
+        agent_slug: &str,
         description: Option<&str>,
     ) -> Result<serde_json::Value, CommError> {
         let body = AgentActivateRequest {
             bot_id: self.bot_id.clone(),
-            role_name: role_name.to_string(),
-            role_slug: role_slug.to_string(),
+            agent_name: agent_name.to_string(),
+            agent_slug: agent_slug.to_string(),
             description: description.map(|s| s.to_string()),
         };
         self.do_json(

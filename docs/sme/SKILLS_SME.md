@@ -38,10 +38,10 @@
 
 ## 1. System Overview
 
-A **Skill** is domain knowledge expressed as markdown. It sits at the base of the ROLE → WORK → SKILL hierarchy:
+A **Skill** is domain knowledge expressed as markdown. It sits at the base of the AGENT → WORK → SKILL hierarchy:
 
 ```
-ROLE (schedule of intent)
+AGENT (schedule of intent)
   └─ WORKFLOW (procedure)
       └─ ACTIVITY (LLM-guided task)
           └─ SKILL (domain knowledge)
@@ -1032,7 +1032,7 @@ resolve_cascade(state, deps, visited):
        │         nebo/skills/ (qualified path or walk_for_marker)
        └─ Yes → AlreadyInstalled, skip
     3. is_marketplace_ref()?
-       ├─ Starts with @ or SKIL-/WORK-/ROLE- → yes
+       ├─ Starts with @ or SKIL-/WORK-/AGNT- → yes
        └─ Simple name (no prefix) → Unresolvable (built-in)
     4. If autonomous mode:
        ├─ install_dep() → call NeboLoop API
@@ -1099,7 +1099,7 @@ Activities reference skills by name in `activity.skills[]`. The workflow engine:
 Skills tool (`"skill"`) is always in the core tool set:
 
 ```rust
-const CORE_TOOLS: &[&str] = &["os", "web", "agent", "event", "message", "skill", "role"];
+const CORE_TOOLS: &[&str] = &["os", "web", "agent", "event", "message", "skill", "persona"];
 ```
 
 ---
@@ -1241,11 +1241,11 @@ When `ExecuteTool` runs a script, ALL resources are extracted to a temp director
 - No global skill context bleed between activities
 - Workflow `dependencies.skills[]` triggers cascade installation
 
-### With Role System
+### With Agent System
 
-- Roles declare skill dependencies in `skills[]` (role.json)
-- Skills cascade-installed when role is created
-- Skills referenced by role's workflows are also included in cascade
+- Agents declare skill dependencies in `skills[]` (agent.json)
+- Skills cascade-installed when agent is created
+- Skills referenced by agent's workflows are also included in cascade
 
 ### With Agent Runner
 
@@ -1337,7 +1337,7 @@ const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 | NeboLoop API client | `crates/comm/src/api.rs` |
 
 **Canonical specification:**
-- [platform-taxonomy.md](../.archive/platform-taxonomy.md) — Authoritative ROLE/WORK/SKILL hierarchy definition
+- [platform-taxonomy.md](../.archive/platform-taxonomy.md) — Authoritative AGENT/WORK/SKILL hierarchy definition
 
 ---
 

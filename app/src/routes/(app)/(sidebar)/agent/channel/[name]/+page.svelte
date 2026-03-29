@@ -9,8 +9,8 @@
 		activeChannelId: string;
 		activeChannelName: string;
 		activeLoopName: string;
-		activeRoleId: string;
-		activeRoleName: string;
+		activeAgentId: string;
+		activeAgentName: string;
 	}>('channelState');
 
 	let loading = $state(true);
@@ -45,8 +45,8 @@
 							(c) => c.channelName.toLowerCase() === channelName.toLowerCase()
 						);
 						if (match) {
-							channelState.activeRoleId = '';
-							channelState.activeRoleName = '';
+							channelState.activeAgentId = '';
+							channelState.activeAgentName = '';
 							channelState.activeChannelId = match.channelId;
 							channelState.activeChannelName = match.channelName;
 							channelState.activeLoopName = loop.name;

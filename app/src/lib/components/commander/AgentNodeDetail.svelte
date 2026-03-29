@@ -13,12 +13,12 @@
 
 	function openChat() {
 		if (!node) return;
-		goto(`/agent/role/${node.id}/chat`);
+		goto(`/agent/persona/${node.id}/chat`);
 	}
 
 	function openSettings() {
 		if (!node) return;
-		goto(`/agent/role/${node.id}/settings`);
+		goto(`/agent/persona/${node.id}/settings`);
 	}
 </script>
 

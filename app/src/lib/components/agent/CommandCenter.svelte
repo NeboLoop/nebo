@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { getActiveRoles, listAgentSessions, listAllRuns } from '$lib/api/nebo';
-	import type { ActiveRoleEntry, AgentSession } from '$lib/api/neboComponents';
+	import { getActiveRoles as getActiveAgents, listAgentSessions, listAllRuns } from '$lib/api/nebo';
+	import type { ActiveRoleEntry as ActiveAgentEntry, AgentSession } from '$lib/api/neboComponents';
 	import type { WorkflowRun } from '$lib/api/nebo';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { t } from 'svelte-i18n';
 
 	const channelState = getContext<{
 		activeView: string;
-		activeRoleId: string;
-		activeRoleName: string;
+		activeAgentId: string;
+		activeAgentName: string;
 	}>('channelState');
 
 	const BOT_COLORS = [
@@ -31,11 +31,11 @@
 		return Math.abs(hash);
 	}
 
-	function roleColor(name: string) {
+	function agentColor(name: string) {
 		return BOT_COLORS[nameHash(name) % BOT_COLORS.length];
 	}
 
-	function roleInitial(name: string): string {
+	function agentInitial(name: string): string {
 		return name.charAt(0).toUpperCase();
 	}
 
@@ -52,14 +52,14 @@
 		return $t('time.daysAgo', { values: { n: days } });
 	}
 
-	let roles: ActiveRoleEntry[] = $state([]);
+	let agents: ActiveAgentEntry[] = $state([]);
 	let sessions: AgentSession[] = $state([]);
 	let workflowRuns: (WorkflowRun & { workflow_name: string })[] = $state([]);
 	let loading = $state(true);
 
 	interface FeedEntry {
 		id: string;
-		roleName: string;
+		agentName: string;
 		icon: string;
 		event: string;
 		time: string;
@@ -72,14 +72,14 @@
 
 		// Add sessions as activity (recent conversations)
 		for (const s of sessions) {
-			// Try to match session to a role via name pattern
-			const matchedRole = roles.find(r =>
+			// Try to match session to an agent via name pattern
+			const matchedAgent = agents.find(r =>
 				s.name?.toLowerCase().includes(r.name.toLowerCase())
 			);
 			entries.push({
 				id: `session-${s.id}`,
-				roleName: matchedRole?.name || 'Companion',
-				icon: roleInitial(matchedRole?.name || 'Companion'),
+				agentName: matchedAgent?.name || 'Companion',
+				icon: agentInitial(matchedAgent?.name || 'Companion'),
 				event: s.summary || `Chat session${s.messageCount > 0 ? ` (${s.messageCount} messages)` : ''}`,
 				time: timeAgo(s.updatedAt),
 				sortTime: new Date(s.updatedAt).getTime(),
@@ -91,8 +91,8 @@
 		for (const run of workflowRuns) {
 			entries.push({
 				id: `run-${run.id}`,
-				roleName: run.workflow_name || 'Workflow',
-				icon: roleInitial(run.workflow_name || 'W'),
+				agentName: run.workflow_name || 'Workflow',
+				icon: agentInitial(run.workflow_name || 'W'),
 				event: `${run.workflow_name}: ${run.status}${run.current_activity ? ` — ${run.current_activity}` : ''}`,
 				time: timeAgo(run.started_at),
 				sortTime: new Date(run.started_at).getTime(),
@@ -112,11 +112,11 @@
 		info: 'bg-info',
 	};
 
-	function selectRole(role: ActiveRoleEntry) {
-		channelState.activeRoleId = role.roleId;
-		channelState.activeRoleName = role.name;
-		channelState.activeView = 'role' as any;
-		goto(`/agent/role/${role.roleId}/chat`);
+	function selectAgent(agent: ActiveAgentEntry) {
+		channelState.activeAgentId = agent.roleId;
+		channelState.activeAgentName = agent.name;
+		channelState.activeView = 'agent' as any;
+		goto(`/agent/persona/${agent.roleId}/chat`);
 	}
 
 	function selectCompanion() {
@@ -126,12 +126,12 @@
 	async function loadData() {
 		loading = true;
 		try {
-			const [rolesRes, sessionsRes, runsRes] = await Promise.all([
-				getActiveRoles().catch(() => null),
+			const [agentsRes, sessionsRes, runsRes] = await Promise.all([
+				getActiveAgents().catch(() => null),
 				listAgentSessions().catch(() => null),
 				listAllRuns().catch(() => null),
 			]);
-			if (rolesRes?.roles) roles = rolesRes.roles;
+			if (agentsRes?.roles) agents = agentsRes.roles;
 			if (sessionsRes?.sessions) sessions = sessionsRes.sessions.slice(0, 10);
 			if (runsRes?.runs) workflowRuns = runsRes.runs.slice(0, 10);
 		} finally {
@@ -143,8 +143,8 @@
 		loadData();
 
 		const ws = getWebSocketClient();
-		const unsub1 = ws.on('role_activated', () => loadData());
-		const unsub2 = ws.on('role_deactivated', () => loadData());
+		const unsub1 = ws.on('agent_activated', () => loadData());
+		const unsub2 = ws.on('agent_deactivated', () => loadData());
 		const unsub3 = ws.on('lane_update', () => loadData());
 
 		return () => { unsub1(); unsub2(); unsub3(); };
@@ -157,7 +157,7 @@
 			<div class="spinner"></div>
 		</div>
 	{:else}
-		<!-- Role cards -->
+		<!-- Agent cards -->
 		<div class="mb-6">
 			<h2 class="text-sm font-semibold uppercase tracking-wider text-base-content/60 mb-3">{$t('sidebar.agents')}</h2>
 			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -179,29 +179,29 @@
 					</div>
 				</button>
 
-				<!-- Role cards -->
-				{#each roles as role (role.roleId)}
-					{@const c = roleColor(role.name)}
+				<!-- Agent cards -->
+				{#each agents as agent (agent.roleId)}
+					{@const c = agentColor(agent.name)}
 					<button
 						class="flex items-start gap-3 p-4 rounded-xl border border-base-content/10 hover:border-base-content/40 hover:bg-base-200/50 transition-all text-left cursor-pointer"
-						onclick={() => selectRole(role)}
+						onclick={() => selectAgent(agent)}
 					>
 						<div class="flex items-center justify-center w-10 h-10 rounded-lg {c.bg} shrink-0">
-							<span class="{c.text} font-semibold">{roleInitial(role.name)}</span>
+							<span class="{c.text} font-semibold">{agentInitial(agent.name)}</span>
 						</div>
 						<div class="flex-1 min-w-0">
 							<div class="flex items-center gap-2">
-								<span class="text-base font-semibold text-base-content">{role.name}</span>
+								<span class="text-base font-semibold text-base-content">{agent.name}</span>
 							</div>
-							{#if role.description}
-								<p class="text-sm text-base-content/60 mt-0.5 truncate">{role.description}</p>
+							{#if agent.description}
+								<p class="text-sm text-base-content/60 mt-0.5 truncate">{agent.description}</p>
 							{/if}
 							<div class="flex items-center gap-3 mt-1.5">
-								{#if role.workflowCount > 0}
-									<span class="text-sm text-base-content/60">{$t('commander.workflowCount', { values: { count: role.workflowCount } })}</span>
+								{#if agent.workflowCount > 0}
+									<span class="text-sm text-base-content/60">{$t('commander.workflowCount', { values: { count: agent.workflowCount } })}</span>
 								{/if}
-								{#if role.skillCount > 0}
-									<span class="text-sm text-base-content/60">{$t('agent.skillCount', { values: { count: role.skillCount } })}</span>
+								{#if agent.skillCount > 0}
+									<span class="text-sm text-base-content/60">{$t('agent.skillCount', { values: { count: agent.skillCount } })}</span>
 								{/if}
 							</div>
 						</div>
@@ -210,7 +210,7 @@
 
 				<!-- Add new bot card -->
 				<a
-					href="/marketplace?type=role"
+					href="/marketplace?type=agent"
 					class="flex items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-base-content/10 hover:border-base-content/40 hover:bg-base-200/30 transition-all text-base-content/60 hover:text-base-content/80 cursor-pointer"
 				>
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -238,14 +238,14 @@
 			{:else}
 				<div class="flex flex-col">
 					{#each feed as entry, i}
-						{@const c = roleColor(entry.roleName)}
+						{@const c = agentColor(entry.agentName)}
 						<div class="flex items-start gap-3 py-2.5 {i < feed.length - 1 ? 'border-b border-base-content/5' : ''}">
 							<div class="flex items-center justify-center w-7 h-7 rounded-lg {c.bg} shrink-0 mt-0.5">
 								<span class="text-sm font-semibold {c.text}">{entry.icon}</span>
 							</div>
 							<div class="flex-1 min-w-0">
 								<p class="text-base text-base-content/80">
-									<span class="font-semibold text-base-content">{entry.roleName}</span>
+									<span class="font-semibold text-base-content">{entry.agentName}</span>
 									{' '}{entry.event}
 								</p>
 								<span class="text-sm text-base-content/60">{entry.time}</span>

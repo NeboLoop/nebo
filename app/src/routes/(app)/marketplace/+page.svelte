@@ -14,13 +14,13 @@
 	let loading = $state(true);
 
 	let featuredSkills: AppItem[] = $state([]);
-	let roles: AppItem[] = $state([]);
+	let agents: AppItem[] = $state([]);
 	let skillItems: AppItem[] = $state([]);
 
 	onMount(async () => {
 		try {
 			const [
-				rolesRes,
+				agentsRes,
 				skillsRes,
 				featuredSkillRes
 			] = await Promise.all([
@@ -29,7 +29,7 @@
 				webapi.get<any>('/api/v1/store/featured', { type: 'skill' }).catch(() => ({ apps: [] }))
 			]);
 
-			roles = (rolesRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: 'role' }, i));
+			agents = (agentsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: 'role' }, i));
 			skillItems = (skillsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: 'skill' }, i));
 			featuredSkills = (featuredSkillRes.apps || []).map((a: any, i: number) =>
 				toAppItem({ ...a, type: a.type || 'skill' }, i)
@@ -55,14 +55,14 @@
 	<!-- Featured Skills -->
 	<SectionEditorial title={$t('marketplace.featuredSkills')} items={featuredSkills} />
 
-	<!-- Roles — LargeCard grid -->
+	<!-- Agents — LargeCard grid -->
 	<div class="pt-8 pb-2">
 		<div class="flex items-baseline justify-between px-6 mb-4">
 			<div>
-				<h3 class="font-display text-xl font-bold">{$t('marketplace.roles')}</h3>
-				<p class="text-sm text-base-content/60 mt-0.5">{$t('marketplace.rolesDesc')}</p>
+				<h3 class="font-display text-xl font-bold">{$t('marketplace.agents')}</h3>
+				<p class="text-sm text-base-content/60 mt-0.5">{$t('marketplace.agentsDesc')}</p>
 			</div>
-			<a href="/marketplace/roles" class="text-base text-primary font-medium">{$t('marketplace.browseAll')}</a>
+			<a href="/marketplace/agents" class="text-base text-primary font-medium">{$t('marketplace.browseAll')}</a>
 		</div>
 		{#if loading}
 			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 px-6">
@@ -72,16 +72,16 @@
 					></div>
 				{/each}
 			</div>
-		{:else if roles.length > 0}
+		{:else if agents.length > 0}
 			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4 px-6">
-				{#each roles.slice(0, 4) as role}
-					<LargeCard item={role} />
+				{#each agents.slice(0, 4) as agent}
+					<LargeCard item={agent} />
 				{/each}
 			</div>
 		{:else}
 			<div class="flex flex-col items-center justify-center py-12 text-center px-6">
 				<Sparkles class="w-8 h-8 text-base-content/40 mb-2" />
-				<p class="text-base text-base-content/80">{$t('marketplace.noRoles')}</p>
+				<p class="text-base text-base-content/80">{$t('marketplace.noAgents')}</p>
 			</div>
 		{/if}
 	</div>

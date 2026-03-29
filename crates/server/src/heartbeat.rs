@@ -1,7 +1,7 @@
 //! Heartbeat scheduler — fires prompt-based proactive tasks for entities
-//! with heartbeat enabled (main agent, roles, channels).
+//! with heartbeat enabled (main agent, agents, channels).
 //!
-//! Coexists with RoleWorker workflow-bound heartbeats: RoleWorker runs
+//! Coexists with AgentWorker workflow-bound heartbeats: AgentWorker runs
 //! workflows, this scheduler runs prompt-based chat dispatches.
 
 use std::collections::HashMap;
@@ -161,9 +161,9 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             continue;
         }
 
-        // Skip deactivated roles — check the live registry
-        if entity.entity_type == "role" {
-            let registry = state.role_registry.read().await;
+        // Skip deactivated agents — check the live registry
+        if entity.entity_type == "agent" {
+            let registry = state.agent_registry.read().await;
             if !registry.contains_key(&entity.entity_id) {
                 continue;
             }
@@ -172,7 +172,7 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
         info!(entity = key, "firing heartbeat");
 
         let session_key = format!("heartbeat-{}-{}", entity.entity_type, entity.entity_id);
-        let role_id = if entity.entity_type == "role" {
+        let agent_id = if entity.entity_type == "agent" {
             entity.entity_id.clone()
         } else {
             String::new()
@@ -185,7 +185,7 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             user_id: String::new(),
             channel: "heartbeat".into(),
             origin: Origin::System,
-            role_id,
+            agent_id,
             cancel_token: CancellationToken::new(),
             lane: lanes::HEARTBEAT.to_string(),
             comm_reply: None,

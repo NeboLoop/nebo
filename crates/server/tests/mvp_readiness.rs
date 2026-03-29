@@ -2,7 +2,7 @@
 //!
 //! Validates the OS & execution layer: server boot, CRUD lifecycles, code detection,
 //! dependency cascade, memory, cron/scheduling, event dispatch, browser snapshot, and
-//! AI provider management. Skills, workflows, and roles are artifacts that run on this
+//! AI provider management. Skills, workflows, and agents are artifacts that run on this
 //! platform — they are NOT tested here.
 //!
 //! Run:
@@ -34,11 +34,11 @@ impl TestServer {
         std::fs::create_dir_all(data_dir.join("nebo").join("skills")).unwrap();
         std::fs::create_dir_all(data_dir.join("nebo").join("tools")).unwrap();
         std::fs::create_dir_all(data_dir.join("nebo").join("workflows")).unwrap();
-        std::fs::create_dir_all(data_dir.join("nebo").join("roles")).unwrap();
+        std::fs::create_dir_all(data_dir.join("nebo").join("agents")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("skills")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("tools")).unwrap();
         std::fs::create_dir_all(data_dir.join("user").join("workflows")).unwrap();
-        std::fs::create_dir_all(data_dir.join("user").join("roles")).unwrap();
+        std::fs::create_dir_all(data_dir.join("user").join("agents")).unwrap();
         std::fs::create_dir_all(data_dir.join("bundled").join("skills")).unwrap();
 
         // Set NEBO_DATA_DIR so config::data_dir() resolves to our temp dir
@@ -495,67 +495,67 @@ async fn test_workflow_lifecycle(server: &TestServer) -> TestResult {
 // ═══════════════════════════════════════════════════════════════════
 
 async fn test_role_lifecycle(server: &TestServer) -> TestResult {
-    let role_md = "---\nname: MVP Test Role\ndescription: A test role for readiness verification\n---\n\n# MVP Test Role\n\nYou are a test role for readiness verification.";
+    let agent_md = "---\nname: MVP Test Agent\ndescription: A test agent for readiness verification\n---\n\n# MVP Test Agent\n\nYou are a test agent for readiness verification.";
 
     let create_body = json!({
-        "roleMd": role_md,
-        "name": "mvp-test-role",
-        "description": "A test role for MVP readiness"
+        "agentMd": agent_md,
+        "name": "mvp-test-agent",
+        "description": "A test agent for MVP readiness"
     });
 
-    // 1. POST /roles — create
-    let resp = server.post_json("/roles", &create_body).await;
+    // 1. POST /agents — create
+    let resp = server.post_json("/agents", &create_body).await;
     if resp.status() != 200 {
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or_default();
         return TestResult {
-            name: "role_lifecycle".into(),
+            name: "agent_lifecycle".into(),
             status: TestStatus::Fail,
-            detail: format!("POST /roles returned {} — {:?}", status, body),
+            detail: format!("POST /agents returned {} — {:?}", status, body),
         };
     }
     let body: Value = resp.json().await.unwrap();
-    let role_id = body["role"]["id"].as_str().unwrap().to_string();
+    let agent_id = body["agent"]["id"].as_str().unwrap().to_string();
 
-    // 2. GET /roles — list
-    let resp = server.get("/roles").await;
+    // 2. GET /agents — list
+    let resp = server.get("/agents").await;
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    let roles = body["roles"].as_array().unwrap();
+    let agents = body["agents"].as_array().unwrap();
     assert!(
-        roles.iter().any(|r| r["id"] == role_id),
-        "role should appear in list"
+        agents.iter().any(|r| r["id"] == agent_id),
+        "agent should appear in list"
     );
 
-    // 3. GET /roles/{id}
-    let resp = server.get(&format!("/roles/{}", role_id)).await;
+    // 3. GET /agents/{id}
+    let resp = server.get(&format!("/agents/{}", agent_id)).await;
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["role"]["name"], "MVP Test Role");
+    assert_eq!(body["agent"]["name"], "MVP Test Agent");
 
     // 4. POST toggle disable
     let resp = server
-        .post_json(&format!("/roles/{}/toggle", role_id), &json!({}))
+        .post_json(&format!("/agents/{}/toggle", agent_id), &json!({}))
         .await;
     assert_eq!(resp.status(), 200);
 
     // 5. POST toggle re-enable
     let resp = server
-        .post_json(&format!("/roles/{}/toggle", role_id), &json!({}))
+        .post_json(&format!("/agents/{}/toggle", agent_id), &json!({}))
         .await;
     assert_eq!(resp.status(), 200);
 
     // 6. DELETE
-    let resp = server.delete(&format!("/roles/{}", role_id)).await;
+    let resp = server.delete(&format!("/agents/{}", agent_id)).await;
     assert_eq!(resp.status(), 200);
 
     // 7. Verify gone
-    let resp = server.get("/roles").await;
+    let resp = server.get("/agents").await;
     let body: Value = resp.json().await.unwrap();
-    let roles = body["roles"].as_array().unwrap();
+    let agents = body["agents"].as_array().unwrap();
     assert!(
-        !roles.iter().any(|r| r["id"] == role_id),
-        "deleted role should not appear in list"
+        !agents.iter().any(|r| r["id"] == agent_id),
+        "deleted agent should not appear in list"
     );
 
     TestResult {
@@ -637,7 +637,7 @@ fn test_install_flow() -> TestResult {
     assert_eq!(ct, CodeType::Skill);
 
     let (ct, _) = detect_code("ROLE-A1B2-C3D4").expect("valid ROLE code");
-    assert_eq!(ct, CodeType::Role);
+    assert_eq!(ct, CodeType::Agent);
 
     let (ct, _) = detect_code("WORK-A1B2-C3D4").expect("valid WORK code");
     assert_eq!(ct, CodeType::Work);
@@ -664,7 +664,7 @@ fn test_install_flow() -> TestResult {
 
     // ── Cascade Deps ────────────────────────────────────────────────
     use nebo_server::deps::{
-        extract_role_deps, extract_simple_name, extract_workflow_deps, is_marketplace_ref,
+        extract_agent_deps, extract_simple_name, extract_workflow_deps, is_marketplace_ref,
     };
 
     // is_marketplace_ref
@@ -681,7 +681,7 @@ fn test_install_flow() -> TestResult {
     assert_eq!(extract_simple_name("SKIL-A1B2-C3D4"), "SKIL-A1B2-C3D4");
     assert_eq!(extract_simple_name("web"), "web");
 
-    // extract_role_deps
+    // extract_agent_deps
     let role_json = r#"{
         "workflows": {
             "daily": {
@@ -695,8 +695,8 @@ fn test_install_flow() -> TestResult {
         },
         "skills": ["@nebo/skills/writer@^1.0.0"]
     }"#;
-    let config = napp::role::parse_role_config(role_json).unwrap();
-    let deps = extract_role_deps(&config);
+    let config = napp::agent::parse_agent_config(role_json).unwrap();
+    let deps = extract_agent_deps(&config);
     assert_eq!(deps.len(), 1, "1 skill dep (workflow refs are inline, not extracted)");
 
     // extract_workflow_deps
@@ -850,10 +850,10 @@ async fn test_cron(server: &TestServer) -> TestResult {
     let count_removed = store.count_cron_jobs().unwrap();
     assert!(count_removed < count_after, "cron_job count should decrease after unregister");
 
-    // ── Role trigger registration ───────────────────────────────────
-    let bindings = vec![db::models::RoleWorkflow {
+    // ── Agent trigger registration ───────────────────────────────────
+    let bindings = vec![db::models::AgentWorkflow {
         id: 0,
-        role_id: "mvp-role-1".into(),
+        agent_id: "mvp-role-1".into(),
         binding_name: "daily".into(),
         trigger_type: "schedule".into(),
         trigger_config: "0 7 * * *".into(),
@@ -865,15 +865,15 @@ async fn test_cron(server: &TestServer) -> TestResult {
         last_fired: None,
     }];
 
-    let count_before_role = store.count_cron_jobs().unwrap();
-    workflow::triggers::register_role_triggers("mvp-role-1", &bindings, &store);
-    let count_after_role = store.count_cron_jobs().unwrap();
-    assert!(count_after_role > count_before_role, "role cron_job should be created");
+    let count_before_agent = store.count_cron_jobs().unwrap();
+    workflow::triggers::register_agent_triggers("mvp-role-1", &bindings, &store);
+    let count_after_agent = store.count_cron_jobs().unwrap();
+    assert!(count_after_agent > count_before_agent, "agent cron_job should be created");
 
-    // Unregister role triggers
-    workflow::triggers::unregister_role_triggers("mvp-role-1", &store);
-    let count_removed_role = store.count_cron_jobs().unwrap();
-    assert!(count_removed_role < count_after_role, "role cron_job should be removed");
+    // Unregister agent triggers
+    workflow::triggers::unregister_agent_triggers("mvp-role-1", &store);
+    let count_removed_agent = store.count_cron_jobs().unwrap();
+    assert!(count_removed_agent < count_after_agent, "agent cron_job should be removed");
 
     TestResult {
         name: "cron".into(),
@@ -893,7 +893,7 @@ async fn test_events() -> TestResult {
         .subscribe(workflow::events::EventSubscription {
             pattern: "email.*".into(),
             default_inputs: serde_json::json!({}),
-            role_source: "test-role".into(),
+            agent_source: "test-role".into(),
             binding_name: "email-watch".into(),
             definition_json: None,
             emit_source: None,
@@ -903,7 +903,7 @@ async fn test_events() -> TestResult {
         .subscribe(workflow::events::EventSubscription {
             pattern: "email.urgent".into(),
             default_inputs: serde_json::json!({}),
-            role_source: "test-role".into(),
+            agent_source: "test-role".into(),
             binding_name: "urgent-watch".into(),
             definition_json: None,
             emit_source: None,
@@ -973,9 +973,9 @@ fn test_role_trigger_parsing() -> TestResult {
     let json = r#"{ "workflows": { "w1": {
         "ref": "@o/workflows/x@^1.0", "trigger": { "type": "schedule", "cron": "0 7 * * *" }
     }}}"#;
-    let cfg = napp::role::parse_role_config(json).unwrap();
+    let cfg = napp::agent::parse_agent_config(json).unwrap();
     match &cfg.workflows["w1"].trigger {
-        napp::role::RoleTrigger::Schedule { cron } => assert_eq!(cron, "0 7 * * *"),
+        napp::agent::AgentTrigger::Schedule { cron } => assert_eq!(cron, "0 7 * * *"),
         other => panic!("expected Schedule, got {:?}", other),
     }
 
@@ -983,9 +983,9 @@ fn test_role_trigger_parsing() -> TestResult {
     let json = r#"{ "workflows": { "w2": {
         "ref": "@o/workflows/y@^1.0", "trigger": { "type": "event", "sources": ["email.urgent", "cal.changed"] }
     }}}"#;
-    let cfg = napp::role::parse_role_config(json).unwrap();
+    let cfg = napp::agent::parse_agent_config(json).unwrap();
     match &cfg.workflows["w2"].trigger {
-        napp::role::RoleTrigger::Event { sources } => {
+        napp::agent::AgentTrigger::Event { sources } => {
             assert_eq!(sources.len(), 2);
             assert!(sources.contains(&"email.urgent".to_string()));
             assert!(sources.contains(&"cal.changed".to_string()));
@@ -997,9 +997,9 @@ fn test_role_trigger_parsing() -> TestResult {
     let json = r#"{ "workflows": { "w3": {
         "ref": "@o/workflows/z@^1.0", "trigger": { "type": "heartbeat", "interval": "30m", "window": "08:00-18:00" }
     }}}"#;
-    let cfg = napp::role::parse_role_config(json).unwrap();
+    let cfg = napp::agent::parse_agent_config(json).unwrap();
     match &cfg.workflows["w3"].trigger {
-        napp::role::RoleTrigger::Heartbeat { interval, window } => {
+        napp::agent::AgentTrigger::Heartbeat { interval, window } => {
             assert_eq!(interval, "30m");
             assert_eq!(window.as_deref(), Some("08:00-18:00"));
         }
@@ -1010,9 +1010,9 @@ fn test_role_trigger_parsing() -> TestResult {
     let json = r#"{ "workflows": { "w4": {
         "ref": "@o/workflows/m@^1.0", "trigger": { "type": "manual" }
     }}}"#;
-    let cfg = napp::role::parse_role_config(json).unwrap();
+    let cfg = napp::agent::parse_agent_config(json).unwrap();
     match &cfg.workflows["w4"].trigger {
-        napp::role::RoleTrigger::Manual => {}
+        napp::agent::AgentTrigger::Manual => {}
         other => panic!("expected Manual, got {:?}", other),
     }
 

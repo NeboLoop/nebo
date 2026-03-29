@@ -55,7 +55,7 @@ async fn tick(
 
     for job in &jobs {
         // Normalize schedule at read time — handles stale 5-field expressions in DB
-        let normalized = tools::RoleTool::normalize_cron(&job.schedule);
+        let normalized = tools::PersonaTool::normalize_cron(&job.schedule);
         let schedule: Schedule = match normalized.parse() {
             Ok(s) => s,
             Err(e) => {
@@ -92,7 +92,7 @@ async fn tick(
             "bash" | "shell" | "" => execute_shell(&job.command).await,
             "agent" => execute_agent(runner, hub, job).await,
             "workflow" => execute_workflow_task(workflow_manager, &job.command).await,
-            "role_workflow" => execute_role_workflow_task(workflow_manager, &store, &job.command).await,
+            "agent_workflow" | "role_workflow" => execute_agent_workflow_task(workflow_manager, &store, &job.command).await,
             other => (false, String::new(), Some(format!("unknown task type: {}", other))),
         };
 
@@ -205,48 +205,48 @@ async fn execute_workflow_task(
     }
 }
 
-/// Execute a role's inline workflow. Command format: `role:{role_id}:{binding_name}`
-async fn execute_role_workflow_task(
+/// Execute an agent's inline workflow. Command format: `agent:{agent_id}:{binding_name}`
+async fn execute_agent_workflow_task(
     manager: &dyn tools::workflows::WorkflowManager,
     store: &Store,
     command: &str,
 ) -> (bool, String, Option<String>) {
     let parts: Vec<&str> = command.splitn(3, ':').collect();
-    if parts.len() != 3 || parts[0] != "role" {
-        return (false, String::new(), Some(format!("invalid role_workflow command: {}", command)));
+    if parts.len() != 3 || (parts[0] != "agent" && parts[0] != "role") {
+        return (false, String::new(), Some(format!("invalid agent_workflow command: {}", command)));
     }
-    let role_id = parts[1];
+    let agent_id = parts[1];
     let binding_name = parts[2];
 
-    // Guard: skip if automation is disabled or role is disabled
-    match store.is_role_workflow_active(role_id, binding_name) {
+    // Guard: skip if automation is disabled or agent is disabled
+    match store.is_agent_workflow_active(agent_id, binding_name) {
         Ok(false) => {
-            info!(role_id, binding_name, "skipping disabled role workflow");
+            info!(agent_id, binding_name, "skipping disabled agent workflow");
             return (false, String::new(), Some("automation is disabled".to_string()));
         }
         Err(e) => {
-            warn!(role_id, binding_name, error = %e, "failed to check role workflow status");
+            warn!(agent_id, binding_name, error = %e, "failed to check agent workflow status");
             // Fail closed: don't execute if we can't verify it's active
             return (false, String::new(), Some(format!("failed to check active status: {}", e)));
         }
         Ok(true) => {} // proceed
     }
 
-    // Load role config from DB
-    let role = match store.get_role(role_id) {
+    // Load agent config from DB
+    let agent_rec = match store.get_agent(agent_id) {
         Ok(Some(r)) => r,
-        Ok(None) => return (false, String::new(), Some(format!("role not found: {}", role_id))),
+        Ok(None) => return (false, String::new(), Some(format!("agent not found: {}", agent_id))),
         Err(e) => return (false, String::new(), Some(format!("db error: {}", e))),
     };
 
-    let config = match napp::role::parse_role_config(&role.frontmatter) {
+    let config = match napp::agent::parse_agent_config(&agent_rec.frontmatter) {
         Ok(c) => c,
-        Err(e) => return (false, String::new(), Some(format!("parse role config: {}", e))),
+        Err(e) => return (false, String::new(), Some(format!("parse agent config: {}", e))),
     };
 
     let binding = match config.workflows.get(binding_name) {
         Some(b) => b,
-        None => return (false, String::new(), Some(format!("binding '{}' not found in role", binding_name))),
+        None => return (false, String::new(), Some(format!("binding '{}' not found in agent", binding_name))),
     };
 
     if !binding.has_activities() {
@@ -256,11 +256,11 @@ async fn execute_role_workflow_task(
     let def_json = binding.to_workflow_json(binding_name);
     let inputs: serde_json::Value = serde_json::to_value(&binding.inputs).unwrap_or_default();
     let emit_source = binding.emit.as_ref().map(|emit_name| {
-        let slug = role.name.to_lowercase().replace(' ', "-");
+        let slug = agent_rec.name.to_lowercase().replace(' ', "-");
         format!("{}.{}", slug, emit_name)
     });
 
-    match manager.run_inline(def_json, inputs, "schedule", role_id, emit_source).await {
+    match manager.run_inline(def_json, inputs, "schedule", agent_id, emit_source).await {
         Ok(run_id) => (true, format!("inline workflow run started: {}", run_id), None),
         Err(e) => (false, String::new(), Some(e)),
     }

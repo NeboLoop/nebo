@@ -1,6 +1,6 @@
 //! Dependency auto-install cascade resolver.
 //!
-//! Walks the STRAP hierarchy (ROLE → WORK → SKILL) downward,
+//! Walks the STRAP hierarchy (AGENT → WORK → SKILL) downward,
 //! checks local presence, and either auto-installs (autonomous mode)
 //! or reports pending (non-autonomous mode).
 
@@ -215,6 +215,7 @@ pub fn is_marketplace_ref(reference: &str) -> bool {
         || reference.starts_with("SKIL-")
         || reference.starts_with("WORK-")
         || reference.starts_with("ROLE-")
+        || reference.starts_with("AGNT-")
         || reference.starts_with("PLUG-")
 }
 
@@ -446,15 +447,15 @@ async fn install_plugin(
 
 // ── Dep Extraction ──────────────────────────────────────────────────
 
-/// Extract dependencies from a role's frontmatter JSON string.
+/// Extract dependencies from an agent's frontmatter JSON string.
 ///
 /// Workflows are now inline (no external refs). Only skill dependencies are extracted
 /// from both the top-level `skills` array and from inline activity skill references.
-pub fn extract_role_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef> {
+pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef> {
     let mut deps = Vec::new();
-    // Try parsing as full RoleConfig first (has typed workflows with activities)
-    if let Ok(config) = napp::role::parse_role_config(frontmatter_json) {
-        return extract_role_deps(&config);
+    // Try parsing as full AgentConfig first (has typed workflows with activities)
+    if let Ok(config) = napp::agent::parse_agent_config(frontmatter_json) {
+        return extract_agent_deps(&config);
     }
     // Fallback: parse as raw JSON for simpler frontmatter
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(frontmatter_json) {
@@ -472,9 +473,9 @@ pub fn extract_role_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef>
     deps
 }
 
-/// Extract dependencies from a role config.
+/// Extract dependencies from an agent config.
 /// Workflows are now inline — only skill dependencies are extracted.
-pub fn extract_role_deps(config: &napp::role::RoleConfig) -> Vec<DepRef> {
+pub fn extract_agent_deps(config: &napp::agent::AgentConfig) -> Vec<DepRef> {
     let mut deps = Vec::new();
 
     for skill_ref in &config.skills {

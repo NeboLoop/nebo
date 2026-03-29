@@ -67,9 +67,9 @@ pub struct RunRequest {
     pub max_iterations: usize,
     /// Cancellation token for cooperative shutdown of the agentic loop.
     pub cancel_token: CancellationToken,
-    /// When set, this run executes as a specific role. The role's persona
+    /// When set, this run executes as a specific agent (persona). The agent's persona
     /// replaces the default identity, and session history is isolated.
-    pub role_id: String,
+    pub agent_id: String,
     /// Per-entity permission overrides (tool category → allowed).
     pub permissions: Option<HashMap<String, bool>>,
     /// Per-entity resource grant overrides (resource → "allow"|"deny"|"inherit").
@@ -122,7 +122,7 @@ pub struct Runner {
     concurrency: Arc<ConcurrencyController>,
     hooks: Arc<napp::HookDispatcher>,
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
-    role_registry: tools::RoleRegistry,
+    agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
 }
 
@@ -135,7 +135,7 @@ impl Runner {
         concurrency: Arc<ConcurrencyController>,
         hooks: Arc<napp::HookDispatcher>,
         mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
-        role_registry: tools::RoleRegistry,
+        agent_registry: tools::AgentRegistry,
         skill_loader: Option<Arc<tools::skills::Loader>>,
     ) -> Self {
         Self {
@@ -148,7 +148,7 @@ impl Runner {
             concurrency,
             hooks,
             mcp_context,
-            role_registry,
+            agent_registry,
             skill_loader,
         }
     }
@@ -307,8 +307,8 @@ impl Runner {
         let concurrency = self.concurrency.clone();
         let selector = self.selector.clone();
         let hooks = self.hooks.clone();
-        let role_registry = self.role_registry.clone();
-        let role_id = req.role_id.clone();
+        let agent_registry = self.agent_registry.clone();
+        let agent_id = req.agent_id.clone();
         let system_prompt = req.system.clone();
         let user_id = req.user_id.clone();
         let origin = req.origin;
@@ -382,8 +382,8 @@ impl Runner {
                 skip_memory,
                 max_iterations,
                 &cancel_token,
-                &role_registry,
-                &role_id,
+                &agent_registry,
+                &agent_id,
                 personality_snippet.as_deref(),
                 entity_permissions.as_ref(),
                 entity_resource_grants.as_ref(),
@@ -481,8 +481,8 @@ async fn run_loop(
     skip_memory: bool,
     max_iterations: usize,
     cancel_token: &CancellationToken,
-    role_registry: &tools::RoleRegistry,
-    role_id: &str,
+    agent_registry: &tools::AgentRegistry,
+    agent_id: &str,
     personality_snippet: Option<&str>,
     entity_permissions: Option<&HashMap<String, bool>>,
     entity_resource_grants: Option<&HashMap<String, String>>,
@@ -501,18 +501,18 @@ async fn run_loop(
     let mut auto_continuations = 0usize;
     let mut consecutive_error_iterations = 0usize;
 
-    // Resolve role from registry if role_id is set
-    let active_role_entry = if !role_id.is_empty() {
-        let reg = role_registry.read().await;
-        reg.get(role_id).cloned()
+    // Resolve agent from registry if agent_id is set
+    let active_agent_entry = if !agent_id.is_empty() {
+        let reg = agent_registry.read().await;
+        reg.get(agent_id).cloned()
     } else {
         None
     };
 
-    // Scope memory by role: each role gets its own memory namespace to prevent cross-contamination.
-    // Main bot uses the raw user_id; roles use "user_id:role:role_id".
-    let memory_user_id = if !role_id.is_empty() {
-        format!("{}:role:{}", user_id, role_id)
+    // Scope memory by agent: each agent gets its own memory namespace to prevent cross-contamination.
+    // Main bot uses the raw user_id; agents use "user_id:persona:agent_id".
+    let memory_user_id = if !agent_id.is_empty() {
+        format!("{}:persona:{}", user_id, agent_id)
     } else {
         user_id.to_string()
     };
@@ -520,9 +520,9 @@ async fn run_loop(
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
     let db_ctx = db_context::load_db_context(store, &memory_user_id);
 
-    // If running as a role, use the role name as agent_name
-    let agent_name = if let Some(ref role) = active_role_entry {
-        role.name.clone()
+    // If running as an agent (persona), use the agent name as agent_name
+    let agent_name = if let Some(ref agent) = active_agent_entry {
+        agent.name.clone()
     } else {
         db_ctx
             .agent
@@ -585,7 +585,7 @@ async fn run_loop(
     // Build static system prompt — use modular prompt when no custom one is provided
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
     // based on which tools pass the context filter (dynamic injection).
-    let active_role_body = active_role_entry.as_ref().map(|r| r.role_md.clone());
+    let active_agent_body = active_agent_entry.as_ref().map(|r| r.agent_md.clone());
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
             agent_name: agent_name.clone(),
@@ -596,7 +596,7 @@ async fn run_loop(
             platform: std::env::consts::OS.to_string(),
             memory_context: String::new(),
             db_context: Some(db_context_formatted.clone()),
-            active_role: active_role_body,
+            active_agent: active_agent_body,
         };
         prompt::build_static(&pctx)
     } else {

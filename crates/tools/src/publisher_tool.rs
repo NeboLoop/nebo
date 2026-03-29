@@ -6,7 +6,7 @@ use db::Store;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
-/// PublisherTool manages publishing skills and roles to NeboLoop marketplace.
+/// PublisherTool manages publishing skills and agents to NeboLoop marketplace.
 pub struct PublisherTool {
     store: Arc<Store>,
 }
@@ -32,35 +32,35 @@ impl PublisherTool {
         };
 
         match artifact_type {
-            "role" => self.publish_role(&api, name, version, visibility).await,
+            "agent" => self.publish_agent(&api, name, version, visibility).await,
             "skill" => self.publish_skill(&api, name, version, visibility).await,
-            _ => ToolResult::error("'type' must be 'role' or 'skill'"),
+            _ => ToolResult::error("'type' must be 'agent' or 'skill'"),
         }
     }
 
-    async fn publish_role(&self, api: &comm::api::NeboLoopApi, name: &str, version: &str, visibility: &str) -> ToolResult {
-        let db_role = match self.store.list_roles(500, 0) {
-            Ok(roles) => {
+    async fn publish_agent(&self, api: &comm::api::NeboLoopApi, name: &str, version: &str, visibility: &str) -> ToolResult {
+        let db_role = match self.store.list_agents(500, 0) {
+            Ok(agents) => {
                 let lower = name.to_lowercase();
-                roles.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
+                agents.into_iter().find(|r| r.name.to_lowercase() == lower || r.id == name)
             }
-            Err(e) => return ToolResult::error(format!("Failed to query roles: {}", e)),
+            Err(e) => return ToolResult::error(format!("Failed to query agents: {}", e)),
         };
         let db_role = match db_role {
             Some(r) => r,
-            None => return ToolResult::error(format!("Role '{}' not found locally.", name)),
+            None => return ToolResult::error(format!("Agent '{}' not found locally.", name)),
         };
 
-        let role_json = if db_role.frontmatter.is_empty() || db_role.frontmatter == "{}" {
+        let agent_json = if db_role.frontmatter.is_empty() || db_role.frontmatter == "{}" {
             None
         } else {
             Some(db_role.frontmatter.as_str())
         };
 
-        match api.publish_role(&db_role.name, &db_role.description, &db_role.role_md, version, visibility, role_json).await {
+        match api.publish_agent(&db_role.name, &db_role.description, &db_role.agent_md, version, visibility, agent_json).await {
             Ok(result) => {
                 let artifact_id = result["id"].as_str().unwrap_or("unknown");
-                self.maybe_submit(api, artifact_id, version, visibility, &db_role.name, "role").await
+                self.maybe_submit(api, artifact_id, version, visibility, &db_role.name, "agent").await
             }
             Err(e) => ToolResult::error(format!("Publish failed: {}", e)),
         }
@@ -183,13 +183,13 @@ impl DynTool for PublisherTool {
     }
 
     fn description(&self) -> String {
-        "Publish skills and roles to NeboLoop marketplace.\n\n\
+        "Publish skills and agents to NeboLoop marketplace.\n\n\
          Actions:\n\
-         - publish: publish a local skill or role to NeboLoop\n\
+         - publish: publish a local skill or agent to NeboLoop\n\
          - list: list your published artifacts on NeboLoop\n\
          - status: check review/publication status of an artifact\n\n\
          EXAMPLES:\n  \
-         publisher(action: \"publish\", type: \"role\", name: \"marketing-manager\", version: \"1.0.0\", visibility: \"private\")\n  \
+         publisher(action: \"publish\", type: \"agent\", name: \"marketing-manager\", version: \"1.0.0\", visibility: \"private\")\n  \
          publisher(action: \"publish\", type: \"skill\", name: \"seo-audit\", version: \"1.0.0\", visibility: \"public\")\n  \
          publisher(action: \"list\")\n  \
          publisher(action: \"status\", id: \"artifact-uuid\")\n\n\
@@ -209,11 +209,11 @@ impl DynTool for PublisherTool {
                 "type": {
                     "type": "string",
                     "description": "Artifact type (for publish)",
-                    "enum": ["role", "skill"]
+                    "enum": ["agent", "skill"]
                 },
                 "name": {
                     "type": "string",
-                    "description": "Local role or skill name (for publish)"
+                    "description": "Local agent or skill name (for publish)"
                 },
                 "version": {
                     "type": "string",

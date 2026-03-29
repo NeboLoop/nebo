@@ -486,7 +486,7 @@ pub async fn get_heartbeat(
         .unwrap_or_default()
         .iter()
         .filter_map(|job| {
-            let normalized = tools::RoleTool::normalize_cron(&job.schedule);
+            let normalized = tools::PersonaTool::normalize_cron(&job.schedule);
             let schedule: cron::Schedule = normalized.parse().ok()?;
             let last_run_ts = job.last_run.as_deref()
                 .and_then(|s| s.parse::<i64>().ok()

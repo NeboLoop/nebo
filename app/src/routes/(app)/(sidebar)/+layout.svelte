@@ -14,9 +14,9 @@
 		activeChannelId = $state('');
 		activeChannelName = $state('');
 		activeLoopName = $state('');
-		activeRoleId = $state('');
-		activeRoleName = $state('');
-		activeView = $state<'companion' | 'channel' | 'role' | 'overview'>('overview');
+		activeAgentId = $state('');
+		activeAgentName = $state('');
+		activeView = $state<'companion' | 'channel' | 'agent' | 'overview'>('overview');
 	}
 
 	const channelState = new ChannelState();
@@ -27,8 +27,8 @@
 		const path = $page.url.pathname;
 		if (path.startsWith('/agent/assistant')) {
 			channelState.activeView = 'companion';
-		} else if (path.startsWith('/agent/role/')) {
-			channelState.activeView = 'role';
+		} else if (path.startsWith('/agent/persona/')) {
+			channelState.activeView = 'agent';
 		}
 
 		function handleFocus(e: Event) {
@@ -42,8 +42,8 @@
 		channelState.activeChannelId = '';
 		channelState.activeChannelName = '';
 		channelState.activeLoopName = '';
-		channelState.activeRoleId = '';
-		channelState.activeRoleName = '';
+		channelState.activeAgentId = '';
+		channelState.activeAgentName = '';
 	}
 </script>
 
@@ -51,11 +51,11 @@
 	<div class={focusMode ? 'sidebar-rail' : ''}>
 	<Sidebar
 		bind:activeChannelId={channelState.activeChannelId}
-		activeRoleId={channelState.activeRoleId}
+		activeAgentId={channelState.activeAgentId}
 		activeView={channelState.activeView}
 		onSelectMyChat={() => { clearAll(); channelState.activeView = 'companion'; goto('/agent/assistant/chat'); }}
 		onSelectChannel={(id, name, loop) => { clearAll(); channelState.activeChannelId = id; channelState.activeChannelName = name; channelState.activeLoopName = loop; channelState.activeView = 'channel'; goto(`/agent/channel/${encodeURIComponent(name.toLowerCase())}`); }}
-		onSelectRole={(id, name) => { clearAll(); channelState.activeRoleId = id; channelState.activeRoleName = name; channelState.activeView = 'role'; goto(`/agent/role/${id}/chat`); }}
+		onSelectAgent={(id, name) => { clearAll(); channelState.activeAgentId = id; channelState.activeAgentName = name; channelState.activeView = 'agent'; goto(`/agent/persona/${id}/chat`); }}
 	/>
 	</div>
 

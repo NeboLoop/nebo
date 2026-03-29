@@ -10,8 +10,8 @@
 		activeChannelId: string;
 		activeChannelName: string;
 		activeLoopName: string;
-		activeRoleId: string;
-		activeRoleName: string;
+		activeAgentId: string;
+		activeAgentName: string;
 		activeView: string;
 	}>('channelState');
 
@@ -29,8 +29,8 @@
 		channelState.activeChannelId = '';
 		channelState.activeChannelName = '';
 		channelState.activeLoopName = '';
-		channelState.activeRoleId = '';
-		channelState.activeRoleName = 'Assistant';
+		channelState.activeAgentId = '';
+		channelState.activeAgentName = 'Assistant';
 		channelState.activeView = 'companion';
 	});
 </script>
@@ -46,7 +46,7 @@
 			</div>
 			<div class="agent-tab-bar-inline">
 				<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>{$t('agent.chatTab')}</a>
-				<a href="{basePath}/role" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('role')}>{$t('agent.roleTab')}</a>
+				<a href="{basePath}/persona" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('persona')}>{$t('agent.personaTab')}</a>
 				<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>{$t('agent.automate')}</a>
 				<a href="{basePath}/activity" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('activity')}>{$t('agent.activity')}</a>
 				<a href="{basePath}/settings" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('settings')}>{$t('agent.settingsTab')}</a>

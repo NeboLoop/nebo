@@ -2,7 +2,7 @@
 
 Platform capabilities are infrastructure services provided by Nebo itself. They are not marketplace artifacts — they ship with the platform. Skills declare which capabilities they need; the platform provides them; users grant permission.
 
-This is the same model as mobile app stores: iOS provides the camera API, apps declare they need camera access, the user grants permission once. Nebo provides storage, network, vision, and other capabilities. Skills declare what they need. Users grant permission when they install a Role or Skill.
+This is the same model as mobile app stores: iOS provides the camera API, apps declare they need camera access, the user grants permission once. Nebo provides storage, network, vision, and other capabilities. Skills declare what they need. Users grant permission when they install an Agent or Skill.
 
 ---
 
@@ -34,7 +34,7 @@ capabilities: [vision, storage]
 ---
 ```
 
-When a user installs a skill (or a Role that includes it), Nebo shows which capabilities the skill requests and the user grants or denies access.
+When a user installs a skill (or an Agent that includes it), Nebo shows which capabilities the skill requests and the user grants or denies access.
 
 ---
 

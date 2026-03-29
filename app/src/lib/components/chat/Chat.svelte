@@ -15,7 +15,7 @@
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat, createNewCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
 	import { goto } from '$app/navigation';
-	import { getRole, editChatMessage } from '$lib/api/nebo';
+	import { getRole as getAgent, editChatMessage } from '$lib/api/nebo';
 	import { logger } from '$lib/monitoring/logger';
 
 	const log = logger.child({ component: 'Chat' });
@@ -41,24 +41,24 @@
 
 	// ── Mode prop ──────────────────────────────────────────────────────
 	interface ChatMode {
-		type: 'companion' | 'channel' | 'role';
+		type: 'companion' | 'channel' | 'agent';
 		channelId?: string;
 		channelName?: string;
 		loopName?: string;
-		roleId?: string;
-		roleName?: string;
+		agentId?: string;
+		agentName?: string;
 	}
 
 	let { mode }: { mode: ChatMode } = $props();
 
 	const isCompanion = $derived(mode.type === 'companion');
 	const isChannel = $derived(mode.type === 'channel');
-	const isRole = $derived(mode.type === 'role');
+	const isAgent = $derived(mode.type === 'agent');
 
 	// Entity config panel state
 	let showConfig = $state(false);
-	const entityType = $derived(isChannel ? 'channel' : isRole ? 'role' : 'main');
-	const entityId = $derived(isChannel ? (mode.channelId ?? '') : isRole ? (mode.roleId ?? '') : 'main');
+	const entityType = $derived(isChannel ? 'channel' : isAgent ? 'role' : 'main');
+	const entityId = $derived(isChannel ? (mode.channelId ?? '') : isAgent ? (mode.agentId ?? '') : 'main');
 
 	// ── Shared interfaces ──────────────────────────────────────────────
 	interface ApprovalRequest {
@@ -127,7 +127,7 @@
 	let isLoading = $state(false);
 	let wsConnected = $state(false);
 	let agentName = $state('Nebo');
-	let roleDescription = $state('');
+	let agentDescription = $state('');
 	let messagesContainer: HTMLDivElement;
 	let currentStreamingMessage = $state<Message | null>(null);
 	let chatLoaded = $state(false);
@@ -363,17 +363,17 @@
 		'chat.suggestion4'
 	];
 
-	// Marketplace roles for empty state (loaded once, no tokens — pure UI)
-	interface MarketplaceRole { id: string; name: string; description: string; icon: string; }
-	let marketplaceRoles = $state<MarketplaceRole[]>([]);
+	// Marketplace agents for empty state (loaded once, no tokens — pure UI)
+	interface MarketplaceAgent { id: string; name: string; description: string; icon: string; }
+	let marketplaceAgents = $state<MarketplaceAgent[]>([]);
 
-	async function loadMarketplaceRoles() {
+	async function loadMarketplaceAgents() {
 		try {
 			const res = await fetch('/api/v1/store/products?type=role&pageSize=6');
 			if (res.ok) {
 				const data = await res.json();
 				const items = data.skills || data.items || data.products || [];
-				marketplaceRoles = items.slice(0, 6).map((r: any) => ({
+				marketplaceAgents = items.slice(0, 6).map((r: any) => ({
 					id: r.id || r.slug || '',
 					name: r.name || '',
 					description: r.description || '',
@@ -395,7 +395,7 @@
 		unsubscribers.push(() => window.removeEventListener('nebo:focus-mode', handleFocusSync));
 
 		// Load marketplace roles for empty state (no tokens — pure UI)
-		if (isCompanion) loadMarketplaceRoles();
+		if (isCompanion) loadMarketplaceAgents();
 
 		// Tauri native drag-and-drop via Rust eval() → global functions.
 		// Registered FIRST (synchronously) so they're available immediately.
@@ -426,7 +426,7 @@
 			if (profile.name) agentName = profile.name;
 		} catch {}
 
-		if (isCompanion || isRole) {
+		if (isCompanion || isAgent) {
 			unsubscribers.push(
 				client.on('chat_stream', handleChatStream),
 				client.on('chat_complete', handleChatComplete),
@@ -496,17 +496,17 @@
 				draftInitialized = true;
 			}
 
-			if (isRole) {
-				// Role chat: set chatId to role-scoped session key, load existing messages
-				chatId = `role:${mode.roleId}:web`;
-				agentName = mode.roleName || $t('common.agent');
-				// Fetch role details for empty state display
-				if (mode.roleId) {
-					getRole(mode.roleId).then((data) => {
-						if (data?.role?.description) roleDescription = data.role.description;
+			if (isAgent) {
+				// Agent chat: set chatId to agent-scoped session key, load existing messages
+				chatId = `role:${mode.agentId}:web`;
+				agentName = mode.agentName || $t('common.agent');
+				// Fetch agent details for empty state display
+				if (mode.agentId) {
+					getAgent(mode.agentId).then((data) => {
+						if (data?.role?.description) agentDescription = data.role.description;
 					}).catch(() => {});
 				}
-				await loadRoleChat();
+				await loadAgentChat();
 			} else {
 				await loadCompanionChat();
 			}
@@ -774,7 +774,7 @@
 		}
 	}
 
-	async function loadRoleChat() {
+	async function loadAgentChat() {
 		try {
 			const res = await getChatMessages(chatId);
 			messages = (res.messages || []).map((m: ApiChatMessage) => {
@@ -883,10 +883,10 @@
 			const payload: Record<string, unknown> = {
 				session_id: chatId || '',
 				prompt: prompt,
-				companion: !isRole
+				companion: !isAgent
 			};
-			if (isRole && mode.roleId) {
-				payload.role_id = mode.roleId;
+			if (isAgent && mode.agentId) {
+				payload.role_id = mode.agentId;
 			}
 			client.send('chat', payload);
 		} else {
@@ -2410,7 +2410,7 @@
 			</div>
 		</header>
 	{:else}
-		<!-- Header provided by [name]/+layout.svelte for both role and companion -->
+		<!-- Header provided by [name]/+layout.svelte for both agent and companion -->
 	{/if}
 
 	<!-- Entity Config Panel -->
@@ -2429,7 +2429,7 @@
 				{#if isCompanion && hasMoreHistory}
 					<div class="flex justify-center">
 						<a
-							href="{mode.roleId ? `/agent/role/${mode.roleId}/activity` : '/agent/assistant/activity'}"
+							href="{mode.agentId ? `/agent/persona/${mode.agentId}/activity` : '/agent/assistant/activity'}"
 							class="flex items-center gap-2 px-4 py-2 rounded-lg bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
 						>
 
@@ -2467,22 +2467,22 @@
 								{/each}
 							</div>
 
-							{#if marketplaceRoles.length > 0}
+							{#if marketplaceAgents.length > 0}
 								<div class="w-full max-w-lg">
 									<p class="text-xs text-base-content/70 uppercase tracking-wider font-semibold mb-3 text-left">{$t('chat.availableAgents')}</p>
 									<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-										{#each marketplaceRoles as role}
+										{#each marketplaceAgents as agent}
 											<button
 												type="button"
 												class="flex items-center gap-3 w-full text-left px-3 py-2.5 rounded-xl border border-base-content/10 hover:border-primary/30 hover:bg-primary/5 transition-colors"
-												onclick={() => goto(`/marketplace/roles/${role.id}`)}
+												onclick={() => goto(`/marketplace/agents/${agent.id}`)}
 											>
 												<div class="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-													<span class="text-xs font-bold text-primary">{role.name.charAt(0).toUpperCase()}</span>
+													<span class="text-xs font-bold text-primary">{agent.name.charAt(0).toUpperCase()}</span>
 												</div>
 												<div class="flex-1 min-w-0">
-													<p class="text-sm font-medium truncate">{role.name}</p>
-													<p class="text-xs text-base-content/70 truncate">{role.description}</p>
+													<p class="text-sm font-medium truncate">{agent.name}</p>
+													<p class="text-xs text-base-content/70 truncate">{agent.description}</p>
 												</div>
 											</button>
 										{/each}
@@ -2491,15 +2491,15 @@
 								</div>
 							{/if}
 						</div>
-					{:else if isRole}
-						<!-- Role empty state -->
+					{:else if isAgent}
+						<!-- Agent empty state -->
 						<div class="flex flex-col items-center justify-center pt-12 text-center">
 							<div class="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
-								<span class="text-2xl font-bold text-primary">{(mode.roleName || 'R').charAt(0).toUpperCase()}</span>
+								<span class="text-2xl font-bold text-primary">{(mode.agentName || 'R').charAt(0).toUpperCase()}</span>
 							</div>
-							<h2 class="font-display text-xl font-bold text-base-content mb-2">{mode.roleName || $t('common.agent')}</h2>
-							{#if roleDescription}
-								<p class="text-base text-base-content/60 max-w-md mb-8">{roleDescription}</p>
+							<h2 class="font-display text-xl font-bold text-base-content mb-2">{mode.agentName || $t('common.agent')}</h2>
+							{#if agentDescription}
+								<p class="text-base text-base-content/60 max-w-md mb-8">{agentDescription}</p>
 							{:else}
 								<p class="text-base text-base-content/60 max-w-md mb-8">{$t('chat.startConversation')}</p>
 							{/if}
@@ -2537,17 +2537,17 @@
 							agentName={group.agentName}
 							onCopy={copyMessage}
 							copiedId={copiedMessageId}
-							onViewToolOutput={(isCompanion || isRole) ? openToolSidebar : undefined}
-							isStreaming={(isCompanion || isRole) && group.role === 'assistant' &&
+							onViewToolOutput={(isCompanion || isAgent) ? openToolSidebar : undefined}
+							isStreaming={(isCompanion || isAgent) && group.role === 'assistant' &&
 								isLoading &&
 								idx === groupedMessages.length - 1}
-							onAskSubmit={(isCompanion || isRole) ? handleAskSubmit : undefined}
-							onEditMessage={(isCompanion || isRole) ? handleEditMessage : undefined}
+							onAskSubmit={(isCompanion || isAgent) ? handleAskSubmit : undefined}
+							onEditMessage={(isCompanion || isAgent) ? handleEditMessage : undefined}
 						/>
 					{/each}
 
 					<!-- Loading indicator -->
-					{#if (isCompanion || isRole) && isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
+					{#if (isCompanion || isAgent) && isLoading && !currentStreamingMessage && (groupedMessages.length === 0 || groupedMessages[groupedMessages.length - 1]?.role !== 'assistant')}
 						<div class="flex gap-3 mb-4">
 							<div
 								class="w-10 h-10 rounded-lg flex-shrink-0 self-end mb-1 grid place-items-center font-semibold text-base bg-base-300 text-base-content/80"

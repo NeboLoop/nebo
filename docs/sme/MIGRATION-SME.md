@@ -55,7 +55,7 @@ These documents consolidate multiple Go SME docs into unified Rust migration ref
 
 | # | Document | Covers | Size |
 |---|---|---|---|
-| 26 | [platform-taxonomy.md](platform-taxonomy.md) | Canonical spec: Skills, Tools, Workflows, Roles, install codes, marketplace, execution model | 22KB |
+| 26 | [platform-taxonomy.md](platform-taxonomy.md) | Canonical spec: Skills, Tools, Workflows, Agents, install codes, marketplace, execution model | 22KB |
 | 27 | [workflow-engine.md](workflow-engine.md) | Implementation SME: Rust structs, lean execution algorithm, DB schema, API routes, crate design | 14KB |
 
 **Total documentation: ~1.3MB across 27 files + this index.**

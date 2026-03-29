@@ -564,16 +564,16 @@ pub struct WorkflowActivityResult {
     pub completed_at: Option<i64>,
 }
 
-// ── Roles ──
+// ── Agents ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Role {
+pub struct Agent {
     pub id: String,
     pub kind: Option<String>,
     pub name: String,
     pub description: String,
-    pub role_md: String,
+    pub agent_md: String,
     pub frontmatter: String,
     pub pricing_model: Option<String>,
     pub pricing_cost: Option<f64>,
@@ -591,12 +591,12 @@ fn default_input_values() -> String {
     "{}".to_string()
 }
 
-/// A workflow binding owned by a role, with trigger configuration.
+/// A workflow binding owned by an agent, with trigger configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RoleWorkflow {
+pub struct AgentWorkflow {
     pub id: i64,
-    pub role_id: String,
+    pub agent_id: String,
     pub binding_name: String,
     pub trigger_type: String,
     pub trigger_config: String,
@@ -616,16 +616,16 @@ pub struct RoleWorkflow {
 #[serde(rename_all = "camelCase")]
 pub struct EmitSource {
     pub emit: String,
-    pub role_name: String,
+    pub agent_name: String,
     pub binding_name: String,
     pub description: Option<String>,
 }
 
-// ── Role Workflow Stats ──
+// ── Agent Workflow Stats ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RoleWorkflowStats {
+pub struct AgentWorkflowStats {
     pub total_runs: i64,
     pub completed: i64,
     pub failed: i64,
@@ -687,7 +687,7 @@ pub struct CommanderTeam {
 #[serde(rename_all = "camelCase")]
 pub struct CommanderTeamMember {
     pub team_id: String,
-    pub role_id: String,
+    pub agent_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

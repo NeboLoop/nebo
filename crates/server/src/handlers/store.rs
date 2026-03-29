@@ -251,7 +251,7 @@ fn is_skill_locally_installed(slug: &str) -> bool {
 /// Check if a product is installed: roles use the DB, skills use the filesystem.
 fn is_installed(slug: &str, name: &str, artifact_type: &str, store: &db::Store) -> bool {
     match artifact_type {
-        "role" => store.role_installed_by_name(name).unwrap_or(false),
+        "agent" => store.agent_installed_by_name(name).unwrap_or(false),
         _ => is_skill_locally_installed(slug),
     }
 }
@@ -330,13 +330,13 @@ pub async fn uninstall_store_product(
     let _ = api.uninstall_product(&id).await;
 
     // Determine slug and type from local DB first, then NeboLoop as fallback
-    let local_role = state.store.get_role(&id).ok().flatten();
+    let local_agent = state.store.get_agent(&id).ok().flatten();
     let slug = detail.as_ref().map(|d| d.item.slug.clone()).unwrap_or_default();
     let artifact_type = detail.as_ref().and_then(|d| d.artifact_type.as_deref()).unwrap_or("");
 
     // Derive slug from role name if NeboLoop didn't provide it
     let slug = if slug.is_empty() {
-        local_role.as_ref()
+        local_agent.as_ref()
             .map(|r| r.name.to_lowercase().replace(' ', "-"))
             .unwrap_or_default()
     } else {
@@ -344,21 +344,21 @@ pub async fn uninstall_store_product(
     };
 
     // Determine artifact type from local DB kind or NeboLoop
-    let is_role = artifact_type == "role"
-        || local_role.is_some()
-        || local_role.as_ref().and_then(|r| r.kind.as_deref()).map(|k| k.starts_with("ROLE-")).unwrap_or(false);
+    let is_agent = artifact_type == "agent"
+        || local_agent.is_some()
+        || local_agent.as_ref().and_then(|r| r.kind.as_deref()).map(|k| k.starts_with("ROLE-") || k.starts_with("AGNT-")).unwrap_or(false);
 
     // Clean up local DB
-    if let Some(ref role) = local_role {
+    if let Some(ref agent_rec) = local_agent {
         // Stop role worker
-        state.role_workers.stop_role(&id).await;
+        state.agent_workers.stop_agent(&id).await;
         // Deactivate from live registry
-        state.role_registry.write().await.remove(&id);
+        state.agent_registry.write().await.remove(&id);
         // Remove workflow bindings and triggers
-        workflow::triggers::unregister_role_triggers(&id, &state.store);
-        state.event_dispatcher.unsubscribe_role(&id).await;
-        let _ = state.store.delete_role_workflows(&id);
-        let _ = state.store.delete_role(&id);
+        workflow::triggers::unregister_agent_triggers(&id, &state.store);
+        state.event_dispatcher.unsubscribe_agent(&id).await;
+        let _ = state.store.delete_agent_workflows(&id);
+        let _ = state.store.delete_agent(&id);
         // Deregister agent from NeboLoop (non-blocking)
         {
             let st = state.clone();
@@ -370,15 +370,15 @@ pub async fn uninstall_store_product(
             });
         }
         state.hub.broadcast(
-            "role_deactivated",
-            serde_json::json!({ "roleId": id, "name": role.name }),
+            "agent_deactivated",
+            serde_json::json!({ "agentId": id, "name": agent_rec.name }),
         );
     }
 
     // Clean up filesystem
     if !slug.is_empty() {
         if let Ok(nebo_dir) = config::nebo_dir() {
-            let subdir = if is_role { "roles" } else { "skills" };
+            let subdir = if is_agent { "agents" } else { "skills" };
             let artifact_dir = nebo_dir.join(subdir).join(&slug);
             if artifact_dir.exists() {
                 let _ = std::fs::remove_dir_all(&artifact_dir);

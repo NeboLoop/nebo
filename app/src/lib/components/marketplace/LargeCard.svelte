@@ -3,15 +3,15 @@
 	import InstallCode from '$lib/components/InstallCode.svelte';
 	import PricePill from './PricePill.svelte';
 	import ArtifactIcon from './ArtifactIcon.svelte';
-	import RoleSetupModal from '$lib/components/role/RoleSetupModal.svelte';
+	import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
 	import { type AppItem, itemHref } from '$lib/types/marketplace';
-	import { installStoreProduct, listRoles, activateRole } from '$lib/api/nebo';
+	import { installStoreProduct, listRoles as listAgents, activateRole as activateAgent } from '$lib/api/nebo';
 	import webapi from '$lib/api/gocliRequest';
 	import { CheckCircle } from 'lucide-svelte';
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
 
-	const typeLabel = label || (item.type === 'role' ? 'ROLE' : item.type === 'workflow' ? 'WORKFLOW' : 'SKILL');
+	const typeLabel = label || (item.type === 'agent' ? 'AGENT' : item.type === 'workflow' ? 'WORKFLOW' : 'SKILL');
 
 	let installing = $state(false);
 	let showSetupModal = $state(false);
@@ -24,8 +24,8 @@
 
 		installing = true;
 		try {
-			if (item.type === 'role') {
-				// Fetch role detail to check for inputs
+			if (item.type === 'agent') {
+				// Fetch agent detail to check for inputs
 				const detail = await webapi.get<any>(`/api/v1/store/products/${item.id}`).catch(() => null);
 				const inputs = detail?.typeConfig?.inputs || detail?.inputs || {};
 
@@ -37,25 +37,25 @@
 				}
 			}
 
-			// No inputs or not a role — install directly
+			// No inputs or not an agent — install directly
 			await installStoreProduct(item.id);
 
-			if (item.type === 'role') {
-				// Find and activate the role
-				const rolesRes = await listRoles();
-				const allRoles = rolesRes?.roles || [];
-				const matched = allRoles.find(
+			if (item.type === 'agent') {
+				// Find and activate the agent
+				const agentsRes = await listAgents();
+				const allAgents = agentsRes?.roles || [];
+				const matched = allAgents.find(
 					(r: any) => r.name?.toLowerCase() === item.name.toLowerCase()
 				);
 
 				if (matched) {
-					await activateRole(matched.id);
-					goto(`/agent/role/${matched.id}/chat`);
+					await activateAgent(matched.id);
+					goto(`/agent/persona/${matched.id}/chat`);
 					return;
 				}
 			}
 
-			// For non-role items, just mark installed
+			// For non-agent items, just mark installed
 			item.installed = true;
 		} catch {
 			// ignore
@@ -64,9 +64,9 @@
 		}
 	}
 
-	function handleSetupComplete(roleId: string) {
+	function handleSetupComplete(agentId: string) {
 		showSetupModal = false;
-		goto(`/agent/role/${roleId}/chat`);
+		goto(`/agent/persona/${agentId}/chat`);
 	}
 
 	function handleSetupCancel() {
@@ -118,10 +118,10 @@
 </a>
 
 {#if showSetupModal}
-	<RoleSetupModal
+	<AgentSetupModal
 		appId={item.id}
-		roleName={item.name}
-		roleDescription={item.description}
+		agentName={item.name}
+		agentDescription={item.description}
 		inputs={setupInputs}
 		onComplete={handleSetupComplete}
 		onCancel={handleSetupCancel}

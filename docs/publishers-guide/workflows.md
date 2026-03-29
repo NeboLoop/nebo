@@ -1,6 +1,6 @@
 # Workflow Developer Guide
 
-This guide covers everything you need to design, build, test, and deploy workflows for Nebo. A workflow is a JSON definition that chains AI-powered activities together with tool access, budget constraints, and error handling. Workflows are pure procedures — they define *how* something gets done, not *when*. Triggers and schedules belong to the Role that binds the workflow. Workflows run as background subagents with their own tool access and token budgets, independent from the main agent conversation.
+This guide covers everything you need to design, build, test, and deploy workflows for Nebo. A workflow is a JSON definition that chains AI-powered activities together with tool access, budget constraints, and error handling. Workflows are pure procedures — they define *how* something gets done, not *when*. Triggers and schedules belong to the Agent that binds the workflow. Workflows run as background subagents with their own tool access and token budgets, independent from the main agent conversation.
 
 ## When to Use a Workflow
 
@@ -46,7 +46,7 @@ A workflow is a single JSON document (`workflow.json`) with this top-level struc
 
 > **`id` vs manifest `name`:** The `id` field in workflow.json is the local engine identifier — it's how the REST API addresses the workflow, how run records are keyed, and how the `work` tool references it. The `name` field in `manifest.json` is the marketplace identity (`@org/workflows/name`). They serve different purposes. The `id` is typically the last segment of the qualified name (e.g., `lead-qualification` from `@acme/workflows/lead-qualification`).
 
-> **Note:** There is no `triggers` field in workflow.json. Workflows are pure procedures. Triggers and schedules are defined in the Role's `role.json`, which binds workflows to events. This means the same workflow can run on different schedules in different Roles, and a user can change when something runs without touching the procedure itself. A standalone workflow without a Role can still be invoked manually or via the `work` tool.
+> **Note:** There is no `triggers` field in workflow.json. Workflows are pure procedures. Triggers and schedules are defined in the Agent's `agent.json`, which binds workflows to events. This means the same workflow can run on different schedules in different Agents, and a user can change when something runs without touching the procedure itself. A standalone workflow without an Agent can still be invoked manually or via the `work` tool.
 
 ---
 
@@ -164,7 +164,7 @@ Activities run in a **lean execution path** — there is no steering, no memory 
 
 This is by design: workflows are deterministic, repeatable processes.
 
-> **Note on Roles:** Installing a Role loads the ROLE.md persona into the agent's *conversational* context — it shapes how the agent talks to the user. But the Role's own workflows do **not** inherit that persona. Workflow activities get only the lean context listed above. The persona is for the agent's personality in chat; workflows are impersonal execution engines.
+> **Note on Agents:** Installing an Agent loads the AGENT.md persona into the bot's *conversational* context — it shapes how the bot talks to the user. But the Agent's own workflows do **not** inherit that persona. Workflow activities get only the lean context listed above. The persona is for the bot's personality in chat; workflows are impersonal execution engines.
 
 ### Activity ID Rules
 
@@ -523,9 +523,9 @@ Response:
 }
 ```
 
-### Via Schedule (Role-Bound)
+### Via Schedule (Agent-Bound)
 
-Workflows do not carry their own schedule triggers. To run a workflow on a schedule, bind it to a Role with a `schedule` trigger in `role.json`. The scheduler polls every 60 seconds and fires workflows when their cron expression is due. Scheduled runs use `trigger_type: "cron"`. If the Role's workflow binding defines default `inputs`, those are passed to the workflow; otherwise the workflow receives no inputs.
+Workflows do not carry their own schedule triggers. To run a workflow on a schedule, bind it to an Agent with a `schedule` trigger in `agent.json`. The scheduler polls every 60 seconds and fires workflows when their cron expression is due. Scheduled runs use `trigger_type: "cron"`. If the Agent's workflow binding defines default `inputs`, those are passed to the workflow; otherwise the workflow receives no inputs.
 
 ---
 
@@ -541,7 +541,7 @@ work(action: "install", name: "@acme/workflows/lead-qualification@^1.0.0")
 
 Or paste an install code in chat — Nebo detects `WORK-XXXX-XXXX` codes automatically, resolves them to the qualified name, and installs the workflow.
 
-The marketplace resolves the reference, downloads the workflow definition, stores it in the local database, and makes it available for manual invocation or Role binding.
+The marketplace resolves the reference, downloads the workflow definition, stores it in the local database, and makes it available for manual invocation or Agent binding.
 
 ### Via REST API
 
@@ -572,7 +572,7 @@ Or via REST API:
 DELETE /workflows/{id}
 ```
 
-Uninstalling removes the workflow, all its bindings, and deregisters it from any Roles that reference it.
+Uninstalling removes the workflow, all its bindings, and deregisters it from any Agents that reference it.
 
 ---
 
@@ -675,7 +675,7 @@ The parser enforces these rules at creation time:
 
 Every workflow package includes a `WORKFLOW.md` file alongside `manifest.json` and `workflow.json`. This is the workflow's documentation for the agent — it tells the agent what the workflow does, when it's appropriate to use, and how to interpret its results. It is plain markdown with no frontmatter (identity comes from the manifest).
 
-This is analogous to `SKILL.md` in a skill package and `ROLE.md` in a role package.
+This is analogous to `SKILL.md` in a skill package and `AGENT.md` in an agent package.
 
 ---
 
@@ -744,10 +744,10 @@ emit(source: "email.customer-service", payload: {"from": "j@example.com", "subje
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `source` | string | yes | Event type string — matched against trigger `sources` in active Roles |
+| `source` | string | yes | Event type string — matched against trigger `sources` in active Agents |
 | `payload` | map | no | Arbitrary data — becomes the triggered workflow's `inputs` |
 
-Each `emit` call produces a discrete event. If an activity emits 5 events, each one is matched independently against all active trigger subscriptions across all installed Roles.
+Each `emit` call produces a discrete event. If an activity emits 5 events, each one is matched independently against all active trigger subscriptions across all installed Agents.
 
 ### Fan-Out Pattern
 
@@ -760,7 +760,7 @@ emit(source: "email.customer-service", payload: {"from": "j@example.com", "subje
 emit(source: "email.sales-inquiry", payload: {"from": "k@example.com", "subject": "Pricing", "body": "..."})
 ```
 
-Each emit triggers whatever Role workflow is subscribed to that source. See [Roles — Event System](roles.md#event-system) for the full event architecture.
+Each emit triggers whatever Agent workflow is subscribed to that source. See [Agents — Event System](agents.md#event-system) for the full event architecture.
 
 ---
 

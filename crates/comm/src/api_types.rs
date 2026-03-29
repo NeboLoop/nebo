@@ -159,7 +159,7 @@ pub struct SkillItem {
 
 /// Full skill detail with manifest.
 ///
-/// Also used for workflow and role detail — all artifact types share
+/// Also used for workflow and agent detail — all artifact types share
 /// the `GET /api/v1/skills/{id}` endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,7 +174,7 @@ pub struct SkillDetail {
     /// Secondary markdown content (marketplace description).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_md: Option<String>,
-    /// Artifact type: "skill", "workflow", or "role".
+    /// Artifact type: "skill", "workflow", or "agent".
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     pub artifact_type: Option<String>,
     /// Install code (e.g. SKIL-XXXX-XXXX).
@@ -249,12 +249,12 @@ pub struct WorkflowsResponse {
     pub page_size: i64,
 }
 
-// ── Role Types ───────────────────────────────────────────────────────
+// ── Agent Types (marketplace) ─────────────────────────────────────────
 
-/// Compact role in list responses.
+/// Compact agent in list responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RoleItem {
+pub struct AgentItem {
     pub id: String,
     pub name: String,
     #[serde(default)]
@@ -266,23 +266,23 @@ pub struct RoleItem {
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pricing: Option<RolePricingInfo>,
+    pub pricing: Option<AgentPricingInfo>,
 }
 
-/// Pricing info attached to a role.
+/// Pricing info attached to an agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RolePricingInfo {
+pub struct AgentPricingInfo {
     pub model: String,
     pub cost: f64,
 }
 
-/// Full role detail.
+/// Full agent detail.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RoleDetail {
+pub struct AgentDetail {
     #[serde(flatten)]
-    pub item: RoleItem,
+    pub item: AgentItem,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_md: Option<String>,
 }
@@ -302,11 +302,11 @@ pub struct AgentInfo {
     pub status: String,
 }
 
-/// Paginated list response for roles.
+/// Paginated list response for agents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RolesResponse {
-    pub roles: Vec<RoleItem>,
+pub struct AgentsResponse {
+    pub agents: Vec<AgentItem>,
     #[serde(default)]
     pub total_count: i64,
 }
@@ -737,9 +737,9 @@ pub struct ChannelMessage {
 pub struct AgentActivateRequest {
     pub bot_id: String,
     #[serde(rename = "name")]
-    pub role_name: String,
+    pub agent_name: String,
     #[serde(rename = "slug")]
-    pub role_slug: String,
+    pub agent_slug: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }

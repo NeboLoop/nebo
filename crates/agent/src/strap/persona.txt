@@ -1,0 +1,9 @@
+### persona — Agent Management
+USE THIS when: user wants to manage agents (list, activate, deactivate), check current agent, or install a new agent.
+
+- persona(action: "list") — List available agents
+- persona(action: "activate", name: "chief-of-staff") — Activate an agent (injects persona, registers triggers)
+- persona(action: "deactivate") — Deactivate current agent, revert to default
+- persona(action: "info", name: "chief-of-staff") — Show agent details
+- persona(action: "create", name: "my-agent", agent_md: "# Agent...") — Create a user agent
+- persona(action: "install", code: "AGNT-XXXX-XXXX") — Install from marketplace

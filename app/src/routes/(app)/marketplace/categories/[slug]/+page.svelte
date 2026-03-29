@@ -11,7 +11,7 @@
 	let loading = $state(true);
 	let skills: AppItem[] = $state([]);
 	let workflows: AppItem[] = $state([]);
-	let roles: AppItem[] = $state([]);
+	let agents: AppItem[] = $state([]);
 	let catMeta: { name: string; slug: string; emoji: string } | null = $state(null);
 
 	const slug = $derived($page.params.slug);
@@ -45,22 +45,22 @@
 			// Split products by type
 			const skillList: any[] = [];
 			const workflowList: any[] = [];
-			const roleList: any[] = [];
+			const agentList: any[] = [];
 
 			for (const p of rawProducts) {
 				if (p.type === 'workflow') workflowList.push(p);
-				else if (p.type === 'role') roleList.push(p);
+				else if (p.type === 'role') agentList.push(p);
 				else skillList.push(p);
 			}
 
 			skills = skillList.map((s: any, i: number) => toAppItem(s, i));
 			workflows = workflowList.map((w: any, i: number) => toAppItem({ ...w, type: 'workflow' }, i));
-			roles = roleList.map((r: any, i: number) => toAppItem({ ...r, type: 'role' }, i));
+			agents = agentList.map((r: any, i: number) => toAppItem({ ...r, type: 'role' }, i));
 		} catch { /* ignore */ }
 		loading = false;
 	});
 
-	const totalItems = $derived(skills.length + workflows.length + roles.length);
+	const totalItems = $derived(skills.length + workflows.length + agents.length);
 </script>
 
 <!-- Sticky Header -->
@@ -150,12 +150,12 @@
 		</div>
 	{/if}
 
-	<!-- Roles Section -->
-	{#if roles.length > 0}
+	<!-- Agents Section -->
+	{#if agents.length > 0}
 		<div class="px-6 py-6 border-t border-base-content/10">
-			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.roles')}</h2>
+			<h2 class="font-display text-lg font-bold mb-4">{$t('marketplace.agents')}</h2>
 			<div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-px">
-				{#each roles as item, i}
+				{#each agents as item, i}
 					<a href={itemHref(item)} class="flex items-center gap-3 py-3 pr-3 hover:bg-base-content/[0.03] transition-colors rounded-lg">
 						<span class="w-5 text-right text-base text-base-content/80 font-medium shrink-0">{i + 1}</span>
 						<div class="w-14 h-14 rounded-2xl {item.iconBg} flex items-center justify-center text-2xl shrink-0">{item.iconEmoji}</div>

@@ -14,7 +14,7 @@
 	let installed = $state<AppItem[]>([]);
 	let uninstallingId = $state<string | null>(null);
 
-	let installedRoles = $derived(installed.filter(i => i.type === 'role' || i.type === 'workflow'));
+	let installedAgents = $derived(installed.filter(i => i.type === 'agent' || i.type === 'workflow'));
 	let installedSkills = $derived(installed.filter(i => i.type === 'skill'));
 
 	onMount(async () => {
@@ -101,12 +101,12 @@
 				</div>
 			</div>
 		{:else}
-			{#if installedRoles.length > 0}
+			{#if installedAgents.length > 0}
 				<div class="mb-6">
-					<h3 class="text-lg font-semibold text-base-content mb-3">{$t('marketplace.roles')}</h3>
+					<h3 class="text-lg font-semibold text-base-content mb-3">{$t('marketplace.agents')}</h3>
 					<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 						<div class="space-y-2">
-							{#each installedRoles as item (item.id)}
+							{#each installedAgents as item (item.id)}
 								<div class="flex items-center justify-between py-2.5 px-4 rounded-xl bg-base-content/5 border border-base-content/10">
 									<a href={itemHref(item)} class="flex items-center gap-3 min-w-0 no-underline group">
 										<ArtifactIcon emoji={item.iconEmoji} bg={item.iconBg} size="sm" />
@@ -143,7 +143,7 @@
 							{/each}
 						</div>
 					</div>
-					<p class="text-sm text-base-content/40 mt-2 text-center">{$t('marketplace.installedPage.rolesInstalled', { values: { count: installedRoles.length } })}</p>
+					<p class="text-sm text-base-content/40 mt-2 text-center">{$t('marketplace.installedPage.agentsInstalled', { values: { count: installedAgents.length } })}</p>
 				</div>
 			{/if}
 

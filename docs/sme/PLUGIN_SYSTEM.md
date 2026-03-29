@@ -273,7 +273,7 @@ Plugins have their own install code prefix, following the same Crockford Base32 
 | `NEBO` | Link bot to NeboLoop account |
 | `SKIL` | Install a skill |
 | `WORK` | Install a workflow |
-| `ROLE` | Install a role |
+| `AGNT` | Install an agent |
 | `LOOP` | Join bot to a Loop |
 | `PLUG` | Install a plugin |
 

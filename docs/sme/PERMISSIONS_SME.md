@@ -44,7 +44,7 @@ Layer 2: Capability Permissions (user_profiles.tool_permissions JSON)
   │  8 categories: chat, file, shell, web, contacts, desktop, media, system
   │
 Layer 3: Per-Entity Overrides (entity_config table)
-  │  Per-role/channel permissions + resource_grants, inherits from layers 1-2
+  │  Per-agent/channel permissions + resource_grants, inherits from layers 1-2
   │
 Layer 4: Origin-Based Policy (tools::policy)
      Hard deny lists per Origin (Comm/App/Skill cannot use shell)
@@ -138,12 +138,12 @@ The `user_profiles` table also stores:
 **Source:** `crates/db/migrations/0057_entity_config.sql`
 **Resolution:** `crates/server/src/entity_config.rs`
 
-Each role or channel can override global permissions via the `entity_config` table:
+Each agent or channel can override global permissions via the `entity_config` table:
 
 ```sql
 CREATE TABLE entity_config (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL CHECK(entity_type IN ('main', 'role', 'channel')),
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('main', 'agent', 'channel')),
     entity_id   TEXT NOT NULL,
     -- Heartbeat
     heartbeat_enabled          INTEGER,  -- NULL=inherit, 0/1
@@ -200,7 +200,7 @@ pub struct ResolvedEntityConfig {
 
 ### Convenience Resolver
 
-`resolve_for_chat()` is the one-call path used by chat dispatch, roles, and heartbeat:
+`resolve_for_chat()` is the one-call path used by chat dispatch, agents, and heartbeat:
 
 ```rust
 pub fn resolve_for_chat(
@@ -423,7 +423,7 @@ capability permissions:
 | `execute` (ExecuteTool) | — | Yes (when loader+tier available) |
 | `message` (MessageTool) | — | Yes (core) |
 | `work` (WorkTool) | — | Yes (when manager provided) |
-| `role` (RoleTool) | — | Yes (always) |
+| `persona` (PersonaTool) | — | Yes (always) |
 | `loop` (LoopTool) | `allowed("loop")` | No |
 
 Tools registered unconditionally still go through the per-execution entity
@@ -463,7 +463,7 @@ End-to-end flow from user request to tool execution:
 ```
 User message → WebSocket → chat_dispatch::run_chat()
   │
-  ├─ Load ResolvedEntityConfig (if role/channel)
+  ├─ Load ResolvedEntityConfig (if agent/channel)
   │   entity_config::resolve_for_chat(store, entity_type, entity_id)
   │     ├─ Load global settings (settings table)
   │     ├─ Load global permissions (user_profiles.tool_permissions)
@@ -742,7 +742,7 @@ ALTER TABLE user_profiles ADD COLUMN terms_accepted_at INTEGER;
 ```sql
 CREATE TABLE entity_config (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL CHECK(entity_type IN ('main', 'role', 'channel')),
+    entity_type TEXT NOT NULL CHECK(entity_type IN ('main', 'agent', 'channel')),
     entity_id   TEXT NOT NULL,
     heartbeat_enabled          INTEGER,
     heartbeat_interval_minutes INTEGER,

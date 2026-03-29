@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use crate::models::{RoleWorkflowStats, Workflow, WorkflowActivityResult, WorkflowRun, WorkflowRunError, WorkflowToolBinding};
+use crate::models::{AgentWorkflowStats, Workflow, WorkflowActivityResult, WorkflowRun, WorkflowRunError, WorkflowToolBinding};
 use crate::OptionalExt;
 use crate::Store;
 use types::NeboError;
@@ -369,10 +369,10 @@ impl Store {
         Ok(())
     }
 
-    /// Aggregate stats for all workflow runs belonging to a role.
-    pub fn role_workflow_stats(&self, role_id: &str) -> Result<RoleWorkflowStats, NeboError> {
+    /// Aggregate stats for all workflow runs belonging to an agent.
+    pub fn agent_workflow_stats(&self, agent_id: &str) -> Result<AgentWorkflowStats, NeboError> {
         let conn = self.conn()?;
-        let wf_id = format!("role:{}", role_id);
+        let wf_id = format!("role:{}", agent_id);
         conn.query_row(
             "SELECT
                 COUNT(*) AS total_runs,
@@ -391,7 +391,7 @@ impl Store {
              FROM workflow_runs WHERE workflow_id = ?1",
             params![wf_id],
             |row| {
-                Ok(RoleWorkflowStats {
+                Ok(AgentWorkflowStats {
                     total_runs: row.get(0)?,
                     completed: row.get(1)?,
                     failed: row.get(2)?,
@@ -408,14 +408,14 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))
     }
 
-    /// Recent failures for a role's workflows (last N errors).
-    pub fn role_recent_errors(
+    /// Recent failures for an agent's workflows (last N errors).
+    pub fn agent_recent_errors(
         &self,
-        role_id: &str,
+        agent_id: &str,
         limit: i64,
     ) -> Result<Vec<WorkflowRunError>, NeboError> {
         let conn = self.conn()?;
-        let wf_id = format!("role:{}", role_id);
+        let wf_id = format!("role:{}", agent_id);
         let mut stmt = conn
             .prepare(
                 "SELECT id, error, error_activity, started_at

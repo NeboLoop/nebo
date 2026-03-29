@@ -26,8 +26,8 @@ pub struct WorkflowManagerImpl {
     config: config::Config,
     /// Active run cancellation tokens, keyed by run_id.
     active_runs: Arc<std::sync::Mutex<HashMap<String, CancellationToken>>>,
-    /// Maps role_id → list of active run_ids, for cancelling all runs when a role stops.
-    role_runs: Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>,
+    /// Maps agent_id → list of active run_ids, for cancelling all runs when an agent stops.
+    agent_runs: Arc<std::sync::Mutex<HashMap<String, Vec<String>>>>,
     /// Event bus for emitting workflow lifecycle events.
     event_bus: Option<tools::EventBus>,
     /// Skill loader for resolving skill_content in workflow execution.
@@ -51,7 +51,7 @@ impl WorkflowManagerImpl {
             hub,
             config,
             active_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            role_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            agent_runs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_bus,
             skill_loader,
         }
@@ -88,19 +88,19 @@ impl WorkflowManagerImpl {
         }
     }
 
-    /// Cancel all running workflows associated with a role.
-    async fn cancel_runs_for_role_impl(&self, role_id: &str) {
+    /// Cancel all running workflows associated with an agent.
+    async fn cancel_runs_for_agent_impl(&self, agent_id: &str) {
         let run_ids = {
-            let runs = self.role_runs.lock().unwrap();
-            runs.get(role_id).cloned().unwrap_or_default()
+            let runs = self.agent_runs.lock().unwrap();
+            runs.get(agent_id).cloned().unwrap_or_default()
         };
         for run_id in &run_ids {
             if let Err(e) = self.cancel_run(run_id).await {
-                warn!(role_id, run_id = %run_id, error = %e, "failed to cancel role workflow run");
+                warn!(agent_id, run_id = %run_id, error = %e, "failed to cancel agent workflow run");
             }
         }
         if !run_ids.is_empty() {
-            info!(role_id, count = run_ids.len(), "cancelled running workflows for role");
+            info!(agent_id, count = run_ids.len(), "cancelled running workflows for agent");
         }
     }
 
@@ -141,7 +141,7 @@ impl WorkflowManagerImpl {
             version: wf.version.clone(),
             description,
             is_enabled: wf.is_enabled != 0,
-            trigger_count: 0, // Triggers are now role-owned
+            trigger_count: 0, // Triggers are now agent-owned
             activity_count,
         }
     }
@@ -563,19 +563,19 @@ impl WorkflowManager for WorkflowManagerImpl {
         definition_json: String,
         inputs: serde_json::Value,
         trigger_type: &'a str,
-        role_id: &'a str,
+        agent_id: &'a str,
         emit_source: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
             let def = workflow::parser::parse_workflow(&definition_json)
                 .map_err(|e| format!("parse inline workflow: {}", e))?;
 
-            // Merge role-level input_values into workflow inputs
+            // Merge agent-level input_values into workflow inputs
             let inputs = {
                 let mut merged = inputs;
-                if let Ok(Some(role)) = self.store.get_role(role_id) {
-                    if let Ok(role_inputs) = serde_json::from_str::<serde_json::Value>(&role.input_values) {
-                        if let (Some(m), Some(r)) = (merged.as_object_mut(), role_inputs.as_object()) {
+                if let Ok(Some(agent_rec)) = self.store.get_agent(agent_id) {
+                    if let Ok(agent_inputs) = serde_json::from_str::<serde_json::Value>(&agent_rec.input_values) {
+                        if let (Some(m), Some(r)) = (merged.as_object_mut(), agent_inputs.as_object()) {
                             for (k, v) in r {
                                 m.entry(k.clone()).or_insert_with(|| v.clone());
                             }
@@ -585,12 +585,12 @@ impl WorkflowManager for WorkflowManagerImpl {
                 merged
             };
 
-            // Create run record using role_id for tracking
+            // Create run record using agent_id for tracking
             let run_id = uuid::Uuid::new_v4().to_string();
-            let session_key = format!("role-{}-{}", role_id, run_id);
+            let session_key = format!("agent-{}-{}", agent_id, run_id);
             self.store.create_workflow_run(
                 &run_id,
-                &format!("role:{}", role_id),
+                &format!("agent:{}", agent_id),
                 trigger_type,
                 None,
                 Some(&inputs.to_string()),
@@ -604,8 +604,8 @@ impl WorkflowManager for WorkflowManagerImpl {
                 runs.insert(run_id.clone(), cancel_token.clone());
             }
             {
-                let mut role_map = self.role_runs.lock().unwrap();
-                role_map.entry(role_id.to_string()).or_default().push(run_id.clone());
+                let mut agent_map = self.agent_runs.lock().unwrap();
+                agent_map.entry(agent_id.to_string()).or_default().push(run_id.clone());
             }
 
             // Clone Arcs for the spawned task
@@ -614,17 +614,17 @@ impl WorkflowManager for WorkflowManagerImpl {
             let tools_registry = self.tools.clone();
             let hub = self.hub.clone();
             let active_runs = self.active_runs.clone();
-            let role_runs = self.role_runs.clone();
+            let agent_runs = self.agent_runs.clone();
             let event_bus = self.event_bus.clone();
             let skill_loader = self.skill_loader.clone();
             let run_id_clone = run_id.clone();
-            let role_id_owned = role_id.to_string();
+            let agent_id_owned = agent_id.to_string();
             let trigger = trigger_type.to_string();
             let binding_name = def.name.clone();
 
             tokio::spawn(async move {
-                // Session key for posting chat messages to the role's conversation
-                let chat_session = format!("role:{}:web", role_id_owned);
+                // Session key for posting chat messages to the agent's conversation
+                let chat_session = format!("persona:{}:web", agent_id_owned);
 
                 let provider = {
                     let lock = providers.read().await;
@@ -637,7 +637,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             &run_id_clone, Some("failed"), None, None,
                             Some("no AI provider available"), None,
                         );
-                        // Post failure to role chat
+                        // Post failure to agent chat
                         post_automation_message(
                             &store, &hub, &chat_session,
                             &format!("**Automation failed** — {} ({}): no AI provider available", binding_name, trigger),
@@ -645,14 +645,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                         hub.broadcast(
                             "workflow_run_failed",
                             serde_json::json!({
-                                "roleId": role_id_owned,
+                                "agentId": agent_id_owned,
                                 "runId": run_id_clone,
                                 "bindingName": binding_name,
                                 "error": "no AI provider available",
                             }),
                         );
                         let now = chrono::Utc::now().to_rfc3339();
-                        let _ = store.update_role_workflow_last_fired(&role_id_owned, &binding_name, &now);
+                        let _ = store.update_agent_workflow_last_fired(&agent_id_owned, &binding_name, &now);
                         return;
                     }
                 };
@@ -671,14 +671,14 @@ impl WorkflowManager for WorkflowManagerImpl {
                     .collect();
 
                 info!(
-                    role = %role_id_owned,
+                    role = %agent_id_owned,
                     run_id = %run_id_clone,
                     trigger = %trigger,
                     tools = resolved_tools.len(),
                     "executing inline workflow in background"
                 );
 
-                // Post "started" message to role chat
+                // Post "started" message to agent chat
                 post_automation_message(
                     &store, &hub, &chat_session,
                     &format!("**Automation started** — {} ({})", binding_name, trigger),
@@ -686,12 +686,12 @@ impl WorkflowManager for WorkflowManagerImpl {
 
                 // Record last_fired timestamp
                 let now = chrono::Utc::now().to_rfc3339();
-                let _ = store.update_role_workflow_last_fired(&role_id_owned, &binding_name, &now);
+                let _ = store.update_agent_workflow_last_fired(&agent_id_owned, &binding_name, &now);
 
                 hub.broadcast(
                     "workflow_run_started",
                     serde_json::json!({
-                        "roleId": role_id_owned,
+                        "agentId": agent_id_owned,
                         "runId": run_id_clone,
                         "bindingName": binding_name,
                         "triggerType": trigger,
@@ -720,7 +720,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<workflow::WorkflowProgress>();
                 {
                     let hub = hub.clone();
-                    let role_id = role_id_owned.clone();
+                    let agent_id_for_progress = agent_id_owned.clone();
                     let run_id = run_id_clone.clone();
                     let binding = binding_name.clone();
                     tokio::spawn(async move {
@@ -728,7 +728,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             hub.broadcast(
                                 "workflow_activity_update",
                                 serde_json::json!({
-                                    "roleId": role_id,
+                                    "agentId": agent_id_for_progress,
                                     "runId": run_id,
                                     "bindingName": binding,
                                     "activityId": progress.activity_id,
@@ -749,7 +749,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                     Ok((_engine_run_id, output)) => {
                         // Engine already called complete_workflow_run with output
 
-                        // Post completion message with output to role chat
+                        // Post completion message with output to agent chat
                         let summary = if output.is_empty() {
                             format!("**Automation completed** — {} ({})", binding_name, trigger)
                         } else {
@@ -766,12 +766,12 @@ impl WorkflowManager for WorkflowManagerImpl {
                         hub.broadcast(
                             "workflow_run_completed",
                             serde_json::json!({
-                                "roleId": role_id_owned,
+                                "agentId": agent_id_owned,
                                 "runId": run_id_clone,
                                 "bindingName": binding_name,
                             }),
                         );
-                        info!(role = %role_id_owned, run_id = %run_id_clone, "inline workflow completed");
+                        info!(role = %agent_id_owned, run_id = %run_id_clone, "inline workflow completed");
                     }
                     Err(e) => {
                         let err_msg = e.to_string();
@@ -779,7 +779,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                             &run_id_clone, Some("failed"), None, None, Some(&err_msg), None,
                         );
 
-                        // Post failure message to role chat
+                        // Post failure message to agent chat
                         post_automation_message(
                             &store, &hub, &chat_session,
                             &format!("**Automation failed** — {} ({}): {}", binding_name, trigger, err_msg),
@@ -788,27 +788,27 @@ impl WorkflowManager for WorkflowManagerImpl {
                         hub.broadcast(
                             "workflow_run_failed",
                             serde_json::json!({
-                                "roleId": role_id_owned,
+                                "agentId": agent_id_owned,
                                 "runId": run_id_clone,
                                 "bindingName": binding_name,
                                 "error": err_msg,
                             }),
                         );
-                        warn!(role = %role_id_owned, run_id = %run_id_clone, error = %err_msg, "inline workflow failed");
+                        warn!(role = %agent_id_owned, run_id = %run_id_clone, error = %err_msg, "inline workflow failed");
                     }
                 }
 
-                // Clean up from active_runs and role_runs
+                // Clean up from active_runs and agent_runs
                 {
                     let mut runs = active_runs.lock().unwrap();
                     runs.remove(&run_id_clone);
                 }
                 {
-                    let mut role_map = role_runs.lock().unwrap();
-                    if let Some(ids) = role_map.get_mut(&role_id_owned) {
+                    let mut agent_map = agent_runs.lock().unwrap();
+                    if let Some(ids) = agent_map.get_mut(&agent_id_owned) {
                         ids.retain(|id| id != &run_id_clone);
                         if ids.is_empty() {
-                            role_map.remove(&role_id_owned);
+                            agent_map.remove(&agent_id_owned);
                         }
                     }
                 }
@@ -824,9 +824,9 @@ impl WorkflowManager for WorkflowManagerImpl {
         })
     }
 
-    fn cancel_runs_for_role<'a>(&'a self, role_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    fn cancel_runs_for_agent<'a>(&'a self, agent_id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            self.cancel_runs_for_role_impl(role_id).await
+            self.cancel_runs_for_agent_impl(agent_id).await
         })
     }
 }
@@ -870,7 +870,7 @@ impl DynTool for RegistryTool {
     }
 }
 
-/// Post an automation lifecycle message to a role's chat session.
+/// Post an automation lifecycle message to an agent's chat session.
 fn post_automation_message(
     store: &db::Store,
     hub: &ClientHub,

@@ -15,6 +15,6 @@ mod mcp_integrations;
 mod user_profile;
 mod provider_models;
 mod workflows;
-mod roles;
+mod agents;
 mod entity_config;
 mod commander;

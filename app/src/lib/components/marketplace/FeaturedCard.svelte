@@ -7,7 +7,7 @@
 
 	let { item, label }: { item: AppItem; label?: string } = $props();
 
-	const typeLabel = label || `Featured ${item.type === 'role' ? 'Role' : item.type === 'workflow' ? 'Workflow' : 'Skill'}`;
+	const typeLabel = label || `Featured ${item.type === 'agent' ? 'Agent' : item.type === 'workflow' ? 'Workflow' : 'Skill'}`;
 </script>
 
 <a

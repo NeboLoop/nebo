@@ -116,7 +116,7 @@
 	/** Parse session source from name prefix */
 	function sessionSource(s: AgentSession): { type: string; label: string } {
 		const name = s.name || s.id;
-		if (name.startsWith('role:')) return { type: 'role', label: $t('settingsSessions.sources.role') };
+		if (name.startsWith('role:')) return { type: 'role', label: $t('settingsSessions.sources.agent') };
 		if (name.startsWith('channel:')) return { type: 'channel', label: $t('settingsSessions.sources.channel') };
 		if (name.startsWith('heartbeat')) return { type: 'heartbeat', label: $t('settingsSessions.sources.heartbeat') };
 		if (name.startsWith('workflow:')) return { type: 'workflow', label: $t('settingsSessions.sources.workflow') };
@@ -154,10 +154,10 @@
 		const name = session.name || session.id;
 
 		if (name.startsWith('role:')) {
-			// role:<roleId>:<channel> → navigate to that role's activity tab
+			// role:<agentId>:<channel> → navigate to that agent's activity tab
 			const parts = name.split(':');
-			const roleId = parts[1];
-			goto(`/agent/role/${roleId}/activity?session=${session.id}`);
+			const agentId = parts[1];
+			goto(`/agent/persona/${agentId}/activity?session=${session.id}`);
 			return;
 		}
 

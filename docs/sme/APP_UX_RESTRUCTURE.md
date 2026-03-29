@@ -34,24 +34,24 @@ Chat | [Store puzzle-piece icon] | [Settings gear icon]
 ## Store / Marketplace (Implemented)
 
 ### Route: `/store`
-- `/store` — featured roles, skills, workflows, editorial sections, "Build for Nebo" CTA
-- `/store/roles` — browse all roles
+- `/store` — featured agents, skills, workflows, editorial sections, "Build for Nebo" CTA
+- `/store/agents` — browse all agents
 - `/store/skills` — browse all skills
 - `/store/workflows` — browse all workflows
 - `/store/categories` — browse by category
 
 ### Key Components
-- `app/src/lib/components/marketplace/LargeCard.svelte` — role cards (2-col grid)
+- `app/src/lib/components/marketplace/LargeCard.svelte` — agent cards (2-col grid)
 - `app/src/lib/components/marketplace/ListCard.svelte` — list items in horizontal grids
 - `app/src/lib/components/MarketplaceGrid.svelte` — Apple App Store-style horizontal paging (3 rows, snap scroll)
 - `app/src/lib/components/marketplace/sections/SectionEditorial.svelte` — featured carousel
 - `app/src/lib/components/marketplace/sections/SectionListGrid.svelte` — titled grid section
 - `app/src/lib/components/marketplace/sections/SectionTopRanked.svelte` — ranked grid with numbers
-- `app/src/lib/components/InstallCode.svelte` — code redemption (SKILL-XXXX, ROLE-XXXX, etc.)
+- `app/src/lib/components/InstallCode.svelte` — code redemption (SKILL-XXXX, AGNT-XXXX, etc.)
 
 ### Data Flow
-- Products: `GET /api/v1/store/products?type={role|skill|workflow}`
-- Featured: `GET /api/v1/store/featured?type={role|skill|workflow}`
+- Products: `GET /api/v1/store/products?type={agent|skill|workflow}`
+- Featured: `GET /api/v1/store/featured?type={agent|skill|workflow}`
 - Types: `$lib/types/marketplace.ts` — `AppItem`, `toAppItem()`
 
 ## Current Settings Sidebar (7 groups, group headers)
@@ -161,8 +161,8 @@ Developer
 
 ### Sidebar (Chat only, 240px)
 - "My Chat" button (default conversation)
-- Loops section (expandable, shows channels + roles within loops)
-- Standalone Roles (roles not linked to a Loop)
+- Loops section (expandable, shows channels + agents within loops)
+- Standalone Agents (agents not linked to a Loop)
 - Activity indicators: Heartbeat, Events, Desktop (pulse dots)
 
 ### Styling
@@ -174,7 +174,7 @@ Developer
 
 ## Key User Flows (Priority Order)
 1. **Onboarding** → NeboLoop OAuth (happens during setup)
-2. **Install a role** → Store → gives bot a job
+2. **Install an agent** → Store → gives bot a job
 3. **Install a skill** → Store → gives bot capability
 4. **Chat remotely** → Loop channels → shows online in sidebar
 5. **Use own LLMs** → Settings > Providers → power user

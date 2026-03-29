@@ -18,7 +18,7 @@
 		if (currentPath.startsWith('/marketplace/skills')) return $t('marketplace.skills');
 		if (currentPath.startsWith('/marketplace/installed')) return $t('marketplace.installed');
 		if (currentPath.startsWith('/marketplace/categories')) return $t('marketplace.categories');
-		if (currentPath.startsWith('/marketplace/roles')) return $t('marketplace.roles');
+		if (currentPath.startsWith('/marketplace/agents')) return $t('marketplace.agents');
 		return $t('marketplace.title');
 	});
 
@@ -29,7 +29,7 @@
 
 	const navItems = $derived([
 		{ label: $t('marketplace.featured'), icon: Compass, href: '/marketplace' },
-		{ label: $t('marketplace.roles'), icon: UserCog, href: '/marketplace/roles' },
+		{ label: $t('marketplace.agents'), icon: UserCog, href: '/marketplace/agents' },
 		{ label: $t('marketplace.skills'), icon: FileText, href: '/marketplace/skills' },
 		{ label: $t('marketplace.installed'), icon: PackageCheck, href: '/marketplace/installed' },
 	]);

@@ -36,9 +36,9 @@ pub async fn update_entity_config(
     Json(body): Json<serde_json::Value>,
 ) -> HandlerResult<serde_json::Value> {
     // Validate entity_type
-    if !["main", "role", "channel"].contains(&entity_type.as_str()) {
+    if !["main", "agent", "channel"].contains(&entity_type.as_str()) {
         return Err(to_error_response(NeboError::Validation(
-            "entity_type must be main, role, or channel".into(),
+            "entity_type must be main, agent, or channel".into(),
         )));
     }
     state

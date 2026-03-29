@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { RoleWorkflowEntry, EventSourceOption } from '$lib/api/neboComponents';
-	import { createRoleWorkflow, updateRoleWorkflow, listEventSources } from '$lib/api/nebo';
+	import type { RoleWorkflowEntry as AgentWorkflowEntry, EventSourceOption } from '$lib/api/neboComponents';
+	import { createRoleWorkflow as createAgentWorkflow, updateRoleWorkflow as updateAgentWorkflow, listEventSources } from '$lib/api/nebo';
 	import { fly } from 'svelte/transition';
 	import { Plus, X, GripVertical } from 'lucide-svelte';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
@@ -13,7 +13,7 @@
 		onsave,
 	}: {
 		roleId: string;
-		existing: RoleWorkflowEntry | null;
+		existing: AgentWorkflowEntry | null;
 		onclose: () => void;
 		onsave: () => void;
 	} = $props();
@@ -365,9 +365,9 @@
 			};
 
 			if (isEdit && existing) {
-				await updateRoleWorkflow(roleId, existing.bindingName, payload);
+				await updateAgentWorkflow(roleId, existing.bindingName, payload);
 			} else {
-				await createRoleWorkflow(roleId, payload);
+				await createAgentWorkflow(roleId, payload);
 			}
 			onsave();
 		} catch (e: any) {

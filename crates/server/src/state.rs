@@ -75,10 +75,10 @@ pub struct AppState {
     pub plan_tier: Arc<tokio::sync::RwLock<String>>,
     /// Skill loader for hot-reload after marketplace installs
     pub skill_loader: Arc<tools::skills::Loader>,
-    /// Registry of currently active roles — each role is its own bot with isolated persona
-    pub role_registry: tools::RoleRegistry,
-    /// Autonomous role workers — one per active role, manages trigger lifecycle
-    pub role_workers: Arc<agent::RoleWorkerRegistry>,
+    /// Registry of currently active agents — each agent is its own bot with isolated persona
+    pub agent_registry: tools::AgentRegistry,
+    /// Autonomous agent workers — one per active agent, manages trigger lifecycle
+    pub agent_workers: Arc<agent::AgentWorkerRegistry>,
     /// Janus AI usage stats (session/weekly token limits), updated from rate limit headers
     pub janus_usage: Arc<tokio::sync::RwLock<Option<JanusUsage>>>,
     /// Plugin store for shared binary management (plugins downloaded once, shared across skills)

@@ -1,6 +1,6 @@
 //! Code interception and dispatch for NeboLoop marketplace codes.
 //!
-//! Detects NEBO/SKILL/WORK/ROLE/LOOP codes in chat prompts, handles them
+//! Detects NEBO/SKILL/WORK/ROLE/AGNT/LOOP codes in chat prompts, handles them
 //! before the prompt reaches the agent runner, and broadcasts results to the client.
 
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ pub enum CodeType {
     Nebo,
     Skill,
     Work,
-    Role,
+    Agent,
     Loop,
     Plugin,
 }
@@ -47,7 +47,9 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
     } else if upper.starts_with("WORK-") {
         ("WORK-", CodeType::Work)
     } else if upper.starts_with("ROLE-") {
-        ("ROLE-", CodeType::Role)
+        ("ROLE-", CodeType::Agent)
+    } else if upper.starts_with("AGNT-") {
+        ("AGNT-", CodeType::Agent)
     } else if upper.starts_with("LOOP-") {
         ("LOOP-", CodeType::Loop)
     } else if upper.starts_with("PLUG-") {
@@ -89,7 +91,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Nebo => ("nebo", "Connecting to NeboLoop..."),
         CodeType::Skill => ("skill", "Installing skill..."),
         CodeType::Work => ("workflow", "Installing workflow..."),
-        CodeType::Role => ("role", "Installing role..."),
+        CodeType::Agent => ("agent", "Installing agent..."),
         CodeType::Loop => ("loop", "Joining loop..."),
         CodeType::Plugin => ("plugin", "Installing plugin..."),
     };
@@ -108,7 +110,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
         CodeType::Nebo => handle_nebo_code(state, code).await,
         CodeType::Skill => handle_skill_code(state, code).await,
         CodeType::Work => handle_work_code(state, code).await,
-        CodeType::Role => handle_role_code(state, code).await,
+        CodeType::Agent => handle_agent_code(state, code).await,
         CodeType::Loop => handle_loop_code(state, code).await,
         CodeType::Plugin => handle_plugin_code(state, code).await,
     };
@@ -267,17 +269,17 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     })
 }
 
-async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
+async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
     // Try to redeem code — may fail if already redeemed (re-install)
-    let redeem_result = api.install_role(code).await;
+    let redeem_result = api.install_agent(code).await;
 
     if let Ok(ref resp) = redeem_result {
         if resp.status == "payment_required" {
             let name = resp.artifact.name.clone();
             return Ok(CodeHandlerResult {
-                message: format!("Role requires payment: {}", name),
+                message: format!("Agent requires payment: {}", name),
                 artifact_name: Some(name),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
             });
@@ -295,7 +297,7 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
         // or fetch detail from NeboLoop to get the artifact ID
         warn!(code, "redeem failed, attempting to look up artifact by code");
         // Search products to find the artifact by code
-        let products = api.list_products(Some("role"), None, None, None, None).await
+        let products = api.list_products(Some("agent"), None, None, None, None).await
             .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
         let items = products.get("results").and_then(|v| v.as_array())
             .or_else(|| products.get("skills").and_then(|v| v.as_array()));
@@ -306,15 +308,15 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
             artifact_id = item["id"].as_str().unwrap_or("").to_string();
             artifact_name = item["name"].as_str().unwrap_or("").to_string();
         } else {
-            return Err(NeboError::Internal(format!("install_role: code not found: {code}")));
+            return Err(NeboError::Internal(format!("install_agent: code not found: {code}")));
         }
     }
 
     // Fetch artifact content from NeboLoop and persist to DB + filesystem
-    let persist_result = match tools::persist_role_from_api(&api, &artifact_id, &artifact_name, code, &state.store).await {
+    let persist_result = match tools::persist_agent_from_api(&api, &artifact_id, &artifact_name, code, &state.store).await {
         Ok(result) => Some(result),
         Err(e) => {
-            warn!(code, error = %e, "failed to persist role artifact after redeem");
+            warn!(code, error = %e, "failed to persist agent artifact after redeem");
             None
         }
     };
@@ -324,56 +326,56 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     if let Some(ref result) = persist_result {
         if let Some(ref tc) = result.type_config {
             let tc_str = serde_json::to_string(tc).unwrap_or_default();
-            match napp::role::parse_role_config(&tc_str) {
-                Ok(role_config) => {
-                    info!(role = %artifact_name, workflows = role_config.workflows.len(), "processing workflow bindings from typeConfig");
-                    let _ = crate::handlers::roles::process_role_bindings(&artifact_id, &role_config, state).await;
+            match napp::agent::parse_agent_config(&tc_str) {
+                Ok(agent_config) => {
+                    info!(agent = %artifact_name, workflows = agent_config.workflows.len(), "processing workflow bindings from typeConfig");
+                    let _ = crate::handlers::agents::process_agent_bindings(&artifact_id, &agent_config, state).await;
                     bindings_processed = true;
                 }
                 Err(e) => {
-                    warn!(role = %artifact_name, error = %e, "failed to parse role config from typeConfig");
+                    warn!(agent = %artifact_name, error = %e, "failed to parse agent config from typeConfig");
                 }
             }
         } else {
-            info!(role = %artifact_name, "persist result has no type_config");
+            info!(agent = %artifact_name, "persist result has no type_config");
         }
     }
 
     // Fallback: process from existing frontmatter in DB (covers re-install case)
     if !bindings_processed {
-        if let Ok(Some(role)) = state.store.get_role(&artifact_id) {
-            if !role.frontmatter.is_empty() {
-                match napp::role::parse_role_config(&role.frontmatter) {
-                    Ok(role_config) => {
-                        info!(role = %artifact_name, workflows = role_config.workflows.len(), "processing workflow bindings from DB frontmatter (fallback)");
-                        let _ = crate::handlers::roles::process_role_bindings(&artifact_id, &role_config, state).await;
+        if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
+            if !agent.frontmatter.is_empty() {
+                match napp::agent::parse_agent_config(&agent.frontmatter) {
+                    Ok(agent_config) => {
+                        info!(agent = %artifact_name, workflows = agent_config.workflows.len(), "processing workflow bindings from DB frontmatter (fallback)");
+                        let _ = crate::handlers::agents::process_agent_bindings(&artifact_id, &agent_config, state).await;
                     }
                     Err(e) => {
-                        warn!(role = %artifact_name, error = %e, "failed to parse role config from DB frontmatter");
+                        warn!(agent = %artifact_name, error = %e, "failed to parse agent config from DB frontmatter");
                     }
                 }
             }
         }
     }
 
-    // Auto-activate the role so it appears in the sidebar immediately
-    if let Ok(Some(role)) = state.store.get_role(&artifact_id) {
-        let config = if !role.frontmatter.is_empty() {
-            napp::role::parse_role_config(&role.frontmatter).ok()
+    // Auto-activate the agent so it appears in the sidebar immediately
+    if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
+        let config = if !agent.frontmatter.is_empty() {
+            napp::agent::parse_agent_config(&agent.frontmatter).ok()
         } else {
             None
         };
-        let active = tools::ActiveRole {
-            role_id: artifact_id.clone(),
-            name: role.name.clone(),
-            role_md: role.role_md.clone(),
+        let active = tools::ActiveAgent {
+            agent_id: artifact_id.clone(),
+            name: agent.name.clone(),
+            agent_md: agent.agent_md.clone(),
             config,
             channel_id: None,
         };
-        state.role_registry.write().await.insert(artifact_id.clone(), active);
+        state.agent_registry.write().await.insert(artifact_id.clone(), active);
         state.hub.broadcast(
-            "role_activated",
-            serde_json::json!({ "roleId": artifact_id, "name": role.name }),
+            "agent_activated",
+            serde_json::json!({ "agentId": artifact_id, "name": agent.name }),
         );
     }
 
@@ -384,17 +386,17 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
         let slug = artifact_name.to_lowercase().replace(' ', "-");
         tokio::spawn(async move {
             if let Err(e) = register_agent_in_loop(&st, &name, &slug).await {
-                warn!(role = %name, error = %e, "failed to register agent in loop");
+                warn!(agent = %name, error = %e, "failed to register agent in loop");
             }
         });
     }
 
-    // Cascade: resolve role deps (workflows, skills, tools from frontmatter)
+    // Cascade: resolve agent deps (workflows, skills, tools from frontmatter)
     let state_clone = state.clone();
     let artifact_id_clone = artifact_id.clone();
     tokio::spawn(async move {
-        if let Ok(Some(role)) = state_clone.store.get_role(&artifact_id_clone) {
-            let deps = crate::deps::extract_role_deps_from_frontmatter(&role.frontmatter);
+        if let Ok(Some(agent)) = state_clone.store.get_agent(&artifact_id_clone) {
+            let deps = crate::deps::extract_agent_deps_from_frontmatter(&agent.frontmatter);
             if !deps.is_empty() {
                 let mut visited = std::collections::HashSet::new();
                 crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
@@ -403,7 +405,7 @@ async fn handle_role_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     });
 
     Ok(CodeHandlerResult {
-        message: format!("Installed role: {}", artifact_name),
+        message: format!("Installed agent: {}", artifact_name),
         artifact_name: Some(artifact_name),
         checkout_url: None,
     })
@@ -547,7 +549,7 @@ pub async fn submit_code(
         CodeType::Nebo => handle_nebo_code(&state, validated_code).await,
         CodeType::Skill => handle_skill_code(&state, validated_code).await,
         CodeType::Work => handle_work_code(&state, validated_code).await,
-        CodeType::Role => handle_role_code(&state, validated_code).await,
+        CodeType::Agent => handle_agent_code(&state, validated_code).await,
         CodeType::Loop => handle_loop_code(&state, validated_code).await,
         CodeType::Plugin => handle_plugin_code(&state, validated_code).await,
     };
@@ -592,8 +594,8 @@ pub(crate) fn build_api_client(state: &AppState) -> Result<NeboLoopApi, NeboErro
 // After redeem_code() registers the install in the NeboLoop cloud DB,
 // these functions fetch the actual artifact content and persist locally.
 //
-// Skills and roles: canonical implementation in tools::persist_skill_from_api
-// and tools::persist_role_from_api. Workflows have a unique DB+filesystem
+// Skills and agents: canonical implementation in tools::persist_skill_from_api
+// and tools::persist_agent_from_api. Workflows have a unique DB+filesystem
 // persist path that only exists here.
 
 /// Fetch workflow content from NeboLoop and persist to DB + filesystem.
@@ -820,7 +822,7 @@ pub(crate) async fn sync_bot_identity(state: &AppState) {
     }
 }
 
-/// Reconcile agents: sync all local roles (enabled AND disabled) to NeboLoop.
+/// Reconcile agents: sync all local agents (enabled AND disabled) to NeboLoop.
 /// Only deregister agents that are truly deleted locally, not just paused.
 async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     let api = build_api_client(state)?;
@@ -839,8 +841,8 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
 
     // Build map of ALL local roles (enabled + disabled) by slug
-    let local_roles: std::collections::HashMap<String, bool> =
-        if let Ok(roles) = state.store.list_roles(1000, 0) {
+    let local_agents: std::collections::HashMap<String, bool> =
+        if let Ok(roles) = state.store.list_agents(1000, 0) {
             roles
                 .iter()
                 .map(|r| {
@@ -859,7 +861,7 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         if agent.slug.starts_with("bot_") {
             continue;
         }
-        if !local_roles.contains_key(&agent.slug) {
+        if !local_agents.contains_key(&agent.slug) {
             info!(agent_slug = %agent.slug, agent_id = %agent.id, "reconcile: deregistering deleted agent");
             if let Err(e) = api.deregister_agent(&personal.loop_id, &agent.id).await {
                 warn!(agent_slug = %agent.slug, agent_id = %agent.id, error = %e, "reconcile: failed to deregister");
@@ -870,14 +872,14 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
     // Register local roles missing from remote (both enabled and disabled)
     let remote_slugs: std::collections::HashSet<String> =
         remote_agents.iter().map(|a| a.slug.clone()).collect();
-    if let Ok(roles) = state.store.list_roles(1000, 0) {
-        for role in &roles {
-            let slug = role.name.to_lowercase().replace(' ', "-");
+    if let Ok(agents) = state.store.list_agents(1000, 0) {
+        for agent in &agents {
+            let slug = agent.name.to_lowercase().replace(' ', "-");
             if !remote_slugs.contains(&slug) {
-                let status = if role.is_enabled != 0 { "active" } else { "paused" };
-                info!(role = %role.name, slug = %slug, status = %status, "reconcile: registering missing agent");
+                let status = if agent.is_enabled != 0 { "active" } else { "paused" };
+                info!(agent = %agent.name, slug = %slug, status = %status, "reconcile: registering missing agent");
                 if let Err(e) = api
-                    .register_agent(&personal.loop_id, &role.name, &slug, None)
+                    .register_agent(&personal.loop_id, &agent.name, &slug, None)
                     .await
                 {
                     warn!(slug = %slug, error = %e, "reconcile: failed to register");
@@ -1023,7 +1025,7 @@ pub(crate) async fn register_agent_in_loop(
     api.register_agent(&personal.loop_id, name, slug, None)
         .await
         .map_err(|e| NeboError::Internal(format!("register agent: {e}")))?;
-    info!(role = %name, loop_id = %personal.loop_id, "registered agent in loop");
+    info!(agent = %name, loop_id = %personal.loop_id, "registered agent in loop");
     Ok(())
 }
 
@@ -1057,7 +1059,7 @@ mod tests {
         assert!(matches!(detect_code("NEBO-A1B2-C3D4"), Some((CodeType::Nebo, _))));
         assert!(matches!(detect_code("SKIL-0000-ZZZZ"), Some((CodeType::Skill, _))));
         assert!(matches!(detect_code("WORK-1234-5678"), Some((CodeType::Work, _))));
-        assert!(matches!(detect_code("ROLE-9999-AAAA"), Some((CodeType::Role, _))));
+        assert!(matches!(detect_code("ROLE-9999-AAAA"), Some((CodeType::Agent, _))));
         assert!(matches!(detect_code("LOOP-QRST-VWXY"), Some((CodeType::Loop, _))));
         assert!(matches!(detect_code("PLUG-A1B2-C3D4"), Some((CodeType::Plugin, _))));
     }

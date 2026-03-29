@@ -284,8 +284,8 @@
 		const ws = getWebSocketClient();
 
 		const unsubs = [
-			ws.on('role_activated', () => loadGraph()),
-			ws.on('role_deactivated', () => loadGraph()),
+			ws.on('agent_activated', () => loadGraph()),
+			ws.on('agent_deactivated', () => loadGraph()),
 			ws.on('workflow_run_started', (data: any) => {
 				if (!data?.roleId) return;
 				nodes = nodes.map((n) =>

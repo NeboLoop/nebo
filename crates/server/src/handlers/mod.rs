@@ -9,7 +9,7 @@ pub mod memory;
 pub mod neboloop;
 pub mod notification;
 pub mod provider;
-pub mod roles;
+pub mod agents;
 pub mod setup;
 pub mod skills;
 pub mod store;

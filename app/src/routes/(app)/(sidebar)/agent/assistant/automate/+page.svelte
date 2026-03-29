@@ -20,7 +20,7 @@
 				<p class="text-sm text-base-content/60">
 					{$t('agent.automationsAvailable')}
 				</p>
-				<a href="/marketplace?type=role" class="text-sm text-primary font-medium mt-1 block">
+				<a href="/marketplace?type=agent" class="text-sm text-primary font-medium mt-1 block">
 					{$t('agent.browseMarketplace')}
 				</a>
 			</div>

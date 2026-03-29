@@ -18,7 +18,7 @@ use crate::safeguard;
 /// Tools that control physical resources (screen, browser) must declare
 /// which resource they need via [`DynTool::resource_permit`]. The registry
 /// acquires a per-resource mutex before executing, preventing concurrent
-/// roles/workflows from fighting over the same physical device.
+/// agents/workflows from fighting over the same physical device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
     /// Mouse, keyboard, accessibility, app control, screenshots.
@@ -389,7 +389,7 @@ impl Registry {
             None, // plan_tier
             None, // sandbox_manager
             None, // comm_plugin
-            None, // active_role
+            None, // active_agent
             None, // broadcaster
         )
         .await;
@@ -411,7 +411,7 @@ impl Registry {
         plan_tier: Option<Arc<tokio::sync::RwLock<String>>>,
         sandbox_manager: Option<Arc<sandbox_runtime::SandboxManager>>,
         comm_plugin: Option<Arc<dyn comm::CommPlugin>>,
-        active_role: Option<crate::role_tool::ActiveRoleState>,
+        active_agent: Option<crate::agent_tool::ActiveAgentState>,
         broadcaster: Option<crate::web_tool::Broadcaster>,
     ) {
         let allowed = |category: &str| -> bool {
@@ -489,12 +489,12 @@ impl Registry {
             self.register(Box::new(crate::workflows::WorkTool::new(manager))).await;
         }
 
-        // Role tool (role management: list, activate, deactivate, info, create, install) — always registered
+        // Persona tool (agent management: list, activate, deactivate, info, create, install) — always registered
         {
-            let role_reg = active_role.unwrap_or_else(|| {
+            let agent_reg = active_agent.unwrap_or_else(|| {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
             });
-            self.register(Box::new(crate::role_tool::RoleTool::new(store.clone(), role_reg))).await;
+            self.register(Box::new(crate::agent_tool::PersonaTool::new(store.clone(), agent_reg))).await;
             self.register(Box::new(crate::publisher_tool::PublisherTool::new(store.clone()))).await;
         }
 

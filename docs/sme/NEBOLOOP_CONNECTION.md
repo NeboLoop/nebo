@@ -156,7 +156,7 @@ Two-phase handler registration:
 | Topic | Route | Details |
 |-------|-------|---------|
 | `"installs"` | `napp_registry.handle_install_event()` | Parse as InstallEvent, return immediately |
-| `"agent_space"` | Unified chat pipeline | Resolve role from agent_slug, session key = `neboloop:agent_space:{slug}:{conv_id}` |
+| `"agent_space"` | Unified chat pipeline | Resolve agent from agent_slug, session key = `neboloop:agent_space:{slug}:{conv_id}` |
 | `"chat"` or `"dm"` | Unified chat pipeline | Optional @mention routing via agent_slug, session key = `neboloop:{topic}:{conv_id}` |
 | Other | Event bus + broadcast | Emit as `neboloop.{topic}`, broadcast raw to frontend |
 
@@ -165,14 +165,14 @@ Two-phase handler registration:
 ```
 1. Extract text from JSON content (msg.content.text or msg.content.content or raw)
 2. Get agent_slug from msg.metadata["agent_slug"]
-3. Resolve role_id from slug (scan role_registry for matching name)
+3. Resolve agent_id from slug (scan agent_registry for matching name)
 4. Build session_key: "neboloop:agent_space:{slug}:{conversation_id}"
-5. Pre-create chat record with "Agent: {role_name}" title
+5. Pre-create chat record with "Agent: {agent_name}" title
 6. Send desktop notification
 7. Resolve entity config for ("channel", "agent_space")
-8. Build ChatConfig {origin: Comm, lane: COMM, role_id, comm_reply: {topic, conv_id}}
+8. Build ChatConfig {origin: Comm, lane: COMM, agent_id, comm_reply: {topic, conv_id}}
 9. Dispatch to run_chat()
-10. Emit event: "neboloop.agent_space.{slug}" → triggers role event subscriptions
+10. Emit event: "neboloop.agent_space.{slug}" → triggers agent event subscriptions
 ```
 
 ### Chat/DM Messages (`lib.rs:1125-1195`)
@@ -182,11 +182,11 @@ Two-phase handler registration:
 2. Send desktop notification
 3. Build session_key: "neboloop:{topic}:{conversation_id}"
 4. Resolve entity config for ("channel", topic)
-5. Check @mention: if agent_slug in metadata → resolve role_id
+5. Check @mention: if agent_slug in metadata → resolve agent_id
 6. If @mentioned: pre-create chat with "@{slug} (channel)" title
-7. Build ChatConfig {origin: Comm, lane: COMM, role_id (empty if no @mention), comm_reply}
+7. Build ChatConfig {origin: Comm, lane: COMM, agent_id (empty if no @mention), comm_reply}
 8. Dispatch to run_chat()
-9. Emit event: "neboloop.{topic}" → triggers role event subscriptions
+9. Emit event: "neboloop.{topic}" → triggers agent event subscriptions
 ```
 
 ---
@@ -205,7 +205,7 @@ ChatConfig {
     user_id:       String,           // User identity
     channel:       String,           // "neboloop" for comm messages
     origin:        Origin::Comm,     // Identifies source (Comm vs Ws vs Heartbeat)
-    role_id:       String,           // Route to specific role (empty = main agent)
+    agent_id:      String,           // Route to specific agent (empty = main agent)
     cancel_token:  CancellationToken,
     lane:          String,           // "comm" for NeboLoop (not "main")
     comm_reply:    Option<CommReplyConfig>, // Where to send response back
@@ -292,7 +292,7 @@ Agents can also send messages proactively using the "loop" tool:
 | `main` | User chat from local WebSocket | Unlimited |
 | **`comm`** | **Inbound NeboLoop messages** | **Unlimited** |
 | `events` | Event-triggered workflows | Unlimited |
-| `heartbeat` | Role proactive ticks | Unlimited |
+| `heartbeat` | Agent proactive ticks | Unlimited |
 | `desktop` | Screen/mouse automation | 1 (serialized) |
 
 COMM lane prevents NeboLoop message flood from blocking local user chat on MAIN lane.
@@ -301,16 +301,16 @@ COMM lane prevents NeboLoop message flood from blocking local user chat on MAIN 
 
 ## 9. Agent Registration
 
-When a role is installed/activated, the bot registers an agent in the owner's personal loop (`codes.rs:622-644`):
+When an agent is installed/activated, the bot registers an agent in the owner's personal loop (`codes.rs:622-644`):
 
 ```
 1. Get API client from stored credentials
 2. List bot's loops → pick first (personal loop)
-3. POST /api/v1/loops/{loopId}/agents {role_name, role_slug, description}
+3. POST /api/v1/loops/{loopId}/agents {agent_name, agent_slug, description}
 4. Gateway auto-creates agent_space conversation + subscribes bot to it
 ```
 
-Deregistration on role removal: `DELETE /api/v1/loops/{loopId}/agents/{agentSlug}`
+Deregistration on agent removal: `DELETE /api/v1/loops/{loopId}/agents/{agentSlug}`
 
 ---
 
@@ -321,7 +321,7 @@ Deregistration on role removal: `DELETE /api/v1/loops/{loopId}/agents/{agentSlug
 | Category | Key Endpoints |
 |----------|--------------|
 | **Marketplace** | `list_products`, `list_skills`, `get_skill`, `list_categories`, `get_featured` |
-| **Code Redemption** | `redeem_code(code)` — universal (SKIL/WORK/ROLE/NEBO/LOOP codes) |
+| **Code Redemption** | `redeem_code(code)` — universal (SKIL/WORK/AGNT/NEBO/LOOP codes) |
 | **Downloads** | `download_napp(url)` — sealed .napp archives |
 | **Loops** | `list_bot_loops`, `get_loop`, `join_loop(code)`, `list_loop_members` |
 | **Channels** | `list_bot_channels`, `list_channel_messages`, `list_channel_members` |
@@ -335,7 +335,7 @@ API URL derived from gateway: `wss://comms.neboloop.com/ws` → `https://api.neb
 
 ## 11. Event Bus Integration
 
-Every incoming NeboLoop message emits an event for role triggers:
+Every incoming NeboLoop message emits an event for agent triggers:
 
 | Message Topic | Event Source | Payload |
 |---------------|-------------|---------|
@@ -344,7 +344,7 @@ Every incoming NeboLoop message emits an event for role triggers:
 | dm | `neboloop.dm` | from, content, conversation_id |
 | other | `neboloop.{topic}` | from, content, topic |
 
-Roles subscribe to these event sources in their configuration, triggering automated responses.
+Agents subscribe to these event sources in their configuration, triggering automated responses.
 
 ---
 
@@ -359,7 +359,7 @@ Roles subscribe to these event sources in their configuration, triggering automa
 7. **ConvMaps thread safety**: `Arc<RwLock<ConvMaps>>` shared across read loop, join processor, and public query methods.
 8. **Graceful shutdown**: Single `CancellationToken` coordinates all 3 background tasks.
 9. **Entity config**: Per-topic permissions resolved via `entity_config::resolve_for_chat("channel", topic)`.
-10. **@mention routing**: `agent_slug` in DeliveryPayload metadata → resolve to local role_id → route to that role's agent.
+10. **@mention routing**: `agent_slug` in DeliveryPayload metadata → resolve to local agent_id → route to that agent's persona.
 
 ---
 
@@ -386,7 +386,7 @@ Read loop (neboloop.rs:707)
   ▼
 handle_comm_message (lib.rs:1035)
   ├─ topic="installs" → napp_registry
-  ├─ topic="agent_space" → resolve role from slug, build ChatConfig
+  ├─ topic="agent_space" → resolve agent from slug, build ChatConfig
   ├─ topic="chat"/"dm" → optional @mention resolve, build ChatConfig
   └─ other → event_bus + broadcast to frontend
   │
@@ -397,7 +397,7 @@ chat_dispatch::run_chat (chat_dispatch.rs:78)
   │
   ▼
 Lane task executes
-  ├─ runner.run(RunRequest{origin: Comm, role_id, ...})
+  ├─ runner.run(RunRequest{origin: Comm, agent_id, ...})
   ├─ Agent processes (tools, thinking, text generation)
   ├─ Stream events → broadcast to frontend (chat_stream, tool_start, etc.)
   │
