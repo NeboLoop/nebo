@@ -624,7 +624,7 @@ impl WorkflowManager for WorkflowManagerImpl {
 
             tokio::spawn(async move {
                 // Session key for posting chat messages to the agent's conversation
-                let chat_session = format!("persona:{}:web", agent_id_owned);
+                let chat_session = format!("agent:{}:web", agent_id_owned);
 
                 let provider = {
                     let lock = providers.read().await;

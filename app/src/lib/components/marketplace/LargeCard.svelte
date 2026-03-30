@@ -5,7 +5,7 @@
 	import ArtifactIcon from './ArtifactIcon.svelte';
 	import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
 	import { type AppItem, itemHref } from '$lib/types/marketplace';
-	import { installStoreProduct, listRoles as listAgents, activateRole as activateAgent } from '$lib/api/nebo';
+	import { installStoreProduct, listAgents, activateAgent } from '$lib/api/nebo';
 	import webapi from '$lib/api/gocliRequest';
 	import { CheckCircle } from 'lucide-svelte';
 
@@ -43,7 +43,7 @@
 			if (item.type === 'agent') {
 				// Find and activate the agent
 				const agentsRes = await listAgents();
-				const allAgents = agentsRes?.roles || [];
+				const allAgents = agentsRes?.agents || [];
 				const matched = allAgents.find(
 					(r: any) => r.name?.toLowerCase() === item.name.toLowerCase()
 				);

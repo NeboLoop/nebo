@@ -346,7 +346,7 @@ pub async fn uninstall_store_product(
     // Determine artifact type from local DB kind or NeboLoop
     let is_agent = artifact_type == "agent"
         || local_agent.is_some()
-        || local_agent.as_ref().and_then(|r| r.kind.as_deref()).map(|k| k.starts_with("ROLE-") || k.starts_with("AGNT-")).unwrap_or(false);
+        || local_agent.as_ref().and_then(|r| r.kind.as_deref()).map(|k| k.starts_with("AGNT-")).unwrap_or(false);
 
     // Clean up local DB
     if let Some(ref agent_rec) = local_agent {

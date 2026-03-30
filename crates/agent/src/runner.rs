@@ -510,9 +510,9 @@ async fn run_loop(
     };
 
     // Scope memory by agent: each agent gets its own memory namespace to prevent cross-contamination.
-    // Main bot uses the raw user_id; agents use "user_id:persona:agent_id".
+    // Main bot uses the raw user_id; agents use "user_id:agent:agent_id".
     let memory_user_id = if !agent_id.is_empty() {
-        format!("{}:persona:{}", user_id, agent_id)
+        format!("{}:agent:{}", user_id, agent_id)
     } else {
         user_id.to_string()
     };

@@ -9,7 +9,7 @@ use super::{to_error_response, HandlerResult};
 pub async fn get_graph(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
-    // 1. Active roles from the in-memory registry
+    // 1. Active agents from the in-memory registry
     let registry = state.agent_registry.read().await;
     let mut nodes: Vec<serde_json::Value> = Vec::new();
 
@@ -22,24 +22,24 @@ pub async fn get_graph(
 
     // Agent nodes
     let agent_ids: Vec<String> = registry.keys().cloned().collect();
-    for role in registry.values() {
+    for active in registry.values() {
         let description = state
             .store
-            .get_agent(&role.agent_id)
+            .get_agent(&active.agent_id)
             .ok()
             .flatten()
-            .map(|r| r.description)
+            .map(|a| a.description)
             .unwrap_or_default();
-        let workflow_count = role
+        let workflow_count = active
             .config
             .as_ref()
             .map(|c| c.workflows.len())
             .unwrap_or(0);
 
         nodes.push(serde_json::json!({
-            "id": role.agent_id,
+            "id": active.agent_id,
             "type": "agent",
-            "name": role.name,
+            "name": active.name,
             "description": description,
             "status": "active",
             "workflowCount": workflow_count,
@@ -143,8 +143,8 @@ fn compute_event_edges(
     let agent_name_to_id: std::collections::HashMap<String, String> = {
         let mut map = std::collections::HashMap::new();
         for agent_id in active_agent_ids {
-            if let Ok(Some(role)) = state.store.get_agent(agent_id) {
-                let slug = role.name.to_lowercase().replace(' ', "-");
+            if let Ok(Some(agent)) = state.store.get_agent(agent_id) {
+                let slug = agent.name.to_lowercase().replace(' ', "-");
                 map.insert(slug, agent_id.clone());
             }
         }

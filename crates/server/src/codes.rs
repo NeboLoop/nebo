@@ -46,8 +46,6 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
         ("SKIL-", CodeType::Skill)
     } else if upper.starts_with("WORK-") {
         ("WORK-", CodeType::Work)
-    } else if upper.starts_with("ROLE-") {
-        ("ROLE-", CodeType::Agent)
     } else if upper.starts_with("AGNT-") {
         ("AGNT-", CodeType::Agent)
     } else if upper.starts_with("LOOP-") {
@@ -1059,7 +1057,7 @@ mod tests {
         assert!(matches!(detect_code("NEBO-A1B2-C3D4"), Some((CodeType::Nebo, _))));
         assert!(matches!(detect_code("SKIL-0000-ZZZZ"), Some((CodeType::Skill, _))));
         assert!(matches!(detect_code("WORK-1234-5678"), Some((CodeType::Work, _))));
-        assert!(matches!(detect_code("ROLE-9999-AAAA"), Some((CodeType::Agent, _))));
+        assert!(matches!(detect_code("AGNT-9999-AAAA"), Some((CodeType::Agent, _))));
         assert!(matches!(detect_code("LOOP-QRST-VWXY"), Some((CodeType::Loop, _))));
         assert!(matches!(detect_code("PLUG-A1B2-C3D4"), Some((CodeType::Plugin, _))));
     }

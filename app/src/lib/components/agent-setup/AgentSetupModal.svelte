@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { installStoreProduct, listRoles as listAgents, activateRole as activateAgent, getRole as getAgent, updateRoleInputs as updateAgentInputs, getRoleWorkflows as getAgentWorkflows, updateRoleWorkflow as updateAgentWorkflow } from '$lib/api/nebo';
-	import type { RoleInputField as AgentInputField, RoleWorkflowEntry as AgentWorkflowEntry } from '$lib/api/neboComponents';
+	import { installStoreProduct, listAgents, activateAgent, getAgent, updateAgentInputs, getAgentWorkflows, updateAgentWorkflow } from '$lib/api/nebo';
+	import type { AgentInputField, AgentWorkflowEntry } from '$lib/api/neboComponents';
 	import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
 	import { X } from 'lucide-svelte';
 
@@ -93,7 +93,7 @@
 
 			// 2. Find the agent
 			const agentsRes = await listAgents();
-			const allAgents = agentsRes?.roles || [];
+			const allAgents = agentsRes?.agents || [];
 			const matchedAgent = allAgents.find(
 				(r: any) => r.name?.toLowerCase() === agentName.toLowerCase()
 			);

@@ -23,9 +23,9 @@ const ALLOWED_FILES: &[&str] = &[
     "WORKFLOW.md",
     "workflow.md",
     "workflow.json",
-    "ROLE.md",
-    "role.md",
-    "role.json",
+    "AGENT.md",
+    "agent.md",
+    "agent.json",
     "SKILL.md",
     "skill.md",
 ];

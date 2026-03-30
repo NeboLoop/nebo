@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { Bot, MessageSquare, Store } from 'lucide-svelte';
-	import type { ActiveRoleEntry as ActiveAgentEntry, SimpleAgentStatusResponse } from '$lib/api/neboComponents';
+	import type { ActiveAgentEntry, SimpleAgentStatusResponse } from '$lib/api/neboComponents';
 
 	let {
 		agents = [],
@@ -52,7 +52,7 @@
 		</div>
 
 		<!-- Active agents -->
-		{#each agents as agent (agent.roleId)}
+		{#each agents as agent (agent.agentId)}
 			<div class="card bg-base-200 border border-base-300 hover:border-base-content/40 transition-all duration-200">
 				<div class="card-body p-5">
 					<div class="flex items-center gap-3 mb-3">
@@ -68,7 +68,7 @@
 						</div>
 					</div>
 					<div class="flex items-center gap-2">
-						<button class="btn btn-secondary btn-sm btn-outline gap-1.5" onclick={() => goto(`/agent/persona/${agent.roleId}/chat`)}>
+						<button class="btn btn-secondary btn-sm btn-outline gap-1.5" onclick={() => goto(`/agent/persona/${agent.agentId}/chat`)}>
 							<MessageSquare class="w-3.5 h-3.5" /> Chat
 						</button>
 					</div>

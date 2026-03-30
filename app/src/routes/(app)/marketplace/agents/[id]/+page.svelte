@@ -5,7 +5,7 @@
 	import { onMount } from 'svelte';
 	import { t } from 'svelte-i18n';
 	import webapi from '$lib/api/gocliRequest';
-	import { installStoreProduct, listRoles as listAgents, activateRole as activateAgent } from '$lib/api/nebo';
+	import { installStoreProduct, listAgents, activateAgent } from '$lib/api/nebo';
 	import MediaGallery from '$lib/components/marketplace/MediaGallery.svelte';
 	import ReviewCard from '$lib/components/marketplace/ReviewCard.svelte';
 	import FeedbackSection from '$lib/components/marketplace/FeedbackSection.svelte';
@@ -112,7 +112,7 @@
 
 			// Find and activate the agent
 			const agentsRes = await listAgents();
-			const allAgents = agentsRes?.roles || [];
+			const allAgents = agentsRes?.agents || [];
 			const matched = allAgents.find(
 				(r: any) => r.name?.toLowerCase() === skill?.name?.toLowerCase()
 			);

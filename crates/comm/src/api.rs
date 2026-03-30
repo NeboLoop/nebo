@@ -289,7 +289,7 @@ impl NeboLoopApi {
 
     // ── Universal Code Redemption ────────────────────────────────────
 
-    /// Redeem any marketplace code (SKIL-*, WORK-*, ROLE-*/AGNT-*) via the universal endpoint.
+    /// Redeem any marketplace code (SKIL-*, WORK-*, AGNT-*) via the universal endpoint.
     pub async fn redeem_code(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
         let body = serde_json::json!({
             "code": code,
@@ -388,7 +388,7 @@ impl NeboLoopApi {
 
     /// Uninstall an agent for this bot.
     pub async fn uninstall_agent(&self, id: &str) -> Result<(), CommError> {
-        self.do_void(reqwest::Method::DELETE, &format!("/api/v1/roles/{}/install/{}", id, self.bot_id), None::<&()>).await
+        self.do_void(reqwest::Method::DELETE, &format!("/api/v1/agents/{}/install/{}", id, self.bot_id), None::<&()>).await
     }
 
     // ── Publishing ────────────────────────────────────────────────

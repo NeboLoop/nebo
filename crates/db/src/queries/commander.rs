@@ -119,7 +119,7 @@ impl Store {
     pub fn list_commander_team_members(&self) -> Result<Vec<CommanderTeamMember>, NeboError> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT team_id, role_id FROM commander_team_members")
+            .prepare("SELECT team_id, agent_id FROM commander_team_members")
             .map_err(|e| NeboError::Database(e.to_string()))?;
         let rows = stmt
             .query_map([], row_to_member)
@@ -131,7 +131,7 @@ impl Store {
     pub fn set_commander_team_members(
         &self,
         team_id: &str,
-        role_ids: &[String],
+        agent_ids: &[String],
     ) -> Result<(), NeboError> {
         let conn = self.conn()?;
         conn.execute(
@@ -139,10 +139,10 @@ impl Store {
             params![team_id],
         )
         .map_err(|e| NeboError::Database(e.to_string()))?;
-        for role_id in role_ids {
+        for agent_id in agent_ids {
             conn.execute(
-                "INSERT INTO commander_team_members (team_id, role_id) VALUES (?1, ?2)",
-                params![team_id, role_id],
+                "INSERT INTO commander_team_members (team_id, agent_id) VALUES (?1, ?2)",
+                params![team_id, agent_id],
             )
             .map_err(|e| NeboError::Database(e.to_string()))?;
         }

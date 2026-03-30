@@ -164,10 +164,9 @@
 
 			if (agentsData) {
 				agents = (agentsData.agents || []).map((a) => ({
-					id: a.agentId,
-					name: a.agentId,
-					status: a.connected ? 'online' : 'offline' as const,
-					connected_at: a.createdAt
+					id: a.id,
+					name: a.name || a.id,
+					status: a.is_enabled ? 'online' : 'offline' as const
 				}));
 			}
 

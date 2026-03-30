@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { RoleInputField as AgentInputField } from '$lib/api/neboComponents';
+	import type { AgentInputField } from '$lib/api/neboComponents';
 	import { pickFolder, pickFiles } from '$lib/api/nebo';
 	import { FolderOpen, FileText } from 'lucide-svelte';
 

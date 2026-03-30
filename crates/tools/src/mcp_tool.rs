@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use tracing::{info, warn};
+
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
@@ -8,6 +10,107 @@ use crate::registry::{DynTool, ToolResult};
 pub struct McpTool {
     bridge: Arc<mcp::Bridge>,
     store: Arc<db::Store>,
+}
+
+/// Check if a stored OAuth token is expired (with 60s buffer).
+pub fn is_token_expired(expires_at: Option<i64>) -> bool {
+    match expires_at {
+        Some(exp) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            now >= (exp - 60)
+        }
+        None => false, // no expiry info = assume valid
+    }
+}
+
+/// Refresh an MCP integration's OAuth token. Orchestrates DB read → decrypt → HTTP refresh →
+/// encrypt → DB write → session update. Returns the new plaintext access_token.
+pub async fn refresh_mcp_token(
+    store: &db::Store,
+    client: &mcp::McpClient,
+    integration_id: &str,
+) -> Result<String, String> {
+    // 1. Read OAuth config from integration row
+    let oauth_config = store
+        .get_mcp_oauth_config(integration_id)
+        .map_err(|e| format!("read oauth config: {e}"))?
+        .ok_or("no oauth config found")?;
+
+    let token_endpoint = oauth_config.oauth_token_endpoint
+        .ok_or("no token_endpoint on integration")?;
+    let client_id = oauth_config.oauth_client_id
+        .ok_or("no client_id on integration")?;
+
+    // Decrypt client_secret if present
+    let client_secret = oauth_config.oauth_client_secret
+        .as_deref()
+        .and_then(|enc| client.decrypt_token(enc).ok());
+
+    // 2. Read credential with refresh_token
+    let cred = store
+        .get_mcp_credential_full(integration_id, "oauth_token")
+        .map_err(|e| format!("read credential: {e}"))?
+        .ok_or("no credential found")?;
+
+    let encrypted_refresh = cred.refresh_token
+        .ok_or("no refresh_token stored")?;
+    let refresh_token = client
+        .decrypt_token(&encrypted_refresh)
+        .map_err(|e| format!("decrypt refresh_token: {e}"))?;
+
+    // 3. Call refresh endpoint
+    let result = client
+        .refresh_token(&token_endpoint, &client_id, client_secret.as_deref(), &refresh_token)
+        .await
+        .map_err(|e| format!("refresh request failed: {e}"))?;
+
+    // 4. Encrypt and store new tokens
+    let new_encrypted_access = client
+        .encrypt_token(&result.access_token)
+        .map_err(|e| format!("encrypt new access_token: {e}"))?;
+
+    // Use rotated refresh_token if server provided one, otherwise keep old
+    let new_encrypted_refresh = match &result.refresh_token {
+        Some(new_rt) => Some(
+            client.encrypt_token(new_rt)
+                .map_err(|e| format!("encrypt new refresh_token: {e}"))?,
+        ),
+        None => Some(encrypted_refresh.clone()),
+    };
+
+    let new_expires_at = result.expires_in.map(|secs| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            + secs
+    });
+
+    store.store_mcp_credentials(
+        integration_id,
+        "oauth_token",
+        &new_encrypted_access,
+        new_encrypted_refresh.as_deref(),
+        new_expires_at,
+        result.scope.as_deref(),
+    ).map_err(|e| format!("store new credentials: {e}"))?;
+
+    // 5. Update in-memory session
+    let plain_refresh = result.refresh_token.unwrap_or(refresh_token);
+    client.update_session_token(
+        integration_id,
+        mcp::OAuthTokens {
+            access_token: result.access_token.clone(),
+            refresh_token: Some(plain_refresh),
+            expires_at: new_expires_at,
+            scope: result.scope,
+        },
+    ).await;
+
+    Ok(result.access_token)
 }
 
 impl McpTool {
@@ -45,6 +148,40 @@ impl McpTool {
         }
 
         desc
+    }
+
+    /// Attempt proactive token refresh if expired, returning true if refresh happened.
+    async fn maybe_refresh_token(&self, integration_id: &str) -> bool {
+        // Check if this is an OAuth integration with expired token
+        let integration = match self.store.get_mcp_integration(integration_id) {
+            Ok(Some(i)) if i.auth_type == "oauth" => i,
+            _ => return false,
+        };
+
+        let cred = match self.store.get_mcp_credential_full(&integration.id, "oauth_token") {
+            Ok(Some(c)) => c,
+            _ => return false,
+        };
+
+        if !is_token_expired(cred.expires_at) {
+            return false;
+        }
+
+        if cred.refresh_token.is_none() {
+            return false;
+        }
+
+        info!(integration = integration_id, "MCP token expired, attempting refresh");
+        match refresh_mcp_token(&self.store, self.bridge.client(), integration_id).await {
+            Ok(_) => {
+                info!(integration = integration_id, "MCP token refreshed");
+                true
+            }
+            Err(e) => {
+                warn!(integration = integration_id, error = %e, "MCP token refresh failed");
+                false
+            }
+        }
     }
 }
 
@@ -140,8 +277,11 @@ impl DynTool for McpTool {
                 obj.remove("resource");
             }
 
+            // Proactive refresh: if token is expired, refresh before calling
+            self.maybe_refresh_token(&integration_id).await;
+
             // Call the tool via bridge
-            match self.bridge.call_tool(&integration_id, resource, mcp_input).await {
+            match self.bridge.call_tool(&integration_id, resource, mcp_input.clone()).await {
                 Ok(result) => {
                     if result.is_error {
                         ToolResult::error(result.content)
@@ -149,7 +289,38 @@ impl DynTool for McpTool {
                         ToolResult::ok(result.content)
                     }
                 }
-                Err(e) => ToolResult::error(format!("MCP call failed: {}", e)),
+                Err(e) => {
+                    let err_str = e.to_string();
+                    // Retry once on 401 (token may have been revoked server-side before expiry)
+                    if err_str.contains("401") || err_str.contains("Unauthorized") {
+                        info!(integration = %integration_id, "MCP 401, attempting token refresh");
+                        match refresh_mcp_token(&self.store, self.bridge.client(), &integration_id).await {
+                            Ok(_) => {
+                                match self.bridge.call_tool(&integration_id, resource, mcp_input).await {
+                                    Ok(result) => {
+                                        if result.is_error {
+                                            ToolResult::error(result.content)
+                                        } else {
+                                            ToolResult::ok(result.content)
+                                        }
+                                    }
+                                    Err(retry_err) => ToolResult::error(format!(
+                                        "MCP call failed after token refresh: {}", retry_err
+                                    )),
+                                }
+                            }
+                            Err(refresh_err) => {
+                                let _ = self.store.set_mcp_connection_status(&integration_id, "disconnected", 0);
+                                ToolResult::error(format!(
+                                    "MCP authentication expired and refresh failed: {}. Reconnect the integration in settings.",
+                                    refresh_err
+                                ))
+                            }
+                        }
+                    } else {
+                        ToolResult::error(format!("MCP call failed: {}", e))
+                    }
+                }
             }
         })
     }

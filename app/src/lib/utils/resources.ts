@@ -1,4 +1,4 @@
-import { listMCPIntegrations, listExtensions, getActiveRoles } from '$lib/api/nebo';
+import { listMCPIntegrations, listExtensions, getActiveAgents } from '$lib/api/nebo';
 
 export type Resource = {
 	type: 'mcp' | 'skill' | 'agent' | 'cmd';
@@ -8,10 +8,10 @@ export type Resource = {
 };
 
 export async function loadResources(currentRoleId?: string): Promise<Resource[]> {
-	const [mcpRes, extRes, rolesRes] = await Promise.all([
+	const [mcpRes, extRes, agentsRes] = await Promise.all([
 		listMCPIntegrations().catch(() => ({ integrations: [] })),
 		listExtensions().catch(() => ({ skills: [] })),
-		getActiveRoles().catch(() => ({ roles: [] })),
+		getActiveAgents().catch(() => ({ agents: [] })),
 	]);
 	const mcps: Resource[] = (mcpRes.integrations || []).map((i: any) => ({
 		type: 'mcp' as const,
@@ -26,11 +26,11 @@ export async function loadResources(currentRoleId?: string): Promise<Resource[]>
 		name: s.name,
 		status: s.enabled ? ('ok' as const) : ('warn' as const),
 	}));
-	const agents: Resource[] = (rolesRes.roles || [])
-		.filter((r: any) => r.roleId !== currentRoleId)
+	const agents: Resource[] = (agentsRes.agents || [])
+		.filter((r: any) => r.agentId !== currentRoleId)
 		.map((r: any) => ({
 			type: 'agent' as const,
-			id: r.roleId,
+			id: r.agentId,
 			name: r.name,
 			status: 'ok' as const,
 		}));

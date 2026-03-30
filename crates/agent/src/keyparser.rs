@@ -12,14 +12,12 @@ pub struct SessionKeyInfo {
     pub is_topic: bool,
     pub parent_key: String,
     pub rest: String,
-    /// When set, this session belongs to a specific persona (e.g. "persona:researcher:web").
-    pub persona_id: String,
 }
 
 /// Parse a hierarchical session key into components.
 ///
 /// Key formats:
-/// - `agent:<agentId>:rest` — Agent-scoped session
+/// - `agent:<agentId>:<channel>` — Agent-scoped session
 /// - `subagent:<parentId>:...` — Sub-agent session
 /// - `acp:...` — ACP session
 /// - `<channel>:group:<id>` — Group chat session
@@ -44,21 +42,11 @@ pub fn parse_session_key(key: &str) -> SessionKeyInfo {
 
     // Check for special prefixes
     match parts[0] {
-        "persona" => {
-            // Format: persona:<personaId>:<rest>
-            if parts.len() >= 2 {
-                info.persona_id = parts[1].to_string();
-                if parts.len() > 2 {
-                    info.channel = parts[2].to_string();
-                    info.rest = parts[2..].join(":");
-                }
-            }
-            return info;
-        }
         "agent" => {
             if parts.len() >= 2 {
                 info.agent_id = parts[1].to_string();
                 if parts.len() > 2 {
+                    info.channel = parts[2].to_string();
                     info.rest = parts[2..].join(":");
                 }
             }
@@ -192,15 +180,15 @@ pub fn build_session_key(channel: &str, chat_type: &str, chat_id: &str) -> Strin
     format!("{}:{}:{}", channel, chat_type, chat_id)
 }
 
-/// Build an agent-scoped session key.
-pub fn build_agent_session_key(agent_id: &str, session_name: &str) -> String {
+/// Build an agent-scoped session key: `agent:<agentId>:<channel>`.
+pub fn build_agent_session_key(agent_id: &str, channel: &str) -> String {
     if agent_id.is_empty() {
-        return session_name.to_string();
+        return channel.to_string();
     }
-    if session_name.is_empty() {
+    if channel.is_empty() {
         return format!("agent:{}", agent_id);
     }
-    format!("agent:{}:{}", agent_id, session_name)
+    format!("agent:{}:{}", agent_id, channel)
 }
 
 /// Build a subagent session key.
@@ -221,34 +209,16 @@ pub fn build_topic_session_key(parent_key: &str, topic_id: &str) -> String {
     format!("{}:topic:{}", parent_key, topic_id)
 }
 
-/// Build a persona-scoped session key: `persona:<personaId>:<channel>`.
-pub fn build_persona_session_key(persona_id: &str, channel: &str) -> String {
-    if channel.is_empty() {
-        format!("persona:{}:web", persona_id)
-    } else {
-        format!("persona:{}:{}", persona_id, channel)
-    }
-}
-
-/// Returns true if the key represents a persona session.
-pub fn is_persona_key(key: &str) -> bool {
-    key.starts_with("persona:")
-}
-
-/// Extract the persona ID from a persona-scoped session key.
-pub fn extract_persona_id(key: &str) -> String {
-    parse_session_key(key).persona_id
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_parse_agent_key() {
-        let info = parse_session_key("agent:abc123:main");
+        let info = parse_session_key("agent:abc123:web");
         assert_eq!(info.agent_id, "abc123");
-        assert_eq!(info.rest, "main");
+        assert_eq!(info.channel, "web");
+        assert_eq!(info.rest, "web");
         assert!(!info.is_subagent);
     }
 
@@ -378,23 +348,4 @@ mod tests {
         assert_eq!(resolve_thread_parent_key("discord:group:123"), "");
     }
 
-    #[test]
-    fn test_parse_persona_key() {
-        let info = parse_session_key("persona:researcher:web");
-        assert_eq!(info.persona_id, "researcher");
-        assert_eq!(info.channel, "web");
-    }
-
-    #[test]
-    fn test_persona_key_predicates() {
-        assert!(is_persona_key("persona:researcher:web"));
-        assert!(!is_persona_key("agent:x"));
-        assert_eq!(extract_persona_id("persona:researcher:web"), "researcher");
-    }
-
-    #[test]
-    fn test_build_persona_session_key() {
-        assert_eq!(build_persona_session_key("researcher", "web"), "persona:researcher:web");
-        assert_eq!(build_persona_session_key("chief-of-staff", ""), "persona:chief-of-staff:web");
-    }
 }

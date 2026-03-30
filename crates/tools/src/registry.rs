@@ -139,6 +139,7 @@ pub struct Registry {
     policy: Arc<RwLock<Policy>>,
     process_registry: Arc<ProcessRegistry>,
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
+    plugin_store: std::sync::RwLock<Option<Arc<napp::plugin::PluginStore>>>,
     resource_permits: ResourcePermits,
 }
 
@@ -149,6 +150,7 @@ impl Registry {
             policy: Arc::new(RwLock::new(policy)),
             process_registry: Arc::new(ProcessRegistry::new()),
             bridge: std::sync::RwLock::new(None),
+            plugin_store: std::sync::RwLock::new(None),
             resource_permits: ResourcePermits::new(),
         }
     }
@@ -156,6 +158,11 @@ impl Registry {
     /// Set the MCP bridge for proxy tool execution.
     pub fn set_bridge(&self, bridge: Arc<mcp::Bridge>) {
         *self.bridge.write().unwrap() = Some(bridge);
+    }
+
+    /// Set the plugin store for injecting plugin binary env vars into subprocesses.
+    pub fn set_plugin_store(&self, ps: Arc<napp::plugin::PluginStore>) {
+        *self.plugin_store.write().unwrap() = Some(ps);
     }
 
     /// Register a tool.

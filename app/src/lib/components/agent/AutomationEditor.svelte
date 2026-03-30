@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { RoleWorkflowEntry as AgentWorkflowEntry, EventSourceOption } from '$lib/api/neboComponents';
-	import { createRoleWorkflow as createAgentWorkflow, updateRoleWorkflow as updateAgentWorkflow, listEventSources } from '$lib/api/nebo';
+	import type { AgentWorkflowEntry, EventSourceOption } from '$lib/api/neboComponents';
+	import { createAgentWorkflow, updateAgentWorkflow, listEventSources } from '$lib/api/nebo';
 	import { fly } from 'svelte/transition';
 	import { Plus, X, GripVertical } from 'lucide-svelte';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
@@ -629,7 +629,7 @@
 													type="button"
 													class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs bg-base-content/5 border border-base-content/10 text-base-content/60 hover:border-primary/30 hover:text-primary transition-colors"
 													onclick={() => { eventSources = [...eventSources, opt.value]; }}
-													title={opt.description || `From ${opt.roleName}`}
+													title={opt.description || `From ${opt.agentName}`}
 												>
 													<Plus class="w-3 h-3" />
 													{opt.value}

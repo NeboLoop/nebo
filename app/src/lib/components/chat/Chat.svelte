@@ -15,7 +15,7 @@
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat, createNewCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
 	import { goto } from '$app/navigation';
-	import { getRole as getAgent, editChatMessage } from '$lib/api/nebo';
+	import { getAgent, editChatMessage } from '$lib/api/nebo';
 	import { logger } from '$lib/monitoring/logger';
 
 	const log = logger.child({ component: 'Chat' });
@@ -503,7 +503,7 @@
 				// Fetch agent details for empty state display
 				if (mode.agentId) {
 					getAgent(mode.agentId).then((data) => {
-						if (data?.role?.description) agentDescription = data.role.description;
+						if (data?.agent?.description) agentDescription = data.agent.description;
 					}).catch(() => {});
 				}
 				await loadAgentChat();

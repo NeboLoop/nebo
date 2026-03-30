@@ -287,25 +287,25 @@
 			ws.on('agent_activated', () => loadGraph()),
 			ws.on('agent_deactivated', () => loadGraph()),
 			ws.on('workflow_run_started', (data: any) => {
-				if (!data?.roleId) return;
+				if (!data?.agentId) return;
 				nodes = nodes.map((n) =>
-					n.id === data.roleId
+					n.id === data.agentId
 						? { ...n, data: { ...n.data, status: 'running' } }
 						: n
 				);
 			}),
 			ws.on('workflow_run_completed', (data: any) => {
-				if (!data?.roleId) return;
+				if (!data?.agentId) return;
 				nodes = nodes.map((n) =>
-					n.id === data.roleId
+					n.id === data.agentId
 						? { ...n, data: { ...n.data, status: 'active' } }
 						: n
 				);
 			}),
 			ws.on('workflow_run_failed', (data: any) => {
-				if (!data?.roleId) return;
+				if (!data?.agentId) return;
 				nodes = nodes.map((n) =>
-					n.id === data.roleId
+					n.id === data.agentId
 						? { ...n, data: { ...n.data, status: 'active' } }
 						: n
 				);

@@ -342,6 +342,23 @@ pub struct McpIntegration {
     pub tool_count: Option<i64>,
 }
 
+/// Full OAuth credential data including expiry (for token refresh decisions).
+#[derive(Debug, Clone)]
+pub struct McpCredentialFull {
+    pub credential_value: String,
+    pub refresh_token: Option<String>,
+    pub expires_at: Option<i64>,
+    pub scopes: Option<String>,
+}
+
+/// OAuth config needed for token refresh (from the integration row).
+#[derive(Debug, Clone)]
+pub struct McpOAuthConfig {
+    pub oauth_client_id: Option<String>,
+    pub oauth_client_secret: Option<String>,
+    pub oauth_token_endpoint: Option<String>,
+}
+
 /// OAuth flow state for an MCP integration (used during callback).
 #[derive(Debug, Clone)]
 pub struct McpIntegrationOAuth {

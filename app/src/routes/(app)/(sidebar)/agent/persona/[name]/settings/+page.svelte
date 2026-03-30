@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { getActiveRoles as getActiveAgents, getRole as getAgent, updateRole as updateAgent, activateRole as activateAgent, deactivateRole as deactivateAgent, deleteRole as deleteAgent, reloadRole as reloadAgent, checkRoleUpdate as checkAgentUpdate, applyRoleUpdate as applyAgentUpdate } from '$lib/api/nebo';
+	import { getActiveAgents, getAgent, updateAgent, activateAgent, deactivateAgent, deleteAgent, reloadAgent, checkAgentUpdate, applyAgentUpdate } from '$lib/api/nebo';
 	import AlertDialog from '$lib/components/ui/AlertDialog.svelte';
 	import { t } from 'svelte-i18n';
 
@@ -39,19 +39,19 @@
 	async function load() {
 		loading = true;
 		try {
-			const [activeRes, roleRes] = await Promise.all([
+			const [activeRes, agentRes] = await Promise.all([
 				getActiveAgents(),
 				getAgent(channelState.activeAgentId).catch(() => null),
 			]);
-			isActive = activeRes.roles?.some(r => r.roleId === channelState.activeAgentId) ?? false;
+			isActive = activeRes.agents?.some(r => r.agentId === channelState.activeAgentId) ?? false;
 
-			if (roleRes?.role) {
-				nameValue = roleRes.role.name || '';
-				descriptionValue = roleRes.role.description || '';
+			if (agentRes?.agent) {
+				nameValue = agentRes.agent.name || '';
+				descriptionValue = agentRes.agent.description || '';
 				originalName = nameValue;
 				originalDescription = descriptionValue;
-				isMarketplace = !!roleRes.role.kind;
-				version = (roleRes as any).version || null;
+				isMarketplace = !!agentRes.agent.kind;
+				version = (agentRes as any).version || null;
 			}
 		} catch {
 			// ignore

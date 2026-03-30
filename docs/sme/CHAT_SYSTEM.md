@@ -212,7 +212,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
     // 1. Extract session_id, prompt, system, user_id, channel, agent_id from data
     // 2. Intercept marketplace codes (NEBO/SKIL/WORK/AGNT/LOOP-XXXX-XXXX)
     // 3. Reject empty prompts
-    // 4. Build session_key: if agent_id set, use build_persona_session_key()
+    // 4. Build session_key: if agent_id set, use build_agent_session_key()
     // 5. Resolve entity_config via resolve_for_chat() (per-entity overrides)
     // 6. Build ChatConfig with lane=MAIN, origin=User, entity_config
     // 7. Call run_chat(state, config, Some(active_runs))
@@ -579,19 +579,18 @@ pub struct SessionKeyInfo {
 | Function | Output Format |
 |----------|---------------|
 | `build_session_key(channel, type, id)` | `"discord:group:123"` |
-| `build_agent_session_key(agent_id, name)` | `"agent:bot1:main"` |
+| `build_agent_session_key(agent_id, channel)` | `"agent:bot1:web"` |
 | `build_subagent_session_key(parent, child)` | `"subagent:parent:child"` |
 | `build_thread_session_key(parent, thread)` | `"discord:group:123:thread:t1"` |
 | `build_topic_session_key(parent, topic)` | `"slack:channel:abc:topic:t2"` |
-| `build_persona_session_key(agent_id, channel)` | `"persona:researcher:web"` |
 
 ### Predicate Functions
 
-`is_subagent_key()`, `is_acp_key()`, `is_agent_key()`, `is_persona_key()`
+`is_subagent_key()`, `is_acp_key()`, `is_agent_key()`
 
 ### Extraction Functions
 
-`extract_agent_id()`, `extract_persona_id()`, `resolve_thread_parent_key()`
+`extract_agent_id()`, `resolve_thread_parent_key()`
 
 ---
 
@@ -1344,10 +1343,10 @@ CREATE TABLE entity_config (
 
 ### User sends message to agent "Researcher":
 
-1. **Frontend**: `ws.send('chat', {session_id: 'persona:35672fb4:web', prompt: 'Hello', agent_id: '35672fb4', channel: 'web'})`
-2. **dispatch_chat()**: agent_id is set → `session_key = build_persona_session_key(agent_id, "web")` = `"persona:35672fb4:web"`
-3. **run_chat()**: Same as companion but `session_key = "persona:35672fb4:web"`, `agent_id = "35672fb4"`
-4. **Runner.run()**: Creates session with `name = "persona:35672fb4:web"`, auto-creates `chats` row with same ID
+1. **Frontend**: `ws.send('chat', {session_id: 'agent:35672fb4:web', prompt: 'Hello', agent_id: '35672fb4', channel: 'web'})`
+2. **dispatch_chat()**: agent_id is set → `session_key = build_agent_session_key(agent_id, "web")` = `"agent:35672fb4:web"`
+3. **run_chat()**: Same as companion but `session_key = "agent:35672fb4:web"`, `agent_id = "35672fb4"`
+4. **Runner.run()**: Creates session with `name = "agent:35672fb4:web"`, auto-creates `chats` row with same ID
 5. **run_loop()**: Resolves agent from `agent_registry`, injects AGENT.md into system prompt, uses agent's declared tools
 6. Rest of flow identical to companion chat
 

@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use crate::models::{McpIntegration, McpIntegrationOAuth};
+use crate::models::{McpCredentialFull, McpIntegration, McpIntegrationOAuth, McpOAuthConfig};
 use crate::Store;
 use types::NeboError;
 
@@ -242,6 +242,47 @@ impl Store {
              ORDER BY rowid DESC LIMIT 1",
             params![integration_id, credential_type],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        ) {
+            Ok(r) => Ok(Some(r)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(NeboError::Database(e.to_string())),
+        }
+    }
+
+    /// Get full OAuth credential including expiry (for token refresh decisions).
+    pub fn get_mcp_credential_full(&self, integration_id: &str, credential_type: &str) -> Result<Option<McpCredentialFull>, NeboError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT credential_value, refresh_token, expires_at, scopes
+             FROM mcp_integration_credentials
+             WHERE integration_id = ?1 AND credential_type = ?2
+             ORDER BY rowid DESC LIMIT 1",
+            params![integration_id, credential_type],
+            |row| Ok(McpCredentialFull {
+                credential_value: row.get(0)?,
+                refresh_token: row.get(1)?,
+                expires_at: row.get(2)?,
+                scopes: row.get(3)?,
+            }),
+        ) {
+            Ok(r) => Ok(Some(r)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(NeboError::Database(e.to_string())),
+        }
+    }
+
+    /// Get OAuth config needed for token refresh (client_id, client_secret, token_endpoint).
+    pub fn get_mcp_oauth_config(&self, integration_id: &str) -> Result<Option<McpOAuthConfig>, NeboError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT oauth_client_id, oauth_client_secret, oauth_token_endpoint
+             FROM mcp_integrations WHERE id = ?1",
+            params![integration_id],
+            |row| Ok(McpOAuthConfig {
+                oauth_client_id: row.get(0)?,
+                oauth_client_secret: row.get(1)?,
+                oauth_token_endpoint: row.get(2)?,
+            }),
         ) {
             Ok(r) => Ok(Some(r)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

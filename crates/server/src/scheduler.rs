@@ -212,7 +212,7 @@ async fn execute_agent_workflow_task(
     command: &str,
 ) -> (bool, String, Option<String>) {
     let parts: Vec<&str> = command.splitn(3, ':').collect();
-    if parts.len() != 3 || (parts[0] != "agent" && parts[0] != "role") {
+    if parts.len() != 3 || parts[0] != "agent" {
         return (false, String::new(), Some(format!("invalid agent_workflow command: {}", command)));
     }
     let agent_id = parts[1];

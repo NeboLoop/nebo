@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, getContext } from 'svelte';
-	import { getRole as getAgent, updateRoleInputs as updateAgentInputs, getEntityConfig, updateEntityConfig, pickFolder } from '$lib/api/nebo';
-	import type { RoleInputField, ResolvedEntityConfig } from '$lib/api/neboComponents';
+	import { getAgent, updateAgentInputs, getEntityConfig, updateEntityConfig, pickFolder } from '$lib/api/nebo';
+	import type { AgentInputField, ResolvedEntityConfig } from '$lib/api/neboComponents';
 	import AgentInputForm from '$lib/components/agent/AgentInputForm.svelte';
 	import { FolderOpen } from 'lucide-svelte';
 	import { t } from 'svelte-i18n';
@@ -15,7 +15,7 @@
 	let saving = $state(false);
 
 	// Agent inputs
-	let inputFields = $state<RoleInputField[]>([]);
+	let inputFields = $state<AgentInputField[]>([]);
 	let inputValues = $state<Record<string, unknown>>({});
 	let savedInputValues = $state<string>('{}');
 
@@ -39,16 +39,16 @@
 	async function load() {
 		loading = true;
 		try {
-			const [roleRes, configRes] = await Promise.all([
+			const [agentRes, configRes] = await Promise.all([
 				getAgent(channelState.activeAgentId).catch(() => null),
 				getEntityConfig('role', channelState.activeAgentId).catch(() => null),
 			]);
 
-			if (roleRes?.role) {
+			if (agentRes?.agent) {
 				// Use pre-normalized inputFields from backend
-				inputFields = roleRes.inputFields || [];
+				inputFields = agentRes.inputFields || [];
 				try {
-					inputValues = JSON.parse(roleRes.role.inputValues || '{}');
+					inputValues = JSON.parse(agentRes.agent.inputValues || '{}');
 					savedInputValues = JSON.stringify(inputValues);
 				} catch {
 					inputValues = {};

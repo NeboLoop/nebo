@@ -2,7 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
 	import { tick, getContext, untrack } from 'svelte';
-	import { getActiveRoles as getActiveAgents, updateRole as updateAgent } from '$lib/api/nebo';
+	import { getActiveAgents, updateAgent } from '$lib/api/nebo';
 	import { t } from 'svelte-i18n';
 
 	let { children }: { children: Snippet } = $props();
@@ -87,13 +87,13 @@
 
 		getActiveAgents().then((data) => {
 			if (cancelled) return;
-			if (data?.roles) {
-				const match = data.roles.find((r) => r.roleId === name);
+			if (data?.agents) {
+				const match = data.agents.find((r) => r.agentId === name);
 				if (match) {
 					channelState.activeChannelId = '';
 					channelState.activeChannelName = '';
 					channelState.activeLoopName = '';
-					channelState.activeAgentId = match.roleId;
+					channelState.activeAgentId = match.agentId;
 					channelState.activeAgentName = match.name;
 					channelState.activeView = 'agent';
 				} else {

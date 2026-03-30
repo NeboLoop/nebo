@@ -478,9 +478,9 @@ export interface GetLoopsResponse {
 	desktopActive: boolean
 }
 
-// Active roles — running as separate bots in the sidebar
-export interface ActiveRoleEntry {
-	roleId: string
+// Active agents — running as separate bots in the sidebar
+export interface ActiveAgentEntry {
+	agentId: string
 	name: string
 	description?: string
 	channelId?: string
@@ -489,14 +489,14 @@ export interface ActiveRoleEntry {
 	skillCount: number
 }
 
-// Role detail — full role from GET /roles/{id}
-export interface RoleDetailResponse {
-	role: {
+// Agent detail — full agent from GET /agents/{id}
+export interface AgentDetailResponse {
+	agent: {
 		id: string
 		kind?: string
 		name: string
 		description: string
-		roleMd: string
+		agentMd: string
 		frontmatter: string
 		pricingModel?: string
 		pricingCost?: number
@@ -508,10 +508,10 @@ export interface RoleDetailResponse {
 	}
 }
 
-// Role workflow entry — from GET /roles/{id}/workflows
-export interface RoleWorkflowEntry {
+// Agent workflow entry — from GET /agents/{id}/workflows
+export interface AgentWorkflowEntry {
 	id: number
-	roleId: string
+	agentId: string
 	bindingName: string
 	workflowRef: string
 	workflowId?: string
@@ -525,7 +525,7 @@ export interface RoleWorkflowEntry {
 	lastFired?: string
 }
 
-export interface RoleInputField {
+export interface AgentInputField {
 	key: string
 	label: string
 	description?: string
@@ -536,7 +536,7 @@ export interface RoleInputField {
 	options?: Array<{ value: string; label: string }>
 }
 
-export interface RoleWorkflowStats {
+export interface AgentWorkflowStats {
 	totalRuns: number
 	completed: number
 	failed: number
@@ -556,8 +556,8 @@ export interface WorkflowRunError {
 	startedAt: number
 }
 
-export interface RoleStatsResponse {
-	stats: RoleWorkflowStats
+export interface AgentStatsResponse {
+	stats: AgentWorkflowStats
 	recentErrors: Array<WorkflowRunError>
 }
 
@@ -578,17 +578,17 @@ export interface WorkflowRun {
 	completedAt?: number
 }
 
-export interface ListRoleRunsResponse {
+export interface ListAgentRunsResponse {
 	runs: Array<WorkflowRun>
 	total: number
 }
 
-export interface GetRoleWorkflowsResponse {
-	workflows: Array<RoleWorkflowEntry>
+export interface GetAgentWorkflowsResponse {
+	workflows: Array<AgentWorkflowEntry>
 	count: number
 }
 
-export interface CreateRoleWorkflowRequest {
+export interface CreateAgentWorkflowRequest {
 	bindingName: string
 	triggerType: string
 	triggerConfig: Record<string, unknown>
@@ -599,7 +599,7 @@ export interface CreateRoleWorkflowRequest {
 	emit?: string
 }
 
-export interface UpdateRoleWorkflowRequest {
+export interface UpdateAgentWorkflowRequest {
 	triggerType?: string
 	triggerConfig?: Record<string, unknown>
 	description?: string
@@ -609,11 +609,11 @@ export interface UpdateRoleWorkflowRequest {
 	emit?: string | null
 }
 
-export interface RoleWorkflowMutationResponse {
-	workflow: RoleWorkflowEntry
+export interface AgentWorkflowMutationResponse {
+	workflow: AgentWorkflowEntry
 }
 
-export interface ToggleRoleWorkflowResponse {
+export interface ToggleAgentWorkflowResponse {
 	bindingName: string
 	isActive: boolean
 }
@@ -621,7 +621,7 @@ export interface ToggleRoleWorkflowResponse {
 export interface EventSourceOption {
 	value: string
 	label: string
-	roleName: string
+	agentName: string
 	bindingName: string
 	description?: string
 }
@@ -630,7 +630,7 @@ export interface ListEventSourcesResponse {
 	sources: Array<EventSourceOption>
 }
 
-export interface InstalledRole {
+export interface InstalledAgent {
 	id: string
 	name: string
 	description: string
@@ -638,32 +638,32 @@ export interface InstalledRole {
 	is_enabled: boolean
 }
 
-export interface ListRolesResponse {
-	roles: Array<InstalledRole>
-	filesystemRoles: Array<{ name: string; description: string; source: string; version: string; isEnabled: boolean }>
+export interface ListAgentsResponse {
+	agents: Array<InstalledAgent>
+	filesystemAgents: Array<{ name: string; description: string; source: string; version: string; isEnabled: boolean }>
 	total: number
 }
 
-export interface GetActiveRolesResponse {
-	roles: Array<ActiveRoleEntry>
+export interface GetActiveAgentsResponse {
+	agents: Array<ActiveAgentEntry>
 	count: number
 }
 
-export interface ActivateRoleResponse {
-	roleId: string
+export interface ActivateAgentResponse {
+	agentId: string
 	name: string
 	status: string
 }
 
-export interface DeactivateRoleResponse {
-	roleId: string
+export interface DeactivateAgentResponse {
+	agentId: string
 	name: string
 	status: string
 }
 
-export interface ChatWithRoleResponse {
+export interface ChatWithAgentResponse {
 	sessionId: string
-	roleId: string
+	agentId: string
 	status: string
 }
 
@@ -790,11 +790,6 @@ export interface ListAgentSessionsResponse {
 }
 
 export interface ListAgentsRequest {
-}
-
-export interface ListAgentsResponse {
-	agents: Array<AgentInfo>
-	total: number
 }
 
 export interface ListAuthProfilesResponse {

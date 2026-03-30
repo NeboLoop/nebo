@@ -214,7 +214,6 @@ pub fn is_marketplace_ref(reference: &str) -> bool {
     reference.starts_with('@')
         || reference.starts_with("SKIL-")
         || reference.starts_with("WORK-")
-        || reference.starts_with("ROLE-")
         || reference.starts_with("AGNT-")
         || reference.starts_with("PLUG-")
 }

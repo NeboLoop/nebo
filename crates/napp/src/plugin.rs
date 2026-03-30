@@ -422,6 +422,26 @@ impl PluginStore {
         results
     }
 
+    /// Build env var pairs for all installed (non-quarantined) plugins.
+    ///
+    /// Returns `Vec<(env_name, binary_path)>` — e.g., `("GWS_BIN", "/path/to/gws")`.
+    /// For plugins with multiple versions, picks the highest semver
+    /// (`list_installed` sorts by slug asc, version desc — first per slug wins).
+    pub fn build_env_map(&self) -> Vec<(String, String)> {
+        let installed = self.list_installed();
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for (slug, _version, binary_path) in installed {
+            if seen.insert(slug.clone()) {
+                result.push((
+                    plugin_env_var(&slug),
+                    binary_path.to_string_lossy().into_owned(),
+                ));
+            }
+        }
+        result
+    }
+
     /// Remove plugin versions not referenced by any of the given slugs.
     ///
     /// Takes a snapshot of referenced slugs to avoid lock coupling with skill loader.

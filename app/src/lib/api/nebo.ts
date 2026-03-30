@@ -87,164 +87,164 @@ export function getLoops() {
 }
 
 /**
- * @description "List all installed roles (active + inactive)"
+ * @description "List all installed agents (active + inactive)"
  */
-export function listRoles() {
-	return webapi.get<components.ListRolesResponse>(`/api/v1/roles`)
+export function listAgents() {
+	return webapi.get<components.ListAgentsResponse>(`/api/v1/agents`)
 }
 
 /**
  * @description "List available event sources from active workflow emits"
  */
 export function listEventSources() {
-	return webapi.get<components.ListEventSourcesResponse>('/api/v1/roles/event-sources')
+	return webapi.get<components.ListEventSourcesResponse>('/api/v1/agents/event-sources')
 }
 
 /**
- * @description "Get active roles — roles currently running as separate bots"
+ * @description "Get active agents — agents currently running as separate bots"
  */
-export function getActiveRoles() {
-	return webapi.get<components.GetActiveRolesResponse>(`/api/v1/roles/active`)
+export function getActiveAgents() {
+	return webapi.get<components.GetActiveAgentsResponse>(`/api/v1/agents/active`)
 }
 
 /**
- * @description "Activate a role — makes it appear in sidebar as its own bot"
+ * @description "Activate an agent — makes it appear in sidebar as its own bot"
  */
-export function activateRole(roleId: string) {
-	return webapi.post<components.ActivateRoleResponse>(`/api/v1/roles/${roleId}/activate`, {})
+export function activateAgent(agentId: string) {
+	return webapi.post<components.ActivateAgentResponse>(`/api/v1/agents/${agentId}/activate`, {})
 }
 
 /**
- * @description "Deactivate a role — removes it from sidebar"
+ * @description "Deactivate an agent — removes it from sidebar"
  */
-export function deactivateRole(roleId: string) {
-	return webapi.post<components.DeactivateRoleResponse>(`/api/v1/roles/${roleId}/deactivate`, {})
+export function deactivateAgent(agentId: string) {
+	return webapi.post<components.DeactivateAgentResponse>(`/api/v1/agents/${agentId}/deactivate`, {})
 }
 
 /**
- * @description "Send a chat message to a specific role"
+ * @description "Send a chat message to a specific agent"
  */
-export function chatWithRole(roleId: string, prompt: string) {
-	return webapi.post<components.ChatWithRoleResponse>(`/api/v1/roles/${roleId}/chat`, { prompt })
+export function chatWithAgent(agentId: string, prompt: string) {
+	return webapi.post<components.ChatWithAgentResponse>(`/api/v1/agents/${agentId}/chat`, { prompt })
 }
 
 /**
- * @description "Create a blank role instance and auto-activate it"
+ * @description "Create a blank agent instance and auto-activate it"
  */
-export function createBlankRole() {
-	return webapi.post<{ role: { id: string; name: string }; activated: boolean }>(`/api/v1/roles`, { blank: true })
+export function createBlankAgent() {
+	return webapi.post<{ agent: { id: string; name: string }; activated: boolean }>(`/api/v1/agents`, { blank: true })
 }
 
 /**
- * @description "Delete a role"
+ * @description "Delete an agent"
  */
-export function deleteRole(roleId: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/roles/${roleId}`)
+export function deleteAgent(agentId: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/agents/${agentId}`)
 }
 
 /**
- * @description "Update a role's name, description, or roleMd"
+ * @description "Update an agent's name, description, or agentMd"
  */
-export function updateRole(roleId: string, data: { name?: string; description?: string; roleMd?: string }) {
-	return webapi.put<{ role: { id: string; name: string; description: string; roleMd: string } }>(`/api/v1/roles/${roleId}`, data)
+export function updateAgent(agentId: string, data: { name?: string; description?: string; agentMd?: string }) {
+	return webapi.put<{ agent: { id: string; name: string; description: string; agentMd: string } }>(`/api/v1/agents/${agentId}`, data)
 }
 
 /**
- * @description "Duplicate a role"
+ * @description "Duplicate an agent"
  */
-export function duplicateRole(roleId: string) {
-	return webapi.post<{ role: { id: string; name: string }; activated: boolean }>(`/api/v1/roles/${roleId}/duplicate`, {})
+export function duplicateAgent(agentId: string) {
+	return webapi.post<{ agent: { id: string; name: string }; activated: boolean }>(`/api/v1/agents/${agentId}/duplicate`, {})
 }
 
 /**
- * @description "Get full role details"
+ * @description "Get full agent details"
  */
-export function getRole(roleId: string) {
-	return webapi.get<components.RoleDetailResponse>(`/api/v1/roles/${roleId}`)
+export function getAgent(agentId: string) {
+	return webapi.get<components.AgentDetailResponse>(`/api/v1/agents/${agentId}`)
 }
 
 /**
- * @description "Get workflows for a role"
+ * @description "Get workflows for an agent"
  */
-export function getRoleWorkflows(roleId: string) {
-	return webapi.get<components.GetRoleWorkflowsResponse>(`/api/v1/roles/${roleId}/workflows`)
+export function getAgentWorkflows(agentId: string) {
+	return webapi.get<components.GetAgentWorkflowsResponse>(`/api/v1/agents/${agentId}/workflows`)
 }
 
 /**
- * @description "Create a new workflow binding for a role"
+ * @description "Create a new workflow binding for an agent"
  */
-export function createRoleWorkflow(roleId: string, data: components.CreateRoleWorkflowRequest) {
-	return webapi.post<components.RoleWorkflowMutationResponse>(`/api/v1/roles/${roleId}/workflows`, data)
+export function createAgentWorkflow(agentId: string, data: components.CreateAgentWorkflowRequest) {
+	return webapi.post<components.AgentWorkflowMutationResponse>(`/api/v1/agents/${agentId}/workflows`, data)
 }
 
 /**
- * @description "Update an existing workflow binding for a role"
+ * @description "Update an existing workflow binding for an agent"
  */
-export function updateRoleWorkflow(roleId: string, bindingName: string, data: components.UpdateRoleWorkflowRequest) {
-	return webapi.put<components.RoleWorkflowMutationResponse>(`/api/v1/roles/${roleId}/workflows/${bindingName}`, data)
+export function updateAgentWorkflow(agentId: string, bindingName: string, data: components.UpdateAgentWorkflowRequest) {
+	return webapi.put<components.AgentWorkflowMutationResponse>(`/api/v1/agents/${agentId}/workflows/${bindingName}`, data)
 }
 
 /**
  * @description "Toggle a workflow binding on/off"
  */
-export function toggleRoleWorkflow(roleId: string, bindingName: string) {
-	return webapi.post<components.ToggleRoleWorkflowResponse>(`/api/v1/roles/${roleId}/workflows/${bindingName}/toggle`, {})
+export function toggleAgentWorkflow(agentId: string, bindingName: string) {
+	return webapi.post<components.ToggleAgentWorkflowResponse>(`/api/v1/agents/${agentId}/workflows/${bindingName}/toggle`, {})
 }
 
 /**
  * @description "Delete a workflow binding"
  */
-export function deleteRoleWorkflow(roleId: string, bindingName: string) {
-	return webapi.delete<components.MessageResponse>(`/api/v1/roles/${roleId}/workflows/${bindingName}`)
+export function deleteAgentWorkflow(agentId: string, bindingName: string) {
+	return webapi.delete<components.MessageResponse>(`/api/v1/agents/${agentId}/workflows/${bindingName}`)
 }
 
 /**
- * @description "Update user-supplied input values for a role"
+ * @description "Update user-supplied input values for an agent"
  */
-export function updateRoleInputs(roleId: string, values: Record<string, unknown>) {
-	return webapi.put<{ ok: boolean }>(`/api/v1/roles/${roleId}/inputs`, values)
+export function updateAgentInputs(agentId: string, values: Record<string, unknown>) {
+	return webapi.put<{ ok: boolean }>(`/api/v1/agents/${agentId}/inputs`, values)
 }
 
 /**
- * @description "Trigger role setup wizard"
+ * @description "Trigger agent setup wizard"
  */
-export function triggerRoleSetup(roleId: string) {
-	return webapi.post<{ ok: boolean }>(`/api/v1/roles/${roleId}/setup`, {})
+export function triggerAgentSetup(agentId: string) {
+	return webapi.post<{ ok: boolean }>(`/api/v1/agents/${agentId}/setup`, {})
 }
 
 /**
- * @description "Reload role from filesystem (ROLE.md + role.json)"
+ * @description "Reload agent from filesystem (AGENT.md + agent.json)"
  */
-export function reloadRole(roleId: string) {
-	return webapi.post<{ ok: boolean; reloaded?: string[]; role?: components.RoleDetailResponse['role'] }>(`/api/v1/roles/${roleId}/reload`, {})
+export function reloadAgent(agentId: string) {
+	return webapi.post<{ ok: boolean; reloaded?: string[]; agent?: components.AgentDetailResponse['agent'] }>(`/api/v1/agents/${agentId}/reload`, {})
 }
 
 /**
- * @description "Check if a marketplace role has an update available"
+ * @description "Check if a marketplace agent has an update available"
  */
-export function checkRoleUpdate(roleId: string) {
-	return webapi.post<{ hasUpdate: boolean; localVersion?: string; remoteVersion?: string; error?: string }>(`/api/v1/roles/${roleId}/check-update`, {})
+export function checkAgentUpdate(agentId: string) {
+	return webapi.post<{ hasUpdate: boolean; localVersion?: string; remoteVersion?: string; error?: string }>(`/api/v1/agents/${agentId}/check-update`, {})
 }
 
 /**
- * @description "Apply marketplace update to a role"
+ * @description "Apply marketplace update to an agent"
  */
-export function applyRoleUpdate(roleId: string) {
-	return webapi.post<{ ok: boolean; role?: components.RoleDetailResponse['role'] }>(`/api/v1/roles/${roleId}/apply-update`, {})
+export function applyAgentUpdate(agentId: string) {
+	return webapi.post<{ ok: boolean; agent?: components.AgentDetailResponse['agent'] }>(`/api/v1/agents/${agentId}/apply-update`, {})
 }
 
 /**
- * @description "Get workflow run stats for a role"
+ * @description "Get workflow run stats for an agent"
  */
-export function getRoleStats(roleId: string) {
-	return webapi.get<components.RoleStatsResponse>(`/api/v1/roles/${roleId}/stats`)
+export function getAgentStats(agentId: string) {
+	return webapi.get<components.AgentStatsResponse>(`/api/v1/agents/${agentId}/stats`)
 }
 
 /**
- * @description "List workflow runs for a role"
+ * @description "List workflow runs for an agent"
  */
-export function listRoleRuns(roleId: string, limit = 20, offset = 0) {
-	return webapi.get<components.ListRoleRunsResponse>(`/api/v1/roles/${roleId}/runs?limit=${limit}&offset=${offset}`)
+export function listAgentRuns(agentId: string, limit = 20, offset = 0) {
+	return webapi.get<components.ListAgentRunsResponse>(`/api/v1/agents/${agentId}/runs?limit=${limit}&offset=${offset}`)
 }
 
 /**
@@ -320,14 +320,6 @@ export function getSimpleAgentStatus() {
  */
 export function getSystemInfo() {
 	return webapi.get<components.SystemInfoResponse>(`/api/v1/agent/system-info`)
-}
-
-/**
- * @description "List agents"
- * @param req
- */
-export function listAgents() {
-	return webapi.get<components.ListAgentsResponse>(`/api/v1/agents`)
 }
 
 /**

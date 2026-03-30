@@ -70,7 +70,7 @@ pub async fn create_workflow(
         }
     }
 
-    // Triggers are now role-owned (via role.json), not workflow-level
+    // Triggers are now agent-owned (via agent.json), not workflow-level
 
     state.hub.broadcast(
         "workflow_installed",

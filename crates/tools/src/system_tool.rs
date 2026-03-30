@@ -24,6 +24,11 @@ impl SystemTool {
         }
     }
 
+    pub fn with_plugin_store(mut self, ps: Arc<napp::plugin::PluginStore>) -> Self {
+        self.shell_tool = self.shell_tool.with_plugin_store(ps);
+        self
+    }
+
     /// Infer resource from action name when resource is omitted.
     fn infer_resource(&self, action: &str) -> &str {
         match action {

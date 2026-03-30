@@ -53,6 +53,7 @@ impl ProcessRegistry {
         &self,
         command: &str,
         cwd: Option<&str>,
+        extra_env: &[(String, String)],
     ) -> Result<String, String> {
         let (shell, shell_args) = shell_command();
         let mut cmd = Command::new(shell);
@@ -71,6 +72,9 @@ impl ProcessRegistry {
         cmd.stdin(Stdio::piped());
         cmd.env_clear();
         for (k, v) in sanitized_env() {
+            cmd.env(k, v);
+        }
+        for (k, v) in extra_env {
             cmd.env(k, v);
         }
 

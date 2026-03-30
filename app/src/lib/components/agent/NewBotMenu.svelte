@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { createBlankRole as createBlankAgent } from '$lib/api/nebo';
+	import { createBlankAgent } from '$lib/api/nebo';
 	import { t } from 'svelte-i18n';
 
 	let {
@@ -22,7 +22,7 @@
 		onClose();
 		try {
 			const res = await createBlankAgent();
-			goto(`/agent/persona/${res.role.id}/chat`);
+			goto(`/agent/persona/${res.agent.id}/chat`);
 		} catch (e) {
 			console.error('Failed to create blank agent:', e);
 			creating = false;

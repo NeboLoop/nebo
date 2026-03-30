@@ -128,7 +128,7 @@ pub async fn update_integration(
             body["name"].as_str(),
             body["serverUrl"].as_str(),
             body["authType"].as_str(),
-            body["isEnabled"].as_i64().map(|v| v != 0),
+            body["isEnabled"].as_bool(),
             body.get("metadata").map(|v| v.to_string()).as_deref(),
         )
         .map_err(to_error_response)?;
@@ -209,14 +209,27 @@ pub async fn connect_integration(
         )));
     }
 
-    // Get stored OAuth token if available
+    // Get stored OAuth token, refreshing if expired
     let access_token = if integration.auth_type == "oauth" {
-        state
-            .store
-            .get_mcp_credential(&id, "oauth_token")
-            .ok()
-            .flatten()
-            .and_then(|(encrypted, _)| state.bridge.client().decrypt_token(&encrypted).ok())
+        match state.store.get_mcp_credential_full(&id, "oauth_token") {
+            Ok(Some(cred)) => {
+                if tools::mcp_tool::is_token_expired(cred.expires_at) && cred.refresh_token.is_some() {
+                    // Token expired — try to refresh before connecting
+                    info!(integration = %id, "MCP token expired on connect, attempting refresh");
+                    match tools::mcp_tool::refresh_mcp_token(&state.store, state.bridge.client(), &id).await {
+                        Ok(new_token) => Some(new_token),
+                        Err(e) => {
+                            warn!(integration = %id, error = %e, "MCP token refresh on connect failed");
+                            // Fall through with possibly-expired token
+                            state.bridge.client().decrypt_token(&cred.credential_value).ok()
+                        }
+                    }
+                } else {
+                    state.bridge.client().decrypt_token(&cred.credential_value).ok()
+                }
+            }
+            _ => None,
+        }
     } else {
         None
     };
@@ -254,10 +267,22 @@ pub async fn connect_integration(
             })))
         }
         Err(e) => {
+            warn!(
+                integration = %id,
+                server_url = server_url,
+                error = %e,
+                "MCP connect failed"
+            );
+            let err_msg = format!("Connection failed: {}", e);
             let _ = state.store.set_mcp_connection_status(&id, "error", 0);
+            // Also persist the error message for display
+            let _ = state.store.update_mcp_integration(
+                &id, None, None, None, None,
+                Some(&serde_json::json!({"last_error": &err_msg}).to_string()),
+            );
             Ok(Json(serde_json::json!({
                 "success": false,
-                "message": format!("Connection failed: {}", e),
+                "message": err_msg,
             })))
         }
     }

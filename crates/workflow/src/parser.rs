@@ -4,8 +4,8 @@ use crate::WorkflowError;
 
 /// Top-level workflow definition (parsed from workflow.json).
 ///
-/// Triggers are no longer part of workflow.json — they are owned by Roles
-/// (via role.json). Legacy `triggers` fields are silently ignored on parse.
+/// Triggers are no longer part of workflow.json — they are owned by Agents
+/// (via agent.json). Legacy `triggers` fields are silently ignored on parse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowDef {
     pub version: String,

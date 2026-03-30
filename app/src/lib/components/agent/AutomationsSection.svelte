@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { getEntityConfig, updateEntityConfig, getRoleWorkflows as getAgentWorkflows, createRoleWorkflow as createAgentWorkflow, toggleRoleWorkflow as toggleAgentWorkflow, deleteRoleWorkflow as deleteAgentWorkflow } from '$lib/api/nebo';
-	import type { RoleWorkflowEntry as AgentWorkflowEntry } from '$lib/api/neboComponents';
+	import { getEntityConfig, updateEntityConfig, getAgentWorkflows, createAgentWorkflow, toggleAgentWorkflow, deleteAgentWorkflow } from '$lib/api/nebo';
+	import type { AgentWorkflowEntry } from '$lib/api/neboComponents';
 	import AutomationEditor from './AutomationEditor.svelte';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
 	import { Plus, Pencil, Trash2, Store, Copy, MoreHorizontal, X } from 'lucide-svelte';
@@ -371,14 +371,14 @@
 	onMount(() => {
 		const ws = getWebSocketClient();
 		wsUnsubs.push(
-			ws.on('workflow_run_started', (data: { roleId: string }) => {
-				if (roleId && data.roleId === roleId) loadWorkflows();
+			ws.on('workflow_run_started', (data: { agentId: string }) => {
+				if (roleId && data.agentId === roleId) loadWorkflows();
 			}),
-			ws.on('workflow_run_completed', (data: { roleId: string }) => {
-				if (roleId && data.roleId === roleId) loadWorkflows();
+			ws.on('workflow_run_completed', (data: { agentId: string }) => {
+				if (roleId && data.agentId === roleId) loadWorkflows();
 			}),
-			ws.on('workflow_run_failed', (data: { roleId: string }) => {
-				if (roleId && data.roleId === roleId) loadWorkflows();
+			ws.on('workflow_run_failed', (data: { agentId: string }) => {
+				if (roleId && data.agentId === roleId) loadWorkflows();
 			}),
 		);
 	});

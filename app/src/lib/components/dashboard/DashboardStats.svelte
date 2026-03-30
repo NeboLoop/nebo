@@ -1,6 +1,6 @@
 <script lang="ts">
 	import MetricCard from '$lib/components/ui/MetricCard.svelte';
-	import type { ActiveRoleEntry as ActiveAgentEntry, SimpleAgentStatusResponse, NeboLoopJanusUsageResponse, Chat } from '$lib/api/neboComponents';
+	import type { ActiveAgentEntry, SimpleAgentStatusResponse, NeboLoopJanusUsageResponse, Chat } from '$lib/api/neboComponents';
 
 	let {
 		agents = [],

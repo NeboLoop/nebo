@@ -636,7 +636,7 @@ fn test_install_flow() -> TestResult {
     let (ct, _) = detect_code("SKIL-A1B2-C3D4").expect("valid SKILL code");
     assert_eq!(ct, CodeType::Skill);
 
-    let (ct, _) = detect_code("ROLE-A1B2-C3D4").expect("valid ROLE code");
+    let (ct, _) = detect_code("AGNT-A1B2-C3D4").expect("valid AGNT code");
     assert_eq!(ct, CodeType::Agent);
 
     let (ct, _) = detect_code("WORK-A1B2-C3D4").expect("valid WORK code");
@@ -671,7 +671,7 @@ fn test_install_flow() -> TestResult {
     assert!(is_marketplace_ref("@acme/skills/web"));
     assert!(is_marketplace_ref("SKIL-A1B2-C3D4"));
     assert!(is_marketplace_ref("WORK-A1B2-C3D4"));
-    assert!(is_marketplace_ref("ROLE-A1B2-C3D4"));
+    assert!(is_marketplace_ref("AGNT-A1B2-C3D4"));
     assert!(!is_marketplace_ref("builtin-name"));
     assert!(!is_marketplace_ref("web"));
 

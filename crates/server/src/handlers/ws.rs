@@ -474,7 +474,6 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
     let user_id = data["user_id"].as_str().unwrap_or("").to_string();
     let channel = data["channel"].as_str().unwrap_or("web").to_string();
     let agent_id = data["agentId"].as_str()
-        .or_else(|| data["role_id"].as_str()) // backwards compat
         .unwrap_or("").to_string();
 
     info!(
@@ -513,7 +512,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
 
     // If agent_id is set, build a persona-scoped session key for isolation
     let session_key = if !agent_id.is_empty() {
-        agent::keyparser::build_persona_session_key(&agent_id, &channel)
+        agent::keyparser::build_agent_session_key(&agent_id, &channel)
     } else {
         session_id
     };

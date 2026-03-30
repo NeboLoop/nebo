@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { getActiveRoles as getActiveAgents, listAgentSessions, listAllRuns } from '$lib/api/nebo';
-	import type { ActiveRoleEntry as ActiveAgentEntry, AgentSession } from '$lib/api/neboComponents';
+	import { getActiveAgents, listAgentSessions, listAllRuns } from '$lib/api/nebo';
+	import type { ActiveAgentEntry, AgentSession } from '$lib/api/neboComponents';
 	import type { WorkflowRun } from '$lib/api/nebo';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import { t } from 'svelte-i18n';
@@ -113,10 +113,10 @@
 	};
 
 	function selectAgent(agent: ActiveAgentEntry) {
-		channelState.activeAgentId = agent.roleId;
+		channelState.activeAgentId = agent.agentId;
 		channelState.activeAgentName = agent.name;
 		channelState.activeView = 'agent' as any;
-		goto(`/agent/persona/${agent.roleId}/chat`);
+		goto(`/agent/persona/${agent.agentId}/chat`);
 	}
 
 	function selectCompanion() {
@@ -131,7 +131,7 @@
 				listAgentSessions().catch(() => null),
 				listAllRuns().catch(() => null),
 			]);
-			if (agentsRes?.roles) agents = agentsRes.roles;
+			if (agentsRes?.agents) agents = agentsRes.agents;
 			if (sessionsRes?.sessions) sessions = sessionsRes.sessions.slice(0, 10);
 			if (runsRes?.runs) workflowRuns = runsRes.runs.slice(0, 10);
 		} finally {
@@ -180,7 +180,7 @@
 				</button>
 
 				<!-- Agent cards -->
-				{#each agents as agent (agent.roleId)}
+				{#each agents as agent (agent.agentId)}
 					{@const c = agentColor(agent.name)}
 					<button
 						class="flex items-start gap-3 p-4 rounded-xl border border-base-content/10 hover:border-base-content/40 hover:bg-base-200/50 transition-all text-left cursor-pointer"

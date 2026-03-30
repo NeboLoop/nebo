@@ -57,6 +57,15 @@ pub struct OAuthTokens {
     pub scope: Option<String>,
 }
 
+/// Result of a successful OAuth token refresh.
+#[derive(Debug, Clone)]
+pub struct RefreshResult {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_in: Option<i64>,
+    pub scope: Option<String>,
+}
+
 /// OAuth metadata from a well-known endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthMetadata {

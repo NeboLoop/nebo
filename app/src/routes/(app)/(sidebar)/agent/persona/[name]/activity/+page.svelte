@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy, getContext } from 'svelte';
 	import { page } from '$app/stores';
-	import { listAgentSessions, listMemories, getRoleWorkflows as getAgentWorkflows, getActiveRoles as getActiveAgents, getAgentSessionMessages, getRoleStats as getAgentStats, listRoleRuns as listAgentRuns } from '$lib/api/nebo';
-	import type { AgentSession, MemoryItem, RoleWorkflowEntry as AgentWorkflowEntry, SessionMessage, RoleWorkflowStats as AgentWorkflowStats, WorkflowRun, WorkflowRunError } from '$lib/api/neboComponents';
+	import { listAgentSessions, listMemories, getAgentWorkflows, getActiveAgents, getAgentSessionMessages, getAgentStats, listAgentRuns } from '$lib/api/nebo';
+	import type { AgentSession, MemoryItem, AgentWorkflowEntry, SessionMessage, AgentWorkflowStats, WorkflowRun, WorkflowRunError } from '$lib/api/neboComponents';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ToolCard from '$lib/components/chat/ToolCard.svelte';
 	import { getWebSocketClient } from '$lib/websocket/client';
@@ -55,7 +55,7 @@
 	let loading = $state(true);
 
 	// Workflow run state
-	let stats: RoleWorkflowStats | null = $state(null);
+	let stats: AgentWorkflowStats | null = $state(null);
 	let recentErrors: WorkflowRunError[] = $state([]);
 	let runs: WorkflowRun[] = $state([]);
 	let runsTotal = $state(0);
@@ -229,7 +229,7 @@
 				hasAgentId ? getAgentStats(channelState.activeAgentId).catch(() => null) : null,
 				hasAgentId ? listAgentRuns(channelState.activeAgentId, 100).catch(() => null) : null,
 			]);
-			isActive = activeRes?.roles?.some(r => r.roleId === channelState.activeAgentId) ?? false;
+			isActive = activeRes?.agents?.some(r => r.agentId === channelState.activeAgentId) ?? false;
 			if (sessRes?.sessions) {
 				const roleLower = channelState.activeAgentName.toLowerCase();
 				sessions = sessRes.sessions.filter(s => s.name?.toLowerCase().includes(roleLower));
@@ -281,14 +281,14 @@
 		// Subscribe to WS events for live updates
 		const ws = getWebSocketClient();
 		unsubs.push(
-			ws.on('workflow_run_started', (data: { roleId: string }) => {
-				if (data.roleId === channelState.activeAgentId) loadData();
+			ws.on('workflow_run_started', (data: { agentId: string }) => {
+				if (data.agentId === channelState.activeAgentId) loadData();
 			}),
-			ws.on('workflow_run_completed', (data: { roleId: string }) => {
-				if (data.roleId === channelState.activeAgentId) loadData();
+			ws.on('workflow_run_completed', (data: { agentId: string }) => {
+				if (data.agentId === channelState.activeAgentId) loadData();
 			}),
-			ws.on('workflow_run_failed', (data: { roleId: string }) => {
-				if (data.roleId === channelState.activeAgentId) loadData();
+			ws.on('workflow_run_failed', (data: { agentId: string }) => {
+				if (data.agentId === channelState.activeAgentId) loadData();
 			}),
 		);
 	});

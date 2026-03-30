@@ -33,16 +33,16 @@ pub fn register_schedule_trigger(workflow_id: &str, cron: &str, store: &Store) {
 
 /// Register all triggers from an agent's workflow bindings.
 ///
-/// For schedule triggers: creates cron_job with name `role-{agent_id}-{binding}`.
-/// The command field stores `role:{agent_id}:{binding_name}` so the scheduler
+/// For schedule triggers: creates cron_job with name `agent-{agent_id}-{binding}`.
+/// The command field stores `agent:{agent_id}:{binding_name}` so the scheduler
 /// can resolve the inline definition at execution time.
 /// For event triggers: stored in agent_workflows table, consumed by EventDispatcher.
 pub fn register_agent_triggers(agent_id: &str, bindings: &[db::models::AgentWorkflow], store: &Store) {
     for binding in bindings {
         if binding.trigger_type == "schedule" && binding.is_active == 1 {
-            let name = format!("role-{}-{}", agent_id, binding.binding_name);
+            let name = format!("agent-{}-{}", agent_id, binding.binding_name);
             // Command encodes agent_id:binding_name for scheduler to resolve inline def
-            let command = format!("role:{}:{}", agent_id, binding.binding_name);
+            let command = format!("agent:{}:{}", agent_id, binding.binding_name);
             match store.upsert_cron_job(
                 &name,
                 &binding.trigger_config,
@@ -71,9 +71,9 @@ pub fn register_agent_triggers(agent_id: &str, bindings: &[db::models::AgentWork
     }
 }
 
-/// Unregister a single agent trigger (cron job named `role-{agent_id}-{binding_name}`).
+/// Unregister a single agent trigger (cron job named `agent-{agent_id}-{binding_name}`).
 pub fn unregister_single_agent_trigger(agent_id: &str, binding_name: &str, store: &Store) {
-    let name = format!("role-{}-{}", agent_id, binding_name);
+    let name = format!("agent-{}-{}", agent_id, binding_name);
     match store.delete_cron_job_by_name(&name) {
         Ok(count) => {
             if count > 0 {
@@ -89,9 +89,9 @@ pub fn unregister_single_agent_trigger(agent_id: &str, binding_name: &str, store
     }
 }
 
-/// Unregister all triggers for an agent (cron jobs with role-{agent_id} prefix).
+/// Unregister all triggers for an agent (cron jobs with agent-{agent_id} prefix).
 pub fn unregister_agent_triggers(agent_id: &str, store: &Store) {
-    let prefix = format!("role-{}-", agent_id);
+    let prefix = format!("agent-{}-", agent_id);
     match store.delete_cron_jobs_by_prefix(&prefix) {
         Ok(count) => {
             if count > 0 {

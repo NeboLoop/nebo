@@ -10,54 +10,99 @@
 ## Table of Contents
 
 1. [System Overview](#1-system-overview)
-2. [Architecture & Crate Placement](#2-architecture--crate-placement)
-3. [Plugin Types](#3-plugin-types)
-4. [PluginStore](#4-pluginstore)
-5. [SKILL.md Integration](#5-skillmd-integration)
-6. [Skill Loader Integration](#6-skill-loader-integration)
-7. [ExecuteTool Integration](#7-executetool-integration)
-8. [Code System (PLUG-XXXX-XXXX)](#8-code-system-plug-xxxx-xxxx)
-9. [Dependency Cascade](#9-dependency-cascade)
-10. [NeboLoop API](#10-neboloop-api)
-11. [AppState Wiring](#11-appstate-wiring)
-12. [Sandbox Policy](#12-sandbox-policy)
-13. [Storage Layout](#13-storage-layout)
-14. [Concurrency Model](#14-concurrency-model)
-15. [Platform Detection](#15-platform-detection)
-16. [Precedence Rule](#16-precedence-rule)
-17. [WebSocket Events](#17-websocket-events)
-18. [Edge Cases](#18-edge-cases)
-19. [Key Files](#19-key-files)
+2. [Skills vs Plugins — Decision Rule](#2-skills-vs-plugins--decision-rule)
+3. [Architecture & Crate Placement](#3-architecture--crate-placement)
+4. [Plugin Types](#4-plugin-types)
+5. [PluginStore](#5-pluginstore)
+6. [SKILL.md Integration](#6-skillmd-integration)
+7. [Skill Loader Integration](#7-skill-loader-integration)
+8. [ExecuteTool Integration](#8-executetool-integration)
+9. [Code System (PLUG-XXXX-XXXX)](#9-code-system-plug-xxxx-xxxx)
+10. [Dependency Cascade](#10-dependency-cascade)
+11. [NeboLoop API](#11-neboloop-api)
+12. [AppState Wiring](#12-appstate-wiring)
+13. [Sandbox Policy](#13-sandbox-policy)
+14. [Storage Layout](#14-storage-layout)
+15. [Concurrency Model](#15-concurrency-model)
+16. [Platform Detection](#16-platform-detection)
+17. [Precedence Rule](#17-precedence-rule)
+18. [WebSocket Events](#18-websocket-events)
+19. [Edge Cases](#19-edge-cases)
+20. [Key Files](#20-key-files)
+21. [NeboLoop MCP Server — Plugin Tool](#21-neboloop-mcp-server--plugin-tool)
 
 ---
 
 ## 1. System Overview
 
-A **Plugin** is a managed native binary downloaded once from NeboLoop and shared across skills. It sits alongside skills and extensions in the artifact hierarchy:
+Nebo has two ways to distribute native binaries to agents. Both follow the [Agent Skills](https://agentskills.io) open format for SKILL.md, with Nebo-specific extensions for binary distribution.
 
 ```
-Skills      — pure markdown knowledge, injected into context
-Plugins     — managed binaries that skills depend on (gws, ffmpeg, etc.)
+Skills      — markdown knowledge + optional embedded binary (agentskills.io spec)
+Plugins     — shared managed binaries that multiple skills depend on
 Extensions  — deep integrations (Chrome bridge, etc.)
 ```
 
-**Key properties:**
+**Skills can have their own binaries.** A skill uploaded via `skill(action: binary-token)` bundles a native binary that is tightly coupled to that one skill. The binary is downloaded when the skill is installed.
+
+**Plugins are shared binaries.** A plugin is a standalone binary artifact that multiple skills can depend on. When any skill declaring `plugins: [{name: gws}]` is installed, the plugin binary is downloaded once and shared. If 3 skills depend on `gws`, only one copy exists on disk.
+
+**Key properties (plugins):**
 - **Zero-click install.** Plugin binaries download silently during skill install. No approval dialog.
 - **Shared across skills.** If 3 skills depend on `gws`, only one copy is downloaded.
 - **Platform-specific.** Each plugin has per-platform binaries (darwin-arm64, linux-amd64, etc.).
 - **Semver range matching.** Skills declare version ranges (`>=1.2.0`, `^1.0.0`, `*`).
 - **SHA256 + ED25519 verification.** Binary integrity verified on download; signature verified if signing key available.
 - **Env var injection.** Scripts access the binary via `{SLUG}_BIN` environment variable (e.g., `GWS_BIN=/path/to/gws`).
-- **Coexists with embedded binaries.** Skills can still embed binaries in `.napp` archives via `RuntimeKind::Binary`. Plugins are for shared/heavy binaries.
-
-**Why not just embed binaries?**
-- 3 skills bundling `gws` = 3 copies of the same binary
-- Platform-specific binaries require separate `.napp` archives per platform per skill
-- Plugins solve both: download once, share everywhere, one `.napp` per skill regardless of platform
 
 ---
 
-## 2. Architecture & Crate Placement
+## 2. Skills vs Plugins — Decision Rule
+
+> **One binary, one skill → skill with binary.**
+> **One binary, many skills → plugin.**
+
+This is the only rule. If a binary is used by exactly one skill, embed it as a skill with binary. If multiple skills share the same binary, make it a plugin.
+
+| Binary | Used by | Artifact type | Why |
+|--------|---------|---------------|-----|
+| `nebo-pdf` | pdf skill only | Skill with binary | 1 skill, 1 binary |
+| `nebo-office` | docx, xlsx, pptx skills | Plugin | 3 skills share 1 binary |
+| `gws` | gmail, calendar, drive, sheets skills | Plugin | Many skills share 1 binary |
+| `ffmpeg` | video-encode, audio-extract skills | Plugin | Many skills share 1 binary |
+
+### Skills with Binaries
+
+Published via the `skill(...)` MCP tool. The binary is uploaded alongside the SKILL.md:
+
+```
+1. skill(action: create, name: "pdf", manifestContent: "...")
+2. skill(action: binary-token, id: "<SKILL_ID>")
+3. curl upload: -F "file=@./nebo-pdf" -F "platform=darwin-arm64" -F "skill=@./SKILL.md"
+4. skill(action: submit, id: "<SKILL_ID>", version: "1.0.0")
+```
+
+The SKILL.md follows the [agentskills.io specification](https://agentskills.io/specification) exactly. Required frontmatter: `name`, `description`. Optional: `license`, `compatibility`, `metadata`, `allowed-tools`.
+
+### Plugins
+
+Published via the `plugin(...)` MCP tool. The binary is a separate artifact that skills reference:
+
+```
+1. plugin(action: create, name: "gws", category: "connectors", version: "0.22.3")
+2. plugin(action: binary-token, id: "<PLUGIN_ID>")
+3. curl upload: -F "file=@./gws" -F "platform=darwin-arm64" -F "skill=@./PLUGIN.md"
+4. plugin(action: submit, id: "<PLUGIN_ID>", version: "0.22.3")
+```
+
+Then, separately, create skills that depend on the plugin:
+```
+skill(action: create, name: "gmail", manifestContent: "---\nplugins:\n  - name: gws\n    version: \">=0.22.0\"\n---\n...")
+```
+
+---
+
+## 3. Architecture & Crate Placement
 
 Plugin lifecycle belongs in **`crates/napp/`** — not `crates/tools/`. The napp crate already manages binary artifacts (Registry, signing, versioning, quarantine). A parallel `PluginRegistry` in tools would create competing pathways.
 
@@ -77,7 +122,7 @@ Plugin lifecycle belongs in **`crates/napp/`** — not `crates/tools/`. The napp
 
 ---
 
-## 3. Plugin Types
+## 4. Plugin Types
 
 **Source:** `crates/napp/src/plugin.rs`
 
@@ -127,7 +172,7 @@ pub struct PluginDependency {
 
 ---
 
-## 4. PluginStore
+## 5. PluginStore
 
 **Source:** `crates/napp/src/plugin.rs`
 
@@ -189,17 +234,33 @@ Two-step binary discovery:
 
 ---
 
-## 5. SKILL.md Integration
+## 6. SKILL.md Integration
 
-Skills declare plugin dependencies in YAML frontmatter:
+Nebo skills follow the [Agent Skills](https://agentskills.io) open format. The SKILL.md file must contain YAML frontmatter followed by Markdown content per the [specification](https://agentskills.io/specification).
+
+### Standard Fields (agentskills.io spec)
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Lowercase letters, numbers, hyphens. Max 64 chars. Must match parent directory name. |
+| `description` | Yes | What the skill does and when to use it. Max 1024 chars. |
+| `license` | No | License name or reference to bundled license file. |
+| `compatibility` | No | Environment requirements (system packages, network access, etc.). |
+| `metadata` | No | Arbitrary key-value mapping. |
+| `allowed-tools` | No | Space-delimited list of pre-approved tools. (Experimental) |
+
+### Nebo Extension: `plugins` Field
+
+Nebo extends the frontmatter with a `plugins` array to declare plugin dependencies:
 
 ```yaml
 ---
-name: google-workspace
-description: Manage Google Workspace (Gmail, Calendar, Drive)
+name: gmail
+description: Send and read Gmail messages. Use when the user mentions Gmail, email, or inbox.
+license: MIT
 plugins:
   - name: gws
-    version: ">=1.2.0"
+    version: ">=0.22.0"
   - name: ffmpeg
     version: ">=5.0.0"
     optional: true
@@ -212,9 +273,17 @@ plugins:
 
 The `plugins` field is parsed into `Vec<PluginDependency>` on the `Skill` struct.
 
+### Progressive Disclosure
+
+Following the agentskills.io model, skills use progressive disclosure:
+
+1. **Discovery** (~100 tokens): `name` and `description` loaded at startup for all skills
+2. **Activation** (< 5000 tokens recommended): Full SKILL.md body loaded when skill is activated
+3. **Resources** (as needed): Files in `scripts/`, `references/`, `assets/` loaded on demand
+
 ---
 
-## 6. Skill Loader Integration
+## 7. Skill Loader Integration
 
 **Source:** `crates/tools/src/skills/loader.rs`
 
@@ -236,7 +305,7 @@ The hot-reload watcher (`watch()`) clones the `plugin_store` Arc and passes it t
 
 ---
 
-## 7. ExecuteTool Integration
+## 8. ExecuteTool Integration
 
 **Source:** `crates/tools/src/execute_tool.rs`
 
@@ -262,7 +331,7 @@ This means:
 
 ---
 
-## 8. Code System (PLUG-XXXX-XXXX)
+## 9. Code System (PLUG-XXXX-XXXX)
 
 **Source:** `crates/server/src/codes.rs`
 
@@ -292,7 +361,7 @@ Both the WebSocket handler and the REST `POST /api/v1/codes/redeem` handler disp
 
 ---
 
-## 9. Dependency Cascade
+## 10. Dependency Cascade
 
 **Source:** `crates/server/src/deps.rs`
 
@@ -327,7 +396,7 @@ For plugins: calls `install_plugin()` which:
 
 ---
 
-## 10. NeboLoop API
+## 11. NeboLoop API
 
 **Source:** `crates/comm/src/api.rs`
 
@@ -349,7 +418,7 @@ Returns `Vec<u8>`.
 
 ---
 
-## 11. AppState Wiring
+## 12. AppState Wiring
 
 **Source:** `crates/server/src/state.rs`, `crates/server/src/lib.rs`
 
@@ -374,7 +443,7 @@ let skill_loader = Loader::new(bundled_dir, installed_dir, user_dir)
 
 ---
 
-## 12. Sandbox Policy
+## 13. Sandbox Policy
 
 **Source:** `crates/tools/src/sandbox_policy.rs`
 
@@ -384,7 +453,7 @@ Plugin binaries are executed as subprocesses by the skill's script (e.g., `$GWS_
 
 ---
 
-## 13. Storage Layout
+## 14. Storage Layout
 
 ```
 <data_dir>/
@@ -412,7 +481,7 @@ Plugin binaries are executed as subprocesses by the skill's script (e.g., `$GWS_
 
 ---
 
-## 14. Concurrency Model
+## 15. Concurrency Model
 
 | Concern | Solution |
 |---------|----------|
@@ -423,7 +492,7 @@ Plugin binaries are executed as subprocesses by the skill's script (e.g., `$GWS_
 
 ---
 
-## 15. Platform Detection
+## 16. Platform Detection
 
 **Source:** `crates/napp/src/plugin.rs`
 
@@ -465,7 +534,7 @@ If `PluginManifest.env_var` is non-empty, the custom name is used instead. (Not 
 
 ---
 
-## 16. Precedence Rule
+## 17. Precedence Rule
 
 When a skill has BOTH an embedded binary (`RuntimeKind::Binary` from `.napp`) AND a `plugins:` dependency for the same tool:
 
@@ -475,7 +544,7 @@ When a skill has BOTH an embedded binary (`RuntimeKind::Binary` from `.napp`) AN
 
 ---
 
-## 17. WebSocket Events
+## 18. WebSocket Events
 
 Events broadcast during plugin operations (camelCase per convention):
 
@@ -492,7 +561,7 @@ Future events (not yet implemented):
 
 ---
 
-## 18. Edge Cases
+## 19. Edge Cases
 
 - **Offline:** `resolve()` is local-only. Works without network after first download.
 - **Platform unavailable:** `NappError::PluginPlatformUnavailable` → "This skill isn't available for your platform yet."
@@ -506,7 +575,7 @@ Future events (not yet implemented):
 
 ---
 
-## 19. Key Files
+## 20. Key Files
 
 | File | Lines | What |
 |------|-------|------|
@@ -523,8 +592,105 @@ Future events (not yet implemented):
 
 ---
 
+## 21. NeboLoop MCP Server — Plugin Tool
+
+Plugins are a **first-class artifact type** on NeboLoop, alongside skills and agents. Each has its own dedicated MCP tool — plugins are never created through the skill tool.
+
+### Three Artifact Types
+
+| MCP Tool | DB Type | Code Prefix | Manifest |
+|----------|---------|-------------|----------|
+| `skill(...)` | `skill` | `SKIL` | SKILL.md |
+| `plugin(...)` | `plugin` | `PLUG` | PLUGIN.md |
+| `agent(...)` | `agent` | `AGNT` | AGENT.md |
+
+### Plugin Tool Actions
+
+**Source:** `neboloop/internal/mcp/tools/plugin.go`
+
+| Action | Description |
+|--------|-------------|
+| `plugin(action: list)` | List all your plugins |
+| `plugin(action: get, id: "...")` | Get plugin details |
+| `plugin(action: create, name: "...")` | Create a new plugin artifact |
+| `plugin(action: update, id: "...")` | Update plugin metadata |
+| `plugin(action: delete, id: "...")` | Delete a plugin |
+| `plugin(action: submit, id: "...", version: "...")` | Submit for marketplace review (requires developer account) |
+| `plugin(action: list-binaries, id: "...")` | List uploaded binaries (requires developer account) |
+| `plugin(action: binary-token, id: "...")` | Generate upload token + curl command (requires developer account) |
+| `plugin(action: delete-binary, id: "...")` | Delete a binary by ID (requires developer account) |
+
+### Publishing a Plugin — Step by Step
+
+```
+1. Select developer account:
+   developer(resource: account, action: select, id: "<dev-account-id>")
+
+2. Create the plugin artifact:
+   plugin(action: create, name: "gws", category: "connectors", version: "1.0.0")
+
+3. Get an upload token (returns a curl command):
+   plugin(action: binary-token, id: "<PLUGIN_ID>")
+
+4. Upload binary per platform (via curl from step 3):
+   curl -X POST https://neboloop.com/api/v1/developer/apps/<PLUGIN_ID>/binaries \
+     -H "Authorization: Bearer <token>" \
+     -F "file=@./target/release/gws" \
+     -F "platform=darwin-arm64" \
+     -F "skill=@./PLUGIN.md"
+
+   Repeat for each platform: darwin-arm64, darwin-amd64, linux-arm64, linux-amd64, etc.
+
+5. Submit for review:
+   plugin(action: submit, id: "<PLUGIN_ID>", version: "1.0.0")
+```
+
+### Server-Side Architecture
+
+| File | What |
+|------|------|
+| `neboloop/internal/mcp/tools/plugin.go` | Plugin MCP tool — all 9 actions |
+| `neboloop/internal/mcp/server.go` | `RegisterPluginTool()` registration |
+| `neboloop/internal/mcp/tools/registry.go` | `registerPluginToolToRegistry()` |
+| `neboloop/internal/marketplace/service.go` | `CodePrefix("plugin")` → `"PLUG"` |
+| `neboloop/internal/db/queries/marketplace_categories.sql` | `plugin_count` in category counts |
+
+### Code Prefix Generation
+
+```go
+func CodePrefix(artifactType string) string {
+    switch artifactType {
+    case "agent":
+        return "AGNT"
+    case "plugin":
+        return "PLUG"
+    default:
+        return "SKIL"
+    }
+}
+```
+
+### Database
+
+Plugins use the unified `artifacts` table with `type = 'plugin'`. The DB constraint allows: `type IN ('skill', 'plugin', 'agent')`.
+
+Binary uploads go to `artifact_binaries` table with `(artifact_id, version, platform)` unique constraint. Storage key: `binaries/{plugin_id}/{version}/{platform}`.
+
+### Marketplace Integration
+
+- `marketplace(action: search, type: "plugin")` — filter by plugin type
+- `marketplace(action: list_categories, withCounts: true)` — includes `pluginCount` per category
+- Featured, popular, and recent queries all support `type: "plugin"` filter
+
+### Access Control
+
+Plugin access uses the same namespace-based model as skills: `canAccessPlugin()` checks that the plugin's namespace matches the developer account's namespace, or the plugin is owned by the current user.
+
+---
+
 ## Cross-References
 
+- **Agent Skills Spec:** https://agentskills.io/specification — the open SKILL.md format we adhere to
 - **Skills SME:** `docs/sme/SKILLS_SME.md` — SKILL.md format, loader, ExecuteTool, sandbox
 - **Publisher's Guide:** `docs/publishers-guide/plugins.md` — how to create and publish plugins
 - **Packaging:** `docs/publishers-guide/packaging.md` — .napp archives, qualified names, install codes

@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { t } from 'svelte-i18n';
 	import { getWebSocketClient } from '$lib/websocket/client';
-	import { getLoops, getActiveRoles as getActiveAgents, listRoles as listAgents, activateRole as activateAgent, deactivateRole as deactivateAgent, deleteRole as deleteAgent, duplicateRole as duplicateAgent, updateRole as updateAgent } from '$lib/api/nebo';
+	import { getLoops, getActiveAgents, listAgents, activateAgent, deactivateAgent, deleteAgent, duplicateAgent, updateAgent } from '$lib/api/nebo';
 	import type { GetLoopsResponse, LoopChannelEntry, LoopEntry } from '$lib/api/neboComponents';
 	import NewBotMenu from '$lib/components/agent/NewBotMenu.svelte';
 	import AlertDialog from '$lib/components/ui/AlertDialog.svelte';
@@ -81,7 +81,7 @@
 		const running = runningAgents[agent.agentId];
 		if (running) return running; // "running" or "Step 2 of 3"
 		if (agent.nextFireAt) {
-			const cd = formatCountdown(role.nextFireAt);
+			const cd = formatCountdown(agent.nextFireAt);
 			if (cd) return cd;
 			// Countdown expired but no running state — show description while we wait for refresh
 		}
@@ -145,13 +145,13 @@
 				getActiveAgents().catch(() => null),
 			]);
 
-			const activeAgentList = activeRes?.roles ?? [];
-			const activeMap = new Map(activeAgentList.map(r => [r.roleId, r]));
+			const activeAgentList = activeRes?.agents ?? [];
+			const activeMap = new Map(activeAgentList.map(r => [r.agentId, r]));
 			const agents: SidebarAgent[] = [];
 
 			// DB agents
-			if (allRes?.roles) {
-				for (const r of allRes.roles) {
+			if (allRes?.agents) {
+				for (const r of allRes.agents) {
 					const active = activeMap.get(r.id);
 					agents.push({
 						agentId: r.id,
@@ -164,12 +164,12 @@
 			}
 
 			// Filesystem-only agents — only show if they have an active UUID
-			if (allRes?.filesystemRoles) {
-				for (const r of allRes.filesystemRoles) {
+			if (allRes?.filesystemAgents) {
+				for (const r of allRes.filesystemAgents) {
 					const matchedActive = activeAgentList.find(a => a.name === r.name);
 					if (matchedActive && !agents.some(existing => existing.name === r.name)) {
 						agents.push({
-							agentId: matchedActive.roleId,
+							agentId: matchedActive.agentId,
 							name: r.name,
 							description: r.description || undefined,
 							isActive: true,
@@ -290,10 +290,10 @@
 		closeContextMenu();
 		try {
 			const res = await duplicateAgent(agentId);
-			if (res?.role) {
+			if (res?.agent) {
 				await loadAgents();
-				onSelectAgent(res.role.id, res.role.name);
-				goto(`/agent/persona/${res.role.id}/chat`);
+				onSelectAgent(res.agent.id, res.agent.name);
+				goto(`/agent/persona/${res.agent.id}/chat`);
 			}
 		} catch {
 			// ignore
@@ -375,32 +375,32 @@
 		const unsubAgentUpdated = wsClient.on('agent_updated', () => {
 			loadAgents();
 		});
-		const unsubAgentSetup = wsClient.on('agent_setup', (data: { roleId: string; roleName: string; roleDescription: string }) => {
-			setupAgentId = data.roleId;
-			setupAgentName = data.roleName;
-			setupAgentDescription = data.roleDescription || '';
+		const unsubAgentSetup = wsClient.on('agent_setup', (data: { agentId: string; agentName: string; agentDescription: string }) => {
+			setupAgentId = data.agentId;
+			setupAgentName = data.agentName;
+			setupAgentDescription = data.agentDescription || '';
 			showSetupWizard = true;
 		});
-		const unsubRunStarted = wsClient.on('workflow_run_started', (data: { roleId: string }) => {
-			if (data.roleId) {
-				runningAgents = { ...runningAgents, [data.roleId]: 'running' };
+		const unsubRunStarted = wsClient.on('workflow_run_started', (data: { agentId: string }) => {
+			if (data.agentId) {
+				runningAgents = { ...runningAgents, [data.agentId]: 'running' };
 			}
 		});
-		const unsubActivityUpdate = wsClient.on('workflow_activity_update', (data: { roleId: string; step: number; totalSteps: number }) => {
-			if (data.roleId) {
-				runningAgents = { ...runningAgents, [data.roleId]: $t('sidebar.stepProgress', { values: { step: data.step, total: data.totalSteps } }) };
+		const unsubActivityUpdate = wsClient.on('workflow_activity_update', (data: { agentId: string; step: number; totalSteps: number }) => {
+			if (data.agentId) {
+				runningAgents = { ...runningAgents, [data.agentId]: $t('sidebar.stepProgress', { values: { step: data.step, total: data.totalSteps } }) };
 			}
 		});
-		const unsubRunCompleted = wsClient.on('workflow_run_completed', (data: { roleId: string }) => {
-			if (data.roleId) {
-				const { [data.roleId]: _, ...rest } = runningAgents;
+		const unsubRunCompleted = wsClient.on('workflow_run_completed', (data: { agentId: string }) => {
+			if (data.agentId) {
+				const { [data.agentId]: _, ...rest } = runningAgents;
 				runningAgents = rest;
 			}
 			loadAgents();
 		});
-		const unsubRunFailed = wsClient.on('workflow_run_failed', (data: { roleId: string }) => {
-			if (data.roleId) {
-				const { [data.roleId]: _, ...rest } = runningAgents;
+		const unsubRunFailed = wsClient.on('workflow_run_failed', (data: { agentId: string }) => {
+			if (data.agentId) {
+				const { [data.agentId]: _, ...rest } = runningAgents;
 				runningAgents = rest;
 			}
 			loadAgents();

@@ -415,6 +415,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
+    // Rename roles/ → agents/ directories and ROLE.md → AGENT.md files (one-time, before dir creation)
+    migration::migrate_roles_to_agents(&data_dir);
+
     // Ensure artifact directory structure exists (nebo/ and user/ namespaces)
     if let Err(e) = config::ensure_artifact_dirs() {
         warn!("failed to create artifact directories: {}", e);
@@ -796,13 +799,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Start workers for all enabled agents (replaces manual trigger reconciliation)
     {
-        if let Ok(roles) = store.list_agents(1000, 0) {
+        if let Ok(agents) = store.list_agents(1000, 0) {
             let mut started = 0usize;
-            for role in &roles {
-                if role.is_enabled == 0 {
+            for agent in &agents {
+                if agent.is_enabled == 0 {
                     continue;
                 }
-                agent_workers.start_agent(&role.id, &role.name).await;
+                agent_workers.start_agent(&agent.id, &agent.name).await;
                 started += 1;
             }
             if started > 0 {
@@ -813,21 +816,21 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
 
     // Populate agent_registry from DB so enabled agents appear in sidebar after restart
     {
-        if let Ok(roles) = store.list_agents(1000, 0) {
+        if let Ok(agents) = store.list_agents(1000, 0) {
             let mut registry = active_agent_state.write().await;
-            for role in &roles {
-                if role.is_enabled == 0 {
+            for agent in &agents {
+                if agent.is_enabled == 0 {
                     continue;
                 }
-                let config = if !role.frontmatter.is_empty() {
-                    napp::agent::parse_agent_config(&role.frontmatter).ok()
+                let config = if !agent.frontmatter.is_empty() {
+                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
                 } else {
                     None
                 };
-                registry.insert(role.id.clone(), tools::ActiveAgent {
-                    agent_id: role.id.clone(),
-                    name: role.name.clone(),
-                    agent_md: role.agent_md.clone(),
+                registry.insert(agent.id.clone(), tools::ActiveAgent {
+                    agent_id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    agent_md: agent.agent_md.clone(),
                     config,
                     channel_id: None,
                 });
@@ -1423,14 +1426,14 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     );
 }
 
-/// Resolve a role ID from an agent slug by scanning the active role registry.
+/// Resolve an agent ID from a slug by scanning the active agent registry.
 async fn resolve_agent_id_from_slug(state: &AppState, slug: &str) -> String {
     if slug.is_empty() {
         return String::new();
     }
     let registry = state.agent_registry.read().await;
-    for (id, role) in registry.iter() {
-        if role.name.to_lowercase().replace(' ', "-") == slug {
+    for (id, agent) in registry.iter() {
+        if agent.name.to_lowercase().replace(' ', "-") == slug {
             return id.clone();
         }
     }

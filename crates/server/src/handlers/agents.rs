@@ -1353,7 +1353,7 @@ pub async fn chat_with_agent(
         }
     }
 
-    let session_key = agent::keyparser::build_persona_session_key(&id, "web");
+    let session_key = agent::keyparser::build_agent_session_key(&id, "web");
 
     let entity_config = crate::entity_config::resolve_for_chat(&state.store, "agent", &id);
 

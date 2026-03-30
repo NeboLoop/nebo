@@ -10,6 +10,7 @@ use crate::registry::ToolResult;
 pub struct ShellTool {
     _policy: Policy,
     registry: Arc<ProcessRegistry>,
+    plugin_store: Option<Arc<napp::plugin::PluginStore>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,7 +40,12 @@ struct ShellInput {
 
 impl ShellTool {
     pub fn new(policy: Policy, registry: Arc<ProcessRegistry>) -> Self {
-        Self { _policy: policy, registry }
+        Self { _policy: policy, registry, plugin_store: None }
+    }
+
+    pub fn with_plugin_store(mut self, ps: Arc<napp::plugin::PluginStore>) -> Self {
+        self.plugin_store = Some(ps);
+        self
     }
 
     pub fn name(&self) -> &str {
@@ -116,6 +122,11 @@ impl ShellTool {
         for (k, v) in process::sanitized_env() {
             cmd.env(k, v);
         }
+        if let Some(ref ps) = self.plugin_store {
+            for (k, v) in ps.build_env_map() {
+                cmd.env(k, v);
+            }
+        }
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
@@ -179,7 +190,13 @@ impl ShellTool {
             Some(input.cwd.as_str())
         };
 
-        match self.registry.spawn_background(&input.command, cwd).await {
+        let plugin_envs = self
+            .plugin_store
+            .as_ref()
+            .map(|ps| ps.build_env_map())
+            .unwrap_or_default();
+
+        match self.registry.spawn_background(&input.command, cwd, &plugin_envs).await {
             Ok(session_id) => {
                 // Brief pause to see initial output
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;

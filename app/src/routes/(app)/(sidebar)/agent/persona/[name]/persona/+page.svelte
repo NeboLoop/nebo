@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, getContext } from 'svelte';
-	import { getRole as getAgent, updateRole as updateAgent } from '$lib/api/nebo';
+	import { getAgent, updateAgent } from '$lib/api/nebo';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
 	import { Undo2, Redo2 } from 'lucide-svelte';
 	import { t } from 'svelte-i18n';
@@ -28,8 +28,8 @@
 		loading = true;
 		try {
 			const res = await getAgent(channelState.activeAgentId);
-			if (res?.role) {
-				personaMdValue = res.role.roleMd || '';
+			if (res?.agent) {
+				personaMdValue = res.agent.agentMd || '';
 				savedValue = personaMdValue;
 			}
 		} catch {
@@ -72,7 +72,7 @@
 	async function handleSave() {
 		saving = true;
 		try {
-			await updateAgent(channelState.activeAgentId, { roleMd: personaMdValue });
+			await updateAgent(channelState.activeAgentId, { agentMd: personaMdValue });
 			savedValue = personaMdValue;
 		} finally {
 			saving = false;

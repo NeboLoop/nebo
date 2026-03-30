@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { RotateCcw } from 'lucide-svelte';
-	import { getActiveRoles as getActiveAgents, getSimpleAgentStatus, neboLoopJanusUsage, listChats, listMCPIntegrations } from '$lib/api/nebo';
+	import { getActiveAgents, getSimpleAgentStatus, neboLoopJanusUsage, listChats, listMCPIntegrations } from '$lib/api/nebo';
 	import { getWebSocketClient } from '$lib/websocket/client';
 	import PageHeader from '$lib/components/ui/PageHeader.svelte';
 	import DashboardStats from '$lib/components/dashboard/DashboardStats.svelte';
 	import AgentCards from '$lib/components/dashboard/AgentCards.svelte';
 	import ActivityFeed from '$lib/components/dashboard/ActivityFeed.svelte';
 	import QuickActions from '$lib/components/dashboard/QuickActions.svelte';
-	import type { ActiveRoleEntry as ActiveAgentEntry, SimpleAgentStatusResponse, NeboLoopJanusUsageResponse, Chat } from '$lib/api/neboComponents';
+	import type { ActiveAgentEntry, SimpleAgentStatusResponse, NeboLoopJanusUsageResponse, Chat } from '$lib/api/neboComponents';
 
 	let agents = $state<ActiveAgentEntry[]>([]);
 	let agentStatus = $state<SimpleAgentStatusResponse | null>(null);
@@ -19,13 +19,13 @@
 
 	async function load() {
 		const [r, s, u, c, m] = await Promise.all([
-			getActiveAgents().catch(() => ({ roles: [], count: 0 })),
+			getActiveAgents().catch(() => ({ agents: [], count: 0 })),
 			getSimpleAgentStatus().catch(() => null),
 			neboLoopJanusUsage().catch(() => null),
 			listChats({ pageSize: 10 }).catch(() => ({ chats: [], total: 0 })),
 			listMCPIntegrations().catch(() => ({ integrations: [] })),
 		]);
-		agents = r?.roles ?? [];
+		agents = r?.agents ?? [];
 		agentStatus = s;
 		usage = u;
 		chats = c?.chats ?? [];

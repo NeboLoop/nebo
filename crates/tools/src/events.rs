@@ -2,7 +2,7 @@
 //!
 //! The EventBus provides best-effort event delivery via an unbounded mpsc channel.
 //! Events are consumed by the EventDispatcher (in the workflow crate) which matches
-//! them against role-owned event subscriptions and triggers workflows.
+//! them against agent-owned event subscriptions and triggers workflows.
 
 use tracing::warn;
 

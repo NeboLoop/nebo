@@ -168,7 +168,7 @@ pub struct SkillDetail {
     pub item: SkillItem,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_url: Option<String>,
-    /// Primary content: SKILL.md, WORKFLOW.md, or ROLE.md text.
+    /// Primary content: SKILL.md, WORKFLOW.md, or AGENT.md text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<serde_json::Value>,
     /// Secondary markdown content (marketplace description).
@@ -284,7 +284,7 @@ pub struct AgentDetail {
     #[serde(flatten)]
     pub item: AgentItem,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role_md: Option<String>,
+    pub agent_md: Option<String>,
 }
 
 /// Agent registered in a NeboLoop loop.
