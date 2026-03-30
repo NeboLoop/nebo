@@ -365,7 +365,10 @@ impl Registry {
     /// Register the default set of tools (os tool only — no DB access).
     pub async fn register_defaults(&self) {
         let policy = self.policy.read().await.clone();
-        let os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+            os_tool = os_tool.with_plugin_store(ps);
+        }
         self.register(Box::new(os_tool)).await;
     }
 
@@ -430,7 +433,10 @@ impl Registry {
 
         // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — always registered
         let policy = self.policy.read().await.clone();
-        let os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+            os_tool = os_tool.with_plugin_store(ps);
+        }
         self.register(Box::new(os_tool)).await;
 
         // Web tool (HTTP fetch + search + browser) — requires "web" permission

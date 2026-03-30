@@ -515,6 +515,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         hub_for_tools.broadcast(event_type, payload);
     });
 
+    tool_registry.set_plugin_store(plugin_store.clone());
     tool_registry
         .register_all_with_permissions(
             store.clone(),
