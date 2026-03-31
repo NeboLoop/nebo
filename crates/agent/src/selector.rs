@@ -408,7 +408,29 @@ impl ModelSelector {
             return self.config.default_model.clone();
         }
 
-        // Last resort: any available model
+        // Last resort: any non-gateway available model
+        for (provider_id, models) in &self.config.provider_models {
+            if provider_id == "janus" {
+                continue; // Skip gateway — prefer CLI or direct API
+            }
+            for model in models {
+                let id = format!("{}/{}", provider_id, model.id);
+                if model.active && is_usable(&id) {
+                    return id;
+                }
+            }
+        }
+
+        // If CLI providers are loaded, return empty so the runner uses
+        // index 0 (CLI provider, after reordering) instead of Janus.
+        let has_cli = loaded.iter().any(|p| {
+            p == "claude-code" || p == "codex-cli" || p == "gemini-cli"
+        });
+        if has_cli {
+            return String::new();
+        }
+
+        // True last resort: gateway model
         for (provider_id, models) in &self.config.provider_models {
             for model in models {
                 let id = format!("{}/{}", provider_id, model.id);
@@ -576,5 +598,78 @@ mod tests {
         let selected = selector.select(&[msg]);
         // Should pick an anthropic model since openai is not loaded
         assert!(selected.contains("anthropic"), "Expected anthropic model, got: {}", selected);
+    }
+
+    #[test]
+    fn test_cli_preferred_over_janus() {
+        // When only CLI + Janus are loaded (no direct API keys), the selector
+        // should return empty string so the runner defers to index 0 (CLI)
+        // instead of selecting a Janus model that burns Nebo credits.
+        let mut provider_models = HashMap::new();
+        provider_models.insert(
+            "janus".to_string(),
+            vec![ModelInfo {
+                id: "nebo-1".to_string(),
+                display_name: "Nebo 1".to_string(),
+                context_window: 200000,
+                input_price: 0.0,
+                output_price: 0.0,
+                capabilities: vec![],
+                kind: vec![],
+                preferred: true,
+                active: true,
+            }],
+        );
+        provider_models.insert(
+            "anthropic".to_string(),
+            vec![ModelInfo {
+                id: "claude-sonnet-4-5".to_string(),
+                display_name: "Sonnet".to_string(),
+                context_window: 200000,
+                input_price: 3.0,
+                output_price: 15.0,
+                capabilities: vec![],
+                kind: vec![],
+                preferred: true,
+                active: true,
+            }],
+        );
+
+        let mut creds = HashMap::new();
+        creds.insert("janus".into(), true);
+        creds.insert("anthropic".into(), false); // No API key
+
+        let config = ModelRoutingConfig {
+            task_routing: HashMap::new(),
+            task_fallbacks: HashMap::new(),
+            default_model: "anthropic/claude-sonnet-4-5".into(),
+            provider_models,
+            provider_credentials: creds,
+        };
+
+        let selector = ModelSelector::new(config);
+        // Only janus + CLI loaded — no direct anthropic provider
+        selector.set_loaded_providers(vec!["claude-code".into(), "janus".into()]);
+
+        let msg = ChatMessage {
+            id: "1".into(),
+            chat_id: "c".into(),
+            role: "user".into(),
+            content: "hello".into(),
+            metadata: None,
+            created_at: 0,
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+        };
+
+        let selected = selector.select(&[msg]);
+        // Should return empty (defer to runner index 0 = CLI), NOT "janus/nebo-1"
+        assert!(
+            selected.is_empty(),
+            "Expected empty string (defer to CLI), got: {}",
+            selected
+        );
     }
 }

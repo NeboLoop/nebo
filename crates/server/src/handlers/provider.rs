@@ -20,6 +20,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
     let models_cfg = config::ModelsConfig::load();
 
     let mut providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
+    let mut gateway_providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
     for profile in &profiles {
         if profile.is_active.unwrap_or(0) == 0 {
             continue;
@@ -121,7 +122,15 @@ pub(crate) async fn reload_providers(state: &AppState) {
             _ => None,
         };
         if let Some(p) = provider {
-            providers.push(p);
+            // Defer gateway providers (Janus) to end of the list so CLI
+            // providers and direct API keys take priority.  This prevents
+            // Nebo credits from being consumed when the user has enabled
+            // a CLI provider that uses their own subscription.
+            if profile.provider == "neboloop" {
+                gateway_providers.push(p);
+            } else {
+                providers.push(p);
+            }
         }
     }
 
@@ -152,6 +161,10 @@ pub(crate) async fn reload_providers(state: &AppState) {
         info!(cli = %cli_def.command, "reloaded CLI provider");
         providers.push(p);
     }
+
+    // Gateway providers (Janus) go last — they consume Nebo credits and
+    // should only be used when no direct API key or CLI provider is available.
+    providers.extend(gateway_providers);
 
     info!(count = providers.len(), "reloading providers");
     state.runner.reload_providers(providers).await;
