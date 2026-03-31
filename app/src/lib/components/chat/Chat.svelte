@@ -26,6 +26,7 @@
 	import ApprovalModal from '$lib/components/ui/ApprovalModal.svelte';
 	import BrowserExtensionModal from '$lib/components/ui/BrowserExtensionModal.svelte';
 	import Toast from '$lib/components/ui/Toast.svelte';
+	import CodeInstallModal from '$lib/components/chat/CodeInstallModal.svelte';
 	import { generateUUID } from '$lib/utils';
 	import { VoiceSession, type VoiceState as DuplexVoiceState } from '$lib/voice/VoiceSession';
 	import {
@@ -131,6 +132,7 @@
 	let messagesContainer: HTMLDivElement;
 	let currentStreamingMessage = $state<Message | null>(null);
 	let chatLoaded = $state(false);
+	let initialScrollDone = $state(false);
 	let copiedMessageId = $state<string | null>(null);
 	let showScrollButton = $state(false);
 	let autoScrollEnabled = $state(true);
@@ -180,8 +182,8 @@
 	}
 
 	// ── Virtual scroll (top-truncation) ───────────────────────────────
-	const VS_WINDOW = 20;
-	const VS_LOAD_MORE = 20;
+	const VS_WINDOW = 10;
+	const VS_LOAD_MORE = 10;
 	let renderStart = $state(0);
 	let loadingMore = false;
 
@@ -209,6 +211,8 @@
 	let duplexLevel = $state(0);
 	let sidebarTool = $state<ToolCall | null>(null);
 	let codeStatusMessageId = $state<string | null>(null);
+	let showInstallModal = $state(false);
+	let installModal: CodeInstallModal;
 
 	// ── Channel-only state ─────────────────────────────────────────────
 	let channelMemberNames = $state<Record<string, string>>({});
@@ -232,7 +236,6 @@
 
 		for (const msg of messages) {
 			if (msg.role === 'system' || (msg.role as string) === 'tool') {
-				currentGroup = null;
 				continue;
 			}
 			// Skip hidden steering messages
@@ -245,11 +248,9 @@
 
 			const role = msg.role as 'user' | 'assistant';
 			const name = isChannel ? resolveChannelName(msg) : (role === 'assistant' ? agentName : $t('common.you'));
-			const hasTools = (msg.toolCalls?.length ?? 0) > 0;
-			const prevHasTools = (currentGroup?.messages.at(-1)?.toolCalls?.length ?? 0) > 0;
 
-			// Break group on role change, name change (channels), or tool-bearing vs text-only switch
-			if (!currentGroup || currentGroup.role !== role || (isChannel && currentGroup.agentName !== name) || hasTools !== prevHasTools) {
+			// Break group on role change or name change (channels only)
+			if (!currentGroup || currentGroup.role !== role || (isChannel && currentGroup.agentName !== name)) {
 				currentGroup = { role, messages: [], agentName: name };
 				groups.push(currentGroup);
 			}
@@ -455,10 +456,21 @@
 						warningToast = true;
 					}
 				}),
-				client.on('code_processing', handleCodeProcessing),
+				client.on('code_processing', (data: Record<string, unknown>) => {
+					isLoading = false; // Code intercepted server-side — no chat stream coming
+					installModal?.onCodeProcessing(data);
+				}),
 				client.on('code_result', handleCodeResult),
-				client.on('dep_installed', handleDepInstalled),
-				client.on('dep_cascade_complete', handleDepCascadeComplete),
+				client.on('plugin_installing', (data: Record<string, unknown>) => installModal?.onPluginInstalling(data)),
+				client.on('plugin_installed', (data: Record<string, unknown>) => installModal?.onPluginInstalled(data)),
+				client.on('plugin_error', (data: Record<string, unknown>) => installModal?.onPluginError(data)),
+				client.on('plugin_auth_required', (data: Record<string, unknown>) => installModal?.onPluginAuthRequired(data)),
+				client.on('plugin_auth_complete', (data: Record<string, unknown>) => installModal?.onPluginAuthComplete(data)),
+				client.on('plugin_auth_error', (data: Record<string, unknown>) => installModal?.onPluginAuthError(data)),
+				client.on('dep_pending', (data: Record<string, unknown>) => installModal?.onDepPending(data)),
+				client.on('dep_installed', (data: Record<string, unknown>) => installModal?.onDepInstalled(data)),
+				client.on('dep_failed', (data: Record<string, unknown>) => installModal?.onDepFailed(data)),
+				client.on('dep_cascade_complete', (data: Record<string, unknown>) => installModal?.onDepCascadeComplete(data)),
 				client.on('chat_ack', (data: Record<string, unknown>) => {
 					if (data?.session_id === chatId) {
 						log.debug('chat_ack received for session ' + chatId);
@@ -755,22 +767,16 @@
 			log.debug('Messages loaded: ' + messages.length + ' total: ' + totalMessages);
 
 			if (messages.length > 0) {
-				tick().then(() => {
-					requestAnimationFrame(() => {
-						if (messagesContainer) {
-							messagesContainer.scrollTo({
-								top: messagesContainer.scrollHeight,
-								behavior: 'smooth'
-							});
-						}
-					});
-				});
+				scrollToBottomOnLoad();
+			} else {
+				initialScrollDone = true;
 			}
 
 			checkForActiveStream();
 		} catch (err) {
 			log.error('Failed to load companion chat', err);
 			chatLoaded = true;
+			initialScrollDone = true;
 		}
 	}
 
@@ -799,24 +805,18 @@
 					contentBlocks
 				};
 			});
-			totalMessages = messages.length;
+			totalMessages = res.totalMessages || messages.length;
 			chatLoaded = true;
 			if (messages.length > 0) {
-				tick().then(() => {
-					requestAnimationFrame(() => {
-						if (messagesContainer) {
-							messagesContainer.scrollTo({
-								top: messagesContainer.scrollHeight,
-								behavior: 'smooth'
-							});
-						}
-					});
-				});
+				scrollToBottomOnLoad();
+			} else {
+				initialScrollDone = true;
 			}
 			checkForActiveStream();
 		} catch {
 			// Chat may not exist yet (first interaction) — that's OK
 			chatLoaded = true;
+			initialScrollDone = true;
 		}
 	}
 
@@ -1479,43 +1479,26 @@
 		scrollToBottom();
 	}
 
-	function handleCodeProcessing(data: Record<string, unknown>) {
-		const code = (data?.code as string) || '';
-		const statusMessage = (data?.status_message as string) || 'Processing code...';
-		const msgId = generateUUID();
-		codeStatusMessageId = msgId;
-
-		const processingMsg: Message = {
-			id: msgId,
-			role: 'assistant',
-			content: `**${statusMessage}**\n\nCode: \`${code}\``,
-			timestamp: new Date()
-		};
-		messages = [...messages, processingMsg];
-		scrollToBottom();
-	}
-
 	function handleCodeResult(data: Record<string, unknown>) {
+		// Route to modal for live progress
+		installModal?.onCodeResult(data);
+
+		// Also add a brief chat message for history
 		const success = data?.success as boolean;
-		const code = (data?.code as string) || '';
+		const artifactName = (data?.artifact_name as string) || '';
 		const codeType = (data?.code_type as string) || '';
-		const artifactName = data?.artifact_name as string | undefined;
-		const paymentRequired = data?.payment_required as boolean;
-		const checkoutUrl = data?.checkout_url as string | undefined;
 		const errorMsg = (data?.error as string) || '';
 
 		let content: string;
-		if (success && paymentRequired && checkoutUrl) {
-			const typeLabel = codeType.charAt(0).toUpperCase() + codeType.slice(1);
-			const name = artifactName || code;
-			content = `**${typeLabel} requires payment**\n\n**${name}** is a paid artifact.\n\n[Complete checkout to install](${checkoutUrl})`;
-		} else if (success) {
+		if (success) {
 			const msg = (data?.message as string) || 'Done';
 			content = `**${msg}**`;
 		} else {
+			const code = (data?.code as string) || '';
 			content = `**Failed to process code \`${code}\`**\n\n${errorMsg}`;
 		}
 
+		// Replace the processing message if one exists, otherwise append
 		if (codeStatusMessageId) {
 			const idx = messages.findIndex((m) => m.id === codeStatusMessageId);
 			if (idx >= 0) {
@@ -1535,34 +1518,6 @@
 			};
 			messages = [...messages, resultMsg];
 		}
-		scrollToBottom();
-	}
-
-	function handleDepInstalled(data: Record<string, unknown>) {
-		const reference = (data?.reference as string) || '';
-		const depType = ((data?.depType as string) || 'skill').toLowerCase();
-
-		const depMsg: Message = {
-			id: generateUUID(),
-			role: 'assistant',
-			content: `Installed dependency: **${reference}** (${depType})`,
-			timestamp: new Date()
-		};
-		messages = [...messages, depMsg];
-		scrollToBottom();
-	}
-
-	function handleDepCascadeComplete(data: Record<string, unknown>) {
-		const installed = (data?.installed as number) || 0;
-		if (installed === 0) return;
-
-		const depMsg: Message = {
-			id: generateUUID(),
-			role: 'assistant',
-			content: `All ${installed} ${installed === 1 ? 'dependency' : 'dependencies'} installed successfully.`,
-			timestamp: new Date()
-		};
-		messages = [...messages, depMsg];
 		scrollToBottom();
 	}
 
@@ -1813,6 +1768,14 @@
 		autoScrollEnabled = true;
 		showScrollButton = false;
 
+		// Detect marketplace codes client-side — show install modal immediately
+		const codeMatch = prompt.match(/^(NEBO|SKIL|WORK|AGNT|LOOP|PLUG)-[0-9A-Z]{4}-[0-9A-Z]{4}$/i);
+		if (codeMatch) {
+			const codeType = { NEBO: 'nebo', SKIL: 'skill', WORK: 'workflow', AGNT: 'agent', LOOP: 'loop', PLUG: 'plugin' }[codeMatch[1].toUpperCase()] || 'code';
+			const statusMessage = { nebo: 'Connecting to NeboLoop...', skill: 'Installing skill...', workflow: 'Installing workflow...', agent: 'Installing agent...', loop: 'Joining loop...', plugin: 'Installing plugin...' }[codeType] || 'Processing...';
+			installModal?.onCodeProcessing({ code: prompt.toUpperCase(), code_type: codeType, status_message: statusMessage });
+		}
+
 		handleSendPrompt(prompt);
 	}
 
@@ -1882,6 +1845,52 @@
 				loadingMore = false;
 			});
 		}
+
+		// Fetch older messages from API when we've revealed all local messages
+		if (scrollTop < 200 && renderStart === 0 && messages.length < totalMessages && !loadingMore && initialScrollDone) {
+			loadingMore = true;
+			const oldestId = messages[0]?.id;
+			if (oldestId && (mode.type === 'agent' || mode.type === 'companion')) {
+				getChatMessages(chatId, { before: oldestId }).then((res) => {
+					const older = (res.messages || []).map((m: ApiChatMessage) => {
+						const meta = parseMetadata((m as { metadata?: string }).metadata);
+						let content = m.content;
+						let contentBlocks = meta.contentBlocks;
+						if (!contentBlocks?.length) {
+							const multipart = parseMultipartContent(content);
+							if (multipart) {
+								content = multipart.text;
+								contentBlocks = multipart.blocks;
+							}
+						}
+						return {
+							id: m.id,
+							role: m.role as 'user' | 'assistant' | 'system',
+							content,
+							contentHtml: m.contentHtml || undefined,
+							timestamp: new Date(m.createdAt * 1000),
+							toolCalls: meta.toolCalls,
+							thinking: meta.thinking,
+							contentBlocks
+						};
+					});
+					if (older.length > 0) {
+						const prevH = messagesContainer?.scrollHeight ?? 0;
+						messages = [...older, ...messages];
+						tick().then(() => {
+							if (messagesContainer) {
+								messagesContainer.scrollTop += messagesContainer.scrollHeight - prevH;
+							}
+							loadingMore = false;
+						});
+					} else {
+						loadingMore = false;
+					}
+				}).catch(() => { loadingMore = false; });
+			} else {
+				loadingMore = false;
+			}
+		}
 	}
 
 	function scrollToBottom() {
@@ -1899,6 +1908,22 @@
 				});
 			});
 		}
+	}
+
+	/** Instant scroll to bottom after initial load — waits for DOM to fully lay out. */
+	function scrollToBottomOnLoad() {
+		tick().then(() => {
+			requestAnimationFrame(() => {
+				requestAnimationFrame(() => {
+					if (messagesContainer) {
+						messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'instant' });
+						showScrollButton = false;
+						autoScrollEnabled = true;
+					}
+					initialScrollDone = true;
+				});
+			});
+		});
 	}
 
 	async function copyMessage(messageId: string, content: string) {
@@ -2712,6 +2737,8 @@
 	</div>
 </div>
 {/if}
+
+<CodeInstallModal bind:this={installModal} bind:show={showInstallModal} onclose={() => { showInstallModal = false; }} />
 
 <Toast message={warningMessage} type="warning" duration={8000} bind:show={warningToast} />
 

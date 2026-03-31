@@ -586,6 +586,11 @@ async fn run_loop(
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
     // based on which tools pass the context filter (dynamic injection).
     let active_agent_body = active_agent_entry.as_ref().map(|r| r.agent_md.clone());
+    let plugin_inventory = skill_loader
+        .as_ref()
+        .map(|l| l.plugin_inventory())
+        .unwrap_or_default();
+
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
             agent_name: agent_name.clone(),
@@ -597,6 +602,7 @@ async fn run_loop(
             memory_context: String::new(),
             db_context: Some(db_context_formatted.clone()),
             active_agent: active_agent_body,
+            plugin_inventory,
         };
         prompt::build_static(&pctx)
     } else {

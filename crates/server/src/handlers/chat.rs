@@ -282,14 +282,21 @@ fn find_tool_output_in_metadata(
 /// Stable user_id for the companion chat (matches Go's companionUserIDFallback).
 const COMPANION_USER_ID: &str = "companion-default";
 
-fn default_message_limit() -> i64 {
-    20
+fn default_char_budget() -> i64 {
+    12000
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CompanionQuery {
-    #[serde(default = "default_message_limit")]
-    pub limit: i64,
+    #[serde(default = "default_char_budget")]
+    pub max_chars: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatMessagesQuery {
+    #[serde(default = "default_char_budget")]
+    pub max_chars: i64,
+    pub before: Option<String>,
 }
 
 /// GET /api/v1/chats/companion?limit=30
@@ -311,7 +318,7 @@ pub async fn get_companion_chat(
     // Messages are stored with chat_id = chat.id (the session_key used by the runner)
     let mut messages = state
         .store
-        .get_recent_chat_messages_with_tools(&chat.id, query.limit)
+        .get_chat_messages_budgeted(&chat.id, query.max_chars, None)
         .unwrap_or_default();
     build_message_metadata(&mut messages);
     let total = state.store.count_chat_messages(&chat.id).unwrap_or(messages.len() as i64);
@@ -475,12 +482,17 @@ pub async fn edit_message(
     ))
 }
 
-/// GET /api/v1/chats/:id/messages (used by agent sessions endpoint too)
+/// GET /api/v1/chats/:id/messages?max_chars=12000&before=msg_id
 pub async fn get_chat_messages(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<ChatMessagesQuery>,
 ) -> HandlerResult<serde_json::Value> {
-    let mut messages = state.store.get_chat_messages(&id).map_err(to_error_response)?;
+    let mut messages = state
+        .store
+        .get_chat_messages_budgeted(&id, query.max_chars, query.before.as_deref())
+        .map_err(to_error_response)?;
     build_message_metadata(&mut messages);
-    Ok(Json(serde_json::json!({"messages": messages})))
+    let total = state.store.count_chat_messages(&id).unwrap_or(messages.len() as i64);
+    Ok(Json(serde_json::json!({"messages": messages, "totalMessages": total})))
 }

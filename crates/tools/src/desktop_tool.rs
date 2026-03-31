@@ -1,3 +1,6 @@
+use crate::desktop_snapshot::{
+    self, assign_element_ids, generate_snapshot_id, parse_ax_output, Snapshot, SnapshotStore,
+};
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
 
@@ -7,12 +10,14 @@ use crate::registry::{DynTool, ToolResult};
 pub struct DesktopTool {
     #[allow(dead_code)]
     queue: tokio::sync::Mutex<()>,
+    snapshot_store: tokio::sync::Mutex<SnapshotStore>,
 }
 
 impl DesktopTool {
     pub fn new() -> Self {
         Self {
             queue: tokio::sync::Mutex::new(()),
+            snapshot_store: tokio::sync::Mutex::new(SnapshotStore::new()),
         }
     }
 }
@@ -38,14 +43,16 @@ impl DynTool for DesktopTool {
          - shortcut: list, run\n\
          - tts: speak\n\
          - dock: badges, recent, is_running (macOS only)\n\n\
+         Workflow: Use capture(action: see) to get a snapshot with element IDs, then reference them in input actions.\n\n\
          Examples:\n  \
+         desktop(resource: \"capture\", action: \"see\", app: \"Safari\") — snapshot + element IDs\n  \
+         desktop(resource: \"input\", action: \"click\", element_id: \"B3\") — click element from snapshot\n  \
+         desktop(resource: \"input\", action: \"type\", element_id: \"T1\", text: \"hello\") — focus + type\n  \
          desktop(resource: \"clipboard\", action: \"read\")\n  \
          desktop(resource: \"window\", action: \"list\")\n  \
          desktop(resource: \"capture\", action: \"screenshot\", app: \"Safari\")\n  \
          desktop(resource: \"notification\", action: \"send\", title: \"Done\", message: \"Task complete\")\n  \
-         desktop(resource: \"ui\", action: \"tree\", app: \"Safari\")\n  \
-         desktop(resource: \"tts\", action: \"speak\", text: \"Hello world\")\n  \
-         desktop(resource: \"shortcut\", action: \"run\", name: \"My Shortcut\")"
+         desktop(resource: \"tts\", action: \"speak\", text: \"Hello world\")"
             .to_string()
     }
 
@@ -85,7 +92,10 @@ impl DynTool for DesktopTool {
                 "label": { "type": "string", "description": "UI element label/identifier" },
                 "index": { "type": "integer", "description": "Index for space/menu item" },
                 "voice": { "type": "string", "description": "TTS voice name" },
-                "rate": { "type": "integer", "description": "TTS speaking rate (words per minute)" }
+                "rate": { "type": "integer", "description": "TTS speaking rate (words per minute)" },
+                "element_id": { "type": "string", "description": "Element ID from a snapshot (e.g. B1, T2). Use capture(action: see) first" },
+                "snapshot_id": { "type": "string", "description": "Snapshot ID from a previous see action" },
+                "max_elements": { "type": "integer", "description": "Max elements returned by see (default: 100)" }
             },
             "required": ["resource", "action"]
         })
@@ -107,10 +117,10 @@ impl DynTool for DesktopTool {
 
             match resource {
                 "window" => handle_window(action, &input).await,
-                "input" => handle_input(action, &input).await,
+                "input" => handle_input(action, &input, &self.snapshot_store).await,
                 "clipboard" => handle_clipboard(action, &input).await,
                 "notification" => handle_notification(action, &input).await,
-                "capture" => handle_capture(action, &input).await,
+                "capture" => handle_capture(action, &input, &self.snapshot_store).await,
                 "ui" => handle_ui(action, &input).await,
                 "menu" => handle_menu(action, &input).await,
                 "dialog" => handle_dialog(action, &input).await,
@@ -487,7 +497,101 @@ if ($p) {{ $r = New-Object Win+RECT; [Win]::GetWindowRect($p.MainWindowHandle, [
 
 // --- Input simulation ---
 
-async fn handle_input(action: &str, input: &serde_json::Value) -> ToolResult {
+async fn handle_input(
+    action: &str,
+    input: &serde_json::Value,
+    snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
+) -> ToolResult {
+    // Resolve element_id → coordinates if provided
+    let element_id = input["element_id"].as_str().unwrap_or("");
+    let snapshot_id = input["snapshot_id"].as_str().unwrap_or("");
+
+    if !element_id.is_empty() {
+        let store = snapshot_store.lock().await;
+        let element = if !snapshot_id.is_empty() {
+            store.get_element(snapshot_id, element_id)
+        } else {
+            store.latest().and_then(|snap| snap.elements.iter().find(|e| e.id == element_id))
+        };
+
+        match element {
+            Some(elem) => {
+                let (cx, cy) = elem.bounds.center();
+                let label = elem.label.clone();
+                drop(store);
+
+                // For type action with element_id: click to focus first, then type
+                if action == "type" {
+                    let text = input["text"].as_str().unwrap_or("");
+                    if text.is_empty() {
+                        return ToolResult::error("'text' parameter required for type");
+                    }
+                    let click_result = input_click(cx, cy).await;
+                    if click_result.is_error {
+                        return click_result;
+                    }
+                    // Small delay for focus
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    let type_result = input_type(text).await;
+                    return ToolResult {
+                        content: format!("Clicked '{}' at ({},{}) and typed text", label, cx, cy),
+                        is_error: type_result.is_error,
+                        image_url: None,
+                    };
+                }
+
+                // For click-family actions: use resolved coordinates
+                return match action {
+                    "click" => {
+                        let r = input_click(cx, cy).await;
+                        ToolResult {
+                            content: format!("Clicked '{}' ({}) at ({},{})", label, element_id, cx, cy),
+                            is_error: r.is_error,
+                            image_url: None,
+                        }
+                    }
+                    "double_click" => {
+                        let r = input_double_click(cx, cy).await;
+                        ToolResult {
+                            content: format!("Double-clicked '{}' ({}) at ({},{})", label, element_id, cx, cy),
+                            is_error: r.is_error,
+                            image_url: None,
+                        }
+                    }
+                    "right_click" => {
+                        let r = input_right_click(cx, cy).await;
+                        ToolResult {
+                            content: format!("Right-clicked '{}' ({}) at ({},{})", label, element_id, cx, cy),
+                            is_error: r.is_error,
+                            image_url: None,
+                        }
+                    }
+                    "move" => {
+                        let r = input_move(cx, cy).await;
+                        ToolResult {
+                            content: format!("Moved cursor to '{}' ({}) at ({},{})", label, element_id, cx, cy),
+                            is_error: r.is_error,
+                            image_url: None,
+                        }
+                    }
+                    _ => ToolResult::error(format!(
+                        "element_id not supported for action '{}'. Use: click, double_click, right_click, type, move",
+                        action
+                    )),
+                };
+            }
+            None => {
+                drop(store);
+                return ToolResult::error(format!(
+                    "Element '{}' not found{}. Use capture(action: \"see\") first to detect elements.",
+                    element_id,
+                    if !snapshot_id.is_empty() { format!(" in snapshot '{}'", snapshot_id) } else { String::new() }
+                ));
+            }
+        }
+    }
+
+    // Standard coordinate-based input (no element_id)
     match action {
         "type" => {
             let text = input["text"].as_str().unwrap_or("");
@@ -1190,25 +1294,132 @@ async fn notification_alert(title: &str, message: &str) -> ToolResult {
 
 // --- Screen capture ---
 
-async fn handle_capture(action: &str, input: &serde_json::Value) -> ToolResult {
+async fn handle_capture(
+    action: &str,
+    input: &serde_json::Value,
+    snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
+) -> ToolResult {
     match action {
         "screenshot" => capture_screenshot(input).await,
-        "see" => {
-            // "see" takes a screenshot and returns it for AI vision analysis
-            let result = capture_screenshot(input).await;
-            if result.is_error {
-                return result;
-            }
-            ToolResult {
-                content: format!("Screen captured for analysis. {}", result.content),
-                is_error: false,
-                image_url: result.image_url,
-            }
-        }
+        "see" => capture_see(input, snapshot_store).await,
         _ => ToolResult::error(format!(
             "Unknown capture action '{}'. Use: screenshot, see",
             action
         )),
+    }
+}
+
+/// Capture screenshot + AX tree elements, store as a snapshot.
+/// Returns the snapshot_id and element list as JSON, plus the screenshot image.
+async fn capture_see(
+    input: &serde_json::Value,
+    snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
+) -> ToolResult {
+    // Step 1: Take screenshot
+    let screenshot = capture_screenshot(input).await;
+    if screenshot.is_error {
+        return screenshot;
+    }
+
+    // Step 2: Capture AX elements with positions
+    let app = input["app"].as_str().unwrap_or("");
+    let max_elements = input["max_elements"].as_u64().unwrap_or(100).min(500) as usize;
+    let mut elements = capture_ax_elements(app).await;
+
+    // Limit and assign IDs
+    elements.truncate(max_elements);
+    assign_element_ids(&mut elements);
+
+    // Step 3: Build and store snapshot
+    let snapshot_id = generate_snapshot_id();
+    let snapshot = Snapshot {
+        id: snapshot_id.clone(),
+        app: if app.is_empty() { None } else { Some(app.to_string()) },
+        created_at: std::time::Instant::now(),
+        elements: elements.clone(),
+    };
+
+    {
+        let mut store = snapshot_store.lock().await;
+        store.insert(snapshot);
+    }
+
+    // Step 4: Build response
+    let elements_json: Vec<serde_json::Value> = elements
+        .iter()
+        .filter(|e| e.actionable || !e.label.is_empty())
+        .take(50) // Keep response concise for the LLM
+        .map(|e| {
+            serde_json::json!({
+                "id": e.id,
+                "role": e.role,
+                "label": e.label,
+                "bounds": { "x": e.bounds.x, "y": e.bounds.y, "w": e.bounds.width, "h": e.bounds.height },
+                "actionable": e.actionable,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "snapshot_id": snapshot_id,
+        "app": app,
+        "element_count": elements.len(),
+        "elements": elements_json,
+    });
+
+    ToolResult {
+        content: serde_json::to_string_pretty(&response).unwrap_or_default(),
+        is_error: false,
+        image_url: screenshot.image_url,
+    }
+}
+
+/// Capture AX elements with position information from the accessibility tree.
+#[allow(unused_variables)]
+async fn capture_ax_elements(app: &str) -> Vec<desktop_snapshot::UIElement> {
+    #[cfg(target_os = "macos")]
+    {
+        let target = if app.is_empty() {
+            "first application process whose frontmost is true".to_string()
+        } else {
+            format!("process \"{}\"", escape_applescript(app))
+        };
+        // Recursive AppleScript that returns role||label||x,y,w,h per element
+        let script = format!(
+            r#"tell application "System Events"
+    tell {}
+        set output to ""
+        try
+            repeat with elem in (every UI element of window 1)
+                try
+                    set eRole to role of elem
+                    set eName to name of elem
+                    if eName is missing value then set eName to description of elem
+                    if eName is missing value then set eName to ""
+                    set ePos to position of elem
+                    set eSize to size of elem
+                    set output to output & eRole & "||" & eName & "||" & (item 1 of ePos as text) & "," & (item 2 of ePos as text) & "," & (item 1 of eSize as text) & "," & (item 2 of eSize as text) & linefeed
+                end try
+            end repeat
+        end try
+        return output
+    end tell
+end tell"#,
+            target
+        );
+        match run_osascript_raw(&script).await {
+            Ok(output) => {
+                let mut elements = parse_ax_output(&output);
+                assign_element_ids(&mut elements);
+                elements
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Linux/Windows: return empty for now — element detection requires platform-specific work
+        Vec::new()
     }
 }
 
@@ -2891,18 +3102,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_input_missing_params() {
+        let store = tokio::sync::Mutex::new(SnapshotStore::new());
         // type without text
-        let result = handle_input("type", &serde_json::json!({})).await;
+        let result = handle_input("type", &serde_json::json!({}), &store).await;
         assert!(result.is_error);
         assert!(result.content.contains("text"));
 
         // press without key
-        let result = handle_input("press", &serde_json::json!({})).await;
+        let result = handle_input("press", &serde_json::json!({}), &store).await;
         assert!(result.is_error);
         assert!(result.content.contains("key"));
 
         // hotkey without keys
-        let result = handle_input("hotkey", &serde_json::json!({})).await;
+        let result = handle_input("hotkey", &serde_json::json!({}), &store).await;
         assert!(result.is_error);
         assert!(result.content.contains("keys"));
     }

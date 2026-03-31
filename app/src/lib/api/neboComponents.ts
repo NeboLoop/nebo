@@ -1315,6 +1315,26 @@ export interface PluginItem {
 	updatedAt: string
 }
 
+export interface InstalledPlugin {
+	slug: string
+	version: string
+	name: string
+	description: string
+	author: string
+	hasAuth: boolean
+	authLabel: string
+	source: string
+}
+
+export interface ListInstalledPluginsResponse {
+	plugins: Array<InstalledPlugin>
+	total: number
+}
+
+export interface PluginAuthStatusResponse {
+	authenticated: boolean
+}
+
 // ProjectContext provides full project state for the Dev Assistant system prompt.
 export interface ProjectContext {
 	path: string

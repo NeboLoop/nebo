@@ -28,6 +28,9 @@ const ALLOWED_FILES: &[&str] = &[
     "agent.json",
     "SKILL.md",
     "skill.md",
+    "PLUGIN.md",
+    "plugin.md",
+    "plugin.json",
 ];
 
 /// Extract a .napp (tar.gz) archive securely.
@@ -70,9 +73,26 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
 
         // Check if file is allowed
         let is_ui = name.starts_with("ui/");
+        let is_skill = name.starts_with("skills/");
         let base_name = name.trim_start_matches("./");
 
-        if !is_ui && !ALLOWED_FILES.contains(&base_name) {
+        // Determine if this is the native binary (plugin .napp uses real binary name, not "binary")
+        let is_binary = base_name == "binary" || base_name == "app"
+            || (!is_ui && !is_skill && !ALLOWED_FILES.contains(&base_name) && !base_name.contains('/'));
+
+        if is_skill {
+            // Skills directory: only allow SKILL.md or skill.md files
+            let file_name = Path::new(base_name)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if !file_name.eq_ignore_ascii_case("skill.md") {
+                return Err(NappError::Extraction(format!(
+                    "only SKILL.md files allowed in skills/ directory: {}",
+                    name
+                )));
+            }
+        } else if !is_ui && !is_binary && !ALLOWED_FILES.contains(&base_name) {
             return Err(NappError::Extraction(format!(
                 "unexpected file in .napp: {}",
                 name
@@ -82,8 +102,9 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
         // Enforce size limits
         let size = entry.size();
         let max_size = match base_name {
-            "binary" | "app" => MAX_BINARY_SIZE,
+            _ if is_binary => MAX_BINARY_SIZE,
             _ if is_ui => MAX_UI_FILE_SIZE,
+            _ if is_skill => MAX_METADATA_SIZE,
             _ => MAX_METADATA_SIZE,
         };
         if size > max_size {
@@ -95,21 +116,22 @@ pub fn extract_napp(napp_path: &Path, dest_dir: &Path) -> Result<Manifest, NappE
 
         // Build target path and verify it's within dest_dir
         let target = dest_dir.join(base_name);
+
+        // Create parent dirs first so canonicalize() works for nested paths (skills/, ui/)
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
         let canonical_dest = dest_dir
             .canonicalize()
             .unwrap_or_else(|_| dest_dir.to_path_buf());
-        if let Some(canonical_target) = target.parent().and_then(|p| p.canonicalize().ok().or(Some(p.to_path_buf()))) {
+        if let Some(canonical_target) = target.parent().and_then(|p| p.canonicalize().ok()) {
             if !canonical_target.starts_with(&canonical_dest) {
                 return Err(NappError::Extraction(format!(
                     "path escape detected: {}",
                     name
                 )));
             }
-        }
-
-        // Create parent dirs for ui/ files
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
         }
 
         // Extract file

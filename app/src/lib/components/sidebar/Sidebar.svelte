@@ -340,13 +340,13 @@
 	}
 
 	onMount(() => {
-		loadLoops();
-		loadAgents();
+		let initialLoadDone = false;
+		Promise.all([loadLoops(), loadAgents()]).then(() => { initialLoadDone = true; });
 
 		const wsClient = getWebSocketClient();
 
 		const unsubStatus = wsClient.onStatus((status) => {
-			if (status === 'connected') {
+			if (status === 'connected' && initialLoadDone) {
 				loadLoops();
 				loadAgents();
 			}

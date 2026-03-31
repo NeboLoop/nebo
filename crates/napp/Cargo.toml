@@ -22,7 +22,7 @@ libc = "0.2"
 serde_yaml = { workspace = true }
 semver = { workspace = true }
 async-trait = "0.1"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 

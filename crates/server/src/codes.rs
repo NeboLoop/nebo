@@ -165,22 +165,44 @@ async fn handle_nebo_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
 
 async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
-    let resp = api
-        .install_skill(code)
-        .await
-        .map_err(|e| NeboError::Internal(format!("install_skill: {e}")))?;
 
-    if resp.status == "payment_required" {
-        let name = resp.artifact.name.clone();
-        return Ok(CodeHandlerResult {
-            message: format!("Skill requires payment: {}", name),
-            artifact_name: Some(name),
-            checkout_url: Some(resp.checkout_url.unwrap_or_default()),
-        });
+    // Try to redeem code — may fail if already redeemed (re-install)
+    let redeem_result = api.install_skill(code).await;
+
+    if let Ok(ref resp) = redeem_result {
+        if resp.status == "payment_required" {
+            let name = resp.artifact.name.clone();
+            return Ok(CodeHandlerResult {
+                message: format!("Skill requires payment: {}", name),
+                artifact_name: Some(name),
+                checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+            });
+        }
     }
 
-    let artifact_id = resp.artifact.id.clone();
-    let name = resp.artifact.name.clone();
+    let artifact_id;
+    let name;
+
+    if let Ok(ref resp) = redeem_result {
+        artifact_id = resp.artifact.id.clone();
+        name = resp.artifact.name.clone();
+    } else {
+        // Redemption failed (likely already redeemed) — look up by code
+        warn!(code, "skill redeem failed, attempting to look up artifact by code");
+        let products = api.list_products(Some("skill"), None, None, None, None).await
+            .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
+        let items = products.get("results").and_then(|v| v.as_array())
+            .or_else(|| products.get("skills").and_then(|v| v.as_array()));
+        let found = items.and_then(|arr| arr.iter().find(|item| {
+            item.get("code").and_then(|c| c.as_str()) == Some(code)
+        }));
+        if let Some(item) = found {
+            artifact_id = item["id"].as_str().unwrap_or("").to_string();
+            name = item["name"].as_str().unwrap_or("").to_string();
+        } else {
+            return Err(NeboError::Internal(format!("install_skill: code not found: {code}")));
+        }
+    }
 
     // Fetch artifact content from NeboLoop and persist to filesystem
     let skill_dir = match tools::persist_skill_from_api(&api, &artifact_id, &name, code).await {
@@ -223,22 +245,44 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
 
 async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
-    let resp = api
-        .install_workflow(code)
-        .await
-        .map_err(|e| NeboError::Internal(format!("install_workflow: {e}")))?;
 
-    if resp.status == "payment_required" {
-        let name = resp.artifact.name.clone();
-        return Ok(CodeHandlerResult {
-            message: format!("Workflow requires payment: {}", name),
-            artifact_name: Some(name),
-            checkout_url: Some(resp.checkout_url.unwrap_or_default()),
-        });
+    // Try to redeem code — may fail if already redeemed (re-install)
+    let redeem_result = api.install_workflow(code).await;
+
+    if let Ok(ref resp) = redeem_result {
+        if resp.status == "payment_required" {
+            let name = resp.artifact.name.clone();
+            return Ok(CodeHandlerResult {
+                message: format!("Workflow requires payment: {}", name),
+                artifact_name: Some(name),
+                checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+            });
+        }
     }
 
-    let artifact_id = resp.artifact.id.clone();
-    let artifact_name = resp.artifact.name.clone();
+    let artifact_id;
+    let artifact_name;
+
+    if let Ok(ref resp) = redeem_result {
+        artifact_id = resp.artifact.id.clone();
+        artifact_name = resp.artifact.name.clone();
+    } else {
+        // Redemption failed (likely already redeemed) — look up by code
+        warn!(code, "workflow redeem failed, attempting to look up artifact by code");
+        let products = api.list_products(Some("workflow"), None, None, None, None).await
+            .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
+        let items = products.get("results").and_then(|v| v.as_array())
+            .or_else(|| products.get("workflows").and_then(|v| v.as_array()));
+        let found = items.and_then(|arr| arr.iter().find(|item| {
+            item.get("code").and_then(|c| c.as_str()) == Some(code)
+        }));
+        if let Some(item) = found {
+            artifact_id = item["id"].as_str().unwrap_or("").to_string();
+            artifact_name = item["name"].as_str().unwrap_or("").to_string();
+        } else {
+            return Err(NeboError::Internal(format!("install_workflow: code not found: {code}")));
+        }
+    }
 
     // Fetch artifact content from NeboLoop and persist to DB + filesystem
     if let Err(e) = persist_workflow_artifact(&api, &artifact_id, &artifact_name, code, &state.store).await {
@@ -425,23 +469,44 @@ async fn handle_loop_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
 async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerResult, NeboError> {
     let api = build_api_client(state)?;
 
-    // Redeem the plugin code with NeboLoop
-    let resp = api
-        .install_skill(code) // plugins use the same install endpoint
-        .await
-        .map_err(|e| NeboError::Internal(format!("install_plugin: {e}")))?;
+    // Try to redeem code — may fail if already redeemed (re-install)
+    let redeem_result = api.install_skill(code).await; // plugins use the same install endpoint
 
-    if resp.status == "payment_required" {
-        let name = resp.artifact.name.clone();
-        return Ok(CodeHandlerResult {
-            message: format!("Plugin requires payment: {}", name),
-            artifact_name: Some(name),
-            checkout_url: Some(resp.checkout_url.unwrap_or_default()),
-        });
+    if let Ok(ref resp) = redeem_result {
+        if resp.status == "payment_required" {
+            let name = resp.artifact.name.clone();
+            return Ok(CodeHandlerResult {
+                message: format!("Plugin requires payment: {}", name),
+                artifact_name: Some(name),
+                checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+            });
+        }
     }
 
-    let artifact_id = resp.artifact.id.clone();
-    let name = resp.artifact.name.clone();
+    let artifact_id;
+    let name;
+
+    if let Ok(ref resp) = redeem_result {
+        artifact_id = resp.artifact.id.clone();
+        name = resp.artifact.name.clone();
+    } else {
+        // Redemption failed (likely already redeemed) — look up by code
+        warn!(code, "plugin redeem failed, attempting to look up artifact by code");
+        let products = api.list_products(Some("plugin"), None, None, None, None).await
+            .map_err(|e| NeboError::Internal(format!("list_products: {e}")))?;
+        let items = products.get("results").and_then(|v| v.as_array())
+            .or_else(|| products.get("plugins").and_then(|v| v.as_array()));
+        let found = items.and_then(|arr| arr.iter().find(|item| {
+            item.get("code").and_then(|c| c.as_str()) == Some(code)
+        }));
+        if let Some(item) = found {
+            artifact_id = item["id"].as_str().unwrap_or("").to_string();
+            name = item["name"].as_str().unwrap_or("").to_string();
+        } else {
+            return Err(NeboError::Internal(format!("install_plugin: code not found: {code}")));
+        }
+    }
+
     let platform = napp::plugin::current_platform_key();
 
     // Broadcast installing event
@@ -453,32 +518,31 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         }),
     );
 
-    // Download and install via PluginStore
-    let plugin_store = state.plugin_store.clone();
-    let api_clone = build_api_client(state)?;
-    let slug = name.to_lowercase().replace(' ', "-");
+    // Fetch artifact detail from NeboLoop (same pattern as agents — get version, slug, download_url)
+    let detail = api.get_skill(&artifact_id).await
+        .map_err(|e| NeboError::Internal(format!("fetch plugin detail: {e}")))?;
 
-    match plugin_store
-        .ensure(&slug, "*", |slug, platform| async move {
-            let detail = api_clone
-                .get_plugin(&slug, &platform)
-                .await
-                .map_err(|e| napp::NappError::PluginDownloadFailed(format!("get_plugin: {e}")))?;
-            let platform_binary = detail
-                .platforms
-                .get(&platform)
-                .ok_or_else(|| napp::NappError::PluginPlatformUnavailable {
-                    plugin: slug.clone(),
-                    platform: platform.clone(),
-                })?;
-            let binary_data = api_clone
-                .download_plugin_binary(&platform_binary.download_url)
-                .await
-                .map_err(|e| napp::NappError::PluginDownloadFailed(format!("download: {e}")))?;
-            Ok((detail, binary_data))
-        })
-        .await
-    {
+    let slug = if detail.item.slug.is_empty() { name.to_lowercase().replace(' ', "-") } else { detail.item.slug.clone() };
+    let version = if detail.item.version.is_empty() { "1.0.0".to_string() } else { detail.item.version.clone() };
+
+    // Remove existing version so extract re-runs (enables upgrade via re-paste)
+    let plugin_store = state.plugin_store.clone();
+    let _ = plugin_store.remove(&slug); // ignore error if not installed
+
+    // Download .napp — use API-provided URL or construct from artifact ID
+    let download_url = detail.download_url.clone()
+        .unwrap_or_else(|| format!("/api/v1/apps/{}/download/{}", artifact_id, platform));
+
+    info!(plugin = %name, url = %download_url, "downloading plugin .napp");
+
+    let napp_data = api.download_napp(&download_url).await
+        .map_err(|e| NeboError::Internal(format!("download .napp for {}: {}", name, e)))?;
+
+    info!(plugin = %name, size = napp_data.len(), "downloaded .napp archive");
+
+    let install_result = plugin_store.install_from_napp(&slug, &version, &napp_data).await;
+
+    match install_result {
         Ok(path) => {
             state.hub.broadcast(
                 "plugin_installed",
@@ -487,6 +551,18 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
                 }),
             );
             info!(code, plugin = %name, artifact_id = %artifact_id, path = %path.display(), "installed plugin");
+
+            // Check if plugin requires authentication
+            if let Some(auth) = state.plugin_store.get_manifest(&name).and_then(|m| m.auth) {
+                state.hub.broadcast(
+                    "plugin_auth_required",
+                    serde_json::json!({
+                        "plugin": name,
+                        "label": auth.label,
+                        "description": auth.description,
+                    }),
+                );
+            }
         }
         Err(e) => {
             state.hub.broadcast(
@@ -502,6 +578,14 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
 
     // Reload skill loader so skills with this plugin dep can activate
     state.skill_loader.load_all().await;
+
+    // Re-register plugin tool so the new plugin appears as a resource
+    state.tools.unregister("plugin").await;
+    if !plugin_store.list_installed().is_empty() {
+        state.tools.register(Box::new(
+            tools::plugin_tool::PluginTool::new(plugin_store.clone())
+        )).await;
+    }
 
     Ok(CodeHandlerResult {
         message: format!("Installed plugin: {}", name),
@@ -638,9 +722,11 @@ async fn persist_workflow_artifact(
     let dir_name = if slug.is_empty() { name } else { slug.as_str() };
     let version = if detail.item.version.is_empty() { "1.0.0" } else { &detail.item.version };
 
-    // Try sealed .napp download — use API-provided URL or construct from artifact ID
+    // Try sealed .napp download — use API-provided URL or construct from artifact ID.
+    // Include platform so the server can serve the right binary for this OS/arch.
+    let platform = napp::plugin::current_platform_key();
     let download_url = detail.download_url.clone()
-        .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
+        .or_else(|| Some(format!("/api/v1/apps/{}/download/{}", artifact_id, platform)));
     if let Some(ref download_url) = download_url {
         let napp_dir = nebo_dir.join("workflows").join(dir_name);
         std::fs::create_dir_all(&napp_dir)

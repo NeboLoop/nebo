@@ -61,6 +61,38 @@ impl Loader {
             }
         }
 
+        // 2.5. Load skills embedded in plugins (override installed by name).
+        // Auto-inject the parent plugin slug as a PluginDependency so GWS_BIN etc. get set.
+        if let Some(ref ps) = self.plugin_store {
+            let plugins_dir = ps.plugins_dir();
+            if plugins_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(plugins_dir) {
+                    for entry in entries.flatten() {
+                        let slug_dir = entry.path();
+                        if !slug_dir.is_dir() {
+                            continue;
+                        }
+                        let plugin_slug = match slug_dir.file_name().and_then(|n| n.to_str()) {
+                            Some(s) => s.to_string(),
+                            None => continue,
+                        };
+                        for mut skill in load_skills_from_nested_dir(&slug_dir, SkillSource::Installed) {
+                            skill.enabled = true;
+                            // Auto-inject parent plugin as dependency if not already declared
+                            if !skill.plugins.iter().any(|p| p.name == plugin_slug) {
+                                skill.plugins.push(super::skill::PluginDependency {
+                                    name: plugin_slug.clone(),
+                                    version: "*".to_string(),
+                                    optional: false,
+                                });
+                            }
+                            loaded.insert(skill.name.clone(), skill);
+                        }
+                    }
+                }
+            }
+        }
+
         // 3. Load user skills (override installed by name)
         if self.user_dir.exists() {
             for skill in load_skills_from_dir(&self.user_dir, SkillSource::User) {
@@ -107,6 +139,31 @@ impl Loader {
         matches.into_iter().cloned().collect()
     }
 
+    /// Build a plugin inventory string for the system prompt.
+    /// Lists installed plugins with their env vars so the agent knows they exist.
+    pub fn plugin_inventory(&self) -> String {
+        let ps = match self.plugin_store {
+            Some(ref ps) => ps,
+            None => return String::new(),
+        };
+        let env_map = ps.build_env_map();
+        if env_map.is_empty() {
+            return String::new();
+        }
+        let mut lines = vec!["## Installed Plugins\n".to_string()];
+        lines.push("These plugins are available via the `plugin` tool. Example: plugin(resource: \"gws\", command: \"gmail +triage --max 5\")\n".to_string());
+        for (env_name, _path) in &env_map {
+            let slug = env_name.trim_end_matches("_BIN").to_lowercase();
+            if let Some(manifest) = ps.get_manifest(&slug) {
+                lines.push(format!("- **{}** — {}", slug, manifest.description));
+            } else {
+                lines.push(format!("- **{}**", slug));
+            }
+        }
+        lines.push(String::new());
+        lines.join("\n")
+    }
+
     /// Start watching for filesystem changes and reload on modification.
     /// Returns a JoinHandle that runs until cancelled.
     /// Get the bundled skills directory path.
@@ -120,6 +177,7 @@ impl Loader {
         let installed_dir = self.installed_dir.clone();
         let skills = self.skills.clone();
         let plugin_store = self.plugin_store.clone();
+        let plugins_dir = plugin_store.as_ref().map(|ps| ps.plugins_dir().to_path_buf());
 
         tokio::spawn(async move {
             use notify::{Event, EventKind, RecursiveMode, Watcher};
@@ -150,6 +208,15 @@ impl Loader {
             if installed_dir.exists() {
                 if let Err(e) = watcher.watch(&installed_dir, RecursiveMode::Recursive) {
                     warn!(error = %e, dir = %installed_dir.display(), "failed to watch installed skills dir");
+                }
+            }
+
+            // Watch plugin directory for embedded skill changes
+            if let Some(ref pdir) = plugins_dir {
+                if pdir.exists() {
+                    if let Err(e) = watcher.watch(pdir, RecursiveMode::Recursive) {
+                        warn!(error = %e, dir = %pdir.display(), "failed to watch plugins dir for skills");
+                    }
                 }
             }
 
@@ -214,6 +281,16 @@ impl Loader {
                             for mut skill in load_skills_from_nested_dir(&installed_dir, SkillSource::Installed) {
                                 skill.enabled = true;
                                 loaded.insert(skill.name.clone(), skill);
+                            }
+                        }
+
+                        // Reload skills embedded in plugins
+                        if let Some(ref pdir) = plugins_dir {
+                            if pdir.exists() {
+                                for mut skill in load_skills_from_nested_dir(pdir, SkillSource::Installed) {
+                                    skill.enabled = true;
+                                    loaded.insert(skill.name.clone(), skill);
+                                }
                             }
                         }
 

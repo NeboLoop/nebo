@@ -300,6 +300,7 @@ impl ExecuteTool {
         }
 
         // Inject plugin binary paths as environment variables (e.g., GWS_BIN=/path/to/gws)
+        // and add plugin directories to PATH so binaries can find themselves.
         if let Some(ref plugin_store) = self.plugin_store {
             for p in &skill.plugins {
                 if let Some(binary_path) = plugin_store.resolve(&p.name, &p.version) {
@@ -307,6 +308,7 @@ impl ExecuteTool {
                     cmd.env(&env_name, binary_path.to_string_lossy().as_ref());
                 }
             }
+            cmd.env("PATH", plugin_store.path_with_plugins());
         }
 
         crate::process::hide_window(&mut cmd);

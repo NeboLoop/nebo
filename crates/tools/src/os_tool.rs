@@ -130,6 +130,9 @@ impl DynTool for OsTool {
          os(resource: \"shell\", action: \"exec\", command: \"ls -la\")\n  \
          os(resource: \"app\", action: \"launch\", app: \"Safari\")\n  \
          os(resource: \"capture\", action: \"screenshot\")\n  \
+         os(resource: \"capture\", action: \"see\", app: \"Safari\") — returns snapshot_id + element IDs\n  \
+         os(resource: \"input\", action: \"click\", element_id: \"B3\") — click element from snapshot\n  \
+         os(resource: \"input\", action: \"type\", element_id: \"T1\", text: \"hello\") — focus + type\n  \
          os(resource: \"music\", action: \"play\")\n  \
          os(resource: \"keychain\", action: \"get\", service: \"myapp\", account: \"user@example.com\")\n  \
          os(resource: \"mail\", action: \"unread\")"
@@ -199,6 +202,10 @@ impl DynTool for OsTool {
         props.insert("index".into(), prop("integer", "Index for space/menu"));
         props.insert("voice".into(), prop("string", "TTS voice name"));
         props.insert("rate".into(), prop("integer", "TTS speaking rate"));
+        // Snapshot (see → click flow)
+        props.insert("element_id".into(), prop("string", "Element ID from a snapshot (e.g. B1, T2). Use capture(action: see) first"));
+        props.insert("snapshot_id".into(), prop("string", "Snapshot ID from a previous see action"));
+        props.insert("max_elements".into(), prop("integer", "Max elements returned by see (default: 100)"));
         // Keychain
         props.insert("service".into(), prop("string", "Keychain service name"));
         props.insert("account".into(), prop("string", "Keychain account"));

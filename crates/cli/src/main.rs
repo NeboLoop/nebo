@@ -1,3 +1,5 @@
+mod mcp_serve;
+
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -58,6 +60,33 @@ enum Commands {
     Capabilities,
     /// Run as Chrome native messaging relay (used internally by the extension)
     Relay,
+    /// MCP server for external AI tools (Claude Desktop, Cursor, etc.)
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommands {
+    /// Start stdio MCP server (bridges to running Nebo instance)
+    Serve {
+        /// Nebo server URL
+        #[arg(long, default_value = "http://localhost:27895")]
+        url: String,
+        /// Only expose these tools (comma-separated)
+        #[arg(long)]
+        tools: Option<String>,
+        /// Exclude these tools (comma-separated)
+        #[arg(long, alias = "exclude")]
+        exclude_tools: Option<String>,
+    },
+    /// Print configuration snippet for Claude Desktop or Cursor
+    Config {
+        /// Target application
+        #[arg(value_enum, default_value = "claude-desktop")]
+        target: mcp_serve::ConfigTarget,
+    },
 }
 
 #[derive(Subcommand)]
@@ -231,6 +260,20 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Relay) => {
             run_native_messaging().await?;
+        }
+        Some(Commands::Mcp { command }) => {
+            match command {
+                McpCommands::Serve { url, tools, exclude_tools } => {
+                    // MCP serve: stdout is the protocol channel, so all logging goes to stderr.
+                    // Tracing was already initialized above (to stdout), so we just run the bridge.
+                    // The bridge writes only JSON-RPC to stdout.
+                    let bridge = mcp_serve::McpStdioBridge::new(url, tools, exclude_tools);
+                    bridge.run().await?;
+                }
+                McpCommands::Config { ref target } => {
+                    mcp_serve::print_config(target);
+                }
+            }
         }
         Some(Commands::Capabilities) => {
             println!("Nebo v{VERSION} — Platform Capabilities");

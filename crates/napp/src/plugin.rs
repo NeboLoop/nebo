@@ -8,8 +8,10 @@
 //! ```
 //!
 //! Plugins are downloaded from NeboLoop, verified (SHA256 + ED25519), and stored at
-//! `<data_dir>/nebo/plugins/<slug>/<version>/`. Multiple skills can share the same
-//! plugin binary. Scripts access the binary via `{SLUG}_BIN` environment variable.
+//! `<data_dir>/nebo/plugins/<slug>/<version>/`. User-provided plugins live at
+//! `<data_dir>/user/plugins/<slug>/<version>/` and override installed versions.
+//! Multiple skills can share the same plugin binary. Scripts access the binary via
+//! `{SLUG}_BIN` environment variable.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -50,6 +52,47 @@ pub struct PluginManifest {
     /// Custom env var name override. Defaults to `{SLUG}_BIN`.
     #[serde(default)]
     pub env_var: String,
+    /// Optional authentication configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<PluginAuth>,
+}
+
+/// Authentication configuration for a plugin binary.
+///
+/// Plugins that require credentials (e.g., OAuth for Google Workspace) declare
+/// their auth requirements here. Nebo runs the plugin's auth commands and injects
+/// the publisher-provided env vars (client_id, client_secret, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAuth {
+    /// Auth type identifier (e.g., "oauth_cli").
+    #[serde(rename = "type")]
+    pub auth_type: String,
+    /// Environment variables to inject before running auth commands.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// CLI subcommands (appended to plugin binary path).
+    pub commands: PluginAuthCommands,
+    /// Human-readable label for the auth button (e.g., "Google Account").
+    #[serde(default)]
+    pub label: String,
+    /// Description shown to user during auth step.
+    #[serde(default)]
+    pub description: String,
+}
+
+/// CLI commands for plugin authentication lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginAuthCommands {
+    /// Subcommand to trigger authentication (e.g., "auth login").
+    pub login: String,
+    /// Subcommand to check auth status, must return JSON (e.g., "auth status").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Subcommand to clear credentials (e.g., "auth logout").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logout: Option<String>,
 }
 
 /// Binary artifact for a specific platform.
@@ -73,10 +116,14 @@ pub struct PlatformBinary {
 /// Manages downloaded plugin binaries.
 ///
 /// Lives in the napp crate alongside Registry — shares `SigningKeyProvider` and
-/// version resolution infrastructure.
+/// version resolution infrastructure. Scans two directories:
+/// - `installed_dir` (`<data_dir>/nebo/plugins/`) — marketplace downloads
+/// - `user_dir` (`<data_dir>/user/plugins/`) — user-provided, overrides installed
 pub struct PluginStore {
-    /// Root directory for plugin storage: `<data_dir>/nebo/plugins/`.
-    plugins_dir: PathBuf,
+    /// Marketplace plugin storage: `<data_dir>/nebo/plugins/`.
+    installed_dir: PathBuf,
+    /// User plugin storage: `<data_dir>/user/plugins/`.
+    user_dir: PathBuf,
     /// ED25519 signing key provider for signature verification.
     signing_key: Option<Arc<SigningKeyProvider>>,
     /// Cached manifests keyed by `slug:version`.
@@ -86,26 +133,37 @@ pub struct PluginStore {
 }
 
 impl PluginStore {
-    pub fn new(plugins_dir: PathBuf, signing_key: Option<Arc<SigningKeyProvider>>) -> Self {
+    pub fn new(installed_dir: PathBuf, user_dir: PathBuf, signing_key: Option<Arc<SigningKeyProvider>>) -> Self {
         Self {
-            plugins_dir,
+            installed_dir,
+            user_dir,
             signing_key,
             manifests: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             downloading: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
         }
     }
 
-    /// Root directory for plugin storage.
+    /// Root directory for installed (marketplace) plugin storage.
     pub fn plugins_dir(&self) -> &Path {
-        &self.plugins_dir
+        &self.installed_dir
     }
 
     /// Resolve a plugin binary path from local storage only. Non-async.
     ///
-    /// Scans `<plugins_dir>/<slug>/` for version directories, matches the
+    /// Checks user directory first (override), then installed directory.
+    /// Scans `<dir>/<slug>/` for version directories, matches the
     /// semver range, and returns the binary path if found.
     pub fn resolve(&self, slug: &str, version_range: &str) -> Option<PathBuf> {
-        let slug_dir = self.plugins_dir.join(slug);
+        // User dir takes priority
+        if let Some(path) = self.resolve_in_dir(&self.user_dir, slug, version_range) {
+            return Some(path);
+        }
+        self.resolve_in_dir(&self.installed_dir, slug, version_range)
+    }
+
+    /// Resolve a plugin binary within a single root directory.
+    fn resolve_in_dir(&self, root: &Path, slug: &str, version_range: &str) -> Option<PathBuf> {
+        let slug_dir = root.join(slug);
         if !slug_dir.exists() {
             return None;
         }
@@ -292,9 +350,9 @@ impl PluginStore {
             }
         }
 
-        // Store binary on disk
+        // Store binary on disk (always in installed_dir — marketplace downloads)
         let version_dir = self
-            .plugins_dir
+            .installed_dir
             .join(slug)
             .join(&manifest.version);
         std::fs::create_dir_all(&version_dir)?;
@@ -333,9 +391,161 @@ impl PluginStore {
         Ok(binary_path)
     }
 
+    /// Install a plugin from a .napp archive containing binary + plugin.json + PLUGIN.md + skills/.
+    ///
+    /// Stores the .napp archive at `<installed_dir>/<slug>/<version>.napp`, then
+    /// extracts alongside (into `<version>/`) — same pattern as agent install.
+    /// Reads plugin.json for metadata, verifies binary integrity (SHA256 + ED25519).
+    pub async fn install_from_napp(&self, slug: &str, version: &str, napp_data: &[u8]) -> Result<PathBuf, NappError> {
+        // Dedup concurrent installs
+        {
+            let mut downloading = self.downloading.lock().await;
+            if downloading.contains(slug) {
+                drop(downloading);
+                for _ in 0..30 {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    if let Some(path) = self.resolve(slug, "*") {
+                        return Ok(path);
+                    }
+                }
+                return Err(NappError::PluginDownloadFailed(format!(
+                    "timed out waiting for concurrent install of plugin '{}'",
+                    slug
+                )));
+            }
+            downloading.insert(slug.to_string());
+        }
+
+        let result = self.install_from_napp_inner(slug, version, napp_data).await;
+
+        // Release install lock
+        {
+            let mut downloading = self.downloading.lock().await;
+            downloading.remove(slug);
+        }
+
+        result
+    }
+
+    /// Inner implementation of .napp-based plugin install.
+    async fn install_from_napp_inner(&self, slug: &str, version: &str, napp_data: &[u8]) -> Result<PathBuf, NappError> {
+        // Store .napp archive alongside version dir (same pattern as agent install)
+        let plugin_dir = self.installed_dir.join(slug);
+        std::fs::create_dir_all(&plugin_dir)?;
+        let napp_path = plugin_dir.join(format!("{version}.napp"));
+        std::fs::write(&napp_path, napp_data)?;
+        info!(plugin = slug, path = %napp_path.display(), size = napp_data.len(), "stored sealed .napp");
+
+        // Remove existing version dir so extract_napp_alongside re-extracts
+        let version_dir = plugin_dir.join(version);
+        if version_dir.exists() {
+            std::fs::remove_dir_all(&version_dir)?;
+        }
+
+        // Extract alongside: <slug>/<version>.napp → <slug>/<version>/
+        let extract_dir = crate::reader::extract_napp_alongside(&napp_path)?;
+        info!(plugin = slug, dir = %extract_dir.display(), "extracted .napp");
+
+        // Read plugin.json from extracted dir (plugin-specific metadata)
+        let plugin_json_path = extract_dir.join("plugin.json");
+        let plugin_manifest: Option<PluginManifest> = if plugin_json_path.exists() {
+            let data = std::fs::read_to_string(&plugin_json_path)?;
+            match serde_json::from_str(&data) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    warn!(plugin = slug, error = %e, "failed to parse plugin.json");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Find binary and make executable
+        let binary_path = self
+            .find_binary_in_version_dir(&extract_dir)
+            .ok_or_else(|| NappError::Extraction("no binary found in extracted .napp".into()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755))?;
+        }
+
+        // Verify SHA256 + ED25519 if plugin.json exists with platform entry
+        if let Some(ref pm) = plugin_manifest {
+            let platform = current_platform_key();
+            if let Some(pb) = pm.platforms.get(&platform) {
+                let binary_data = std::fs::read(&binary_path)?;
+
+                // SHA256
+                let mut hasher = Sha256::new();
+                hasher.update(&binary_data);
+                let actual_hash = hex::encode(hasher.finalize());
+                if actual_hash != pb.sha256 {
+                    let _ = std::fs::remove_dir_all(&extract_dir);
+                    let _ = std::fs::remove_file(&napp_path);
+                    return Err(NappError::PluginDownloadFailed(format!(
+                        "SHA256 mismatch for plugin '{}': expected {}, got {}",
+                        slug, pb.sha256, actual_hash
+                    )));
+                }
+
+                // ED25519
+                if let Some(ref signing_key) = self.signing_key {
+                    match signing_key.get_key().await {
+                        Ok(verifying_key) => {
+                            use base64::Engine;
+                            use ed25519_dalek::{Signature, Verifier};
+
+                            let sig_bytes = base64::engine::general_purpose::STANDARD
+                                .decode(&pb.signature)
+                                .map_err(|e| {
+                                    NappError::Signing(format!("decode plugin signature: {}", e))
+                                })?;
+                            let signature = Signature::from_slice(&sig_bytes).map_err(|e| {
+                                NappError::Signing(format!("invalid plugin signature: {}", e))
+                            })?;
+                            verifying_key.verify(&binary_data, &signature).map_err(|_| {
+                                NappError::Signing(format!(
+                                    "plugin '{}' signature verification failed",
+                                    slug
+                                ))
+                            })?;
+                            debug!(plugin = slug, "ED25519 signature verified (.napp)");
+                        }
+                        Err(e) => {
+                            warn!(plugin = slug, error = %e, "could not fetch signing key, skipping signature verification");
+                        }
+                    }
+                }
+            }
+
+            // Cache manifest in memory
+            let cache_key = format!("{}:{}", slug, version);
+            let mut manifests = self.manifests.write().await;
+            manifests.insert(cache_key, pm.clone());
+        }
+
+        info!(
+            plugin = slug,
+            version = %version,
+            path = %binary_path.display(),
+            "installed plugin from .napp"
+        );
+
+        Ok(binary_path)
+    }
+
     /// Verify binary integrity against cached manifest.
     pub fn verify_integrity(&self, slug: &str, version: &str) -> Result<(), NappError> {
-        let version_dir = self.plugins_dir.join(slug).join(version);
+        // Check user dir first, then installed dir
+        let user_dir = self.user_dir.join(slug).join(version);
+        let version_dir = if user_dir.exists() {
+            user_dir
+        } else {
+            self.installed_dir.join(slug).join(version)
+        };
         let manifest_path = version_dir.join("plugin.json");
 
         let manifest_data = std::fs::read_to_string(&manifest_path).map_err(|e| {
@@ -370,13 +580,34 @@ impl PluginStore {
         Ok(())
     }
 
-    /// List all installed plugins as `(slug, version, binary_path)`.
-    pub fn list_installed(&self) -> Vec<(String, semver::Version, PathBuf)> {
+    /// List all installed plugins as `(slug, version, binary_path, source)`.
+    ///
+    /// Scans both user and installed directories. User plugins override
+    /// installed plugins when the same slug+version exists in both.
+    pub fn list_installed(&self) -> Vec<(String, semver::Version, PathBuf, &'static str)> {
         let mut results = Vec::new();
+        let mut seen = HashSet::new();
 
-        let entries = match std::fs::read_dir(&self.plugins_dir) {
+        // User dir first — takes priority
+        self.collect_from_dir(&self.user_dir, "user", &mut results, &mut seen);
+        // Installed dir — skips slug+version already seen in user
+        self.collect_from_dir(&self.installed_dir, "installed", &mut results, &mut seen);
+
+        results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        results
+    }
+
+    /// Scan a single root directory for plugins.
+    fn collect_from_dir(
+        &self,
+        root: &Path,
+        source: &'static str,
+        results: &mut Vec<(String, semver::Version, PathBuf, &'static str)>,
+        seen: &mut HashSet<(String, String)>,
+    ) {
+        let entries = match std::fs::read_dir(root) {
             Ok(e) => e,
-            Err(_) => return results,
+            Err(_) => return,
         };
 
         for entry in entries.flatten() {
@@ -412,14 +643,16 @@ impl PluginStore {
                     Err(_) => continue,
                 };
 
+                let key = (slug.clone(), ver_name.to_string());
+                if !seen.insert(key) {
+                    continue; // Already seen from higher-priority dir
+                }
+
                 if let Some(binary_path) = self.find_binary_in_version_dir(&ver_path) {
-                    results.push((slug.clone(), version, binary_path));
+                    results.push((slug.clone(), version, binary_path, source));
                 }
             }
         }
-
-        results.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
-        results
     }
 
     /// Build env var pairs for all installed (non-quarantined) plugins.
@@ -431,7 +664,7 @@ impl PluginStore {
         let installed = self.list_installed();
         let mut seen = std::collections::HashSet::new();
         let mut result = Vec::new();
-        for (slug, _version, binary_path) in installed {
+        for (slug, _version, binary_path, _source) in installed {
             if seen.insert(slug.clone()) {
                 result.push((
                     plugin_env_var(&slug),
@@ -442,33 +675,60 @@ impl PluginStore {
         result
     }
 
+    /// Build a PATH string that prepends all installed plugin directories
+    /// to the system PATH. This ensures plugin binaries can find themselves
+    /// and sibling binaries when spawned as subprocesses.
+    pub fn path_with_plugins(&self) -> String {
+        let installed = self.list_installed();
+        let mut dirs = std::collections::HashSet::new();
+        let mut prefix_parts = Vec::new();
+        for (_slug, _version, binary_path, _source) in &installed {
+            if let Some(dir) = binary_path.parent() {
+                if dirs.insert(dir.to_path_buf()) {
+                    prefix_parts.push(dir.to_string_lossy().into_owned());
+                }
+            }
+        }
+        let system_path = std::env::var("PATH").unwrap_or_default();
+        if prefix_parts.is_empty() {
+            system_path
+        } else {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            prefix_parts.push(system_path);
+            prefix_parts.join(sep)
+        }
+    }
+
     /// Remove plugin versions not referenced by any of the given slugs.
     ///
     /// Takes a snapshot of referenced slugs to avoid lock coupling with skill loader.
     pub fn garbage_collect(&self, referenced_slugs: &HashSet<String>) -> Vec<String> {
         let mut removed = Vec::new();
 
-        let entries = match std::fs::read_dir(&self.plugins_dir) {
-            Ok(e) => e,
-            Err(_) => return removed,
-        };
-
-        for entry in entries.flatten() {
-            let slug_path = entry.path();
-            if !slug_path.is_dir() {
-                continue;
-            }
-            let slug = match slug_path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
+        // GC both directories
+        for root in [&self.installed_dir, &self.user_dir] {
+            let entries = match std::fs::read_dir(root) {
+                Ok(e) => e,
+                Err(_) => continue,
             };
 
-            if !referenced_slugs.contains(&slug) {
-                if let Err(e) = std::fs::remove_dir_all(&slug_path) {
-                    warn!(slug = %slug, error = %e, "failed to garbage collect plugin");
-                } else {
-                    info!(slug = %slug, "garbage collected unreferenced plugin");
-                    removed.push(slug);
+            for entry in entries.flatten() {
+                let slug_path = entry.path();
+                if !slug_path.is_dir() {
+                    continue;
+                }
+                let slug = match slug_path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+
+                if !referenced_slugs.contains(&slug) {
+                    if let Err(e) = std::fs::remove_dir_all(&slug_path) {
+                        warn!(slug = %slug, error = %e, "failed to garbage collect plugin");
+                    } else {
+                        info!(slug = %slug, "garbage collected unreferenced plugin");
+                        removed.push(slug);
+                    }
                 }
             }
         }
@@ -476,9 +736,37 @@ impl PluginStore {
         removed
     }
 
+    /// Remove a plugin entirely (all versions). Checks both user and installed dirs.
+    pub fn remove(&self, slug: &str) -> Result<(), NappError> {
+        let mut found = false;
+        // Remove from user dir if present
+        let user_slug_dir = self.user_dir.join(slug);
+        if user_slug_dir.exists() {
+            std::fs::remove_dir_all(&user_slug_dir)?;
+            found = true;
+        }
+        // Remove from installed dir if present
+        let installed_slug_dir = self.installed_dir.join(slug);
+        if installed_slug_dir.exists() {
+            std::fs::remove_dir_all(&installed_slug_dir)?;
+            found = true;
+        }
+        if !found {
+            return Err(NappError::PluginNotFound(slug.to_string()));
+        }
+        info!(slug = slug, "removed plugin");
+        Ok(())
+    }
+
     /// Quarantine a plugin version (delete binary, write `.quarantined` marker).
     pub fn quarantine(&self, slug: &str, version: &str, reason: &str) {
-        let version_dir = self.plugins_dir.join(slug).join(version);
+        // Find which dir contains this version
+        let user_ver = self.user_dir.join(slug).join(version);
+        let version_dir = if user_ver.exists() {
+            user_ver
+        } else {
+            self.installed_dir.join(slug).join(version)
+        };
         if !version_dir.exists() {
             return;
         }
@@ -498,6 +786,53 @@ impl PluginStore {
             reason = reason,
             "quarantined plugin"
         );
+    }
+
+    /// Read the manifest for a plugin's latest installed version.
+    /// Checks user dir first (override), then installed dir.
+    pub fn get_manifest(&self, slug: &str) -> Option<PluginManifest> {
+        // User dir takes priority
+        if let Some(m) = self.get_manifest_from_dir(&self.user_dir, slug) {
+            return Some(m);
+        }
+        self.get_manifest_from_dir(&self.installed_dir, slug)
+    }
+
+    /// Read manifest from a single root directory.
+    fn get_manifest_from_dir(&self, root: &Path, slug: &str) -> Option<PluginManifest> {
+        let slug_dir = root.join(slug);
+        if !slug_dir.exists() {
+            return None;
+        }
+
+        // Find the latest version directory
+        let mut best: Option<(semver::Version, PathBuf)> = None;
+        let entries = std::fs::read_dir(&slug_dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() || path.join(".quarantined").exists() {
+                continue;
+            }
+            let ver_name = path.file_name()?.to_str()?;
+            let version = semver::Version::parse(ver_name).ok()?;
+            match &best {
+                Some((current, _)) if &version <= current => {}
+                _ => best = Some((version, path)),
+            }
+        }
+
+        let (_, version_dir) = best?;
+        let manifest_path = version_dir.join("plugin.json");
+        let data = std::fs::read_to_string(&manifest_path).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
+    /// Get binary path and auth config for a plugin, if auth is declared.
+    pub fn get_auth_info(&self, slug: &str) -> Option<(PathBuf, PluginAuth)> {
+        let binary_path = self.resolve(slug, "*")?;
+        let manifest = self.get_manifest(slug)?;
+        let auth = manifest.auth?;
+        Some((binary_path, auth))
     }
 
     /// Find a binary in a version directory by reading plugin.json or scanning for executables.
@@ -556,9 +891,12 @@ impl PluginStore {
 
 /// Detect the current platform key matching NeboLoop conventions.
 ///
-/// Returns e.g., "macos-arm64", "linux-amd64", "windows-amd64".
+/// Returns e.g., "darwin-arm64", "linux-amd64", "windows-amd64".
 pub fn current_platform_key() -> String {
-    let os = std::env::consts::OS; // "macos", "linux", "windows"
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "amd64",
@@ -597,7 +935,9 @@ mod tests {
     #[test]
     fn test_resolve_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = PluginStore::new(tmp.path().to_path_buf(), None);
+        let user_dir = tmp.path().join("user");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let store = PluginStore::new(tmp.path().to_path_buf(), user_dir, None);
         assert!(store.resolve("nonexistent", "*").is_none());
     }
 
@@ -619,7 +959,9 @@ mod tests {
                 .unwrap();
         }
 
-        let store = PluginStore::new(plugins_dir.to_path_buf(), None);
+        let user_plugins_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_plugins_dir).unwrap();
+        let store = PluginStore::new(plugins_dir.to_path_buf(), user_plugins_dir, None);
         let result = store.resolve("gws", "*");
         assert!(result.is_some());
         assert!(result.unwrap().ends_with("gws"));
@@ -644,7 +986,9 @@ mod tests {
             }
         }
 
-        let store = PluginStore::new(plugins_dir.to_path_buf(), None);
+        let user_plugins_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_plugins_dir).unwrap();
+        let store = PluginStore::new(plugins_dir.to_path_buf(), user_plugins_dir, None);
 
         // ^1.0.0 should resolve to 1.2.0 (not 2.0.0)
         let result = store.resolve("gws", "^1.0.0");
@@ -681,7 +1025,9 @@ mod tests {
         // Quarantine it
         std::fs::write(version_dir.join(".quarantined"), "test reason").unwrap();
 
-        let store = PluginStore::new(plugins_dir.to_path_buf(), None);
+        let user_plugins_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_plugins_dir).unwrap();
+        let store = PluginStore::new(plugins_dir.to_path_buf(), user_plugins_dir, None);
         assert!(store.resolve("gws", "*").is_none());
     }
 
@@ -703,7 +1049,9 @@ mod tests {
             }
         }
 
-        let store = PluginStore::new(plugins_dir.to_path_buf(), None);
+        let user_plugins_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_plugins_dir).unwrap();
+        let store = PluginStore::new(plugins_dir.to_path_buf(), user_plugins_dir, None);
         let installed = store.list_installed();
         assert_eq!(installed.len(), 3);
     }
@@ -719,7 +1067,10 @@ mod tests {
             std::fs::write(version_dir.join(slug), b"fake").unwrap();
         }
 
-        let store = PluginStore::new(plugins_dir.to_path_buf(), None);
+        // Use a separate temp dir for user_plugins to avoid GC seeing it as a slug
+        let user_tmp = tempfile::TempDir::new().unwrap();
+        let user_plugins_dir = user_tmp.path().to_path_buf();
+        let store = PluginStore::new(plugins_dir.to_path_buf(), user_plugins_dir, None);
         let referenced: HashSet<String> = ["gws", "ffmpeg"].iter().map(|s| s.to_string()).collect();
         let removed = store.garbage_collect(&referenced);
         assert_eq!(removed, vec!["orphan"]);
@@ -743,7 +1094,9 @@ mod tests {
                 .unwrap();
         }
 
-        let store = PluginStore::new(plugins_dir.to_path_buf(), None);
+        let user_plugins_dir = tmp.path().join("user_plugins");
+        std::fs::create_dir_all(&user_plugins_dir).unwrap();
+        let store = PluginStore::new(plugins_dir.to_path_buf(), user_plugins_dir, None);
         store.quarantine("bad-plugin", "1.0.0", "revoked by NeboLoop");
 
         // Binary should be removed, marker should exist
@@ -757,7 +1110,9 @@ mod tests {
     #[test]
     fn test_verify_integrity_missing() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = PluginStore::new(tmp.path().to_path_buf(), None);
+        let user_dir = tmp.path().join("user");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        let store = PluginStore::new(tmp.path().to_path_buf(), user_dir, None);
         assert!(store.verify_integrity("nonexistent", "1.0.0").is_err());
     }
 
@@ -773,25 +1128,75 @@ mod tests {
             platforms: {
                 let mut m = HashMap::new();
                 m.insert(
-                    "macos-arm64".into(),
+                    "darwin-arm64".into(),
                     PlatformBinary {
                         binary_name: "gws".into(),
                         sha256: "abc123".into(),
                         signature: "sig==".into(),
                         size: 1024,
-                        download_url: "https://cdn.neboloop.com/plugins/gws/1.2.0/macos-arm64/gws".into(),
+                        download_url: "https://cdn.neboloop.com/plugins/gws/1.2.0/darwin-arm64/gws".into(),
                     },
                 );
                 m
             },
             signing_key_id: "key-1".into(),
             env_var: String::new(),
+            auth: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
         let parsed: PluginManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.slug, "gws");
         assert_eq!(parsed.version, "1.2.0");
-        assert!(parsed.platforms.contains_key("macos-arm64"));
+        assert!(parsed.platforms.contains_key("darwin-arm64"));
+        assert!(parsed.auth.is_none());
+    }
+
+    #[test]
+    fn test_manifest_serde_with_auth() {
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "gws",
+            "name": "gws",
+            "version": "0.22.3",
+            "platforms": {},
+            "auth": {
+                "type": "oauth_cli",
+                "env": {
+                    "GOOGLE_WORKSPACE_CLI_CLIENT_ID": "123.apps.googleusercontent.com",
+                    "GOOGLE_WORKSPACE_CLI_CLIENT_SECRET": "GOCSPX-test"
+                },
+                "commands": {
+                    "login": "auth login",
+                    "status": "auth status",
+                    "logout": "auth logout"
+                },
+                "label": "Google Account",
+                "description": "Sign in to access Gmail, Drive, and more."
+            }
+        }"#;
+
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        let auth = parsed.auth.unwrap();
+        assert_eq!(auth.auth_type, "oauth_cli");
+        assert_eq!(auth.commands.login, "auth login");
+        assert_eq!(auth.commands.status.as_deref(), Some("auth status"));
+        assert_eq!(auth.env.len(), 2);
+        assert_eq!(auth.label, "Google Account");
+    }
+
+    #[test]
+    fn test_manifest_without_auth_field() {
+        // Existing manifests without auth field should deserialize fine
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "ffmpeg",
+            "name": "ffmpeg",
+            "version": "5.0.0",
+            "platforms": {}
+        }"#;
+
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        assert!(parsed.auth.is_none());
     }
 }

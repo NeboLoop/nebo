@@ -190,6 +190,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                                     "content": &text_buffer,
                                     "agentId": agent_id,
                                 }));
+                                text_buffer.clear();
                             }
                             hub.broadcast("chat_cancelled", serde_json::json!({
                                 "session_id": sid,

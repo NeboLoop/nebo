@@ -21,7 +21,10 @@
 		Lock,
 		X,
 		ArrowUpCircle,
-		Info
+		Info,
+		Bot,
+		Zap,
+		Puzzle
 	} from 'lucide-svelte';
 	import type { Snippet, Component } from 'svelte';
 	import { updateInfo } from '$lib/stores/update';
@@ -49,6 +52,10 @@
 		{ id: 'rules', path: '/settings/rules', label: 'settings.navItems.rules', icon: ScrollText },
 		{ id: 'notes', path: '/settings/notes', label: 'settings.navItems.notes', icon: StickyNote },
 		{ id: 'advisors', path: '/settings/advisors', label: 'settings.navItems.advisors', icon: MessagesSquare },
+		null,
+		{ id: 'agents', path: '/settings/agents', label: 'settings.navItems.agents', icon: Bot },
+		{ id: 'skills', path: '/settings/skills', label: 'settings.navItems.skills', icon: Zap },
+		{ id: 'plugins', path: '/settings/plugins', label: 'settings.navItems.plugins', icon: Puzzle },
 		null,
 		{ id: 'providers', path: '/settings/providers', label: 'settings.navItems.providers', icon: Key },
 		{ id: 'routing', path: '/settings/routing', label: 'settings.navItems.routing', icon: Cpu },

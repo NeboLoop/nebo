@@ -511,6 +511,13 @@ impl Registry {
             self.register(Box::new(crate::publisher_tool::PublisherTool::new(store.clone()))).await;
         }
 
+        // Plugin tool (installed plugin binaries as STRAP resources) — always registered when plugins exist
+        if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+            if !ps.list_installed().is_empty() {
+                self.register(Box::new(crate::plugin_tool::PluginTool::new(ps))).await;
+            }
+        }
+
         // Loop tool (NeboLoop comms: dm, channel, group, topic) — requires "loop" permission + comm plugin
         if allowed("loop") {
             if let Some(ref comm) = comm_plugin {
@@ -668,6 +675,7 @@ fn tool_category(name: &str) -> &str {
         "skill" => "filesystem",
         "work" => "filesystem",
         "loop" => "web",
+        "plugin" => "desktop",
         _ => "other",
     }
 }
@@ -743,6 +751,9 @@ fn tool_correction(name: &str) -> String {
         }
         "organizer" => {
             "INSTEAD USE: os(resource: \"mail\", action: \"unread\") or os(resource: \"calendar\", action: \"today\") — organizer is now under os".to_string()
+        }
+        "gws" | "google-workspace" | "gmail" | "gcalendar" | "gdrive" | "gsheets" | "gdocs" => {
+            "INSTEAD USE: plugin(resource: \"gws\", command: \"gmail +triage --max 5\") — use the plugin tool with the plugin slug as resource".to_string()
         }
         "napp" | "install" | "package" => {
             "INSTEAD USE: skill(action: \"catalog\") to see available skills, skill(action: \"install\", code: \"SKILL-XXXX-XXXX\") to install".to_string()

@@ -141,8 +141,56 @@ pub struct PluginManifest {
     pub platforms: HashMap<String, PlatformBinary>,   // "macos-arm64" → binary info
     pub signing_key_id: String,                      // ED25519 signing key ID
     pub env_var: String,                             // Custom env var name override (default: {SLUG}_BIN)
+    pub auth: Option<PluginAuth>,                    // Optional authentication configuration
 }
 ```
+
+### PluginAuth
+
+Authentication configuration for plugins that require credentials (e.g., OAuth for Google Workspace). Declared in `plugin.json`, read by handlers at `crates/server/src/handlers/plugins.rs`.
+
+```rust
+pub struct PluginAuth {
+    pub auth_type: String,                           // Auth type identifier (e.g., "oauth_cli")
+    pub env: HashMap<String, String>,                // Env vars injected before running auth commands
+    pub commands: PluginAuthCommands,                // CLI subcommands for auth lifecycle
+    pub label: String,                               // Human-readable label for UI (e.g., "Google Account")
+    pub description: String,                         // Description shown to user during auth step
+}
+
+pub struct PluginAuthCommands {
+    pub login: String,                               // Subcommand to trigger auth (e.g., "auth login")
+    pub status: Option<String>,                      // Subcommand to check auth status (exit 0 = authenticated)
+    pub logout: Option<String>,                      // Subcommand to clear credentials (e.g., "auth logout")
+}
+```
+
+**JSON example** (in `plugin.json`):
+
+```json
+{
+  "slug": "gws",
+  "name": "Google Workspace CLI",
+  "auth": {
+    "type": "oauth_cli",
+    "label": "Google Account",
+    "description": "Authenticate with your Google Workspace account.",
+    "commands": {
+      "login": "auth login",
+      "status": "auth status",
+      "logout": "auth logout"
+    },
+    "env": {}
+  }
+}
+```
+
+**Auth flow:**
+
+1. `GET /api/v1/plugins` — returns `hasAuth: true` + `authLabel` for plugins with auth config
+2. `GET /api/v1/plugins/{slug}/auth/status` — runs `<binary> <status_cmd>`, exit code 0 = authenticated
+3. `POST /api/v1/plugins/{slug}/auth/login` — spawns `<binary> <login_cmd>` in background, broadcasts `plugin_auth_complete` or `plugin_auth_error` via WebSocket
+4. `POST /api/v1/plugins/{slug}/auth/logout` — runs `<binary> <logout_cmd>` synchronously
 
 ### PlatformBinary
 
@@ -180,7 +228,8 @@ Core struct managing the plugin lifecycle. Constructed once at startup, stored a
 
 ```rust
 pub struct PluginStore {
-    plugins_dir: PathBuf,                                           // <data_dir>/nebo/plugins/
+    installed_dir: PathBuf,                                         // <data_dir>/nebo/plugins/
+    user_dir: PathBuf,                                              // <data_dir>/user/plugins/
     signing_key: Option<Arc<SigningKeyProvider>>,                    // ED25519 verification
     manifests: Arc<tokio::sync::RwLock<HashMap<String, PluginManifest>>>,  // Cache keyed by "slug:version"
     downloading: Arc<tokio::sync::Mutex<HashSet<String>>>,          // Concurrent download dedup
@@ -192,9 +241,10 @@ pub struct PluginStore {
 | Method | Async | Description |
 |--------|-------|-------------|
 | `new(plugins_dir, signing_key)` | No | Constructor |
-| `plugins_dir()` | No | Returns root storage path |
+| `plugins_dir()` | No | Returns installed dir path (`&Path`) |
 | `resolve(slug, version_range)` | No | Local-only semver resolution → `Option<PathBuf>` |
 | `ensure(slug, version_range, download_fn)` | Yes | Resolve locally or download, returns binary path |
+| `install_from_napp(slug, napp_data)` | Yes | Install from .napp archive (binary + plugin.json + PLUGIN.md + skills/) |
 | `verify_integrity(slug, version)` | No | SHA256 check against cached manifest |
 | `list_installed()` | No | All installed `(slug, Version, PathBuf)` tuples |
 | `garbage_collect(referenced_slugs)` | No | Remove unreferenced plugin slug directories |
@@ -224,6 +274,24 @@ Async download with dedup.
 7. **Write manifest:** Serialize to `plugin.json` in version directory
 8. **Cache:** Insert manifest into in-memory `manifests` map
 9. **Release:** Remove slug from `downloading` set
+
+### install_from_napp()
+
+Install a plugin from a sealed `.napp` archive. Used by `handle_plugin_code()` when `CodeRedeemResponse.download_url` ends in `.napp`.
+
+```
+1. Write napp_data to temp file
+2. extract_napp() → temp directory
+3. Read plugin.json from extracted dir → PluginManifest
+4. Look up platform binary entry for current_platform_key()
+5. Verify SHA256 of binary against manifest
+6. Verify ED25519 signature if signing_key available
+7. copy_dir_recursive() → <installed_dir>/<slug>/<version>/
+8. Cache manifest in memory
+9. Return binary path
+```
+
+The extracted .napp contains: `manifest.json`, `plugin.json`, `PLUGIN.md`, the native binary, and optionally `skills/{name}/SKILL.md` entries. After extraction, all files land in the version directory — the skill loader picks up embedded skills from there.
 
 ### find_binary_in_version_dir()
 
@@ -289,7 +357,23 @@ Following the agentskills.io model, skills use progressive disclosure:
 
 The `Loader` struct has an optional `plugin_store: Option<Arc<napp::plugin::PluginStore>>` field, set via the builder method `with_plugin_store()`.
 
-During `load_all()`, after scanning all skill directories, the loader calls `verify_dependencies()` which now checks plugin dependencies:
+### Plugin Directory Scanning (Tier 2.5)
+
+During `load_all()`, after installed skills (tier 2) and before user skills (tier 3), the loader scans plugin directories for embedded skills:
+
+```
+1. Bundled (bundled_dir)
+2. Installed (installed_dir) — marketplace .napp skills
+2.5. Plugin-embedded (plugin_store.plugins_dir()) — skills inside plugin .napp bundles
+3. User (user_dir)
+4. Legacy YAML (user_dir)
+```
+
+The plugin scan uses `load_skills_from_nested_dir()` with `walk_for_marker("SKILL.md")`, which recursively finds paths like `plugins/gws/0.22.3/skills/gws-gmail/SKILL.md`. All discovered skills are force-enabled.
+
+### Plugin Dependency Verification
+
+After loading all tiers, `verify_dependencies()` checks plugin dependencies:
 
 ```
 For each loaded skill:
@@ -301,7 +385,11 @@ For each loaded skill:
 
 Skills with missing **required** plugin dependencies are removed from the loaded set. Optional plugins are silently skipped.
 
-The hot-reload watcher (`watch()`) clones the `plugin_store` Arc and passes it to the reload closure, ensuring plugin checks happen on every reload cycle.
+### Hot-Reload Watching
+
+The `watch()` method watches the plugin installed dir alongside `user_dir` and `installed_dir`. When a plugin is installed or removed, the watcher triggers a full `load_all()` reload, picking up or removing plugin-embedded skills.
+
+The hot-reload watcher clones the `plugin_store` Arc and passes it to the reload closure, ensuring plugin checks happen on every reload cycle.
 
 ---
 
@@ -353,8 +441,10 @@ Plugins have their own install code prefix, following the same Crockford Base32 
 2. Redeem code via `api.install_skill(code)` (plugins use the same install endpoint)
 3. Detect platform via `napp::plugin::current_platform_key()`
 4. Broadcast `plugin_installing` WebSocket event
-5. Call `plugin_store.ensure()` with a download callback that queries `api.get_plugin()` and `api.download_plugin_binary()`
-6. On success: broadcast `plugin_installed` event, reload skill loader
+5. Check if `CodeRedeemResponse.download_url` ends in `.napp`:
+   - **Yes (.napp path):** Download .napp via `api.download_napp()` → `plugin_store.install_from_napp()` — extracts binary + plugin.json + PLUGIN.md + skills/ in one shot
+   - **No (binary-only fallback):** Call `plugin_store.ensure()` with a download callback that queries `api.get_plugin()` and `api.download_plugin_binary()`
+6. On success: broadcast `plugin_installed` event, reload skill loader (picks up embedded skills)
 7. On failure: broadcast `plugin_error` event
 
 Both the WebSocket handler and the REST `POST /api/v1/codes/redeem` handler dispatch to `handle_plugin_code()`.
@@ -459,22 +549,38 @@ Plugin binaries are executed as subprocesses by the skill's script (e.g., `$GWS_
 <data_dir>/
   nebo/
     skills/           # Marketplace skills (existing)
-    plugins/          # Plugin binaries (NEW)
+    plugins/          # Plugin binaries
       gws/
-        1.2.0/
-          plugin.json # Cached PluginManifest (JSON, camelCase)
-          gws         # Native binary (chmod 755)
-        1.3.0/
+        0.22.3/
+          manifest.json   # Package identity + metadata
+          plugin.json     # Cached PluginManifest (JSON, camelCase)
+          PLUGIN.md       # Plugin documentation
+          gws             # Native binary (chmod 755)
+          skills/         # Embedded skills (from .napp bundle)
+            gws-gmail/
+              SKILL.md
+            gws-calendar/
+              SKILL.md
+            gws-drive/
+              SKILL.md
+      nebo-office/
+        1.0.0/
+          manifest.json
           plugin.json
-          gws
-      ffmpeg/
-        5.0.0/
-          plugin.json
-          ffmpeg
+          PLUGIN.md
+          nebo-office
+          skills/
+            xlsx/
+              SKILL.md
+            docx/
+              SKILL.md
 ```
 
 - Directory per slug, subdirectory per version
 - `plugin.json` = serialized `PluginManifest` with full platform map
+- `manifest.json` = package identity (required by .napp extraction)
+- `PLUGIN.md` = plugin documentation/instructions
+- `skills/` = embedded SKILL.md files, discovered by skill loader via `walk_for_marker()`
 - Binary = native executable, platform-specific
 - `.quarantined` marker file = quarantined version (binary deleted, manifest preserved)
 - Multiple versions can coexist (different skills may require different ranges)
@@ -579,7 +685,8 @@ Future events (not yet implemented):
 
 | File | Lines | What |
 |------|-------|------|
-| `crates/napp/src/plugin.rs` | 777 | Core module: types, PluginStore, helpers, tests |
+| `crates/napp/src/plugin.rs` | ~900 | Core module: types, PluginStore (ensure + install_from_napp), helpers, tests |
+| `crates/napp/src/napp.rs` | — | .napp extraction: ALLOWED_FILES includes PLUGIN.md/plugin.json, `skills/` prefix support |
 | `crates/napp/src/lib.rs` | — | `pub mod plugin;` + NappError variants |
 | `crates/tools/src/skills/skill.rs` | — | `PluginDependency` struct, `plugins` field on `Skill` |
 | `crates/tools/src/skills/loader.rs` | — | `plugin_store` field, `verify_dependencies()` plugin check |

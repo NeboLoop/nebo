@@ -2,7 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
 	import { tick, getContext, untrack } from 'svelte';
-	import { getActiveAgents, updateAgent } from '$lib/api/nebo';
+	import { getActiveAgents, getAgent, updateAgent } from '$lib/api/nebo';
 	import { t } from 'svelte-i18n';
 
 	let { children }: { children: Snippet } = $props();
@@ -85,21 +85,35 @@
 		loading = true;
 		notFound = false;
 
-		getActiveAgents().then((data) => {
+		getActiveAgents().then(async (data) => {
 			if (cancelled) return;
-			if (data?.agents) {
-				const match = data.agents.find((r) => r.agentId === name);
-				if (match) {
+			const match = data?.agents?.find((r) => r.agentId === name);
+			if (match) {
+				channelState.activeChannelId = '';
+				channelState.activeChannelName = '';
+				channelState.activeLoopName = '';
+				channelState.activeAgentId = match.agentId;
+				channelState.activeAgentName = match.name;
+				channelState.activeView = 'agent';
+				loading = false;
+				return;
+			}
+			// Fallback: agent may be disabled — fetch it directly
+			try {
+				const detail = await getAgent(name);
+				if (cancelled) return;
+				if (detail?.agent) {
 					channelState.activeChannelId = '';
 					channelState.activeChannelName = '';
 					channelState.activeLoopName = '';
-					channelState.activeAgentId = match.agentId;
-					channelState.activeAgentName = match.name;
+					channelState.activeAgentId = detail.agent.id;
+					channelState.activeAgentName = detail.agent.name;
 					channelState.activeView = 'agent';
 				} else {
 					notFound = true;
 				}
-			} else {
+			} catch {
+				if (cancelled) return;
 				notFound = true;
 			}
 			loading = false;

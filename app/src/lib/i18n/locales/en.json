@@ -457,6 +457,9 @@
 			"rules": "Rules",
 			"notes": "Notes",
 			"advisors": "Advisors",
+			"agents": "Agents",
+			"skills": "Skills",
+			"plugins": "Plugins",
 			"providers": "Providers",
 			"routing": "Routing",
 			"secrets": "Secrets",
@@ -576,6 +579,32 @@
 			"innovator": "innovator",
 			"userAdvocate": "user-advocate"
 		}
+	},
+	"settingsPlugins": {
+		"title": "Plugins",
+		"description": "Managed binaries shared across skills",
+		"loading": "Loading plugins...",
+		"noPlugins": "No plugins installed",
+		"noPluginsHint": "Plugins are installed automatically when you add skills that need them.",
+		"connect": "Connect",
+		"connecting": "Connecting...",
+		"connected": "Connected",
+		"disconnect": "Disconnect",
+		"authRequired": "Auth required",
+		"authFailed": "Auth failed",
+		"noAuthNeeded": "No auth needed",
+		"removeTitle": "Remove Plugin",
+		"removeConfirm": "Remove {name}? Skills that depend on this plugin will stop working."
+	},
+	"settingsAgents": {
+		"title": "Agents",
+		"description": "Installed and user-created agents",
+		"loading": "Loading agents...",
+		"noAgents": "No agents yet",
+		"noAgentsHint": "Install agents from the marketplace or create your own.",
+		"installed": "Installed",
+		"user": "User",
+		"configure": "Configure"
 	},
 	"settingsApps": {
 		"title": "Apps",
@@ -1054,6 +1083,7 @@
 		"source": "Source",
 		"configuration": "Configuration",
 		"enable": "Enable",
+		"deleteTitle": "Delete Skill",
 		"deleteConfirm": "Delete skill \"{name}\"? This cannot be undone."
 	},
 	"settingsStatus": {

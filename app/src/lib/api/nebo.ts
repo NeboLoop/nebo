@@ -528,8 +528,12 @@ export function getChat(id: string) {
 /**
  * @description "Get chat messages by chat_id"
  */
-export function getChatMessages(chatId: string) {
-	return webapi.get<{ messages: components.ChatMessage[] }>(`/api/v1/chats/${chatId}/messages`)
+export function getChatMessages(chatId: string, params?: { max_chars?: number; before?: string }) {
+	const query = new URLSearchParams();
+	if (params?.max_chars) query.set('max_chars', String(params.max_chars));
+	if (params?.before) query.set('before', params.before);
+	const qs = query.toString();
+	return webapi.get<{ messages: components.ChatMessage[]; totalMessages: number }>(`/api/v1/chats/${chatId}/messages${qs ? `?${qs}` : ''}`)
 }
 
 /**
@@ -1056,7 +1060,7 @@ export function getOAuthUrl(params: components.GetOAuthUrlRequestParams, provide
  * @description "List plugins"
  */
 export function listPlugins() {
-	return webapi.get<components.ListPluginsResponse>(`/api/v1/plugins`)
+	return webapi.get<components.ListInstalledPluginsResponse>(`/api/v1/plugins`)
 }
 
 /**
@@ -1526,5 +1530,21 @@ export function updateEntityConfig(entityType: string, entityId: string, patch: 
 
 export function deleteEntityConfig(entityType: string, entityId: string) {
 	return webapi.delete<{ message: string }>(`/api/v1/entity-config/${entityType}/${entityId}`);
+}
+
+export function removePlugin(slug: string) {
+	return webapi.delete<{ message: string }>(`/api/v1/plugins/${slug}`)
+}
+
+export function pluginAuthLogin(slug: string) {
+	return webapi.post<{ started: boolean }>(`/api/v1/plugins/${slug}/auth/login`)
+}
+
+export function pluginAuthLogout(slug: string) {
+	return webapi.post<{ success: boolean }>(`/api/v1/plugins/${slug}/auth/logout`)
+}
+
+export function pluginAuthStatus(slug: string) {
+	return webapi.get<components.PluginAuthStatusResponse>(`/api/v1/plugins/${slug}/auth/status`)
 }
 

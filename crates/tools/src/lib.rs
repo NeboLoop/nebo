@@ -1,5 +1,6 @@
 pub mod app_tool;
 pub mod bot_tool;
+pub mod desktop_snapshot;
 pub mod desktop_tool;
 pub mod domain;
 pub mod emit_tool;
@@ -18,6 +19,7 @@ mod organizer;
 pub mod organizer_tool;
 pub mod origin;
 pub mod os_tool;
+pub mod plugin_tool;
 pub mod policy;
 pub mod process;
 pub mod publisher_tool;
@@ -136,9 +138,11 @@ pub async fn persist_skill_from_api(
     let dir_name = if slug.is_empty() { name } else { slug.as_str() };
     let version = if detail.item.version.is_empty() { "1.0.0" } else { &detail.item.version };
 
-    // Try sealed .napp download — use API-provided URL or construct from artifact ID
+    // Try sealed .napp download — use API-provided URL or construct from artifact ID.
+    // Include platform so the server can serve the right binary for this OS/arch.
+    let platform = napp::plugin::current_platform_key();
     let download_url = detail.download_url.clone()
-        .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
+        .or_else(|| Some(format!("/api/v1/apps/{}/download/{}", artifact_id, platform)));
     if let Some(ref download_url) = download_url {
         let napp_dir = nebo_dir.join("skills").join(dir_name);
         std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create skill dir: {e}"))?;

@@ -37,6 +37,7 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tempfile = "3"
 sandbox-runtime = { workspace = true }
+shlex = "1"
 
 [dev-dependencies]
 flate2 = "1"

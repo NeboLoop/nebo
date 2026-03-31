@@ -199,6 +199,10 @@ export async function requestBlob({
 	return response.blob();
 }
 
+// In-flight GET request deduplication: if the same URL is already being fetched,
+// return the existing promise instead of making a duplicate request.
+const inflightGets = new Map<string, Promise<unknown>>();
+
 export const webapi = {
 	get<T>(url: string, params?: any, req?: any): Promise<T> {
 		// For GET requests, append params as query string to URL
@@ -214,7 +218,11 @@ export const webapi = {
 				url += (url.includes('?') ? '&' : '?') + queryString;
 			}
 		}
-		return api<T>('get', url, undefined, req) as Promise<T>;
+		const existing = inflightGets.get(url);
+		if (existing) return existing as Promise<T>;
+		const p = api<T>('get', url, undefined, req).finally(() => inflightGets.delete(url));
+		inflightGets.set(url, p);
+		return p;
 	},
 	delete<T>(url: string, params?: any, req?: any): Promise<T> {
 		return api<T>(

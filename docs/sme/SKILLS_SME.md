@@ -244,6 +244,7 @@ pub struct Loader {
     bundled_dir: PathBuf,       // e.g. <data_dir>/bundled/skills/
     installed_dir: PathBuf,     // e.g. <data_dir>/nebo/skills/
     user_dir: PathBuf,          // e.g. <data_dir>/user/skills/
+    plugin_store: Option<Arc<napp::plugin::PluginStore>>,  // For plugin-embedded skills + dep verification
     skills: Arc<RwLock<HashMap<String, Skill>>>,
 }
 ```
@@ -258,6 +259,7 @@ Loading order (later tiers override earlier by name):
 
 1. **Bundled** (`bundled_dir`) — `load_skills_from_dir()` — force `enabled = true`
 2. **Installed** (`installed_dir`) — `load_skills_from_nested_dir()` — force `enabled = true`, uses `napp::reader::walk_for_marker()` for recursive SKILL.md discovery
+2.5. **Plugin-embedded** (`plugin_store.plugins_dir()`) — `load_skills_from_nested_dir()` — force `enabled = true`. Discovers skills bundled inside plugin .napp archives (e.g., `plugins/gws/0.22.3/skills/gws-gmail/SKILL.md`). Only runs if `plugin_store` is Some and the directory exists.
 3. **User** (`user_dir`) — `load_skills_from_dir()` — respects enabled/disabled state
 4. **Legacy YAML** (`user_dir`) — `load_yaml_skills()` — flat `.yaml` / `.yaml.disabled` files, only if name not already loaded
 
@@ -305,7 +307,8 @@ Builds a set of all loaded skill names. Retains only skills whose every dependen
 ### Setup
 
 - Uses `notify::RecommendedWatcher` with 2s poll interval
-- Watches `user_dir` and `installed_dir` recursively (not bundled — those don't change)
+- Watches `user_dir`, `installed_dir`, and `plugin_store.plugins_dir()` recursively (not bundled — those don't change)
+- Plugin dir is only watched if `plugin_store` is Some and the directory exists
 
 ### Trigger Conditions
 
@@ -984,18 +987,24 @@ pub async fn persist_skill_from_api(
 ```
 1. api.get_skill(artifact_id) → SkillDetail
 2. Determine dir_name (slug or name) and version
-3. If download_url exists:
+3. Detect platform via napp::plugin::current_platform_key() (e.g. "macos-arm64")
+4. Resolve download URL:
+   - Use API-provided download_url if present
+   - Otherwise construct: /api/v1/apps/{artifact_id}/download/{platform}
+5. Download .napp:
    a. Create nebo/skills/{dir_name}/
    b. Download .napp to nebo/skills/{dir_name}/{version}.napp
    c. extract_napp_alongside() → nebo/skills/{dir_name}/{version}/
    d. Return extracted directory
    e. On failure: fall through to loose files
-4. Fallback (no download_url or download failed):
+6. Fallback (download failed):
    a. Extract manifest text from API (or generate minimal SKILL.md)
    b. Write nebo/skills/{dir_name}/SKILL.md
    c. Write nebo/skills/{dir_name}/manifest.json
    d. Return skill directory
 ```
+
+**Platform-aware downloads:** Skills with binaries need platform-specific .napp archives. The download URL includes the platform key (e.g., `darwin-arm64`) so the server returns the correct binary for this OS/arch. Pure markdown skills ignore the platform — the server returns the same .napp regardless.
 
 ### Minimal SKILL.md Generation
 
@@ -1110,11 +1119,11 @@ const CORE_TOOLS: &[&str] = &["os", "web", "agent", "event", "message", "skill",
 
 ```
 {data_dir}/
-├── bundled/skills/               # Shipped with app (lowest priority)
+├── bundled/skills/               # Tier 1: Shipped with app (lowest priority)
 │   └── skill-name/
 │       └── SKILL.md
 │
-├── nebo/skills/                  # Marketplace (sealed .napp archives)
+├── nebo/skills/                  # Tier 2: Marketplace (sealed .napp archives)
 │   └── @org/skills/name/
 │       ├── 1.0.0.napp           # Sealed tar.gz archive
 │       └── 1.0.0/               # Extracted directory
@@ -1124,22 +1133,33 @@ const CORE_TOOLS: &[&str] = &["os", "web", "agent", "event", "message", "skill",
 │           └── scripts/
 │               └── run.py
 │
-└── user/skills/                  # User-created (highest priority)
+├── nebo/plugins/                 # Tier 2.5: Skills embedded in plugin .napp bundles
+│   └── gws/
+│       └── 0.22.3/
+│           ├── plugin.json
+│           ├── gws              # Plugin binary
+│           └── skills/          # Embedded skills (discovered by walk_for_marker)
+│               ├── gws-gmail/
+│               │   └── SKILL.md
+│               └── gws-calendar/
+│                   └── SKILL.md
+│
+└── user/skills/                  # Tier 3: User-created (highest priority)
     ├── my-skill/
     │   ├── SKILL.md
     │   ├── scripts/
     │   │   └── process.py
     │   └── references/
     │       └── guide.md
-    ├── legacy.yaml               # Backward-compatible flat files
+    ├── legacy.yaml               # Tier 4: Backward-compatible flat files
     └── disabled.yaml.disabled    # Disabled skills
 ```
 
 ### Priority Override
 
-If a user skill has the same `name` as an installed skill, the user version wins:
+If a user skill has the same `name` as an installed or plugin-embedded skill, the user version wins:
 ```
-bundled "research" → overridden by installed "research" → overridden by user "research"
+bundled "research" → overridden by installed "research" → overridden by plugin-embedded "research" → overridden by user "research"
 ```
 
 ### .napp Archive Contents

@@ -507,7 +507,7 @@
 				</div>
 				<h1 class="text-3xl font-bold mb-3">{$t('onboarding.language.title')}</h1>
 				<p class="text-base-content/80 mb-6 text-lg">{$t('onboarding.language.description')}</p>
-				<div class="grid grid-cols-2 gap-2 max-w-md mx-auto mb-8 max-h-72 overflow-y-auto px-1">
+				<div class="grid grid-cols-2 gap-2 max-w-md mx-auto mb-8 px-1">
 					{#each onboardingLanguages as lang}
 						<button
 							type="button"

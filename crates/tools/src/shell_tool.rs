@@ -126,6 +126,7 @@ impl ShellTool {
             for (k, v) in ps.build_env_map() {
                 cmd.env(k, v);
             }
+            cmd.env("PATH", ps.path_with_plugins());
         }
 
         let result = tokio::time::timeout(

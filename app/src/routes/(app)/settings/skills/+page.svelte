@@ -3,21 +3,18 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Spinner from '$lib/components/ui/Spinner.svelte';
 	import SkillEditorModal from '$lib/components/skills/SkillEditorModal.svelte';
+	import AlertDialog from '$lib/components/ui/AlertDialog.svelte';
 	import {
-		Zap, RefreshCw, Power, Store, Download, Check, Star, Plus, Pencil, Trash2,
-		Wrench, Tag, FileText, Hash, FolderOpen, Loader2, Key
+		Zap, RefreshCw, Power, Plus, Pencil, Trash2,
+		Wrench, Tag, FileText, Hash, FolderOpen, Loader2
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
-	import type { ExtensionSkill, SkillItem } from '$lib/api/nebo';
+	import type { ExtensionSkill } from '$lib/api/nebo';
 	import { t } from 'svelte-i18n';
 
 	let skills = $state<ExtensionSkill[]>([]);
-	let storeSkills = $state<SkillItem[]>([]);
-	let neboLoopConnected = $state(false);
 	let isLoading = $state(true);
-	let isLoadingStore = $state(false);
 	let togglingSkill = $state<string | null>(null);
-	let installingSkill = $state<string | null>(null);
 	let deletingSkill = $state<string | null>(null);
 
 	let showEditor = $state(false);
@@ -25,6 +22,10 @@
 
 	let selectedSkill = $state<ExtensionSkill | null>(null);
 	let showDetail = $state(false);
+
+	// Delete confirmation dialog
+	let deleteTarget = $state<ExtensionSkill | null>(null);
+	let showDeleteDialog = $state(false);
 
 	// Secrets state
 	interface SecretInfo { key: string; label: string; hint: string; required: boolean; configured: boolean }
@@ -39,32 +40,12 @@
 	async function loadAll() {
 		isLoading = true;
 		try {
-			const [extensionsResp, loopStatus] = await Promise.all([
-				api.listExtensions(),
-				api.neboLoopStatus()
-			]);
+			const extensionsResp = await api.listExtensions();
 			skills = extensionsResp.skills || [];
-			neboLoopConnected = loopStatus.connected;
-
-			if (neboLoopConnected) {
-				loadStoreSkills();
-			}
 		} catch (error) {
 			console.error('Failed to load skills:', error);
 		} finally {
 			isLoading = false;
-		}
-	}
-
-	async function loadStoreSkills() {
-		isLoadingStore = true;
-		try {
-			const resp = await api.listStoreProducts({ type: "skill" } as any);
-			storeSkills = resp.skills || [];
-		} catch (error) {
-			console.error('Failed to load store skills:', error);
-		} finally {
-			isLoadingStore = false;
 		}
 	}
 
@@ -84,11 +65,19 @@
 		}
 	}
 
-	async function handleDelete(skill: ExtensionSkill) {
-		if (!confirm($t('settingsSkills.deleteConfirm', { values: { name: skill.name } }))) return;
-		deletingSkill = skill.name;
+	function promptDelete(skill: ExtensionSkill) {
+		deleteTarget = skill;
+		showDeleteDialog = true;
+	}
+
+	async function confirmDelete() {
+		if (!deleteTarget) return;
+		const name = deleteTarget.name;
+		showDeleteDialog = false;
+		deleteTarget = null;
+		deletingSkill = name;
 		try {
-			await api.deleteSkill(skill.name);
+			await api.deleteSkill(name);
 			showDetail = false;
 			selectedSkill = null;
 			await loadAll();
@@ -151,30 +140,6 @@
 			settingSecret = null;
 		}
 	}
-
-	async function handleInstall(skill: SkillItem) {
-		installingSkill = skill.id;
-		try {
-			await api.installStoreProduct(skill.id);
-			await loadAll();
-		} catch (error) {
-			console.error('Failed to install skill:', error);
-		} finally {
-			installingSkill = null;
-		}
-	}
-
-	async function handleUninstall(skill: SkillItem) {
-		installingSkill = skill.id;
-		try {
-			await api.uninstallStoreProduct(skill.id);
-			await loadAll();
-		} catch (error) {
-			console.error('Failed to uninstall skill:', error);
-		} finally {
-			installingSkill = null;
-		}
-	}
 </script>
 
 <div class="mb-6 flex items-center justify-between">
@@ -207,136 +172,43 @@
 		<p class="text-base">{$t('settingsSkills.loadingSkills')}</p>
 	</div>
 {:else}
-	<!-- Installed Skills -->
-	<div class="mb-8">
-		<h3 class="text-base font-semibold uppercase tracking-wider text-base-content/60 mb-4">{$t('settingsSkills.installedSkills')}</h3>
-
-		{#if skills.length > 0}
-			<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-				{#each skills as skill}
-					<button
-						type="button"
-						class="group text-left rounded-xl bg-base-100 p-4 shadow-sm ring-1 ring-base-content/5 transition-all hover:shadow-md hover:ring-primary/20 {!skill.enabled ? 'opacity-60' : ''}"
-						onclick={() => openDetail(skill)}
-					>
-						<div class="flex items-center gap-3 mb-2">
-							<div class="w-9 h-9 rounded-lg {skill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
-								<Zap class="w-4.5 h-4.5 {skill.enabled ? 'text-primary' : 'text-base-content/90'}" />
-							</div>
-							<div class="flex-1 min-w-0">
-								<div class="flex items-center gap-2">
-									<span class="font-display font-bold text-base text-base-content truncate">{skill.name}</span>
-									<span class="text-sm text-base-content/60 tabular-nums">v{skill.version}</span>
-								</div>
-							</div>
-							{#if skill.source === 'bundled'}
-								<span class="text-sm font-medium uppercase tracking-wide text-base-content/60">{$t('settingsSkills.bundled')}</span>
-							{/if}
+	{#if skills.length > 0}
+		<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+			{#each skills as skill}
+				<button
+					type="button"
+					class="group text-left rounded-xl bg-base-100 p-4 shadow-sm ring-1 ring-base-content/5 transition-all hover:shadow-md hover:ring-primary/20 {!skill.enabled ? 'opacity-60' : ''}"
+					onclick={() => openDetail(skill)}
+				>
+					<div class="flex items-center gap-3 mb-2">
+						<div class="w-9 h-9 rounded-lg {skill.enabled ? 'bg-primary/10' : 'bg-base-200'} flex items-center justify-center shrink-0">
+							<Zap class="w-4.5 h-4.5 {skill.enabled ? 'text-primary' : 'text-base-content/90'}" />
 						</div>
-						<p class="text-base text-base-content/80 line-clamp-2 leading-relaxed">{skill.description}</p>
-						{#if (skill as any).needsConfiguration}
-							<div class="flex items-center gap-1.5 mt-2">
-								<span class="w-2 h-2 rounded-full bg-warning"></span>
-								<span class="text-xs text-warning font-medium">{$t('settingsSkills.needsConfig')}</span>
+						<div class="flex-1 min-w-0">
+							<div class="flex items-center gap-2">
+								<span class="font-display font-bold text-base text-base-content truncate">{skill.name}</span>
+								<span class="text-sm text-base-content/60 tabular-nums">v{skill.version}</span>
 							</div>
+						</div>
+						{#if skill.source === 'bundled'}
+							<span class="text-sm font-medium uppercase tracking-wide text-base-content/60">{$t('settingsSkills.bundled')}</span>
 						{/if}
-					</button>
-				{/each}
-			</div>
-		{:else}
-			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/90">
-				<Zap class="w-12 h-12 mx-auto mb-4 opacity-20" />
-				<p class="font-medium mb-2">{$t('settingsSkills.noSkills')}</p>
-				<p class="text-base">{$t('settingsSkills.noSkillsDesc')}</p>
-			</div>
-		{/if}
-	</div>
-
-	<!-- Skill Store -->
-	{#if neboLoopConnected}
-		<div>
-			<h3 class="text-base font-semibold uppercase tracking-wider text-base-content/60 mb-4">{$t('settingsSkills.skillStore')}</h3>
-
-			{#if isLoadingStore}
-				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
-					<Spinner class="w-5 h-5 mx-auto mb-2" />
-					<p class="text-base">{$t('settingsSkills.loadingStore')}</p>
-				</div>
-			{:else if storeSkills.length > 0}
-				<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-					{#each storeSkills as skill}
-						<div class="rounded-xl bg-base-100 p-4 shadow-sm ring-1 ring-base-content/5 transition-all hover:shadow-md hover:ring-primary/20">
-							<div class="flex items-center gap-3 mb-2">
-								<div class="w-9 h-9 rounded-lg bg-base-200 flex items-center justify-center shrink-0 overflow-hidden">
-									{#if skill.icon}
-										<img src={skill.icon} alt={skill.name} class="w-9 h-9 rounded-lg object-cover" />
-									{:else}
-										<Store class="w-4.5 h-4.5 text-base-content/90" />
-									{/if}
-								</div>
-								<div class="flex-1 min-w-0">
-									<span class="font-display font-bold text-base text-base-content truncate block">{skill.name}</span>
-									<span class="text-sm text-base-content/60">
-										{$t('settingsSkills.byAuthor', { values: { name: skill.author.name } })}
-										{#if skill.author.verified}
-											<Check class="w-2.5 h-2.5 inline text-success" />
-										{/if}
-									</span>
-								</div>
-							</div>
-							<p class="text-base text-base-content/80 line-clamp-2 leading-relaxed mb-3">{skill.description}</p>
-							<div class="flex items-center justify-between">
-								<div class="flex items-center gap-3 text-sm text-base-content/60">
-									{#if skill.rating > 0}
-										<span class="flex items-center gap-0.5">
-											<Star class="w-3 h-3" />
-											{skill.rating.toFixed(1)}
-										</span>
-									{/if}
-									{#if skill.installCount > 0}
-										<span class="flex items-center gap-0.5">
-											<Download class="w-3 h-3" />
-											{skill.installCount}
-										</span>
-									{/if}
-								</div>
-								{#if skill.isInstalled}
-									<button
-										class="h-7 px-2.5 rounded-md bg-success/10 text-success text-sm font-semibold flex items-center gap-1 hover:bg-success/20 transition-colors disabled:opacity-50"
-										onclick={() => handleUninstall(skill)}
-										disabled={installingSkill === skill.id}
-									>
-										{#if installingSkill === skill.id}
-											<Loader2 class="w-3 h-3 animate-spin" />
-										{:else}
-											<Check class="w-3 h-3" />
-											{$t('common.installed')}
-										{/if}
-									</button>
-								{:else}
-									<button
-										class="h-7 px-2.5 rounded-md bg-primary text-primary-content text-sm font-semibold flex items-center gap-1 hover:brightness-110 transition-all disabled:opacity-50"
-										onclick={() => handleInstall(skill)}
-										disabled={installingSkill === skill.id}
-									>
-										{#if installingSkill === skill.id}
-											<Loader2 class="w-3 h-3 animate-spin" />
-										{:else}
-											{$t('common.install')}
-										{/if}
-									</button>
-								{/if}
-							</div>
+					</div>
+					<p class="text-base text-base-content/80 line-clamp-2 leading-relaxed">{skill.description}</p>
+					{#if (skill as any).needsConfiguration}
+						<div class="flex items-center gap-1.5 mt-2">
+							<span class="w-2 h-2 rounded-full bg-warning"></span>
+							<span class="text-xs text-warning font-medium">{$t('settingsSkills.needsConfig')}</span>
 						</div>
-					{/each}
-				</div>
-			{:else}
-				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-8 text-center text-base-content/90">
-					<Store class="w-10 h-10 mx-auto mb-3 opacity-20" />
-					<p class="font-medium mb-1">{$t('settingsSkills.noSkillsAvailable')}</p>
-					<p class="text-base">{$t('settingsSkills.checkBackLater')}</p>
-				</div>
-			{/if}
+					{/if}
+				</button>
+			{/each}
+		</div>
+	{:else}
+		<div class="rounded-2xl bg-base-200/50 border border-base-content/10 py-12 text-center text-base-content/90">
+			<Zap class="w-12 h-12 mx-auto mb-4 opacity-20" />
+			<p class="font-medium mb-2">{$t('settingsSkills.noSkills')}</p>
+			<p class="text-base">{$t('settingsSkills.noSkillsDesc')}</p>
 		</div>
 	{/if}
 {/if}
@@ -485,7 +357,7 @@
 						</button>
 						<button
 							class="h-8 px-3 rounded-lg bg-base-content/5 border border-base-content/10 text-sm font-medium text-base-content/60 hover:border-error/30 hover:text-error transition-colors flex items-center gap-1.5 disabled:opacity-50"
-							onclick={() => handleDelete(selectedSkill)}
+							onclick={() => promptDelete(selectedSkill)}
 							disabled={deletingSkill === selectedSkill.name}
 						>
 							{#if deletingSkill === selectedSkill.name}
@@ -519,4 +391,14 @@
 	skill={editingSkill}
 	onclose={() => { showEditor = false; }}
 	onsaved={() => loadAll()}
+/>
+
+<AlertDialog
+	bind:open={showDeleteDialog}
+	title={$t('settingsSkills.deleteTitle')}
+	description={$t('settingsSkills.deleteConfirm', { values: { name: deleteTarget?.name ?? '' } })}
+	actionLabel={$t('common.delete')}
+	actionType="danger"
+	onAction={confirmDelete}
+	onclose={() => { deleteTarget = null; }}
 />

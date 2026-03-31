@@ -89,10 +89,14 @@ pub async fn agent_mcp_handler(
             req.id,
             serde_json::json!({
                 "protocolVersion": "2025-03-26",
-                "capabilities": { "tools": {} },
+                "capabilities": {
+                    "tools": {},
+                    "resources": {},
+                    "prompts": {}
+                },
                 "serverInfo": {
-                    "name": "nebo-agent",
-                    "version": "1.0.0"
+                    "name": "nebo",
+                    "version": env!("CARGO_PKG_VERSION")
                 }
             }),
         ),

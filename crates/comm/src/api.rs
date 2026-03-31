@@ -289,11 +289,13 @@ impl NeboLoopApi {
 
     // ── Universal Code Redemption ────────────────────────────────────
 
-    /// Redeem any marketplace code (SKIL-*, WORK-*, AGNT-*) via the universal endpoint.
+    /// Redeem any marketplace code (SKIL-*, WORK-*, AGNT-*, PLUG-*) via the universal endpoint.
+    /// Includes platform so the server returns a resolved, platform-specific download URL.
     pub async fn redeem_code(&self, code: &str) -> Result<CodeRedeemResponse, CommError> {
         let body = serde_json::json!({
             "code": code,
             "botIds": [self.bot_id],
+            "platform": napp::plugin::current_platform_key(),
         });
         self.do_json(reqwest::Method::POST, "/api/v1/codes/redeem", Some(&body)).await
     }

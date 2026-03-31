@@ -141,7 +141,7 @@ impl Store {
 
             let mut stmt = conn.prepare(
                 "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
-                 ORDER BY created_at DESC, rowid DESC LIMIT ?3"
+                 ORDER BY created_at DESC, id DESC LIMIT ?3"
             ).map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt.query_map(params![chat_id, cursor_ts, limit], row_to_chat_message)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -154,8 +154,8 @@ impl Store {
             let mut stmt = conn.prepare(
                 "SELECT * FROM (
                     SELECT * FROM chat_messages WHERE chat_id = ?1
-                    ORDER BY created_at DESC, rowid DESC LIMIT ?2
-                ) ORDER BY created_at ASC, rowid ASC"
+                    ORDER BY created_at DESC, id DESC LIMIT ?2
+                ) ORDER BY created_at ASC, id ASC"
             ).map_err(|e| NeboError::Database(e.to_string()))?;
             let rows = stmt.query_map(params![chat_id, limit], row_to_chat_message)
                 .map_err(|e| NeboError::Database(e.to_string()))?;
@@ -163,6 +163,57 @@ impl Store {
                 .map_err(|e| NeboError::Database(e.to_string()))?
         };
         Ok(messages)
+    }
+
+    /// Get the most recent messages for a chat, bounded by a character budget rather than
+    /// a fixed count. Fetches newest-first, accumulates content + tool_calls + tool_results
+    /// length, and stops when the budget is exceeded. Always returns at least 1 message.
+    /// If `before` is provided, fetches messages older than that message ID.
+    /// Returns messages in ascending chronological order.
+    pub fn get_chat_messages_budgeted(&self, chat_id: &str, max_chars: i64, before: Option<&str>) -> Result<Vec<ChatMessage>, NeboError> {
+        let conn = self.conn()?;
+        // Fetch a generous batch newest-first (50 is plenty — budget will cut it short)
+        let batch_limit: i64 = 50;
+        let mut msgs: Vec<ChatMessage> = if let Some(before_id) = before {
+            let cursor_ts: i64 = conn.query_row(
+                "SELECT created_at FROM chat_messages WHERE id = ?1",
+                params![before_id],
+                |row| row.get(0),
+            ).map_err(|e| NeboError::Database(e.to_string()))?;
+            let mut stmt = conn.prepare(
+                "SELECT * FROM chat_messages WHERE chat_id = ?1 AND created_at < ?2
+                 ORDER BY created_at DESC, id DESC LIMIT ?3"
+            ).map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt.query_map(params![chat_id, cursor_ts, batch_limit], row_to_chat_message)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| NeboError::Database(e.to_string()))?
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT * FROM chat_messages WHERE chat_id = ?1
+                 ORDER BY created_at DESC, id DESC LIMIT ?2"
+            ).map_err(|e| NeboError::Database(e.to_string()))?;
+            let rows = stmt.query_map(params![chat_id, batch_limit], row_to_chat_message)
+                .map_err(|e| NeboError::Database(e.to_string()))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| NeboError::Database(e.to_string()))?
+        };
+        // msgs is newest-first — accumulate budget and truncate
+        let mut budget: i64 = 0;
+        let mut keep = 0usize;
+        for msg in &msgs {
+            let size = msg.content.len() as i64
+                + msg.tool_calls.as_ref().map_or(0, |s| s.len() as i64)
+                + msg.tool_results.as_ref().map_or(0, |s| s.len() as i64);
+            budget += size;
+            keep += 1;
+            if budget >= max_chars && keep > 1 {
+                break;
+            }
+        }
+        msgs.truncate(keep);
+        msgs.reverse(); // back to ascending order
+        Ok(msgs)
     }
 
     pub fn get_chat_message(&self, id: &str) -> Result<Option<ChatMessage>, NeboError> {

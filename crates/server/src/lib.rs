@@ -430,9 +430,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     migration::migrate_napp_extraction(&data_dir);
 
     // Initialize plugin store for shared binary management
-    let plugins_dir = data_dir.join("nebo").join("plugins");
-    let _ = std::fs::create_dir_all(&plugins_dir);
-    let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, None));
+    let installed_plugins_dir = data_dir.join("nebo").join("plugins");
+    let user_plugins_dir = data_dir.join("user").join("plugins");
+    let _ = std::fs::create_dir_all(&installed_plugins_dir);
+    let _ = std::fs::create_dir_all(&user_plugins_dir);
+    let plugin_store = Arc::new(napp::plugin::PluginStore::new(installed_plugins_dir, user_plugins_dir, None));
 
     // Initialize skill loader (bundled + extracted dirs from nebo/skills/ + loose files from user/skills/)
     let bundled_skills_dir = config::bundled_skills_dir().unwrap_or_else(|_| data_dir.join("bundled").join("skills"));
@@ -1553,6 +1555,12 @@ fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .route("/skills/{name}/secrets", axum::routing::get(handlers::skills::list_skill_secrets))
         .route("/skills/{name}/secrets", axum::routing::put(handlers::skills::set_skill_secret))
         .route("/skills/{name}/secrets/{key}", axum::routing::delete(handlers::skills::delete_skill_secret))
+        // Plugins
+        .route("/plugins", axum::routing::get(handlers::plugins::list_plugins))
+        .route("/plugins/{slug}", axum::routing::delete(handlers::plugins::remove_plugin))
+        .route("/plugins/{slug}/auth/login", axum::routing::post(handlers::plugins::auth_login))
+        .route("/plugins/{slug}/auth/logout", axum::routing::post(handlers::plugins::auth_logout))
+        .route("/plugins/{slug}/auth/status", axum::routing::get(handlers::plugins::auth_status))
         // Scheduled Tasks
         .route("/tasks", axum::routing::get(handlers::tasks::list_tasks))
         .route("/tasks", axum::routing::post(handlers::tasks::create_task))

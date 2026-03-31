@@ -15,6 +15,8 @@ pub struct PromptContext {
     pub db_context: Option<String>,
     /// Active agent AGENT.md body, injected before identity when set.
     pub active_agent: Option<String>,
+    /// Installed plugin inventory (env vars + binary paths) for the system prompt.
+    pub plugin_inventory: String,
 }
 
 /// Per-iteration inputs that change between agentic loop iterations.
@@ -138,6 +140,10 @@ Route every request to a tool call. Whether responding to a user message, execut
 
 **Email, calendar, contacts:**
 → os(resource: "mail"|"calendar"|"contacts"|"reminders", ...)
+
+**Installed plugins — external CLI tools (Gmail, Calendar, Drive, etc.):**
+→ plugin(resource: "<slug>", command: "<cli args>") — check active skill docs for exact command syntax
+→ Skills loaded for each plugin contain usage docs, flags, and examples — always follow them
 
 **Credentials & passwords:**
 → os(resource: "keychain", action: "get"|"find"|"add"|"delete", service: "...", ...)
@@ -404,12 +410,17 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // 8. System etiquette
     parts.push(SECTION_SYSTEM_ETIQUETTE.to_string());
 
-    // 9. Skill hints
+    // 9. Plugin inventory (installed plugin binaries the agent can use)
+    if !pctx.plugin_inventory.is_empty() {
+        parts.push(pctx.plugin_inventory.clone());
+    }
+
+    // 10. Skill hints
     if !pctx.skill_hints.is_empty() {
         parts.push(pctx.skill_hints.join("\n"));
     }
 
-    // 10. Active skill content
+    // 11. Active skill content
     if let Some(ref skill) = pctx.active_skill {
         if !skill.is_empty() {
             parts.push(skill.clone());
