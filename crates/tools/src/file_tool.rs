@@ -152,6 +152,17 @@ impl FileTool {
             }
         }
 
+        // Cap total result size to prevent huge files from blowing up context
+        const FILE_READ_MAX_CHARS: usize = 50_000;
+        if result.len() > FILE_READ_MAX_CHARS {
+            let total_len = result.len();
+            let truncated = crate::truncate_str(&result, FILE_READ_MAX_CHARS);
+            result = format!(
+                "{}\n\n[Output truncated: {} total chars, showing first {}. Use offset/limit params to read specific sections.]",
+                truncated, total_len, FILE_READ_MAX_CHARS
+            );
+        }
+
         if let Some(ref callback) = self.on_file_read {
             callback(&path);
         }

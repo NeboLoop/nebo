@@ -28,6 +28,8 @@ use crate::tool_filter;
 
 /// Default maximum agentic loop iterations per run.
 const DEFAULT_MAX_ITERATIONS: usize = 100;
+/// Extended ceiling when agent is making genuine progress (successful tool calls, no loops).
+const EXTENDED_MAX_ITERATIONS: usize = 200;
 /// Default context token limit for models that don't report one.
 const DEFAULT_CONTEXT_TOKEN_LIMIT: usize = 80_000;
 /// Max transient error retries before giving up.
@@ -37,7 +39,7 @@ const MAX_RETRYABLE_RETRIES: usize = 5;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// Max auto-continuations when agent stops mid-task.
-const MAX_AUTO_CONTINUATIONS: usize = 3;
+const MAX_AUTO_CONTINUATIONS: usize = 5;
 
 /// JSON shape for tool results stored in the DB. Includes optional image_url
 /// so vision-capable providers can receive screenshots in tool result content.
@@ -638,10 +640,38 @@ async fn run_loop(
         });
     }
 
-    for iteration in 1..=max_iterations {
+    // Use the extended ceiling for the loop range; adaptive check below enforces
+    // the default limit unless the agent is making genuine progress.
+    let hard_ceiling = max_iterations.max(EXTENDED_MAX_ITERATIONS);
+
+    for iteration in 1..=hard_ceiling {
         if cancel_token.is_cancelled() {
             info!(session_id, "run cancelled before iteration {}", iteration);
             return Ok(());
+        }
+
+        // Adaptive iteration limit: extend past default only if making genuine progress
+        if iteration > max_iterations && iteration <= hard_ceiling {
+            if consecutive_error_iterations >= 2
+                || steering::should_force_break(&steering::Context {
+                    session_id: session_id.to_string(),
+                    messages: sessions.get_messages(session_id).unwrap_or_default(),
+                    user_prompt: user_prompt.to_string(),
+                    active_task: active_task.clone(),
+                    channel: channel.to_string(),
+                    agent_name: "Nebo".to_string(),
+                    iteration,
+                    work_tasks: vec![],
+                    quota_warning: None,
+                    consecutive_error_iterations,
+                }).is_some()
+            {
+                info!(session_id, iteration, "adaptive limit: stopping, no progress");
+                break;
+            }
+            if iteration == max_iterations + 1 {
+                info!(session_id, "adaptive limit: extending past {} (making progress)", max_iterations);
+            }
         }
 
         // agent.should_continue filter — let apps dynamically stop the agent
@@ -691,11 +721,41 @@ async fn run_loop(
         // Build rolling summary if we evicted messages
         let summary = if !evicted.is_empty() {
             let existing_summary = sessions.get_summary(session_id).unwrap_or_default();
-            if existing_summary.is_empty() {
+            let cheap_model = selector.get_cheapest_model();
+            let prov = providers.read().await.first().cloned();
+            let new_summary = if let Some(prov) = prov {
+                pruning::build_llm_summary(
+                    prov.as_ref(),
+                    &evicted,
+                    &existing_summary,
+                    &active_task,
+                    &cheap_model,
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    debug!(error = %e, "LLM compaction failed, using fallback");
+                    if existing_summary.is_empty() {
+                        pruning::build_quick_fallback_summary(&evicted, &active_task)
+                    } else {
+                        format!(
+                            "{}\n\n{}",
+                            existing_summary,
+                            pruning::build_quick_fallback_summary(&evicted, &active_task)
+                        )
+                    }
+                })
+            } else if existing_summary.is_empty() {
                 pruning::build_quick_fallback_summary(&evicted, &active_task)
             } else {
-                existing_summary
-            }
+                format!(
+                    "{}\n\n{}",
+                    existing_summary,
+                    pruning::build_quick_fallback_summary(&evicted, &active_task)
+                )
+            };
+            // Persist so it survives across iterations
+            let _ = sessions.update_summary(session_id, &new_summary);
+            new_summary
         } else {
             sessions.get_summary(session_id).unwrap_or_default()
         };
@@ -737,7 +797,7 @@ async fn run_loop(
         let steering_ctx = steering::Context {
             session_id: session_id.to_string(),
             messages: window_messages.clone(),
-            user_prompt: String::new(),
+            user_prompt: user_prompt.to_string(),
             active_task: active_task.clone(),
             channel: channel.to_string(),
             agent_name: "Nebo".to_string(),
@@ -913,6 +973,7 @@ async fn run_loop(
                 session_id,
                 provider_idx = idx,
                 provider_id = prov_lock[idx].id(),
+                selected_provider_id,
                 selected_model = %selected_model,
                 provider_count = prov_lock.len(),
                 message_count = chat_req.messages.len(),
@@ -1418,13 +1479,24 @@ async fn run_loop(
 
             // Save all tool results to session in deterministic order
             // and track whether ALL results in this iteration were errors
+            const UNIVERSAL_TOOL_RESULT_CAP: usize = 100_000;
             let mut all_errors_this_iteration = true;
             let mut had_results = false;
             for entry in results.into_iter().flatten() {
-                let (tc, result) = entry;
+                let (tc, mut result) = entry;
                 had_results = true;
                 if !result.is_error {
                     all_errors_this_iteration = false;
+                }
+                // Universal safety net: cap any tool result that exceeds 100K chars.
+                // Per-tool caps (50K) handle common cases; this catches MCP, plugin, etc.
+                if result.content.len() > UNIVERSAL_TOOL_RESULT_CAP {
+                    let total_len = result.content.len();
+                    let preview = truncate_str(&result.content, 4_000);
+                    result.content = format!(
+                        "{}\n\n[Result truncated: {} chars total, showing first 4000. Re-run the tool with narrower parameters.]",
+                        preview, total_len
+                    );
                 }
                 let row = ToolResultRow {
                     tool_call_id: tc.id.clone(),
@@ -1475,9 +1547,13 @@ async fn run_loop(
         }
 
         // No tool calls — check if we should auto-continue
-        if !active_task.is_empty()
+        let has_task_context = !active_task.is_empty() || user_demanded_action(&all_messages);
+        let looks_like_pause = looks_like_continuation_pause(&assistant_content)
+            || looks_like_choice_question(&assistant_content);
+
+        if has_task_context
             && auto_continuations < MAX_AUTO_CONTINUATIONS
-            && looks_like_continuation_pause(&assistant_content)
+            && looks_like_pause
         {
             auto_continuations += 1;
             info!(
@@ -1486,10 +1562,17 @@ async fn run_loop(
                 "auto-continuing: agent paused mid-task"
             );
 
+            // Use active_task if available, otherwise a generic fallback
+            let task_desc = if active_task.is_empty() {
+                "the task the user asked you to do".to_string()
+            } else {
+                active_task.clone()
+            };
+
             // Inject a synthetic continuation message — scoped to the CURRENT task only
             let continuation_msg = format!(
-                "<system>Continue with the task you were just working on: {}. Do not ask for permission — use your tools to make progress. If you have completed this task, say so and stop.</system>",
-                active_task
+                "<system>Continue with the task you were just working on: {}. Do not ask for permission or present options — pick the best approach and use your tools to execute it. If you have completed this task, say so and stop.</system>",
+                task_desc
             );
             let _ = sessions.append_message(
                 session_id,
@@ -1606,6 +1689,67 @@ fn looks_like_continuation_pause(content: &str) -> bool {
         "awaiting your",
     ];
     patterns.iter().any(|p| lower.contains(p))
+}
+
+/// Detect when the assistant presents options instead of acting — another form
+/// of mid-task pausing that should trigger auto-continuation.
+fn looks_like_choice_question(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    let patterns = [
+        "which do you prefer",
+        "which would you prefer",
+        "which option",
+        "option 1",
+        "option a)",
+        "here are your options",
+        "here are a few options",
+        "would you prefer to",
+        "there are a few ways",
+        "there are several ways",
+        "i could either",
+        "we could either",
+        "a few approaches",
+        "which approach",
+        "what would you like me to",
+        "how would you like me to",
+    ];
+    patterns.iter().any(|p| lower.contains(p))
+}
+
+/// Check if recent user messages contain imperative language demanding action.
+/// Serves as an implicit active-task signal for auto-continuation when objective
+/// detection hasn't run yet.
+fn user_demanded_action(messages: &[ChatMessage]) -> bool {
+    let imperative_patterns = [
+        "do it", "just do it", "get it done", "finish it", "keep going",
+        "don't stop", "dont stop", "handle it", "do them all", "go ahead",
+        "get them done", "do them", "finish them", "just go", "proceed",
+        "continue", "keep at it", "do the rest", "all of them",
+    ];
+    // Check last 2 user messages (skip system/steering)
+    let recent_user: Vec<&ChatMessage> = messages
+        .iter()
+        .rev()
+        .filter(|m| {
+            m.role == "user"
+                && !m.content.starts_with("<system>")
+                && !m.content.starts_with("<steering")
+        })
+        .take(2)
+        .collect();
+
+    for msg in &recent_user {
+        let lower = msg.content.to_lowercase();
+        // Only match short imperative messages (not long messages that happen to contain these phrases)
+        if lower.len() < 120 {
+            for p in &imperative_patterns {
+                if lower.contains(p) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Convert database ChatMessages to ai::Messages for the provider.

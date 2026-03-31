@@ -65,6 +65,7 @@ impl Pipeline {
             Box::new(ActiveObjectiveReminder),
             Box::new(ProgressNudge),
             Box::new(LoopDetector),
+            Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
         ];
 
@@ -703,7 +704,27 @@ impl Generator for ProgressNudge {
     }
 }
 
-// 13. Janus Quota Warning
+// 13. Context Pressure
+struct ContextPressure;
+impl Generator for ContextPressure {
+    fn name(&self) -> &str { "context_pressure" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
+        // Fire every 15 iterations starting at 15 as a proxy for high context usage
+        if ctx.iteration < 15 || ctx.iteration % 15 != 0 {
+            return vec![];
+        }
+        vec![SteeringMessage {
+            content: "Context window is filling up. Keep responses concise. \
+                      Summarize tool results instead of echoing them verbatim. \
+                      Important information from earlier tool calls may be trimmed — \
+                      if you need to reference earlier results, re-run the tool."
+                .to_string(),
+            position: Position::End,
+        }]
+    }
+}
+
+// 14. Janus Quota Warning
 struct JanusQuotaWarning;
 impl Generator for JanusQuotaWarning {
     fn name(&self) -> &str { "janus_quota_warning" }

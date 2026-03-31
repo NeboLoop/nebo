@@ -1,4 +1,6 @@
+use ai::{ChatRequest, Message, Provider, StreamEventType};
 use db::models::ChatMessage;
+use tracing::debug;
 
 /// Approximate chars per token.
 const CHARS_PER_TOKEN: usize = 4;
@@ -320,6 +322,130 @@ pub fn build_quick_fallback_summary(messages: &[ChatMessage], active_objective: 
     }
 
     parts.join("\n")
+}
+
+/// Max tokens for compaction summary output.
+const COMPACTION_MAX_TOKENS: i32 = 2000;
+/// Max chars of evicted content to feed to the compaction model.
+const COMPACTION_CONTENT_CAP: usize = 80_000;
+
+/// Build a structured LLM summary of evicted messages.
+///
+/// Uses the sidecar pattern (isolated ChatRequest, no session/DB writes).
+/// Falls back to `build_quick_fallback_summary()` on any error.
+pub async fn build_llm_summary(
+    provider: &dyn Provider,
+    evicted: &[ChatMessage],
+    existing_summary: &str,
+    active_task: &str,
+    model: &str,
+) -> Result<String, String> {
+    // Serialize evicted messages into a compact transcript
+    let mut transcript = String::new();
+    for msg in evicted {
+        let role = msg.role.as_str();
+        if !msg.content.is_empty() {
+            transcript.push_str(&format!("[{}]: {}\n", role, msg.content));
+        }
+        if let Some(ref tc) = msg.tool_calls {
+            if !tc.is_empty() && tc != "[]" && tc != "null" {
+                transcript.push_str(&format!("[{} tool_calls]: {}\n", role, tc));
+            }
+        }
+        if let Some(ref tr) = msg.tool_results {
+            if !tr.is_empty() && tr != "[]" && tr != "null" {
+                // Truncate individual tool results in the transcript
+                let tr_display = if tr.len() > 500 {
+                    format!("{}...(truncated)", crate::runner::truncate_str(tr, 500))
+                } else {
+                    tr.clone()
+                };
+                transcript.push_str(&format!("[{} tool_result]: {}\n", role, tr_display));
+            }
+        }
+    }
+
+    // Cap total transcript fed to model
+    if transcript.len() > COMPACTION_CONTENT_CAP {
+        transcript.truncate(COMPACTION_CONTENT_CAP);
+    }
+
+    let mut user_content = String::new();
+    if !existing_summary.is_empty() {
+        user_content.push_str(&format!(
+            "## Existing Summary (merge with new context)\n{}\n\n",
+            existing_summary
+        ));
+    }
+    if !active_task.is_empty() {
+        user_content.push_str(&format!("## Active Objective\n{}\n\n", active_task));
+    }
+    user_content.push_str(&format!("## Conversation Transcript to Summarize\n{}", transcript));
+
+    let system = "\
+You are a conversation compaction engine. Produce a structured summary of the conversation transcript below. \
+If an existing summary is provided, merge it with the new information into one coherent summary. \
+Be concise but preserve critical context.
+
+Output format (use these exact headings):
+
+## Goal
+One sentence: what is the user trying to accomplish?
+
+## Key Decisions
+Bullet list of decisions made and approaches chosen.
+
+## Files & Resources
+Full paths of files read, written, or referenced.
+
+## Errors & Resolutions
+Any errors encountered and how they were resolved (or if still open).
+
+## Current State
+What has been completed and what remains.
+
+## User Requests
+Verbatim key requests from the user (quoted, max 3).
+
+## Pending Items
+Anything incomplete or blocked.";
+
+    let req = ChatRequest {
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: user_content,
+            ..Default::default()
+        }],
+        tools: vec![],
+        max_tokens: COMPACTION_MAX_TOKENS,
+        temperature: 0.0,
+        system: system.to_string(),
+        static_system: String::new(),
+        model: model.to_string(),
+        enable_thinking: false,
+        metadata: None,
+    };
+
+    let mut rx = provider
+        .stream(&req)
+        .await
+        .map_err(|e| format!("compaction stream: {e}"))?;
+
+    let mut text = String::new();
+    while let Some(event) = rx.recv().await {
+        match event.event_type {
+            StreamEventType::Text => text.push_str(&event.text),
+            StreamEventType::Done | StreamEventType::Error => break,
+            _ => {}
+        }
+    }
+
+    if text.is_empty() {
+        Err("compaction: empty response from provider".into())
+    } else {
+        debug!(summary_len = text.len(), "LLM compaction summary generated");
+        Ok(text)
+    }
 }
 
 #[cfg(test)]
