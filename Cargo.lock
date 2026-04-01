@@ -3748,6 +3748,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "sandbox-runtime",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

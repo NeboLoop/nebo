@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -22,6 +22,9 @@ pub struct ActiveAgent {
     pub config: Option<napp::agent::AgentConfig>,
     /// Optional bound NeboLoop channel.
     pub channel_id: Option<String>,
+    /// If set, this agent has unmet skill dependencies and is degraded.
+    /// The string describes which skill dependencies are missing.
+    pub degraded: Option<String>,
 }
 
 /// Registry of all currently active agents. Multiple agents run concurrently.
@@ -30,6 +33,83 @@ pub type AgentRegistry = Arc<RwLock<HashMap<String, ActiveAgent>>>;
 
 /// Legacy alias — callers that only need the old behavior can still compile.
 pub type ActiveAgentState = AgentRegistry;
+
+/// Validate agent→skill dependencies for all active agents.
+///
+/// For each agent that declares required skills (via `config.skills`), checks
+/// whether those skills are actually loaded. Agents with missing skill
+/// dependencies are marked as `degraded` with a descriptive reason string.
+///
+/// This does NOT prevent loading — degraded agents remain activatable but
+/// their missing capabilities will be logged at warn level.
+///
+/// Call this after both the agent registry and skill loader have been populated.
+pub async fn validate_agent_dependencies(
+    agent_registry: &AgentRegistry,
+    skill_loader: &crate::skills::Loader,
+) {
+    let loaded_skills = skill_loader.list().await;
+    let skill_names: HashSet<String> = loaded_skills.iter().map(|s| s.name.clone()).collect();
+
+    let mut registry = agent_registry.write().await;
+    for (agent_id, active_agent) in registry.iter_mut() {
+        let skill_refs = match active_agent.config {
+            Some(ref cfg) if !cfg.skills.is_empty() => &cfg.skills,
+            _ => continue,
+        };
+
+        let mut missing = Vec::new();
+        for skill_ref in skill_refs {
+            let skill_name = extract_skill_name_from_ref(skill_ref);
+            if !skill_names.contains(&skill_name) {
+                missing.push(skill_ref.clone());
+            }
+        }
+
+        if !missing.is_empty() {
+            let reason = format!("missing skills: {}", missing.join(", "));
+            warn!(
+                agent = %active_agent.name,
+                agent_id = %agent_id,
+                reason = %reason,
+                "agent degraded: unmet skill dependencies"
+            );
+            active_agent.degraded = Some(reason);
+        }
+    }
+}
+
+/// Extract the short skill name from a qualified reference.
+///
+/// Qualified refs look like `@nebo/skills/briefing-writer@^1.0.0` — this
+/// extracts `briefing-writer`. Install codes like `SKIL-XXXX-XXXX` are
+/// returned as-is since they can't be resolved to a skill name at load time.
+fn extract_skill_name_from_ref(skill_ref: &str) -> String {
+    // Install codes — return as-is (can't resolve without API call)
+    if skill_ref.starts_with("SKIL-") {
+        return skill_ref.to_string();
+    }
+
+    // Qualified: @org/skills/name@version → name
+    if skill_ref.starts_with('@') {
+        let without_at = &skill_ref[1..];
+        // Strip version suffix: @org/skills/name@^1.0.0 → org/skills/name
+        let name_part = if let Some(idx) = without_at.find('@') {
+            &without_at[..idx]
+        } else {
+            without_at
+        };
+        // Split on '/' and take the last segment
+        if let Some(last) = name_part.rsplit('/').next() {
+            if !last.is_empty() {
+                return last.to_string();
+            }
+        }
+    }
+
+    // Fallback: return as-is (bare name)
+    skill_ref.to_string()
+}
 
 /// PersonaTool manages the agent's personas — the top of the hierarchy.
 /// A persona defines who the agent is: persona, workflows, skills, triggers.
@@ -158,6 +238,7 @@ impl PersonaTool {
                     agent_md: body,
                     config: loaded.config.clone(),
                     channel_id: None,
+                    degraded: None,
                 };
                 self.agent_registry.write().await.insert(agent_id.clone(), active);
 
@@ -437,6 +518,7 @@ impl PersonaTool {
             agent_md: agent_md.clone(),
             config: parsed_config,
             channel_id: None,
+            degraded: None,
         };
         self.agent_registry.write().await.insert(id.clone(), active);
         result.push_str("\nAgent activated and visible in sidebar.");
@@ -1899,5 +1981,164 @@ impl DynTool for PersonaTool {
                 )),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_skill_name_qualified() {
+        assert_eq!(
+            extract_skill_name_from_ref("@nebo/skills/briefing-writer@^1.0.0"),
+            "briefing-writer"
+        );
+        assert_eq!(
+            extract_skill_name_from_ref("@acme/skills/data-analysis"),
+            "data-analysis"
+        );
+    }
+
+    #[test]
+    fn test_extract_skill_name_install_code() {
+        assert_eq!(
+            extract_skill_name_from_ref("SKIL-ABCD-1234"),
+            "SKIL-ABCD-1234"
+        );
+    }
+
+    #[test]
+    fn test_extract_skill_name_bare() {
+        assert_eq!(
+            extract_skill_name_from_ref("my-skill"),
+            "my-skill"
+        );
+    }
+
+    #[test]
+    fn test_extract_skill_name_edge_cases() {
+        // Version range without caret
+        assert_eq!(
+            extract_skill_name_from_ref("@nebo/skills/web-search@>=2.0.0"),
+            "web-search"
+        );
+        // No version suffix
+        assert_eq!(
+            extract_skill_name_from_ref("@org/skills/name"),
+            "name"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_agent_dependencies_marks_degraded() {
+        use tempfile::TempDir;
+
+        // Set up a skill loader with one skill loaded
+        let bundled = TempDir::new().unwrap();
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+
+        // Create a skill named "briefing-writer"
+        let skill_dir = user.path().join("briefing-writer");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: briefing-writer\ndescription: test\n---\nTemplate",
+        ).unwrap();
+
+        let loader = crate::skills::Loader::new(
+            bundled.path().to_path_buf(),
+            installed.path().to_path_buf(),
+            user.path().to_path_buf(),
+        );
+        loader.load_all().await;
+
+        // Create agent registry with an agent that requires two skills —
+        // one that exists and one that doesn't
+        let registry: AgentRegistry = Arc::new(RwLock::new(HashMap::new()));
+        {
+            let mut reg = registry.write().await;
+            reg.insert("agent-1".to_string(), ActiveAgent {
+                agent_id: "agent-1".to_string(),
+                name: "Test Agent".to_string(),
+                agent_md: String::new(),
+                config: Some(napp::agent::parse_agent_config(
+                    r#"{"skills": ["@nebo/skills/briefing-writer@^1.0.0", "@nebo/skills/missing-skill@^1.0.0"]}"#
+                ).unwrap()),
+                channel_id: None,
+                degraded: None,
+            });
+            // Agent with no config — should remain non-degraded
+            reg.insert("agent-2".to_string(), ActiveAgent {
+                agent_id: "agent-2".to_string(),
+                name: "No Config Agent".to_string(),
+                agent_md: String::new(),
+                config: None,
+                channel_id: None,
+                degraded: None,
+            });
+        }
+
+        // Run validation
+        validate_agent_dependencies(&registry, &loader).await;
+
+        // Agent-1 should be degraded (missing-skill not loaded)
+        let reg = registry.read().await;
+        let agent1 = reg.get("agent-1").unwrap();
+        assert!(agent1.degraded.is_some(), "agent-1 should be degraded");
+        assert!(
+            agent1.degraded.as_ref().unwrap().contains("missing-skill"),
+            "degraded reason should mention the missing skill"
+        );
+
+        // Agent-2 should NOT be degraded
+        let agent2 = reg.get("agent-2").unwrap();
+        assert!(agent2.degraded.is_none(), "agent-2 should not be degraded");
+    }
+
+    #[tokio::test]
+    async fn test_validate_agent_dependencies_all_satisfied() {
+        use tempfile::TempDir;
+
+        let bundled = TempDir::new().unwrap();
+        let installed = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+
+        // Create the required skill
+        let skill_dir = user.path().join("briefing-writer");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: briefing-writer\ndescription: test\n---\nTemplate",
+        ).unwrap();
+
+        let loader = crate::skills::Loader::new(
+            bundled.path().to_path_buf(),
+            installed.path().to_path_buf(),
+            user.path().to_path_buf(),
+        );
+        loader.load_all().await;
+
+        let registry: AgentRegistry = Arc::new(RwLock::new(HashMap::new()));
+        {
+            let mut reg = registry.write().await;
+            reg.insert("agent-ok".to_string(), ActiveAgent {
+                agent_id: "agent-ok".to_string(),
+                name: "Happy Agent".to_string(),
+                agent_md: String::new(),
+                config: Some(napp::agent::parse_agent_config(
+                    r#"{"skills": ["@nebo/skills/briefing-writer@^1.0.0"]}"#
+                ).unwrap()),
+                channel_id: None,
+                degraded: None,
+            });
+        }
+
+        validate_agent_dependencies(&registry, &loader).await;
+
+        let reg = registry.read().await;
+        let agent = reg.get("agent-ok").unwrap();
+        assert!(agent.degraded.is_none(), "agent with all deps satisfied should not be degraded");
     }
 }

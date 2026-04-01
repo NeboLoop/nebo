@@ -38,6 +38,23 @@ pub struct PluginDependency {
     pub optional: bool,
 }
 
+/// A skill-to-skill dependency declared in a skill's frontmatter.
+///
+/// ```yaml
+/// requires:
+///   - name: web-search
+///     version: ">=1.0.0"
+///   - name: data-analysis
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillRequirement {
+    /// Skill name (must match the loaded skill's `name` field).
+    pub name: String,
+    /// Semver version range. Defaults to `"*"` (any version).
+    #[serde(default = "default_version_range")]
+    pub version: String,
+}
+
 fn default_version_range() -> String {
     "*".to_string()
 }
@@ -97,12 +114,19 @@ pub struct Skill {
     /// Shared plugin binaries this skill depends on.
     #[serde(default)]
     pub plugins: Vec<PluginDependency>,
+    /// Skill-to-skill dependencies with optional version ranges.
+    #[serde(default)]
+    pub requires: Vec<SkillRequirement>,
     /// The markdown body (not from YAML — parsed from the content after frontmatter).
     #[serde(skip)]
     pub template: String,
     /// Whether this skill is currently enabled.
     #[serde(skip)]
     pub enabled: bool,
+    /// If set, this skill has unmet dependencies and is degraded.
+    /// The string describes which dependencies are missing or version-incompatible.
+    #[serde(skip)]
+    pub degraded: Option<String>,
     /// Filesystem path this skill was loaded from.
     #[serde(skip)]
     pub source_path: Option<PathBuf>,
@@ -407,9 +431,11 @@ You are a research specialist. When activated, focus on:
             priority: 0,
             max_turns: 0,
             plugins: vec![],
+            requires: vec![],
             metadata: HashMap::new(),
             template: String::new(),
             enabled: true,
+            degraded: None,
             source_path: None,
             source: SkillSource::User,
             base_dir: None,

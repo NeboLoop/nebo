@@ -62,7 +62,7 @@ pub use registry::{Registry, ResourceKind, ToolResult};
 pub use shell_tool::ShellTool;
 pub use system_tool::SystemTool;
 pub use os_tool::OsTool;
-pub use agent_tool::{PersonaTool, ActiveAgentState, ActiveAgent, AgentRegistry};
+pub use agent_tool::{PersonaTool, ActiveAgentState, ActiveAgent, AgentRegistry, validate_agent_dependencies};
 pub use web_tool::WebTool;
 pub use bot_tool::{AdvisorDeliberator, AgentTool, HybridSearchResult, HybridSearcher};
 pub use event_tool::EventTool;

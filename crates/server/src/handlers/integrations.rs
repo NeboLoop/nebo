@@ -417,7 +417,7 @@ pub async fn get_oauth_url(
 
 /// Dynamic Client Registration (RFC 7591).
 async fn do_client_registration(
-    state: &AppState,
+    _state: &AppState,
     registration_endpoint: &str,
     redirect_uri: &str,
 ) -> Result<(String, Option<String>), String> {

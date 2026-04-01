@@ -505,20 +505,66 @@ fn find_skill_md_disabled(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Verify skill dependencies — drop skills with missing deps or required plugins.
+/// Verify skill dependencies — mark skills with missing deps as degraded.
+///
+/// Skills with unmet dependencies are kept in the registry but marked with
+/// `degraded = Some(reason)` so the UI can surface a warning. The skill
+/// remains activatable but its missing capabilities will be logged.
 fn verify_dependencies(
     loaded: &mut HashMap<String, Skill>,
     plugin_store: Option<&napp::plugin::PluginStore>,
 ) {
     let names: HashSet<String> = loaded.keys().cloned().collect();
-    loaded.retain(|name, skill| {
-        // Check inter-skill dependencies
+    // Build a version map for requires checking: name -> version string
+    let versions: HashMap<String, String> = loaded
+        .iter()
+        .map(|(name, skill)| (name.clone(), skill.version.clone()))
+        .collect();
+
+    for (name, skill) in loaded.iter_mut() {
+        let mut reasons = Vec::new();
+
+        // Check inter-skill dependencies (legacy `dependencies` field — bare names)
         for dep in &skill.dependencies {
             if !names.contains(dep) {
-                warn!(skill = %name, missing_dep = %dep, "skill skipped: missing dependency");
-                return false;
+                reasons.push(format!("missing dependency: {}", dep));
             }
         }
+
+        // Check skill-to-skill requirements (new `requires` field — with version ranges)
+        for req in &skill.requires {
+            match versions.get(&req.name) {
+                None => {
+                    reasons.push(format!("missing required skill: {}", req.name));
+                }
+                Some(ver_str) => {
+                    // Check version compatibility if a range is specified
+                    if req.version != "*" && !req.version.is_empty() {
+                        if let Ok(req_range) = semver::VersionReq::parse(&req.version) {
+                            match semver::Version::parse(ver_str) {
+                                Ok(ver) if !req_range.matches(&ver) => {
+                                    reasons.push(format!(
+                                        "skill {} version {} does not satisfy {}",
+                                        req.name, ver_str, req.version
+                                    ));
+                                }
+                                Err(_) => {
+                                    // Installed skill has unparseable version — warn but don't fail
+                                    warn!(
+                                        skill = %name,
+                                        required_skill = %req.name,
+                                        installed_version = %ver_str,
+                                        "cannot verify version: installed skill has unparseable version"
+                                    );
+                                }
+                                _ => {} // version matches
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Check plugin dependencies (only required ones)
         if let Some(store) = plugin_store {
             for p in &skill.plugins {
@@ -526,13 +572,20 @@ fn verify_dependencies(
                     continue;
                 }
                 if store.resolve(&p.name, &p.version).is_none() {
-                    warn!(skill = %name, plugin = %p.name, version = %p.version, "skill skipped: missing required plugin");
-                    return false;
+                    reasons.push(format!(
+                        "missing required plugin: {} ({})",
+                        p.name, p.version
+                    ));
                 }
             }
         }
-        true
-    });
+
+        if !reasons.is_empty() {
+            let reason = reasons.join("; ");
+            warn!(skill = %name, reason = %reason, "skill degraded: unmet dependencies");
+            skill.degraded = Some(reason);
+        }
+    }
 }
 
 

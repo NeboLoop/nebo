@@ -737,6 +737,7 @@ async fn create_blank_agent(state: AppState) -> HandlerResult<serde_json::Value>
         agent_md: agent.agent_md.clone(),
         config: None,
         channel_id: None,
+        degraded: None,
     };
     state.agent_registry.write().await.insert(id.clone(), active);
     state.agent_workers.start_agent(&id, &agent.name).await;
@@ -982,6 +983,7 @@ pub async fn apply_agent_update(
                     agent_md: updated.agent_md.clone(),
                     config: Some(config),
                     channel_id: None,
+                    degraded: None,
                 };
                 state.agent_registry.write().await.insert(id.clone(), active);
             }
@@ -1174,6 +1176,7 @@ pub async fn activate_agent(
         agent_md: agent.agent_md.clone(),
         config,
         channel_id: None,
+        degraded: None,
     };
 
     state.agent_registry.write().await.insert(agent_id.clone(), active);
@@ -1316,6 +1319,7 @@ pub async fn duplicate_agent(
         agent_md: agent.agent_md.clone(),
         config: None,
         channel_id: None,
+        degraded: None,
     };
     state.agent_registry.write().await.insert(new_id.clone(), active);
     state.agent_workers.start_agent(&new_id, &agent.name).await;

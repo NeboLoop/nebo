@@ -424,6 +424,7 @@ Anything incomplete or blocked.";
         model: model.to_string(),
         enable_thinking: false,
         metadata: None,
+        cache_breakpoints: vec![],
     };
 
     let mut rx = provider

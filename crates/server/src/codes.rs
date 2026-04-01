@@ -413,6 +413,7 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             agent_md: agent.agent_md.clone(),
             config,
             channel_id: None,
+            degraded: None,
         };
         state.agent_registry.write().await.insert(artifact_id.clone(), active);
         state.hub.broadcast(
