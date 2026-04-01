@@ -85,6 +85,10 @@ pub struct RunRequest {
     /// Allowed filesystem paths — restricts file writes and shell commands to these directories.
     /// Empty = unrestricted.
     pub allowed_paths: Vec<String>,
+    /// User presence tracker (shared Arc, for live updates during the run).
+    pub presence_tracker: Option<Arc<crate::proactive::PresenceTracker>>,
+    /// Proactive inbox (shared Arc, drained once per run).
+    pub proactive_inbox: Option<Arc<crate::proactive::ProactiveInbox>>,
 }
 
 /// Per-run mutable state (prevents data races across concurrent runs).
@@ -351,6 +355,8 @@ impl Runner {
         let entity_resource_grants = req.resource_grants.clone();
         let personality_snippet = req.personality_snippet.clone();
         let allowed_paths = req.allowed_paths.clone();
+        let presence_tracker = req.presence_tracker.clone();
+        let proactive_inbox = req.proactive_inbox.clone();
 
         // Set MCP context so CLI providers can access tools with the right session info
         if let Some(ref mcp_ctx) = self.mcp_context {
@@ -393,6 +399,8 @@ impl Runner {
                 &force_skill,
                 skill_loader.as_deref(),
                 &allowed_paths,
+                presence_tracker.as_ref(),
+                proactive_inbox.as_ref(),
             )
             .await;
 
@@ -493,6 +501,8 @@ async fn run_loop(
     force_skill: &str,
     skill_loader: Option<&tools::skills::Loader>,
     allowed_paths: &[String],
+    presence_tracker: Option<&Arc<crate::proactive::PresenceTracker>>,
+    proactive_inbox: Option<&Arc<crate::proactive::ProactiveInbox>>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
@@ -668,6 +678,9 @@ async fn run_loop(
                     work_tasks: vec![],
                     quota_warning: None,
                     consecutive_error_iterations,
+                    user_presence: String::new(),
+                    user_just_returned: false,
+                    proactive_items: vec![],
                 }).is_some()
             {
                 info!(session_id, iteration, "adaptive limit: stopping, no progress");
@@ -797,6 +810,29 @@ async fn run_loop(
         let work_tasks: Vec<steering::WorkTask> = serde_json::from_str(&work_tasks_json)
             .unwrap_or_default();
 
+        // Resolve user presence for steering (live from shared tracker)
+        let (user_presence, user_just_returned) = if let Some(tracker) = presence_tracker {
+            let p = tracker.get("_global").await;
+            let jr = tracker.just_returned("_global").await;
+            (
+                p.map(|p| p.as_str().to_string()).unwrap_or_default(),
+                jr,
+            )
+        } else {
+            (String::new(), false)
+        };
+
+        // Drain proactive inbox on first iteration only
+        let proactive_items = if iteration == 1 {
+            if let Some(inbox) = proactive_inbox {
+                inbox.drain(session_id).await
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
         // Generate steering messages
         let steering_ctx = steering::Context {
             session_id: session_id.to_string(),
@@ -809,6 +845,9 @@ async fn run_loop(
             work_tasks,
             quota_warning: state.quota_warning.clone(),
             consecutive_error_iterations,
+            user_presence,
+            user_just_returned,
+            proactive_items,
         };
 
         // Circuit-breaker: check if the loop must be force-broken before making the next LLM call

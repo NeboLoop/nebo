@@ -37,6 +37,12 @@ pub struct Context {
     pub quota_warning: Option<String>,
     /// Number of consecutive iterations where ALL tool calls returned errors.
     pub consecutive_error_iterations: usize,
+    /// User presence state: "focused", "unfocused", "away", or empty if unknown.
+    pub user_presence: String,
+    /// Whether the user just transitioned from unfocused/away back to focused.
+    pub user_just_returned: bool,
+    /// Proactive items drained from the inbox for this iteration.
+    pub proactive_items: Vec<crate::proactive::ProactiveItem>,
 }
 
 /// A steering message generator.
@@ -53,6 +59,7 @@ pub struct Pipeline {
 impl Pipeline {
     pub fn new() -> Self {
         let generators: Vec<Box<dyn Generator>> = vec![
+            Box::new(ProactiveResults),
             Box::new(IdentityGuard),
             Box::new(ChannelAdapter),
             Box::new(ToolNudge),
@@ -65,6 +72,8 @@ impl Pipeline {
             Box::new(ActiveObjectiveReminder),
             Box::new(ProgressNudge),
             Box::new(LoopDetector),
+            Box::new(PresenceAwareness),
+            Box::new(ProactiveResults),
             Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
         ];
@@ -704,7 +713,60 @@ impl Generator for ProgressNudge {
     }
 }
 
-// 13. Context Pressure
+// 13. Presence Awareness — adapts behavior based on user focus state
+struct PresenceAwareness;
+impl Generator for PresenceAwareness {
+    fn name(&self) -> &str { "presence_awareness" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
+        if ctx.user_presence.is_empty() || ctx.iteration < 2 {
+            return vec![];
+        }
+
+        match ctx.user_presence.as_str() {
+            "unfocused" | "away" => {
+                vec![SteeringMessage {
+                    content: "The user stepped away. Continue working autonomously on active tasks. \
+                              Be thorough but concise in your output."
+                        .to_string(),
+                    position: Position::End,
+                }]
+            }
+            "focused" if ctx.user_just_returned => {
+                vec![SteeringMessage {
+                    content: "The user is back. If you completed work while they were away, \
+                              briefly summarize what you accomplished."
+                        .to_string(),
+                    position: Position::End,
+                }]
+            }
+            _ => vec![],
+        }
+    }
+}
+
+// 14. Proactive Results — injects background task results at the start of each iteration
+struct ProactiveResults;
+impl Generator for ProactiveResults {
+    fn name(&self) -> &str { "proactive_results" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
+        if ctx.proactive_items.is_empty() {
+            return vec![];
+        }
+
+        let mut summary = String::from("Background tasks completed while you were away:\n");
+        for item in &ctx.proactive_items {
+            summary.push_str(&format!("- [{}] {}: {}\n", item.priority, item.source, item.summary));
+        }
+        summary.push_str("\nMention these to the user naturally.");
+
+        vec![SteeringMessage {
+            content: summary,
+            position: Position::AfterUser,
+        }]
+    }
+}
+
+// 15. Context Pressure
 struct ContextPressure;
 impl Generator for ContextPressure {
     fn name(&self) -> &str { "context_pressure" }
@@ -724,7 +786,7 @@ impl Generator for ContextPressure {
     }
 }
 
-// 14. Janus Quota Warning
+// 16. Janus Quota Warning
 struct JanusQuotaWarning;
 impl Generator for JanusQuotaWarning {
     fn name(&self) -> &str { "janus_quota_warning" }
@@ -812,8 +874,97 @@ mod tests {
             work_tasks: vec![],
             quota_warning: None,
             consecutive_error_iterations: 0,
+            user_presence: String::new(),
+            user_just_returned: false,
+            proactive_items: vec![],
         };
         let result = guard.generate(&ctx);
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_presence_awareness_away() {
+        let messages = vec![
+            make_msg("user", "hello"),
+            make_msg("assistant", "hi"),
+        ];
+        let generator = PresenceAwareness;
+        let ctx = Context {
+            session_id: String::new(),
+            messages,
+            user_prompt: String::new(),
+            active_task: String::new(),
+            channel: "web".to_string(),
+            agent_name: "Nebo".to_string(),
+            iteration: 3,
+            work_tasks: vec![],
+            quota_warning: None,
+            consecutive_error_iterations: 0,
+            user_presence: "away".to_string(),
+            user_just_returned: false,
+            proactive_items: vec![],
+        };
+        let result = generator.generate(&ctx);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].content.contains("stepped away"));
+    }
+
+    #[test]
+    fn test_presence_awareness_returned() {
+        let messages = vec![
+            make_msg("user", "hello"),
+            make_msg("assistant", "hi"),
+        ];
+        let generator = PresenceAwareness;
+        let ctx = Context {
+            session_id: String::new(),
+            messages,
+            user_prompt: String::new(),
+            active_task: String::new(),
+            channel: "web".to_string(),
+            agent_name: "Nebo".to_string(),
+            iteration: 3,
+            work_tasks: vec![],
+            quota_warning: None,
+            consecutive_error_iterations: 0,
+            user_presence: "focused".to_string(),
+            user_just_returned: true,
+            proactive_items: vec![],
+        };
+        let result = generator.generate(&ctx);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].content.contains("user is back"));
+    }
+
+    #[test]
+    fn test_proactive_results() {
+        let generator = ProactiveResults;
+        let ctx = Context {
+            session_id: String::new(),
+            messages: vec![make_msg("user", "hello")],
+            user_prompt: String::new(),
+            active_task: String::new(),
+            channel: "web".to_string(),
+            agent_name: "Nebo".to_string(),
+            iteration: 1,
+            work_tasks: vec![],
+            quota_warning: None,
+            consecutive_error_iterations: 0,
+            user_presence: String::new(),
+            user_just_returned: false,
+            proactive_items: vec![
+                crate::proactive::ProactiveItem {
+                    source: "heartbeat:gws-email".to_string(),
+                    summary: "3 urgent emails from your boss".to_string(),
+                    priority: crate::proactive::Priority::Urgent,
+                    created_at: 1000,
+                },
+            ],
+        };
+        let result = generator.generate(&ctx);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].content.contains("Background tasks completed"));
+        assert!(result[0].content.contains("3 urgent emails"));
+        assert_eq!(result[0].position, Position::AfterUser);
     }
 }

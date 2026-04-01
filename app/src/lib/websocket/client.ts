@@ -44,6 +44,11 @@ export interface RewriteError {
 
 type MessageHandler<T = any> = (data: T) => void | Promise<void>;
 
+/** Time in ms before "unfocused" transitions to "away". */
+const AWAY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+type PresenceStatus = 'focused' | 'unfocused' | 'away';
+
 /**
  * Get WebSocket URL based on current page origin
  */
@@ -66,6 +71,11 @@ class WebSocketClient {
 	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempts = 0;
 	private authToken: string | null = null;
+
+	// Presence tracking state
+	private currentPresence: PresenceStatus = 'focused';
+	private awayTimer: ReturnType<typeof setTimeout> | null = null;
+	private presenceListenersAttached = false;
 
 	private setStatus(status: ConnectionStatus) {
 		if (this.currentStatus === status) return;
@@ -157,6 +167,9 @@ class WebSocketClient {
 							this.setStatus('connected');
 							this.reconnectAttempts = 0;
 
+							// Start presence tracking after first successful connection
+							this.startPresenceTracking();
+
 							// Flush queued messages
 							while (this.messageQueue.length > 0) {
 								const msg = this.messageQueue.shift();
@@ -210,12 +223,81 @@ class WebSocketClient {
 			this.reconnectTimeout = null;
 		}
 
+		// Clean up presence tracking timer
+		if (this.awayTimer) {
+			clearTimeout(this.awayTimer);
+			this.awayTimer = null;
+		}
+
 		if (this.ws) {
 			this.ws.close();
 			this.ws = null;
 		}
 
 		this.setStatus('disconnected');
+	}
+
+	// ── Presence tracking ──────────────────────────────────────────
+
+	/**
+	 * Start tracking user presence via visibility/focus events.
+	 * Called once after the first successful connect.
+	 */
+	private startPresenceTracking(): void {
+		if (typeof document === 'undefined' || this.presenceListenersAttached) return;
+		this.presenceListenersAttached = true;
+
+		document.addEventListener('visibilitychange', this.handleVisibilityChange);
+		window.addEventListener('focus', this.handleWindowFocus);
+		window.addEventListener('blur', this.handleWindowBlur);
+	}
+
+	private handleVisibilityChange = (): void => {
+		if (document.visibilityState === 'visible') {
+			this.setPresence('focused');
+		} else {
+			this.setPresence('unfocused');
+		}
+	};
+
+	private handleWindowFocus = (): void => {
+		this.setPresence('focused');
+	};
+
+	private handleWindowBlur = (): void => {
+		this.setPresence('unfocused');
+	};
+
+	private setPresence(status: PresenceStatus): void {
+		// Clear any pending away timer
+		if (this.awayTimer) {
+			clearTimeout(this.awayTimer);
+			this.awayTimer = null;
+		}
+
+		if (status === 'unfocused') {
+			// Start timer to transition to "away" after 5 minutes
+			this.awayTimer = setTimeout(() => {
+				this.awayTimer = null;
+				this.updatePresence('away');
+			}, AWAY_TIMEOUT_MS);
+		}
+
+		this.updatePresence(status);
+	}
+
+	private updatePresence(status: PresenceStatus): void {
+		if (status === this.currentPresence) return;
+		this.currentPresence = status;
+		this.send('presence', { status });
+		log.debug('Presence updated: ' + status);
+	}
+
+	/**
+	 * Get the current user presence status.
+	 */
+	getPresence(): PresenceStatus {
+		return this.currentPresence;
 	}
 
 	/**

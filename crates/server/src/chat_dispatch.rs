@@ -79,6 +79,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
     let hub = state.hub.clone();
     let runner = state.runner.clone();
     let janus_usage = state.janus_usage.clone();
+    let presence_tracker = state.presence.clone();
+    let proactive_inbox = state.proactive_inbox.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
     } else {
@@ -164,6 +166,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
             personality_snippet,
             images,
             allowed_paths,
+            presence_tracker: Some(presence_tracker.clone()),
+            proactive_inbox: Some(proactive_inbox.clone()),
             ..Default::default()
         };
 

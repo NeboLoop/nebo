@@ -81,6 +81,7 @@
 		thinking?: string;
 		contentBlocks?: ContentBlock[];
 		senderName?: string; // For channel mode multi-participant display
+		proactive?: boolean; // Agent-initiated proactive message
 	}
 
 	interface ToolCall {
@@ -674,6 +675,7 @@
 		toolCalls?: ToolCall[];
 		thinking?: string;
 		contentBlocks?: ContentBlock[];
+		proactive?: boolean;
 	}
 
 	function parseMetadata(metadata: string | undefined): ParsedMetadata {
@@ -700,6 +702,10 @@
 
 			if (parsed.contentBlocks && Array.isArray(parsed.contentBlocks)) {
 				result.contentBlocks = parsed.contentBlocks;
+			}
+
+			if (parsed.proactive === true) {
+				result.proactive = true;
 			}
 
 			return result;
@@ -759,7 +765,8 @@
 					timestamp: new Date(m.createdAt * 1000),
 					toolCalls: meta.toolCalls,
 					thinking: meta.thinking,
-					contentBlocks
+					contentBlocks,
+					proactive: meta.proactive
 				};
 			});
 			totalMessages = res.totalMessages || messages.length;
@@ -802,7 +809,8 @@
 					timestamp: new Date(m.createdAt * 1000),
 					toolCalls: meta.toolCalls,
 					thinking: meta.thinking,
-					contentBlocks
+					contentBlocks,
+					proactive: meta.proactive
 				};
 			});
 			totalMessages = res.totalMessages || messages.length;

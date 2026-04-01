@@ -430,7 +430,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Initialize plugin store for shared binary management
     let plugins_dir = data_dir.join("nebo").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
-    let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, None));
+    let user_plugins_dir = data_dir.join("user").join("plugins");
+    let _ = std::fs::create_dir_all(&user_plugins_dir);
+    let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, user_plugins_dir, None));
 
     // Initialize skill loader (bundled + extracted dirs from nebo/skills/ + loose files from user/skills/)
     let bundled_skills_dir = config::bundled_skills_dir().unwrap_or_else(|_| data_dir.join("bundled").join("skills"));
@@ -504,8 +506,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     };
 
-    // Create shared role registry — multiple roles can be active concurrently, each with isolated persona
-    let active_role_state: tools::RoleRegistry = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    // Create shared agent registry — multiple agents can be active concurrently, each with isolated persona
+    let active_role_state: tools::AgentRegistry = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
     // Create broadcaster closure for tools to emit WS events
     let hub_for_tools = hub.clone();
@@ -788,56 +790,61 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
     ))).await;
 
-    // Create role worker registry — manages autonomous trigger lifecycle for each role
-    let role_workers = Arc::new(agent::RoleWorkerRegistry::new(
+    // Create agent worker registry — manages autonomous trigger lifecycle for each agent
+    let agent_workers = Arc::new(agent::AgentWorkerRegistry::new(
         store.clone(),
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
         event_dispatcher.clone(),
+        plugin_store.clone(),
     ));
 
-    // Start workers for all enabled roles (replaces manual trigger reconciliation)
+    // Start workers for all enabled agents (replaces manual trigger reconciliation)
     {
-        if let Ok(roles) = store.list_roles(1000, 0) {
+        if let Ok(agents) = store.list_agents(1000, 0) {
             let mut started = 0usize;
-            for role in &roles {
-                if role.is_enabled == 0 {
+            for agent in &agents {
+                if agent.is_enabled == 0 {
                     continue;
                 }
-                role_workers.start_role(&role.id, &role.name).await;
+                agent_workers.start_agent(&agent.id, &agent.name).await;
                 started += 1;
             }
             if started > 0 {
-                info!(count = started, "started role workers for enabled roles");
+                info!(count = started, "started agent workers for enabled agents");
             }
         }
     }
 
-    // Populate role_registry from DB so enabled roles appear in sidebar after restart
+    // Populate agent_registry from DB so enabled agents appear in sidebar after restart
     {
-        if let Ok(roles) = store.list_roles(1000, 0) {
+        if let Ok(agents) = store.list_agents(1000, 0) {
             let mut registry = active_role_state.write().await;
-            for role in &roles {
-                if role.is_enabled == 0 {
+            for agent in &agents {
+                if agent.is_enabled == 0 {
                     continue;
                 }
-                let config = if !role.frontmatter.is_empty() {
-                    napp::role::parse_role_config(&role.frontmatter).ok()
+                let config = if !agent.frontmatter.is_empty() {
+                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
                 } else {
                     None
                 };
-                registry.insert(role.id.clone(), tools::ActiveRole {
-                    role_id: role.id.clone(),
-                    name: role.name.clone(),
-                    role_md: role.role_md.clone(),
+                registry.insert(agent.id.clone(), tools::ActiveAgent {
+                    agent_id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    agent_md: agent.agent_md.clone(),
                     config,
                     channel_id: None,
+                    degraded: None,
                 });
             }
             if !registry.is_empty() {
-                info!(count = registry.len(), "restored active roles from DB");
+                info!(count = registry.len(), "restored active agents from DB");
             }
         }
     }
+
+    // Validate agent→skill dependencies — mark agents with missing skills as degraded
+    tools::validate_agent_dependencies(&active_role_state, &skill_loader).await;
 
     // Spawn event dispatcher loop (matches events to role-owned subscriptions)
     event_dispatcher.clone().spawn(
@@ -893,10 +900,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         event_dispatcher,
         plan_tier,
         skill_loader: skill_loader.clone(),
-        role_registry: active_role_state,
-        role_workers,
+        agent_registry: active_role_state,
+        agent_workers,
         janus_usage: Arc::new(tokio::sync::RwLock::new(None)),
         plugin_store,
+        presence: Arc::new(agent::PresenceTracker::new()),
+        proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
     };
 
     // Replace comm message handler with full version that routes chat/DM to agent runner
@@ -1178,10 +1187,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
 
         let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
-        let role_id = resolve_role_id_from_slug(&state, &agent_slug).await;
+        let agent_id = resolve_agent_id_from_slug(&state, &agent_slug).await;
         tracing::info!(
             agent_slug = %agent_slug,
-            role_id = %role_id,
+            agent_id = %agent_id,
             text_len = text.len(),
             "agent_space: routing to role"
         );
@@ -1194,9 +1203,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 
         // Pre-create chat with friendly title (agent name, not raw session key)
         let role_name = {
-            let registry = state.role_registry.read().await;
+            let registry = state.agent_registry.read().await;
             registry
-                .get(&role_id)
+                .get(&agent_id)
                 .map(|r| r.name.clone())
                 .unwrap_or_else(|| agent_slug.clone())
         };
@@ -1218,7 +1227,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             user_id: String::new(),
             channel: "neboloop".to_string(),
             origin: tools::Origin::Comm,
-            role_id,
+            agent_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -1256,10 +1265,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             if text.is_empty() {
                 return;
             }
-            let role_id = resolve_role_id_from_slug(&state, &agent_slug).await;
+            let agent_id = resolve_agent_id_from_slug(&state, &agent_slug).await;
             tracing::info!(
                 agent_slug = %agent_slug,
-                role_id = %role_id,
+                agent_id = %agent_id,
                 conv_id = %msg.conversation_id,
                 "dm→agent_space reroute: conv belongs to agent space"
             );
@@ -1271,9 +1280,9 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             );
 
             let role_name = {
-                let registry = state.role_registry.read().await;
+                let registry = state.agent_registry.read().await;
                 registry
-                    .get(&role_id)
+                    .get(&agent_id)
                     .map(|r| r.name.clone())
                     .unwrap_or_else(|| agent_slug.clone())
             };
@@ -1295,7 +1304,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 user_id: String::new(),
                 channel: "neboloop".to_string(),
                 origin: tools::Origin::Comm,
-                role_id,
+                agent_id,
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
                 comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -1347,14 +1356,14 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             &msg.topic,
         );
 
-        // Check for @mention routing — if agent_slug is present, resolve to role_id
-        let role_id = {
+        // Check for @mention routing — if agent_slug is present, resolve to agent_id
+        let agent_id = {
             let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
-            resolve_role_id_from_slug(&state, &agent_slug).await
+            resolve_agent_id_from_slug(&state, &agent_slug).await
         };
 
         // Pre-create chat with @mention context if applicable
-        if !role_id.is_empty() {
+        if !agent_id.is_empty() {
             let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
             let _ = state.store.create_chat(&session_key, &format!("@{} (channel)", agent_slug));
         }
@@ -1366,7 +1375,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             user_id: String::new(),
             channel: "neboloop".to_string(),
             origin: tools::Origin::Comm,
-            role_id,
+            agent_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -1425,11 +1434,11 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 }
 
 /// Resolve a role ID from an agent slug by scanning the active role registry.
-async fn resolve_role_id_from_slug(state: &AppState, slug: &str) -> String {
+async fn resolve_agent_id_from_slug(state: &AppState, slug: &str) -> String {
     if slug.is_empty() {
         return String::new();
     }
-    let registry = state.role_registry.read().await;
+    let registry = state.agent_registry.read().await;
     for (id, role) in registry.iter() {
         if role.name.to_lowercase().replace(' ', "-") == slug {
             return id.clone();

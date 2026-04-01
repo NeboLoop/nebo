@@ -58,6 +58,7 @@
 		streaming?: boolean;
 		thinking?: string;
 		contentBlocks?: ContentBlock[];
+		proactive?: boolean;
 	}
 
 	interface ResolvedMessage {
@@ -122,6 +123,7 @@
 	}
 
 	const groupTimestamp = $derived(messages[messages.length - 1]?.timestamp || messages[0]?.timestamp);
+	const isProactive = $derived(messages.some(m => m.proactive));
 
 	// Pre-resolve all message data including tool lookups into a flat structure.
 	// This ensures Svelte's reactivity tracks every piece of data that affects rendering.
@@ -285,7 +287,7 @@
 								</div>
 							{:else}
 								<div
-									class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''}"
+									class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 mb-1 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming && block.isLastBlock ? 'animate-pulse-border' : ''} {resolved.message.proactive ? 'proactive-message' : ''}"
 								>
 									<div class="prose prose-invert max-w-none leading-relaxed">
 										<Markdown content={block.text} />
@@ -363,7 +365,7 @@
 							</div>
 						{:else}
 							<div
-								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming ? 'animate-pulse-border' : ''}"
+								class="relative rounded-xl px-3.5 py-2.5 max-w-full break-words transition-colors duration-150 {role === 'user' ? 'bg-primary/10 hover:bg-primary/15' : 'bg-base-200 hover:bg-base-200/80'} {resolved.message.streaming ? 'animate-pulse-border' : ''} {resolved.message.proactive ? 'proactive-message' : ''}"
 							>
 								{#if resolved.message.streaming && !resolved.cleanContent}
 									<ReadingIndicator />

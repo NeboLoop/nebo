@@ -358,6 +358,17 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         let _ = tx.send(approved);
                                     }
                                 }
+                                "presence" => {
+                                    let status = parsed["data"]["status"]
+                                        .as_str()
+                                        .unwrap_or("");
+                                    if let Some(presence) = agent::proactive::Presence::from_str(status) {
+                                        // Update global presence — applies to all sessions
+                                        // from this client connection.
+                                        state.presence.set("_global", presence).await;
+                                        debug!("presence updated: {}", status);
+                                    }
+                                }
                                 "request_introduction" => {
                                     // Introduction not yet implemented in Rust backend.
                                     // Send chat_complete so frontend resets isLoading.
@@ -474,7 +485,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
     let system = data["system"].as_str().unwrap_or("").to_string();
     let user_id = data["user_id"].as_str().unwrap_or("").to_string();
     let channel = data["channel"].as_str().unwrap_or("web").to_string();
-    let role_id = data["role_id"].as_str().unwrap_or("").to_string();
+    let agent_id = data["agent_id"].as_str().unwrap_or("").to_string();
 
     info!(
         session_id = %session_id,
@@ -510,19 +521,19 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         return;
     }
 
-    // If role_id is set, build a role-scoped session key for isolation
-    let session_key = if !role_id.is_empty() {
-        agent::keyparser::build_role_session_key(&role_id, &channel)
+    // If agent_id is set, build a role-scoped session key for isolation
+    let session_key = if !agent_id.is_empty() {
+        agent::keyparser::build_agent_session_key(&agent_id, &channel)
     } else {
         session_id
     };
 
-    info!(session_id = %session_key, role_id = %role_id, "dispatching chat to agent");
+    info!(session_id = %session_key, agent_id = %agent_id, "dispatching chat to agent");
 
     // Resolve entity config for the active entity
     let entity_config = {
-        let (etype, eid) = if !role_id.is_empty() {
-            ("role", role_id.as_str())
+        let (etype, eid) = if !agent_id.is_empty() {
+            ("role", agent_id.as_str())
         } else {
             ("main", "main")
         };
@@ -536,7 +547,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         user_id,
         channel,
         origin: Origin::User,
-        role_id,
+        agent_id,
         cancel_token: CancellationToken::new(),
         lane: lanes::MAIN.to_string(),
         comm_reply: None,

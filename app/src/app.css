@@ -396,6 +396,11 @@
 		animation: pulse-border 1.5s ease-out infinite;
 		border: 1px solid color-mix(in srgb, var(--color-base-content) 20%, transparent);
 	}
+
+	/* Proactive (agent-initiated) message indicator — subtle left accent border */
+	.proactive-message {
+		border-left: 2px solid color-mix(in srgb, var(--color-secondary) 60%, transparent);
+	}
 }
 
 

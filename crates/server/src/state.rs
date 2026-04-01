@@ -83,4 +83,8 @@ pub struct AppState {
     pub janus_usage: Arc<tokio::sync::RwLock<Option<JanusUsage>>>,
     /// Plugin store for shared binary management (plugins downloaded once, shared across skills)
     pub plugin_store: Arc<napp::plugin::PluginStore>,
+    /// User presence tracker — per-session focused/unfocused/away state
+    pub presence: Arc<agent::PresenceTracker>,
+    /// Proactive inbox — in-memory queue for background task results
+    pub proactive_inbox: Arc<agent::ProactiveInbox>,
 }
