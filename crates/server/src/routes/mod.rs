@@ -14,6 +14,7 @@ mod integrations;
 mod memory;
 mod neboloop;
 mod notifications;
+mod plugins;
 mod provider;
 mod roles;
 mod setup;
@@ -54,6 +55,7 @@ pub fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
         .merge(workflows::routes())
         .merge(roles::routes())
         .merge(commander::routes())
+        .merge(plugins::routes())
         .merge(store::routes())
         .merge(entity_config::routes())
         .merge(user::public_routes())

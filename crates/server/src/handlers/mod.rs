@@ -8,6 +8,7 @@ pub mod mcp_server;
 pub mod memory;
 pub mod neboloop;
 pub mod notification;
+pub mod plugins;
 pub mod provider;
 pub mod agents;
 pub mod setup;
