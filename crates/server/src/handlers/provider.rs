@@ -81,12 +81,19 @@ pub(crate) async fn reload_providers(state: &AppState) {
                     == Some("true");
                 if is_janus {
                     // Skip Janus if user has disabled all Janus chat models.
+                    // Only count chat-capable models (not embedding-only).
                     // Fail-safe: if DB query fails, skip Janus (don't burn tokens).
-                    let has_active_models = state.store
+                    let has_active_chat = state.store
                         .list_active_provider_models("janus")
-                        .map(|models| !models.is_empty())
+                        .map(|models| models.iter().any(|m| {
+                            let caps: Vec<String> = m.capabilities
+                                .as_ref()
+                                .and_then(|c| serde_json::from_str(c).ok())
+                                .unwrap_or_default();
+                            caps.iter().any(|c| c == "streaming" || c == "tools")
+                        }))
                         .unwrap_or(false);
-                    if !has_active_models {
+                    if !has_active_chat {
                         info!("janus provider has no active models in catalog, skipping");
                         None
                     } else {
@@ -587,6 +594,34 @@ pub async fn update_model(
             .store
             .update_provider_model_preferred(&model.id, if preferred { 1 } else { 0 })
             .map_err(to_error_response)?;
+    }
+
+    // Janus cascade: when no chat-capable Janus models remain active,
+    // disable ALL Janus models (embeddings cost money too).
+    if provider == "janus" {
+        let has_active_chat = state.store
+            .list_active_provider_models("janus")
+            .unwrap_or_default()
+            .iter()
+            .any(|m| {
+                let caps: Vec<String> = m.capabilities
+                    .as_ref()
+                    .and_then(|c| serde_json::from_str(c).ok())
+                    .unwrap_or_default();
+                caps.iter().any(|c| c == "streaming" || c == "tools")
+            });
+
+        if !has_active_chat {
+            // No chat models active → disable ALL Janus models (embeddings too)
+            if let Ok(all_janus) = state.store.list_provider_models("janus") {
+                for m in &all_janus {
+                    if m.is_active.unwrap_or(0) == 1 {
+                        let _ = state.store.update_provider_model_active(&m.id, 0);
+                    }
+                }
+            }
+            info!("janus chat model disabled — cascade-disabled all janus models (embeddings)");
+        }
     }
 
     // Reload providers so model toggle takes effect immediately

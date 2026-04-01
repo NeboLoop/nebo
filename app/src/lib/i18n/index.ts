@@ -18,6 +18,7 @@ register('tr', () => import('./locales/tr.json'));
 register('vi', () => import('./locales/vi.json'));
 register('ar', () => import('./locales/ar.json'));
 register('uk', () => import('./locales/uk.json'));
+register('ru', () => import('./locales/ru.json'));
 register('nl', () => import('./locales/nl.json'));
 
 init({

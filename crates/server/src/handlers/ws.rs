@@ -533,7 +533,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
     // Resolve entity config for the active entity
     let entity_config = {
         let (etype, eid) = if !agent_id.is_empty() {
-            ("role", agent_id.as_str())
+            ("agent", agent_id.as_str())
         } else {
             ("main", "main")
         };

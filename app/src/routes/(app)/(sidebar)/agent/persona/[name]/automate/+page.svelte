@@ -18,7 +18,7 @@
 		<div class="max-w-3xl mx-auto px-6 py-6">
 			{#if channelState.activeAgentId}
 				<AutomationsSection
-					entityType="role"
+					entityType="agent"
 					entityId={channelState.activeAgentId}
 					roleId={channelState.activeAgentId}
 				/>

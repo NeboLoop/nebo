@@ -58,7 +58,7 @@
 
 	// Entity config panel state
 	let showConfig = $state(false);
-	const entityType = $derived(isChannel ? 'channel' : isAgent ? 'role' : 'main');
+	const entityType = $derived(isChannel ? 'channel' : isAgent ? 'agent' : 'main');
 	const entityId = $derived(isChannel ? (mode.channelId ?? '') : isAgent ? (mode.agentId ?? '') : 'main');
 
 	// ── Shared interfaces ──────────────────────────────────────────────

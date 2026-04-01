@@ -41,7 +41,7 @@
 		try {
 			const [agentRes, configRes] = await Promise.all([
 				getAgent(channelState.activeAgentId).catch(() => null),
-				getEntityConfig('role', channelState.activeAgentId).catch(() => null),
+				getEntityConfig('agent', channelState.activeAgentId).catch(() => null),
 			]);
 
 			if (agentRes?.agent) {
@@ -105,7 +105,7 @@
 			// Save allowed paths
 			if (allowedPathsText !== savedPathsText) {
 				const paths = allowedPathsText.split('\n').map(p => p.trim()).filter(p => p.length > 0);
-				await updateEntityConfig('role', channelState.activeAgentId, {
+				await updateEntityConfig('agent', channelState.activeAgentId, {
 					allowedPaths: paths,
 				});
 				savedPathsText = allowedPathsText;

@@ -66,9 +66,12 @@ pub struct ModelRoutingConfig {
 
 impl ModelRoutingConfig {
     /// Build a routing config from the models.yaml catalog and active provider IDs.
+    /// `model_overrides` maps "provider/model_id" → is_active from the DB,
+    /// overriding the yaml catalog defaults so the selector respects user toggles.
     pub fn from_models_config(
         models_cfg: &ModelsConfig,
         active_provider_ids: &[String],
+        model_overrides: &HashMap<String, bool>,
     ) -> Self {
         let mut provider_models: HashMap<String, Vec<ModelInfo>> = HashMap::new();
         let mut provider_credentials: HashMap<String, bool> = HashMap::new();
@@ -84,6 +87,7 @@ impl ModelRoutingConfig {
                         Some(p) => (p.input, p.output),
                         None => (0.0, 0.0),
                     };
+                    let override_key = format!("{}/{}", provider_name, m.id);
                     ModelInfo {
                         id: m.id.clone(),
                         display_name: m.display_name.clone(),
@@ -93,7 +97,10 @@ impl ModelRoutingConfig {
                         capabilities: m.capabilities.clone(),
                         kind: m.kind.clone(),
                         preferred: m.preferred,
-                        active: m.is_active(),
+                        active: model_overrides
+                            .get(&override_key)
+                            .copied()
+                            .unwrap_or(m.is_active()),
                     }
                 })
                 .collect();
@@ -380,7 +387,7 @@ impl ModelSelector {
         // Try task-specific routing
         let task_key = task.as_str();
         if let Some(primary) = self.config.task_routing.get(task_key) {
-            if is_usable(primary) {
+            if !primary.is_empty() && is_usable(primary) {
                 return primary.clone();
             }
         }
@@ -388,7 +395,7 @@ impl ModelSelector {
         // Try fallbacks for this task type
         if let Some(fallbacks) = self.config.task_fallbacks.get(task_key) {
             for fb in fallbacks {
-                if is_usable(fb) {
+                if !fb.is_empty() && is_usable(fb) {
                     return fb.clone();
                 }
             }
@@ -397,14 +404,14 @@ impl ModelSelector {
         // Fall back to general routing
         if task_key != "general" {
             if let Some(general) = self.config.task_routing.get("general") {
-                if is_usable(general) {
+                if !general.is_empty() && is_usable(general) {
                     return general.clone();
                 }
             }
         }
 
         // Final fallback: default model
-        if is_usable(&self.config.default_model) {
+        if !self.config.default_model.is_empty() && is_usable(&self.config.default_model) {
             return self.config.default_model.clone();
         }
 
@@ -528,7 +535,7 @@ mod tests {
             cli_providers: vec![],
         };
 
-        let routing = ModelRoutingConfig::from_models_config(&models_cfg, &["anthropic".into()]);
+        let routing = ModelRoutingConfig::from_models_config(&models_cfg, &["anthropic".into()], &HashMap::new());
         assert_eq!(routing.default_model, "anthropic/claude-sonnet-4-20250514");
         assert!(routing.provider_credentials.get("anthropic").copied().unwrap_or(false));
         assert_eq!(routing.provider_models.get("anthropic").unwrap().len(), 1);

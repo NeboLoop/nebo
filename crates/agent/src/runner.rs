@@ -512,6 +512,7 @@ async fn run_loop(
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
     let mut auto_continuations = 0usize;
+    let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
 
     // Resolve agent from registry if agent_id is set
@@ -564,7 +565,7 @@ async fn run_loop(
 
     // Match skills against user prompt (force_skill overrides trigger matching)
     // Template variables (${NEBO_SKILL_DIR}, ${NEBO_DATA_DIR}, etc.) are expanded at activation.
-    let (active_skill_template, skill_hints) = if let Some(loader) = skill_loader {
+    let (mut active_skill_template, mut skill_hints) = if let Some(loader) = skill_loader {
         if !force_skill.is_empty() {
             // Forced skill: look up by name directly
             match loader.get(force_skill).await {
@@ -597,6 +598,42 @@ async fn run_loop(
     } else {
         (None, Vec::new())
     };
+
+    // Auto-load agent-declared skills so the LLM knows about plugin tools and
+    // usage patterns from SKILL.md content. Without this, agents fall back to
+    // native tools (e.g. organizer:mail) instead of using declared plugins.
+    if let (Some(ref agent_entry), Some(loader)) = (&active_agent_entry, skill_loader) {
+        if let Some(ref cfg) = agent_entry.config {
+            let mut agent_skill_parts: Vec<String> = Vec::new();
+            for skill_ref in &cfg.skills {
+                let skill_name = extract_skill_name(skill_ref);
+                if let Some(skill) = loader.get(&skill_name).await {
+                    if skill.enabled {
+                        let hint = format!("Agent skill: {} — {}", skill.name, skill.description);
+                        if !skill_hints.iter().any(|h| h.contains(&skill.name)) {
+                            skill_hints.push(hint);
+                        }
+                        let expanded = loader.expand_template(&skill, Some(store));
+                        if !expanded.is_empty() {
+                            agent_skill_parts.push(expanded);
+                        }
+                    }
+                }
+            }
+            if !agent_skill_parts.is_empty() {
+                let combined = agent_skill_parts.join("\n\n---\n\n");
+                active_skill_template = Some(match active_skill_template {
+                    Some(existing) => format!("{}\n\n---\n\n{}", existing, combined),
+                    None => combined,
+                });
+                info!(
+                    agent = %agent_entry.name,
+                    count = agent_skill_parts.len(),
+                    "auto-loaded agent-declared skills"
+                );
+            }
+        }
+    }
 
     // Build static system prompt — use modular prompt when no custom one is provided
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
@@ -902,6 +939,15 @@ async fn run_loop(
             steering_messages
         };
 
+        // Append one-shot continuation steering (from auto-continue, never persisted)
+        let mut steering_messages = steering_messages;
+        if let Some(cont) = continuation_steering.take() {
+            steering_messages.push(steering::SteeringMessage {
+                content: cont,
+                position: steering::Position::End,
+            });
+        }
+
         // Convert ChatMessage to ai::Message
         let mut ai_messages = convert_messages(&window_messages);
 
@@ -1083,10 +1129,20 @@ async fn run_loop(
                     if transient_retries > MAX_TRANSIENT_RETRIES {
                         return Err(format!("Too many transient errors: {}", e));
                     }
-                    // Try next provider on transient error
-                    let prov_count = providers.read().await.len();
+                    // Try next provider on transient error — but never
+                    // silently fall from CLI to Janus (burns Nebo credits).
+                    let prov_lock = providers.read().await;
+                    let prov_count = prov_lock.len();
                     if prov_count > 1 {
+                        let next_idx = (provider_idx + 1) % prov_count;
+                        if prov_lock[next_idx].id() == "janus" {
+                            drop(prov_lock);
+                            return Err(format!("Provider error (no fallback to Janus): {}", e));
+                        }
+                        drop(prov_lock);
                         provider_idx += 1;
+                    } else {
+                        drop(prov_lock);
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok(()),
@@ -1101,9 +1157,18 @@ async fn run_loop(
                     if retryable_retries > MAX_RETRYABLE_RETRIES {
                         return Err(format!("Service temporarily unavailable after {} retries: {}", MAX_RETRYABLE_RETRIES, e));
                     }
-                    let prov_count = providers.read().await.len();
+                    let prov_lock = providers.read().await;
+                    let prov_count = prov_lock.len();
                     if prov_count > 1 {
+                        let next_idx = (provider_idx + 1) % prov_count;
+                        if prov_lock[next_idx].id() == "janus" {
+                            drop(prov_lock);
+                            return Err(format!("Provider error (no fallback to Janus): {}", e));
+                        }
+                        drop(prov_lock);
                         provider_idx += 1;
+                    } else {
+                        drop(prov_lock);
                     }
                     tokio::select! {
                         _ = cancel_token.cancelled() => return Ok(()),
@@ -1631,19 +1696,11 @@ async fn run_loop(
                 active_task.clone()
             };
 
-            // Inject a synthetic continuation message — scoped to the CURRENT task only
-            let continuation_msg = format!(
+            // Set as steering (ephemeral, never persisted, never shown to user)
+            continuation_steering = Some(format!(
                 "<system>Continue with the task you were just working on: {}. Do not ask for permission or present options — pick the best approach and use your tools to execute it. If you have completed this task, say so and stop.</system>",
                 task_desc
-            );
-            let _ = sessions.append_message(
-                session_id,
-                "user",
-                &continuation_msg,
-                Some(&serde_json::json!({"hidden": true}).to_string()),
-                None,
-                None,
-            );
+            ));
             continue;
         }
 

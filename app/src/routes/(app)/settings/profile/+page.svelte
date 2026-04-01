@@ -35,6 +35,7 @@
 		{ value: 'nl', label: 'Nederlands' },
 		{ value: 'pl', label: 'Polski' },
 		{ value: 'tr', label: 'Türkçe' },
+		{ value: 'ru', label: 'Русский' },
 		{ value: 'uk', label: 'Українська' },
 		{ value: 'vi', label: 'Tiếng Việt' },
 		{ value: 'ar', label: 'العربية' },

@@ -115,6 +115,19 @@ fn seed_models_from_catalog(store: &db::Store, models_cfg: &config::ModelsConfig
     }
 }
 
+/// Build a map of "provider/model_id" → is_active from the DB provider_models table.
+/// Used to override the yaml catalog defaults so the selector respects user toggles.
+pub fn build_model_overrides(store: &db::Store) -> std::collections::HashMap<String, bool> {
+    let mut overrides = std::collections::HashMap::new();
+    if let Ok(all_models) = store.list_all_provider_models() {
+        for m in &all_models {
+            let key = format!("{}/{}", m.provider, m.model_id);
+            overrides.insert(key, m.is_active.unwrap_or(0) == 1);
+        }
+    }
+    overrides
+}
+
 /// Build AI providers from auth_profiles in the database.
 /// Config is needed for NeboLoop's Janus URL (not stored in auth_profile).
 pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&config::AllCliStatuses>) -> Vec<Arc<dyn ai::Provider>> {
@@ -193,12 +206,19 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                     == Some("true");
                 if is_janus {
                     // Skip Janus if user has disabled all Janus chat models.
+                    // Only count chat-capable models (not embedding-only).
                     // Fail-safe: if DB query fails, skip Janus (don't burn tokens).
-                    let has_active_models = store
+                    let has_active_chat = store
                         .list_active_provider_models("janus")
-                        .map(|models| !models.is_empty())
+                        .map(|models| models.iter().any(|m| {
+                            let caps: Vec<String> = m.capabilities
+                                .as_ref()
+                                .and_then(|c| serde_json::from_str(c).ok())
+                                .unwrap_or_default();
+                            caps.iter().any(|c| c == "streaming" || c == "tools")
+                        }))
                         .unwrap_or(false);
-                    if !has_active_models {
+                    if !has_active_chat {
                         info!("janus provider has no active models in catalog, skipping");
                         None
                     } else {
@@ -515,6 +535,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         hub_for_tools.broadcast(event_type, payload);
     });
 
+    tool_registry.set_plugin_store(plugin_store.clone());
     tool_registry
         .register_all_with_permissions(
             store.clone(),
@@ -738,8 +759,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Collect active provider IDs from auth profiles
     let active_provider_ids: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
 
+    // Build DB model overrides so the selector respects user toggles
+    let model_overrides = build_model_overrides(&store);
+
     // Build real routing config from models catalog
-    let routing_config = agent::selector::ModelRoutingConfig::from_models_config(&models_cfg, &active_provider_ids);
+    let routing_config = agent::selector::ModelRoutingConfig::from_models_config(&models_cfg, &active_provider_ids, &model_overrides);
     let selector = agent::ModelSelector::new(routing_config);
 
     // Set loaded providers and rebuild fuzzy with user aliases
