@@ -52,7 +52,6 @@ pub(crate) struct AgentSpaceMeta {
 }
 
 struct Inner {
-    handler: Option<MessageHandler>,
     send_tx: Option<mpsc::Sender<Vec<u8>>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
     api: Option<Arc<NeboLoopApi>>,
@@ -61,6 +60,9 @@ struct Inner {
 /// NeboLoop WebSocket CommPlugin.
 pub struct NeboLoopPlugin {
     inner: RwLock<Inner>,
+    /// Message handler — separate sync lock so `set_message_handler()` never fails.
+    /// Using `std::sync::RwLock` (not tokio) because the trait method is sync.
+    handler: std::sync::RwLock<Option<MessageHandler>>,
     bot_id: RwLock<String>,
     /// Rotated bot JWT from the last AUTH_OK (token rotation).
     rotated_token: RwLock<Option<String>>,
@@ -80,11 +82,11 @@ impl NeboLoopPlugin {
     pub fn new() -> Self {
         Self {
             inner: RwLock::new(Inner {
-                handler: None,
                 send_tx: None,
                 cancel: None,
                 api: None,
             }),
+            handler: std::sync::RwLock::new(None),
             bot_id: RwLock::new(String::new()),
             rotated_token: RwLock::new(None),
             conv_maps: Arc::new(RwLock::new(ConvMaps::default())),
@@ -406,8 +408,8 @@ impl CommPlugin for NeboLoopPlugin {
         }
         self.connected.store(true, Ordering::SeqCst);
 
-        // Clone what the read loop needs
-        let handler = self.inner.read().await.handler.clone();
+        // Clone what the read loop needs (handler is in separate sync lock)
+        let handler = self.handler.read().unwrap().clone();
 
         // Channel for join result updates (read loop → join processor)
         let (join_tx, mut join_rx) = mpsc::channel::<JoinUpdate>(64);
@@ -589,10 +591,8 @@ impl CommPlugin for NeboLoopPlugin {
     }
 
     fn set_message_handler(&self, handler: MessageHandler) {
-        // Try to set synchronously; if contended just skip
-        if let Ok(mut inner) = self.inner.try_write() {
-            inner.handler = Some(handler);
-        }
+        // Uses std::sync::RwLock (not tokio) — always succeeds, never skipped.
+        *self.handler.write().unwrap() = Some(handler);
     }
 
     async fn list_channels(&self) -> Result<Vec<LoopChannelInfo>, CommError> {
@@ -924,6 +924,11 @@ async fn read_loop(
 
                         if let Some(ref h) = handler {
                             h(msg);
+                        } else {
+                            warn!(stream = %delivery.stream, "message dropped: no handler set");
+                            if let Some(ref dl) = devlog {
+                                dl.error(&format!("DROPPED (no handler): stream={}", delivery.stream));
+                            }
                         }
                     }
 

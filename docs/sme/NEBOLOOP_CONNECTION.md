@@ -132,7 +132,7 @@ ConvMaps {
 
 ## 5. Inbound Message Flow
 
-### Read Loop (`neboloop.rs:706-872`)
+### Read Loop (`neboloop.rs:793+`)
 
 1. Receive WS binary message
 2. Decode 47-byte header + payload
@@ -142,7 +142,7 @@ ConvMaps {
    - Parse `DeliveryPayload`
    - Build `CommMessage` with metadata (agent_id, agent_slug, source_channel_id)
    - Set `topic` = `delivery.stream` (e.g., "chat", "dm", "agent_space", "installs")
-   - Call registered message handler callback
+   - Call registered message handler callback (warns + logs if handler is None)
 6. For `TYPE_JOIN_CONVERSATION`: route to join processor
 
 ### Message Handler (`lib.rs:835-846, 1034-1223`)
@@ -357,9 +357,31 @@ Agents subscribe to these event sources in their configuration, triggering autom
 5. **Session isolation**: Each NeboLoop conversation gets unique `session_key` → separate chat history.
 6. **Response is sync, not streamed**: Agent response accumulated during execution, sent as single message after completion.
 7. **ConvMaps thread safety**: `Arc<RwLock<ConvMaps>>` shared across read loop, join processor, and public query methods.
-8. **Graceful shutdown**: Single `CancellationToken` coordinates all 3 background tasks.
+8. **Graceful shutdown**: Single `CancellationToken` coordinates all 3 background tasks (read, write, join processor). Note: process kill (SIGKILL / cargo watch) bypasses this — spawned tasks are dropped without running cleanup.
 9. **Entity config**: Per-topic permissions resolved via `entity_config::resolve_for_chat("channel", topic)`.
 10. **@mention routing**: `agent_slug` in DeliveryPayload metadata → resolve to local agent_id → route to that agent's persona.
+11. **Handler field**: Message handler is stored in a separate `std::sync::RwLock` (not inside the async `Inner` RwLock) so `set_message_handler()` always succeeds synchronously. The handler is cloned at connect time and passed to the read loop as a local variable.
+
+---
+
+## 12b. Known Issues & Fixes Applied
+
+### Fixed: `try_write()` race in `set_message_handler` (neboloop.rs)
+**Was:** Handler stored inside `Inner` (tokio async RwLock). `set_message_handler()` used `try_write()` which silently failed if the lock was contended, causing the handler to remain `None`. All delivered messages would then be silently dropped at `read_loop` line ~925.
+**Fix:** Moved handler to its own `std::sync::RwLock<Option<MessageHandler>>` field on `NeboLoopPlugin`. `set_message_handler()` now uses `.write().unwrap()` which always succeeds.
+
+### Fixed: Silent message drop when handler is None
+**Was:** When `handler` was `None` in the read loop, messages were silently swallowed with zero logging.
+**Fix:** Added `warn!()` and devlog error entry when a message is dropped due to missing handler.
+
+### Open: Ghost connections from hot-reload (dev mode)
+`cargo watch` sends SIGTERM/SIGKILL to the process. Spawned tokio tasks (read/write loops) are dropped immediately without running cleanup, so no WebSocket close frame is sent. The gateway keeps the old connection alive until its own keepalive timeout. A new process connects, creating a second connection for the same bot_id. The gateway may route inbound messages to the old (dead) connection, causing message loss. **Evidence:** devlog shows 46 connections with zero disconnect/error/cancel entries; only 1 inbound message received across all connections. **Mitigation:** Gateway should replace old connection when same bot_id reconnects. Client should implement SIGTERM handler for graceful disconnect.
+
+### Open: Reconnect watcher uses polling instead of `wait_disconnect()`
+The reconnect watcher in `lib.rs` polls `is_connected()` every 30s. The `wait_disconnect()` method exists on the plugin trait and fires immediately when the read loop exits unexpectedly, but it's not used. Using it would reduce reconnect latency from up to 30s to near-instant.
+
+### Open: No guard against concurrent `activate_neboloop()` calls
+If `activate_neboloop()` takes longer than the reconnect poll interval (30s), a second call can overlap. Both pass the `is_connected()` guard (both see `false`), and both call `connect()`. The second `connect()` will disconnect the first via `self.disconnect()` at the top of `connect()`, but this creates wasted connections and confusing devlog entries.
 
 ---
 
