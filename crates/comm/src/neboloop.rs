@@ -380,7 +380,17 @@ impl CommPlugin for NeboLoopPlugin {
         // Parse AUTH_OK to extract rotated token (if present)
         if let Ok(auth_result) = serde_json::from_slice::<wire::AuthResultPayload>(auth_payload) {
             if !auth_result.token.is_empty() {
-                *self.rotated_token.write().await = Some(auth_result.token);
+                *self.rotated_token.write().await = Some(auth_result.token.clone());
+
+                // Persist rotated token to cache file immediately — if the process
+                // is killed (e.g. hot reload) before the caller can persist to DB,
+                // the next startup reads this file and avoids "stale token" failure.
+                if let Some(dir) = config.get("data_dir") {
+                    let cache_path = std::path::PathBuf::from(dir).join("neboloop_token.cache");
+                    if let Err(e) = std::fs::write(&cache_path, &auth_result.token) {
+                        warn!(error = %e, "failed to cache rotated token");
+                    }
+                }
             }
         }
 
@@ -437,8 +447,9 @@ impl CommPlugin for NeboLoopPlugin {
 
         // Spawn write loop
         let write_cancel = cancel.clone();
+        let devlog_for_write = self.devlog.read().await.clone();
         tokio::spawn(async move {
-            write_loop(write, send_rx, write_cancel).await;
+            write_loop(write, send_rx, write_cancel, devlog_for_write).await;
         });
 
         // Spawn join processor — writes to self.conv_maps (shared with query methods)
@@ -801,6 +812,10 @@ async fn read_loop(
     connected: Arc<AtomicBool>,
     disconnect_notify: Arc<Notify>,
 ) {
+    if let Some(ref dl) = devlog {
+        dl.event(&format!("READ_LOOP started handler={}", if handler.is_some() { "SET" } else { "NONE" }));
+    }
+
     loop {
         tokio::select! {
             msg = read.next() => {
@@ -823,7 +838,18 @@ async fn read_loop(
 
                 let data = match msg {
                     WsMessage::Binary(d) => d.to_vec(),
-                    WsMessage::Ping(_) | WsMessage::Pong(_) => continue,
+                    WsMessage::Ping(_) => {
+                        if let Some(ref dl) = devlog {
+                            dl.event("← PING");
+                        }
+                        continue;
+                    }
+                    WsMessage::Pong(_) => {
+                        if let Some(ref dl) = devlog {
+                            dl.event("← PONG");
+                        }
+                        continue;
+                    }
                     WsMessage::Close(reason) => {
                         if let Some(ref dl) = devlog {
                             dl.event(&format!("CLOSE frame received: {:?}", reason));
@@ -843,6 +869,10 @@ async fn read_loop(
                         continue;
                     }
                 };
+
+                if let Some(ref dl) = devlog {
+                    dl.event(&format!("← FRAME type={} payload={}b", header.frame_type, payload.len()));
+                }
 
                 // Decompress if needed
                 let decompressed;
@@ -1017,10 +1047,16 @@ async fn read_loop(
                     }
 
                     frame::TYPE_REPLAY => {
+                        if let Some(ref dl) = devlog {
+                            dl.event(&format!("← REPLAY payload={}b", payload.len()));
+                        }
                         debug!("replay frame received");
                     }
 
                     _ => {
+                        if let Some(ref dl) = devlog {
+                            dl.event(&format!("← UNKNOWN type={} payload={}b", header.frame_type, payload.len()));
+                        }
                         debug!(frame_type = header.frame_type, "unhandled frame type");
                     }
                 }
@@ -1050,6 +1086,7 @@ async fn write_loop(
     mut write: SplitSink<WsStream, WsMessage>,
     mut send_rx: mpsc::Receiver<Vec<u8>>,
     cancel: tokio_util::sync::CancellationToken,
+    devlog: Option<DevLog>,
 ) {
     let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(15));
     ping_interval.tick().await; // skip first immediate tick
@@ -1059,6 +1096,9 @@ async fn write_loop(
             msg = send_rx.recv() => {
                 match msg {
                     Some(data) => {
+                        if let Some(ref dl) = devlog {
+                            dl.event(&format!("→ SEND frame={}b", data.len()));
+                        }
                         if let Err(e) = write.send(WsMessage::Binary(data.into())).await {
                             warn!(error = %e, "neboloop write error");
                             break;
@@ -1073,6 +1113,9 @@ async fn write_loop(
                 }
             }
             _ = ping_interval.tick() => {
+                if let Some(ref dl) = devlog {
+                    dl.event("→ PING");
+                }
                 if let Err(e) = write.send(WsMessage::Ping(vec![].into())).await {
                     debug!(error = %e, "neboloop ping error");
                     break;
@@ -1080,6 +1123,9 @@ async fn write_loop(
             }
             _ = cancel.cancelled() => break,
         }
+    }
+    if let Some(ref dl) = devlog {
+        dl.event("WRITE_LOOP exited");
     }
     debug!("neboloop write loop exited");
 }

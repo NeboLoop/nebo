@@ -23,7 +23,7 @@ pub struct StoreQuery {
 // ── Marketplace Endpoints (unified on /store/products) ──────────────
 
 /// GET /store/products — unified product listing via `/api/v1/products`.
-/// Query params: type (skill|workflow|role), category, q, page, pageSize.
+/// Query params: type (skill|workflow|agent), category, q, page, pageSize.
 /// Returns `{ "skills": [...] }` enriched with local install state.
 /// NeboLoop returns `{ "results": [...] }` — we normalize to `{ "skills": [...] }`.
 pub async fn list_store_products(

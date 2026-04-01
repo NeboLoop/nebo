@@ -153,6 +153,13 @@
 		phase = 'auth';
 	}
 
+	export function onPluginAuthUrl(data: Record<string, unknown>) {
+		const url = data?.url as string;
+		if (url) {
+			window.open(url, '_blank');
+		}
+	}
+
 	export function onPluginAuthComplete(_data: Record<string, unknown>) {
 		authInProgress = false;
 		// Transition to done — install was already successful

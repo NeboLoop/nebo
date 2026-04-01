@@ -413,7 +413,18 @@ pub async fn execute_activity(
         let ctx = tools::ToolContext::default();
         let mut tool_result_entries = Vec::new();
         for tc in &tool_calls {
-            let tool = tools.iter().find(|t| t.name() == tc.name);
+            // Try exact name first, then strip MCP prefix (LLMs sometimes
+            // hallucinate mcp__nebo-agent__<tool> even when given plain names).
+            let tool = tools.iter().find(|t| t.name() == tc.name)
+                .or_else(|| {
+                    let stripped = strip_mcp_prefix(&tc.name);
+                    if stripped != tc.name {
+                        warn!(requested = %tc.name, resolved = %stripped, "stripped MCP prefix from tool call");
+                        tools.iter().find(|t| t.name() == stripped)
+                    } else {
+                        None
+                    }
+                });
             let result = match tool {
                 Some(t) => t.execute_dyn(&ctx, tc.input.clone()).await,
                 None => tools::ToolResult::error(format!("tool not found: {}", tc.name)),
@@ -599,5 +610,35 @@ fn extract_error_pattern(err: &str) -> String {
         pattern[..end].to_string()
     } else {
         pattern
+    }
+}
+
+/// Strip MCP namespace prefix from tool names.
+/// `mcp__{server}__{tool}` → `{tool}`
+/// e.g. "mcp__nebo-agent__plugin" → "plugin"
+fn strip_mcp_prefix(name: &str) -> &str {
+    if !name.starts_with("mcp__") {
+        return name;
+    }
+    let parts: Vec<&str> = name.splitn(3, "__").collect();
+    if parts.len() == 3 {
+        parts[2]
+    } else {
+        name
+    }
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_mcp_prefix() {
+        assert_eq!(strip_mcp_prefix("plugin"), "plugin");
+        assert_eq!(strip_mcp_prefix("os"), "os");
+        assert_eq!(strip_mcp_prefix("mcp__nebo-agent__plugin"), "plugin");
+        assert_eq!(strip_mcp_prefix("mcp__nebo-agent__os"), "os");
+        assert_eq!(strip_mcp_prefix("mcp__monument_sh__project"), "project");
+        assert_eq!(strip_mcp_prefix("mcp__only_one"), "mcp__only_one");
     }
 }

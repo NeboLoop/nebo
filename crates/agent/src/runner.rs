@@ -2086,7 +2086,8 @@ async fn detect_objective(
 
     let provider = {
         let prov_lock = providers.read().await;
-        prov_lock.first().cloned()
+        prov_lock.iter().find(|p| p.id() != "janus").cloned()
+            .or_else(|| prov_lock.first().cloned())
     };
     let provider = match provider {
         Some(p) => p,

@@ -26,15 +26,15 @@
 		error = '';
 		try {
 			// Fetch all products and filter to installed
-			const [skillsRes, rolesRes, workflowsRes] = await Promise.all([
+			const [skillsRes, agentsRes, workflowsRes] = await Promise.all([
 				webapi.get<any>('/api/v1/store/products', { type: 'skill', pageSize: 100 }).catch(() => ({ skills: [] })),
-				webapi.get<any>('/api/v1/store/products', { type: 'role', pageSize: 100 }).catch(() => ({ skills: [] })),
+				webapi.get<any>('/api/v1/store/products', { type: 'agent', pageSize: 100 }).catch(() => ({ skills: [] })),
 				webapi.get<any>('/api/v1/store/products', { type: 'workflow', pageSize: 100 }).catch(() => ({ skills: [] }))
 			]);
 
 			const all = [
 				...(skillsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'skill' }, i)),
-				...(rolesRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'role' }, i + 100)),
+				...(agentsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'agent' }, i + 100)),
 				...(workflowsRes.skills || []).map((s: any, i: number) => toAppItem({ ...s, type: s.type || 'workflow' }, i + 200))
 			];
 

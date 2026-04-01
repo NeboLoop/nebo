@@ -28,7 +28,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
         let provider: Option<Arc<dyn ai::Provider>> = match profile.provider.as_str() {
             "anthropic" => {
                 let default_model = models_cfg.default_model_for_provider("anthropic")
-                    .unwrap_or_else(|| "claude-sonnet-4-5-20250929".into());
+                    .unwrap_or_default();
                 Some(Arc::new(ai::AnthropicProvider::new(
                     profile.api_key.clone(),
                     profile.model.clone().unwrap_or(default_model),
@@ -36,7 +36,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
             }
             "openai" => {
                 let default_model = models_cfg.default_model_for_provider("openai")
-                    .unwrap_or_else(|| "gpt-5.2".into());
+                    .unwrap_or_default();
                 Some(Arc::new(ai::OpenAIProvider::new(
                     profile.api_key.clone(),
                     profile.model.clone().unwrap_or(default_model),
@@ -44,7 +44,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
             }
             "deepseek" => {
                 let default_model = models_cfg.default_model_for_provider("deepseek")
-                    .unwrap_or_else(|| "deepseek-chat".into());
+                    .unwrap_or_default();
                 let mut p = ai::OpenAIProvider::with_base_url(
                     profile.api_key.clone(),
                     profile.model.clone().unwrap_or(default_model),
@@ -55,7 +55,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
             }
             "google" => {
                 let default_model = models_cfg.default_model_for_provider("google")
-                    .unwrap_or_else(|| "gemini-3-flash".into());
+                    .unwrap_or_default();
                 Some(Arc::new(ai::GeminiProvider::new(
                     profile.api_key.clone(),
                     profile.model.clone().unwrap_or(default_model),
@@ -63,7 +63,7 @@ pub(crate) async fn reload_providers(state: &AppState) {
             }
             "ollama" => {
                 let default_model = models_cfg.default_model_for_provider("ollama")
-                    .unwrap_or_else(|| "qwen3:4b".into());
+                    .unwrap_or_default();
                 Some(Arc::new(ai::OllamaProvider::new(
                     profile.base_url.clone().unwrap_or_else(|| "http://localhost:11434".into()),
                     profile.model.clone().unwrap_or(default_model),

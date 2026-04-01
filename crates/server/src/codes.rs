@@ -806,11 +806,24 @@ pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
     let profile = profiles
         .first()
         .ok_or_else(|| NeboError::Internal("no NeboLoop credentials".into()))?;
-    let token = if profile.api_key.is_empty() {
+    let mut token = if profile.api_key.is_empty() {
         return Err(NeboError::Internal("empty NeboLoop token".into()));
     } else {
         profile.api_key.clone()
     };
+
+    // Prefer cached rotated token over DB token — the cache is written immediately
+    // on AUTH_OK, so it survives hot-reload/crash where the DB persist hasn't run yet.
+    if let Ok(dir) = config::data_dir() {
+        let cache_path = dir.join("neboloop_token.cache");
+        if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+            let cached = cached.trim().to_string();
+            if !cached.is_empty() && cached != token {
+                info!("neboloop: using cached rotated token (differs from DB)");
+                token = cached;
+            }
+        }
+    }
 
     let mut config = HashMap::new();
     config.insert("gateway".into(), state.config.neboloop.comms_url.clone());

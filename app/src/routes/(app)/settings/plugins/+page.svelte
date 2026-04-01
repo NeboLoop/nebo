@@ -26,6 +26,12 @@
 
 		const client = getWebSocketClient();
 		unsubscribers.push(
+			client.on('plugin_auth_url', (data: Record<string, unknown>) => {
+				const url = data.url as string;
+				if (url) {
+					window.open(url, '_blank');
+				}
+			}),
 			client.on('plugin_auth_complete', (data: Record<string, unknown>) => {
 				const slug = data.plugin as string;
 				if (slug) {

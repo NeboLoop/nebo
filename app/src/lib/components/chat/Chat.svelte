@@ -466,6 +466,7 @@
 				client.on('plugin_installed', (data: Record<string, unknown>) => installModal?.onPluginInstalled(data)),
 				client.on('plugin_error', (data: Record<string, unknown>) => installModal?.onPluginError(data)),
 				client.on('plugin_auth_required', (data: Record<string, unknown>) => installModal?.onPluginAuthRequired(data)),
+				client.on('plugin_auth_url', (data: Record<string, unknown>) => installModal?.onPluginAuthUrl(data)),
 				client.on('plugin_auth_complete', (data: Record<string, unknown>) => installModal?.onPluginAuthComplete(data)),
 				client.on('plugin_auth_error', (data: Record<string, unknown>) => installModal?.onPluginAuthError(data)),
 				client.on('dep_pending', (data: Record<string, unknown>) => installModal?.onDepPending(data)),

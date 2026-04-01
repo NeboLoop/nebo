@@ -5,6 +5,7 @@
 //! auth CLI commands and report status via WebSocket events.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::response::Json;
@@ -127,27 +128,50 @@ pub async fn auth_login(
         let stderr_handle = child.stderr.take();
         let stdout_handle = child.stdout.take();
         let slug_for_stderr = slug_owned.clone();
+        let hub_for_stderr = hub.clone();
 
-        // Read stderr/stdout in chunks — gws may not flush with a trailing newline,
-        // so line-based reading blocks. Instead we read chunks and scan for URLs.
+        // Read stderr/stdout in chunks, scanning for OAuth URLs. When found,
+        // broadcast via WebSocket so the frontend can open the browser (primary),
+        // and also try open::that() as a server-side fallback.
         let stderr_task = tokio::spawn(async move {
             let mut all = String::new();
             let mut opened = false;
             if let Some(mut stream) = stderr_handle {
                 let mut buf = [0u8; 4096];
-                while let Ok(n) = stream.read(&mut buf).await {
-                    if n == 0 { break; }
-                    let chunk = String::from_utf8_lossy(&buf[..n]);
-                    info!(plugin = %slug_for_stderr, chunk = %chunk, "plugin auth stderr");
-                    all.push_str(&chunk);
-                    if !opened {
-                        if let Some(url) = extract_url(&all) {
-                            info!(plugin = %slug_for_stderr, url = %url, "opening OAuth URL in browser");
-                            if let Err(e) = open::that(&url) {
-                                warn!(plugin = %slug_for_stderr, error = %e, "failed to open browser");
+                loop {
+                    let has_candidate = !opened && has_url_candidate(&all);
+                    let read_result = if has_candidate {
+                        match tokio::time::timeout(
+                            Duration::from_secs(1),
+                            stream.read(&mut buf),
+                        ).await {
+                            Ok(r) => r,
+                            Err(_) => {
+                                // Timeout — no more data coming, treat URL as complete.
+                                if let Some(url) = extract_url(&all, true) {
+                                    open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
+                                    opened = true;
+                                }
+                                continue;
                             }
-                            opened = true;
                         }
+                    } else {
+                        stream.read(&mut buf).await
+                    };
+                    match read_result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]);
+                            info!(plugin = %slug_for_stderr, chunk = %chunk, "plugin auth stderr");
+                            all.push_str(&chunk);
+                            if !opened {
+                                if let Some(url) = extract_url(&all, false) {
+                                    open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
+                                    opened = true;
+                                }
+                            }
+                        }
+                        Err(_) => break,
                     }
                 }
             }
@@ -155,24 +179,45 @@ pub async fn auth_login(
         });
 
         let slug_for_stdout = slug_owned.clone();
+        let hub_for_stdout = hub.clone();
         let stdout_task = tokio::spawn(async move {
             let mut all = String::new();
             let mut opened = false;
             if let Some(mut stream) = stdout_handle {
                 let mut buf = [0u8; 4096];
-                while let Ok(n) = stream.read(&mut buf).await {
-                    if n == 0 { break; }
-                    let chunk = String::from_utf8_lossy(&buf[..n]);
-                    info!(plugin = %slug_for_stdout, chunk = %chunk, "plugin auth stdout");
-                    all.push_str(&chunk);
-                    if !opened {
-                        if let Some(url) = extract_url(&all) {
-                            info!(plugin = %slug_for_stdout, url = %url, "opening OAuth URL in browser");
-                            if let Err(e) = open::that(&url) {
-                                warn!(plugin = %slug_for_stdout, error = %e, "failed to open browser");
+                loop {
+                    let has_candidate = !opened && has_url_candidate(&all);
+                    let read_result = if has_candidate {
+                        match tokio::time::timeout(
+                            Duration::from_secs(1),
+                            stream.read(&mut buf),
+                        ).await {
+                            Ok(r) => r,
+                            Err(_) => {
+                                if let Some(url) = extract_url(&all, true) {
+                                    open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
+                                    opened = true;
+                                }
+                                continue;
                             }
-                            opened = true;
                         }
+                    } else {
+                        stream.read(&mut buf).await
+                    };
+                    match read_result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]);
+                            info!(plugin = %slug_for_stdout, chunk = %chunk, "plugin auth stdout");
+                            all.push_str(&chunk);
+                            if !opened {
+                                if let Some(url) = extract_url(&all, false) {
+                                    open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
+                                    opened = true;
+                                }
+                            }
+                        }
+                        Err(_) => break,
                     }
                 }
             }
@@ -329,20 +374,49 @@ pub async fn auth_status(
     Ok(Json(result))
 }
 
+/// Open an OAuth URL: broadcast it to the frontend via WebSocket (primary) and
+/// also try `open::that()` as a server-side fallback.
+fn open_auth_url(slug: &str, url: &str, hub: &super::ws::ClientHub) {
+    info!(plugin = %slug, url = %url, "broadcasting plugin OAuth URL to frontend");
+    hub.broadcast(
+        "plugin_auth_url",
+        serde_json::json!({
+            "plugin": slug,
+            "url": url,
+        }),
+    );
+    // Fallback: also try server-side browser open
+    if let Err(e) = open::that(url) {
+        warn!(plugin = %slug, error = %e, "failed to open browser via open::that");
+    }
+}
+
+/// Returns true if the text contains a URL-like token that `extract_url(text, false)`
+/// would skip because it's the last token without trailing whitespace.
+fn has_url_candidate(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if let Some(last) = words.last() {
+        let trimmed = last.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
+        (trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+            && !text.ends_with(char::is_whitespace)
+    } else {
+        false
+    }
+}
+
 /// Extract the first HTTP(S) URL from accumulated output text.
 ///
-/// Only returns a URL that is bounded by whitespace on both sides, so we never
-/// match a partial URL when the output arrives in multiple chunks.
-fn extract_url(text: &str) -> Option<String> {
+/// When `complete` is false (streaming), only returns a URL that is followed by
+/// more text or trailing whitespace — this avoids matching a partial URL that is
+/// still being written. When `complete` is true (after EOF or timeout), the last
+/// token is accepted unconditionally since no more data is expected.
+fn extract_url(text: &str, complete: bool) -> Option<String> {
     let words: Vec<&str> = text.split_whitespace().collect();
     for (i, word) in words.iter().enumerate() {
         let trimmed = word.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
         if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
-            // Only return if this isn't the last token — the last token might be
-            // a partial URL still being written. Exception: if the text ends with
-            // whitespace, the last token is complete.
             let is_last = i == words.len() - 1;
-            if !is_last || text.ends_with(char::is_whitespace) {
+            if complete || !is_last || text.ends_with(char::is_whitespace) {
                 return Some(trimmed.to_string());
             }
         }

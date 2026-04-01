@@ -116,7 +116,7 @@
 	/** Parse session source from name prefix */
 	function sessionSource(s: AgentSession): { type: string; label: string } {
 		const name = s.name || s.id;
-		if (name.startsWith('agent:') || name.startsWith('role:')) return { type: 'agent', label: $t('settingsSessions.sources.agent') };
+		if (name.startsWith('agent:')) return { type: 'agent', label: $t('settingsSessions.sources.agent') };
 		if (name.startsWith('channel:')) return { type: 'channel', label: $t('settingsSessions.sources.channel') };
 		if (name.startsWith('heartbeat')) return { type: 'heartbeat', label: $t('settingsSessions.sources.heartbeat') };
 		if (name.startsWith('workflow:')) return { type: 'workflow', label: $t('settingsSessions.sources.workflow') };
@@ -126,7 +126,7 @@
 	function sessionDisplayName(s: AgentSession): string {
 		const name = s.name || s.id;
 		// Strip source prefixes for display
-		const prefixes = ['agent:', 'role:', 'channel:', 'workflow:', 'heartbeat:'];
+		const prefixes = ['agent:', 'channel:', 'workflow:', 'heartbeat:'];
 		for (const prefix of prefixes) {
 			if (name.startsWith(prefix)) {
 				const rest = name.slice(prefix.length).trim();
@@ -142,7 +142,7 @@
 
 	const sourceColors: Record<string, string> = {
 		chat: 'text-primary bg-primary/10',
-		role: 'text-info bg-info/10',
+		agent: 'text-info bg-info/10',
 		channel: 'text-success bg-success/10',
 		heartbeat: 'text-warning bg-warning/10',
 		workflow: 'text-secondary bg-secondary/10',
@@ -153,7 +153,7 @@
 	async function navigateToSession(session: AgentSession) {
 		const name = session.name || session.id;
 
-		if (name.startsWith('agent:') || name.startsWith('role:')) {
+		if (name.startsWith('agent:')) {
 			// agent:<agentId>:<channel> → navigate to that agent's activity tab
 			const parts = name.split(':');
 			const agentId = parts[1];

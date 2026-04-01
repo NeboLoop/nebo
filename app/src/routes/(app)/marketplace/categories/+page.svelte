@@ -10,7 +10,7 @@
 		gradient: string;
 		skillCount: number;
 		workflowCount: number;
-		roleCount: number;
+		agentCount: number;
 		toolCount: number;
 	}
 
@@ -50,7 +50,7 @@
 	<!-- Category Tiles -->
 	<div class="px-6 pb-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
 		{#each categories as cat}
-			{@const total = (cat.skillCount || 0) + (cat.workflowCount || 0) + (cat.roleCount || 0) + (cat.toolCount || 0)}
+			{@const total = (cat.skillCount || 0) + (cat.workflowCount || 0) + (cat.agentCount || 0) + (cat.toolCount || 0)}
 			<a href="/marketplace/categories/{cat.slug}" class="group flex flex-col items-center gap-3 p-5 rounded-2xl bg-base-200/50 border border-base-content/10 hover:border-primary/30 hover:bg-base-200 transition-all duration-200">
 				<span class="text-4xl">{cat.emoji || '📦'}</span>
 				<span class="text-base font-bold text-base-content text-center">{cat.name}</span>

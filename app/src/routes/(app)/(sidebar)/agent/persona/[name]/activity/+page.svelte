@@ -231,8 +231,8 @@
 			]);
 			isActive = activeRes?.agents?.some(r => r.agentId === channelState.activeAgentId) ?? false;
 			if (sessRes?.sessions) {
-				const roleLower = channelState.activeAgentName.toLowerCase();
-				sessions = sessRes.sessions.filter(s => s.name?.toLowerCase().includes(roleLower));
+				const agentNameLower = channelState.activeAgentName.toLowerCase();
+				sessions = sessRes.sessions.filter(s => s.name?.toLowerCase().includes(agentNameLower));
 			}
 			if (memRes?.memories) memories = memRes.memories;
 			if (wfRes?.workflows) workflows = wfRes.workflows;

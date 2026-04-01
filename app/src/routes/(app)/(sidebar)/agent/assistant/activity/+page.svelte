@@ -102,7 +102,7 @@
 				// Filter to companion sessions (no agent: or channel: prefix)
 				sessions = sessRes.sessions.filter(s => {
 					const name = s.name || '';
-					return !name.startsWith('agent:') && !name.startsWith('role:') && !name.startsWith('channel:');
+					return !name.startsWith('agent:') && !name.startsWith('channel:');
 				});
 			}
 		} catch {

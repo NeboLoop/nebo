@@ -49,13 +49,13 @@
 
 			for (const p of rawProducts) {
 				if (p.type === 'workflow') workflowList.push(p);
-				else if (p.type === 'role') agentList.push(p);
+				else if (p.type === 'agent') agentList.push(p);
 				else skillList.push(p);
 			}
 
 			skills = skillList.map((s: any, i: number) => toAppItem(s, i));
 			workflows = workflowList.map((w: any, i: number) => toAppItem({ ...w, type: 'workflow' }, i));
-			agents = agentList.map((r: any, i: number) => toAppItem({ ...r, type: 'role' }, i));
+			agents = agentList.map((r: any, i: number) => toAppItem({ ...r, type: 'agent' }, i));
 		} catch { /* ignore */ }
 		loading = false;
 	});
