@@ -386,6 +386,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 );
 
                 // Load skill content for activities that reference skills
+                // Template variables are expanded at activation time.
                 let skill_content = if let Some(ref loader) = skill_loader {
                     let mut map = HashMap::new();
                     for activity in &def.activities {
@@ -393,7 +394,8 @@ impl WorkflowManager for WorkflowManagerImpl {
                             if !map.contains_key(skill_name) {
                                 if let Some(skill) = loader.get(skill_name).await {
                                     if !skill.template.is_empty() {
-                                        map.insert(skill_name.clone(), skill.template.clone());
+                                        let expanded = loader.expand_template(&skill, Some(&store));
+                                        map.insert(skill_name.clone(), expanded);
                                     }
                                 }
                             }

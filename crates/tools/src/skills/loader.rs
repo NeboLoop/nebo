@@ -333,6 +333,19 @@ impl Loader {
     pub fn resolve_user_skill_path(&self, name: &str) -> Option<PathBuf> {
         resolve_skill_path(&self.user_dir, name)
     }
+
+    /// Expand template variables in a skill's body using runtime context.
+    ///
+    /// Resolves `${NEBO_SKILL_DIR}`, `${NEBO_DATA_DIR}`, `${NEBO_USER_NAME}`,
+    /// `${NEBO_OS}`, `${NEBO_ARCH}`, `${plugin.SLUG_BIN}`, and `${secret.KEY}`.
+    pub fn expand_template(&self, skill: &Skill, store: Option<&db::Store>) -> String {
+        let ctx = super::expand::build_context(
+            skill,
+            self.plugin_store.as_deref(),
+            store,
+        );
+        super::expand::expand_variables(&skill.template, &ctx)
+    }
 }
 
 /// Write a skill file to a directory as `{name}/SKILL.md` per Agent Skills spec.

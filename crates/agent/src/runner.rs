@@ -428,6 +428,7 @@ impl Runner {
             model: String::new(),
             enable_thinking: false,
             metadata: None,
+            cache_breakpoints: vec![],
         };
 
         let mut rx = prov_lock[0].stream(&req).await?;
@@ -552,13 +553,15 @@ async fn run_loop(
         .unwrap_or_default();
 
     // Match skills against user prompt (force_skill overrides trigger matching)
+    // Template variables (${NEBO_SKILL_DIR}, ${NEBO_DATA_DIR}, etc.) are expanded at activation.
     let (active_skill_template, skill_hints) = if let Some(loader) = skill_loader {
         if !force_skill.is_empty() {
             // Forced skill: look up by name directly
             match loader.get(force_skill).await {
                 Some(skill) if skill.enabled => {
                     info!(skill = %skill.name, "force-activated skill");
-                    (Some(skill.template.clone()), vec![format!("Active skill: {} — {}", skill.name, skill.description)])
+                    let expanded = loader.expand_template(&skill, Some(store));
+                    (Some(expanded), vec![format!("Active skill: {} — {}", skill.name, skill.description)])
                 }
                 _ => {
                     warn!(force_skill, "forced skill not found or disabled");
@@ -573,7 +576,8 @@ async fn run_loop(
                 let hints: Vec<String> = matches.iter()
                     .map(|s| format!("Available skill: {} — {}", s.name, s.description))
                     .collect();
-                (Some(best.template.clone()), hints)
+                let expanded = loader.expand_template(best, Some(store));
+                (Some(expanded), hints)
             } else {
                 (None, Vec::new())
             }
@@ -927,6 +931,24 @@ async fn run_loop(
             full_system
         };
 
+        // Compute cache breakpoints for providers that support prompt caching.
+        // Breakpoint 1: CACHE_BOUNDARY within static_system (stable identity/behaviour — rarely changes)
+        // Breakpoint 2: end of static_system (semi-dynamic: skill hints, model aliases)
+        // Everything after breakpoint 2 (STRAP, tools list, dynamic suffix) is fully dynamic.
+        let cache_breakpoints = {
+            let mut bps = Vec::new();
+            if let Some(boundary) = prompt::cache_boundary_offset(&static_system) {
+                bps.push(boundary);
+            }
+            let static_len = static_system.len();
+            if static_len > 0
+                && (bps.is_empty() || *bps.last().unwrap() < static_len)
+            {
+                bps.push(static_len);
+            }
+            bps
+        };
+
         // Build ChatRequest
         let chat_req = ChatRequest {
             messages: ai_messages,
@@ -942,6 +964,7 @@ async fn run_loop(
             },
             enable_thinking,
             metadata: sticky_metadata.clone(),
+            cache_breakpoints,
         };
 
         // Acquire LLM permit before provider call (blocks if at capacity)
@@ -2035,6 +2058,7 @@ OR {{"action": "keep"}}
         model: String::new(),
         enable_thinking: false,
         metadata: None,
+        cache_breakpoints: vec![],
     };
 
     let stream_result = provider.stream(&req).await;
