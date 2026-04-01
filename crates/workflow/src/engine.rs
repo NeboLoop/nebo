@@ -359,6 +359,7 @@ pub async fn execute_activity(
             model: activity.model.clone(),
             enable_thinking: false,
             metadata: None,
+            cache_breakpoints: vec![],
         };
 
         let mut rx = provider

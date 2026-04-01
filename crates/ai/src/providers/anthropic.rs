@@ -352,9 +352,56 @@ impl Provider for AnthropicProvider {
             8192
         };
 
-        // Build system blocks with caching
+        // Build system blocks with caching.
+        //
+        // When `cache_breakpoints` are provided (byte offsets into `system_prompt`),
+        // we split the system prompt at those offsets and mark each prefix block
+        // with `cache_control: { type: "ephemeral" }` so that the stable prefix
+        // can be served from Anthropic's prompt cache at ~90% discount.
+        //
+        // Fallback: if no breakpoints but `static_system` is set (legacy path),
+        // split at the static/dynamic boundary.  Otherwise send the whole prompt
+        // as a single cached block.
         let system_blocks = if !system_prompt.is_empty() {
-            if !req.static_system.is_empty() && system_prompt.starts_with(&req.static_system) {
+            if !req.cache_breakpoints.is_empty() {
+                let mut blocks = Vec::new();
+                let mut cursor = 0usize;
+                let prompt_len = system_prompt.len();
+
+                for &bp in &req.cache_breakpoints {
+                    // Clamp to prompt length and skip invalid/duplicate offsets
+                    let bp = bp.min(prompt_len);
+                    if bp <= cursor {
+                        continue;
+                    }
+                    blocks.push(SystemBlock {
+                        text: system_prompt[cursor..bp].to_string(),
+                        block_type: "text".to_string(),
+                        cache_control: Some(CacheControl { cache_type: "ephemeral".to_string() }),
+                    });
+                    cursor = bp;
+                }
+
+                // Remaining tail (dynamic portion) — no cache_control
+                if cursor < prompt_len {
+                    blocks.push(SystemBlock {
+                        text: system_prompt[cursor..].to_string(),
+                        block_type: "text".to_string(),
+                        cache_control: None,
+                    });
+                }
+
+                // Guard: if somehow we produced nothing, fall back to single block
+                if blocks.is_empty() {
+                    Some(vec![SystemBlock {
+                        text: system_prompt,
+                        block_type: "text".to_string(),
+                        cache_control: Some(CacheControl { cache_type: "ephemeral".to_string() }),
+                    }])
+                } else {
+                    Some(blocks)
+                }
+            } else if !req.static_system.is_empty() && system_prompt.starts_with(&req.static_system) {
                 let dynamic_suffix = system_prompt.strip_prefix(&req.static_system).unwrap_or("");
                 let mut blocks = vec![
                     SystemBlock {

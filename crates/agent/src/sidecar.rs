@@ -42,6 +42,7 @@ pub async fn verify_screenshot(
         model: sidecar_model(),
         enable_thinking: false,
         metadata: None,
+        cache_breakpoints: vec![],
     };
 
     let mut rx = match provider.stream(&req).await {

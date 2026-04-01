@@ -246,6 +246,12 @@ pub struct ChatRequest {
     /// Provider metadata echoed back for Janus tool stickiness routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
+    /// Byte offsets into the system prompt where cache boundaries should be
+    /// placed.  Providers that support prompt caching (e.g. Anthropic) will
+    /// split the system prompt at these offsets and mark the prefix blocks
+    /// with `cache_control: { type: "ephemeral" }`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_breakpoints: Vec<usize>,
 }
 
 /// Sender half of a streaming event channel.

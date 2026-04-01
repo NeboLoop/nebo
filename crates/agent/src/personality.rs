@@ -129,6 +129,7 @@ pub async fn synthesize_directive(
         model: String::new(),
         enable_thinking: false,
         metadata: None,
+        cache_breakpoints: vec![],
     };
 
     let mut rx = match provider.stream(&req).await {

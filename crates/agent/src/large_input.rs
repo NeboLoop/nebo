@@ -144,6 +144,7 @@ pub async fn summarize(
         model: model.to_string(),
         enable_thinking: false,
         metadata: None,
+        cache_breakpoints: vec![],
     };
 
     let mut rx = provider.stream(&req).await.map_err(|e| format!("summarize stream: {e}"))?;

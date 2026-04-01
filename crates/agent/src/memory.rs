@@ -157,6 +157,7 @@ pub async fn extract_facts(
         model: String::new(),
         enable_thinking: false,
         metadata: None,
+        cache_breakpoints: vec![],
     };
 
     let mut rx = match provider.stream(&req).await {

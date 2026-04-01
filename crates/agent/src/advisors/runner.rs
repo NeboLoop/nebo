@@ -148,6 +148,7 @@ async fn run_single_advisor(
         model: String::new(),
         enable_thinking: false,
         metadata: None,
+        cache_breakpoints: vec![],
     };
 
     let mut rx = provider
