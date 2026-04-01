@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -136,6 +136,8 @@ pub trait DynTool: Send + Sync {
 /// Registry manages available tools.
 pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Box<dyn DynTool>>>>,
+    /// Tools marked as deferred — not sent to LLM until keyword-activated or first called.
+    deferred: Arc<RwLock<HashSet<String>>>,
     policy: Arc<RwLock<Policy>>,
     process_registry: Arc<ProcessRegistry>,
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
@@ -147,6 +149,7 @@ impl Registry {
     pub fn new(policy: Policy) -> Self {
         Self {
             tools: Arc::new(RwLock::new(HashMap::new())),
+            deferred: Arc::new(RwLock::new(HashSet::new())),
             policy: Arc::new(RwLock::new(policy)),
             process_registry: Arc::new(ProcessRegistry::new()),
             bridge: std::sync::RwLock::new(None),
@@ -176,12 +179,31 @@ impl Registry {
         debug!(tool = %name, "registered tool");
     }
 
+    /// Register a tool and mark it as deferred (not sent to LLM until activated).
+    pub async fn register_deferred(&self, tool: Box<dyn DynTool>) {
+        let name = tool.name().to_string();
+        self.deferred.write().await.insert(name.clone());
+        self.register(tool).await;
+        debug!(tool = %name, "registered as deferred");
+    }
+
     /// Unregister a tool by name.
     pub async fn unregister(&self, name: &str) {
         let mut tools = self.tools.write().await;
         if tools.remove(name).is_some() {
+            self.deferred.write().await.remove(name);
             debug!(tool = %name, "unregistered tool");
         }
+    }
+
+    /// Check if a tool is deferred.
+    pub async fn is_deferred(&self, name: &str) -> bool {
+        self.deferred.read().await.contains(name)
+    }
+
+    /// Get names of all deferred tools.
+    pub async fn get_deferred_names(&self) -> HashSet<String> {
+        self.deferred.read().await.clone()
     }
 
     /// Get a tool by name (returns None if not found).
@@ -200,6 +222,49 @@ impl Registry {
                 input_schema: tool.schema(),
             })
             .collect()
+    }
+
+    /// List only non-deferred tools as full AI tool definitions.
+    /// Deferred tools are excluded — use `list_deferred_stubs()` for compact listings.
+    pub async fn list_active(&self, activated: &HashSet<String>) -> Vec<ToolDefinition> {
+        let tools = self.tools.read().await;
+        let deferred = self.deferred.read().await;
+        tools
+            .values()
+            .filter(|tool| {
+                let name = tool.name();
+                !deferred.contains(name) || activated.contains(name)
+            })
+            .map(|tool| ToolDefinition {
+                name: tool.name().to_string(),
+                description: tool.description(),
+                input_schema: tool.schema(),
+            })
+            .collect()
+    }
+
+    /// List deferred tools that haven't been activated yet as compact stubs.
+    /// Returns (name, first_line_of_description) pairs for system prompt listing.
+    pub async fn list_deferred_stubs(&self, activated: &HashSet<String>) -> Vec<(String, String)> {
+        let tools = self.tools.read().await;
+        let deferred = self.deferred.read().await;
+        deferred
+            .iter()
+            .filter(|name| !activated.contains(name.as_str()))
+            .filter_map(|name| {
+                tools.get(name.as_str()).map(|tool| {
+                    let desc = tool.description();
+                    let short = desc.lines().next().unwrap_or("").to_string();
+                    (name.clone(), short)
+                })
+            })
+            .collect()
+    }
+
+    /// Get the full description of a specific tool (used for steering injection on first use).
+    pub async fn get_tool_description(&self, name: &str) -> Option<String> {
+        let tools = self.tools.read().await;
+        tools.get(name).map(|t| t.description())
     }
 
     /// List tools filtered by per-entity permissions.
@@ -481,9 +546,9 @@ impl Registry {
             self.register(Box::new(crate::skill_tool::SkillTool::new(loader_default))).await;
         }
 
-        // Execute tool (script execution) — registered when skill_loader and plan_tier are available
+        // Execute tool (script execution) — deferred (only activated when user mentions scripts/code)
         if let (Some(loader), Some(tier)) = (&skill_loader, &plan_tier) {
-            self.register(Box::new(
+            self.register_deferred(Box::new(
                 crate::execute_tool::ExecuteTool::new(
                     loader.clone(),
                     tier.clone(),
@@ -497,9 +562,9 @@ impl Registry {
         // Message tool (owner notifications) — always registered (core)
         self.register(Box::new(crate::message_tool::MessageTool::new(store.clone()))).await;
 
-        // Work tool (workflow lifecycle + execution) — always registered when manager is provided
+        // Work tool (workflow lifecycle + execution) — deferred (only activated when user mentions workflows)
         if let Some(manager) = workflow_manager {
-            self.register(Box::new(crate::workflows::WorkTool::new(manager))).await;
+            self.register_deferred(Box::new(crate::workflows::WorkTool::new(manager))).await;
         }
 
         // Persona tool (agent management: list, activate, deactivate, info, create, install) — always registered
@@ -508,13 +573,13 @@ impl Registry {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
             });
             self.register(Box::new(crate::agent_tool::PersonaTool::new(store.clone(), agent_reg))).await;
-            self.register(Box::new(crate::publisher_tool::PublisherTool::new(store.clone()))).await;
+            self.register_deferred(Box::new(crate::publisher_tool::PublisherTool::new(store.clone()))).await;
         }
 
-        // Plugin tool (installed plugin binaries as STRAP resources) — always registered when plugins exist
+        // Plugin tool (installed plugin binaries as STRAP resources) — deferred (activated by skill docs or keyword)
         if let Some(ps) = self.plugin_store.read().unwrap().clone() {
             if !ps.list_installed().is_empty() {
-                self.register(Box::new(crate::plugin_tool::PluginTool::new(ps))).await;
+                self.register_deferred(Box::new(crate::plugin_tool::PluginTool::new(ps))).await;
             }
         }
 
@@ -646,11 +711,10 @@ impl mcp::bridge::ProxyToolRegistry for Registry {
             integration_id: integration_id.to_string(),
             bridge: self.bridge.read().unwrap().as_ref().expect("bridge not set").clone(),
         };
-        // Use block_in_place to bridge sync trait → async registry
-        // (block_on panics inside an async context, block_in_place does not)
+        // MCP proxy tools are deferred — activated by keyword matching or direct call
         if tokio::runtime::Handle::try_current().is_ok() {
             tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(self.register(Box::new(tool)));
+                tokio::runtime::Handle::current().block_on(self.register_deferred(Box::new(tool)));
             });
         }
     }
@@ -805,6 +869,6 @@ mod tests {
         assert!(tool_correction("bot").contains("agent"));
         assert!(tool_correction("desktop").contains("os"));
         assert!(tool_correction("music").contains("os"));
-        assert!(tool_correction("unknown_tool").contains("Check your available tools"));
+        assert!(tool_correction("unknown_tool").contains("check your available tools"));
     }
 }

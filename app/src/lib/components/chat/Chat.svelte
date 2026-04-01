@@ -511,7 +511,7 @@
 
 			if (isAgent) {
 				// Agent chat: set chatId to agent-scoped session key, load existing messages
-				chatId = `role:${mode.agentId}:web`;
+				chatId = `agent:${mode.agentId}:web`;
 				agentName = mode.agentName || $t('common.agent');
 				// Fetch agent details for empty state display
 				if (mode.agentId) {
@@ -896,7 +896,7 @@
 				companion: !isAgent
 			};
 			if (isAgent && mode.agentId) {
-				payload.role_id = mode.agentId;
+				payload.agent_id = mode.agentId;
 			}
 			client.send('chat', payload);
 		} else {

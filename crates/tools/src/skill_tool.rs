@@ -36,35 +36,25 @@ impl DynTool for SkillTool {
     }
 
     fn description(&self) -> String {
-        "Manage skills — browsable catalog of agent capabilities.\n\n\
-         Actions:\n\
-         - catalog: List all available skills\n\
-         - help: Show full content of a skill by name\n\
-         - browse: List resource files in a skill's directory\n\
-         - read_resource: Read a specific resource file by relative path\n\
-         - load: Activate a skill for the current session\n\
-         - unload: Deactivate a skill\n\
-         - create: Create a new skill from YAML content\n\
-         - update: Update an existing skill\n\
-         - delete: Delete a user-created skill\n\
-         - install: Install a skill from NeboLoop marketplace (SKIL-XXXX-XXXX code)\n\
-         - configure: Set a secret/API key for a skill (requires name, key, value)\n\
-         - secrets: List configured secrets for a skill (requires name)\n\
-         - featured: Show featured skills with high capability counts\n\
-         - popular: Show most-used skills sorted by capabilities\n\
-         - reviews: Show reviews for a skill (requires name)\n\n\
-         Examples:\n  \
-         skill(action: \"catalog\")\n  \
-         skill(action: \"help\", name: \"coding-assistant\")\n  \
-         skill(action: \"browse\", name: \"xlsx-processor\")\n  \
-         skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\")\n  \
-         skill(action: \"load\", name: \"coding-assistant\")\n  \
-         skill(action: \"install\", code: \"SKIL-XXXX-XXXX\")\n  \
-         skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"BSA...\")\n  \
-         skill(action: \"secrets\", name: \"brave-search\")\n  \
-         skill(action: \"featured\")\n  \
-         skill(action: \"popular\")\n  \
-         skill(action: \"reviews\", name: \"coding-assistant\")"
+        "Capabilities & knowledge — skill catalog, loading, and execution.\n\
+         USE THIS when: user asks for something unfamiliar, or you're unsure if a specialized skill exists for the task.\n\n\
+         Before replying to any request, scan your available skills:\n\
+         1. If a skill clearly applies → load it with skill(name: \"...\") to get detailed instructions, then follow them\n\
+         2. If multiple skills could apply → choose the most specific one\n\
+         3. If no skill applies → proceed with your built-in tools\n\n\
+         - skill(action: \"catalog\") — Browse all available skills and apps\n\
+         - skill(action: \"help\", name: \"calendar\") — Show full content of a skill\n\
+         - skill(name: \"calendar\", resource: \"events\", action: \"list\") — Execute a skill action directly\n\
+         - skill(action: \"browse\", name: \"xlsx-processor\") — List resource files in a skill's directory\n\
+         - skill(action: \"read_resource\", name: \"xlsx-processor\", path: \"scripts/recalc.py\") — Read a resource file\n\
+         - skill(action: \"load\", name: \"coding-assistant\") — Activate for current session\n\
+         - skill(action: \"install\", code: \"SKIL-XXXX-XXXX\") — Install from marketplace\n\
+         - skill(action: \"configure\", name: \"brave-search\", key: \"BRAVE_API_KEY\", value: \"...\") — Set a secret\n\
+         - skill(action: \"discover\", query: \"email management\") — Search for skills matching a description\n\
+         - skill(action: \"featured\") / skill(action: \"popular\") / skill(action: \"reviews\", name: \"...\")\n\n\
+         If you're about to do something and aren't sure if a skill exists for it, call skill(action: \"discover\", query: \"what you're trying to do\") to check.\n\
+         If a skill returns an auth error, guide the user to Settings → Apps to reconnect.\n\n\
+         GUARDRAILS: Only invoke skills that appear in the catalog or discover results. Do not guess skill names."
             .to_string()
     }
 
@@ -75,7 +65,7 @@ impl DynTool for SkillTool {
                 "action": {
                     "type": "string",
                     "description": "Action to perform",
-                    "enum": ["catalog", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews"]
+                    "enum": ["catalog", "discover", "help", "browse", "read_resource", "load", "unload", "create", "update", "delete", "install", "configure", "secrets", "featured", "popular", "reviews"]
                 },
                 "name": {
                     "type": "string",
@@ -100,6 +90,10 @@ impl DynTool for SkillTool {
                 "value": {
                     "type": "string",
                     "description": "Secret value for configure action"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query for discover action (describe what you're trying to do)"
                 }
             },
             "required": ["action"]
@@ -158,6 +152,24 @@ impl DynTool for SkillTool {
                             "{} skills:\n{}",
                             skills.len(),
                             lines.join("\n")
+                        ))
+                    }
+                }
+                "discover" => {
+                    let query = input["query"].as_str().unwrap_or("");
+                    if query.is_empty() {
+                        return ToolResult::error("query is required — describe what you're trying to do");
+                    }
+                    let matches = self.loader.discover(query).await;
+                    if matches.is_empty() {
+                        ToolResult::ok(format!("No skills match \"{}\". Try a different query or check the catalog.", query))
+                    } else {
+                        let lines: Vec<String> = matches.iter().take(10).map(|s| {
+                            format!("- **{}** — {}", s.name, s.description)
+                        }).collect();
+                        ToolResult::ok(format!(
+                            "Skills matching \"{}\":\n{}\n\nTo use a skill, call: skill(action: \"help\", name: \"<name>\") for full instructions.",
+                            query, lines.join("\n")
                         ))
                     }
                 }

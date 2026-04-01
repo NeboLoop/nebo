@@ -20,7 +20,7 @@
 				<AutomationsSection
 					entityType="agent"
 					entityId={channelState.activeAgentId}
-					roleId={channelState.activeAgentId}
+					agentId={channelState.activeAgentId}
 				/>
 			{:else}
 				<div class="flex justify-center py-12">

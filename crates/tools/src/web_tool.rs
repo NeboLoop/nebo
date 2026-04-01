@@ -522,33 +522,38 @@ impl DynTool for WebTool {
     }
 
     fn description(&self) -> String {
-        "Web operations — HTTP requests, search, browser automation, and devtools.\n\n\
-         Resources and Actions:\n\
-         - http: fetch (HTTP request with any method), sanitize (extract visible text and chunk for LLM)\n\
-         - search: query (Web search via Brave Search)\n\
-         - browser: navigate, read_page, click, double_click, triple_click, right_click, hover, fill, form_input, type, select, screenshot, scroll, scroll_to, press, drag, go_back, go_forward, wait, evaluate\n\
-         - devtools: console, source, storage, dom, cookies, performance (Chrome DevTools Protocol via extension)\n\n\
-         Browser workflow: read_page returns an accessibility tree with element refs. Use refs for click/fill/select.\n\
-         For React/modern sites: use click on field first, then type to fill (character-by-character via real key events).\n\
-         triple_click selects all text in a field, then type to replace it.\n\n\
-         Examples:\n  \
-         web(action: \"fetch\", url: \"https://example.com\")\n  \
-         web(action: \"sanitize\", url: \"https://example.com\") — extract text, chunked\n  \
-         web(action: \"sanitize\", url: \"https://example.com\", chunk_size: 8000) — larger chunks\n  \
-         web(action: \"search\", query: \"rust async programming\")\n  \
-         web(action: \"navigate\", url: \"https://example.com\")\n  \
-         web(action: \"read_page\", filter: \"interactive\")\n  \
-         web(action: \"click\", ref: \"ref_1\")\n  \
-         web(action: \"triple_click\", ref: \"ref_3\") — select all text\n  \
-         web(action: \"type\", text: \"hello\") — types via real key events\n  \
-         web(action: \"fill\", ref: \"ref_3\", value: \"hello\") — direct value set\n  \
-         web(action: \"hover\", ref: \"ref_5\")\n  \
-         web(action: \"scroll_to\", ref: \"ref_10\")\n  \
-         web(action: \"press\", key: \"cmd+a\") — key chord\n  \
-         web(action: \"press\", key: \"ArrowDown ArrowDown Enter\") — key sequence\n  \
-         web(action: \"console\") — read browser console logs\n  \
-         web(action: \"cookies\") — inspect cookies\n  \
-         web(action: \"performance\") — page performance metrics"
+        "Web operations — HTTP requests, search, browser automation, and devtools.\n\
+         USE THIS when: user mentions a URL, asks to look something up, browse, search the web, fetch a page, or interact with a website.\n\n\
+         Two modes:\n\
+         - fetch/search: Simple HTTP requests and web search (no JavaScript, no rendering)\n\
+         - browser: Controls the user's Chrome browser via the Nebo extension. Full automation — navigate, read pages, click, fill forms, take screenshots. Works on the user's real browser with their logged-in sessions.\n\n\
+         Decision: If you just need an API response or static HTML → fetch. If you need to read a rendered page, interact with elements, or use the user's sessions → browser actions.\n\n\
+         Actions:\n\
+         - web(action: \"fetch\", url: \"...\") — Simple HTTP request (no JS rendering)\n\
+         - web(action: \"sanitize\", url: \"...\") — Extract visible text and chunk for LLM\n\
+         - web(action: \"search\", query: \"...\") — Web search\n\
+         - web(action: \"navigate\", url: \"...\") — Navigate browser tab\n\
+         - web(action: \"read_page\") — Get page accessibility tree with element refs [ref_1], [ref_2]\n\
+         - web(action: \"read_page\", filter: \"interactive\") — Only interactive elements\n\
+         - web(action: \"read_page\", depth: 5) — Limit tree depth (default 15)\n\
+         - web(action: \"click\", ref: \"ref_5\") — Click element by ref\n\
+         - web(action: \"fill\", ref: \"ref_3\", value: \"hello\") — Set form input value directly\n\
+         - web(action: \"type\", text: \"hello\") — Type via real keystrokes into focused element\n\
+         - web(action: \"select\", ref: \"ref_7\", value: \"option1\") — Select dropdown option\n\
+         - web(action: \"screenshot\") — Capture page screenshot\n\
+         - web(action: \"scroll\", direction: \"down\") — Scroll page\n\
+         - web(action: \"press\", key: \"Enter\") / web(action: \"press\", key: \"cmd+a\") — Press key/chord\n\
+         - web(action: \"evaluate\", expression: \"document.title\") — Run JavaScript\n\
+         - web(action: \"new_tab\", url: \"...\") / web(action: \"close_tab\") / web(action: \"list_tabs\")\n\
+         - web(action: \"go_back\") / web(action: \"go_forward\")\n\
+         - web(action: \"console\") / web(action: \"cookies\") / web(action: \"performance\")\n\n\
+         CRITICAL — Browse Like a Human:\n\
+         - Read before interacting: Always read_page first to understand what's on screen before clicking\n\
+         - Scroll to explore: NEVER assume you can see everything — scroll down and read_page again\n\
+         - read_page returns ONLY elements visible in the current viewport. You MUST scroll to see more.\n\
+         - For React/modern sites: if fill doesn't work, use click → press(key: \"cmd+a\") → type (real keystrokes)\n\
+         - NEVER navigate directly to URLs with search query params (triggers anti-bot). Navigate to homepage, find search box, type query, press Enter.\n\n\
+         GUARDRAILS: Always include source URLs in your response when citing web results."
             .to_string()
     }
 

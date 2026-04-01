@@ -30,21 +30,20 @@ impl DynTool for EventTool {
     }
 
     fn description(&self) -> String {
-        "Schedule and manage recurring tasks — cron jobs, reminders, and routines.\n\n\
-         Actions:\n\
-         - create: Schedule a new task (cron expression)\n\
-         - list: List all scheduled tasks\n\
-         - delete: Remove a scheduled task by name\n\
-         - pause: Disable a task (keeps it, won't fire)\n\
-         - resume: Re-enable a paused task\n\
-         - run: Immediately trigger a task\n\
-         - history: Show execution history for a task\n\n\
-         Examples:\n  \
-         event(action: \"create\", name: \"reminder\", at: \"in 10 minutes\", task_type: \"agent\", prompt: \"Remind user about the meeting\")\n  \
-         event(action: \"create\", name: \"daily-backup\", cron: \"0 0 2 * * *\", task_type: \"bash\", command: \"./backup.sh\")\n  \
-         event(action: \"create\", name: \"check-in\", cron: \"0 30 9 * * *\", task_type: \"agent\", prompt: \"Check the server\")\n  \
-         event(action: \"list\")\n  \
-         event(action: \"run\", name: \"daily-backup\")"
+        "Scheduling & reminders — one-time and recurring time-based triggers.\n\
+         USE THIS when: user mentions \"every\", \"remind me\", \"daily\", \"weekly\", \"in X minutes\", or any time-based trigger.\n\
+         Prefer task_type: \"agent\" — this means YOU execute the task when it fires, with full access to all your tools and memory.\n\n\
+         One-time reminders (use \"at\" with relative time):\n\
+         - event(action: \"create\", name: \"call-kristi\", at: \"in 10 minutes\", task_type: \"agent\", prompt: \"Remind user to call Kristi\")\n\n\
+         Recurring tasks (use \"cron\" expression: second minute hour day month weekday):\n\
+         - event(action: \"create\", name: \"morning-brief\", cron: \"0 0 8 * * 1-5\", task_type: \"agent\", prompt: \"Check today's calendar and send a summary\")\n\n\
+         Management:\n\
+         - event(action: \"list\") — List all reminders\n\
+         - event(action: \"delete\", name: \"...\") — Remove a reminder\n\
+         - event(action: \"pause\", name: \"...\") / event(action: \"resume\", name: \"...\") — Pause or resume\n\
+         - event(action: \"run\", name: \"...\") — Trigger immediately\n\
+         - event(action: \"history\", name: \"...\") — View execution history\n\n\
+         Common cron patterns: \"0 0 9 * * 1-5\" (9am weekdays), \"0 30 8 * * *\" (8:30am daily), \"0 0 */2 * * *\" (every 2h)"
             .to_string()
     }
 

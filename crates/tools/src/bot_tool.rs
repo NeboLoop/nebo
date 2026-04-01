@@ -905,21 +905,38 @@ impl DynTool for AgentTool {
     }
 
     fn description(&self) -> String {
-        "Agent self-management — memory, tasks, sessions, context, advisors, and ask.\n\n\
-         Resources and Actions:\n\
-         - memory: store, recall, search, list, delete, clear\n\
-         - task: spawn, orchestrate, status, cancel, create, update, list, delete\n\
-         - session: list, history, status, clear, query (cross-session search)\n\
-         - context: summary, reset, compact\n\
-         - advisors: deliberate, list\n\
-         - ask: prompt, confirm, select\n\n\
-         Examples:\n  \
-         agent(resource: \"memory\", action: \"store\", key: \"user_name\", value: \"Alice\")\n  \
-         agent(resource: \"memory\", action: \"recall\", key: \"user_name\")\n  \
-         agent(resource: \"task\", action: \"create\", subject: \"Research topic X\")\n  \
-         agent(resource: \"session\", action: \"list\")\n  \
-         agent(resource: \"session\", action: \"query\", query: \"deployment issue\")\n  \
-         agent(resource: \"advisors\", action: \"deliberate\", task: \"How to approach X\")"
+        "Agent self-management — memory, tasks, sub-agents, sessions, context, advisors, vision, and ask.\n\
+         USE THIS when: spawning sub-agents, tracking multi-step work, searching memory, managing sessions, analyzing images, or asking the user a question.\n\n\
+         Sub-agents (parallel work):\n\
+         - agent(resource: \"task\", action: \"spawn\", prompt: \"Research competitor pricing\") — Spawn and wait (default)\n\
+         - agent(resource: \"task\", action: \"spawn\", prompt: \"...\", wait: false) — Background; result delivered when done\n\
+         - agent(resource: \"task\", action: \"status\", agent_id: \"...\") — Check background agent status\n\
+         - agent(resource: \"task\", action: \"cancel\", agent_id: \"...\") — Cancel a running sub-agent\n\
+         Spawn when: multiple independent tasks, long-running research. Do it yourself when: simple task, dependent results.\n\n\
+         Work tracking:\n\
+         - agent(resource: \"task\", action: \"create\", subject: \"Test shell tool\") — Create a trackable step\n\
+         - agent(resource: \"task\", action: \"update\", task_id: \"1\", status: \"completed\") — Mark done\n\
+         - agent(resource: \"task\", action: \"list\") — See all tasks and sub-agents\n\n\
+         Memory (3-tier persistence):\n\
+         - agent(resource: \"memory\", action: \"store\", key: \"user/name\", value: \"Alice\", layer: \"tacit\") — Store a fact\n\
+         - agent(resource: \"memory\", action: \"recall\", key: \"user/name\") — Recall a specific fact\n\
+         - agent(resource: \"memory\", action: \"search\", query: \"...\") — Search across all memories\n\
+         Layers: \"tacit\" (long-term preferences — MOST COMMON), \"daily\" (today's facts, auto-expires), \"entity\" (people/places/things)\n\n\
+         Sessions:\n\
+         - agent(resource: \"session\", action: \"list\") / history / status / clear / query\n\n\
+         Profile:\n\
+         - agent(resource: \"profile\", action: \"get\") / update / open_billing\n\n\
+         Advisors (internal deliberation):\n\
+         - agent(resource: \"advisors\", action: \"deliberate\", task: \"Should we use PostgreSQL or SQLite?\")\n\n\
+         Vision:\n\
+         - agent(resource: \"vision\", action: \"analyze\", image: \"/path/to/image.png\")\n\n\
+         Context:\n\
+         - agent(resource: \"context\", action: \"summary\") / compact / reset\n\n\
+         Ask (user input):\n\
+         - agent(resource: \"ask\", action: \"prompt\", text: \"What would you like?\")\n\
+         - agent(resource: \"ask\", action: \"confirm\", text: \"Proceed with deletion?\")\n\
+         - agent(resource: \"ask\", action: \"select\", text: \"Pick a color\", options: [\"red\", \"blue\"])\n\n\
+         GUARDRAILS: When storing memory, use the exact phrasing the user used. Do not paraphrase."
             .to_string()
     }
 

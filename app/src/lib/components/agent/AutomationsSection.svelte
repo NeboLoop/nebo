@@ -12,12 +12,12 @@
 	let {
 		entityType,
 		entityId,
-		roleId,
+		agentId,
 		readonly = false,
 	}: {
 		entityType: string;
 		entityId: string;
-		roleId?: string;
+		agentId?: string;
 		readonly?: boolean;
 	} = $props();
 
@@ -244,7 +244,7 @@
 	}
 
 	async function handleDuplicate(wf: AgentWorkflowEntry) {
-		if (!roleId) return;
+		if (!agentId) return;
 		overflowMenu = null;
 		try {
 			const inputs = wf.inputs ? JSON.parse(wf.inputs) : undefined;
@@ -261,7 +261,7 @@
 					}
 				}
 			})() : {};
-			await createAgentWorkflow(roleId, {
+			await createAgentWorkflow(agentId, {
 				bindingName: wf.bindingName + '-copy',
 				triggerType: wf.triggerType,
 				triggerConfig,
@@ -276,10 +276,10 @@
 	}
 
 	async function handleToggle(wf: AgentWorkflowEntry) {
-		if (!roleId) return;
+		if (!agentId) return;
 		toggling = wf.bindingName;
 		try {
-			await toggleAgentWorkflow(roleId, wf.bindingName);
+			await toggleAgentWorkflow(agentId, wf.bindingName);
 			await loadWorkflows();
 		} catch {
 			// ignore
@@ -289,9 +289,9 @@
 	}
 
 	async function handleDelete(bindingName: string) {
-		if (!roleId) return;
+		if (!agentId) return;
 		try {
-			await deleteAgentWorkflow(roleId, bindingName);
+			await deleteAgentWorkflow(agentId, bindingName);
 			confirmDelete = null;
 			overflowMenu = null;
 			await loadWorkflows();
@@ -314,9 +314,9 @@
 	// --- Data loading ---
 
 	async function loadWorkflows() {
-		if (!roleId) return;
+		if (!agentId) return;
 		try {
-			const res = await getAgentWorkflows(roleId);
+			const res = await getAgentWorkflows(agentId);
 			if (res?.workflows) workflows = res.workflows;
 		} catch {
 			// ignore
@@ -327,7 +327,7 @@
 		loading = true;
 		try {
 			const configPromise = getEntityConfig(entityType, entityId).catch(() => null);
-			const wfPromise = roleId ? getAgentWorkflows(roleId).catch(() => null) : Promise.resolve(null);
+			const wfPromise = agentId ? getAgentWorkflows(agentId).catch(() => null) : Promise.resolve(null);
 			const [configRes, wfRes] = await Promise.all([configPromise, wfPromise]);
 			if (configRes?.config) {
 				heartbeatEnabled = configRes.config.heartbeatEnabled ?? false;
@@ -372,13 +372,13 @@
 		const ws = getWebSocketClient();
 		wsUnsubs.push(
 			ws.on('workflow_run_started', (data: { agentId: string }) => {
-				if (roleId && data.agentId === roleId) loadWorkflows();
+				if (agentId && data.agentId === agentId) loadWorkflows();
 			}),
 			ws.on('workflow_run_completed', (data: { agentId: string }) => {
-				if (roleId && data.agentId === roleId) loadWorkflows();
+				if (agentId && data.agentId === agentId) loadWorkflows();
 			}),
 			ws.on('workflow_run_failed', (data: { agentId: string }) => {
-				if (roleId && data.agentId === roleId) loadWorkflows();
+				if (agentId && data.agentId === agentId) loadWorkflows();
 			}),
 		);
 	});
@@ -401,7 +401,7 @@
 			<div class="flex flex-col gap-3">
 				<div class="flex items-center justify-between min-h-8">
 					<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('automations.title')}</h2>
-					{#if roleId}
+					{#if agentId}
 						<button type="button" class="btn btn-sm btn-ghost text-primary gap-1.5" onclick={openCreate}>
 							<Plus class="w-3.5 h-3.5" />
 							{$t('automations.new')}
@@ -594,9 +594,9 @@
 	</div>
 {/if}
 
-{#if showEditor && roleId}
+{#if showEditor && agentId}
 	<AutomationEditor
-		roleId={roleId}
+		agentId={agentId}
 		existing={editingWorkflow}
 		onclose={handleEditorClose}
 		onsave={handleEditorSave}

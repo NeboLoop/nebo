@@ -20,8 +20,27 @@ register('ar', () => import('./locales/ar.json'));
 register('uk', () => import('./locales/uk.json'));
 register('ru', () => import('./locales/ru.json'));
 register('nl', () => import('./locales/nl.json'));
+register('id', () => import('./locales/id.json'));
+register('th', () => import('./locales/th.json'));
+register('ms', () => import('./locales/ms.json'));
+register('he', () => import('./locales/he.json'));
+register('sv', () => import('./locales/sv.json'));
+register('pt', () => import('./locales/pt.json'));
+register('bn', () => import('./locales/bn.json'));
+
+const supportedLocales = ['en', 'de', 'es', 'pt-BR', 'zh-CN', 'zh-TW', 'ja', 'ko', 'fr', 'hi', 'it', 'pl', 'tr', 'vi', 'ar', 'uk', 'ru', 'nl', 'id', 'th', 'ms', 'he', 'sv', 'pt', 'bn'];
+
+function detectLocale(): string {
+	if (!browser) return 'en';
+	const saved = localStorage.getItem('nebo_locale');
+	if (saved) return saved;
+	const browserLang = navigator.language;
+	if (supportedLocales.includes(browserLang)) return browserLang;
+	const base = browserLang.split('-')[0];
+	return supportedLocales.find(l => l === base || l.startsWith(base + '-')) ?? 'en';
+}
 
 init({
 	fallbackLocale: 'en',
-	initialLocale: browser ? (localStorage.getItem('nebo_locale') || 'en') : 'en'
+	initialLocale: detectLocale()
 });

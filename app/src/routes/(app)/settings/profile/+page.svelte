@@ -23,27 +23,46 @@
 	let theme = $state<Theme>('system');
 	let themeError = $state('');
 
+	const supportedLocales = languages.map(l => l.value);
+
+	function detectSystemLanguage(): string {
+		const browserLang = navigator.language;
+		// Exact match (e.g. "pt-BR", "zh-CN")
+		if (supportedLocales.includes(browserLang)) return browserLang;
+		// Base language match (e.g. "fr-CA" → "fr", "de-AT" → "de")
+		const base = browserLang.split('-')[0];
+		const match = supportedLocales.find(l => l === base || l.startsWith(base + '-'));
+		return match ?? 'en';
+	}
+
 	let language = $state('en');
 
 	const languages = [
 		{ value: 'en', label: 'English' },
+		{ value: 'id', label: 'Bahasa Indonesia' },
+		{ value: 'ms', label: 'Bahasa Melayu' },
 		{ value: 'de', label: 'Deutsch' },
 		{ value: 'es', label: 'Español' },
 		{ value: 'fr', label: 'Français' },
 		{ value: 'it', label: 'Italiano' },
-		{ value: 'pt-BR', label: 'Português (Brasil)' },
 		{ value: 'nl', label: 'Nederlands' },
 		{ value: 'pl', label: 'Polski' },
+		{ value: 'pt', label: 'Português' },
+		{ value: 'pt-BR', label: 'Português (Brasil)' },
+		{ value: 'sv', label: 'Svenska' },
+		{ value: 'vi', label: 'Tiếng Việt' },
 		{ value: 'tr', label: 'Türkçe' },
 		{ value: 'ru', label: 'Русский' },
 		{ value: 'uk', label: 'Українська' },
-		{ value: 'vi', label: 'Tiếng Việt' },
 		{ value: 'ar', label: 'العربية' },
+		{ value: 'he', label: 'עברית' },
+		{ value: 'bn', label: 'বাংলা' },
 		{ value: 'hi', label: 'हिन्दी' },
-		{ value: 'ja', label: '日本語' },
-		{ value: 'ko', label: '한국어' },
+		{ value: 'th', label: 'ไทย' },
 		{ value: 'zh-CN', label: '中文 (简体)' },
-		{ value: 'zh-TW', label: '中文 (繁體)' }
+		{ value: 'zh-TW', label: '中文 (繁體)' },
+		{ value: 'ja', label: '日本語' },
+		{ value: 'ko', label: '한국어' }
 	];
 
 	let displayName = $state('');
@@ -100,7 +119,7 @@
 				context = profile.context || '';
 			}
 			theme = (prefsData.preferences?.theme as Theme) || 'system';
-			language = prefsData.preferences?.language || 'en';
+			language = prefsData.preferences?.language || detectSystemLanguage();
 			locale.set(language);
 			localStorage.setItem('nebo_locale', language);
 		} catch (error) {
@@ -134,7 +153,7 @@
 		locale.set(newLang);
 		localStorage.setItem('nebo_locale', newLang);
 		if (typeof document !== 'undefined') {
-			document.documentElement.dir = newLang === 'ar' ? 'rtl' : 'ltr';
+			document.documentElement.dir = (newLang === 'ar' || newLang === 'he') ? 'rtl' : 'ltr';
 			document.documentElement.lang = newLang;
 		}
 		try {

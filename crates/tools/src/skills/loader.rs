@@ -139,6 +139,59 @@ impl Loader {
         matches.into_iter().cloned().collect()
     }
 
+    /// Build a compact skill catalog for the system prompt.
+    /// Lists all enabled skills with 1-line descriptions (name: description).
+    /// This replaces the old keyword-triggered skill hints.
+    pub async fn compact_catalog(&self) -> String {
+        let skills = self.skills.read().await;
+        let mut entries: Vec<String> = skills
+            .values()
+            .filter(|s| s.enabled)
+            .map(|s| {
+                let desc = if s.description.len() > 200 {
+                    format!("{}...", &s.description[..197])
+                } else {
+                    s.description.clone()
+                };
+                format!("- {}: {}", s.name, desc)
+            })
+            .collect();
+        entries.sort();
+        if entries.is_empty() {
+            return String::new();
+        }
+        format!(
+            "## Available Skills\n{}\n\nTo use a skill, call: skill(action: \"help\", name: \"<skill_name>\") to see full instructions, then follow them.",
+            entries.join("\n")
+        )
+    }
+
+    /// Search skills by query (name or description match).
+    /// Returns matching skills sorted by relevance.
+    pub async fn discover(&self, query: &str) -> Vec<Skill> {
+        let skills = self.skills.read().await;
+        let query_lower = query.to_lowercase();
+        let mut matches: Vec<(usize, Skill)> = skills
+            .values()
+            .filter(|s| s.enabled)
+            .filter_map(|s| {
+                let name_match = s.name.to_lowercase().contains(&query_lower);
+                let desc_match = s.description.to_lowercase().contains(&query_lower);
+                let trigger_match = s.triggers.iter().any(|t| t.to_lowercase().contains(&query_lower));
+                if name_match || desc_match || trigger_match {
+                    let score = if name_match { 3 } else { 0 }
+                        + if trigger_match { 2 } else { 0 }
+                        + if desc_match { 1 } else { 0 };
+                    Some((score, s.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        matches.sort_by(|a, b| b.0.cmp(&a.0));
+        matches.into_iter().map(|(_, s)| s).collect()
+    }
+
     /// Build a plugin inventory string for the system prompt.
     /// Lists installed plugins with their env vars so the agent knows they exist.
     pub fn plugin_inventory(&self) -> String {

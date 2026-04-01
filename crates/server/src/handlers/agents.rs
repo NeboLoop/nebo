@@ -36,9 +36,8 @@ fn extract_agent_json_str(body: &serde_json::Value) -> Option<String> {
 fn parse_agent_md(content: &str) -> Result<(AgentFrontmatter, String), types::NeboError> {
     let trimmed = content.trim();
     if !trimmed.starts_with("---") {
-        return Err(types::NeboError::Validation(
-            "AGENT.md must start with YAML frontmatter (---)".into(),
-        ));
+        // Pure prose (no frontmatter) — modern preferred format
+        return Ok((AgentFrontmatter::default(), trimmed.to_string()));
     }
 
     let after_first = &trimmed[3..];
@@ -55,7 +54,7 @@ fn parse_agent_md(content: &str) -> Result<(AgentFrontmatter, String), types::Ne
     Ok((fm, body))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct AgentFrontmatter {
     #[serde(default)]
     name: String,

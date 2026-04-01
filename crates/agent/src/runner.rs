@@ -514,6 +514,8 @@ async fn run_loop(
     let mut auto_continuations = 0usize;
     let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
+    // Deferred tools that have been activated (keyword-matched or first-called)
+    let mut activated_deferred: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Resolve agent from registry if agent_id is set
     let active_agent_entry = if !agent_id.is_empty() {
@@ -565,54 +567,45 @@ async fn run_loop(
 
     // Match skills against user prompt (force_skill overrides trigger matching)
     // Template variables (${NEBO_SKILL_DIR}, ${NEBO_DATA_DIR}, etc.) are expanded at activation.
-    let (mut active_skill_template, mut skill_hints) = if let Some(loader) = skill_loader {
+    // The compact skill catalog (always-present listing) replaces old keyword-triggered hints.
+    // Full skill bodies are only injected when: forced, trigger-matched, or agent-declared.
+    let mut active_skill_template = if let Some(loader) = skill_loader {
         if !force_skill.is_empty() {
-            // Forced skill: look up by name directly
             match loader.get(force_skill).await {
                 Some(skill) if skill.enabled => {
                     info!(skill = %skill.name, "force-activated skill");
-                    let expanded = loader.expand_template(&skill, Some(store));
-                    (Some(expanded), vec![format!("Active skill: {} — {}", skill.name, skill.description)])
+                    Some(loader.expand_template(&skill, Some(store)))
                 }
                 _ => {
                     warn!(force_skill, "forced skill not found or disabled");
-                    (None, Vec::new())
+                    None
                 }
             }
         } else if !user_prompt.is_empty() {
-            // Trigger matching: find best matching skill
             let matches = loader.match_triggers(user_prompt, 3).await;
             if let Some(best) = matches.first() {
                 info!(skill = %best.name, priority = best.priority, "skill matched via trigger");
-                let hints: Vec<String> = matches.iter()
-                    .map(|s| format!("Available skill: {} — {}", s.name, s.description))
-                    .collect();
-                let expanded = loader.expand_template(best, Some(store));
-                (Some(expanded), hints)
+                Some(loader.expand_template(best, Some(store)))
             } else {
-                (None, Vec::new())
+                None
             }
         } else {
-            (None, Vec::new())
+            None
         }
     } else {
-        (None, Vec::new())
+        None
     };
 
     // Auto-load agent-declared skills so the LLM knows about plugin tools and
     // usage patterns from SKILL.md content. Without this, agents fall back to
     // native tools (e.g. organizer:mail) instead of using declared plugins.
-    if let (Some(ref agent_entry), Some(loader)) = (&active_agent_entry, skill_loader) {
-        if let Some(ref cfg) = agent_entry.config {
+    if let (Some(agent_entry), Some(loader)) = (&active_agent_entry, skill_loader) {
+        if let Some(cfg) = &agent_entry.config {
             let mut agent_skill_parts: Vec<String> = Vec::new();
             for skill_ref in &cfg.skills {
                 let skill_name = extract_skill_name(skill_ref);
                 if let Some(skill) = loader.get(&skill_name).await {
                     if skill.enabled {
-                        let hint = format!("Agent skill: {} — {}", skill.name, skill.description);
-                        if !skill_hints.iter().any(|h| h.contains(&skill.name)) {
-                            skill_hints.push(hint);
-                        }
                         let expanded = loader.expand_template(&skill, Some(store));
                         if !expanded.is_empty() {
                             agent_skill_parts.push(expanded);
@@ -644,11 +637,20 @@ async fn run_loop(
         .map(|l| l.plugin_inventory())
         .unwrap_or_default();
 
+    // Build compact skill catalog (replaces old keyword-triggered skill_hints).
+    // The full skill body is now in active_skill_template (agent-declared skills)
+    // or loaded on-demand via the skill tool.
+    let skill_catalog = if let Some(loader) = skill_loader {
+        loader.compact_catalog().await
+    } else {
+        String::new()
+    };
+
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
             agent_name: agent_name.clone(),
             active_skill: active_skill_template,
-            skill_hints,
+            skill_catalog,
             model_aliases: model_aliases.to_string(),
             channel: channel.to_string(),
             platform: std::env::consts::OS.to_string(),
@@ -838,8 +840,18 @@ async fn run_loop(
             pruning::micro_compact(&window_messages, thresholds.warning);
         window_messages = compacted_messages;
 
-        // Get tool definitions, filtered by context (returns active contexts for STRAP sub-doc injection)
-        let all_tool_defs = tools.list().await;
+        // Detect which deferred tools should be activated this iteration (keyword match or prior call)
+        let deferred_names = tools.get_deferred_names().await;
+        let new_activations = tool_filter::detect_deferred_activations(
+            &window_messages, &called_tools, &deferred_names, &activated_deferred,
+        );
+        if !new_activations.is_empty() {
+            debug!(tools = ?new_activations, "activating deferred tools");
+            activated_deferred.extend(new_activations);
+        }
+
+        // Get tool definitions: active (non-deferred + activated deferred) tools get full schemas
+        let all_tool_defs = tools.list_active(&activated_deferred).await;
         let (tool_defs, active_contexts) = tool_filter::filter_tools_with_context(&all_tool_defs, &window_messages, &called_tools);
 
         // Parse work tasks for steering
@@ -962,6 +974,10 @@ async fn run_loop(
         let strap_section = prompt::build_strap_section(&filtered_tool_names, &active_contexts);
         let tools_list = prompt::build_tools_list(&filtered_tool_names);
 
+        // Build compact listing of deferred (not yet activated) tools
+        let deferred_stubs = tools.list_deferred_stubs(&activated_deferred).await;
+        let deferred_listing = prompt::build_deferred_listing(&deferred_stubs);
+
         // Select model: use override if set, otherwise ask the selector
         let selected_model = if !model_override.is_empty() {
             model_override.to_string()
@@ -995,7 +1011,11 @@ async fn run_loop(
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
-        let full_system = format!("{}\n\n{}\n\n{}{}", static_system, strap_section, tools_list, dynamic_suffix);
+        let full_system = if deferred_listing.is_empty() {
+            format!("{}\n\n{}\n\n{}{}", static_system, strap_section, tools_list, dynamic_suffix)
+        } else {
+            format!("{}\n\n{}\n\n{}\n\n{}{}", static_system, strap_section, tools_list, deferred_listing, dynamic_suffix)
+        };
 
         // Hook: message.pre_send — let apps modify system prompt before LLM call
         let full_system = if hooks.has_subscribers("message.pre_send") {
@@ -1477,9 +1497,13 @@ async fn run_loop(
                 stream_tx: Some(tx.clone()),
             };
 
-            // Track tool names for filter
+            // Track tool names for filter + activate any deferred tools on first call
             for tc in &tool_calls {
                 called_tools.push(tc.name.clone());
+                if deferred_names.contains(&tc.name) && !activated_deferred.contains(&tc.name) {
+                    debug!(tool = %tc.name, "activating deferred tool on first call");
+                    activated_deferred.insert(tc.name.clone());
+                }
             }
 
             // Launch all tool calls concurrently via FuturesUnordered
@@ -2241,6 +2265,20 @@ fn build_system_prompt(custom_system: &str, memory_context: &str) -> String {
     prompt
 }
 
+/// Extract the plain skill name from a qualified ref.
+/// "@nebo/skills/gws-gmail@^1.0.0" → "gws-gmail"
+/// "SKIL-ABCD-1234" → "SKIL-ABCD-1234" (passed through)
+/// "gws-gmail" → "gws-gmail" (plain names pass through)
+fn extract_skill_name(skill_ref: &str) -> String {
+    if skill_ref.starts_with('@') {
+        let without_at = &skill_ref[1..];
+        let name_part = without_at.split('@').next().unwrap_or(without_at);
+        name_part.rsplit('/').next().unwrap_or(name_part).to_string()
+    } else {
+        skill_ref.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2379,5 +2417,17 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].role, "user");
         assert_eq!(result[1].role, "assistant");
+    }
+
+    #[test]
+    fn test_extract_skill_name() {
+        // Qualified ref with org and version
+        assert_eq!(extract_skill_name("@nebo/skills/gws-gmail@^1.0.0"), "gws-gmail");
+        // Qualified ref without version
+        assert_eq!(extract_skill_name("@nebo/skills/gws-gmail"), "gws-gmail");
+        // Plain name passthrough
+        assert_eq!(extract_skill_name("gws-gmail"), "gws-gmail");
+        // Code passthrough
+        assert_eq!(extract_skill_name("SKIL-ABCD-1234"), "SKIL-ABCD-1234");
     }
 }

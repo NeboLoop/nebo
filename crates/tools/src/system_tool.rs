@@ -55,17 +55,26 @@ impl DynTool for SystemTool {
     }
 
     fn description(&self) -> String {
-        "OS operations — files, commands, apps, clipboard, settings.\n\n\
-         Resources and Actions:\n\
-         - file: read, write, edit, glob, grep (File operations)\n\
-         - shell: exec, list, poll, log, write, kill, info (Shell operations)\n\n\
-         Examples:\n  \
-         system(resource: \"file\", action: \"read\", path: \"/path/to/file.txt\")\n  \
-         system(resource: \"file\", action: \"write\", path: \"/path/to/file.txt\", content: \"hello\")\n  \
-         system(resource: \"file\", action: \"edit\", path: \"/path/to/file.txt\", old_string: \"foo\", new_string: \"bar\")\n  \
-         system(resource: \"file\", action: \"glob\", pattern: \"**/*.go\")\n  \
-         system(resource: \"file\", action: \"grep\", pattern: \"TODO\", path: \"/project\")\n  \
-         system(resource: \"shell\", action: \"exec\", command: \"ls -la\")"
+        "OS operations — files, commands, apps, clipboard, settings.\n\
+         USE THIS when: user wants to read/write/find files or run shell commands.\n\
+         Prefer file actions over shell commands: file read NOT shell cat, file grep NOT shell grep, file glob NOT shell find.\n\n\
+         File operations:\n\
+         - system(resource: \"file\", action: \"read\", path: \"/path/to/file\") — Read file contents\n\
+         - system(resource: \"file\", action: \"write\", path: \"/path\", content: \"...\") — Write/create a file\n\
+         - system(resource: \"file\", action: \"edit\", path: \"/path\", old_string: \"...\", new_string: \"...\") — Edit a file\n\
+         - system(resource: \"file\", action: \"glob\", pattern: \"**/*.go\") — Find files by pattern\n\
+         - system(resource: \"file\", action: \"grep\", pattern: \"search term\", path: \"/dir\") — Search file contents\n\n\
+         Shell operations:\n\
+         - system(resource: \"shell\", action: \"exec\", command: \"ls -la\") — Run a command\n\
+         - system(resource: \"shell\", action: \"exec\", command: \"...\", background: true) — Run in background\n\
+         - system(resource: \"shell\", action: \"list\") — List running processes or sessions\n\
+         - system(resource: \"shell\", action: \"kill\", pid: 1234) — Kill a process\n\
+         - system(resource: \"shell\", action: \"poll\", session_id: \"...\") — Read background session output\n\
+         - system(resource: \"shell\", action: \"log\", session_id: \"...\") — Get full session log\n\
+         - system(resource: \"shell\", action: \"write\", session_id: \"...\", input: \"...\") — Send input to session\n\
+         - system(resource: \"shell\", action: \"status\") — Get shell/session status\n\n\
+         GUARDRAILS: Verify file exists before modifying. Never assume a path — use system(resource: \"file\", action: \"glob\") first. \
+         Read file content before editing. Never edit a file you haven't read in this conversation."
             .to_string()
     }
 

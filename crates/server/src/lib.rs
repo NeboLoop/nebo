@@ -613,13 +613,25 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     if i.auth_type == "oauth" && i.connection_status.is_none() {
                         continue;
                     }
-                    // Retrieve stored OAuth token
+                    // Retrieve stored OAuth token, refreshing if expired
                     let access_token = if i.auth_type == "oauth" {
-                        store_init
-                            .get_mcp_credential(&i.id, "oauth_token")
-                            .ok()
-                            .flatten()
-                            .and_then(|(encrypted, _)| bridge_init.client().decrypt_token(&encrypted).ok())
+                        match store_init.get_mcp_credential_full(&i.id, "oauth_token") {
+                            Ok(Some(cred)) => {
+                                if tools::mcp_tool::is_token_expired(cred.expires_at) && cred.refresh_token.is_some() {
+                                    info!(name = %i.name, "MCP token expired on startup, attempting refresh");
+                                    match tools::mcp_tool::refresh_mcp_token(&store_init, bridge_init.client(), &i.id).await {
+                                        Ok(new_token) => Some(new_token),
+                                        Err(e) => {
+                                            warn!(name = %i.name, error = %e, "MCP token refresh on startup failed");
+                                            bridge_init.client().decrypt_token(&cred.credential_value).ok()
+                                        }
+                                    }
+                                } else {
+                                    bridge_init.client().decrypt_token(&cred.credential_value).ok()
+                                }
+                            }
+                            _ => None,
+                        }
                     } else {
                         None
                     };
@@ -1226,17 +1238,17 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         );
 
         // Pre-create chat with friendly title (agent name, not raw session key)
-        let role_name = {
+        let agent_name = {
             let registry = state.agent_registry.read().await;
             registry
                 .get(&agent_id)
                 .map(|r| r.name.clone())
                 .unwrap_or_else(|| agent_slug.clone())
         };
-        let _ = state.store.create_chat(&session_key, &format!("Agent: {}", role_name));
+        let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
 
         let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
-        notify_crate::send(&format!("Agent space: {}", role_name), &preview);
+        notify_crate::send(&format!("Agent space: {}", agent_name), &preview);
 
         let entity_config = entity_config::resolve_for_chat(
             &state.store,
@@ -1303,17 +1315,17 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 &format!("{}:{}", agent_slug, msg.conversation_id),
             );
 
-            let role_name = {
+            let agent_name = {
                 let registry = state.agent_registry.read().await;
                 registry
                     .get(&agent_id)
                     .map(|r| r.name.clone())
                     .unwrap_or_else(|| agent_slug.clone())
             };
-            let _ = state.store.create_chat(&session_key, &format!("Agent: {}", role_name));
+            let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
 
             let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
-            notify_crate::send(&format!("Agent space: {}", role_name), &preview);
+            notify_crate::send(&format!("Agent space: {}", agent_name), &preview);
 
             let entity_config = entity_config::resolve_for_chat(
                 &state.store,

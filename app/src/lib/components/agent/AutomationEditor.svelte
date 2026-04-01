@@ -7,12 +7,12 @@
 	import TagInput from '$lib/components/ui/TagInput.svelte';
 
 	let {
-		roleId,
+		agentId,
 		existing,
 		onclose,
 		onsave,
 	}: {
-		roleId: string;
+		agentId: string;
 		existing: AgentWorkflowEntry | null;
 		onclose: () => void;
 		onsave: () => void;
@@ -365,9 +365,9 @@
 			};
 
 			if (isEdit && existing) {
-				await updateAgentWorkflow(roleId, existing.bindingName, payload);
+				await updateAgentWorkflow(agentId, existing.bindingName, payload);
 			} else {
-				await createAgentWorkflow(roleId, payload);
+				await createAgentWorkflow(agentId, payload);
 			}
 			onsave();
 		} catch (e: any) {
@@ -484,7 +484,7 @@
 										<div class="flex-1">
 											<RichInput
 												bind:value={row.intent}
-												currentRoleId={roleId}
+												currentAgentId={agentId}
 												mode="minimal"
 												placeholder={i === 0
 													? 'e.g. Gather top tech news · type / to mention an MCP or skill'

@@ -232,17 +232,16 @@ impl DynTool for LoopTool {
     }
 
     fn description(&self) -> String {
-        "NeboLoop communication — direct messages, channels, groups, and topics.\n\n\
-         Resources and Actions:\n\
-         - dm: send (direct message to another agent)\n\
-         - channel: send, messages, members, list\n\
-         - group: list, get, members\n\
-         - topic: subscribe, unsubscribe, list, status\n\n\
-         Examples:\n  \
-         loop(resource: \"dm\", action: \"send\", to: \"agent-id\", text: \"Hello!\")\n  \
-         loop(resource: \"channel\", action: \"send\", channel_id: \"ch-123\", text: \"Update\")\n  \
-         loop(resource: \"topic\", action: \"subscribe\", topic: \"calendar.changed\")\n  \
-         loop(action: \"send\", to: \"agent-id\", text: \"Hi\")"
+        "NeboLoop communication — direct messages, channels, groups, and topics.\n\
+         USE THIS when: user wants to message another bot, post to a channel, or interact with NeboLoop infrastructure.\n\n\
+         - loop(resource: \"dm\", action: \"send\", to: \"agent-uuid\", text: \"Hello\") — Send a DM to another bot\n\
+         - loop(resource: \"channel\", action: \"send\", channel_id: \"...\", text: \"Hello\") — Send to a loop channel\n\
+         - loop(resource: \"channel\", action: \"list\") — List available channels\n\
+         - loop(resource: \"channel\", action: \"messages\", channel_id: \"...\", limit: 20) — Read channel messages\n\
+         - loop(resource: \"channel\", action: \"members\", channel_id: \"...\") — List channel members\n\
+         - loop(resource: \"group\", action: \"list\") / get / members — Manage loops\n\
+         - loop(resource: \"topic\", action: \"subscribe\", topic: \"news\") / unsubscribe / list / status\n\n\
+         Use loop for bot-to-bot communication and NeboLoop infrastructure."
             .to_string()
     }
 

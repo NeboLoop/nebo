@@ -13,13 +13,13 @@
 	let {
 		value = $bindable(''),
 		placeholder = '',
-		currentRoleId = '',
+		currentAgentId = '',
 		mode = 'minimal',
 		onchange,
 	}: {
 		value: string;
 		placeholder?: string;
-		currentRoleId?: string;
+		currentAgentId?: string;
 		mode?: 'minimal' | 'full';
 		onchange?: (val: string) => void;
 	} = $props();
@@ -328,7 +328,7 @@
 	onMount(async () => {
 		// Load resources for slash commands
 		try {
-			resources = await loadResources(currentRoleId);
+			resources = await loadResources(currentAgentId);
 		} catch {
 			// ignore
 		}

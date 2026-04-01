@@ -7,7 +7,7 @@ export type Resource = {
 	status: 'ok' | 'warn';
 };
 
-export async function loadResources(currentRoleId?: string): Promise<Resource[]> {
+export async function loadResources(currentAgentId?: string): Promise<Resource[]> {
 	const [mcpRes, extRes, agentsRes] = await Promise.all([
 		listMCPIntegrations().catch(() => ({ integrations: [] })),
 		listExtensions().catch(() => ({ skills: [] })),
@@ -27,7 +27,7 @@ export async function loadResources(currentRoleId?: string): Promise<Resource[]>
 		status: s.enabled ? ('ok' as const) : ('warn' as const),
 	}));
 	const agents: Resource[] = (agentsRes.agents || [])
-		.filter((r: any) => r.agentId !== currentRoleId)
+		.filter((r: any) => r.agentId !== currentAgentId)
 		.map((r: any) => ({
 			type: 'agent' as const,
 			id: r.agentId,

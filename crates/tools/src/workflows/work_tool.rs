@@ -195,7 +195,22 @@ impl DynTool for WorkTool {
     }
 
     fn description(&self) -> String {
-        "Manage and run automated workflows. Use action: list/create/install/uninstall for lifecycle, or set resource to a workflow name for: run/status/runs/toggle.".to_string()
+        "Workflow management & execution.\n\
+         USE THIS when: user wants to manage or run automated workflows.\n\n\
+         Lifecycle actions (no resource):\n\
+         - work(action: \"list\") — List installed workflows and their status\n\
+         - work(action: \"create\", name: \"My Workflow\", definition: \"{...}\") — Create a new workflow\n\
+         - work(action: \"install\", code: \"WORK-XXXX-XXXX\") — Install from marketplace\n\
+         - work(action: \"uninstall\", id: \"workflow-id\") — Uninstall a workflow\n\n\
+         Dispatch to workflow (set resource = workflow name):\n\
+         - work(resource: \"weekly-report\", action: \"run\") — Run the workflow (returns immediately with run_id)\n\
+         - work(resource: \"weekly-report\", action: \"run\", inputs: {\"week\": \"2024-03\"}) — Run with inputs\n\
+         - work(resource: \"weekly-report\", action: \"status\") — Check latest run status\n\
+         - work(resource: \"weekly-report\", action: \"runs\") — List recent runs\n\
+         - work(resource: \"weekly-report\", action: \"toggle\") — Enable/disable\n\n\
+         First use work(action: \"list\") to see available workflows, then dispatch with resource.\n\
+         Workflows run as background subagents — run returns a run_id immediately."
+            .to_string()
     }
 
     fn schema(&self) -> serde_json::Value {

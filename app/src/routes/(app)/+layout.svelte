@@ -218,7 +218,7 @@
 			if (savedLang) {
 				locale.set(savedLang);
 				localStorage.setItem('nebo_locale', savedLang);
-				document.documentElement.dir = savedLang === 'ar' ? 'rtl' : 'ltr';
+				document.documentElement.dir = (savedLang === 'ar' || savedLang === 'he') ? 'rtl' : 'ltr';
 				document.documentElement.lang = savedLang;
 			}
 		} catch (err) {

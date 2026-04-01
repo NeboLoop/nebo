@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ai::ToolDefinition;
 use db::models::ChatMessage;
 
@@ -77,6 +79,76 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
 
 /// Context names that correspond to actual registered tools (not os sub-contexts).
 const TOOL_CONTEXTS: &[&str] = &["web", "event", "loop", "work", "execute", "emit"];
+
+/// Keyword groups for activating deferred tools.
+/// Maps tool name → keywords that should activate the full tool.
+const DEFERRED_TOOL_KEYWORDS: &[(&str, &[&str])] = &[
+    ("loop", &[
+        "neboloop", "channel", "dm", "direct message", "group chat",
+        "topic", "broadcast", "send to", "other bot", "message bot",
+    ]),
+    ("work", &[
+        "workflow", "automate", "automation", "procedure", "run workflow",
+    ]),
+    ("execute", &[
+        "run script", "execute script", "python", "node", "javascript",
+        "run code", "execute code", "script",
+    ]),
+    ("plugin", &[
+        "plugin", "gmail", "google workspace", "gws", "gdrive",
+        "google calendar", "google docs", "google sheets",
+    ]),
+    ("publisher", &[
+        "publish", "marketplace", "submit skill", "submit agent",
+        "developer account", "upload binary",
+    ]),
+];
+
+/// Detect which deferred tools should be activated based on conversation keywords
+/// and tools that have already been called.
+pub fn detect_deferred_activations(
+    messages: &[ChatMessage],
+    called_tools: &[String],
+    deferred_names: &HashSet<String>,
+    already_activated: &HashSet<String>,
+) -> HashSet<String> {
+    let mut activations = HashSet::new();
+
+    // Any deferred tool that was already called → activate
+    for name in called_tools {
+        if deferred_names.contains(name) && !already_activated.contains(name) {
+            activations.insert(name.clone());
+        }
+    }
+
+    // MCP proxy tools that were called → activate
+    for name in called_tools {
+        if name.starts_with("mcp__") && deferred_names.contains(name) && !already_activated.contains(name) {
+            activations.insert(name.clone());
+        }
+    }
+
+    // Keyword matching for known deferred tools
+    let recent_text: String = messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == "user" || m.role == "assistant")
+        .take(5)
+        .map(|m| m.content.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    for (tool_name, keywords) in DEFERRED_TOOL_KEYWORDS {
+        if !deferred_names.contains(*tool_name) || already_activated.contains(*tool_name) {
+            continue;
+        }
+        if keywords.iter().any(|kw| recent_text.contains(kw)) {
+            activations.insert(tool_name.to_string());
+        }
+    }
+
+    activations
+}
 
 /// Detect active contexts based on conversation content.
 /// All tools are always included — contexts only control STRAP sub-doc injection.
@@ -245,5 +317,44 @@ mod tests {
         let names = active_tool_names(&all, &messages, &[]);
         assert!(names.contains(&"os".to_string())); // core
         assert!(names.contains(&"agent".to_string())); // core
+    }
+
+    #[test]
+    fn test_deferred_activation_by_keyword() {
+        let deferred: HashSet<String> = ["loop", "work", "execute", "plugin"]
+            .iter().map(|s| s.to_string()).collect();
+        let activated = HashSet::new();
+        let messages = vec![make_msg("user", "Send a direct message to the other bot")];
+        let result = detect_deferred_activations(&messages, &[], &deferred, &activated);
+        assert!(result.contains("loop"), "loop should activate on 'direct message'");
+        assert!(!result.contains("work"), "work should not activate without workflow keywords");
+    }
+
+    #[test]
+    fn test_deferred_activation_by_called_tool() {
+        let deferred: HashSet<String> = ["execute", "work"]
+            .iter().map(|s| s.to_string()).collect();
+        let activated = HashSet::new();
+        let result = detect_deferred_activations(&[], &["execute".to_string()], &deferred, &activated);
+        assert!(result.contains("execute"), "called deferred tool should activate it");
+    }
+
+    #[test]
+    fn test_deferred_already_activated_skipped() {
+        let deferred: HashSet<String> = ["loop"].iter().map(|s| s.to_string()).collect();
+        let mut activated = HashSet::new();
+        activated.insert("loop".to_string());
+        let messages = vec![make_msg("user", "Send a direct message")];
+        let result = detect_deferred_activations(&messages, &[], &deferred, &activated);
+        assert!(result.is_empty(), "already activated tools should not re-activate");
+    }
+
+    #[test]
+    fn test_deferred_plugin_keyword() {
+        let deferred: HashSet<String> = ["plugin"].iter().map(|s| s.to_string()).collect();
+        let activated = HashSet::new();
+        let messages = vec![make_msg("user", "Check my gmail for new messages")];
+        let result = detect_deferred_activations(&messages, &[], &deferred, &activated);
+        assert!(result.contains("plugin"), "plugin should activate on 'gmail'");
     }
 }

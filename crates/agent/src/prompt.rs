@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet};
 pub struct PromptContext {
     pub agent_name: String,
     pub active_skill: Option<String>,
-    pub skill_hints: Vec<String>,
+    /// Compact skill catalog: "## Available Skills\n- name: description\n..."
+    pub skill_catalog: String,
     pub model_aliases: String,
     pub channel: String,
     pub platform: String,
@@ -260,26 +261,8 @@ You share this computer with a real person. Be a courteous roommate:
 8. **Never open apps just to test.** Only open apps, create files, or modify the desktop when the user's request requires it."#;
 
 // --- STRAP tool documentation (compile-time includes) ---
-
-// Core tool docs (always loaded when tool is active)
-const STRAP_WEB: &str = include_str!("strap/web.txt");
-const STRAP_AGENT: &str = include_str!("strap/agent.txt");
-const STRAP_PERSONA: &str = include_str!("strap/persona.txt");
-const STRAP_LOOP: &str = include_str!("strap/loop.txt");
-const STRAP_EVENT: &str = include_str!("strap/event.txt");
-const STRAP_MESSAGE: &str = include_str!("strap/message.txt");
-const STRAP_SKILL: &str = include_str!("strap/skill.txt");
-const STRAP_WORK: &str = include_str!("strap/work.txt");
-const STRAP_EXECUTE: &str = include_str!("strap/execute.txt");
-const STRAP_MCP: &str = include_str!("strap/mcp.txt");
-
-// OS base docs (file + shell, platform-specific)
-#[cfg(target_os = "windows")]
-const STRAP_OS: &str = include_str!("strap/os_windows.txt");
-#[cfg(target_os = "linux")]
-const STRAP_OS: &str = include_str!("strap/os_linux.txt");
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
-const STRAP_OS: &str = include_str!("strap/os_macos.txt");
+// Core tool docs have moved into each tool's description() method (tool schema).
+// Only sub-context docs remain here (keyword-activated, extend the system tool).
 
 // OS sub-context docs (loaded dynamically based on keyword matching)
 #[cfg(target_os = "windows")]
@@ -295,24 +278,6 @@ const STRAP_KEYCHAIN: &str = include_str!("strap/keychain.txt");
 const STRAP_SETTINGS: &str = include_str!("strap/settings.txt");
 const STRAP_SPOTLIGHT: &str = include_str!("strap/spotlight.txt");
 const STRAP_ORGANIZER: &str = include_str!("strap/organizer.txt");
-
-/// Get STRAP doc for a registered tool name.
-fn strap_doc(tool_name: &str) -> Option<&'static str> {
-    match tool_name {
-        "os" => Some(STRAP_OS),
-        "web" => Some(STRAP_WEB),
-        "agent" => Some(STRAP_AGENT),
-        "persona" => Some(STRAP_PERSONA),
-        "loop" => Some(STRAP_LOOP),
-        "event" => Some(STRAP_EVENT),
-        "message" => Some(STRAP_MESSAGE),
-        "skill" => Some(STRAP_SKILL),
-        "work" => Some(STRAP_WORK),
-        "execute" => Some(STRAP_EXECUTE),
-        "mcp" => Some(STRAP_MCP),
-        _ => None,
-    }
-}
 
 /// Get STRAP doc for an OS sub-context (activated by keyword matching).
 fn strap_context_doc(context_name: &str) -> Option<&'static str> {
@@ -335,18 +300,10 @@ fn strap_context_doc(context_name: &str) -> Option<&'static str> {
 pub fn build_strap_section(tool_names: &[String], active_contexts: &[String]) -> String {
     let mut sb = String::from(SECTION_STRAP_HEADER);
 
+    // Core tool docs are now in each tool's description() method (tool schema).
+    // Only inject keyword-activated OS sub-context docs here (they extend the system tool
+    // but don't have their own registered tools).
     let mut seen = HashSet::new();
-    // 1. Core tool docs
-    for name in tool_names {
-        if seen.insert(name.as_str()) {
-            if let Some(doc) = strap_doc(name) {
-                sb.push_str("\n\n");
-                sb.push_str(doc);
-            }
-        }
-    }
-
-    // 2. OS sub-context docs (only when keywords matched)
     for ctx in active_contexts {
         if seen.insert(ctx.as_str()) {
             if let Some(doc) = strap_context_doc(ctx) {
@@ -386,6 +343,19 @@ pub fn build_strap_section(tool_names: &[String], active_contexts: &[String]) ->
     sb
 }
 
+/// Build a compact listing of deferred tools (name + short description).
+/// Included in the system prompt so the LLM knows they exist but doesn't get full schemas.
+pub fn build_deferred_listing(stubs: &[(String, String)]) -> String {
+    if stubs.is_empty() {
+        return String::new();
+    }
+    let mut sb = String::from("## Additional Tools (available on demand)\n\nThese tools are available but not loaded yet. If a user's request matches one, just call it — it will activate automatically.\n");
+    for (name, desc) in stubs {
+        sb.push_str(&format!("- **{}**: {}\n", name, desc));
+    }
+    sb
+}
+
 /// Build the registered tools list for only the specified tools.
 /// Called per-iteration with the filtered tool list.
 pub fn build_tools_list(tool_names: &[String]) -> String {
@@ -418,16 +388,14 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // 2. Separator
     parts.push("---".to_string());
 
-    // 3. Identity: agent body REPLACES the default identity when set.
-    //    The agent IS the bot's identity. Standard capability sections still append.
+    // 3. Identity: agent AGENT.md is injected AFTER the base identity.
+    //    The base identity establishes "You are {agent_name}" and core behavior.
+    //    The AGENT.md adds the agent's unique persona/instructions on top.
+    parts.push(SECTION_IDENTITY.to_string());
     if let Some(ref agent_md) = pctx.active_agent {
         if !agent_md.is_empty() {
-            parts.push(agent_md.clone());
-        } else {
-            parts.push(SECTION_IDENTITY.to_string());
+            parts.push(format!("## Your Persona\n\n{}", agent_md));
         }
-    } else {
-        parts.push(SECTION_IDENTITY.to_string());
     }
     parts.push(SECTION_CAPABILITIES.to_string());
     parts.push(SECTION_TOOLS_DECLARATION.to_string());
@@ -462,12 +430,12 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // varies with the active skill set and model list.
     parts.push(CACHE_BOUNDARY.to_string());
 
-    // 10. Skill hints
-    if !pctx.skill_hints.is_empty() {
-        parts.push(pctx.skill_hints.join("\n"));
+    // 10. Compact skill catalog (always-present listing of all enabled skills)
+    if !pctx.skill_catalog.is_empty() {
+        parts.push(pctx.skill_catalog.clone());
     }
 
-    // 11. Active skill content
+    // 11. Active skill content (agent-declared skills, loaded on activation)
     if let Some(ref skill) = pctx.active_skill {
         if !skill.is_empty() {
             parts.push(skill.clone());
@@ -627,21 +595,23 @@ mod tests {
     }
 
     #[test]
-    fn test_strap_only_active_tools() {
+    fn test_strap_header_only_no_core_docs() {
+        // Core tool docs moved to tool description() methods — build_strap_section
+        // should NOT inject them.
         let result = build_strap_section(&[
             "web".to_string(),
             "agent".to_string(),
         ], &[]);
         assert!(result.contains("STRAP Pattern"));
-        assert!(result.contains("web"));
-        assert!(result.contains("agent"));
+        // Core tool docs should NOT be present (they're in tool schemas now)
+        assert!(!result.contains("### web"));
+        assert!(!result.contains("### agent"));
     }
 
     #[test]
     fn test_strap_empty_is_header_only() {
         let result = build_strap_section(&[], &[]);
         assert!(result.contains("STRAP Pattern"));
-        // No tool docs appended
         assert!(!result.contains("### "));
     }
 
@@ -657,9 +627,7 @@ mod tests {
                 "spotlight".to_string(),
             ],
         );
-        // Base os doc should be included
-        assert!(result.contains("os"));
-        // Sub-context docs should also be included
+        // Sub-context docs should be included (keyword-activated)
         assert!(result.contains("App Lifecycle"));
         assert!(result.contains("Media Playback"));
         assert!(result.contains("Credential Storage"));
@@ -749,16 +717,16 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_boundary_before_skill_hints() {
+    fn test_cache_boundary_before_skill_catalog() {
         let pctx = PromptContext {
             agent_name: "Nebo".to_string(),
-            skill_hints: vec!["SKILL: test_skill - does testing".to_string()],
+            skill_catalog: "## Available Skills\n- test_skill: does testing".to_string(),
             ..Default::default()
         };
         let result = build_static(&pctx);
         let offset = cache_boundary_offset(&result).unwrap();
         let suffix = &result[offset..];
-        assert!(suffix.contains("test_skill"), "skill hints should be after cache boundary");
+        assert!(suffix.contains("test_skill"), "skill catalog should be after cache boundary");
     }
 
     #[test]
@@ -772,6 +740,25 @@ mod tests {
         let offset = cache_boundary_offset(&result).unwrap();
         let suffix = &result[offset..];
         assert!(suffix.contains("Model Switching"), "model aliases should be after cache boundary");
+    }
+
+    #[test]
+    fn test_deferred_listing_empty() {
+        let result = build_deferred_listing(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_deferred_listing_has_tools() {
+        let stubs = vec![
+            ("execute".to_string(), "Script execution engine".to_string()),
+            ("work".to_string(), "Workflow lifecycle management".to_string()),
+        ];
+        let result = build_deferred_listing(&stubs);
+        assert!(result.contains("Additional Tools"));
+        assert!(result.contains("**execute**"));
+        assert!(result.contains("**work**"));
+        assert!(result.contains("Script execution engine"));
     }
 }
 

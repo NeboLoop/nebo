@@ -5,7 +5,7 @@
 **Platform:** ___ (e.g., macOS 15.4 arm64 / Windows 11 x64)
 **Nebo Version:** ___ (git commit hash)
 **Tester:** ___
-**NeboLoop Codes Available:** SKILL: SKIL-RFBM-XCYT / WORK: WORK-SW4Z-5XKN / ROLE: ROLE-KG82-KM2G
+**NeboLoop Codes Available:** SKILL: SKIL-RFBM-XCYT / WORK: WORK-SW4Z-5XKN / AGNT: AGNT-KG82-KM2G
 
 ---
 
@@ -33,13 +33,11 @@
 | Path | Expected | Result | Notes |
 |------|----------|--------|-------|
 | `<data_dir>/nebo/skills/` | Directory exists | | |
-| `<data_dir>/nebo/tools/` | Directory exists | | |
-| `<data_dir>/nebo/workflows/` | Directory exists | | |
-| `<data_dir>/nebo/roles/` | Directory exists | | |
+| `<data_dir>/nebo/agents/` | Directory exists | | |
+| `<data_dir>/nebo/plugins/` | Directory exists | | |
 | `<data_dir>/user/skills/` | Directory exists | | |
-| `<data_dir>/user/tools/` | Directory exists | | |
-| `<data_dir>/user/workflows/` | Directory exists | | |
-| `<data_dir>/user/roles/` | Directory exists | | |
+| `<data_dir>/user/agents/` | Directory exists | | |
+| `<data_dir>/user/plugins/` | Directory exists | | |
 | `<data_dir>/data/nebo.db` | File exists | | |
 
 ### PF-04: Providers Ready
@@ -213,21 +211,21 @@
 | Delete succeeds | Skill removed | | |
 | Gone from catalog | Absent after delete | | |
 
-### AT-20: role — Verify Persona Activation
+### AT-20: persona — Verify Persona Activation
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Role created | In `user/roles/at-test-pirate/` | | |
+| Agent created | In `user/agents/at-test-pirate/` | | |
 | Activate succeeds | Confirmation message | | |
 | Persona active | Response contains pirate-speak | | |
 | Deactivate succeeds | Reverted to default | | |
 | Persona gone | Normal response (no pirate) | | |
 
-### AT-21: role — List Shows Created Roles
+### AT-21: persona — List Shows Created Agents
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| List includes role | `at-test-pirate` present | | |
+| List includes agent | `at-test-pirate` present | | |
 | Info returns details | "Pirate persona" in description | | |
 | Version shown | `1.0.0` | | |
 
@@ -377,16 +375,17 @@
 |-------|----------|--------|-------|
 | HTTP 200 | Response received | | |
 | JSON array | Built-in tools listed | | |
-| Contains `os` | Present | | |
-| Contains `web` | Present | | |
-| Contains `agent` | Present | | |
-| Contains `skill` | Present | | |
-| Contains `role` | Present | | |
-| Contains `work` | Present | | |
-| Contains `event` | Present | | |
-| Contains `message` | Present | | |
-| Contains `execute` | Present | | |
-| Contains `loop` | Present | | |
+| Contains `os` | Present (file, shell, app, settings, clipboard, etc.) | | |
+| Contains `web` | Present (http, search, browser, devtools) | | |
+| Contains `agent` | Present (memory, task, session, context, advisors, ask) | | |
+| Contains `skill` | Present (catalog, discover, help, load/unload, CRUD) | | |
+| Contains `persona` | Present (list, activate, deactivate, info, create) | | |
+| Contains `work` | Present — deferred (workflow lifecycle) | | |
+| Contains `event` | Present (create, list, delete, run, history) | | |
+| Contains `message` | Present (owner notify, sms, dnd) | | |
+| Contains `execute` | Present — deferred (script execution) | | |
+| Contains `loop` | Present — conditional (dm, channel, group, topic) | | |
+| Contains `plugin` | Present — deferred (plugin binary management) | | |
 | Each has name | Non-empty | | |
 | Each has description | Non-empty | | |
 
@@ -499,106 +498,106 @@
 
 ---
 
-## Section 5: Roles (R)
+## Section 5: Agents (A)
 
-### R-01: List Roles (REST)
+### A-01: List Agents (REST)
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
 | HTTP 200 | Response received | | |
-| JSON array | Roles listed | | |
+| JSON array | Agents listed | | |
 
-### R-01a: List Roles (Agent Tool)
+### A-01a: List Agents (Persona Tool)
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Tool executes | Role list returned | | |
+| Tool executes | Agent list returned | | |
 | Format | JSON with names, enabled | | |
 | No error | `is_error: false` | | |
 
-### R-02: Create Role (REST)
+### A-02: Create Agent (REST)
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Role created | 200/201 | | |
-| Stored in `user/roles/` | Files on disk | | |
+| Agent created | 200/201 | | |
+| Stored in `user/agents/` | Files on disk | | |
 | DB row created | Metadata persisted | | |
 
-### R-02a: Create Role (Agent Tool)
+### A-02a: Create Agent (Persona Tool)
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Tool executes | Role created | | |
-| Location | `user/roles/test-role-agent/` | | |
+| Tool executes | Agent created | | |
+| Location | `user/agents/test-agent-tool/` | | |
 | No error | `is_error: false` | | |
 
-### R-03: Get Role (REST)
+### A-03: Get Agent (REST)
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Role returned | Full definition | | |
-| ROLE.md content | Contains `ROLE_TEST_PASS` | | |
-| role.json content | Workflows, skills, tools present | | |
+| Agent returned | Full definition | | |
+| AGENT.md content | Contains `AGENT_TEST_PASS` | | |
+| agent.json content | Workflows, skills, tools present | | |
 
-### R-03a: Get Role Info (Agent Tool)
+### A-03a: Get Agent Info (Persona Tool)
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Tool executes | Role info returned | | |
-| Content | Contains role description | | |
+| Tool executes | Agent info returned | | |
+| Content | Contains agent description | | |
 | No error | `is_error: false` | | |
 
-### R-04: Update Role
+### A-04: Update Agent
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Role updated | 200 | | |
-| New description | `Updated integration test role` | | |
+| Agent updated | 200 | | |
+| New description | `Updated integration test agent` | | |
 | Version bumped | `1.1.0` | | |
 
-### R-05: Toggle Role
+### A-05: Toggle Agent
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Role disabled | `is_enabled: false` | | |
+| Agent disabled | `is_enabled: false` | | |
 | Toggle again | `is_enabled: true` | | |
 
-### R-05a: Activate/Deactivate Role (Agent Tool)
+### A-05a: Activate/Deactivate Agent (Persona Tool)
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Activate executes | Role active | | |
-| Deactivate executes | Role deactivated | | |
+| Activate executes | Agent active | | |
+| Deactivate executes | Agent deactivated | | |
 | No error | `is_error: false` | | |
 
-### R-06: Delete Role
+### A-06: Delete Agent
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Role removed | 200 | | |
+| Agent removed | 200 | | |
 | Not in list | Absent | | |
 | Files cleaned | Directory removed | | |
 
-### R-06a: Cleanup Agent Tool Role
+### A-06a: Cleanup Persona Tool Agent
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Directory removed | `user/roles/test-role-agent/` gone | | |
+| Directory removed | `user/agents/test-agent-tool/` gone | | |
 | Not in list | Absent | | |
 
-### R-07: Install Role from NeboLoop (`ROLE-KG82-KM2G`)
+### A-07: Install Agent from NeboLoop (`AGNT-KG82-KM2G`)
 
-**Method:** `POST /api/v1/codes {"code": "ROLE-KG82-KM2G"}`
+**Method:** `POST /api/v1/codes {"code": "AGNT-KG82-KM2G"}`
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
 | Code accepted | 200, success: true | | |
-| Download succeeds | Role installed | | |
+| Download succeeds | Agent installed | | |
 | Cascading install | Dependencies also installed | | |
-| Role in list | Present | | |
+| Agent in list | Present | | |
 | Dependencies present | Skills, workflows | | |
 
-### R-08: Install Dependencies
+### A-08: Install Dependencies
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
@@ -606,17 +605,83 @@
 | Install triggered | Deps downloaded | | |
 | All resolved | No missing deps | | |
 
-### R-09: Role with Triggers
+### A-09: Agent with Triggers
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
-| Role created | With trigger definitions | | |
+| Agent created | With trigger definitions | | |
 | Triggers registered | Parsed correctly | | |
 | Manual trigger | Invocable on demand | | |
 
+### A-10: Agent Workflows — Bind + Run
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| List bindings | `GET /agents/{id}/workflows` returns list | | |
+| Create binding | `POST /agents/{id}/workflows` succeeds | | |
+| Toggle binding | `POST /agents/{id}/workflows/{name}/toggle` | | |
+| Delete binding | `DELETE /agents/{id}/workflows/{name}` | | |
+
+### A-11: Agent REST API — Extended Operations
+
+| Operation | Endpoint | Expected | Result | Notes |
+|-----------|----------|----------|--------|-------|
+| List | `GET /agents` | 200 | | |
+| Create | `POST /agents` | 200/201 | | |
+| Get | `GET /agents/{id}` | 200 | | |
+| Update | `PUT /agents/{id}` | 200 | | |
+| Toggle | `POST /agents/{id}/toggle` | 200 | | |
+| Activate | `POST /agents/{id}/activate` | 200 | | |
+| Deactivate | `POST /agents/{id}/deactivate` | 200 | | |
+| Duplicate | `POST /agents/{id}/duplicate` | 200/201 | | |
+| Install deps | `POST /agents/{id}/install-deps` | 200 | | |
+| Update inputs | `PUT /agents/{id}/inputs` | 200 | | |
+| Stats | `GET /agents/{id}/stats` | 200 | | |
+| Runs | `GET /agents/{id}/runs` | 200 | | |
+| Delete | `DELETE /agents/{id}` | 200 | | |
+
 ---
 
-## Section 6: Cross-Cutting (X)
+## Section 6: Plugins (P)
+
+### P-01: List Installed Plugins
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| No crash | Returns list or empty | | |
+| Format | Plugin name, version, path | | |
+
+### P-02: Plugin Install via Skill Dependency
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Skill with plugin dep installed | Skill references plugin in frontmatter | | |
+| Plugin auto-downloaded | Binary present in `nebo/plugins/` | | |
+| Plugin verified | SHA256 + ED25519 check passed | | |
+| Env var available | `{SLUG}_BIN` set during tool execution | | |
+
+### P-03: Plugin Tool — Services/Help/Exec
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Services action | Lists available plugin commands | | |
+| Help action | Returns plugin help text | | |
+| Exec action | Executes plugin command successfully | | |
+
+### P-04: Install Plugin via Code (`PLUG-XXXX-XXXX`)
+
+**Method:** `POST /api/v1/codes {"code": "PLUG-XXXX-XXXX"}`
+
+| Check | Expected | Result | Notes |
+|-------|----------|--------|-------|
+| Code accepted | 200, success: true | | |
+| Download succeeds | Plugin installed | | |
+| Binary present | In `nebo/plugins/<slug>/<version>/` | | |
+| plugin.json present | Metadata file alongside binary | | |
+
+---
+
+## Section 7: Cross-Cutting (X)
 
 ### X-01: Code Format Validation
 
@@ -647,7 +712,7 @@
 | Contains SKILL.md | Entry present | | |
 | Not extracted | No loose SKILL.md | | |
 
-**After W-09 or R-07 (marketplace install):**
+**After W-09 or A-07 (marketplace install):**
 
 | Check | Expected | Result | Notes |
 |-------|----------|--------|-------|
@@ -660,6 +725,8 @@
 |-------|----------|--------|-------|
 | User skills → `user/skills/` | Correct namespace | | |
 | Marketplace skills → `nebo/skills/` | Correct namespace | | |
+| User agents → `user/agents/` | Correct namespace | | |
+| Marketplace agents → `nebo/agents/` | Correct namespace | | |
 | User CRUD → `user/` only | Never touches `nebo/` | | |
 | Installed artifacts read-only | Cannot modify/delete | | |
 
@@ -683,7 +750,8 @@
 |-------|----------|--------|-------|
 | `code_processing` | Received on code entry | | |
 | `code_result` | Received on completion | | |
-| `tool_installed` | Received for tool install | | |
+| `dep_installed` | Received for dependency install | | |
+| `dep_cascade_complete` | Received when all deps done | | |
 
 ### X-08: Settings Consistency Check
 
@@ -714,7 +782,7 @@
 
 ---
 
-## Section 7: Cleanup
+## Section 8: Cleanup
 
 | Artifact | Cleanup Action | Done | Notes |
 |----------|----------------|------|-------|
@@ -722,19 +790,19 @@
 | `at-test-event` | Delete via event tool | | |
 | `at-run-test` event | Delete via event tool | | |
 | `at-test-skill` | Delete via skill tool | | |
-| `at-test-pirate` role | `rm -rf user/roles/at-test-pirate/` | | |
+| `at-test-pirate` agent | `rm -rf user/agents/at-test-pirate/` | | |
 | `at-test-workflow` | Uninstall + rm files | | |
 | `test-integration` skill | Delete via skill tool (S-09) | | |
 | `api-test-skill` | DELETE REST API (S-12) | | |
 | `hot-reload-test` skill | `rm -rf user/skills/hot-reload-test/` | | |
 | `test-workflow` | Uninstall + rm files (W-08) | | |
-| `test-role` | DELETE REST API (R-06) | | |
-| `test-role-agent` | `rm -rf user/roles/test-role-agent/` (R-06a) | | |
-| `trigger-test-role` | DELETE REST API (R-09) | | |
+| `test-agent` | DELETE REST API (A-06) | | |
+| `test-agent-tool` | `rm -rf user/agents/test-agent-tool/` (A-06a) | | |
+| `trigger-test-agent` | DELETE REST API (A-09) | | |
 | Memory `test_key` | Delete via agent tool (X-05) | | |
 | **SKIL-RFBM-XCYT** skill | Uninstall installed skill from `nebo/skills/` | | |
 | **WORK-SW4Z-5XKN** workflow | Uninstall installed workflow from `nebo/workflows/` | | |
-| **ROLE-KG82-KM2G** role | Uninstall installed role from `nebo/roles/` | | |
+| **AGNT-KG82-KM2G** agent | Uninstall installed agent from `nebo/agents/` | | |
 | httpbin browser tab | Close tab (X-10) | | |
 
 ---
@@ -748,9 +816,10 @@
 | Skills (S) | 12 | | | | |
 | Built-in Tools (T) | 2 | | | | |
 | Workflows (W) | 10 | | | | |
-| Roles (R) | 14 | | | | |
+| Agents (A) | 15 | | | | |
+| Plugins (P) | 4 | | | | |
 | Cross-Cutting (X) | 10 | | | | |
-| **Total** | **76** | | | | |
+| **Total** | **81** | | | | |
 
 ## Regressions from Previous Run
 

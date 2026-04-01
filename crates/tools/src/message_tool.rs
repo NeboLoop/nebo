@@ -31,21 +31,18 @@ impl DynTool for MessageTool {
     }
 
     fn description(&self) -> String {
-        "Send messages, notifications, and SMS to the owner.\n\n\
-         Resources and Actions:\n\
-         - owner: notify (append message to companion chat + push notification)\n\
-         - notify: send, alert, dnd_status (system notifications, DND status)\n\
-         - sms: send, conversations, read, search (macOS Messages.app integration)\n\n\
-         For text-to-speech use os(resource: \"tts\", action: \"speak\", text: \"...\")\n\n\
-         Examples:\n  \
-         message(resource: \"owner\", action: \"notify\", text: \"Your task is complete!\")\n  \
-         message(action: \"notify\", text: \"Reminder: meeting in 5 minutes\")\n  \
-         message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"Disk space low\")\n  \
-         message(resource: \"notify\", action: \"dnd_status\")\n  \
-         message(resource: \"sms\", action: \"send\", phone: \"+15551234567\", text: \"Hello!\")\n  \
-         message(resource: \"sms\", action: \"conversations\")\n  \
-         message(resource: \"sms\", action: \"read\", phone: \"+15551234567\")\n  \
-         message(resource: \"sms\", action: \"search\", query: \"meeting\")"
+        "Outbound delivery — send notifications, alerts, and SMS to the owner.\n\
+         USE THIS when: user wants to send a text, notification, or alert to someone outside NeboLoop.\n\n\
+         - message(resource: \"owner\", action: \"notify\", text: \"Task complete!\") — Notify the owner via companion chat\n\
+         - message(resource: \"sms\", action: \"send\", to: \"+15551234567\", body: \"Hello!\") — Send SMS (macOS)\n\
+         - message(resource: \"sms\", action: \"conversations\") — List SMS conversations\n\
+         - message(resource: \"sms\", action: \"read\", chat_id: \"+15551234567\") — Read SMS messages\n\
+         - message(resource: \"sms\", action: \"search\", query: \"meeting\") — Search SMS messages\n\
+         - message(resource: \"notify\", action: \"send\", title: \"Alert\", text: \"Something happened\") — System notification\n\
+         - message(resource: \"notify\", action: \"alert\", title: \"Warning\", text: \"...\") — Show alert dialog\n\
+         - message(resource: \"notify\", action: \"dnd_status\") — Check Do Not Disturb status\n\n\
+         For text-to-speech: use os(resource: \"tts\", action: \"speak\", text: \"Hello\")\n\
+         Use message for outbound delivery to humans outside NeboLoop."
             .to_string()
     }
 

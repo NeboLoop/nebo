@@ -370,11 +370,11 @@ impl DynTool for ExecuteTool {
     }
 
     fn description(&self) -> String {
-        "Execute a script or binary bundled with a skill. Runs locally if the runtime is installed, \
-         or in the cloud sandbox for paid tiers.\n\n\
-         Examples:\n  \
-         execute(skill: \"xlsx-processor\", script: \"scripts/recalc.py\", args: {\"file\": \"output.xlsx\"})\n  \
-         execute(skill: \"pptx\", script: \"binary\", args: {\"command\": \"create\", \"spec\": {...}})"
+        "Script execution — run a script or binary bundled with a skill.\n\
+         USE THIS when: user wants to run a script (Python, Node.js, etc.) from an installed skill.\n\n\
+         - execute(skill: \"SKILL-XXXX-XXXX\", args: {...}) — Execute a skill's binary/script\n\
+         - execute(skill: \"SKILL-XXXX-XXXX\", action: \"info\") — Get skill execution info\n\n\
+         Scripts run in a sandboxed environment with managed runtimes (Python via uv, Node via bun)."
             .to_string()
     }
 

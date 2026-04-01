@@ -88,22 +88,30 @@
 
 	const onboardingLanguages = [
 		{ value: 'en', label: 'English' },
+		{ value: 'id', label: 'Bahasa Indonesia' },
+		{ value: 'ms', label: 'Bahasa Melayu' },
 		{ value: 'de', label: 'Deutsch' },
 		{ value: 'es', label: 'Español' },
 		{ value: 'fr', label: 'Français' },
 		{ value: 'it', label: 'Italiano' },
-		{ value: 'pt-BR', label: 'Português (Brasil)' },
 		{ value: 'nl', label: 'Nederlands' },
 		{ value: 'pl', label: 'Polski' },
-		{ value: 'tr', label: 'Türkçe' },
-		{ value: 'uk', label: 'Українська' },
+		{ value: 'pt', label: 'Português' },
+		{ value: 'pt-BR', label: 'Português (Brasil)' },
+		{ value: 'sv', label: 'Svenska' },
 		{ value: 'vi', label: 'Tiếng Việt' },
+		{ value: 'tr', label: 'Türkçe' },
+		{ value: 'ru', label: 'Русский' },
+		{ value: 'uk', label: 'Українська' },
 		{ value: 'ar', label: 'العربية' },
+		{ value: 'he', label: 'עברית' },
+		{ value: 'bn', label: 'বাংলা' },
 		{ value: 'hi', label: 'हिन्दी' },
-		{ value: 'ja', label: '日本語' },
-		{ value: 'ko', label: '한국어' },
+		{ value: 'th', label: 'ไทย' },
 		{ value: 'zh-CN', label: '中文 (简体)' },
-		{ value: 'zh-TW', label: '中文 (繁體)' }
+		{ value: 'zh-TW', label: '中文 (繁體)' },
+		{ value: 'ja', label: '日本語' },
+		{ value: 'ko', label: '한국어' }
 	];
 
 	function selectLanguage(lang: string) {
@@ -111,7 +119,7 @@
 		locale.set(lang);
 		localStorage.setItem('nebo_locale', lang);
 		if (typeof document !== 'undefined') {
-			document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+			document.documentElement.dir = (lang === 'ar' || lang === 'he') ? 'rtl' : 'ltr';
 			document.documentElement.lang = lang;
 		}
 	}
@@ -483,7 +491,7 @@
 </script>
 
 <div class="fixed inset-0 bg-base-100 z-50 scrollbar-overlay">
-	<div class="w-full max-w-lg mx-auto py-8 px-8 min-h-full flex flex-col justify-center">
+	<div class="w-full mx-auto py-8 px-8 min-h-full flex flex-col justify-center {currentStep === 'language' ? 'max-w-2xl' : 'max-w-lg'}">
 		<!-- Progress dots -->
 		<div class="flex justify-center gap-2 mb-8">
 			{#each progressSteps as step}
@@ -507,7 +515,7 @@
 				</div>
 				<h1 class="text-3xl font-bold mb-3">{$t('onboarding.language.title')}</h1>
 				<p class="text-base-content/80 mb-6 text-lg">{$t('onboarding.language.description')}</p>
-				<div class="grid grid-cols-2 gap-2 max-w-md mx-auto mb-8 px-1">
+				<div class="grid grid-cols-3 gap-2 max-w-2xl mx-auto mb-8 px-1">
 					{#each onboardingLanguages as lang}
 						<button
 							type="button"

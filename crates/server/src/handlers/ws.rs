@@ -521,7 +521,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         return;
     }
 
-    // If agent_id is set, build a role-scoped session key for isolation
+    // If agent_id is set, build an agent-scoped session key for isolation
     let session_key = if !agent_id.is_empty() {
         agent::keyparser::build_agent_session_key(&agent_id, &channel)
     } else {

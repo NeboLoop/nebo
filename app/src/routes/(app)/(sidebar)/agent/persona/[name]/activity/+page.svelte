@@ -223,7 +223,7 @@
 		try {
 			const [sessRes, memRes, wfRes, activeRes, statsRes, runsRes] = await Promise.all([
 				listAgentSessions().catch(() => null),
-				hasAgentId ? listMemories({ namespace: `role:${channelState.activeAgentId}`, page: 1, pageSize: 10 }).catch(() => null) : null,
+				hasAgentId ? listMemories({ namespace: `agent:${channelState.activeAgentId}`, page: 1, pageSize: 10 }).catch(() => null) : null,
 				hasAgentId ? getAgentWorkflows(channelState.activeAgentId).catch(() => null) : null,
 				hasAgentId ? getActiveAgents().catch(() => null) : null,
 				hasAgentId ? getAgentStats(channelState.activeAgentId).catch(() => null) : null,
