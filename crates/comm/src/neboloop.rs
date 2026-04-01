@@ -3,11 +3,12 @@
 //! and dispatches typed messages (installs, chat, DMs, loop channels, voice).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Notify, RwLock};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::MaybeTlsStream;
 use tracing::{debug, info, warn};
@@ -51,7 +52,6 @@ pub(crate) struct AgentSpaceMeta {
 }
 
 struct Inner {
-    connected: bool,
     handler: Option<MessageHandler>,
     send_tx: Option<mpsc::Sender<Vec<u8>>>,
     cancel: Option<tokio_util::sync::CancellationToken>,
@@ -70,13 +70,16 @@ pub struct NeboLoopPlugin {
     ulid_gen: UlidGen,
     /// Dev log for `tail -f` traffic inspection (set during connect).
     devlog: RwLock<Option<DevLog>>,
+    /// Lock-free connected flag — set true after AUTH_OK, false on disconnect/read-loop exit.
+    connected: Arc<AtomicBool>,
+    /// Signalled when the read loop exits unexpectedly (not via cancel).
+    disconnect_notify: Arc<Notify>,
 }
 
 impl NeboLoopPlugin {
     pub fn new() -> Self {
         Self {
             inner: RwLock::new(Inner {
-                connected: false,
                 handler: None,
                 send_tx: None,
                 cancel: None,
@@ -87,6 +90,8 @@ impl NeboLoopPlugin {
             conv_maps: Arc::new(RwLock::new(ConvMaps::default())),
             ulid_gen: UlidGen::new(),
             devlog: RwLock::new(None),
+            connected: Arc::new(AtomicBool::new(false)),
+            disconnect_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -274,7 +279,7 @@ impl CommPlugin for NeboLoopPlugin {
                 cancel.cancel();
             }
             inner.send_tx = None;
-            inner.connected = false;
+            self.connected.store(false, Ordering::SeqCst);
         }
 
         let gateway = config
@@ -395,11 +400,11 @@ impl CommPlugin for NeboLoopPlugin {
 
         {
             let mut inner = self.inner.write().await;
-            inner.connected = true;
             inner.send_tx = Some(send_tx);
             inner.cancel = Some(cancel.clone());
             inner.api = Some(api);
         }
+        self.connected.store(true, Ordering::SeqCst);
 
         // Clone what the read loop needs
         let handler = self.inner.read().await.handler.clone();
@@ -412,8 +417,20 @@ impl CommPlugin for NeboLoopPlugin {
         let read_cancel = cancel.clone();
         let dedup = DedupWindow::new();
         let devlog_for_read = self.devlog.read().await.clone();
+        let connected_for_read = self.connected.clone();
+        let notify_for_read = self.disconnect_notify.clone();
         tokio::spawn(async move {
-            read_loop(read, read_handler, join_tx, dedup, read_cancel, devlog_for_read).await;
+            read_loop(
+                read,
+                read_handler,
+                join_tx,
+                dedup,
+                read_cancel,
+                devlog_for_read,
+                connected_for_read,
+                notify_for_read,
+            )
+            .await;
         });
 
         // Spawn write loop
@@ -470,32 +487,25 @@ impl CommPlugin for NeboLoopPlugin {
         if let Some(ref dl) = *self.devlog.read().await {
             dl.event("DISCONNECT");
         }
+        self.connected.store(false, Ordering::SeqCst);
         let mut inner = self.inner.write().await;
         if let Some(cancel) = inner.cancel.take() {
             cancel.cancel();
         }
-        inner.connected = false;
         inner.send_tx = None;
         info!("neboloop disconnected");
         Ok(())
     }
 
     fn is_connected(&self) -> bool {
-        // Use try_read to avoid blocking; return false if locked
-        self.inner
-            .try_read()
-            .map(|inner| {
-                inner.connected
-                    && inner.cancel.as_ref().map_or(false, |c| !c.is_cancelled())
-            })
-            .unwrap_or(false)
+        self.connected.load(Ordering::SeqCst)
     }
 
     async fn send(&self, msg: CommMessage) -> Result<(), CommError> {
-        let inner = self.inner.read().await;
-        if !inner.connected {
+        if !self.connected.load(Ordering::SeqCst) {
             return Err(CommError::NotConnected);
         }
+        let inner = self.inner.read().await;
 
         // Find conversation for the topic/target
         let conv_id = if !msg.conversation_id.is_empty() {
@@ -705,6 +715,10 @@ impl CommPlugin for NeboLoopPlugin {
             .get(conv_id)
             .map(|meta| meta.agent_slug.clone())
     }
+
+    async fn wait_disconnect(&self) {
+        self.disconnect_notify.notified().await;
+    }
 }
 
 // ── Background tasks ─────────────────────────────────────────────────
@@ -784,6 +798,8 @@ async fn read_loop(
     dedup: DedupWindow,
     cancel: tokio_util::sync::CancellationToken,
     devlog: Option<DevLog>,
+    connected: Arc<AtomicBool>,
+    disconnect_notify: Arc<Notify>,
 ) {
     loop {
         tokio::select! {
@@ -1012,8 +1028,15 @@ async fn read_loop(
             }
         }
     }
-    // Signal disconnection so is_connected() returns false and reconnect watcher kicks in
+    // Signal disconnection so is_connected() returns false and reconnect kicks in.
+    // If the exit was due to cancellation (intentional disconnect), don't notify —
+    // the caller already knows. Only notify on unexpected drops (read error, stream end).
+    let was_cancelled = cancel.is_cancelled();
+    connected.store(false, Ordering::SeqCst);
     cancel.cancel();
+    if !was_cancelled {
+        disconnect_notify.notify_one();
+    }
     info!("neboloop read loop exited");
 }
 

@@ -87,4 +87,10 @@ pub trait CommPlugin: Send + Sync {
     async fn agent_slug_for_conv(&self, _conv_id: &str) -> Option<String> {
         None
     }
+
+    /// Wait for an unexpected disconnect (read loop failure).
+    /// Default implementation never returns (plugin doesn't support disconnect notification).
+    async fn wait_disconnect(&self) {
+        std::future::pending::<()>().await;
+    }
 }

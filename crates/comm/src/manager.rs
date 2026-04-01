@@ -200,6 +200,20 @@ impl PluginManager {
         }
     }
 
+    /// Wait for the active plugin to report an unexpected disconnect.
+    /// Returns immediately if no active plugin. Callers should loop and reconnect.
+    pub async fn wait_disconnect(&self) {
+        let plugin = {
+            let inner = self.inner.read().await;
+            inner.active.clone()
+        };
+        if let Some(p) = plugin {
+            p.wait_disconnect().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    }
+
     /// Disconnect all plugins.
     pub async fn shutdown(&self) {
         let mut inner = self.inner.write().await;

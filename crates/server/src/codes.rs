@@ -791,6 +791,11 @@ async fn persist_workflow_artifact(
 /// This is the canonical implementation — called by both startup auto-connect
 /// and code handlers. Builds config from stored credentials and connects.
 pub async fn activate_neboloop(state: &AppState) -> Result<(), NeboError> {
+    // Guard against re-entry: if already connected, skip.
+    if state.comm_manager.is_connected().await {
+        return Ok(());
+    }
+
     let bot_id = config::read_bot_id()
         .ok_or_else(|| NeboError::Internal("no bot_id".into()))?;
     let profiles = state

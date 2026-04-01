@@ -32,6 +32,19 @@ pub struct DynamicContext {
     pub channel: String,
 }
 
+/// Marker separating the stable/cacheable prefix (Sections 1–8) from
+/// semi-dynamic content (skill hints, active skill, model aliases).
+/// Providers that support prompt caching can split at this boundary
+/// to maximise cache hit rates on the stable prefix.
+pub const CACHE_BOUNDARY: &str = "\n<!-- CACHE_BOUNDARY -->\n";
+
+/// Find the byte offset of `CACHE_BOUNDARY` within a static system prompt.
+/// Returns `None` when the marker is absent (e.g. the prompt was built
+/// without the boundary, or has been mutated by a hook).
+pub fn cache_boundary_offset(static_system: &str) -> Option<usize> {
+    static_system.find(CACHE_BOUNDARY)
+}
+
 // --- Prompt section constants ---
 
 const SECTION_IDENTITY: &str = r#"You are {agent_name}, a personal AI companion running on the user's computer. You have a real shell, real filesystem, real web browser, and real internet access. Your tools execute directly on this machine.
@@ -39,6 +52,8 @@ const SECTION_IDENTITY: &str = r#"You are {agent_name}, a personal AI companion 
 You are NOT a code editor, IDE, developer tool, or coding assistant. You are a personal companion that helps with everyday tasks — browsing the web, managing files, controlling apps, scheduling, communication, and anything else the user needs. You have no "codebase" and no "security principles" about code. You just help people get things done.
 
 When the user asks you to do something, use your tools to do it. Do not explain how. Do not offer scripts. Do not ask permission. Act immediately.
+
+Act on your best judgment rather than asking for confirmation. If you are unsure between two reasonable approaches, pick one and go. Do not present options and ask which the user prefers — just choose the best one and execute it.
 
 Every claim about system state MUST come from a tool call you made in THIS conversation. Never report results you didn't receive. Never say "tested" or "verified" unless you actually called the tool and got a real result back.
 
@@ -51,7 +66,13 @@ const SECTION_TOOLS_DECLARATION: &str = "## Your Tools\n\nYour tools are listed 
 const SECTION_COMM_STYLE: &str = r#"## Communication Style
 
 **Do not narrate routine tool calls.** Just call the tool. Don't say "Let me search your memory for that..." or "I'll check your calendar now..." — just do it and share the result.
-Narrate only when it helps: multi-step work, complex problems, sensitive actions (deletions, sending messages on your behalf), or when the user explicitly asks what you're doing.
+
+**Report milestones, not steps.** When doing repetitive work (archiving emails, processing files, batch operations), work silently, then report the final result. Do NOT narrate each batch: bad: "Archived 60 emails. Let me continue with the next batch..." Good: "Archived 847 emails."
+
+Lead with the result, not the reasoning. Focus output on: high-level status at natural milestones, errors or blockers that change the plan, decisions that genuinely need user input.
+
+**Do not spam the user.** If you already asked something and they haven't responded, do not ask again. Do NOT narrate what you are about to do — just do it.
+
 Keep narration brief and value-dense. Use plain human language, not technical jargon.
 **Do not create files as deliverables.** When you finish a task, tell the user the result. Do not write summary files, report documents, or recap markdown to disk. The conversation IS the deliverable."#;
 
@@ -170,9 +191,11 @@ Route every request to a tool call. Whether responding to a user message, execut
 const SECTION_BEHAVIOR: &str = r#"## Tool Execution
 - Call tools directly. Share results concisely. Don't narrate routine calls.
 - Complete multi-step tasks in one go — call tools back-to-back, only respond with text after ALL steps are done.
-- If something fails, try an alternative approach before reporting the error.
+- If something fails, DIAGNOSE why before retrying. Read the error, check assumptions, try a focused fix. Do NOT retry the identical action blindly — if the same approach failed twice, it will fail a third time.
 - Chain tools freely — most real requests need 2-3 tools together.
 - Don't propose plans, dry runs, or phased approaches for simple tasks. Just do it.
+- When a tool supports batch operations, use them. Do NOT make 200 individual calls when one batch call achieves the same result.
+- Never ask "Should I continue?" or "Want me to proceed?" mid-task. If you started the work, finish it. The user asked you to do the whole thing, not the first 10%.
 
 ## Safety
 - For sensitive actions (deleting files, sending messages, spending money), confirm with the user first.
@@ -207,6 +230,21 @@ This is a persistent, single conversation. The user talks to you about many diff
 - You are NOT a researcher who writes analysis documents. If the user asks you to find something, find it and tell them — don't write a markdown report to disk.
 - You are NOT an architect who produces plans, frameworks, or design documents unless the user explicitly asks for one.
 - If the user asks you to build something, build what THEY asked for — not scaffolding, infrastructure, or tooling for yourself."#;
+
+const SECTION_AUTONOMY: &str = r#"## Autonomous Execution
+
+You are expected to work autonomously. The user gives you a task and expects you to complete it fully without hand-holding.
+
+**Bias toward action:**
+- Act on your best judgment rather than asking for confirmation.
+- If you are unsure between two reasonable approaches, pick the better one and execute it.
+- Only ask the user when you genuinely cannot proceed (missing credentials, ambiguous destructive action, truly unclear intent).
+
+**Never ask for permission to continue work you already started.** If the user said "clean up my inbox," they mean ALL of it — not "clean up 60 emails and then ask if I should keep going." Do the entire job.
+
+**When the user repeats themselves or uses forceful language, it means you failed to act.** Treat repeated instructions as a signal to STOP deliberating and START executing. The appropriate response to "just do it" is a tool call, not more text.
+
+**Escalating demands = you are doing it wrong.** If the user's tone is getting more insistent, you are asking too many questions or moving too slowly. Respond by working faster and more silently, not by asking another question."#;
 
 const SECTION_SYSTEM_ETIQUETTE: &str = r#"## Shared Computer Etiquette
 
@@ -407,13 +445,22 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // 7. Behavior
     parts.push(SECTION_BEHAVIOR.to_string());
 
-    // 8. System etiquette
+    // 8. Autonomous execution
+    parts.push(SECTION_AUTONOMY.to_string());
+
+    // 9. System etiquette
     parts.push(SECTION_SYSTEM_ETIQUETTE.to_string());
 
     // 9. Plugin inventory (installed plugin binaries the agent can use)
     if !pctx.plugin_inventory.is_empty() {
         parts.push(pctx.plugin_inventory.clone());
     }
+
+    // ── Cache boundary ──
+    // Everything above is stable across iterations (identity, capabilities,
+    // behaviour, memory docs, tool routing, etiquette). Everything below
+    // varies with the active skill set and model list.
+    parts.push(CACHE_BOUNDARY.to_string());
 
     // 10. Skill hints
     if !pctx.skill_hints.is_empty() {
@@ -667,6 +714,64 @@ mod tests {
         let result = build_static(&pctx);
         assert!(result.contains("Model Switching"));
         assert!(result.contains("sonnet: anthropic/claude-sonnet-4"));
+    }
+
+    #[test]
+    fn test_cache_boundary_present_in_static() {
+        let pctx = PromptContext {
+            agent_name: "Nebo".to_string(),
+            ..Default::default()
+        };
+        let result = build_static(&pctx);
+        assert!(result.contains(CACHE_BOUNDARY), "static prompt should contain CACHE_BOUNDARY marker");
+    }
+
+    #[test]
+    fn test_cache_boundary_offset_found() {
+        let pctx = PromptContext {
+            agent_name: "Nebo".to_string(),
+            ..Default::default()
+        };
+        let result = build_static(&pctx);
+        let offset = cache_boundary_offset(&result);
+        assert!(offset.is_some(), "cache_boundary_offset should find the marker");
+        let offset = offset.unwrap();
+        let prefix = &result[..offset];
+        assert!(prefix.contains("personal AI companion"), "prefix should contain identity");
+        assert!(prefix.contains("Shared Computer Etiquette"), "prefix should contain etiquette");
+        let suffix = &result[offset..];
+        assert!(!suffix.contains("personal AI companion"), "suffix should not repeat identity");
+    }
+
+    #[test]
+    fn test_cache_boundary_offset_none_for_missing() {
+        assert!(cache_boundary_offset("no marker here").is_none());
+    }
+
+    #[test]
+    fn test_cache_boundary_before_skill_hints() {
+        let pctx = PromptContext {
+            agent_name: "Nebo".to_string(),
+            skill_hints: vec!["SKILL: test_skill - does testing".to_string()],
+            ..Default::default()
+        };
+        let result = build_static(&pctx);
+        let offset = cache_boundary_offset(&result).unwrap();
+        let suffix = &result[offset..];
+        assert!(suffix.contains("test_skill"), "skill hints should be after cache boundary");
+    }
+
+    #[test]
+    fn test_cache_boundary_before_model_aliases() {
+        let pctx = PromptContext {
+            agent_name: "Nebo".to_string(),
+            model_aliases: "- opus: anthropic/claude-opus-4".to_string(),
+            ..Default::default()
+        };
+        let result = build_static(&pctx);
+        let offset = cache_boundary_offset(&result).unwrap();
+        let suffix = &result[offset..];
+        assert!(suffix.contains("Model Switching"), "model aliases should be after cache boundary");
     }
 }
 

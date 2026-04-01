@@ -4,6 +4,7 @@ pub mod deps;
 pub mod entity_config;
 pub mod handlers;
 pub mod middleware;
+pub mod routes;
 pub mod workflow_manager;
 mod heartbeat;
 mod migration;
@@ -415,9 +416,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     }
 
-    // Rename roles/ → agents/ directories and ROLE.md → AGENT.md files (one-time, before dir creation)
-    migration::migrate_roles_to_agents(&data_dir);
-
     // Ensure artifact directory structure exists (nebo/ and user/ namespaces)
     if let Err(e) = config::ensure_artifact_dirs() {
         warn!("failed to create artifact directories: {}", e);
@@ -430,11 +428,9 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     migration::migrate_napp_extraction(&data_dir);
 
     // Initialize plugin store for shared binary management
-    let installed_plugins_dir = data_dir.join("nebo").join("plugins");
-    let user_plugins_dir = data_dir.join("user").join("plugins");
-    let _ = std::fs::create_dir_all(&installed_plugins_dir);
-    let _ = std::fs::create_dir_all(&user_plugins_dir);
-    let plugin_store = Arc::new(napp::plugin::PluginStore::new(installed_plugins_dir, user_plugins_dir, None));
+    let plugins_dir = data_dir.join("nebo").join("plugins");
+    let _ = std::fs::create_dir_all(&plugins_dir);
+    let plugin_store = Arc::new(napp::plugin::PluginStore::new(plugins_dir, None));
 
     // Initialize skill loader (bundled + extracted dirs from nebo/skills/ + loose files from user/skills/)
     let bundled_skills_dir = config::bundled_skills_dir().unwrap_or_else(|_| data_dir.join("bundled").join("skills"));
@@ -508,8 +504,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         }
     };
 
-    // Create shared agent registry — multiple agents can be active concurrently, each with isolated persona
-    let active_agent_state: tools::AgentRegistry = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+    // Create shared role registry — multiple roles can be active concurrently, each with isolated persona
+    let active_role_state: tools::RoleRegistry = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
 
     // Create broadcaster closure for tools to emit WS events
     let hub_for_tools = hub.clone();
@@ -517,7 +513,6 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         hub_for_tools.broadcast(event_type, payload);
     });
 
-    tool_registry.set_plugin_store(plugin_store.clone());
     tool_registry
         .register_all_with_permissions(
             store.clone(),
@@ -531,7 +526,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             Some(plan_tier.clone()),
             sandbox_manager,
             None, // comm_plugin — set later when NeboLoop connects
-            Some(active_agent_state.clone()),
+            Some(active_role_state.clone()),
             Some(broadcaster),
         )
         .await;
@@ -767,7 +762,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         concurrency.clone(),
         hooks.clone(),
         Some(mcp_context.clone()),
-        active_agent_state.clone(),
+        active_role_state.clone(),
         Some(skill_loader.clone()),
     ));
 
@@ -793,58 +788,58 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
     ))).await;
 
-    // Create agent worker registry — manages autonomous trigger lifecycle for each agent
-    let agent_workers = Arc::new(agent::AgentWorkerRegistry::new(
+    // Create role worker registry — manages autonomous trigger lifecycle for each role
+    let role_workers = Arc::new(agent::RoleWorkerRegistry::new(
         store.clone(),
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
         event_dispatcher.clone(),
     ));
 
-    // Start workers for all enabled agents (replaces manual trigger reconciliation)
+    // Start workers for all enabled roles (replaces manual trigger reconciliation)
     {
-        if let Ok(agents) = store.list_agents(1000, 0) {
+        if let Ok(roles) = store.list_roles(1000, 0) {
             let mut started = 0usize;
-            for agent in &agents {
-                if agent.is_enabled == 0 {
+            for role in &roles {
+                if role.is_enabled == 0 {
                     continue;
                 }
-                agent_workers.start_agent(&agent.id, &agent.name).await;
+                role_workers.start_role(&role.id, &role.name).await;
                 started += 1;
             }
             if started > 0 {
-                info!(count = started, "started agent workers for enabled agents");
+                info!(count = started, "started role workers for enabled roles");
             }
         }
     }
 
-    // Populate agent_registry from DB so enabled agents appear in sidebar after restart
+    // Populate role_registry from DB so enabled roles appear in sidebar after restart
     {
-        if let Ok(agents) = store.list_agents(1000, 0) {
-            let mut registry = active_agent_state.write().await;
-            for agent in &agents {
-                if agent.is_enabled == 0 {
+        if let Ok(roles) = store.list_roles(1000, 0) {
+            let mut registry = active_role_state.write().await;
+            for role in &roles {
+                if role.is_enabled == 0 {
                     continue;
                 }
-                let config = if !agent.frontmatter.is_empty() {
-                    napp::agent::parse_agent_config(&agent.frontmatter).ok()
+                let config = if !role.frontmatter.is_empty() {
+                    napp::role::parse_role_config(&role.frontmatter).ok()
                 } else {
                     None
                 };
-                registry.insert(agent.id.clone(), tools::ActiveAgent {
-                    agent_id: agent.id.clone(),
-                    name: agent.name.clone(),
-                    agent_md: agent.agent_md.clone(),
+                registry.insert(role.id.clone(), tools::ActiveRole {
+                    role_id: role.id.clone(),
+                    name: role.name.clone(),
+                    role_md: role.role_md.clone(),
                     config,
                     channel_id: None,
                 });
             }
             if !registry.is_empty() {
-                info!(count = registry.len(), "restored active agents from DB");
+                info!(count = registry.len(), "restored active roles from DB");
             }
         }
     }
 
-    // Spawn event dispatcher loop (matches events to agent-owned subscriptions)
+    // Spawn event dispatcher loop (matches events to role-owned subscriptions)
     event_dispatcher.clone().spawn(
         event_rx,
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
@@ -898,8 +893,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         event_dispatcher,
         plan_tier,
         skill_loader: skill_loader.clone(),
-        agent_registry: active_agent_state,
-        agent_workers,
+        role_registry: active_role_state,
+        role_workers,
         janus_usage: Arc::new(tokio::sync::RwLock::new(None)),
         plugin_store,
     };
@@ -1071,7 +1066,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             "/auth/neboloop/callback",
             axum::routing::get(handlers::neboloop::oauth_callback),
         )
-        .nest("/api/v1", api_routes(jwt_secret)
+        .nest("/api/v1", routes::api_routes(jwt_secret)
             .layer(axum::middleware::from_fn(middleware::api_security_headers)))
         .fallback(spa::spa_handler)
         .layer(CompressionLayer::new());
@@ -1183,12 +1178,12 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
 
         let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
-        let agent_id = resolve_agent_id_from_slug(&state, &agent_slug).await;
+        let role_id = resolve_role_id_from_slug(&state, &agent_slug).await;
         tracing::info!(
             agent_slug = %agent_slug,
-            agent_id = %agent_id,
+            role_id = %role_id,
             text_len = text.len(),
-            "agent_space: routing to agent"
+            "agent_space: routing to role"
         );
 
         let session_key = agent::keyparser::build_session_key(
@@ -1198,17 +1193,17 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         );
 
         // Pre-create chat with friendly title (agent name, not raw session key)
-        let agent_name = {
-            let registry = state.agent_registry.read().await;
+        let role_name = {
+            let registry = state.role_registry.read().await;
             registry
-                .get(&agent_id)
+                .get(&role_id)
                 .map(|r| r.name.clone())
                 .unwrap_or_else(|| agent_slug.clone())
         };
-        let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
+        let _ = state.store.create_chat(&session_key, &format!("Agent: {}", role_name));
 
         let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
-        notify_crate::send(&format!("Agent space: {}", agent_name), &preview);
+        notify_crate::send(&format!("Agent space: {}", role_name), &preview);
 
         let entity_config = entity_config::resolve_for_chat(
             &state.store,
@@ -1223,7 +1218,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             user_id: String::new(),
             channel: "neboloop".to_string(),
             origin: tools::Origin::Comm,
-            agent_id: agent_id,
+            role_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -1261,10 +1256,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             if text.is_empty() {
                 return;
             }
-            let agent_id = resolve_agent_id_from_slug(&state, &agent_slug).await;
+            let role_id = resolve_role_id_from_slug(&state, &agent_slug).await;
             tracing::info!(
                 agent_slug = %agent_slug,
-                agent_id = %agent_id,
+                role_id = %role_id,
                 conv_id = %msg.conversation_id,
                 "dm→agent_space reroute: conv belongs to agent space"
             );
@@ -1275,17 +1270,17 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 &format!("{}:{}", agent_slug, msg.conversation_id),
             );
 
-            let agent_name = {
-                let registry = state.agent_registry.read().await;
+            let role_name = {
+                let registry = state.role_registry.read().await;
                 registry
-                    .get(&agent_id)
+                    .get(&role_id)
                     .map(|r| r.name.clone())
                     .unwrap_or_else(|| agent_slug.clone())
             };
-            let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
+            let _ = state.store.create_chat(&session_key, &format!("Agent: {}", role_name));
 
             let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
-            notify_crate::send(&format!("Agent space: {}", agent_name), &preview);
+            notify_crate::send(&format!("Agent space: {}", role_name), &preview);
 
             let entity_config = entity_config::resolve_for_chat(
                 &state.store,
@@ -1300,7 +1295,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 user_id: String::new(),
                 channel: "neboloop".to_string(),
                 origin: tools::Origin::Comm,
-                agent_id: agent_id,
+                role_id,
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
                 comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -1352,14 +1347,14 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             &msg.topic,
         );
 
-        // Check for @mention routing — if agent_slug is present, resolve to agent_id
-        let agent_id = {
+        // Check for @mention routing — if agent_slug is present, resolve to role_id
+        let role_id = {
             let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
-            resolve_agent_id_from_slug(&state, &agent_slug).await
+            resolve_role_id_from_slug(&state, &agent_slug).await
         };
 
         // Pre-create chat with @mention context if applicable
-        if !agent_id.is_empty() {
+        if !role_id.is_empty() {
             let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
             let _ = state.store.create_chat(&session_key, &format!("@{} (channel)", agent_slug));
         }
@@ -1371,7 +1366,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             user_id: String::new(),
             channel: "neboloop".to_string(),
             origin: tools::Origin::Comm,
-            agent_id: agent_id,
+            role_id,
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
@@ -1429,14 +1424,14 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
     );
 }
 
-/// Resolve an agent ID from a slug by scanning the active agent registry.
-async fn resolve_agent_id_from_slug(state: &AppState, slug: &str) -> String {
+/// Resolve a role ID from an agent slug by scanning the active role registry.
+async fn resolve_role_id_from_slug(state: &AppState, slug: &str) -> String {
     if slug.is_empty() {
         return String::new();
     }
-    let registry = state.agent_registry.read().await;
-    for (id, agent) in registry.iter() {
-        if agent.name.to_lowercase().replace(' ', "-") == slug {
+    let registry = state.role_registry.read().await;
+    for (id, role) in registry.iter() {
+        if role.name.to_lowercase().replace(' ', "-") == slug {
             return id.clone();
         }
     }
@@ -1461,265 +1456,6 @@ async fn health_handler() -> Json<HealthResponse> {
         status: "ok".into(),
         version: VERSION.into(),
     })
-}
-
-fn api_routes(jwt_secret: JwtSecret) -> Router<AppState> {
-    // Auth routes with rate limiting (10 req/min per IP)
-    let auth_limiter = middleware::RateLimiter::new(10, std::time::Duration::from_secs(60));
-    let auth_routes = Router::new()
-        .route("/auth/login", axum::routing::post(handlers::auth::login))
-        .route("/auth/register", axum::routing::post(handlers::auth::register))
-        .route("/auth/refresh", axum::routing::post(handlers::auth::refresh))
-        .route("/auth/forgot", axum::routing::post(handlers::auth::forgot_password))
-        .route("/auth/reset", axum::routing::post(handlers::auth::reset_password))
-        .route("/auth/verify", axum::routing::post(handlers::auth::verify_email))
-        .route("/auth/resend", axum::routing::post(handlers::auth::resend_verification))
-        .layer(axum::Extension(auth_limiter))
-        .layer(axum::middleware::from_fn(middleware::rate_limit));
-
-    // Public routes (no auth required)
-    let public = Router::new()
-        // Auth config
-        .route("/auth/config", axum::routing::get(handlers::auth::config))
-        // Setup
-        .route("/setup/status", axum::routing::get(handlers::setup::status))
-        .route("/setup/admin", axum::routing::post(handlers::setup::create_admin))
-        .route("/setup/complete", axum::routing::post(handlers::setup::complete))
-        .route("/setup/personality", axum::routing::get(handlers::setup::get_personality))
-        .route("/setup/personality", axum::routing::put(handlers::setup::update_personality))
-        // Chats
-        .route("/chats", axum::routing::get(handlers::chat::list_chats))
-        .route("/chats", axum::routing::post(handlers::chat::create_chat))
-        .route("/chats/days", axum::routing::get(handlers::chat::list_chat_days))
-        .route("/chats/history/{day}", axum::routing::get(handlers::chat::get_chat_history_by_day))
-        .route("/chats/companion", axum::routing::get(handlers::chat::get_companion_chat))
-        .route("/chats/companion/new", axum::routing::post(handlers::chat::create_companion_chat))
-        .route("/chats/search", axum::routing::get(handlers::chat::search_messages))
-        .route("/chats/message", axum::routing::post(handlers::chat::send_message))
-        .route("/chats/{id}", axum::routing::get(handlers::chat::get_chat))
-        .route("/chats/{id}", axum::routing::put(handlers::chat::update_chat))
-        .route("/chats/{id}", axum::routing::delete(handlers::chat::delete_chat))
-        .route("/chats/{id}/messages", axum::routing::get(handlers::chat::get_chat_messages))
-        .route("/chats/{chat_id}/tool-output/{tool_call_id}", axum::routing::get(handlers::chat::get_tool_output))
-        .route("/chats/messages/{id}/edit", axum::routing::post(handlers::chat::edit_message))
-        // Agent
-        .route("/agent/sessions", axum::routing::get(handlers::agent::list_sessions))
-        .route("/agent/sessions/{id}", axum::routing::delete(handlers::agent::delete_session))
-        .route("/agent/sessions/{id}/messages", axum::routing::get(handlers::agent::get_session_messages))
-        .route("/agent/settings", axum::routing::get(handlers::agent::get_settings))
-        .route("/agent/settings", axum::routing::put(handlers::agent::update_settings))
-        .route("/agent/profile", axum::routing::get(handlers::agent::get_profile))
-        .route("/agent/profile", axum::routing::put(handlers::agent::update_profile))
-        .route("/agent/status", axum::routing::get(handlers::agent::get_status))
-        .route("/agent/system-info", axum::routing::get(handlers::agent::get_system_info))
-        .route("/agent/personality-presets", axum::routing::get(handlers::agent::list_personality_presets))
-        .route("/agent/heartbeat", axum::routing::get(handlers::agent::get_heartbeat))
-        .route("/agent/heartbeat", axum::routing::put(handlers::agent::update_heartbeat))
-        .route("/agent/lanes", axum::routing::get(handlers::agent::get_lanes))
-        .route("/agent/advisors", axum::routing::get(handlers::agent::list_advisors))
-        .route("/agent/advisors", axum::routing::post(handlers::agent::create_advisor))
-        .route("/agent/advisors/{name}", axum::routing::get(handlers::agent::get_advisor))
-        .route("/agent/advisors/{name}", axum::routing::put(handlers::agent::update_advisor))
-        .route("/agent/advisors/{name}", axum::routing::delete(handlers::agent::delete_advisor))
-        .route("/agent/channels/{channelId}/messages", axum::routing::get(handlers::agent::get_channel_messages))
-        .route("/agent/channels/{channelId}/send", axum::routing::post(handlers::agent::send_channel_message))
-        .route("/agent/ws", axum::routing::get(handlers::ws::agent_ws_handler))
-        // Memory
-        .route("/memories", axum::routing::get(handlers::memory::list_memories))
-        .route("/memories/search", axum::routing::get(handlers::memory::search_memories))
-        .route("/memories/stats", axum::routing::get(handlers::memory::get_stats))
-        .route("/memories/{id}", axum::routing::get(handlers::memory::get_memory))
-        .route("/memories/{id}", axum::routing::put(handlers::memory::update_memory))
-        .route("/memories/{id}", axum::routing::delete(handlers::memory::delete_memory))
-        // Providers & Models
-        .route("/providers", axum::routing::get(handlers::provider::list_providers))
-        .route("/providers", axum::routing::post(handlers::provider::create_provider))
-        .route("/providers/{id}", axum::routing::get(handlers::provider::get_provider))
-        .route("/providers/{id}", axum::routing::put(handlers::provider::update_provider))
-        .route("/providers/{id}", axum::routing::delete(handlers::provider::delete_provider))
-        .route("/providers/{id}/test", axum::routing::post(handlers::provider::test_provider))
-        .route("/models", axum::routing::get(handlers::provider::list_models))
-        .route("/models/config", axum::routing::put(handlers::provider::update_model_config))
-        .route("/models/task-routing", axum::routing::put(handlers::provider::update_task_routing))
-        .route("/models/cli/{cliId}", axum::routing::put(handlers::provider::update_cli_provider))
-        .route("/models/{provider}/{modelId}", axum::routing::put(handlers::provider::update_model))
-        .route("/local-models/status", axum::routing::get(handlers::provider::local_models_status))
-        // Skills & Extensions
-        .route("/extensions", axum::routing::get(handlers::skills::list_extensions))
-        .route("/skills", axum::routing::post(handlers::skills::create_skill))
-        .route("/skills/{name}", axum::routing::get(handlers::skills::get_skill))
-        .route("/skills/{name}", axum::routing::put(handlers::skills::update_skill))
-        .route("/skills/{name}", axum::routing::delete(handlers::skills::delete_skill))
-        .route("/skills/{name}/content", axum::routing::get(handlers::skills::get_skill_content))
-        .route("/skills/{name}/toggle", axum::routing::post(handlers::skills::toggle_skill))
-        .route("/skills/{name}/secrets", axum::routing::get(handlers::skills::list_skill_secrets))
-        .route("/skills/{name}/secrets", axum::routing::put(handlers::skills::set_skill_secret))
-        .route("/skills/{name}/secrets/{key}", axum::routing::delete(handlers::skills::delete_skill_secret))
-        // Plugins
-        .route("/plugins", axum::routing::get(handlers::plugins::list_plugins))
-        .route("/plugins/{slug}", axum::routing::delete(handlers::plugins::remove_plugin))
-        .route("/plugins/{slug}/auth/login", axum::routing::post(handlers::plugins::auth_login))
-        .route("/plugins/{slug}/auth/logout", axum::routing::post(handlers::plugins::auth_logout))
-        .route("/plugins/{slug}/auth/status", axum::routing::get(handlers::plugins::auth_status))
-        // Scheduled Tasks
-        .route("/tasks", axum::routing::get(handlers::tasks::list_tasks))
-        .route("/tasks", axum::routing::post(handlers::tasks::create_task))
-        .route("/tasks/{name}", axum::routing::get(handlers::tasks::get_task))
-        .route("/tasks/{name}", axum::routing::put(handlers::tasks::update_task))
-        .route("/tasks/{name}", axum::routing::delete(handlers::tasks::delete_task))
-        .route("/tasks/{name}/toggle", axum::routing::post(handlers::tasks::toggle_task))
-        .route("/tasks/{name}/run", axum::routing::post(handlers::tasks::run_task))
-        .route("/tasks/{name}/history", axum::routing::get(handlers::tasks::list_task_history))
-        // Integrations (MCP)
-        .route("/integrations", axum::routing::get(handlers::integrations::list_integrations))
-        .route("/integrations", axum::routing::post(handlers::integrations::create_integration))
-        .route("/integrations/registry", axum::routing::get(handlers::integrations::list_registry))
-        .route("/mcp/servers", axum::routing::get(handlers::integrations::list_registry))
-        .route("/integrations/tools", axum::routing::get(handlers::integrations::list_tools))
-        .route("/integrations/{id}", axum::routing::get(handlers::integrations::get_integration))
-        .route("/integrations/{id}", axum::routing::put(handlers::integrations::update_integration))
-        .route("/integrations/{id}", axum::routing::delete(handlers::integrations::delete_integration))
-        .route("/integrations/{id}/test", axum::routing::post(handlers::integrations::test_integration))
-        .route("/integrations/{id}/connect", axum::routing::post(handlers::integrations::connect_integration))
-        .route("/integrations/{id}/oauth-url", axum::routing::get(handlers::integrations::get_oauth_url))
-        .route("/integrations/oauth/callback", axum::routing::get(handlers::integrations::oauth_callback))
-        // Updates
-        .route("/update/check", axum::routing::get(handlers::agent::update_check))
-        .route("/update/apply", axum::routing::post(handlers::agent::update_apply))
-        // Files
-        .route("/files/browse", axum::routing::post(handlers::files::browse))
-        .route("/files/pick", axum::routing::post(handlers::files::pick_files))
-        .route("/files/pick-folder", axum::routing::post(handlers::files::pick_folder))
-        .route("/files/{*path}", axum::routing::get(handlers::files::serve_file))
-        // NeboLoop OAuth and account
-        .route("/neboloop/oauth/start", axum::routing::get(handlers::neboloop::oauth_start))
-        .route("/neboloop/oauth/status", axum::routing::get(handlers::neboloop::oauth_status))
-        .route("/neboloop/account", axum::routing::get(handlers::neboloop::account_status))
-        .route("/neboloop/account", axum::routing::delete(handlers::neboloop::account_disconnect))
-        .route("/neboloop/status", axum::routing::get(handlers::neboloop::bot_status))
-        .route("/neboloop/janus/usage", axum::routing::get(handlers::neboloop::janus_usage))
-        .route("/neboloop/janus/usage/refresh", axum::routing::post(handlers::neboloop::janus_usage_refresh))
-        .route("/neboloop/open", axum::routing::get(handlers::neboloop::open_neboloop))
-        .route("/neboloop/connect", axum::routing::post(handlers::neboloop::connect_handler))
-        .route("/neboloop/billing/prices", axum::routing::get(handlers::neboloop::billing_prices))
-        .route("/neboloop/billing/subscription", axum::routing::get(handlers::neboloop::billing_subscription))
-        .route("/neboloop/billing/checkout", axum::routing::post(handlers::neboloop::billing_checkout))
-        .route("/neboloop/billing/subscribe", axum::routing::post(handlers::neboloop::billing_subscribe))
-        .route("/neboloop/billing/portal", axum::routing::post(handlers::neboloop::billing_portal))
-        .route("/neboloop/billing/setup-intent", axum::routing::post(handlers::neboloop::billing_setup_intent))
-        .route("/neboloop/billing/cancel", axum::routing::post(handlers::neboloop::billing_cancel))
-        .route("/neboloop/billing/invoices", axum::routing::get(handlers::neboloop::billing_invoices))
-        .route("/neboloop/billing/payment-methods", axum::routing::get(handlers::neboloop::billing_payment_methods))
-        .route("/neboloop/referral-code", axum::routing::get(handlers::neboloop::referral_code))
-        // Workflows
-        .route("/workflows", axum::routing::get(handlers::workflows::list_workflows))
-        .route("/workflows", axum::routing::post(handlers::workflows::create_workflow))
-        .route("/workflows/{id}", axum::routing::get(handlers::workflows::get_workflow))
-        .route("/workflows/{id}", axum::routing::put(handlers::workflows::update_workflow))
-        .route("/workflows/{id}", axum::routing::delete(handlers::workflows::delete_workflow))
-        .route("/workflows/{id}/toggle", axum::routing::post(handlers::workflows::toggle_workflow))
-        .route("/workflows/{id}/run", axum::routing::post(handlers::workflows::run_workflow))
-        .route("/workflows/{id}/runs", axum::routing::get(handlers::workflows::list_runs))
-        .route("/workflows/{id}/runs/{runId}", axum::routing::get(handlers::workflows::get_run))
-        .route("/workflows/{id}/runs/{runId}/cancel", axum::routing::post(handlers::workflows::cancel_run))
-        .route("/workflows/{id}/bindings", axum::routing::get(handlers::workflows::list_bindings))
-        .route("/workflows/{id}/bindings", axum::routing::put(handlers::workflows::update_bindings))
-        // Agents
-        .route("/agents", axum::routing::get(handlers::agents::list_agents))
-        .route("/agents", axum::routing::post(handlers::agents::create_agent))
-        .route("/agents/{id}", axum::routing::get(handlers::agents::get_agent))
-        .route("/agents/{id}", axum::routing::put(handlers::agents::update_agent))
-        .route("/agents/{id}", axum::routing::delete(handlers::agents::delete_agent))
-        .route("/agents/{id}/toggle", axum::routing::post(handlers::agents::toggle_agent))
-        .route("/agents/{id}/install-deps", axum::routing::post(handlers::agents::install_deps))
-        .route("/agents/active", axum::routing::get(handlers::agents::list_active_agents))
-        .route("/agents/event-sources", axum::routing::get(handlers::agents::list_event_sources))
-        .route("/agents/{id}/activate", axum::routing::post(handlers::agents::activate_agent))
-        .route("/agents/{id}/deactivate", axum::routing::post(handlers::agents::deactivate_agent))
-        .route("/agents/{id}/duplicate", axum::routing::post(handlers::agents::duplicate_agent))
-        .route("/agents/{id}/chat", axum::routing::post(handlers::agents::chat_with_agent))
-        .route("/agents/{id}/workflows", axum::routing::get(handlers::agents::list_agent_workflows))
-        .route("/agents/{id}/workflows", axum::routing::post(handlers::agents::create_agent_workflow))
-        .route("/agents/{id}/workflows/{binding_name}", axum::routing::put(handlers::agents::update_agent_workflow))
-        .route("/agents/{id}/workflows/{binding_name}", axum::routing::delete(handlers::agents::delete_agent_workflow))
-        .route("/agents/{id}/workflows/{binding_name}/toggle", axum::routing::post(handlers::agents::toggle_agent_workflow))
-        .route("/agents/{id}/inputs", axum::routing::put(handlers::agents::update_agent_inputs))
-        .route("/agents/{id}/setup", axum::routing::post(handlers::agents::trigger_agent_setup))
-        .route("/agents/{id}/reload", axum::routing::post(handlers::agents::reload_agent))
-        .route("/agents/{id}/check-update", axum::routing::post(handlers::agents::check_agent_update))
-        .route("/agents/{id}/apply-update", axum::routing::post(handlers::agents::apply_agent_update))
-        .route("/agents/{id}/stats", axum::routing::get(handlers::agents::agent_stats))
-        .route("/agents/{id}/runs", axum::routing::get(handlers::agents::list_agent_runs))
-        // Commander (multi-agent coordination canvas)
-        .route("/commander/graph", axum::routing::get(handlers::commander::get_graph))
-        .route("/commander/layout", axum::routing::put(handlers::commander::save_layout))
-        .route("/commander/teams", axum::routing::post(handlers::commander::create_team))
-        .route("/commander/teams/{id}", axum::routing::put(handlers::commander::update_team))
-        .route("/commander/teams/{id}", axum::routing::delete(handlers::commander::delete_team))
-        .route("/commander/edges", axum::routing::post(handlers::commander::create_edge))
-        .route("/commander/edges/{id}", axum::routing::delete(handlers::commander::delete_edge))
-        // Marketplace (unified on /store/products with ?type= filter)
-        .route("/store/products", axum::routing::get(handlers::store::list_store_products))
-        .route("/store/products/top", axum::routing::get(handlers::store::list_store_products_top))
-        .route("/store/featured", axum::routing::get(handlers::store::list_store_featured))
-        .route("/store/categories", axum::routing::get(handlers::store::list_store_categories))
-        .route("/store/screenshots/{type}", axum::routing::get(handlers::store::get_store_screenshots))
-        .route("/store/products/{id}", axum::routing::get(handlers::store::get_store_product))
-        .route("/store/products/{id}/reviews", axum::routing::get(handlers::store::get_store_product_reviews).post(handlers::store::submit_store_product_review))
-        .route("/store/products/{id}/similar", axum::routing::get(handlers::store::get_store_product_similar))
-        .route("/store/products/{id}/media", axum::routing::get(handlers::store::get_store_product_media))
-        .route("/store/products/{id}/feedback", axum::routing::get(handlers::store::get_store_product_feedback).post(handlers::store::submit_store_product_feedback))
-        .route("/store/products/{id}/install", axum::routing::post(handlers::store::install_store_product).delete(handlers::store::uninstall_store_product))
-
-        // Entity Config (per-entity settings)
-        .route("/entity-config/{entity_type}/{entity_id}", axum::routing::get(handlers::entity_config::get_entity_config))
-        .route("/entity-config/{entity_type}/{entity_id}", axum::routing::put(handlers::entity_config::update_entity_config))
-        .route("/entity-config/{entity_type}/{entity_id}", axum::routing::delete(handlers::entity_config::delete_entity_config))
-        .route("/codes", axum::routing::post(codes::submit_code))
-        // Dependency cascade
-        .route("/deps/approve", axum::routing::post(deps::approve_deps))
-        // User profile/preferences (public — single-user local app)
-        .route("/user/me/profile", axum::routing::get(handlers::user::get_profile))
-        .route("/user/me/profile", axum::routing::put(handlers::user::update_profile))
-        .route("/user/me/preferences", axum::routing::get(handlers::user::get_preferences))
-        .route("/user/me/preferences", axum::routing::put(handlers::user::update_preferences))
-        .route("/user/me/permissions", axum::routing::get(handlers::user::get_permissions))
-        .route("/user/me/permissions", axum::routing::put(handlers::user::update_permissions))
-        .route("/user/me/accept-terms", axum::routing::post(handlers::user::accept_terms));
-
-    // Protected routes (JWT required)
-    let protected = Router::new()
-        .route("/user/me", axum::routing::get(handlers::user::get_current_user))
-        .route("/user/me", axum::routing::put(handlers::user::update_current_user))
-        .route("/user/me", axum::routing::delete(handlers::user::delete_account))
-        .route(
-            "/user/me/change-password",
-            axum::routing::post(handlers::user::change_password),
-        )
-        .route(
-            "/notifications",
-            axum::routing::get(handlers::notification::list_notifications),
-        )
-        .route(
-            "/notifications/{id}/read",
-            axum::routing::put(handlers::notification::mark_read),
-        )
-        .route(
-            "/notifications/read-all",
-            axum::routing::put(handlers::notification::mark_all_read),
-        )
-        .route(
-            "/notifications/{id}",
-            axum::routing::delete(handlers::notification::delete_notification),
-        )
-        .route(
-            "/notifications/unread-count",
-            axum::routing::get(handlers::notification::unread_count),
-        )
-        .layer(axum::Extension(jwt_secret))
-        .layer(axum::middleware::from_fn(middleware::jwt_auth));
-
-    Router::new().merge(auth_routes).merge(public).merge(protected)
 }
 
 fn cors_layer() -> CorsLayer {
