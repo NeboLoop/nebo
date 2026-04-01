@@ -3470,6 +3470,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "shlex",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.18",

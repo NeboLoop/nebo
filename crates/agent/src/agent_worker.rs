@@ -1,17 +1,20 @@
 //! AgentWorker — autonomous agent execution.
 //!
 //! One `AgentWorker` per active agent. Spawns and owns all trigger tasks
-//! (schedule, heartbeat, event). The `AgentWorkerRegistry` manages the
+//! (schedule, heartbeat, event, watch). The `AgentWorkerRegistry` manages the
 //! lifecycle of all workers.
 
 use std::collections::HashMap;
+use std::process::Stdio;
 use std::sync::Arc;
 
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 use db::Store;
+use napp::plugin::PluginStore;
 use tools::workflows::WorkflowManager;
 use workflow::events::{EventDispatcher, EventSubscription};
 
@@ -22,6 +25,7 @@ pub struct AgentWorker {
     cancel: CancellationToken,
     event_dispatcher: Arc<EventDispatcher>,
     workflow_manager: Arc<dyn WorkflowManager>,
+    plugin_store: Arc<PluginStore>,
 }
 
 impl AgentWorker {
@@ -32,6 +36,7 @@ impl AgentWorker {
         store: &Store,
         workflow_manager: Arc<dyn WorkflowManager>,
         event_dispatcher: Arc<EventDispatcher>,
+        plugin_store: Arc<PluginStore>,
     ) -> Self {
         let cancel = CancellationToken::new();
 
@@ -39,7 +44,7 @@ impl AgentWorker {
             Ok(b) => b,
             Err(e) => {
                 warn!(agent = %agent_id, error = %e, "failed to load agent workflow bindings");
-                return Self { agent_id, name, cancel, event_dispatcher, workflow_manager };
+                return Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store };
             }
         };
 
@@ -196,6 +201,92 @@ impl AgentWorker {
                         });
                     }
                 }
+                "watch" => {
+                    // Parse watch config from trigger_config JSON
+                    let watch_cfg: WatchTriggerConfig = match serde_json::from_str(&binding.trigger_config) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(
+                                agent = %agent_id,
+                                binding = %binding.binding_name,
+                                error = %e,
+                                "invalid watch trigger config, skipping"
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Resolve plugin binary
+                    let binary_path = match plugin_store.resolve(&watch_cfg.plugin, "*") {
+                        Some(p) => p,
+                        None => {
+                            warn!(
+                                agent = %agent_id,
+                                binding = %binding.binding_name,
+                                plugin = %watch_cfg.plugin,
+                                "watch plugin not found, skipping"
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Build inline definition JSON from agent config
+                    let def_json = match wf_binding {
+                        Some(wb) if wb.has_activities() => wb.to_workflow_json(&binding.binding_name),
+                        _ => {
+                            warn!(agent = %agent_id, binding = %binding.binding_name, "no inline activities found, skipping watch");
+                            continue;
+                        }
+                    };
+
+                    let inputs: serde_json::Value = binding
+                        .inputs
+                        .as_ref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default();
+
+                    // Substitute agent input values into the command template
+                    let input_values: serde_json::Value = match store.get_agent(&agent_id) {
+                        Ok(Some(r)) => serde_json::from_str(&r.input_values).unwrap_or_default(),
+                        _ => serde_json::Value::default(),
+                    };
+                    let command = substitute_inputs(&watch_cfg.command, &input_values);
+
+                    let emit_source = wf_binding
+                        .and_then(|wb| wb.emit.as_ref())
+                        .map(|emit_name| {
+                            let slug = name.to_lowercase().replace(' ', "-");
+                            format!("{}.{}", slug, emit_name)
+                        });
+
+                    let token = cancel.clone();
+                    let mgr = workflow_manager.clone();
+                    let agent = agent_id.clone();
+                    let bname = binding.binding_name.clone();
+                    let ps = plugin_store.clone();
+                    let watch_plugin = watch_cfg.plugin.clone();
+
+                    tokio::spawn(watch_loop(
+                        binary_path,
+                        command,
+                        watch_cfg,
+                        ps,
+                        def_json,
+                        inputs,
+                        agent,
+                        bname,
+                        emit_source,
+                        mgr,
+                        token,
+                    ));
+
+                    info!(
+                        agent = %agent_id,
+                        binding = %binding.binding_name,
+                        plugin = %watch_plugin,
+                        "started watch trigger"
+                    );
+                }
                 "schedule" => {
                     // Already handled by register_agent_triggers above
                 }
@@ -215,7 +306,7 @@ impl AgentWorker {
 
         info!(agent = %agent_id, name = %name, bindings = bindings.len(), "agent worker started");
 
-        Self { agent_id, name, cancel, event_dispatcher, workflow_manager }
+        Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store }
     }
 
     /// Stop the worker: cancel all spawned tasks, running workflows, cron jobs and event subscriptions.
@@ -244,6 +335,7 @@ pub struct AgentWorkerRegistry {
     store: Arc<Store>,
     workflow_manager: Arc<dyn WorkflowManager>,
     event_dispatcher: Arc<EventDispatcher>,
+    plugin_store: Arc<PluginStore>,
 }
 
 impl AgentWorkerRegistry {
@@ -251,12 +343,14 @@ impl AgentWorkerRegistry {
         store: Arc<Store>,
         workflow_manager: Arc<dyn WorkflowManager>,
         event_dispatcher: Arc<EventDispatcher>,
+        plugin_store: Arc<PluginStore>,
     ) -> Self {
         Self {
             workers: RwLock::new(HashMap::new()),
             store,
             workflow_manager,
             event_dispatcher,
+            plugin_store,
         }
     }
 
@@ -276,6 +370,7 @@ impl AgentWorkerRegistry {
             &self.store,
             self.workflow_manager.clone(),
             self.event_dispatcher.clone(),
+            self.plugin_store.clone(),
         );
 
         self.workers.write().await.insert(agent_id.to_string(), worker);
@@ -355,6 +450,263 @@ fn parse_time_window(s: &str) -> Option<(chrono::NaiveTime, chrono::NaiveTime)> 
     Some((start, end))
 }
 
+// ---------------------------------------------------------------------------
+// Watch trigger
+// ---------------------------------------------------------------------------
+
+/// Deserialized watch trigger config from DB's trigger_config JSON.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct WatchTriggerConfig {
+    plugin: String,
+    command: String,
+    #[serde(default = "default_restart_delay")]
+    restart_delay_secs: u64,
+}
+
+fn default_restart_delay() -> u64 {
+    5
+}
+
+/// Substitute `{{key}}` placeholders in a template with values from agent inputs.
+fn substitute_inputs(template: &str, inputs: &serde_json::Value) -> String {
+    let mut result = template.to_string();
+    if let Some(obj) = inputs.as_object() {
+        for (key, val) in obj {
+            if let Some(s) = val.as_str() {
+                result = result.replace(&format!("{{{{{}}}}}", key), s);
+            }
+        }
+    }
+    result
+}
+
+/// Long-running loop that spawns a plugin watcher process, reads NDJSON lines
+/// from stdout, and fires `run_inline()` for each line received.
+///
+/// On process exit (not cancelled): waits with exponential backoff, then restarts.
+/// On cancel token: kills child process and breaks.
+async fn watch_loop(
+    binary_path: std::path::PathBuf,
+    command: String,
+    cfg: WatchTriggerConfig,
+    plugin_store: Arc<PluginStore>,
+    def_json: String,
+    base_inputs: serde_json::Value,
+    agent_id: String,
+    binding_name: String,
+    emit_source: Option<String>,
+    workflow_manager: Arc<dyn WorkflowManager>,
+    cancel: CancellationToken,
+) {
+    let mut backoff_secs = cfg.restart_delay_secs;
+    let max_backoff_secs = 300; // 5 minutes
+
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        // Parse command string into args
+        let args = match shlex::split(&command) {
+            Some(a) => a,
+            None => {
+                error!(
+                    agent = %agent_id,
+                    binding = %binding_name,
+                    command = %command,
+                    "failed to parse watch command, stopping"
+                );
+                break;
+            }
+        };
+
+        // Build the child process (same env setup as PluginTool::handle_exec)
+        let mut cmd = tokio::process::Command::new(&binary_path);
+        cmd.args(&args);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        // Clean env + inject sanitized env
+        cmd.env_clear();
+        for (k, v) in tools::process::sanitized_env() {
+            cmd.env(k, v);
+        }
+
+        // Plugin binary env var (e.g., GWS_BIN=/path/to/gws)
+        cmd.env(
+            napp::plugin::plugin_env_var(&cfg.plugin),
+            binary_path.to_string_lossy().as_ref(),
+        );
+
+        // Augmented PATH with all plugin directories
+        cmd.env("PATH", plugin_store.path_with_plugins());
+
+        // Auth env vars (client_id, client_secret, etc.)
+        if let Some((_bin, auth)) = plugin_store.get_auth_info(&cfg.plugin) {
+            for (k, v) in &auth.env {
+                cmd.env(k, v);
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        info!(
+            agent = %agent_id,
+            binding = %binding_name,
+            binary = %binary_path.display(),
+            command = %command,
+            "spawning watch process"
+        );
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                error!(
+                    agent = %agent_id,
+                    binding = %binding_name,
+                    error = %e,
+                    "failed to spawn watch process, retrying in {}s",
+                    backoff_secs
+                );
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+                    _ = cancel.cancelled() => break,
+                }
+                backoff_secs = (backoff_secs * 2).min(max_backoff_secs);
+                continue;
+            }
+        };
+
+        // Reset backoff on successful spawn
+        backoff_secs = cfg.restart_delay_secs;
+
+        let stdout = child.stdout.take().expect("stdout piped");
+        let mut lines = BufReader::new(stdout).lines();
+
+        // Spawn a task to log stderr
+        let stderr = child.stderr.take();
+        let stderr_agent = agent_id.clone();
+        let stderr_binding = binding_name.clone();
+        let stderr_handle = tokio::spawn(async move {
+            if let Some(stderr) = stderr {
+                let mut stderr_lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = stderr_lines.next_line().await {
+                    debug!(
+                        agent = %stderr_agent,
+                        binding = %stderr_binding,
+                        "watch stderr: {}",
+                        line
+                    );
+                }
+            }
+        });
+
+        // Read NDJSON lines until process exits or cancel
+        loop {
+            tokio::select! {
+                line_result = lines.next_line() => {
+                    match line_result {
+                        Ok(Some(line)) => {
+                            let line = line.trim().to_string();
+                            if line.is_empty() {
+                                continue;
+                            }
+
+                            // Parse JSON payload
+                            let payload: serde_json::Value = match serde_json::from_str(&line) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    warn!(
+                                        agent = %agent_id,
+                                        binding = %binding_name,
+                                        error = %e,
+                                        "invalid JSON from watch process, skipping line"
+                                    );
+                                    continue;
+                                }
+                            };
+
+                            // Merge base inputs with watch payload
+                            let mut run_inputs = base_inputs.clone();
+                            if let Some(obj) = run_inputs.as_object_mut() {
+                                obj.insert("_watch_payload".to_string(), payload);
+                                obj.insert("_watch_source".to_string(), serde_json::Value::String(cfg.plugin.clone()));
+                            }
+
+                            match workflow_manager.run_inline(
+                                def_json.clone(),
+                                run_inputs,
+                                "watch",
+                                &agent_id,
+                                emit_source.clone(),
+                            ).await {
+                                Ok(run_id) => {
+                                    info!(
+                                        agent = %agent_id,
+                                        binding = %binding_name,
+                                        run_id = %run_id,
+                                        "watch triggered inline workflow"
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        agent = %agent_id,
+                                        binding = %binding_name,
+                                        error = %e,
+                                        "watch inline workflow run failed"
+                                    );
+                                    notify_crate::send("Nebo", &format!("{} failed: {}", binding_name, e));
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            // stdout closed — process exiting
+                            info!(agent = %agent_id, binding = %binding_name, "watch process stdout closed");
+                            break;
+                        }
+                        Err(e) => {
+                            warn!(agent = %agent_id, binding = %binding_name, error = %e, "watch stdout read error");
+                            break;
+                        }
+                    }
+                }
+                _ = cancel.cancelled() => {
+                    info!(agent = %agent_id, binding = %binding_name, "watch cancelled, killing process");
+                    let _ = child.kill().await;
+                    stderr_handle.abort();
+                    return;
+                }
+            }
+        }
+
+        // Wait for the child to finish
+        let _ = child.wait().await;
+        stderr_handle.abort();
+
+        if cancel.is_cancelled() {
+            break;
+        }
+
+        // Restart with backoff
+        info!(
+            agent = %agent_id,
+            binding = %binding_name,
+            backoff_secs = backoff_secs,
+            "watch process exited, restarting"
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+            _ = cancel.cancelled() => break,
+        }
+        backoff_secs = (backoff_secs * 2).min(max_backoff_secs);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,5 +762,40 @@ mod tests {
     #[test]
     fn test_parse_time_window_invalid() {
         assert!(parse_time_window("invalid").is_none());
+    }
+
+    #[test]
+    fn test_substitute_inputs() {
+        let inputs = serde_json::json!({
+            "gcp_project": "my-project-123",
+            "poll_interval": "30"
+        });
+        let template = "gmail +watch --project {{gcp_project}} --poll-interval {{poll_interval}}";
+        let result = substitute_inputs(template, &inputs);
+        assert_eq!(result, "gmail +watch --project my-project-123 --poll-interval 30");
+    }
+
+    #[test]
+    fn test_substitute_inputs_no_match() {
+        let inputs = serde_json::json!({});
+        let template = "gmail +watch --project {{gcp_project}}";
+        let result = substitute_inputs(template, &inputs);
+        assert_eq!(result, template); // unchanged
+    }
+
+    #[test]
+    fn test_watch_trigger_config_deserialize() {
+        let json = r#"{"plugin":"gws","command":"gmail +watch","restart_delay_secs":10}"#;
+        let cfg: WatchTriggerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.plugin, "gws");
+        assert_eq!(cfg.command, "gmail +watch");
+        assert_eq!(cfg.restart_delay_secs, 10);
+    }
+
+    #[test]
+    fn test_watch_trigger_config_default_delay() {
+        let json = r#"{"plugin":"gws","command":"gmail +watch"}"#;
+        let cfg: WatchTriggerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.restart_delay_secs, 5);
     }
 }

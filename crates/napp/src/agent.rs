@@ -305,9 +305,26 @@ pub enum AgentTrigger {
     /// Event-driven, fires when something in the world changes.
     #[serde(rename = "event")]
     Event { sources: Vec<String> },
+    /// Watch trigger — spawns a plugin process that emits NDJSON to stdout.
+    /// Each line triggers a workflow run with the parsed JSON as `_watch_payload`.
+    #[serde(rename = "watch")]
+    Watch {
+        /// Plugin slug (e.g., "gws").
+        plugin: String,
+        /// CLI args passed to the plugin binary (e.g., "gmail +watch --project my-proj").
+        /// Supports `{{key}}` template substitution from agent input values.
+        command: String,
+        /// Seconds to wait before restarting on crash (default: 5).
+        #[serde(default = "default_restart_delay")]
+        restart_delay_secs: u64,
+    },
     /// Explicit user trigger.
     #[serde(rename = "manual")]
     Manual,
+}
+
+fn default_restart_delay() -> u64 {
+    5
 }
 
 /// Pricing configuration for an agent.
@@ -570,6 +587,31 @@ mod tests {
         }"#;
         let config = parse_agent_config(json).unwrap();
         assert!(matches!(config.workflows["ad-hoc"].trigger, AgentTrigger::Manual));
+    }
+
+    #[test]
+    fn test_watch_trigger() {
+        let json = r#"{
+            "workflows": {
+                "inbox-watcher": {
+                    "trigger": {
+                        "type": "watch",
+                        "plugin": "gws",
+                        "command": "gmail +watch --project {{gcp_project}} --poll-interval 30"
+                    }
+                }
+            }
+        }"#;
+        let config = parse_agent_config(json).unwrap();
+        let binding = &config.workflows["inbox-watcher"];
+        match &binding.trigger {
+            AgentTrigger::Watch { plugin, command, restart_delay_secs } => {
+                assert_eq!(plugin, "gws");
+                assert!(command.contains("gmail +watch"));
+                assert_eq!(*restart_delay_secs, 5); // default
+            }
+            other => panic!("expected Watch trigger, got {:?}", other),
+        }
     }
 
     #[test]

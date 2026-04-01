@@ -609,6 +609,14 @@ pub async fn process_agent_bindings(
                 ("heartbeat", cfg)
             }
             napp::agent::AgentTrigger::Event { sources } => ("event", sources.join(",")),
+            napp::agent::AgentTrigger::Watch { plugin, command, restart_delay_secs } => {
+                let cfg = serde_json::json!({
+                    "plugin": plugin,
+                    "command": command,
+                    "restart_delay_secs": restart_delay_secs
+                }).to_string();
+                ("watch", cfg)
+            }
             napp::agent::AgentTrigger::Manual => ("manual", String::new()),
         };
 
