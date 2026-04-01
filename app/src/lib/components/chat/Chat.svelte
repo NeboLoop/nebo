@@ -597,12 +597,14 @@
 				channelMemberNames = names;
 			}
 			chatLoaded = true;
-			await tick();
-			if (messagesContainer) {
-				messagesContainer.scrollTo({ top: messagesContainer.scrollHeight, behavior: 'instant' });
+			if (messages.length > 0) {
+				scrollToBottomOnLoad();
+			} else {
+				initialScrollDone = true;
 			}
 		} catch {
 			chatLoaded = true;
+			initialScrollDone = true;
 		}
 	}
 
@@ -1805,6 +1807,10 @@
 		const streamingContent = currentStreamingMessage?.content;
 		const isStreaming = !!streamingContent;
 
+		// Skip during initial load — scrollToBottomOnLoad() handles that path
+		// to avoid smooth-scroll animation racing with the instant scroll.
+		if (!initialScrollDone) return;
+
 		if (messagesContainer && (messageCount > 0 || streamingContent) && autoScrollEnabled) {
 			if (pendingScrollRAF) {
 				cancelAnimationFrame(pendingScrollRAF);
@@ -1920,6 +1926,9 @@
 
 	/** Instant scroll to bottom after initial load — waits for DOM to fully lay out. */
 	function scrollToBottomOnLoad() {
+		// Block handleScroll from disabling autoScrollEnabled during the
+		// reactive cascade (renderStart effect causes DOM changes → scroll events).
+		scrollingProgrammatically = true;
 		tick().then(() => {
 			requestAnimationFrame(() => {
 				requestAnimationFrame(() => {
@@ -1928,7 +1937,19 @@
 						showScrollButton = false;
 						autoScrollEnabled = true;
 					}
-					initialScrollDone = true;
+					// Third rAF: verify we actually reached the bottom (DOM may
+					// still have been settling from the renderStart virtual-scroll
+					// effect). Reset scrollingProgrammatically only after this check.
+					requestAnimationFrame(() => {
+						if (messagesContainer) {
+							const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
+							if (scrollHeight - scrollTop - clientHeight > 10) {
+								messagesContainer.scrollTo({ top: scrollHeight, behavior: 'instant' });
+							}
+						}
+						initialScrollDone = true;
+						scrollingProgrammatically = false;
+					});
 				});
 			});
 		});
