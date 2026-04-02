@@ -36,6 +36,8 @@
 		ChatInput
 	} from '$lib/components/chat';
 	import EntityConfigPanel from '$lib/components/chat/EntityConfigPanel.svelte';
+	import AgentActivityPanel from '$lib/components/chat/AgentActivityPanel.svelte';
+	import type { RunSnapshot } from '$lib/components/chat/AgentActivityPanel.svelte';
 	import { parseSlashCommand } from './slash-commands';
 	import { executeSlashCommand, type CommandContext } from './slash-command-executor';
 	import type { SlashCommand } from './slash-commands';
@@ -123,6 +125,7 @@
 
 	// ── Shared state ───────────────────────────────────────────────────
 	let chatId = $state<string | null>(null);
+	let sessionKey = $state<string | null>(null);
 	let messages = $state<Message[]>([]);
 	let totalMessages = $state<number>(0);
 	let inputValue = $state('');
@@ -142,6 +145,9 @@
 
 	// ── Subagent tracking ────────────────────────────────────────────
 	let activeSubagents = $state<Map<string, SubagentState>>(new Map());
+
+	// ── Global agent activity (RunRegistry) ──────────────────────────
+	let activeRuns = $state<RunSnapshot[]>([]);
 
 	// ── Slash commands ────────────────────────────────────────────────
 	let verboseMode = $state(false);
@@ -166,7 +172,7 @@
 		// Command was auto-executed from menu (no-arg commands)
 		const client = getWebSocketClient();
 		const ctx: CommandContext = {
-			messages, chatId, isLoading,
+			messages, chatId, sessionKey, isLoading,
 			onNewChat: newChat,
 			onNewSession: resetChat,
 			onCancel: cancelMessage,
@@ -311,7 +317,8 @@
 	}
 
 	function hasRunningTools(): boolean {
-		return !!currentStreamingMessage?.toolCalls?.some((tc) => tc.status === 'running');
+		if (currentStreamingMessage?.toolCalls?.some((tc) => tc.status === 'running')) return true;
+		return messages.some((m) => m.toolCalls?.some((tc) => tc.status === 'running'));
 	}
 
 	function resetLoadingTimeout() {
@@ -419,6 +426,10 @@
 		unsubscribers.push(
 			client.onStatus((status: ConnectionStatus) => {
 				wsConnected = status === 'connected';
+				// Request active runs on connect/reconnect
+				if (status === 'connected') {
+					client.send('list_active_runs');
+				}
 			})
 		);
 
@@ -447,12 +458,22 @@
 				client.on('subagent_start', handleSubagentStart),
 				client.on('subagent_progress', handleSubagentProgress),
 				client.on('subagent_complete', handleSubagentComplete),
+				client.on('agent_progress', (data: Record<string, unknown>) => {
+					if (data?.runs && Array.isArray(data.runs)) {
+						activeRuns = data.runs as RunSnapshot[];
+					}
+				}),
+				client.on('active_runs', (data: Record<string, unknown>) => {
+					if (data?.runs && Array.isArray(data.runs)) {
+						activeRuns = data.runs as RunSnapshot[];
+					}
+				}),
 				client.on('agent_warning', (data: Record<string, unknown>) => {
 					warningMessage = (data?.message as string) || $t('chat.retryWarning');
 					warningToast = true;
 				}),
 				client.on('quota_warning', (data: Record<string, unknown>) => {
-					if (data?.session_id === chatId) {
+					if (isOurSession(data)) {
 						warningMessage = (data?.message as string) || $t('chat.quotaWarning');
 						warningToast = true;
 					}
@@ -474,17 +495,21 @@
 				client.on('dep_failed', (data: Record<string, unknown>) => installModal?.onDepFailed(data)),
 				client.on('dep_cascade_complete', (data: Record<string, unknown>) => installModal?.onDepCascadeComplete(data)),
 				client.on('chat_ack', (data: Record<string, unknown>) => {
-					if (data?.session_id === chatId) {
+					if (isOurSession(data)) {
 						log.debug('chat_ack received for session ' + chatId);
 					}
 				}),
 				client.on('session_reset', (data: Record<string, unknown>) => {
-					if (data?.session_id === chatId && data?.success) {
+					if (isOurSession(data) && data?.success) {
+						// Update chatId to the new conversation
+						if (data?.newChatId) {
+							chatId = data.newChatId as string;
+						}
 						loadCompanionChat();
 					}
 				}),
 				client.on('session_compact', (data: Record<string, unknown>) => {
-					if (data?.session_id === chatId) {
+					if (isOurSession(data)) {
 						if (data?.success) {
 							loadCompanionChat();
 						} else {
@@ -493,7 +518,7 @@
 					}
 				}),
 				client.on('browser_extension_disconnected', (data: Record<string, unknown>) => {
-					if (chatId && data?.session_id !== chatId) return;
+					if (chatId && !isOurSession(data)) return;
 					const now = Date.now();
 					if (now - lastBrowserExtModalTime < BROWSER_EXT_MODAL_COOLDOWN) return;
 					lastBrowserExtModalTime = now;
@@ -748,7 +773,8 @@
 		try {
 			const res = await getCompanionChat();
 			chatId = res.chat.id;
-			log.debug('Loaded companion chat: ' + chatId);
+			sessionKey = res.sessionKey || res.chat.id;
+			log.debug('Loaded companion chat: ' + chatId + ' sessionKey: ' + sessionKey);
 			messages = (res.messages || []).map((m: ApiChatMessage) => {
 				const meta = parseMetadata((m as { metadata?: string }).metadata);
 				let content = m.content;
@@ -844,18 +870,20 @@
 			}
 		}, 5000);
 
-		if (!client.isConnected() || !chatId) {
+		const checkId = isAgent ? chatId : (sessionKey || chatId);
+		if (!client.isConnected() || !checkId) {
 			const unsub = client.onStatus((status: ConnectionStatus) => {
-				if (status === 'connected' && chatId) {
+				const sid = isAgent ? chatId : (sessionKey || chatId);
+				if (status === 'connected' && sid) {
 					unsub();
-					log.debug('Checking for active stream on session: ' + chatId);
-					client.send('check_stream', { session_id: chatId });
+					log.debug('Checking for active stream on session: ' + sid);
+					client.send('check_stream', { session_id: sid });
 				}
 			});
 			return;
 		}
-		log.debug('Checking for active stream on session: ' + chatId);
-		client.send('check_stream', { session_id: chatId });
+		log.debug('Checking for active stream on session: ' + checkId);
+		client.send('check_stream', { session_id: checkId });
 	}
 
 	function requestIntroduction() {
@@ -876,15 +904,22 @@
 	}
 
 	function doRequestIntroduction() {
-		log.debug('Sending request_introduction for session: ' + chatId);
+		const sid = isAgent ? (chatId || '') : (sessionKey || chatId || '');
+		log.debug('Sending request_introduction for session: ' + sid);
 		const client = getWebSocketClient();
 		isLoading = true;
 		client.send('request_introduction', {
-			session_id: chatId || ''
+			session_id: sid
 		});
 	}
 
 	const hasMoreHistory = $derived(totalMessages > messages.length);
+
+	/** Check if a WS event belongs to our current session (matches chatId or sessionKey). */
+	function isOurSession(data: Record<string, unknown>): boolean {
+		const sid = data?.session_id;
+		return sid === chatId || sid === sessionKey;
+	}
 
 	function sendToAgent(prompt: string) {
 		isLoading = true;
@@ -892,7 +927,7 @@
 
 		if (client.isConnected()) {
 			const payload: Record<string, unknown> = {
-				session_id: chatId || '',
+				session_id: isAgent ? (chatId || '') : (sessionKey || chatId || ''),
 				prompt: prompt,
 				companion: !isAgent
 			};
@@ -911,7 +946,7 @@
 
 	function handleChatStream(data: Record<string, unknown>) {
 		log.debug('handleChatStream called: ' + data?.session_id + ' chatId: ' + chatId);
-		if (chatId && data?.session_id !== chatId) {
+		if (chatId && !isOurSession(data)) {
 			log.debug('handleChatStream: session_id mismatch, ignoring');
 			return;
 		}
@@ -1021,7 +1056,7 @@
 			messagesCount: String(messages.length)
 		});
 
-		if (chatId && data?.session_id !== chatId) {
+		if (chatId && !isOurSession(data)) {
 			log.debug(
 				'handleChatComplete: session mismatch, expected ' + chatId + ' got ' + data?.session_id
 			);
@@ -1092,6 +1127,9 @@
 		}
 		isLoading = false;
 
+		// Refresh active runs — the completed run should now be gone
+		getWebSocketClient().send('list_active_runs');
+
 		if (voiceOutputEnabled && ttsStreamingActive) {
 			flushTTSBuffer();
 		} else if (voiceOutputEnabled && completedContent) {
@@ -1104,38 +1142,62 @@
 	function cancelMessage() {
 		const client = getWebSocketClient();
 		client.send('cancel', {
-			session_id: chatId || ''
+			session_id: isAgent ? (chatId || '') : (sessionKey || chatId || '')
 		});
+
+		// Force-clean any running tool calls in the UI immediately.
+		// This handles the case where chat_cancelled already arrived (isLoading=false)
+		// but the runner was still wrapping up and left tool indicators spinning.
+		forceCleanRunningTools();
 
 		if (cancelTimeoutId) clearTimeout(cancelTimeoutId);
 		cancelTimeoutId = setTimeout(() => {
 			cancelTimeoutId = null;
-			if (isLoading) {
-				log.warn('Cancel timeout - force resetting loading state');
-				if (currentStreamingMessage) {
-					currentStreamingMessage.streaming = false;
-					if (currentStreamingMessage.content) {
-						currentStreamingMessage.content += `\n\n${$t('chat.generationCancelled')}`;
-					} else {
-						currentStreamingMessage.content = $t('chat.generationCancelled');
-					}
-					if (currentStreamingMessage.toolCalls?.length) {
-						currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
-							tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
-						);
-					}
-					const finalMsg = { ...currentStreamingMessage };
-					replaceMessageById(finalMsg);
-					currentStreamingMessage = null;
+			log.warn('Cancel timeout - force resetting state');
+			forceCleanRunningTools();
+			if (currentStreamingMessage) {
+				currentStreamingMessage.streaming = false;
+				if (currentStreamingMessage.content) {
+					currentStreamingMessage.content += `\n\n${$t('chat.generationCancelled')}`;
+				} else {
+					currentStreamingMessage.content = $t('chat.generationCancelled');
 				}
-				isLoading = false;
-				processQueue();
+				if (currentStreamingMessage.toolCalls?.length) {
+					currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					);
+				}
+				const finalMsg = { ...currentStreamingMessage };
+				replaceMessageById(finalMsg);
+				currentStreamingMessage = null;
 			}
+			isLoading = false;
+			processQueue();
 		}, 2000);
 	}
 
+	function forceCleanRunningTools() {
+		let changed = false;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const msg = messages[i];
+			if (msg.toolCalls?.some((tc) => tc.status === 'running')) {
+				messages[i] = {
+					...msg,
+					toolCalls: msg.toolCalls!.map((tc) =>
+						tc.status === 'running' ? { ...tc, status: 'complete' as const } : tc
+					)
+				};
+				changed = true;
+			}
+			if (msg.role === 'assistant') break; // Only clean current assistant turn
+		}
+		if (changed) {
+			messages = [...messages]; // Trigger Svelte reactivity
+		}
+	}
+
 	function handleChatCancelled(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 
 		if (cancelTimeoutId) {
 			clearTimeout(cancelTimeoutId);
@@ -1159,11 +1221,12 @@
 			currentStreamingMessage = null;
 		}
 		isLoading = false;
+		getWebSocketClient().send('list_active_runs');
 		processQueue();
 	}
 
 	function handleChatResponse(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 
 		const assistantMessage: Message = {
 			id: generateUUID(),
@@ -1178,7 +1241,7 @@
 
 	function handleToolStart(data: Record<string, unknown>) {
 		log.debug('handleToolStart: ' + (data?.tool as string));
-		if (chatId && data?.session_id !== chatId) {
+		if (chatId && !isOurSession(data)) {
 			log.debug('handleToolStart: session_id mismatch, ignoring');
 			return;
 		}
@@ -1232,7 +1295,7 @@
 	function handleToolResult(data: Record<string, unknown>) {
 		log.debug('handleToolResult: ' + ((data?.tool_name as string) || (data?.tool_id as string)));
 
-		if (chatId && data?.session_id !== chatId) {
+		if (chatId && !isOurSession(data)) {
 			log.debug('handleToolResult: session mismatch');
 			return;
 		}
@@ -1306,7 +1369,7 @@
 	}
 
 	function handleImage(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 		resetLoadingTimeout();
 
 		const imageURL = (data?.image_url as string) || '';
@@ -1326,7 +1389,7 @@
 
 	function handleThinking(data: Record<string, unknown>) {
 		log.debug('handleThinking');
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 		resetLoadingTimeout();
 
 		const thinkingContent = (data?.content as string) || '';
@@ -1348,7 +1411,7 @@
 	}
 
 	function handleSubagentStart(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 		resetLoadingTimeout();
 
 		const taskId = (data?.task_id as string) || '';
@@ -1388,7 +1451,7 @@
 	}
 
 	function handleSubagentProgress(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 		resetLoadingTimeout();
 
 		const taskId = (data?.task_id as string) || '';
@@ -1416,7 +1479,7 @@
 	}
 
 	function handleSubagentComplete(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 		resetLoadingTimeout();
 
 		const taskId = (data?.task_id as string) || '';
@@ -1454,7 +1517,7 @@
 	}
 
 	function handleError(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 
 		if (currentStreamingMessage?.toolCalls?.length) {
 			currentStreamingMessage.toolCalls = currentStreamingMessage.toolCalls.map((tc) =>
@@ -1533,7 +1596,7 @@
 	}
 
 	function handleDMUserMessage(data: Record<string, unknown>) {
-		if (chatId && data?.session_id !== chatId) return;
+		if (chatId && !isOurSession(data)) return;
 		const content = (data?.content as string) || '';
 		if (!content) return;
 
@@ -1729,7 +1792,7 @@
 			clearDraft();
 			const client = getWebSocketClient();
 			const ctx: CommandContext = {
-				messages, chatId, isLoading,
+				messages, chatId, sessionKey, isLoading,
 				onNewChat: newChat,
 				onNewSession: resetChat,
 				onCancel: cancelMessage,
@@ -1978,8 +2041,9 @@
 
 	function resetChat() {
 		const client = getWebSocketClient();
-		if (chatId && client.isConnected()) {
-			client.send('session_reset', { session_id: chatId });
+		const sid = isAgent ? chatId : (sessionKey || chatId);
+		if (sid && client.isConnected()) {
+			client.send('session_reset', { session_id: sid });
 		}
 		messages = [];
 		currentStreamingMessage = null;
@@ -1992,12 +2056,13 @@
 		try {
 			const res = await createNewCompanionChat();
 			chatId = res.chat.id;
+			sessionKey = res.sessionKey || res.chat.id;
 			messages = [];
 			currentStreamingMessage = null;
 			inputValue = '';
 			renderStart = 0;
 			clearDraft();
-			log.debug('Created new companion chat: ' + chatId);
+			log.debug('Created new companion chat: ' + chatId + ' sessionKey: ' + sessionKey);
 		} catch (err) {
 			log.error('Failed to create new chat', err);
 			addSystemMessage('Failed to create new session.');
@@ -2384,7 +2449,7 @@
 			duplexState = 'idle';
 			return;
 		}
-		if (e.key === 'Escape' && isLoading) {
+		if (e.key === 'Escape') {
 			e.preventDefault();
 			cancelMessage();
 			return;
@@ -2661,10 +2726,26 @@
 			</div>
 		</div>
 	{:else}
+		{#if activeRuns.length > 0}
+			<div class="max-w-4xl mx-auto px-6 pb-1">
+				<AgentActivityPanel
+					runs={activeRuns}
+					onCancel={(runId) => {
+						const client = getWebSocketClient();
+						client.send('cancel', { run_id: runId });
+					}}
+					onCancelAll={() => {
+						const client = getWebSocketClient();
+						client.send('cancel_all');
+					}}
+				/>
+			</div>
+		{/if}
 		<ChatInput
 			bind:this={chatInputRef}
 			bind:value={inputValue}
 			{isLoading}
+			hasRunningTools={hasRunningTools()}
 			duplexActive={duplexState !== 'idle'}
 			audioLevel={duplexLevel}
 			{isDraggingOver}

@@ -9,6 +9,7 @@ import { SLASH_COMMANDS } from './slash-commands';
 export interface CommandContext {
 	messages: { role: string; content: string; timestamp: Date }[];
 	chatId: string;
+	sessionKey: string | null;
 	isLoading: boolean;
 	onNewChat: () => void;
 	onNewSession: () => void;
@@ -46,11 +47,10 @@ export async function executeSlashCommand(
 			return true;
 
 		case 'stop':
-			if (ctx.isLoading) {
-				ctx.onCancel();
-			} else {
-				ctx.addSystemMessage('Nothing to stop — no generation in progress.');
-			}
+			// Always send cancel — the backend tracks active runs independently.
+			// Don't guard on isLoading: it may be false if chat_cancelled already
+			// arrived but the runner is still wrapping up tool execution.
+			ctx.onCancel();
 			return true;
 
 		case 'focus':
@@ -58,7 +58,7 @@ export async function executeSlashCommand(
 			return true;
 
 		case 'compact':
-			ctx.wsSend('session_compact', { session_id: ctx.chatId });
+			ctx.wsSend('session_compact', { session_id: ctx.sessionKey || ctx.chatId });
 			ctx.addSystemMessage('Compacting conversation — summarizing and clearing old messages...');
 			return true;
 

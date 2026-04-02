@@ -15,6 +15,7 @@
 		placeholder?: string;
 		disabled?: boolean;
 		isLoading?: boolean;
+		hasRunningTools?: boolean;
 		duplexActive?: boolean;
 		audioLevel?: number;
 		queuedMessages?: QueuedMessage[];
@@ -33,6 +34,7 @@
 		placeholder = '',
 		disabled = false,
 		isLoading = false,
+		hasRunningTools = false,
 		duplexActive = false,
 		audioLevel = 0,
 		queuedMessages = [],
@@ -395,7 +397,7 @@
 					{/if}
 
 					<!-- Send / Stop button -->
-					{#if isLoading && onCancel}
+					{#if (isLoading || hasRunningTools) && onCancel}
 						<button
 							type="button"
 							onclick={onCancel}
