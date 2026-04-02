@@ -25,4 +25,5 @@ pub fn routes() -> Router<AppState> {
         .route("/neboloop/billing/invoices", axum::routing::get(handlers::neboloop::billing_invoices))
         .route("/neboloop/billing/payment-methods", axum::routing::get(handlers::neboloop::billing_payment_methods))
         .route("/neboloop/referral-code", axum::routing::get(handlers::neboloop::referral_code))
+        .route("/neboloop/reconnect", axum::routing::post(handlers::neboloop::force_reconnect))
 }

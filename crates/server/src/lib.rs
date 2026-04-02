@@ -995,18 +995,47 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         });
     }
 
-    // Reconnect watcher with exponential backoff
+    // Reconnect watcher with exponential backoff + wall-clock drift detection.
+    // Uses dual select: periodic poll OR instant notification from wait_disconnect().
+    // Wall-clock drift detects system sleep/wake (tokio timers freeze during sleep).
     if cfg.is_neboloop_enabled() {
         let reconnect_state = state.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             let mut backoff_secs: u64 = 30;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
-                if reconnect_state.comm_manager.is_connected().await {
+                let before_sleep = std::time::SystemTime::now();
+
+                tokio::select! {
+                    // Branch 1: periodic backoff poll
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)) => {}
+                    // Branch 2: instant notification when read loop exits unexpectedly
+                    _ = reconnect_state.comm_manager.wait_disconnect() => {
+                        info!("neboloop: disconnect notification received, will reconnect");
+                    }
+                }
+
+                // Detect wall-clock drift — if elapsed >> expected, system was asleep
+                let elapsed_wall = std::time::SystemTime::now()
+                    .duration_since(before_sleep)
+                    .unwrap_or_default();
+                let expected = std::time::Duration::from_secs(backoff_secs);
+                let drift = elapsed_wall.saturating_sub(expected);
+                let was_asleep = drift > std::time::Duration::from_secs(10);
+
+                if was_asleep {
+                    info!(
+                        drift_secs = drift.as_secs(),
+                        "neboloop: detected system sleep, forcing reconnect"
+                    );
+                    // Tear down stale connection (read/write loops may still be blocked)
+                    reconnect_state.comm_manager.shutdown().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                } else if reconnect_state.comm_manager.is_connected().await {
                     backoff_secs = 30;
                     continue;
                 }
+
                 match codes::activate_neboloop(&reconnect_state).await {
                     Ok(()) => {
                         info!("neboloop: reconnected to gateway");

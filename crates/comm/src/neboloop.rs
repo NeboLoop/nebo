@@ -818,19 +818,28 @@ async fn read_loop(
 
     loop {
         tokio::select! {
-            msg = read.next() => {
-                let msg = match msg {
-                    Some(Ok(m)) => m,
-                    Some(Err(e)) => {
+            result = tokio::time::timeout(std::time::Duration::from_secs(60), read.next()) => {
+                let msg = match result {
+                    Ok(Some(Ok(m))) => m,
+                    Ok(Some(Err(e))) => {
                         warn!(error = %e, "neboloop read error");
                         if let Some(ref dl) = devlog {
                             dl.error(&format!("read error: {}", e));
                         }
                         break;
                     }
-                    None => {
+                    Ok(None) => {
                         if let Some(ref dl) = devlog {
                             dl.event("DISCONNECTED (stream ended)");
+                        }
+                        break;
+                    }
+                    Err(_) => {
+                        // No data received in 60s (4x the 15s ping interval).
+                        // Connection is likely dead (e.g. after system sleep/wake).
+                        warn!("neboloop read timeout (60s), treating as disconnect");
+                        if let Some(ref dl) = devlog {
+                            dl.event("READ_TIMEOUT (60s) — treating as disconnect");
                         }
                         break;
                     }
@@ -1090,6 +1099,7 @@ async fn write_loop(
 ) {
     let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(15));
     ping_interval.tick().await; // skip first immediate tick
+    let mut last_ping_wall = std::time::SystemTime::now();
 
     loop {
         tokio::select! {
@@ -1113,6 +1123,23 @@ async fn write_loop(
                 }
             }
             _ = ping_interval.tick() => {
+                // Detect wall-clock drift — if elapsed > 2x the 15s interval,
+                // the system was likely asleep and the TCP connection is dead.
+                let now_wall = std::time::SystemTime::now();
+                let elapsed = now_wall.duration_since(last_ping_wall).unwrap_or_default();
+                last_ping_wall = now_wall;
+
+                if elapsed > std::time::Duration::from_secs(30) {
+                    warn!(
+                        elapsed_secs = elapsed.as_secs(),
+                        "neboloop write loop detected sleep drift, exiting"
+                    );
+                    if let Some(ref dl) = devlog {
+                        dl.event(&format!("SLEEP_DRIFT detected ({}s), exiting write loop", elapsed.as_secs()));
+                    }
+                    break;
+                }
+
                 if let Some(ref dl) = devlog {
                     dl.event("→ PING");
                 }

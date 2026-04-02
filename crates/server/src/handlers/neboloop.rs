@@ -951,3 +951,29 @@ setTimeout(function() {{ window.close(); }}, 1500);
 </body></html>"#,
     ))
 }
+
+// ── Force reconnect (sleep/wake recovery) ─────────────────────────────
+
+/// POST /api/v1/neboloop/reconnect — tear down stale connection and reconnect.
+/// Called by Tauri on system resume or manually for diagnostics.
+pub async fn force_reconnect(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    info!("neboloop: force reconnect requested (sleep/wake)");
+
+    state.comm_manager.shutdown().await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    match crate::codes::activate_neboloop(&state).await {
+        Ok(()) => {
+            if let Some(new_token) = state.comm_manager.take_rotated_token().await {
+                let _ = state.store.update_auth_profile_token_by_provider("neboloop", &new_token);
+            }
+            Ok(Json(serde_json::json!({"reconnected": true})))
+        }
+        Err(e) => {
+            warn!(error = %e, "neboloop: force reconnect failed");
+            Ok(Json(serde_json::json!({"reconnected": false, "error": e.to_string()})))
+        }
+    }
+}
