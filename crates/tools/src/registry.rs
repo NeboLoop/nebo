@@ -431,7 +431,8 @@ impl Registry {
     pub async fn register_defaults(&self) {
         let policy = self.policy.read().await.clone();
         let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
-        if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+        let ps_opt = self.plugin_store.read().unwrap().clone();
+        if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
         self.register(Box::new(os_tool)).await;
@@ -466,6 +467,7 @@ impl Registry {
             None, // comm_plugin
             None, // active_agent
             None, // broadcaster
+            None, // run_querier
         )
         .await;
     }
@@ -488,6 +490,7 @@ impl Registry {
         comm_plugin: Option<Arc<dyn comm::CommPlugin>>,
         active_agent: Option<crate::agent_tool::ActiveAgentState>,
         broadcaster: Option<crate::web_tool::Broadcaster>,
+        run_querier: Option<crate::run_querier::RunQuerierHandle>,
     ) {
         let allowed = |category: &str| -> bool {
             match permissions {
@@ -499,7 +502,8 @@ impl Registry {
         // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — always registered
         let policy = self.policy.read().await.clone();
         let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
-        if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+        let ps_opt = self.plugin_store.read().unwrap().clone();
+        if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);
         }
         self.register(Box::new(os_tool)).await;
@@ -516,7 +520,7 @@ impl Registry {
             self.register(Box::new(web_tool)).await;
         }
 
-        // Agent tool (memory, tasks, sessions, context, advisors, ask) — always registered (core)
+        // Agent tool (memory, tasks, sessions, context, advisors, ask, runs) — always registered (core)
         let mut agent_tool = crate::bot_tool::AgentTool::new(store.clone(), orchestrator);
         let runner_for_events = advisor_runner.clone();
         if let Some(runner) = advisor_runner {
@@ -524,6 +528,9 @@ impl Registry {
         }
         if let Some(searcher) = hybrid_searcher {
             agent_tool = agent_tool.with_hybrid_searcher(searcher);
+        }
+        if let Some(rq) = run_querier {
+            agent_tool = agent_tool.with_run_querier(rq);
         }
         self.register(Box::new(agent_tool)).await;
 
@@ -577,9 +584,14 @@ impl Registry {
         }
 
         // Plugin tool (installed plugin binaries as STRAP resources) — deferred (activated by skill docs or keyword)
-        if let Some(ps) = self.plugin_store.read().unwrap().clone() {
+        let ps_opt = self.plugin_store.read().unwrap().clone();
+        if let Some(ps) = ps_opt {
             if !ps.list_installed().is_empty() {
-                self.register_deferred(Box::new(crate::plugin_tool::PluginTool::new(ps))).await;
+                let mut pt = crate::plugin_tool::PluginTool::new(ps);
+                if let Some(ref bc) = broadcaster {
+                    pt = pt.with_broadcaster(bc.clone());
+                }
+                self.register_deferred(Box::new(pt)).await;
             }
         }
 

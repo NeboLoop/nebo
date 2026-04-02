@@ -254,8 +254,8 @@ pub struct CommReplyConfig {
 | Source | session_key | lane | origin | comm_reply |
 |--------|-------------|------|--------|------------|
 | WebSocket (companion) | companion chat UUID | `MAIN` | `User` | `None` |
-| WebSocket (agent) | `persona:<agentId>:web` | `MAIN` | `User` | `None` |
-| REST `/agents/:id/chat` | `persona:<agentId>:web` | `MAIN` | `User` | `None` |
+| WebSocket (agent) | `agent:<agentId>:web` | `MAIN` | `User` | `None` |
+| REST `/agents/:id/chat` | `agent:<agentId>:web` | `MAIN` | `User` | `None` |
 | NeboLoop comm | `neboloop:<type>:<convId>` | `COMM` | `Comm` | `Some(...)` |
 
 ### run_chat() Flow
@@ -483,27 +483,35 @@ This ensures the agent identifies as "Nebo" when routed through Janus or using n
 ```rust
 pub struct SessionManager {
     store: Arc<Store>,
-    session_keys: Arc<RwLock<HashMap<String, String>>>,  // session_id -> session_key
+    chat_ids: Arc<RwLock<HashMap<String, String>>>,      // session_id -> active_chat_id
+    session_keys: Arc<RwLock<HashMap<String, String>>>,   // session_id -> session_key (name)
 }
 ```
 
-The `session_keys` cache maps internal `session_id` (UUID) to the `session_key`
-(the frontend-visible identifier like `"companion-default"`, `"persona:researcher:web"`).
-The `session_key` IS the `chat_id` used for message storage.
+Two caches:
+- `chat_ids`: maps `session_id` (UUID) → `active_chat_id` (the current conversation's chat_id)
+- `session_keys`: maps `session_id` (UUID) → `session_key` (the frontend-visible identifier)
+
+Sessions and chats are **decoupled**: a session can hold multiple conversations over time.
+`session.active_chat_id` points to the current conversation. `rotate_chat()` creates a new
+conversation under the same session, preserving old messages and session-level preferences.
 
 ### Public Methods
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `new()` | `(Arc<Store>) -> Self` | Constructor |
-| `get_or_create()` | `(&self, session_key, user_id) -> Result<Session>` | Upsert session by key+scope |
+| `get_or_create()` | `(&self, session_key, user_id) -> Result<Session>` | Upsert session by key+scope; ensures `active_chat_id` is set |
 | `resolve_session_key()` | `(&self, session_id) -> Result<String>` | Cache-first lookup: session_id → key |
-| `get_messages()` | `(&self, session_id) -> Result<Vec<ChatMessage>>` | Load + sanitize messages |
+| `active_chat_id()` | `(&self, session_id) -> String` | Public accessor for resolved chat_id |
+| `get_messages()` | `(&self, session_id) -> Result<Vec<ChatMessage>>` | Load + sanitize messages for active conversation |
 | `append_message()` | `(&self, session_id, role, content, tool_calls, tool_results, metadata) -> Result<ChatMessage>` | Create message with token estimate |
 | `get_summary()` / `update_summary()` | — | Rolling compaction summary |
 | `get_active_task()` / `set_active_task()` / `clear_active_task()` | — | Pinned objective tracking |
 | `get_work_tasks()` / `set_work_tasks()` | — | Work tasks JSON for steering |
-| `reset()` | `(&self, session_id)` | Clear messages + counters |
+| `rotate_chat()` | `(&self, session_id, user_id) -> Result<String>` | Create new conversation under same session; returns new chat_id |
+| `reset()` | `(&self, session_id) -> Result<String>` | Alias for `rotate_chat(session_id, None)` |
+| `clear_current_messages()` | `(&self, session_id) -> Result<()>` | Delete messages within current conversation (used by compact) |
 | `list_sessions()` | `(&self, scope) -> Result<Vec<Session>>` | List by scope |
 | `delete_session()` | `(&self, session_id)` | Delete session + messages |
 | `store()` | `(&self) -> &Arc<Store>` | Accessor |
@@ -514,26 +522,33 @@ The `session_key` IS the `chat_id` used for message storage.
 - **Message sanitization**: `sanitize_messages()` removes orphaned tool results
   (tool messages whose `tool_call_id` doesn't match any assistant's tool calls)
 - **Empty message rejection**: Skips messages where content, tool_calls, and tool_results are all empty/null
-- **Chat ID resolution**: `resolve_chat_id()` uses session_key as chat_id; fallback `"chat-{session_id}"`
+- **Chat ID resolution**: `resolve_chat_id()` prefers `session.active_chat_id`, falls back to `session.name` (legacy compat), then `"chat-{session_id}"`
+- **Non-destructive reset**: `rotate_chat()` creates a new chat_id, updates `active_chat_id`, resets conversation-scoped counters (message_count, summary, active_task) but preserves session-level preferences (model_override, provider_override)
+- **Compact vs reset**: `clear_current_messages()` stays within the same conversation; `rotate_chat()`/`reset()` creates a new one
 
 ### Session-to-Chat Relationship
 
 ```
 sessions table              chats table                chat_messages table
 ==============              ===========                ===================
-id (UUID)          ──┐
-name (session_key) ──┼──>   id = session_key    <──── chat_id (FK)
-scope, scope_id      │      title
-                     └──>   (auto-created by
-                             create_chat_message_for_runner)
+id (UUID)
+name (session_key)
+active_chat_id ────────>    id (UUID)           <──── chat_id (FK)
+scope, scope_id             session_name ──┐          role, content, ...
+model_override              title          │
+provider_override           user_id        │
+                                           └── links chat back to session
 ```
 
-The `session_key` serves as BOTH:
-- The session `name` (in sessions table)
-- The `chat_id` (in chats + chat_messages tables)
+Sessions are **decoupled** from chats:
+- `session.active_chat_id` points to the current conversation
+- `chat.session_name` links a chat back to its parent session (for history queries)
+- `rotate_chat()` creates a new chat under the same session; old messages are preserved
+- `create_chat_message_for_runner` auto-creates the parent `chats` row via `INSERT OR IGNORE`
 
-The `create_chat_message_for_runner` function auto-creates the parent `chats` row
-via `INSERT OR IGNORE` before inserting the message, satisfying the FK constraint.
+**Migration:** `0075_session_conversations.sql` adds `active_chat_id` to sessions and
+`session_name` to chats, with backfill: `active_chat_id = session.name` for existing sessions.
+Runtime fallback in `get_or_create()` handles sessions missed by the migration.
 
 ---
 
@@ -544,7 +559,7 @@ via `INSERT OR IGNORE` before inserting the message, satisfying the FK constrain
 ### Session Key Formats
 
 ```
-persona:<agentId>:<channel>      — Agent-scoped session
+agent:<agentId>:<channel>      — Agent-scoped session
 agent:<agentId>:<rest>           — Agent-scoped session
 subagent:<parentId>:<childId>    — Sub-agent session
 acp:<sessionId>                  — ACP session
@@ -1589,4 +1604,4 @@ The system uses `session_key` as both the session name AND the `chat_id` for mes
 storage. This coupling means:
 - Changing a session key format requires migrating existing messages
 - The session key must be a valid identifier (no special characters beyond what's already used)
-- Frontend must know the exact session key format to load history (e.g., `persona:<id>:web`)
+- Frontend must know the exact session key format to load history (e.g., `agent:<id>:web`)

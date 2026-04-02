@@ -14,6 +14,7 @@ use comm::PluginManager;
 use serde::Serialize;
 
 use crate::handlers::ws::ClientHub;
+use crate::run_registry::RunRegistry;
 use crate::workflow_manager::WorkflowManagerImpl;
 
 /// Janus AI usage stats stored in memory, updated from rate limit headers or direct API call.
@@ -87,4 +88,6 @@ pub struct AppState {
     pub presence: Arc<agent::PresenceTracker>,
     /// Proactive inbox — in-memory queue for background task results
     pub proactive_inbox: Arc<agent::ProactiveInbox>,
+    /// Global registry of all active agent runs — single source of truth
+    pub run_registry: RunRegistry,
 }

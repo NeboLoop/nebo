@@ -6,6 +6,7 @@ use crate::domain::DomainInput;
 use crate::orchestrator::OrchestratorHandle;
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+use crate::run_querier::RunQuerierHandle;
 
 /// Trait for advisor deliberation (implemented by agent::advisors::Runner).
 /// Defined here to avoid circular dependencies between tools and agent crates.
@@ -43,15 +44,21 @@ pub struct AgentTool {
     orchestrator: OrchestratorHandle,
     advisor_runner: Option<Arc<dyn AdvisorDeliberator>>,
     hybrid_searcher: Option<Arc<dyn HybridSearcher>>,
+    run_querier: RunQuerierHandle,
 }
 
 impl AgentTool {
     pub fn new(store: Arc<Store>, orchestrator: OrchestratorHandle) -> Self {
-        Self { store, orchestrator, advisor_runner: None, hybrid_searcher: None }
+        Self { store, orchestrator, advisor_runner: None, hybrid_searcher: None, run_querier: crate::run_querier::new_handle() }
     }
 
     pub fn with_advisor_runner(mut self, runner: Arc<dyn AdvisorDeliberator>) -> Self {
         self.advisor_runner = Some(runner);
+        self
+    }
+
+    pub fn with_run_querier(mut self, handle: RunQuerierHandle) -> Self {
+        self.run_querier = handle;
         self
     }
 
@@ -64,6 +71,7 @@ impl AgentTool {
         match action {
             "store" | "recall" | "search" => "memory",
             "spawn" | "spawn_parallel" | "orchestrate" | "status" | "cancel" | "create" | "update" | "delete" => "task",
+            "active" | "cancel_run" => "runs",
             "history" | "query" => "session",
             "reset" | "compact" | "summary" => "context",
             "deliberate" => "advisors",
@@ -939,6 +947,65 @@ impl AgentTool {
             )),
         }
     }
+
+    /// Handle runs resource — scoped agent visibility into the global RunRegistry.
+    ///
+    /// Primary agent ("main") sees all runs. Persona agents see only their own.
+    async fn handle_runs(&self, input: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
+        let action = input["action"].as_str().unwrap_or("active");
+
+        let querier = match self.run_querier.get() {
+            Some(q) => q,
+            None => return ToolResult::error("Run registry not available"),
+        };
+
+        // Derive caller's entity_id from session_key.
+        // Format: "agent:<uuid>:<channel>" → entity is the uuid.
+        // Anything else (e.g., "default", "main") → "main" (primary agent).
+        let caller_entity_id = if ctx.session_key.starts_with("agent:") {
+            ctx.session_key.split(':').nth(1).unwrap_or("main").to_string()
+        } else {
+            "main".to_string()
+        };
+
+        match action {
+            "active" | "list" => {
+                let runs = querier.list_runs(&caller_entity_id).await;
+                if runs.is_empty() {
+                    return ToolResult::ok("No active agent runs.");
+                }
+                let lines: Vec<String> = runs.iter().map(|r| {
+                    let tool_info = if r.current_tool.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — running: {}", r.current_tool)
+                    };
+                    format!(
+                        "- [{}] {} ({}) · {} tools · {}s{}",
+                        &r.run_id[..8.min(r.run_id.len())],
+                        r.entity_name, r.origin,
+                        r.tool_call_count, r.elapsed_secs, tool_info,
+                    )
+                }).collect();
+                ToolResult::ok(format!("{} active runs:\n{}", runs.len(), lines.join("\n")))
+            }
+            "cancel_run" => {
+                let run_id = input["run_id"].as_str().unwrap_or("");
+                if run_id.is_empty() {
+                    return ToolResult::error("run_id is required for cancel_run");
+                }
+                match querier.cancel_run(run_id, &caller_entity_id).await {
+                    Ok(true) => ToolResult::ok(format!("Cancelled run {}", run_id)),
+                    Ok(false) => ToolResult::error(format!("Run {} not found", run_id)),
+                    Err(e) => ToolResult::error(e),
+                }
+            }
+            _ => ToolResult::error(format!(
+                "Unknown runs action: {}. Available: active, cancel_run",
+                action
+            )),
+        }
+    }
 }
 
 impl DynTool for AgentTool {
@@ -1051,8 +1118,9 @@ impl DynTool for AgentTool {
                 "context" => self.handle_context(&input, ctx).await,
                 "advisors" => self.handle_advisors(&input).await,
                 "ask" => self.handle_ask(&input).await,
+                "runs" => self.handle_runs(&input, ctx).await,
                 other => ToolResult::error(format!(
-                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask",
+                    "Resource {:?} not available. Available: memory, task, session, context, advisors, ask, runs",
                     other
                 )),
             }

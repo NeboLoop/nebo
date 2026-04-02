@@ -1,23 +1,46 @@
+#[cfg(target_os = "windows")]
+use crate::desktop_daemon::DesktopDaemon;
 use crate::desktop_snapshot::{
     self, assign_element_ids, generate_snapshot_id, parse_ax_output, Snapshot, SnapshotStore,
+    UIElement,
 };
 use crate::origin::ToolContext;
 use crate::registry::{DynTool, ToolResult};
+use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Desktop automation — windows, input, clipboard, notifications, screen capture,
 /// UI accessibility, menus, dialogs, virtual desktops, shortcuts, TTS, and dock.
 /// Cross-platform: macOS (AppleScript/native), Linux (xdotool/wmctrl/AT-SPI), Windows (PowerShell).
+/// Persistent PowerShell daemon — shared across all desktop tool invocations (Windows only).
+/// Initialized on first use, one per process. Not mutable global state — the internal
+/// Mutex serializes all access.
+#[cfg(target_os = "windows")]
+static PS_DAEMON: std::sync::OnceLock<Arc<DesktopDaemon>> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn ps_daemon() -> &'static Arc<DesktopDaemon> {
+    PS_DAEMON.get_or_init(|| Arc::new(DesktopDaemon::new()))
+}
+
 pub struct DesktopTool {
-    #[allow(dead_code)]
-    queue: tokio::sync::Mutex<()>,
+    /// Serializes mouse + keyboard operations (one physical input device).
+    input_lock: tokio::sync::Mutex<()>,
+    /// Serializes clipboard read/write (single system clipboard).
+    clipboard_lock: tokio::sync::Mutex<()>,
     snapshot_store: tokio::sync::Mutex<SnapshotStore>,
+    ax_cache: std::sync::Mutex<HashMap<String, (Vec<UIElement>, Instant)>>,
 }
 
 impl DesktopTool {
     pub fn new() -> Self {
         Self {
-            queue: tokio::sync::Mutex::new(()),
+            input_lock: tokio::sync::Mutex::new(()),
+            clipboard_lock: tokio::sync::Mutex::new(()),
             snapshot_store: tokio::sync::Mutex::new(SnapshotStore::new()),
+            ax_cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -111,19 +134,43 @@ impl DynTool for DesktopTool {
         input: serde_json::Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
-            let _guard = self.queue.lock().await;
             let resource = input["resource"].as_str().unwrap_or("");
             let action = input["action"].as_str().unwrap_or("");
 
             match resource {
-                "window" => handle_window(action, &input).await,
-                "input" => handle_input(action, &input, &self.snapshot_store).await,
-                "clipboard" => handle_clipboard(action, &input).await,
+                "window" => {
+                    let _guard = self.input_lock.lock().await;
+                    handle_window(action, &input).await
+                }
+                "input" => {
+                    let _guard = self.input_lock.lock().await;
+                    let result = handle_input(action, &input, &self.snapshot_store).await;
+                    if !result.is_error {
+                        // Invalidate AX cache on successful input actions
+                        if let Ok(mut guard) = self.ax_cache.lock() {
+                            guard.clear();
+                        }
+                    }
+                    result
+                }
+                "clipboard" => {
+                    let _guard = self.clipboard_lock.lock().await;
+                    handle_clipboard(action, &input).await
+                }
                 "notification" => handle_notification(action, &input).await,
-                "capture" => handle_capture(action, &input, &self.snapshot_store).await,
-                "ui" => handle_ui(action, &input).await,
-                "menu" => handle_menu(action, &input).await,
-                "dialog" => handle_dialog(action, &input).await,
+                "capture" => handle_capture(action, &input, &self.snapshot_store, &self.ax_cache).await,
+                "ui" => {
+                    let _guard = self.input_lock.lock().await;
+                    handle_ui(action, &input).await
+                }
+                "menu" => {
+                    let _guard = self.input_lock.lock().await;
+                    handle_menu(action, &input).await
+                }
+                "dialog" => {
+                    let _guard = self.input_lock.lock().await;
+                    handle_dialog(action, &input).await
+                }
                 "space" => handle_space(action, &input).await,
                 "shortcut" => handle_shortcut(action, &input).await,
                 "tts" => handle_tts(action, &input).await,
@@ -715,13 +762,8 @@ async fn input_press(key: &str) -> ToolResult {
 async fn input_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        let script = format!("do shell script \"cliclick c:{},{}\"", x, y);
-        return match run_osascript_raw(&script).await {
-            Ok(out) => ToolResult::ok(out),
-            Err(_) => ToolResult::error(
-                "Click requires 'cliclick' utility. Install with: brew install cliclick"
-            ),
-        };
+        let arg = format!("c:{},{}", x, y);
+        return run_command("cliclick", &[&arg]).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -757,13 +799,8 @@ public class Mouse {{
 async fn input_double_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        let script = format!("do shell script \"cliclick dc:{},{}\"", x, y);
-        return match run_osascript_raw(&script).await {
-            Ok(out) => ToolResult::ok(out),
-            Err(_) => ToolResult::error(
-                "Double click requires 'cliclick' utility. Install with: brew install cliclick"
-            ),
-        };
+        let arg = format!("dc:{},{}", x, y);
+        return run_command("cliclick", &[&arg]).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -800,13 +837,8 @@ Start-Sleep -Milliseconds 50
 async fn input_right_click(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        let script = format!("do shell script \"cliclick rc:{},{}\"", x, y);
-        return match run_osascript_raw(&script).await {
-            Ok(out) => ToolResult::ok(out),
-            Err(_) => ToolResult::error(
-                "Right click requires 'cliclick' utility. Install with: brew install cliclick"
-            ),
-        };
+        let arg = format!("rc:{},{}", x, y);
+        return run_command("cliclick", &[&arg]).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -901,13 +933,8 @@ async fn input_hotkey(keys: &str) -> ToolResult {
 async fn input_move(x: i64, y: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        let script = format!("do shell script \"cliclick m:{},{}\"", x, y);
-        return match run_osascript_raw(&script).await {
-            Ok(out) => ToolResult::ok(out),
-            Err(_) => ToolResult::error(
-                "Mouse move requires 'cliclick' utility. Install with: brew install cliclick"
-            ),
-        };
+        let arg = format!("m:{},{}", x, y);
+        return run_command("cliclick", &[&arg]).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -939,20 +966,14 @@ async fn input_scroll(dx: i64, dy: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
         // cliclick supports scroll: kd (scroll down) / ku (scroll up)
-        let script = if dy != 0 {
-            let dir = if dy > 0 { "ku" } else { "kd" };
-            let count = dy.unsigned_abs();
-            let cmds: Vec<String> = (0..count).map(|_| dir.to_string()).collect();
-            format!("do shell script \"cliclick {}\"", cmds.join(" "))
-        } else {
+        if dy == 0 {
             return ToolResult::ok("No scroll delta specified");
-        };
-        return match run_osascript_raw(&script).await {
-            Ok(out) => ToolResult::ok(if out.is_empty() { "OK".to_string() } else { out }),
-            Err(_) => ToolResult::error(
-                "Scroll requires 'cliclick' utility. Install with: brew install cliclick"
-            ),
-        };
+        }
+        let dir = if dy > 0 { "ku" } else { "kd" };
+        let count = dy.unsigned_abs() as usize;
+        let args: Vec<String> = (0..count).map(|_| dir.to_string()).collect();
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        return run_command("cliclick", &arg_refs).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -995,16 +1016,9 @@ public class Mouse {{ [DllImport("user32.dll")] public static extern void mouse_
 async fn input_drag(x: i64, y: i64, x2: i64, y2: i64) -> ToolResult {
     #[cfg(target_os = "macos")]
     {
-        let script = format!(
-            "do shell script \"cliclick dd:{},{} du:{},{}\"",
-            x, y, x2, y2
-        );
-        return match run_osascript_raw(&script).await {
-            Ok(out) => ToolResult::ok(if out.is_empty() { "OK".to_string() } else { out }),
-            Err(_) => ToolResult::error(
-                "Drag requires 'cliclick' utility. Install with: brew install cliclick"
-            ),
-        };
+        let dd = format!("dd:{},{}", x, y);
+        let du = format!("du:{},{}", x2, y2);
+        return run_command("cliclick", &[&dd, &du]).await;
     }
     #[cfg(target_os = "linux")]
     {
@@ -1298,10 +1312,11 @@ async fn handle_capture(
     action: &str,
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
+    ax_cache: &std::sync::Mutex<HashMap<String, (Vec<UIElement>, Instant)>>,
 ) -> ToolResult {
     match action {
         "screenshot" => capture_screenshot(input).await,
-        "see" => capture_see(input, snapshot_store).await,
+        "see" => capture_see(input, snapshot_store, ax_cache).await,
         _ => ToolResult::error(format!(
             "Unknown capture action '{}'. Use: screenshot, see",
             action
@@ -1314,6 +1329,7 @@ async fn handle_capture(
 async fn capture_see(
     input: &serde_json::Value,
     snapshot_store: &tokio::sync::Mutex<SnapshotStore>,
+    ax_cache: &std::sync::Mutex<HashMap<String, (Vec<UIElement>, Instant)>>,
 ) -> ToolResult {
     // Step 1: Take screenshot
     let screenshot = capture_screenshot(input).await;
@@ -1321,10 +1337,32 @@ async fn capture_see(
         return screenshot;
     }
 
-    // Step 2: Capture AX elements with positions
+    // Step 2: Capture AX elements with positions (cached, 2s TTL)
     let app = input["app"].as_str().unwrap_or("");
     let max_elements = input["max_elements"].as_u64().unwrap_or(100).min(500) as usize;
-    let mut elements = capture_ax_elements(app).await;
+    let cache_key = app.to_string();
+
+    // Check cache (snapshot-then-release — lock held <1μs)
+    let cached = ax_cache
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .get(&cache_key)
+                .filter(|(_, ts)| ts.elapsed() < Duration::from_secs(2))
+                .map(|(elems, _)| elems.clone())
+        });
+
+    let mut elements = if let Some(elems) = cached {
+        elems
+    } else {
+        // Cache miss — subprocess runs with NO lock held
+        let elems = capture_ax_elements(app).await;
+        if let Ok(mut guard) = ax_cache.lock() {
+            guard.insert(cache_key, (elems.clone(), Instant::now()));
+        }
+        elems
+    };
 
     // Limit and assign IDs
     elements.truncate(max_elements);
@@ -1424,12 +1462,26 @@ end tell"#,
 }
 
 async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
-    let tmp_path = format!("/tmp/nebo-capture-{}.png", std::process::id());
+    let quality = input["quality"].as_str().unwrap_or("medium");
     let app = input["app"].as_str().unwrap_or("");
     let region = input["region"].as_str();
 
+    // Use JPEG capture on macOS for low/medium to skip PNG decode overhead
+    #[cfg(target_os = "macos")]
+    let use_jpeg = quality != "high";
+    #[cfg(not(target_os = "macos"))]
+    let use_jpeg = false;
+
+    let ext = if use_jpeg { "jpg" } else { "png" };
+    let tmp_path = format!("/tmp/nebo-capture-{}.{}", std::process::id(), ext);
+
     #[cfg(target_os = "macos")]
     let result = {
+        let mut base_args: Vec<String> = vec!["-x".to_string()];
+        if use_jpeg {
+            base_args.extend_from_slice(&["-t".to_string(), "jpg".to_string()]);
+        }
+
         if !app.is_empty() {
             let wid_script = format!(
                 "tell application \"System Events\" to return id of first window of process \"{}\"",
@@ -1438,14 +1490,20 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
             match run_osascript_raw(&wid_script).await {
                 Ok(wid) => {
                     let wid = wid.trim().to_string();
+                    let mut args = vec!["-l".to_string(), wid];
+                    args.extend(base_args);
+                    args.push(tmp_path.clone());
+                    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                     tokio::process::Command::new("screencapture")
-                        .args(["-l", &wid, "-x", &tmp_path])
+                        .args(&arg_refs)
                         .output()
                         .await
                 }
                 Err(_) => {
+                    base_args.push(tmp_path.clone());
+                    let arg_refs: Vec<&str> = base_args.iter().map(|s| s.as_str()).collect();
                     tokio::process::Command::new("screencapture")
-                        .args(["-x", &tmp_path])
+                        .args(&arg_refs)
                         .output()
                         .await
                 }
@@ -1453,16 +1511,22 @@ async fn capture_screenshot(input: &serde_json::Value) -> ToolResult {
         } else if let Some(region) = region {
             let parts: Vec<&str> = region.split(',').collect();
             if parts.len() == 4 {
+                let mut args = base_args;
+                args.extend_from_slice(&["-R".to_string(), region.to_string()]);
+                args.push(tmp_path.clone());
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                 tokio::process::Command::new("screencapture")
-                    .args(["-x", "-R", region, &tmp_path])
+                    .args(&arg_refs)
                     .output()
                     .await
             } else {
                 return ToolResult::error("Region format: 'x,y,w,h'");
             }
         } else {
+            base_args.push(tmp_path.clone());
+            let arg_refs: Vec<&str> = base_args.iter().map(|s| s.as_str()).collect();
             tokio::process::Command::new("screencapture")
-                .args(["-x", &tmp_path])
+                .args(&arg_refs)
                 .output()
                 .await
         }
@@ -1547,7 +1611,6 @@ $bmp.Dispose()"#,
             match tokio::fs::read(&tmp_path).await {
                 Ok(bytes) => {
                     let _ = tokio::fs::remove_file(&tmp_path).await;
-                    let quality = input["quality"].as_str().unwrap_or("medium");
                     compress_and_encode(&bytes, quality)
                 }
                 Err(e) => ToolResult::error(format!("Failed to read screenshot: {}", e)),
@@ -1561,23 +1624,27 @@ $bmp.Dispose()"#,
     }
 }
 
-/// Compress a raw PNG screenshot to JPEG at the given quality level, resize, and base64-encode.
+/// Compress a screenshot to JPEG at the given quality level, resize, and base64-encode.
+/// Accepts both PNG and JPEG input (auto-detected via magic bytes).
 ///
 /// Quality levels:
 /// - "low":    800px max width, 50% JPEG
 /// - "medium": 1280px max width, 65% JPEG (default)
-/// - "high":   original PNG, no compression
-fn compress_and_encode(png_bytes: &[u8], quality: &str) -> ToolResult {
+/// - "high":   original format, no compression
+fn compress_and_encode(img_bytes: &[u8], quality: &str) -> ToolResult {
     use base64::Engine;
     use image::ImageReader;
     use std::io::Cursor;
 
+    let is_jpeg = img_bytes.len() >= 2 && img_bytes[0] == 0xFF && img_bytes[1] == 0xD8;
+
     if quality == "high" {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+        let mime = if is_jpeg { "image/jpeg" } else { "image/png" };
+        let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
         return ToolResult {
-            content: format!("Screenshot captured (high quality, {} bytes)", png_bytes.len()),
+            content: format!("Screenshot captured (high quality, {} bytes)", img_bytes.len()),
             is_error: false,
-            image_url: Some(format!("data:image/png;base64,{}", b64)),
+            image_url: Some(format!("data:{};base64,{}", mime, b64)),
         };
     }
 
@@ -1586,19 +1653,20 @@ fn compress_and_encode(png_bytes: &[u8], quality: &str) -> ToolResult {
         _ => (1280u32, 65u8), // "medium" or any other value
     };
 
-    let img = match ImageReader::new(Cursor::new(png_bytes))
+    let img = match ImageReader::new(Cursor::new(img_bytes))
         .with_guessed_format()
         .and_then(|r| r.decode().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
     {
         Ok(img) => img,
         Err(e) => {
-            // Fall back to raw PNG if decode fails
-            tracing::warn!(error = %e, "failed to decode screenshot for compression, returning raw PNG");
-            let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+            // Fall back to raw bytes if decode fails
+            let mime = if is_jpeg { "image/jpeg" } else { "image/png" };
+            tracing::warn!(error = %e, "failed to decode screenshot for compression, returning raw");
+            let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
             return ToolResult {
-                content: format!("Screenshot captured ({} bytes, uncompressed)", png_bytes.len()),
+                content: format!("Screenshot captured ({} bytes, uncompressed)", img_bytes.len()),
                 is_error: false,
-                image_url: Some(format!("data:image/png;base64,{}", b64)),
+                image_url: Some(format!("data:{};base64,{}", mime, b64)),
             };
         }
     };
@@ -1616,7 +1684,7 @@ fn compress_and_encode(png_bytes: &[u8], quality: &str) -> ToolResult {
     match img.write_with_encoder(encoder) {
         Ok(()) => {
             let jpeg_bytes = jpeg_buf.into_inner();
-            let original_kb = png_bytes.len() / 1024;
+            let original_kb = img_bytes.len() / 1024;
             let compressed_kb = jpeg_bytes.len() / 1024;
             let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
             ToolResult {
@@ -1629,13 +1697,13 @@ fn compress_and_encode(png_bytes: &[u8], quality: &str) -> ToolResult {
             }
         }
         Err(e) => {
-            // Fall back to raw PNG
-            tracing::warn!(error = %e, "JPEG encode failed, returning raw PNG");
-            let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+            let mime = if is_jpeg { "image/jpeg" } else { "image/png" };
+            tracing::warn!(error = %e, "JPEG encode failed, returning raw image");
+            let b64 = base64::engine::general_purpose::STANDARD.encode(img_bytes);
             ToolResult {
-                content: format!("Screenshot captured ({} bytes, uncompressed)", png_bytes.len()),
+                content: format!("Screenshot captured ({} bytes, uncompressed)", img_bytes.len()),
                 is_error: false,
-                image_url: Some(format!("data:image/png;base64,{}", b64)),
+                image_url: Some(format!("data:{};base64,{}", mime, b64)),
             }
         }
     }
@@ -2930,6 +2998,17 @@ async fn run_command_raw(cmd: &str, args: &[&str]) -> Result<String, String> {
 
 #[cfg(target_os = "windows")]
 async fn run_powershell(script: &str) -> ToolResult {
+    #[cfg(target_os = "windows")]
+    {
+        let daemon = ps_daemon();
+        match daemon.execute(script, Duration::from_secs(30)).await {
+            Ok(out) => return ToolResult::ok(if out.is_empty() { "OK".to_string() } else { out }),
+            Err(e) => {
+                tracing::debug!(error = %e, "persistent PowerShell failed, falling back to subprocess");
+            }
+        }
+    }
+    // Fallback (non-Windows or daemon failure)
     run_command("powershell", &["-NoProfile", "-Command", script]).await
 }
 

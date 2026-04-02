@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use tools::Origin;
 use types::constants::lanes;
 
-use crate::chat_dispatch::{ActiveRuns, ChatConfig, run_chat};
+use crate::chat_dispatch::{ChatConfig, run_chat};
 use crate::state::AppState;
 
 /// Broadcast channel for real-time events to connected clients.
@@ -59,12 +59,10 @@ pub async fn client_ws_handler(
 async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
     info!("ws client connected — starting handle_client_ws");
     let mut hub_rx = state.hub.subscribe();
-    let active_runs: ActiveRuns = Default::default();
     let seen_ids: Arc<tokio::sync::Mutex<HashSet<String>>> = Default::default();
 
-    // Spawn periodic cleanup of stale active runs (10 min expiry).
-    // The task stops when the WS connection drops (cleanup_token cancelled).
-    let cleanup_runs = active_runs.clone();
+    // Spawn periodic cleanup of stale runs in the global registry (10 min expiry).
+    let cleanup_registry = state.run_registry.clone();
     let cleanup_token = CancellationToken::new();
     let cleanup_token_clone = cleanup_token.clone();
     tokio::spawn(async move {
@@ -73,18 +71,10 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
             tokio::select! {
                 _ = cleanup_token_clone.cancelled() => break,
                 _ = interval.tick() => {
-                    let mut runs = cleanup_runs.lock().await;
-                    let now = std::time::Instant::now();
-                    runs.retain(|session_id, run| {
-                        let age = now.duration_since(run.started_at);
-                        if age > std::time::Duration::from_secs(600) {
-                            warn!(%session_id, ?age, "expiring stale active run");
-                            run.token.cancel();
-                            false
-                        } else {
-                            true
-                        }
-                    });
+                    let cleaned = cleanup_registry.cleanup_stale(600).await;
+                    if cleaned > 0 {
+                        warn!(cleaned, "expired stale runs from global registry");
+                    }
                 }
             }
         }
@@ -151,39 +141,50 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             seen.clear();
                                         }
                                     }
-                                    dispatch_chat(&state, &parsed, active_runs.clone()).await;
+                                    dispatch_chat(&state, &parsed).await;
                                 }
                                 "cancel" => {
-                                    let session_id = parsed["data"]["session_id"]
+                                    let data = &parsed["data"];
+                                    let session_id = data["session_id"]
                                         .as_str()
                                         .unwrap_or("default")
                                         .to_string();
-                                    let runs = active_runs.lock().await;
-                                    if let Some(run) = runs.get(&session_id) {
-                                        run.token.cancel();
-                                        info!(session_id = %session_id, "cancelled agent run (exact match)");
+                                    let registry = &state.run_registry;
+
+                                    // Support cancel by run_id, entity_id, or session_id
+                                    if let Some(run_id) = data["run_id"].as_str() {
+                                        if registry.cancel(run_id).await {
+                                            info!(run_id, "cancelled run by run_id");
+                                        } else {
+                                            debug!(run_id, "cancel: run_id not found");
+                                        }
+                                    } else if let Some(entity_id) = data["entity_id"].as_str() {
+                                        let count = registry.cancel_by_entity(entity_id).await;
+                                        info!(entity_id, count, "cancelled runs by entity_id");
+                                    } else if registry.cancel_by_session(&session_id).await {
+                                        info!(session_id = %session_id, "cancelled run by session_id");
                                     } else {
-                                        // Stop means stop: cancel ALL active runs for this
-                                        // connection. Key mismatches (companion UUID vs
-                                        // agent-scoped key) must never let a run escape.
-                                        let count = runs.len();
+                                        // Stop means stop: cancel ALL active runs.
+                                        let count = registry.cancel_all().await;
                                         if count > 0 {
                                             warn!(
                                                 requested = %session_id,
-                                                active_keys = ?runs.keys().collect::<Vec<_>>(),
-                                                "cancel key mismatch — cancelling all {} active runs",
+                                                "cancel key mismatch — cancelled all {} active runs",
                                                 count
                                             );
-                                            for run in runs.values() {
-                                                run.token.cancel();
-                                            }
                                         } else {
                                             debug!(session_id = %session_id, "cancel: no active runs");
                                         }
                                     }
-                                    drop(runs);
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": session_id,
+                                    }));
+                                }
+                                "cancel_all" => {
+                                    let count = state.run_registry.cancel_all().await;
+                                    info!(count, "emergency cancel_all");
+                                    state.hub.broadcast("chat_cancelled", serde_json::json!({
+                                        "session_id": "all",
                                     }));
                                 }
                                 "auth" | "connect" => {
@@ -211,38 +212,53 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                     }
                                 }
                                 "session_reset" => {
-                                    let session_id = parsed["data"]["session_id"]
+                                    let session_key = parsed["data"]["session_id"]
                                         .as_str()
                                         .unwrap_or("default")
                                         .to_string();
-                                    let result = state.runner.sessions().reset(&session_id);
+                                    // Resolve frontend session key to internal session ID
+                                    let result = state.runner.sessions()
+                                        .resolve_session_id_by_key(&session_key)
+                                        .and_then(|sid| state.runner.sessions().reset(&sid));
                                     let reply = match result {
-                                        Ok(()) => serde_json::json!({
+                                        Ok(new_chat_id) => serde_json::json!({
                                             "type": "session_reset",
-                                            "data": {"session_id": session_id, "success": true},
+                                            "data": {"session_id": session_key, "success": true, "newChatId": new_chat_id},
                                         }),
                                         Err(e) => serde_json::json!({
                                             "type": "session_reset",
-                                            "data": {"session_id": session_id, "success": false, "error": e.to_string()},
+                                            "data": {"session_id": session_key, "success": false, "error": e.to_string()},
                                         }),
                                     };
                                     state.hub.broadcast("session_reset", reply["data"].clone());
                                 }
                                 "session_compact" => {
-                                    let session_id = parsed["data"]["session_id"]
+                                    let session_key = parsed["data"]["session_id"]
                                         .as_str()
                                         .unwrap_or("default")
                                         .to_string();
 
                                     let state_clone = state.clone();
-                                    let sid = session_id.clone();
+                                    let skey = session_key.clone();
                                     tokio::spawn(async move {
+                                        // Resolve frontend session key to internal session ID
+                                        let internal_sid = match state_clone.runner.sessions()
+                                            .resolve_session_id_by_key(&skey) {
+                                            Ok(id) => id,
+                                            Err(_) => {
+                                                state_clone.hub.broadcast("session_compact", serde_json::json!({
+                                                    "session_id": skey, "success": false, "error": "session not found"
+                                                }));
+                                                return;
+                                            }
+                                        };
+
                                         // 1. Get current messages
-                                        let messages = match state_clone.runner.sessions().get_messages(&sid) {
+                                        let messages = match state_clone.runner.sessions().get_messages(&internal_sid) {
                                             Ok(msgs) => msgs,
                                             Err(_) => {
                                                 state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": sid, "success": false, "error": "failed to load messages"
+                                                    "session_id": skey, "success": false, "error": "failed to load messages"
                                                 }));
                                                 return;
                                             }
@@ -250,7 +266,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
 
                                         if messages.len() < 4 {
                                             state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                "session_id": sid, "success": false, "error": "conversation too short to compact"
+                                                "session_id": skey, "success": false, "error": "conversation too short to compact"
                                             }));
                                             return;
                                         }
@@ -275,7 +291,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             Some(p) => p.clone(),
                                             None => {
                                                 state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": sid, "success": false, "error": "no AI provider available"
+                                                    "session_id": skey, "success": false, "error": "no AI provider available"
                                                 }));
                                                 return;
                                             }
@@ -310,7 +326,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             Ok(rx) => rx,
                                             Err(e) => {
                                                 state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                    "session_id": sid, "success": false, "error": format!("LLM error: {}", e)
+                                                    "session_id": skey, "success": false, "error": format!("LLM error: {}", e)
                                                 }));
                                                 return;
                                             }
@@ -325,15 +341,14 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
 
                                         if summary.is_empty() {
                                             state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                                "session_id": sid, "success": false, "error": "empty summary generated"
+                                                "session_id": skey, "success": false, "error": "empty summary generated"
                                             }));
                                             return;
                                         }
 
-                                        // 4. Reset session and insert summary as first message
-                                        let _ = state_clone.runner.sessions().reset(&sid);
-                                        let chat_id = state_clone.runner.sessions().resolve_session_key(&sid)
-                                            .unwrap_or_else(|_| sid.clone());
+                                        // 4. Clear messages in current conversation and insert summary
+                                        let _ = state_clone.runner.sessions().clear_current_messages(&internal_sid);
+                                        let chat_id = state_clone.runner.sessions().active_chat_id(&internal_sid);
                                         let msg_id = uuid::Uuid::new_v4().to_string();
                                         let _ = state_clone.store.create_chat_message(
                                             &msg_id, &chat_id, "assistant",
@@ -342,16 +357,47 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         );
 
                                         state_clone.hub.broadcast("session_compact", serde_json::json!({
-                                            "session_id": sid, "success": true, "summary_length": summary.len()
+                                            "session_id": skey, "success": true, "summary_length": summary.len()
                                         }));
                                     });
+                                }
+                                "list_active_runs" => {
+                                    let runs = state.run_registry.list_top_level().await;
+                                    let reply = serde_json::json!({
+                                        "type": "active_runs",
+                                        "data": { "runs": runs },
+                                    });
+                                    if socket
+                                        .send(Message::Text(serde_json::to_string(&reply).unwrap().into()))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                                "list_run_children" => {
+                                    let run_id = parsed["data"]["run_id"]
+                                        .as_str()
+                                        .unwrap_or("");
+                                    let children = state.run_registry.list_children(run_id).await;
+                                    let reply = serde_json::json!({
+                                        "type": "run_children",
+                                        "data": { "run_id": run_id, "children": children },
+                                    });
+                                    if socket
+                                        .send(Message::Text(serde_json::to_string(&reply).unwrap().into()))
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
                                 }
                                 "check_stream" => {
                                     let session_id = parsed["data"]["session_id"]
                                         .as_str()
                                         .unwrap_or("default")
                                         .to_string();
-                                    let running = active_runs.lock().await.contains_key(&session_id);
+                                    let running = state.run_registry.is_session_active(&session_id).await;
                                     let status = if running { "running" } else { "idle" };
                                     let reply = serde_json::json!({
                                         "type": "stream_status",
@@ -495,7 +541,7 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
 }
 
 /// Dispatch a chat message to the agent runner via the unified chat pipeline.
-async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: ActiveRuns) {
+async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
     let data = &msg["data"];
     let session_id = data["session_id"]
         .as_str()
@@ -573,9 +619,10 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value, active_runs: A
         comm_reply: None,
         entity_config,
         images,
+        entity_name: String::new(), // resolved from agent_registry in run_chat
     };
 
-    run_chat(state, config, Some(active_runs)).await;
+    run_chat(state, config).await;
 }
 
 /// GET /api/v1/agent/ws — Agent WebSocket endpoint for agent-to-server communication.
@@ -653,12 +700,21 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
     // Task 1: Read tool requests from this connection's channel → send to WS
     let send_task = tokio::spawn(async move {
         while let Some(req) = request_rx.recv().await {
-            let msg = serde_json::json!({
-                "type": "execute_tool",
-                "id": req.id,
-                "tool": req.tool,
-                "args": req.args,
-            });
+            let msg = if req.is_batch {
+                serde_json::json!({
+                    "type": "execute_batch",
+                    "id": req.id,
+                    "actions": req.args["actions"],
+                    "stop_on_error": req.args["stop_on_error"],
+                })
+            } else {
+                serde_json::json!({
+                    "type": "execute_tool",
+                    "id": req.id,
+                    "tool": req.tool,
+                    "args": req.args,
+                })
+            };
             if ws_tx
                 .send(Message::Text(serde_json::to_string(&msg).unwrap().into()))
                 .await
@@ -686,6 +742,17 @@ async fn handle_extension_ws(socket: WebSocket, bridge: Arc<browser::ExtensionBr
                                         Err(err.to_string())
                                     } else {
                                         Ok(parsed["result"].clone())
+                                    };
+                                    bridge_recv.deliver_result(id, result).await;
+                                }
+                            }
+                            "batch_response" => {
+                                if let Some(id) = parsed["id"].as_i64() {
+                                    // Batch response: deliver the results array as-is
+                                    let result = if let Some(err) = parsed["error"].as_str() {
+                                        Err(err.to_string())
+                                    } else {
+                                        Ok(parsed["results"].clone())
                                     };
                                     bridge_recv.deliver_result(id, result).await;
                                 }

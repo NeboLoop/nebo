@@ -33,6 +33,9 @@ pub struct DynamicContext {
     pub channel: String,
     /// Work tasks for the current session (synced from pending_tasks).
     pub work_tasks: Vec<crate::steering::WorkTask>,
+    /// Cached tool documentation (key → content). Injected into the dynamic
+    /// suffix so it survives sliding window eviction.
+    pub tool_doc_cache: Vec<(String, String)>,
 }
 
 /// Marker separating the stable/cacheable prefix (Sections 1–8) from
@@ -570,6 +573,27 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         sb.push_str("---");
     }
 
+    // 6. Cached tool documentation — survives sliding window eviction
+    if !dctx.tool_doc_cache.is_empty() {
+        sb.push_str("\n\n---\n[Reference Documentation — cached from earlier tool calls]\n");
+        let mut total_chars = 0usize;
+        const MAX_DOC_CHARS: usize = 8_000;
+        for (key, content) in &dctx.tool_doc_cache {
+            if total_chars >= MAX_DOC_CHARS {
+                break;
+            }
+            let remaining = MAX_DOC_CHARS - total_chars;
+            let truncated = if content.len() > remaining {
+                &content[..content.floor_char_boundary(remaining)]
+            } else {
+                content.as_str()
+            };
+            sb.push_str(&format!("## {}\n{}\n\n", key, truncated));
+            total_chars += truncated.len() + key.len() + 5;
+        }
+        sb.push_str("---");
+    }
+
     sb
 }
 
@@ -682,6 +706,7 @@ mod tests {
             neboloop_connected: false,
             channel: "web".to_string(),
             work_tasks: vec![],
+            tool_doc_cache: vec![],
         };
         let result = build_dynamic_suffix(&dctx);
         assert!(result.contains("anthropic/claude-sonnet-4"));

@@ -1,14 +1,13 @@
 //! Unified chat dispatch — ONE way to run any chat (primary, role, channel, comm).
 //!
-//! Every chat entry point (WebSocket, REST, NeboLoop) builds a [`ChatConfig`] with
-//! the appropriate decorators and calls [`run_chat`]. The underlying lane infrastructure,
-//! event streaming, and response handling are identical for all chat types.
+//! Every chat entry point (WebSocket, REST, NeboLoop, cron, heartbeat) builds a
+//! [`ChatConfig`] with the appropriate decorators and calls [`run_chat`]. The
+//! underlying lane infrastructure, event streaming, and response handling are
+//! identical for all chat types.
+//!
+//! All runs register in the global [`RunRegistry`](crate::run_registry::RunRegistry)
+//! for visibility, cancellation, and progress tracking.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use agent::lanes::make_task;
@@ -16,32 +15,8 @@ use agent::RunRequest;
 use ai::StreamEventType;
 use tools::Origin;
 
+use crate::run_registry::RegisterParams;
 use crate::state::AppState;
-
-/// An active agent run with its cancellation token and start time.
-pub struct ActiveRun {
-    pub token: CancellationToken,
-    pub started_at: std::time::Instant,
-}
-
-/// Tracks active agent runs so they can be cancelled (e.g., from WebSocket).
-pub type ActiveRuns = Arc<Mutex<HashMap<String, ActiveRun>>>;
-
-/// Guard that removes a session from active_runs on drop (panic-safe cleanup).
-struct ActiveRunGuard {
-    active_runs: Option<ActiveRuns>,
-    session_id: String,
-}
-
-impl Drop for ActiveRunGuard {
-    fn drop(&mut self) {
-        if let Some(ref runs) = self.active_runs {
-            if let Ok(mut guard) = runs.try_lock() {
-                guard.remove(&self.session_id);
-            }
-        }
-    }
-}
 
 /// Configuration for a chat run — decorators that customize behavior
 /// without changing the underlying execution flow.
@@ -53,7 +28,7 @@ pub struct ChatConfig {
     pub channel: String,
     pub origin: Origin,
     pub agent_id: String,
-    pub cancel_token: CancellationToken,
+    pub cancel_token: tokio_util::sync::CancellationToken,
     /// Which lane to enqueue on (e.g., lanes::MAIN, lanes::COMM).
     pub lane: String,
     /// If set, sends the accumulated text response back via comm after completion.
@@ -62,6 +37,8 @@ pub struct ChatConfig {
     pub entity_config: Option<crate::entity_config::ResolvedEntityConfig>,
     /// Images attached to the user's message (base64-encoded).
     pub images: Vec<ai::ImageContent>,
+    /// Display name for the entity (agent name or "Nebo"). Used in RunRegistry.
+    pub entity_name: String,
 }
 
 /// Configuration for sending a reply back through a communication channel.
@@ -73,9 +50,10 @@ pub struct CommReplyConfig {
 
 /// Single entry point for all chat dispatch.
 ///
-/// Callers configure behavior via [`ChatConfig`] decorators. Optionally pass
-/// [`ActiveRuns`] to enable external cancellation (WebSocket cancel messages).
-pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<ActiveRuns>) {
+/// Callers configure behavior via [`ChatConfig`] decorators. Every run is
+/// automatically registered in the global [`RunRegistry`] for visibility and
+/// cancellation — no opt-in required.
+pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let hub = state.hub.clone();
     let runner = state.runner.clone();
     let janus_usage = state.janus_usage.clone();
@@ -88,13 +66,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
     };
 
     // Resolve agent display name for outbound comm messages
-    let agent_display_name = if !config.agent_id.is_empty() {
+    let agent_display_name = if !config.entity_name.is_empty() {
+        config.entity_name.clone()
+    } else if !config.agent_id.is_empty() {
         let registry = state.agent_registry.read().await;
         registry.get(&config.agent_id).map(|r| r.name.clone()).unwrap_or_default()
     } else {
         state.store.get_agent_profile().ok().flatten()
             .map(|p| p.name)
-            .unwrap_or_default()
+            .unwrap_or_else(|| "Nebo".to_string())
     };
 
     let sid = config.session_key.clone();
@@ -102,13 +82,24 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
     let cancel_token = config.cancel_token.clone();
     let lane = config.lane.clone();
 
-    // Track for external cancellation if active_runs provided
-    if let Some(ref runs) = active_runs {
-        runs.lock().await.insert(sid.clone(), ActiveRun {
-            token: cancel_token.clone(),
-            started_at: std::time::Instant::now(),
-        });
-    }
+    // Determine entity_id for the registry
+    let entity_id = if !agent_id.is_empty() {
+        agent_id.clone()
+    } else {
+        "main".to_string()
+    };
+    let origin_label = format!("{:?}", config.origin).to_lowercase();
+
+    // Register in the global RunRegistry — ALL run paths go through here.
+    let run_handle = state.run_registry.register(RegisterParams {
+        session_key: sid.clone(),
+        entity_id,
+        entity_name: agent_display_name.clone(),
+        origin: origin_label,
+        channel: config.channel.clone(),
+        cancel_token: cancel_token.clone(),
+        parent_run_id: None,
+    }).await;
 
     // Broadcast chat_created so frontend can track new conversations
     hub.broadcast(
@@ -131,11 +122,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
     let images = config.images;
 
     let lane_task = make_task(&lane, format!("chat:{}", sid), async move {
-        // Panic-safe cleanup: removes session from active_runs even on panic
-        let _run_guard = ActiveRunGuard {
-            active_runs: active_runs.clone(),
-            session_id: sid.clone(),
-        };
+        // RunHandle auto-unregisters from RunRegistry on drop (panic-safe).
+        let _run_handle = run_handle;
 
         // Extract per-entity overrides from resolved config
         let (permissions, resource_grants, model_preference, personality_snippet) =
@@ -150,6 +138,14 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                 (None, None, None, None)
             };
         let allowed_paths = entity_cfg.as_ref().map(|ec| ec.allowed_paths.clone()).unwrap_or_default();
+
+        // Build progress tracker from RunHandle's shared Arcs
+        let progress = agent::RunProgress {
+            run_id: _run_handle.run_id.clone(),
+            iteration_count: _run_handle.iteration_count.clone(),
+            tool_call_count: _run_handle.tool_call_count.clone(),
+            current_tool: _run_handle.current_tool.clone(),
+        };
 
         let req = RunRequest {
             session_key: sid.clone(),
@@ -168,6 +164,7 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
             allowed_paths,
             presence_tracker: Some(presence_tracker.clone()),
             proactive_inbox: Some(proactive_inbox.clone()),
+            progress: Some(progress),
             ..Default::default()
         };
 
@@ -207,6 +204,9 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                             None => break,
                         }
                     };
+
+                    // Refresh activity timestamp so stale-run cleanup doesn't kill us
+                    _run_handle.touch();
 
                     match event.event_type {
                         StreamEventType::Text => {
@@ -526,8 +526,8 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
             }
         }
 
-        // ActiveRunGuard handles cleanup on drop (including panics)
-        drop(_run_guard);
+        // RunHandle unregisters from RunRegistry on drop (including panics)
+        drop(_run_handle);
 
         Ok(())
     });

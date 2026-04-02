@@ -191,9 +191,10 @@ async fn tick(state: &AppState, last_fired: &LastFired) -> Result<(), String> {
             comm_reply: None,
             entity_config: Some(resolved.clone()),
             images: vec![],
+            entity_name: String::new(),
         };
 
-        run_chat(state, config, None).await;
+        run_chat(state, config).await;
         fired.insert(key, now);
     }
 

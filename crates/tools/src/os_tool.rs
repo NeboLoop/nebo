@@ -280,9 +280,9 @@ impl DynTool for OsTool {
         match resource {
             // Physical screen resources — one mouse, one keyboard, one display
             "window" | "input" | "ui" | "menu" | "dialog"
-            | "space" | "shortcut" | "capture" | "app" => Some(ResourceKind::Screen),
-            // Parallelizable: clipboard, notification, tts, dock, file, shell,
-            // settings, music, keychain, search, mail, contacts, calendar, reminders
+            | "space" | "shortcut" => Some(ResourceKind::Screen),
+            // Parallelizable: capture, app, clipboard, notification, tts, dock, file,
+            // shell, settings, music, keychain, search, mail, contacts, calendar, reminders
             _ => None,
         }
     }

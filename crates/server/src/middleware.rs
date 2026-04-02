@@ -123,6 +123,56 @@ pub async fn api_security_headers(request: Request, next: Next) -> Response {
     response
 }
 
+/// Opt-in API key auth for the MCP endpoint.
+/// If `NEBO_MCP_API_KEY` is set, requires `Authorization: Bearer <key>`.
+/// If not set, the endpoint is open (localhost-only use case).
+pub async fn mcp_api_key_auth(request: Request, next: Next) -> Response {
+    let expected = std::env::var("NEBO_MCP_API_KEY").ok();
+
+    // No key configured → skip auth (zero-config localhost mode)
+    let expected = match expected {
+        Some(k) if !k.is_empty() => k,
+        _ => return next.run(request).await,
+    };
+
+    let auth_header = request
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+
+    let token = match auth_header {
+        Some(header) => {
+            let parts: Vec<&str> = header.splitn(2, ' ').collect();
+            if parts.len() != 2 || !parts[0].eq_ignore_ascii_case("bearer") {
+                return mcp_auth_error("invalid authorization header format");
+            }
+            parts[1]
+        }
+        None => {
+            return mcp_auth_error("MCP API key required (set NEBO_MCP_API_KEY)");
+        }
+    };
+
+    if token != expected {
+        return mcp_auth_error("invalid MCP API key");
+    }
+
+    next.run(request).await
+}
+
+fn mcp_auth_error(message: &str) -> Response {
+    // Return JSON-RPC error for MCP clients
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": null,
+        "error": {
+            "code": -32000,
+            "message": message,
+        }
+    });
+    (StatusCode::UNAUTHORIZED, Json(body)).into_response()
+}
+
 /// In-memory rate limiter state.
 #[derive(Clone)]
 pub struct RateLimiter {

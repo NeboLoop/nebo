@@ -11,6 +11,7 @@ use db::Store;
 use tools::Origin;
 
 use crate::handlers::ws::ClientHub;
+use crate::run_registry::{RegisterParams, RunRegistry};
 
 /// Spawn the cron scheduler loop. Polls enabled cron_jobs every 60 seconds.
 pub fn spawn(
@@ -19,6 +20,7 @@ pub fn spawn(
     hub: Arc<ClientHub>,
     snapshot_store: Arc<browser::SnapshotStore>,
     workflow_manager: Arc<dyn tools::workflows::WorkflowManager>,
+    run_registry: RunRegistry,
 ) {
     tokio::spawn(async move {
         // Initial delay to let the server boot
@@ -27,7 +29,7 @@ pub fn spawn(
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
-            if let Err(e) = tick(&store, &runner, &hub, &*workflow_manager).await {
+            if let Err(e) = tick(&store, &runner, &hub, &*workflow_manager, &run_registry).await {
                 warn!("scheduler tick error: {}", e);
             }
             // Cleanup expired snapshots
@@ -41,6 +43,7 @@ async fn tick(
     runner: &Runner,
     hub: &ClientHub,
     workflow_manager: &dyn tools::workflows::WorkflowManager,
+    run_registry: &RunRegistry,
 ) -> Result<(), String> {
     // Cleanup old completed/failed/cancelled tasks (7-day TTL)
     if let Err(e) = store.delete_completed_tasks() {
@@ -90,7 +93,7 @@ async fn tick(
 
         let (success, output, err_msg) = match job.task_type.as_str() {
             "bash" | "shell" | "" => execute_shell(&job.command).await,
-            "agent" => execute_agent(runner, hub, job).await,
+            "agent" => execute_agent(runner, hub, job, run_registry).await,
             "workflow" => execute_workflow_task(workflow_manager, &job.command).await,
             "agent_workflow" | "role_workflow" => execute_agent_workflow_task(workflow_manager, &store, &job.command).await,
             other => (false, String::new(), Some(format!("unknown task type: {}", other))),
@@ -146,6 +149,7 @@ async fn execute_agent(
     runner: &Runner,
     hub: &ClientHub,
     job: &db::models::CronJob,
+    run_registry: &RunRegistry,
 ) -> (bool, String, Option<String>) {
     let prompt = job
         .message
@@ -153,13 +157,27 @@ async fn execute_agent(
         .unwrap_or(&job.command);
 
     let system = job.instructions.as_deref().unwrap_or("").to_string();
+    let session_key = format!("cron-{}", job.name);
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+
+    // Register in the global RunRegistry so cron runs are visible and cancellable
+    let run_handle = run_registry.register(RegisterParams {
+        session_key: session_key.clone(),
+        entity_id: "main".to_string(),
+        entity_name: format!("Cron: {}", job.name),
+        origin: "cron".to_string(),
+        channel: "cron".to_string(),
+        cancel_token: cancel_token.clone(),
+        parent_run_id: None,
+    }).await;
 
     let req = RunRequest {
-        session_key: format!("cron-{}", job.name),
+        session_key: session_key.clone(),
         prompt: prompt.to_string(),
         system,
         origin: Origin::System,
         channel: "cron".to_string(),
+        cancel_token: cancel_token,
         ..Default::default()
     };
 
@@ -167,13 +185,14 @@ async fn execute_agent(
         Ok(mut rx) => {
             let mut full_text = String::new();
             while let Some(event) = rx.recv().await {
+                run_handle.touch();
                 match event.event_type {
                     ai::StreamEventType::Text => {
                         full_text.push_str(&event.text);
                         hub.broadcast(
                             "chat_stream",
                             serde_json::json!({
-                                "session_id": format!("cron-{}", job.name),
+                                "session_id": session_key,
                                 "content": event.text,
                             }),
                         );
@@ -186,10 +205,12 @@ async fn execute_agent(
                     _ => {}
                 }
             }
+            drop(run_handle);
             (true, full_text, None)
         }
         Err(e) => {
             error!(job = job.name.as_str(), error = %e, "agent run failed");
+            drop(run_handle);
             (false, String::new(), Some(e.to_string()))
         }
     }
@@ -212,7 +233,7 @@ async fn execute_agent_workflow_task(
     command: &str,
 ) -> (bool, String, Option<String>) {
     let parts: Vec<&str> = command.splitn(3, ':').collect();
-    if parts.len() != 3 || parts[0] != "agent" {
+    if parts.len() != 3 || (parts[0] != "agent" && parts[0] != "role") {
         return (false, String::new(), Some(format!("invalid agent_workflow command: {}", command)));
     }
     let agent_id = parts[1];

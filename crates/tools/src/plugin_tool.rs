@@ -1,9 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Deserialize;
-use tracing::debug;
+use tokio::io::AsyncReadExt;
+use tracing::{debug, info, warn};
 
 use crate::origin::ToolContext;
 use crate::process;
@@ -14,8 +16,13 @@ use crate::registry::{DynTool, ToolResult};
 /// Plugins ship with their own skills (`skills/` directory inside the plugin).
 /// These skills are the plugin's documentation — they describe the CLI syntax,
 /// flags, and examples. The plugin tool routes to them via `action: "help"`.
+///
+/// When a plugin command fails due to stale OAuth credentials, the tool
+/// automatically detects the auth failure, triggers re-authentication via
+/// the plugin's declared `auth login` command, and retries the original command.
 pub struct PluginTool {
     plugin_store: Arc<napp::plugin::PluginStore>,
+    broadcaster: Option<crate::web_tool::Broadcaster>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +55,15 @@ fn default_action() -> String {
 
 impl PluginTool {
     pub fn new(plugin_store: Arc<napp::plugin::PluginStore>) -> Self {
-        Self { plugin_store }
+        Self {
+            plugin_store,
+            broadcaster: None,
+        }
+    }
+
+    pub fn with_broadcaster(mut self, broadcaster: crate::web_tool::Broadcaster) -> Self {
+        self.broadcaster = Some(broadcaster);
+        self
     }
 
     /// Build a deduplicated list of installed plugin slugs.
@@ -164,9 +179,17 @@ impl DynTool for PluginTool {
              Actions:\n\
              - exec: Run a plugin command (default)\n\
              - services: List available services/commands for a plugin\n\
-             - help: Read documentation for a specific service (use topic param)\n\n\
+             - help: Read documentation for a specific service (use topic param)\n\
+             - events: List declared events for a plugin (NDJSON watch capabilities)\n\n\
              For exec: use `command` for subcommand + simple flags, and `args` for values \
              that may contain special characters (quotes, backticks, $, etc.).\n\n\
+             Plugin capabilities:\n\
+             - Events: Plugins can declare watch events in plugin.json (e.g. email.new, calendar.event).\n  \
+               These are long-running NDJSON processes that auto-emit into the EventBus.\n  \
+               Use `events` action to discover what events a plugin provides.\n  \
+               Agents reference plugin events via watch triggers: plugin=\"gws\", event=\"email.new\".\n\
+             - Auth: Plugins can declare OAuth flows. Auth is handled by Nebo — plugins receive\n  \
+               tokens via environment variables at runtime.\n\n\
              Available plugins:\n",
         );
         for slug in &slugs {
@@ -176,7 +199,7 @@ impl DynTool for PluginTool {
                 desc.push_str(&format!("- {}\n", slug));
             }
         }
-        desc.push_str("\nWorkflow: services → help → exec. Always check docs before executing unfamiliar commands.");
+        desc.push_str("\nWorkflow: services → help → exec. Use events to discover watch capabilities. Always check docs before executing unfamiliar commands.");
         desc
     }
 
@@ -200,8 +223,8 @@ impl DynTool for PluginTool {
             "action".into(),
             serde_json::json!({
                 "type": "string",
-                "description": "Action: exec (run command), services (list available), help (read docs for a topic)",
-                "enum": ["exec", "services", "help"],
+                "description": "Action: exec (run command), services (list available), help (read docs for a topic), events (list declared NDJSON events)",
+                "enum": ["exec", "services", "help", "events"],
                 "default": "exec"
             }),
         );
@@ -247,7 +270,7 @@ impl DynTool for PluginTool {
     }
 
     fn requires_approval_for(&self, input: &serde_json::Value) -> bool {
-        // help and services are read-only, exec needs approval
+        // help, services, and events are read-only; exec needs approval
         let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("exec");
         action == "exec"
     }
@@ -274,6 +297,7 @@ impl DynTool for PluginTool {
             match pi.action.as_str() {
                 "services" => self.handle_services(&pi.resource),
                 "help" => self.handle_help(&pi.resource, &pi.topic),
+                "events" => self.handle_events(&pi.resource),
                 _ => self.handle_exec(&pi).await,
             }
         })
@@ -307,6 +331,36 @@ impl PluginTool {
         ToolResult::ok(result)
     }
 
+    fn handle_events(&self, slug: &str) -> ToolResult {
+        let events = self.plugin_store.get_events(slug);
+        match events {
+            Some(evts) if !evts.is_empty() => {
+                let mut result = format!("Declared events for **{}**:\n\n", slug);
+                for ev in &evts {
+                    result.push_str(&format!(
+                        "- **{}.{}** — {}{}\n",
+                        slug,
+                        ev.name,
+                        if ev.description.is_empty() { "(no description)" } else { &ev.description },
+                        if ev.multiplexed { " [multiplexed]" } else { "" }
+                    ));
+                }
+                result.push_str(&format!(
+                    "\nAgents can reference these via watch triggers:\n\
+                     persona(action: \"create\", name: \"...\", automations: [\n  \
+                       {{\"name\": \"...\", \"plugin\": \"{}\", \"event\": \"<event-name>\", \"steps\": [...]}}])",
+                    slug
+                ));
+                ToolResult::ok(result)
+            }
+            _ => ToolResult::ok(format!(
+                "Plugin '{}' has no declared events. Not all plugins produce events — \
+                 events are for plugins that run long-lived watch processes outputting NDJSON.",
+                slug
+            )),
+        }
+    }
+
     fn handle_help(&self, slug: &str, topic: &str) -> ToolResult {
         if topic.is_empty() {
             // No topic — show the shared/root docs if available, otherwise list services
@@ -336,6 +390,75 @@ impl PluginTool {
     }
 
     async fn handle_exec(&self, pi: &PluginInput) -> ToolResult {
+        let result = self.run_plugin_command(pi).await;
+
+        // On error, check if it's an auth failure and attempt re-auth.
+        if result.is_error {
+            if let Some((binary, auth)) = self.plugin_store.get_auth_info(&pi.resource) {
+                if is_auth_error(&result.content) {
+                    // Confirm with auth status if the command is available
+                    if let Some(ref _status_cmd) = auth.commands.status {
+                        if self.run_auth_status(&pi.resource, &binary, &auth).await {
+                            // Status says authenticated — false positive, return original error
+                            return result;
+                        }
+                    }
+
+                    info!(plugin = %pi.resource, "auth failure detected, triggering re-authentication");
+
+                    // Broadcast re-auth request so frontend can show a notification
+                    if let Some(ref bc) = self.broadcaster {
+                        bc(
+                            "plugin_reauth_request",
+                            serde_json::json!({
+                                "plugin": &pi.resource,
+                                "label": &auth.label,
+                            }),
+                        );
+                    }
+
+                    // Attempt re-auth via plugin's auth login command
+                    if self.run_auth_login(&pi.resource, &binary, &auth).await {
+                        info!(plugin = %pi.resource, "re-authentication succeeded, retrying command");
+
+                        // Broadcast success
+                        if let Some(ref bc) = self.broadcaster {
+                            bc(
+                                "plugin_auth_complete",
+                                serde_json::json!({ "plugin": &pi.resource }),
+                            );
+                        }
+
+                        return self.run_plugin_command(pi).await;
+                    }
+
+                    // Re-auth failed
+                    warn!(plugin = %pi.resource, "re-authentication failed");
+                    if let Some(ref bc) = self.broadcaster {
+                        bc(
+                            "plugin_auth_error",
+                            serde_json::json!({
+                                "plugin": &pi.resource,
+                                "error": "Re-authentication failed or timed out",
+                            }),
+                        );
+                    }
+
+                    return ToolResult::error(format!(
+                        "Plugin '{}' authentication expired. Re-authentication was attempted but failed. \
+                         The user must re-authenticate in Settings > Plugins. \
+                         Do NOT call this plugin again until re-authenticated.",
+                        pi.resource
+                    ));
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Execute a plugin command and return the result. Shared by initial call and retry.
+    async fn run_plugin_command(&self, pi: &PluginInput) -> ToolResult {
         if pi.command.is_empty() && pi.args.is_empty() {
             return ToolResult::error(
                 "command is required for exec. Use action: \"services\" to discover available commands."
@@ -417,7 +540,7 @@ impl PluginTool {
         }
 
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
+            Duration::from_secs(timeout_secs),
             cmd.output(),
         )
         .await;
@@ -470,5 +593,363 @@ impl PluginTool {
                 ToolResult::ok(text)
             }
         }
+    }
+
+    /// Run the plugin's `auth status` command. Returns `true` if authenticated.
+    async fn run_auth_status(
+        &self,
+        slug: &str,
+        binary: &Path,
+        auth: &napp::plugin::PluginAuth,
+    ) -> bool {
+        let status_cmd = match auth.commands.status.as_deref() {
+            Some(c) => c,
+            None => return false,
+        };
+
+        let args: Vec<&str> = status_cmd.split_whitespace().collect();
+        let mut cmd = tokio::process::Command::new(binary);
+        cmd.args(&args);
+
+        process::hide_window(&mut cmd);
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+
+        cmd.env_clear();
+        for (k, v) in process::sanitized_env() {
+            cmd.env(k, v);
+        }
+        cmd.env("PATH", self.plugin_store.path_with_plugins());
+        for (k, v) in &auth.env {
+            cmd.env(k, v);
+        }
+
+        match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
+            Ok(Ok(output)) => {
+                let authenticated = output.status.success();
+                debug!(plugin = %slug, authenticated, "plugin auth status check");
+                authenticated
+            }
+            _ => {
+                warn!(plugin = %slug, "plugin auth status check failed or timed out");
+                false
+            }
+        }
+    }
+
+    /// Run the plugin's `auth login` command to trigger OAuth re-authentication.
+    /// Opens the browser for the user to complete the OAuth flow.
+    /// Returns `true` if login succeeded (exit code 0).
+    async fn run_auth_login(
+        &self,
+        slug: &str,
+        binary: &Path,
+        auth: &napp::plugin::PluginAuth,
+    ) -> bool {
+        let args: Vec<&str> = auth.commands.login.split_whitespace().collect();
+        let mut cmd = tokio::process::Command::new(binary);
+        cmd.args(&args);
+
+        process::hide_window(&mut cmd);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        cmd.env_clear();
+        for (k, v) in process::sanitized_env() {
+            cmd.env(k, v);
+        }
+        cmd.env("PATH", self.plugin_store.path_with_plugins());
+        for (k, v) in &auth.env {
+            cmd.env(k, v);
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(plugin = %slug, error = %e, "failed to spawn auth login");
+                return false;
+            }
+        };
+
+        // Read stderr for OAuth URLs (plugins write the URL to stderr).
+        let stderr_handle = child.stderr.take();
+        let slug_owned = slug.to_string();
+        let broadcaster = self.broadcaster.clone();
+
+        let stderr_task = tokio::spawn(async move {
+            let mut all = String::new();
+            let mut opened = false;
+            if let Some(mut stream) = stderr_handle {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let has_candidate = !opened && has_url_candidate(&all);
+                    let read_result = if has_candidate {
+                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(_) => {
+                                // Timeout — treat URL as complete
+                                if let Some(url) = extract_url(&all, true) {
+                                    open_auth_url(&slug_owned, &url, &broadcaster);
+                                    opened = true;
+                                }
+                                continue;
+                            }
+                        }
+                    } else {
+                        stream.read(&mut buf).await
+                    };
+                    match read_result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]);
+                            debug!(plugin = %slug_owned, chunk = %chunk, "auth login stderr");
+                            all.push_str(&chunk);
+                            if !opened {
+                                if let Some(url) = extract_url(&all, false) {
+                                    open_auth_url(&slug_owned, &url, &broadcaster);
+                                    opened = true;
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            all
+        });
+
+        // Also read stdout (some plugins may write URL there)
+        let stdout_handle = child.stdout.take();
+        let slug_for_stdout = slug.to_string();
+        let broadcaster_for_stdout = self.broadcaster.clone();
+
+        let stdout_task = tokio::spawn(async move {
+            let mut all = String::new();
+            let mut opened = false;
+            if let Some(mut stream) = stdout_handle {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let has_candidate = !opened && has_url_candidate(&all);
+                    let read_result = if has_candidate {
+                        match tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buf))
+                            .await
+                        {
+                            Ok(r) => r,
+                            Err(_) => {
+                                if let Some(url) = extract_url(&all, true) {
+                                    open_auth_url(&slug_for_stdout, &url, &broadcaster_for_stdout);
+                                    opened = true;
+                                }
+                                continue;
+                            }
+                        }
+                    } else {
+                        stream.read(&mut buf).await
+                    };
+                    match read_result {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]);
+                            debug!(plugin = %slug_for_stdout, chunk = %chunk, "auth login stdout");
+                            all.push_str(&chunk);
+                            if !opened {
+                                if let Some(url) = extract_url(&all, false) {
+                                    open_auth_url(
+                                        &slug_for_stdout,
+                                        &url,
+                                        &broadcaster_for_stdout,
+                                    );
+                                    opened = true;
+                                }
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            all
+        });
+
+        // Wait for the auth login process with a 120s timeout.
+        let login_result = tokio::time::timeout(Duration::from_secs(120), async {
+            let (stderr_out, stdout_out) = tokio::join!(stderr_task, stdout_task);
+            let _stderr = stderr_out.unwrap_or_default();
+            let _stdout = stdout_out.unwrap_or_default();
+            child.wait().await
+        })
+        .await;
+
+        match login_result {
+            Ok(Ok(status)) if status.success() => {
+                info!(plugin = %slug, "plugin re-authentication succeeded");
+                true
+            }
+            Ok(Ok(status)) => {
+                warn!(plugin = %slug, code = ?status.code(), "plugin re-authentication failed");
+                false
+            }
+            Ok(Err(e)) => {
+                warn!(plugin = %slug, error = %e, "plugin auth login process error");
+                false
+            }
+            Err(_) => {
+                warn!(plugin = %slug, "plugin auth login timed out after 120s");
+                // Kill the child process on timeout
+                let _ = child.kill().await;
+                false
+            }
+        }
+    }
+}
+
+// ── Auth error detection ────────────────────────────────────────────
+
+/// Check if a plugin command failure is due to stale/expired authentication.
+/// Matches common OAuth/auth error patterns in the combined output text.
+fn is_auth_error(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    const PATTERNS: &[&str] = &[
+        "unauthorized",
+        "token expired",
+        "login required",
+        "invalid_grant",
+        "not authenticated",
+        "credentials expired",
+        "re-authenticate",
+        "please login",
+        "sign in again",
+        "token has been revoked",
+        "refresh token",
+        "oauth2: cannot fetch token",
+        "401",
+    ];
+    PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+// ── URL extraction (duplicated from handlers/plugins.rs) ────────────
+
+/// Returns true if the text ends with an incomplete URL-like token.
+fn has_url_candidate(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if let Some(last) = words.last() {
+        let trimmed = last.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
+        (trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+            && !text.ends_with(char::is_whitespace)
+    } else {
+        false
+    }
+}
+
+/// Extract the first HTTP(S) URL from accumulated output text.
+///
+/// When `complete` is false (streaming), only returns a URL that is followed by
+/// more text — avoids matching a partial URL still being written.
+/// When `complete` is true (after timeout), the last token is accepted.
+fn extract_url(text: &str, complete: bool) -> Option<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        let trimmed = word.trim_matches(|c: char| c == '"' || c == '\'' || c == '<' || c == '>');
+        if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+            let is_last = i == words.len() - 1;
+            if complete || !is_last || text.ends_with(char::is_whitespace) {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Open an OAuth URL: broadcast via WebSocket so the frontend can open the browser,
+/// and also try a platform `open` command as a server-side fallback.
+fn open_auth_url(slug: &str, url: &str, broadcaster: &Option<crate::web_tool::Broadcaster>) {
+    info!(plugin = %slug, url = %url, "opening plugin OAuth URL for re-authentication");
+    if let Some(bc) = broadcaster {
+        bc(
+            "plugin_auth_url",
+            serde_json::json!({
+                "plugin": slug,
+                "url": url,
+            }),
+        );
+    }
+    // Server-side fallback: open browser directly via platform command
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_auth_error_detects_common_patterns() {
+        assert!(is_auth_error("Error: unauthorized"));
+        assert!(is_auth_error("token expired, please re-authenticate"));
+        assert!(is_auth_error("HTTP 401 Unauthorized"));
+        assert!(is_auth_error("Error: login required"));
+        assert!(is_auth_error("invalid_grant: Token has been revoked"));
+        assert!(is_auth_error("Not authenticated. Run: gws auth login"));
+        assert!(is_auth_error("credentials expired"));
+        assert!(is_auth_error("Please sign in again"));
+        assert!(is_auth_error("oauth2: cannot fetch token: 400 Bad Request"));
+    }
+
+    #[test]
+    fn test_is_auth_error_ignores_non_auth() {
+        assert!(!is_auth_error("file not found"));
+        assert!(!is_auth_error("invalid argument: --foo"));
+        assert!(!is_auth_error("network timeout"));
+        assert!(!is_auth_error("rate limited, try again later"));
+        assert!(!is_auth_error("permission denied: /etc/shadow"));
+    }
+
+    #[test]
+    fn test_extract_url_streaming() {
+        // URL followed by more text → extracted
+        assert_eq!(
+            extract_url("Visit https://accounts.google.com/o/oauth2 to continue", false),
+            Some("https://accounts.google.com/o/oauth2".to_string())
+        );
+        // URL as last token without trailing whitespace → NOT extracted (still streaming)
+        assert_eq!(
+            extract_url("Visit https://accounts.google.com/o/oauth2", false),
+            None
+        );
+        // URL as last token with trailing whitespace → extracted
+        assert_eq!(
+            extract_url("Visit https://accounts.google.com/o/oauth2 ", false),
+            Some("https://accounts.google.com/o/oauth2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_url_complete() {
+        // In complete mode, last token is accepted
+        assert_eq!(
+            extract_url("Visit https://accounts.google.com/o/oauth2", true),
+            Some("https://accounts.google.com/o/oauth2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_url_strips_quotes() {
+        assert_eq!(
+            extract_url("URL: \"https://example.com/auth\" done", false),
+            Some("https://example.com/auth".to_string())
+        );
+    }
+
+    #[test]
+    fn test_has_url_candidate() {
+        assert!(has_url_candidate("Visit https://example.com"));
+        assert!(!has_url_candidate("Visit https://example.com "));
+        assert!(!has_url_candidate("no url here"));
     }
 }

@@ -12,6 +12,8 @@ pub enum Origin {
     Skill,
     /// Internal system tasks (heartbeat, cron, recovery).
     System,
+    /// External MCP client (Claude Desktop, Cursor, etc.).
+    Mcp,
 }
 
 impl Default for Origin {
@@ -40,6 +42,9 @@ pub struct ToolContext {
     /// Stream sender from the parent run — used by spawn_parallel to forward
     /// sub-agent progress events to the caller's event stream.
     pub stream_tx: Option<tokio::sync::mpsc::Sender<ai::StreamEvent>>,
+    /// Run ID from the global RunRegistry — used by sub-agent spawning to link
+    /// child runs to their parent via parent_run_id.
+    pub run_id: Option<String>,
 }
 
 impl ToolContext {

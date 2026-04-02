@@ -94,7 +94,7 @@ Frontend (Svelte) → WebSocket /ws → ws.rs handler → chat_dispatch.rs
 Three WS endpoints: `/ws` (client), `/agent/ws` (agent), `/ws/extension` (Chrome bridge).
 
 ### Session Keys
-Format: `role:<id>:<channel>`, `agent:<id>:<rest>`, `subagent:<parent>:<child>`, etc. Session key doubles as chat_id (FK coupling).
+Format: `agent:<id>:<channel>`, `subagent:<parent>:<child>`, `acp:<id>`, `<ch>:group:<id>`, etc. Sessions are decoupled from chats: `session.active_chat_id` points to the current conversation. `rotate_chat()` creates a new conversation under the same session (non-destructive reset). Legacy sessions backfill `active_chat_id = session.name` at runtime.
 
 ### Frontend Structure
 - `app/src/routes/(app)/` — main app routes (chat, settings, marketplace, etc.)

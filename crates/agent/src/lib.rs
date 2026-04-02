@@ -36,7 +36,7 @@ pub use lanes::LaneManager;
 pub use orchestrator::Orchestrator;
 pub use proactive::{PresenceTracker, ProactiveInbox};
 pub use agent_worker::AgentWorkerRegistry;
-pub use runner::{RunRequest, Runner};
+pub use runner::{RunProgress, RunRequest, Runner};
 pub use selector::ModelSelector;
 pub use session::SessionManager;
 pub use steering::Pipeline as SteeringPipeline;

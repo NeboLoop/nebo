@@ -1,3 +1,5 @@
+mod mcp_serve;
+
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -58,6 +60,30 @@ enum Commands {
     Capabilities,
     /// Run as Chrome native messaging relay (used internally by the extension)
     Relay,
+    /// MCP (Model Context Protocol) server for Claude Desktop, Cursor, etc.
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommands {
+    /// Start MCP stdio bridge (requires a running Nebo server)
+    Serve {
+        /// Comma-separated tool allowlist (e.g. "system,web,bot")
+        #[arg(long)]
+        tools: Option<String>,
+        /// Comma-separated tool denylist (e.g. "desktop,organizer")
+        #[arg(long)]
+        exclude_tools: Option<String>,
+    },
+    /// Print MCP configuration for a target application
+    Config {
+        /// Target application
+        #[arg(long, value_enum, default_value = "claude-desktop")]
+        target: mcp_serve::ConfigTarget,
+    },
 }
 
 #[derive(Subcommand)]
@@ -252,6 +278,16 @@ async fn main() -> anyhow::Result<()> {
             println!("  - JWT authentication");
             println!("  - SQLite storage (WAL mode)");
         }
+        Some(Commands::Mcp { command }) => match command {
+            McpCommands::Config { target } => {
+                mcp_serve::print_config(&target);
+            }
+            McpCommands::Serve { tools, exclude_tools } => {
+                let server_url = format!("http://{}:{}", cfg.host, cfg.port);
+                let bridge = mcp_serve::McpStdioBridge::new(server_url, tools, exclude_tools);
+                bridge.run().await?;
+            }
+        },
     }
 
     Ok(())

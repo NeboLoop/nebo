@@ -401,7 +401,7 @@ async fn handle_session_reset(state: &AppState, session_id: &str) -> (String, bo
     };
 
     match state.runner.sessions().reset(&key) {
-        Ok(()) => (format!("Session '{}' reset", session_id), false),
+        Ok(_) => (format!("Session '{}' reset", session_id), false),
         Err(e) => (format!("Failed to reset session: {}", e), true),
     }
 }

@@ -116,6 +116,7 @@ pub struct Session {
     pub active_task: Option<String>,
     pub last_summarized_count: Option<i64>,
     pub work_tasks: Option<String>,
+    pub active_chat_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +150,7 @@ pub struct Chat {
     pub created_at: i64,
     pub updated_at: i64,
     pub user_id: Option<String>,
+    pub session_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

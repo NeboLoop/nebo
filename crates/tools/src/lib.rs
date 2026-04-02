@@ -1,5 +1,6 @@
 pub mod app_tool;
 pub mod bot_tool;
+pub mod desktop_daemon;
 pub mod desktop_snapshot;
 pub mod desktop_tool;
 pub mod domain;
@@ -16,6 +17,7 @@ pub mod message_tool;
 pub mod music_tool;
 pub mod orchestrator;
 mod organizer;
+pub mod run_querier;
 pub mod organizer_tool;
 pub mod origin;
 pub mod os_tool;

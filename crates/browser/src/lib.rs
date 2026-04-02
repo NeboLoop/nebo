@@ -14,7 +14,7 @@ pub mod storage;
 
 pub use config::{BrowserConfig, ProfileConfig, ResolvedProfile};
 pub use executor::ActionExecutor;
-pub use extension_bridge::ExtensionBridge;
+pub use extension_bridge::{BatchAction, BatchOptions, ExtensionBridge};
 pub use manager::Manager;
 pub use native_host::NativeHost;
 pub use session::{Page, PageState, Session};

@@ -39,22 +39,69 @@ fn fix_server_type(state: &AppState) {
 }
 
 /// Re-sync the MCP bridge after integration changes.
+/// Uses per-integration connect with proper token resolution instead of sync_all
+/// (which passes None for tokens and would fail for OAuth integrations).
 async fn sync_bridge(state: &AppState) {
-    if let Ok(integrations) = state.store.list_mcp_integrations() {
-        let infos: Vec<mcp::bridge::IntegrationInfo> = integrations
-            .iter()
-            .map(|i| mcp::bridge::IntegrationInfo {
-                id: i.id.clone(),
-                name: i.name.clone(),
-                server_type: slugify_name(&i.name),
-                server_url: i.server_url.clone(),
-                auth_type: i.auth_type.clone(),
-                is_enabled: i.is_enabled.unwrap_or(0) != 0,
-                connection_status: i.connection_status.clone(),
-            })
-            .collect();
-        if let Err(e) = state.bridge.sync_all(&infos).await {
-            warn!("MCP bridge sync failed: {}", e);
+    let integrations = match state.store.list_mcp_integrations() {
+        Ok(i) => i,
+        Err(e) => {
+            warn!("failed to load MCP integrations for sync: {}", e);
+            return;
+        }
+    };
+
+    // Disconnect integrations that are no longer enabled
+    let enabled_ids: std::collections::HashSet<&str> = integrations.iter()
+        .filter(|i| i.is_enabled.unwrap_or(0) != 0)
+        .map(|i| i.id.as_str())
+        .collect();
+    for conn_id in state.bridge.connected_ids().await {
+        if !enabled_ids.contains(conn_id.as_str()) {
+            state.bridge.disconnect(&conn_id).await;
+        }
+    }
+
+    // Connect enabled integrations with proper token handling
+    for i in &integrations {
+        if i.is_enabled.unwrap_or(0) == 0 {
+            continue;
+        }
+        let server_url = match &i.server_url {
+            Some(u) if !u.is_empty() => u.clone(),
+            _ => continue,
+        };
+        if i.auth_type == "oauth" && i.connection_status.is_none() {
+            continue;
+        }
+        let access_token = if i.auth_type == "oauth" {
+            match state.store.get_mcp_credential_full(&i.id, "oauth_token") {
+                Ok(Some(cred)) => {
+                    if tools::mcp_tool::is_token_expired(cred.expires_at) && cred.refresh_token.is_some() {
+                        match tools::mcp_tool::refresh_mcp_token(&state.store, state.bridge.client(), &i.id).await {
+                            Ok(new_token) => Some(new_token),
+                            Err(e) => {
+                                warn!(name = %i.name, error = %e, "MCP token refresh failed during sync");
+                                state.bridge.client().decrypt_token(&cred.credential_value).ok()
+                            }
+                        }
+                    } else {
+                        state.bridge.client().decrypt_token(&cred.credential_value).ok()
+                    }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let tool_prefix = slugify_name(&i.name);
+        match state.bridge.connect(&i.id, &tool_prefix, &server_url, access_token.as_deref()).await {
+            Ok(tools_list) => {
+                let _ = state.store.set_mcp_connection_status(&i.id, "connected", tools_list.len() as i64);
+            }
+            Err(e) => {
+                let _ = state.store.set_mcp_connection_status(&i.id, "error", 0);
+                warn!(name = %i.name, error = %e, "MCP reconnect failed during sync");
+            }
         }
     }
 }

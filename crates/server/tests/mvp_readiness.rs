@@ -777,7 +777,7 @@ async fn test_memory(server: &TestServer) -> TestResult {
     let resp = server.get("/memories/stats").await;
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert!(body["total"].as_i64().unwrap() >= 2);
+    assert!(body["totalCount"].as_i64().unwrap() >= 2);
 
     // Find the "color" memory and update it
     let resp = server.get("/memories").await;
@@ -799,7 +799,7 @@ async fn test_memory(server: &TestServer) -> TestResult {
     // Verify update
     let resp = server.get(&format!("/memories/{}", mem_id)).await;
     let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["value"], "green");
+    assert_eq!(body["memory"]["value"], "green");
 
     // DELETE /memories/{id}
     let resp = server.delete(&format!("/memories/{}", mem_id)).await;

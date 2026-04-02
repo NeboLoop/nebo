@@ -315,25 +315,59 @@ pub async fn get_companion_chat(
             .map_err(to_error_response)?
     };
 
-    // Messages are stored with chat_id = chat.id (the session_key used by the runner)
+    // The session_name links back to the session key used by the runner.
+    // For legacy chats (pre-decoupling), session_name may be None — use chat.id as fallback.
+    let session_key = chat.session_name.as_deref().unwrap_or(&chat.id);
+
+    // Resolve the active chat_id from the session. After a rotation (via /reset or
+    // session_reset), the session's active_chat_id may point to a different chat than
+    // what get_companion_chat_by_user() returns. Always load messages from the active chat.
+    let active_chat_id = state.runner.sessions()
+        .resolve_session_id_by_key(session_key)
+        .ok()
+        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .unwrap_or_else(|| chat.id.clone());
+
     let mut messages = state
         .store
-        .get_chat_messages_budgeted(&chat.id, query.max_chars, None)
+        .get_chat_messages_budgeted(&active_chat_id, query.max_chars, None)
         .unwrap_or_default();
     build_message_metadata(&mut messages);
-    let total = state.store.count_chat_messages(&chat.id).unwrap_or(messages.len() as i64);
+    let total = state.store.count_chat_messages(&active_chat_id).unwrap_or(messages.len() as i64);
 
     Ok(Json(serde_json::json!({
         "chat": chat,
         "messages": messages,
         "totalMessages": total,
+        "sessionKey": session_key,
     })))
 }
 
-/// POST /api/v1/chats/companion/new — create a fresh companion session
+/// POST /api/v1/chats/companion/new — create a fresh conversation under the existing session.
+/// If an existing companion session exists, rotates the chat (preserving old messages).
+/// Otherwise creates a fresh companion chat.
 pub async fn create_companion_chat(
     State(state): State<AppState>,
 ) -> HandlerResult<serde_json::Value> {
+    // Try to find the existing companion session and rotate its chat.
+    if let Ok(Some(existing_chat)) = state.store.get_companion_chat_by_user(COMPANION_USER_ID) {
+        let session_key = existing_chat.session_name.as_deref().unwrap_or(&existing_chat.id);
+        if let Ok(Some(session)) = state.store.get_session_by_name(session_key) {
+            let new_chat_id = state.runner.sessions().rotate_chat(&session.id, Some(COMPANION_USER_ID))
+                .map_err(to_error_response)?;
+            let chat = state.store.get_chat(&new_chat_id)
+                .map_err(to_error_response)?
+                .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+            return Ok(Json(serde_json::json!({
+                "chat": chat,
+                "messages": [],
+                "totalMessages": 0,
+                "sessionKey": session_key,
+            })));
+        }
+    }
+
+    // No existing session — create a fresh companion chat (first-time setup).
     let id = uuid::Uuid::new_v4().to_string();
     let chat = state
         .store
@@ -344,6 +378,7 @@ pub async fn create_companion_chat(
         "chat": chat,
         "messages": [],
         "totalMessages": 0,
+        "sessionKey": &chat.id,
     })))
 }
 
@@ -409,9 +444,17 @@ pub async fn list_chat_days(
         None => return Ok(Json(serde_json::json!({"days": []}))),
     };
 
+    // Resolve active chat_id from session (same pattern as get_companion_chat)
+    let session_key = chat.session_name.as_deref().unwrap_or(&chat.id);
+    let active_chat_id = state.runner.sessions()
+        .resolve_session_id_by_key(session_key)
+        .ok()
+        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .unwrap_or_else(|| chat.id.clone());
+
     let days = state
         .store
-        .list_chat_days(&chat.id, q.limit, q.offset)
+        .list_chat_days(&active_chat_id, q.limit, q.offset)
         .map_err(to_error_response)?;
 
     let day_infos: Vec<serde_json::Value> = days
@@ -438,9 +481,17 @@ pub async fn get_chat_history_by_day(
         None => return Ok(Json(serde_json::json!({"messages": []}))),
     };
 
+    // Resolve active chat_id from session (same pattern as get_companion_chat)
+    let session_key = chat.session_name.as_deref().unwrap_or(&chat.id);
+    let active_chat_id = state.runner.sessions()
+        .resolve_session_id_by_key(session_key)
+        .ok()
+        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .unwrap_or_else(|| chat.id.clone());
+
     let mut messages = state
         .store
-        .get_chat_messages_by_day(&chat.id, &day)
+        .get_chat_messages_by_day(&active_chat_id, &day)
         .map_err(to_error_response)?;
     build_message_metadata(&mut messages);
 
@@ -488,11 +539,20 @@ pub async fn get_chat_messages(
     Path(id): Path<String>,
     Query(query): Query<ChatMessagesQuery>,
 ) -> HandlerResult<serde_json::Value> {
+    // The caller may pass a session key (e.g. "agent:UUID:web") instead of a raw
+    // chat_id.  Resolve via the session's active_chat_id when possible so we
+    // always load from the correct (possibly rotated) conversation.
+    let resolved_id = state.runner.sessions()
+        .resolve_session_id_by_key(&id)
+        .ok()
+        .map(|sid| state.runner.sessions().active_chat_id(&sid))
+        .unwrap_or_else(|| id.clone());
+
     let mut messages = state
         .store
-        .get_chat_messages_budgeted(&id, query.max_chars, query.before.as_deref())
+        .get_chat_messages_budgeted(&resolved_id, query.max_chars, query.before.as_deref())
         .map_err(to_error_response)?;
     build_message_metadata(&mut messages);
-    let total = state.store.count_chat_messages(&id).unwrap_or(messages.len() as i64);
+    let total = state.store.count_chat_messages(&resolved_id).unwrap_or(messages.len() as i64);
     Ok(Json(serde_json::json!({"messages": messages, "totalMessages": total})))
 }

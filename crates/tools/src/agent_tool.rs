@@ -1804,6 +1804,12 @@ impl DynTool for PersonaTool {
            interval: \"5m\", \"30m\", \"1h\", etc. window: optional time range.\n\n\
          Event (reactive):\n  \
            {\"name\": \"x\", \"sources\": [\"email.received\", \"calendar.changed\"], \"steps\": [...]}\n\n\
+         Watch (plugin NDJSON watcher):\n  \
+           {\"name\": \"x\", \"plugin\": \"gws\", \"event\": \"email.new\", \"steps\": [...]}\n  \
+           plugin: required plugin slug. event: optional plugin event name (resolves command from manifest).\n  \
+           command: optional CLI args (required if event not set). restart_delay_secs: default 5.\n  \
+           Auto-emits NDJSON output into EventBus as {plugin}.{event}. Steps are optional —\n  \
+           event-only watches (no steps) relay events without inline processing.\n\n\
          Manual (on-demand):\n  \
            {\"name\": \"x\", \"trigger\": \"manual\", \"steps\": [...]}\n\n\
          Optional fields: emit (event name on completion), description (human label).\n\n\
@@ -1819,6 +1825,12 @@ impl DynTool for PersonaTool {
          persona(action: \"update\", name: \"morning-briefing\",\n    \
            add_automations: [{\"name\": \"evening-recap\", \"schedule\": \"daily at 6pm\",\n    \
              \"steps\": [\"Summarize the day\"]}])\n  \
+         persona(action: \"create\", name: \"inbox-watcher\", description: \"Watches for new emails\",\n    \
+           automations: [{\"name\": \"watch-email\", \"plugin\": \"gws\", \"event\": \"email.new\",\n    \
+             \"steps\": [\"Triage the incoming email\", \"Flag if urgent\"]}])\n  \
+         persona(action: \"create\", name: \"email-relay\", description: \"Relays email events\",\n    \
+           automations: [{\"name\": \"relay\", \"plugin\": \"gws\", \"event\": \"email.new\",\n    \
+             \"description\": \"Event-only watch — no steps, just relays into EventBus\"}])\n  \
          persona(action: \"update\", name: \"morning-briefing\", remove_automations: [\"evening-recap\"])\n  \
          persona(action: \"delete\", name: \"morning-briefing\")\n  \
          persona(action: \"repair\")  — fix all agents\n  \
@@ -1866,16 +1878,20 @@ impl DynTool for PersonaTool {
                 },
                 "automations": {
                     "type": "array",
-                    "description": "Structured automations. For create: sets initial automations. For update: REPLACES ALL existing automations. Trigger type is auto-inferred from fields: schedule field→schedule, interval→heartbeat, sources→event, otherwise manual.",
+                    "description": "Structured automations. For create: sets initial automations. For update: REPLACES ALL existing automations. Trigger type is auto-inferred from fields: schedule→schedule, interval→heartbeat, sources→event, plugin→watch, otherwise manual.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "name": { "type": "string", "description": "Automation binding name" },
-                            "trigger": { "type": "string", "enum": ["schedule", "heartbeat", "event", "manual"], "description": "Trigger type (optional — auto-inferred from schedule/interval/sources fields)" },
+                            "trigger": { "type": "string", "enum": ["schedule", "heartbeat", "event", "watch", "manual"], "description": "Trigger type (optional — auto-inferred from schedule/interval/sources/plugin fields)" },
                             "schedule": { "type": "string", "description": "Schedule — cron (5-field: '0 7 * * *' or 7-field: '0 0 7 * * * *') or human-readable ('every 30 seconds', 'daily at 7am', 'every 2 minutes', 'weekdays at 9:30am'). Auto-normalized." },
                             "interval": { "type": "string", "description": "Interval — presence auto-sets trigger to heartbeat (e.g. '15m', '1h')" },
                             "window": { "type": "string", "description": "Time window for heartbeat (e.g. '08:00-18:00')" },
                             "sources": { "type": "array", "items": { "type": "string" }, "description": "Event sources — presence auto-sets trigger to event" },
+                            "plugin": { "type": "string", "description": "Plugin slug for watch trigger (e.g. 'gws') — presence auto-sets trigger to watch" },
+                            "event": { "type": "string", "description": "Plugin event name for watch trigger (e.g. 'email.new'). Resolves command from plugin manifest." },
+                            "command": { "type": "string", "description": "CLI args for watch trigger (e.g. 'gmail +watch --format ndjson'). Required if event not set." },
+                            "restart_delay_secs": { "type": "integer", "description": "Seconds before restarting watch process on crash (default: 5)" },
                             "steps": { "type": "array", "items": { "type": "string" }, "description": "Activity steps — plain language instructions executed in order" },
                             "emit": { "type": "string", "description": "Event to emit on completion (e.g. 'briefing.ready')" },
                             "description": { "type": "string", "description": "Human-readable description of this automation" }
@@ -1904,6 +1920,10 @@ impl DynTool for PersonaTool {
                         "interval": { "type": "string", "description": "New interval (changes trigger to heartbeat)" },
                         "window": { "type": "string", "description": "Time window for heartbeat" },
                         "sources": { "type": "array", "items": { "type": "string" }, "description": "Event sources (changes trigger to event)" },
+                        "plugin": { "type": "string", "description": "Plugin slug (changes trigger to watch)" },
+                        "event": { "type": "string", "description": "Plugin event name for watch trigger" },
+                        "command": { "type": "string", "description": "CLI args for watch trigger" },
+                        "restart_delay_secs": { "type": "integer", "description": "Watch restart delay in seconds" },
                         "emit": { "type": "string", "description": "Event to emit on completion" }
                     },
                     "required": ["name"]

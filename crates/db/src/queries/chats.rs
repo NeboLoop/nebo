@@ -400,6 +400,38 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))
     }
 
+    /// Create a new chat linked to a session.
+    pub fn create_chat_for_session(
+        &self,
+        id: &str,
+        session_name: &str,
+        title: &str,
+        user_id: Option<&str>,
+    ) -> Result<Chat, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "INSERT INTO chats (id, session_name, title, user_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch(), unixepoch())
+             RETURNING *",
+            params![id, session_name, title, user_id],
+            row_to_chat,
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// List all chats belonging to a session, newest first.
+    pub fn list_chats_by_session(&self, session_name: &str) -> Result<Vec<Chat>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT * FROM chats WHERE session_name = ?1 ORDER BY updated_at DESC")
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![session_name], row_to_chat)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Create a new companion chat for the given user_id.
     pub fn create_companion_chat(
         &self,
@@ -500,6 +532,7 @@ fn row_to_chat(row: &rusqlite::Row) -> rusqlite::Result<Chat> {
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         user_id: row.get("user_id")?,
+        session_name: row.get("session_name")?,
     })
 }
 

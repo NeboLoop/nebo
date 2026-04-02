@@ -81,4 +81,13 @@ fn codes_and_deps() -> Router<AppState> {
     Router::new()
         .route("/codes", axum::routing::post(codes::submit_code))
         .route("/deps/approve", axum::routing::post(deps::approve_deps))
+        .route("/runs/active", axum::routing::get(active_runs_handler))
+}
+
+/// GET /api/v1/runs/active — list all top-level active agent runs.
+async fn active_runs_handler(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    let runs = state.run_registry.list_top_level().await;
+    axum::Json(serde_json::json!({ "runs": runs }))
 }

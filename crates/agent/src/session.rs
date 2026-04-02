@@ -6,10 +6,17 @@ use db::Store;
 use types::NeboError;
 
 /// Manages agent sessions backed by the database.
+///
+/// Sessions are containers that hold conversation-scoped state (model overrides,
+/// preferences, etc.). Each session points to an `active_chat_id` which identifies
+/// the current conversation's messages. Rotating the chat creates a new conversation
+/// under the same session, preserving old messages and session-level settings.
 #[derive(Clone)]
 pub struct SessionManager {
     store: Arc<Store>,
-    /// Cache: session_id -> session_key (name) for fast lookups.
+    /// Cache: session_id -> active_chat_id for fast message lookups.
+    chat_ids: Arc<RwLock<HashMap<String, String>>>,
+    /// Cache: session_id -> session_key (name) for routing lookups.
     session_keys: Arc<RwLock<HashMap<String, String>>>,
 }
 
@@ -17,11 +24,13 @@ impl SessionManager {
     pub fn new(store: Arc<Store>) -> Self {
         Self {
             store,
+            chat_ids: Arc::new(RwLock::new(HashMap::new())),
             session_keys: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Get or create a session by key, optionally scoped to a user.
+    /// Ensures the session has a valid `active_chat_id` for message storage.
     pub fn get_or_create(&self, session_key: &str, user_id: &str) -> Result<Session, NeboError> {
         let id = uuid::Uuid::new_v4().to_string();
         let (scope, scope_id) = if user_id.is_empty() {
@@ -38,10 +47,26 @@ impl SessionManager {
             None,
         )?;
 
-        // Cache session_id -> session_key mapping synchronously.
-        // The session_key IS the companion chat ID (sent by the frontend),
-        // so we use it directly as chat_id for message storage.
+        // Ensure active_chat_id is set. Existing sessions get it from the migration
+        // backfill; truly new sessions or missed migrations need a runtime fallback.
+        let chat_id = if let Some(ref cid) = session.active_chat_id {
+            cid.clone()
+        } else {
+            // Legacy session without active_chat_id — use session name (= old behavior).
+            let fallback = session.name.clone().unwrap_or_default();
+            if !fallback.is_empty() {
+                if let Err(e) = self.store.set_session_active_chat_id(&session.id, &fallback) {
+                    tracing::warn!("failed to backfill active_chat_id for session {}: {}", session.id, e);
+                }
+            }
+            fallback
+        };
+
+        // Cache both mappings.
         let key = session.name.clone().unwrap_or_default();
+        if let Ok(mut cache) = self.chat_ids.write() {
+            cache.insert(session.id.clone(), chat_id);
+        }
         if let Ok(mut cache) = self.session_keys.write() {
             cache.insert(session.id.clone(), key);
         }
@@ -49,9 +74,27 @@ impl SessionManager {
         Ok(session)
     }
 
+    /// Resolve a session key (name) to the session's internal UUID.
+    /// Used by WS handlers that receive the frontend's session identifier.
+    pub fn resolve_session_id_by_key(&self, session_key: &str) -> Result<String, NeboError> {
+        // Check reverse cache (key → id) via session_keys which maps id → key
+        if let Ok(cache) = self.session_keys.read() {
+            for (id, key) in cache.iter() {
+                if key == session_key {
+                    return Ok(id.clone());
+                }
+            }
+        }
+
+        // Fallback to DB lookup by name
+        match self.store.get_session_by_name(session_key)? {
+            Some(session) => Ok(session.id),
+            None => Err(NeboError::NotFound),
+        }
+    }
+
     /// Resolve session ID to session key (name), using cache.
-    /// The session_key is used as the chat_id for message storage,
-    /// matching what the frontend expects (companion chat ID).
+    /// Still needed for routing, keyparser, and compact handler.
     pub fn resolve_session_key(&self, session_id: &str) -> Result<String, NeboError> {
         // Check cache first
         if let Ok(cache) = self.session_keys.read() {
@@ -74,22 +117,49 @@ impl SessionManager {
     }
 
     /// Resolve session_id to the chat_id used for message storage.
-    /// This is the session_key (= companion chat ID from frontend).
+    /// Returns the session's active_chat_id, falling back to session_key (name)
+    /// for backward compatibility with sessions that predate the decoupling.
     fn resolve_chat_id(&self, session_id: &str) -> String {
-        match self.resolve_session_key(session_id) {
-            Ok(key) if !key.is_empty() => key,
-            _ => format!("chat-{}", session_id), // fallback for legacy data
+        // Check cache first
+        if let Ok(cache) = self.chat_ids.read() {
+            if let Some(id) = cache.get(session_id) {
+                return id.clone();
+            }
         }
+
+        // Load from DB — prefer active_chat_id, fall back to name
+        let chat_id = self.store.get_session(session_id)
+            .ok()
+            .flatten()
+            .and_then(|s| s.active_chat_id.or(s.name))
+            .unwrap_or_else(|| format!("chat-{}", session_id));
+
+        if let Ok(mut cache) = self.chat_ids.write() {
+            cache.insert(session_id.to_string(), chat_id.clone());
+        }
+
+        tracing::debug!(
+            session_id = %session_id,
+            chat_id = %chat_id,
+            "resolved chat_id for message storage"
+        );
+
+        chat_id
     }
 
-    /// Get messages for a session (resolves session_id to chat_id via session_key).
+    /// Public accessor for the resolved chat_id.
+    pub fn active_chat_id(&self, session_id: &str) -> String {
+        self.resolve_chat_id(session_id)
+    }
+
+    /// Get messages for a session's active conversation.
     pub fn get_messages(&self, session_id: &str) -> Result<Vec<ChatMessage>, NeboError> {
         let chat_id = self.resolve_chat_id(session_id);
         let messages = self.store.get_chat_messages(&chat_id)?;
         Ok(sanitize_messages(messages))
     }
 
-    /// Append a message to the session.
+    /// Append a message to the session's active conversation.
     pub fn append_message(
         &self,
         session_id: &str,
@@ -164,11 +234,56 @@ impl SessionManager {
         self.store.set_session_work_tasks(session_id, tasks_json)
     }
 
-    /// Reset a session (clear messages and counters).
-    pub fn reset(&self, session_id: &str) -> Result<(), NeboError> {
+    /// Create a new conversation under the same session, preserving old messages.
+    /// Returns the new chat_id. Pass `user_id` to carry forward ownership (e.g. companion chats).
+    pub fn rotate_chat(&self, session_id: &str, user_id: Option<&str>) -> Result<String, NeboError> {
+        let session = self.store.get_session(session_id)?
+            .ok_or(NeboError::NotFound)?;
+
+        let session_name = session.name.clone().unwrap_or_default();
+        let new_chat_id = uuid::Uuid::new_v4().to_string();
+
+        // Create a new chat row linked to this session.
+        self.store.create_chat_for_session(
+            &new_chat_id,
+            &session_name,
+            "New Chat",
+            user_id,
+        )?;
+
+        // Point the session to the new chat.
+        self.store.set_session_active_chat_id(session_id, &new_chat_id)?;
+
+        // Reset conversation-scoped counters; preserve session-level preferences.
+        self.store.reset_session_counters(session_id)?;
+
+        // Update cache.
+        if let Ok(mut cache) = self.chat_ids.write() {
+            cache.insert(session_id.to_string(), new_chat_id.clone());
+        }
+
+        Ok(new_chat_id)
+    }
+
+    /// Reset a session by rotating to a new conversation.
+    /// Old messages are preserved. Returns the new chat_id.
+    /// Carries forward the user_id from the current active chat so the new chat
+    /// remains discoverable by get_companion_chat_by_user().
+    pub fn reset(&self, session_id: &str) -> Result<String, NeboError> {
+        let current_chat_id = self.resolve_chat_id(session_id);
+        let user_id = self.store.get_chat(&current_chat_id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.user_id);
+        self.rotate_chat(session_id, user_id.as_deref())
+    }
+
+    /// Clear messages within the current conversation (used by compact).
+    /// Unlike reset/rotate, this stays in the same conversation.
+    pub fn clear_current_messages(&self, session_id: &str) -> Result<(), NeboError> {
         let chat_id = self.resolve_chat_id(session_id);
         self.store.delete_chat_messages_by_chat_id(&chat_id)?;
-        self.store.reset_session(session_id)?;
+        self.store.reset_session_counters(session_id)?;
         Ok(())
     }
 

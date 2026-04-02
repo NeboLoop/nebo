@@ -323,6 +323,39 @@ impl Store {
         .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(())
     }
+
+    /// Point a session to a different active chat (conversation).
+    pub fn set_session_active_chat_id(&self, id: &str, chat_id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE sessions SET active_chat_id = ?2, updated_at = unixepoch() WHERE id = ?1",
+            params![id, chat_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Reset conversation-scoped counters without clearing session-level preferences.
+    /// Preserves model_override, provider_override, auth_profile_override, send_policy,
+    /// custom_label, verbose_level — only clears per-conversation state.
+    pub fn reset_session_counters(&self, id: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "UPDATE sessions SET
+                message_count = 0,
+                token_count = 0,
+                summary = NULL,
+                last_compacted_at = NULL,
+                last_summarized_count = 0,
+                active_task = NULL,
+                work_tasks = NULL,
+                updated_at = unixepoch()
+             WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
@@ -352,6 +385,7 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         active_task: row.get("active_task")?,
         last_summarized_count: row.get("last_summarized_count")?,
         work_tasks: row.get("work_tasks")?,
+        active_chat_id: row.get("active_chat_id")?,
     })
 }
 
