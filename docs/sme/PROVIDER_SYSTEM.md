@@ -44,7 +44,7 @@ This document is the authoritative reference for the Nebo AI provider system as 
 ├──────────────────────────────────────────────────────────────────────┤
 │                    Model Selector (crates/agent/)                     │
 │  classify task → route by config → check usable → fallback chain     │
-│  fuzzy resolution: "sonnet" → "anthropic/claude-sonnet-4-5"          │
+│  fuzzy resolution: "sonnet" → "anthropic/claude-sonnet-4-6"          │
 ├──────────────────────────────────────────────────────────────────────┤
 │                    Provider Trait (crates/ai/)                        │
 │  stream(&ChatRequest) → Result<EventReceiver, ProviderError>         │
@@ -70,13 +70,16 @@ ChatRequest
 
 ### 1.3 Provider Priority Order
 
+Provider ordering in the `providers` vec (used by runner fallback logic):
+
 ```
-1. Cloud APIs (Anthropic, OpenAI, Gemini via API keys)
-2. Janus (NeboLoop gateway -- no user API keys needed)
-3. Ollama (if installed locally)
-4. CLI providers (claude, codex, gemini binaries)
-5. Local models (GGUF -- always-available fallback)
+1. Direct API providers (Anthropic, OpenAI, Gemini, DeepSeek, Ollama via API keys)
+2. CLI providers (claude, codex, gemini binaries -- use user's own subscription)
+3. Janus gateway (NeboLoop -- consumes Nebo credits, always LAST)
+4. Local models (GGUF -- always-available fallback, feature-gated)
 ```
+
+**Rationale:** CLI providers don't burn Nebo credits (they use the user's existing subscription), so they take priority over Janus. Direct API keys take priority over everything.
 
 ---
 
@@ -98,6 +101,12 @@ pub trait Provider: Send + Sync {
     /// True for CLI providers that execute tools autonomously via MCP
     fn handles_tools(&self) -> bool { false }
 
+    /// Whether this provider supports images in tool result content blocks.
+    /// When true, the runner passes screenshot images directly to the model
+    /// instead of converting them to text via the sidecar vision model.
+    /// Returns true for Anthropic (which supports image blocks in tool_result).
+    fn supports_tool_result_images(&self) -> bool { false }
+
     /// Send a chat request and return a streaming event receiver
     async fn stream(&self, req: &ChatRequest) -> Result<EventReceiver, ProviderError>;
 }
@@ -114,11 +123,14 @@ pub trait ConnectionResetter {
 /// Track auth profile usage for billing
 pub trait ProfileTracker {
     fn record_usage(&self, input_tokens: i32, output_tokens: i32);
-    fn record_error(&self, cooldown: Option<i64>);
+    fn record_error(&self, cooldown: &str);  // e.g., "rate_limit:60s"
 }
 
 /// Wrapper that adds profile ID tracking to any Provider
-pub struct ProfiledProvider { ... }
+pub struct ProfiledProvider {
+    pub inner: Arc<dyn Provider>,
+    profile_id: String,
+}
 ```
 
 ### 2.3 ChatRequest
@@ -127,14 +139,17 @@ The universal request envelope sent to every provider:
 
 ```rust
 pub struct ChatRequest {
-    pub messages: Vec<Message>,        // Conversation history
-    pub tools: Vec<ToolDefinition>,    // Available tools/functions
-    pub max_tokens: i32,               // Max output tokens
-    pub temperature: f64,              // Sampling temperature
-    pub system: String,                // Dynamic system prompt
-    pub static_system: String,         // Static system (Anthropic cache control)
-    pub model: String,                 // Model ID (e.g., "claude-sonnet-4-5")
-    pub enable_thinking: bool,         // Extended thinking (Anthropic)
+    pub messages: Vec<Message>,                       // Conversation history
+    pub tools: Vec<ToolDefinition>,                   // Available tools/functions
+    pub max_tokens: i32,                              // Max output tokens
+    pub temperature: f64,                             // Sampling temperature
+    pub system: String,                               // Dynamic system prompt
+    pub static_system: String,                        // Static system (Anthropic legacy cache)
+    pub model: String,                                // Model ID (e.g., "claude-sonnet-4-6")
+    pub enable_thinking: bool,                        // Extended thinking (Anthropic)
+    pub metadata: Option<HashMap<String, String>>,    // Janus tool stickiness routing (echoed back)
+    pub cache_breakpoints: Vec<usize>,                // Byte offsets for Anthropic prompt caching
+    pub cancel_token: Option<CancellationToken>,      // Cooperative shutdown (CLI providers)
 }
 ```
 
@@ -167,19 +182,25 @@ pub struct StreamEvent {
     pub error: Option<String>,
     pub usage: Option<UsageInfo>,
     pub rate_limit: Option<RateLimitMeta>,
+    pub widgets: Option<serde_json::Value>,                 // UI widgets (ask_request)
+    pub provider_metadata: Option<HashMap<String, String>>, // Janus tool stickiness (on Done)
+    pub stop_reason: Option<String>,                        // "end_turn", "max_tokens", "tool_use"
 }
 
 pub enum StreamEventType {
-    Text,            // Incremental text output
-    ToolCall,        // Tool/function call request
-    ToolResult,      // Tool execution result
-    Error,           // Provider error
-    Done,            // Stream complete
-    Thinking,        // Extended thinking output (Anthropic)
-    Usage,           // Token usage report
-    RateLimit,       // Rate limit metadata
-    ApprovalRequest, // Tool approval request (CLI providers)
-    AskRequest,      // User input request (CLI providers)
+    Text,             // Incremental text output
+    ToolCall,         // Tool/function call request
+    ToolResult,       // Tool execution result
+    Error,            // Provider error
+    Done,             // Stream complete
+    Thinking,         // Extended thinking output (Anthropic)
+    Usage,            // Token usage report
+    RateLimit,        // Rate limit metadata
+    ApprovalRequest,  // Tool approval request (CLI providers)
+    AskRequest,       // User input request (CLI providers)
+    SubagentStart,    // Subagent execution started
+    SubagentProgress, // Subagent progress update
+    SubagentComplete, // Subagent execution finished
 }
 ```
 
@@ -218,6 +239,13 @@ pub struct RateLimitMeta {
     pub remaining_tokens: Option<u64>,
     pub reset_after_secs: Option<f64>,
     pub retry_after_secs: Option<u64>,
+    // Janus session/weekly rate limit windows
+    pub session_limit_tokens: Option<u64>,
+    pub session_remaining_tokens: Option<u64>,
+    pub session_reset_at: Option<String>,      // ISO8601 timestamp
+    pub weekly_limit_tokens: Option<u64>,
+    pub weekly_remaining_tokens: Option<u64>,
+    pub weekly_reset_at: Option<String>,       // ISO8601 timestamp
 }
 ```
 
@@ -225,7 +253,7 @@ pub struct RateLimitMeta {
 
 ```rust
 pub enum ProviderError {
-    Api { code: u16, message: String, retryable: bool },
+    Api { code: String, message: String, retryable: bool },
     ContextOverflow,
     RateLimit,
     Auth(String),
@@ -266,21 +294,27 @@ pub struct AnthropicProvider {
 | **Streaming** | Raw HTTP SSE via reqwest `bytes_stream()` |
 | **Vision** | Base64 image `ContentBlock::Image` in user messages |
 | **Tool calling** | `ContentBlock::ToolUse` (call) + `ContentBlock::ToolResult` (response) |
-| **Extended thinking** | `enable_thinking` flag → `thinking_delta` events in stream |
-| **Prompt caching** | `cache_control: "ephemeral"` on last 3 messages + `static_system` |
+| **Tool result images** | `supports_tool_result_images() = true` — images passed inline in tool results |
+| **Extended thinking** | `enable_thinking` flag → `thinking_delta` events (budget_tokens: 10000) |
+| **Prompt caching** | 3-tier: `cache_breakpoints` offsets, `static_system` fallback, or single-block |
+| **Message caching** | Last 3 messages get `cache_control: "ephemeral"` on their last content block |
+| **Max tokens** | Default: 8192; with thinking: 16384 |
 | **Rate limits** | `anthropic-ratelimit-{requests,tokens}-remaining` headers |
 
 ### 3.3 Message Compilation
 
 Anthropic has the most complex message building:
 
-1. **System prompt**: Up to 2 system blocks -- `static_system` (cacheable) and `system` (dynamic). Last block gets `cache_control: "ephemeral"`.
+1. **System prompt caching** (3-tier):
+   - **Primary:** `cache_breakpoints` (byte offsets into `system_prompt`) — splits prompt and marks prefix blocks with `cache_control: "ephemeral"`. The tail (dynamic suffix) gets no cache control.
+   - **Fallback 1:** `static_system` prefix — splits at static/dynamic boundary. Static prefix is cached, dynamic suffix is not.
+   - **Fallback 2:** Single block with `cache_control: "ephemeral"` (whole prompt cached).
 
-2. **User messages**: `ContentBlock::Text` or `ContentBlock::Image` (vision). Tool results go as `ContentBlock::ToolResult` with `tool_use_id` and optional `is_error`.
+2. **User messages**: `ContentBlock::Text` or `ContentBlock::Image` (vision). Tool results go as `ContentBlock::ToolResult` with `tool_use_id` and optional `is_error`. Tool results with `image_url` get multi-block content (text + image).
 
 3. **Assistant messages**: `ContentBlock::Text` for text, `ContentBlock::ToolUse` for tool calls. Only tool calls that have corresponding results are included (orphan filtering).
 
-4. **Cache control breakpoints**: The last 3 user/tool messages get `cache_control: "ephemeral"` to optimize prompt caching. The last tool definition also gets cache control.
+4. **Conversation caching**: The last content block of the last 3 messages gets `cache_control: "ephemeral"`. The last tool definition also gets cache control.
 
 ### 3.4 SSE Event Handling
 
@@ -382,16 +416,28 @@ Called by the runner on GOAWAY or persistent connection errors.
 - Assistant messages with empty content but tool_calls get content `" "` (Gemini backend compat)
 - Uses `async-openai` SDK types for request construction but raw reqwest for execution
 
-### 4.9 Rate Limit Headers
+### 4.9 Provider Metadata (Tool Stickiness)
+
+Janus includes `provider_metadata` in SSE stream data. The OpenAI provider extracts this and attaches it to the `StreamEvent::Done` event via `provider_metadata` field. On the next request, it's echoed back via `ChatRequest.metadata` → serialized as `"metadata"` in the JSON body.
+
+### 4.10 Rate Limit Headers
 
 ```
+# Standard OpenAI:
 x-ratelimit-remaining-requests
 x-ratelimit-remaining-tokens
 x-ratelimit-reset-requests
-# Janus additional:
+# Janus session window:
+x-ratelimit-session-limit-tokens
 x-ratelimit-session-remaining-tokens
+x-ratelimit-session-reset              # ISO8601 timestamp
+# Janus weekly window:
+x-ratelimit-weekly-limit-tokens
 x-ratelimit-weekly-remaining-tokens
+x-ratelimit-weekly-reset               # ISO8601 timestamp
 ```
+
+The `remaining_tokens` field in `RateLimitMeta` uses `session_remaining` if available (tighter constraint), otherwise falls back to standard `remaining_tokens`.
 
 ---
 
@@ -545,9 +591,9 @@ Since llama.cpp has no native function calling, tools are handled via prompt inj
 
 ```rust
 pub struct CLIProvider {
-    name: String,           // "claude", "gemini", "codex"
-    command: String,        // Binary path
-    args: Vec<String>,      // CLI arguments
+    name: String,           // "claude-code", "gemini-cli", "codex-cli"
+    command: String,        // Binary name: "claude", "gemini", "codex"
+    args: Vec<String>,      // CLI arguments (built by constructors)
 }
 ```
 
@@ -558,31 +604,37 @@ pub struct CLIProvider {
 ### 8.3 Claude Code Integration
 
 ```rust
-CLIProvider::new_claude_code(mcp_port: u16) -> Self
+CLIProvider::new_claude_code(max_turns: u32, server_port: u16) -> Self
 ```
 
-- Connects to Nebo agent MCP server at `http://localhost:{PORT}/agent/mcp`
+- Connects to Nebo agent MCP server at `http://localhost:{server_port}/agent/mcp`
 - Disables ALL built-in Claude Code tools (`--tools ""`)
 - Only allows `mcp__nebo-agent__*` tools (Nebo's tool set)
-- Configurable max turns via `--max-turns`
+- Configurable max turns via `--max-turns` (0 = unlimited)
 - Effort levels: `"high"` (thinking enabled), `"low"` (disabled)
-- Strict MCP config enabled
+- Strict MCP config enabled (`--strict-mcp-config`)
+- Output format: `--output-format stream-json --include-partial-messages`
+- Cancellation: listens to `req.cancel_token`, kills child process group on cancel
 
 ### 8.4 Other CLI Wrappers
 
 ```rust
-CLIProvider::new_gemini_cli() -> Self   // Wraps `gemini` binary
-CLIProvider::new_codex_cli() -> Self    // Wraps `codex` binary
+CLIProvider::new_gemini_cli() -> Self   // Wraps `gemini` binary, reads from stdin
+CLIProvider::new_codex_cli() -> Self    // Wraps `codex` binary with --full-auto
 ```
 
 ### 8.5 Stream Processing
 
 - Reads stdout line-by-line (stream-json format)
-- Intercepts `content_block` events for tool tracking
-- Accumulates tool input JSON
+- Unwraps `stream_event` envelope if present
+- Intercepts `content_block_start/delta/stop` events for tool tracking
+- Accumulates tool input JSON via `input_json_delta`
 - Emits `tool_call` events on `content_block_stop`
-- Handles thinking events (skipped if `!enable_thinking`)
-- Process group setup on Unix for clean shutdown
+- Handles `text_delta` → StreamEvent::text(), `thinking_delta` → StreamEvent::thinking()
+- Handles `result` type: subtype "success" or "error_max_turns" → done
+- Handles `error` type → StreamEvent::error()
+- Process group setup on Unix for clean shutdown (SIGTERM → SIGKILL)
+- Windows: `CREATE_NO_WINDOW` flag to suppress console flash
 
 ### 8.6 Prompt Building
 
@@ -693,14 +745,14 @@ pub struct ModelSelector {
 
 ### 11.2 Task Classification
 
-Messages are classified by keyword detection:
+Messages are classified by keyword detection on the last user message:
 
 | Task Type | Keywords |
 |-----------|----------|
-| **Vision** | `data:image/`, image references |
-| **Audio** | `data:audio/`, audio references |
-| **Reasoning** | think through, analyze, prove, step by step, mathematical proof, logical reasoning, evaluate, compare and contrast, pros and cons, trade-offs |
-| **Code** | function, implement, refactor, debug, python, javascript, typescript, react, rust, golang, java, swift, kotlin, sql, api, endpoint, database, algorithm |
+| **Vision** | `data:image/`, `"type":"image"` references |
+| **Audio** | `data:audio/`, `"type":"audio"` references |
+| **Reasoning** | think through, analyze, prove, step by step, mathematical proof, logical reasoning, derive, theorem, hypothesis, contradict, paradox, evaluate the, compare and contrast, pros and cons, trade-offs, implications |
+| **Code** | code, function, implement, refactor, debug, python, javascript, typescript, react, rust, golang, java, swift, kotlin, sql, api, endpoint, database, algorithm, compile, syntax, variable, class |
 | **General** | Default (no keyword match) |
 
 ### 11.3 Selection Algorithm (`select_for_task()`)
@@ -710,39 +762,45 @@ Messages are classified by keyword detection:
 2. Look up task_routing[task_type] (e.g., "anthropic/claude-opus-4-6" for reasoning)
 3. Check usability:
    a. Provider is loaded (has a running Provider instance)
-   b. Model not excluded by mark_failed()
+   b. Model not in exclusion list
    c. Model not in cooldown (exponential backoff)
 4. If not usable, try fallbacks for that task type
 5. Fall back to task_routing["general"]
 6. Fall back to defaults.primary
-7. Last resort: any active model from any loaded provider
+7. Any active non-gateway model from loaded providers
+8. If CLI provider is loaded → return empty string (runner defers to index 0 = CLI)
+9. True last resort: any gateway (Janus) model
+10. Final fallback: default_model regardless of usability
 ```
 
 ### 11.4 Fuzzy Resolution
 
-User-friendly aliases resolve to full model IDs:
+User-friendly aliases resolve to full model IDs (examples from current catalog):
 
 ```
-"sonnet"   → "anthropic/claude-sonnet-4-5-20250929"
+"sonnet"   → "anthropic/claude-sonnet-4-6"
 "opus"     → "anthropic/claude-opus-4-6"
 "haiku"    → "anthropic/claude-haiku-4-5-20251001"
-"gpt"      → "openai/gpt-5.3"
+"gpt"      → "openai/gpt-5.4"
 ```
 
-Resolution uses the configured models in `ModelsConfig.providers`.
+Resolution uses `FuzzyMatcher` (in `crates/agent/src/fuzzy.rs`) built from `ModelsConfig.providers` and user-defined aliases.
 
 ### 11.5 Failure Tracking
 
 ```rust
 /// Mark a model as failed with exponential backoff
-fn mark_failed(&self, model_id: &str);
+pub fn mark_failed(&self, model_id: &str);
 // Backoff: 5s → 10s → 20s → 40s → ... → 1 hour max
 
-/// Check remaining cooldown duration
-fn get_cooldown_remaining(&self, model_id: &str) -> Option<Duration>;
+/// Check remaining cooldown duration (returns Duration::ZERO if not in cooldown)
+pub fn get_cooldown_remaining(&self, model_id: &str) -> Duration;
 
-/// Clear all cooldowns (called on provider reload)
-fn clear_failed(&self);
+/// Clear all failures and cooldowns
+pub fn clear_failed(&self);
+
+/// Rebuild fuzzy matcher (e.g., after provider reload)
+pub fn rebuild_fuzzy(&self, user_aliases: &HashMap<String, String>);
 ```
 
 ### 11.6 Lane Routing
@@ -769,11 +827,13 @@ Lane names are defined in `crates/types/src/constants.rs`: `main`, `events`, `su
 
 ```rust
 pub struct ModelsConfig {
-    pub providers: HashMap<String, Vec<ModelDef>>,  // Provider → models
-    pub defaults: Defaults,                          // Primary + fallbacks
-    pub task_routing: TaskRouting,                   // Task → model mapping
-    pub lane_routing: LaneRouting,                   // Lane → model mapping
-    pub cli_providers: Vec<CliProviderDef>,          // CLI tool definitions
+    pub version: String,                                   // "1.0"
+    pub providers: HashMap<String, Vec<ModelDef>>,         // Provider → models
+    pub defaults: Option<Defaults>,                        // Primary + fallbacks
+    pub task_routing: Option<TaskRouting>,                  // Task → model mapping
+    pub lane_routing: Option<LaneRouting>,                  // Lane → model mapping
+    pub aliases: Vec<ModelAlias>,                           // User-friendly name mappings
+    pub cli_providers: Vec<CliProviderDef>,                 // CLI tool definitions
 }
 ```
 
@@ -781,13 +841,14 @@ pub struct ModelsConfig {
 
 ```rust
 pub struct ModelDef {
-    pub id: String,                     // "claude-sonnet-4-5-20250929"
-    pub display_name: String,           // "Claude Sonnet 4.5"
-    pub context_window: i64,            // 200000
-    pub capabilities: Vec<String>,      // ["vision", "tools", "reasoning", "thinking"]
+    pub id: String,                     // "claude-sonnet-4-6"
+    pub display_name: String,           // "Claude Sonnet 4.6"
+    pub context_window: i64,            // 1000000
+    pub capabilities: Vec<String>,      // ["vision", "tools", "streaming", "code", "reasoning", "thinking"]
     pub kind: Vec<String>,              // ["smart", "fast", "code"]
     pub preferred: bool,                // User preference flag
     pub pricing: Option<ModelPricing>,  // input/output/cachedInput per million tokens
+    pub active: Option<bool>,           // Active by default (defaults to true if None)
 }
 
 pub struct ModelPricing {
@@ -795,13 +856,18 @@ pub struct ModelPricing {
     pub output: f64,
     pub cached_input: f64,
 }
+
+pub struct ModelAlias {
+    pub alias: String,      // e.g., "sonnet"
+    pub model_id: String,   // e.g., "claude-sonnet-4-6"
+}
 ```
 
 ### 12.3 Defaults and Routing
 
 ```rust
 pub struct Defaults {
-    pub primary: String,            // "anthropic/claude-sonnet-4-5"
+    pub primary: String,            // "anthropic/claude-sonnet-4-6"
     pub fallbacks: Vec<String>,     // Ordered fallback chain
 }
 
@@ -813,6 +879,13 @@ pub struct TaskRouting {
     pub general: String,
     pub fallbacks: HashMap<String, Vec<String>>,  // Per-task fallbacks
 }
+
+pub struct LaneRouting {
+    pub heartbeat: String,
+    pub events: String,
+    pub comm: String,
+    pub subagent: String,
+}
 ```
 
 ### 12.4 Embedded models.yaml
@@ -823,33 +896,39 @@ The default model catalog is embedded in the binary at `crates/config/src/models
 
 | Provider | Models |
 |----------|--------|
-| `anthropic` | Opus 4.6, Sonnet 4.5, Haiku 4.5 |
-| `openai` | GPT-5.3, GPT-5.2, GPT-5.2-Pro, GPT-5-Nano |
-| `google` | Gemini 3 Flash, Gemini 3 Pro, Gemini 3 DeepThink |
-| `deepseek` | DeepSeek Chat, DeepSeek Reasoner |
-| `janus` | Janus (server-side routing), text-embedding-small, text-embedding-large |
-| `ollama` | Qwen3, Mistral, DeepSeek R1 |
+| `anthropic` | Opus 4.6 (1M ctx), Sonnet 4.6 (1M ctx), Haiku 4.5 (200K ctx) |
+| `openai` | GPT-5.4 (400K ctx), GPT-5.4 Mini (400K ctx), GPT-5.4 Nano (128K ctx), Codex (256K ctx) |
+| `google` | Gemini 3.1 Pro (1M ctx), Gemini 3 Flash (1M ctx), Gemini 2.5 Flash (1M ctx) |
+| `deepseek` | DeepSeek Chat (128K ctx), DeepSeek Reasoner (128K ctx) |
+| `janus` | Nebo 1 (200K ctx, server-side routing), Nebo Embeddings Small/Large (8K ctx) |
+| `ollama` | Auto-discovered at runtime (not listed in YAML) |
 
 **Default task routing:**
 
 ```yaml
+defaults:
+  primary: anthropic/claude-sonnet-4-6
+  fallbacks: [anthropic/claude-haiku-4-5-20251001]
+
 task_routing:
-  vision: "anthropic/claude-sonnet-4-5-20250929"
-  audio: "openai/gpt-5.2"
-  reasoning: "anthropic/claude-opus-4-6"
-  code: "anthropic/claude-sonnet-4-5-20250929"
-  general: "anthropic/claude-sonnet-4-5-20250929"
+  vision: anthropic/claude-sonnet-4-6
+  audio: openai/gpt-5.4
+  reasoning: anthropic/claude-opus-4-6
+  code: anthropic/claude-sonnet-4-6
+  general: anthropic/claude-sonnet-4-6
 ```
 
 ### 12.5 CLI Provider Definitions
 
 ```rust
 pub struct CliProviderDef {
-    pub id: String,         // "claude", "codex", "gemini"
-    pub command: String,    // Binary name
-    pub enabled: bool,      // Active by default
-    pub max_turns: u32,     // Max agentic turns
-    pub install_hint: String, // e.g., "brew install claude-code"
+    pub id: String,              // "claude-code", "codex-cli", "gemini-cli"
+    pub display_name: String,    // "Claude Agent", "OpenAI Codex CLI", "Gemini CLI"
+    pub command: String,         // Binary name: "claude", "codex", "gemini"
+    pub install_hint: String,    // e.g., "brew install claude-code"
+    pub models: Vec<String>,     // Available models for this CLI
+    pub default_model: String,   // Default model selection
+    pub active: Option<bool>,    // Active (defaults to false if None)
 }
 ```
 
@@ -965,9 +1044,9 @@ CREATE TABLE provider_models (
 
 ```
 1. Load auth_profiles from DB
-2. Load models.yaml (embedded + user override)
+2. Load models.yaml (embedded + user override, merge missing sections)
 3. seed_models_from_catalog() → upsert provider_models table
-4. build_providers() → create Arc<dyn Provider> instances:
+4. reload_providers() → create Arc<dyn Provider> instances:
    - anthropic → AnthropicProvider
    - openai    → OpenAIProvider
    - deepseek  → OpenAIProvider(base_url=deepseek, provider_id="deepseek")
@@ -975,19 +1054,20 @@ CREATE TABLE provider_models (
    - ollama    → OllamaProvider
    - neboloop + metadata.janus_provider="true"
               → OpenAIProvider(base_url=janus, provider_id="janus", bot_id)
-5. Detect CLI providers (PATH scan for claude, codex, gemini)
-6. Create ModelSelector with routing config
-7. Create Runner with providers + selector
+5. Live-detect CLI providers (PATH scan for claude, codex, gemini)
+6. Order: [direct API providers] + [CLI providers] + [Janus gateway]
+7. Create ModelSelector with routing config
+8. Create Runner with providers + selector
 ```
 
-### 14.2 build_providers() Provider Mapping
+### 14.2 reload_providers() Provider Mapping
 
 ```rust
 match profile.provider.as_str() {
     "anthropic" => AnthropicProvider::new(api_key, model),
     "openai"    => OpenAIProvider::new(api_key, model),
     "deepseek"  => {
-        let mut p = OpenAIProvider::with_base_url(api_key, model, "https://api.deepseek.com/v1");
+        let mut p = OpenAIProvider::with_base_url(api_key, model, base_url_or_default);
         p.set_provider_id("deepseek");
         p
     },
@@ -995,12 +1075,16 @@ match profile.provider.as_str() {
     "ollama"    => OllamaProvider::new(base_url, model),
     "neboloop"  => {
         // Only if metadata contains janus_provider: "true"
-        let mut p = OpenAIProvider::with_base_url(jwt, model, format!("{}/v1", janus_url));
+        // Skip if no active chat-capable Janus models in catalog
+        let api_key = if profile.api_key.is_empty() { bot_id.clone() } else { profile.api_key };
+        let mut p = OpenAIProvider::with_base_url(api_key, model, format!("{}/v1", janus_url));
         p.set_provider_id("janus");
-        p.set_bot_id(read_bot_id());
-        p
+        p.set_bot_id(bot_id);
+        p  // → gateway_providers (appended LAST)
     },
 }
+// CLI providers: live-detected via config::detect_all_clis()
+// Final order: [direct API] + [CLI] + [Janus]
 ```
 
 ### 14.3 Hot Reload on Auth Profile Changes
@@ -1009,14 +1093,17 @@ match profile.provider.as_str() {
 1. User creates/updates/deletes auth profile via REST API
 2. Handler updates database
 3. Handler calls reload_providers(state: &AppState):
-   a. Re-reads auth_profiles from DB
-   b. Calls build_providers() with new profiles
-   c. Calls state.runner.reload_providers(providers).await:
+   a. Re-reads auth_profiles from DB (list_auth_profiles)
+   b. Builds providers from profiles (match on provider type)
+   c. Live-detects CLI providers (detect_all_clis)
+   d. Orders: direct API → CLI → Janus
+   e. Calls state.runner.reload_providers(providers).await:
       - Swaps providers: *self.providers.write().await = providers
       - Updates selector: self.selector.set_loaded_providers(provider_ids)
-      - Rebuilds fuzzy matcher: self.selector.rebuild_fuzzy()
-      - Clears cooldowns: self.selector.clear_failed()
+      - Rebuilds fuzzy matcher: self.selector.rebuild_fuzzy(&HashMap::new())
 ```
+
+**Note:** `clear_failed()` is NOT called during reload — cooldowns persist across reloads.
 
 ### 14.4 Runner Provider Management
 
@@ -1029,10 +1116,10 @@ pub struct Runner {
 
 impl Runner {
     pub async fn reload_providers(&self, providers: Vec<Arc<dyn Provider>>) {
+        let loaded_ids: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
         *self.providers.write().await = providers;
-        let ids: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
-        self.selector.set_loaded_providers(ids);
-        self.selector.rebuild_fuzzy();
+        self.selector.set_loaded_providers(loaded_ids);
+        self.selector.rebuild_fuzzy(&HashMap::new());
     }
 }
 ```
@@ -1059,8 +1146,9 @@ pub fn classify_error_reason(err: &ProviderError) -> &str {
 
 /// Check if error is a network-level transient error (safe to retry)
 pub fn is_transient_error(err: &ProviderError) -> bool {
-    // Stream error, connection reset, broken pipe
-    // TLS handshake, timeout, DNS resolution
+    // Only matches Stream/Request variants. Keywords:
+    // stream error, connection reset, connection refused, broken pipe,
+    // eof, tls handshake, timeout, no such host
 }
 
 /// Check if context window was exceeded
@@ -1070,7 +1158,8 @@ pub fn is_context_overflow(err: &ProviderError) -> bool {
 
 /// Check if message role ordering is invalid
 pub fn is_role_ordering_error(err: &ProviderError) -> bool {
-    // "roles must alternate"
+    // "roles must alternate", "incorrect role information",
+    // "expected alternating", "must be followed by"
 }
 ```
 
@@ -1125,7 +1214,7 @@ Exponential backoff per model in `ModelSelector`:
 Maximum:      1 hour
 ```
 
-Cooldowns are cleared on `reload_providers()`.
+Cooldowns are NOT automatically cleared on `reload_providers()` — they persist until they expire or `clear_failed()` is called explicitly.
 
 ---
 
@@ -1164,10 +1253,13 @@ Cooldowns are cleared on `reload_providers()`.
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | `GET` | `/api/v1/models` | Model catalog + routing config + CLI statuses |
-| `PUT` | `/api/v1/models/{provider}/{modelId}` | Toggle model active/preferred |
+| `PUT` | `/api/v1/models/{provider}/{modelId}` | Toggle model active/preferred (Janus cascade) |
 | `PUT` | `/api/v1/models/config` | Update defaults (primary + fallbacks) |
 | `PUT` | `/api/v1/models/task-routing` | Update task routing + lane routing |
 | `PUT` | `/api/v1/models/cli/{cliId}` | Enable/disable CLI provider |
+| `GET` | `/api/v1/local-models/status` | Ollama availability + installed models |
+
+**Janus cascade rule:** When the last chat-capable Janus model is disabled, ALL Janus models (including embeddings) are auto-disabled. On `reload_providers()`, Janus provider is skipped if no active chat models remain.
 
 **GET /api/v1/models response:**
 
@@ -1178,17 +1270,26 @@ Cooldowns are cleared on `reload_providers()`.
     "openai": [...]
   },
   "taskRouting": {
-    "vision": "anthropic/claude-sonnet-4-5-20250929",
-    "reasoning": "anthropic/claude-opus-4-6"
+    "vision": "anthropic/claude-sonnet-4-6",
+    "reasoning": "anthropic/claude-opus-4-6",
+    "code": "anthropic/claude-sonnet-4-6",
+    "general": "anthropic/claude-sonnet-4-6",
+    "audio": "openai/gpt-5.4",
+    "fallbacks": { "vision": ["anthropic/claude-opus-4-6", "openai/gpt-5.4"], ... }
   },
   "laneRouting": { "heartbeat": "janus", "events": "janus" },
-  "aliases": [{ "alias": "sonnet", "modelId": "claude-sonnet-4-5" }],
+  "aliases": [{ "alias": "sonnet", "modelId": "claude-sonnet-4-6" }],
+  "availableCLIs": { "claude": true, "codex": false, "gemini": false },
   "cliStatuses": {
-    "claude": { "installed": true, "authenticated": true },
-    "codex": { "installed": false },
-    "gemini": { "installed": false }
+    "claude": { "installed": true, "authenticated": true, "version": "..." },
+    "codex": { "installed": false, "authenticated": false, "version": null },
+    "gemini": { "installed": false, "authenticated": false, "version": null }
   },
-  "cliProviders": [...]
+  "cliProviders": [
+    { "id": "claude-code", "displayName": "Claude Agent", "command": "claude",
+      "installHint": "brew install claude-code", "models": ["opus","sonnet","haiku"],
+      "defaultModel": "opus", "active": false }
+  ]
 }
 ```
 
@@ -1227,7 +1328,8 @@ Cooldowns are cleared on `reload_providers()`.
 
 | File | Purpose |
 |------|---------|
-| `crates/agent/src/selector.rs` | ModelSelector: task classification, routing, fuzzy resolution, cooldowns |
+| `crates/agent/src/selector.rs` | ModelSelector: task classification, routing, cooldowns |
+| `crates/agent/src/fuzzy.rs` | FuzzyMatcher: alias resolution ("sonnet" → full model ID) |
 | `crates/agent/src/runner.rs` | Runner: provider management, retry loop, auto-continuation |
 
 ### Configuration
@@ -1263,4 +1365,4 @@ Cooldowns are cleared on `reload_providers()`.
 
 ---
 
-*Generated: 2026-03-06*
+*Generated: 2026-03-06 | Validated: 2026-04-02*
