@@ -44,7 +44,7 @@ pub struct PluginManifest {
     /// Publisher name.
     #[serde(default)]
     pub author: String,
-    /// Platform-specific binary entries keyed by platform key (e.g., "macos-arm64").
+    /// Platform-specific binary entries keyed by platform key (e.g., "darwin-arm64").
     pub platforms: HashMap<String, PlatformBinary>,
     /// ED25519 signing key ID used to sign binaries.
     #[serde(default)]
@@ -55,6 +55,9 @@ pub struct PluginManifest {
     /// Optional authentication configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<PluginAuth>,
+    /// Optional event capabilities — events this plugin can produce via watch processes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events: Option<Vec<PluginEventDef>>,
 }
 
 /// Authentication configuration for a plugin binary.
@@ -93,6 +96,29 @@ pub struct PluginAuthCommands {
     /// Subcommand to clear credentials (e.g., "auth logout").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logout: Option<String>,
+}
+
+/// An event type that a plugin can produce via a long-running watch process.
+///
+/// Plugins that monitor external services (e.g., Gmail for new emails) declare
+/// their event types here. Each event has a name, the CLI command to start the
+/// watcher, and whether the watcher multiplexes multiple event types on stdout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginEventDef {
+    /// Event name, e.g. "email.new". Prefixed with plugin slug at runtime → "gws.email.new".
+    pub name: String,
+    /// Human-readable description of what triggers this event.
+    #[serde(default)]
+    pub description: String,
+    /// CLI arguments passed to the plugin binary to start the watcher
+    /// (e.g. "gmail +watch --format ndjson"). Supports `{{key}}` template
+    /// substitution from agent input values.
+    pub command: String,
+    /// If true, the watcher process may output lines with an `"event"` field
+    /// to multiplex multiple event types. Default: false (single event type).
+    #[serde(default)]
+    pub multiplexed: bool,
 }
 
 /// Binary artifact for a specific platform.
@@ -835,6 +861,18 @@ impl PluginStore {
         Some((binary_path, auth))
     }
 
+    /// Get event definitions for a plugin, if declared in its manifest.
+    pub fn get_events(&self, slug: &str) -> Option<Vec<PluginEventDef>> {
+        let manifest = self.get_manifest(slug)?;
+        manifest.events
+    }
+
+    /// Look up a specific event definition by plugin slug and event name.
+    pub fn resolve_event(&self, slug: &str, event_name: &str) -> Option<PluginEventDef> {
+        let events = self.get_events(slug)?;
+        events.into_iter().find(|e| e.name == event_name)
+    }
+
     /// Find a binary in a version directory by reading plugin.json or scanning for executables.
     fn find_binary_in_version_dir(&self, version_dir: &Path) -> Option<PathBuf> {
         // Try plugin.json first
@@ -1142,6 +1180,7 @@ mod tests {
             signing_key_id: "key-1".into(),
             env_var: String::new(),
             auth: None,
+            events: None,
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -1150,6 +1189,7 @@ mod tests {
         assert_eq!(parsed.version, "1.2.0");
         assert!(parsed.platforms.contains_key("darwin-arm64"));
         assert!(parsed.auth.is_none());
+        assert!(parsed.events.is_none());
     }
 
     #[test]
@@ -1198,5 +1238,73 @@ mod tests {
 
         let parsed: PluginManifest = serde_json::from_str(json).unwrap();
         assert!(parsed.auth.is_none());
+        assert!(parsed.events.is_none());
+    }
+
+    #[test]
+    fn test_manifest_with_events() {
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "gws",
+            "name": "Google Workspace",
+            "version": "1.3.0",
+            "platforms": {},
+            "events": [
+                {
+                    "name": "email.new",
+                    "description": "Fires when a new email arrives",
+                    "command": "gmail +watch --format ndjson"
+                },
+                {
+                    "name": "calendar.event",
+                    "description": "Calendar event changes",
+                    "command": "calendar +watch --format ndjson",
+                    "multiplexed": true
+                }
+            ]
+        }"#;
+
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        let events = parsed.events.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].name, "email.new");
+        assert_eq!(events[0].command, "gmail +watch --format ndjson");
+        assert!(!events[0].multiplexed);
+        assert_eq!(events[1].name, "calendar.event");
+        assert!(events[1].multiplexed);
+    }
+
+    #[test]
+    fn test_manifest_without_events_backward_compat() {
+        // Existing manifests without events field should deserialize fine
+        let json = r#"{
+            "id": "uuid-1234",
+            "slug": "gws",
+            "name": "gws",
+            "version": "0.22.3",
+            "platforms": {},
+            "auth": {
+                "type": "oauth_cli",
+                "commands": { "login": "auth login" },
+                "label": "Google"
+            }
+        }"#;
+
+        let parsed: PluginManifest = serde_json::from_str(json).unwrap();
+        assert!(parsed.auth.is_some());
+        assert!(parsed.events.is_none());
+    }
+
+    #[test]
+    fn test_event_def_serde_defaults() {
+        let json = r#"{
+            "name": "email.new",
+            "command": "gmail +watch"
+        }"#;
+        let event: PluginEventDef = serde_json::from_str(json).unwrap();
+        assert_eq!(event.name, "email.new");
+        assert_eq!(event.command, "gmail +watch");
+        assert!(event.description.is_empty());
+        assert!(!event.multiplexed);
     }
 }

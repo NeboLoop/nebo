@@ -15,6 +15,7 @@ use tracing::{debug, error, info, warn};
 
 use db::Store;
 use napp::plugin::PluginStore;
+use tools::events::EventBus;
 use tools::workflows::WorkflowManager;
 use workflow::events::{EventDispatcher, EventSubscription};
 
@@ -26,6 +27,7 @@ pub struct AgentWorker {
     event_dispatcher: Arc<EventDispatcher>,
     workflow_manager: Arc<dyn WorkflowManager>,
     plugin_store: Arc<PluginStore>,
+    event_bus: EventBus,
 }
 
 impl AgentWorker {
@@ -37,6 +39,7 @@ impl AgentWorker {
         workflow_manager: Arc<dyn WorkflowManager>,
         event_dispatcher: Arc<EventDispatcher>,
         plugin_store: Arc<PluginStore>,
+        event_bus: EventBus,
     ) -> Self {
         let cancel = CancellationToken::new();
 
@@ -44,7 +47,7 @@ impl AgentWorker {
             Ok(b) => b,
             Err(e) => {
                 warn!(agent = %agent_id, error = %e, "failed to load agent workflow bindings");
-                return Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store };
+                return Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store, event_bus };
             }
         };
 
@@ -203,7 +206,7 @@ impl AgentWorker {
                 }
                 "watch" => {
                     // Parse watch config from trigger_config JSON
-                    let watch_cfg: WatchTriggerConfig = match serde_json::from_str(&binding.trigger_config) {
+                    let mut watch_cfg: WatchTriggerConfig = match serde_json::from_str(&binding.trigger_config) {
                         Ok(c) => c,
                         Err(e) => {
                             warn!(
@@ -214,6 +217,36 @@ impl AgentWorker {
                             );
                             continue;
                         }
+                    };
+
+                    // If event is specified, resolve command from plugin manifest
+                    let auto_emit: Option<(String, bool)> = if let Some(ref event_name) = watch_cfg.event {
+                        match plugin_store.resolve_event(&watch_cfg.plugin, event_name) {
+                            Some(event_def) => {
+                                if watch_cfg.command.is_empty() {
+                                    watch_cfg.command = event_def.command.clone();
+                                }
+                                let multiplexed = watch_cfg.multiplexed || event_def.multiplexed;
+                                let source = format!("{}.{}", watch_cfg.plugin, event_name);
+                                Some((source, multiplexed))
+                            }
+                            None => {
+                                warn!(
+                                    agent = %agent_id,
+                                    binding = %binding.binding_name,
+                                    plugin = %watch_cfg.plugin,
+                                    event = %event_name,
+                                    "plugin event not found in manifest, falling back to explicit command"
+                                );
+                                if watch_cfg.command.is_empty() {
+                                    warn!(agent = %agent_id, binding = %binding.binding_name, "no command and no event definition, skipping");
+                                    continue;
+                                }
+                                None
+                            }
+                        }
+                    } else {
+                        None
                     };
 
                     // Resolve plugin binary
@@ -231,13 +264,15 @@ impl AgentWorker {
                     };
 
                     // Build inline definition JSON from agent config
-                    let def_json = match wf_binding {
-                        Some(wb) if wb.has_activities() => wb.to_workflow_json(&binding.binding_name),
-                        _ => {
-                            warn!(agent = %agent_id, binding = %binding.binding_name, "no inline activities found, skipping watch");
-                            continue;
-                        }
-                    };
+                    let def_json = wf_binding
+                        .filter(|wb| wb.has_activities())
+                        .map(|wb| wb.to_workflow_json(&binding.binding_name));
+
+                    // Skip only if no activities AND no auto-emit event
+                    if def_json.is_none() && auto_emit.is_none() {
+                        warn!(agent = %agent_id, binding = %binding.binding_name, "no inline activities and no event auto-emit, skipping watch");
+                        continue;
+                    }
 
                     let inputs: serde_json::Value = binding
                         .inputs
@@ -265,6 +300,7 @@ impl AgentWorker {
                     let bname = binding.binding_name.clone();
                     let ps = plugin_store.clone();
                     let watch_plugin = watch_cfg.plugin.clone();
+                    let bus = event_bus.clone();
 
                     tokio::spawn(watch_loop(
                         binary_path,
@@ -278,6 +314,8 @@ impl AgentWorker {
                         emit_source,
                         mgr,
                         token,
+                        auto_emit,
+                        bus,
                     ));
 
                     info!(
@@ -306,7 +344,7 @@ impl AgentWorker {
 
         info!(agent = %agent_id, name = %name, bindings = bindings.len(), "agent worker started");
 
-        Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store }
+        Self { agent_id, name, cancel, event_dispatcher, workflow_manager, plugin_store, event_bus }
     }
 
     /// Stop the worker: cancel all spawned tasks, running workflows, cron jobs and event subscriptions.
@@ -336,6 +374,7 @@ pub struct AgentWorkerRegistry {
     workflow_manager: Arc<dyn WorkflowManager>,
     event_dispatcher: Arc<EventDispatcher>,
     plugin_store: Arc<PluginStore>,
+    event_bus: EventBus,
 }
 
 impl AgentWorkerRegistry {
@@ -344,6 +383,7 @@ impl AgentWorkerRegistry {
         workflow_manager: Arc<dyn WorkflowManager>,
         event_dispatcher: Arc<EventDispatcher>,
         plugin_store: Arc<PluginStore>,
+        event_bus: EventBus,
     ) -> Self {
         Self {
             workers: RwLock::new(HashMap::new()),
@@ -351,6 +391,7 @@ impl AgentWorkerRegistry {
             workflow_manager,
             event_dispatcher,
             plugin_store,
+            event_bus,
         }
     }
 
@@ -371,6 +412,7 @@ impl AgentWorkerRegistry {
             self.workflow_manager.clone(),
             self.event_dispatcher.clone(),
             self.plugin_store.clone(),
+            self.event_bus.clone(),
         );
 
         self.workers.write().await.insert(agent_id.to_string(), worker);
@@ -458,7 +500,14 @@ fn parse_time_window(s: &str) -> Option<(chrono::NaiveTime, chrono::NaiveTime)> 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct WatchTriggerConfig {
     plugin: String,
+    #[serde(default)]
     command: String,
+    /// Plugin event name — when set, enables auto-emission and command resolution.
+    #[serde(default)]
+    event: Option<String>,
+    /// If true, NDJSON lines may contain an `"event"` field for multiplexing.
+    #[serde(default)]
+    multiplexed: bool,
     #[serde(default = "default_restart_delay")]
     restart_delay_secs: u64,
 }
@@ -483,6 +532,10 @@ fn substitute_inputs(template: &str, inputs: &serde_json::Value) -> String {
 /// Long-running loop that spawns a plugin watcher process, reads NDJSON lines
 /// from stdout, and fires `run_inline()` for each line received.
 ///
+/// When `auto_emit` is set, each NDJSON line is also emitted into the EventBus
+/// with the appropriate event source name. The workflow still runs if `def_json`
+/// is provided.
+///
 /// On process exit (not cancelled): waits with exponential backoff, then restarts.
 /// On cancel token: kills child process and breaks.
 async fn watch_loop(
@@ -490,13 +543,15 @@ async fn watch_loop(
     command: String,
     cfg: WatchTriggerConfig,
     plugin_store: Arc<PluginStore>,
-    def_json: String,
+    def_json: Option<String>,
     base_inputs: serde_json::Value,
     agent_id: String,
     binding_name: String,
     emit_source: Option<String>,
     workflow_manager: Arc<dyn WorkflowManager>,
     cancel: CancellationToken,
+    auto_emit: Option<(String, bool)>,
+    event_bus: EventBus,
 ) {
     let mut backoff_secs = cfg.restart_delay_secs;
     let max_backoff_secs = 300; // 5 minutes
@@ -631,36 +686,75 @@ async fn watch_loop(
                                 }
                             };
 
-                            // Merge base inputs with watch payload
-                            let mut run_inputs = base_inputs.clone();
-                            if let Some(obj) = run_inputs.as_object_mut() {
-                                obj.insert("_watch_payload".to_string(), payload);
-                                obj.insert("_watch_source".to_string(), serde_json::Value::String(cfg.plugin.clone()));
+                            // Auto-emit into EventBus if event-based watch
+                            if let Some((ref base_source, multiplexed)) = auto_emit {
+                                let (event_source, event_payload) = if multiplexed {
+                                    if let Some(event_name) = payload.get("event").and_then(|v| v.as_str()) {
+                                        let source = format!("{}.{}", cfg.plugin, event_name);
+                                        let mut cleaned = payload.clone();
+                                        if let Some(obj) = cleaned.as_object_mut() {
+                                            obj.remove("event");
+                                        }
+                                        (source, cleaned)
+                                    } else {
+                                        (base_source.clone(), payload.clone())
+                                    }
+                                } else {
+                                    (base_source.clone(), payload.clone())
+                                };
+
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+
+                                event_bus.emit(tools::events::Event {
+                                    source: event_source.clone(),
+                                    payload: event_payload,
+                                    origin: format!("plugin:{}:{}", cfg.plugin, binding_name),
+                                    timestamp,
+                                });
+
+                                debug!(
+                                    agent = %agent_id,
+                                    binding = %binding_name,
+                                    event_source = %event_source,
+                                    "auto-emitted plugin event"
+                                );
                             }
 
-                            match workflow_manager.run_inline(
-                                def_json.clone(),
-                                run_inputs,
-                                "watch",
-                                &agent_id,
-                                emit_source.clone(),
-                            ).await {
-                                Ok(run_id) => {
-                                    info!(
-                                        agent = %agent_id,
-                                        binding = %binding_name,
-                                        run_id = %run_id,
-                                        "watch triggered inline workflow"
-                                    );
+                            // Run inline workflow if activities are defined
+                            if let Some(ref def) = def_json {
+                                let mut run_inputs = base_inputs.clone();
+                                if let Some(obj) = run_inputs.as_object_mut() {
+                                    obj.insert("_watch_payload".to_string(), payload);
+                                    obj.insert("_watch_source".to_string(), serde_json::Value::String(cfg.plugin.clone()));
                                 }
-                                Err(e) => {
-                                    warn!(
-                                        agent = %agent_id,
-                                        binding = %binding_name,
-                                        error = %e,
-                                        "watch inline workflow run failed"
-                                    );
-                                    notify_crate::send("Nebo", &format!("{} failed: {}", binding_name, e));
+
+                                match workflow_manager.run_inline(
+                                    def.clone(),
+                                    run_inputs,
+                                    "watch",
+                                    &agent_id,
+                                    emit_source.clone(),
+                                ).await {
+                                    Ok(run_id) => {
+                                        info!(
+                                            agent = %agent_id,
+                                            binding = %binding_name,
+                                            run_id = %run_id,
+                                            "watch triggered inline workflow"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            agent = %agent_id,
+                                            binding = %binding_name,
+                                            error = %e,
+                                            "watch inline workflow run failed"
+                                        );
+                                        notify_crate::send("Nebo", &format!("{} failed: {}", binding_name, e));
+                                    }
                                 }
                             }
                         }
@@ -789,6 +883,8 @@ mod tests {
         let cfg: WatchTriggerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.plugin, "gws");
         assert_eq!(cfg.command, "gmail +watch");
+        assert!(cfg.event.is_none());
+        assert!(!cfg.multiplexed);
         assert_eq!(cfg.restart_delay_secs, 10);
     }
 
@@ -797,5 +893,25 @@ mod tests {
         let json = r#"{"plugin":"gws","command":"gmail +watch"}"#;
         let cfg: WatchTriggerConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.restart_delay_secs, 5);
+    }
+
+    #[test]
+    fn test_watch_trigger_config_with_event() {
+        let json = r#"{"plugin":"gws","event":"email.new","multiplexed":false}"#;
+        let cfg: WatchTriggerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.plugin, "gws");
+        assert_eq!(cfg.event.as_deref(), Some("email.new"));
+        assert!(cfg.command.is_empty());
+        assert!(!cfg.multiplexed);
+    }
+
+    #[test]
+    fn test_watch_trigger_config_backward_compat() {
+        // Existing configs without event/multiplexed fields should work
+        let json = r#"{"plugin":"gws","command":"gmail +watch","restart_delay_secs":5}"#;
+        let cfg: WatchTriggerConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.event.is_none());
+        assert!(!cfg.multiplexed);
+        assert_eq!(cfg.command, "gmail +watch");
     }
 }

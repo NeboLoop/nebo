@@ -350,7 +350,10 @@ impl PersonaTool {
                                     }
                                 }
                                 napp::agent::AgentTrigger::Event { sources } => format!("event({})", sources.join(", ")),
-                                napp::agent::AgentTrigger::Watch { plugin, command, .. } => format!("watch({}, {})", plugin, command),
+                                napp::agent::AgentTrigger::Watch { plugin, event, command, .. } => match event {
+                                    Some(ev) => format!("watch({}, event:{})", plugin, ev),
+                                    None => format!("watch({}, {})", plugin, command),
+                                },
                                 napp::agent::AgentTrigger::Manual => "manual".to_string(),
                             };
                             let desc = if wf.description.is_empty() { "" } else { &wf.description };
@@ -1243,13 +1246,16 @@ impl PersonaTool {
                     ("heartbeat", cfg)
                 }
                 napp::agent::AgentTrigger::Event { sources } => ("event", sources.join(",")),
-                napp::agent::AgentTrigger::Watch { plugin, command, restart_delay_secs } => {
-                    let cfg = serde_json::json!({
+                napp::agent::AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+                    let mut cfg = serde_json::json!({
                         "plugin": plugin,
                         "command": command,
                         "restart_delay_secs": restart_delay_secs
-                    }).to_string();
-                    ("watch", cfg)
+                    });
+                    if let Some(ev) = event {
+                        cfg["event"] = serde_json::json!(ev);
+                    }
+                    ("watch", cfg.to_string())
                 }
                 napp::agent::AgentTrigger::Manual => ("manual", String::new()),
             };
@@ -1502,13 +1508,16 @@ impl PersonaTool {
                 ("heartbeat".to_string(), config)
             }
             napp::agent::AgentTrigger::Event { sources } => ("event".to_string(), sources.join(",")),
-            napp::agent::AgentTrigger::Watch { plugin, command, restart_delay_secs } => {
-                let cfg = serde_json::json!({
+            napp::agent::AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+                let mut cfg = serde_json::json!({
                     "plugin": plugin,
                     "command": command,
                     "restart_delay_secs": restart_delay_secs
-                }).to_string();
-                ("watch".to_string(), cfg)
+                });
+                if let Some(ev) = event {
+                    cfg["event"] = serde_json::json!(ev);
+                }
+                ("watch".to_string(), cfg.to_string())
             }
             napp::agent::AgentTrigger::Manual => ("manual".to_string(), String::new()),
         }

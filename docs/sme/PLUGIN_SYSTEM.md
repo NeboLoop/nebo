@@ -13,23 +13,24 @@
 2. [Skills vs Plugins — Decision Rule](#2-skills-vs-plugins--decision-rule)
 3. [Architecture & Crate Placement](#3-architecture--crate-placement)
 4. [Plugin Types](#4-plugin-types)
-5. [PluginStore](#5-pluginstore)
-6. [SKILL.md Integration](#6-skillmd-integration)
-7. [Skill Loader Integration](#7-skill-loader-integration)
-8. [ExecuteTool Integration](#8-executetool-integration)
-9. [Code System (PLUG-XXXX-XXXX)](#9-code-system-plug-xxxx-xxxx)
-10. [Dependency Cascade](#10-dependency-cascade)
-11. [NeboLoop API](#11-neboloop-api)
-12. [AppState Wiring](#12-appstate-wiring)
-13. [Sandbox Policy](#13-sandbox-policy)
-14. [Storage Layout](#14-storage-layout)
-15. [Concurrency Model](#15-concurrency-model)
-16. [Platform Detection](#16-platform-detection)
-17. [Precedence Rule](#17-precedence-rule)
-18. [WebSocket Events](#18-websocket-events)
-19. [Edge Cases](#19-edge-cases)
-20. [Key Files](#20-key-files)
-21. [NeboLoop MCP Server — Plugin Tool](#21-neboloop-mcp-server--plugin-tool)
+5. [Plugin Events](#5-plugin-events)
+6. [PluginStore](#6-pluginstore)
+7. [SKILL.md Integration](#7-skillmd-integration)
+8. [Skill Loader Integration](#8-skill-loader-integration)
+9. [ExecuteTool Integration](#9-executetool-integration)
+10. [Code System (PLUG-XXXX-XXXX)](#10-code-system-plug-xxxx-xxxx)
+11. [Dependency Cascade](#11-dependency-cascade)
+12. [NeboLoop API](#12-neboloop-api)
+13. [AppState Wiring](#13-appstate-wiring)
+14. [Sandbox Policy](#14-sandbox-policy)
+15. [Storage Layout](#15-storage-layout)
+16. [Concurrency Model](#16-concurrency-model)
+17. [Platform Detection](#17-platform-detection)
+18. [Precedence Rule](#18-precedence-rule)
+19. [WebSocket Events](#19-websocket-events)
+20. [Edge Cases](#20-edge-cases)
+21. [Key Files](#21-key-files)
+22. [NeboLoop MCP Server — Plugin Tool](#22-neboloop-mcp-server--plugin-tool)
 
 ---
 
@@ -138,10 +139,11 @@ pub struct PluginManifest {
     pub version: String,                             // Semver version string
     pub description: String,                         // Brief description
     pub author: String,                              // Publisher name
-    pub platforms: HashMap<String, PlatformBinary>,   // "macos-arm64" → binary info
+    pub platforms: HashMap<String, PlatformBinary>,   // "darwin-arm64" → binary info
     pub signing_key_id: String,                      // ED25519 signing key ID
     pub env_var: String,                             // Custom env var name override (default: {SLUG}_BIN)
     pub auth: Option<PluginAuth>,                    // Optional authentication configuration
+    pub events: Option<Vec<PluginEventDef>>,         // Optional event declarations (see §5)
 }
 ```
 
@@ -220,7 +222,155 @@ pub struct PluginDependency {
 
 ---
 
-## 5. PluginStore
+## 5. Plugin Events
+
+Plugins can declare **event-producing capabilities** in their manifest. When an agent's watch trigger references a plugin event, NDJSON output from the watch process auto-emits into the EventBus — no intermediate workflow or explicit `emit` tool call needed.
+
+### PluginEventDef
+
+**Source:** `crates/napp/src/plugin.rs`
+
+```rust
+pub struct PluginEventDef {
+    pub name: String,           // Event name, e.g. "email.new". Prefixed with plugin slug at runtime → "gws.email.new"
+    pub description: String,    // Human-readable description of what triggers this event
+    pub command: String,        // CLI args for the watch process (e.g. "gmail +watch --format ndjson")
+    pub multiplexed: bool,      // If true, NDJSON lines may contain an "event" field for multiplexing
+}
+```
+
+Declared in `plugin.json` under the `events` array:
+
+```json
+{
+  "slug": "gws",
+  "events": [
+    {
+      "name": "email.new",
+      "description": "Fires when a new email arrives in Gmail",
+      "command": "gmail +watch --format ndjson --project {{gcp_project}}"
+    },
+    {
+      "name": "calendar.event",
+      "description": "Fires on calendar event changes",
+      "command": "calendar +watch --format ndjson",
+      "multiplexed": true
+    }
+  ]
+}
+```
+
+### NDJSON Event Protocol
+
+Plugin watch processes output JSON lines to stdout. Two modes:
+
+**Single event type** (`multiplexed: false`):
+```json
+{"messageId": "123", "from": "alice@example.com"}
+```
+→ Nebo emits: `Event { source: "gws.email.new", payload: <whole line> }`
+
+**Multiplexed** (`multiplexed: true`):
+```json
+{"event": "email.new", "messageId": "123"}
+{"event": "email.read", "messageId": "456"}
+```
+→ Nebo reads the `event` field, emits: `Event { source: "gws.email.new", payload: <line minus event field> }`
+
+If a multiplexed line has no `event` field, the declared event name is used as fallback.
+
+### Auto-Emission Flow
+
+**Source:** `crates/agent/src/agent_worker.rs`
+
+When an agent declares a watch trigger with an `event` field:
+
+```json
+{
+  "trigger": {
+    "type": "watch",
+    "plugin": "gws",
+    "event": "email.new",
+    "restart_delay_secs": 5
+  }
+}
+```
+
+The watch loop resolves the event from the plugin manifest:
+
+1. `plugin_store.resolve_event("gws", "email.new")` → `PluginEventDef`
+2. If `command` is empty on the trigger, copy from `event_def.command`
+3. Template substitution runs on the resolved command (`{{gcp_project}}` → agent `input_values`)
+4. Set `auto_emit = Some(("gws.email.new", event_def.multiplexed))`
+
+On each NDJSON line parsed from stdout:
+
+1. **Auto-emit:** Emit into `EventBus` with source `gws.email.new` and origin `plugin:gws:{binding_name}`
+2. **Inline workflow:** If activities are defined on the trigger, also run the inline workflow
+
+Both happen — dual mode. Agents get EventBus integration AND can process events inline.
+
+**Relaxed activity guard:** Watch triggers with `event` set but no activities are allowed. They auto-emit into EventBus without running any inline workflow. This enables event-only watches where other agents subscribe to the events.
+
+### PluginStore Methods
+
+| Method | Description |
+|--------|-------------|
+| `get_events(slug)` | Returns `Option<Vec<PluginEventDef>>` from cached manifest |
+| `resolve_event(slug, event_name)` | Finds specific event def by name within a plugin's events |
+
+### AgentTrigger::Watch Extension
+
+**Source:** `crates/napp/src/agent.rs`
+
+The `Watch` trigger variant now has an optional `event` field:
+
+```rust
+Watch {
+    plugin: String,
+    command: String,          // defaults to empty (resolved from manifest when event is set)
+    event: Option<String>,    // plugin event name e.g. "email.new"
+    restart_delay_secs: u64,
+}
+```
+
+When `event` is set and `command` is empty, the command is resolved from the plugin manifest's event definition.
+
+### Discovery HTTP Endpoints
+
+**Source:** `crates/server/src/handlers/plugins.rs`, `crates/server/src/routes/plugins.rs`
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /plugins` | Lists installed plugins — includes `hasEvents` (bool) and `eventCount` (int) per plugin |
+| `GET /plugins/events` | Lists all declared events across all installed plugins |
+| `GET /plugins/{slug}/events` | Lists declared events for a specific plugin |
+
+**`GET /plugins/events` response:**
+```json
+{
+  "events": [
+    { "plugin": "gws", "name": "email.new", "source": "gws.email.new", "description": "...", "multiplexed": false },
+    { "plugin": "gws", "name": "calendar.event", "source": "gws.calendar.event", "description": "...", "multiplexed": true }
+  ],
+  "total": 2
+}
+```
+
+**`GET /plugins/{slug}/events` response:**
+```json
+{
+  "plugin": "gws",
+  "events": [
+    { "name": "email.new", "source": "gws.email.new", "description": "...", "multiplexed": false }
+  ],
+  "total": 1
+}
+```
+
+---
+
+## 6. PluginStore
 
 **Source:** `crates/napp/src/plugin.rs`
 
@@ -302,7 +452,7 @@ Two-step binary discovery:
 
 ---
 
-## 6. SKILL.md Integration
+## 7. SKILL.md Integration
 
 Nebo skills follow the [Agent Skills](https://agentskills.io) open format. The SKILL.md file must contain YAML frontmatter followed by Markdown content per the [specification](https://agentskills.io/specification).
 
@@ -351,7 +501,7 @@ Following the agentskills.io model, skills use progressive disclosure:
 
 ---
 
-## 7. Skill Loader Integration
+## 8. Skill Loader Integration
 
 **Source:** `crates/tools/src/skills/loader.rs`
 
@@ -393,7 +543,7 @@ The hot-reload watcher clones the `plugin_store` Arc and passes it to the reload
 
 ---
 
-## 8. ExecuteTool Integration
+## 9. ExecuteTool Integration
 
 **Source:** `crates/tools/src/execute_tool.rs`
 
@@ -419,7 +569,7 @@ This means:
 
 ---
 
-## 9. Code System (PLUG-XXXX-XXXX)
+## 10. Code System (PLUG-XXXX-XXXX)
 
 **Source:** `crates/server/src/codes.rs`
 
@@ -451,7 +601,7 @@ Both the WebSocket handler and the REST `POST /api/v1/codes/redeem` handler disp
 
 ---
 
-## 10. Dependency Cascade
+## 11. Dependency Cascade
 
 **Source:** `crates/server/src/deps.rs`
 
@@ -486,7 +636,7 @@ For plugins: calls `install_plugin()` which:
 
 ---
 
-## 11. NeboLoop API
+## 12. NeboLoop API
 
 **Source:** `crates/comm/src/api.rs`
 
@@ -508,7 +658,7 @@ Returns `Vec<u8>`.
 
 ---
 
-## 12. AppState Wiring
+## 13. AppState Wiring
 
 **Source:** `crates/server/src/state.rs`, `crates/server/src/lib.rs`
 
@@ -533,7 +683,7 @@ let skill_loader = Loader::new(bundled_dir, installed_dir, user_dir)
 
 ---
 
-## 13. Sandbox Policy
+## 14. Sandbox Policy
 
 **Source:** `crates/tools/src/sandbox_policy.rs`
 
@@ -543,7 +693,7 @@ Plugin binaries are executed as subprocesses by the skill's script (e.g., `$GWS_
 
 ---
 
-## 14. Storage Layout
+## 15. Storage Layout
 
 ```
 <data_dir>/
@@ -587,7 +737,7 @@ Plugin binaries are executed as subprocesses by the skill's script (e.g., `$GWS_
 
 ---
 
-## 15. Concurrency Model
+## 16. Concurrency Model
 
 | Concern | Solution |
 |---------|----------|
@@ -598,13 +748,16 @@ Plugin binaries are executed as subprocesses by the skill's script (e.g., `$GWS_
 
 ---
 
-## 16. Platform Detection
+## 17. Platform Detection
 
 **Source:** `crates/napp/src/plugin.rs`
 
 ```rust
 pub fn current_platform_key() -> String {
-    let os = std::env::consts::OS;       // "macos", "linux", "windows"
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "amd64",
@@ -615,8 +768,8 @@ pub fn current_platform_key() -> String {
 ```
 
 Valid platform keys (matching NeboLoop conventions):
-- `macos-arm64` (Apple Silicon)
-- `macos-amd64` (Intel Mac)
+- `darwin-arm64` (Apple Silicon)
+- `darwin-amd64` (Intel Mac)
 - `linux-arm64`
 - `linux-amd64`
 - `windows-arm64`
@@ -640,7 +793,7 @@ If `PluginManifest.env_var` is non-empty, the custom name is used instead. (Not 
 
 ---
 
-## 17. Precedence Rule
+## 18. Precedence Rule
 
 When a skill has BOTH an embedded binary (`RuntimeKind::Binary` from `.napp`) AND a `plugins:` dependency for the same tool:
 
@@ -650,7 +803,7 @@ When a skill has BOTH an embedded binary (`RuntimeKind::Binary` from `.napp`) AN
 
 ---
 
-## 18. WebSocket Events
+## 19. WebSocket Events
 
 Events broadcast during plugin operations (camelCase per convention):
 
@@ -667,7 +820,7 @@ Future events (not yet implemented):
 
 ---
 
-## 19. Edge Cases
+## 20. Edge Cases
 
 - **Offline:** `resolve()` is local-only. Works without network after first download.
 - **Platform unavailable:** `NappError::PluginPlatformUnavailable` → "This skill isn't available for your platform yet."
@@ -681,25 +834,31 @@ Future events (not yet implemented):
 
 ---
 
-## 20. Key Files
+## 21. Key Files
 
 | File | Lines | What |
 |------|-------|------|
-| `crates/napp/src/plugin.rs` | ~900 | Core module: types, PluginStore (ensure + install_from_napp), helpers, tests |
+| `crates/napp/src/plugin.rs` | ~1200 | Core module: types (incl. `PluginEventDef`), PluginStore (ensure + install_from_napp + get_events + resolve_event), helpers, tests |
+| `crates/napp/src/agent.rs` | — | `AgentTrigger::Watch` with optional `event` field |
 | `crates/napp/src/napp.rs` | — | .napp extraction: ALLOWED_FILES includes PLUGIN.md/plugin.json, `skills/` prefix support |
 | `crates/napp/src/lib.rs` | — | `pub mod plugin;` + NappError variants |
+| `crates/agent/src/agent_worker.rs` | — | Watch loop auto-emission: resolves event from manifest, emits NDJSON into EventBus |
+| `crates/tools/src/events.rs` | — | `EventBus`, `Event` struct definitions |
+| `crates/tools/src/agent_tool.rs` | — | Serializes `event` field in watch trigger_config JSON |
 | `crates/tools/src/skills/skill.rs` | — | `PluginDependency` struct, `plugins` field on `Skill` |
 | `crates/tools/src/skills/loader.rs` | — | `plugin_store` field, `verify_dependencies()` plugin check |
 | `crates/tools/src/execute_tool.rs` | — | `plugin_store` field, env var injection |
 | `crates/server/src/state.rs` | — | `plugin_store: Arc<PluginStore>` on AppState |
-| `crates/server/src/lib.rs` | — | Plugin store init, loader wiring |
+| `crates/server/src/lib.rs` | — | Plugin store init, loader wiring, EventBus → AgentWorkerRegistry |
+| `crates/server/src/handlers/plugins.rs` | — | Plugin HTTP handlers incl. `list_plugin_events`, `list_all_plugin_events` |
+| `crates/server/src/routes/plugins.rs` | — | Plugin routes incl. event discovery endpoints |
 | `crates/server/src/codes.rs` | — | `CodeType::Plugin`, `PLUG-` detection, `handle_plugin_code()` |
 | `crates/server/src/deps.rs` | — | `DepType::Plugin`, `install_plugin()`, `extract_skill_deps()` |
 | `crates/comm/src/api.rs` | — | `get_plugin()`, `download_plugin_binary()` |
 
 ---
 
-## 21. NeboLoop MCP Server — Plugin Tool
+## 22. NeboLoop MCP Server — Plugin Tool
 
 Plugins are a **first-class artifact type** on NeboLoop, alongside skills and agents. Each has its own dedicated MCP tool — plugins are never created through the skill tool.
 

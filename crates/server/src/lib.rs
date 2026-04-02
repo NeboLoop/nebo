@@ -5,6 +5,7 @@ pub mod entity_config;
 pub mod handlers;
 pub mod middleware;
 pub mod routes;
+pub mod run_registry;
 pub mod workflow_manager;
 mod heartbeat;
 mod migration;
@@ -142,6 +143,7 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
     let models_cfg = config::ModelsConfig::load();
 
     let mut providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
+    let mut gateway_providers: Vec<Arc<dyn ai::Provider>> = Vec::new();
     for profile in &profiles {
         if profile.is_active.unwrap_or(0) == 0 {
             continue;
@@ -269,7 +271,13 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
                 model = %profile.model.as_deref().unwrap_or("-"),
                 "loaded AI provider"
             );
-            providers.push(p);
+            // Defer gateway providers (Janus) to end of the list so CLI
+            // providers and direct API keys take priority.
+            if profile.provider == "neboloop" {
+                gateway_providers.push(p);
+            } else {
+                providers.push(p);
+            }
         }
     }
 
@@ -303,6 +311,10 @@ pub fn build_providers(store: &db::Store, cfg: &Config, cli_statuses: Option<&co
             providers.push(p);
         }
     }
+
+    // Gateway providers (Janus) go last — they consume Nebo credits and
+    // should only be used when no direct API key or CLI provider is available.
+    providers.extend(gateway_providers);
 
     if providers.is_empty() {
         warn!("no active AI providers configured — agent will be unavailable until providers are added");
@@ -535,6 +547,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         hub_for_tools.broadcast(event_type, payload);
     });
 
+    // Create a late-binding handle for run visibility from tools → RunRegistry.
+    // The OnceLock is set after AppState is constructed (which owns the RunRegistry).
+    let run_querier_handle = tools::run_querier::new_handle();
+
     tool_registry.set_plugin_store(plugin_store.clone());
     tool_registry
         .register_all_with_permissions(
@@ -551,6 +567,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
             None, // comm_plugin — set later when NeboLoop connects
             Some(active_role_state.clone()),
             Some(broadcaster),
+            Some(run_querier_handle.clone()),
         )
         .await;
 
@@ -790,7 +807,12 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     let hooks = Arc::new(napp::HookDispatcher::new());
 
     // Create shared MCP context for CLI provider tool calls
-    let mcp_context = Arc::new(tokio::sync::Mutex::new(tools::ToolContext::default()));
+    let mcp_context = Arc::new(tokio::sync::Mutex::new(tools::ToolContext {
+        origin: tools::Origin::Mcp,
+        user_id: "mcp-client".into(),
+        session_key: "mcp".into(),
+        ..Default::default()
+    }));
 
     let runner = Arc::new(agent::Runner::new(
         store.clone(),
@@ -832,6 +854,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
         event_dispatcher.clone(),
         plugin_store.clone(),
+        event_bus.clone(),
     ));
 
     // Start workers for all enabled agents (replaces manual trigger reconciliation)
@@ -942,7 +965,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         plugin_store,
         presence: Arc::new(agent::PresenceTracker::new()),
         proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
+        run_registry: run_registry::RunRegistry::new(),
     };
+
+    // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
+    let _ = run_querier_handle.set(Box::new(state.run_registry.clone()));
 
     // Replace comm message handler with full version that routes chat/DM to agent runner
     {
@@ -1093,10 +1120,28 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         state.hub.clone(),
         state.snapshot_store.clone(),
         state.workflow_manager.clone(),
+        state.run_registry.clone(),
     );
 
     // Spawn heartbeat scheduler for per-entity heartbeats
     heartbeat::spawn(state.clone());
+
+    // Spawn periodic agent_progress broadcaster — broadcasts active run snapshots
+    // to all connected clients every 5 seconds so the frontend stays in sync.
+    {
+        let hub = state.hub.clone();
+        let registry = state.run_registry.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let runs = registry.list_top_level().await;
+                if !runs.is_empty() {
+                    hub.broadcast("agent_progress", serde_json::json!({ "runs": runs }));
+                }
+            }
+        });
+    }
 
     // Build router
     // WebSocket routes are kept outside CompressionLayer — compression corrupts
@@ -1105,7 +1150,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .route("/health", axum::routing::get(health_handler))
         .route("/server.json", axum::routing::get(spa::server_json))
         // MCP endpoint for CLI providers (Claude Code, Codex, Gemini)
-        .route("/agent/mcp", axum::routing::post(handlers::mcp_server::agent_mcp_handler))
+        .route("/agent/mcp", axum::routing::post(handlers::mcp_server::agent_mcp_handler)
+            .layer(axum::middleware::from_fn(middleware::mcp_api_key_auth)))
         // NeboLoop OAuth callback — top-level because the browser navigates here directly
         .route(
             "/auth/neboloop/callback",
@@ -1137,9 +1183,18 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         info!("Server ready at http://localhost:{port}");
     }
 
-    // Warn if non-loopback
+    // Block non-loopback binding unless explicitly opted in
     if host != "127.0.0.1" && host != "localhost" && host != "::1" {
-        eprintln!("WARNING: Server binding to {bind_addr} — Nebo is designed for localhost-only access");
+        if std::env::var("NEBO_ALLOW_REMOTE").as_deref() != Ok("true") {
+            return Err(NeboError::Server(format!(
+                "Refusing to bind to {bind_addr} — Nebo is designed for localhost-only access. \
+                 Set NEBO_ALLOW_REMOTE=true to override."
+            )));
+        }
+        eprintln!("WARNING: Server binding to {bind_addr} — remote access enabled");
+        if std::env::var("NEBO_MCP_API_KEY").ok().filter(|k| !k.is_empty()).is_none() {
+            eprintln!("WARNING: MCP endpoint is UNAUTHENTICATED. Set NEBO_MCP_API_KEY to secure it.");
+        }
     }
 
     let listener = tokio::net::TcpListener::bind(&bind_addr)
@@ -1272,9 +1327,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             }),
             entity_config,
             images: vec![],
+            entity_name: agent_name.clone(),
         };
 
-        chat_dispatch::run_chat(&state, config, None).await;
+        chat_dispatch::run_chat(&state, config).await;
 
         state.event_bus.emit(tools::events::Event {
             source: format!("neboloop.agent_space.{}", agent_slug),
@@ -1349,9 +1405,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 }),
                 entity_config,
                 images: vec![],
+                entity_name: agent_name.clone(),
             };
 
-            chat_dispatch::run_chat(&state, config, None).await;
+            chat_dispatch::run_chat(&state, config).await;
 
             state.event_bus.emit(tools::events::Event {
                 source: format!("neboloop.agent_space.{}", agent_slug),
@@ -1420,9 +1477,10 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             }),
             entity_config,
             images: vec![],
+            entity_name: String::new(),
         };
 
-        chat_dispatch::run_chat(&state, config, None).await;
+        chat_dispatch::run_chat(&state, config).await;
 
         // Also emit into event bus so role event triggers can fire
         state.event_bus.emit(tools::events::Event {

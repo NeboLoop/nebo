@@ -43,6 +43,12 @@ pub async fn list_plugins(
             None => (false, String::new()),
         };
 
+        let event_count = manifest
+            .as_ref()
+            .and_then(|m| m.events.as_ref())
+            .map(|e| e.len())
+            .unwrap_or(0);
+
         plugins.push(serde_json::json!({
             "slug": slug,
             "version": version.to_string(),
@@ -51,6 +57,8 @@ pub async fn list_plugins(
             "author": manifest.as_ref().map(|m| m.author.as_str()).unwrap_or(""),
             "hasAuth": has_auth,
             "authLabel": auth_label,
+            "hasEvents": event_count > 0,
+            "eventCount": event_count,
             "source": source,
         }));
     }
@@ -372,6 +380,78 @@ pub async fn auth_status(
     }
 
     Ok(Json(result))
+}
+
+/// GET /plugins/events
+///
+/// Lists all declared events across all installed plugins.
+pub async fn list_all_plugin_events(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
+    let installed = state.plugin_store.list_installed();
+
+    // Dedup by slug (highest version wins).
+    let mut seen = HashMap::new();
+    for (slug, version, _binary_path, _source) in &installed {
+        seen.entry(slug.clone()).or_insert_with(|| version.clone());
+    }
+
+    let mut events = Vec::new();
+    for slug in seen.keys() {
+        if let Some(event_defs) = state.plugin_store.get_events(slug) {
+            for ev in &event_defs {
+                events.push(serde_json::json!({
+                    "plugin": slug,
+                    "name": ev.name,
+                    "source": format!("{}.{}", slug, ev.name),
+                    "description": ev.description,
+                    "multiplexed": ev.multiplexed,
+                }));
+            }
+        }
+    }
+
+    events.sort_by(|a, b| {
+        a["source"].as_str().unwrap_or("").cmp(b["source"].as_str().unwrap_or(""))
+    });
+
+    let total = events.len();
+    Ok(Json(serde_json::json!({
+        "events": events,
+        "total": total,
+    })))
+}
+
+/// GET /plugins/{slug}/events
+///
+/// Lists declared events for a specific plugin.
+pub async fn list_plugin_events(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let event_defs = state
+        .plugin_store
+        .get_events(&slug)
+        .unwrap_or_default();
+
+    let events: Vec<serde_json::Value> = event_defs
+        .iter()
+        .map(|ev| {
+            serde_json::json!({
+                "name": ev.name,
+                "source": format!("{}.{}", slug, ev.name),
+                "description": ev.description,
+                "multiplexed": ev.multiplexed,
+            })
+        })
+        .collect();
+
+    let total = events.len();
+    Ok(Json(serde_json::json!({
+        "plugin": slug,
+        "events": events,
+        "total": total,
+    })))
 }
 
 /// Open an OAuth URL: broadcast it to the frontend via WebSocket (primary) and
