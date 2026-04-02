@@ -36,8 +36,6 @@
 		ChatInput
 	} from '$lib/components/chat';
 	import EntityConfigPanel from '$lib/components/chat/EntityConfigPanel.svelte';
-	import AgentActivityPanel from '$lib/components/chat/AgentActivityPanel.svelte';
-	import type { RunSnapshot } from '$lib/components/chat/AgentActivityPanel.svelte';
 	import { parseSlashCommand } from './slash-commands';
 	import { executeSlashCommand, type CommandContext } from './slash-command-executor';
 	import type { SlashCommand } from './slash-commands';
@@ -146,8 +144,6 @@
 	// ── Subagent tracking ────────────────────────────────────────────
 	let activeSubagents = $state<Map<string, SubagentState>>(new Map());
 
-	// ── Global agent activity (RunRegistry) ──────────────────────────
-	let activeRuns = $state<RunSnapshot[]>([]);
 
 	// ── Slash commands ────────────────────────────────────────────────
 	let verboseMode = $state(false);
@@ -458,16 +454,6 @@
 				client.on('subagent_start', handleSubagentStart),
 				client.on('subagent_progress', handleSubagentProgress),
 				client.on('subagent_complete', handleSubagentComplete),
-				client.on('agent_progress', (data: Record<string, unknown>) => {
-					if (data?.runs && Array.isArray(data.runs)) {
-						activeRuns = data.runs as RunSnapshot[];
-					}
-				}),
-				client.on('active_runs', (data: Record<string, unknown>) => {
-					if (data?.runs && Array.isArray(data.runs)) {
-						activeRuns = data.runs as RunSnapshot[];
-					}
-				}),
 				client.on('agent_warning', (data: Record<string, unknown>) => {
 					warningMessage = (data?.message as string) || $t('chat.retryWarning');
 					warningToast = true;
@@ -2726,21 +2712,6 @@
 			</div>
 		</div>
 	{:else}
-		{#if activeRuns.length > 0}
-			<div class="max-w-4xl mx-auto px-6 pb-1">
-				<AgentActivityPanel
-					runs={activeRuns}
-					onCancel={(runId) => {
-						const client = getWebSocketClient();
-						client.send('cancel', { run_id: runId });
-					}}
-					onCancelAll={() => {
-						const client = getWebSocketClient();
-						client.send('cancel_all');
-					}}
-				/>
-			</div>
-		{/if}
 		<ChatInput
 			bind:this={chatInputRef}
 			bind:value={inputValue}

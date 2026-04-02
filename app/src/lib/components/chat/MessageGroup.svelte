@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { Copy, Check, Pencil } from 'lucide-svelte';
+	import { Copy, Check, Pencil, Loader2 } from 'lucide-svelte';
 	import { t } from 'svelte-i18n';
 	import Markdown from '$lib/components/ui/Markdown.svelte';
 	import ToolCard from './ToolCard.svelte';
+	import ToolActivityGroup from './ToolActivityGroup.svelte';
 	import ThinkingBlock from './ThinkingBlock.svelte';
 	import ReadingIndicator from './ReadingIndicator.svelte';
 	import AskWidget from './AskWidget.svelte';
@@ -33,10 +34,11 @@
 
 	// A resolved content block with tool data pre-resolved (no indirect lookup)
 	interface ResolvedBlock {
-		type: 'text' | 'tool' | 'image' | 'ask' | 'subagent_tree';
+		type: 'text' | 'tool' | 'tool_group' | 'image' | 'ask' | 'subagent_tree';
 		key: string;
 		text?: string;
 		tool?: ToolCall;
+		tools?: ToolCall[];
 		imageData?: string;
 		imageMimeType?: string;
 		imageURL?: string;
@@ -125,6 +127,42 @@
 	const groupTimestamp = $derived(messages[messages.length - 1]?.timestamp || messages[0]?.timestamp);
 	const isProactive = $derived(messages.some(m => m.proactive));
 
+	// Group consecutive tool blocks into tool_group blocks, preserving conversation flow.
+	// text→[tool,tool,tool]→text→[tool,tool] becomes text→tool_group→text→tool_group
+	function groupToolBlocks(blocks: ResolvedBlock[]): ResolvedBlock[] {
+		const result: ResolvedBlock[] = [];
+		let pendingTools: ToolCall[] = [];
+		let groupStart = 0;
+
+		function flushTools() {
+			if (pendingTools.length === 0) return;
+			const statusKey = pendingTools.map(t => t.status ?? 'u').join('');
+			result.push({
+				type: 'tool_group',
+				key: `tg-${groupStart}-${pendingTools.length}-${statusKey}`,
+				tools: [...pendingTools],
+				isLastBlock: false
+			});
+			pendingTools = [];
+		}
+
+		for (let i = 0; i < blocks.length; i++) {
+			if (blocks[i].type === 'tool' && blocks[i].tool) {
+				if (pendingTools.length === 0) groupStart = i;
+				pendingTools.push(blocks[i].tool!);
+			} else {
+				flushTools();
+				result.push(blocks[i]);
+			}
+		}
+		flushTools();
+
+		if (result.length > 0) {
+			result[result.length - 1].isLastBlock = true;
+		}
+		return result;
+	}
+
 	// Pre-resolve all message data including tool lookups into a flat structure.
 	// This ensures Svelte's reactivity tracks every piece of data that affects rendering.
 	const resolvedMessages = $derived.by((): ResolvedMessage[] => {
@@ -188,7 +226,7 @@
 				message,
 				thinking,
 				cleanContent,
-				blocks
+				blocks: groupToolBlocks(blocks)
 			};
 		});
 	});
@@ -238,7 +276,20 @@
 				<!-- Content blocks: interleaved text and tool calls (pre-resolved) -->
 				{#if resolved.blocks.length > 0}
 					{#each resolved.blocks as block (block.key)}
-						{#if block.type === 'tool' && block.tool}
+						{#if block.type === 'tool_group' && block.tools?.length}
+							<div class="mb-2 max-w-lg">
+								<ToolActivityGroup
+									tools={block.tools}
+									onViewToolOutput={(tool) => handleViewToolOutput(tool)}
+								/>
+							</div>
+							{#if resolved.message.streaming && block.isLastBlock}
+								<div class="flex items-center gap-2 py-1.5 mb-2 text-sm text-base-content/60">
+									<Loader2 class="w-3.5 h-3.5 shrink-0 animate-spin text-primary" />
+									<span>Working...</span>
+								</div>
+							{/if}
+						{:else if block.type === 'tool' && block.tool}
 							<div class="max-w-md mb-2">
 								<ToolCard
 									name={block.tool.name}
@@ -337,17 +388,12 @@
 				{:else}
 					<!-- Legacy fallback: messages without contentBlocks -->
 					{#if resolved.message.toolCalls?.length && role === 'assistant'}
-						{#each resolved.message.toolCalls as tool}
-							<div class="max-w-md mb-2">
-								<ToolCard
-									name={tool.name}
-									input={tool.input}
-									output={tool.output}
-									status={tool.status}
-									onclick={() => handleViewToolOutput(tool)}
-								/>
-							</div>
-						{/each}
+						<div class="mb-2 max-w-lg">
+							<ToolActivityGroup
+								tools={resolved.message.toolCalls}
+								onViewToolOutput={(tool) => handleViewToolOutput(tool)}
+							/>
+						</div>
 					{/if}
 
 					{#if resolved.cleanContent || resolved.message.streaming}
