@@ -149,6 +149,7 @@ async fn run_single_advisor(
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],
+        cancel_token: None,
     };
 
     let mut rx = provider

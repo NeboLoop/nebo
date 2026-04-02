@@ -50,6 +50,10 @@ pub struct Activity {
     pub token_budget: TokenBudget,
     #[serde(default)]
     pub on_error: OnError,
+    /// Minimum iterations before allowing the activity to stop naturally.
+    /// When set, forces continuation even on text-only responses.
+    #[serde(default)]
+    pub min_iterations: u32,
 }
 
 /// Token budget for an activity.

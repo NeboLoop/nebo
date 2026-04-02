@@ -11,7 +11,7 @@ use tools::registry::DynTool;
 use crate::parser::{Activity, Fallback, WorkflowDef};
 use crate::WorkflowError;
 
-const MAX_ITERATIONS: u32 = 20;
+const MAX_ITERATIONS: u32 = 50;
 
 /// Execute a complete workflow run.
 ///
@@ -321,6 +321,9 @@ pub async fn execute_activity(
     let mut tokens_used: u32 = 0;
     let mut iterations: u32 = 0;
     let mut consecutive_all_not_found: u32 = 0;
+    // Track consecutive same-tool calls for loop detection
+    let mut last_tool_name: String = String::new();
+    let mut consecutive_same_tool: u32 = 0;
 
     // Detect if browser tool is available for this activity
     let has_browser = tools.iter().any(|t| t.name() == "web");
@@ -360,6 +363,7 @@ pub async fn execute_activity(
             enable_thinking: false,
             metadata: None,
             cache_breakpoints: vec![],
+            cancel_token: None,
         };
 
         let mut rx = provider
@@ -396,8 +400,30 @@ pub async fn execute_activity(
             }
         }
 
-        // If no tool calls, we're done
+        // If no tool calls, check if we should force-continue (min_iterations budget)
         if tool_calls.is_empty() {
+            if activity.min_iterations > 0 && iterations < activity.min_iterations && !response_text.is_empty() {
+                info!(
+                    activity_id = %activity.id,
+                    iteration = iterations,
+                    min = activity.min_iterations,
+                    "budget continuation: forcing next iteration"
+                );
+                messages.push(ai::Message {
+                    role: "assistant".into(),
+                    content: response_text,
+                    ..Default::default()
+                });
+                messages.push(ai::Message {
+                    role: "user".into(),
+                    content: "You stopped early but your task is not complete. \
+                              Keep working — use your tools to make more progress. \
+                              Do not summarize or ask to continue. Take the next action.".to_string(),
+                    ..Default::default()
+                });
+                iterations += 1;
+                continue;
+            }
             return Ok((response_text, tokens_used));
         }
 
@@ -444,6 +470,29 @@ pub async fn execute_activity(
             }));
         }
 
+        // Same-tool loop detection: if the LLM calls the same tool 3+ times
+        // consecutively, inject a steering hint into the conversation.
+        if let Some(first_call) = tool_calls.first() {
+            if first_call.name == last_tool_name {
+                consecutive_same_tool += 1;
+            } else {
+                last_tool_name = first_call.name.clone();
+                consecutive_same_tool = 1;
+            }
+        }
+        if consecutive_same_tool >= 3 {
+            // Inject a user-role steering message to break the loop
+            messages.push(ai::Message {
+                role: "user".into(),
+                content: format!(
+                    "You have called '{}' {} times in a row. Take a different action \
+                     or complete this activity by responding without tool calls.",
+                    last_tool_name, consecutive_same_tool
+                ),
+                ..Default::default()
+            });
+        }
+
         // Early termination: if ALL tool calls failed with "tool not found" for 3
         // consecutive iterations, bail instead of looping to MAX_ITERATIONS.
         let all_not_found = tool_result_entries.iter().all(|e| {
@@ -476,9 +525,9 @@ pub async fn execute_activity(
     }
 }
 
-/// Build the system prompt for an activity (lean — no steering, memory, or personality).
+/// Build the system prompt for an activity.
 ///
-/// Spec order: Skills → Task → Steps → Inputs → Prior Results → Browser Guide
+/// Spec order: Execution Rules → Skills → Tools → Task → Steps → Inputs → Prior Results → Browser Guide
 fn build_activity_prompt(
     activity: &Activity,
     prior_context: &str,
@@ -489,6 +538,20 @@ fn build_activity_prompt(
     tool_names: &[String],
 ) -> String {
     let mut prompt = String::new();
+
+    // Execution behavior rules — same action-bias as the chat agent
+    prompt.push_str("## Execution Rules\n\
+        You are an autonomous agent executing a workflow activity. Bias toward action:\n\
+        - ZERO text when making tool calls. If you are calling a tool, output ONLY the tool call — no text.\n\
+        - After a tool returns results, take the NEXT action immediately. Do not re-read data you already have.\n\
+        - Do not call the same tool with identical parameters twice. If you got a result, act on it.\n\
+        - When processing a collection (emails, files, records), use batch operations if available. \
+          Do NOT process items one at a time when a batch call exists.\n\
+        - Track your progress. Do not re-fetch the full list after every single operation.\n\
+        - If something fails, diagnose why before retrying. Do not retry the identical call blindly.\n\
+        - Complete the ENTIRE task. Do not stop at 10% and ask whether to continue.\n\
+        - Do NOT repeat information you already told the user. Each response must contain NEW information only.\n\
+        - Report the final result only. No status updates, no intermediate summaries.\n\n");
 
     // Skills — injected from SKILL.md content
     if let Some(skills) = skill_content {

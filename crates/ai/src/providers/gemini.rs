@@ -352,8 +352,12 @@ async fn handle_gemini_stream(response: reqwest::Response, tx: mpsc::Sender<Stre
                             // Check finish reason
                             if let Some(ref reason) = candidate.finish_reason {
                                 match reason.as_str() {
-                                    "STOP" | "MAX_TOKENS" => {
-                                        let _ = tx.send(StreamEvent::done()).await;
+                                    "STOP" => {
+                                        let _ = tx.send(StreamEvent::done_with_reason("end_turn")).await;
+                                        return;
+                                    }
+                                    "MAX_TOKENS" => {
+                                        let _ = tx.send(StreamEvent::done_with_reason("max_tokens")).await;
                                         return;
                                     }
                                     "SAFETY" => {

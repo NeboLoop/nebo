@@ -145,6 +145,7 @@ pub async fn summarize(
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],
+        cancel_token: None,
     };
 
     let mut rx = provider.stream(&req).await.map_err(|e| format!("summarize stream: {e}"))?;

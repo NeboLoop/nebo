@@ -161,8 +161,27 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                     let runs = active_runs.lock().await;
                                     if let Some(run) = runs.get(&session_id) {
                                         run.token.cancel();
-                                        info!(session_id = %session_id, "cancelled agent run");
+                                        info!(session_id = %session_id, "cancelled agent run (exact match)");
+                                    } else {
+                                        // Stop means stop: cancel ALL active runs for this
+                                        // connection. Key mismatches (companion UUID vs
+                                        // agent-scoped key) must never let a run escape.
+                                        let count = runs.len();
+                                        if count > 0 {
+                                            warn!(
+                                                requested = %session_id,
+                                                active_keys = ?runs.keys().collect::<Vec<_>>(),
+                                                "cancel key mismatch — cancelling all {} active runs",
+                                                count
+                                            );
+                                            for run in runs.values() {
+                                                run.token.cancel();
+                                            }
+                                        } else {
+                                            debug!(session_id = %session_id, "cancel: no active runs");
+                                        }
                                     }
+                                    drop(runs);
                                     state.hub.broadcast("chat_cancelled", serde_json::json!({
                                         "session_id": session_id,
                                     }));
@@ -284,6 +303,7 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                             enable_thinking: false,
                                             metadata: None,
                                             cache_breakpoints: vec![],
+                                            cancel_token: None,
                                         };
 
                                         let mut rx = match provider.stream(&req).await {

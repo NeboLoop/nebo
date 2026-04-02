@@ -43,6 +43,7 @@ pub async fn verify_screenshot(
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],
+        cancel_token: None,
     };
 
     let mut rx = match provider.stream(&req).await {

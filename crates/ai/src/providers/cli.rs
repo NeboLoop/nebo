@@ -181,6 +181,7 @@ impl Provider for CLIProvider {
         let stderr = child.stderr.take();
         let command_name = self.command.clone();
         let enable_thinking = req.enable_thinking;
+        let cancel_token = req.cancel_token.clone();
 
         tokio::spawn(async move {
             // Read stderr in background
@@ -204,7 +205,26 @@ impl Provider for CLIProvider {
                 // Tool state tracking for accumulated input
                 let mut pending_tool: Option<PendingToolCall> = None;
 
-                while let Ok(Some(line)) = lines.next_line().await {
+                loop {
+                    let line = if let Some(ref token) = cancel_token {
+                        tokio::select! {
+                            _ = token.cancelled() => {
+                                info!(command = %command_name, "CLI process cancelled — killing child");
+                                kill_child_process(&mut child);
+                                let _ = tx.send(StreamEvent::error("Cancelled".to_string())).await;
+                                break;
+                            }
+                            result = lines.next_line() => match result {
+                                Ok(Some(line)) => line,
+                                _ => break,
+                            }
+                        }
+                    } else {
+                        match lines.next_line().await {
+                            Ok(Some(line)) => line,
+                            _ => break,
+                        }
+                    };
                     if line.is_empty() {
                         continue;
                     }
@@ -375,6 +395,26 @@ impl Provider for CLIProvider {
         });
 
         Ok(rx)
+    }
+}
+
+/// Kill a CLI child process and its entire process group.
+fn kill_child_process(child: &mut tokio::process::Child) {
+    // Try SIGTERM on the process group first (graceful)
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            unsafe {
+                // Negative PID sends to the process group
+                libc::kill(-(pid as i32), libc::SIGTERM);
+            }
+            // Give it 100ms then force kill
+            let _ = child.start_kill();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.start_kill();
     }
 }
 

@@ -185,6 +185,28 @@ impl Store {
         Ok(())
     }
 
+    /// Returns work-type tasks for a specific session (pending, running, completed).
+    /// Used to sync working memory into the session's work_tasks column.
+    pub fn get_work_tasks_for_session(
+        &self,
+        session_key: &str,
+    ) -> Result<Vec<PendingTask>, NeboError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM pending_tasks
+                 WHERE session_key = ?1 AND task_type = 'work'
+                   AND status IN ('pending', 'running', 'completed')
+                 ORDER BY created_at ASC",
+            )
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![session_key], row_to_pending_task)
+            .map_err(|e| NeboError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Returns all pending/running tasks plus recently completed tasks (within the last hour).
     pub fn get_active_and_recent_tasks(&self) -> Result<Vec<PendingTask>, NeboError> {
         let conn = self.conn()?;

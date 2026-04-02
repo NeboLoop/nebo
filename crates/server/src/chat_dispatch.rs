@@ -266,6 +266,16 @@ pub async fn run_chat(state: &AppState, config: ChatConfig, active_runs: Option<
                             }));
                         }
                         StreamEventType::ToolCall => {
+                            // Flush pending text before tool event to prevent fragmentation
+                            if !text_buffer.is_empty() {
+                                hub.broadcast("chat_stream", serde_json::json!({
+                                    "session_id": sid,
+                                    "content": &text_buffer,
+                                    "agentId": agent_id,
+                                }));
+                                text_buffer.clear();
+                                last_flush = tokio::time::Instant::now();
+                            }
                             if let Some(ref tc) = event.tool_call {
                                 hub.broadcast("tool_start", serde_json::json!({
                                     "session_id": sid,

@@ -22,6 +22,8 @@ pub struct WorkTask {
     pub id: String,
     pub subject: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
 }
 
 /// Context passed to all steering generators.
@@ -37,6 +39,9 @@ pub struct Context {
     pub quota_warning: Option<String>,
     /// Number of consecutive iterations where ALL tool calls returned errors.
     pub consecutive_error_iterations: usize,
+    /// Rolling hashes of recent tool results for stale-result detection.
+    /// Each entry is (tool_name_hash, content_hash). Last 5 results kept.
+    pub recent_tool_result_hashes: Vec<(u64, u64)>,
     /// User presence state: "focused", "unfocused", "away", or empty if unknown.
     pub user_presence: String,
     /// Whether the user just transitioned from unfocused/away back to focused.
@@ -71,6 +76,8 @@ impl Pipeline {
             Box::new(TaskProgress),
             Box::new(ActiveObjectiveReminder),
             Box::new(ProgressNudge),
+            Box::new(ActionBias),
+            Box::new(NarrationSuppressor),
             Box::new(LoopDetector),
             Box::new(PresenceAwareness),
             Box::new(ProactiveResults),
@@ -337,7 +344,7 @@ pub fn should_force_break(ctx: &Context) -> Option<String> {
 
     // 2. Same-tool loop at extreme count — the LLM is ignoring steering
     let (tool_name, count) = count_consecutive_same_tool_calls(&ctx.messages);
-    if !tool_name.is_empty() && count >= 8 {
+    if !tool_name.is_empty() && count >= 5 {
         return Some(format!(
             "Circuit breaker: '{}' called {} times consecutively. \
              The agent is stuck in a loop and steering was ignored.",
@@ -592,7 +599,11 @@ impl Generator for TaskProgress {
                     "in_progress" => "[→]",
                     _ => "[ ]",
                 };
-                sb.push_str(&format!("  {} [{}] {}\n", icon, task.id, task.subject));
+                if let Some(ref details) = task.details {
+                    sb.push_str(&format!("  {} [{}] {} ({})\n", icon, task.id, task.subject, details));
+                } else {
+                    sb.push_str(&format!("  {} [{}] {}\n", icon, task.id, task.subject));
+                }
             }
             sb.push_str("\nContinue working on the next incomplete task.");
             sb
@@ -624,17 +635,106 @@ impl Generator for ActiveObjectiveReminder {
     }
 }
 
-// 11. Loop Detector
+// 11. Action Bias — language-agnostic structural detection of narration
+struct ActionBias;
+impl Generator for ActionBias {
+    fn name(&self) -> &str { "action_bias" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
+        if ctx.active_task.is_empty() || ctx.iteration < 2 {
+            return vec![];
+        }
+
+        // Count consecutive text-only assistant responses (no tool calls)
+        let mut consecutive_text_only = 0usize;
+        for msg in ctx.messages.iter().rev() {
+            if msg.role == "user" { break; }
+            if msg.role != "assistant" { continue; }
+            let has_tool_calls = msg.tool_calls.as_ref()
+                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
+            if has_tool_calls { break; }
+            if !msg.content.is_empty() {
+                consecutive_text_only += 1;
+            }
+        }
+
+        if consecutive_text_only >= 2 {
+            return vec![SteeringMessage {
+                content: format!(
+                    "You have responded with text {} times without calling any tool. \
+                     You have an active task — call a tool NOW to make progress. \
+                     Do not describe what you plan to do — just do it.",
+                    consecutive_text_only
+                ),
+                position: Position::End,
+            }];
+        }
+
+        // Detect: long text response (>200 chars) with no tool call during active task
+        if let Some(last) = ctx.messages.iter().rev()
+            .find(|m| m.role == "assistant")
+        {
+            let has_tool_calls = last.tool_calls.as_ref()
+                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
+            if !has_tool_calls && last.content.len() > 200 && ctx.iteration >= 3 {
+                return vec![SteeringMessage {
+                    content: "Your last response was long text with no tool call. \
+                             Keep responses brief — the user can see your tool calls. \
+                             Take the next action instead of explaining.".to_string(),
+                    position: Position::End,
+                }];
+            }
+        }
+
+        vec![]
+    }
+}
+
+// 12. Narration Suppressor — detects text+tool narration pattern
+struct NarrationSuppressor;
+impl Generator for NarrationSuppressor {
+    fn name(&self) -> &str { "narration_suppressor" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
+        if ctx.iteration < 2 {
+            return vec![];
+        }
+
+        // Count recent assistant messages that have BOTH text (>50 chars) AND tool calls
+        let mut narrating_turns = 0usize;
+        for msg in ctx.messages.iter().rev().take(6) {
+            if msg.role != "assistant" { continue; }
+            let has_tool_calls = msg.tool_calls.as_ref()
+                .is_some_and(|tc| !tc.is_empty() && tc != "[]" && tc != "null");
+            if has_tool_calls && msg.content.len() > 50 {
+                narrating_turns += 1;
+            }
+        }
+
+        if narrating_turns >= 2 {
+            return vec![SteeringMessage {
+                content: "STOP narrating your tool calls. You have been outputting text alongside \
+                         tool calls for multiple turns. The user can see your tool calls directly — \
+                         they do not need commentary. From now on: if you are calling a tool, output \
+                         ONLY the tool call with ZERO text. Save all commentary for after the work \
+                         is complete.".to_string(),
+                position: Position::End,
+            }];
+        }
+
+        vec![]
+    }
+}
+
+// 13. Loop Detector
 struct LoopDetector;
 impl Generator for LoopDetector {
     fn name(&self) -> &str { "loop_detector" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
         let mut msgs = Vec::new();
 
-        // A. Same-tool repetition detection (original logic)
+        // A. Same-tool repetition detection
         let (tool_name, count) = count_consecutive_same_tool_calls(&ctx.messages);
-        if !tool_name.is_empty() && count >= 4 {
-            let content = if count >= 6 {
+        if !tool_name.is_empty() && count >= 2 {
+            let content = if count >= 3 {
                 format!(
                     "CRITICAL: You have called '{}' {} times consecutively. \
                      You are in an infinite loop. You MUST stop calling tools entirely. \
@@ -652,7 +752,24 @@ impl Generator for LoopDetector {
             msgs.push(SteeringMessage { content, position: Position::End });
         }
 
-        // B. All-error iteration detection (catches varied-tool loops)
+        // B. Stale-result detection — same tool returning identical results
+        if ctx.recent_tool_result_hashes.len() >= 2 {
+            let last = ctx.recent_tool_result_hashes.last();
+            let prev = ctx.recent_tool_result_hashes.get(ctx.recent_tool_result_hashes.len() - 2);
+            if let (Some(last), Some(prev)) = (last, prev) {
+                if last.0 == prev.0 && last.1 == prev.1 {
+                    msgs.push(SteeringMessage {
+                        content: "CRITICAL: You called the same tool twice and got identical results. \
+                                 You are not making progress. Take a DIFFERENT action now — process \
+                                 the results you already have, use a different tool, or report what \
+                                 you've accomplished so far.".to_string(),
+                        position: Position::End,
+                    });
+                }
+            }
+        }
+
+        // C. All-error iteration detection (catches varied-tool loops)
         if ctx.consecutive_error_iterations >= 3 {
             let content = format!(
                 "CRITICAL: The last {} iterations all had failing tool calls. \
@@ -664,7 +781,7 @@ impl Generator for LoopDetector {
             msgs.push(SteeringMessage { content, position: Position::End });
         }
 
-        // C. User stop detection
+        // D. User stop detection
         if user_requested_stop(&ctx.messages) {
             msgs.push(SteeringMessage {
                 content: "The user has asked you to STOP. Cease all tool calls immediately. \
@@ -874,6 +991,7 @@ mod tests {
             work_tasks: vec![],
             quota_warning: None,
             consecutive_error_iterations: 0,
+            recent_tool_result_hashes: vec![],
             user_presence: String::new(),
             user_just_returned: false,
             proactive_items: vec![],
@@ -900,6 +1018,7 @@ mod tests {
             work_tasks: vec![],
             quota_warning: None,
             consecutive_error_iterations: 0,
+            recent_tool_result_hashes: vec![],
             user_presence: "away".to_string(),
             user_just_returned: false,
             proactive_items: vec![],
@@ -927,6 +1046,7 @@ mod tests {
             work_tasks: vec![],
             quota_warning: None,
             consecutive_error_iterations: 0,
+            recent_tool_result_hashes: vec![],
             user_presence: "focused".to_string(),
             user_just_returned: true,
             proactive_items: vec![],
@@ -950,6 +1070,7 @@ mod tests {
             work_tasks: vec![],
             quota_warning: None,
             consecutive_error_iterations: 0,
+            recent_tool_result_hashes: vec![],
             user_presence: String::new(),
             user_just_returned: false,
             proactive_items: vec![

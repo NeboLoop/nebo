@@ -194,6 +194,7 @@ impl AnthropicProvider {
         let mut current_tool_id = String::new();
         let mut current_tool_name = String::new();
         let mut input_buffer = String::new();
+        let mut last_stop_reason: Option<String> = None;
 
         let mut byte_stream = response.bytes_stream();
         let mut line_buf = String::new();
@@ -246,6 +247,11 @@ impl AnthropicProvider {
                                     }
                             }
                             "message_delta" => {
+                                if let Some(ref delta) = event.delta {
+                                    if let Some(ref reason) = delta.stop_reason {
+                                        last_stop_reason = Some(reason.clone());
+                                    }
+                                }
                                 if let Some(usage) = event.usage {
                                     let _ = tx.send(StreamEvent::usage(UsageInfo {
                                         input_tokens: usage.input_tokens.unwrap_or(0),
@@ -298,7 +304,11 @@ impl AnthropicProvider {
                                 }
                             }
                             "message_stop" => {
-                                let _ = tx.send(StreamEvent::done()).await;
+                                let done = match last_stop_reason.take() {
+                                    Some(reason) => StreamEvent::done_with_reason(reason),
+                                    None => StreamEvent::done(),
+                                };
+                                let _ = tx.send(done).await;
                                 return;
                             }
                             "error" => {
@@ -314,7 +324,11 @@ impl AnthropicProvider {
                         // We parse the type from the data JSON itself, so we can skip this.
                     }
                     SseEvent::Done => {
-                        let _ = tx.send(StreamEvent::done()).await;
+                        let done = match last_stop_reason.take() {
+                            Some(reason) => StreamEvent::done_with_reason(reason),
+                            None => StreamEvent::done(),
+                        };
+                        let _ = tx.send(done).await;
                         return;
                     }
                     SseEvent::Skip => {}
@@ -322,7 +336,11 @@ impl AnthropicProvider {
             }
         }
 
-        let _ = tx.send(StreamEvent::done()).await;
+        let done = match last_stop_reason.take() {
+            Some(reason) => StreamEvent::done_with_reason(reason),
+            None => StreamEvent::done(),
+        };
+        let _ = tx.send(done).await;
     }
 }
 
@@ -752,6 +770,8 @@ struct AnthropicDelta {
     partial_json: Option<String>,
     #[serde(default)]
     thinking: Option<String>,
+    #[serde(default)]
+    stop_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

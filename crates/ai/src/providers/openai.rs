@@ -277,6 +277,7 @@ impl OpenAIProvider {
         let mut text_chunks = 0u32;
         let mut chunk_count = 0u32;
         let mut finished = false;
+        let mut last_finish_reason: Option<String> = None;
         let mut last_provider_metadata: Option<HashMap<String, String>> = None;
 
         'outer: while let Some(result) = byte_stream.next().await {
@@ -439,6 +440,10 @@ impl OpenAIProvider {
                                     chunk_count,
                                     "stream finished"
                                 );
+                                last_finish_reason = Some(serde_json::to_value(reason)
+                                    .ok()
+                                    .and_then(|v| v.as_str().map(String::from))
+                                    .unwrap_or_else(|| format!("{:?}", reason).to_lowercase()));
                                 finished = true;
                                 break 'outer;
                             }
@@ -472,7 +477,10 @@ impl OpenAIProvider {
             }
         }
 
-        let mut done_event = StreamEvent::done();
+        let mut done_event = match last_finish_reason {
+            Some(reason) => StreamEvent::done_with_reason(reason),
+            None => StreamEvent::done(),
+        };
         done_event.provider_metadata = last_provider_metadata;
         let _ = tx.send(done_event).await;
     }

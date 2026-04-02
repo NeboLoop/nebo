@@ -547,6 +547,7 @@ impl AgentTool {
                 if subject.is_empty() {
                     return ToolResult::error("subject is required for task creation");
                 }
+                let details = input["details"].as_str();
 
                 let id = uuid::Uuid::new_v4().to_string();
                 match self.store.create_pending_task(
@@ -556,11 +557,14 @@ impl AgentTool {
                     None,
                     subject,
                     None,
-                    None,
+                    details,
                     None,
                     0,
                 ) {
-                    Ok(task) => ToolResult::ok(format!("Created task [{}]: {}", task.id, subject)),
+                    Ok(task) => {
+                        self.sync_work_tasks_to_session(&ctx.session_id);
+                        ToolResult::ok(format!("Created task [{}]: {}", task.id, subject))
+                    }
                     Err(e) => ToolResult::error(format!("Failed to create task: {}", e)),
                 }
             }
@@ -573,7 +577,10 @@ impl AgentTool {
                 }
 
                 match self.store.update_task_status(task_id, status) {
-                    Ok(_) => ToolResult::ok(format!("Updated task {} to {}", task_id, status)),
+                    Ok(_) => {
+                        self.sync_work_tasks_to_session(&ctx.session_id);
+                        ToolResult::ok(format!("Updated task {} to {}", task_id, status))
+                    }
                     Err(e) => ToolResult::error(format!("Failed to update task: {}", e)),
                 }
             }
@@ -614,7 +621,10 @@ impl AgentTool {
                     return ToolResult::error("task_id is required");
                 }
                 match self.store.cancel_task(task_id) {
-                    Ok(_) => ToolResult::ok(format!("Cancelled task: {}", task_id)),
+                    Ok(_) => {
+                        self.sync_work_tasks_to_session(&ctx.session_id);
+                        ToolResult::ok(format!("Cancelled task: {}", task_id))
+                    }
                     Err(e) => ToolResult::error(format!("Failed to cancel task: {}", e)),
                 }
             }
@@ -622,6 +632,38 @@ impl AgentTool {
                 "Unknown task action: {}. Available: spawn, spawn_parallel, orchestrate, status, cancel, create, update, list, delete",
                 action
             )),
+        }
+    }
+
+    /// Sync pending_tasks → sessions.work_tasks so the runner/steering can see them.
+    fn sync_work_tasks_to_session(&self, session_id: &str) {
+        match self.store.get_work_tasks_for_session(session_id) {
+            Ok(tasks) => {
+                let json_tasks: Vec<serde_json::Value> = tasks
+                    .iter()
+                    .map(|t| {
+                        let mut obj = serde_json::json!({
+                            "id": t.id,
+                            "subject": t.prompt,
+                            "status": match t.status.as_str() {
+                                "running" => "in_progress",
+                                other => other,
+                            },
+                        });
+                        if let Some(ref desc) = t.description {
+                            obj["details"] = serde_json::Value::String(desc.clone());
+                        }
+                        obj
+                    })
+                    .collect();
+                let json = serde_json::to_string(&json_tasks).unwrap_or_else(|_| "[]".to_string());
+                if let Err(e) = self.store.set_session_work_tasks(session_id, &json) {
+                    warn!(session_id, error = %e, "failed to sync work tasks to session");
+                }
+            }
+            Err(e) => {
+                warn!(session_id, error = %e, "failed to load work tasks for sync");
+            }
         }
     }
 

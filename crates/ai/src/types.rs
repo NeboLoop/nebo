@@ -4,6 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 /// Rate limit metadata extracted from provider response headers.
 #[derive(Debug, Clone, Default)]
@@ -71,6 +72,8 @@ pub struct StreamEvent {
     pub widgets: Option<serde_json::Value>,
     /// Provider metadata from Janus for tool stickiness routing.
     pub provider_metadata: Option<HashMap<String, String>>,
+    /// Stop reason from the provider: "end_turn", "max_tokens", "length", "tool_use", etc.
+    pub stop_reason: Option<String>,
 }
 
 impl StreamEvent {
@@ -84,6 +87,7 @@ impl StreamEvent {
             rate_limit: None,
             widgets: None,
             provider_metadata: None,
+            stop_reason: None,
         }
     }
 
@@ -97,6 +101,7 @@ impl StreamEvent {
             rate_limit: None,
             widgets: None,
             provider_metadata: None,
+            stop_reason: None,
         }
     }
 
@@ -110,6 +115,7 @@ impl StreamEvent {
             rate_limit: None,
             widgets: None,
             provider_metadata: None,
+            stop_reason: None,
         }
     }
 
@@ -123,6 +129,7 @@ impl StreamEvent {
             rate_limit: None,
             widgets: None,
             provider_metadata: None,
+            stop_reason: None,
         }
     }
 
@@ -136,6 +143,21 @@ impl StreamEvent {
             rate_limit: None,
             widgets: None,
             provider_metadata: None,
+            stop_reason: None,
+        }
+    }
+
+    pub fn done_with_reason(reason: impl Into<String>) -> Self {
+        Self {
+            event_type: StreamEventType::Done,
+            text: String::new(),
+            tool_call: None,
+            error: None,
+            usage: None,
+            rate_limit: None,
+            widgets: None,
+            provider_metadata: None,
+            stop_reason: Some(reason.into()),
         }
     }
 
@@ -149,6 +171,7 @@ impl StreamEvent {
             rate_limit: None,
             widgets: None,
             provider_metadata: None,
+            stop_reason: None,
         }
     }
 
@@ -162,6 +185,7 @@ impl StreamEvent {
             rate_limit: Some(meta),
             widgets: None,
             provider_metadata: None,
+            stop_reason: None,
         }
     }
 
@@ -175,6 +199,7 @@ impl StreamEvent {
             rate_limit: None,
             widgets: None,
             provider_metadata: None,
+            stop_reason: None,
         }
     }
 
@@ -192,6 +217,7 @@ impl StreamEvent {
             rate_limit: None,
             widgets,
             provider_metadata: None,
+            stop_reason: None,
         }
     }
 }
@@ -252,6 +278,10 @@ pub struct ChatRequest {
     /// with `cache_control: { type: "ephemeral" }`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cache_breakpoints: Vec<usize>,
+    /// Cancellation token for cooperative shutdown. CLI providers use this to
+    /// kill their child process when the user hits stop.
+    #[serde(skip)]
+    pub cancel_token: Option<CancellationToken>,
 }
 
 /// Sender half of a streaming event channel.

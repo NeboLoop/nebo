@@ -400,6 +400,7 @@ async fn test_provider_connection(provider: &dyn ai::Provider) -> Result<String,
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],
+        cancel_token: None,
     };
 
     match tokio::time::timeout(std::time::Duration::from_secs(15), provider.stream(&req)).await {

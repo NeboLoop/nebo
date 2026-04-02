@@ -511,6 +511,7 @@ impl Orchestrator {
                     "total_count": total,
                 })),
                 provider_metadata: None,
+                stop_reason: None,
             }).await;
 
             let runner = self.runner.clone();
@@ -574,6 +575,7 @@ impl Orchestrator {
                                 "current_operation": p.current_operation,
                             })),
                             provider_metadata: None,
+                            stop_reason: None,
                         }).await;
                     }
                 }
@@ -597,6 +599,7 @@ impl Orchestrator {
                                     "token_count": token_count,
                                 })),
                                 provider_metadata: None,
+                                stop_reason: None,
                             }).await;
                             results.push((tid, desc, result));
                         }

@@ -31,6 +31,8 @@ pub struct DynamicContext {
     pub neboloop_connected: bool,
     /// The channel this message arrived on (e.g., "web", "neboloop", "mcp").
     pub channel: String,
+    /// Work tasks for the current session (synced from pending_tasks).
+    pub work_tasks: Vec<crate::steering::WorkTask>,
 }
 
 /// Marker separating the stable/cacheable prefix (Sections 1–8) from
@@ -66,16 +68,15 @@ const SECTION_TOOLS_DECLARATION: &str = "## Your Tools\n\nYour tools are listed 
 
 const SECTION_COMM_STYLE: &str = r#"## Communication Style
 
-**Do not narrate routine tool calls.** Just call the tool. Don't say "Let me search your memory for that..." or "I'll check your calendar now..." — just do it and share the result.
+**ZERO text when making tool calls.** If you are calling a tool, output ONLY the tool call — no text before, between, or after it. Do not say "Let me...", "I'll now...", "Continuing to...", or ANY preamble. The user can see your tool calls — they do not need narration.
 
-**Report milestones, not steps.** When doing repetitive work (archiving emails, processing files, batch operations), work silently, then report the final result. Do NOT narrate each batch: bad: "Archived 60 emails. Let me continue with the next batch..." Good: "Archived 847 emails."
+**Report milestones, not steps.** When doing repetitive work (archiving emails, processing files, batch operations), work silently and only speak when ALL the work is done. Do NOT narrate each batch. Bad: "Archived 60 emails. Let me continue with the next batch..." Good: (make all tool calls silently, then at the very end) "Done — archived 847 emails. Kept 12 urgent items in your inbox."
 
-Lead with the result, not the reasoning. Focus output on: high-level status at natural milestones, errors or blockers that change the plan, decisions that genuinely need user input.
+**Do not repeat yourself.** Never restate information you already told the user. If you listed "keeping these urgent items" once, do not list them again on the next tool call. Each response must contain NEW information only.
 
-**Do not spam the user.** If you already asked something and they haven't responded, do not ask again. Do NOT narrate what you are about to do — just do it.
+**Do not spam the user.** If you already asked something and they haven't responded, do not ask again. The conversation IS the deliverable — do not create summary files or reports to disk.
 
-Keep narration brief and value-dense. Use plain human language, not technical jargon.
-**Do not create files as deliverables.** When you finish a task, tell the user the result. Do not write summary files, report documents, or recap markdown to disk. The conversation IS the deliverable."#;
+Keep narration brief and value-dense. Use plain human language, not technical jargon."#;
 
 const SECTION_STRAP_HEADER: &str = "## Your Tools (STRAP Pattern)\n\nYour tools use the STRAP pattern: Single Tool, Resource, Action, Parameters.\nCall them like: tool_name(resource: \"resource\", action: \"action\", param: \"value\")";
 
@@ -176,8 +177,11 @@ Route every request to a tool call. Whether responding to a user message, execut
 **Multiple independent tasks in one request:**
 → Spawn sub-agents: agent(resource: "task", action: "spawn", ...) — don't serialize independent work
 
-**Multi-step work you're doing yourself:**
-→ Track steps: agent(resource: "task", action: "create", ...) then update as you go
+**Multi-step work you're doing yourself (3+ steps):**
+→ ALWAYS create work tasks first: agent(resource: "task", action: "create", subject: "step name", details: "resource IDs, URLs, etc.")
+→ Include resource IDs (spreadsheet IDs, document IDs, URLs) in the details field
+→ Check your task list before creating any new resource — if you already created it, reuse it
+→ Update task status as you complete each step: agent(resource: "task", action: "update", task_id: "...", status: "completed")
 
 **Complex requests = chain tools:**
 → "Research and remember" = web + memory
@@ -190,7 +194,7 @@ Route every request to a tool call. Whether responding to a user message, execut
 → The event run can use agent(resource: "session", action: "query") to pull context from the original conversation"#;
 
 const SECTION_BEHAVIOR: &str = r#"## Tool Execution
-- Call tools directly. Share results concisely. Don't narrate routine calls.
+- Call tools directly with ZERO narration. If your response contains a tool call, it should contain NOTHING else — no text, no explanation, no status update.
 - Complete multi-step tasks in one go — call tools back-to-back, only respond with text after ALL steps are done.
 - If something fails, DIAGNOSE why before retrying. Read the error, check assumptions, try a focused fix. Do NOT retry the identical action blindly — if the same approach failed twice, it will fail a third time.
 - Chain tools freely — most real requests need 2-3 tools together.
@@ -245,7 +249,9 @@ You are expected to work autonomously. The user gives you a task and expects you
 
 **When the user repeats themselves or uses forceful language, it means you failed to act.** Treat repeated instructions as a signal to STOP deliberating and START executing. The appropriate response to "just do it" is a tool call, not more text.
 
-**Escalating demands = you are doing it wrong.** If the user's tone is getting more insistent, you are asking too many questions or moving too slowly. Respond by working faster and more silently, not by asking another question."#;
+**Escalating demands = you are doing it wrong.** If the user's tone is getting more insistent, you are asking too many questions or moving too slowly. Respond by working faster and more silently, not by asking another question.
+
+**Context is unlimited.** Old messages are automatically compacted as needed — you will never run out of space. There is no need to rush, summarize prematurely, or stop early because the conversation is long. Keep working at full thoroughness regardless of turn count."#;
 
 const SECTION_SYSTEM_ETIQUETTE: &str = r#"## Shared Computer Etiquette
 
@@ -546,6 +552,24 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         sb.push_str("\n---");
     }
 
+    // 5. Current work tasks
+    if !dctx.work_tasks.is_empty() {
+        sb.push_str("\n\n---\n## Current Work Tasks\nDo NOT recreate resources that already exist. Check this list before creating anything new.\n");
+        for task in &dctx.work_tasks {
+            let icon = match task.status.as_str() {
+                "completed" => "completed",
+                "in_progress" => "in_progress",
+                _ => "pending",
+            };
+            if let Some(ref details) = task.details {
+                sb.push_str(&format!("- [{}] {} — {}\n", icon, task.subject, details));
+            } else {
+                sb.push_str(&format!("- [{}] {}\n", icon, task.subject));
+            }
+        }
+        sb.push_str("---");
+    }
+
     sb
 }
 
@@ -657,6 +681,7 @@ mod tests {
             summary: "User asked about web development".to_string(),
             neboloop_connected: false,
             channel: "web".to_string(),
+            work_tasks: vec![],
         };
         let result = build_dynamic_suffix(&dctx);
         assert!(result.contains("anthropic/claude-sonnet-4"));

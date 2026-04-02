@@ -40,6 +40,8 @@ const MAX_RETRYABLE_RETRIES: usize = 5;
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
 /// Max auto-continuations when agent stops mid-task.
 const MAX_AUTO_CONTINUATIONS: usize = 5;
+/// Max recovery attempts when output is truncated by token limit.
+const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
 
 /// JSON shape for tool results stored in the DB. Includes optional image_url
 /// so vision-capable providers can receive screenshots in tool result content.
@@ -89,6 +91,10 @@ pub struct RunRequest {
     pub presence_tracker: Option<Arc<crate::proactive::PresenceTracker>>,
     /// Proactive inbox (shared Arc, drained once per run).
     pub proactive_inbox: Option<Arc<crate::proactive::ProactiveInbox>>,
+    /// Minimum iterations before allowing the agent to stop naturally.
+    /// When set, the runner forces continuation even on text-only responses
+    /// until this many iterations have been reached.
+    pub min_iterations: usize,
 }
 
 /// Per-run mutable state (prevents data races across concurrent runs).
@@ -351,6 +357,7 @@ impl Runner {
 
         let cancel_token = req.cancel_token.clone();
         let max_iterations = if req.max_iterations > 0 { req.max_iterations } else { DEFAULT_MAX_ITERATIONS };
+        let min_iterations = req.min_iterations;
         let entity_permissions = req.permissions.clone();
         let entity_resource_grants = req.resource_grants.clone();
         let personality_snippet = req.personality_snippet.clone();
@@ -401,6 +408,7 @@ impl Runner {
                 &allowed_paths,
                 presence_tracker.as_ref(),
                 proactive_inbox.as_ref(),
+                min_iterations,
             )
             .await;
 
@@ -437,6 +445,7 @@ impl Runner {
             enable_thinking: false,
             metadata: None,
             cache_breakpoints: vec![],
+            cancel_token: None,
         };
 
         let mut rx = prov_lock[0].stream(&req).await?;
@@ -503,15 +512,19 @@ async fn run_loop(
     allowed_paths: &[String],
     presence_tracker: Option<&Arc<crate::proactive::PresenceTracker>>,
     proactive_inbox: Option<&Arc<crate::proactive::ProactiveInbox>>,
+    min_iterations: usize,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
     let mut retryable_retries = 0usize;
     let mut called_tools: Vec<String> = Vec::new();
+    // Rolling hashes of recent tool results for stale-result detection in steering
+    let mut recent_tool_result_hashes: Vec<(u64, u64)> = Vec::new();
     let mut provider_idx: usize = 0;
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
     let mut auto_continuations = 0usize;
+    let mut output_recovery_attempts = 0usize;
     let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
     // Deferred tools that have been activated (keyword-matched or first-called)
@@ -717,6 +730,7 @@ async fn run_loop(
                     work_tasks: vec![],
                     quota_warning: None,
                     consecutive_error_iterations,
+                    recent_tool_result_hashes: recent_tool_result_hashes.clone(),
                     user_presence: String::new(),
                     user_just_returned: false,
                     proactive_items: vec![],
@@ -891,9 +905,10 @@ async fn run_loop(
             channel: channel.to_string(),
             agent_name: "Nebo".to_string(),
             iteration,
-            work_tasks,
+            work_tasks: work_tasks.clone(),
             quota_warning: state.quota_warning.clone(),
             consecutive_error_iterations,
+            recent_tool_result_hashes: recent_tool_result_hashes.clone(),
             user_presence,
             user_just_returned,
             proactive_items,
@@ -915,6 +930,7 @@ async fn run_loop(
                 rate_limit: None,
                 widgets: None,
                 provider_metadata: None,
+                stop_reason: None,
             }).await;
             break;
         }
@@ -1008,6 +1024,7 @@ async fn run_loop(
             summary: summary.clone(),
             neboloop_connected: channel == "neboloop",
             channel: channel.to_string(),
+            work_tasks: work_tasks.clone(),
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
@@ -1070,6 +1087,7 @@ async fn run_loop(
             enable_thinking,
             metadata: sticky_metadata.clone(),
             cache_breakpoints,
+            cancel_token: Some(cancel_token.clone()),
         };
 
         // Acquire LLM permit before provider call (blocks if at capacity)
@@ -1205,6 +1223,7 @@ async fn run_loop(
         let mut assistant_content = String::new();
         let mut tool_calls: Vec<ai::ToolCall> = Vec::new();
         let mut stream_error: Option<String> = None;
+        let mut stop_reason: Option<String> = None;
         // Track the order of content blocks (text vs tool) for correct rehydration.
         // Each entry is either "text" (coalesced) or a tool index.
         let mut block_order: Vec<(&str, Option<usize>)> = Vec::new();
@@ -1309,12 +1328,17 @@ async fn run_loop(
                                     rate_limit: event.rate_limit.clone(),
                                     widgets: None,
                                     provider_metadata: None,
+                                    stop_reason: None,
                                 }).await;
                             }
                         }
                     }
                 }
                 StreamEventType::Done => {
+                    // Capture stop reason for max output recovery
+                    if event.stop_reason.is_some() {
+                        stop_reason = event.stop_reason.clone();
+                    }
                     // Capture provider metadata for Janus tool stickiness
                     if let Some(meta) = event.provider_metadata {
                         sticky_metadata = Some(meta);
@@ -1571,6 +1595,7 @@ async fn run_loop(
                         rate_limit: None,
                         widgets: None,
                         provider_metadata: None,
+                        stop_reason: None,
                     })
                     .await;
                 results[idx] = Some((tc, result));
@@ -1667,6 +1692,24 @@ async fn run_loop(
                 );
             }
 
+            // Compute tool result hashes for stale-result detection.
+            // Uses a simple FNV-style hash of tool name + result content.
+            for tc in &tool_calls {
+                let name_hash = simple_hash(tc.name.as_bytes());
+                // Hash first 2000 bytes of the most recent result for this tool
+                let content_hash = sessions.get_messages(session_id)
+                    .ok()
+                    .and_then(|msgs| msgs.iter().rev().find(|m| m.role == "tool").cloned())
+                    .and_then(|m| m.tool_results)
+                    .map(|tr| simple_hash(tr.as_bytes().get(..2000).unwrap_or(tr.as_bytes())))
+                    .unwrap_or(0);
+                recent_tool_result_hashes.push((name_hash, content_hash));
+                // Keep only last 5
+                if recent_tool_result_hashes.len() > 5 {
+                    recent_tool_result_hashes.remove(0);
+                }
+            }
+
             // Update consecutive error iteration counter
             if had_results && all_errors_this_iteration {
                 consecutive_error_iterations += 1;
@@ -1697,6 +1740,44 @@ async fn run_loop(
             continue;
         }
 
+        // Max output tokens recovery: if response was truncated, force continuation
+        if stop_reason.as_deref() == Some("length")
+            || stop_reason.as_deref() == Some("max_tokens")
+        {
+            if output_recovery_attempts < MAX_OUTPUT_RECOVERY_ATTEMPTS {
+                output_recovery_attempts += 1;
+                info!(iteration, session_id, attempt = output_recovery_attempts, "max output tokens recovery");
+                continuation_steering = Some(
+                    "<system>Your previous response was cut off by the output token limit. \
+                     Resume directly from where you stopped. No recap, no apology. \
+                     If you had pending tool calls, make them now.</system>".to_string()
+                );
+                continue;
+            }
+        }
+        // Reset recovery counter on successful non-truncated completion
+        if stop_reason.as_deref() != Some("length") && stop_reason.as_deref() != Some("max_tokens") {
+            output_recovery_attempts = 0;
+        }
+
+        // Token budget continuation: if min_iterations is set and not yet reached,
+        // force-continue even if the LLM wants to stop.
+        if min_iterations > 0 && iteration < min_iterations && tool_calls.is_empty() {
+            if cancel_token.is_cancelled() {
+                info!(session_id, "skipping budget continuation: run was cancelled");
+                break;
+            }
+            if !assistant_content.is_empty() {
+                info!(iteration, session_id, min = min_iterations, "budget continuation: forcing next iteration");
+                continuation_steering = Some(
+                    "<system>You stopped early but your task is not complete. \
+                     Keep working — use your tools to make more progress. \
+                     Do not summarize or ask to continue. Take the next action.</system>".to_string()
+                );
+                continue;
+            }
+        }
+
         // No tool calls — check if we should auto-continue
         let has_task_context = !active_task.is_empty() || user_demanded_action(&all_messages);
         let looks_like_pause = looks_like_continuation_pause(&assistant_content)
@@ -1706,6 +1787,10 @@ async fn run_loop(
             && auto_continuations < MAX_AUTO_CONTINUATIONS
             && looks_like_pause
         {
+            if cancel_token.is_cancelled() {
+                info!(session_id, "skipping auto-continue: run was cancelled");
+                break;
+            }
             auto_continuations += 1;
             info!(
                 iteration, session_id,
@@ -2180,6 +2265,7 @@ OR {{"action": "keep"}}
         enable_thinking: false,
         metadata: None,
         cache_breakpoints: vec![],
+        cancel_token: None,
     };
 
     let stream_result = provider.stream(&req).await;
@@ -2270,6 +2356,16 @@ fn build_system_prompt(custom_system: &str, memory_context: &str) -> String {
 /// "@nebo/skills/gws-gmail@^1.0.0" → "gws-gmail"
 /// "SKIL-ABCD-1234" → "SKIL-ABCD-1234" (passed through)
 /// "gws-gmail" → "gws-gmail" (plain names pass through)
+/// Simple FNV-1a hash for stale-result detection. Not cryptographic.
+fn simple_hash(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &byte in data {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 fn extract_skill_name(skill_ref: &str) -> String {
     if skill_ref.starts_with('@') {
         let without_at = &skill_ref[1..];

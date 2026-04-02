@@ -1214,13 +1214,11 @@ Use this before committing or when reviewing code.
 ## Related SME Documents
 
 - **MIGRATION-SME.md** — Master migration index, gap analysis, route/tool mappings, roadmap
-- **MEMORY_AND_PROMPT.md** — Memory extraction, prompt assembly, 31-step pipeline
-- **workflow-engine.md** — Workflow execution (lean mode), activity model, token budgets
-- **platform-taxonomy.md** — Skills, Tools, Workflows, Roles taxonomy spec
-- **agent-core.md** — Runner, steering, sessions, skills, AI providers (deep dive)
-- **agent-tools.md** — Tool registry, STRAP pattern, 20+ tools (deep dive)
-- **lanes-and-hub.md** — Lane system, hub, WebSocket lifecycle (deep dive)
-- **browser-and-relay.md** — Chrome/CDP, extension relay (deep dive)
-- **mcp-and-comm.md** — MCP server/client/bridge, NeboLoop comm (deep dive)
-- **middleware-and-config.md** — All middleware, security, config (deep dive)
-- **handlers-cli-db.md** — 60+ handlers, CLI commands, DB layer (deep dive)
+- **MEMORY_AND_PROMPT.md** — Memory extraction, prompt assembly, steering pipeline
+- **CHAT_SYSTEM.md** — Runner, steering, sessions, lanes, WebSocket lifecycle
+- **AUTOMATION_SME.md** — Workflow execution, activity model, token budgets
+- **SKILLS_SME.md** — Skills platform, taxonomy, tool/workflow/role artifacts
+- **BROWSER_AUTOMATION.md** — Chrome/CDP, extension relay
+- **MCP_SYSTEM.md** — MCP server/client/bridge, NeboLoop comm
+- **PERMISSIONS_SME.md** — Security middleware, tool policy, approval flows
+- **PROVIDER_SYSTEM.md** — AI providers, model selection, Janus gateway
