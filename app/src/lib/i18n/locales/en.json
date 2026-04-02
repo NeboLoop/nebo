@@ -1325,7 +1325,13 @@
 		"assistantPlaceholder": "Define the assistant's personality, role, and behavioral guidelines. e.g. You are a personal companion who helps manage daily tasks... Type / to mention an MCP, skill, or agent.",
 		"personaPlaceholder": "Define this agent's personality, role, and behavioral guidelines. e.g. You are a chief of staff who manages the executive's daily rhythm... Type / to mention an MCP, skill, or agent.",
 		"undo": "Undo",
-		"redo": "Redo"
+		"redo": "Redo",
+		"properties": "Properties",
+		"propertiesEmpty": "No properties. Add one to configure skills, pricing, or custom settings.",
+		"addProperty": "Add property",
+		"propertyName": "Property name",
+		"propertyValue": "Value",
+		"removeProperty": "Remove {key}"
 	},
 	"agentActivity": {
 		"overview": "Overview",

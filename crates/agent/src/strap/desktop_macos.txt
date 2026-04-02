@@ -43,3 +43,9 @@ USE THIS when: user wants to interact with the GUI — click, type, screenshot, 
 - os(resource: "screenshot", action: "capture", format: "file") — Capture and save to disk (returns inline image URL)
 - os(resource: "screenshot", action: "see", app: "Safari") — Capture specific app with annotated element IDs
 - os(resource: "tts", action: "speak", text: "Hello") — Text-to-speech
+
+Speed — chain actions from one snapshot:
+- After capture(action: see), you can chain MULTIPLE input actions from the same snapshot in one response — they share element IDs.
+- Example: click a text field AND type into it in one response: [click(element_id: "T1"), type(element_id: "T1", text: "hello")]
+- Element IDs remain valid until the next capture(action: see). Chain as many inputs as you can before re-seeing.
+- Only re-see when you need to verify the result or the UI may have changed significantly.

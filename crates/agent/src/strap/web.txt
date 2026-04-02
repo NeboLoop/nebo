@@ -11,10 +11,10 @@ Decision: If you just need an API response or static HTML → fetch. If you need
 When using browser actions, you MUST behave like a real person browsing the web:
 - **Read before interacting:** Always read_page first to understand what's on screen before clicking anything
 - **Scroll to explore:** Real people scroll down pages to see more content. NEVER assume you can see everything without scrolling
-- **Click naturally:** Click on links, buttons, and elements as a curious person would. Read → think → click → read again
+- **Click naturally:** Click on links, buttons, and elements as a curious person would. After clicking a navigation link, read_page to see the new page. After clicking a button that doesn't navigate, you may not need to re-read.
 - **Navigate within tabs:** Once you open a tab for a task (like YouTube monitoring), stay in that tab and navigate naturally with clicks and scrolling
 - **One tab per task:** Open ONE new tab for each distinct task, then do all your work in that tab before closing it
-- **Timing matters:** After clicking or submitting forms, wait briefly (1-2 seconds) before reading the page again
+- **Don't wait unnecessarily:** After clicking or submitting forms, read_page immediately — the extension handles page load timing internally. Only use wait() when you can see a loading spinner or know the page needs time (e.g. after form submission to an API).
 - **Follow the flow:** Homepage → search box → type query → Enter → read results → click result → read page → go_back if needed
 Anti-bot sites (Google, Yelp, social media) WILL block you if you don't browse like a human. Scroll, click, read naturally.
 
@@ -99,3 +99,9 @@ DO NOT just navigate and read_page once. Real pages have content below the fold.
 DO NOT give up after a single read_page. If you don't see what you need, scroll down or try a different approach.
 NEVER navigate directly to a URL with search query params (e.g. yelp.com/search?q=..., google.com/search?q=...). This triggers anti-bot detection and gets you blocked. Instead, navigate to the site's homepage, find the search box, click it, type your query, and press Enter — exactly like a real person would.
 When researching, CLICK INTO links and pages to get details. Don't just read titles from a list — open the actual pages, read them, go_back, and try the next one. Browse like a curious person who clicks things to learn more.
+
+Speed matters — chain tool calls:
+- You can return MULTIPLE tool calls in a single response. They execute concurrently.
+- For sequences where the second call doesn't depend on the first's result, chain them: e.g., click a button AND read a different element in one response.
+- For dependent sequences (click → read_page to see result), you must use separate responses since read_page needs the click to complete first.
+- NEVER call wait() between actions unless you see a loading state. The extension handles timing.

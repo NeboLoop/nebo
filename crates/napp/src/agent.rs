@@ -307,13 +307,23 @@ pub enum AgentTrigger {
     Event { sources: Vec<String> },
     /// Watch trigger — spawns a plugin process that emits NDJSON to stdout.
     /// Each line triggers a workflow run with the parsed JSON as `_watch_payload`.
+    /// When `event` is set, NDJSON output also auto-emits into the EventBus
+    /// as `{plugin}.{event_name}`, and the command is resolved from the plugin
+    /// manifest if not explicitly provided.
     #[serde(rename = "watch")]
     Watch {
         /// Plugin slug (e.g., "gws").
         plugin: String,
         /// CLI args passed to the plugin binary (e.g., "gmail +watch --project my-proj").
         /// Supports `{{key}}` template substitution from agent input values.
+        /// Optional when `event` is set — resolved from plugin manifest.
+        #[serde(default)]
         command: String,
+        /// Plugin event name to watch (e.g., "email.new"). Enables auto-emission
+        /// into EventBus as `{plugin}.{event_name}`. If set, the command can be
+        /// omitted and will be resolved from the plugin manifest's event definition.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event: Option<String>,
         /// Seconds to wait before restarting on crash (default: 5).
         #[serde(default = "default_restart_delay")]
         restart_delay_secs: u64,
@@ -487,17 +497,32 @@ pub fn parse_agent(content: &str) -> Result<AgentDef, NappError> {
 }
 
 /// Split `---` delimited frontmatter from the markdown body.
-fn split_frontmatter(content: &str) -> Result<(String, String), NappError> {
-    let trimmed = content.trim_start();
-    let after_first = &trimmed[3..];
-    let close_pos = after_first
-        .find("\n---")
-        .ok_or_else(|| NappError::Manifest("missing closing --- in frontmatter".into()))?;
+/// Returns `(yaml_str, body)`. If no frontmatter found, yaml_str is empty.
+pub fn split_frontmatter(content: &str) -> Result<(String, String), NappError> {
+    let trimmed = content.trim();
+    if !trimmed.starts_with("---") {
+        return Ok((String::new(), trimmed.to_string()));
+    }
 
-    let yaml = after_first[..close_pos].trim().to_string();
-    let body = after_first[close_pos + 4..].trim().to_string();
-
-    Ok((yaml, body))
+    let after_first = trimmed[3..].trim_start();
+    match after_first.find("\n---") {
+        Some(pos) => {
+            let yaml = after_first[..pos].trim().to_string();
+            let body = after_first[pos + 4..].trim().to_string();
+            Ok((yaml, body))
+        }
+        None => {
+            // No closing delimiter — split at first blank line
+            match after_first.find("\n\n") {
+                Some(pos) => {
+                    let yaml = after_first[..pos].trim().to_string();
+                    let body = after_first[pos..].trim().to_string();
+                    Ok((yaml, body))
+                }
+                None => Ok((String::new(), trimmed.to_string())),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -605,10 +630,36 @@ mod tests {
         let config = parse_agent_config(json).unwrap();
         let binding = &config.workflows["inbox-watcher"];
         match &binding.trigger {
-            AgentTrigger::Watch { plugin, command, restart_delay_secs } => {
+            AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
                 assert_eq!(plugin, "gws");
                 assert!(command.contains("gmail +watch"));
+                assert!(event.is_none());
                 assert_eq!(*restart_delay_secs, 5); // default
+            }
+            other => panic!("expected Watch trigger, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_watch_trigger_with_event() {
+        let json = r#"{
+            "workflows": {
+                "inbox-watcher": {
+                    "trigger": {
+                        "type": "watch",
+                        "plugin": "gws",
+                        "event": "email.new"
+                    }
+                }
+            }
+        }"#;
+        let config = parse_agent_config(json).unwrap();
+        let binding = &config.workflows["inbox-watcher"];
+        match &binding.trigger {
+            AgentTrigger::Watch { plugin, command, event, .. } => {
+                assert_eq!(plugin, "gws");
+                assert!(command.is_empty()); // resolved at runtime from manifest
+                assert_eq!(event.as_deref(), Some("email.new"));
             }
             other => panic!("expected Watch trigger, got {:?}", other),
         }

@@ -33,25 +33,51 @@ fn extract_agent_json_str(body: &serde_json::Value) -> Option<String> {
 }
 
 /// Parse AGENT.md content: extract YAML frontmatter between `---` delimiters.
+/// If content starts with `---` but has no closing delimiter, treats as pure prose.
 fn parse_agent_md(content: &str) -> Result<(AgentFrontmatter, String), types::NeboError> {
-    let trimmed = content.trim();
-    if !trimmed.starts_with("---") {
-        // Pure prose (no frontmatter) — modern preferred format
-        return Ok((AgentFrontmatter::default(), trimmed.to_string()));
+    let (yaml_str, body) = napp::agent::split_frontmatter(content)
+        .map_err(|e| types::NeboError::Validation(e.to_string()))?;
+    if yaml_str.is_empty() {
+        return Ok((AgentFrontmatter::default(), body));
     }
 
-    let after_first = &trimmed[3..];
-    let end_pos = after_first
-        .find("---")
-        .ok_or_else(|| types::NeboError::Validation("missing closing --- in frontmatter".into()))?;
-
-    let yaml_str = &after_first[..end_pos];
-    let body = after_first[end_pos + 3..].trim().to_string();
-
-    let fm: AgentFrontmatter = serde_yaml::from_str(yaml_str)
+    let fm: AgentFrontmatter = serde_yaml::from_str(&yaml_str)
         .map_err(|e| types::NeboError::Validation(format!("invalid YAML frontmatter: {}", e)))?;
 
     Ok((fm, body))
+}
+
+/// Parse frontmatter YAML into a list of {key, value} objects for the frontend.
+/// Value is either a string or an array of strings.
+fn parse_persona_properties(yaml_str: &str) -> Vec<serde_json::Value> {
+    if yaml_str.is_empty() {
+        return vec![];
+    }
+    // Parse as generic YAML mapping
+    let mapping: serde_yaml::Mapping = match serde_yaml::from_str(yaml_str) {
+        Ok(m) => m,
+        Err(_) => return vec![],
+    };
+    mapping.into_iter().filter_map(|(k, v)| {
+        let key = match k {
+            serde_yaml::Value::String(s) => s,
+            _ => return None,
+        };
+        let value = match v {
+            serde_yaml::Value::String(s) => serde_json::json!(s),
+            serde_yaml::Value::Number(n) => serde_json::json!(n.to_string()),
+            serde_yaml::Value::Bool(b) => serde_json::json!(b.to_string()),
+            serde_yaml::Value::Sequence(seq) => {
+                let items: Vec<String> = seq.into_iter().filter_map(|item| match item {
+                    serde_yaml::Value::String(s) => Some(s),
+                    other => Some(format!("{:?}", other)),
+                }).collect();
+                serde_json::json!(items)
+            }
+            _ => serde_json::json!(""),
+        };
+        Some(serde_json::json!({ "key": key, "value": value }))
+    }).collect()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -367,10 +393,16 @@ pub async fn get_agent(
         vec![]
     };
 
+    // Split agentMd into properties + body for the persona editor
+    let (yaml_str, persona_body) = napp::agent::split_frontmatter(&agent.agent_md).unwrap_or_default();
+    let persona_properties = parse_persona_properties(&yaml_str);
+
     Ok(Json(serde_json::json!({
         "agent": agent,
         "version": version,
         "inputFields": input_fields,
+        "personaProperties": persona_properties,
+        "personaBody": persona_body,
     })))
 }
 
@@ -608,13 +640,16 @@ pub async fn process_agent_bindings(
                 ("heartbeat", cfg)
             }
             napp::agent::AgentTrigger::Event { sources } => ("event", sources.join(",")),
-            napp::agent::AgentTrigger::Watch { plugin, command, restart_delay_secs } => {
-                let cfg = serde_json::json!({
+            napp::agent::AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+                let mut cfg = serde_json::json!({
                     "plugin": plugin,
                     "command": command,
                     "restart_delay_secs": restart_delay_secs
-                }).to_string();
-                ("watch", cfg)
+                });
+                if let Some(ev) = event {
+                    cfg["event"] = serde_json::json!(ev);
+                }
+                ("watch", cfg.to_string())
             }
             napp::agent::AgentTrigger::Manual => ("manual", String::new()),
         };
@@ -1381,9 +1416,10 @@ pub async fn chat_with_agent(
         comm_reply: None,
         entity_config,
         images: vec![],
+        entity_name: String::new(),
     };
 
-    crate::chat_dispatch::run_chat(&state, config, None).await;
+    crate::chat_dispatch::run_chat(&state, config).await;
 
     Ok(Json(serde_json::json!({
         "sessionId": session_key,

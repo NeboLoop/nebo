@@ -38,10 +38,21 @@ const MAX_TRANSIENT_RETRIES: usize = 10;
 const MAX_RETRYABLE_RETRIES: usize = 5;
 /// Timeout for individual tool execution.
 const TOOL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(300);
-/// Max auto-continuations when agent stops mid-task.
-const MAX_AUTO_CONTINUATIONS: usize = 5;
+/// Default max auto-continuations when agent stops mid-task (no work tasks).
+const MAX_AUTO_CONTINUATIONS_DEFAULT: usize = 5;
+/// Ceiling for auto-continuations even with many work tasks.
+const MAX_AUTO_CONTINUATIONS_CEILING: usize = 50;
 /// Max recovery attempts when output is truncated by token limit.
 const MAX_OUTPUT_RECOVERY_ATTEMPTS: usize = 3;
+
+/// Pick a non-gateway provider when available.  Falls back to first provider
+/// (which may be Janus) only when no other option exists.  This prevents
+/// background operations (memory extraction, compaction, summarisation) from
+/// burning Janus credits when a CLI or direct-API provider is loaded.
+fn prefer_non_gateway(providers: &[Arc<dyn Provider>]) -> Option<Arc<dyn Provider>> {
+    providers.iter().find(|p| p.id() != "janus").cloned()
+        .or_else(|| providers.first().cloned())
+}
 
 /// JSON shape for tool results stored in the DB. Includes optional image_url
 /// so vision-capable providers can receive screenshots in tool result content.
@@ -95,6 +106,20 @@ pub struct RunRequest {
     /// When set, the runner forces continuation even on text-only responses
     /// until this many iterations have been reached.
     pub min_iterations: usize,
+    /// Optional progress counters shared with the global RunRegistry.
+    /// When set, the runner updates these atomics during run_loop() so
+    /// external observers can see live iteration/tool counts.
+    pub progress: Option<RunProgress>,
+}
+
+/// Shared atomic counters for live run progress reporting.
+/// Created by the server's RunRegistry and threaded into the runner.
+#[derive(Clone, Debug)]
+pub struct RunProgress {
+    pub run_id: String,
+    pub iteration_count: Arc<std::sync::atomic::AtomicU32>,
+    pub tool_call_count: Arc<std::sync::atomic::AtomicU32>,
+    pub current_tool: Arc<std::sync::Mutex<String>>,
 }
 
 /// Per-run mutable state (prevents data races across concurrent runs).
@@ -245,7 +270,7 @@ impl Runner {
                 //    never touches the session or DB.
                 let cheap_model = self.selector.get_cheapest_model();
                 let summary = {
-                    let prov = self.providers.read().await.first().cloned();
+                    let prov = prefer_non_gateway(&self.providers.read().await);
                     match prov {
                         Some(p) => {
                             crate::large_input::summarize(
@@ -364,6 +389,7 @@ impl Runner {
         let allowed_paths = req.allowed_paths.clone();
         let presence_tracker = req.presence_tracker.clone();
         let proactive_inbox = req.proactive_inbox.clone();
+        let progress = req.progress.clone();
 
         // Set MCP context so CLI providers can access tools with the right session info
         if let Some(ref mcp_ctx) = self.mcp_context {
@@ -409,6 +435,7 @@ impl Runner {
                 presence_tracker.as_ref(),
                 proactive_inbox.as_ref(),
                 min_iterations,
+                progress.as_ref(),
             )
             .await;
 
@@ -513,6 +540,7 @@ async fn run_loop(
     presence_tracker: Option<&Arc<crate::proactive::PresenceTracker>>,
     proactive_inbox: Option<&Arc<crate::proactive::ProactiveInbox>>,
     min_iterations: usize,
+    progress: Option<&RunProgress>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
@@ -524,9 +552,20 @@ async fn run_loop(
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
     let mut auto_continuations = 0usize;
+    // Sticky flag: once user demands action ("don't stop", "do them all"), stays true for the run
+    let mut user_demanded_action_sticky = user_demanded_action(&sessions.get_messages(session_id).unwrap_or_default());
+    // Cache for tool documentation (help/schema results) — survives sliding window eviction
+    // via injection into the dynamic suffix. Max 5 entries, LRU-evict oldest.
+    let mut tool_doc_cache: Vec<(String, String)> = Vec::new();
+    const MAX_TOOL_DOC_ENTRIES: usize = 5;
+    const MAX_TOOL_DOC_CONTENT: usize = 4_000;
     let mut output_recovery_attempts = 0usize;
     let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
+    // Circuit breaker for LLM compaction: after 3 consecutive failures, fall
+    // back to quick summary (truncated user messages + tool names) to avoid
+    // hammering the provider with doomed calls.
+    let mut compaction_failures: u32 = 0;
     // Deferred tools that have been activated (keyword-matched or first-called)
     let mut activated_deferred: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -573,8 +612,8 @@ async fn run_loop(
         }
     }
 
-    // Get active task
-    let active_task = sessions
+    // Get active task (mutable: refreshed periodically to catch async detect_objective)
+    let mut active_task = sessions
         .get_active_task(session_id)
         .unwrap_or_default();
 
@@ -711,6 +750,11 @@ async fn run_loop(
     let hard_ceiling = max_iterations.max(EXTENDED_MAX_ITERATIONS);
 
     for iteration in 1..=hard_ceiling {
+        // Update progress counter for external observers (RunRegistry dashboard)
+        if let Some(p) = progress {
+            p.iteration_count.store(iteration as u32, std::sync::atomic::Ordering::Relaxed);
+        }
+
         if cancel_token.is_cancelled() {
             info!(session_id, "run cancelled before iteration {}", iteration);
             return Ok(());
@@ -773,6 +817,22 @@ async fn run_loop(
                 .map_err(|e| format!("failed to load messages: {}", e))?,
         );
 
+        // Refresh active_task from DB periodically to catch:
+        // 1. Background detect_objective() completing after initial read
+        // 2. Task updates from tool calls (bot:task:update)
+        if iteration <= 5 || iteration % 10 == 0 {
+            let refreshed = sessions.get_active_task(session_id).unwrap_or_default();
+            if !refreshed.is_empty() && refreshed != active_task {
+                info!(session_id, iteration, old = %active_task, new = %refreshed, "active_task refreshed from DB");
+                active_task = refreshed;
+            }
+        }
+
+        // Refresh sticky demand flag — once set, stays true for the entire run
+        if !user_demanded_action_sticky {
+            user_demanded_action_sticky = user_demanded_action(&all_messages);
+        }
+
         if all_messages.is_empty() {
             let chat_id = sessions.resolve_session_key(session_id)
                 .unwrap_or_else(|_| format!("(unresolved, fallback=chat-{})", session_id));
@@ -783,52 +843,6 @@ async fn run_loop(
             );
             return Err(format!("No messages in session (session_id={}, chat_id={})", session_id, chat_id));
         }
-
-        // Apply sliding window
-        let (mut window_messages, evicted) =
-            pruning::apply_sliding_window(&all_messages, run_start_time);
-
-        // Build rolling summary if we evicted messages
-        let summary = if !evicted.is_empty() {
-            let existing_summary = sessions.get_summary(session_id).unwrap_or_default();
-            let cheap_model = selector.get_cheapest_model();
-            let prov = providers.read().await.first().cloned();
-            let new_summary = if let Some(prov) = prov {
-                pruning::build_llm_summary(
-                    prov.as_ref(),
-                    &evicted,
-                    &existing_summary,
-                    &active_task,
-                    &cheap_model,
-                )
-                .await
-                .unwrap_or_else(|e| {
-                    debug!(error = %e, "LLM compaction failed, using fallback");
-                    if existing_summary.is_empty() {
-                        pruning::build_quick_fallback_summary(&evicted, &active_task)
-                    } else {
-                        format!(
-                            "{}\n\n{}",
-                            existing_summary,
-                            pruning::build_quick_fallback_summary(&evicted, &active_task)
-                        )
-                    }
-                })
-            } else if existing_summary.is_empty() {
-                pruning::build_quick_fallback_summary(&evicted, &active_task)
-            } else {
-                format!(
-                    "{}\n\n{}",
-                    existing_summary,
-                    pruning::build_quick_fallback_summary(&evicted, &active_task)
-                )
-            };
-            // Persist so it survives across iterations
-            let _ = sessions.update_summary(session_id, &new_summary);
-            new_summary
-        } else {
-            sessions.get_summary(session_id).unwrap_or_default()
-        };
 
         // Compute prompt overhead on first iteration
         if iteration == 1 {
@@ -841,13 +855,93 @@ async fn run_loop(
             state.prompt_overhead = system_tokens + schema_tokens + 4000;
         }
 
-        // Compute context thresholds
+        // Compute context thresholds — use model's actual context window when
+        // available so large-context providers (200K Claude, 128K GPT-4o) aren't
+        // under-utilized.  Falls back to DEFAULT_CONTEXT_TOKEN_LIMIT (80K).
         let thresholds = state.thresholds.get_or_insert_with(|| {
-            ContextThresholds::from_context_window(
-                DEFAULT_CONTEXT_TOKEN_LIMIT,
-                state.prompt_overhead,
-            )
+            let model_ctx = if !model_override.is_empty() {
+                selector.get_model_info(model_override)
+                    .map(|m| m.context_window as usize)
+                    .filter(|&w| w > 0)
+            } else {
+                let default_model = selector.select(&[]);
+                if !default_model.is_empty() {
+                    selector.get_model_info(&default_model)
+                        .map(|m| m.context_window as usize)
+                        .filter(|&w| w > 0)
+                } else {
+                    None
+                }
+            };
+            let context_window = model_ctx.unwrap_or(DEFAULT_CONTEXT_TOKEN_LIMIT);
+            ContextThresholds::from_context_window(context_window, state.prompt_overhead)
         });
+
+        // Apply sliding window — token-only threshold (no message count limit).
+        // auto_compact is ~80% of effective context window, so eviction only
+        // fires when approaching the limit (Claude Code's proven approach).
+        let (mut window_messages, evicted) =
+            pruning::apply_sliding_window(&all_messages, run_start_time, thresholds.auto_compact);
+
+        // Build rolling summary if we evicted messages
+        let summary = if !evicted.is_empty() {
+            let existing_summary = sessions.get_summary(session_id).unwrap_or_default();
+            let cheap_model = selector.get_cheapest_model();
+            let prov = prefer_non_gateway(&providers.read().await);
+
+            let build_fallback = |existing: &str, evicted: &[ChatMessage], task: &str| -> String {
+                let fallback = pruning::build_quick_fallback_summary(evicted, task);
+                if existing.is_empty() {
+                    fallback
+                } else {
+                    format!("{}\n\n{}", existing, fallback)
+                }
+            };
+
+            let new_summary = if let Some(prov) = prov {
+                if compaction_failures >= 3 {
+                    // Circuit breaker: too many consecutive LLM compaction failures.
+                    // Fall back to quick summary (truncated user messages + tool names)
+                    // to avoid hammering the provider with doomed calls.
+                    debug!(
+                        failures = compaction_failures,
+                        "circuit breaker: skipping LLM compaction"
+                    );
+                    build_fallback(&existing_summary, &evicted, &active_task)
+                } else {
+                    match pruning::build_llm_summary(
+                        prov.as_ref(),
+                        &evicted,
+                        &existing_summary,
+                        &active_task,
+                        &cheap_model,
+                    )
+                    .await
+                    {
+                        Ok(s) => {
+                            compaction_failures = 0;
+                            s
+                        }
+                        Err(e) => {
+                            compaction_failures += 1;
+                            debug!(
+                                error = %e,
+                                failures = compaction_failures,
+                                "LLM compaction failed, using fallback"
+                            );
+                            build_fallback(&existing_summary, &evicted, &active_task)
+                        }
+                    }
+                }
+            } else {
+                build_fallback(&existing_summary, &evicted, &active_task)
+            };
+            // Persist so it survives across iterations
+            let _ = sessions.update_summary(session_id, &new_summary);
+            new_summary
+        } else {
+            sessions.get_summary(session_id).unwrap_or_default()
+        };
 
         // Micro-compact tool results if needed
         let (compacted_messages, _tokens_saved) =
@@ -1025,6 +1119,7 @@ async fn run_loop(
             neboloop_connected: channel == "neboloop",
             channel: channel.to_string(),
             work_tasks: work_tasks.clone(),
+            tool_doc_cache: tool_doc_cache.clone(),
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
@@ -1091,7 +1186,13 @@ async fn run_loop(
         };
 
         // Acquire LLM permit before provider call (blocks if at capacity)
-        let _llm_permit = concurrency.acquire_llm_permit().await;
+        let _llm_permit = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                info!(session_id, "run cancelled waiting for LLM permit");
+                return Ok(());
+            }
+            permit = concurrency.acquire_llm_permit() => permit,
+        };
 
         // Snapshot provider from lock, then release before I/O
         let provider = {
@@ -1137,7 +1238,13 @@ async fn run_loop(
             chat_req.model = String::new();
         }
 
-        let stream_result = provider.stream(&chat_req).await;
+        let stream_result = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                info!(session_id, "run cancelled during provider.stream() call");
+                return Ok(());
+            }
+            result = provider.stream(&chat_req) => result,
+        };
 
         let mut rx = match stream_result {
             Ok(rx) => {
@@ -1227,11 +1334,29 @@ async fn run_loop(
         // Track the order of content blocks (text vs tool) for correct rehydration.
         // Each entry is either "text" (coalesced) or a tool index.
         let mut block_order: Vec<(&str, Option<usize>)> = Vec::new();
+        // CLI providers run multi-turn tool loops — save each turn incrementally.
+        let cli_incremental = provider.handles_tools();
 
         loop {
             let event = tokio::select! {
                 _ = cancel_token.cancelled() => {
                     info!(session_id, "run cancelled during LLM stream");
+                    // Best-effort: save whatever content we accumulated before cancellation
+                    if !assistant_content.is_empty() || !tool_calls.is_empty() {
+                        let tc_json = if !tool_calls.is_empty() {
+                            serde_json::to_string(&tool_calls).ok()
+                        } else {
+                            None
+                        };
+                        if let Err(e) = sessions.append_message(
+                            session_id, "assistant", &assistant_content,
+                            tc_json.as_deref(), None, None,
+                        ) {
+                            warn!(session_id = %session_id, error = %e, "failed to save partial assistant message on cancel");
+                        } else {
+                            info!(session_id, content_len = assistant_content.len(), tool_count = tool_calls.len(), "saved partial assistant message before cancel");
+                        }
+                    }
                     return Ok(());
                 }
                 ev = rx.recv() => match ev {
@@ -1241,6 +1366,22 @@ async fn run_loop(
             };
             match event.event_type {
                 StreamEventType::Text => {
+                    // CLI incremental save: text after tool calls = new turn.
+                    // Flush the previous turn's content + tool calls to DB.
+                    if cli_incremental && !tool_calls.is_empty() {
+                        let tc_json = serde_json::to_string(&tool_calls).ok();
+                        if let Err(e) = sessions.append_message(
+                            session_id, "assistant", &assistant_content,
+                            tc_json.as_deref(), None, None,
+                        ) {
+                            warn!(session_id = %session_id, error = %e, "failed to save CLI turn to DB");
+                        } else {
+                            debug!(session_id, content_len = assistant_content.len(), tool_count = tool_calls.len(), "saved CLI turn incrementally");
+                        }
+                        assistant_content.clear();
+                        tool_calls.clear();
+                        block_order.clear();
+                    }
                     assistant_content.push_str(&event.text);
                     // Coalesce consecutive text events into one block
                     if block_order.last().map_or(true, |b| b.0 != "text") {
@@ -1478,14 +1619,16 @@ async fn run_loop(
                 None // single text block = default order, no need to persist
             };
 
-            let _ = sessions.append_message(
+            if let Err(e) = sessions.append_message(
                 session_id,
                 "assistant",
                 &assistant_content,
                 tc_json.as_deref(),
                 None,
                 metadata.as_deref(),
-            );
+            ) {
+                warn!(session_id = %session_id, error = %e, "failed to save assistant message to DB");
+            }
 
             // Hook: session.message_append — notify apps that a message was saved
             if hooks.has_subscribers("session.message_append") {
@@ -1519,6 +1662,7 @@ async fn run_loop(
                 allowed_paths: allowed_paths.to_vec(),
                 cancel_token: cancel_token.clone(),
                 stream_tx: Some(tx.clone()),
+                run_id: progress.map(|p| p.run_id.clone()),
             };
 
             // Track tool names for filter + activate any deferred tools on first call
@@ -1532,6 +1676,18 @@ async fn run_loop(
 
             // Launch all tool calls concurrently via FuturesUnordered
             let mut futures = FuturesUnordered::new();
+            // Update progress: count tools and set current tool name
+            if let Some(p) = progress {
+                p.tool_call_count.fetch_add(tool_calls.len() as u32, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(mut ct) = p.current_tool.lock() {
+                    ct.clear();
+                    if tool_calls.len() == 1 {
+                        ct.push_str(&tool_calls[0].name);
+                    } else {
+                        ct.push_str(&format!("{} tools", tool_calls.len()));
+                    }
+                }
+            }
             for (idx, tc) in tool_calls.iter().enumerate() {
                 let tools = tools.clone();
                 let ctx = ctx.clone();
@@ -1674,6 +1830,26 @@ async fn run_loop(
                         preview, total_len
                     );
                 }
+                // Cache tool documentation results so they survive sliding window eviction.
+                // Detect help/schema actions on skill and plugin tools.
+                if !result.is_error && result.content.len() > 100 {
+                    if let Some(cache_key) = detect_tool_doc_call(&tc.name, &tc.input) {
+                        let content = if result.content.len() > MAX_TOOL_DOC_CONTENT {
+                            truncate_str(&result.content, MAX_TOOL_DOC_CONTENT).to_string()
+                        } else {
+                            result.content.clone()
+                        };
+                        // Remove existing entry with same key (LRU refresh)
+                        tool_doc_cache.retain(|(k, _)| k != &cache_key);
+                        // Evict oldest if at capacity
+                        if tool_doc_cache.len() >= MAX_TOOL_DOC_ENTRIES {
+                            tool_doc_cache.remove(0);
+                        }
+                        tool_doc_cache.push((cache_key.clone(), content));
+                        debug!(key = %cache_key, "cached tool documentation");
+                    }
+                }
+
                 let row = ToolResultRow {
                     tool_call_id: tc.id.clone(),
                     content: result.content,
@@ -1682,14 +1858,16 @@ async fn run_loop(
                 };
                 let tr_json = serde_json::json!([row]).to_string();
 
-                let _ = sessions.append_message(
+                if let Err(e) = sessions.append_message(
                     session_id,
                     "tool",
                     "",
                     None,
                     Some(&tr_json),
                     None,
-                );
+                ) {
+                    warn!(session_id = %session_id, error = %e, "failed to save tool message to DB");
+                }
             }
 
             // Compute tool result hashes for stale-result detection.
@@ -1720,6 +1898,13 @@ async fn run_loop(
                 );
             } else {
                 consecutive_error_iterations = 0;
+            }
+
+            // Clear current tool in progress tracker
+            if let Some(p) = progress {
+                if let Ok(mut ct) = p.current_tool.lock() {
+                    ct.clear();
+                }
             }
 
             // agent.turn action — notify apps after tool execution
@@ -1779,12 +1964,17 @@ async fn run_loop(
         }
 
         // No tool calls — check if we should auto-continue
-        let has_task_context = !active_task.is_empty() || user_demanded_action(&all_messages);
+        let has_incomplete = work_tasks.iter().any(|t| t.status != "completed");
+        let has_task_context = !active_task.is_empty()
+            || user_demanded_action_sticky
+            || (has_incomplete && !work_tasks.is_empty());
+        let auto_limit = max_auto_continuations(&work_tasks);
         let looks_like_pause = looks_like_continuation_pause(&assistant_content)
             || looks_like_choice_question(&assistant_content);
 
+        // Path 1: Classic pause detection (permission-asking, option-presenting)
         if has_task_context
-            && auto_continuations < MAX_AUTO_CONTINUATIONS
+            && auto_continuations < auto_limit
             && looks_like_pause
         {
             if cancel_token.is_cancelled() {
@@ -1795,6 +1985,7 @@ async fn run_loop(
             info!(
                 iteration, session_id,
                 auto_continuations,
+                auto_limit,
                 "auto-continuing: agent paused mid-task"
             );
 
@@ -1809,6 +2000,36 @@ async fn run_loop(
             continuation_steering = Some(format!(
                 "<system>Continue with the task you were just working on: {}. Do not ask for permission or present options — pick the best approach and use your tools to execute it. If you have completed this task, say so and stop.</system>",
                 task_desc
+            ));
+            continue;
+        }
+
+        // Path 2: Work-task-aware continuation — if there are incomplete work
+        // tasks, auto-continue regardless of response phrasing (the agent may
+        // have produced a summary or status report instead of asking to continue).
+        if has_task_context
+            && has_incomplete
+            && auto_continuations < auto_limit
+            && !assistant_content.is_empty()
+        {
+            if cancel_token.is_cancelled() {
+                info!(session_id, "skipping work-task auto-continue: run was cancelled");
+                break;
+            }
+            auto_continuations += 1;
+            let incomplete_count = work_tasks.iter().filter(|t| t.status != "completed").count();
+            info!(
+                iteration, session_id,
+                auto_continuations,
+                auto_limit,
+                incomplete_count,
+                "auto-continuing: incomplete work tasks remain"
+            );
+            continuation_steering = Some(format!(
+                "<system>You stopped but there are still {} incomplete tasks. \
+                 Continue working on the next incomplete task. Do not summarize \
+                 or ask permission — take the next action now.</system>",
+                incomplete_count
             ));
             continue;
         }
@@ -1852,7 +2073,7 @@ async fn run_loop(
             debouncer.schedule(session_id, move || async move {
                 let provider = {
                     let prov_lock = providers.read().await;
-                    prov_lock.first().cloned()
+                    prefer_non_gateway(&prov_lock)
                 };
                 if let Some(provider) = provider {
                     if let Some(facts) = memory::extract_facts(provider.as_ref(), &all_msgs).await {
@@ -1879,6 +2100,57 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &s[..end]
+}
+
+/// Detect if a tool call is requesting documentation (help/schema).
+/// Returns a cache key like "skill:gws-sheets" or "plugin:sheets:help" if so.
+fn detect_tool_doc_call(tool_name: &str, input: &serde_json::Value) -> Option<String> {
+    let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let resource = input.get("resource").and_then(|v| v.as_str()).unwrap_or("");
+
+    match tool_name {
+        "skill" => {
+            if action == "help" || action == "list" || action == "docs" {
+                let skill_name = input.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                Some(format!("skill:{}", skill_name))
+            } else {
+                None
+            }
+        }
+        "plugin" => {
+            if action == "help" || action == "schema" || action == "services" {
+                let name = if !resource.is_empty() {
+                    resource
+                } else {
+                    input.get("name").and_then(|v| v.as_str()).unwrap_or("unknown")
+                };
+                Some(format!("plugin:{}:{}", name, action))
+            } else {
+                None
+            }
+        }
+        // MCP tool documentation
+        "mcp" => {
+            if action == "help" || action == "list" || action == "schema" {
+                let server = input.get("server").and_then(|v| v.as_str()).unwrap_or("unknown");
+                Some(format!("mcp:{}:{}", server, action))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Compute max auto-continuations based on incomplete work tasks.
+/// Scales with remaining work so batch tasks get more runway.
+fn max_auto_continuations(work_tasks: &[steering::WorkTask]) -> usize {
+    let incomplete = work_tasks.iter().filter(|t| t.status != "completed").count();
+    if incomplete > 0 {
+        (incomplete * 2).clamp(10, MAX_AUTO_CONTINUATIONS_CEILING)
+    } else {
+        MAX_AUTO_CONTINUATIONS_DEFAULT
+    }
 }
 
 /// Detect if the assistant's response looks like a "should I continue?" pause
@@ -1915,6 +2187,15 @@ fn looks_like_continuation_pause(content: &str) -> bool {
         "next steps:",
         "i'll wait for your",
         "awaiting your",
+        // Batch-processing patterns (agent producing status reports mid-task)
+        "processing next batch",
+        "moving to item",
+        "moving on to item",
+        "continuing with the next",
+        "let me continue with",
+        "items remaining",
+        "tasks remaining",
+        "notes remaining",
     ];
     patterns.iter().any(|p| lower.contains(p))
 }
@@ -1950,11 +2231,13 @@ fn looks_like_choice_question(content: &str) -> bool {
 fn user_demanded_action(messages: &[ChatMessage]) -> bool {
     let imperative_patterns = [
         "do it", "just do it", "get it done", "finish it", "keep going",
-        "don't stop", "dont stop", "handle it", "do them all", "go ahead",
+        "don't stop", "dont stop", "do not stop", "handle it", "do them all", "go ahead",
         "get them done", "do them", "finish them", "just go", "proceed",
         "continue", "keep at it", "do the rest", "all of them",
+        "finish all", "complete all", "process all", "handle all",
+        "work through all", "why did you stop", "why are you stopping",
     ];
-    // Check last 2 user messages (skip system/steering)
+    // Check last 5 user messages (was 2) to catch demands that scroll off
     let recent_user: Vec<&ChatMessage> = messages
         .iter()
         .rev()
@@ -1963,13 +2246,13 @@ fn user_demanded_action(messages: &[ChatMessage]) -> bool {
                 && !m.content.starts_with("<system>")
                 && !m.content.starts_with("<steering")
         })
-        .take(2)
+        .take(5)
         .collect();
 
     for msg in &recent_user {
         let lower = msg.content.to_lowercase();
-        // Only match short imperative messages (not long messages that happen to contain these phrases)
-        if lower.len() < 120 {
+        // Match short-to-medium imperative messages (raised from 120 to 200)
+        if lower.len() < 200 {
             for p in &imperative_patterns {
                 if lower.contains(p) {
                     return true;
@@ -2171,8 +2454,7 @@ async fn detect_objective(
 
     let provider = {
         let prov_lock = providers.read().await;
-        prov_lock.iter().find(|p| p.id() != "janus").cloned()
-            .or_else(|| prov_lock.first().cloned())
+        prefer_non_gateway(&prov_lock)
     };
     let provider = match provider {
         Some(p) => p,

@@ -7,13 +7,15 @@ const CHARS_PER_TOKEN: usize = 4;
 /// Chars estimate for a base64 image.
 const IMAGE_CHAR_ESTIMATE: usize = 8000;
 /// Minimum token savings to bother micro-compacting.
-const MICRO_COMPACT_MIN_SAVINGS: usize = 3000;
+const MICRO_COMPACT_MIN_SAVINGS: usize = 1000;
 /// Protect the N most recent tool results from micro-compaction.
 const MICRO_COMPACT_KEEP_RECENT: usize = 5;
+/// When compactable tool results exceed this count, strip aggressively
+/// regardless of age (keep only MICRO_COMPACT_KEEP_RECENT most recent).
+const MICRO_COMPACT_COUNT_TRIGGER: usize = 8;
 
-/// Sliding window parameters.
-pub const WINDOW_MAX_MESSAGES: usize = 20;
-pub const WINDOW_MAX_TOKENS: usize = 40000;
+/// Default sliding window token limit (used when caller doesn't supply one).
+pub const DEFAULT_WINDOW_MAX_TOKENS: usize = 40_000;
 
 /// Graduated context thresholds.
 pub struct ContextThresholds {
@@ -65,21 +67,24 @@ pub fn estimate_total_tokens(messages: &[ChatMessage]) -> usize {
 
 /// Apply sliding window: returns (window_messages, evicted_messages).
 /// Never evicts messages with created_at >= run_start_time.
+/// `max_tokens` controls the token budget for the window — caller typically
+/// passes `ContextThresholds::auto_compact` so eviction only fires when
+/// approaching the context limit (like Claude Code's ~83% threshold).
 pub fn apply_sliding_window(
     messages: &[ChatMessage],
     run_start_time: i64,
+    max_tokens: usize,
 ) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
-    if messages.len() <= WINDOW_MAX_MESSAGES {
-        let total = estimate_total_tokens(messages);
-        if total <= WINDOW_MAX_TOKENS {
-            return (messages.to_vec(), vec![]);
-        }
+    // Early-return: if total tokens fit within budget, no eviction needed.
+    // This short-circuits the vast majority of turns.
+    let total = estimate_total_tokens(messages);
+    if total <= max_tokens {
+        return (messages.to_vec(), vec![]);
     }
 
     // Walk backwards from end, accumulating tokens
     let mut window_start = messages.len();
     let mut accumulated_tokens = 0usize;
-    let mut message_count = 0usize;
 
     for i in (0..messages.len()).rev() {
         let msg = &messages[i];
@@ -88,18 +93,16 @@ pub fn apply_sliding_window(
         if msg.created_at >= run_start_time {
             let tokens = estimate_message_tokens(msg);
             accumulated_tokens += tokens;
-            message_count += 1;
             window_start = i;
             continue;
         }
 
         let tokens = estimate_message_tokens(msg);
-        if accumulated_tokens + tokens > WINDOW_MAX_TOKENS || message_count >= WINDOW_MAX_MESSAGES {
+        if accumulated_tokens + tokens > max_tokens {
             break;
         }
 
         accumulated_tokens += tokens;
-        message_count += 1;
         window_start = i;
     }
 
@@ -133,8 +136,9 @@ pub fn micro_compact(
     let mut result = messages.to_vec();
     let mut tokens_saved = 0usize;
 
-    // Find tool result indices eligible for compaction
-    let compactable_tools = ["os", "system", "web", "file", "shell"];
+    // Find tool result indices eligible for compaction.
+    // Tool results are the biggest token hog — strip proactively like Claude Code.
+    let compactable_tools = ["os", "system", "web", "file", "shell", "bot", "desktop"];
     let mut tool_result_indices: Vec<(usize, usize, String)> = Vec::new(); // (index, age_from_end, tool_name)
 
     for (i, msg) in result.iter().enumerate() {
@@ -172,8 +176,11 @@ pub fn micro_compact(
         return (result, 0);
     };
 
-    // Only compact if above threshold or proactively if old enough
-    let min_age = if total_tokens < warning_threshold { 6 } else { 3 };
+    // Count-based trigger: when compactable results exceed threshold,
+    // strip aggressively regardless of age (Claude Code style).
+    let count_triggered = tool_result_indices.len() > MICRO_COMPACT_COUNT_TRIGGER;
+    // Age-based floor for the non-triggered path (backward compat).
+    let min_age = if count_triggered { 0 } else if total_tokens < warning_threshold { 6 } else { 3 };
 
     for (idx, age, tool_name) in candidates {
         if *age < min_age {
@@ -478,9 +485,40 @@ mod tests {
     #[test]
     fn test_sliding_window_small() {
         let messages = vec![make_msg("user", "hello"), make_msg("assistant", "hi")];
-        let (window, evicted) = apply_sliding_window(&messages, 0);
+        let (window, evicted) = apply_sliding_window(&messages, 0, DEFAULT_WINDOW_MAX_TOKENS);
         assert_eq!(window.len(), 2);
         assert!(evicted.is_empty());
+    }
+
+    #[test]
+    fn test_sliding_window_token_eviction() {
+        // Each message ~2500 chars = ~625 tokens. 5 messages = ~3125 tokens.
+        let big = "x".repeat(2500);
+        let messages: Vec<ChatMessage> = (0..5)
+            .map(|i| {
+                let role = if i % 2 == 0 { "user" } else { "assistant" };
+                make_msg(role, &big)
+            })
+            .collect();
+        // With a 2000-token budget, should evict some messages
+        let (window, evicted) = apply_sliding_window(&messages, 0, 2000);
+        assert!(!evicted.is_empty(), "should evict when over token budget");
+        assert!(window.len() < messages.len());
+    }
+
+    #[test]
+    fn test_sliding_window_high_threshold_no_eviction() {
+        // Same messages but with a high threshold — should keep everything
+        let big = "x".repeat(2500);
+        let messages: Vec<ChatMessage> = (0..5)
+            .map(|i| {
+                let role = if i % 2 == 0 { "user" } else { "assistant" };
+                make_msg(role, &big)
+            })
+            .collect();
+        let (window, evicted) = apply_sliding_window(&messages, 0, 100_000);
+        assert!(evicted.is_empty(), "high threshold should keep everything");
+        assert_eq!(window.len(), 5);
     }
 
     #[test]

@@ -50,6 +50,11 @@ pub struct Context {
     pub proactive_items: Vec<crate::proactive::ProactiveItem>,
 }
 
+/// Returns true if there are work_tasks with non-"completed" status.
+fn has_incomplete_work_tasks(work_tasks: &[WorkTask]) -> bool {
+    work_tasks.iter().any(|t| t.status != "completed")
+}
+
 /// A steering message generator.
 trait Generator: Send + Sync {
     fn name(&self) -> &str;
@@ -79,6 +84,7 @@ impl Pipeline {
             Box::new(ActionBias),
             Box::new(NarrationSuppressor),
             Box::new(LoopDetector),
+            Box::new(AutomationSpeed),
             Box::new(PresenceAwareness),
             Box::new(ProactiveResults),
             Box::new(ContextPressure),
@@ -246,61 +252,6 @@ fn count_consecutive_same_tool_calls(messages: &[ChatMessage]) -> (String, usize
     (last_tool, count)
 }
 
-/// Count consecutive iterations (assistant+tool pairs) where ALL tool results
-/// were errors. This catches loops where the agent calls different failing tools
-/// each time (not just the same tool repeatedly).
-fn count_consecutive_all_error_rounds(messages: &[ChatMessage]) -> usize {
-    let mut count = 0usize;
-
-    // Walk backwards through messages looking for tool-result / assistant pairs
-    let mut i = messages.len();
-    while i > 0 {
-        i -= 1;
-        let msg = &messages[i];
-
-        // Skip non-tool messages until we find a tool result
-        if msg.role != "tool" {
-            continue;
-        }
-
-        // Collect all consecutive tool results for this round
-        let mut all_error = true;
-        let mut found_tool = false;
-        while i < messages.len() && messages[i].role == "tool" {
-            found_tool = true;
-            if let Some(ref tr_json) = messages[i].tool_results {
-                if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(tr_json) {
-                    for r in &results {
-                        if !r.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
-                            all_error = false;
-                        }
-                    }
-                }
-            }
-            if i == 0 { break; }
-            i -= 1;
-        }
-
-        if !found_tool {
-            break;
-        }
-
-        if all_error {
-            count += 1;
-        } else {
-            break; // Found a round with at least one successful tool call
-        }
-
-        // Skip the assistant message that preceded these tool results
-        while i > 0 && messages[i].role == "assistant" {
-            if i == 0 { break; }
-            i -= 1;
-        }
-    }
-
-    count
-}
-
 /// Detect if recent user messages contain stop/cancel/abort requests.
 fn user_requested_stop(messages: &[ChatMessage]) -> bool {
     let stop_patterns = [
@@ -352,15 +303,11 @@ pub fn should_force_break(ctx: &Context) -> Option<String> {
         ));
     }
 
-    // 3. User explicitly asked to stop but the loop is still running
+    // 3. User explicitly asked to stop — unconditional hard break
     if user_requested_stop(&ctx.messages) && ctx.iteration > 2 {
-        // Check if tool errors are also happening (user said stop AND things are failing)
-        let error_rounds = count_consecutive_all_error_rounds(&ctx.messages);
-        if error_rounds >= 2 {
-            return Some(
-                "Circuit breaker: user requested stop and recent tool calls are failing.".to_string()
-            );
-        }
+        return Some(
+            "Circuit breaker: user requested stop. Halting agent loop.".to_string()
+        );
     }
 
     None
@@ -624,9 +571,15 @@ impl Generator for ActiveObjectiveReminder {
         if ctx.active_task.is_empty() || ctx.iteration < 2 {
             return vec![];
         }
-        // Skip iterations where TaskProgress fires (avoid double-injection)
+        // Skip iterations where TaskProgress fires (avoid double-injection),
+        // UNLESS this is also a ProgressNudge iteration AND work tasks are
+        // incomplete — in that case we WANT the objective reminder to
+        // reinforce continued work alongside the progress checkpoint.
         if ctx.iteration >= 4 && ctx.iteration % 4 == 0 {
-            return vec![];
+            let is_progress_nudge_iter = ctx.iteration >= 10 && ctx.iteration % 10 == 0;
+            if !(is_progress_nudge_iter && has_incomplete_work_tasks(&ctx.work_tasks)) {
+                return vec![];
+            }
         }
         vec![SteeringMessage {
             content: format!("Your active objective: {} — keep working on it.", ctx.active_task),
@@ -795,7 +748,121 @@ impl Generator for LoopDetector {
     }
 }
 
-// 12. Progress Nudge
+// 14. Automation Speed — nudges agent to stop wasting time in automation loops
+struct AutomationSpeed;
+impl Generator for AutomationSpeed {
+    fn name(&self) -> &str { "automation_speed" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringMessage> {
+        if ctx.iteration < 4 {
+            return vec![];
+        }
+
+        // Inspect recent assistant messages for automation inefficiencies
+        let recent: Vec<&ChatMessage> = ctx.messages.iter().rev()
+            .filter(|m| m.role == "assistant")
+            .take(8)
+            .collect();
+
+        if recent.is_empty() {
+            return vec![];
+        }
+
+        // Count wait() calls, redundant read_page/see calls, and single-tool responses
+        let mut wait_calls = 0usize;
+        let mut consecutive_reads = 0usize;
+        let mut max_consecutive_reads = 0usize;
+        let mut single_tool_responses = 0usize;
+        let mut last_was_read = false;
+
+        for msg in &recent {
+            if let Some(ref tc_json) = msg.tool_calls {
+                if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
+                    if calls.len() == 1 {
+                        single_tool_responses += 1;
+                    }
+
+                    let mut has_mutation = false;
+                    let mut has_read = false;
+                    for call in &calls {
+                        let name = call.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let input = call.get("input").or_else(|| call.get("arguments"));
+
+                        // Detect wait() calls
+                        if name == "web" {
+                            if let Some(args) = input {
+                                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                                if action == "wait" {
+                                    wait_calls += 1;
+                                } else if action == "read_page" || action == "screenshot" {
+                                    has_read = true;
+                                } else if matches!(action,
+                                    "click" | "double_click" | "triple_click" | "right_click"
+                                    | "fill" | "form_input" | "type" | "select" | "press"
+                                    | "navigate" | "go_back" | "go_forward" | "evaluate"
+                                    | "drag" | "new_tab" | "close_tab" | "scroll"
+                                ) {
+                                    has_mutation = true;
+                                }
+                            }
+                        } else if name == "desktop" || name == "os" {
+                            if let Some(args) = input {
+                                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                                if action == "see" || action == "screenshot" {
+                                    has_read = true;
+                                } else if matches!(action,
+                                    "click" | "double_click" | "right_click" | "type"
+                                    | "press" | "hotkey" | "scroll" | "drag" | "paste"
+                                ) {
+                                    has_mutation = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Track consecutive read-only responses (no mutation between reads)
+                    if has_read && !has_mutation {
+                        consecutive_reads += 1;
+                        if consecutive_reads > max_consecutive_reads {
+                            max_consecutive_reads = consecutive_reads;
+                        }
+                    } else if has_mutation {
+                        consecutive_reads = 0;
+                    }
+                    last_was_read = has_read && !has_mutation;
+                    let _ = last_was_read; // suppress unused warning
+                }
+            }
+        }
+
+        // Fire if: 2+ wait calls, or 2+ consecutive reads without mutation, or mostly single-tool responses
+        let should_fire = wait_calls >= 2
+            || max_consecutive_reads >= 2
+            || (single_tool_responses >= 4 && recent.len() >= 5);
+
+        if !should_fire {
+            return vec![];
+        }
+
+        let mut tips = String::from("You are in an automation loop. Speed tips:");
+        if wait_calls >= 2 {
+            tips.push_str(" (1) Don't call wait() unless you see a loading spinner — the tools handle timing internally.");
+        }
+        if single_tool_responses >= 4 {
+            tips.push_str(" (2) Chain multiple tool calls in one response when possible.");
+        }
+        if max_consecutive_reads >= 2 {
+            tips.push_str(" (3) Don't re-read the page unless you performed an action that changes it.");
+        }
+        tips.push_str(" Work efficiently — every response costs time.");
+
+        vec![SteeringMessage {
+            content: tips,
+            position: Position::End,
+        }]
+    }
+}
+
+// 15. Progress Nudge — work-task-aware
 struct ProgressNudge;
 impl Generator for ProgressNudge {
     fn name(&self) -> &str { "progress_nudge" }
@@ -804,7 +871,21 @@ impl Generator for ProgressNudge {
             return vec![];
         }
 
+        let has_incomplete = has_incomplete_work_tasks(&ctx.work_tasks);
+
         if ctx.iteration == 10 {
+            if has_incomplete {
+                let incomplete = ctx.work_tasks.iter().filter(|t| t.status != "completed").count();
+                return vec![SteeringMessage {
+                    content: format!(
+                        "Turn 10 checkpoint: {} incomplete work tasks remaining. \
+                         Keep working through them systematically. Do not stop or \
+                         summarize until all tasks are complete.",
+                        incomplete
+                    ),
+                    position: Position::End,
+                }];
+            }
             return vec![SteeringMessage {
                 content: "You are on turn 10. Assess your progress: \
                           what have you found so far and what remains? \
@@ -815,6 +896,19 @@ impl Generator for ProgressNudge {
         }
 
         if ctx.iteration % 10 == 0 {
+            if has_incomplete {
+                let completed = ctx.work_tasks.iter().filter(|t| t.status == "completed").count();
+                let total = ctx.work_tasks.len();
+                let incomplete = total - completed;
+                return vec![SteeringMessage {
+                    content: format!(
+                        "Turn {} checkpoint: {}/{} tasks completed, {} remaining. \
+                         Keep going — process the next incomplete task now.",
+                        ctx.iteration, completed, total, incomplete,
+                    ),
+                    position: Position::End,
+                }];
+            }
             return vec![SteeringMessage {
                 content: format!(
                     "You are on turn {}. Wrap up now. \
@@ -1087,5 +1181,59 @@ mod tests {
         assert!(result[0].content.contains("Background tasks completed"));
         assert!(result[0].content.contains("3 urgent emails"));
         assert_eq!(result[0].position, Position::AfterUser);
+    }
+
+    #[test]
+    fn test_user_stop_forces_break_without_errors() {
+        let messages = vec![
+            make_msg("user", "search for emails"),
+            make_msg("assistant", "I'll search for emails."),
+            make_msg("user", "stop"),
+        ];
+        let ctx = Context {
+            session_id: String::new(),
+            messages,
+            user_prompt: String::new(),
+            active_task: String::new(),
+            channel: "web".to_string(),
+            agent_name: "Nebo".to_string(),
+            iteration: 3,
+            work_tasks: vec![],
+            quota_warning: None,
+            consecutive_error_iterations: 0,
+            recent_tool_result_hashes: vec![],
+            user_presence: String::new(),
+            user_just_returned: false,
+            proactive_items: vec![],
+        };
+        let result = should_force_break(&ctx);
+        assert!(result.is_some(), "user stop should force break even with zero errors");
+        assert!(result.unwrap().contains("user requested stop"));
+    }
+
+    #[test]
+    fn test_user_stop_no_break_at_iteration_2() {
+        let messages = vec![
+            make_msg("user", "stop"),
+            make_msg("assistant", "ok"),
+        ];
+        let ctx = Context {
+            session_id: String::new(),
+            messages,
+            user_prompt: String::new(),
+            active_task: String::new(),
+            channel: "web".to_string(),
+            agent_name: "Nebo".to_string(),
+            iteration: 2,
+            work_tasks: vec![],
+            quota_warning: None,
+            consecutive_error_iterations: 0,
+            recent_tool_result_hashes: vec![],
+            user_presence: String::new(),
+            user_just_returned: false,
+            proactive_items: vec![],
+        };
+        let result = should_force_break(&ctx);
+        assert!(result.is_none(), "should NOT break at iteration 2");
     }
 }
