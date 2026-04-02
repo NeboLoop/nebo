@@ -2,7 +2,7 @@
 
 > Definitive reference for the Nebo Rust agent and workflow system. Covers agent
 > definitions (AGENT.md + agent.json), the workflow engine, trigger types (schedule,
-> heartbeat, event, manual), the cron scheduler, event dispatcher, AgentWorker
+> heartbeat, event, watch, manual), the cron scheduler, event dispatcher, AgentWorker
 > runtime, database schema, HTTP endpoints, and known issues.
 
 **Last verified against source:** 2026-03-26
@@ -206,9 +206,17 @@ pub enum AgentTrigger {
     Schedule { cron: String },                    // Cron expression
     Heartbeat { interval: String, window: Option<String> },  // "30m|08:00-18:00"
     Event { sources: Vec<String> },               // ["email.*", "cal.changed"]
+    Watch {                                        // Long-running plugin NDJSON watcher
+        plugin: String,                            // Plugin slug (e.g., "gws")
+        command: String,                           // CLI args (default empty, resolved from manifest)
+        event: Option<String>,                     // Plugin event name → auto-emit + command resolution
+        restart_delay_secs: u64,                   // Restart delay on crash (default 5)
+    },
     Manual,                                        // User-initiated
 }
 ```
+
+**Watch trigger details:** When `event` is set, the command is resolved from the plugin manifest's `events` array (see `docs/sme/PLUGIN_SYSTEM.md` §5). NDJSON output auto-emits into the EventBus as `{plugin}.{event}`. If activities are defined, the inline workflow also runs (dual mode). Watches without activities are valid — they only auto-emit. Template `{{key}}` placeholders in commands are substituted from agent `input_values` via `substitute_inputs()`. See `crates/agent/src/agent_worker.rs` for implementation.
 
 ### AgentActivity
 
@@ -856,6 +864,7 @@ pub enum WorkflowError {
 | `schedule` | Cron expression (`"0 7 * * 1-5"`) | Creates `cron_jobs` row | Cron scheduler -> `execute_agent_workflow_task()` |
 | `heartbeat` | `"30m"` or `"30m\|08:00-18:00"` | AgentWorker spawns `tokio::interval` task | AgentWorker -> `manager.run_inline()` |
 | `event` | Comma-separated patterns (`"email.*,cal.changed"`) | EventDispatcher subscription | EventDispatcher -> `manager.run_inline()` |
+| `watch` | JSON: `{"plugin","command","event","multiplexed","restart_delay_secs"}` | AgentWorker spawns `watch_loop()` task | AgentWorker -> `watch_loop()` -> auto-emit to EventBus + optional `manager.run_inline()` |
 | `manual` | Empty string | No registration | User triggers via REST API |
 
 ### Schedule Trigger Registration

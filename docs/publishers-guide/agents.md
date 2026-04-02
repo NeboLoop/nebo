@@ -108,6 +108,7 @@ Each entry in the `workflows` map binds a workflow to a trigger:
 | `schedule` | `cron` (string) | Fires on a cron schedule. Standard 5-field cron expression. |
 | `heartbeat` | `interval` (string), `window` (string, optional) | Fires at a recurring interval. Window limits active hours (e.g., `"08:00-18:00"`). |
 | `event` | `sources` (string[]) | Fires when a matching event occurs. See [Event System](#event-system) below. |
+| `watch` | `plugin` (string), `event` (string, optional), `command` (string, optional), `restart_delay_secs` (u64, optional) | Long-running plugin process that emits NDJSON events. See [Watch Triggers](#watch-triggers) below. |
 | `manual` | — | Only fires by explicit user request or API call. |
 
 > **Key principle:** The workflow doesn't decide when it runs. The Agent does. The same `@acme/workflows/lead-qualification` workflow could run at 7am in one Agent and 9am in another. The procedure doesn't change just because you want your briefing at a different time.
@@ -226,6 +227,110 @@ When an event is emitted, Nebo checks all active event trigger subscriptions acr
 ```
 
 Read top to bottom: triage runs every 30 minutes. For each email it classifies, it calls `emit` with the appropriate source (`email.customer-service`, `email.sales-inquiry`). Each emit triggers the matching handler workflow with the email data as inputs.
+
+---
+
+## Watch Triggers
+
+Watch triggers run a long-lived plugin process that outputs NDJSON to stdout. Each JSON line triggers the bound activities and optionally auto-emits into the EventBus so other agents can subscribe.
+
+### With a Plugin Event (Recommended)
+
+Reference an event declared in the plugin's `plugin.json`. The CLI command is resolved from the manifest automatically:
+
+```json
+{
+  "email-watcher": {
+    "trigger": {
+      "type": "watch",
+      "plugin": "gws",
+      "event": "email.new",
+      "restart_delay_secs": 5
+    },
+    "description": "React to new emails in real-time",
+    "activities": [
+      {
+        "id": "triage",
+        "intent": "Triage the incoming email",
+        "steps": ["Classify urgency", "Draft response if needed"]
+      }
+    ]
+  }
+}
+```
+
+### With an Explicit Command
+
+Specify the CLI args directly instead of referencing a manifest event:
+
+```json
+{
+  "trigger": {
+    "type": "watch",
+    "plugin": "gws",
+    "command": "gmail +watch --format ndjson",
+    "restart_delay_secs": 5
+  }
+}
+```
+
+### Watch Trigger Fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `plugin` | string | Yes | — | Plugin slug (e.g., `"gws"`) |
+| `event` | string | No | — | Plugin event name. Resolves command from the plugin manifest's `events` array |
+| `command` | string | No | `""` | CLI args appended to the plugin binary. Required if `event` is not set |
+| `restart_delay_secs` | u64 | No | `5` | Seconds to wait before restarting the process on crash |
+
+### How It Works
+
+1. The `AgentWorker` spawns `<plugin-binary> <command>` as a long-running subprocess
+2. The plugin outputs NDJSON (one JSON object per line) to stdout
+3. Each parsed JSON line triggers the bound activities (if any)
+4. If `event` is set, each line also auto-emits into the EventBus as `{plugin}.{event}` (e.g., `gws.email.new`)
+5. If the process crashes, it restarts after `restart_delay_secs`
+
+### Event-Only Watches
+
+A watch with `event` set but no activities is valid. It auto-emits into the EventBus without processing anything inline. Other agents can subscribe to these events via `event` triggers:
+
+```json
+{
+  "email-relay": {
+    "trigger": {
+      "type": "watch",
+      "plugin": "gws",
+      "event": "email.new"
+    },
+    "description": "Relay new email events into the EventBus for other agents"
+  }
+}
+```
+
+Another agent subscribes:
+
+```json
+{
+  "handle-emails": {
+    "trigger": {
+      "type": "event",
+      "sources": ["gws.email.new"]
+    },
+    "activities": [...]
+  }
+}
+```
+
+### Template Substitution
+
+Event commands from the plugin manifest support `{{key}}` placeholders, substituted from the agent's `input_values` at runtime:
+
+```json
+"command": "gmail +watch --format ndjson --project {{gcp_project}}"
+```
+
+For more on plugin events and the NDJSON protocol, see [Plugins — Plugin Events](plugins.md#plugin-events).
 
 ---
 

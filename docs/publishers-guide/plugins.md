@@ -128,6 +128,237 @@ $GWS_BIN gmail list --limit 10
 
 ---
 
+## The plugin.json Manifest
+
+Every plugin has a `plugin.json` manifest that describes the binary, its platforms, and optional capabilities like authentication and events. This file is stored alongside the binary on disk and cached in memory by the PluginStore.
+
+```json
+{
+  "id": "plugin-uuid-123",
+  "slug": "gws",
+  "name": "Google Workspace CLI",
+  "version": "1.2.3",
+  "description": "Google Workspace integration for email, calendar, and drive",
+  "author": "NeboLoop Inc.",
+  "platforms": {
+    "darwin-arm64": {
+      "binaryName": "gws",
+      "sha256": "a1b2c3...",
+      "signature": "base64...",
+      "size": 45678900,
+      "downloadUrl": "https://cdn.neboloop.com/plugins/gws/1.2.3/darwin-arm64/gws"
+    },
+    "linux-amd64": {
+      "binaryName": "gws",
+      "sha256": "d4e5f6...",
+      "signature": "base64...",
+      "size": 42000000,
+      "downloadUrl": "https://cdn.neboloop.com/plugins/gws/1.2.3/linux-amd64/gws"
+    }
+  },
+  "signingKeyId": "key-001",
+  "envVar": "",
+  "auth": { ... },
+  "events": [ ... ]
+}
+```
+
+### Manifest Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | NeboLoop artifact ID (assigned on create) |
+| `slug` | string | Yes | URL-safe slug. Must match what skills reference in `plugins[].name` |
+| `name` | string | Yes | Human-readable display name |
+| `version` | string | Yes | Semver version string |
+| `description` | string | No | Brief description |
+| `author` | string | No | Publisher name |
+| `platforms` | object | Yes | Map of platform key to `PlatformBinary` |
+| `signingKeyId` | string | No | ED25519 signing key ID |
+| `envVar` | string | No | Custom env var name override. If empty, defaults to `{SLUG}_BIN` |
+| `auth` | object | No | Authentication configuration. See [Authentication](#authentication) |
+| `events` | array | No | Event declarations. See [Plugin Events](#plugin-events) |
+
+### PlatformBinary
+
+Each entry in the `platforms` map describes the binary for one platform:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `binaryName` | string | Filename of the binary (e.g., `"gws"` or `"gws.exe"`) |
+| `sha256` | string | SHA256 hex hash for integrity verification |
+| `signature` | string | ED25519 signature (base64) |
+| `size` | number | File size in bytes |
+| `downloadUrl` | string | CDN URL or API path to download the binary |
+
+---
+
+## Authentication
+
+Plugins that require user credentials (e.g., Google OAuth, API keys) can declare an `auth` block. Nebo provides HTTP endpoints and WebSocket events to drive the auth flow from the frontend.
+
+```json
+{
+  "auth": {
+    "type": "oauth_cli",
+    "label": "Google Account",
+    "description": "Authenticate with your Google Workspace account.",
+    "commands": {
+      "login": "auth login",
+      "status": "auth status",
+      "logout": "auth logout"
+    },
+    "env": {
+      "GOOGLE_CLIENT_ID": "...",
+      "GOOGLE_CLIENT_SECRET": "..."
+    }
+  }
+}
+```
+
+### Auth Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Auth type identifier (e.g., `"oauth_cli"`) |
+| `label` | string | Yes | Button label in UI (e.g., `"Google Account"`) |
+| `description` | string | No | Description shown to user during auth step |
+| `commands.login` | string | Yes | CLI args appended to binary for login (e.g., `"auth login"`) |
+| `commands.status` | string | No | CLI args for status check. Exit code 0 = authenticated |
+| `commands.logout` | string | No | CLI args to clear credentials |
+| `env` | object | No | Environment variables injected when running auth commands |
+
+### Auth HTTP Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/plugins` | GET | Returns `hasAuth` and `authLabel` per plugin |
+| `/api/v1/plugins/{slug}/auth/status` | GET | Runs status command. Returns `{ "authenticated": bool }` |
+| `/api/v1/plugins/{slug}/auth/login` | POST | Spawns login command in background. Returns `{ "started": true }` |
+| `/api/v1/plugins/{slug}/auth/logout` | POST | Runs logout command synchronously |
+
+### Auth WebSocket Events
+
+| Event | Payload | When |
+|-------|---------|------|
+| `plugin_auth_started` | `{ plugin, label }` | Login command spawned |
+| `plugin_auth_url` | `{ plugin, url }` | OAuth URL discovered in output |
+| `plugin_auth_complete` | `{ plugin }` | Login succeeded (exit code 0) |
+| `plugin_auth_error` | `{ plugin, error }` | Login failed |
+
+The login flow is asynchronous. Nebo spawns the plugin's login command, scans stderr/stdout for OAuth URLs, broadcasts them to the frontend via WebSocket, and also attempts `open::that()` as a server-side fallback.
+
+---
+
+## Plugin Events
+
+Plugins can declare event-producing capabilities. When a long-running watch process outputs NDJSON to stdout, Nebo auto-emits each line into the EventBus. Other agents can subscribe to these events without knowing plugin internals.
+
+```json
+{
+  "events": [
+    {
+      "name": "email.new",
+      "description": "Fires when a new email arrives in Gmail",
+      "command": "gmail +watch --format ndjson --project {{gcp_project}}"
+    },
+    {
+      "name": "calendar.event",
+      "description": "Fires on calendar event changes",
+      "command": "calendar +watch --format ndjson",
+      "multiplexed": true
+    }
+  ]
+}
+```
+
+### Event Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Event name. Prefixed with plugin slug at runtime (e.g., `"gws.email.new"`) |
+| `description` | string | `""` | Human-readable description of what triggers this event |
+| `command` | string | required | CLI args for the watch process. Supports `{{key}}` template substitution from agent input values |
+| `multiplexed` | bool | `false` | If true, NDJSON lines may contain an `"event"` field for multiplexing |
+
+### NDJSON Protocol
+
+Watch processes output one JSON object per line to stdout.
+
+**Single event type** (`multiplexed: false`):
+
+The entire line becomes the event payload, emitted under the declared event source.
+
+```
+{"messageId": "123", "from": "alice@example.com", "subject": "Hello"}
+```
+
+Nebo emits: `Event { source: "gws.email.new", payload: <entire line> }`
+
+**Multiplexed** (`multiplexed: true`):
+
+Each line may contain an `"event"` field that discriminates the event type. The field is stripped from the payload before emission.
+
+```
+{"event": "email.new", "messageId": "123", "from": "alice@example.com"}
+{"event": "email.read", "messageId": "456"}
+```
+
+Nebo emits:
+- `Event { source: "gws.email.new", payload: {"messageId": "123", "from": "alice@example.com"} }`
+- `Event { source: "gws.email.read", payload: {"messageId": "456"} }`
+
+If a multiplexed line has no `event` field, the declared event name is used as fallback.
+
+### Agent Watch Triggers
+
+Agents consume plugin events by declaring a watch trigger with an `event` field in `agent.json`:
+
+```json
+{
+  "email-watcher": {
+    "trigger": {
+      "type": "watch",
+      "plugin": "gws",
+      "event": "email.new",
+      "restart_delay_secs": 5
+    },
+    "description": "React to new emails",
+    "activities": [...]
+  }
+}
+```
+
+When `event` is set, the watch command is resolved from the plugin's manifest — no need to hardcode CLI args in the agent config. The `{{key}}` placeholders in the manifest command are substituted from the agent's input values.
+
+Watch triggers with `event` set but no activities are also valid. They auto-emit into the EventBus without running any inline workflow, allowing other agents to subscribe to the events.
+
+### Event Discovery Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/plugins/events` | GET | Lists all declared events across all installed plugins |
+| `/api/v1/plugins/{slug}/events` | GET | Lists declared events for a specific plugin |
+
+Response format:
+
+```json
+{
+  "events": [
+    {
+      "plugin": "gws",
+      "name": "email.new",
+      "source": "gws.email.new",
+      "description": "Fires when a new email arrives in Gmail",
+      "multiplexed": false
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
 ## Publishing a Plugin
 
 ### Prerequisites
@@ -160,15 +391,13 @@ Publish for as many platforms as you support. At minimum, target `darwin-arm64` 
 2. **Create the plugin artifact:**
 
    ```
-   skill(action: create, name: "gws", type: "plugin")
+   plugin(action: create, name: "gws", category: "connectors")
    ```
-
-   Note: Plugins use the `skill` tool with `type: "plugin"` on NeboLoop. The returned ID is your plugin artifact ID.
 
 3. **Get an upload token (per platform):**
 
    ```
-   skill(action: binary-token, id: "<PLUGIN_ID>")
+   plugin(action: binary-token, id: "<PLUGIN_ID>")
    ```
 
    This returns a curl command with a 5-minute expiry.
@@ -181,7 +410,7 @@ Publish for as many platforms as you support. At minimum, target `darwin-arm64` 
    curl -X PUT "<upload-url>" \
      -F "binary=@./build/gws-darwin-arm64" \
      -F "platform=darwin-arm64" \
-     -F "manifest=@./SKILL.md"
+     -F "manifest=@./PLUGIN.md"
    ```
 
    Repeat for each platform you support.
@@ -189,8 +418,22 @@ Publish for as many platforms as you support. At minimum, target `darwin-arm64` 
 5. **Submit for review:**
 
    ```
-   skill(action: submit, id: "<PLUGIN_ID>", version: "1.0.0")
+   plugin(action: submit, id: "<PLUGIN_ID>", version: "1.0.0")
    ```
+
+### Plugin Tool Actions
+
+| Action | Description |
+|--------|-------------|
+| `plugin(action: list)` | List all your plugins |
+| `plugin(action: get, id: "...")` | Get plugin details |
+| `plugin(action: create, name: "...", category: "...")` | Create a new plugin |
+| `plugin(action: update, id: "...")` | Update plugin metadata |
+| `plugin(action: delete, id: "...")` | Delete a plugin |
+| `plugin(action: submit, id: "...", version: "...")` | Submit for review |
+| `plugin(action: list-binaries, id: "...")` | List uploaded binaries |
+| `plugin(action: binary-token, id: "...")` | Generate upload token |
+| `plugin(action: delete-binary, id: "...")` | Delete a binary |
 
 ### Install Codes
 
@@ -198,19 +441,51 @@ After your plugin is approved, NeboLoop assigns a `PLUG-XXXX-XXXX` install code.
 
 ---
 
-## Directory Structure
+## Bundling Skills with Your Plugin
 
-Unlike skills, plugins don't have a directory structure for publishers to maintain. You just compile your binary and upload it. NeboLoop handles the rest.
+Plugins can embed skills inside a `.napp` archive. This is the preferred distribution method — when the plugin installs, its skills install automatically.
+
+### .napp Archive Structure
+
+```
+gws.napp
+├── manifest.json       # Package identity
+├── plugin.json         # PluginManifest (the full manifest)
+├── PLUGIN.md           # Plugin documentation
+├── gws                 # Native binary (platform-specific)
+└── skills/             # Embedded skills (optional)
+    ├── gws-gmail/
+    │   └── SKILL.md
+    ├── gws-calendar/
+    │   └── SKILL.md
+    └── gws-drive/
+        └── SKILL.md
+```
+
+After installation, embedded skills are discovered by the skill loader automatically. They appear as Tier 2.5 — between marketplace-installed skills and user skills.
+
+---
+
+## Directory Structure
 
 What the user sees on disk after install:
 
 ```
 <data_dir>/nebo/plugins/
   gws/
-    1.2.0/
-      plugin.json      # Cached manifest (auto-generated)
+    1.2.3/
+      manifest.json    # Package identity
+      plugin.json      # Cached PluginManifest
+      PLUGIN.md        # Documentation
       gws              # Your binary (chmod 755)
+      skills/          # Embedded skills (if bundled)
+        gws-gmail/
+          SKILL.md
+        gws-calendar/
+          SKILL.md
 ```
+
+Multiple versions can coexist. Each skill resolves to the highest installed version matching its semver range.
 
 ---
 
@@ -248,13 +523,77 @@ chmod 755 ~/Library/Application\ Support/nebo/plugins/my-plugin/0.1.0/my-plugin
 
 Then create a skill with `plugins: [{name: "my-plugin", version: "*"}]` in your `user/skills/` directory. The loader will resolve the plugin locally without contacting NeboLoop.
 
+### Testing Authentication
+
+To test auth locally, create a `plugin.json` in the version directory with your auth config:
+
+```json
+{
+  "slug": "my-plugin",
+  "name": "My Plugin",
+  "version": "0.1.0",
+  "platforms": {},
+  "auth": {
+    "type": "oauth_cli",
+    "label": "My Service",
+    "description": "Connect to My Service",
+    "commands": {
+      "login": "auth login",
+      "status": "auth status",
+      "logout": "auth logout"
+    },
+    "env": {}
+  }
+}
+```
+
+The auth endpoints (`/api/v1/plugins/{slug}/auth/*`) read from this cached manifest.
+
+### Testing Events
+
+Declare events in your local `plugin.json`:
+
+```json
+{
+  "slug": "my-plugin",
+  "name": "My Plugin",
+  "version": "0.1.0",
+  "platforms": {},
+  "events": [
+    {
+      "name": "item.created",
+      "description": "Fires when a new item is created",
+      "command": "watch --format ndjson"
+    }
+  ]
+}
+```
+
+Then create an agent with a watch trigger referencing `event: "item.created"`. The watch process should output NDJSON to stdout.
+
+---
+
+## WebSocket Events
+
+Events broadcast during plugin operations:
+
+| Event | Payload | When |
+|-------|---------|------|
+| `plugin_installing` | `{ plugin, platform }` | Before download starts |
+| `plugin_installed` | `{ plugin }` | After successful install |
+| `plugin_error` | `{ plugin, error }` | On download/verify failure |
+| `plugin_auth_started` | `{ plugin, label }` | Auth login begins |
+| `plugin_auth_url` | `{ plugin, url }` | OAuth URL discovered in output |
+| `plugin_auth_complete` | `{ plugin }` | Auth login succeeded |
+| `plugin_auth_error` | `{ plugin, error }` | Auth login failed |
+
 ---
 
 ## Quick Reference
 
 ### Environment Variable Naming
 
-`{SLUG}_BIN` — slug uppercased, hyphens → underscores.
+`{SLUG}_BIN` — slug uppercased, hyphens become underscores.
 
 ### Install Code Prefix
 
@@ -276,3 +615,52 @@ plugins:
 ```
 
 Same scoping and version resolution rules as skills. See [Packaging](packaging.md).
+
+### Complete plugin.json Example
+
+```json
+{
+  "id": "abc-123",
+  "slug": "gws",
+  "name": "Google Workspace CLI",
+  "version": "1.2.3",
+  "description": "Google Workspace integration for email, calendar, and drive",
+  "author": "NeboLoop Inc.",
+  "platforms": {
+    "darwin-arm64": {
+      "binaryName": "gws",
+      "sha256": "a1b2c3...",
+      "signature": "base64...",
+      "size": 45678900,
+      "downloadUrl": "https://cdn.neboloop.com/..."
+    }
+  },
+  "signingKeyId": "key-001",
+  "envVar": "",
+  "auth": {
+    "type": "oauth_cli",
+    "label": "Google Account",
+    "description": "Authenticate with your Google Workspace account.",
+    "commands": {
+      "login": "auth login",
+      "status": "auth status",
+      "logout": "auth logout"
+    },
+    "env": {}
+  },
+  "events": [
+    {
+      "name": "email.new",
+      "description": "Fires when a new email arrives",
+      "command": "gmail +watch --format ndjson",
+      "multiplexed": false
+    },
+    {
+      "name": "calendar.event",
+      "description": "Fires on calendar event changes",
+      "command": "calendar +watch --format ndjson",
+      "multiplexed": true
+    }
+  ]
+}
+```
