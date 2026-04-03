@@ -41,11 +41,11 @@
 		refreshing = false;
 	}
 
-	function formatDollars(microdollars: number): string {
-		const dollars = microdollars / 1_000_000;
-		if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}K`;
-		if (dollars >= 1) return `$${dollars.toFixed(2)}`;
-		return `$${dollars.toFixed(2)}`;
+	function formatTokens(tokens: number): string {
+		if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1)}B`;
+		if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+		if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+		return tokens.toLocaleString();
 	}
 
 	function timeUntilReset(resetAt?: string): string {
@@ -192,12 +192,14 @@
 						{#if usage.budget.freeAvailable > 0}
 							<div>
 								<p class="text-sm text-base-content/50">{$t('settingsUsage.freePool')}</p>
-								<p class="text-lg font-bold text-base-content tabular-nums">{formatDollars(usage.budget.freeAvailable)}</p>
+								<p class="text-lg font-bold text-base-content tabular-nums">{formatTokens(usage.budget.freeAvailable)}</p>
+								<p class="text-xs text-base-content/40">tokens</p>
 							</div>
 						{/if}
 						<div>
 							<p class="text-sm text-base-content/50">{$t('settingsUsage.giftPool')}</p>
-							<p class="text-lg font-bold text-base-content tabular-nums">{formatDollars(usage.budget.giftAvailable)}</p>
+							<p class="text-lg font-bold text-base-content tabular-nums">{formatTokens(usage.budget.giftAvailable)}</p>
+							<p class="text-xs text-base-content/40">tokens</p>
 						</div>
 						<div>
 							<p class="text-sm text-base-content/50">{$t('settingsUsage.creditsPool')}</p>
