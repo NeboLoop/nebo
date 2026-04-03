@@ -103,11 +103,13 @@ impl Pipeline {
         }
 
         // Provider-specific skip rules
-        let is_claude = matches!(ctx.provider_id.as_str(), "anthropic" | "janus");
+        // NOTE: Janus is a gateway that proxies to any upstream (GPT, Claude, Gemini).
+        // Only skip for direct Anthropic connections where we know it's Claude.
+        let is_claude = ctx.provider_id == "anthropic";
         let is_ollama = ctx.provider_id == "ollama";
 
         for g in &self.generators {
-            // Skip ActionBias and NarrationSuppressor for Claude (anthropic/janus)
+            // Skip ActionBias and NarrationSuppressor for direct Claude only
             if is_claude && matches!(g.name(), "action_bias" | "narration_suppressor") {
                 continue;
             }
@@ -868,10 +870,18 @@ mod tests {
         let (dirs_claude, _) = pipeline.generate(&ctx);
         let has_action_bias_claude = dirs_claude.iter().any(|d| d.label == "Action Bias");
 
-        // ActionBias fires for openai but not claude
+        // Janus is a gateway — should NOT skip ActionBias (may proxy to GPT)
+        ctx.provider_id = "janus".to_string();
+        let (dirs_janus, _) = pipeline.generate(&ctx);
+        let has_action_bias_janus = dirs_janus.iter().any(|d| d.label == "Action Bias");
+
+        // ActionBias fires for openai and janus but not claude
         // (Note: it may not fire in these exact conditions, but the skip rule is exercised)
         assert!(!has_action_bias_claude || !has_action_bias,
             "Claude should skip action_bias when openai doesn't");
+        // Janus should behave like openai, not like anthropic
+        assert_eq!(has_action_bias, has_action_bias_janus,
+            "Janus should not skip action_bias — it's a gateway, not Claude");
     }
 
     #[test]
