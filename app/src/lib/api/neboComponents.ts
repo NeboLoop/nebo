@@ -1185,15 +1185,23 @@ export interface NeboLoopDisconnectResponse {
 export interface NeboLoopJanusUsageResponse {
 	session: NeboLoopJanusWindowUsage
 	weekly: NeboLoopJanusWindowUsage
+	budget?: NeboLoopBudget
 	updatedAt?: string
 }
 
 export interface NeboLoopJanusWindowUsage {
-	limitTokens: number
-	remainingTokens: number
-	usedTokens: number
+	limitCredits: number
+	remainingCredits: number
+	usedCredits: number
 	percentUsed: number
 	resetAt?: string
+}
+
+export interface NeboLoopBudget {
+	freeAvailable: number
+	giftAvailable: number
+	creditsCents: number
+	activePool?: string
 }
 
 export interface NeboLoopLoginRequest {

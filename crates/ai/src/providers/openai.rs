@@ -636,13 +636,15 @@ impl Provider for OpenAIProvider {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<f64>().ok());
 
-        // Janus session rate limit headers
+        // Janus session rate limit headers (try -credits first, fall back to -tokens for rollout)
         let session_limit = resp_headers
-            .get("x-ratelimit-session-limit-tokens")
+            .get("x-ratelimit-session-limit-credits")
+            .or_else(|| resp_headers.get("x-ratelimit-session-limit-tokens"))
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
         let session_remaining = resp_headers
-            .get("x-ratelimit-session-remaining-tokens")
+            .get("x-ratelimit-session-remaining-credits")
+            .or_else(|| resp_headers.get("x-ratelimit-session-remaining-tokens"))
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
         let session_reset = resp_headers
@@ -650,17 +652,37 @@ impl Provider for OpenAIProvider {
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_string());
 
-        // Janus weekly rate limit headers
+        // Janus weekly rate limit headers (try -credits first, fall back to -tokens)
         let weekly_limit = resp_headers
-            .get("x-ratelimit-weekly-limit-tokens")
+            .get("x-ratelimit-weekly-limit-credits")
+            .or_else(|| resp_headers.get("x-ratelimit-weekly-limit-tokens"))
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
         let weekly_remaining = resp_headers
-            .get("x-ratelimit-weekly-remaining-tokens")
+            .get("x-ratelimit-weekly-remaining-credits")
+            .or_else(|| resp_headers.get("x-ratelimit-weekly-remaining-tokens"))
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
         let weekly_reset = resp_headers
             .get("x-ratelimit-weekly-reset")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_string());
+
+        // Janus budget pool headers
+        let budget_free = resp_headers
+            .get("x-budget-free-available")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let budget_gift = resp_headers
+            .get("x-budget-gift-available")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let budget_credits_cents = resp_headers
+            .get("x-budget-credits-cents")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        let budget_active_pool = resp_headers
+            .get("x-budget-active-pool")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_string());
 
@@ -671,7 +693,10 @@ impl Provider for OpenAIProvider {
             || effective_remaining.is_some()
             || weekly_remaining.is_some()
             || session_limit.is_some()
-            || weekly_limit.is_some();
+            || weekly_limit.is_some()
+            || budget_free.is_some()
+            || budget_gift.is_some()
+            || budget_active_pool.is_some();
 
         if has_any {
             let _ = tx
@@ -680,12 +705,16 @@ impl Provider for OpenAIProvider {
                     remaining_tokens: effective_remaining,
                     reset_after_secs: reset_after,
                     retry_after_secs: None,
-                    session_limit_tokens: session_limit,
-                    session_remaining_tokens: session_remaining,
+                    session_limit_credits: session_limit,
+                    session_remaining_credits: session_remaining,
                     session_reset_at: session_reset,
-                    weekly_limit_tokens: weekly_limit,
-                    weekly_remaining_tokens: weekly_remaining,
+                    weekly_limit_credits: weekly_limit,
+                    weekly_remaining_credits: weekly_remaining,
                     weekly_reset_at: weekly_reset,
+                    budget_free_available: budget_free,
+                    budget_gift_available: budget_gift,
+                    budget_credits_cents,
+                    budget_active_pool,
                 }))
                 .await;
         }

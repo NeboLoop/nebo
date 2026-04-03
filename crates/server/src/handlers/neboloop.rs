@@ -462,6 +462,13 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
     let weekly_used = am["weekly_used"].as_u64().unwrap_or(0);
     let weekly_reset_secs = am["weekly_reset_seconds"].as_i64().unwrap_or(0);
 
+    // Budget pools
+    let budget = &body["budget"];
+    let budget_free = budget["free_available"].as_u64().unwrap_or(0);
+    let budget_gift = budget["gift_available"].as_u64().unwrap_or(0);
+    let budget_credits_cents = budget["credits_cents"].as_u64().unwrap_or(0);
+    let budget_active_pool = budget["active_pool"].as_str().unwrap_or("").to_string();
+
     let session_reset_at = if session_reset_secs > 0 {
         (chrono::Utc::now() + chrono::Duration::seconds(session_reset_secs)).to_rfc3339()
     } else {
@@ -474,12 +481,16 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
     };
 
     let usage = crate::state::JanusUsage {
-        session_limit_tokens: session_limit,
-        session_remaining_tokens: session_limit.saturating_sub(session_used),
+        session_limit_credits: session_limit,
+        session_remaining_credits: session_limit.saturating_sub(session_used),
         session_reset_at,
-        weekly_limit_tokens: weekly_limit,
-        weekly_remaining_tokens: weekly_limit.saturating_sub(weekly_used),
+        weekly_limit_credits: weekly_limit,
+        weekly_remaining_credits: weekly_limit.saturating_sub(weekly_used),
         weekly_reset_at,
+        budget_free_available: budget_free,
+        budget_gift_available: budget_gift,
+        budget_credits_cents,
+        budget_active_pool,
         updated_at: now,
     };
 
@@ -491,33 +502,39 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
 
 /// Build the JSON response from a JanusUsage struct.
 fn janus_usage_response(u: &crate::state::JanusUsage) -> serde_json::Value {
-    let session_used = u.session_limit_tokens.saturating_sub(u.session_remaining_tokens);
-    let session_pct = if u.session_limit_tokens > 0 {
-        ((session_used as f64 / u.session_limit_tokens as f64) * 100.0).round() as u64
+    let session_used = u.session_limit_credits.saturating_sub(u.session_remaining_credits);
+    let session_pct = if u.session_limit_credits > 0 {
+        ((session_used as f64 / u.session_limit_credits as f64) * 100.0).round() as u64
     } else {
         0
     };
-    let weekly_used = u.weekly_limit_tokens.saturating_sub(u.weekly_remaining_tokens);
-    let weekly_pct = if u.weekly_limit_tokens > 0 {
-        ((weekly_used as f64 / u.weekly_limit_tokens as f64) * 100.0).round() as u64
+    let weekly_used = u.weekly_limit_credits.saturating_sub(u.weekly_remaining_credits);
+    let weekly_pct = if u.weekly_limit_credits > 0 {
+        ((weekly_used as f64 / u.weekly_limit_credits as f64) * 100.0).round() as u64
     } else {
         0
     };
 
     serde_json::json!({
         "session": {
-            "limitTokens": u.session_limit_tokens,
-            "remainingTokens": u.session_remaining_tokens,
-            "usedTokens": session_used,
+            "limitCredits": u.session_limit_credits,
+            "remainingCredits": u.session_remaining_credits,
+            "usedCredits": session_used,
             "percentUsed": session_pct,
             "resetAt": if u.session_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.session_reset_at.clone()) },
         },
         "weekly": {
-            "limitTokens": u.weekly_limit_tokens,
-            "remainingTokens": u.weekly_remaining_tokens,
-            "usedTokens": weekly_used,
+            "limitCredits": u.weekly_limit_credits,
+            "remainingCredits": u.weekly_remaining_credits,
+            "usedCredits": weekly_used,
             "percentUsed": weekly_pct,
             "resetAt": if u.weekly_reset_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.weekly_reset_at.clone()) },
+        },
+        "budget": {
+            "freeAvailable": u.budget_free_available,
+            "giftAvailable": u.budget_gift_available,
+            "creditsCents": u.budget_credits_cents,
+            "activePool": if u.budget_active_pool.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.budget_active_pool.clone()) },
         },
         "updatedAt": if u.updated_at.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(u.updated_at.clone()) },
     })
@@ -541,8 +558,9 @@ pub async fn janus_usage(
             warn!("failed to fetch janus usage: {e}");
             // Return zeros rather than error so the page still renders
             Ok(Json(serde_json::json!({
-                "session": { "limitTokens": 0, "remainingTokens": 0, "usedTokens": 0, "percentUsed": 0 },
-                "weekly": { "limitTokens": 0, "remainingTokens": 0, "usedTokens": 0, "percentUsed": 0 },
+                "session": { "limitCredits": 0, "remainingCredits": 0, "usedCredits": 0, "percentUsed": 0 },
+                "weekly": { "limitCredits": 0, "remainingCredits": 0, "usedCredits": 0, "percentUsed": 0 },
+                "budget": { "freeAvailable": 0, "giftAvailable": 0, "creditsCents": 0 },
             })))
         }
     }

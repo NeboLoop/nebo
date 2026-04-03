@@ -340,28 +340,41 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                         }
                         StreamEventType::RateLimit => {
                             if let Some(ref rl) = event.rate_limit {
-                                if rl.session_limit_tokens.is_some()
-                                    || rl.weekly_limit_tokens.is_some()
+                                if rl.session_limit_credits.is_some()
+                                    || rl.weekly_limit_credits.is_some()
                                 {
                                     let usage = crate::state::JanusUsage {
-                                        session_limit_tokens: rl
-                                            .session_limit_tokens
+                                        session_limit_credits: rl
+                                            .session_limit_credits
                                             .unwrap_or(0),
-                                        session_remaining_tokens: rl
-                                            .session_remaining_tokens
+                                        session_remaining_credits: rl
+                                            .session_remaining_credits
                                             .unwrap_or(0),
                                         session_reset_at: rl
                                             .session_reset_at
                                             .clone()
                                             .unwrap_or_default(),
-                                        weekly_limit_tokens: rl
-                                            .weekly_limit_tokens
+                                        weekly_limit_credits: rl
+                                            .weekly_limit_credits
                                             .unwrap_or(0),
-                                        weekly_remaining_tokens: rl
-                                            .weekly_remaining_tokens
+                                        weekly_remaining_credits: rl
+                                            .weekly_remaining_credits
                                             .unwrap_or(0),
                                         weekly_reset_at: rl
                                             .weekly_reset_at
+                                            .clone()
+                                            .unwrap_or_default(),
+                                        budget_free_available: rl
+                                            .budget_free_available
+                                            .unwrap_or(0),
+                                        budget_gift_available: rl
+                                            .budget_gift_available
+                                            .unwrap_or(0),
+                                        budget_credits_cents: rl
+                                            .budget_credits_cents
+                                            .unwrap_or(0),
+                                        budget_active_pool: rl
+                                            .budget_active_pool
                                             .clone()
                                             .unwrap_or_default(),
                                         updated_at: chrono::Utc::now().to_rfc3339(),

@@ -20,9 +20,7 @@
 	let tokenPercent = $derived(usage?.weekly?.percentUsed ?? 0);
 	let tokenSubtitle = $derived.by(() => {
 		if (!usage?.weekly) return '';
-		const used = Math.round(usage.weekly.usedTokens / 1000);
-		const limit = Math.round(usage.weekly.limitTokens / 1000);
-		return `${used}k / ${limit}k credits this week`;
+		return `${usage.weekly.percentUsed}% used this week`;
 	});
 	let sessionCount = $derived(chats.length);
 </script>
@@ -40,14 +38,16 @@
 		subtitle="Installed agents running"
 		loading={isLoading}
 	/>
-	<MetricCard
-		title="Credit Budget"
-		value={tokenPercent / 100}
-		format="percentage"
-		precision={0}
-		subtitle={tokenSubtitle}
-		loading={isLoading}
-	/>
+	<a href="/settings/usage" class="contents">
+		<MetricCard
+			title="Credit Budget"
+			value={tokenPercent / 100}
+			format="percentage"
+			precision={0}
+			subtitle={tokenSubtitle}
+			loading={isLoading}
+		/>
+	</a>
 	<MetricCard
 		title="Recent Sessions"
 		value={sessionCount}

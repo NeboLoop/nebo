@@ -18,15 +18,22 @@ use crate::run_registry::RunRegistry;
 use crate::workflow_manager::WorkflowManagerImpl;
 
 /// Janus AI usage stats stored in memory, updated from rate limit headers or direct API call.
+/// Credit values are in microdollars (µ$); divide by 1,000,000 for dollars.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JanusUsage {
-    pub session_limit_tokens: u64,
-    pub session_remaining_tokens: u64,
+    pub session_limit_credits: u64,
+    pub session_remaining_credits: u64,
     pub session_reset_at: String,
-    pub weekly_limit_tokens: u64,
-    pub weekly_remaining_tokens: u64,
+    pub weekly_limit_credits: u64,
+    pub weekly_remaining_credits: u64,
     pub weekly_reset_at: String,
+    // Budget pools
+    pub budget_free_available: u64,
+    pub budget_gift_available: u64,
+    /// Purchased credits in cents
+    pub budget_credits_cents: u64,
+    pub budget_active_pool: String,
     /// ISO 8601 timestamp of when this data was last updated
     #[serde(skip_serializing_if = "String::is_empty")]
     pub updated_at: String,

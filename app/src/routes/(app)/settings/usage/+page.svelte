@@ -41,11 +41,11 @@
 		refreshing = false;
 	}
 
-	function formatTokens(n: number): string {
-		if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-		if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
-		return n.toLocaleString();
+	function formatDollars(microdollars: number): string {
+		const dollars = microdollars / 1_000_000;
+		if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}K`;
+		if (dollars >= 1) return `$${dollars.toFixed(2)}`;
+		return `$${dollars.toFixed(2)}`;
 	}
 
 	function timeUntilReset(resetAt?: string): string {
@@ -141,13 +141,12 @@
 							</div>
 							<span class="text-sm text-base-content/60 tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: usage.session.percentUsed } })}</span>
 						</div>
-						<div class="h-2 rounded-full bg-base-content/10 overflow-hidden mb-1">
+						<div class="h-2 rounded-full bg-base-content/10 overflow-hidden">
 							<div
 								class="h-full rounded-full transition-all {usage.session.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
 								style="width: {Math.min(usage.session.percentUsed, 100)}%"
 							></div>
 						</div>
-						<span class="text-sm text-base-content/40 tabular-nums">{$t('settingsUsage.usageCount', { values: { used: formatTokens(usage.session.usedTokens), limit: formatTokens(usage.session.limitTokens) } })}</span>
 					</div>
 				{/if}
 
@@ -163,13 +162,12 @@
 							</div>
 							<span class="text-sm text-base-content/60 tabular-nums">{$t('settingsUsage.percentUsed', { values: { percent: usage.weekly.percentUsed } })}</span>
 						</div>
-						<div class="h-2 rounded-full bg-base-content/10 overflow-hidden mb-1">
+						<div class="h-2 rounded-full bg-base-content/10 overflow-hidden">
 							<div
 								class="h-full rounded-full transition-all {usage.weekly.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
 								style="width: {Math.min(usage.weekly.percentUsed, 100)}%"
 							></div>
 						</div>
-						<span class="text-sm text-base-content/40 tabular-nums">{$t('settingsUsage.usageCount', { values: { used: formatTokens(usage.weekly.usedTokens), limit: formatTokens(usage.weekly.limitTokens) } })}</span>
 					</div>
 				{/if}
 
@@ -179,17 +177,35 @@
 			</div>
 		</section>
 
-		<!-- Extra Usage -->
-		<section>
-			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsUsage.extraUsage')}</h3>
-			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-				<p class="text-base text-base-content/80">
-					{$t('settingsUsage.extraUsageDesc')}
-				</p>
-				<p class="text-sm text-base-content/50 mt-2">
-					{$t('settingsUsage.manageCredits')}
-				</p>
-			</div>
-		</section>
+		<!-- Budget Balance -->
+		{#if usage?.budget}
+			<section>
+				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsUsage.budgetBalance')}</h3>
+				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
+					{#if usage.budget.activePool}
+						<div class="flex items-center gap-2 mb-4">
+							<span class="text-sm text-base-content/50">{$t('settingsUsage.activePool')}</span>
+							<span class="badge badge-primary badge-sm">{usage.budget.activePool}</span>
+						</div>
+					{/if}
+					<div class="grid sm:grid-cols-3 gap-4">
+						{#if usage.budget.freeAvailable > 0}
+							<div>
+								<p class="text-sm text-base-content/50">{$t('settingsUsage.freePool')}</p>
+								<p class="text-lg font-bold text-base-content tabular-nums">{formatDollars(usage.budget.freeAvailable)}</p>
+							</div>
+						{/if}
+						<div>
+							<p class="text-sm text-base-content/50">{$t('settingsUsage.giftPool')}</p>
+							<p class="text-lg font-bold text-base-content tabular-nums">{formatDollars(usage.budget.giftAvailable)}</p>
+						</div>
+						<div>
+							<p class="text-sm text-base-content/50">{$t('settingsUsage.creditsPool')}</p>
+							<p class="text-lg font-bold text-base-content tabular-nums">${(usage.budget.creditsCents / 100).toFixed(2)}</p>
+						</div>
+					</div>
+				</div>
+			</section>
+		{/if}
 	</div>
 {/if}

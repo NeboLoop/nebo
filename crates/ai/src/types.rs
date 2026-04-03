@@ -13,13 +13,18 @@ pub struct RateLimitMeta {
     pub remaining_tokens: Option<u64>,
     pub reset_after_secs: Option<f64>,
     pub retry_after_secs: Option<u64>,
-    // Janus session/weekly rate limit windows
-    pub session_limit_tokens: Option<u64>,
-    pub session_remaining_tokens: Option<u64>,
+    // Janus session/weekly rate limit windows (values are microdollars)
+    pub session_limit_credits: Option<u64>,
+    pub session_remaining_credits: Option<u64>,
     pub session_reset_at: Option<String>,
-    pub weekly_limit_tokens: Option<u64>,
-    pub weekly_remaining_tokens: Option<u64>,
+    pub weekly_limit_credits: Option<u64>,
+    pub weekly_remaining_credits: Option<u64>,
     pub weekly_reset_at: Option<String>,
+    // Janus budget pool headers
+    pub budget_free_available: Option<u64>,
+    pub budget_gift_available: Option<u64>,
+    pub budget_credits_cents: Option<u64>,
+    pub budget_active_pool: Option<String>,
 }
 
 /// Streaming event types from AI providers.

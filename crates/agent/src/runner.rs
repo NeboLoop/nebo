@@ -683,7 +683,50 @@ async fn run_loop(
     // Build static system prompt — use modular prompt when no custom one is provided
     // STRAP docs and tool list are NOT included here — they're injected per-iteration
     // based on which tools pass the context filter (dynamic injection).
-    let active_agent_body = active_agent_entry.as_ref().map(|r| r.agent_md.clone());
+    let active_agent_body = active_agent_entry.as_ref().map(|r| {
+        // Strip YAML frontmatter from AGENT.md — inject only the prose body.
+        // Frontmatter is machine metadata (name, triggers, etc.), not persona instructions.
+        match napp::agent::split_frontmatter(&r.agent_md) {
+            Ok((yaml_str, body)) => {
+                if yaml_str.is_empty() {
+                    body
+                } else {
+                    // Include a compact identity header from frontmatter properties
+                    let mut result = String::new();
+                    if let Ok(mapping) = serde_yaml::from_str::<serde_yaml::Mapping>(&yaml_str) {
+                        let mut identity_parts = Vec::new();
+                        for (k, v) in &mapping {
+                            if let (serde_yaml::Value::String(key), val) = (k, v) {
+                                match key.as_str() {
+                                    "name" | "description" | "triggers" => {
+                                        let val_str = match val {
+                                            serde_yaml::Value::String(s) => s.clone(),
+                                            serde_yaml::Value::Sequence(seq) => {
+                                                seq.iter().filter_map(|i| match i {
+                                                    serde_yaml::Value::String(s) => Some(s.as_str()),
+                                                    _ => None,
+                                                }).collect::<Vec<_>>().join(", ")
+                                            }
+                                            _ => continue,
+                                        };
+                                        identity_parts.push(format!("- **{}**: {}", key, val_str));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if !identity_parts.is_empty() {
+                            result.push_str(&identity_parts.join("\n"));
+                            result.push_str("\n\n");
+                        }
+                    }
+                    result.push_str(&body);
+                    result
+                }
+            }
+            Err(_) => r.agent_md.clone(),
+        }
+    });
     let plugin_inventory = skill_loader
         .as_ref()
         .map(|l| l.plugin_inventory())
@@ -1414,34 +1457,30 @@ async fn run_loop(
                         // Check Janus session/weekly usage and generate quota warning at >80%
                         let mut warnings = Vec::new();
                         if let (Some(limit), Some(remaining)) =
-                            (meta.session_limit_tokens, meta.session_remaining_tokens)
+                            (meta.session_limit_credits, meta.session_remaining_credits)
                         {
                             if limit > 0 {
                                 let used_pct =
                                     ((limit.saturating_sub(remaining)) as f64 / limit as f64) * 100.0;
                                 if used_pct >= 80.0 {
                                     warnings.push(format!(
-                                        "Session usage at {:.0}% ({} of {} tokens remaining, resets at {})",
+                                        "Session usage at {:.0}% (resets at {})",
                                         used_pct,
-                                        remaining,
-                                        limit,
                                         meta.session_reset_at.as_deref().unwrap_or("unknown"),
                                     ));
                                 }
                             }
                         }
                         if let (Some(limit), Some(remaining)) =
-                            (meta.weekly_limit_tokens, meta.weekly_remaining_tokens)
+                            (meta.weekly_limit_credits, meta.weekly_remaining_credits)
                         {
                             if limit > 0 {
                                 let used_pct =
                                     ((limit.saturating_sub(remaining)) as f64 / limit as f64) * 100.0;
                                 if used_pct >= 80.0 {
                                     warnings.push(format!(
-                                        "Weekly usage at {:.0}% ({} of {} tokens remaining, resets at {})",
+                                        "Weekly usage at {:.0}% (resets at {})",
                                         used_pct,
-                                        remaining,
-                                        limit,
                                         meta.weekly_reset_at.as_deref().unwrap_or("unknown"),
                                     ));
                                 }

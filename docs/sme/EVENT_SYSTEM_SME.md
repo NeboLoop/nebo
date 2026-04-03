@@ -660,6 +660,13 @@ in the calling code.
 | NeboLoop chat/DM messages | `neboloop.{topic}` | `"neboloop"` | `server/lib.rs:1246` |
 | NeboLoop other topics | `neboloop.{topic}` | `"neboloop"` | `server/lib.rs:1263` |
 | MCP server emit_event tool | User-defined | `"mcp"` | `handlers/mcp_server.rs:355` |
+| Plugin watch NDJSON auto-emit | `{plugin-slug}.{event-name}` (e.g. `gws.email.new`) | `"plugin:{slug}:{binding}"` | `agent/agent_worker.rs` |
+
+**Plugin watch auto-emission:** When an agent's `watch` trigger references a plugin
+event (via the `event` field), the AgentWorker's `watch_loop()` parses NDJSON lines
+from the plugin's stdout and emits them directly into the EventBus. Supports single-event
+and multiplexed modes. See [PLUGIN_SYSTEM.md §5](PLUGIN_SYSTEM.md#5-plugin-events) for
+the full NDJSON protocol, `PluginEventDef` schema, and multiplexing details.
 
 ---
 
@@ -674,6 +681,10 @@ in the calling code.
 **System events:**
 - `neboloop.{topic}` — NeboLoop message events
 - `neboloop.agent_space.{slug}` — Agent-to-agent messages
+
+**Plugin events (via watch trigger auto-emit):**
+- `{plugin-slug}.{event-name}` — e.g. `"gws.email.new"`, `"gws.calendar.event"`
+- Declared in `plugin.json` `events[]` array, prefixed with plugin slug at runtime
 
 **Emit sources (agent-namespaced):**
 - `{agent-slug}.{emit-name}` — e.g. `"chief-of-staff.briefing.ready"`

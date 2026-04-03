@@ -224,19 +224,21 @@ async function handleStatus(ctx: CommandContext): Promise<boolean> {
 async function handleUsage(ctx: CommandContext): Promise<boolean> {
 	try {
 		const res = await api.neboLoopJanusUsage();
-		const fmt = (w: typeof res.session) => {
-			const used = Math.round(w.usedTokens / 1000);
-			const limit = Math.round(w.limitTokens / 1000);
-			const pct = w.percentUsed.toFixed(1);
-			return `${used}K / ${limit}K (${pct}%)`;
-		};
 		const lines = [
 			'**Credit Usage**\n',
-			`Session: ${fmt(res.session)}`,
-			`Weekly: ${fmt(res.weekly)}`
+			`Session: ${res.session.percentUsed}% used`,
+			`Weekly: ${res.weekly.percentUsed}% used`
 		];
 		if (res.weekly.resetAt) {
 			lines.push(`Resets: ${new Date(res.weekly.resetAt).toLocaleDateString()}`);
+		}
+		if (res.budget) {
+			lines.push('');
+			lines.push('**Budget**');
+			if (res.budget.activePool) lines.push(`Active pool: ${res.budget.activePool}`);
+			if (res.budget.freeAvailable > 0) lines.push(`Free: $${(res.budget.freeAvailable / 1_000_000).toFixed(2)}`);
+			if (res.budget.giftAvailable > 0) lines.push(`Gift: $${(res.budget.giftAvailable / 1_000_000).toFixed(2)}`);
+			if (res.budget.creditsCents > 0) lines.push(`Credits: $${(res.budget.creditsCents / 100).toFixed(2)}`);
 		}
 		ctx.addSystemMessage(lines.join('\n'));
 	} catch {

@@ -497,6 +497,7 @@
 		"signInFailed": "Sign-in failed",
 		"signInExpired": "Sign-in expired. Please try again.",
 		"startFailed": "Failed to start sign-in",
+		"viewUsage": "View AI usage",
 		"deleteModal": {
 			"title": "Delete Account",
 			"permanent": "This action is permanent",
@@ -970,7 +971,8 @@
 		"cliUpdateFailed": "Failed to update CLI provider",
 		"deleteConfirm": "Are you sure you want to delete this provider?",
 		"deleteFailed": "Failed to delete provider",
-		"addFailed": "Failed to add provider"
+		"addFailed": "Failed to add provider",
+		"viewUsage": "View usage"
 	},
 	"settingsRouting": {
 		"title": "Routing",
@@ -1142,12 +1144,13 @@
 		"resetsInDays": "Resets in {days}d",
 		"resetsInTime": "Resets in {hours}h {minutes}m",
 		"percentUsed": "{percent}% used",
-		"usageCount": "{used} / {limit}",
 		"weekly": "Weekly",
 		"noUsageData": "No usage data available yet. Usage tracking starts when you use Nebo AI.",
-		"extraUsage": "Extra Usage",
-		"extraUsageDesc": "When you hit your plan limit, extra usage keeps you going. Credits are deducted automatically.",
-		"manageCredits": "Manage credits in Billing."
+		"budgetBalance": "Budget Balance",
+		"activePool": "Active pool",
+		"freePool": "Free",
+		"giftPool": "Gift",
+		"creditsPool": "Credits"
 	},
 	"settingsFamily": {
 		"title": "Family",

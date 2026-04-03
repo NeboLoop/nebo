@@ -23,9 +23,6 @@
 	let pendingState = $state('');
 	let pollTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
-	// Janus usage
-	let janusUsage = $state<components.NeboLoopJanusUsageResponse | null>(null);
-
 	// Disconnect
 	let showDisconnectConfirm = $state(false);
 	let disconnecting = $state(false);
@@ -49,13 +46,6 @@
 			botId = bot.botId || '';
 			botName = bot.botName || '';
 
-			if (account.connected) {
-				try {
-					janusUsage = await api.neboLoopJanusUsage();
-				} catch {
-					janusUsage = null;
-				}
-			}
 		} catch (e) {
 			console.error('Failed to load NeboLoop status:', e);
 		} finally {
@@ -224,63 +214,14 @@
 			<GiveNebo />
 		{/if}
 
-		<!-- Janus Usage -->
-		{#if janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
-			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-				<div class="flex items-center gap-3 mb-4">
-					<Zap class="w-5 h-5 text-primary" />
-					<div class="flex-1">
-						<p class="font-medium text-base">{$t('settingsAccount.aiUsage')}</p>
-					</div>
-					<button
-						class="h-7 px-2.5 rounded-lg bg-base-content/5 border border-base-content/10 text-base font-medium text-base-content/80 hover:border-base-content/40 hover:text-base-content transition-colors flex items-center gap-1"
-						onclick={() => webapi.get('/api/v1/neboloop/open', { path: '/app/settings/billing' })}
-					>
-						{$t('settingsAccount.managePlan')}
-						<ExternalLink class="w-3 h-3" />
-					</button>
-				</div>
-				<div class="flex flex-col gap-3">
-					{#if janusUsage.session.limitTokens > 0}
-						<div>
-							<div class="flex justify-between text-base text-base-content/80 mb-1.5">
-								<span>{$t('settingsAccount.sessionUsed', { values: { percent: janusUsage.session.percentUsed } })}</span>
-								{#if janusUsage.session.resetAt}
-									{@const reset = new Date(janusUsage.session.resetAt)}
-									{@const now = new Date()}
-									{@const diffMs = reset.getTime() - now.getTime()}
-									{@const diffH = Math.floor(diffMs / 3600000)}
-									{@const diffM = Math.floor((diffMs % 3600000) / 60000)}
-									<span>{$t('settingsAccount.resetsInTime', { values: { hours: diffH, minutes: diffM } })}</span>
-								{/if}
-							</div>
-							<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
-								<div
-									class="h-full rounded-full transition-all {janusUsage.session.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
-									style="width: {janusUsage.session.percentUsed}%"
-								></div>
-							</div>
-						</div>
-					{/if}
-					{#if janusUsage.weekly.limitTokens > 0}
-						<div>
-							<div class="flex justify-between text-base text-base-content/80 mb-1.5">
-								<span>{$t('settingsAccount.weeklyUsed', { values: { percent: janusUsage.weekly.percentUsed } })}</span>
-								{#if janusUsage.weekly.resetAt}
-									<span>{$t('settingsAccount.resetsDate', { values: { date: new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) } })}</span>
-								{/if}
-							</div>
-							<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
-								<div
-									class="h-full rounded-full transition-all {janusUsage.weekly.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
-									style="width: {janusUsage.weekly.percentUsed}%"
-								></div>
-							</div>
-						</div>
-					{/if}
-				</div>
+		<!-- AI Usage Link -->
+		<a href="/settings/usage" class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5 flex items-center justify-between hover:border-base-content/30 transition-colors">
+			<div class="flex items-center gap-3">
+				<Zap class="w-5 h-5 text-primary" />
+				<p class="text-base font-medium text-base-content">{$t('settingsAccount.viewUsage')}</p>
 			</div>
-		{/if}
+			<span class="text-sm text-primary">{$t('common.view')}</span>
+		</a>
 
 		<!-- Disconnect -->
 		<div class="pt-2">
