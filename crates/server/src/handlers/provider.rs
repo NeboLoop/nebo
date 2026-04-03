@@ -764,7 +764,11 @@ pub async fn update_task_routing(
 }
 
 /// GET /api/v1/local-models/status
-pub async fn local_models_status() -> HandlerResult<serde_json::Value> {
+/// Checks Ollama availability, syncs discovered models into the DB (inactive by
+/// default), and removes stale models that Ollama no longer reports.
+pub async fn local_models_status(
+    State(state): State<AppState>,
+) -> HandlerResult<serde_json::Value> {
     let available = ai::providers::ollama::check_ollama_available("").await;
     if !available {
         return Ok(Json(serde_json::json!({
@@ -776,6 +780,59 @@ pub async fn local_models_status() -> HandlerResult<serde_json::Value> {
     let model_names = ai::providers::ollama::list_ollama_models("")
         .await
         .unwrap_or_default();
+
+    // Sync discovered models into the DB so they appear in the model catalog.
+    // New models default to is_active=false — the user must explicitly enable them.
+    let existing = state.store.list_provider_models("ollama").unwrap_or_default();
+    let existing_ids: std::collections::HashSet<&str> =
+        existing.iter().map(|m| m.model_id.as_str()).collect();
+
+    for name in &model_names {
+        if !existing_ids.contains(name.as_str()) {
+            let id = format!("ollama/{}", name);
+            // Derive a friendly display name: strip ":latest", title-case
+            let display = name
+                .trim_end_matches(":latest")
+                .replace(':', " ")
+                .replace('-', " ");
+            let display = display
+                .split_whitespace()
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        Some(first) => {
+                            let upper: String = first.to_uppercase().collect();
+                            format!("{}{}", upper, c.as_str())
+                        }
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let _ = state.store.upsert_provider_model(
+                &id,
+                "ollama",
+                name,
+                &display,
+                Some(128_000), // sensible default
+                None,
+                None,
+                Some("[\"streaming\",\"tools\",\"code\"]"),
+                None,
+                None,
+                false, // default_active = false
+            );
+        }
+    }
+
+    // Remove DB models that Ollama no longer reports
+    let live: std::collections::HashSet<&str> =
+        model_names.iter().map(|n| n.as_str()).collect();
+    for m in &existing {
+        if !live.contains(m.model_id.as_str()) {
+            let _ = state.store.delete_provider_model(&m.id);
+        }
+    }
 
     Ok(Json(serde_json::json!({
         "available": true,

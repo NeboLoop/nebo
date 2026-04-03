@@ -20,7 +20,6 @@
 
 	// Janus / NeboLoop status
 	let janusStatus = $state<components.NeboLoopAccountStatusResponse | null>(null);
-	let janusUsage = $state<components.NeboLoopJanusUsageResponse | null>(null);
 
 	// New provider form
 	let showAddForm = $state(false);
@@ -90,8 +89,10 @@
 			const profile = providers.find(p => p.provider === providerType) || null;
 			const providerModels = models[providerType] || [];
 			const isLocal = localProviderTypes.has(providerType);
-			// Local providers are "configured" if they have detected models — no API key needed
-			const configured = isLocal ? providerModels.length > 0 : !!profile;
+			// Local providers are "configured" only when the runtime is actually available
+			const configured = isLocal
+				? (!!localModelsStatus?.available && providerModels.length > 0)
+				: !!profile;
 
 			result.push({
 				type: providerType,
@@ -127,8 +128,11 @@
 	}
 
 	onMount(async () => {
-		await Promise.all([loadProviders(), loadModels(), loadJanusStatus(), loadJanusUsage(), loadLocalModelsStatus()]);
-		const h = () => { loadJanusStatus(); loadJanusUsage(); };
+		// Local models status syncs discovered Ollama models into the DB,
+		// so it must complete before loadModels() reads the catalog.
+		await Promise.all([loadProviders(), loadLocalModelsStatus(), loadJanusStatus()]);
+		await loadModels();
+		const h = () => { loadJanusStatus(); };
 		window.addEventListener('nebo:plan_changed', h);
 		return () => window.removeEventListener('nebo:plan_changed', h);
 	});
@@ -138,14 +142,6 @@
 			janusStatus = await api.neboLoopAccountStatus();
 		} catch {
 			janusStatus = null;
-		}
-	}
-
-	async function loadJanusUsage() {
-		try {
-			janusUsage = await api.neboLoopJanusUsage();
-		} catch {
-			janusUsage = null;
 		}
 	}
 
@@ -308,42 +304,13 @@
 			<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsProviders.neboloopAI')}</h3>
 			<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
 				{#if janusStatus?.connected}
-					<!-- Provider header — same as Anthropic/DeepSeek -->
-					<p class="text-base font-medium text-base-content">{$t('settingsProviders.neboloopAI')}</p>
-
-					<!-- Usage -->
-					{#if janusStatus.janusProvider && janusUsage && (janusUsage.session.limitTokens > 0 || janusUsage.weekly.limitTokens > 0)}
-						<div class="space-y-3 mt-4">
-							{#if janusUsage.session.limitTokens > 0}
-								<div>
-									<div class="flex justify-between text-base text-base-content/80 mb-1">
-										<span>{$t('settingsProviders.session')}</span>
-										<span>{janusUsage.session.percentUsed}% used{#if janusUsage.session.resetAt}{@const reset = new Date(janusUsage.session.resetAt)}{@const now = new Date()}{@const diffMs = reset.getTime() - now.getTime()}{@const diffH = Math.floor(diffMs / 3600000)}{@const diffM = Math.floor((diffMs % 3600000) / 60000)} &middot; resets in {diffH}h {diffM}m{/if}</span>
-									</div>
-									<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
-										<div
-											class="h-full rounded-full transition-all {janusUsage.session.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
-											style="width: {janusUsage.session.percentUsed}%"
-										></div>
-									</div>
-								</div>
-							{/if}
-							{#if janusUsage.weekly.limitTokens > 0}
-								<div>
-									<div class="flex justify-between text-base text-base-content/80 mb-1">
-										<span>{$t('settingsProviders.weekly')}</span>
-										<span>{janusUsage.weekly.percentUsed}% used{#if janusUsage.weekly.resetAt} &middot; resets {new Date(janusUsage.weekly.resetAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}{/if}</span>
-									</div>
-									<div class="h-1.5 rounded-full bg-base-content/10 overflow-hidden">
-										<div
-											class="h-full rounded-full transition-all {janusUsage.weekly.percentUsed > 80 ? 'bg-warning' : 'bg-primary'}"
-											style="width: {janusUsage.weekly.percentUsed}%"
-										></div>
-									</div>
-								</div>
-							{/if}
-						</div>
-					{/if}
+					<!-- Provider header -->
+					<div class="flex items-center justify-between">
+						<p class="text-base font-medium text-base-content">{$t('settingsProviders.neboloopAI')}</p>
+						<a href="/settings/usage" class="text-sm text-primary hover:brightness-110 transition-all">
+							{$t('settingsProviders.viewUsage')}
+						</a>
+					</div>
 
 					<!-- Models with toggles — same as Anthropic/DeepSeek -->
 					{#if janusModels().length > 0}
@@ -409,7 +376,7 @@
 					<button
 						type="button"
 						class="flex items-center gap-1.5 text-sm font-medium text-base-content/60 hover:text-primary transition-colors"
-						onclick={async () => { await loadModels(); }}
+						onclick={async () => { await loadLocalModelsStatus(); await loadModels(); }}
 					>
 						<RefreshCw class="w-3.5 h-3.5" /> {$t('settingsProviders.discover')}
 					</button>
@@ -429,7 +396,7 @@
 						{:else}
 							<p class="text-sm text-base-content/50 ml-5 mb-3">{$t('settingsProviders.ollamaNotDetected')}</p>
 						{/if}
-						{#if prov.models.length > 0}
+						{#if prov.configured && prov.models.length > 0}
 							<div class="space-y-1.5">
 								{#each prov.models as model (model.id)}
 									<div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-base-content/5">
