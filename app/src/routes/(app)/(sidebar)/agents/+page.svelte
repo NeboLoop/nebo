@@ -1,9 +1,8 @@
 <script lang="ts">
-	import CommandCenter from '$lib/components/agent/CommandCenter.svelte';
+	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
+
+	onMount(() => {
+		goto('/agent/assistant/chat', { replaceState: true });
+	});
 </script>
-
-<svelte:head>
-	<title>Nebo - Agents</title>
-</svelte:head>
-
-<CommandCenter />

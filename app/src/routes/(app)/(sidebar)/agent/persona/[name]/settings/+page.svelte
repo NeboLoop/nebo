@@ -135,7 +135,7 @@
 		try {
 			if (isActive) await deactivateAgent(channelState.activeAgentId);
 			await deleteAgent(channelState.activeAgentId);
-			goto('/agents');
+			goto('/agent/assistant/chat');
 		} finally {
 			deleting = false;
 		}
