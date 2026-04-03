@@ -547,7 +547,7 @@ async fn run_loop(
     let mut retryable_retries = 0usize;
     let mut called_tools: Vec<String> = Vec::new();
     // Rolling hashes of recent tool results for stale-result detection in steering
-    let mut recent_tool_result_hashes: Vec<(u64, u64)> = Vec::new();
+    let mut recent_tool_result_hashes: Vec<(u64, u64, u64)> = Vec::new();
     let mut provider_idx: usize = 0;
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
@@ -1865,10 +1865,13 @@ async fn run_loop(
                 }
             }
 
-            // Compute tool result hashes for stale-result detection.
-            // Uses a simple FNV-style hash of tool name + result content.
+            // Compute tool call hashes for loop detection (OpenClaw-style).
+            // Tuple: (name_hash, args_hash, result_hash) — detects same-tool-same-args
+            // and stale results independently.
             for tc in &tool_calls {
                 let name_hash = simple_hash(tc.name.as_bytes());
+                let args_str = tc.input.to_string();
+                let args_hash = simple_hash(args_str.as_bytes());
                 // Hash first 2000 bytes of the most recent result for this tool
                 let content_hash = sessions.get_messages(session_id)
                     .ok()
@@ -1876,9 +1879,9 @@ async fn run_loop(
                     .and_then(|m| m.tool_results)
                     .map(|tr| simple_hash(tr.as_bytes().get(..2000).unwrap_or(tr.as_bytes())))
                     .unwrap_or(0);
-                recent_tool_result_hashes.push((name_hash, content_hash));
-                // Keep only last 5
-                if recent_tool_result_hashes.len() > 5 {
+                recent_tool_result_hashes.push((name_hash, args_hash, content_hash));
+                // Keep last 10 for ping-pong detection
+                if recent_tool_result_hashes.len() > 10 {
                     recent_tool_result_hashes.remove(0);
                 }
             }

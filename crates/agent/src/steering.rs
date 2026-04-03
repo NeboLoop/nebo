@@ -31,9 +31,9 @@ pub struct Context {
     pub quota_warning: Option<String>,
     /// Number of consecutive iterations where ALL tool calls returned errors.
     pub consecutive_error_iterations: usize,
-    /// Rolling hashes of recent tool results for stale-result detection.
-    /// Each entry is (tool_name_hash, content_hash). Last 5 results kept.
-    pub recent_tool_result_hashes: Vec<(u64, u64)>,
+    /// Rolling hashes of recent tool calls for loop detection (OpenClaw-style).
+    /// Each entry is (tool_name_hash, args_hash, result_hash). Last 10 kept.
+    pub recent_tool_result_hashes: Vec<(u64, u64, u64)>,
     /// User presence state: "focused", "unfocused", "away", or empty if unknown.
     pub user_presence: String,
     /// Whether the user just transitioned from unfocused/away back to focused.
@@ -172,54 +172,6 @@ fn count_turns_since_any_tool_use(messages: &[ChatMessage]) -> i32 {
     -1 // never used tools
 }
 
-fn count_consecutive_same_tool_calls(messages: &[ChatMessage]) -> (String, usize) {
-    let mut last_tool = String::new();
-    let mut count = 0usize;
-
-    for msg in messages.iter().rev() {
-        if msg.role == "user" {
-            break; // A new user message resets the consecutive tool call count
-        }
-        if msg.role != "assistant" {
-            continue;
-        }
-        if let Some(ref tc_json) = msg.tool_calls {
-            if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(tc_json) {
-                if let Some(first_call) = calls.first() {
-                    let name = first_call
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    if name == "agent" {
-                        break; // Progress marker
-                    }
-
-                    // Browser/desktop tools are inherently sequential (navigate→click→fill→check).
-                    // Calling "web" 10 times in a row is normal, not a loop.
-                    if matches!(name.as_str(), "web" | "desktop") {
-                        continue;
-                    }
-
-                    if last_tool.is_empty() {
-                        last_tool = name;
-                        count = 1;
-                    } else if name == last_tool {
-                        count += 1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        } else if !msg.content.is_empty() {
-            break; // Text-only response breaks the chain
-        }
-    }
-
-    (last_tool, count)
-}
-
 /// Detect if recent user messages contain stop/cancel/abort requests.
 fn user_requested_stop(messages: &[ChatMessage]) -> bool {
     let stop_patterns = [
@@ -261,14 +213,27 @@ pub fn should_force_break(ctx: &Context) -> Option<String> {
         ));
     }
 
-    // 2. Same-tool loop at extreme count — the LLM is ignoring steering
-    let (tool_name, count) = count_consecutive_same_tool_calls(&ctx.messages);
-    if !tool_name.is_empty() && count >= 5 {
-        return Some(format!(
-            "Circuit breaker: '{}' called {} times consecutively. \
-             The agent is stuck in a loop and steering was ignored.",
-            tool_name, count,
-        ));
+    // 2. Same-tool-same-args loop at extreme count — the LLM is ignoring steering.
+    // Uses hash-based detection: (name_hash, args_hash) must match for it to count.
+    // This correctly allows web(navigate)→web(click)→web(fill) while catching
+    // web(search, "flights") × 6 with identical args.
+    if ctx.recent_tool_result_hashes.len() >= 2 {
+        let last = ctx.recent_tool_result_hashes.last().unwrap();
+        let mut same_call_count = 1usize;
+        for entry in ctx.recent_tool_result_hashes.iter().rev().skip(1) {
+            if entry.0 == last.0 && entry.1 == last.1 {
+                same_call_count += 1;
+            } else {
+                break;
+            }
+        }
+        if same_call_count >= 6 {
+            return Some(format!(
+                "Circuit breaker: same tool called with identical arguments {} times. \
+                 The agent is stuck in a loop and steering was ignored.",
+                same_call_count,
+            ));
+        }
     }
 
     // 3. User explicitly asked to stop — unconditional hard break
@@ -428,47 +393,57 @@ impl Generator for ActionBias {
     }
 }
 
-// 6. Output Discipline — proactive reinforcement for non-Claude models
-// Claude follows system prompt well; GPT/Gemini need constant reminders.
+// 6. Output Discipline — proactive reinforcement for non-Claude models.
+// Modeled after Hermes TOOL_USE_ENFORCEMENT_GUIDANCE which uses forceful
+// language ("MUST", "immediately", "not acceptable") targeted at GPT/Codex.
 struct OutputDiscipline;
 impl Generator for OutputDiscipline {
     fn name(&self) -> &str { "output_discipline" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        // Always fire from iteration 1 onward (skip only the very first response)
-        if ctx.iteration < 1 {
-            return vec![];
-        }
+        let mut directives = Vec::new();
+
+        // Always-on tool enforcement (fires from iteration 0).
+        // Hermes-strength language — "MUST", "immediately", "not acceptable".
+        directives.push(SteeringDirective {
+            label: "Tool Enforcement".to_string(),
+            content: "You MUST use your tools to take action — do not describe what you would do \
+                     or plan to do without actually doing it. When you say you will perform an \
+                     action (e.g. 'I will search', 'Let me check', 'I will look up'), you MUST \
+                     immediately make the corresponding tool call in the same response. \
+                     Never end your turn with a promise of future action — execute it now.\n\
+                     Keep working until the task is actually complete. Do not stop with a summary \
+                     of what you plan to do next. If you have tools available that can accomplish \
+                     the task, use them instead of telling the user what you would do.\n\
+                     Every response MUST either (a) contain tool calls that make progress, or \
+                     (b) deliver a final result to the user. Responses that only describe \
+                     intentions without acting are not acceptable.".to_string(),
+            priority: 9,
+        });
 
         // Check if last assistant message was excessively long
-        let last_len = ctx.messages.iter().rev()
-            .find(|m| m.role == "assistant")
-            .map(|m| m.content.len())
-            .unwrap_or(0);
+        if ctx.iteration >= 1 {
+            let last_len = ctx.messages.iter().rev()
+                .find(|m| m.role == "assistant")
+                .map(|m| m.content.len())
+                .unwrap_or(0);
 
-        if last_len > 300 {
-            return vec![SteeringDirective {
-                label: "Output Discipline".to_string(),
-                content: "STRICT RULES — you are violating output norms:\n\
-                         1. When calling tools: output ZERO text. No preamble, no summary, no status update.\n\
-                         2. When reporting results: state the answer in 1-3 sentences. No bullet lists of \"what I tried\". No \"current status\" sections.\n\
-                         3. NEVER repeat information you already said. Each response must contain ONLY new information.\n\
-                         4. DO NOT explain what you plan to do. Just do it.\n\
-                         5. NEVER say \"if you want, I can...\" or ask permission to continue. Just continue.\n\
-                         6. NEVER announce your technical limitations, timeouts, or tool errors. Handle them silently or try a different approach.\n\
-                         7. NEVER explain what blocked you or what failed. The user doesn't care about your process — they care about results.\n\
-                         8. Your last response was too long. Cut your output by 80%.".to_string(),
-                priority: 9,
-            }];
+            if last_len > 300 {
+                directives.push(SteeringDirective {
+                    label: "Output Violation".to_string(),
+                    content: "Your last response was too long. STRICT CORRECTIONS:\n\
+                             1. When calling tools: output ZERO text. No preamble, no summary, no status update.\n\
+                             2. When reporting results: 1-3 sentences maximum. No bullet lists of \"what I tried\".\n\
+                             3. NEVER repeat information you already said.\n\
+                             4. NEVER say \"if you want, I can...\" — just continue working.\n\
+                             5. NEVER announce timeouts, errors, or limitations — handle them silently or try a different approach.\n\
+                             6. NEVER explain what blocked you. The user cares about results, not your process.\n\
+                             7. Cut your output by 80%.".to_string(),
+                    priority: 9,
+                });
+            }
         }
 
-        // Lighter reminder even when not over threshold
-        vec![SteeringDirective {
-            label: "Output Discipline".to_string(),
-            content: "Keep text responses under 3 sentences. When calling tools, output ZERO text. \
-                     Never repeat information already stated. Never ask permission to continue — just do it. \
-                     Never announce timeouts, errors, or limitations — handle them silently.".to_string(),
-            priority: 4,
-        }]
+        directives
     }
 }
 
@@ -564,74 +539,143 @@ impl Generator for RepetitionDetector {
     }
 }
 
-// 7. Loop Detector
+// 7. Loop Detector — OpenClaw-style hash-based detection.
+// Uses (name_hash, args_hash, result_hash) tuples instead of tool name strings.
+// This correctly distinguishes web(navigate, google.com) → web(click, button)
+// (legitimate browser work) from web(search, "flights") × 5 (actual loop).
 struct LoopDetector;
 impl Generator for LoopDetector {
     fn name(&self) -> &str { "loop_detector" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
         let mut directives = Vec::new();
+        let hashes = &ctx.recent_tool_result_hashes;
 
-        // A. Same-tool repetition detection
-        let (tool_name, count) = count_consecutive_same_tool_calls(&ctx.messages);
-        if !tool_name.is_empty() && count >= 2 {
-            let content = if count >= 3 {
-                format!(
-                    "You have called '{}' {} times consecutively. \
-                     You are in an infinite loop. You MUST stop calling tools entirely. \
-                     Respond with text only — tell the user what happened and what you cannot do.",
-                    tool_name, count
-                )
-            } else {
-                format!(
-                    "You have called '{}' {} times in a row. \
-                     Pause and report your findings. Identify what's missing before continuing.",
-                    tool_name, count
-                )
-            };
-            directives.push(SteeringDirective {
-                label: "Loop Warning".to_string(),
-                content,
-                priority: 9,
-            });
-        }
-
-        // B. Stale-result detection — same tool returning identical results
-        if ctx.recent_tool_result_hashes.len() >= 2 {
-            let last = ctx.recent_tool_result_hashes.last();
-            let prev = ctx.recent_tool_result_hashes.get(ctx.recent_tool_result_hashes.len() - 2);
-            if let (Some(last), Some(prev)) = (last, prev) {
-                if last.0 == prev.0 && last.1 == prev.1 {
-                    directives.push(SteeringDirective {
-                        label: "Stale Results".to_string(),
-                        content: "You called the same tool twice and got identical results. \
-                                 You are not making progress. Take a DIFFERENT action now.".to_string(),
-                        priority: 9,
-                    });
+        // A. Same-tool-same-args detection (OpenClaw "generic repeat" pattern).
+        // Counts consecutive calls with identical (name_hash, args_hash).
+        // Different args = different action = not a loop.
+        if hashes.len() >= 2 {
+            let last = hashes.last().unwrap();
+            let mut same_call_count = 1usize;
+            for entry in hashes.iter().rev().skip(1) {
+                if entry.0 == last.0 && entry.1 == last.1 {
+                    same_call_count += 1;
+                } else {
+                    break;
                 }
+            }
+
+            if same_call_count >= 4 {
+                directives.push(SteeringDirective {
+                    label: "Loop Warning".to_string(),
+                    content: format!(
+                        "You have called the same tool with identical arguments {} times. \
+                         You are in an infinite loop. Try a COMPLETELY different approach \
+                         or tell the user what's blocking you.",
+                        same_call_count
+                    ),
+                    priority: 10,
+                });
+            } else if same_call_count >= 2 {
+                directives.push(SteeringDirective {
+                    label: "Loop Warning".to_string(),
+                    content: format!(
+                        "You have called the same tool with identical arguments {} times. \
+                         The result will not change. Try different parameters or a different tool.",
+                        same_call_count
+                    ),
+                    priority: 8,
+                });
             }
         }
 
-        // C. All-error iteration detection (catches varied-tool loops)
+        // B. Stale-result detection — same tool, same args, AND same result.
+        // Stronger signal: even the output is identical.
+        if hashes.len() >= 2 {
+            let last = hashes.last().unwrap();
+            let prev = &hashes[hashes.len() - 2];
+            if last.0 == prev.0 && last.1 == prev.1 && last.2 == prev.2 {
+                directives.push(SteeringDirective {
+                    label: "Stale Results".to_string(),
+                    content: "You called the same tool with the same arguments and got \
+                             identical results. You are NOT making progress. Take a \
+                             DIFFERENT action now — different tool, different parameters, \
+                             or different approach entirely.".to_string(),
+                    priority: 9,
+                });
+            }
+        }
+
+        // C. Ping-pong detection (OpenClaw pattern) — A→B→A→B alternating.
+        if hashes.len() >= 4 {
+            let len = hashes.len();
+            let a1 = &hashes[len - 4];
+            let b1 = &hashes[len - 3];
+            let a2 = &hashes[len - 2];
+            let b2 = &hashes[len - 1];
+            // Check: (name+args of position -4) == (name+args of position -2)
+            //    AND (name+args of position -3) == (name+args of position -1)
+            //    AND they're different from each other
+            let a_matches = a1.0 == a2.0 && a1.1 == a2.1;
+            let b_matches = b1.0 == b2.0 && b1.1 == b2.1;
+            let a_differs_from_b = a1.0 != b1.0 || a1.1 != b1.1;
+            if a_matches && b_matches && a_differs_from_b {
+                directives.push(SteeringDirective {
+                    label: "Ping-Pong".to_string(),
+                    content: "You are alternating between two tool calls in a loop (A→B→A→B). \
+                             Neither is making progress. STOP this pattern. Try a completely \
+                             different approach or tell the user what's blocking you.".to_string(),
+                    priority: 9,
+                });
+            }
+        }
+
+        // D. All-error iteration detection (catches varied-tool loops)
         if ctx.consecutive_error_iterations >= 3 {
-            let content = format!(
-                "The last {} iterations all had failing tool calls. \
-                 You are stuck. STOP calling tools. Tell the user what you tried, \
-                 what failed, and what they can do to unblock you.",
-                ctx.consecutive_error_iterations
-            );
             directives.push(SteeringDirective {
                 label: "Error Loop".to_string(),
-                content,
+                content: format!(
+                    "The last {} iterations all had failing tool calls. \
+                     You are stuck. Try a COMPLETELY different approach. If you cannot \
+                     make progress, tell the user what's blocking you.",
+                    ctx.consecutive_error_iterations
+                ),
                 priority: 10,
             });
         }
 
-        // D. User stop detection
+        // E. Budget pressure warnings (Hermes pattern — 70%/90% thresholds).
+        // Max iterations is 100 (from runner).
+        const MAX_ITERATIONS: usize = 100;
+        let pct = (ctx.iteration * 100) / MAX_ITERATIONS;
+        if pct >= 90 {
+            let remaining = MAX_ITERATIONS.saturating_sub(ctx.iteration);
+            directives.push(SteeringDirective {
+                label: "Budget Critical".to_string(),
+                content: format!(
+                    "BUDGET WARNING: Iteration {}/{}. Only {} left. \
+                     Provide your final answer NOW. No more tool calls unless absolutely critical.",
+                    ctx.iteration, MAX_ITERATIONS, remaining
+                ),
+                priority: 10,
+            });
+        } else if pct >= 70 {
+            let remaining = MAX_ITERATIONS.saturating_sub(ctx.iteration);
+            directives.push(SteeringDirective {
+                label: "Budget Caution".to_string(),
+                content: format!(
+                    "Budget: iteration {}/{}. {} iterations left. Start consolidating your work.",
+                    ctx.iteration, MAX_ITERATIONS, remaining
+                ),
+                priority: 6,
+            });
+        }
+
+        // F. User stop detection
         if user_requested_stop(&ctx.messages) {
             directives.push(SteeringDirective {
                 label: "User Stop".to_string(),
                 content: "The user has asked you to STOP. Cease all tool calls immediately. \
-                         Respond with a brief summary of what happened and stop."
+                         Respond with a brief summary and stop."
                     .to_string(),
                 priority: 10,
             });
