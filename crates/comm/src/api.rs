@@ -388,6 +388,12 @@ impl NeboLoopApi {
         self.redeem_code(code).await
     }
 
+    /// Get agent detail from NeboLoop (persona, workflows, download URL).
+    pub async fn get_agent(&self, slug: &str) -> Result<AgentDetailResponse, CommError> {
+        let path = format!("/api/v1/agents/{}", urlencoding::encode(slug));
+        self.do_json(reqwest::Method::GET, &path, None::<&()>).await
+    }
+
     /// Uninstall an agent for this bot.
     pub async fn uninstall_agent(&self, id: &str) -> Result<(), CommError> {
         self.do_void(reqwest::Method::DELETE, &format!("/api/v1/agents/{}/install/{}", id, self.bot_id), None::<&()>).await

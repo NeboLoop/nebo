@@ -157,10 +157,38 @@ pub struct SkillItem {
     pub status: String,
 }
 
+/// Agent detail from `GET /api/v1/agents/{slug}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDetailResponse {
+    pub id: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    /// Raw AGENT.md persona text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_md: Option<String>,
+    /// agent.json content (workflows, triggers, skills, inputs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_config: Option<serde_json::Value>,
+    /// URL to download the sealed .napp archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+    /// Signing key ID for verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key_id: Option<String>,
+}
+
 /// Full skill detail with manifest.
 ///
-/// Also used for workflow and agent detail — all artifact types share
-/// the `GET /api/v1/skills/{id}` endpoint.
+/// Used for skill and workflow detail via `GET /api/v1/skills/{id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillDetail {
@@ -386,6 +414,8 @@ pub struct CodeRedeemResponse {
 pub struct CodeRedeemArtifact {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub slug: String,
     #[serde(rename = "type")]
     pub artifact_type: String,
     pub code: String,

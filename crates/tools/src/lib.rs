@@ -237,23 +237,45 @@ pub async fn persist_agent_from_api(
     code: &str,
     store: &db::Store,
 ) -> Result<PersistAgentResult, String> {
-    let detail = api.get_skill(artifact_id).await
-        .map_err(|e| format!("fetch agent detail: {e}"))?;
+    // Try agent-specific endpoint first (GET /api/v1/agents/{slug}),
+    // fall back to skill endpoint (GET /api/v1/skills/{id}) for older NeboLoop versions.
+    let derived_slug = name.to_lowercase().replace(' ', "-");
 
-    let manifest_text = extract_manifest_text(&detail)
-        .unwrap_or_else(|| generate_minimal_agent_md(name, &detail.item.description));
-
-    // Store typeConfig as frontmatter so workflow bindings are preserved
-    let frontmatter_str = detail.type_config.as_ref()
-        .map(|tc| serde_json::to_string(tc).unwrap_or_default())
-        .unwrap_or_default();
+    let (manifest_text, frontmatter_str, description, agent_slug, version, download_url, type_config) =
+        if let Ok(detail) = api.get_agent(&derived_slug).await {
+            tracing::info!(agent = name, slug = %derived_slug, "fetched agent detail via /agents endpoint");
+            let md = detail.content_md.clone()
+                .unwrap_or_else(|| generate_minimal_agent_md(name, &detail.description));
+            let fm = detail.type_config.as_ref()
+                .map(|tc| serde_json::to_string(tc).unwrap_or_default())
+                .unwrap_or_default();
+            let slug = if detail.slug.is_empty() { derived_slug.clone() } else { detail.slug.clone() };
+            let ver = if detail.version.is_empty() { "1.0.0".to_string() } else { detail.version.clone() };
+            let dl = detail.download_url.clone()
+                .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
+            (md, fm, detail.description.clone(), slug, ver, dl, detail.type_config)
+        } else {
+            tracing::info!(agent = name, "agent endpoint unavailable, falling back to /skills endpoint");
+            let detail = api.get_skill(artifact_id).await
+                .map_err(|e| format!("fetch agent detail: {e}"))?;
+            let md = extract_manifest_text(&detail)
+                .unwrap_or_else(|| generate_minimal_agent_md(name, &detail.item.description));
+            let fm = detail.type_config.as_ref()
+                .map(|tc| serde_json::to_string(tc).unwrap_or_default())
+                .unwrap_or_default();
+            let slug = if detail.item.slug.is_empty() { derived_slug.clone() } else { detail.item.slug.clone() };
+            let ver = if detail.item.version.is_empty() { "1.0.0".to_string() } else { detail.item.version.clone() };
+            let dl = detail.download_url.clone()
+                .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
+            (md, fm, detail.item.description.clone(), slug, ver, dl, detail.type_config)
+        };
 
     // Persist to DB — create or update if already exists (re-install)
     if store.get_agent(artifact_id).ok().flatten().is_some() {
         let _ = store.update_agent(
             artifact_id,
             name,
-            &detail.item.description,
+            &description,
             &manifest_text,
             &frontmatter_str,
             None,
@@ -264,7 +286,7 @@ pub async fn persist_agent_from_api(
             artifact_id,
             Some(code),
             name,
-            &detail.item.description,
+            &description,
             &manifest_text,
             &frontmatter_str,
             None,
@@ -274,18 +296,14 @@ pub async fn persist_agent_from_api(
 
     // Marketplace artifacts go to nebo/ namespace (installed)
     let nebo_dir = config::nebo_dir().map_err(|e| format!("nebo_dir: {e}"))?;
-    let slug = &detail.item.slug;
-    let dir_name = if slug.is_empty() { name } else { slug.as_str() };
-    let version = if detail.item.version.is_empty() { "1.0.0" } else { &detail.item.version };
 
-    // Try sealed .napp download — use API-provided URL or construct from artifact ID
-    let download_url = detail.download_url.clone()
-        .or_else(|| Some(format!("/api/v1/apps/{}/download", artifact_id)));
+    let napp_dir = nebo_dir.join("agents").join(&agent_slug);
+    std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create agent dir: {e}"))?;
+    let version_dir = napp_dir.join(&version);
+
+    // Download sealed .napp and extract it
     if let Some(ref download_url) = download_url {
-        let napp_dir = nebo_dir.join("agents").join(dir_name);
-        std::fs::create_dir_all(&napp_dir).map_err(|e| format!("create agent dir: {e}"))?;
         let napp_path = napp_dir.join(format!("{}.napp", version));
-
         match api.download_napp(download_url).await {
             Ok(data) => {
                 std::fs::write(&napp_path, &data)
@@ -295,53 +313,32 @@ pub async fn persist_agent_from_api(
                 match napp::reader::extract_napp_alongside(&napp_path) {
                     Ok(extract_dir) => {
                         tracing::info!(agent = name, dir = %extract_dir.display(), "extracted .napp");
-                        return Ok(PersistAgentResult { type_config: detail.type_config });
                     }
                     Err(e) => {
-                        tracing::warn!(agent = name, error = %e, "failed to extract .napp; falling back to loose files");
+                        tracing::warn!(agent = name, error = %e, "failed to extract .napp");
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(agent = name, error = %e, "failed to download .napp; falling back to loose files");
+                tracing::warn!(agent = name, error = %e, "failed to download .napp");
             }
         }
     }
 
-    // Fallback: write loose AGENT.md + agent.json + manifest.json
-    let agent_dir = nebo_dir.join("agents").join(dir_name);
-    std::fs::create_dir_all(&agent_dir).map_err(|e| format!("create agent dir: {e}"))?;
-
-    if let Err(e) = std::fs::write(agent_dir.join("AGENT.md"), &manifest_text) {
-        tracing::warn!(agent = name, error = %e, "failed to write AGENT.md");
+    // Validate: an agent .napp must contain both AGENT.md and agent.json
+    let agent_md_path = version_dir.join("AGENT.md");
+    let agent_json_path = version_dir.join("agent.json");
+    if !agent_md_path.exists() || !agent_json_path.exists() {
+        let missing: Vec<&str> = [
+            (!agent_md_path.exists()).then_some("AGENT.md"),
+            (!agent_json_path.exists()).then_some("agent.json"),
+        ].into_iter().flatten().collect();
+        tracing::error!(agent = name, ?missing, "agent .napp is incomplete — missing required files");
+        return Err(format!("agent package for {name} is incomplete: missing {}", missing.join(", ")));
     }
 
-    // Write agent.json from typeConfig (contains workflow bindings, triggers)
-    if let Some(ref tc) = detail.type_config {
-        if let Err(e) = std::fs::write(
-            agent_dir.join("agent.json"),
-            serde_json::to_string_pretty(tc).unwrap_or_default(),
-        ) {
-            tracing::warn!(agent = name, error = %e, "failed to write agent.json");
-        }
-    }
-
-    let manifest_json = serde_json::json!({
-        "name": name,
-        "version": detail.item.version,
-        "type": "agent",
-        "code": code,
-        "description": detail.item.description,
-    });
-    if let Err(e) = std::fs::write(
-        agent_dir.join("manifest.json"),
-        serde_json::to_string_pretty(&manifest_json).unwrap_or_default(),
-    ) {
-        tracing::warn!(agent = name, error = %e, "failed to write manifest.json");
-    }
-
-    tracing::info!(agent = name, dir = %agent_dir.display(), "persisted agent artifact (loose)");
-    Ok(PersistAgentResult { type_config: detail.type_config })
+    tracing::info!(agent = name, dir = %version_dir.display(), "persisted agent artifact");
+    Ok(PersistAgentResult { type_config })
 }
 
 /// Generate a minimal AGENT.md from metadata.

@@ -519,24 +519,27 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         }),
     );
 
-    // Fetch artifact detail from NeboLoop (same pattern as agents — get version, slug, download_url)
-    let detail = api.get_skill(&artifact_id).await
+    // Fetch plugin manifest from NeboLoop (platform-specific binary info)
+    let slug = name.to_lowercase().replace(' ', "-");
+    let detail = api.get_plugin(&slug, &platform).await
         .map_err(|e| NeboError::Internal(format!("fetch plugin detail: {e}")))?;
 
-    let slug = if detail.item.slug.is_empty() { name.to_lowercase().replace(' ', "-") } else { detail.item.slug.clone() };
-    let version = if detail.item.version.is_empty() { "1.0.0".to_string() } else { detail.item.version.clone() };
+    let version = if detail.version.is_empty() { "1.0.0".to_string() } else { detail.version.clone() };
 
     // Remove existing version so extract re-runs (enables upgrade via re-paste)
     let plugin_store = state.plugin_store.clone();
     let _ = plugin_store.remove(&slug); // ignore error if not installed
 
-    // Download .napp — use API-provided URL or construct from artifact ID
-    let download_url = detail.download_url.clone()
-        .unwrap_or_else(|| format!("/api/v1/apps/{}/download/{}", artifact_id, platform));
+    // Get platform-specific download URL from the manifest
+    let platform_binary = detail.platforms.get(&platform)
+        .ok_or_else(|| NeboError::Internal(format!(
+            "plugin {} has no binary for platform {}", slug, platform
+        )))?;
+    let download_url = &platform_binary.download_url;
 
     info!(plugin = %name, url = %download_url, "downloading plugin .napp");
 
-    let napp_data = api.download_napp(&download_url).await
+    let napp_data = api.download_napp(download_url).await
         .map_err(|e| NeboError::Internal(format!("download .napp for {}: {}", name, e)))?;
 
     info!(plugin = %name, size = napp_data.len(), "downloaded .napp archive");
@@ -554,7 +557,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
             info!(code, plugin = %name, artifact_id = %artifact_id, path = %path.display(), "installed plugin");
 
             // Check if plugin requires authentication
-            if let Some(auth) = state.plugin_store.get_manifest(&name).and_then(|m| m.auth) {
+            if let Some(auth) = state.plugin_store.get_manifest(&slug).and_then(|m| m.auth) {
                 state.hub.broadcast(
                     "plugin_auth_required",
                     serde_json::json!({
