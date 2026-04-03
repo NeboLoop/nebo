@@ -11,7 +11,8 @@
 		RefreshCw,
 		Trash2,
 		Server,
-		X
+		X,
+		KeyRound
 	} from 'lucide-svelte';
 	import * as api from '$lib/api/nebo';
 	import type { MCPIntegration } from '$lib/api/nebo';
@@ -22,6 +23,7 @@
 	let testingId = $state<string | null>(null);
 	let testResult = $state<{ id: string; success: boolean; message: string } | null>(null);
 	let connectingId = $state<string | null>(null);
+	let reauthenticatingId = $state<string | null>(null);
 
 	// Add form state
 	let showAddForm = $state(false);
@@ -199,6 +201,36 @@
 		}
 	}
 
+	async function reauthenticateIntegration(integration: MCPIntegration) {
+		reauthenticatingId = integration.id;
+		testResult = null;
+		try {
+			const result = await api.reauthenticateMCPIntegration(integration.id);
+			if (result.authUrl) {
+				window.open(result.authUrl, '_blank');
+				// Poll for completion
+				const pollInterval = setInterval(async () => {
+					try {
+						const data = await api.listMCPIntegrations();
+						const updated = (data.integrations || []).find((i: any) => i.id === integration.id);
+						if (updated && updated.connectionStatus === 'connected') {
+							clearInterval(pollInterval);
+							await loadIntegrations();
+						}
+					} catch { /* ignore */ }
+				}, 2000);
+				setTimeout(() => {
+					clearInterval(pollInterval);
+					loadIntegrations();
+				}, 180000);
+			}
+		} catch (err: any) {
+			testResult = { id: integration.id, success: false, message: err?.message || 'Reauthentication failed' };
+		} finally {
+			reauthenticatingId = null;
+		}
+	}
+
 	async function toggleIntegration(integration: MCPIntegration) {
 		const newEnabled = !integration.isEnabled;
 		integration.isEnabled = newEnabled;
@@ -320,6 +352,15 @@
 												<button
 													type="button"
 													class="text-base text-base-content/80 hover:text-primary transition-colors"
+													onclick={() => connectIntegration(integration.id)}
+													disabled={connectingId === integration.id}
+													title="Reconnect"
+												>
+													{#if connectingId === integration.id}<Spinner size={14} />{:else}<RefreshCw class="w-3.5 h-3.5" />{/if}
+												</button>
+												<button
+													type="button"
+													class="text-base text-base-content/80 hover:text-primary transition-colors"
 													onclick={() => testIntegration(integration.id)}
 													disabled={testingId === integration.id}
 												>
@@ -334,6 +375,17 @@
 												>
 													{#if connectingId === integration.id}<Spinner size={12} />{:else}Connect{/if}
 												</button>
+												{#if integration.authType === 'oauth'}
+													<button
+														type="button"
+														class="text-base text-base-content/80 hover:text-warning transition-colors"
+														onclick={() => reauthenticateIntegration(integration)}
+														disabled={reauthenticatingId === integration.id}
+														title="Reauthenticate — restart OAuth flow"
+													>
+														{#if reauthenticatingId === integration.id}<Spinner size={14} />{:else}<KeyRound class="w-4 h-4" />{/if}
+													</button>
+												{/if}
 											{/if}
 											<Toggle checked={integration.isEnabled} onchange={() => toggleIntegration(integration)} />
 											<button

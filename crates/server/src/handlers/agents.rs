@@ -74,6 +74,13 @@ fn parse_persona_properties(yaml_str: &str) -> Vec<serde_json::Value> {
                 }).collect();
                 serde_json::json!(items)
             }
+            serde_yaml::Value::Mapping(m) => {
+                // Flatten nested mapping to a compact YAML string for display
+                match serde_yaml::to_string(&serde_yaml::Value::Mapping(m)) {
+                    Ok(s) => serde_json::json!(s.trim().to_string()),
+                    Err(_) => serde_json::json!(""),
+                }
+            }
             _ => serde_json::json!(""),
         };
         Some(serde_json::json!({ "key": key, "value": value }))

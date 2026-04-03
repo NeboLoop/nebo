@@ -233,6 +233,17 @@ impl Store {
         Ok(())
     }
 
+    /// Delete stored credentials for an integration (used during reauthentication).
+    pub fn delete_mcp_credentials(&self, integration_id: &str, credential_type: &str) -> Result<(), NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM mcp_integration_credentials WHERE integration_id = ?1 AND credential_type = ?2",
+            params![integration_id, credential_type],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     /// Get OAuth access token for an integration (encrypted).
     pub fn get_mcp_credential(&self, integration_id: &str, credential_type: &str) -> Result<Option<(String, Option<String>)>, NeboError> {
         let conn = self.conn()?;

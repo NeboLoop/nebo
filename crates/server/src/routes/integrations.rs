@@ -17,5 +17,6 @@ pub fn routes() -> Router<AppState> {
         .route("/integrations/{id}/test", axum::routing::post(handlers::integrations::test_integration))
         .route("/integrations/{id}/connect", axum::routing::post(handlers::integrations::connect_integration))
         .route("/integrations/{id}/oauth-url", axum::routing::get(handlers::integrations::get_oauth_url))
+        .route("/integrations/{id}/reauthenticate", axum::routing::post(handlers::integrations::reauthenticate_integration))
         .route("/integrations/oauth/callback", axum::routing::get(handlers::integrations::oauth_callback))
 }

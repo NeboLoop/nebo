@@ -3,7 +3,7 @@
 	import { getAgent, updateAgent } from '$lib/api/nebo';
 	import RichInput from '$lib/components/ui/RichInput.svelte';
 	import TagInput from '$lib/components/ui/TagInput.svelte';
-	import { Undo2, Redo2, Plus, Trash2 } from 'lucide-svelte';
+	import { Undo2, Redo2, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-svelte';
 	import { t } from 'svelte-i18n';
 
 	const channelState = getContext<{
@@ -15,6 +15,7 @@
 
 	let loading = $state(true);
 	let saving = $state(false);
+	let propertiesExpanded = $state(false);
 	let personaMdValue = $state('');
 	let savedValue = $state('');
 	let properties = $state<PropEntry[]>([]);
@@ -123,7 +124,8 @@
 
 	function updatePropertyKey(index: number, newKey: string) {
 		const old = properties[index];
-		const shouldBeArray = newKey.trim() === 'skills';
+		const arrayKeys = ['skills', 'triggers', 'tags'];
+		const shouldBeArray = arrayKeys.includes(newKey.trim());
 
 		if (shouldBeArray && !old.isArray) {
 			const tags = old.text ? old.text.split(',').map((s) => s.trim()).filter(Boolean) : [];
@@ -161,54 +163,74 @@
 				<div class="loading loading-spinner loading-md"></div>
 			</div>
 		{:else}
-			<!-- Properties section -->
-			<div class="mb-4 shrink-0">
-				<div class="flex items-center justify-between mb-2 min-h-8">
-					<h2 class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentPersona.properties')}</h2>
+			<!-- Properties section (collapsible) -->
+			<div class="mb-4 shrink-0 border border-base-300/60 rounded-xl overflow-hidden">
+				<div class="flex items-center gap-2 w-full px-3 py-2 text-base-content text-sm">
 					<button
 						type="button"
-						class="btn btn-xs btn-ghost gap-1 text-base-content/60 hover:text-base-content"
-						onclick={addProperty}
+						class="flex items-center gap-2 flex-1 bg-transparent cursor-pointer text-left hover:opacity-80 transition-opacity"
+						onclick={() => propertiesExpanded = !propertiesExpanded}
 					>
-						<Plus class="w-3.5 h-3.5" />
-						{$t('agentPersona.addProperty')}
+						{#if propertiesExpanded}
+							<ChevronDown class="w-3.5 h-3.5 shrink-0 opacity-50" />
+						{:else}
+							<ChevronRight class="w-3.5 h-3.5 shrink-0 opacity-50" />
+						{/if}
+						<span class="text-xs text-base-content/80 uppercase tracking-wider font-semibold">{$t('agentPersona.properties')}</span>
+						{#if !propertiesExpanded && properties.length > 0}
+							<span class="text-xs text-base-content/40">{properties.length} {properties.length === 1 ? 'property' : 'properties'}</span>
+						{/if}
 					</button>
+					{#if propertiesExpanded}
+						<button
+							type="button"
+							class="btn btn-xs btn-ghost gap-1 text-base-content/60 hover:text-base-content ml-auto"
+							onclick={addProperty}
+						>
+							<Plus class="w-3.5 h-3.5" />
+							{$t('agentPersona.addProperty')}
+						</button>
+					{/if}
 				</div>
-				{#if properties.length === 0}
-					<p class="text-xs text-base-content/50 py-2">{$t('agentPersona.propertiesEmpty')}</p>
-				{:else}
-					<div class="flex flex-col gap-2">
-						{#each properties as prop, i}
-							<div class="flex items-start gap-2">
-								<input
-									type="text"
-									class="input input-bordered input-sm w-36 shrink-0"
-									value={prop.key}
-									placeholder={$t('agentPersona.propertyName')}
-									oninput={(e) => updatePropertyKey(i, (e.target as HTMLInputElement).value)}
-								/>
-								{#if prop.isArray}
-									<div class="flex-1 min-w-0">
-										<TagInput bind:value={properties[i].tags} placeholder={$t('agentPersona.propertyValue')} />
+				{#if propertiesExpanded}
+					<div class="border-t border-base-300/40 px-3 py-2">
+						{#if properties.length === 0}
+							<p class="text-xs text-base-content/50 py-2">{$t('agentPersona.propertiesEmpty')}</p>
+						{:else}
+							<div class="flex flex-col gap-2">
+								{#each properties as prop, i}
+									<div class="flex items-start gap-2">
+										<input
+											type="text"
+											class="input input-bordered input-sm w-36 shrink-0"
+											value={prop.key}
+											placeholder={$t('agentPersona.propertyName')}
+											oninput={(e) => updatePropertyKey(i, (e.target as HTMLInputElement).value)}
+										/>
+										{#if prop.isArray}
+											<div class="flex-1 min-w-0">
+												<TagInput bind:value={properties[i].tags} placeholder={$t('agentPersona.propertyValue')} />
+											</div>
+										{:else}
+											<input
+												type="text"
+												class="input input-bordered input-sm flex-1 min-w-0"
+												bind:value={properties[i].text}
+												placeholder={$t('agentPersona.propertyValue')}
+											/>
+										{/if}
+										<button
+											type="button"
+											class="btn btn-xs btn-ghost btn-square text-base-content/40 hover:text-error mt-0.5"
+											onclick={() => removeProperty(i)}
+											title={$t('agentPersona.removeProperty', { values: { key: prop.key || '...' } })}
+										>
+											<Trash2 class="w-3.5 h-3.5" />
+										</button>
 									</div>
-								{:else}
-									<input
-										type="text"
-										class="input input-bordered input-sm flex-1 min-w-0"
-										bind:value={properties[i].text}
-										placeholder={$t('agentPersona.propertyValue')}
-									/>
-								{/if}
-								<button
-									type="button"
-									class="btn btn-xs btn-ghost btn-square text-base-content/40 hover:text-error mt-0.5"
-									onclick={() => removeProperty(i)}
-									title={$t('agentPersona.removeProperty', { values: { key: prop.key || '...' } })}
-								>
-									<Trash2 class="w-3.5 h-3.5" />
-								</button>
+								{/each}
 							</div>
-						{/each}
+						{/if}
 					</div>
 				{/if}
 			</div>

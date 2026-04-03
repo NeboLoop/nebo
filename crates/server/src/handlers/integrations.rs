@@ -335,6 +335,112 @@ pub async fn connect_integration(
     }
 }
 
+/// POST /api/v1/integrations/:id/reauthenticate — clear stored credentials and restart OAuth.
+/// For OAuth integrations whose tokens have fully expired (refresh failed too).
+pub async fn reauthenticate_integration(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let integration = state
+        .store
+        .get_mcp_integration(&id)
+        .map_err(to_error_response)?
+        .ok_or_else(|| to_error_response(types::NeboError::NotFound))?;
+
+    if integration.auth_type != "oauth" {
+        return Err(to_error_response(types::NeboError::Validation(
+            "Reauthenticate is only for OAuth integrations".into(),
+        )));
+    }
+
+    // Disconnect from bridge
+    state.bridge.disconnect(&id).await;
+    let _ = state.store.set_mcp_connection_status(&id, "disconnected", 0);
+
+    // Clear stored OAuth credentials so a fresh flow can start
+    let _ = state.store.delete_mcp_credentials(&id, "oauth_token");
+    let _ = state.store.clear_mcp_oauth_state(&id);
+
+    // Start a new OAuth flow (same as get_oauth_url but returns the URL directly)
+    let server_url = integration
+        .server_url
+        .as_deref()
+        .ok_or_else(|| to_error_response(types::NeboError::Validation("No server URL".into())))?;
+
+    let metadata = state
+        .bridge
+        .client()
+        .discover_oauth(server_url)
+        .await
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("OAuth discovery failed: {e}"))))?;
+
+    info!(
+        integration = %id,
+        "MCP reauthenticate: discovered OAuth metadata"
+    );
+
+    let redirect_uri = format!("http://localhost:{}/api/v1/integrations/oauth/callback", state.config.port);
+    let (client_id, client_secret) = if let Some(ref reg_endpoint) = metadata.registration_endpoint {
+        match do_client_registration(&state, reg_endpoint, &redirect_uri).await {
+            Ok((cid, csec)) => (cid, csec),
+            Err(e) => {
+                warn!("DCR failed during reauth, using fallback: {e}");
+                (format!("nebo-agent-{}", id), None)
+            }
+        }
+    } else {
+        (format!("nebo-agent-{}", id), None)
+    };
+
+    let code_verifier = generate_code_verifier();
+    let code_challenge = compute_code_challenge(&code_verifier);
+    let oauth_state = generate_state();
+
+    let encrypted_verifier = state
+        .bridge
+        .client()
+        .encrypt_token(&code_verifier)
+        .map_err(|e| to_error_response(types::NeboError::Internal(format!("encrypt: {e}"))))?;
+    let encrypted_secret = match &client_secret {
+        Some(s) => Some(
+            state
+                .bridge
+                .client()
+                .encrypt_token(s)
+                .map_err(|e| to_error_response(types::NeboError::Internal(format!("encrypt: {e}"))))?
+        ),
+        None => None,
+    };
+
+    state
+        .store
+        .set_mcp_oauth_state(
+            &id,
+            &oauth_state,
+            &encrypted_verifier,
+            &client_id,
+            encrypted_secret.as_deref(),
+            &metadata.authorization_endpoint,
+            &metadata.token_endpoint,
+        )
+        .map_err(to_error_response)?;
+
+    let auth_url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256&scope=mcp:full",
+        metadata.authorization_endpoint,
+        urlencoding::encode(&client_id),
+        urlencoding::encode(&redirect_uri),
+        urlencoding::encode(&oauth_state),
+        urlencoding::encode(&code_challenge),
+    );
+
+    info!(integration = %id, "MCP reauthenticate: OAuth URL generated");
+
+    Ok(Json(serde_json::json!({
+        "authUrl": auth_url,
+    })))
+}
+
 // ── PKCE helpers (RFC 7636) ─────────────────────────────────────────
 
 fn generate_code_verifier() -> String {

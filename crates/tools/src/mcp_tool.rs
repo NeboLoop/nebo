@@ -270,11 +270,13 @@ impl DynTool for McpTool {
                 }
             };
 
-            // Build the input for the MCP call — pass everything except server/resource
+            // Build the input for the MCP call — pass everything except server/resource/action
+            // (action is a STRAP convention, not an MCP tool parameter)
             let mut mcp_input = input.clone();
             if let Some(obj) = mcp_input.as_object_mut() {
                 obj.remove("server");
                 obj.remove("resource");
+                obj.remove("action");
             }
 
             // Proactive refresh: if token is expired, refresh before calling

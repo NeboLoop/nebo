@@ -214,6 +214,17 @@ impl McpClient {
             parse_sse_json(&resp_text)?
         };
 
+        // Check for JSON-RPC error response first
+        if let Some(err) = body.get("error") {
+            let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
+            let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+            warn!(tool = tool_name, code = code, error = message, "MCP server returned JSON-RPC error");
+            return Ok(McpToolResult {
+                content: format!("MCP error ({}): {}", code, message),
+                is_error: true,
+            });
+        }
+
         // JSON-RPC response: { "result": { "content": [...], "isError": false } }
         let result_val = body.get("result").cloned().unwrap_or(body.clone());
 
@@ -239,10 +250,25 @@ impl McpClient {
         let content = result
             .content
             .iter()
-            .filter(|c| c.block_type == "text" && !c.text.is_empty())
+            .filter(|c| !c.text.is_empty())
             .map(|c| c.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
+
+        if content.is_empty() && !result.content.is_empty() {
+            warn!(
+                tool = tool_name,
+                block_count = result.content.len(),
+                block_types = %result.content.iter().map(|c| c.block_type.as_str()).collect::<Vec<_>>().join(", "),
+                "MCP tool returned content blocks but all had empty text"
+            );
+        } else if content.is_empty() && result.content.is_empty() {
+            warn!(
+                tool = tool_name,
+                response_preview = %resp_text.chars().take(500).collect::<String>(),
+                "MCP tool returned no content blocks"
+            );
+        }
 
         Ok(McpToolResult {
             content,

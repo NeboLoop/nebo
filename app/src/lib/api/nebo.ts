@@ -743,6 +743,13 @@ export function connectMCPIntegration(id: string) {
 }
 
 /**
+ * @description "Reauthenticate m c p integration — clear credentials and restart OAuth flow"
+ */
+export function reauthenticateMCPIntegration(id: string) {
+	return webapi.post<{ authUrl: string }>(`/api/v1/integrations/${id}/reauthenticate`)
+}
+
+/**
  * @description "Local models download"
  */
 export function localModelsDownload() {
