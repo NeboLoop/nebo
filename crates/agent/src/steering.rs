@@ -75,7 +75,9 @@ impl Pipeline {
             Box::new(ToolNudge),
             Box::new(PendingTaskAction),
             Box::new(ActionBias),
+            Box::new(OutputDiscipline),
             Box::new(NarrationSuppressor),
+            Box::new(RepetitionDetector),
             Box::new(LoopDetector),
             Box::new(AutomationSpeed),
             Box::new(PresenceAwareness),
@@ -109,8 +111,8 @@ impl Pipeline {
         let is_ollama = ctx.provider_id == "ollama";
 
         for g in &self.generators {
-            // Skip ActionBias and NarrationSuppressor for direct Claude only
-            if is_claude && matches!(g.name(), "action_bias" | "narration_suppressor") {
+            // Skip narration/discipline generators for direct Claude only — Claude follows system prompt well
+            if is_claude && matches!(g.name(), "action_bias" | "narration_suppressor" | "output_discipline" | "repetition_detector") {
                 continue;
             }
             // Skip JanusQuotaWarning for Ollama
@@ -420,12 +422,52 @@ impl Generator for ActionBias {
     }
 }
 
-// 6. Narration Suppressor — detects text+tool narration pattern
+// 6. Output Discipline — proactive reinforcement for non-Claude models
+// Claude follows system prompt well; GPT/Gemini need constant reminders.
+struct OutputDiscipline;
+impl Generator for OutputDiscipline {
+    fn name(&self) -> &str { "output_discipline" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Always fire from iteration 1 onward (skip only the very first response)
+        if ctx.iteration < 1 {
+            return vec![];
+        }
+
+        // Check if last assistant message was excessively long
+        let last_len = ctx.messages.iter().rev()
+            .find(|m| m.role == "assistant")
+            .map(|m| m.content.len())
+            .unwrap_or(0);
+
+        if last_len > 300 {
+            return vec![SteeringDirective {
+                label: "Output Discipline".to_string(),
+                content: "STRICT RULES — you are violating output norms:\n\
+                         1. When calling tools: output ZERO text. No preamble, no summary, no status update.\n\
+                         2. When reporting results: state the answer in 1-3 sentences. No bullet lists of \"what I tried\". No \"current status\" sections.\n\
+                         3. NEVER repeat information you already said. Each response must contain ONLY new information.\n\
+                         4. DO NOT explain what you plan to do. Just do it.\n\
+                         5. Your last response was too long. Cut your output by 80%.".to_string(),
+                priority: 9,
+            }];
+        }
+
+        // Lighter reminder even when not over threshold
+        vec![SteeringDirective {
+            label: "Output Discipline".to_string(),
+            content: "Keep text responses under 3 sentences. When calling tools, output ZERO text. \
+                     Never repeat information already stated.".to_string(),
+            priority: 4,
+        }]
+    }
+}
+
+// 6b. Narration Suppressor — detects text+tool narration pattern
 struct NarrationSuppressor;
 impl Generator for NarrationSuppressor {
     fn name(&self) -> &str { "narration_suppressor" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
-        if ctx.iteration < 2 {
+        if ctx.iteration < 1 {
             return vec![];
         }
 
@@ -440,14 +482,71 @@ impl Generator for NarrationSuppressor {
             }
         }
 
-        if narrating_turns >= 2 {
+        // Fire on first narrating turn (was 2 — too late for GPT)
+        if narrating_turns >= 1 {
             return vec![SteeringDirective {
                 label: "Narration".to_string(),
-                content: "STOP narrating your tool calls. You have been outputting text alongside \
-                         tool calls for multiple turns. The user can see your tool calls directly — \
-                         they do not need commentary. If you are calling a tool, output \
-                         ONLY the tool call with ZERO text.".to_string(),
+                content: "STOP narrating your tool calls. Output ONLY the tool call — \
+                         ZERO text before, between, or after. The user sees your tool calls directly.".to_string(),
                 priority: 8,
+            }];
+        }
+
+        vec![]
+    }
+}
+
+// 6c. Repetition Detector — catches GPT's habit of restating the same info
+struct RepetitionDetector;
+impl Generator for RepetitionDetector {
+    fn name(&self) -> &str { "repetition_detector" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        if ctx.iteration < 3 {
+            return vec![];
+        }
+
+        // Collect recent non-empty assistant text responses
+        let recent_texts: Vec<&str> = ctx.messages.iter().rev()
+            .filter(|m| m.role == "assistant" && m.content.len() > 100)
+            .take(4)
+            .map(|m| m.content.as_str())
+            .collect();
+
+        if recent_texts.len() < 2 {
+            return vec![];
+        }
+
+        // Simple similarity: check if bigrams overlap significantly between consecutive responses
+        let mut repetitive_pairs = 0usize;
+        for window in recent_texts.windows(2) {
+            let a_words: Vec<&str> = window[0].split_whitespace().collect();
+            let b_words: Vec<&str> = window[1].split_whitespace().collect();
+            if a_words.len() < 10 || b_words.len() < 10 {
+                continue;
+            }
+            // Count shared 3-grams
+            let a_trigrams: std::collections::HashSet<String> = a_words.windows(3)
+                .map(|w| w.join(" ").to_lowercase())
+                .collect();
+            let b_trigrams: std::collections::HashSet<String> = b_words.windows(3)
+                .map(|w| w.join(" ").to_lowercase())
+                .collect();
+            let shared = a_trigrams.intersection(&b_trigrams).count();
+            let min_size = a_trigrams.len().min(b_trigrams.len());
+            if min_size > 0 && (shared * 100 / min_size) > 40 {
+                repetitive_pairs += 1;
+            }
+        }
+
+        if repetitive_pairs >= 1 {
+            return vec![SteeringDirective {
+                label: "Repetition".to_string(),
+                content: "You are REPEATING YOURSELF. Your recent responses contain the same information \
+                         restated multiple times. STOP. Either:\n\
+                         (a) Take a NEW action with a tool, or\n\
+                         (b) Give the user a final 1-sentence answer and STOP.\n\
+                         Do NOT output another status update.".to_string(),
+                priority: 9,
             }];
         }
 
