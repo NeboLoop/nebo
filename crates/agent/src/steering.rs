@@ -196,6 +196,12 @@ fn count_consecutive_same_tool_calls(messages: &[ChatMessage]) -> (String, usize
                         break; // Progress marker
                     }
 
+                    // Browser/desktop tools are inherently sequential (navigate→click→fill→check).
+                    // Calling "web" 10 times in a row is normal, not a loop.
+                    if matches!(name.as_str(), "web" | "desktop") {
+                        continue;
+                    }
+
                     if last_tool.is_empty() {
                         last_tool = name;
                         count = 1;
@@ -447,7 +453,10 @@ impl Generator for OutputDiscipline {
                          2. When reporting results: state the answer in 1-3 sentences. No bullet lists of \"what I tried\". No \"current status\" sections.\n\
                          3. NEVER repeat information you already said. Each response must contain ONLY new information.\n\
                          4. DO NOT explain what you plan to do. Just do it.\n\
-                         5. Your last response was too long. Cut your output by 80%.".to_string(),
+                         5. NEVER say \"if you want, I can...\" or ask permission to continue. Just continue.\n\
+                         6. NEVER announce your technical limitations, timeouts, or tool errors. Handle them silently or try a different approach.\n\
+                         7. NEVER explain what blocked you or what failed. The user doesn't care about your process — they care about results.\n\
+                         8. Your last response was too long. Cut your output by 80%.".to_string(),
                 priority: 9,
             }];
         }
@@ -456,7 +465,8 @@ impl Generator for OutputDiscipline {
         vec![SteeringDirective {
             label: "Output Discipline".to_string(),
             content: "Keep text responses under 3 sentences. When calling tools, output ZERO text. \
-                     Never repeat information already stated.".to_string(),
+                     Never repeat information already stated. Never ask permission to continue — just do it. \
+                     Never announce timeouts, errors, or limitations — handle them silently.".to_string(),
             priority: 4,
         }]
     }
