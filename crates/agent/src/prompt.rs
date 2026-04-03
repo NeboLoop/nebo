@@ -584,7 +584,14 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
             }
             let remaining = MAX_DOC_CHARS - total_chars;
             let truncated = if content.len() > remaining {
-                &content[..content.floor_char_boundary(remaining)]
+                // Find a char boundary at or before `remaining`
+                {
+                    let mut end = remaining.min(content.len());
+                    while end > 0 && !content.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    &content[..end]
+                }
             } else {
                 content.as_str()
             };
