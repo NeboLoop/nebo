@@ -36,6 +36,10 @@ pub struct DynamicContext {
     /// Cached tool documentation (key → content). Injected into the dynamic
     /// suffix so it survives sliding window eviction.
     pub tool_doc_cache: Vec<(String, String)>,
+    /// Formatted steering directives (from Pipeline::generate + hooks + continuation).
+    pub steering_directives: String,
+    /// Background proactive results (actual content, not behavioral guidance).
+    pub proactive_context: String,
 }
 
 /// Marker separating the stable/cacheable prefix (Sections 1–8) from
@@ -601,6 +605,16 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         sb.push_str("---");
     }
 
+    // 7. Steering directives (behavioral guidance from generators)
+    if !dctx.steering_directives.is_empty() {
+        sb.push_str("\n\n---\n");
+        sb.push_str(&dctx.steering_directives);
+    }
+    if !dctx.proactive_context.is_empty() {
+        sb.push_str("\n\n[Background Results]\n");
+        sb.push_str(&dctx.proactive_context);
+    }
+
     sb
 }
 
@@ -714,6 +728,8 @@ mod tests {
             channel: "web".to_string(),
             work_tasks: vec![],
             tool_doc_cache: vec![],
+            steering_directives: String::new(),
+            proactive_context: String::new(),
         };
         let result = build_dynamic_suffix(&dctx);
         assert!(result.contains("anthropic/claude-sonnet-4"));

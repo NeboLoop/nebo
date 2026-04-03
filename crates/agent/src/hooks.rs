@@ -11,18 +11,24 @@ pub struct SteeringGeneratePayload {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SteeringGenerateResponse {
     #[serde(default)]
-    pub messages: Vec<SteeringHookMessage>,
+    pub directives: Vec<SteeringHookDirective>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SteeringHookMessage {
+pub struct SteeringHookDirective {
     pub content: String,
-    #[serde(default = "default_end")]
-    pub position: String,
+    #[serde(default = "default_label")]
+    pub label: String,
+    #[serde(default = "default_priority")]
+    pub priority: u8,
 }
 
-fn default_end() -> String {
-    "end".to_string()
+fn default_label() -> String {
+    "Hook".to_string()
+}
+
+fn default_priority() -> u8 {
+    5
 }
 
 /// Payload for `message.pre_send` filter hook.

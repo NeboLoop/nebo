@@ -778,6 +778,7 @@ async fn run_loop(
                     user_presence: String::new(),
                     user_just_returned: false,
                     proactive_items: vec![],
+                    provider_id: String::new(),
                 }).is_some()
             {
                 info!(session_id, iteration, "adaptive limit: stopping, no progress");
@@ -990,95 +991,6 @@ async fn run_loop(
             vec![]
         };
 
-        // Generate steering messages
-        let steering_ctx = steering::Context {
-            session_id: session_id.to_string(),
-            messages: window_messages.clone(),
-            user_prompt: user_prompt.to_string(),
-            active_task: active_task.clone(),
-            channel: channel.to_string(),
-            agent_name: "Nebo".to_string(),
-            iteration,
-            work_tasks: work_tasks.clone(),
-            quota_warning: state.quota_warning.clone(),
-            consecutive_error_iterations,
-            recent_tool_result_hashes: recent_tool_result_hashes.clone(),
-            user_presence,
-            user_just_returned,
-            proactive_items,
-        };
-
-        // Circuit-breaker: check if the loop must be force-broken before making the next LLM call
-        if let Some(reason) = steering::should_force_break(&steering_ctx) {
-            warn!(session_id, iteration, reason = %reason, "circuit breaker triggered");
-            let _ = tx.send(StreamEvent {
-                event_type: StreamEventType::Text,
-                text: format!(
-                    "\n\nI got stuck in a loop and the circuit breaker stopped me. {}\n\n\
-                     I apologize for the repeated attempts. Please let me know how you'd like to proceed.",
-                    reason
-                ),
-                tool_call: None,
-                error: None,
-                usage: None,
-                rate_limit: None,
-                widgets: None,
-                provider_metadata: None,
-                stop_reason: None,
-            }).await;
-            break;
-        }
-
-        let steering_messages = steering_pipeline.generate(&steering_ctx);
-
-        // Hook: steering.generate — let apps inject additional steering messages
-        let steering_messages = if hooks.has_subscribers("steering.generate") {
-            let payload = serde_json::to_vec(&crate::hooks::SteeringGeneratePayload {
-                session_id: session_id.to_string(),
-                iteration,
-            })
-            .unwrap_or_default();
-            let (result, _) = hooks.apply_filter("steering.generate", payload).await;
-            match serde_json::from_slice::<crate::hooks::SteeringGenerateResponse>(&result) {
-                Ok(resp) => {
-                    let mut msgs = steering_messages;
-                    for m in resp.messages {
-                        let pos = if m.position == "after_user" {
-                            steering::Position::AfterUser
-                        } else {
-                            steering::Position::End
-                        };
-                        msgs.push(steering::SteeringMessage {
-                            content: m.content,
-                            position: pos,
-                        });
-                    }
-                    msgs
-                }
-                Err(_) => steering_messages,
-            }
-        } else {
-            steering_messages
-        };
-
-        // Append one-shot continuation steering (from auto-continue, never persisted)
-        let mut steering_messages = steering_messages;
-        if let Some(cont) = continuation_steering.take() {
-            steering_messages.push(steering::SteeringMessage {
-                content: cont,
-                position: steering::Position::End,
-            });
-        }
-
-        // Convert ChatMessage to ai::Message
-        let mut ai_messages = convert_messages(&window_messages);
-
-        // Inject steering
-        if !steering_messages.is_empty() {
-            let all_with_steering = steering::inject(window_messages.clone(), &steering_messages);
-            ai_messages = convert_messages(&all_with_steering);
-        }
-
         // Build per-iteration STRAP docs + tool list based on filtered tools
         let filtered_tool_names: Vec<String> = tool_defs.iter().map(|t| t.name.clone()).collect();
         let strap_section = prompt::build_strap_section(&filtered_tool_names, &active_contexts);
@@ -1110,6 +1022,87 @@ async fn run_loop(
             selector::parse_model_id(&selected_model)
         };
 
+        // Generate steering directives (provider_id needed for skip rules)
+        let steering_ctx = steering::Context {
+            session_id: session_id.to_string(),
+            messages: window_messages.clone(),
+            user_prompt: user_prompt.to_string(),
+            active_task: active_task.clone(),
+            channel: channel.to_string(),
+            agent_name: "Nebo".to_string(),
+            iteration,
+            work_tasks: work_tasks.clone(),
+            quota_warning: state.quota_warning.clone(),
+            consecutive_error_iterations,
+            recent_tool_result_hashes: recent_tool_result_hashes.clone(),
+            user_presence,
+            user_just_returned,
+            proactive_items,
+            provider_id: selected_provider_id.to_string(),
+        };
+
+        // Circuit-breaker: check if the loop must be force-broken before making the next LLM call
+        if let Some(reason) = steering::should_force_break(&steering_ctx) {
+            warn!(session_id, iteration, reason = %reason, "circuit breaker triggered");
+            let _ = tx.send(StreamEvent {
+                event_type: StreamEventType::Text,
+                text: format!(
+                    "\n\nI got stuck in a loop and the circuit breaker stopped me. {}\n\n\
+                     I apologize for the repeated attempts. Please let me know how you'd like to proceed.",
+                    reason
+                ),
+                tool_call: None,
+                error: None,
+                usage: None,
+                rate_limit: None,
+                widgets: None,
+                provider_metadata: None,
+                stop_reason: None,
+            }).await;
+            break;
+        }
+
+        let (mut all_directives, proactive_context) = steering_pipeline.generate(&steering_ctx);
+
+        // Hook: steering.generate — let apps inject additional directives
+        if hooks.has_subscribers("steering.generate") {
+            let payload = serde_json::to_vec(&crate::hooks::SteeringGeneratePayload {
+                session_id: session_id.to_string(),
+                iteration,
+            })
+            .unwrap_or_default();
+            let (result, _) = hooks.apply_filter("steering.generate", payload).await;
+            if let Ok(resp) = serde_json::from_slice::<crate::hooks::SteeringGenerateResponse>(&result) {
+                for d in resp.directives {
+                    all_directives.push(steering::SteeringDirective {
+                        label: d.label,
+                        content: d.content,
+                        priority: d.priority,
+                    });
+                }
+            }
+        }
+
+        // Append one-shot continuation steering (from auto-continue, never persisted)
+        if let Some(cont) = continuation_steering.take() {
+            all_directives.push(steering::SteeringDirective {
+                label: "Continue".to_string(),
+                content: cont,
+                priority: 8,
+            });
+        }
+
+        // Convert ChatMessage to ai::Message (no steering injection — steering goes in system prompt)
+        let ai_messages = convert_messages(&window_messages);
+
+        // Format steering for system prompt suffix
+        let steering_text = steering::format_directives(&all_directives);
+        let proactive_text = if proactive_context.is_empty() {
+            String::new()
+        } else {
+            proactive_context.join("\n")
+        };
+
         // Build dynamic system suffix — AFTER model selection so identity is accurate
         let dctx = prompt::DynamicContext {
             provider_name: selected_provider_id.to_string(),
@@ -1120,6 +1113,8 @@ async fn run_loop(
             channel: channel.to_string(),
             work_tasks: work_tasks.clone(),
             tool_doc_cache: tool_doc_cache.clone(),
+            steering_directives: steering_text,
+            proactive_context: proactive_text,
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
