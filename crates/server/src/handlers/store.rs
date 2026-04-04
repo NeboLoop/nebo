@@ -329,8 +329,16 @@ pub async fn uninstall_store_product(
     // Unregister from NeboLoop
     let _ = api.uninstall_product(&id).await;
 
-    // Determine slug and type from local DB first, then NeboLoop as fallback
-    let local_agent = state.store.get_agent(&id).ok().flatten();
+    // Look up local agent by NeboLoop product ID first, then by name as fallback
+    let local_agent = state.store.get_agent(&id).ok().flatten()
+        .or_else(|| {
+            let name = detail.as_ref().map(|d| d.item.name.as_str()).unwrap_or("");
+            if !name.is_empty() {
+                state.store.get_agent_by_name(name).ok().flatten()
+            } else {
+                None
+            }
+        });
     let slug = detail.as_ref().map(|d| d.item.slug.clone()).unwrap_or_default();
     let artifact_type = detail.as_ref().and_then(|d| d.artifact_type.as_deref()).unwrap_or("");
 
@@ -348,17 +356,31 @@ pub async fn uninstall_store_product(
         || local_agent.is_some()
         || local_agent.as_ref().and_then(|r| r.kind.as_deref()).map(|k| k.starts_with("AGNT-")).unwrap_or(false);
 
-    // Clean up local DB
+    // Clean up local DB — use the local agent's ID (may differ from NeboLoop product ID)
     if let Some(ref agent_rec) = local_agent {
-        // Stop role worker
-        state.agent_workers.stop_agent(&id).await;
+        let agent_id = &agent_rec.id;
+        // Stop agent worker
+        state.agent_workers.stop_agent(agent_id).await;
         // Deactivate from live registry
-        state.agent_registry.write().await.remove(&id);
+        state.agent_registry.write().await.remove(agent_id);
         // Remove workflow bindings and triggers
-        workflow::triggers::unregister_agent_triggers(&id, &state.store);
-        state.event_dispatcher.unsubscribe_agent(&id).await;
-        let _ = state.store.delete_agent_workflows(&id);
-        let _ = state.store.delete_agent(&id);
+        workflow::triggers::unregister_agent_triggers(agent_id, &state.store);
+        state.event_dispatcher.unsubscribe_agent(agent_id).await;
+        let _ = state.store.delete_agent_workflows(agent_id);
+        let _ = state.store.delete_agent(agent_id);
+        // Clean up filesystem: napp_path, nebo/agents/{slug}, user/agents/{slug}
+        if let Some(ref napp_path) = agent_rec.napp_path {
+            let path = std::path::Path::new(napp_path);
+            if path.exists() {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+        if let Ok(user_dir) = config::user_dir() {
+            let dir = user_dir.join("agents").join(&slug);
+            if dir.exists() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
         // Deregister agent from NeboLoop (non-blocking)
         {
             let st = state.clone();
@@ -370,8 +392,8 @@ pub async fn uninstall_store_product(
             });
         }
         state.hub.broadcast(
-            "agent_deactivated",
-            serde_json::json!({ "agentId": id, "name": agent_rec.name }),
+            "agent_uninstalled",
+            serde_json::json!({ "agentId": agent_id, "name": agent_rec.name }),
         );
     }
 

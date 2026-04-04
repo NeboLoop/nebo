@@ -19,10 +19,12 @@
 
 	let {
 		show = $bindable(false),
-		onclose
+		onclose,
+		onAgentSetup
 	}: {
 		show: boolean;
 		onclose?: () => void;
+		onAgentSetup?: (agentId: string, agentName: string) => void;
 	} = $props();
 
 	let phase = $state<Phase>('installing');
@@ -201,6 +203,7 @@
 		const paymentRequired = data?.payment_required as boolean;
 		const checkout = data?.checkout_url as string | undefined;
 		const name = (data?.artifact_name as string) || '';
+		const agentId = (data?.artifact_id as string) || '';
 		const error = (data?.error as string) || '';
 		const message = (data?.message as string) || '';
 
@@ -210,6 +213,12 @@
 			checkoutUrl = checkout;
 			phase = 'payment';
 		} else if (success) {
+			// Agent code install: hand off to agent setup modal for input configuration
+			if (codeType === 'agent' && agentId && onAgentSetup) {
+				show = false;
+				onAgentSetup(agentId, artifactName);
+				return;
+			}
 			statusMessage = message || `${artifactName || typeLabel} installed`;
 			// If auth phase is active, don't override — auth handlers will finish the flow
 			if (phase !== 'auth') {

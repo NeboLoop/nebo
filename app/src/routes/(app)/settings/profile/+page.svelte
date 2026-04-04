@@ -23,20 +23,6 @@
 	let theme = $state<Theme>('system');
 	let themeError = $state('');
 
-	const supportedLocales = languages.map(l => l.value);
-
-	function detectSystemLanguage(): string {
-		const browserLang = navigator.language;
-		// Exact match (e.g. "pt-BR", "zh-CN")
-		if (supportedLocales.includes(browserLang)) return browserLang;
-		// Base language match (e.g. "fr-CA" → "fr", "de-AT" → "de")
-		const base = browserLang.split('-')[0];
-		const match = supportedLocales.find(l => l === base || l.startsWith(base + '-'));
-		return match ?? 'en';
-	}
-
-	let language = $state('en');
-
 	const languages = [
 		{ value: 'en', label: 'English' },
 		{ value: 'id', label: 'Bahasa Indonesia' },
@@ -64,6 +50,18 @@
 		{ value: 'ja', label: '日本語' },
 		{ value: 'ko', label: '한국어' }
 	];
+
+	const supportedLocales = languages.map(l => l.value);
+
+	function detectSystemLanguage(): string {
+		const browserLang = navigator.language;
+		if (supportedLocales.includes(browserLang)) return browserLang;
+		const base = browserLang.split('-')[0];
+		const match = supportedLocales.find(l => l === base || l.startsWith(base + '-'));
+		return match ?? 'en';
+	}
+
+	let language = $state('en');
 
 	let displayName = $state('');
 	let location = $state('');

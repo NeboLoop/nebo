@@ -27,6 +27,7 @@
 	import BrowserExtensionModal from '$lib/components/ui/BrowserExtensionModal.svelte';
 	import Toast from '$lib/components/ui/Toast.svelte';
 	import CodeInstallModal from '$lib/components/chat/CodeInstallModal.svelte';
+	import AgentSetupModal from '$lib/components/agent-setup/AgentSetupModal.svelte';
 	import { generateUUID } from '$lib/utils';
 	import { VoiceSession, type VoiceState as DuplexVoiceState } from '$lib/voice/VoiceSession';
 	import {
@@ -216,6 +217,9 @@
 	let codeStatusMessageId = $state<string | null>(null);
 	let showInstallModal = $state(false);
 	let installModal: CodeInstallModal;
+	let showAgentSetup = $state(false);
+	let setupAgentId = $state('');
+	let setupAgentName = $state('');
 
 	// ── Channel-only state ─────────────────────────────────────────────
 	let channelMemberNames = $state<Record<string, string>>({});
@@ -1581,6 +1585,24 @@
 		scrollToBottom();
 	}
 
+	async function handleAgentSetup(agentId: string, agentName: string) {
+		try {
+			const agentRes = await getAgent(agentId);
+			const fields = agentRes?.inputFields || [];
+			if (fields.length > 0) {
+				setupAgentId = agentId;
+				setupAgentName = agentName;
+				showAgentSetup = true;
+			} else {
+				// No inputs needed — navigate to agent chat
+				goto(`/agent/persona/${agentId}/chat`);
+			}
+		} catch {
+			// If fetch fails, navigate anyway
+			goto(`/agent/persona/${agentId}/chat`);
+		}
+	}
+
 	function handleDMUserMessage(data: Record<string, unknown>) {
 		if (chatId && !isOurSession(data)) return;
 		const content = (data?.content as string) || '';
@@ -2820,7 +2842,19 @@
 </div>
 {/if}
 
-<CodeInstallModal bind:this={installModal} bind:show={showInstallModal} onclose={() => { showInstallModal = false; }} />
+<CodeInstallModal bind:this={installModal} bind:show={showInstallModal} onclose={() => { showInstallModal = false; }} onAgentSetup={handleAgentSetup} />
+
+{#if showAgentSetup}
+	<AgentSetupModal
+		appId={setupAgentId}
+		agentName={setupAgentName}
+		agentDescription=""
+		inputs={{}}
+		existingAgentId={setupAgentId}
+		onComplete={(id) => { showAgentSetup = false; goto(`/agent/persona/${id}/chat`); }}
+		onCancel={() => { showAgentSetup = false; }}
+	/>
+{/if}
 
 <Toast message={warningMessage} type="warning" duration={8000} bind:show={warningToast} />
 

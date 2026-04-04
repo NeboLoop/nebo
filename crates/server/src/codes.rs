@@ -77,10 +77,12 @@ pub fn detect_code(prompt: &str) -> Option<(CodeType, &str)> {
 // ── Code Dispatch ───────────────────────────────────────────────────
 
 /// Rich result from a per-type code handler.
+#[derive(Default)]
 struct CodeHandlerResult {
     message: String,
     artifact_name: Option<String>,
     checkout_url: Option<String>,
+    artifact_id: Option<String>,
 }
 
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
@@ -125,6 +127,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
                     "success": true,
                     "message": r.message,
                     "artifact_name": r.artifact_name,
+                    "artifact_id": r.artifact_id,
                     "payment_required": payment_required,
                     "checkout_url": r.checkout_url,
                 }),
@@ -158,8 +161,7 @@ async fn handle_nebo_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     let bot_id = redeem_nebo_code(state, code).await?;
     Ok(CodeHandlerResult {
         message: format!("Connected to NeboLoop (bot: {})", &bot_id[..8]),
-        artifact_name: None,
-        checkout_url: None,
+        ..Default::default()
     })
 }
 
@@ -176,6 +178,7 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 message: format!("Skill requires payment: {}", name),
                 artifact_name: Some(name),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+                ..Default::default()
             });
         }
     }
@@ -239,7 +242,7 @@ async fn handle_skill_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
     Ok(CodeHandlerResult {
         message: format!("Installed skill: {}", name),
         artifact_name: Some(name),
-        checkout_url: None,
+        ..Default::default()
     })
 }
 
@@ -256,6 +259,7 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
                 message: format!("Workflow requires payment: {}", name),
                 artifact_name: Some(name),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+                ..Default::default()
             });
         }
     }
@@ -307,7 +311,7 @@ async fn handle_work_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     Ok(CodeHandlerResult {
         message: format!("Installed workflow: {}", artifact_name),
         artifact_name: Some(artifact_name),
-        checkout_url: None,
+        ..Default::default()
     })
 }
 
@@ -324,6 +328,7 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 message: format!("Agent requires payment: {}", name),
                 artifact_name: Some(name),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+                ..Default::default()
             });
         }
     }
@@ -351,6 +356,25 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
             artifact_name = item["name"].as_str().unwrap_or("").to_string();
         } else {
             return Err(NeboError::Internal(format!("install_agent: code not found: {code}")));
+        }
+    }
+
+    // Clean reinstall: if agent already exists, fully remove it first
+    if let Ok(Some(existing)) = state.store.get_agent(&artifact_id) {
+        info!(agent = %artifact_name, id = %artifact_id, "clean reinstall: removing existing agent before re-install");
+        state.agent_workers.stop_agent(&artifact_id).await;
+        state.agent_registry.write().await.remove(&artifact_id);
+        workflow::triggers::unregister_agent_triggers(&artifact_id, &state.store);
+        state.event_dispatcher.unsubscribe_agent(&artifact_id).await;
+        let _ = state.store.delete_agent_workflows(&artifact_id);
+        let _ = state.store.delete_agent(&artifact_id);
+        // Clean filesystem
+        let slug = existing.name.to_lowercase().replace(' ', "-");
+        if let Ok(nebo_dir) = config::nebo_dir() {
+            let dir = nebo_dir.join("agents").join(&slug);
+            if dir.exists() {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
         }
     }
 
@@ -451,6 +475,7 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         message: format!("Installed agent: {}", artifact_name),
         artifact_name: Some(artifact_name),
         checkout_url: None,
+        artifact_id: Some(artifact_id),
     })
 }
 
@@ -463,7 +488,7 @@ async fn handle_loop_code(state: &AppState, code: &str) -> Result<CodeHandlerRes
     Ok(CodeHandlerResult {
         message: format!("Joined loop {}", resp.loop_id),
         artifact_name: Some(resp.loop_id),
-        checkout_url: None,
+        ..Default::default()
     })
 }
 
@@ -480,6 +505,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
                 message: format!("Plugin requires payment: {}", name),
                 artifact_name: Some(name),
                 checkout_url: Some(resp.checkout_url.clone().unwrap_or_default()),
+                ..Default::default()
             });
         }
     }
@@ -594,7 +620,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
     Ok(CodeHandlerResult {
         message: format!("Installed plugin: {}", name),
         artifact_name: Some(name),
-        checkout_url: None,
+        ..Default::default()
     })
 }
 

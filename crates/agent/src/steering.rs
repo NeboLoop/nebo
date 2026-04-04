@@ -42,6 +42,8 @@ pub struct Context {
     pub proactive_items: Vec<crate::proactive::ProactiveItem>,
     /// Provider ID for provider-specific skip rules (e.g. "anthropic", "openai", "janus", "ollama").
     pub provider_id: String,
+    /// Recent tool names (parallel to recent_tool_result_hashes). Last 10 kept.
+    pub recent_tool_names: Vec<String>,
 }
 
 /// A steering directive generator.
@@ -544,6 +546,23 @@ impl Generator for RepetitionDetector {
 // This correctly distinguishes web(navigate, google.com) → web(click, button)
 // (legitimate browser work) from web(search, "flights") × 5 (actual loop).
 struct LoopDetector;
+impl LoopDetector {
+    /// Check if the tool involved in the detected loop is the plugin tool.
+    /// Returns true when the most recent entry in recent_tool_names is "plugin".
+    fn is_plugin_loop(names: &[String]) -> bool {
+        names.last().is_some_and(|n| n == "plugin")
+    }
+
+    /// Extra guidance when the looping tool is a plugin CLI command.
+    fn plugin_hint() -> &'static str {
+        "\n--- PLUGIN-SPECIFIC RECOVERY ---\n\
+         The failing tool is a plugin (external CLI). The command syntax may be wrong. Try:\n\
+         - Run the plugin with --help to discover the correct subcommands and flags \
+         (e.g. plugin(resource: \"gws\", command: \"gmail users messages --help\"))\n\
+         - Check if you're passing the right parameter format (JSON vs positional args)\n\
+         - Try a simpler variant of the command first to confirm the subcommand exists"
+    }
+}
 impl Generator for LoopDetector {
     fn name(&self) -> &str { "loop_detector" }
     fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
@@ -565,23 +584,35 @@ impl Generator for LoopDetector {
             }
 
             if same_call_count >= 4 {
+                let plugin_extra = if Self::is_plugin_loop(&ctx.recent_tool_names) {
+                    Self::plugin_hint()
+                } else { "" };
                 directives.push(SteeringDirective {
                     label: "Loop Warning".to_string(),
                     content: format!(
-                        "You have called the same tool with identical arguments {} times. \
-                         You are in an infinite loop. Try a COMPLETELY different approach \
-                         or tell the user what's blocking you.",
-                        same_call_count
+                        "LOOP DETECTED: You have called the same tool with identical arguments {} times. \
+                         You are in an infinite loop and MUST break out NOW. Do one of the following:\n\
+                         1. Check if a skill can handle this: skill(action: \"catalog\") — a specialized skill may solve this differently.\n\
+                         2. Ask your advisors for help: agent(resource: \"advisors\", action: \"deliberate\", task: \"I am stuck in a loop trying to [describe what you're doing]. What alternative approach should I take?\")\n\
+                         3. Try a COMPLETELY different tool or approach — not the same tool with different args.\n\
+                         4. If none of the above work, tell the user what's blocking you and ask for guidance.\n\
+                         Do NOT call the same tool again.{}",
+                        same_call_count, plugin_extra
                     ),
                     priority: 10,
                 });
             } else if same_call_count >= 2 {
+                let plugin_extra = if Self::is_plugin_loop(&ctx.recent_tool_names) {
+                    Self::plugin_hint()
+                } else { "" };
                 directives.push(SteeringDirective {
                     label: "Loop Warning".to_string(),
                     content: format!(
-                        "You have called the same tool with identical arguments {} times. \
-                         The result will not change. Try different parameters or a different tool.",
-                        same_call_count
+                        "You have called the same tool with identical arguments {} times and the result will not change. \
+                         Before repeating, consider:\n\
+                         - Is there a skill for this? Try skill(action: \"catalog\") to check.\n\
+                         - Try different parameters, a different tool, or a different approach entirely.{}",
+                        same_call_count, plugin_extra
                     ),
                     priority: 8,
                 });
@@ -596,10 +627,13 @@ impl Generator for LoopDetector {
             if last.0 == prev.0 && last.1 == prev.1 && last.2 == prev.2 {
                 directives.push(SteeringDirective {
                     label: "Stale Results".to_string(),
-                    content: "You called the same tool with the same arguments and got \
-                             identical results. You are NOT making progress. Take a \
-                             DIFFERENT action now — different tool, different parameters, \
-                             or different approach entirely.".to_string(),
+                    content: format!("You called the same tool with the same arguments and got \
+                             identical results. You are NOT making progress. STOP and pivot:\n\
+                             1. Check for a skill: skill(action: \"catalog\") — a specialized skill may handle this.\n\
+                             2. Consult advisors: agent(resource: \"advisors\", action: \"deliberate\", task: \"describe your stuck situation\") for a fresh perspective.\n\
+                             3. Use a completely different tool or approach.\n\
+                             Do NOT repeat the same call.{}",
+                             if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }),
                     priority: 9,
                 });
             }
@@ -621,9 +655,13 @@ impl Generator for LoopDetector {
             if a_matches && b_matches && a_differs_from_b {
                 directives.push(SteeringDirective {
                     label: "Ping-Pong".to_string(),
-                    content: "You are alternating between two tool calls in a loop (A→B→A→B). \
-                             Neither is making progress. STOP this pattern. Try a completely \
-                             different approach or tell the user what's blocking you.".to_string(),
+                    content: format!("You are alternating between two tool calls in a loop (A→B→A→B). \
+                             Neither is making progress. STOP this pattern immediately.\n\
+                             1. Check if a skill can handle this differently: skill(action: \"catalog\")\n\
+                             2. Ask advisors for a fresh approach: agent(resource: \"advisors\", action: \"deliberate\", task: \"describe the problem you're trying to solve\")\n\
+                             3. Try a completely different strategy — not a variation of the same two tools.\n\
+                             4. If truly stuck, tell the user what's blocking you.{}",
+                             if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }),
                     priority: 9,
                 });
             }
@@ -634,10 +672,13 @@ impl Generator for LoopDetector {
             directives.push(SteeringDirective {
                 label: "Error Loop".to_string(),
                 content: format!(
-                    "The last {} iterations all had failing tool calls. \
-                     You are stuck. Try a COMPLETELY different approach. If you cannot \
-                     make progress, tell the user what's blocking you.",
-                    ctx.consecutive_error_iterations
+                    "The last {} iterations all produced errors. You are stuck. STOP retrying and pivot:\n\
+                     1. A skill might handle this better: skill(action: \"catalog\") to check.\n\
+                     2. Get advice: agent(resource: \"advisors\", action: \"deliberate\", task: \"I keep getting errors trying to [describe task]. What should I try instead?\")\n\
+                     3. Try a fundamentally different approach — not the same action with tweaks.\n\
+                     4. If nothing works, tell the user what's failing and ask for guidance.{}",
+                    ctx.consecutive_error_iterations,
+                    if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }
                 ),
                 priority: 10,
             });

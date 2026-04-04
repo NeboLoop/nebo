@@ -858,6 +858,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     tool_registry.set_agent_loader(agent_loader.clone());
 
     // Sync filesystem agent content → DB (keeps DB content columns fresh + recovers missing records)
+    // Collect frontmatter of newly created agents for dependency cascade after AppState is ready.
+    let mut agents_needing_cascade: Vec<String> = Vec::new();
     {
         let fs_agents = agent_loader.list().await;
         let mut synced = 0usize;
@@ -899,6 +901,10 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     Ok(_) => {
                         agent_id_for_bindings = agent_id;
                         created += 1;
+                        // Queue for dependency cascade if agent has frontmatter
+                        if !loaded.frontmatter.is_empty() {
+                            agents_needing_cascade.push(loaded.frontmatter.clone());
+                        }
                     }
                     Err(_) => continue,
                 }
@@ -1049,6 +1055,20 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                 });
             })
         }).await;
+    }
+
+    // Resolve dependency cascade for agents that were just created from filesystem
+    if !agents_needing_cascade.is_empty() {
+        let cascade_state = state.clone();
+        tokio::spawn(async move {
+            for frontmatter in agents_needing_cascade {
+                let deps = crate::deps::extract_agent_deps_from_frontmatter(&frontmatter);
+                if !deps.is_empty() {
+                    let mut visited = std::collections::HashSet::new();
+                    crate::deps::resolve_cascade(&cascade_state, deps, &mut visited).await;
+                }
+            }
+        });
     }
 
     // Auto-connect NeboLoop if enabled and credentials exist

@@ -9,6 +9,7 @@
 		agentName,
 		agentDescription,
 		inputs = {},
+		existingAgentId,
 		onComplete,
 		onCancel,
 	}: {
@@ -16,6 +17,7 @@
 		agentName: string;
 		agentDescription: string;
 		inputs: Record<string, unknown>;
+		existingAgentId?: string;
 		onComplete: (agentId: string) => void;
 		onCancel: () => void;
 	} = $props();
@@ -88,23 +90,28 @@
 		step = 'installing';
 		error = '';
 		try {
-			// 1. Install
-			await installStoreProduct(appId);
+			if (existingAgentId) {
+				// Agent already installed (e.g. via code) — skip install + lookup
+				agentId = existingAgentId;
+			} else {
+				// 1. Install
+				await installStoreProduct(appId);
 
-			// 2. Find the agent
-			const agentsRes = await listAgents();
-			const allAgents = agentsRes?.agents || [];
-			const matchedAgent = allAgents.find(
-				(r: any) => r.name?.toLowerCase() === agentName.toLowerCase()
-			);
+				// 2. Find the agent
+				const agentsRes = await listAgents();
+				const allAgents = agentsRes?.agents || [];
+				const matchedAgent = allAgents.find(
+					(r: any) => r.name?.toLowerCase() === agentName.toLowerCase()
+				);
 
-			if (!matchedAgent) {
-				error = 'Agent installed but could not be found.';
-				step = 'inputs';
-				return;
+				if (!matchedAgent) {
+					error = 'Agent installed but could not be found.';
+					step = 'inputs';
+					return;
+				}
+
+				agentId = matchedAgent.id;
 			}
-
-			agentId = matchedAgent.id;
 
 			// 3. Load normalized input fields from backend
 			try {

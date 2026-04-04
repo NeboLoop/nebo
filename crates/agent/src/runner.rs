@@ -548,6 +548,8 @@ async fn run_loop(
     let mut called_tools: Vec<String> = Vec::new();
     // Rolling hashes of recent tool results for stale-result detection in steering
     let mut recent_tool_result_hashes: Vec<(u64, u64, u64)> = Vec::new();
+    // Parallel vec of tool names (same indexing as recent_tool_result_hashes)
+    let mut recent_tool_names: Vec<String> = Vec::new();
     let mut provider_idx: usize = 0;
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
@@ -818,6 +820,7 @@ async fn run_loop(
                     quota_warning: None,
                     consecutive_error_iterations,
                     recent_tool_result_hashes: recent_tool_result_hashes.clone(),
+                    recent_tool_names: recent_tool_names.clone(),
                     user_presence: String::new(),
                     user_just_returned: false,
                     proactive_items: vec![],
@@ -1078,6 +1081,7 @@ async fn run_loop(
             quota_warning: state.quota_warning.clone(),
             consecutive_error_iterations,
             recent_tool_result_hashes: recent_tool_result_hashes.clone(),
+            recent_tool_names: recent_tool_names.clone(),
             user_presence,
             user_just_returned,
             proactive_items,
@@ -1919,9 +1923,11 @@ async fn run_loop(
                     .map(|tr| simple_hash(tr.as_bytes().get(..2000).unwrap_or(tr.as_bytes())))
                     .unwrap_or(0);
                 recent_tool_result_hashes.push((name_hash, args_hash, content_hash));
+                recent_tool_names.push(tc.name.clone());
                 // Keep last 10 for ping-pong detection
                 if recent_tool_result_hashes.len() > 10 {
                     recent_tool_result_hashes.remove(0);
+                    recent_tool_names.remove(0);
                 }
             }
 
