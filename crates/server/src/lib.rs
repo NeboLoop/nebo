@@ -848,6 +848,72 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         workflow_manager.clone() as Arc<dyn tools::WorkflowManager>,
     ))).await;
 
+    // Create agent loader — filesystem content scanner for nebo/agents/ and user/agents/
+    let agent_loader = Arc::new(napp::AgentLoader::new(
+        data_dir.join("nebo").join("agents"),
+        data_dir.join("user").join("agents"),
+    ));
+    agent_loader.load_all().await;
+    agent_loader.watch();
+    tool_registry.set_agent_loader(agent_loader.clone());
+
+    // Sync filesystem agent content → DB (keeps DB content columns fresh + recovers missing records)
+    {
+        let fs_agents = agent_loader.list().await;
+        let mut synced = 0usize;
+        let mut created = 0usize;
+        for loaded in &fs_agents {
+            // Match by manifest ID first (marketplace agents), then by name
+            let db_agent = loaded.id.as_deref()
+                .and_then(|id| store.get_agent(id).ok().flatten())
+                .or_else(|| store.get_agent_by_name(&loaded.agent_def.name).ok().flatten());
+
+            let agent_id_for_bindings;
+            if let Some(db_agent) = db_agent {
+                // Update existing DB record with fresh filesystem content
+                let _ = store.update_agent(
+                    &db_agent.id,
+                    &loaded.agent_def.name,
+                    &loaded.description,
+                    &loaded.agent_md,
+                    &loaded.frontmatter,
+                    None,
+                    None,
+                );
+                agent_id_for_bindings = db_agent.id.clone();
+                synced += 1;
+            } else {
+                // Agent on filesystem but not in DB — create DB record so it appears in UI
+                let agent_id = loaded.id.clone()
+                    .unwrap_or_else(|| loaded.agent_def.name.clone());
+                let kind = match loaded.source {
+                    napp::AgentSource::Installed => Some("installed"),
+                    napp::AgentSource::User => Some("user"),
+                };
+                match store.create_agent(
+                    &agent_id, kind,
+                    &loaded.agent_def.name, &loaded.description,
+                    &loaded.agent_md, &loaded.frontmatter,
+                    None, None,
+                ) {
+                    Ok(_) => {
+                        agent_id_for_bindings = agent_id;
+                        created += 1;
+                    }
+                    Err(_) => continue,
+                }
+            }
+
+            // Sync workflow bindings from agent.json
+            if let Some(ref config) = loaded.config {
+                sync_agent_workflows(&store, &agent_id_for_bindings, config);
+            }
+        }
+        if synced > 0 || created > 0 {
+            info!(synced, created, "synced agent content from filesystem to DB");
+        }
+    }
+
     // Create agent worker registry — manages autonomous trigger lifecycle for each agent
     let agent_workers = Arc::new(agent::AgentWorkerRegistry::new(
         store.clone(),
@@ -963,6 +1029,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         agent_workers,
         janus_usage: Arc::new(tokio::sync::RwLock::new(None)),
         plugin_store,
+        agent_loader,
         presence: Arc::new(agent::PresenceTracker::new()),
         proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
         run_registry: run_registry::RunRegistry::new(),
@@ -1235,6 +1302,42 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .map_err(|e| NeboError::Server(format!("server error: {e}")))?;
 
     Ok(())
+}
+
+/// Sync workflow bindings from an AgentConfig into the agent_workflows table.
+fn sync_agent_workflows(store: &db::Store, agent_id: &str, config: &napp::agent::AgentConfig) {
+    for (binding_name, binding) in &config.workflows {
+        let (trigger_type, trigger_config) = match &binding.trigger {
+            napp::agent::AgentTrigger::Schedule { cron } => ("schedule", tools::PersonaTool::normalize_cron(cron)),
+            napp::agent::AgentTrigger::Heartbeat { interval, window } => {
+                let cfg = match window {
+                    Some(w) => format!("{}|{}", interval, w),
+                    None => interval.clone(),
+                };
+                ("heartbeat", cfg)
+            }
+            napp::agent::AgentTrigger::Event { sources } => ("event", sources.join(",")),
+            napp::agent::AgentTrigger::Watch { plugin, command, event, restart_delay_secs } => {
+                let mut cfg = serde_json::json!({
+                    "plugin": plugin,
+                    "command": command,
+                    "restart_delay_secs": restart_delay_secs
+                });
+                if let Some(ev) = event {
+                    cfg["event"] = serde_json::json!(ev);
+                }
+                ("watch", cfg.to_string())
+            }
+            napp::agent::AgentTrigger::Manual => ("manual", String::new()),
+        };
+        let inputs_json = if binding.inputs.is_empty() { None } else { serde_json::to_string(&binding.inputs).ok() };
+        let desc = if binding.description.is_empty() { None } else { Some(binding.description.as_str()) };
+        let activities_json = if binding.activities.is_empty() { None } else { serde_json::to_string(&binding.activities).ok() };
+        let _ = store.upsert_agent_workflow(
+            agent_id, binding_name, trigger_type, &trigger_config,
+            desc, inputs_json.as_deref(), binding.emit.as_deref(), activities_json.as_deref(),
+        );
+    }
 }
 
 /// Handle an incoming NeboLoop message with full access to runner/lanes/comm.

@@ -142,6 +142,7 @@ pub struct Registry {
     process_registry: Arc<ProcessRegistry>,
     bridge: std::sync::RwLock<Option<Arc<mcp::Bridge>>>,
     plugin_store: std::sync::RwLock<Option<Arc<napp::plugin::PluginStore>>>,
+    agent_loader: std::sync::RwLock<Option<Arc<napp::AgentLoader>>>,
     resource_permits: ResourcePermits,
 }
 
@@ -154,6 +155,7 @@ impl Registry {
             process_registry: Arc::new(ProcessRegistry::new()),
             bridge: std::sync::RwLock::new(None),
             plugin_store: std::sync::RwLock::new(None),
+            agent_loader: std::sync::RwLock::new(None),
             resource_permits: ResourcePermits::new(),
         }
     }
@@ -166,6 +168,11 @@ impl Registry {
     /// Set the plugin store for injecting plugin binary env vars into subprocesses.
     pub fn set_plugin_store(&self, ps: Arc<napp::plugin::PluginStore>) {
         *self.plugin_store.write().unwrap() = Some(ps);
+    }
+
+    /// Set the agent loader for PersonaTool filesystem access.
+    pub fn set_agent_loader(&self, loader: Arc<napp::AgentLoader>) {
+        *self.agent_loader.write().unwrap() = Some(loader);
     }
 
     /// Register a tool.
@@ -579,7 +586,15 @@ impl Registry {
             let agent_reg = active_agent.unwrap_or_else(|| {
                 std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()))
             });
-            self.register(Box::new(crate::agent_tool::PersonaTool::new(store.clone(), agent_reg))).await;
+            let agent_loader = self.agent_loader.read().unwrap().clone()
+                .unwrap_or_else(|| {
+                    let data = config::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    Arc::new(napp::AgentLoader::new(
+                        data.join("nebo").join("agents"),
+                        data.join("user").join("agents"),
+                    ))
+                });
+            self.register(Box::new(crate::agent_tool::PersonaTool::new(store.clone(), agent_reg, agent_loader))).await;
             self.register_deferred(Box::new(crate::publisher_tool::PublisherTool::new(store.clone()))).await;
         }
 

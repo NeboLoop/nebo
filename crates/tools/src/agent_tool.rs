@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -116,25 +116,23 @@ fn extract_skill_name_from_ref(skill_ref: &str) -> String {
 pub struct PersonaTool {
     store: Arc<Store>,
     agent_registry: AgentRegistry,
-    installed_dir: PathBuf,
-    user_dir: PathBuf,
+    agent_loader: Arc<napp::AgentLoader>,
 }
 
 impl PersonaTool {
-    pub fn new(store: Arc<Store>, agent_registry: AgentRegistry) -> Self {
-        let data = config::data_dir().unwrap_or_else(|_| PathBuf::from("."));
+    pub fn new(store: Arc<Store>, agent_registry: AgentRegistry, agent_loader: Arc<napp::AgentLoader>) -> Self {
         Self {
             store,
             agent_registry,
-            installed_dir: data.join("nebo").join("agents"),
-            user_dir: data.join("user").join("agents"),
+            agent_loader,
         }
     }
 
     async fn handle_list(&self) -> ToolResult {
-        // Scan filesystem
-        let installed = napp::agent_loader::scan_installed_agents(&self.installed_dir);
-        let user = napp::agent_loader::scan_user_agents(&self.user_dir);
+        // Get agents from loader cache
+        let fs_agents = self.agent_loader.list().await;
+        let installed: Vec<_> = fs_agents.iter().filter(|a| a.source == napp::AgentSource::Installed).cloned().collect();
+        let user: Vec<_> = fs_agents.iter().filter(|a| a.source == napp::AgentSource::User).cloned().collect();
 
         // Also check DB for agents
         let db_agents = self.store.list_agents(100, 0).unwrap_or_default();
@@ -194,7 +192,7 @@ impl PersonaTool {
         }
 
         // Try loading from filesystem first
-        let agent = self.find_agent(name);
+        let agent = self.find_agent(name).await;
 
         match agent {
             Some(loaded) => {
@@ -216,7 +214,7 @@ impl PersonaTool {
                             .unwrap_or_else(|| "{}".to_string());
                         match self.store.create_agent(&id, None, &agent_name, &loaded.agent_def.description, &body, &frontmatter, None, None) {
                             Ok(_) => {
-                                let agent_dir = self.user_dir.join(&agent_name);
+                                let agent_dir = self.agent_loader.user_dir().join(&agent_name);
                                 if agent_dir.exists() {
                                     let _ = self.store.set_agent_napp_path(&id, &agent_dir.to_string_lossy());
                                 }
@@ -323,7 +321,7 @@ impl PersonaTool {
             return ToolResult::ok(format!("Active agents ({}):\n\n{}", registry.len(), lines.join("\n\n---\n\n")));
         }
 
-        match self.find_agent(name) {
+        match self.find_agent(name).await {
             Some(loaded) => {
                 let version_str = loaded.version.as_deref().unwrap_or("-");
                 let mut info = format!(
@@ -424,7 +422,7 @@ impl PersonaTool {
             agent_md_raw.replace("\\n", "\n")
         };
 
-        let agent_dir = self.user_dir.join(name);
+        let agent_dir = self.agent_loader.user_dir().join(name);
         if agent_dir.exists() {
             return ToolResult::error(format!("Agent '{}' already exists at {}", name, agent_dir.display()));
         }
@@ -563,8 +561,8 @@ impl PersonaTool {
         if let Some(new_name) = input["new_name"].as_str() {
             if !new_name.is_empty() && new_name != current_name {
                 // Rename filesystem directory if it exists
-                let old_dir = self.user_dir.join(&current_name);
-                let new_dir = self.user_dir.join(new_name);
+                let old_dir = self.agent_loader.user_dir().join(&current_name);
+                let new_dir = self.agent_loader.user_dir().join(new_name);
                 if old_dir.exists() {
                     if new_dir.exists() {
                         return ToolResult::error(format!("Cannot rename: '{}' already exists", new_name));
@@ -592,7 +590,7 @@ impl PersonaTool {
             if !md.is_empty() {
                 current_md = md.replace("\\n", "\n");
                 // Write to filesystem
-                let agent_dir = self.user_dir.join(&current_name);
+                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if agent_dir.exists() {
                     let _ = std::fs::write(agent_dir.join("AGENT.md"), &current_md);
                 }
@@ -617,7 +615,7 @@ impl PersonaTool {
                 let mut fm: serde_json::Value = serde_json::from_str(&current_frontmatter).unwrap_or(serde_json::json!({}));
                 fm["inputs"] = schema.clone();
                 current_frontmatter = fm.to_string();
-                let agent_dir = self.user_dir.join(&current_name);
+                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if agent_dir.exists() {
                     let _ = std::fs::write(agent_dir.join("agent.json"), &current_frontmatter);
                 }
@@ -706,7 +704,7 @@ impl PersonaTool {
                     }
 
                     current_frontmatter = fm.to_string();
-                    let agent_dir = self.user_dir.join(&current_name);
+                    let agent_dir = self.agent_loader.user_dir().join(&current_name);
                     if agent_dir.exists() {
                         let _ = std::fs::write(agent_dir.join("agent.json"), &current_frontmatter);
                     }
@@ -774,7 +772,7 @@ impl PersonaTool {
                 current_frontmatter = agent_json.to_string();
 
                 // Write to filesystem
-                let agent_dir = self.user_dir.join(&current_name);
+                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if agent_dir.exists() {
                     let _ = std::fs::write(agent_dir.join("agent.json"), &current_frontmatter);
                 }
@@ -814,7 +812,7 @@ impl PersonaTool {
                 current_frontmatter = existing.to_string();
 
                 // Write merged agent.json to filesystem
-                let agent_dir = self.user_dir.join(&current_name);
+                let agent_dir = self.agent_loader.user_dir().join(&current_name);
                 if agent_dir.exists() {
                     let _ = std::fs::write(agent_dir.join("agent.json"), &current_frontmatter);
                 }
@@ -890,7 +888,7 @@ impl PersonaTool {
         }
 
         // Remove filesystem directory (user-created only)
-        let user_dir = self.user_dir.join(agent_name);
+        let user_dir = self.agent_loader.user_dir().join(agent_name);
         if user_dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(&user_dir) {
                 return ToolResult::ok(format!(
@@ -1028,7 +1026,7 @@ impl PersonaTool {
         let agent_dir = if let Some(ref napp_path) = db_agent.napp_path {
             std::path::PathBuf::from(napp_path)
         } else {
-            self.user_dir.join(&db_agent.name)
+            self.agent_loader.user_dir().join(&db_agent.name)
         };
 
         if !agent_dir.exists() {
@@ -1188,7 +1186,7 @@ impl PersonaTool {
                             );
 
                             // Also update agent.json on disk
-                            let agent_dir = self.user_dir.join(&agent.name);
+                            let agent_dir = self.agent_loader.user_dir().join(&agent.name);
                             if agent_dir.join("agent.json").exists() {
                                 let _ = std::fs::write(agent_dir.join("agent.json"), &new_fm);
                             }
@@ -1721,22 +1719,11 @@ impl PersonaTool {
         ))
     }
 
-    /// Find an agent by name across filesystem locations and DB.
-    fn find_agent(&self, name: &str) -> Option<napp::agent_loader::LoadedAgent> {
-        // Check user agents first (more likely to be edited)
-        let user_agents = napp::agent_loader::scan_user_agents(&self.user_dir);
-        for agent in user_agents {
-            if agent.agent_def.name.eq_ignore_ascii_case(name) {
-                return Some(agent);
-            }
-        }
-
-        // Check installed agents
-        let installed = napp::agent_loader::scan_installed_agents(&self.installed_dir);
-        for agent in installed {
-            if agent.agent_def.name.eq_ignore_ascii_case(name) {
-                return Some(agent);
-            }
+    /// Find an agent by name across loader cache and DB.
+    async fn find_agent(&self, name: &str) -> Option<napp::agent_loader::LoadedAgent> {
+        // Check loader cache first
+        if let Some(agent) = self.agent_loader.get_by_name(name).await {
+            return Some(agent);
         }
 
         // Fallback: check DB (agents created via REST API or marketplace install)
@@ -1760,8 +1747,12 @@ impl PersonaTool {
                         config,
                         source: napp::agent_loader::AgentSource::Installed,
                         napp_path: r.napp_path.map(std::path::PathBuf::from),
-                        source_path: self.installed_dir.clone(),
+                        source_path: self.agent_loader.installed_dir().to_path_buf(),
                         version: None,
+                        agent_md: r.agent_md.clone(),
+                        frontmatter: r.frontmatter.clone(),
+                        description: r.description.clone(),
+                        id: Some(r.id.clone()),
                     });
                 }
             }

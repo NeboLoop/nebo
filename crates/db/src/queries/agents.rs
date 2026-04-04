@@ -90,6 +90,21 @@ impl Store {
         Ok(())
     }
 
+    /// Get an agent by name (case-insensitive).
+    pub fn get_agent_by_name(&self, name: &str) -> Result<Option<Agent>, NeboError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT id, kind, name, description, agent_md, frontmatter,
+                    pricing_model, pricing_cost, is_enabled, installed_at, updated_at,
+                    napp_path, input_values
+             FROM agents WHERE LOWER(name) = LOWER(?1)",
+            params![name],
+            row_to_agent,
+        )
+        .optional()
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
     /// Check if an agent is installed by matching its name (case-insensitive).
     pub fn agent_installed_by_name(&self, name: &str) -> Result<bool, NeboError> {
         let conn = self.conn()?;

@@ -17,6 +17,7 @@ pub use registry::{Registry, RegistryConfig};
 pub use runtime::{Process, Runtime};
 pub use signing::{SigningKeyProvider, RevocationChecker};
 pub use hooks::{HookDispatcher, HookCaller, HookType};
+pub use agent_loader::{AgentLoader, LoadedAgent, AgentSource};
 
 use serde::{Deserialize, Serialize};
 
