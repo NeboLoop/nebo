@@ -98,7 +98,8 @@ impl EventDispatcher {
 
                     // Use run_inline with the inline definition from agent.json
                     if let Some(ref def_json) = sub.definition_json {
-                        match manager.run_inline(def_json.clone(), inputs, "event", &sub.agent_source, sub.emit_source.clone()).await {
+                        let detail = Some(format!("{}:{}", sub.binding_name, event.source));
+                        match manager.run_inline(def_json.clone(), inputs, "event", detail, &sub.agent_source, sub.emit_source.clone()).await {
                             Ok(run_id) => {
                                 info!(
                                     agent = %sub.agent_source,

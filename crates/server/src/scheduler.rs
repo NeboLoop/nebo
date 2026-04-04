@@ -281,7 +281,7 @@ async fn execute_agent_workflow_task(
         format!("{}.{}", slug, emit_name)
     });
 
-    match manager.run_inline(def_json, inputs, "schedule", agent_id, emit_source).await {
+    match manager.run_inline(def_json, inputs, "schedule", Some(binding_name.to_string()), agent_id, emit_source).await {
         Ok(run_id) => (true, format!("inline workflow run started: {}", run_id), None),
         Err(e) => (false, String::new(), Some(e)),
     }

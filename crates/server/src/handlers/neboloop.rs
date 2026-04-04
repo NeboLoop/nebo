@@ -452,8 +452,11 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
 
     let now = chrono::Utc::now().to_rfc3339();
 
-    // Map Janus response to our JanusUsage struct.
-    // Janus returns: all_models.{session_used, session_limit, session_reset_seconds, weekly_*}
+    // Janus /v1/usage response body structure:
+    // all_models.{session_used, session_limit, session_reset_seconds, weekly_*}
+    // grants.{free_available, gift_available}
+    // credits.{balance_cents}
+    // plan: string
     let am = &body["all_models"];
     let session_limit = am["session_limit"].as_u64().unwrap_or(0);
     let session_used = am["session_used"].as_u64().unwrap_or(0);
@@ -461,13 +464,6 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
     let weekly_limit = am["weekly_limit"].as_u64().unwrap_or(0);
     let weekly_used = am["weekly_used"].as_u64().unwrap_or(0);
     let weekly_reset_secs = am["weekly_reset_seconds"].as_i64().unwrap_or(0);
-
-    // Budget pools
-    let budget = &body["budget"];
-    let budget_free = budget["free_available"].as_u64().unwrap_or(0);
-    let budget_gift = budget["gift_available"].as_u64().unwrap_or(0);
-    let budget_credits_cents = budget["credits_cents"].as_u64().unwrap_or(0);
-    let budget_active_pool = budget["active_pool"].as_str().unwrap_or("").to_string();
 
     let session_reset_at = if session_reset_secs > 0 {
         (chrono::Utc::now() + chrono::Duration::seconds(session_reset_secs)).to_rfc3339()
@@ -487,10 +483,10 @@ async fn fetch_janus_usage(state: &AppState) -> Result<crate::state::JanusUsage,
         weekly_limit_credits: weekly_limit,
         weekly_remaining_credits: weekly_limit.saturating_sub(weekly_used),
         weekly_reset_at,
-        budget_free_available: budget_free,
-        budget_gift_available: budget_gift,
-        budget_credits_cents,
-        budget_active_pool,
+        budget_free_available: body["grants"]["free_available"].as_u64().unwrap_or(0),
+        budget_gift_available: body["grants"]["gift_available"].as_u64().unwrap_or(0),
+        budget_credits_cents: body["credits"]["balance_cents"].as_u64().unwrap_or(0),
+        budget_active_pool: body["plan"].as_str().unwrap_or("").to_string(),
         updated_at: now,
     };
 

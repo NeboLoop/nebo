@@ -109,6 +109,17 @@
 		return formatDuration(secs);
 	}
 
+	function runLabel(run: WorkflowRun): string {
+		if (run.triggerDetail) {
+			const colonIdx = run.triggerDetail.indexOf(':');
+			if (colonIdx > 0) {
+				return run.triggerDetail.substring(0, colonIdx);
+			}
+			return run.triggerDetail;
+		}
+		return run.triggerType;
+	}
+
 	// Group runs by day
 	interface DayGroup {
 		label: string;
@@ -470,7 +481,7 @@
 											<div class="flex-1 min-w-0">
 												<div class="flex items-center gap-2">
 													<span class="text-sm font-medium text-error">{$t('common.failed')}</span>
-													<span class="text-xs text-base-content/70">{run.triggerType}</span>
+													<span class="text-xs text-base-content/70">{runLabel(run)}</span>
 												</div>
 												{#if run.error}
 													<p class="text-xs text-error/70 truncate mt-0.5">{run.error}</p>
@@ -507,7 +518,7 @@
 											<div class="flex items-center gap-3 px-3 py-1.5 text-xs text-base-content/70">
 												<div class="w-1.5 h-1.5 rounded-full shrink-0 bg-success"></div>
 												<span>{$t('common.completed')}</span>
-												<span>{run.triggerType}</span>
+												<span>{runLabel(run)}</span>
 												<span class="ml-auto">{formatTime(run.startedAt)} · {runDuration(run)}</span>
 											</div>
 										{/each}

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use chrono::Offset;
 
 /// Static inputs populated once per Run() call and reused across iterations.
 #[derive(Debug, Clone, Default)]
@@ -40,6 +41,9 @@ pub struct DynamicContext {
     pub steering_directives: String,
     /// Background proactive results (actual content, not behavioral guidance).
     pub proactive_context: String,
+    /// User-configured IANA timezone (e.g. "America/Denver"). When set, date/time
+    /// in the dynamic suffix is computed in this timezone instead of system-local.
+    pub user_timezone: Option<String>,
 }
 
 /// Marker separating the stable/cacheable prefix (Sections 1–8) from
@@ -476,23 +480,55 @@ pub fn build_static(pctx: &PromptContext) -> String {
 pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
     let mut sb = String::new();
 
-    // 1. Date/time header
-    let now = chrono::Local::now();
-    let offset_secs = now.offset().local_minus_utc();
-    let utc_hours = offset_secs / 3600;
-    let utc_sign = if utc_hours >= 0 { "+" } else { "" };
-    let zone = now.format("%Z");
-    let year = now.format("%Y");
+    // 1. Date/time header — use user's configured timezone when available
+    let (date_str, time_str, tz_display, utc_offset_str, zone_abbrev, year_str) =
+        if let Some(ref tz_name) = dctx.user_timezone {
+            if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
+                let now = chrono::Utc::now().with_timezone(&tz);
+                let offset_secs = now.offset().fix().local_minus_utc();
+                let utc_hours = offset_secs / 3600;
+                let sign = if utc_hours >= 0 { "+" } else { "" };
+                (
+                    now.format("%B %-d, %Y").to_string(),
+                    now.format("%-I:%M %p").to_string(),
+                    tz_name.clone(),
+                    format!("UTC{}{}", sign, utc_hours),
+                    now.format("%Z").to_string(),
+                    now.format("%Y").to_string(),
+                )
+            } else {
+                // Invalid IANA name — fall back to system-local
+                let now = chrono::Local::now();
+                let offset_secs = now.offset().fix().local_minus_utc();
+                let utc_hours = offset_secs / 3600;
+                let sign = if utc_hours >= 0 { "+" } else { "" };
+                (
+                    now.format("%B %-d, %Y").to_string(),
+                    now.format("%-I:%M %p").to_string(),
+                    now.offset().to_string(),
+                    format!("UTC{}{}", sign, utc_hours),
+                    now.format("%Z").to_string(),
+                    now.format("%Y").to_string(),
+                )
+            }
+        } else {
+            let now = chrono::Local::now();
+            let offset_secs = now.offset().fix().local_minus_utc();
+            let utc_hours = offset_secs / 3600;
+            let sign = if utc_hours >= 0 { "+" } else { "" };
+            (
+                now.format("%B %-d, %Y").to_string(),
+                now.format("%-I:%M %p").to_string(),
+                now.offset().to_string(),
+                format!("UTC{}{}", sign, utc_hours),
+                now.format("%Z").to_string(),
+                now.format("%Y").to_string(),
+            )
+        };
 
     sb.push_str(&format!(
-        "\n\n---\nIMPORTANT — Current date: {} | Time: {} | Timezone: {} (UTC{}{}, {}). The year is {}, not 2025. Use this date for all time-sensitive reasoning.",
-        now.format("%B %-d, %Y"),
-        now.format("%-I:%M %p"),
-        now.offset(),
-        utc_sign,
-        utc_hours,
-        zone,
-        year,
+        "\n\n---\nIMPORTANT — Current date: {} | Time: {} | Timezone: {} ({}, {}). The year is {}, not 2025. Use this date for all time-sensitive reasoning.",
+        date_str, time_str, tz_display, utc_offset_str, zone_abbrev, year_str,
     ));
 
     // 2. System context
@@ -517,12 +553,23 @@ pub fn build_dynamic_suffix(dctx: &DynamicContext) -> String {
         format!("Model: {}/{}", dctx.provider_name, dctx.model_name)
     };
 
+    // Compute day-of-week date for system context (uses same timezone logic)
+    let full_date_str = if let Some(ref tz_name) = dctx.user_timezone {
+        if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
+            chrono::Utc::now().with_timezone(&tz).format("%A, %B %-d, %Y").to_string()
+        } else {
+            chrono::Local::now().format("%A, %B %-d, %Y").to_string()
+        }
+    } else {
+        chrono::Local::now().format("%A, %B %-d, %Y").to_string()
+    };
+
     sb.push_str(&format!(
         "\n\n[System Context]\n{}\nDate: {}\nTime: {}\nTimezone: {}\nComputer: {}\nOS: {} ({})\nNeboLoop: {}",
         model_line,
-        now.format("%A, %B %-d, %Y"),
-        now.format("%-I:%M %p"),
-        zone,
+        full_date_str,
+        time_str,
+        tz_display,
         hostname,
         os_name,
         std::env::consts::ARCH,

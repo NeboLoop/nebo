@@ -88,6 +88,7 @@ dotenvy = "0.15"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 sysinfo = "0.33"
 regex = "1"
 semver = "1"

@@ -88,9 +88,30 @@ pub trait CommPlugin: Send + Sync {
         None
     }
 
+    /// Look up the loop_id for an agent_space conversation.
+    /// Returns the loop_id if this conversation belongs to a registered agent space.
+    async fn agent_space_loop_id(&self, _conv_id: &str) -> Option<String> {
+        None
+    }
+
+    /// Look up the NeboLoop conversation ID for an agent by slug.
+    /// Used for forwarding local agent responses to NeboLoop.
+    async fn agent_space_conv_for_slug(&self, _slug: &str) -> Option<String> {
+        None
+    }
+
     /// Wait for an unexpected disconnect (read loop failure).
     /// Default implementation never returns (plugin doesn't support disconnect notification).
     async fn wait_disconnect(&self) {
         std::future::pending::<()>().await;
     }
+}
+
+/// Trait for channel providers that can receive streamed agent responses.
+/// NeboLoop implements this via CommPlugin.send(). Future channel plugins
+/// (Slack, Discord) implement this to receive responses from chat_dispatch.
+#[async_trait::async_trait]
+pub trait ChannelProvider: Send + Sync {
+    fn name(&self) -> &str;
+    async fn send_response(&self, msg: CommMessage) -> Result<(), CommError>;
 }

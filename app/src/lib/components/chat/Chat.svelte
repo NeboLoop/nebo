@@ -442,6 +442,7 @@
 		if (isCompanion || isAgent) {
 			unsubscribers.push(
 				client.on('chat_stream', handleChatStream),
+				client.on('chat_inbound', handleChatInbound),
 				client.on('chat_complete', handleChatComplete),
 				client.on('chat_response', handleChatResponse),
 				client.on('tool_start', handleToolStart),
@@ -932,6 +933,24 @@
 				setTimeout(() => processQueue(), 100);
 			}
 		}
+	}
+
+	function handleChatInbound(data: Record<string, unknown>) {
+		if (chatId && !isOurSession(data)) return;
+		const content = (data?.content as string) || '';
+		if (!content) return;
+		// Add the remote user's message to the local chat display
+		messages = [
+			...messages,
+			{
+				id: crypto.randomUUID(),
+				role: 'user' as const,
+				content,
+				timestamp: new Date(),
+				senderName: 'You (Loop)'
+			}
+		];
+		scrollToBottom();
 	}
 
 	function handleChatStream(data: Record<string, unknown>) {
@@ -1783,6 +1802,17 @@
 		}
 	}
 
+	/** Normalize user input: preserve line breaks and paragraph structure,
+	 *  collapse excessive whitespace and blank lines. */
+	function normalizeInput(text: string): string {
+		return text
+			.replace(/\r\n/g, '\n')        // normalize Windows line endings
+			.trim()                          // strip leading/trailing whitespace
+			.replace(/[ \t]+$/gm, '')       // strip trailing spaces per line
+			.replace(/[ \t]{2,}/g, ' ')     // collapse multiple spaces/tabs to one
+			.replace(/\n{3,}/g, '\n\n');    // collapse 3+ blank lines to paragraph break
+	}
+
 	function sendMessage() {
 		if (isChannel) {
 			sendChannelMsg();
@@ -1791,7 +1821,7 @@
 
 		if (!inputValue.trim()) return;
 
-		const prompt = inputValue.trim();
+		const prompt = normalizeInput(inputValue);
 
 		// ── Slash command interception ──
 		const parsed = parseSlashCommand(prompt);

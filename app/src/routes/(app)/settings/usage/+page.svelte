@@ -16,6 +16,11 @@
 	const currentPlan = $derived((subscription?.plan || accountStatus?.plan || 'free').toLowerCase());
 	const planName = $derived(currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1));
 
+	// Budget data from Janus: grants + credits from /v1/usage body, or X-Budget-* headers from streaming
+	const hasBudget = $derived(
+		usage?.budget && (usage.budget.giftAvailable > 0 || usage.budget.creditsCents > 0 || usage.budget.freeAvailable > 0 || !!usage.budget.activePool)
+	);
+
 	onMount(async () => {
 		try {
 			accountStatus = await api.neboLoopAccountStatus();
@@ -41,11 +46,10 @@
 		refreshing = false;
 	}
 
-	function formatTokens(tokens: number): string {
-		if (tokens >= 1_000_000_000) return `${(tokens / 1_000_000_000).toFixed(1)}B`;
-		if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-		if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
-		return tokens.toLocaleString();
+	function formatDollars(microdollars: number): string {
+		const dollars = microdollars / 1_000_000;
+		if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}K`;
+		return `$${dollars.toFixed(2)}`;
 	}
 
 	function timeUntilReset(resetAt?: string): string {
@@ -178,33 +182,33 @@
 		</section>
 
 		<!-- Budget Balance -->
-		{#if usage?.budget}
+		{#if hasBudget}
 			<section>
 				<h3 class="text-base font-semibold text-base-content/60 uppercase tracking-wider mb-3">{$t('settingsUsage.budgetBalance')}</h3>
 				<div class="rounded-2xl bg-base-200/50 border border-base-content/10 p-5">
-					{#if usage.budget.activePool}
+					{#if usage?.budget?.activePool}
 						<div class="flex items-center gap-2 mb-4">
 							<span class="text-sm text-base-content/50">{$t('settingsUsage.activePool')}</span>
 							<span class="badge badge-primary badge-sm">{usage.budget.activePool}</span>
 						</div>
 					{/if}
 					<div class="grid sm:grid-cols-3 gap-4">
-						{#if usage.budget.freeAvailable > 0}
+						{#if usage?.budget && usage.budget.freeAvailable > 0}
 							<div>
 								<p class="text-sm text-base-content/50">{$t('settingsUsage.freePool')}</p>
-								<p class="text-lg font-bold text-base-content tabular-nums">{formatTokens(usage.budget.freeAvailable)}</p>
-								<p class="text-xs text-base-content/40">tokens</p>
+								<p class="text-lg font-bold text-base-content tabular-nums">{formatDollars(usage.budget.freeAvailable)}</p>
 							</div>
 						{/if}
-						<div>
-							<p class="text-sm text-base-content/50">{$t('settingsUsage.giftPool')}</p>
-							<p class="text-lg font-bold text-base-content tabular-nums">{formatTokens(usage.budget.giftAvailable)}</p>
-							<p class="text-xs text-base-content/40">tokens</p>
-						</div>
-						<div>
-							<p class="text-sm text-base-content/50">{$t('settingsUsage.creditsPool')}</p>
-							<p class="text-lg font-bold text-base-content tabular-nums">${(usage.budget.creditsCents / 100).toFixed(2)}</p>
-						</div>
+						{#if usage?.budget}
+							<div>
+								<p class="text-sm text-base-content/50">{$t('settingsUsage.giftPool')}</p>
+								<p class="text-lg font-bold text-base-content tabular-nums">{formatDollars(usage.budget.giftAvailable)}</p>
+							</div>
+							<div>
+								<p class="text-sm text-base-content/50">{$t('settingsUsage.creditsPool')}</p>
+								<p class="text-lg font-bold text-base-content tabular-nums">${(usage.budget.creditsCents / 100).toFixed(2)}</p>
+							</div>
+						{/if}
 					</div>
 				</div>
 			</section>

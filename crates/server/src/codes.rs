@@ -376,6 +376,8 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
                 let _ = std::fs::remove_dir_all(&dir);
             }
         }
+        // Deregister from NeboLoop so re-registration doesn't 409
+        let _ = deregister_agent_from_loop(state, &slug).await;
     }
 
     // Fetch artifact content from NeboLoop and persist to DB + filesystem
@@ -967,6 +969,9 @@ async fn reconcile_agents(state: &AppState) -> Result<(), NeboError> {
         None => return Ok(()), // No loops, nothing to reconcile
     };
 
+    // Store personal loop_id for session unification
+    *state.personal_loop_id.write().await = Some(personal.loop_id.clone());
+
     let remote_agents = api
         .list_agents(&personal.loop_id)
         .await
@@ -1154,6 +1159,13 @@ pub(crate) async fn register_agent_in_loop(
     let personal = loops
         .first()
         .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
+
+    // Store personal loop_id for session unification
+    *state.personal_loop_id.write().await = Some(personal.loop_id.clone());
+
+    // Deregister first to make this idempotent (avoids 409 on reinstall)
+    let _ = api.deregister_agent(&personal.loop_id, slug).await;
+
     api.register_agent(&personal.loop_id, name, slug, None)
         .await
         .map_err(|e| NeboError::Internal(format!("register agent: {e}")))?;
@@ -1174,11 +1186,20 @@ pub(crate) async fn deregister_agent_from_loop(
     let personal = loops
         .first()
         .ok_or_else(|| NeboError::Internal("bot not in any loop".into()))?;
-    // Use slug as agent_id for deregister — gateway supports both
-    api.deregister_agent(&personal.loop_id, agent_slug)
+    // NeboLoop DELETE requires the agent UUID, not the slug.
+    // Look up the remote agent by slug to get its UUID.
+    let agents = api
+        .list_agents(&personal.loop_id)
+        .await
+        .map_err(|e| NeboError::Internal(format!("list agents: {e}")))?;
+    let remote = agents
+        .iter()
+        .find(|a| a.slug == agent_slug)
+        .ok_or_else(|| NeboError::Internal(format!("agent '{}' not found on NeboLoop", agent_slug)))?;
+    api.deregister_agent(&personal.loop_id, &remote.id)
         .await
         .map_err(|e| NeboError::Internal(format!("deregister agent: {e}")))?;
-    info!(agent = %agent_slug, loop_id = %personal.loop_id, "deregistered agent from loop");
+    info!(agent = %agent_slug, remote_id = %remote.id, loop_id = %personal.loop_id, "deregistered agent from loop");
     Ok(())
 }
 

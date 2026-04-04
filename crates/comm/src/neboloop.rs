@@ -727,6 +727,17 @@ impl CommPlugin for NeboLoopPlugin {
             .map(|meta| meta.agent_slug.clone())
     }
 
+    async fn agent_space_loop_id(&self, conv_id: &str) -> Option<String> {
+        let maps = self.conv_maps.read().await;
+        maps.agent_space_convs
+            .get(conv_id)
+            .map(|meta| meta.loop_id.clone())
+    }
+
+    async fn agent_space_conv_for_slug(&self, slug: &str) -> Option<String> {
+        self.conv_maps.read().await.agent_space_by_slug.get(slug).cloned()
+    }
+
     async fn wait_disconnect(&self) {
         self.disconnect_notify.notified().await;
     }

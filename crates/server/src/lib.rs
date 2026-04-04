@@ -1039,6 +1039,8 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         presence: Arc::new(agent::PresenceTracker::new()),
         proactive_inbox: Arc::new(agent::ProactiveInbox::new()),
         run_registry: run_registry::RunRegistry::new(),
+        personal_loop_id: Arc::new(tokio::sync::RwLock::new(None)),
+        channel_providers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     };
 
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)
@@ -1421,6 +1423,17 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
     }
 
+    // Skip echoed messages: when we forward a local user prompt to NeboLoop
+    // (human_injected=true), the gateway may echo it back — don't re-process.
+    if msg.human_injected {
+        tracing::debug!(
+            topic = %msg.topic,
+            conv_id = %msg.conversation_id,
+            "skipping echoed human_injected message"
+        );
+        return;
+    }
+
     // Route agent space messages to the correct role
     if msg.topic == "agent_space" {
         let text = extract_message_text(&msg.content);
@@ -1430,38 +1443,94 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
         }
 
         let agent_slug = msg.metadata.get("agent_slug").cloned().unwrap_or_default();
-        let agent_id = resolve_agent_id_from_slug(&state, &agent_slug).await;
+        // bot_* slugs are the default bot — not a custom agent, route to main
+        let is_default_bot = agent_slug.starts_with("bot_");
+        let agent_id = if is_default_bot {
+            String::new() // main bot
+        } else {
+            let id = resolve_agent_id_from_slug(&state, &agent_slug).await;
+            // Guard: skip messages for custom agents that no longer exist locally
+            if id.is_empty() {
+                tracing::warn!(
+                    agent_slug = %agent_slug,
+                    conv_id = %msg.conversation_id,
+                    "agent_space: agent not found locally, dropping message (may need gateway deregister)"
+                );
+                return;
+            }
+            id
+        };
+
+        // Check if this is the owner's personal loop → unify session with local agent chat
+        let space_loop_id = state.comm_manager.agent_space_loop_id(&msg.conversation_id).await;
+        let personal_id = state.personal_loop_id.read().await.clone();
+        let is_personal = if is_default_bot {
+            // Default bot is always personal
+            space_loop_id.is_some() && (personal_id.is_none() || space_loop_id == personal_id)
+        } else {
+            space_loop_id.is_some() && space_loop_id == personal_id
+        };
         tracing::info!(
             agent_slug = %agent_slug,
             agent_id = %agent_id,
             text_len = text.len(),
+            is_personal = is_personal,
+            space_loop_id = ?space_loop_id,
+            personal_loop_id = ?personal_id,
             "agent_space: routing to role"
         );
 
-        let session_key = agent::keyparser::build_session_key(
-            "neboloop",
-            "agent_space",
-            &format!("{}:{}", agent_slug, msg.conversation_id),
-        );
+        let session_key = if is_personal && is_default_bot {
+            // Default bot: use the companion chat's actual session key
+            resolve_companion_session_key(&state)
+        } else if is_personal {
+            // Custom agent: use agent-scoped session key (matches frontend's agent:{id}:web)
+            agent::keyparser::build_agent_session_key(&agent_id, "web")
+        } else {
+            // External loop: separate session
+            agent::keyparser::build_session_key(
+                "neboloop",
+                "agent_space",
+                &format!("{}:{}", agent_slug, msg.conversation_id),
+            )
+        };
 
         // Pre-create chat with friendly title (agent name, not raw session key)
-        let agent_name = {
+        let agent_name = if is_default_bot {
+            "Nebo".to_string()
+        } else {
             let registry = state.agent_registry.read().await;
             registry
                 .get(&agent_id)
                 .map(|r| r.name.clone())
                 .unwrap_or_else(|| agent_slug.clone())
         };
-        let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
+        if !is_default_bot {
+            let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
+        }
 
         let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
         notify_crate::send(&format!("Agent space: {}", agent_name), &preview);
 
-        let entity_config = entity_config::resolve_for_chat(
-            &state.store,
-            "channel",
-            "agent_space",
-        );
+        // Broadcast inbound user message to local frontend for real-time display
+        if is_personal {
+            state.hub.broadcast("chat_inbound", serde_json::json!({
+                "session_id": session_key,
+                "content": text,
+                "agentId": agent_id,
+                "source": "neboloop",
+            }));
+        }
+
+        // Use entity config matching the session: agent config for custom agents,
+        // main config for the default bot, channel config for external loops
+        let entity_config = if is_personal && !agent_id.is_empty() {
+            entity_config::resolve_for_chat(&state.store, "agent", &agent_id)
+        } else if is_personal {
+            entity_config::resolve_for_chat(&state.store, "main", "main")
+        } else {
+            entity_config::resolve_for_chat(&state.store, "channel", "agent_space")
+        };
 
         let config = chat_dispatch::ChatConfig {
             session_key,
@@ -1474,6 +1543,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
+                provider: "neboloop".to_string(),
                 topic: "agent_space".to_string(),
                 conversation_id: msg.conversation_id.clone(),
             }),
@@ -1509,37 +1579,88 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             if text.is_empty() {
                 return;
             }
-            let agent_id = resolve_agent_id_from_slug(&state, &agent_slug).await;
+            // bot_* slugs are the default bot — not a custom agent, route to main
+            let is_default_bot = agent_slug.starts_with("bot_");
+            let agent_id = if is_default_bot {
+                String::new() // main bot
+            } else {
+                let id = resolve_agent_id_from_slug(&state, &agent_slug).await;
+                // Guard: skip messages for custom agents that no longer exist locally
+                if id.is_empty() {
+                    tracing::warn!(
+                        agent_slug = %agent_slug,
+                        conv_id = %msg.conversation_id,
+                        "dm→agent_space reroute: agent not found locally, dropping message"
+                    );
+                    return;
+                }
+                id
+            };
+
+            // Check if this is the owner's personal loop → unify session with local agent chat
+            let space_loop_id = state.comm_manager.agent_space_loop_id(&msg.conversation_id).await;
+            let personal_id = state.personal_loop_id.read().await.clone();
+            let is_personal = if is_default_bot {
+                space_loop_id.is_some() && (personal_id.is_none() || space_loop_id == personal_id)
+            } else {
+                space_loop_id.is_some() && space_loop_id == personal_id
+            };
             tracing::info!(
                 agent_slug = %agent_slug,
                 agent_id = %agent_id,
                 conv_id = %msg.conversation_id,
+                is_personal = is_personal,
+                space_loop_id = ?space_loop_id,
+                personal_loop_id = ?personal_id,
                 "dm→agent_space reroute: conv belongs to agent space"
             );
 
-            let session_key = agent::keyparser::build_session_key(
-                "neboloop",
-                "agent_space",
-                &format!("{}:{}", agent_slug, msg.conversation_id),
-            );
+            let session_key = if is_personal && is_default_bot {
+                resolve_companion_session_key(&state)
+            } else if is_personal {
+                agent::keyparser::build_agent_session_key(&agent_id, "web")
+            } else {
+                agent::keyparser::build_session_key(
+                    "neboloop",
+                    "agent_space",
+                    &format!("{}:{}", agent_slug, msg.conversation_id),
+                )
+            };
 
-            let agent_name = {
+            let agent_name = if is_default_bot {
+                "Nebo".to_string()
+            } else {
                 let registry = state.agent_registry.read().await;
                 registry
                     .get(&agent_id)
                     .map(|r| r.name.clone())
                     .unwrap_or_else(|| agent_slug.clone())
             };
-            let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
+            if !is_default_bot {
+                let _ = state.store.create_chat(&session_key, &format!("Agent: {}", agent_name));
+            }
 
             let preview = if text.len() > 80 { format!("{}...", truncate_str(&text, 80)) } else { text.clone() };
             notify_crate::send(&format!("Agent space: {}", agent_name), &preview);
 
-            let entity_config = entity_config::resolve_for_chat(
-                &state.store,
-                "channel",
-                "agent_space",
-            );
+            // Broadcast inbound user message to local frontend for real-time display
+            if is_personal {
+                state.hub.broadcast("chat_inbound", serde_json::json!({
+                    "session_id": session_key,
+                    "content": text,
+                    "agentId": agent_id,
+                    "source": "neboloop",
+                }));
+            }
+
+            // Use entity config matching the session
+            let entity_config = if is_personal && !agent_id.is_empty() {
+                entity_config::resolve_for_chat(&state.store, "agent", &agent_id)
+            } else if is_personal {
+                entity_config::resolve_for_chat(&state.store, "main", "main")
+            } else {
+                entity_config::resolve_for_chat(&state.store, "channel", "agent_space")
+            };
 
             let config = chat_dispatch::ChatConfig {
                 session_key,
@@ -1552,6 +1673,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
                 cancel_token: tokio_util::sync::CancellationToken::new(),
                 lane: types::constants::lanes::COMM.to_string(),
                 comm_reply: Some(chat_dispatch::CommReplyConfig {
+                    provider: "neboloop".to_string(),
                     topic: msg.topic.clone(),
                     conversation_id: msg.conversation_id.clone(),
                 }),
@@ -1624,6 +1746,7 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
             cancel_token: tokio_util::sync::CancellationToken::new(),
             lane: types::constants::lanes::COMM.to_string(),
             comm_reply: Some(chat_dispatch::CommReplyConfig {
+                provider: "neboloop".to_string(),
                 topic: msg.topic.clone(),
                 conversation_id: msg.conversation_id.clone(),
             }),
@@ -1680,6 +1803,19 @@ async fn handle_comm_message(state: AppState, msg: comm::CommMessage) {
 }
 
 /// Resolve a role ID from an agent slug by scanning the active role registry.
+/// Resolve the companion chat's session key (matches what the frontend uses).
+/// Falls back to "web" if no companion chat exists yet.
+fn resolve_companion_session_key(state: &AppState) -> String {
+    match state.store.get_companion_chat_by_user("companion-default") {
+        Ok(Some(chat)) => {
+            let key = chat.session_name.unwrap_or(chat.id);
+            tracing::debug!(session_key = %key, "resolved companion session key for NeboLoop unification");
+            key
+        }
+        _ => "web".to_string(),
+    }
+}
+
 async fn resolve_agent_id_from_slug(state: &AppState, slug: &str) -> String {
     if slug.is_empty() {
         return String::new();

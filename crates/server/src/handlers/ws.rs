@@ -491,12 +491,13 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
 }
 
 /// Scan prompt text for image file paths, read them, and return (cleaned_prompt, images).
+/// Preserves the original prompt formatting (newlines, whitespace) when no images are found.
 fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
     use base64::Engine;
 
     let image_extensions = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"];
     let mut images = Vec::new();
-    let mut cleaned_parts = Vec::new();
+    let mut image_paths: Vec<&str> = Vec::new();
 
     for token in prompt.split_whitespace() {
         let path = std::path::Path::new(token);
@@ -523,15 +524,47 @@ fn extract_images_from_prompt(prompt: &str) -> (String, Vec<ai::ImageContent>) {
                     media_type: media_type.to_string(),
                     data,
                 });
+                image_paths.push(token);
             }
-        } else {
-            cleaned_parts.push(token);
         }
     }
 
-    let cleaned = cleaned_parts.join(" ");
+    // No images found — return original prompt with all formatting intact
+    if images.is_empty() {
+        return (prompt.to_string(), images);
+    }
+
+    // Remove only the image path tokens, preserving surrounding text and formatting
+    let mut cleaned = prompt.to_string();
+    for path in &image_paths {
+        cleaned = cleaned.replacen(path, "", 1);
+    }
+    // Clean up whitespace artifacts left by removed paths (but preserve newlines)
+    let cleaned: String = cleaned
+        .lines()
+        .map(|line| {
+            // Collapse runs of spaces/tabs to single space, trim trailing
+            let mut result = String::new();
+            let mut prev_space = false;
+            for ch in line.chars() {
+                if ch == ' ' || ch == '\t' {
+                    if !prev_space && !result.is_empty() {
+                        result.push(' ');
+                    }
+                    prev_space = true;
+                } else {
+                    prev_space = false;
+                    result.push(ch);
+                }
+            }
+            result.trim_end().to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cleaned = cleaned.trim().to_string();
+
     // If the entire prompt was just image paths, add a generic prompt
-    let cleaned = if cleaned.trim().is_empty() && !images.is_empty() {
+    let cleaned = if cleaned.is_empty() && !images.is_empty() {
         "What's in this image?".to_string()
     } else {
         cleaned
@@ -606,6 +639,65 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         crate::entity_config::resolve_for_chat(&state.store, etype, eid)
     };
 
+    // If NeboLoop is connected, forward responses so the conversation stays in sync.
+    // Works for both custom agents (agent_space by slug) and the companion (default bot).
+    let comm_reply = if state.comm_manager.is_connected().await {
+        let conv_id = if !agent_id.is_empty() {
+            // Custom agent: look up by slug
+            let slug = {
+                let registry = state.agent_registry.read().await;
+                registry.get(&agent_id).map(|r| r.name.to_lowercase().replace(' ', "-"))
+            };
+            if let Some(slug) = slug {
+                state.comm_manager.agent_space_conv_for_slug(&slug).await
+            } else {
+                None
+            }
+        } else {
+            // Companion (default bot): look up by bot_* slug
+            if let Some(bot_id) = config::read_bot_id() {
+                let bot_slug = format!("bot_{}", &bot_id[..bot_id.len().min(12)]);
+                state.comm_manager.agent_space_conv_for_slug(&bot_slug).await
+            } else {
+                None
+            }
+        };
+        conv_id.map(|cid| crate::chat_dispatch::CommReplyConfig {
+            provider: "neboloop".to_string(),
+            topic: "agent_space".to_string(),
+            conversation_id: cid,
+        })
+    } else {
+        None
+    };
+
+    // Send the user's prompt to NeboLoop so it appears in the Loop conversation
+    if let Some(ref reply_cfg) = comm_reply {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("senderName".to_string(), "You".to_string());
+        let user_msg = comm::CommMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            from: String::new(),
+            to: String::new(),
+            topic: reply_cfg.topic.clone(),
+            conversation_id: reply_cfg.conversation_id.clone(),
+            msg_type: comm::CommMessageType::Message,
+            content: prompt.clone(),
+            metadata: meta,
+            timestamp: 0,
+            human_injected: true,
+            human_id: None,
+            task_id: None,
+            correlation_id: None,
+            task_status: None,
+            artifacts: vec![],
+            error: None,
+        };
+        if let Err(e) = state.comm_manager.send(user_msg).await {
+            warn!(error = %e, "failed to forward user prompt to NeboLoop");
+        }
+    }
+
     let config = ChatConfig {
         session_key,
         prompt,
@@ -616,7 +708,7 @@ async fn dispatch_chat(state: &AppState, msg: &serde_json::Value) {
         agent_id,
         cancel_token: CancellationToken::new(),
         lane: lanes::MAIN.to_string(),
-        comm_reply: None,
+        comm_reply,
         entity_config,
         images,
         entity_name: String::new(), // resolved from agent_registry in run_chat

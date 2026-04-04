@@ -78,6 +78,7 @@ pub trait WorkflowManager: Send + Sync {
         definition_json: String,
         inputs: serde_json::Value,
         trigger_type: &'a str,
+        trigger_detail: Option<String>,
         agent_id: &'a str,
         emit_source: Option<String>,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;

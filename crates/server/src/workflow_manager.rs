@@ -565,6 +565,7 @@ impl WorkflowManager for WorkflowManagerImpl {
         definition_json: String,
         inputs: serde_json::Value,
         trigger_type: &'a str,
+        trigger_detail: Option<String>,
         agent_id: &'a str,
         emit_source: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
@@ -594,7 +595,7 @@ impl WorkflowManager for WorkflowManagerImpl {
                 &run_id,
                 &format!("agent:{}", agent_id),
                 trigger_type,
-                None,
+                trigger_detail.as_deref(),
                 Some(&inputs.to_string()),
                 Some(&session_key),
             ).map_err(|e| format!("create_workflow_run: {}", e))?;

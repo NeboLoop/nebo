@@ -9,7 +9,7 @@ use auth::AuthService;
 use agent::{LaneManager, Runner};
 use tools::Registry;
 
-use comm::PluginManager;
+use comm::{ChannelProvider, PluginManager};
 
 use serde::Serialize;
 
@@ -99,4 +99,8 @@ pub struct AppState {
     pub proactive_inbox: Arc<agent::ProactiveInbox>,
     /// Global registry of all active agent runs — single source of truth
     pub run_registry: RunRegistry,
+    /// Owner's personal loop ID — used to unify agent sessions across local + NeboLoop
+    pub personal_loop_id: Arc<tokio::sync::RwLock<Option<String>>>,
+    /// Channel providers for routing agent responses (NeboLoop, future: Slack, Discord)
+    pub channel_providers: Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
 }

@@ -8,6 +8,9 @@
 //! All runs register in the global [`RunRegistry`](crate::run_registry::RunRegistry)
 //! for visibility, cancellation, and progress tracking.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use tracing::{info, warn};
 
 use agent::lanes::make_task;
@@ -44,6 +47,7 @@ pub struct ChatConfig {
 /// Configuration for sending a reply back through a communication channel.
 #[derive(Clone)]
 pub struct CommReplyConfig {
+    pub provider: String, // "neboloop", or future: "slack", "discord"
     pub topic: String,
     pub conversation_id: String,
 }
@@ -61,6 +65,11 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     let proactive_inbox = state.proactive_inbox.clone();
     let comm_manager = if config.comm_reply.is_some() {
         Some(state.comm_manager.clone())
+    } else {
+        None
+    };
+    let channel_providers = if config.comm_reply.is_some() {
+        Some(state.channel_providers.clone())
     } else {
         None
     };
@@ -175,11 +184,15 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                 let mut last_flush = tokio::time::Instant::now();
                 const COALESCE_MS: u64 = 75;
 
-                // Comm streaming: send chunks to NeboLoop as they arrive
+                // Comm streaming: send chunks to NeboLoop as they arrive.
+                // Timer starts on first token, not loop init (LLM latency would
+                // cause the first token to flush immediately otherwise).
                 let mut comm_buffer = String::new();
-                let mut last_comm_flush = tokio::time::Instant::now();
+                let mut last_comm_flush: Option<tokio::time::Instant> = None;
                 let mut comm_streamed = false;
                 const COMM_COALESCE_MS: u64 = 500;
+                // Stable ID across all stream chunks so the gateway coalesces them
+                let comm_stream_id = uuid::Uuid::new_v4().to_string();
 
                 loop {
                     let event = tokio::select! {
@@ -221,17 +234,21 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                 text_buffer.clear();
                                 last_flush = tokio::time::Instant::now();
                             }
-                            // Stream chunks to NeboLoop comm channel
+                            // Stream chunks to comm channel via provider
                             if comm_reply.is_some() {
                                 comm_buffer.push_str(&event.text);
-                                if last_comm_flush.elapsed().as_millis() as u64 >= COMM_COALESCE_MS {
-                                    if let (Some(cfg), Some(mgr)) = (&comm_reply, &comm_manager) {
+                                let flush_elapsed = last_comm_flush
+                                    .get_or_insert_with(tokio::time::Instant::now)
+                                    .elapsed()
+                                    .as_millis() as u64;
+                                if flush_elapsed >= COMM_COALESCE_MS {
+                                    if let Some(cfg) = &comm_reply {
                                         let mut chunk_meta = std::collections::HashMap::new();
                                         if !agent_display_name.is_empty() {
                                             chunk_meta.insert("senderName".to_string(), agent_display_name.clone());
                                         }
                                         let chunk = comm::CommMessage {
-                                            id: uuid::Uuid::new_v4().to_string(),
+                                            id: comm_stream_id.clone(),
                                             from: String::new(),
                                             to: String::new(),
                                             topic: cfg.topic.clone(),
@@ -248,12 +265,12 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
                                             artifacts: vec![],
                                             error: None,
                                         };
-                                        if let Err(e) = mgr.send(chunk).await {
+                                        if let Err(e) = send_to_channel(&cfg.provider, &comm_manager, &channel_providers, chunk).await {
                                             warn!(error = %e, "failed to send comm stream chunk");
                                         }
                                         comm_streamed = true;
                                         comm_buffer.clear();
-                                        last_comm_flush = tokio::time::Instant::now();
+                                        last_comm_flush = Some(tokio::time::Instant::now());
                                     }
                                 }
                             }
@@ -443,79 +460,77 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
 
                 // Send final comm reply — flush remaining stream buffer + complete message
                 if let Some(reply_config) = &comm_reply {
-                    if let Some(comm_mgr) = &comm_manager {
-                        if !full_response.is_empty() {
-                            // Build metadata with agent name for all outbound messages
-                            let mut reply_meta = std::collections::HashMap::new();
-                            if !agent_display_name.is_empty() {
-                                reply_meta.insert("senderName".to_string(), agent_display_name.clone());
-                            }
+                    if !full_response.is_empty() {
+                        // Build metadata with agent name for all outbound messages
+                        let mut reply_meta = std::collections::HashMap::new();
+                        if !agent_display_name.is_empty() {
+                            reply_meta.insert("senderName".to_string(), agent_display_name.clone());
+                        }
 
-                            // Flush any remaining streamed text
-                            if !comm_buffer.is_empty() {
-                                let chunk = comm::CommMessage {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    from: String::new(),
-                                    to: String::new(),
-                                    topic: reply_config.topic.clone(),
-                                    conversation_id: reply_config.conversation_id.clone(),
-                                    msg_type: comm::CommMessageType::Stream,
-                                    content: comm_buffer,
-                                    metadata: reply_meta.clone(),
-                                    timestamp: 0,
-                                    human_injected: false,
-                                    human_id: None,
-                                    task_id: None,
-                                    correlation_id: None,
-                                    task_status: None,
-                                    artifacts: vec![],
-                                    error: None,
-                                };
-                                if let Err(e) = comm_mgr.send(chunk).await {
-                                    warn!(error = %e, "failed to send comm stream flush");
-                                }
+                        // Flush any remaining streamed text
+                        if !comm_buffer.is_empty() {
+                            let chunk = comm::CommMessage {
+                                id: comm_stream_id.clone(),
+                                from: String::new(),
+                                to: String::new(),
+                                topic: reply_config.topic.clone(),
+                                conversation_id: reply_config.conversation_id.clone(),
+                                msg_type: comm::CommMessageType::Stream,
+                                content: comm_buffer,
+                                metadata: reply_meta.clone(),
+                                timestamp: 0,
+                                human_injected: false,
+                                human_id: None,
+                                task_id: None,
+                                correlation_id: None,
+                                task_status: None,
+                                artifacts: vec![],
+                                error: None,
+                            };
+                            if let Err(e) = send_to_channel(&reply_config.provider, &comm_manager, &channel_providers, chunk).await {
+                                warn!(error = %e, "failed to send comm stream flush");
                             }
+                            comm_streamed = true;
+                        }
 
-                            // If we streamed chunks, don't send the full response again
-                            // (it would appear as a duplicate message in the Loop).
-                            // Only send the complete message if no chunks were streamed
-                            // (e.g., very short responses that finished before the first flush).
-                            if !comm_streamed {
-                                info!(
-                                    topic = %reply_config.topic,
-                                    conv_id = %reply_config.conversation_id,
-                                    response_len = full_response.len(),
-                                    "sending comm reply (complete, no stream)"
-                                );
-                                let reply = comm::CommMessage {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    from: String::new(),
-                                    to: String::new(),
-                                    topic: reply_config.topic.clone(),
-                                    conversation_id: reply_config.conversation_id.clone(),
-                                    msg_type: comm::CommMessageType::Message,
-                                    content: full_response,
-                                    metadata: reply_meta,
-                                    timestamp: 0,
-                                    human_injected: false,
-                                    human_id: None,
-                                    task_id: None,
-                                    correlation_id: None,
-                                    task_status: None,
-                                    artifacts: vec![],
-                                    error: None,
-                                };
-                                if let Err(e) = comm_mgr.send(reply).await {
-                                    warn!(error = %e, "failed to send comm reply");
-                                }
-                            }
-                        } else {
-                            warn!(
+                        // If we streamed any chunks (during loop or final flush), don't
+                        // send the full response again — it would duplicate on the Loop.
+                        // Only send a complete Message if nothing was streamed at all.
+                        if !comm_streamed {
+                            info!(
                                 topic = %reply_config.topic,
                                 conv_id = %reply_config.conversation_id,
-                                "comm reply skipped: empty response from agent"
+                                response_len = full_response.len(),
+                                "sending comm reply (complete, no stream)"
                             );
+                            let reply = comm::CommMessage {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                from: String::new(),
+                                to: String::new(),
+                                topic: reply_config.topic.clone(),
+                                conversation_id: reply_config.conversation_id.clone(),
+                                msg_type: comm::CommMessageType::Message,
+                                content: full_response,
+                                metadata: reply_meta,
+                                timestamp: 0,
+                                human_injected: false,
+                                human_id: None,
+                                task_id: None,
+                                correlation_id: None,
+                                task_status: None,
+                                artifacts: vec![],
+                                error: None,
+                            };
+                            if let Err(e) = send_to_channel(&reply_config.provider, &comm_manager, &channel_providers, reply).await {
+                                warn!(error = %e, "failed to send comm reply");
+                            }
                         }
+                    } else {
+                        warn!(
+                            topic = %reply_config.topic,
+                            conv_id = %reply_config.conversation_id,
+                            "comm reply skipped: empty response from agent"
+                        );
                     }
                 }
 
@@ -546,4 +561,29 @@ pub async fn run_chat(state: &AppState, config: ChatConfig) {
     });
 
     state.lanes.enqueue_async(&lane, lane_task);
+}
+
+/// Send a comm message through the appropriate channel provider.
+/// Fast path for "neboloop" uses the comm_manager directly.
+/// Other providers are looked up in the channel_providers registry.
+async fn send_to_channel(
+    provider: &str,
+    comm_manager: &Option<Arc<comm::PluginManager>>,
+    channel_providers: &Option<Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn comm::ChannelProvider>>>>>,
+    msg: comm::CommMessage,
+) -> Result<(), comm::CommError> {
+    if provider == "neboloop" {
+        if let Some(ref mgr) = *comm_manager {
+            return mgr.send(msg).await;
+        }
+        return Err(comm::CommError::NoActivePlugin);
+    }
+    if let Some(ref providers_lock) = *channel_providers {
+        let providers: tokio::sync::RwLockReadGuard<'_, HashMap<String, Arc<dyn comm::ChannelProvider>>> =
+            providers_lock.read().await;
+        if let Some(p) = providers.get(provider) {
+            return p.send_response(msg).await;
+        }
+    }
+    Err(comm::CommError::Other(format!("unknown channel provider: {}", provider)))
 }

@@ -131,7 +131,7 @@ impl AgentWorker {
                                         }
                                     }
 
-                                    match mgr.run_inline(def_json.clone(), inputs.clone(), "heartbeat", &agent, emit_source.clone()).await {
+                                    match mgr.run_inline(def_json.clone(), inputs.clone(), "heartbeat", Some(bname.clone()), &agent, emit_source.clone()).await {
                                         Ok(run_id) => {
                                             info!(
                                                 agent = %agent,
@@ -731,10 +731,12 @@ async fn watch_loop(
                                     obj.insert("_watch_source".to_string(), serde_json::Value::String(cfg.plugin.clone()));
                                 }
 
+                                let watch_detail = Some(format!("{}:{}", binding_name, cfg.plugin));
                                 match workflow_manager.run_inline(
                                     def.clone(),
                                     run_inputs,
                                     "watch",
+                                    watch_detail,
                                     &agent_id,
                                     emit_source.clone(),
                                 ).await {

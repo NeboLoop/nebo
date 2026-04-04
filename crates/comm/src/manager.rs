@@ -200,6 +200,26 @@ impl PluginManager {
         }
     }
 
+    /// Look up the loop_id for an agent_space conversation.
+    pub async fn agent_space_loop_id(&self, conv_id: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.agent_space_loop_id(conv_id).await
+        } else {
+            None
+        }
+    }
+
+    /// Look up the NeboLoop conversation ID for an agent by slug.
+    pub async fn agent_space_conv_for_slug(&self, slug: &str) -> Option<String> {
+        let inner = self.inner.read().await;
+        if let Some(ref active) = inner.active {
+            active.agent_space_conv_for_slug(slug).await
+        } else {
+            None
+        }
+    }
+
     /// Wait for the active plugin to report an unexpected disconnect.
     /// Returns immediately if no active plugin. Callers should loop and reconnect.
     pub async fn wait_disconnect(&self) {

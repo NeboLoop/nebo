@@ -590,6 +590,11 @@ async fn run_loop(
     // Load rich DB context (agent profile, user profile, personality directive, scored memories)
     let db_ctx = db_context::load_db_context(store, &memory_user_id);
 
+    // Extract user-configured timezone for date/time in the dynamic suffix
+    let user_timezone = db_ctx.user.as_ref()
+        .and_then(|u| u.timezone.clone())
+        .filter(|tz| !tz.is_empty());
+
     // If running as an agent (persona), use the agent name as agent_name
     let agent_name = if let Some(ref agent) = active_agent_entry {
         agent.name.clone()
@@ -1162,6 +1167,7 @@ async fn run_loop(
             tool_doc_cache: tool_doc_cache.clone(),
             steering_directives: steering_text,
             proactive_context: proactive_text,
+            user_timezone: user_timezone.clone(),
         };
         let dynamic_suffix = prompt::build_dynamic_suffix(&dctx);
 
