@@ -554,6 +554,8 @@ async fn run_loop(
     // Janus provider metadata for tool stickiness — echoed back in subsequent requests
     let mut sticky_metadata: Option<std::collections::HashMap<String, String>> = None;
     let mut auto_continuations = 0usize;
+    // Cycle detection: track last auto-continued response to break loops
+    let mut prev_auto_content: Option<String> = None;
     // Sticky flag: once user demands action ("don't stop", "do them all"), stays true for the run
     let mut user_demanded_action_sticky = user_demanded_action(&sessions.get_messages(session_id).unwrap_or_default());
     // Cache for tool documentation (help/schema results) — survives sliding window eviction
@@ -780,16 +782,19 @@ async fn run_loop(
     // Record run start time for sliding window protection
     let run_start_time = chrono::Utc::now().timestamp();
 
-    // Fire objective detection in background (non-blocking)
+    // Fire objective detection in background (non-blocking).
+    // Acquires an LLM permit so it doesn't steal provider capacity from the main request.
     {
         let providers = providers.clone();
         let store = store.clone();
+        let conc = concurrency.clone();
         let session_id = session_id.to_string();
         let user_prompt = sessions.get_messages(&session_id)
             .ok()
             .and_then(|msgs| msgs.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()))
             .unwrap_or_default();
         tokio::spawn(async move {
+            let _permit = conc.acquire_llm_permit().await;
             let session_mgr = SessionManager::new(store);
             detect_objective(&providers, &session_mgr, &session_id, &user_prompt).await;
         });
@@ -2012,59 +2017,43 @@ async fn run_loop(
             }
         }
 
-        // No tool calls — check if we should auto-continue
+        // No tool calls — check if we should auto-continue.
+        //
+        // Philosophy (aligned with Claude Code / OpenClaw / Hermes): the primary
+        // continuation signal is the presence of tool_use blocks, NOT pattern
+        // matching on response text.  We only auto-continue when there are
+        // concrete incomplete work tasks AND the response isn't a cycle.
         let has_incomplete = work_tasks.iter().any(|t| t.status != "completed");
         let has_task_context = !active_task.is_empty()
             || user_demanded_action_sticky
             || (has_incomplete && !work_tasks.is_empty());
         let auto_limit = max_auto_continuations(&work_tasks);
-        let looks_like_pause = looks_like_continuation_pause(&assistant_content)
-            || looks_like_choice_question(&assistant_content);
 
-        // Path 1: Classic pause detection (permission-asking, option-presenting)
-        if has_task_context
-            && auto_continuations < auto_limit
-            && looks_like_pause
-        {
-            if cancel_token.is_cancelled() {
-                info!(session_id, "skipping auto-continue: run was cancelled");
-                break;
-            }
-            auto_continuations += 1;
-            info!(
-                iteration, session_id,
-                auto_continuations,
-                auto_limit,
-                "auto-continuing: agent paused mid-task"
-            );
-
-            // Use active_task if available, otherwise a generic fallback
-            let task_desc = if active_task.is_empty() {
-                "the task the user asked you to do".to_string()
-            } else {
-                active_task.clone()
-            };
-
-            // Set as steering (ephemeral, never persisted, never shown to user)
-            continuation_steering = Some(format!(
-                "<system>Continue with the task you were just working on: {}. Do not ask for permission or present options — pick the best approach and use your tools to execute it. If you have completed this task, say so and stop.</system>",
-                task_desc
-            ));
-            continue;
-        }
-
-        // Path 2: Work-task-aware continuation — if there are incomplete work
-        // tasks, auto-continue regardless of response phrasing (the agent may
-        // have produced a summary or status report instead of asking to continue).
+        // Work-task-aware continuation — only when there are explicitly
+        // incomplete work tasks (concrete signal, not text heuristics).
         if has_task_context
             && has_incomplete
             && auto_continuations < auto_limit
             && !assistant_content.is_empty()
         {
+            // Cycle detection: if the response is identical to the previous
+            // auto-continued response, the agent is stuck — stop.
+            if let Some(ref prev) = prev_auto_content {
+                if prev == &assistant_content {
+                    info!(
+                        iteration, session_id,
+                        auto_continuations,
+                        "cycle detected: identical response, stopping auto-continuation"
+                    );
+                    break;
+                }
+            }
+
             if cancel_token.is_cancelled() {
                 info!(session_id, "skipping work-task auto-continue: run was cancelled");
                 break;
             }
+            prev_auto_content = Some(assistant_content.clone());
             auto_continuations += 1;
             let incomplete_count = work_tasks.iter().filter(|t| t.status != "completed").count();
             info!(
@@ -2200,78 +2189,6 @@ fn max_auto_continuations(work_tasks: &[steering::WorkTask]) -> usize {
     } else {
         MAX_AUTO_CONTINUATIONS_DEFAULT
     }
-}
-
-/// Detect if the assistant's response looks like a "should I continue?" pause
-/// rather than a genuine task completion. These patterns indicate the LLM is
-/// asking for permission instead of autonomously continuing work.
-fn looks_like_continuation_pause(content: &str) -> bool {
-    let lower = content.to_lowercase();
-    let patterns = [
-        "should i continue",
-        "shall i continue",
-        "would you like me to continue",
-        "want me to continue",
-        "would you like me to proceed",
-        "shall i proceed",
-        "should i proceed",
-        "want me to proceed",
-        "would you like me to go ahead",
-        "shall i go ahead",
-        "ready to proceed",
-        "let me know if you'd like me to",
-        "let me know if you want me to",
-        "let me know when you're ready",
-        "do you want me to",
-        "would you like me to",
-        "i can continue",
-        "i can proceed",
-        "if you'd like, i can",
-        "if you want, i can",
-        "here's what i plan to do next",
-        "here is what i plan to do",
-        "my plan is to",
-        "the next step would be",
-        "the next steps would be",
-        "next steps:",
-        "i'll wait for your",
-        "awaiting your",
-        // Batch-processing patterns (agent producing status reports mid-task)
-        "processing next batch",
-        "moving to item",
-        "moving on to item",
-        "continuing with the next",
-        "let me continue with",
-        "items remaining",
-        "tasks remaining",
-        "notes remaining",
-    ];
-    patterns.iter().any(|p| lower.contains(p))
-}
-
-/// Detect when the assistant presents options instead of acting — another form
-/// of mid-task pausing that should trigger auto-continuation.
-fn looks_like_choice_question(content: &str) -> bool {
-    let lower = content.to_lowercase();
-    let patterns = [
-        "which do you prefer",
-        "which would you prefer",
-        "which option",
-        "option 1",
-        "option a)",
-        "here are your options",
-        "here are a few options",
-        "would you prefer to",
-        "there are a few ways",
-        "there are several ways",
-        "i could either",
-        "we could either",
-        "a few approaches",
-        "which approach",
-        "what would you like me to",
-        "how would you like me to",
-    ];
-    patterns.iter().any(|p| lower.contains(p))
 }
 
 /// Check if recent user messages contain imperative language demanding action.

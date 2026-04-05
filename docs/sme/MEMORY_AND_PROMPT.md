@@ -1,6 +1,6 @@
 # Memory & Prompt System -- SME Deep-Dive
 
-> **Last updated:** 2026-04-02
+> **Last updated:** 2026-04-04
 >
 > **Purpose:** Definitive technical reference for Nebo's entire memory system and system prompt pipeline -- storage, extraction, personality synthesis, hybrid search, embeddings, session transcript indexing, prompt assembly, steering, and context management. Dead code (functions ported but never called from the runner) is explicitly flagged.
 
@@ -1079,7 +1079,30 @@ This prevents premature stopping on long sessions.
 
 ## 18.5 Continuation & Recovery Mechanisms
 
-Three layers prevent the agent from stopping prematurely:
+Three layers prevent the agent from stopping prematurely.
+
+### Design Philosophy
+
+**The primary continuation signal is the presence of tool_use blocks, NOT pattern
+matching on response text.** This aligns with how Claude Code, OpenClaw, and
+Hermes Agent all handle continuation — none of them pattern-match the assistant's
+text to decide whether to keep going.
+
+Industry comparison (April 2026):
+
+| | Claude Code | OpenClaw | Hermes Agent | Nebo |
+|---|---|---|---|---|
+| Continue when | tool_use blocks | tool_use + error recovery | tool_calls present | tool_calls + work tasks |
+| Text pattern matching | No | No | No | **Removed** (was causing loops) |
+| Loop detection | Max turns only | Per-tool call hash tracking (warn@10, block@20, breaker@30) | Per-tool (read/search) blocking at 3rd repeat | Cycle detection on work-task continuation |
+| Auto-continue (no tools) | Token budget only (diminishing returns guard) | No | Only on `finish_reason=length` (3 retries) | Only with explicit incomplete work tasks |
+
+**History:** Nebo previously used `looks_like_continuation_pause()` (37 English
+patterns like "should I continue", "would you like me to") and
+`looks_like_choice_question()` (16 patterns) to detect mid-task pauses. This
+caused false-positive loops — e.g. "Would you like me to pull the full daily
+stats summary instead?" matched "would you like me to" and triggered 5
+auto-continuations of the identical response. Both functions were removed.
 
 ### 1. Max Output Tokens Recovery
 
@@ -1109,18 +1132,28 @@ Takes priority over auto-continuation (checked first in the post-stream decision
 
 Default is 0 (disabled). Callers can set it for automations/workflows that need guaranteed multi-step execution.
 
-### 3. Auto-Continuation (existing)
+### 3. Work-Task Auto-Continuation
 
-Detects ~20 English patterns indicating the agent paused mid-task (`looks_like_continuation_pause()`: "should i continue", "shall i proceed", etc.) or presented a choice question (`looks_like_choice_question()`). Continues up to `MAX_AUTO_CONTINUATIONS` (5).
+Only fires when **all** of these are true:
+- There is task context (`active_task` set, or user demanded action, or incomplete work tasks)
+- There are explicitly **incomplete work tasks** (`work_tasks` with status != "completed")
+- Auto-continuation budget not exhausted (`auto_continuations < auto_limit`)
+- Response is non-empty
 
-Also checks `user_demanded_action()` (~17 imperative patterns in last 2 user messages < 120 chars).
+**Cycle detection:** Tracks `prev_auto_content`. If the current response is
+identical to the previous auto-continued response, the agent is stuck in a loop
+and continuation is aborted. This prevents the 5x-repeat bug even if work tasks
+remain incomplete.
+
+`user_demanded_action()` (~17 imperative patterns in last 2 user messages < 120 chars)
+acts as an implicit task signal when objective detection hasn't run yet.
 
 ### Decision Priority (post-stream, no tool calls)
 
 ```
 1. Max output recovery (stop_reason=length/max_tokens) → retry up to 3x
 2. Token budget (min_iterations > 0, iteration < min) → force-continue
-3. Auto-continuation (pause/choice detected + task context) → continue up to 5x
+3. Work-task continuation (incomplete tasks + cycle guard) → continue up to limit
 4. Exit loop (text-only response, agent is done)
 ```
 
@@ -1178,8 +1211,8 @@ Runner.run(ctx, req)
     +-- If no tool calls:
     |     +-- Max output recovery: if stop_reason=length/max_tokens, retry up to 3x
     |     +-- Token budget: if min_iterations set and not reached, force-continue
-    |     +-- Auto-continuation: if looks_like_pause and has_task, continue (up to 5x)
-    |     +-- Otherwise: exit loop (text-only response)
+    |     +-- Work-task continuation: if incomplete tasks + not a cycle, continue
+    |     +-- Otherwise: exit loop (text-only response, agent is done)
   |
   v
   After loop exits:

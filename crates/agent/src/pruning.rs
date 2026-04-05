@@ -17,6 +17,11 @@ const MICRO_COMPACT_COUNT_TRIGGER: usize = 8;
 /// Default sliding window token limit (used when caller doesn't supply one).
 pub const DEFAULT_WINDOW_MAX_TOKENS: usize = 40_000;
 
+/// Hard cap on message count regardless of token budget.
+/// Even short messages add serialization/attention overhead at the provider.
+/// 80 messages × ~120 tokens/msg ≈ 9,600 tokens — well within budget.
+const MAX_MESSAGE_COUNT: usize = 80;
+
 /// Graduated context thresholds.
 pub struct ContextThresholds {
     /// Micro-compact activates above this.
@@ -75,16 +80,17 @@ pub fn apply_sliding_window(
     run_start_time: i64,
     max_tokens: usize,
 ) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
-    // Early-return: if total tokens fit within budget, no eviction needed.
-    // This short-circuits the vast majority of turns.
+    // Early-return: if total tokens fit within budget AND message count is under
+    // the cap, no eviction needed. This short-circuits the vast majority of turns.
     let total = estimate_total_tokens(messages);
-    if total <= max_tokens {
+    if total <= max_tokens && messages.len() <= MAX_MESSAGE_COUNT {
         return (messages.to_vec(), vec![]);
     }
 
-    // Walk backwards from end, accumulating tokens
+    // Walk backwards from end, accumulating tokens and counting messages
     let mut window_start = messages.len();
     let mut accumulated_tokens = 0usize;
+    let mut kept_count = 0usize;
 
     for i in (0..messages.len()).rev() {
         let msg = &messages[i];
@@ -93,16 +99,18 @@ pub fn apply_sliding_window(
         if msg.created_at >= run_start_time {
             let tokens = estimate_message_tokens(msg);
             accumulated_tokens += tokens;
+            kept_count += 1;
             window_start = i;
             continue;
         }
 
         let tokens = estimate_message_tokens(msg);
-        if accumulated_tokens + tokens > max_tokens {
+        if accumulated_tokens + tokens > max_tokens || kept_count >= MAX_MESSAGE_COUNT {
             break;
         }
 
         accumulated_tokens += tokens;
+        kept_count += 1;
         window_start = i;
     }
 
@@ -497,11 +505,12 @@ mod tests {
         let messages: Vec<ChatMessage> = (0..5)
             .map(|i| {
                 let role = if i % 2 == 0 { "user" } else { "assistant" };
-                make_msg(role, &big)
+                make_old_msg(role, &big)
             })
             .collect();
         // With a 2000-token budget, should evict some messages
-        let (window, evicted) = apply_sliding_window(&messages, 0, 2000);
+        // run_start_time in the future so none are protected as "current run"
+        let (window, evicted) = apply_sliding_window(&messages, 999_999, 2000);
         assert!(!evicted.is_empty(), "should evict when over token budget");
         assert!(window.len() < messages.len());
     }
@@ -519,6 +528,41 @@ mod tests {
         let (window, evicted) = apply_sliding_window(&messages, 0, 100_000);
         assert!(evicted.is_empty(), "high threshold should keep everything");
         assert_eq!(window.len(), 5);
+    }
+
+    fn make_old_msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            chat_id: "test".to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            metadata: None,
+            created_at: 1000, // in the past
+            day_marker: None,
+            tool_calls: None,
+            tool_results: None,
+            token_estimate: None,
+        }
+    }
+
+    #[test]
+    fn test_sliding_window_message_count_cap() {
+        // 200 short messages (~1 token each) — well within token budget but exceeds count cap
+        let messages: Vec<ChatMessage> = (0..200)
+            .map(|i| {
+                let role = if i % 2 == 0 { "user" } else { "assistant" };
+                make_old_msg(role, "ok")
+            })
+            .collect();
+        // run_start_time far in the future so none are "current run" protected
+        let (window, evicted) = apply_sliding_window(&messages, 999_999, 100_000);
+        assert!(
+            window.len() <= MAX_MESSAGE_COUNT,
+            "window should be capped at {} messages, got {}",
+            MAX_MESSAGE_COUNT,
+            window.len()
+        );
+        assert!(!evicted.is_empty(), "should evict excess messages");
     }
 
     #[test]

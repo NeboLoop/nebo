@@ -777,6 +777,7 @@ mod tests {
             tool_doc_cache: vec![],
             steering_directives: String::new(),
             proactive_context: String::new(),
+            user_timezone: None,
         };
         let result = build_dynamic_suffix(&dctx);
         assert!(result.contains("anthropic/claude-sonnet-4"));

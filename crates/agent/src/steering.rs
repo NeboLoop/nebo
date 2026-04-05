@@ -949,6 +949,7 @@ mod tests {
             user_just_returned: false,
             proactive_items: vec![],
             provider_id: "openai".to_string(),
+            recent_tool_names: vec![],
         }
     }
 

@@ -70,6 +70,11 @@
 	}
 
 	const DRAFT_STORAGE_KEY = 'nebo_companion_draft';
+	const draftKey = $derived(
+		isAgent && mode.agentId
+			? `nebo_agent_draft_${mode.agentId}`
+			: DRAFT_STORAGE_KEY
+	);
 
 	interface Message {
 		id: string;
@@ -325,9 +330,9 @@
 		markActivity();
 	}
 
-	// Stream staleness check (companion-only)
+	// Stream staleness check
 	$effect(() => {
-		if (!isCompanion) return;
+		if (!isCompanion && !isAgent) return;
 		if (!isLoading) {
 			staleWarning = false;
 			pendingAskRequest = false;
@@ -518,8 +523,8 @@
 				})
 			);
 
-			if (isCompanion && browser) {
-				const savedDraft = localStorage.getItem(DRAFT_STORAGE_KEY);
+			if ((isCompanion || isAgent) && browser) {
+				const savedDraft = localStorage.getItem(draftKey);
 				if (savedDraft) {
 					inputValue = savedDraft;
 				}
@@ -569,21 +574,21 @@
 		}
 	});
 
-	// Save draft to localStorage (companion-only)
+	// Save draft to localStorage
 	$effect(() => {
-		if (!isCompanion) return;
+		if (!isCompanion && !isAgent) return;
 		if (browser && draftInitialized) {
 			if (inputValue) {
-				localStorage.setItem(DRAFT_STORAGE_KEY, inputValue);
+				localStorage.setItem(draftKey, inputValue);
 			} else {
-				localStorage.removeItem(DRAFT_STORAGE_KEY);
+				localStorage.removeItem(draftKey);
 			}
 		}
 	});
 
 	function clearDraft() {
 		if (browser) {
-			localStorage.removeItem(DRAFT_STORAGE_KEY);
+			localStorage.removeItem(draftKey);
 		}
 	}
 
@@ -2584,7 +2589,7 @@
 			class="h-full overflow-y-auto overscroll-contain scroll-pb-4"
 		>
 			<div class="max-w-4xl mx-auto p-6 space-y-6">
-				{#if isCompanion && hasMoreHistory}
+				{#if (isCompanion || isAgent) && hasMoreHistory}
 					<div class="flex justify-center">
 						<a
 							href="{mode.agentId ? `/agent/persona/${mode.agentId}/activity` : '/agent/assistant/activity'}"
@@ -2741,8 +2746,8 @@
 		{/if}
 	</div>
 
-	<!-- Stale warning (companion-only) -->
-	{#if isCompanion && staleWarning}
+	<!-- Stale warning -->
+	{#if (isCompanion || isAgent) && staleWarning}
 		<div class="max-w-4xl mx-auto px-6 pb-2">
 			<div class="alert alert-warning text-base py-2">
 				<span>{$t('chat.staleWarning')}</span>
@@ -2784,7 +2789,7 @@
 	{/if}
 </div>
 
-{#if isCompanion}
+{#if isCompanion || isAgent}
 <ApprovalModal
 	request={pendingApproval}
 	onApprove={handleApprove}
@@ -2792,12 +2797,14 @@
 	onDeny={handleDeny}
 />
 
+{#if isCompanion}
 <BrowserExtensionModal
 	bind:show={showBrowserExtModal}
 	reason={browserExtReason}
 	onRetry={() => { showBrowserExtModal = false; }}
 	onDismiss={() => { showBrowserExtModal = false; }}
 />
+{/if}
 
 {#if showModelDownload}
 <div class="nebo-modal-backdrop" role="dialog" aria-modal="true">
