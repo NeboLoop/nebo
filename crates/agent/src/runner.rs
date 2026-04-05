@@ -566,9 +566,6 @@ async fn run_loop(
     let mut output_recovery_attempts = 0usize;
     let mut continuation_steering: Option<String> = None;
     let mut consecutive_error_iterations = 0usize;
-    // Circuit breaker for LLM compaction: after 3 consecutive failures, fall
-    // back to quick summary (truncated user messages + tool names) to avoid
-    // hammering the provider with doomed calls.
     // Deferred tools that have been activated (keyword-matched or first-called)
     let mut activated_deferred: std::collections::HashSet<String> = std::collections::HashSet::new();
 
