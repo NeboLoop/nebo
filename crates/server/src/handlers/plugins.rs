@@ -454,8 +454,8 @@ pub async fn list_plugin_events(
     })))
 }
 
-/// Open an OAuth URL: broadcast it to the frontend via WebSocket (primary) and
-/// also try `open::that()` as a server-side fallback.
+/// Open an OAuth URL: broadcast it to the frontend via WebSocket so the
+/// frontend can call `window.open()`.
 fn open_auth_url(slug: &str, url: &str, hub: &super::ws::ClientHub) {
     info!(plugin = %slug, url = %url, "broadcasting plugin OAuth URL to frontend");
     hub.broadcast(
@@ -465,10 +465,6 @@ fn open_auth_url(slug: &str, url: &str, hub: &super::ws::ClientHub) {
             "url": url,
         }),
     );
-    // Fallback: also try server-side browser open
-    if let Err(e) = open::that(url) {
-        warn!(plugin = %slug, error = %e, "failed to open browser via open::that");
-    }
 }
 
 /// Returns true if the text contains a URL-like token that `extract_url(text, false)`

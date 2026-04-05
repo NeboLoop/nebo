@@ -862,8 +862,7 @@ fn extract_url(text: &str, complete: bool) -> Option<String> {
     None
 }
 
-/// Open an OAuth URL: broadcast via WebSocket so the frontend can open the browser,
-/// and also try a platform `open` command as a server-side fallback.
+/// Open an OAuth URL: broadcast via WebSocket so the frontend can call `window.open()`.
 fn open_auth_url(slug: &str, url: &str, broadcaster: &Option<crate::web_tool::Broadcaster>) {
     info!(plugin = %slug, url = %url, "opening plugin OAuth URL for re-authentication");
     if let Some(bc) = broadcaster {
@@ -875,13 +874,6 @@ fn open_auth_url(slug: &str, url: &str, broadcaster: &Option<crate::web_tool::Br
             }),
         );
     }
-    // Server-side fallback: open browser directly via platform command
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
 }
 
 #[cfg(test)]
