@@ -569,7 +569,6 @@ async fn run_loop(
     // Circuit breaker for LLM compaction: after 3 consecutive failures, fall
     // back to quick summary (truncated user messages + tool names) to avoid
     // hammering the provider with doomed calls.
-    let mut compaction_failures: u32 = 0;
     // Deferred tools that have been activated (keyword-matched or first-called)
     let mut activated_deferred: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -940,62 +939,52 @@ async fn run_loop(
         let (mut window_messages, evicted) =
             pruning::apply_sliding_window(&all_messages, run_start_time, thresholds.auto_compact);
 
-        // Build rolling summary if we evicted messages
+        // Build rolling summary if we evicted messages.
+        // Quick fallback is used immediately (no LLM call); the LLM-quality
+        // summary is generated in the background and stored for next iteration.
         let summary = if !evicted.is_empty() {
             let existing_summary = sessions.get_summary(session_id).unwrap_or_default();
+
+            // Immediate: quick fallback (pure string extraction, no LLM)
+            let quick = pruning::build_quick_fallback_summary(&evicted, &active_task);
+            let immediate_summary = if existing_summary.is_empty() {
+                quick
+            } else {
+                format!("{}\n\n{}", existing_summary, quick)
+            };
+            let _ = sessions.update_summary(session_id, &immediate_summary);
+
+            // Background: fire LLM summary, store when done (non-blocking)
             let cheap_model = selector.get_cheapest_model();
             let prov = prefer_non_gateway(&providers.read().await);
-
-            let build_fallback = |existing: &str, evicted: &[ChatMessage], task: &str| -> String {
-                let fallback = pruning::build_quick_fallback_summary(evicted, task);
-                if existing.is_empty() {
-                    fallback
-                } else {
-                    format!("{}\n\n{}", existing, fallback)
-                }
-            };
-
-            let new_summary = if let Some(prov) = prov {
-                if compaction_failures >= 3 {
-                    // Circuit breaker: too many consecutive LLM compaction failures.
-                    // Fall back to quick summary (truncated user messages + tool names)
-                    // to avoid hammering the provider with doomed calls.
-                    debug!(
-                        failures = compaction_failures,
-                        "circuit breaker: skipping LLM compaction"
-                    );
-                    build_fallback(&existing_summary, &evicted, &active_task)
-                } else {
+            if let Some(prov) = prov {
+                let sess = sessions.clone();
+                let sid = session_id.to_string();
+                let task = active_task.clone();
+                let existing = existing_summary.clone();
+                let conc = concurrency.clone();
+                tokio::spawn(async move {
+                    let _permit = conc.acquire_llm_permit().await;
                     match pruning::build_llm_summary(
                         prov.as_ref(),
                         &evicted,
-                        &existing_summary,
-                        &active_task,
+                        &existing,
+                        &task,
                         &cheap_model,
                     )
                     .await
                     {
                         Ok(s) => {
-                            compaction_failures = 0;
-                            s
+                            let _ = sess.update_summary(&sid, &s);
                         }
                         Err(e) => {
-                            compaction_failures += 1;
-                            debug!(
-                                error = %e,
-                                failures = compaction_failures,
-                                "LLM compaction failed, using fallback"
-                            );
-                            build_fallback(&existing_summary, &evicted, &active_task)
+                            debug!(error = %e, "background LLM compaction failed");
                         }
                     }
-                }
-            } else {
-                build_fallback(&existing_summary, &evicted, &active_task)
-            };
-            // Persist so it survives across iterations
-            let _ = sessions.update_summary(session_id, &new_summary);
-            new_summary
+                });
+            }
+
+            immediate_summary
         } else {
             sessions.get_summary(session_id).unwrap_or_default()
         };
