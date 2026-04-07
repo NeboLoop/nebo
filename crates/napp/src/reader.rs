@@ -218,12 +218,13 @@ pub fn extract_all(napp_path: &Path, dest_dir: &Path) -> Result<Vec<String>, Nap
 
 /// Extract a .napp to its sibling directory (strip .napp extension).
 ///
-/// Idempotent: skips if directory already exists.
+/// Always re-extracts: removes the existing directory first so updates
+/// replace stale files.
 /// Returns the destination directory path.
 pub fn extract_napp_alongside(napp_path: &Path) -> Result<PathBuf, NappError> {
     let dest_dir = napp_path.with_extension("");
     if dest_dir.is_dir() {
-        return Ok(dest_dir);
+        std::fs::remove_dir_all(&dest_dir)?;
     }
 
     extract_all(napp_path, &dest_dir)?;

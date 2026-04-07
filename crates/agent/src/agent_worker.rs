@@ -637,8 +637,8 @@ async fn watch_loop(
             }
         };
 
-        // Reset backoff on successful spawn
-        backoff_secs = cfg.restart_delay_secs;
+        // Track spawn time so we only reset backoff if process ran long enough
+        let spawn_time = std::time::Instant::now();
 
         let stdout = child.stdout.take().expect("stdout piped");
         let mut lines = BufReader::new(stdout).lines();
@@ -651,7 +651,7 @@ async fn watch_loop(
             if let Some(stderr) = stderr {
                 let mut stderr_lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = stderr_lines.next_line().await {
-                    debug!(
+                    warn!(
                         agent = %stderr_agent,
                         binding = %stderr_binding,
                         "watch stderr: {}",
@@ -680,6 +680,7 @@ async fn watch_loop(
                                         agent = %agent_id,
                                         binding = %binding_name,
                                         error = %e,
+                                        line = %line,
                                         "invalid JSON from watch process, skipping line"
                                     );
                                     continue;
@@ -786,6 +787,11 @@ async fn watch_loop(
 
         if cancel.is_cancelled() {
             break;
+        }
+
+        // Only reset backoff if process ran for >30s (not a fast crash)
+        if spawn_time.elapsed() > std::time::Duration::from_secs(30) {
+            backoff_secs = cfg.restart_delay_secs;
         }
 
         // Restart with backoff

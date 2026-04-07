@@ -325,18 +325,21 @@
 
 	async function confirmDelete() {
 		if (!deleteTarget) return;
+		const target = deleteTarget;
 		showDeleteDialog = false;
-		try {
-			if (deleteTarget.isActive) await deactivateAgent(deleteTarget.agentId);
-			await deleteAgent(deleteTarget.agentId);
-			if (activeAgentId === deleteTarget.agentId) {
-				goto('/agents');
-			}
-			await loadAgents();
-		} catch {
-			// ignore
-		}
 		deleteTarget = null;
+		// Optimistically remove from sidebar immediately
+		sidebarAgents = sidebarAgents.filter(a => a.agentId !== target.agentId);
+		try {
+			if (target.isActive) await deactivateAgent(target.agentId);
+			await deleteAgent(target.agentId);
+			if (activeAgentId === target.agentId) {
+				goto('/agent/assistant/chat');
+			}
+		} catch {
+			// Restore on failure
+			await loadAgents();
+		}
 	}
 
 	onMount(() => {
@@ -369,7 +372,10 @@
 		const unsubAgentInstalled = wsClient.on('agent_installed', () => {
 			loadAgents();
 		});
-		const unsubAgentUninstalled = wsClient.on('agent_uninstalled', () => {
+		const unsubAgentUninstalled = wsClient.on('agent_uninstalled', (data: { agentId?: string }) => {
+			if (data?.agentId) {
+				sidebarAgents = sidebarAgents.filter(a => a.agentId !== data.agentId);
+			}
 			loadAgents();
 		});
 		const unsubAgentUpdated = wsClient.on('agent_updated', () => {

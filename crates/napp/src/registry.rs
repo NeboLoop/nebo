@@ -552,7 +552,11 @@ impl Registry {
         match event.event_type.as_str() {
             "tool_installed" => {
                 let url = event.payload["download_url"].as_str()
-                    .ok_or(NappError::Other("missing download_url".into()))?;
+                    .filter(|u| !u.is_empty())
+                    .ok_or(NappError::Other("missing or empty download_url in install event".into()))?;
+                if !url.starts_with("https://") && !url.starts_with("http://") {
+                    return Err(NappError::Other(format!("invalid download_url: {}", url)));
+                }
                 self.install_from_url(url).await?;
             }
             "tool_uninstalled" => {

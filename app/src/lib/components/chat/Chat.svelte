@@ -490,6 +490,7 @@
 				client.on('dep_installed', (data: Record<string, unknown>) => installModal?.onDepInstalled(data)),
 				client.on('dep_failed', (data: Record<string, unknown>) => installModal?.onDepFailed(data)),
 				client.on('dep_cascade_complete', (data: Record<string, unknown>) => installModal?.onDepCascadeComplete(data)),
+				client.on('agent_auth_required', (data: Record<string, unknown>) => installModal?.onAgentAuthRequired(data)),
 				client.on('chat_ack', (data: Record<string, unknown>) => {
 					if (isOurSession(data)) {
 						log.debug('chat_ack received for session ' + chatId);

@@ -30,7 +30,11 @@ impl NeboLoopApi {
             api_server,
             bot_id,
             token: RwLock::new(token),
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
         }
     }
 

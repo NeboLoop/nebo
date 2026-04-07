@@ -5,7 +5,7 @@
 > heartbeat, event, watch, manual), the cron scheduler, event dispatcher, AgentWorker
 > runtime, database schema, HTTP endpoints, and known issues.
 
-**Last verified against source:** 2026-03-26
+**Last verified against source:** 2026-04-05
 
 ---
 
@@ -174,9 +174,14 @@ definitions, triggers, dependencies, pricing, and input fields.
 pub struct AgentConfig {
     pub workflows: HashMap<String, WorkflowBinding>,  // binding_name -> binding
     pub skills: Vec<String>,                           // Qualified skill refs
+    pub requires: AgentRequires,                       // Hard deps (plugins, etc.)
     pub pricing: Option<AgentPricing>,
     pub defaults: Option<AgentDefaults>,
     pub inputs: Vec<AgentInputField>,                   // Dynamic form fields
+}
+
+pub struct AgentRequires {
+    pub plugins: Vec<String>,   // Plugin install codes (e.g., "PLUG-PJ3Z-ECFV")
 }
 ```
 
@@ -629,7 +634,7 @@ entity_config ── standalone per (entity_type, entity_id) pair
 6. Write AGENT.md, agent.json, and manifest.json to `user/agents/{name}/`
 7. Set `napp_path` on the agent record
 8. Process workflow bindings (upsert to agent_workflows, register triggers)
-9. Resolve dependency cascade (skills)
+9. Resolve dependency cascade (plugins from `requires.plugins`, then skills)
 10. Broadcast `agent_installed` WebSocket event
 
 ### Activate (`activate_agent`)
@@ -656,9 +661,16 @@ entity_config ── standalone per (entity_type, entity_id) pair
 3. Unregister all cron triggers
 4. Unsubscribe all event triggers from EventDispatcher
 5. Delete from `agents` table (cascades to `agent_workflows`)
-6. Clean up filesystem (napp_path, nebo/agents/, user/agents/)
-7. Deregister from NeboLoop (async)
-8. Broadcast `agent_uninstalled`
+6. Broadcast `agent_uninstalled` (immediately — before cleanup, so frontend updates fast)
+7. Clean up agent-scoped data (best-effort, `let _ =`):
+   - `delete_agent_chats(id)` — `DELETE FROM chats WHERE session_name LIKE 'agent:{id}:%'`
+   - `delete_agent_sessions(id)` — `DELETE FROM sessions WHERE scope = 'agent' AND scope_id = ?`
+   - `delete_agent_memories(id)` — `DELETE FROM memories WHERE user_id LIKE '%:agent:{id}'`
+   - `delete_agent_workflow_runs(id)` — `DELETE FROM workflow_runs WHERE workflow_id = 'agent:{id}'`
+   - Messages, memory_chunks, and activity_results cascade-delete via FK
+   - Order matters: chats before sessions (chats reference session names)
+8. Clean up filesystem (napp_path, nebo/agents/, user/agents/)
+9. Deregister from NeboLoop (async)
 
 ### Update (`update_agent`)
 
@@ -1206,6 +1218,111 @@ if is_active {
 
 ## 17. End-to-End Flows
 
+### Full Agent Install Flow (Code → Running Agent)
+
+The complete install flow when a user submits an `AGNT-XXXX-XXXX` code.
+
+**Phase 1 — Code Detection & Entry**
+
+1. User pastes `AGNT-XXXX-XXXX` into chat
+2. `codes.rs` `detect_code()` matches `AGNT-` prefix → `CodeType::Agent`
+3. `handle_code()` broadcasts `"code_processing"` WS event ("Installing agent...")
+4. Dispatches to `handle_agent_code()`
+
+**Phase 2 — Redeem & Download**
+
+5. Builds NeboLoop API client with auth tokens
+6. Redeems install code: `api.install_agent(code)` → gets `artifact_id`, `artifact_name`
+   - If already redeemed: falls back to `api.list_products()` lookup by code
+   - If `payment_required`: returns checkout URL to user, stop
+7. **Reinstall check:** If agent already exists in DB:
+   - Stops agent worker, removes from registry
+   - Unregisters triggers, unsubscribes events
+   - Deletes DB rows (`agent_workflows`, `agents`) + filesystem
+   - Deregisters from NeboLoop
+8. `persist_agent_from_api()`:
+   a. Fetches metadata from NeboLoop (`content_md`, `type_config`, `download_url`)
+   b. Creates/updates `agents` DB row (AGENT.md, frontmatter, description)
+   c. Downloads `.napp` → saves to `<nebo_dir>/agents/<slug>/<version>/<version>.napp`
+   d. `extract_napp_alongside()` removes existing dir if present, extracts tar.gz
+   e. Validates: must contain `AGENT.md` + `agent.json` (fails fast if missing)
+
+**Phase 3 — Dependency Cascade (BEFORE activation)**
+
+9. Extracts frontmatter from `type_config` (or DB fallback)
+10. `extract_agent_deps_from_frontmatter()` parses:
+    - `requires.plugins[]` → `DepType::Plugin` (install codes like `PLUG-XXXX-XXXX`)
+    - `skills[]` → `DepType::Skill`
+    - Inline activity skill references → `DepType::Skill`
+11. `resolve_cascade()` for each dep (with visited-set dedup):
+    a. Check if already installed (filesystem for skills/plugins, DB for workflows)
+    b. **Plugins:** `plugin_store.ensure()` → download from NeboLoop → SHA256 + ED25519 verify → store at `<data_dir>/nebo/plugins/<slug>/<version>/`
+    c. **Skills:** redeem code → `persist_skill_from_api()` → reload skill loader → extract child deps (including skill's own `plugins:` frontmatter) and recurse
+    d. Broadcasts `"dep_installed"` per dep
+12. Broadcasts `"dep_cascade_complete"` with install/skip/fail counts
+
+**Phase 4 — Workflow Binding Processing**
+
+13. Parses `agent.json` → `AgentConfig` (via `parse_agent_config()`)
+14. `process_agent_bindings()` for each `WorkflowBinding`:
+    a. Extracts trigger type: `Schedule`/`Heartbeat`/`Event`/`Watch`/`Manual`
+    b. Upserts to `agent_workflows` table (binding_name, trigger_type, trigger_config, activities, inputs, emit)
+    c. Registers triggers: cron jobs, interval timers, event subscriptions
+
+**Phase 5 — Agent Activation**
+
+15. Fetches fresh agent from DB
+16. Creates `ActiveAgent` struct, inserts into `agent_registry` (`RwLock<HashMap>`)
+17. Broadcasts `"agent_activated"` WS event
+18. `AgentWorkerRegistry::start_agent()`:
+    a. Loads workflow bindings from DB
+    b. Spawns trigger tasks per binding:
+       - **Schedule:** cron job registered with scheduler
+       - **Heartbeat:** `tokio::spawn` interval loop (with optional time window)
+       - **Event:** `EventSubscription` registered with `EventDispatcher`
+       - **Watch:** spawns plugin process, parses NDJSON output, auto-emits to EventBus
+    c. Inserts worker into registry
+
+**Phase 6 — NeboLoop Registration (async, non-blocking)**
+
+19. `tokio::spawn` registers agent in user's personal loop
+    - Deregisters first (prevents 409 on reinstall)
+    - Then registers: `api.register_agent(&loop_id, name, slug, None)`
+    - Failure logged but doesn't block install
+
+**Phase 7 — Completion**
+
+20. Returns `CodeHandlerResult { message: "Installed agent: {name}", artifact_id, artifact_name }`
+21. Broadcasts `"code_result"` (success, artifact_name, artifact_id) + `"chat_complete"`
+
+**WebSocket Event Sequence:**
+```
+code_processing → [dep_installed × N] → dep_cascade_complete → code_result → agent_activated → chat_complete
+```
+
+**Filesystem Created:**
+```
+<nebo_dir>/agents/<slug>/
+  <version>.napp                # sealed archive
+  <version>/
+    AGENT.md                    # persona description
+    agent.json                  # config, triggers, deps
+    manifest.json               # package metadata
+
+<data_dir>/nebo/plugins/<slug>/<version>/   # (if requires.plugins present)
+  plugin.json                   # manifest
+  <binary>                      # platform executable
+```
+
+**Key Source References:**
+- `crates/server/src/codes.rs:318-494` — `handle_agent_code()`
+- `crates/tools/src/lib.rs:233-342` — `persist_agent_from_api()`
+- `crates/server/src/deps.rs:64-196` — `resolve_cascade()`
+- `crates/server/src/handlers/agents.rs:639-769` — `process_agent_bindings()`
+- `crates/agent/src/agent_worker.rs:34-80` — `AgentWorker::start()`
+
+---
+
 ### User Creates Schedule Automation
 
 1. **Frontend:** Automate tab -> "New Automation"
@@ -1439,4 +1556,4 @@ notification mechanism is not implemented. Both abort the workflow on activity f
 
 ---
 
-*Last updated: 2026-03-26*
+*Last updated: 2026-04-05*

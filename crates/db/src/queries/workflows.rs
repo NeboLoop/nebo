@@ -381,8 +381,8 @@ impl Store {
                 COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled,
                 COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running,
                 COALESCE(SUM(total_tokens_used), 0) AS total_tokens,
-                AVG(CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
-                    THEN completed_at - started_at ELSE NULL END) AS avg_duration,
+                CAST(AVG(CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
+                    THEN completed_at - started_at ELSE NULL END) AS INTEGER) AS avg_duration,
                 MAX(started_at) AS last_run_at,
                 MAX(CASE WHEN status = 'completed' THEN started_at ELSE NULL END) AS last_success_at,
                 (SELECT error FROM workflow_runs

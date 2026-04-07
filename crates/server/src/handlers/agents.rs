@@ -543,6 +543,18 @@ pub async fn delete_agent(
     // agent_workflows are cascade-deleted via FK when agent is deleted
     state.store.delete_agent(&id).map_err(to_error_response)?;
 
+    // Notify frontend immediately — cleanup runs after
+    state.hub.broadcast(
+        "agent_uninstalled",
+        serde_json::json!({ "agentId": id, "name": agent.name }),
+    );
+
+    // Clean up agent-scoped data (chats before sessions — chats reference session names)
+    let _ = state.store.delete_agent_chats(&id);
+    let _ = state.store.delete_agent_sessions(&id);
+    let _ = state.store.delete_agent_memories(&id);
+    let _ = state.store.delete_agent_workflow_runs(&id);
+
     // Clean up filesystem -- check napp_path, nebo/agents/, and user/agents/
     if let Some(ref napp_path) = agent.napp_path {
         let path = std::path::Path::new(napp_path);
@@ -573,11 +585,6 @@ pub async fn delete_agent(
             }
         });
     }
-
-    state.hub.broadcast(
-        "agent_uninstalled",
-        serde_json::json!({ "agentId": id, "name": agent.name }),
-    );
 
     Ok(Json(serde_json::json!({ "message": "Agent deleted" })))
 }

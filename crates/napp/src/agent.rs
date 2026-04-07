@@ -34,6 +34,13 @@ use crate::NappError;
 // agent.json — workflow bindings, triggers, dependencies, pricing
 // ---------------------------------------------------------------------------
 
+/// Hard dependencies the agent requires (plugins, etc.).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentRequires {
+    #[serde(default)]
+    pub plugins: Vec<String>,
+}
+
 /// Agent configuration parsed from agent.json.
 ///
 /// Contains the "schedule of intent" — which workflows run, when they fire,
@@ -44,6 +51,8 @@ pub struct AgentConfig {
     pub workflows: HashMap<String, WorkflowBinding>,
     #[serde(default)]
     pub skills: Vec<String>,
+    #[serde(default)]
+    pub requires: AgentRequires,
     #[serde(default)]
     pub pricing: Option<AgentPricing>,
     #[serde(default)]
@@ -688,6 +697,67 @@ mod tests {
             ]
         }}}"#;
         assert!(parse_agent_config(json).is_err());
+    }
+
+    #[test]
+    fn test_requires_plugins() {
+        let json = r#"{"requires": {"plugins": ["PLUG-PJ3Z-ECFV"]}}"#;
+        let config = parse_agent_config(json).unwrap();
+        assert_eq!(config.requires.plugins, vec!["PLUG-PJ3Z-ECFV"]);
+    }
+
+    #[test]
+    fn test_requires_plugins_with_full_typeconfig() {
+        // Simulates the full typeConfig returned by the NeboLoop API for chief-of-staff.
+        // This is the exact shape that goes through serde_json::to_string(type_config)
+        // then into extract_agent_deps_from_frontmatter.
+        let json = r#"{
+            "inputs": [{"key": "name", "type": "text", "label": "Your name"}],
+            "skills": [],
+            "pricing": {"cost": 0.0, "model": "monthly_fixed"},
+            "defaults": {"timezone": "user_local"},
+            "requires": {"plugins": ["PLUG-PJ3Z-ECFV"]},
+            "workflows": {
+                "morning-briefing": {
+                    "trigger": {"type": "schedule", "cron": "0 7 * * 1-5"},
+                    "description": "Morning briefing",
+                    "activities": [{"id": "triage", "intent": "Get unread email summary", "skills": ["gws-gmail-triage"], "model": "nebo-1", "steps": ["Run: gws gmail +triage"]}],
+                    "budget": {"total_per_run": 8000}
+                },
+                "email-watcher": {
+                    "trigger": {"type": "watch", "event": "email.new", "plugin": "gws", "restart_delay_secs": 5},
+                    "description": "Relay new email events"
+                },
+                "check-inbox": {
+                    "trigger": {"type": "manual"},
+                    "description": "On-demand inbox check",
+                    "activities": [{"id": "triage-unread", "intent": "Fetch unread", "skills": ["gws-gmail-triage"], "model": "nebo-1", "steps": ["Run triage"]}],
+                    "budget": {"total_per_run": 12000}
+                },
+                "day-monitor": {
+                    "trigger": {"type": "heartbeat", "interval": "30m", "window": "07:00-22:00"},
+                    "description": "Watch for urgent emails",
+                    "activities": [{"id": "quick-scan", "intent": "Fast check", "skills": ["gws-gmail-triage", "gws-calendar-agenda"], "model": "nebo-1", "steps": ["Quick scan"]}],
+                    "budget": {"total_per_run": 3000}
+                },
+                "auto-reply": {
+                    "trigger": {"type": "event", "sources": ["gws.email.new"]},
+                    "description": "Auto-reply to common email types",
+                    "activities": [{"id": "analyze-email", "intent": "Analyze", "skills": ["gws-gmail-read"], "model": "nebo-1", "steps": ["Read email"]}],
+                    "budget": {"total_per_run": 5000}
+                }
+            }
+        }"#;
+        let config = parse_agent_config(json).unwrap();
+        assert_eq!(config.requires.plugins, vec!["PLUG-PJ3Z-ECFV"]);
+        assert_eq!(config.workflows.len(), 5);
+    }
+
+    #[test]
+    fn test_requires_defaults_empty() {
+        let json = "{}";
+        let config = parse_agent_config(json).unwrap();
+        assert!(config.requires.plugins.is_empty());
     }
 
     #[test]

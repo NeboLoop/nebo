@@ -410,35 +410,58 @@ async fn install_workflow(
 
 async fn install_plugin(
     state: &AppState,
-    _api: &NeboLoopApi,
+    api: &NeboLoopApi,
     reference: &str,
 ) -> Result<Vec<DepRef>, String> {
-    let slug = extract_simple_name(reference).to_string();
+    // Redeem the install code (plugins use the same redeem endpoint)
+    let resp = api.install_skill(reference).await
+        .map_err(|e| format!("redeem plugin code: {e}"))?;
 
-    // Use PluginStore.ensure() with a download callback that queries NeboLoop
-    let api_for_download = build_api_client(state).map_err(|e| e.to_string())?;
-    state
-        .plugin_store
-        .ensure(&slug, "*", |slug, platform| async move {
-            let detail = api_for_download
-                .get_plugin(&slug, &platform)
-                .await
-                .map_err(|e| napp::NappError::PluginDownloadFailed(format!("get_plugin: {e}")))?;
-            let platform_binary = detail
-                .platforms
-                .get(&platform)
-                .ok_or_else(|| napp::NappError::PluginPlatformUnavailable {
-                    plugin: slug.clone(),
-                    platform: platform.clone(),
-                })?;
-            let binary_data = api_for_download
-                .download_plugin_binary(&platform_binary.download_url)
-                .await
-                .map_err(|e| napp::NappError::PluginDownloadFailed(format!("download: {e}")))?;
-            Ok((detail, binary_data))
-        })
-        .await
-        .map_err(|e| format!("plugin install: {e}"))?;
+    let name = resp.artifact.name.clone();
+    let slug = if resp.artifact.slug.is_empty() {
+        name.to_lowercase().replace(' ', "-")
+    } else {
+        resp.artifact.slug.clone()
+    };
+    let download_url = resp.download_url
+        .ok_or_else(|| format!("plugin {} has no download URL in redeem response", name))?;
+
+    // Download .napp directly from redeem response URL
+    let napp_data = api.download_napp(&download_url).await
+        .map_err(|e| format!("download .napp for {}: {}", slug, e))?;
+
+    tracing::info!(plugin = %name, slug = %slug, size = napp_data.len(), "cascade: downloaded plugin .napp");
+
+    // Pause skill watcher during extraction to prevent premature reloads
+    state.skill_loader.pause_watcher();
+
+    // Remove existing version AFTER download completes
+    let _ = state.plugin_store.remove(&slug);
+
+    // Install from .napp archive (extracts binary, plugin.json, embedded skills)
+    let install_result = state.plugin_store.install_from_napp(&slug, "latest", &napp_data).await;
+
+    match install_result {
+        Ok(path) => {
+            tracing::info!(plugin = %name, path = %path.display(), "cascade: installed plugin");
+
+            // Reload skills (picks up embedded skills from plugin .napp)
+            state.skill_loader.load_all().await;
+            state.skill_loader.resume_watcher();
+
+            // Re-register plugin tool
+            state.tools.unregister("plugin").await;
+            if !state.plugin_store.list_installed().is_empty() {
+                state.tools.register(Box::new(
+                    tools::plugin_tool::PluginTool::new(state.plugin_store.clone())
+                )).await;
+            }
+        }
+        Err(e) => {
+            state.skill_loader.resume_watcher();
+            return Err(format!("plugin install failed: {e}"));
+        }
+    }
 
     // Plugins don't have child dependencies
     Ok(vec![])
@@ -453,11 +476,32 @@ async fn install_plugin(
 pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef> {
     let mut deps = Vec::new();
     // Try parsing as full AgentConfig first (has typed workflows with activities)
-    if let Ok(config) = napp::agent::parse_agent_config(frontmatter_json) {
-        return extract_agent_deps(&config);
+    match napp::agent::parse_agent_config(frontmatter_json) {
+        Ok(config) => {
+            tracing::info!(
+                plugins = config.requires.plugins.len(),
+                skills = config.skills.len(),
+                workflows = config.workflows.len(),
+                "extract_deps: parsed AgentConfig OK"
+            );
+            return extract_agent_deps(&config);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "extract_deps: parse_agent_config failed, trying raw JSON");
+        }
     }
     // Fallback: parse as raw JSON for simpler frontmatter
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(frontmatter_json) {
+        if let Some(plugins) = val["requires"]["plugins"].as_array() {
+            for p in plugins {
+                if let Some(p) = p.as_str() {
+                    deps.push(DepRef {
+                        dep_type: DepType::Plugin,
+                        reference: p.to_string(),
+                    });
+                }
+            }
+        }
         if let Some(skills) = val["skills"].as_array() {
             for s in skills {
                 if let Some(s) = s.as_str() {
@@ -473,9 +517,18 @@ pub fn extract_agent_deps_from_frontmatter(frontmatter_json: &str) -> Vec<DepRef
 }
 
 /// Extract dependencies from an agent config.
-/// Workflows are now inline — only skill dependencies are extracted.
+/// Extracts plugin deps from `requires.plugins` and skill deps from
+/// the top-level `skills` array and inline activity skill references.
 pub fn extract_agent_deps(config: &napp::agent::AgentConfig) -> Vec<DepRef> {
     let mut deps = Vec::new();
+
+    // Plugin dependencies from requires block — installed before skills
+    for plugin_ref in &config.requires.plugins {
+        deps.push(DepRef {
+            dep_type: DepType::Plugin,
+            reference: plugin_ref.clone(),
+        });
+    }
 
     for skill_ref in &config.skills {
         deps.push(DepRef {

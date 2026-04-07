@@ -344,6 +344,57 @@ impl Store {
             .map_err(|e| NeboError::Database(e.to_string()))?;
         Ok(count as i64)
     }
+
+    // ── Agent data cleanup (on delete) ──
+
+    /// Delete all chats belonging to agent sessions.
+    /// Must be called BEFORE delete_agent_sessions (uses session_name pattern).
+    /// Chat messages cascade-delete via FK.
+    pub fn delete_agent_chats(&self, agent_id: &str) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        let pattern = format!("agent:{}:%", agent_id);
+        conn.execute(
+            "DELETE FROM chats WHERE session_name LIKE ?1",
+            params![pattern],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Delete all sessions scoped to this agent.
+    pub fn delete_agent_sessions(&self, agent_id: &str) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM sessions WHERE scope = 'agent' AND scope_id = ?1",
+            params![agent_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Delete all memories extracted during conversations with this agent.
+    /// Memory user_id format: "{user_id}:agent:{agent_id}".
+    /// Memory chunks cascade-delete via FK.
+    pub fn delete_agent_memories(&self, agent_id: &str) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        let pattern = format!("%:agent:{}", agent_id);
+        conn.execute(
+            "DELETE FROM memories WHERE user_id LIKE ?1",
+            params![pattern],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
+
+    /// Delete all workflow run history for this agent.
+    /// Agent runs use workflow_id = "agent:{agent_id}".
+    /// Activity results cascade-delete via FK.
+    pub fn delete_agent_workflow_runs(&self, agent_id: &str) -> Result<usize, NeboError> {
+        let conn = self.conn()?;
+        let wf_id = format!("agent:{}", agent_id);
+        conn.execute(
+            "DELETE FROM workflow_runs WHERE workflow_id = ?1",
+            params![wf_id],
+        )
+        .map_err(|e| NeboError::Database(e.to_string()))
+    }
 }
 
 fn row_to_agent_workflow(row: &rusqlite::Row) -> rusqlite::Result<AgentWorkflow> {

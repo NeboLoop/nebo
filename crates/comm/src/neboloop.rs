@@ -1093,7 +1093,13 @@ async fn read_loop(
     // If the exit was due to cancellation (intentional disconnect), don't notify —
     // the caller already knows. Only notify on unexpected drops (read error, stream end).
     let was_cancelled = cancel.is_cancelled();
-    connected.store(false, Ordering::SeqCst);
+    // Only update connected flag for unexpected disconnects (read error, stream end,
+    // timeout). For intentional disconnects (cancel token), disconnect() already set
+    // connected=false. Setting it here would race with connect() and clobber the NEW
+    // connection's connected=true if the old read loop exits after reconnect completes.
+    if !was_cancelled {
+        connected.store(false, Ordering::SeqCst);
+    }
     cancel.cancel();
     if !was_cancelled {
         disconnect_notify.notify_one();
@@ -1162,6 +1168,21 @@ async fn write_loop(
             _ = cancel.cancelled() => break,
         }
     }
+    // Send WebSocket Close frame so the gateway drops this connection immediately
+    // (rather than waiting for its keepalive timeout to expire).
+    let close_result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        write.send(WsMessage::Close(None)),
+    )
+    .await;
+    if let Some(ref dl) = devlog {
+        match close_result {
+            Ok(Ok(())) => dl.event("CLOSE frame sent"),
+            Ok(Err(e)) => dl.event(&format!("CLOSE frame failed: {e}")),
+            Err(_) => dl.event("CLOSE frame timed out (2s)"),
+        }
+    }
+
     if let Some(ref dl) = devlog {
         dl.event("WRITE_LOOP exited");
     }

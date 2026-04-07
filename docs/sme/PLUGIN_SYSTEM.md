@@ -605,7 +605,28 @@ Both the WebSocket handler and the REST `POST /api/v1/codes/redeem` handler disp
 
 **Source:** `crates/server/src/deps.rs`
 
-The dependency cascade resolver now includes `DepType::Plugin` alongside `DepType::Skill` and `DepType::Workflow`.
+The dependency cascade resolver includes `DepType::Plugin` alongside `DepType::Skill` and `DepType::Workflow`. Plugins enter the cascade from two paths:
+
+1. **From skills:** SKILL.md `plugins:` frontmatter → `extract_skill_deps()` → `DepType::Plugin`
+2. **From agents:** agent.json `requires.plugins[]` → `extract_agent_deps()` → `DepType::Plugin`
+
+Plugins are always **leaf nodes** — they have no child dependencies of their own.
+
+### How Plugins Enter the Agent Install Cascade
+
+When an agent is installed via `AGNT-XXXX-XXXX`, the cascade runs BEFORE the agent is activated:
+
+```
+agent.json
+├── requires.plugins: ["PLUG-PJ3Z-ECFV"]     → DepType::Plugin (installed first)
+├── skills: ["SKIL-ABCD-EFGH"]                → DepType::Skill
+│   └── SKILL.md plugins: [{name: gws}]       → DepType::Plugin (child dep of skill)
+└── workflows.*.activities[].skills: [...]     → DepType::Skill (inline refs)
+```
+
+The cascade resolves plugins before skills when they appear in `requires.plugins`, ensuring binaries are available when skills load. Skills may declare their own plugin dependencies in SKILL.md frontmatter — these are resolved recursively as child deps.
+
+**Key:** The cascade uses a visited set (`{dep_type}:{reference}`) to prevent cycles and double-installs. If a plugin is declared in both `requires.plugins` and a skill's `plugins:` frontmatter, it's installed once.
 
 ### extract_skill_deps()
 
@@ -619,6 +640,19 @@ for plugin in &skill.plugins {
             reference: plugin.name.clone(),
         });
     }
+}
+```
+
+### extract_agent_deps()
+
+Extracts plugin dependencies from agent.json `requires.plugins[]`:
+
+```rust
+for plugin_ref in &config.requires.plugins {
+    deps.push(DepRef {
+        dep_type: DepType::Plugin,
+        reference: plugin_ref.clone(),
+    });
 }
 ```
 
@@ -956,6 +990,7 @@ Plugin access uses the same namespace-based model as skills: `canAccessPlugin()`
 
 ## Cross-References
 
+- **Agent SME:** `docs/sme/AGENTS_SME.md` — full agent install flow (§17), agent lifecycle, workflow system
 - **Agent Skills Spec:** https://agentskills.io/specification — the open SKILL.md format we adhere to
 - **Skills SME:** `docs/sme/SKILLS_SME.md` — SKILL.md format, loader, ExecuteTool, sandbox
 - **Publisher's Guide:** `docs/publishers-guide/plugins.md` — how to create and publish plugins

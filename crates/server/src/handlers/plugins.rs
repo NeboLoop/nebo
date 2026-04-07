@@ -138,15 +138,20 @@ pub async fn auth_login(
         let slug_for_stderr = slug_owned.clone();
         let hub_for_stderr = hub.clone();
 
+        // Shared flag: once either stream opens a URL, the other skips.
+        let url_opened = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let url_opened_stderr = url_opened.clone();
+        let url_opened_stdout = url_opened.clone();
+
         // Read stderr/stdout in chunks, scanning for OAuth URLs. When found,
-        // broadcast via WebSocket so the frontend can open the browser (primary),
-        // and also try open::that() as a server-side fallback.
+        // broadcast via WebSocket so the frontend can open the browser.
         let stderr_task = tokio::spawn(async move {
             let mut all = String::new();
             let mut opened = false;
             if let Some(mut stream) = stderr_handle {
                 let mut buf = [0u8; 4096];
                 loop {
+                    opened = opened || url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed);
                     let has_candidate = !opened && has_url_candidate(&all);
                     let read_result = if has_candidate {
                         match tokio::time::timeout(
@@ -156,9 +161,12 @@ pub async fn auth_login(
                             Ok(r) => r,
                             Err(_) => {
                                 // Timeout — no more data coming, treat URL as complete.
-                                if let Some(url) = extract_url(&all, true) {
-                                    open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
-                                    opened = true;
+                                if !url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed) {
+                                    if let Some(url) = extract_url(&all, true) {
+                                        open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
+                                        url_opened_stderr.store(true, std::sync::atomic::Ordering::Relaxed);
+                                        opened = true;
+                                    }
                                 }
                                 continue;
                             }
@@ -172,9 +180,10 @@ pub async fn auth_login(
                             let chunk = String::from_utf8_lossy(&buf[..n]);
                             info!(plugin = %slug_for_stderr, chunk = %chunk, "plugin auth stderr");
                             all.push_str(&chunk);
-                            if !opened {
+                            if !opened && !url_opened_stderr.load(std::sync::atomic::Ordering::Relaxed) {
                                 if let Some(url) = extract_url(&all, false) {
                                     open_auth_url(&slug_for_stderr, &url, &hub_for_stderr);
+                                    url_opened_stderr.store(true, std::sync::atomic::Ordering::Relaxed);
                                     opened = true;
                                 }
                             }
@@ -194,6 +203,7 @@ pub async fn auth_login(
             if let Some(mut stream) = stdout_handle {
                 let mut buf = [0u8; 4096];
                 loop {
+                    opened = opened || url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed);
                     let has_candidate = !opened && has_url_candidate(&all);
                     let read_result = if has_candidate {
                         match tokio::time::timeout(
@@ -202,9 +212,12 @@ pub async fn auth_login(
                         ).await {
                             Ok(r) => r,
                             Err(_) => {
-                                if let Some(url) = extract_url(&all, true) {
-                                    open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
-                                    opened = true;
+                                if !url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed) {
+                                    if let Some(url) = extract_url(&all, true) {
+                                        open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
+                                        url_opened_stdout.store(true, std::sync::atomic::Ordering::Relaxed);
+                                        opened = true;
+                                    }
                                 }
                                 continue;
                             }
@@ -218,9 +231,10 @@ pub async fn auth_login(
                             let chunk = String::from_utf8_lossy(&buf[..n]);
                             info!(plugin = %slug_for_stdout, chunk = %chunk, "plugin auth stdout");
                             all.push_str(&chunk);
-                            if !opened {
+                            if !opened && !url_opened_stdout.load(std::sync::atomic::Ordering::Relaxed) {
                                 if let Some(url) = extract_url(&all, false) {
                                     open_auth_url(&slug_for_stdout, &url, &hub_for_stdout);
+                                    url_opened_stdout.store(true, std::sync::atomic::Ordering::Relaxed);
                                     opened = true;
                                 }
                             }
@@ -332,6 +346,29 @@ pub async fn remove_plugin(
 
     info!(plugin = %slug, "plugin removed via settings");
     Ok(Json(serde_json::json!({ "message": "Plugin removed" })))
+}
+
+/// Check if a plugin is authenticated.
+///
+/// Returns `None` if the plugin has no auth config or no status command,
+/// `Some(true)` if authenticated, `Some(false)` if not.
+pub(crate) async fn check_plugin_auth(
+    plugin_store: &napp::plugin::PluginStore,
+    slug: &str,
+) -> Option<bool> {
+    let (binary_path, auth) = plugin_store.get_auth_info(slug)?;
+    let status_cmd = auth.commands.status.as_deref()?;
+    let args: Vec<&str> = status_cmd.split_whitespace().collect();
+    let mut cmd = tokio::process::Command::new(&binary_path);
+    cmd.args(&args);
+    cmd.env("PATH", plugin_store.path_with_plugins());
+    for (key, value) in &auth.env {
+        cmd.env(key, value);
+    }
+    match cmd.output().await {
+        Ok(output) => Some(output.status.success()),
+        Err(_) => Some(false),
+    }
 }
 
 /// GET /plugins/{slug}/auth/status

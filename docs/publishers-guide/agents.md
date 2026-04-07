@@ -49,6 +49,9 @@ The `agent.json` carries the operational structure: which workflows to run, when
       "description": "Fires when something urgent surfaces that needs immediate attention"
     }
   },
+  "requires": {
+    "plugins": ["PLUG-PJ3Z-ECFV"]
+  },
   "skills": [
     "@nebo/skills/briefing-writer@^1.0.0"
   ],
@@ -72,6 +75,7 @@ The `agent.json` carries the operational structure: which workflows to run, when
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `workflows` | map | no | `{}` | Workflow bindings with triggers (keyed by binding name) |
+| `requires` | object | no | `{}` | Hard dependencies. `requires.plugins` is an array of plugin install codes (e.g., `["PLUG-PJ3Z-ECFV"]`) that are auto-installed before skills during agent install. |
 | `skills` | string[] | no | `[]` | Additional skill qualified names (beyond what workflows declare) |
 | `pricing` | object | no | — | Pricing configuration (see below) |
 | `defaults` | object | no | `{}` | Default settings and user-configurable fields (see below) |
@@ -376,13 +380,15 @@ genuinely demands attention.
 
 When a user installs an Agent:
 
-1. Parse `agent.json` for all workflow references
-2. For each workflow: resolve version, install its declared dependencies (skills, sub-workflows)
-3. Install any additional skills listed directly in `agent.json`
-4. Register all trigger bindings from `agent.json`
-5. Load the AGENT.md persona into the agent's context
+1. Parse `agent.json` for `requires.plugins` and skill references
+2. Install required plugins from `requires.plugins` (install codes like `PLUG-XXXX-XXXX`)
+3. For each workflow binding: install its declared skill dependencies
+4. Install any additional skills listed in top-level `skills` array
+5. Skills cascade to their own plugin dependencies (via `plugins:` in SKILL.md frontmatter)
+6. Register all trigger bindings from `agent.json`
+7. Load the AGENT.md persona into the agent's context
 
-The user installs a job. Everything else cascades.
+The user installs a job. Everything else cascades — plugins first, then skills.
 
 ---
 

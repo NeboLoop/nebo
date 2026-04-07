@@ -41,6 +41,9 @@
 	let authDescription = $state('');
 	let authInProgress = $state(false);
 	let pluginSlug = $state('');
+	let authQueue = $state<Array<{slug: string, label: string, description: string}>>([]);
+	let authIndex = $state(0);
+	let pendingAgentId = $state('');
 
 	const typeLabel = $derived(codeType ? codeType.charAt(0).toUpperCase() + codeType.slice(1) : 'Code');
 	const title = $derived(
@@ -87,6 +90,9 @@
 		authDescription = '';
 		authInProgress = false;
 		pluginSlug = '';
+		authQueue = [];
+		authIndex = 0;
+		pendingAgentId = '';
 		stopInstallTimer();
 	}
 
@@ -167,6 +173,17 @@
 		};
 	}
 
+	export function onAgentAuthRequired(data: Record<string, unknown>) {
+		const plugins = (data?.plugins as Array<{slug: string, label: string, description: string}>) || [];
+		if (plugins.length === 0) return;
+		authQueue = plugins;
+		authIndex = 0;
+		pluginSlug = plugins[0].slug;
+		authLabel = plugins[0].label;
+		authDescription = plugins[0].description || '';
+		phase = 'auth';
+	}
+
 	export function onPluginAuthRequired(data: Record<string, unknown>) {
 		pluginSlug = (data?.plugin as string) || '';
 		authLabel = (data?.label as string) || 'Account';
@@ -183,7 +200,26 @@
 
 	export function onPluginAuthComplete(_data: Record<string, unknown>) {
 		authInProgress = false;
-		// Transition to done — install was already successful
+
+		// Multi-plugin auth queue: advance to next plugin
+		if (authQueue.length > 0) {
+			authIndex++;
+			if (authIndex < authQueue.length) {
+				const next = authQueue[authIndex];
+				pluginSlug = next.slug;
+				authLabel = next.label;
+				authDescription = next.description || '';
+				return; // stay in auth phase for next plugin
+			}
+			// All auth done — hand off to agent setup if this was an agent install
+			if (pendingAgentId && onAgentSetup) {
+				show = false;
+				onAgentSetup(pendingAgentId, artifactName);
+				return;
+			}
+		}
+
+		// Default: transition to done (existing behavior for direct plugin installs)
 		phase = 'done';
 		setTimeout(() => {
 			show = false;
@@ -210,6 +246,22 @@
 	}
 
 	function skipAuth() {
+		// Multi-plugin queue: advance to next or finish
+		if (authQueue.length > 0) {
+			authIndex++;
+			if (authIndex < authQueue.length) {
+				const next = authQueue[authIndex];
+				pluginSlug = next.slug;
+				authLabel = next.label;
+				authDescription = next.description || '';
+				return;
+			}
+			if (pendingAgentId && onAgentSetup) {
+				show = false;
+				onAgentSetup(pendingAgentId, artifactName);
+				return;
+			}
+		}
 		phase = 'done';
 		setTimeout(() => {
 			show = false;
@@ -226,13 +278,23 @@
 		const agentId = (data?.artifact_id as string) || '';
 		const error = (data?.error as string) || '';
 		const message = (data?.message as string) || '';
+		const needsAuth = data?.needsAuth as boolean;
 
 		if (name) artifactName = name;
+
+		// Store agent ID for deferred hand-off after auth completes
+		if (codeType === 'agent' && agentId) {
+			pendingAgentId = agentId;
+		}
 
 		if (success && paymentRequired && checkout) {
 			checkoutUrl = checkout;
 			phase = 'payment';
 		} else if (success) {
+			// If auth wizard is active, don't hand off yet — auth handlers will finish
+			if (phase === 'auth') {
+				return;
+			}
 			// Agent code install: hand off to agent setup modal for input configuration
 			if (codeType === 'agent' && agentId && onAgentSetup) {
 				show = false;
@@ -240,14 +302,11 @@
 				return;
 			}
 			statusMessage = message || `${artifactName || typeLabel} installed`;
-			// If auth phase is active, don't override — auth handlers will finish the flow
-			if (phase !== 'auth') {
-				phase = 'done';
-				setTimeout(() => {
-					show = false;
-					onclose?.();
-				}, 1500);
-			}
+			phase = 'done';
+			setTimeout(() => {
+				show = false;
+				onclose?.();
+			}, 1500);
 		} else {
 			errorMessage = error || 'Installation failed';
 			phase = 'error';
@@ -282,6 +341,9 @@
 
 	{:else if phase === 'auth'}
 		<div class="flex flex-col items-center gap-4 py-6">
+			{#if authQueue.length > 1}
+				<p class="text-xs text-base-content/50">Step {authIndex + 1} of {authQueue.length}</p>
+			{/if}
 			{#if authInProgress}
 				<span class="loading loading-spinner loading-lg text-primary"></span>
 				<div class="text-center">

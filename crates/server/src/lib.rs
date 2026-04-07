@@ -1295,7 +1295,11 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     tracing::error!(%error, latency_ms = latency.as_millis(), "request failed");
                 })
         )
-        .with_state(state);
+        .with_state(state.clone());
+
+    // Clone comm_manager for the shutdown handler — needs to disconnect NeboLoop
+    // before the process exits so the gateway sees a clean WebSocket Close frame.
+    let shutdown_comm = state.comm_manager.clone();
 
     if !quiet {
         info!("Server ready at http://localhost:{port}");
@@ -1320,10 +1324,42 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         .map_err(|e| NeboError::Server(format!("failed to bind: {e}")))?;
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            info!("shutdown signal received, disconnecting comm plugins...");
+            shutdown_comm.shutdown().await;
+            // Brief pause for write_loop to send the WebSocket Close frame
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            info!("comm plugins disconnected");
+        })
         .await
         .map_err(|e| NeboError::Server(format!("server error: {e}")))?;
 
     Ok(())
+}
+
+/// Wait for a shutdown signal (SIGTERM on Unix, Ctrl+C everywhere).
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .expect("failed to install SIGTERM handler");
+
+        tokio::select! {
+            _ = ctrl_c => { info!("received Ctrl+C"); }
+            _ = sigterm.recv() => { info!("received SIGTERM"); }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+        info!("received Ctrl+C");
+    }
 }
 
 /// Sync workflow bindings from an AgentConfig into the agent_workflows table.

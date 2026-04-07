@@ -83,6 +83,7 @@ struct CodeHandlerResult {
     artifact_name: Option<String>,
     checkout_url: Option<String>,
     artifact_id: Option<String>,
+    needs_auth: bool,
 }
 
 /// Handle a detected code: broadcast processing event, dispatch to handler, broadcast result.
@@ -130,6 +131,7 @@ pub async fn handle_code(state: &AppState, code_type: CodeType, code: &str, sess
                     "artifact_id": r.artifact_id,
                     "payment_required": payment_required,
                     "checkout_url": r.checkout_url,
+                    "needsAuth": r.needs_auth,
                 }),
             );
         }
@@ -389,7 +391,58 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         }
     };
 
+    // Cascade: resolve agent deps (plugins, skills) BEFORE activating the agent
+    {
+        let has_type_config = persist_result.as_ref().and_then(|r| r.type_config.as_ref()).is_some();
+        info!(agent = %artifact_name, has_type_config, "cascade: checking for deps");
+        let frontmatter = persist_result
+            .as_ref()
+            .and_then(|r| r.type_config.as_ref())
+            .and_then(|tc| serde_json::to_string(tc).ok());
+        let fm = match frontmatter {
+            Some(fm) => fm,
+            None => state
+                .store
+                .get_agent(&artifact_id)
+                .ok()
+                .flatten()
+                .map(|a| a.frontmatter.clone())
+                .unwrap_or_default(),
+        };
+        info!(agent = %artifact_name, fm_len = fm.len(), fm_empty = fm.is_empty(), "cascade: frontmatter");
+        if !fm.is_empty() {
+            // Log a snippet of the frontmatter to verify requires block is present
+            let snippet: String = fm.chars().take(200).collect();
+            info!(agent = %artifact_name, snippet, "cascade: frontmatter snippet");
+            let deps = crate::deps::extract_agent_deps_from_frontmatter(&fm);
+            info!(agent = %artifact_name, dep_count = deps.len(), "cascade: extracted deps");
+            for d in &deps {
+                info!(dep_type = ?d.dep_type, reference = %d.reference, "cascade: dep");
+            }
+            if !deps.is_empty() {
+                let mut visited = std::collections::HashSet::new();
+                crate::deps::resolve_cascade(state, deps, &mut visited).await;
+            }
+        }
+    }
+
+    // Sweep installed plugins for pending auth requirements
+    let auth_required = sweep_plugin_auth(state).await;
+    let has_auth_requirements = !auth_required.is_empty();
+
+    if has_auth_requirements {
+        info!(agent = %artifact_name, plugins = auth_required.len(), "agent install: plugins need auth");
+        state.hub.broadcast(
+            "agent_auth_required",
+            serde_json::json!({
+                "agentId": artifact_id,
+                "plugins": auth_required,
+            }),
+        );
+    }
+
     // Process workflow bindings — from persist result or from existing frontmatter in DB
+    // (persists to DB regardless of auth; triggers only fire after activation)
     let mut bindings_processed = false;
     if let Some(ref result) = persist_result {
         if let Some(ref tc) = result.type_config {
@@ -426,58 +479,49 @@ async fn handle_agent_code(state: &AppState, code: &str) -> Result<CodeHandlerRe
         }
     }
 
-    // Auto-activate the agent so it appears in the sidebar immediately
-    if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
-        let config = if !agent.frontmatter.is_empty() {
-            napp::agent::parse_agent_config(&agent.frontmatter).ok()
-        } else {
-            None
-        };
-        let active = tools::ActiveAgent {
-            agent_id: artifact_id.clone(),
-            name: agent.name.clone(),
-            agent_md: agent.agent_md.clone(),
-            config,
-            channel_id: None,
-            degraded: None,
-        };
-        state.agent_registry.write().await.insert(artifact_id.clone(), active);
-        state.hub.broadcast(
-            "agent_activated",
-            serde_json::json!({ "agentId": artifact_id, "name": agent.name }),
-        );
-    }
-
-    // Register agent in the owner's personal loop
-    {
-        let st = state.clone();
-        let name = artifact_name.clone();
-        let slug = artifact_name.to_lowercase().replace(' ', "-");
-        tokio::spawn(async move {
-            if let Err(e) = register_agent_in_loop(&st, &name, &slug).await {
-                warn!(agent = %name, error = %e, "failed to register agent in loop");
-            }
-        });
-    }
-
-    // Cascade: resolve agent deps (workflows, skills, tools from frontmatter)
-    let state_clone = state.clone();
-    let artifact_id_clone = artifact_id.clone();
-    tokio::spawn(async move {
-        if let Ok(Some(agent)) = state_clone.store.get_agent(&artifact_id_clone) {
-            let deps = crate::deps::extract_agent_deps_from_frontmatter(&agent.frontmatter);
-            if !deps.is_empty() {
-                let mut visited = std::collections::HashSet::new();
-                crate::deps::resolve_cascade(&state_clone, deps, &mut visited).await;
-            }
+    // Auto-activate only if no auth is pending — otherwise the frontend wizard
+    // will call activateAgent() after the user completes all OAuth flows.
+    if !has_auth_requirements {
+        if let Ok(Some(agent)) = state.store.get_agent(&artifact_id) {
+            let config = if !agent.frontmatter.is_empty() {
+                napp::agent::parse_agent_config(&agent.frontmatter).ok()
+            } else {
+                None
+            };
+            let active = tools::ActiveAgent {
+                agent_id: artifact_id.clone(),
+                name: agent.name.clone(),
+                agent_md: agent.agent_md.clone(),
+                config,
+                channel_id: None,
+                degraded: None,
+            };
+            state.agent_registry.write().await.insert(artifact_id.clone(), active);
+            state.hub.broadcast(
+                "agent_activated",
+                serde_json::json!({ "agentId": artifact_id, "name": agent.name }),
+            );
         }
-    });
+
+        // Register agent in the owner's personal loop
+        {
+            let st = state.clone();
+            let name = artifact_name.clone();
+            let slug = artifact_name.to_lowercase().replace(' ', "-");
+            tokio::spawn(async move {
+                if let Err(e) = register_agent_in_loop(&st, &name, &slug).await {
+                    warn!(agent = %name, error = %e, "failed to register agent in loop");
+                }
+            });
+        }
+    }
 
     Ok(CodeHandlerResult {
         message: format!("Installed agent: {}", artifact_name),
         artifact_name: Some(artifact_name),
         checkout_url: None,
         artifact_id: Some(artifact_id),
+        needs_auth: has_auth_requirements,
     })
 }
 
@@ -554,9 +598,7 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
 
     let version = if detail.version.is_empty() { "1.0.0".to_string() } else { detail.version.clone() };
 
-    // Remove existing version so extract re-runs (enables upgrade via re-paste)
     let plugin_store = state.plugin_store.clone();
-    let _ = plugin_store.remove(&slug); // ignore error if not installed
 
     // Get platform-specific download URL from the manifest
     let platform_binary = detail.platforms.get(&platform)
@@ -571,6 +613,12 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
         .map_err(|e| NeboError::Internal(format!("download .napp for {}: {}", name, e)))?;
 
     info!(plugin = %name, size = napp_data.len(), "downloaded .napp archive");
+
+    // Pause skill watcher during extraction to prevent premature reloads
+    state.skill_loader.pause_watcher();
+
+    // Remove existing version AFTER download completes — avoids killing active watch processes
+    let _ = plugin_store.remove(&slug);
 
     let install_result = plugin_store.install_from_napp(&slug, &version, &napp_data).await;
 
@@ -604,12 +652,14 @@ async fn handle_plugin_code(state: &AppState, code: &str) -> Result<CodeHandlerR
                     "error": e.to_string(),
                 }),
             );
+            state.skill_loader.resume_watcher();
             return Err(NeboError::Internal(format!("plugin install failed: {e}")));
         }
     }
 
-    // Reload skill loader so skills with this plugin dep can activate
+    // Resume watcher and reload skills now that extraction is complete
     state.skill_loader.load_all().await;
+    state.skill_loader.resume_watcher();
 
     // Re-register plugin tool so the new plugin appears as a resource
     state.tools.unregister("plugin").await;
@@ -685,6 +735,39 @@ pub async fn submit_code(
             }),
         )),
     }
+}
+
+// ── Plugin Auth Sweep ───────────────────────────────────────────────
+
+/// Check all installed plugins for pending authentication requirements.
+///
+/// Returns a list of plugins that have auth config but are not yet authenticated.
+/// Used after dependency cascade to determine if the agent install wizard should
+/// prompt the user for OAuth before activating the agent.
+async fn sweep_plugin_auth(state: &AppState) -> Vec<serde_json::Value> {
+    let mut needs_auth = Vec::new();
+    let installed = state.plugin_store.list_installed();
+    let mut seen = std::collections::HashSet::new();
+    for (slug, _, _, _) in &installed {
+        if !seen.insert(slug.clone()) {
+            continue;
+        }
+        match crate::handlers::plugins::check_plugin_auth(&state.plugin_store, slug).await {
+            Some(false) => {
+                if let Some(manifest) = state.plugin_store.get_manifest(slug) {
+                    if let Some(auth) = &manifest.auth {
+                        needs_auth.push(serde_json::json!({
+                            "slug": slug,
+                            "label": auth.label,
+                            "description": auth.description,
+                        }));
+                    }
+                }
+            }
+            _ => {} // authenticated or no auth config
+        }
+    }
+    needs_auth
 }
 
 // ── API Client Helper ───────────────────────────────────────────────

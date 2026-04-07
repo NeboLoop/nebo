@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -20,6 +21,9 @@ pub struct Loader {
     skills: Arc<RwLock<HashMap<String, Skill>>>,
     /// Optional plugin store for verifying plugin dependencies.
     plugin_store: Option<Arc<napp::plugin::PluginStore>>,
+    /// When true, the filesystem watcher skips reload events.
+    /// Set during plugin/skill extraction to prevent premature reloads.
+    watcher_paused: Arc<AtomicBool>,
 }
 
 impl Loader {
@@ -30,7 +34,18 @@ impl Loader {
             installed_dir,
             skills: Arc::new(RwLock::new(HashMap::new())),
             plugin_store: None,
+            watcher_paused: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Pause the filesystem watcher (call before extraction).
+    pub fn pause_watcher(&self) {
+        self.watcher_paused.store(true, Ordering::Relaxed);
+    }
+
+    /// Resume the filesystem watcher (call after load_all).
+    pub fn resume_watcher(&self) {
+        self.watcher_paused.store(false, Ordering::Relaxed);
     }
 
     /// Set the plugin store for verifying plugin dependencies during load.
@@ -230,6 +245,7 @@ impl Loader {
         let installed_dir = self.installed_dir.clone();
         let skills = self.skills.clone();
         let plugin_store = self.plugin_store.clone();
+        let watcher_paused = self.watcher_paused.clone();
         let plugins_dir = plugin_store.as_ref().map(|ps| ps.plugins_dir().to_path_buf());
 
         tokio::spawn(async move {
@@ -312,6 +328,11 @@ impl Loader {
                                 })
                         });
                         if !relevant {
+                            continue;
+                        }
+
+                        // Skip reload while paused (extraction in progress)
+                        if watcher_paused.load(Ordering::Relaxed) {
                             continue;
                         }
 
@@ -467,6 +488,9 @@ fn load_skills_from_nested_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
                     warn!(path = %skill_dir.display(), error = %e, "failed to parse SKILL.md");
                 }
             },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Silently skip — file may not be extracted yet
+            }
             Err(e) => {
                 warn!(path = %md_path.display(), error = %e, "failed to read SKILL.md");
             }
@@ -522,6 +546,9 @@ fn load_skills_from_dir(dir: &Path, source: SkillSource) -> Vec<Skill> {
                         warn!(path = %md_path.display(), error = %e, "failed to parse SKILL.md");
                     }
                 },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Silently skip — file may not be extracted yet
+                }
                 Err(e) => {
                     warn!(path = %md_path.display(), error = %e, "failed to read SKILL.md");
                 }
