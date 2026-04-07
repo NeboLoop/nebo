@@ -986,6 +986,18 @@ async fn run_loop(
             sessions.get_summary(session_id).unwrap_or_default()
         };
 
+        // Time-based micro-compact: clear stale tool results when user
+        // returns after inactivity (cache is cold, no point re-processing).
+        let (tb_messages, tb_saved) = pruning::time_based_micro_compact(
+            &window_messages,
+            pruning::TIME_BASED_KEEP_RECENT,
+            pruning::TIME_BASED_GAP_THRESHOLD_SECS,
+        );
+        if tb_saved > 0 {
+            debug!(tokens_saved = tb_saved, "Time-based micro-compact fired");
+            window_messages = tb_messages;
+        }
+
         // Micro-compact tool results if needed
         let (compacted_messages, _tokens_saved) =
             pruning::micro_compact(&window_messages, thresholds.warning);
@@ -2077,13 +2089,22 @@ async fn run_loop(
     }
 
     // Debounced memory extraction: only runs after 5s idle per session.
-    // New messages reset the timer so extraction waits for conversation pauses.
+    // Extract from last exchange only (last user msg + assistant response + tool
+    // calls) to avoid re-extracting facts from old messages and creating duplicates.
     let has_providers = !providers.read().await.is_empty();
     if !skip_memory && has_providers {
         let all_msgs = sessions
             .get_messages(session_id)
             .unwrap_or_default();
-        if all_msgs.len() >= 4 {
+        // Find the last user message and take everything from there onward.
+        let last_exchange: Vec<_> = {
+            let last_user_idx = all_msgs.iter().rposition(|m| m.role == "user");
+            match last_user_idx {
+                Some(idx) => all_msgs[idx..].to_vec(),
+                None => vec![],
+            }
+        };
+        if last_exchange.len() >= 2 {
             use crate::memory_debounce::MemoryDebouncer;
             use std::sync::OnceLock;
             static DEBOUNCER: OnceLock<MemoryDebouncer> = OnceLock::new();
@@ -2100,7 +2121,7 @@ async fn run_loop(
                     prefer_non_gateway(&prov_lock)
                 };
                 if let Some(provider) = provider {
-                    if let Some(facts) = memory::extract_facts(provider.as_ref(), &all_msgs).await {
+                    if let Some(facts) = memory::extract_facts(provider.as_ref(), &last_exchange).await {
                         memory::store_facts(&store, &facts, &mem_uid);
                         debug!(session_id = session_id_owned, "extracted and stored memory facts");
                     }
