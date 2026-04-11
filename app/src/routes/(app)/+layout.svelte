@@ -30,6 +30,7 @@
 	import WhatsNewModal from '$lib/components/WhatsNewModal.svelte';
 	import UpgradeSuccessModal from '$lib/components/UpgradeSuccessModal.svelte';
 	import Toast from '$lib/components/ui/Toast.svelte';
+	import { a2ui } from '$lib/stores/a2ui';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -167,6 +168,17 @@
 			}
 		});
 
+		// A2UI: Initialize processor and listen for surface messages
+		a2ui.init((action) => {
+			// Forward user actions back to the backend via WS
+			wsClient.send('a2ui_action', action);
+		});
+		const unsubA2UI = wsClient.on<{ surface_id: string; message: any }>('a2ui_message', (data) => {
+			if (data?.message) {
+				a2ui.processMessage(data.message);
+			}
+		});
+
 		// On connect (initial + reconnect after restart): reset stale update
 		// state and re-check. onStatus fires immediately with current status,
 		// so this also covers the initial check.
@@ -238,6 +250,8 @@
 			unsubPlan();
 			unsubStatus();
 			unsubWhatsNew();
+			unsubA2UI();
+			a2ui.destroy();
 			delete (window as any).__NEBO_CHECK_UPDATE__;
 		};
 	});

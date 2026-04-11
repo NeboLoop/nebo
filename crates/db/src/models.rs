@@ -727,3 +727,19 @@ pub struct CommanderEdge {
     pub label: String,
     pub created_at: i64,
 }
+
+/// An A2UI surface persisted for state restoration across restarts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct A2UISurface {
+    pub id: String,
+    pub agent_id: String,
+    pub view_id: String,
+    pub surface_type: String,
+    pub components: Option<String>,
+    pub data_model: Option<String>,
+    pub window_geometry: Option<String>,
+    pub is_active: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

@@ -1,10 +1,9 @@
 [package]
 name = "a2ui-core"
 description = "Core logic for the A2UI protocol: traits, negotiation, validation, prompt building"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
 
 [dependencies]
 a2ui-types = { workspace = true }

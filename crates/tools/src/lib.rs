@@ -1,3 +1,4 @@
+pub mod a2ui_tool;
 pub mod app_tool;
 pub mod bot_tool;
 pub mod desktop_daemon;
@@ -75,6 +76,7 @@ pub use events::{Event, EventBus};
 pub use emit_tool::EmitTool;
 pub use execute_tool::ExecuteTool;
 pub use exit_tool::{ExitTool, EXIT_SENTINEL};
+pub use a2ui_tool::{A2UIDomainTool, A2UIHost};
 pub use app_tool::AppTool;
 pub use keychain_tool::KeychainTool;
 pub use loop_tool::LoopTool;

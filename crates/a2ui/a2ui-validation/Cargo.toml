@@ -1,10 +1,9 @@
 [package]
 name = "a2ui-validation"
 description = "JSON Schema validation engine for A2UI protocol messages"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
 
 [dependencies]
 serde = { workspace = true }

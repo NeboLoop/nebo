@@ -1,3 +1,4 @@
+pub mod a2ui;
 pub mod chat_dispatch;
 pub mod codes;
 pub mod deps;
@@ -1004,6 +1005,19 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
     // Create snapshot store for browser accessibility snapshots
     let snapshot_store = Arc::new(browser::SnapshotStore::new());
 
+    // A2UI surface manager
+    let a2ui_catalog = Arc::new(a2ui::NeboCatalogProvider::new());
+    let a2ui_manager = Arc::new(a2ui::A2UIManager::new(
+        hub.clone(),
+        store.clone(),
+        a2ui_catalog,
+    ));
+    tool_registry
+        .register(Box::new(tools::A2UIDomainTool::new(
+            a2ui_manager.clone() as Arc<dyn tools::A2UIHost>,
+        )))
+        .await;
+
     let jwt_secret = JwtSecret(cfg.auth.access_secret.clone());
 
     let state = AppState {
@@ -1041,6 +1055,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         run_registry: run_registry::RunRegistry::new(),
         personal_loop_id: Arc::new(tokio::sync::RwLock::new(None)),
         channel_providers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        a2ui: a2ui_manager,
     };
 
     // Wire RunRegistry into the tool-layer run querier (late binding via OnceLock)

@@ -20,6 +20,9 @@ members = [
     "crates/updater",
     "crates/cli",
     "src-tauri",
+    "crates/a2ui/a2ui-types",
+    "crates/a2ui/a2ui-core",
+    "crates/a2ui/a2ui-validation",
 ]
 
 [workspace.package]
@@ -116,6 +119,13 @@ notify_crate = { path = "crates/notify", package = "nebo-notify" }
 updater = { path = "crates/updater", package = "nebo-updater" }
 cli = { path = "crates/cli", package = "nebo-cli" }
 sandbox-runtime = { git = "https://github.com/NeboLoop/sandbox-runtime.git", branch = "master" }
+
+# A2UI protocol
+a2ui-types = { path = "crates/a2ui/a2ui-types" }
+a2ui-core = { path = "crates/a2ui/a2ui-core" }
+a2ui-validation = { path = "crates/a2ui/a2ui-validation" }
+async-trait = "0.1"
+jsonschema = "0.28"
 
 [profile.dev]
 debug = 1

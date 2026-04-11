@@ -461,6 +461,24 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         let _ = tx.send(value);
                                     }
                                 }
+                                // A2UI: user action on a surface component
+                                "a2ui_action" => {
+                                    let surface_id = parsed["data"]["surface_id"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let action = parsed["data"]["action"].clone();
+                                    if !surface_id.is_empty() {
+                                        debug!("a2ui_action on surface {}", surface_id);
+                                        // Forward action to agent runner as a chat message
+                                        // with the surface context injected.
+                                        // Phase 2: deterministic action bindings will bypass the LLM.
+                                        state.hub.broadcast("a2ui_action_received", serde_json::json!({
+                                            "surface_id": surface_id,
+                                            "action": action,
+                                        }));
+                                    }
+                                }
                                 _ => {
                                     debug!("unhandled ws message type: {}", msg_type);
                                 }

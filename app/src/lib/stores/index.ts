@@ -29,3 +29,6 @@ export {
 
 // Setup wizard store (Svelte 5 runes)
 export { setup, setupState, type SetupState } from './setup.svelte';
+
+// A2UI surface store
+export { a2ui, activeSurfaceIds, surfacesForAgent, type A2UIState, type A2UISurfaceInfo } from './a2ui';

@@ -13,6 +13,7 @@ use comm::{ChannelProvider, PluginManager};
 
 use serde::Serialize;
 
+use crate::a2ui::A2UIManager;
 use crate::handlers::ws::ClientHub;
 use crate::run_registry::RunRegistry;
 use crate::workflow_manager::WorkflowManagerImpl;
@@ -103,4 +104,6 @@ pub struct AppState {
     pub personal_loop_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Channel providers for routing agent responses (NeboLoop, future: Slack, Discord)
     pub channel_providers: Arc<tokio::sync::RwLock<HashMap<String, Arc<dyn ChannelProvider>>>>,
+    /// A2UI surface manager — surface lifecycle, broadcasting, persistence
+    pub a2ui: Arc<A2UIManager>,
 }
