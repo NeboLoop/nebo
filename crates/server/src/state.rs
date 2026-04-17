@@ -69,7 +69,7 @@ pub struct AppState {
     /// Pending tool approval requests: tool_call_id -> sender
     pub approval_channels: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// Pending ask requests: question_id -> sender
-    pub ask_channels: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
+    pub ask_channels: tools::AskChannels,
     /// Staged update binary ready for apply (path + version)
     pub update_pending: Arc<Mutex<Option<(std::path::PathBuf, String)>>>,
     /// Hook dispatcher for napp hook subscriptions

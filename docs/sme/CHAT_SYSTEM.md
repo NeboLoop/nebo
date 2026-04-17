@@ -30,6 +30,7 @@ NeboLoop comm integration, and frontend rendering.
 17. [Slash Commands](#17-slash-commands)
 18. [File Attachment & Drag-and-Drop](#18-file-attachment--drag-and-drop)
 19. [Known Issues and Fixes](#19-known-issues-and-fixes)
+20. [Ask Widget System](#20-ask-widget-system)
 
 ---
 
@@ -1605,3 +1606,141 @@ storage. This coupling means:
 - Changing a session key format requires migrating existing messages
 - The session key must be a valid identifier (no special characters beyond what's already used)
 - Frontend must know the exact session key format to load history (e.g., `agent:<id>:web`)
+
+---
+
+## 20. Ask Widget System
+
+Interactive user-prompt mechanism that lets tools block execution and wait for structured
+user input via the chat UI. Tools call `ctx.ask_user()`, which renders a widget in the
+conversation, blocks until the user responds, and returns the selection as a string.
+
+### Architecture
+
+```
+Tool calls ctx.ask_user(prompt, widgets)
+  │
+  ├─ Creates oneshot channel (resp_tx, resp_rx)
+  ├─ Inserts resp_tx into shared ask_channels (keyed by request_id)
+  ├─ Emits StreamEvent::ask_request via stream_tx
+  │     ↓
+  │   chat_dispatch.rs → hub.broadcast("ask_request", payload)
+  │     ↓
+  │   Frontend Chat.svelte → handleAskRequest() → renders AskWidget contentBlock
+  │     ↓
+  │   User interacts → handleAskSubmit(requestId, value)
+  │     ↓
+  │   WebSocket "ask_response" → ws.rs handler
+  │     ↓
+  │   ask_channels.lock().remove(&request_id) → resp_tx.send(value)
+  │     ↓
+  └─ resp_rx.await.ok() → returns Some(value) to tool
+```
+
+### Key Types and Functions
+
+**`ToolContext::ask_user(prompt, widgets) -> Option<String>`** (`crates/tools/src/origin.rs`)
+- Creates a UUID request_id, oneshot channel pair
+- Inserts sender into `ask_channels` (shared Arc<Mutex<HashMap>>)
+- Emits `StreamEvent::ask_request` via `stream_tx`
+- Awaits receiver — blocks until user responds or channel drops
+- Returns `None` if `stream_tx` or `ask_channels` are not configured
+
+**`AskChannels` type** (`crates/tools/src/origin.rs`)
+```rust
+pub type AskChannels = Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>;
+```
+
+**`StreamEvent::ask_request()`** (`crates/ai/src/types.rs:211-227`)
+- `question_id` stored in the `error` field (field reuse)
+- `prompt` stored in the `text` field
+- `widgets` stored in the `metadata` field as JSON
+
+### Widget Types
+
+The frontend `AskWidget.svelte` supports 5 widget types:
+
+| Type | UI Element | Return Value |
+|------|-----------|-------------|
+| `buttons` | Horizontal button row | Label of clicked button |
+| `select` | Dropdown menu | Selected option string |
+| `confirm` | Yes/Cancel buttons | `"yes"` or `"cancel"` |
+| `radio` | Radio button group | Selected option string |
+| `checkbox` | Checkbox list + Submit button | Comma-separated selected options |
+
+Widget JSON format (array of widget definitions):
+```json
+[{
+  "type": "checkbox",
+  "label": "Pick items",
+  "options": ["Option A", "Option B", "Option C"]
+}]
+```
+
+### Threading Through the Stack
+
+`ask_channels` is created in `crates/server/src/lib.rs` and threaded to both:
+1. **Runner** — via `Runner::set_ask_channels()` builder → stored on Runner struct → passed
+   as param to `run_loop()` → injected into `ToolContext` for each tool call
+2. **AppState** — stored as `state.ask_channels` for the WS handler to resolve responses
+
+### Frontend Flow
+
+**`Chat.svelte`** — `handleAskRequest(data)` (line ~1694):
+- Sets `pendingAskRequest = true`
+- Appends an AskWidget contentBlock to the currently streaming message
+
+**`Chat.svelte`** — `handleAskSubmit(requestId, value)` (line ~1720):
+- Sends `"ask_response"` WS event with `{request_id, value}`
+- Updates the contentBlock to show a submitted badge
+
+**`AskWidget.svelte`** — Self-contained component:
+- Renders the appropriate widget type based on `widget.type`
+- Dispatches `submit` event with the user's selection
+- Shows disabled state after submission
+
+### WS Handler
+
+**`ws.rs:450-462`** — Handles incoming `"ask_response"` messages:
+```rust
+"ask_response" => {
+    let request_id = payload["request_id"].as_str();
+    let value = payload["value"].as_str();
+    if let Some(tx) = state.ask_channels.lock().await.remove(request_id) {
+        let _ = tx.send(value.to_string());
+    }
+}
+```
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `crates/tools/src/origin.rs` | `AskChannels` type, `ToolContext::ask_user()` |
+| `crates/ai/src/types.rs:211` | `StreamEvent::ask_request()` constructor |
+| `crates/agent/src/runner.rs` | Threads `ask_channels` into `run_loop()` → `ToolContext` |
+| `crates/server/src/lib.rs` | Creates shared `ask_channels`, passes to Runner + AppState |
+| `crates/server/src/state.rs` | `AppState.ask_channels` field |
+| `crates/server/src/handlers/ws.rs` | WS handler resolves `ask_response` → oneshot |
+| `crates/server/src/chat_dispatch.rs` | Broadcasts `ask_request` stream events |
+| `app/src/lib/components/chat/AskWidget.svelte` | Widget renderer (5 types) |
+| `app/src/lib/components/chat/Chat.svelte` | `handleAskRequest()` + `handleAskSubmit()` |
+
+### Usage Example (Calendar Configure)
+
+```rust
+// In organizer/macos.rs handle_calendar "configure" action:
+let widgets = serde_json::json!([{
+    "type": "checkbox",
+    "label": "Calendars",
+    "options": all_calendar_names,
+}]);
+
+match ctx.ask_user("Select which calendars to track:", widgets).await {
+    Some(response) => {
+        let selected: Vec<String> = response.split(", ").map(|s| s.to_string()).collect();
+        save_calendar_prefs(&selected)?;
+    }
+    None => { /* cancelled or disconnected */ }
+}
+```

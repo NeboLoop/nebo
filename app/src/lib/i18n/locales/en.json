@@ -143,7 +143,7 @@
 		"dropFileToInsert": "Drop file to insert path",
 		"dropFilesToAdd": "Drop files to add their path",
 		"scrollToBottom": "Scroll to bottom",
-		"viewEarlierMessages": "View {count} earlier messages in history",
+		"viewEarlierMessages": "Load {count} earlier messages",
 		"generationCancelled": "*[Generation cancelled]*",
 		"retryWarning": "The AI service is temporarily busy. Retrying...",
 		"quotaWarning": "You are approaching your usage limit.",

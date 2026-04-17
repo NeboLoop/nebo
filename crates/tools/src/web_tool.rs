@@ -52,9 +52,9 @@ impl WebTool {
             "search" | "query" => "search",
             "navigate" | "snapshot" | "read_page" | "click" | "double_click" | "triple_click"
             | "right_click" | "fill" | "form_input" | "type" | "screenshot" | "evaluate"
-            | "launch" | "close" | "list_pages" | "list_tabs" | "new_tab" | "close_tab"
-            | "back" | "go_back" | "forward" | "go_forward" | "reload" | "scroll" | "scroll_to"
-            | "hover" | "select" | "press" | "key" | "wait" | "drag" | "status" | "text" => {
+            | "close" | "list_tabs" | "new_tab" | "close_tab"
+            | "back" | "go_back" | "forward" | "go_forward" | "scroll" | "scroll_to"
+            | "hover" | "select" | "press" | "key" | "wait" | "drag" | "status" => {
                 "browser"
             }
             "console" | "source" | "storage" | "dom" | "cookies" | "performance" => "devtools",
@@ -106,9 +106,14 @@ impl WebTool {
             ));
         }
 
+        // Infer HTTP method from action name (get/post/put/delete/head) or explicit method param
         let method = input
             .get("method")
             .and_then(|v| v.as_str())
+            .or_else(|| match action {
+                "get" | "post" | "put" | "delete" | "head" => Some(action),
+                _ => None,
+            })
             .unwrap_or("GET")
             .to_uppercase();
 
@@ -570,11 +575,11 @@ impl DynTool for WebTool {
                     "type": "string",
                     "description": "Action to perform",
                     "enum": ["fetch", "get", "post", "put", "delete", "head", "sanitize",
-                             "search", "query",
-                             "navigate", "read_page", "snapshot", "click", "double_click",
+                             "search",
+                             "navigate", "read_page", "click", "double_click",
                              "triple_click", "right_click", "hover", "fill", "form_input",
                              "type", "select", "screenshot", "scroll", "scroll_to", "press",
-                             "key", "drag", "go_back", "go_forward", "wait", "evaluate",
+                             "drag", "go_back", "go_forward", "wait", "evaluate",
                              "list_tabs", "new_tab", "close_tab", "status",
                              "console", "source", "storage", "dom", "cookies", "performance"]
                 },

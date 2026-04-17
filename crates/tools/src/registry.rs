@@ -508,7 +508,8 @@ impl Registry {
 
         // OS tool (file, shell, desktop, apps, settings, music, keychain, search, PIM) — always registered
         let policy = self.policy.read().await.clone();
-        let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone());
+        let mut os_tool = crate::os_tool::OsTool::new(policy, self.process_registry.clone())
+            .with_store(store.clone());
         let ps_opt = self.plugin_store.read().unwrap().clone();
         if let Some(ps) = ps_opt {
             os_tool = os_tool.with_plugin_store(ps);

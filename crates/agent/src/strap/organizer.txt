@@ -1,22 +1,40 @@
 ### os — Personal Information Management (resource: mail/contacts/calendar/reminders)
 USE THIS when: user mentions email, calendar, contacts, reminders, appointments, or events.
 
+**Mail:**
 - os(resource: "mail", action: "unread") — Check unread email count
-- os(resource: "mail", action: "read", count: 5) — Read recent emails
+- os(resource: "mail", action: "read", limit: 5) — Read recent emails
 - os(resource: "mail", action: "send", to: ["alice@example.com"], subject: "Hi", body: "Hello!") — Send email
 - os(resource: "mail", action: "search", query: "invoice") — Search emails
 - os(resource: "mail", action: "accounts") — List email accounts
+
+**Contacts:**
 - os(resource: "contacts", action: "search", query: "Alice") — Search contacts
 - os(resource: "contacts", action: "get", name: "Alice Smith") — Get contact details
-- os(resource: "contacts", action: "create", name: "Bob", email: "bob@example.com") — Create contact
+- os(resource: "contacts", action: "create", name: "Bob", email: "bob@example.com", phone: "555-1234") — Create contact
 - os(resource: "contacts", action: "groups") — List contact groups
+
+**Calendar:**
 - os(resource: "calendar", action: "today") — Today's events
 - os(resource: "calendar", action: "upcoming", days: 7) — Upcoming events
-- os(resource: "calendar", action: "create", title: "Meeting", date: "2024-01-15", time: "14:00") — Create event
-- os(resource: "calendar", action: "list", calendar: "Work") — List events from a specific calendar
-- os(resource: "calendar", action: "calendars") — List calendars
-- os(resource: "reminders", action: "list") — List reminders
-- os(resource: "reminders", action: "create", title: "Buy groceries", reminder_list: "Personal") — Create reminder
-- os(resource: "reminders", action: "complete", reminder_id: "...") — Complete reminder
-- os(resource: "reminders", action: "delete", reminder_id: "...") — Delete reminder
+- os(resource: "calendar", action: "create", title: "Meeting", date: "2025-03-15 14:00", calendar: "Work") — Create event
+- os(resource: "calendar", action: "create", title: "Standup", date: "2025-03-15 09:00", repeat: "weekly", repeat_days: "mon,tue,wed,thu") — Create recurring event
+- os(resource: "calendar", action: "create", title: "Review", date: "2025-03-15 10:00", repeat: "daily", end_repeat: "2025-12-31") — Daily event with end date
+- os(resource: "calendar", action: "delete", title: "Meeting", calendar: "Work") — Delete event(s) by title
+- os(resource: "calendar", action: "list", calendar: "Work", days: 30) — List events from a specific calendar
+- os(resource: "calendar", action: "pending") — List pending calendar invitations
+- os(resource: "calendar", action: "accept") — Accept all pending invitations
+- os(resource: "calendar", action: "accept", title: "Team Standup") — Accept a specific invitation
+- os(resource: "calendar", action: "decline", title: "Team Standup") — Decline a specific invitation
+- os(resource: "calendar", action: "auto_accept") — Toggle auto-accept: pending invites are accepted whenever you check your calendar
+- os(resource: "calendar", action: "calendars") — List all calendars
+- os(resource: "calendar", action: "configure") — Choose which calendars to track
+
+Recurrence params (for create): repeat: "daily"/"weekly"/"monthly"/"yearly", repeat_days: "mon,tue,wed" (for weekly), interval: 2 (every 2 weeks), end_repeat: "2025-12-31"
+
+**Reminders:**
 - os(resource: "reminders", action: "lists") — List reminder lists
+- os(resource: "reminders", action: "list", list: "Personal") — List reminders in a list
+- os(resource: "reminders", action: "create", name: "Buy groceries", list: "Personal", due_date: "tomorrow", priority: 5) — Create reminder
+- os(resource: "reminders", action: "complete", name: "Buy groceries", list: "Personal") — Complete reminder
+- os(resource: "reminders", action: "delete", name: "Buy groceries", list: "Personal") — Delete reminder

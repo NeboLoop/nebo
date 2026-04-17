@@ -1,6 +1,6 @@
 # Memory & Prompt System -- SME Deep-Dive
 
-> **Last updated:** 2026-04-04
+> **Last updated:** 2026-04-15
 >
 > **Purpose:** Definitive technical reference for Nebo's entire memory system and system prompt pipeline -- storage, extraction, personality synthesis, hybrid search, embeddings, session transcript indexing, prompt assembly, steering, and context management. Dead code (functions ported but never called from the runner) is explicitly flagged.
 
@@ -743,6 +743,23 @@ Parts joined with `\n\n---\n\n` separators.
 
 `build_static()` in `crates/agent/src/prompt.rs:376-459`:
 
+### PromptMode (Full / Minimal)
+
+`PromptMode` enum controls how much of the system prompt `build_static()` assembles:
+
+| Mode | Use Case | Sections Included |
+|------|----------|-------------------|
+| `Full` (default) | Interactive chat with main agent | All 11 sections + plugins + skills + model aliases |
+| `Minimal` | Sub-agents, focused tasks | DB context, Identity, Capabilities, Tools Declaration, Behavior only |
+
+**Minimal mode drops (~2.7k tokens):** `SECTION_COMM_STYLE`, `SECTION_MEDIA`, `SECTION_MEMORY_DOCS`, `SECTION_TOOL_GUIDE`, `SECTION_AUTONOMY`, `SECTION_SYSTEM_ETIQUETTE`, plugin inventory, skill catalog, model aliases.
+
+**Minimal mode keeps:** DB context (identity + user info), `SECTION_IDENTITY`, `SECTION_CAPABILITIES`, `SECTION_TOOLS_DECLARATION`, `SECTION_BEHAVIOR`, cache boundary, active skill content (if any), STRAP docs, deferred tool listing, tool list.
+
+**Sub-agent prompt assembly:** `orchestrator.rs` sets `RunRequest.prompt_mode = Minimal`. Agent-type instructions (Explore/Plan/General) are prepended to the user message as a task prefix via `task_prefix_for_type()`, not injected into the system prompt. The old `system_prompt_for_type()` with 3-line hardcoded prompts was removed.
+
+**Field:** `RunRequest.prompt_mode: PromptMode` (default: `Full`). Threaded from `run()` → `run_loop()` → `PromptContext.mode` → `build_static()`.
+
 ### Step 1: DB Context (FIRST -- highest priority position)
 
 Source: `db_context::format_for_system_prompt()`. Full 9-section assembly: identity, character, personality learned, comm style, user info, rules, tool notes, what you know, memory instructions.
@@ -1048,12 +1065,14 @@ Session chunks participate in hybrid search via LEFT JOIN (alongside memory chun
 
 ### Sub-Agent Prompt
 
-`crates/agent/src/orchestrator.rs` -- minimal focused prompt for sub-agents:
-```
-You are a focused sub-agent working on a specific task.
-Your task: {task}
-Guidelines: Focus ONLY on assigned task, work efficiently, use tools...
-```
+`crates/agent/src/orchestrator.rs` -- sub-agents use `PromptMode::Minimal` (see §12), which assembles a proper system prompt with identity, capabilities, tools declaration, and behavior sections -- but drops heavy sections like comm style, media, memory docs, tool guide, autonomy, and etiquette (~2.7k tokens saved).
+
+Agent-type constraints are prepended to the user message as a task prefix via `task_prefix_for_type()`:
+- **Explore:** `[EXPLORATION agent — search, read, research only. Do NOT modify files...]`
+- **Plan:** `[PLANNING agent — analyze, break down steps, identify files...]`
+- **General:** `[Execute the task using whatever tools are needed.]`
+
+Sub-agents also set `skip_memory_extract: true` and `channel: "subagent"` (steering generators skip this channel).
 
 ### Workflow Activity Prompt
 

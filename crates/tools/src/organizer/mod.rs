@@ -3,6 +3,8 @@
 mod shared;
 
 #[cfg(target_os = "macos")]
+mod native;
+#[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -36,7 +38,7 @@ pub async fn handle_contacts(_action: &str, _input: &OrganizerInput) -> ToolResu
     ToolResult::error("Contacts is not supported on this platform")
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub async fn handle_calendar(_action: &str, _input: &OrganizerInput) -> ToolResult {
+pub async fn handle_calendar(_action: &str, _input: &OrganizerInput, _ctx: &crate::origin::ToolContext, _store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
     ToolResult::error("Calendar is not supported on this platform")
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -98,6 +100,14 @@ pub struct OrganizerInput {
     pub title: String,
     #[serde(default)]
     pub days: Option<i64>,
+    #[serde(default)]
+    pub repeat: String,
+    #[serde(default)]
+    pub interval: Option<i32>,
+    #[serde(default)]
+    pub end_repeat: String,
+    #[serde(default, alias = "weekdays")]
+    pub repeat_days: String,
 
     // Reminder fields
     #[serde(default)]

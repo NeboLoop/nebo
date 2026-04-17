@@ -95,16 +95,26 @@ pub fn escape_powershell(s: &str) -> String {
 // Subprocess execution
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Maximum time to wait for a subprocess before killing it.
+const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Run an AppleScript via `osascript -e` and return a ToolResult.
 #[cfg(target_os = "macos")]
 pub async fn run_osascript(script: &str) -> ToolResult {
-    match tokio::process::Command::new("osascript")
+    let child = match tokio::process::Command::new("osascript")
         .arg("-e")
         .arg(script)
-        .output()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
     {
-        Ok(output) if output.status.success() => {
+        Ok(c) => c,
+        Err(e) => return ToolResult::error(format!("Failed to run osascript: {}", e)),
+    };
+
+    match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
                 "OK".to_string()
@@ -112,11 +122,15 @@ pub async fn run_osascript(script: &str) -> ToolResult {
                 text
             })
         }
-        Ok(output) => {
+        Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             ToolResult::error(format!("AppleScript error: {}", stderr))
         }
-        Err(e) => ToolResult::error(format!("Failed to run osascript: {}", e)),
+        Ok(Err(e)) => ToolResult::error(format!("Failed to run osascript: {}", e)),
+        Err(_) => {
+            // child is killed on drop via kill_on_drop(true)
+            ToolResult::error("Timed out after 30s. Try specifying a calendar name to narrow the query.")
+        }
     }
 }
 
@@ -124,12 +138,19 @@ pub async fn run_osascript(script: &str) -> ToolResult {
 /// Uses direct exec (no shell) — safe from shell injection.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
-    match tokio::process::Command::new(cmd)
+    let child = match tokio::process::Command::new(cmd)
         .args(args)
-        .output()
-        .await
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
     {
-        Ok(output) if output.status.success() => {
+        Ok(c) => c,
+        Err(e) => return ToolResult::error(format!("Failed to run {}: {}", cmd, e)),
+    };
+
+    match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
                 "OK".to_string()
@@ -137,7 +158,7 @@ pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
                 text
             })
         }
-        Ok(output) => {
+        Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let msg = if stdout.is_empty() {
@@ -149,7 +170,10 @@ pub async fn run_command(cmd: &str, args: &[&str]) -> ToolResult {
             };
             ToolResult::error(msg)
         }
-        Err(e) => ToolResult::error(format!("Failed to run {}: {}", cmd, e)),
+        Ok(Err(e)) => ToolResult::error(format!("Failed to run {}: {}", cmd, e)),
+        Err(_) => {
+            ToolResult::error("Timed out after 30s.")
+        }
     }
 }
 
@@ -165,6 +189,7 @@ pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) 
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(c) => c,
@@ -175,8 +200,8 @@ pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) 
         let _ = stdin.write_all(stdin_data.as_bytes()).await;
     }
 
-    match child.wait_with_output().await {
-        Ok(output) if output.status.success() => {
+    match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
                 "OK".to_string()
@@ -184,7 +209,7 @@ pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) 
                 text
             })
         }
-        Ok(output) => {
+        Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             ToolResult::error(if stderr.is_empty() {
                 String::from_utf8_lossy(&output.stdout).trim().to_string()
@@ -192,7 +217,11 @@ pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) 
                 stderr
             })
         }
-        Err(e) => ToolResult::error(format!("{} failed: {}", cmd, e)),
+        Ok(Err(e)) => ToolResult::error(format!("{} failed: {}", cmd, e)),
+        Err(_) => {
+            // child already consumed by wait_with_output — process will be cleaned up on drop
+            ToolResult::error("Timed out after 30s.")
+        }
     }
 }
 
@@ -201,10 +230,18 @@ pub async fn run_command_with_stdin(cmd: &str, args: &[&str], stdin_data: &str) 
 pub async fn run_powershell(script: &str) -> ToolResult {
     let mut cmd = tokio::process::Command::new("powershell");
     cmd.args(["-NoProfile", "-Command", script]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
     crate::process::hide_window(&mut cmd);
 
-    match cmd.output().await {
-        Ok(output) if output.status.success() => {
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return ToolResult::error(format!("Failed to run PowerShell: {}", e)),
+    };
+
+    match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
             ToolResult::ok(if text.is_empty() {
                 "OK".to_string()
@@ -212,7 +249,7 @@ pub async fn run_powershell(script: &str) -> ToolResult {
                 text
             })
         }
-        Ok(output) => {
+        Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let msg = if stdout.is_empty() {
@@ -224,7 +261,10 @@ pub async fn run_powershell(script: &str) -> ToolResult {
             };
             ToolResult::error(msg)
         }
-        Err(e) => ToolResult::error(format!("Failed to run PowerShell: {}", e)),
+        Ok(Err(e)) => ToolResult::error(format!("Failed to run PowerShell: {}", e)),
+        Err(_) => {
+            ToolResult::error("Timed out after 30s.")
+        }
     }
 }
 

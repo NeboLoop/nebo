@@ -5,9 +5,9 @@
 > pipeline model. Establishes Nebo as an enterprise-grade intelligent
 > automation platform.
 
-**Created:** 2026-03-29  
-**Last verified against source:** 2026-03-29 (Claude Code parallel explore)  
-**Status:** Design — Phase 1 ready to implement
+**Created:** 2026-03-29
+**Last verified against source:** 2026-04-13
+**Status:** Design — Phase 1 ready to implement (ROLE → AGENT rename complete, A2UI Phase 1 shipped)
 
 ---
 
@@ -58,9 +58,9 @@ code exploration on 2026-03-29. It supersedes any assumptions in earlier drafts.
 |---|---|---|
 | Orchestrator (spawn, parallel, DAG) | Production | 1102 lines, all 6 trait methods wired, task recovery on startup |
 | EventBus + EventDispatcher | Production | Emit tool → EventBus → pattern-matched dispatch → run_inline() |
-| Triggers (schedule, heartbeat, event) | Production | 3 types, wired via AgentWorkerRegistry |
+| Triggers (schedule, heartbeat, event, watch) | Production | 4 types, wired via AgentWorkerRegistry. Watch triggers run plugin NDJSON processes with `{{key}}` template substitution from input_values |
 | Lanes (8 FIFO queues) | Production | Concurrency-controlled, adaptive semaphore |
-| Runner (agentic loop) | Production | 100 max iterations, 80K context, tool chaining, streaming |
+| Runner (agentic loop) | Production | 100 max iterations, 80K context, tool chaining, streaming. Now injects agent `input_values` into system prompt |
 | Session isolation by key | Production | `agent:`, `subagent:` prefixes parsed and used |
 | Agent registry + worker lifecycle | Production | Activate/deactivate, trigger registration, cleanup |
 | Commander graph | Production | 4 tables, 12 queries, 7 REST endpoints, dynamic event edge computation |
@@ -68,6 +68,9 @@ code exploration on 2026-03-29. It supersedes any assumptions in earlier drafts.
 | TaskGraph + Decompose | Built but dormant | DAG structure, Kahn's cycle detection, LLM decomposition — no entry point triggers it |
 | A2A types | Production | TaskStatus, AgentCard, TaskArtifact in comm/types.rs — full lifecycle types built |
 | Vector embeddings | Production | 0016_vector_embeddings.sql — semantic search infrastructure exists |
+| **A2UI workspace surfaces** | **Production** | A2UIManager, 18 Lit components, deterministic action dispatch, data binding polling, agent themes. Action dedup via `pending_actions` HashSet |
+| **Filesystem watcher events** | **Production** | `AgentFsEvent` (Added/Changed/Removed) emitted via mpsc channel, consumed by server for live sync |
+| **ROLE → AGENT rename** | **Complete** | All files, DB, routes, identifiers renamed. Migration 0070 + 0071 applied |
 
 ### What Does Not Exist Yet
 
@@ -374,9 +377,9 @@ in minutes rather than months.
 
 ---
 
-## 10. Rename: ROLE → AGENT
+## 10. Rename: ROLE → AGENT — COMPLETE
 
-Migration `0070` handled the DB layer. The following surfaces remain.
+Migration `0070` + `0071` handled the DB layer. All file renames, identifier renames, and runtime string literals have been updated.
 
 ### Files to Rename
 
@@ -438,13 +441,13 @@ Migration `0070` handled the DB layer. The following surfaces remain.
 ### Phase 1 — Commander + Isolation (enables the core multi-agent vision)
 
 **What gets built:**
-- ROLE → AGENT rename throughout (hygiene, unblocks everything)
+- ~~ROLE → AGENT rename throughout~~ **DONE** (migrations 0070 + 0071, all files renamed)
 - `session_mode` flag on agents table (`persistent` | `concurrent`)
 - Commander dispatch tool — reads `commander_edges`, resolves agent identity,
   constructs correct session key, dispatches via existing `Orchestrator.spawn()`
 - Populate `pending_tasks.parent_task_id` FK properly on dispatch
 - Session key enforcement in dispatch layer (not convention)
-- ~~Wire `persona:` prefix~~ Done — consolidated into `agent:` prefix (0071)
+- ~~Wire `persona:` prefix~~ **DONE** — consolidated into `agent:` prefix (0071)
 - Activate dormant `TaskGraph` / `Decompose` — add entry point so primary
   agent can trigger DAG decomposition
 
@@ -498,11 +501,11 @@ Migration `0070` handled the DB layer. The following surfaces remain.
 | File | Relevance |
 |---|---|
 | `crates/agent/src/orchestrator.rs` | Core spawn/parallel/DAG — foundation for all capabilities. 1102 lines, all production. |
-| `crates/agent/src/role_worker.rs` → `agent_worker.rs` | Agent lifecycle, trigger registration |
+| `crates/agent/src/agent_worker.rs` | Agent lifecycle, trigger registration (renamed from role_worker.rs) |
 | `crates/agent/src/session.rs` | Session key management — isolation enforcement goes here |
 | `crates/agent/src/task_graph.rs` | DAG structure, Kahn's cycle detection — dormant, needs entry point |
 | `crates/agent/src/decompose.rs` | LLM task decomposition — dormant, needs entry point |
-| `crates/tools/src/role_tool.rs` → `agent_tool.rs` | ActiveAgent, AgentRegistry |
+| `crates/tools/src/persona_tool.rs` | ActiveAgent, AgentRegistry (renamed from role_tool.rs) |
 | `crates/tools/src/orchestrator.rs` | SubAgentOrchestrator trait, SpawnRequest/SpawnResult |
 | `crates/workflow/src/events.rs` | EventBus, EventDispatcher — pipeline stage routing, production-ready |
 | `crates/comm/src/types.rs` | A2A types: TaskStatus, AgentCard, TaskArtifact — production-ready |
@@ -512,8 +515,12 @@ Migration `0070` handled the DB layer. The following surfaces remain.
 | `crates/db/migrations/0016_vector_embeddings.sql` | Semantic memory — production-ready |
 | `crates/server/src/workflow_manager.rs` | WorkflowManagerImpl — run_inline, spawn tracking |
 | `crates/agent/src/keyparser.rs` | Session key parsing — `agent:`, `subagent:` prefixes |
-| `docs/sme/ROLES_SME.md` → `AGENTS_SME.md` | Full agent system reference (update in place) |
+| `docs/sme/AGENTS_SME.md` | Full agent system reference (renamed from ROLES_SME.md) |
+| `crates/server/src/a2ui.rs` | A2UIManager — surface lifecycle, action dedup, message broadcast |
+| `crates/server/src/a2ui_actions.rs` | Deterministic action dispatch (mcp_call, navigate, update_data) |
+| `crates/server/src/a2ui_bindings.rs` | DataBindingManager — poll MCP tools, inject into data model |
+| `crates/tools/src/a2ui_tool.rs` | A2UITool STRAP interface, A2UIHost trait |
 
 ---
 
-*Last updated: 2026-03-29 — reflects actual codebase state from parallel code exploration*
+*Last updated: 2026-04-13 — reflects actual codebase state including A2UI Phase 1, filesystem watcher events, ROLE→AGENT rename completion*

@@ -190,6 +190,10 @@ fn main() {
             })
             .on_new_window(|url, _features| {
                 let host = url.host_str().unwrap_or("");
+                // Allow localhost URLs (workspace pop-outs, etc.)
+                if host == "localhost" || host == "127.0.0.1" {
+                    return NewWindowResponse::Allow;
+                }
                 if is_stripe_domain(host) {
                     return NewWindowResponse::Allow;
                 }

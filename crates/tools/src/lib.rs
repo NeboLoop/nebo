@@ -19,7 +19,6 @@ pub mod music_tool;
 pub mod orchestrator;
 mod organizer;
 pub mod run_querier;
-pub mod organizer_tool;
 pub mod origin;
 pub mod os_tool;
 pub mod plugin_tool;
@@ -58,7 +57,7 @@ pub use file_tool::FileTool;
 pub use orchestrator::{
     new_handle, OrchestratorHandle, SpawnRequest, SpawnResult, SubAgentOrchestrator,
 };
-pub use origin::{Origin, ToolContext};
+pub use origin::{AskChannels, Origin, ToolContext};
 pub use policy::{AskMode, Policy, PolicyLevel};
 pub use process::ProcessRegistry;
 pub use registry::{Registry, ResourceKind, ToolResult};
@@ -81,7 +80,6 @@ pub use app_tool::AppTool;
 pub use keychain_tool::KeychainTool;
 pub use loop_tool::LoopTool;
 pub use music_tool::MusicTool;
-pub use organizer_tool::OrganizerTool;
 
 /// Build a NeboLoop API client from a Store (for tool install actions).
 pub(crate) fn build_neboloop_api(store: &db::Store) -> Result<comm::api::NeboLoopApi, String> {

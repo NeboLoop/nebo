@@ -6,7 +6,7 @@ use crate::domain::DomainInput;
 use crate::file_tool::FileTool;
 use crate::keychain_tool::KeychainTool;
 use crate::music_tool::MusicTool;
-use crate::organizer_tool::OrganizerTool;
+use crate::organizer;
 use crate::origin::ToolContext;
 use crate::policy::Policy;
 use crate::process::ProcessRegistry;
@@ -29,8 +29,11 @@ pub struct OsTool {
     music_tool: MusicTool,
     keychain_tool: KeychainTool,
     spotlight_tool: SpotlightTool,
-    organizer_tool: OrganizerTool,
+    store: Option<Arc<db::Store>>,
 }
+
+/// Organizer actions that modify data and require user approval.
+const ORGANIZER_WRITE_ACTIONS: &[&str] = &["send", "create", "delete", "complete", "accept", "decline"];
 
 /// Resources that auto-approve (no user confirmation needed).
 const AUTO_APPROVE_RESOURCES: &[&str] = &[
@@ -49,12 +52,17 @@ impl OsTool {
             music_tool: MusicTool::new(),
             keychain_tool: KeychainTool::new(),
             spotlight_tool: SpotlightTool::new(),
-            organizer_tool: OrganizerTool::new(),
+            store: None,
         }
     }
 
     pub fn with_plugin_store(mut self, ps: Arc<napp::plugin::PluginStore>) -> Self {
         self.shell_tool = self.shell_tool.with_plugin_store(ps);
+        self
+    }
+
+    pub fn with_store(mut self, store: Arc<db::Store>) -> Self {
+        self.store = Some(store);
         self
     }
 
@@ -78,11 +86,45 @@ impl OsTool {
             "speak" => "tts",
             // Organizer inferences
             "accounts" | "unread" | "send" => "mail",
-            "today" | "upcoming" | "calendars" => "calendar",
+            "today" | "upcoming" | "calendars" | "configure" | "pending" | "accept" | "decline" | "auto_accept" => "calendar",
             "groups" => "contacts",
             "lists" | "complete" => "reminders",
             _ => "",
         }
+    }
+
+    /// Infer resource from parameter context when action-based inference fails
+    /// (e.g. "create" is shared across calendar, contacts, reminders).
+    fn infer_resource_from_context(input: &serde_json::Value) -> &'static str {
+        // Calendar: date, calendar, end_date, location, or days present
+        if input.get("date").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+            || input.get("calendar").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+            || input.get("end_date").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+            || input.get("days").is_some()
+        {
+            return "calendar";
+        }
+        // Reminders: list, due_date, or priority present
+        if input.get("list").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+            || input.get("due_date").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+            || input.get("priority").is_some()
+        {
+            return "reminders";
+        }
+        // Contacts: email, phone, or company present
+        if input.get("phone").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+            || input.get("company").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+        {
+            return "contacts";
+        }
+        // Mail: to, cc, subject, or mailbox present
+        if input.get("to").is_some()
+            || input.get("subject").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+            || input.get("mailbox").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+        {
+            return "mail";
+        }
+        ""
     }
 
     pub fn file_tool(&self) -> &FileTool {
@@ -123,7 +165,7 @@ impl DynTool for OsTool {
          - search: search (file search via OS index)\n\
          - mail: accounts, unread, read, send, search\n\
          - contacts: search, get, create, groups\n\
-         - calendar: calendars, today, upcoming, create, list\n\
+         - calendar: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure\n\
          - reminders: lists, list, create, complete, delete\n\n\
          Examples:\n  \
          os(resource: \"file\", action: \"read\", path: \"/path/to/file.txt\")\n  \
@@ -257,14 +299,26 @@ impl DynTool for OsTool {
         let resource = input.get("resource")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        // If no resource, try to infer it
+        // If no resource, try to infer it from action, then from context
         let resource = if resource.is_empty() {
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            Self::infer_resource(action)
+            let inferred = Self::infer_resource(action);
+            if inferred.is_empty() {
+                Self::infer_resource_from_context(input)
+            } else {
+                inferred
+            }
         } else {
             resource
         };
-        !AUTO_APPROVE_RESOURCES.contains(&resource)
+        // Organizer resources: only write actions need approval
+        match resource {
+            "mail" | "contacts" | "calendar" | "reminders" => {
+                let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                ORGANIZER_WRITE_ACTIONS.contains(&action)
+            }
+            _ => !AUTO_APPROVE_RESOURCES.contains(&resource),
+        }
     }
 
     fn resource_permit(&self, input: &serde_json::Value) -> Option<ResourceKind> {
@@ -273,7 +327,12 @@ impl DynTool for OsTool {
             .unwrap_or("");
         let resource = if resource.is_empty() {
             let action = input.get("action").and_then(|v| v.as_str()).unwrap_or("");
-            OsTool::infer_resource(action)
+            let inferred = OsTool::infer_resource(action);
+            if inferred.is_empty() {
+                OsTool::infer_resource_from_context(input)
+            } else {
+                inferred
+            }
         } else {
             resource
         };
@@ -301,7 +360,12 @@ impl DynTool for OsTool {
             };
 
             let resource = if domain_input.resource.is_empty() {
-                Self::infer_resource(&domain_input.action).to_string()
+                let inferred = Self::infer_resource(&domain_input.action);
+                if inferred.is_empty() {
+                    Self::infer_resource_from_context(&input).to_string()
+                } else {
+                    inferred.to_string()
+                }
             } else {
                 domain_input.resource
             };
@@ -334,27 +398,23 @@ impl DynTool for OsTool {
                 // App lifecycle
                 "app" => self.app_tool.execute_dyn(ctx, input).await,
 
-                // Settings — already uses resource/action internally
+                // Settings — OsTool action = setting name, value determines operation
                 "settings" => {
-                    // SettingsTool expects resource=volume/brightness/etc, action=get/set/etc.
-                    // OsTool receives resource="settings", action="volume", value=50
-                    // But SettingsTool's own schema uses resource for the setting type.
-                    // We need to remap: os(resource: "settings", action: "volume", value: 50)
-                    // → settings(resource: "volume", action: "get|set", value: 50)
-                    //
-                    // However the user's action IS the SettingsTool resource, and the value
-                    // determines if it's get or set. Let SettingsTool handle this — just swap
-                    // the resource field to the action, and set action to the appropriate op.
                     let action = input["action"].as_str().unwrap_or("");
-                    let has_value = input.get("value").is_some();
+                    let has_value = input.get("value").and_then(|v| if v.is_null() { None } else { Some(v) }).is_some();
                     let mut settings_input = input.clone();
-                    // Map: os action → settings resource, infer settings action
+
+                    // The OsTool action IS the setting name (volume, wifi, etc.)
+                    // Infer the SettingsTool action from the setting type + context
                     let settings_action = match action {
                         "sleep" | "lock" | "mute" | "unmute" => "trigger",
-                        _ if has_value => "set",
-                        "status" => "status",
-                        "toggle" => "toggle",
-                        _ => "get",
+                        "volume" | "brightness" => if has_value { "set" } else { "get" },
+                        "wifi" | "bluetooth" | "darkmode" => if has_value { "toggle" } else { "status" },
+                        "battery" | "info" => "get",
+                        other => return ToolResult::error(format!(
+                            "Unknown setting '{}'. Use: volume, brightness, wifi, bluetooth, battery, darkmode, sleep, lock, info, mute, unmute",
+                            other
+                        )),
                     };
                     settings_input["resource"] = serde_json::Value::String(action.to_string());
                     settings_input["action"] = serde_json::Value::String(settings_action.to_string());
@@ -370,9 +430,19 @@ impl DynTool for OsTool {
                 // File search
                 "search" => self.spotlight_tool.execute_dyn(ctx, input).await,
 
-                // PIM — delegate to OrganizerTool (already routes by resource)
+                // PIM — parse OrganizerInput and dispatch to handler functions directly
                 "mail" | "contacts" | "calendar" | "reminders" => {
-                    self.organizer_tool.execute_dyn(ctx, input).await
+                    let parsed: organizer::OrganizerInput = match serde_json::from_value(input) {
+                        Ok(v) => v,
+                        Err(e) => return ToolResult::error(format!("Failed to parse input: {}", e)),
+                    };
+                    match resource.as_str() {
+                        "mail" => organizer::handle_mail(&parsed.action, &parsed).await,
+                        "contacts" => organizer::handle_contacts(&parsed.action, &parsed).await,
+                        "calendar" => organizer::handle_calendar(&parsed.action, &parsed, ctx, self.store.as_ref()).await,
+                        "reminders" => organizer::handle_reminders(&parsed.action, &parsed).await,
+                        _ => unreachable!(),
+                    }
                 }
 
                 other => ToolResult::error(format!(
@@ -406,13 +476,14 @@ mod tests {
 
     #[test]
     fn test_approval_map() {
+        let tool = OsTool::new(
+            crate::policy::Policy::default(),
+            Arc::new(crate::process::ProcessRegistry::new()),
+        );
+
         // Auto-approve resources
         for resource in AUTO_APPROVE_RESOURCES {
             let input = serde_json::json!({"resource": resource, "action": "test"});
-            let tool = OsTool::new(
-                crate::policy::Policy::default(),
-                Arc::new(crate::process::ProcessRegistry::new()),
-            );
             assert!(
                 !tool.requires_approval_for(&input),
                 "{} should auto-approve",
@@ -420,16 +491,11 @@ mod tests {
             );
         }
 
-        // Requires-approval resources
+        // Requires-approval resources (non-organizer)
         let sensitive = ["input", "window", "ui", "menu", "dialog", "app",
-                         "settings", "music", "keychain", "mail", "contacts",
-                         "calendar", "reminders", "space", "shortcut"];
+                         "settings", "music", "keychain", "space", "shortcut"];
         for resource in &sensitive {
             let input = serde_json::json!({"resource": resource, "action": "test"});
-            let tool = OsTool::new(
-                crate::policy::Policy::default(),
-                Arc::new(crate::process::ProcessRegistry::new()),
-            );
             assert!(
                 tool.requires_approval_for(&input),
                 "{} should require approval",
@@ -451,5 +517,82 @@ mod tests {
         // click → input → requires approval
         let input = serde_json::json!({"action": "click", "x": 100, "y": 200});
         assert!(tool.requires_approval_for(&input));
+    }
+
+    #[test]
+    fn test_organizer_read_actions_auto_approve() {
+        let tool = OsTool::new(
+            crate::policy::Policy::default(),
+            Arc::new(crate::process::ProcessRegistry::new()),
+        );
+        let read_actions = [
+            ("mail", "unread"), ("mail", "accounts"), ("mail", "read"), ("mail", "search"),
+            ("contacts", "search"), ("contacts", "get"), ("contacts", "groups"),
+            ("calendar", "today"), ("calendar", "upcoming"), ("calendar", "calendars"),
+            ("calendar", "list"), ("calendar", "configure"),
+            ("reminders", "lists"), ("reminders", "list"),
+        ];
+        for (resource, action) in &read_actions {
+            let input = serde_json::json!({"resource": resource, "action": action});
+            assert!(
+                !tool.requires_approval_for(&input),
+                "os(resource: \"{}\", action: \"{}\") should auto-approve",
+                resource, action
+            );
+        }
+    }
+
+    #[test]
+    fn test_organizer_write_actions_require_approval() {
+        let tool = OsTool::new(
+            crate::policy::Policy::default(),
+            Arc::new(crate::process::ProcessRegistry::new()),
+        );
+        let write_actions = [
+            ("mail", "send"), ("contacts", "create"), ("calendar", "create"),
+            ("reminders", "create"), ("reminders", "complete"), ("reminders", "delete"),
+        ];
+        for (resource, action) in &write_actions {
+            let input = serde_json::json!({"resource": resource, "action": action});
+            assert!(
+                tool.requires_approval_for(&input),
+                "os(resource: \"{}\", action: \"{}\") should require approval",
+                resource, action
+            );
+        }
+    }
+
+    #[test]
+    fn test_infer_resource_from_context() {
+        // Calendar: date param present → infer "calendar"
+        assert_eq!(
+            OsTool::infer_resource_from_context(&serde_json::json!({"action": "create", "date": "2025-06-15"})),
+            "calendar"
+        );
+        // Reminders: due_date present → infer "reminders"
+        assert_eq!(
+            OsTool::infer_resource_from_context(&serde_json::json!({"action": "create", "due_date": "tomorrow"})),
+            "reminders"
+        );
+        // Contacts: phone present → infer "contacts"
+        assert_eq!(
+            OsTool::infer_resource_from_context(&serde_json::json!({"action": "create", "phone": "555-1234"})),
+            "contacts"
+        );
+        // Mail: to present → infer "mail"
+        assert_eq!(
+            OsTool::infer_resource_from_context(&serde_json::json!({"action": "send", "to": "user@example.com"})),
+            "mail"
+        );
+        // No context → empty
+        assert_eq!(
+            OsTool::infer_resource_from_context(&serde_json::json!({"action": "create"})),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_infer_configure() {
+        assert_eq!(OsTool::infer_resource("configure"), "calendar");
     }
 }

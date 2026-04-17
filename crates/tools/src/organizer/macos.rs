@@ -2,6 +2,7 @@
 
 use super::shared::{escape_applescript, run_osascript};
 use super::OrganizerInput;
+use crate::origin::ToolContext;
 use crate::registry::ToolResult;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -110,6 +111,23 @@ end tell"#,
 // ═══════════════════════════════════════════════════════════════════════
 
 pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult {
+    // Try native Contacts framework (fast, no Contacts.app activation needed)
+    {
+        let limit_str = input.limit.map(|l| l.to_string());
+        let mut args: Vec<(&str, &str)> = vec![];
+        if !input.query.is_empty() { args.push(("query", &input.query)); }
+        if !input.name.is_empty() { args.push(("name", &input.name)); }
+        if !input.email.is_empty() { args.push(("email", &input.email)); }
+        if !input.phone.is_empty() { args.push(("phone", &input.phone)); }
+        if !input.company.is_empty() { args.push(("company", &input.company)); }
+        if !input.notes.is_empty() { args.push(("notes", &input.notes)); }
+        if let Some(ref s) = limit_str { args.push(("limit", s)); }
+        if let Some(result) = super::native::run_pim("contacts", action, &args).await {
+            return result;
+        }
+    }
+
+    // AppleScript fallback
     match action {
         "search" => {
             let query = &input.query;
@@ -230,65 +248,328 @@ end tell"#,
 // Calendar
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn handle_calendar(action: &str, input: &OrganizerInput) -> ToolResult {
+/// Query events from specific calendars over a date range.
+///
+/// Uses a single osascript process with AppleScript's `with timeout`
+/// per calendar. This avoids spawning 18+ separate processes (which
+/// overwhelmed Calendar.app while it was syncing) and lets the app
+/// warm up during the first calendar query.
+///
+/// When preferences are saved, only the selected calendars are queried.
+async fn query_calendar_events(calendar: &str, days: u32, store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
+    let no_events_msg = if days <= 1 {
+        "No events today".to_string()
+    } else {
+        format!("No upcoming events in the next {} days", days)
+    };
+
+    // If a specific calendar is named, query just that one.
+    if !calendar.is_empty() {
+        let escaped = escape_applescript(calendar);
+        let script = format!(
+            r#"tell application "Calendar"
+    set today to current date
+    set time of today to 0
+    set endDate to today + ({days} * days)
+    set output to ""
+    repeat with cal in (every calendar whose name is "{escaped}")
+        set evts to (every event of cal whose start date >= today and start date < endDate)
+        repeat with e in evts
+            set output to output & (name of cal) & " | " & (summary of e) & " | " & (start date of e as text) & linefeed
+        end repeat
+    end repeat
+    if output is "" then return "{no_events_msg}"
+    return output
+end tell"#,
+        );
+        return run_osascript(&script).await;
+    }
+
+    // Build the calendar filter: use saved preferences if available,
+    // otherwise query all calendars.
+    let saved_prefs = load_calendar_prefs(store);
+    let cal_filter = if let Some(ref prefs) = saved_prefs {
+        // AppleScript list literal: {"cal1", "cal2", ...}
+        let items: Vec<String> = prefs.iter()
+            .map(|n| format!("\"{}\"", escape_applescript(n)))
+            .collect();
+        format!("set targetCals to {{{}}}\n    set allCals to {{}}\n    repeat with cName in targetCals\n        set allCals to allCals & (every calendar whose name is cName)\n    end repeat", items.join(", "))
+    } else {
+        "set allCals to every calendar".to_string()
+    };
+
+    // Single osascript process — Calendar.app activates once, warms up
+    // during the first calendar, and subsequent queries are fast.
+    // `with timeout of 15` gives each calendar's `whose` clause 15s
+    // to respond (Apple Event timeout, not wall-clock).
+    let script = format!(
+        r#"tell application "Calendar"
+    set today to current date
+    set time of today to 0
+    set endDate to today + ({days} * days)
+    set output to ""
+    set skippedCals to ""
+    {cal_filter}
+    repeat with cal in allCals
+        try
+            with timeout of 15 seconds
+                set evts to (every event of cal whose start date >= today and start date < endDate)
+                repeat with e in evts
+                    set output to output & (name of cal) & " | " & (summary of e) & " | " & (start date of e as text) & linefeed
+                end repeat
+            end timeout
+        on error
+            set skippedCals to skippedCals & (name of cal) & ", "
+        end try
+    end repeat
+    if skippedCals is not "" then
+        set output to output & linefeed & "(Skipped slow calendars: " & text 1 thru -3 of skippedCals & ")"
+    end if
+    if output is "" then return "{no_events_msg}"
+    return output
+end tell"#,
+    );
+
+    // Overall timeout: generous enough for Calendar.app warmup + all calendars.
+    // With preferences (3-5 calendars) this completes in seconds.
+    // Without preferences, worst case ~18 calendars × 15s = 4.5min, but in
+    // practice most respond in <2s after the first one warms up the app.
+    let overall_timeout = if saved_prefs.is_some() {
+        std::time::Duration::from_secs(60)
+    } else {
+        std::time::Duration::from_secs(180)
+    };
+
+    let child = match tokio::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return ToolResult::error(format!("Failed to run osascript: {e}")),
+    };
+
+    match tokio::time::timeout(overall_timeout, child.wait_with_output()).await {
+        Ok(Ok(o)) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if text.is_empty() {
+                ToolResult::ok(no_events_msg)
+            } else {
+                ToolResult::ok(text)
+            }
+        }
+        Ok(Ok(o)) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            ToolResult::error(format!("Calendar query failed: {stderr}"))
+        }
+        Ok(Err(e)) => ToolResult::error(format!("Calendar process error: {e}")),
+        Err(_) => ToolResult::error(
+            "Calendar query timed out. Try configuring which calendars to track: \
+             organizer(resource: \"calendar\", action: \"configure\")"
+                .to_string(),
+        ),
+    }
+}
+
+/// Calendar preferences stored in plugin_settings DB table.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CalendarPrefs {
+    #[serde(default)]
+    calendars: Vec<String>,
+    #[serde(default)]
+    auto_accept: bool,
+}
+
+const CALENDAR_PLUGIN_NAME: &str = "organizer";
+const CALENDAR_PREFS_KEY: &str = "calendar_prefs";
+
+/// Load saved calendar preferences from DB, with migration from legacy file.
+fn load_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>) -> Option<Vec<String>> {
+    let prefs = load_full_calendar_prefs(store)?;
+    if prefs.calendars.is_empty() { None } else { Some(prefs.calendars) }
+}
+
+fn load_full_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>) -> Option<CalendarPrefs> {
+    let store = store?;
+
+    // Try DB first
+    if let Ok(Some(json)) = store.get_plugin_setting(CALENDAR_PLUGIN_NAME, CALENDAR_PREFS_KEY) {
+        if let Ok(prefs) = serde_json::from_str::<CalendarPrefs>(&json) {
+            return Some(prefs);
+        }
+    }
+
+    // Migrate from legacy file if it exists
+    if let Ok(dir) = config::data_dir() {
+        let path = dir.join("calendar_preferences.json");
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            let prefs = if let Ok(p) = serde_json::from_str::<CalendarPrefs>(&data) {
+                Some(p)
+            } else if let Ok(cals) = serde_json::from_str::<Vec<String>>(&data) {
+                Some(CalendarPrefs { calendars: cals, auto_accept: false })
+            } else {
+                None
+            };
+            if let Some(ref p) = prefs {
+                // Write to DB and remove legacy file
+                if save_full_calendar_prefs(Some(store), p).is_ok() {
+                    let _ = std::fs::remove_file(&path);
+                    tracing::info!("migrated calendar preferences from file to DB");
+                }
+            }
+            return prefs;
+        }
+    }
+
+    None
+}
+
+/// Save calendar preferences to DB.
+fn save_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>, calendars: &[String]) -> Result<(), String> {
+    let mut prefs = load_full_calendar_prefs(store).unwrap_or(CalendarPrefs {
+        calendars: vec![],
+        auto_accept: false,
+    });
+    prefs.calendars = calendars.to_vec();
+    save_full_calendar_prefs(store, &prefs)
+}
+
+fn save_full_calendar_prefs(store: Option<&std::sync::Arc<db::Store>>, prefs: &CalendarPrefs) -> Result<(), String> {
+    let store = store.ok_or("DB store not available")?;
+    store.ensure_skill_plugin(CALENDAR_PLUGIN_NAME)
+        .map_err(|e| format!("ensure plugin entry: {e}"))?;
+    let json = serde_json::to_string(prefs)
+        .map_err(|e| format!("serialize prefs: {e}"))?;
+    store.set_plugin_setting(CALENDAR_PLUGIN_NAME, CALENDAR_PREFS_KEY, &json)
+        .map_err(|e| format!("save to DB: {e}"))?;
+    Ok(())
+}
+
+pub async fn handle_calendar(action: &str, input: &OrganizerInput, ctx: &ToolContext, store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
+    // Auto-accept: silently accept pending invites before any read operation
+    if matches!(action, "today" | "upcoming" | "list") {
+        if let Some(prefs) = load_full_calendar_prefs(store) {
+            if prefs.auto_accept {
+                // Fire-and-forget: accept pending invites via native helper
+                if let Some(result) = super::native::run_pim("calendar", "accept", &[]).await {
+                    if !result.is_error {
+                        let content = result.content.trim();
+                        if !content.is_empty() && !content.contains("No pending") {
+                            tracing::info!("auto-accepted calendar invites: {}", content);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle auto_accept toggle
+    if action == "auto_accept" {
+        let mut prefs = load_full_calendar_prefs(store).unwrap_or(CalendarPrefs {
+            calendars: vec![],
+            auto_accept: false,
+        });
+        prefs.auto_accept = !prefs.auto_accept;
+        if let Err(e) = save_full_calendar_prefs(store, &prefs) {
+            return ToolResult::error(format!("Failed to save preferences: {e}"));
+        }
+        return ToolResult::ok(format!(
+            "Calendar auto-accept is now {}. Pending invitations will be {} accepted when you check your calendar.",
+            if prefs.auto_accept { "ON" } else { "OFF" },
+            if prefs.auto_accept { "automatically" } else { "not automatically" },
+        ));
+    }
+
+    // Try native EventKit path (fast, reads local SQLite cache, no Calendar.app activation)
+    // Skip `configure` which needs ctx.ask_user() (Nebo-specific, not in Swift helper)
+    if action != "configure" {
+        let days_val = match action {
+            "today" => 1i64,
+            "upcoming" => input.days.unwrap_or(7).clamp(1, 365),
+            "list" => input.days.unwrap_or(30).clamp(1, 365),
+            _ => input.days.unwrap_or(1),
+        };
+        let days_str = days_val.to_string();
+        let name = input.event_name();
+        let mut args: Vec<(&str, &str)> = vec![];
+        if !input.calendar.is_empty() { args.push(("calendar", &input.calendar)); }
+        if !input.date.is_empty() { args.push(("date", &input.date)); }
+        if !input.end_date.is_empty() { args.push(("end_date", &input.end_date)); }
+        if !input.location.is_empty() { args.push(("location", &input.location)); }
+        if !input.notes.is_empty() { args.push(("notes", &input.notes)); }
+        if !name.is_empty() { args.push(("title", name)); }
+        if !input.repeat.is_empty() { args.push(("repeat", &input.repeat)); }
+        if !input.repeat_days.is_empty() { args.push(("days", &input.repeat_days)); }
+        if !input.end_repeat.is_empty() { args.push(("end_repeat", &input.end_repeat)); }
+        let interval_str = input.interval.map(|i| i.to_string());
+        if let Some(ref s) = interval_str { args.push(("interval", s)); }
+        if matches!(action, "today" | "upcoming" | "list") {
+            args.push(("days", &days_str));
+        }
+        if let Some(result) = super::native::run_pim("calendar", action, &args).await {
+            return result;
+        }
+    }
+
+    // AppleScript fallback
     match action {
+        "configure" => {
+            // List all calendars via AppleScript
+            let result = run_osascript(
+                "tell application \"Calendar\" to return name of every calendar",
+            ).await;
+            if result.is_error {
+                return result;
+            }
+
+            let all_cals: Vec<String> = result.content.split(", ").map(|s| s.trim().to_string()).collect();
+            if all_cals.is_empty() {
+                return ToolResult::error("No calendars found on this system");
+            }
+
+            // Build checkbox widget
+            let current_prefs = load_calendar_prefs(store);
+            let prompt = if current_prefs.is_some() {
+                "Select which calendars Nebo should track (updating your saved preferences):"
+            } else {
+                "Select which calendars Nebo should track:"
+            };
+
+            let widgets = serde_json::json!([{
+                "type": "checkbox",
+                "label": "Calendars",
+                "options": all_cals,
+            }]);
+
+            match ctx.ask_user(prompt, widgets).await {
+                Some(response) if !response.is_empty() => {
+                    let selected: Vec<String> = response.split(", ").map(|s| s.trim().to_string()).collect();
+                    if let Err(e) = save_calendar_prefs(store, &selected) {
+                        return ToolResult::error(format!("Failed to save preferences: {e}"));
+                    }
+                    ToolResult::ok(format!(
+                        "Calendar preferences saved. Now tracking {} calendar(s): {}",
+                        selected.len(),
+                        selected.join(", ")
+                    ))
+                }
+                _ => ToolResult::ok("Calendar configuration cancelled — no changes made.".to_string()),
+            }
+        }
         "calendars" => {
             run_osascript("tell application \"Calendar\" to return name of every calendar").await
         }
-        "today" => {
-            let script = r#"tell application "Calendar"
-    set today to current date
-    set time of today to 0
-    set tomorrow to today + (1 * days)
-    set output to ""
-    repeat with cal in every calendar
-        set evts to (every event of cal whose start date >= today and start date < tomorrow)
-        repeat with e in evts
-            set output to output & (name of cal) & " | " & (summary of e) & " | " & (start date of e as text) & linefeed
-        end repeat
-    end repeat
-    if output is "" then return "No events today"
-    return output
-end tell"#;
-            run_osascript(script).await
-        }
+        "today" => query_calendar_events(&input.calendar, 1, store).await,
         "upcoming" => {
-            let days = input.days.unwrap_or(7).clamp(1, 365);
-            let script = format!(
-                r#"tell application "Calendar"
-    set today to current date
-    set endDate to today + ({days} * days)
-    set output to ""
-    repeat with cal in every calendar
-        set evts to (every event of cal whose start date >= today and start date < endDate)
-        repeat with e in evts
-            set output to output & (name of cal) & " | " & (summary of e) & " | " & (start date of e as text) & linefeed
-        end repeat
-    end repeat
-    if output is "" then return "No upcoming events in the next {days} days"
-    return output
-end tell"#,
-            );
-            run_osascript(&script).await
+            let days = input.days.unwrap_or(7).clamp(1, 365) as u32;
+            query_calendar_events(&input.calendar, days, store).await
         }
         "list" => {
-            let days = input.days.unwrap_or(30).clamp(1, 365);
-            let script = format!(
-                r#"tell application "Calendar"
-    set today to current date
-    set endDate to today + ({days} * days)
-    set output to ""
-    repeat with cal in every calendar
-        set evts to (every event of cal whose start date >= today and start date < endDate)
-        repeat with e in evts
-            set output to output & (name of cal) & " | " & (summary of e) & " | " & (start date of e as text) & linefeed
-        end repeat
-    end repeat
-    if output is "" then return "No events in the next {days} days"
-    return output
-end tell"#,
-            );
-            run_osascript(&script).await
+            let days = input.days.unwrap_or(30).clamp(1, 365) as u32;
+            query_calendar_events(&input.calendar, days, store).await
         }
         "create" => {
             let name = input.event_name();
@@ -354,8 +635,38 @@ end tell"#,
             );
             run_osascript(&script).await
         }
+        "delete" => {
+            let name = input.event_name();
+            if name.is_empty() {
+                return ToolResult::error("'name' or 'title' parameter required for delete");
+            }
+            let calendar_filter = if input.calendar.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " whose name of its calendar is \"{}\"",
+                    escape_applescript(&input.calendar)
+                )
+            };
+            let script = format!(
+                r#"tell application "Calendar"
+    set matchingEvents to every event of every calendar{filter} whose summary is "{name}"
+    set deletedCount to 0
+    repeat with evList in matchingEvents
+        repeat with ev in evList
+            delete ev
+            set deletedCount to deletedCount + 1
+        end repeat
+    end repeat
+    return "Deleted " & deletedCount & " event(s) matching '{name}'"
+end tell"#,
+                filter = calendar_filter,
+                name = escape_applescript(name),
+            );
+            run_osascript(&script).await
+        }
         _ => ToolResult::error(format!(
-            "Unknown calendar action '{}'. Use: calendars, today, upcoming, create, list",
+            "Unknown calendar action '{}'. Use: calendars, today, upcoming, create, delete, pending, accept, decline, auto_accept, list, configure",
             action
         )),
     }
@@ -366,6 +677,22 @@ end tell"#,
 // ═══════════════════════════════════════════════════════════════════════
 
 pub async fn handle_reminders(action: &str, input: &OrganizerInput) -> ToolResult {
+    // Try native EventKit path (fast, no Reminders.app activation needed)
+    {
+        let name = input.event_name();
+        let pri_str = input.priority.map(|p| p.to_string());
+        let mut args: Vec<(&str, &str)> = vec![];
+        if !name.is_empty() { args.push(("name", name)); }
+        if !input.list.is_empty() { args.push(("list", &input.list)); }
+        if !input.notes.is_empty() { args.push(("notes", &input.notes)); }
+        if !input.due_date.is_empty() { args.push(("due_date", &input.due_date)); }
+        if let Some(ref s) = pri_str { args.push(("priority", s)); }
+        if let Some(result) = super::native::run_pim("reminders", action, &args).await {
+            return result;
+        }
+    }
+
+    // AppleScript fallback
     match action {
         "lists" => {
             run_osascript("tell application \"Reminders\" to return name of every list").await

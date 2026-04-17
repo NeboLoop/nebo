@@ -7,9 +7,9 @@ USE THIS when: user wants to interact with the GUI — click, type, screenshot, 
 - os(resource: "input", action: "right_click", x: 100, y: 200) — Right-click
 - os(resource: "input", action: "type", text: "hello") — Type text
 - os(resource: "input", action: "hotkey", keys: "cmd+c") — Keyboard shortcut
-- os(resource: "input", action: "scroll", direction: "down", amount: 3) — Scroll
+- os(resource: "input", action: "scroll", dy: 3) — Scroll down (positive=down, negative=up; use dx for horizontal)
 - os(resource: "input", action: "move", x: 100, y: 200) — Move cursor
-- os(resource: "input", action: "drag", x: 10, y: 10, to_x: 200, to_y: 200) — Drag
+- os(resource: "input", action: "drag", x: 10, y: 10, x2: 200, y2: 200) — Drag
 - os(resource: "input", action: "paste", text: "content") — Paste via clipboard
 - os(resource: "ui", action: "tree", app: "Safari") — Get UI element hierarchy
 - os(resource: "ui", action: "find", app: "Safari", role: "button", label: "Submit") — Find elements
@@ -33,15 +33,15 @@ USE THIS when: user wants to interact with the GUI — click, type, screenshot, 
 - os(resource: "menu", action: "click_status", name: "...") — Click a status bar item
 - os(resource: "dialog", action: "detect") — Detect system dialogs
 - os(resource: "dialog", action: "list") — List dialog elements
-- os(resource: "dialog", action: "click", button_label: "OK") — Click dialog button
+- os(resource: "dialog", action: "click", name: "OK") — Click dialog button
 - os(resource: "dialog", action: "fill", field: "...", value: "...") — Fill a dialog field
 - os(resource: "dialog", action: "dismiss") — Dismiss dialog
 - os(resource: "space", action: "list") — List virtual desktops
-- os(resource: "space", action: "switch", space: 2) — Switch desktop
-- os(resource: "space", action: "move_window", app: "Safari", space: 2) — Move window to desktop
-- os(resource: "screenshot", action: "capture") — Capture current screen
-- os(resource: "screenshot", action: "capture", format: "file") — Capture and save to disk (returns inline image URL)
-- os(resource: "screenshot", action: "see", app: "Safari") — Capture specific app with annotated element IDs
+- os(resource: "space", action: "switch", index: 2) — Switch desktop
+- os(resource: "space", action: "move_window", app: "Safari", index: 2) — Move window to desktop
+- os(resource: "capture", action: "capture") — Capture current screen
+- os(resource: "capture", action: "capture", quality: "high") — Capture at full resolution (options: low/medium/high)
+- os(resource: "capture", action: "see", app: "Safari") — Capture specific app with annotated element IDs
 - os(resource: "tts", action: "speak", text: "Hello") — Text-to-speech
 
 Speed — chain actions from one snapshot:

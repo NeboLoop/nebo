@@ -31,4 +31,7 @@ pub fn routes() -> Router<AppState> {
         .route("/agents/{id}/apply-update", axum::routing::post(handlers::agents::apply_agent_update))
         .route("/agents/{id}/stats", axum::routing::get(handlers::agents::agent_stats))
         .route("/agents/{id}/runs", axum::routing::get(handlers::agents::list_agent_runs))
+        .route("/agents/{id}/surfaces", axum::routing::get(handlers::agents::get_agent_surfaces))
+        .route("/agents/{id}/nav", axum::routing::get(handlers::agents::get_agent_nav))
+        .route("/agents/{id}/theme.css", axum::routing::get(handlers::agents::get_agent_theme))
 }

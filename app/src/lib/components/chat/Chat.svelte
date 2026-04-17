@@ -10,12 +10,12 @@
 		Check,
 		History,
 		Settings,
-		X
+		X,
 	} from 'lucide-svelte';
 	import { getWebSocketClient, type ConnectionStatus } from '$lib/websocket/client';
 	import { getCompanionChat, createNewCompanionChat, getChatMessages, speakTTS, getAgentProfile, getChannelMessages, sendChannelMessage } from '$lib/api';
 	import { goto } from '$app/navigation';
-	import { getAgent, editChatMessage } from '$lib/api/nebo';
+	import { getAgent, getAgentSurfaces, editChatMessage } from '$lib/api/nebo';
 	import { logger } from '$lib/monitoring/logger';
 
 	const log = logger.child({ component: 'Chat' });
@@ -37,6 +37,10 @@
 		ChatInput
 	} from '$lib/components/chat';
 	import EntityConfigPanel from '$lib/components/chat/EntityConfigPanel.svelte';
+	import A2UISurfacePanel from '$lib/components/a2ui/A2UISurfacePanel.svelte';
+	import A2UIWorkspaceNav from '$lib/components/a2ui/A2UIWorkspaceNav.svelte';
+	import { surfacesForAgent, a2ui, workspaceOpen } from '$lib/stores/a2ui';
+	import { loadAgentTheme, unloadAgentTheme } from '$lib/utils/a2ui-theme';
 	import { parseSlashCommand } from './slash-commands';
 	import { executeSlashCommand, type CommandContext } from './slash-command-executor';
 	import type { SlashCommand } from './slash-commands';
@@ -61,6 +65,33 @@
 	let showConfig = $state(false);
 	const entityType = $derived(isChannel ? 'channel' : isAgent ? 'agent' : 'main');
 	const entityId = $derived(isChannel ? (mode.channelId ?? '') : isAgent ? (mode.agentId ?? '') : 'main');
+
+	// A2UI surface panel: show when the active agent has live surfaces
+	const agentSurfaces$ = $derived(mode.agentId ? surfacesForAgent(mode.agentId) : null);
+	let agentSurfaces: import('$lib/stores/a2ui').A2UISurfaceInfo[] = $state([]);
+	$effect(() => {
+		if (!agentSurfaces$) { agentSurfaces = []; return; }
+		const unsub = agentSurfaces$.subscribe((v) => { agentSurfaces = v; });
+		return unsub;
+	});
+
+	// Auto-init A2UI surfaces when switching to an agent (surfaces created in background,
+	// panel stays hidden until user clicks Workspace tab)
+	$effect(() => {
+		const id = mode.agentId;
+		if (id) {
+			getWebSocketClient().send('a2ui_init', { agentId: id });
+		}
+	});
+
+	// Load/unload agent theme CSS when workspace surfaces appear/disappear
+	$effect(() => {
+		const id = mode.agentId;
+		if (id && agentSurfaces.length > 0) {
+			loadAgentTheme(id);
+			return () => unloadAgentTheme(id);
+		}
+	});
 
 	// ── Shared interfaces ──────────────────────────────────────────────
 	interface ApprovalRequest {
@@ -536,11 +567,13 @@
 				// Agent chat: set chatId to agent-scoped session key, load existing messages
 				chatId = `agent:${mode.agentId}:web`;
 				agentName = mode.agentName || $t('common.agent');
-				// Fetch agent details for empty state display
+				// Fetch agent details for empty state display + deterministic views
 				if (mode.agentId) {
 					getAgent(mode.agentId).then((data) => {
 						if (data?.agent?.description) agentDescription = data.agent.description;
 					}).catch(() => {});
+					// Restore active A2UI surfaces from backend (survives page refresh)
+					restoreAgentSurfaces(mode.agentId);
 				}
 				await loadAgentChat();
 			} else {
@@ -854,6 +887,19 @@
 		}
 	}
 
+	function restoreAgentSurfaces(agentId: string) {
+		getAgentSurfaces(agentId).then((data) => {
+			if (data?.messages?.length) {
+				console.log('[a2ui] restoring', data.messages.length, 'messages from backend');
+				for (const msg of data.messages) {
+					a2ui.processMessage(msg);
+				}
+			}
+		}).catch((e) => {
+			console.warn('[a2ui] failed to restore surfaces:', e);
+		});
+	}
+
 	let streamCheckResponded = false;
 
 	function checkForActiveStream() {
@@ -911,6 +957,50 @@
 	}
 
 	const hasMoreHistory = $derived(totalMessages > messages.length);
+
+	async function loadEarlierMessages() {
+		if (loadingMore || !messages.length) return;
+		loadingMore = true;
+		const oldestId = messages[0]?.id;
+		if (!oldestId) { loadingMore = false; return; }
+		try {
+			const res = await getChatMessages(chatId, { before: oldestId });
+			const older = (res.messages || []).map((m: ApiChatMessage) => {
+				const meta = parseMetadata((m as { metadata?: string }).metadata);
+				let content = m.content;
+				let contentBlocks = meta.contentBlocks;
+				if (!contentBlocks?.length) {
+					const multipart = parseMultipartContent(content);
+					if (multipart) {
+						content = multipart.text;
+						contentBlocks = multipart.blocks;
+					}
+				}
+				return {
+					id: m.id,
+					role: m.role as 'user' | 'assistant' | 'system',
+					content,
+					contentHtml: m.contentHtml || undefined,
+					timestamp: new Date(m.createdAt * 1000),
+					toolCalls: meta.toolCalls,
+					thinking: meta.thinking,
+					contentBlocks
+				};
+			});
+			if (older.length > 0) {
+				const prevH = messagesContainer?.scrollHeight ?? 0;
+				messages = [...older, ...messages];
+				await tick();
+				if (messagesContainer) {
+					messagesContainer.scrollTop += messagesContainer.scrollHeight - prevH;
+				}
+			}
+		} catch (e) {
+			log.error('Failed to load earlier messages', e);
+		} finally {
+			loadingMore = false;
+		}
+	}
 
 	/** Check if a WS event belongs to our current session (matches chatId or sessionKey). */
 	function isOurSession(data: Record<string, unknown>): boolean {
@@ -2516,10 +2606,12 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
+<!-- Horizontal layout: chat + optional A2UI panel -->
+<div class="flex h-full">
 <!-- File drop zone for the entire chat area -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-	class="relative flex flex-col h-full bg-base-100"
+	class="relative flex flex-col flex-1 min-w-0 h-full bg-base-100"
 	ondragover={(e) => e.preventDefault()}
 	ondragenter={(e) => {
 		e.preventDefault();
@@ -2592,14 +2684,18 @@
 			<div class="max-w-4xl mx-auto p-6 space-y-6">
 				{#if (isCompanion || isAgent) && hasMoreHistory}
 					<div class="flex justify-center">
-						<a
-							href="{mode.agentId ? `/agent/persona/${mode.agentId}/activity` : '/agent/assistant/activity'}"
-							class="flex items-center gap-2 px-4 py-2 rounded-lg bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors"
+						<button
+							onclick={loadEarlierMessages}
+							disabled={loadingMore}
+							class="flex items-center gap-2 px-4 py-2 rounded-lg bg-base-200 text-base text-base-content/80 hover:bg-base-300 hover:text-base-content transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
 						>
-
-							<History class="w-4 h-4" />
+							{#if loadingMore}
+								<Loader2 class="w-4 h-4 animate-spin" />
+							{:else}
+								<History class="w-4 h-4" />
+							{/if}
 							<span>{$t('chat.viewEarlierMessages', { values: { count: totalMessages - messages.length } })}</span>
-						</a>
+						</button>
 					</div>
 				{/if}
 				{#if !chatLoaded}
@@ -2789,6 +2885,24 @@
 		<!-- Voice UI hidden — re-enable onToggleDuplex={toggleDuplexVoice} when phonemizer is fixed (see docs/sme/VOICE_DUPLEX.md) -->
 	{/if}
 </div>
+
+<!-- A2UI Workspace: slides in when agent has live surfaces -->
+{#if agentSurfaces.length > 0 && $workspaceOpen}
+	{@const activeSurface = agentSurfaces[agentSurfaces.length - 1]}
+	<div class="a2ui-workspace-panel" data-a2ui-agent={mode.agentId ?? ''}>
+		{#if mode.agentId}
+			<A2UIWorkspaceNav
+				agentId={mode.agentId}
+				activeSurfaceId={activeSurface.surfaceId}
+				onClose={() => { workspaceOpen.set(false); }}
+			/>
+		{/if}
+		<A2UISurfacePanel surfaceId={activeSurface.surfaceId}
+			onClose={() => { workspaceOpen.set(false); }}
+		/>
+	</div>
+{/if}
+</div><!-- /flex h-full wrapper -->
 
 {#if isCompanion || isAgent}
 <ApprovalModal

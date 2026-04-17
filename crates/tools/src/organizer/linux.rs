@@ -374,7 +374,7 @@ pub async fn handle_contacts(action: &str, input: &OrganizerInput) -> ToolResult
 // Calendar
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn handle_calendar(action: &str, input: &OrganizerInput) -> ToolResult {
+pub async fn handle_calendar(action: &str, input: &OrganizerInput, _ctx: &crate::origin::ToolContext, _store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
     let backend = match detect_calendar() {
         Some(b) => b,
         None => {

@@ -1,9 +1,23 @@
 use std::collections::{HashMap, HashSet};
 use chrono::Offset;
 
+/// Controls how much of the system prompt is assembled.
+#[derive(Debug, Clone, Default)]
+pub enum PromptMode {
+    /// Full prompt: all sections, memory docs, steering, STRAP docs, etiquette.
+    /// Used for interactive chat with the main agent.
+    #[default]
+    Full,
+    /// Minimal prompt: identity + capabilities + behavior core.
+    /// Drops: memory docs, media, etiquette, autonomy, comm style, tool routing guide.
+    /// Used for sub-agents and focused tasks.
+    Minimal,
+}
+
 /// Static inputs populated once per Run() call and reused across iterations.
 #[derive(Debug, Clone, Default)]
 pub struct PromptContext {
+    pub mode: PromptMode,
     pub agent_name: String,
     pub active_skill: Option<String>,
     /// Compact skill catalog: "## Available Skills\n- name: description\n..."
@@ -390,7 +404,12 @@ pub fn build_tools_list(tool_names: &[String]) -> String {
 /// Called once per Run(), reused across iterations.
 /// Does NOT include STRAP docs or tool list — those are injected per-iteration
 /// via build_strap_section() and build_tools_list() to keep context minimal.
+///
+/// Prompt assembly varies by `PromptMode`:
+/// - `Full`: All sections (identity, memory docs, tool routing, behavior, etiquette, etc.)
+/// - `Minimal`: Core sections only (identity, capabilities, behavior). ~2.7k tokens smaller.
 pub fn build_static(pctx: &PromptContext) -> String {
+    let is_minimal = matches!(pctx.mode, PromptMode::Minimal);
     let mut parts: Vec<String> = Vec::new();
 
     // 1. Rich DB context or simple memory context
@@ -416,29 +435,35 @@ pub fn build_static(pctx: &PromptContext) -> String {
     }
     parts.push(SECTION_CAPABILITIES.to_string());
     parts.push(SECTION_TOOLS_DECLARATION.to_string());
-    parts.push(SECTION_COMM_STYLE.to_string());
 
-    // 4. Media section
-    parts.push(SECTION_MEDIA.to_string());
+    // Minimal mode: skip comm style, media, memory docs, tool routing, autonomy, etiquette
+    if !is_minimal {
+        parts.push(SECTION_COMM_STYLE.to_string());
 
-    // 5. Memory docs
-    parts.push(SECTION_MEMORY_DOCS.to_string());
+        // 4. Media section
+        parts.push(SECTION_MEDIA.to_string());
 
-    // 6. Tool routing guide
-    parts.push(SECTION_TOOL_GUIDE.to_string());
+        // 5. Memory docs
+        parts.push(SECTION_MEMORY_DOCS.to_string());
 
-    // 7. Behavior
+        // 6. Tool routing guide
+        parts.push(SECTION_TOOL_GUIDE.to_string());
+    }
+
+    // 7. Behavior (always included — core execution rules)
     parts.push(SECTION_BEHAVIOR.to_string());
 
-    // 8. Autonomous execution
-    parts.push(SECTION_AUTONOMY.to_string());
+    if !is_minimal {
+        // 8. Autonomous execution
+        parts.push(SECTION_AUTONOMY.to_string());
 
-    // 9. System etiquette
-    parts.push(SECTION_SYSTEM_ETIQUETTE.to_string());
+        // 9. System etiquette
+        parts.push(SECTION_SYSTEM_ETIQUETTE.to_string());
 
-    // 9. Plugin inventory (installed plugin binaries the agent can use)
-    if !pctx.plugin_inventory.is_empty() {
-        parts.push(pctx.plugin_inventory.clone());
+        // Plugin inventory (installed plugin binaries the agent can use)
+        if !pctx.plugin_inventory.is_empty() {
+            parts.push(pctx.plugin_inventory.clone());
+        }
     }
 
     // ── Cache boundary ──
@@ -447,24 +472,28 @@ pub fn build_static(pctx: &PromptContext) -> String {
     // varies with the active skill set and model list.
     parts.push(CACHE_BOUNDARY.to_string());
 
-    // 10. Compact skill catalog (always-present listing of all enabled skills)
-    if !pctx.skill_catalog.is_empty() {
-        parts.push(pctx.skill_catalog.clone());
+    if !is_minimal {
+        // Compact skill catalog (always-present listing of all enabled skills)
+        if !pctx.skill_catalog.is_empty() {
+            parts.push(pctx.skill_catalog.clone());
+        }
     }
 
-    // 11. Active skill content (agent-declared skills, loaded on activation)
+    // Active skill content (agent-declared skills, loaded on activation)
     if let Some(ref skill) = pctx.active_skill {
         if !skill.is_empty() {
             parts.push(skill.clone());
         }
     }
 
-    // 11. Model aliases
-    if !pctx.model_aliases.is_empty() {
-        parts.push(format!(
-            "## Model Switching\n\nUsers can ask to switch models. Available models:\n{}\n\nWhen a user asks to switch models, acknowledge the request and confirm the switch.",
-            pctx.model_aliases
-        ));
+    if !is_minimal {
+        // Model aliases
+        if !pctx.model_aliases.is_empty() {
+            parts.push(format!(
+                "## Model Switching\n\nUsers can ask to switch models. Available models:\n{}\n\nWhen a user asks to switch models, acknowledge the request and confirm the switch.",
+                pctx.model_aliases
+            ));
+        }
     }
 
     let mut prompt = parts.join("\n\n");
@@ -861,6 +890,72 @@ mod tests {
         let offset = cache_boundary_offset(&result).unwrap();
         let suffix = &result[offset..];
         assert!(suffix.contains("Model Switching"), "model aliases should be after cache boundary");
+    }
+
+    #[test]
+    fn test_build_static_minimal_includes_core() {
+        let pctx = PromptContext {
+            mode: PromptMode::Minimal,
+            agent_name: "Nebo".to_string(),
+            ..Default::default()
+        };
+        let result = build_static(&pctx);
+        // Minimal mode keeps: identity, capabilities, tools declaration, behavior
+        assert!(result.contains("personal AI companion"));
+        assert!(result.contains("Tool Execution"));
+    }
+
+    #[test]
+    fn test_build_static_minimal_drops_heavy_sections() {
+        let pctx = PromptContext {
+            mode: PromptMode::Minimal,
+            agent_name: "Nebo".to_string(),
+            skill_catalog: "## Available Skills\n- test: does testing".to_string(),
+            model_aliases: "- opus: anthropic/claude-opus-4".to_string(),
+            plugin_inventory: "## Plugins\n- gws: /path/to/gws".to_string(),
+            ..Default::default()
+        };
+        let result = build_static(&pctx);
+        // Minimal mode drops these sections
+        assert!(!result.contains("Communication Style"), "should drop SECTION_COMM_STYLE");
+        assert!(!result.contains("Inline Media"), "should drop SECTION_MEDIA");
+        assert!(!result.contains("PERSISTENT MEMORY"), "should drop SECTION_MEMORY_DOCS");
+        assert!(!result.contains("Tool Routing"), "should drop SECTION_TOOL_GUIDE");
+        assert!(!result.contains("Autonomous Execution"), "should drop SECTION_AUTONOMY");
+        assert!(!result.contains("Shared Computer Etiquette"), "should drop SECTION_SYSTEM_ETIQUETTE");
+        assert!(!result.contains("Available Skills"), "should drop skill catalog");
+        assert!(!result.contains("Model Switching"), "should drop model aliases");
+        assert!(!result.contains("Plugins"), "should drop plugin inventory");
+    }
+
+    #[test]
+    fn test_build_static_minimal_keeps_active_skill() {
+        let pctx = PromptContext {
+            mode: PromptMode::Minimal,
+            agent_name: "Nebo".to_string(),
+            active_skill: Some("## Gmail Skill\nUse plugin(resource: \"gws\")".to_string()),
+            ..Default::default()
+        };
+        let result = build_static(&pctx);
+        assert!(result.contains("Gmail Skill"), "minimal mode should keep active skill content");
+    }
+
+    #[test]
+    fn test_build_static_minimal_smaller_than_full() {
+        let full = build_static(&PromptContext {
+            mode: PromptMode::Full,
+            agent_name: "Nebo".to_string(),
+            ..Default::default()
+        });
+        let minimal = build_static(&PromptContext {
+            mode: PromptMode::Minimal,
+            agent_name: "Nebo".to_string(),
+            ..Default::default()
+        });
+        assert!(minimal.len() < full.len(), "minimal ({}) should be smaller than full ({})", minimal.len(), full.len());
+        // Should save at least 8k chars
+        assert!(full.len() - minimal.len() > 8000,
+            "should save >8k chars, saved {} chars", full.len() - minimal.len());
     }
 
     #[test]

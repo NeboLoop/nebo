@@ -1,9 +1,12 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import { tick, getContext, untrack } from 'svelte';
 	import { getActiveAgents, getAgent, updateAgent } from '$lib/api/nebo';
 	import { t } from 'svelte-i18n';
+	import { workspaceOpen, surfacesForAgent } from '$lib/stores/a2ui';
+	import { getWebSocketClient } from '$lib/websocket/client';
 
 	let { children }: { children: Snippet } = $props();
 
@@ -68,6 +71,12 @@
 			cancelEditing();
 		}
 	}
+
+	// Reset to chat view when switching agents
+	$effect(() => {
+		param;
+		workspaceOpen.set(false);
+	});
 
 	// React only to param (route) changes — untrack channelState reads to avoid
 	// re-triggering when sidebar navigation clears activeAgentId before goto.
@@ -166,7 +175,21 @@
 					{/if}
 				</div>
 				<div class="agent-tab-bar-inline">
-					<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat')}>{$t('agent.chatTab')}</a>
+					<a href="{basePath}/chat" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('chat') && !$workspaceOpen} onclick={() => workspaceOpen.set(false)}>{$t('agent.chatTab')}</a>
+					<button
+						class="agent-tab-inline"
+						class:agent-tab-inline-active={isTabActive('chat') && $workspaceOpen}
+						onclick={() => {
+							const opening = !$workspaceOpen;
+							workspaceOpen.set(opening);
+							if (opening) {
+								if (!isTabActive('chat')) {
+									goto(`${basePath}/chat`);
+								}
+								getWebSocketClient().send('a2ui_init', { agentId: param });
+							}
+						}}
+					>Workspace</button>
 					<a href="{basePath}/persona" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('persona')}>{$t('agent.personaTab')}</a>
 					<a href="{basePath}/configure" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('configure')}>{$t('agent.configure')}</a>
 					<a href="{basePath}/automate" class="agent-tab-inline" class:agent-tab-inline-active={isTabActive('automate')}>{$t('agent.automate')}</a>

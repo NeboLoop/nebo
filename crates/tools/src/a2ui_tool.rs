@@ -59,6 +59,15 @@ pub trait A2UIHost: Send + Sync {
         &self,
         agent_id: &str,
     ) -> Pin<Box<dyn Future<Output = Vec<SurfaceSummary>> + Send + '_>>;
+
+    fn navigate_view(
+        &self,
+        agent_id: &str,
+        from_view: &str,
+        to_view: &str,
+        params: Option<serde_json::Value>,
+        views_json: &serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + '_>>;
 }
 
 /// Summary of an active surface (returned by list).
@@ -92,6 +101,7 @@ impl A2UIDomainTool {
                     "create".into(),
                     "update_components".into(),
                     "update_data".into(),
+                    "navigate".into(),
                     "delete".into(),
                     "list".into(),
                 ],
@@ -109,7 +119,7 @@ impl A2UIDomainTool {
                 FieldConfig {
                     name: "agent_id".into(),
                     field_type: "string".into(),
-                    description: "Agent that owns the surface".into(),
+                    description: "Agent that owns the surface (auto-resolved from session if omitted)".into(),
                     required: false,
                     enum_values: vec![],
                     default: None,
@@ -148,7 +158,7 @@ impl A2UIDomainTool {
                     description: "Component catalog to use".into(),
                     required: false,
                     enum_values: vec![],
-                    default: Some(json!("basic")),
+                    default: Some(json!("https://a2ui.org/specification/v0_9/basic_catalog.json")),
                 },
                 FieldConfig {
                     name: "theme".into(),
@@ -183,12 +193,37 @@ impl A2UIDomainTool {
                     enum_values: vec![],
                     default: None,
                 },
+                FieldConfig {
+                    name: "target_view".into(),
+                    field_type: "string".into(),
+                    description: "Target view ID for navigate action".into(),
+                    required: false,
+                    enum_values: vec![],
+                    default: None,
+                },
+                FieldConfig {
+                    name: "params".into(),
+                    field_type: "object".into(),
+                    description: "Parameters to pass to the target view (injected as data model)".into(),
+                    required: false,
+                    enum_values: vec![],
+                    default: None,
+                },
+                FieldConfig {
+                    name: "views_json".into(),
+                    field_type: "object".into(),
+                    description: "Views definition object (auto-resolved from agent if omitted)".into(),
+                    required: false,
+                    enum_values: vec![],
+                    default: None,
+                },
             ],
             examples: vec![
                 r#"a2ui(resource: "surface", action: "create", agent_id: "crm", view_id: "dashboard")"#.into(),
                 r#"a2ui(action: "update_components", surface_id: "agent:crm:dashboard", components: [...])"#.into(),
                 r#"a2ui(action: "update_data", surface_id: "agent:crm:dashboard", path: "/title", value: "My CRM")"#.into(),
                 r#"a2ui(action: "delete", surface_id: "agent:crm:dashboard")"#.into(),
+                r#"a2ui(action: "navigate", surface_id: "agent:crm:dashboard", target_view: "settings", params: {"tab": "general"})"#.into(),
                 r#"a2ui(action: "list", agent_id: "crm")"#.into(),
             ],
         }
@@ -214,7 +249,7 @@ impl DynTool for A2UIDomainTool {
 
     fn execute_dyn<'a>(
         &'a self,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>> {
         Box::pin(async move {
@@ -228,7 +263,7 @@ impl DynTool for A2UIDomainTool {
             };
 
             match resource {
-                "surface" => self.handle_surface(action, &input).await,
+                "surface" => self.handle_surface(action, &input, ctx).await,
                 other => ToolResult::error(format!("Unknown resource: {other}. Use: surface")),
             }
         })
@@ -236,13 +271,28 @@ impl DynTool for A2UIDomainTool {
 }
 
 impl A2UIDomainTool {
-    async fn handle_surface(&self, action: &str, params: &serde_json::Value) -> ToolResult {
+    /// Resolve agent_id: use explicit param if provided, otherwise derive from
+    /// ToolContext.session_key (format "agent:{id}:{channel}").
+    fn resolve_agent_id<'a>(params: &'a serde_json::Value, ctx: &'a ToolContext) -> &'a str {
+        let explicit = params.get("agent_id").and_then(|v| v.as_str()).unwrap_or("");
+        if !explicit.is_empty() {
+            return explicit;
+        }
+        // Derive from session key: "agent:{id}:{channel}"
+        if ctx.session_key.starts_with("agent:") {
+            if let Some(id) = ctx.session_key.split(':').nth(1) {
+                if !id.is_empty() {
+                    return id;
+                }
+            }
+        }
+        ""
+    }
+
+    async fn handle_surface(&self, action: &str, params: &serde_json::Value, ctx: &ToolContext) -> ToolResult {
         match action {
             "create" => {
-                let agent_id = params
-                    .get("agent_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let agent_id = Self::resolve_agent_id(params, ctx);
                 let view_id = params
                     .get("view_id")
                     .and_then(|v| v.as_str())
@@ -254,11 +304,11 @@ impl A2UIDomainTool {
                 let catalog_id = params
                     .get("catalog_id")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("basic");
+                    .unwrap_or("https://a2ui.org/specification/v0_9/basic_catalog.json");
                 let theme = params.get("theme").cloned();
 
                 if agent_id.is_empty() {
-                    return ToolResult::error("agent_id is required");
+                    return ToolResult::error("agent_id is required (pass it explicitly or ensure session is agent-scoped)");
                 }
 
                 match self
@@ -314,6 +364,41 @@ impl A2UIDomainTool {
                 }
             }
 
+            "navigate" => {
+                let surface_id = params.get("surface_id").and_then(|v| v.as_str()).unwrap_or("");
+                let agent_id_param = Self::resolve_agent_id(params, ctx);
+                let target_view = match params.get("target_view").and_then(|v| v.as_str()) {
+                    Some(v) => v,
+                    None => return ToolResult::error("target_view is required"),
+                };
+                let nav_params = params.get("params").cloned();
+                let views_json = match params.get("views_json") {
+                    Some(v) => v.clone(),
+                    None => return ToolResult::error("views_json is required (agent views definition)"),
+                };
+
+                // Derive agent_id and from_view from surface_id or params
+                let (agent_id, from_view) = if !surface_id.is_empty() {
+                    let parts: Vec<&str> = surface_id.split(':').collect();
+                    let aid = if parts.len() >= 2 { parts[1] } else { agent_id_param };
+                    let fv = if parts.len() >= 3 { parts[2] } else { "default" };
+                    (aid, fv)
+                } else {
+                    (agent_id_param, "default")
+                };
+
+                if agent_id.is_empty() {
+                    return ToolResult::error("agent_id is required for navigate");
+                }
+
+                match self.host.navigate_view(agent_id, from_view, target_view, nav_params, &views_json).await {
+                    Ok(sid) => ToolResult::ok(
+                        json!({ "surface_id": sid, "status": "navigated", "view": target_view }).to_string(),
+                    ),
+                    Err(e) => ToolResult::error(format!("Failed to navigate: {e}")),
+                }
+            }
+
             "delete" => {
                 let surface_id = match params.get("surface_id").and_then(|v| v.as_str()) {
                     Some(id) => id,
@@ -329,10 +414,10 @@ impl A2UIDomainTool {
             }
 
             "list" => {
-                let agent_id = match params.get("agent_id").and_then(|v| v.as_str()) {
-                    Some(id) => id,
-                    None => return ToolResult::error("agent_id is required"),
-                };
+                let agent_id = Self::resolve_agent_id(params, ctx);
+                if agent_id.is_empty() {
+                    return ToolResult::error("agent_id is required (pass it explicitly or ensure session is agent-scoped)");
+                }
 
                 let surfaces = self.host.list_surfaces(agent_id).await;
                 ToolResult::ok(serde_json::to_string(&surfaces).unwrap_or_default())

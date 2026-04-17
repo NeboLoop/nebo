@@ -461,22 +461,225 @@ async fn handle_client_ws(mut socket: WebSocket, state: AppState) {
                                         let _ = tx.send(value);
                                     }
                                 }
-                                // A2UI: user action on a surface component
+                                // A2UI: user action on a surface component — dispatch deterministically or route to agent
                                 "a2ui_action" => {
-                                    let surface_id = parsed["data"]["surface_id"]
-                                        .as_str()
+                                    let data = &parsed["data"];
+                                    // ActionListener sends camelCase; try both forms
+                                    let surface_id = data["surfaceId"].as_str()
+                                        .or_else(|| data["surface_id"].as_str())
                                         .unwrap_or("")
                                         .to_string();
-                                    let action = parsed["data"]["action"].clone();
+                                    let action_name = data["name"].as_str()
+                                        .unwrap_or("unknown")
+                                        .to_string();
+                                    let component_id = data["sourceComponentId"].as_str()
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let context = data["context"].clone();
+
+                                    if surface_id.is_empty() {
+                                        debug!("a2ui_action: missing surface_id, ignoring");
+                                        continue;
+                                    }
+
+                                    // Parse agent_id from surface_id "agent:{id}:{view}"
+                                    let parts: Vec<&str> = surface_id.split(':').collect();
+                                    let agent_id = if parts.len() >= 2 { parts[1].to_string() } else { String::new() };
+
+                                    if agent_id.is_empty() {
+                                        debug!("a2ui_action: could not extract agent_id from {}", surface_id);
+                                        continue;
+                                    }
+
+                                    debug!(surface_id = %surface_id, action = %action_name, component = %component_id, "a2ui_action received");
+
+                                    let state_clone = state.clone();
+                                    tokio::spawn(async move {
+                                        // Look up views.json for action bindings
+                                        let views_json = crate::handlers::agents::get_agent_views(&state_clone, &agent_id).await;
+
+                                        // Try deterministic dispatch first
+                                        let handled = crate::a2ui_actions::dispatch(
+                                            &state_clone,
+                                            &state_clone.a2ui,
+                                            &agent_id,
+                                            &surface_id,
+                                            &action_name,
+                                            &component_id,
+                                            &context,
+                                            views_json.as_ref(),
+                                        ).await;
+
+                                        if handled {
+                                            debug!(action = %action_name, "a2ui_action handled deterministically");
+                                            return;
+                                        }
+
+                                        // State-driven dedup: if this action is already being
+                                        // processed (e.g., user double-clicked before UI updated),
+                                        // reject the duplicate. Broadcasts "processing" status to
+                                        // frontend so the button can show a loading state.
+                                        if !state_clone.a2ui.try_begin_action(&surface_id, &action_name).await {
+                                            debug!(action = %action_name, surface = %surface_id, "a2ui_action already in progress, skipping");
+                                            return;
+                                        }
+
+                                        // Fall through to LLM: build ChatConfig and run_chat
+                                        let session_key = agent::keyparser::build_agent_session_key(&agent_id, "web");
+
+                                        let prompt = if context.is_null() || context == serde_json::json!({}) {
+                                            format!(
+                                                "[Workspace interaction] The user clicked the \"{}\" button (component: {}) in your workspace.",
+                                                action_name, component_id
+                                            )
+                                        } else {
+                                            format!(
+                                                "[Workspace interaction] The user triggered the \"{}\" action (component: {}) in your workspace. Context: {}",
+                                                action_name, component_id, context
+                                            )
+                                        };
+
+                                        let entity_config = crate::entity_config::resolve_for_chat(
+                                            &state_clone.store, "agent", &agent_id
+                                        );
+
+                                        let config = ChatConfig {
+                                            session_key,
+                                            prompt,
+                                            system: String::new(),
+                                            user_id: String::new(),
+                                            channel: "web".to_string(),
+                                            origin: Origin::User,
+                                            agent_id: agent_id.clone(),
+                                            cancel_token: CancellationToken::new(),
+                                            lane: types::constants::lanes::EVENTS.to_string(),
+                                            comm_reply: None,
+                                            entity_config,
+                                            images: vec![],
+                                            entity_name: String::new(),
+                                        };
+
+                                        run_chat(&state_clone, config).await;
+
+                                        // Action complete — re-enable the button
+                                        state_clone.a2ui.end_action(&surface_id, &action_name).await;
+                                    });
+                                }
+                                // A2UI: auto-init default view when agent is selected
+                                "a2ui_init" => {
+                                    let agent_id = parsed["data"]["agentId"].as_str()
+                                        .or_else(|| parsed["data"]["agent_id"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+
+                                    if agent_id.is_empty() {
+                                        debug!("a2ui_init: missing agent_id");
+                                        continue;
+                                    }
+
+                                    let a2ui = state.a2ui.clone();
+                                    let state_clone = state.clone();
+                                    tokio::spawn(async move {
+                                        // If surfaces already exist for this agent, replay them
+                                        // (handles reconnects and pop-out windows)
+                                        let replay = a2ui.get_agent_replay_messages(&agent_id).await;
+                                        if !replay.is_empty() {
+                                            debug!(agent_id = %agent_id, count = replay.len(), "a2ui_init: replaying existing surfaces");
+                                            for msg in replay {
+                                                state_clone.hub.broadcast("a2ui_message", msg);
+                                            }
+                                            return;
+                                        }
+
+                                        let views = crate::handlers::agents::get_agent_views(&state_clone, &agent_id).await;
+                                        if let Some(views) = views {
+                                            // Find the default view: prefer "default" key, then
+                                            // first _nav item's viewId, then first non-underscore key
+                                            let default_key = if views.get("default").is_some() {
+                                                "default".to_string()
+                                            } else if let Some(nav) = views.get("_nav").and_then(|n| n.as_array()) {
+                                                nav.first()
+                                                    .and_then(|item| item["viewId"].as_str())
+                                                    .unwrap_or("default")
+                                                    .to_string()
+                                            } else {
+                                                views.as_object()
+                                                    .and_then(|m| m.keys().find(|k| !k.starts_with('_')).cloned())
+                                                    .unwrap_or_else(|| "default".to_string())
+                                            };
+                                            if let Err(e) = a2ui.navigate_view(
+                                                &agent_id, "__none__", &default_key, None, &views,
+                                            ).await {
+                                                warn!(error = %e, "a2ui_init failed");
+                                            }
+                                        } else {
+                                            debug!(agent_id = %agent_id, "a2ui_init: no views.json found");
+                                        }
+                                    });
+                                }
+                                // A2UI: navigate to a different view
+                                "a2ui_navigate" => {
+                                    let data = &parsed["data"];
+                                    let surface_id = data["surfaceId"].as_str()
+                                        .or_else(|| data["surface_id"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let target_view = data["targetView"].as_str()
+                                        .or_else(|| data["target_view"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let params = if data["params"].is_null() {
+                                        None
+                                    } else {
+                                        Some(data["params"].clone())
+                                    };
+
+                                    if surface_id.is_empty() || target_view.is_empty() {
+                                        debug!("a2ui_navigate: missing surface_id or targetView");
+                                        continue;
+                                    }
+
+                                    // Parse agent_id and current view from surface_id "agent:{id}:{view}"
+                                    let parts: Vec<&str> = surface_id.split(':').collect();
+                                    let agent_id = if parts.len() >= 2 { parts[1].to_string() } else { String::new() };
+                                    let from_view = if parts.len() >= 3 { parts[2].to_string() } else { "default".to_string() };
+
+                                    if agent_id.is_empty() {
+                                        debug!("a2ui_navigate: could not extract agent_id from {}", surface_id);
+                                        continue;
+                                    }
+
+                                    let a2ui = state.a2ui.clone();
+                                    let state_clone = state.clone();
+                                    tokio::spawn(async move {
+                                        // Look up views.json from agent filesystem
+                                        let views = crate::handlers::agents::get_agent_views(&state_clone, &agent_id).await;
+                                        if let Some(views) = views {
+                                            if let Err(e) = a2ui.navigate_view(
+                                                &agent_id, &from_view, &target_view, params, &views,
+                                            ).await {
+                                                warn!(error = %e, "a2ui_navigate failed");
+                                            }
+                                        } else {
+                                            warn!(agent_id = %agent_id, "a2ui_navigate: no views.json found");
+                                        }
+                                    });
+                                }
+                                // A2UI: user closed a surface panel
+                                "a2ui_close" => {
+                                    let surface_id = parsed["data"]["surfaceId"]
+                                        .as_str()
+                                        .or_else(|| parsed["data"]["surface_id"].as_str())
+                                        .unwrap_or("")
+                                        .to_string();
                                     if !surface_id.is_empty() {
-                                        debug!("a2ui_action on surface {}", surface_id);
-                                        // Forward action to agent runner as a chat message
-                                        // with the surface context injected.
-                                        // Phase 2: deterministic action bindings will bypass the LLM.
-                                        state.hub.broadcast("a2ui_action_received", serde_json::json!({
-                                            "surface_id": surface_id,
-                                            "action": action,
-                                        }));
+                                        debug!(surface_id = %surface_id, "a2ui_close: deleting surface");
+                                        let a2ui = state.a2ui.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = a2ui.delete_surface(&surface_id).await {
+                                                warn!(error = %e, "failed to delete a2ui surface on close");
+                                            }
+                                        });
                                     }
                                 }
                                 _ => {

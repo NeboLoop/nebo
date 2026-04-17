@@ -1,4 +1,6 @@
 pub mod a2ui;
+pub mod a2ui_actions;
+pub mod a2ui_bindings;
 pub mod chat_dispatch;
 pub mod codes;
 pub mod deps;
@@ -815,17 +817,23 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         ..Default::default()
     }));
 
-    let runner = Arc::new(agent::Runner::new(
-        store.clone(),
-        tool_registry.clone(),
-        providers,
-        selector,
-        concurrency.clone(),
-        hooks.clone(),
-        Some(mcp_context.clone()),
-        active_role_state.clone(),
-        Some(skill_loader.clone()),
-    ));
+    let ask_channels: tools::AskChannels =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
+    let runner = Arc::new(
+        agent::Runner::new(
+            store.clone(),
+            tool_registry.clone(),
+            providers,
+            selector,
+            concurrency.clone(),
+            hooks.clone(),
+            Some(mcp_context.clone()),
+            active_role_state.clone(),
+            Some(skill_loader.clone()),
+        )
+        .set_ask_channels(ask_channels.clone()),
+    );
 
     // Create event bus and dispatcher for workflow-to-workflow events
     let (event_bus, event_rx) = tools::EventBus::new();
@@ -855,7 +863,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         data_dir.join("user").join("agents"),
     ));
     agent_loader.load_all().await;
-    agent_loader.watch();
+    let (_watcher_handle, agent_fs_rx) = agent_loader.watch();
     tool_registry.set_agent_loader(agent_loader.clone());
 
     // Sync filesystem agent content → DB (keeps DB content columns fresh + recovers missing records)
@@ -1012,6 +1020,13 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         store.clone(),
         a2ui_catalog,
     ));
+    a2ui_manager.restore_surfaces().await;
+    // Wire data binding manager (MCP tool polling for A2UI surfaces)
+    let binding_manager = Arc::new(a2ui_bindings::DataBindingManager::new(
+        a2ui_manager.clone(),
+        bridge.clone(),
+    ));
+    a2ui_manager.set_binding_manager(binding_manager).await;
     tool_registry
         .register(Box::new(tools::A2UIDomainTool::new(
             a2ui_manager.clone() as Arc<dyn tools::A2UIHost>,
@@ -1037,7 +1052,7 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
         extension_bridge,
         comm_manager,
         approval_channels: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        ask_channels: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        ask_channels: ask_channels.clone(),
         update_pending: Arc::new(tokio::sync::Mutex::new(None)),
         hooks,
         mcp_context,
@@ -1085,6 +1100,14 @@ pub async fn run(cfg: Config, quiet: bool) -> Result<(), NeboError> {
                     crate::deps::resolve_cascade(&cascade_state, deps, &mut visited).await;
                 }
             }
+        });
+    }
+
+    // Spawn filesystem agent watcher → DB + registry + WS sync
+    {
+        let fs_state = state.clone();
+        tokio::spawn(async move {
+            handle_agent_fs_events(fs_state, agent_fs_rx).await;
         });
     }
 
@@ -1375,6 +1398,182 @@ async fn shutdown_signal() {
         ctrl_c.await.ok();
         info!("received Ctrl+C");
     }
+}
+
+/// Process filesystem agent change events: sync DB, update registry, broadcast WS.
+async fn handle_agent_fs_events(
+    state: AppState,
+    mut rx: tokio::sync::mpsc::Receiver<napp::AgentFsEvent>,
+) {
+    while let Some(event) = rx.recv().await {
+        match event {
+            napp::AgentFsEvent::Added(loaded) => {
+                // Look up DB by manifest ID first, then by name
+                let db_agent = loaded.id.as_deref()
+                    .and_then(|id| state.store.get_agent(id).ok().flatten())
+                    .or_else(|| state.store.get_agent_by_name(&loaded.agent_def.name).ok().flatten());
+
+                let final_id = if let Some(ref existing) = db_agent {
+                    // Update existing record with fresh filesystem content
+                    let _ = state.store.update_agent(
+                        &existing.id,
+                        &loaded.agent_def.name,
+                        &loaded.description,
+                        &loaded.agent_md,
+                        &loaded.frontmatter,
+                        None, None,
+                    );
+                    existing.id.clone()
+                } else {
+                    // Create new DB record
+                    let agent_id = loaded.id.clone()
+                        .unwrap_or_else(|| loaded.agent_def.name.clone());
+                    let kind = match loaded.source {
+                        napp::AgentSource::Installed => Some("installed"),
+                        napp::AgentSource::User => Some("user"),
+                    };
+                    match state.store.create_agent(
+                        &agent_id, kind,
+                        &loaded.agent_def.name, &loaded.description,
+                        &loaded.agent_md, &loaded.frontmatter,
+                        None, None,
+                    ) {
+                        Ok(_) => {
+                            // Resolve dependency cascade if agent has frontmatter
+                            if !loaded.frontmatter.is_empty() {
+                                let cascade_state = state.clone();
+                                let fm = loaded.frontmatter.clone();
+                                tokio::spawn(async move {
+                                    let deps = crate::deps::extract_agent_deps_from_frontmatter(&fm);
+                                    if !deps.is_empty() {
+                                        let mut visited = std::collections::HashSet::new();
+                                        crate::deps::resolve_cascade(&cascade_state, deps, &mut visited).await;
+                                    }
+                                });
+                            }
+                            agent_id
+                        }
+                        Err(e) => {
+                            warn!(name = %loaded.agent_def.name, error = %e,
+                                  "fs watcher: failed to create agent in DB");
+                            continue;
+                        }
+                    }
+                };
+
+                // Sync workflow bindings
+                if let Some(ref config) = loaded.config {
+                    sync_agent_workflows(&state.store, &final_id, config);
+                }
+
+                // If agent was previously enabled, restore to registry + start worker
+                if let Ok(Some(db)) = state.store.get_agent(&final_id) {
+                    if db.is_enabled != 0 {
+                        let config = if !db.frontmatter.is_empty() {
+                            napp::agent::parse_agent_config(&db.frontmatter).ok()
+                        } else {
+                            None
+                        };
+                        state.agent_registry.write().await.insert(final_id.clone(), tools::ActiveAgent {
+                            agent_id: final_id.clone(),
+                            name: db.name.clone(),
+                            agent_md: db.agent_md.clone(),
+                            config,
+                            channel_id: None,
+                            degraded: None,
+                        });
+                        state.agent_workers.start_agent(&final_id, &db.name).await;
+                    }
+                }
+
+                info!(name = %loaded.agent_def.name, id = %final_id, "fs watcher: agent added");
+                state.hub.broadcast(
+                    "agent_installed",
+                    serde_json::json!({ "agentId": final_id, "name": loaded.agent_def.name }),
+                );
+            }
+
+            napp::AgentFsEvent::Changed(loaded) => {
+                // Find DB record
+                let db_agent = loaded.id.as_deref()
+                    .and_then(|id| state.store.get_agent(id).ok().flatten())
+                    .or_else(|| state.store.get_agent_by_name(&loaded.agent_def.name).ok().flatten());
+
+                let Some(db_agent) = db_agent else {
+                    warn!(name = %loaded.agent_def.name, "fs watcher: changed agent not in DB, skipping");
+                    continue;
+                };
+
+                // Update DB content
+                let _ = state.store.update_agent(
+                    &db_agent.id,
+                    &loaded.agent_def.name,
+                    &loaded.description,
+                    &loaded.agent_md,
+                    &loaded.frontmatter,
+                    None, None,
+                );
+
+                // Re-sync workflow bindings
+                if let Some(ref config) = loaded.config {
+                    sync_agent_workflows(&state.store, &db_agent.id, config);
+                }
+
+                // Patch in-memory registry if active
+                {
+                    let mut registry = state.agent_registry.write().await;
+                    if let Some(active) = registry.get_mut(&db_agent.id) {
+                        active.name = loaded.agent_def.name.clone();
+                        active.agent_md = loaded.agent_md.clone();
+                        active.config = loaded.config.clone();
+                    }
+                }
+
+                // Restart worker if running (picks up new triggers)
+                if db_agent.is_enabled != 0 {
+                    state.agent_workers.stop_agent(&db_agent.id).await;
+                    state.agent_workers.start_agent(&db_agent.id, &loaded.agent_def.name).await;
+                }
+
+                info!(name = %loaded.agent_def.name, id = %db_agent.id, "fs watcher: agent content updated");
+                state.hub.broadcast(
+                    "agent_updated",
+                    serde_json::json!({
+                        "agentId": db_agent.id,
+                        "name": loaded.agent_def.name,
+                        "description": loaded.description,
+                    }),
+                );
+            }
+
+            napp::AgentFsEvent::Removed { name_key: _, agent } => {
+                // Find DB record
+                let db_agent = agent.id.as_deref()
+                    .and_then(|id| state.store.get_agent(id).ok().flatten())
+                    .or_else(|| state.store.get_agent_by_name(&agent.agent_def.name).ok().flatten());
+
+                let Some(db_agent) = db_agent else {
+                    info!(name = %agent.agent_def.name, "fs watcher: removed agent not in DB, nothing to do");
+                    continue;
+                };
+
+                // Soft-deactivate (do NOT delete — user may re-add directory)
+                let _ = state.store.set_agent_enabled(&db_agent.id, false);
+
+                // Stop worker and remove from registry
+                state.agent_workers.stop_agent(&db_agent.id).await;
+                state.agent_registry.write().await.remove(&db_agent.id);
+
+                info!(name = %agent.agent_def.name, id = %db_agent.id, "fs watcher: agent removed from filesystem");
+                state.hub.broadcast(
+                    "agent_deactivated",
+                    serde_json::json!({ "agentId": db_agent.id, "name": agent.agent_def.name }),
+                );
+            }
+        }
+    }
+
+    warn!("agent filesystem event channel closed");
 }
 
 /// Sync workflow bindings from an AgentConfig into the agent_workflows table.

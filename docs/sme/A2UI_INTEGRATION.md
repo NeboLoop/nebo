@@ -1,7 +1,7 @@
 # A2UI Integration Architecture for Nebo
 
-> Last updated: 2026-04-11
-> Status: Research complete, ready for implementation
+> Last updated: 2026-04-13
+> Status: **Phase 1 implemented** (core infrastructure shipped in fcb850a)
 > Protocol target: A2UI v0.9
 > Dependencies: `a2ui-rs` (MIT), `@a2ui/lit` (Apache 2.0)
 
@@ -604,12 +604,43 @@ Extends the basic catalog with 6 Nebo-specific components:
 
 ### 7.2 Implementation Strategy
 
-Custom components are Lit web components built alongside the SvelteKit app:
+Custom components are Lit web components built alongside the SvelteKit app.
+
+**Current file structure (Phase 1 — basic catalog implemented):**
 
 ```
-app/src/lib/a2ui/
-  catalog/
-    index.ts              # Catalog registration
+app/src/lib/components/a2ui/
+  a2ui-markdown-provider.ts     # Markdown rendering for A2UI Text components
+  nebo-action-context.ts        # Lit context for button pending state
+  nebo-surface.ts               # NeboSurfaceElement (shadow DOM + style injection + ContextProvider)
+  A2UISurfacePanel.svelte       # Svelte wrapper: surface model → web component + action routing
+  A2UIWorkspaceNav.svelte       # Tab navigation from views.json _nav
+  nebo-catalog/
+    index.ts                    # neboCatalog registration (18 components)
+    NeboButton.ts               # <nebo-a2ui-button> (pending state via ContextConsumer)
+    NeboText.ts                 # <nebo-a2ui-text>
+    NeboColumn.ts               # <nebo-a2ui-column>
+    NeboRow.ts                  # <nebo-a2ui-row>
+    NeboList.ts                 # <nebo-a2ui-list>
+    NeboTabs.ts                 # <nebo-a2ui-tabs>
+    NeboCard.ts                 # <nebo-a2ui-card>
+    NeboModal.ts                # <nebo-a2ui-modal>
+    NeboTextField.ts            # <nebo-a2ui-textfield>
+    NeboChoicePicker.ts         # <nebo-a2ui-choicepicker>
+    NeboCheckBox.ts             # <nebo-a2ui-checkbox>
+    NeboSlider.ts               # <nebo-a2ui-slider>
+    NeboDivider.ts              # <nebo-a2ui-divider>
+    NeboImage.ts                # <nebo-a2ui-image>
+    NeboIcon.ts                 # <nebo-a2ui-icon>
+    NeboDateTimeInput.ts        # <nebo-a2ui-datetimeinput>
+    NeboAudioPlayer.ts          # <nebo-a2ui-audioplayer>
+    NeboVideo.ts                # <nebo-a2ui-video>
+```
+
+**Future (Phase 5 — custom Nebo catalog components, not yet built):**
+
+```
+app/src/lib/components/a2ui/nebo-catalog/
     MetricTile.ts         # <nebo-metric-tile>
     KanbanBoard.ts        # <nebo-kanban-board>
     KanbanColumn.ts       # <nebo-kanban-column>
@@ -853,87 +884,50 @@ impl DynTool for A2UITool {
 
 ## 10. Frontend Architecture
 
-### 10.1 New SvelteKit Routes
+### 10.1 SvelteKit Routes (Actual)
 
 ```
 app/src/routes/
-  (agent-app)/                      # New route group — agent app windows
-    +layout.svelte                  # Minimal layout + WS + collapsible chat sidebar
-    [agentId]/[viewId]/
-      +page.svelte                  # A2UISurface component
+  (app)/+layout.svelte              # Main layout — subscribes to a2ui_message + a2ui_action_status WS events
+  (workspace)/workspace/[agentId]/
+    +page.svelte                    # Pop-out workspace window — same WS subscriptions
 ```
 
-### 10.2 A2UISurface.svelte (Core Component)
+### 10.2 Architecture (Actual Implementation)
 
-> **Note:** The `processor.onSurfaceCreated` and `<a2ui-surface>` element creation
-> below is pseudocode. The actual `@a2ui/lit` v0.9 API surface will be verified
-> during Phase 1 implementation against the installed package.
+The frontend uses three layers:
 
-```svelte
-<script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { page } from '$app/stores';
-  import { getWebSocketClient } from '$lib/websocket/client';
+1. **Svelte store** (`app/src/lib/stores/a2ui.ts`) — wraps `MessageProcessor`, tracks surfaces + pending actions
+2. **Svelte component** (`A2UISurfacePanel.svelte`) — bridges store to web component, routes actions
+3. **Lit web components** (`NeboSurfaceElement` + 18 catalog components) — renders A2UI component tree
 
-  // Dynamic imports for A2UI (tree-shaken, loaded only when needed)
-  let processor: any;
-  let container: HTMLElement;
-
-  const agentId = $page.params.agentId;
-  const viewId = $page.params.viewId;
-  const surfaceId = `agent:${agentId}:${viewId}`;
-
-  onMount(async () => {
-    // Dynamic import keeps A2UI out of the main bundle
-    const { MessageProcessor } = await import('@a2ui/web_core/v0_9');
-    const { basicCatalog } = await import('@a2ui/lit/v0_9');
-    // Import Nebo custom catalog if needed
-    // const { neboCatalog } = await import('$lib/a2ui/catalog');
-
-    // Initialize processor with action handler
-    processor = new MessageProcessor(
-      [basicCatalog],
-      async (action) => {
-        // Send action back to server
-        wsClient.send('a2ui_action', {
-          surface_id: surfaceId,
-          action,
-        });
-      }
-    );
-
-    // Subscribe to A2UI messages for this surface
-    const wsClient = getWebSocketClient();
-    const unsub = wsClient.on('a2ui_message', (data: any) => {
-      if (data.surface_id === surfaceId) {
-        processor.processMessage(data.message);
-      }
-    });
-
-    // Signal readiness
-    wsClient.send('a2ui_ready', { surface_id: surfaceId });
-
-    // Surface lifecycle: render when created
-    processor.onSurfaceCreated((surface: any) => {
-      // The Lit renderer auto-renders into the container
-      // via <a2ui-surface> custom element
-      const el = document.createElement('a2ui-surface');
-      el.surfaceId = surfaceId;
-      el.surface = surface;
-      el.processor = processor;
-      container.appendChild(el);
-    });
-
-    processor.onSurfaceDeleted(() => {
-      container.innerHTML = '';
-    });
-
-    return () => { unsub(); };
-  });
-</script>
-
-<div bind:this={container} class="a2ui-container"></div>
 ```
+a2ui store (MessageProcessor) ←→ A2UISurfacePanel.svelte ←→ <nebo-a2ui-surface>
+                                        ↕                          ↕ (shadow DOM)
+                                  WS client                   Lit context
+                                  (a2ui_action)            (NeboActionState)
+                                        ↕                          ↕
+                                    Backend                  <nebo-a2ui-button>
+                                  (ws.rs handler)          (pending spinner)
+```
+
+**Key components:**
+
+- `a2ui store` — `MessageProcessor` + `pendingActions: Set<string>` + `handleActionStatus()`
+- `A2UISurfacePanel.svelte` — subscribes to surface creation, routes actions to WS, bridges pending state to Lit
+- `NeboSurfaceElement` — `A2uiSurface` subclass with shadow DOM style injection + `ContextProvider` for action state
+- `NeboButtonElement` — `ContextConsumer` for pending state, shows DaisyUI spinner while action processes
+- `nebo-action-context.ts` — Lit context definition (`NeboActionState` with `onComplete` callback registration)
+
+**Action flow:**
+
+1. User clicks button → `NeboButton` sets `_pending = true`, shows spinner, calls `props.action()`
+2. `A2UISurfacePanel` receives action event → checks `isActionPending()` → sends `a2ui_action` via WS
+3. Backend `ws.rs` → tries `a2ui_actions::dispatch()` for deterministic handling
+4. If not deterministic → `try_begin_action()` (dedup) → `run_chat()` → `end_action()`
+5. Backend broadcasts `a2ui_action_status: processing` / `complete`
+6. Frontend store updates `pendingActions` → `A2UISurfacePanel` calls `notifyActionComplete()` on surface element
+7. `NeboSurfaceElement` fires completion listeners → `NeboButton` clears `_pending`, hides spinner
 
 ### 10.3 Main Window Integration
 
@@ -1032,34 +1026,46 @@ Third-party custom catalogs (from marketplace agents) are a Phase 5+ concern and
 
 ## 12. Implementation Phases
 
-### Phase 1: Core Infrastructure (Foundation)
+### Phase 1: Core Infrastructure (Foundation) — COMPLETE
 
-**Goal:** Agent can push a "Hello World" A2UI surface to the frontend.
+**Shipped in commit `fcb850a` (2026-04-12)**
 
-1. `git subtree add` a2ui-rs into `crates/a2ui/`
-2. Add workspace members to `Cargo.toml`
-3. Implement `NeboCatalogProvider` (basic catalog only)
-4. Implement `A2UIManager` with `broadcast_a2ui_message()`
-5. Register `A2UITool` in tool registry
-6. Add `a2ui_message` WS event type to `ws.rs`
-7. `pnpm add @a2ui/lit @a2ui/web_core` in `app/`
-8. Create `(agent-app)` route group with `A2UISurface.svelte`
-9. Wire WS subscription for `a2ui_message` events
-10. Add DB migration `0078_a2ui_surfaces.sql`
-11. **Verify:** Type "show me a hello world UI" in chat → agent calls a2ui tool → surface renders
+All items implemented:
 
-### Phase 2: Deterministic Rendering
+1. ✅ `git subtree add` a2ui-rs into `crates/a2ui/`
+2. ✅ Add workspace members to `Cargo.toml`
+3. ✅ `NeboCatalogProvider` (basic catalog, 18 components)
+4. ✅ `A2UIManager` with `broadcast_a2ui_message()`, surface CRUD, action dedup (`pending_actions`)
+5. ✅ `A2UITool` registered (STRAP: `a2ui(surface, create|update_components|update_data|navigate|delete|list)`)
+6. ✅ `a2ui_message` + `a2ui_action` + `a2ui_action_status` WS event types
+7. ✅ `pnpm add @a2ui/lit @a2ui/web_core` + 18 Nebo catalog web components
+8. ✅ `A2UISurfacePanel.svelte` + `NeboSurfaceElement` (shadow DOM with style injection)
+9. ✅ WS subscription for `a2ui_message` events in both main layout and workspace routes
+10. ✅ DB migration `0078_a2ui_surfaces.sql`
+11. ✅ Verified: agent calls a2ui tool → surface renders in workspace panel
 
-**Goal:** Agent with pre-composed views loads instantly without LLM.
+**Additional Phase 1 deliverables (beyond original plan):**
 
-1. Implement `views.json` loader in agent loader (check for file, parse A2UIConfig)
-2. Implement `ViewDeclaration`, `DataBinding`, `ActionBinding` types
-3. Build deterministic render function (views.json → MCP calls → A2UI messages)
-4. Add `a2ui_open` / `a2ui_window_open` WS event handlers
-5. Wire action bindings (action → MCP call → updateDataModel)
-6. Implement navigation between views (view → view)
-7. Add sidebar indicator for agents with views.json
-8. **Verify:** Create agent with views.json → click in sidebar → view renders → click button → data updates
+- ✅ **Action dedup** — `A2UIManager.pending_actions: RwLock<HashSet<String>>` prevents double-click LLM dispatch. `try_begin_action()` / `end_action()` broadcast `a2ui_action_status` events.
+- ✅ **Button loading state** — Lit context (`@lit/context`) with `ContextProvider` on `NeboSurfaceElement` and `ContextConsumer` on `NeboButtonElement`. Button shows DaisyUI spinner while action is pending.
+- ✅ **Deterministic action dispatch** — `a2ui_actions.rs` routes `mcp_call`, `navigate`, `update_data` without LLM. Unmatched actions fall through to LLM.
+- ✅ **Data binding manager** — `DataBindingManager` polls MCP tools at configured intervals, injects results into surface data model.
+- ✅ **Agent theme CSS** — `theme.css` loaded per-agent, injected into shadow DOM via `MutationObserver`. Uses `media="not all"` to prevent global leakage.
+- ✅ **Workspace navigation** — `A2UIWorkspaceNav.svelte` renders tabs from `views.json._nav`
+- ✅ **Surface restore on reconnect** — `restore_surfaces()` replays persisted state from DB
+- ✅ **Markdown in A2UI** — `a2ui-markdown-provider.ts` wraps text rendering
+
+### Phase 2: Deterministic Rendering — COMPLETE (merged into Phase 1)
+
+Originally planned separately, but delivered as part of Phase 1:
+
+1. ✅ `views.json` loader in `agent_loader.rs` (parsed into `LoadedAgent.views`)
+2. ✅ `DataBinding`, `ActionBinding` types in `a2ui_bindings.rs` and `a2ui_actions.rs`
+3. ✅ Deterministic render: views.json → create_surface → MCP poll → updateDataModel
+4. ✅ `a2ui_action` WS handler dispatches to deterministic handlers
+5. ✅ Action bindings: mcp_call → bridge.call_tool() → update data model
+6. ✅ Navigation between views via `A2UIManager::navigate_view()`
+7. ✅ Workspace indicator in sidebar for agents with views
 
 ### Phase 3: Multi-Window + Persistence
 
@@ -1105,17 +1111,18 @@ Third-party custom catalogs (from marketplace agents) are a Phase 5+ concern and
 
 ## 13. OpenClaw Comparison Table
 
-| Aspect | OpenClaw | Nebo (Planned) |
-|--------|----------|----------------|
+| Aspect | OpenClaw | Nebo (Implemented) |
+|--------|----------|-------------------|
 | Protocol version | v0.8 (hard-locked, rejects v0.9) | v0.9 from day one |
-| Rendering path | LLM-only (every render needs agent) | Deterministic + LLM fallback |
-| Action bridge | Proprietary plaintext (`CANVAS_A2UI action=...`) | Spec-compliant v0.9 ActionMessage |
-| Style customization | Runtime monkey-patching of Lit styles | Proper theming via catalog theme schema |
-| Window model | Single canvas per session | Multi-window, per-agent |
-| State persistence | None | SQLite (geometry, data model, variants) |
-| Catalog support | Basic only | Basic + custom Nebo catalog |
+| Rendering path | LLM-only (every render needs agent) | **Deterministic + LLM fallback** (both working) |
+| Action bridge | Proprietary plaintext (`CANVAS_A2UI action=...`) | Spec-compliant v0.9 ActionMessage + deterministic dispatch |
+| Action dedup | `chatSending` boolean (state-driven) | `pending_actions` HashSet + Lit context (state-driven) |
+| Style customization | Runtime monkey-patching of Lit styles | Agent `theme.css` + shadow DOM isolation + MutationObserver |
+| Window model | Single canvas per session | Multi-window, per-agent (panel + pop-out) |
+| State persistence | None | SQLite (geometry, data model, components) |
+| Catalog support | Basic only | Basic + custom Nebo catalog (18 components) |
 | Renderer integration | Vendored snapshot, no version pin | npm package, semver pinned |
-| Offline capability | No (requires LLM) | Yes (deterministic path) |
+| Offline capability | No (requires LLM) | Yes (deterministic path + MCP polling) |
 | Build system | Rolldown + manual vendor copy | pnpm + git subtree |
 | Transport | Gateway RPC → WebView evaluateJS | WebSocket (same as chat) |
 | Platform | iOS/macOS/Android (WebView per platform) | macOS/Windows/Linux (Tauri WebView) |

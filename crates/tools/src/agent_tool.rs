@@ -1753,6 +1753,8 @@ impl PersonaTool {
                         frontmatter: r.frontmatter.clone(),
                         description: r.description.clone(),
                         id: Some(r.id.clone()),
+                        views: None,
+                        theme_css: None,
                     });
                 }
             }

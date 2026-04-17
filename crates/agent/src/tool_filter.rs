@@ -44,7 +44,7 @@ const CONTEXTUAL_GROUPS: &[(&str, &[&str])] = &[
     // Personal information management (os sub-context)
     ("organizer", &[
         "calendar", "reminder", "contact", "email", "schedule",
-        "appointment", "mail", "inbox", "unread",
+        "appointment", "mail", "inbox", "unread", "invite", "invitation", "rsvp",
     ]),
     // Music & media (os sub-context)
     ("music", &[

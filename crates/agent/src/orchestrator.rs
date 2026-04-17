@@ -65,13 +65,14 @@ impl Orchestrator {
             .unwrap_or_else(CancellationToken::new);
 
         // Persist to pending_tasks
+        let agent_type = AgentType::from_str(&req.agent_type);
         let _ = self.store.create_pending_task(
             &task_id,
             "subagent",
             &session_key,
             Some(&req.user_id),
             &req.prompt,
-            Some(&system_prompt_for_type(&AgentType::from_str(&req.agent_type))),
+            Some(task_prefix_for_type(&agent_type).trim()),
             Some(&req.description),
             Some("subagent"),
             0,
@@ -91,15 +92,15 @@ impl Orchestrator {
             );
         }
 
-        let system = system_prompt_for_type(&AgentType::from_str(&req.agent_type));
+        let task_prefix = task_prefix_for_type(&agent_type);
+        let prefixed_prompt = format!("{}{}", task_prefix, req.prompt);
 
         if req.wait {
             // Blocking: run and return result
             let result = self
                 .run_subagent(
                     &task_id,
-                    &req.prompt,
-                    &system,
+                    &prefixed_prompt,
                     &req.model_override,
                     &req.user_id,
                     "",
@@ -137,7 +138,7 @@ impl Orchestrator {
             let store = self.store.clone();
             let active = self.active.clone();
             let task_id_clone = task_id.clone();
-            let prompt = req.prompt.clone();
+            let prompt = prefixed_prompt;
             let model_override = req.model_override.clone();
             let user_id = req.user_id.clone();
             let concurrency = self.concurrency.clone();
@@ -148,7 +149,7 @@ impl Orchestrator {
                 let _permit = concurrency.acquire_llm_permit().await;
 
                 let run_req = build_subagent_request(
-                    &bg_session_key, &prompt, &system, &model_override, &user_id, &cancel,
+                    &bg_session_key, &prompt, &model_override, &user_id, &cancel,
                 );
 
                 let result = run_and_collect(&runner, run_req, cancel, None).await;
@@ -179,7 +180,6 @@ impl Orchestrator {
         &self,
         task_id: &str,
         prompt: &str,
-        system_prompt: &str,
         model_override: &str,
         user_id: &str,
         dep_context: &str,
@@ -194,7 +194,7 @@ impl Orchestrator {
             format!("{}\n\n{}", dep_context, prompt)
         };
 
-        let req = build_subagent_request(session_key, &full_prompt, system_prompt, model_override, user_id, &cancel);
+        let req = build_subagent_request(session_key, &full_prompt, model_override, user_id, &cancel);
         run_and_collect(&self.runner, req, cancel, None).await
     }
 
@@ -269,8 +269,8 @@ impl Orchestrator {
             for task_id in ready {
                 let node = graph.nodes.get(&task_id).unwrap();
                 let dep_context = format_dep_context(&graph.collect_dependency_results(&task_id));
-                let system = system_prompt_for_type(&node.agent_type);
-                let prompt = node.prompt.clone();
+                let task_prefix = task_prefix_for_type(&node.agent_type);
+                let prompt = format!("{}{}", task_prefix, node.prompt);
                 let model_override = node.model_override.clone();
                 let user_id = user_id.to_string();
                 let cancel = dag_cancel.clone();
@@ -289,7 +289,7 @@ impl Orchestrator {
                     &session_key,
                     Some(&user_id),
                     &prompt,
-                    Some(&system),
+                    Some(task_prefix.trim()),
                     graph.nodes.get(&task_id).map(|n| n.description.as_str()),
                     Some("subagent"),
                     0,
@@ -311,7 +311,7 @@ impl Orchestrator {
                     };
 
                     let req = build_subagent_request(
-                        &session_key, &full_prompt, &system, &model_override, &user_id, &cancel,
+                        &session_key, &full_prompt, &model_override, &user_id, &cancel,
                     );
 
                     let result = run_and_collect(&runner, req, cancel, None).await;
@@ -474,14 +474,16 @@ impl Orchestrator {
                 .map(|p| p.child_token())
                 .unwrap_or_else(CancellationToken::new);
 
-            let system = system_prompt_for_type(&AgentType::from_str(&req.agent_type));
+            let agent_type = AgentType::from_str(&req.agent_type);
+            let task_prefix = task_prefix_for_type(&agent_type);
+            let prefixed_prompt = format!("{}{}", task_prefix, req.prompt);
             let description = req.description.clone();
 
             // Persist to DB
             let _ = self.store.create_pending_task(
                 &task_id, "subagent", &session_key,
-                Some(&req.user_id), &req.prompt,
-                Some(&system), Some(&description),
+                Some(&req.user_id), &prefixed_prompt,
+                Some(task_prefix.trim()), Some(&description),
                 Some("subagent"), 0,
             );
 
@@ -523,7 +525,7 @@ impl Orchestrator {
             let prog_tx_clone = prog_tx.clone();
 
             let run_req = build_subagent_request(
-                &session_key, &req.prompt, &system, &req.model_override, &req.user_id, &cancel,
+                &session_key, &prefixed_prompt, &req.model_override, &req.user_id, &cancel,
             );
 
             running.push(Box::pin(async move {
@@ -773,10 +775,11 @@ fn check_completion_heuristic(messages: &[db::models::ChatMessage]) -> bool {
 }
 
 /// Build a RunRequest for a sub-agent. Single source of truth for sub-agent request construction.
+/// Uses PromptMode::Minimal — sub-agents get identity + capabilities + behavior core,
+/// but skip memory docs, tool routing guide, etiquette, comm style, and autonomy sections.
 fn build_subagent_request(
     session_key: &str,
     prompt: &str,
-    system: &str,
     model_override: &str,
     user_id: &str,
     cancel: &CancellationToken,
@@ -784,13 +787,13 @@ fn build_subagent_request(
     RunRequest {
         session_key: session_key.to_string(),
         prompt: prompt.to_string(),
-        system: system.to_string(),
         model_override: model_override.to_string(),
         user_id: user_id.to_string(),
         skip_memory_extract: true,
         origin: tools::Origin::System,
         channel: "subagent".to_string(),
         cancel_token: cancel.clone(),
+        prompt_mode: crate::prompt::PromptMode::Minimal,
         ..Default::default()
     }
 }
@@ -906,31 +909,15 @@ fn format_dep_context(deps: &[(String, String)]) -> String {
     parts.join("\n")
 }
 
-/// Generate a system prompt based on agent type.
-fn system_prompt_for_type(agent_type: &AgentType) -> String {
-    let base = "You are a focused sub-agent working on a specific task. \
-                Complete your assigned task and report results concisely. \
-                Do not take on work outside your task scope. \
-                Maximum 50 iterations.";
-
+/// Generate a task prefix based on agent type.
+/// These constraints are prepended to the user's prompt rather than the system prompt,
+/// so sub-agents get the standard Minimal system prompt (identity, capabilities, behavior)
+/// plus task-specific instructions in the user message.
+fn task_prefix_for_type(agent_type: &AgentType) -> &'static str {
     match agent_type {
-        AgentType::Explore => format!(
-            "{}\n\nYou are an EXPLORATION agent. \
-             Search, read, and research. Do NOT modify files or execute destructive commands. \
-             Report your findings clearly.",
-            base
-        ),
-        AgentType::Plan => format!(
-            "{}\n\nYou are a PLANNING agent. \
-             Analyze the task, break down steps, identify files and patterns. \
-             Produce a clear actionable plan. Do NOT implement anything.",
-            base
-        ),
-        AgentType::General => format!(
-            "{}\n\nYou have full tool access. \
-             Execute the task using whatever tools are needed.",
-            base
-        ),
+        AgentType::Explore => "[EXPLORATION agent — search, read, research only. Do NOT modify files or execute destructive commands. Report findings clearly.]\n\n",
+        AgentType::Plan => "[PLANNING agent — analyze, break down steps, identify files and patterns. Produce a clear actionable plan. Do NOT implement anything.]\n\n",
+        AgentType::General => "[Execute the task using whatever tools are needed.]\n\n",
     }
 }
 
@@ -1026,17 +1013,17 @@ mod tests {
     }
 
     #[test]
-    fn test_system_prompts() {
-        let explore = system_prompt_for_type(&AgentType::Explore);
+    fn test_task_prefixes() {
+        let explore = task_prefix_for_type(&AgentType::Explore);
         assert!(explore.contains("EXPLORATION"));
         assert!(explore.contains("Do NOT modify"));
 
-        let plan = system_prompt_for_type(&AgentType::Plan);
+        let plan = task_prefix_for_type(&AgentType::Plan);
         assert!(plan.contains("PLANNING"));
         assert!(plan.contains("Do NOT implement"));
 
-        let general = system_prompt_for_type(&AgentType::General);
-        assert!(general.contains("full tool access"));
+        let general = task_prefix_for_type(&AgentType::General);
+        assert!(general.contains("Execute the task"));
     }
 
     fn make_msg(role: &str, content: &str, tool_calls: Option<&str>) -> db::models::ChatMessage {

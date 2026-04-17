@@ -170,12 +170,34 @@
 
 		// A2UI: Initialize processor and listen for surface messages
 		a2ui.init((action) => {
-			// Forward user actions back to the backend via WS
-			wsClient.send('a2ui_action', action);
+			// Check if the action context specifies a deterministic action type
+			const ctx = (action as any).context;
+			const actionType = ctx?.type || ctx?.actionType;
+
+			if (actionType === 'navigate' && ctx?.view) {
+				// Navigate action: switch to a different view without LLM
+				wsClient.send('a2ui_navigate', {
+					surfaceId: (action as any).surfaceId,
+					targetView: ctx.view,
+					params: ctx.params || null,
+				});
+			} else if (actionType === 'update_data' && ctx?.path != null) {
+				// Local data update: no LLM, no backend — just update the data model
+				wsClient.send('a2ui_action', action);
+			} else {
+				// Default: forward user actions to the backend (routes to agent LLM or action dispatcher)
+				wsClient.send('a2ui_action', action);
+			}
 		});
 		const unsubA2UI = wsClient.on<{ surface_id: string; message: any }>('a2ui_message', (data) => {
+			console.log('[a2ui] WS a2ui_message received:', data);
 			if (data?.message) {
 				a2ui.processMessage(data.message);
+			}
+		});
+		const unsubA2UIAction = wsClient.on<{ surfaceId: string; actionName: string; status: string }>('a2ui_action_status', (data) => {
+			if (data) {
+				a2ui.handleActionStatus(data);
 			}
 		});
 
@@ -251,6 +273,7 @@
 			unsubStatus();
 			unsubWhatsNew();
 			unsubA2UI();
+			unsubA2UIAction();
 			a2ui.destroy();
 			delete (window as any).__NEBO_CHECK_UPDATE__;
 		};

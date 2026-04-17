@@ -340,6 +340,14 @@ pub async fn get_agent(
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v["version"].as_str().map(|s| s.to_string()));
 
+    // Read views.json for deterministic UI declarations
+    let views = agent.napp_path.as_ref()
+        .and_then(|p| {
+            let views_path = std::path::PathBuf::from(p).join("views.json");
+            std::fs::read_to_string(views_path).ok()
+        })
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+
     // Parse and normalize inputFields from frontmatter so frontend doesn't have to
     let input_fields: Vec<serde_json::Value> = if !agent.frontmatter.is_empty() {
         serde_json::from_str::<serde_json::Value>(&agent.frontmatter)
@@ -410,6 +418,7 @@ pub async fn get_agent(
         "inputFields": input_fields,
         "personaProperties": persona_properties,
         "personaBody": persona_body,
+        "views": views,
     })))
 }
 
@@ -1811,4 +1820,174 @@ pub async fn delete_agent_workflow(
     Ok(Json(serde_json::json!({
         "message": format!("Binding '{}' deleted", binding_name),
     })))
+}
+
+/// GET /agents/{id}/surfaces — Return A2UI replay messages for active surfaces.
+///
+/// If no active surfaces exist but the agent has a `default` view in views.json,
+/// auto-creates the surface server-side so it persists across page refreshes.
+pub async fn get_agent_surfaces(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let existing = state.a2ui.list_agent_surfaces(&id).await;
+
+    if existing.is_empty() {
+        // Check if agent has a views.json with a "default" view
+        if let Some(views) = get_agent_views(&state, &id).await {
+            if let Some(default_view) = views.get("default") {
+                if let Some(components) = default_view.get("components").and_then(|c| c.as_array()) {
+                    let catalog_id = "https://a2ui.org/specification/v0_9/basic_catalog.json";
+                    let surface_type = default_view
+                        .get("surface_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("panel");
+
+                    match state.a2ui.create_surface(&id, "default", surface_type, catalog_id, None).await {
+                        Ok(sid) => {
+                            if let Err(e) = state.a2ui.update_components(&sid, components.clone()).await {
+                                warn!(error = %e, "failed to push default view components");
+                            }
+                            // If view has initial data, push it too
+                            if let Some(data) = default_view.get("data") {
+                                if let Err(e) = state.a2ui.update_data_model(&sid, None, data.clone()).await {
+                                    warn!(error = %e, "failed to push default view data model");
+                                }
+                            }
+                            // Start data bindings if defined
+                            state.a2ui.start_data_bindings(&sid, default_view).await;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, agent_id = %id, "failed to auto-create default surface");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let messages = state.a2ui.get_agent_replay_messages(&id).await;
+    Ok(Json(serde_json::json!({
+        "messages": messages,
+    })))
+}
+
+/// GET /agents/{id}/theme.css — Return the agent's theme CSS.
+///
+/// Returns the theme.css content from the agent's LoadedAgent (filesystem).
+/// 204 No Content if the agent has no theme.css.
+pub async fn get_agent_theme(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl axum::response::IntoResponse {
+    // Try DB agent → loader by name
+    if let Ok(Some(agent)) = state.store.get_agent(&id) {
+        if let Some(loaded) = state.agent_loader.get_by_name(&agent.name).await {
+            if let Some(ref css) = loaded.theme_css {
+                return axum::response::Response::builder()
+                    .status(200)
+                    .header("content-type", "text/css; charset=utf-8")
+                    .header("cache-control", "no-cache")
+                    .body(axum::body::Body::from(css.clone()))
+                    .unwrap();
+            }
+        }
+    }
+
+    // Last resort: try id as agent name
+    if let Some(loaded) = state.agent_loader.get_by_name(&id).await {
+        if let Some(ref css) = loaded.theme_css {
+            return axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "text/css; charset=utf-8")
+                .header("cache-control", "no-cache")
+                .body(axum::body::Body::from(css.clone()))
+                .unwrap();
+        }
+    }
+
+    axum::response::Response::builder()
+        .status(204)
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
+/// Return the agent's `_nav` config from views.json.
+///
+/// If `_nav` is explicitly defined, returns it. Otherwise auto-generates
+/// nav items from the top-level view keys (excluding underscore-prefixed keys
+/// and child views like "document-review").
+pub async fn get_agent_nav(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> HandlerResult<serde_json::Value> {
+    let views = get_agent_views(&state, &id).await;
+    let Some(views) = views else {
+        return Ok(axum::Json(serde_json::json!([])));
+    };
+
+    // Check for explicit _nav config
+    if let Some(nav) = views.get("_nav") {
+        return Ok(axum::Json(nav.clone()));
+    }
+
+    // Auto-generate from view keys
+    let obj = views.as_object().cloned().unwrap_or_default();
+    let items: Vec<serde_json::Value> = obj
+        .keys()
+        .filter(|k| !k.starts_with('_'))
+        .map(|k| {
+            let label = k
+                .replace('-', " ")
+                .split_whitespace()
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            serde_json::json!({
+                "viewId": k,
+                "label": if k == "default" { "Dashboard" } else { &label },
+            })
+        })
+        .collect();
+
+    Ok(axum::Json(serde_json::json!(items)))
+}
+
+/// Look up an agent's views.json content.
+///
+/// Tries two sources:
+/// 1. DB agent record's napp_path (filesystem path to agent directory)
+/// 2. Agent loader's in-memory LoadedAgent (already parsed views.json)
+pub async fn get_agent_views(state: &AppState, agent_id: &str) -> Option<serde_json::Value> {
+    // Try DB agent's napp_path first
+    if let Ok(Some(agent)) = state.store.get_agent(agent_id) {
+        if let Some(napp_path) = agent.napp_path.as_ref() {
+            if !napp_path.is_empty() {
+                let views_path = std::path::PathBuf::from(napp_path).join("views.json");
+                if let Ok(content) = std::fs::read_to_string(&views_path) {
+                    if let Ok(views) = serde_json::from_str(&content) {
+                        return Some(views);
+                    }
+                }
+            }
+        }
+
+        // Fallback: look up via agent loader by name
+        if let Some(loaded) = state.agent_loader.get_by_name(&agent.name).await {
+            return loaded.views;
+        }
+    }
+
+    // Last resort: try agent_id as a name directly
+    if let Some(loaded) = state.agent_loader.get_by_name(agent_id).await {
+        return loaded.views;
+    }
+
+    None
 }

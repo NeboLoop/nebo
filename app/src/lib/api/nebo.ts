@@ -164,6 +164,13 @@ export function getAgent(agentId: string) {
 }
 
 /**
+ * @description "Get active A2UI surface replay messages for an agent"
+ */
+export function getAgentSurfaces(agentId: string) {
+	return webapi.get<{ messages: any[] }>(`/api/v1/agents/${agentId}/surfaces`)
+}
+
+/**
  * @description "Get workflows for an agent"
  */
 export function getAgentWorkflows(agentId: string) {

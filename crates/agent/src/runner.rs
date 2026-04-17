@@ -106,6 +106,9 @@ pub struct RunRequest {
     /// When set, the runner forces continuation even on text-only responses
     /// until this many iterations have been reached.
     pub min_iterations: usize,
+    /// Prompt assembly mode. Defaults to Full for interactive chat.
+    /// Set to Minimal for sub-agents (drops memory docs, tool routing, etiquette, etc.).
+    pub prompt_mode: prompt::PromptMode,
     /// Optional progress counters shared with the global RunRegistry.
     /// When set, the runner updates these atomics during run_loop() so
     /// external observers can see live iteration/tool counts.
@@ -161,6 +164,7 @@ pub struct Runner {
     mcp_context: Option<Arc<tokio::sync::Mutex<ToolContext>>>,
     agent_registry: tools::AgentRegistry,
     skill_loader: Option<Arc<tools::skills::Loader>>,
+    ask_channels: Option<tools::AskChannels>,
 }
 
 impl Runner {
@@ -180,6 +184,7 @@ impl Runner {
             providers: Arc::new(RwLock::new(providers)),
             tools,
             store,
+            ask_channels: None,
             selector: Arc::new(selector),
             _steering: steering::Pipeline::new(),
             concurrency,
@@ -193,6 +198,12 @@ impl Runner {
     /// Get the shared providers Arc (for workflow execution).
     pub fn providers(&self) -> Arc<RwLock<Vec<Arc<dyn Provider>>>> {
         self.providers.clone()
+    }
+
+    /// Set the shared ask channels so tools can prompt the user via `ctx.ask_user()`.
+    pub fn set_ask_channels(mut self, channels: tools::AskChannels) -> Self {
+        self.ask_channels = Some(channels);
+        self
     }
 
     /// Replace the active providers list (called when auth_profiles change).
@@ -389,7 +400,9 @@ impl Runner {
         let allowed_paths = req.allowed_paths.clone();
         let presence_tracker = req.presence_tracker.clone();
         let proactive_inbox = req.proactive_inbox.clone();
+        let prompt_mode = req.prompt_mode.clone();
         let progress = req.progress.clone();
+        let ask_channels = self.ask_channels.clone();
 
         // Set MCP context so CLI providers can access tools with the right session info
         if let Some(ref mcp_ctx) = self.mcp_context {
@@ -435,7 +448,9 @@ impl Runner {
                 presence_tracker.as_ref(),
                 proactive_inbox.as_ref(),
                 min_iterations,
+                prompt_mode,
                 progress.as_ref(),
+                ask_channels.as_ref(),
             )
             .await;
 
@@ -540,7 +555,9 @@ async fn run_loop(
     presence_tracker: Option<&Arc<crate::proactive::PresenceTracker>>,
     proactive_inbox: Option<&Arc<crate::proactive::ProactiveInbox>>,
     min_iterations: usize,
+    prompt_mode: prompt::PromptMode,
     progress: Option<&RunProgress>,
+    ask_channels: Option<&tools::AskChannels>,
 ) -> Result<(), String> {
     let mut state = RunState::new();
     let mut transient_retries = 0usize;
@@ -604,6 +621,35 @@ async fn run_loop(
             .unwrap_or_else(|| "Nebo".to_string())
     };
     let mut db_context_formatted = db_context::format_for_system_prompt(&db_ctx, &agent_name);
+
+    // Inject agent input_values into the system prompt so the LLM knows
+    // about user-configured values (API keys, target market, etc.).
+    // Without this, agents and their sub-agents ignore configured inputs.
+    if !agent_id.is_empty() {
+        if let Ok(Some(agent_rec)) = store.get_agent(agent_id) {
+            if let Ok(vals) = serde_json::from_str::<serde_json::Value>(&agent_rec.input_values) {
+                if let Some(obj) = vals.as_object() {
+                    if !obj.is_empty() {
+                        let lines: Vec<String> = obj.iter().filter_map(|(key, val)| {
+                            let display = match val {
+                                serde_json::Value::String(s) if !s.is_empty() => s.clone(),
+                                serde_json::Value::String(_) => return None,
+                                other => other.to_string(),
+                            };
+                            Some(format!("- **{}**: {}", key, display))
+                        }).collect();
+                        if !lines.is_empty() {
+                            db_context_formatted.push_str(&format!(
+                                "\n\n---\n\n# Configured Inputs\nThe user has configured the following inputs for this agent. \
+                                Use these values — do NOT ask the user for information that is already provided here.\n{}",
+                                lines.join("\n")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Pre-load prompt-relevant memories via FTS (surfaces memories the decay scoring may miss)
     if !user_prompt.is_empty() {
@@ -748,6 +794,7 @@ async fn run_loop(
 
     let static_system = if system_prompt.is_empty() {
         let pctx = prompt::PromptContext {
+            mode: prompt_mode,
             agent_name: agent_name.clone(),
             active_skill: active_skill_template,
             skill_catalog,
@@ -1710,6 +1757,7 @@ async fn run_loop(
                 cancel_token: cancel_token.clone(),
                 stream_tx: Some(tx.clone()),
                 run_id: progress.map(|p| p.run_id.clone()),
+                ask_channels: ask_channels.cloned(),
             };
 
             // Track tool names for filter + activate any deferred tools on first call

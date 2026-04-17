@@ -50,6 +50,26 @@ pub struct LoadedAgent {
     pub description: String,
     /// NeboLoop artifact UUID from manifest.json (marketplace agents only).
     pub id: Option<String>,
+    /// Deterministic views from views.json (rendered without LLM involvement).
+    pub views: Option<serde_json::Value>,
+    /// Theme CSS from theme.css (for A2UI workspace styling).
+    pub theme_css: Option<String>,
+}
+
+/// Events emitted by the filesystem watcher when agent content changes on disk.
+#[derive(Debug, Clone)]
+pub enum AgentFsEvent {
+    /// A new agent appeared on the filesystem (not in previous scan).
+    Added(LoadedAgent),
+    /// An existing agent's content changed (agent_md or frontmatter differ).
+    Changed(LoadedAgent),
+    /// An agent was removed from the filesystem (was in previous scan, not in new).
+    Removed {
+        /// Lowercase name key from the cache HashMap.
+        name_key: String,
+        /// The agent that was removed (carries id/name for DB lookup).
+        agent: LoadedAgent,
+    },
 }
 
 /// Manages loading, caching, and hot-reloading of agents from the filesystem.
@@ -112,13 +132,15 @@ impl AgentLoader {
         &self.installed_dir
     }
 
-    /// Start watching for filesystem changes and reload on modification.
-    pub fn watch(&self) -> tokio::task::JoinHandle<()> {
+    /// Start watching for filesystem changes, reload on modification, and emit
+    /// diff events through the returned channel for DB/registry/WS sync.
+    pub fn watch(&self) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Receiver<AgentFsEvent>) {
         let installed_dir = self.installed_dir.clone();
         let user_dir = self.user_dir.clone();
         let agents = self.agents.clone();
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgentFsEvent>(32);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             use notify::{Event, EventKind, RecursiveMode, Watcher};
             use tokio::sync::mpsc;
 
@@ -171,6 +193,8 @@ impl AgentLoader {
                             name.eq_ignore_ascii_case("agent.md")
                                 || name == "agent.json"
                                 || name == "manifest.json"
+                                || name == "views.json"
+                                || name == "theme.css"
                                 || name.ends_with(".napp")
                         });
                         if !relevant {
@@ -192,6 +216,34 @@ impl AgentLoader {
                             loaded.insert(agent.agent_def.name.to_lowercase(), agent);
                         }
 
+                        // Diff old cache vs new scan and emit events
+                        {
+                            let old = agents.read().await;
+                            for (key, new_agent) in &loaded {
+                                match old.get(key) {
+                                    None => {
+                                        let _ = event_tx.send(AgentFsEvent::Added(new_agent.clone())).await;
+                                    }
+                                    Some(old_agent) => {
+                                        if old_agent.agent_md != new_agent.agent_md
+                                            || old_agent.frontmatter != new_agent.frontmatter
+                                            || old_agent.theme_css != new_agent.theme_css
+                                        {
+                                            let _ = event_tx.send(AgentFsEvent::Changed(new_agent.clone())).await;
+                                        }
+                                    }
+                                }
+                            }
+                            for (key, old_agent) in old.iter() {
+                                if !loaded.contains_key(key) {
+                                    let _ = event_tx.send(AgentFsEvent::Removed {
+                                        name_key: key.clone(),
+                                        agent: old_agent.clone(),
+                                    }).await;
+                                }
+                            }
+                        }
+
                         let count = loaded.len();
                         *agents.write().await = loaded;
                         info!(count, "reloaded agents after filesystem change");
@@ -201,7 +253,9 @@ impl AgentLoader {
                     }
                 }
             }
-        })
+        });
+
+        (handle, event_rx)
     }
 }
 
@@ -267,6 +321,28 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
 
     let description = agent_def.description.clone();
 
+    // Read views.json if present (deterministic UI declarations)
+    let views = {
+        let views_path = dir.join("views.json");
+        if views_path.exists() {
+            std::fs::read_to_string(&views_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        } else {
+            None
+        }
+    };
+
+    // Read theme.css if present (A2UI workspace styling)
+    let theme_css = {
+        let theme_path = dir.join("theme.css");
+        if theme_path.exists() {
+            std::fs::read_to_string(&theme_path).ok()
+        } else {
+            None
+        }
+    };
+
     Ok(LoadedAgent {
         agent_def,
         config,
@@ -278,6 +354,8 @@ pub fn load_from_dir(dir: &Path, source: AgentSource) -> Result<LoadedAgent, Nap
         frontmatter,
         description,
         id,
+        views,
+        theme_css,
     })
 }
 

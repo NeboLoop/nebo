@@ -327,7 +327,7 @@ if ($output -eq "") { Write-Output "No contact folders" } else { Write-Output $o
 // Calendar
 // ═══════════════════════════════════════════════════════════════════════
 
-pub async fn handle_calendar(action: &str, input: &OrganizerInput) -> ToolResult {
+pub async fn handle_calendar(action: &str, input: &OrganizerInput, _ctx: &crate::origin::ToolContext, _store: Option<&std::sync::Arc<db::Store>>) -> ToolResult {
     if !has_outlook() {
         return ToolResult::error("Calendar requires Microsoft Outlook on Windows");
     }

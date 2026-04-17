@@ -134,6 +134,7 @@ Workflows and agents are distributed as `.napp` files — signed `tar.gz` archiv
   → manifest.json
   → agent.json
   → AGENT.md
+  → views.json          # Optional — deterministic workspace UI
 ```
 
 ### Sealed Archives
@@ -177,6 +178,7 @@ user/                                    # User-created (dev/sideload path)
     my-agent/
       agent.json
       AGENT.md
+      views.json         # Optional — deterministic workspace UI
 ```
 
 **Marketplace artifacts** (`nebo/`) are sealed `.napp` files. Signed, versioned, read from archive at runtime.
@@ -202,7 +204,7 @@ Nebo reads `.napp` entries by name at runtime using a thin reader:
 fn read_napp_entry(path: &Path, entry_name: &str) -> Result<Vec<u8>>
 ```
 
-The skill loader reads `SKILL.md` from marketplace archives. The workflow engine calls `read_napp_entry(path, "workflow.json")`. The agent loader calls `read_napp_entry(path, "agent.json")` and `read_napp_entry(path, "AGENT.md")`. One function, used everywhere.
+The skill loader reads `SKILL.md` from marketplace archives. The workflow engine calls `read_napp_entry(path, "workflow.json")`. The agent loader calls `read_napp_entry(path, "agent.json")`, `read_napp_entry(path, "AGENT.md")`, and optionally `read_napp_entry(path, "views.json")`. One function, used everywhere.
 
 ---
 
@@ -266,7 +268,7 @@ Each artifact type has a clear split between identity, domain logic, and prose:
 
 - **Skills** — `SKILL.md` frontmatter (identity + runtime config) + body (knowledge) + optional bundled resources (scripts, references, assets). No manifest.json. Frontmatter is the source of truth. Compatible with the Agent Skills standard.
 - **Workflows** — `manifest.json` (marketplace identity) + `workflow.json` (procedure definition) + `WORKFLOW.md` (agent docs). Marketplace identity lives in the manifest; the workflow.json carries its own `id` for the local engine (REST API, run records, the `work` tool). Sealed archive.
-- **Agents** — `manifest.json` (marketplace identity) + `agent.json` (event bindings, pricing, defaults) + `AGENT.md` (persona prose). Sealed archive.
+- **Agents** — `manifest.json` (marketplace identity) + `agent.json` (event bindings, pricing, defaults) + `AGENT.md` (persona prose) + optional `views.json` (deterministic workspace UI). Sealed archive.
 
 ---
 

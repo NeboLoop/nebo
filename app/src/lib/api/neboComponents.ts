@@ -506,6 +506,7 @@ export interface AgentDetailResponse {
 		nappPath?: string
 		inputValues: string
 	}
+	views?: Record<string, unknown>
 }
 
 // Agent workflow entry — from GET /agents/{id}/workflows

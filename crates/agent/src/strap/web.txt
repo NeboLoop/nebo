@@ -1,11 +1,12 @@
 ### web — Web & Browser Automation
 USE THIS when: user mentions a URL, asks to look something up, browse, search the web, fetch a page, or interact with a website.
 
-Two modes:
+Three modes:
 - **fetch/search:** Simple HTTP requests and web search (no JavaScript, no rendering)
 - **browser:** Controls the user's Chrome browser via the Nebo extension. Full automation — navigate, read pages, click, fill forms, take screenshots. Works on the user's real browser with their logged-in sessions.
+- **devtools:** Chrome DevTools inspection — console logs, page source, storage, DOM, cookies, performance metrics.
 
-Decision: If you just need an API response or static HTML → fetch. If you need to read a rendered page, interact with elements, or use the user's sessions → browser actions.
+Decision: If you just need an API response or static HTML → fetch. If you need to read a rendered page, interact with elements, or use the user's sessions → browser actions. If you need to inspect the page internals (console errors, cookies, localStorage) → devtools.
 
 **CRITICAL — Browse Like a Human:**
 When using browser actions, you MUST behave like a real person browsing the web:
@@ -18,9 +19,23 @@ When using browser actions, you MUST behave like a real person browsing the web:
 - **Follow the flow:** Homepage → search box → type query → Enter → read results → click result → read page → go_back if needed
 Anti-bot sites (Google, Yelp, social media) WILL block you if you don't browse like a human. Scroll, click, read naturally.
 
-Actions:
-- web(action: fetch, url: "https://api.example.com") — Simple HTTP request (no JS rendering)
+**HTTP Actions:**
+- web(action: fetch, url: "https://api.example.com") — GET request (no JS rendering)
+- web(action: fetch, url: "https://api.example.com/data", method: "POST", body: "{\"key\": \"value\"}", headers: {"Content-Type": "application/json"}) — POST with body and headers
+- web(action: get, url: "https://...") — Same as fetch (GET)
+- web(action: post, url: "https://...", body: "data") — POST request
+- web(action: put, url: "https://...", body: "data") — PUT request
+- web(action: delete, url: "https://...") — DELETE request
+- web(action: head, url: "https://...") — HEAD request (headers only)
+- web(action: sanitize, url: "https://...") — Fetch HTML, extract visible text, return chunked for LLM context
+- web(action: sanitize, url: "https://...", chunk_size: 8000, offset: 1) — Paginate through chunks (0-indexed)
+
+HTTP params: url (required), method (GET/POST/PUT/DELETE/HEAD/PATCH), headers (object), body (string), offset (pagination)
+
+**Search:**
 - web(action: search, query: "golang tutorials") — Web search
+
+**Browser Actions:**
 - web(action: navigate, url: "https://example.com") — Navigate the active tab to a URL
 - web(action: read_page) — Get page accessibility tree with element refs [ref_1], [ref_2], etc.
 - web(action: read_page, filter: "interactive") — Only interactive elements (buttons, links, inputs)
@@ -29,12 +44,13 @@ Actions:
 - web(action: read_page, maxChars: 10000) — Limit output size.
 - web(action: click, ref: "ref_5") — Click element by ref
 - web(action: click, coordinate: [200, 300]) — Click at screen coordinates
+- web(action: click, ref: "ref_5", modifiers: "ctrl") — Ctrl+click (open in new tab). Modifiers: ctrl, shift, alt, cmd. Combine with + (e.g. "ctrl+shift")
+- web(action: click, selector: "#submit-btn") — Click by CSS selector (use ref when available)
 - web(action: double_click, ref: "ref_5") — Double-click (select word)
 - web(action: triple_click, ref: "ref_5") — Triple-click (select all text in field)
 - web(action: right_click, ref: "ref_5") — Right-click (context menu)
 - web(action: hover, ref: "ref_5") — Hover over element (trigger tooltips, dropdowns)
 - web(action: fill, ref: "ref_3", value: "hello") — Set form input value directly
-- web(action: form_input, ref: "ref_3", value: "hello") — Same as fill
 - web(action: type, text: "hello") — Type text via real keystrokes into focused element
 - web(action: select, ref: "ref_7", value: "option1") — Select dropdown option
 - web(action: screenshot) — Capture page screenshot
@@ -55,8 +71,18 @@ Actions:
 - web(action: list_tabs) — List all open tabs
 - web(action: status) — Check if browser extension is connected
 
+**DevTools Actions** (requires browser extension):
+- web(action: console) — Get browser console logs (errors, warnings, messages)
+- web(action: source) — Get page HTML source
+- web(action: storage) — Inspect localStorage and sessionStorage
+- web(action: dom, selector: "#main") — Inspect DOM element by CSS selector
+- web(action: cookies) — List cookies for the current page
+- web(action: performance) — Get page performance metrics (load time, resource count)
+
+DevTools params: url (filter), selector (CSS selector), expression (JS), filter
+
 Filling forms — TWO approaches:
-1. fill/form_input(ref, value) — Sets the value directly via DOM. Works for most forms: text, textarea, select, checkbox (true/false), radio, date/time, number, range. Fast but may not work on React/Vue/Angular sites with controlled inputs.
+1. fill(ref, value) — Sets the value directly via DOM. Works for most forms: text, textarea, select, checkbox (true/false), radio, date/time, number, range. Fast but may not work on React/Vue/Angular sites with controlled inputs.
 2. click + type — Click the field to focus it, then type text character-by-character via real keystrokes. This goes through the browser's real input pipeline, which ALL JavaScript frameworks hook into. Always works, even on React SPAs.
 
 IMPORTANT — For React/modern framework sites:
