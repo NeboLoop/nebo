@@ -81,10 +81,12 @@ impl Pipeline {
             Box::new(NarrationSuppressor),
             Box::new(RepetitionDetector),
             Box::new(LoopDetector),
+            Box::new(ErrorRecovery),
             Box::new(AutomationSpeed),
             Box::new(PresenceAwareness),
             Box::new(ContextPressure),
             Box::new(JanusQuotaWarning),
+            Box::new(AskToolNudge),
         ];
 
         Self { generators }
@@ -207,7 +209,7 @@ fn user_requested_stop(messages: &[ChatMessage]) -> bool {
 /// making the next LLM call. Returns Some(reason) if the loop must stop.
 pub fn should_force_break(ctx: &Context) -> Option<String> {
     // 1. Consecutive error iterations — hard limit
-    if ctx.consecutive_error_iterations >= 5 {
+    if ctx.consecutive_error_iterations >= 3 {
         return Some(format!(
             "Circuit breaker: {} consecutive iterations where all tool calls failed. \
              Breaking loop to prevent runaway execution.",
@@ -229,7 +231,7 @@ pub fn should_force_break(ctx: &Context) -> Option<String> {
                 break;
             }
         }
-        if same_call_count >= 6 {
+        if same_call_count >= 4 {
             return Some(format!(
                 "Circuit breaker: same tool called with identical arguments {} times. \
                  The agent is stuck in a loop and steering was ignored.",
@@ -583,7 +585,7 @@ impl Generator for LoopDetector {
                 }
             }
 
-            if same_call_count >= 4 {
+            if same_call_count >= 3 {
                 let plugin_extra = if Self::is_plugin_loop(&ctx.recent_tool_names) {
                     Self::plugin_hint()
                 } else { "" };
@@ -667,22 +669,8 @@ impl Generator for LoopDetector {
             }
         }
 
-        // D. All-error iteration detection (catches varied-tool loops)
-        if ctx.consecutive_error_iterations >= 3 {
-            directives.push(SteeringDirective {
-                label: "Error Loop".to_string(),
-                content: format!(
-                    "The last {} iterations all produced errors. You are stuck. STOP retrying and pivot:\n\
-                     1. A skill might handle this better: skill(action: \"catalog\") to check.\n\
-                     2. Get advice: agent(resource: \"advisors\", action: \"deliberate\", task: \"I keep getting errors trying to [describe task]. What should I try instead?\")\n\
-                     3. Try a fundamentally different approach — not the same action with tweaks.\n\
-                     4. If nothing works, tell the user what's failing and ask for guidance.{}",
-                    ctx.consecutive_error_iterations,
-                    if Self::is_plugin_loop(&ctx.recent_tool_names) { Self::plugin_hint() } else { "" }
-                ),
-                priority: 10,
-            });
-        }
+        // D. (Removed — ErrorRecovery generator handles consecutive errors at 1+,
+        //     circuit breaker fires at 3.)
 
         // E. Budget pressure warnings (Hermes pattern — 70%/90% thresholds).
         // Max iterations is 100 (from runner).
@@ -913,6 +901,89 @@ impl Generator for JanusQuotaWarning {
     }
 }
 
+// 14. Error Recovery — fires after the first all-error iteration to prevent blind retries
+struct ErrorRecovery;
+impl Generator for ErrorRecovery {
+    fn name(&self) -> &str { "error_recovery" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        if ctx.consecutive_error_iterations == 0 {
+            return vec![];
+        }
+
+        // At 1 consecutive error iteration: firm warning
+        if ctx.consecutive_error_iterations == 1 {
+            return vec![SteeringDirective {
+                label: "Error Recovery".to_string(),
+                content: "Your last tool call FAILED. Do NOT retry with the same parameters. \
+                         Read the error message carefully and either:\n\
+                         1. Fix the parameters based on the error output\n\
+                         2. Run the command with --help to discover correct usage\n\
+                         3. Try a completely different approach\n\
+                         4. Tell the user what failed and ask for guidance\n\
+                         Retrying the same call will fail again."
+                    .to_string(),
+                priority: 9,
+            }];
+        }
+
+        // At 2+: escalate (LoopDetector arm D handles 3+ separately)
+        vec![SteeringDirective {
+            label: "Error Recovery".to_string(),
+            content: format!(
+                "CRITICAL: {} consecutive iterations have ALL failed. You are wasting resources. \
+                 STOP retrying and tell the user what's wrong. Do NOT call the same tool again.",
+                ctx.consecutive_error_iterations
+            ),
+            priority: 10,
+        }]
+    }
+}
+
+// 15. Ask Tool Nudge — steer the LLM to use the interactive ask widget instead of plain-text questions
+struct AskToolNudge;
+impl Generator for AskToolNudge {
+    fn name(&self) -> &str { "ask_tool_nudge" }
+    fn generate(&self, ctx: &Context) -> Vec<SteeringDirective> {
+        // Find the last assistant message
+        let last_assistant = ctx.messages.iter().rev().find(|m| m.role == "assistant" && !m.content.is_empty());
+        let msg = match last_assistant {
+            Some(m) => m,
+            None => return vec![],
+        };
+
+        // Skip if this turn already had an ask tool call
+        if let Some(ref tc) = msg.tool_calls {
+            if tc.contains("\"ask\"") {
+                return vec![];
+            }
+        }
+
+        // Detect question patterns in the assistant's text
+        let text = &msg.content;
+        let has_question_mark = text.lines().any(|line| line.trim_end().ends_with('?'));
+        let lower = text.to_lowercase();
+        let has_choice_phrase = ["which do you prefer", "what would you like", "please choose",
+            "let me know", "would you rather", "which option", "pick one", "choose from"]
+            .iter()
+            .any(|p| lower.contains(p));
+
+        if !has_question_mark && !has_choice_phrase {
+            return vec![];
+        }
+
+        vec![SteeringDirective {
+            label: "Ask Tool".to_string(),
+            content: "When you need user input, ALWAYS use the ask tool instead of asking in plain text.\n\
+                     - Yes/no: bot(resource: \"ask\", action: \"confirm\", text: \"...\")\n\
+                     - Choices: bot(resource: \"ask\", action: \"select\", text: \"...\", options: [\"A\", \"B\", \"C\"])\n\
+                     - Open-ended: bot(resource: \"ask\", action: \"prompt\", text: \"...\")\n\
+                     Never ask questions as plain text — use the ask tool so the user gets interactive buttons."
+                .to_string(),
+            priority: 7,
+        }]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,5 +1174,51 @@ mod tests {
         ctx.iteration = 2;
         let result = should_force_break(&ctx);
         assert!(result.is_none(), "should NOT break at iteration 2");
+    }
+
+    #[test]
+    fn test_circuit_breaker_fires_at_3_consecutive_errors() {
+        let mut ctx = make_ctx(vec![]);
+        ctx.consecutive_error_iterations = 2;
+        assert!(should_force_break(&ctx).is_none(), "should NOT break at 2");
+        ctx.consecutive_error_iterations = 3;
+        let result = should_force_break(&ctx);
+        assert!(result.is_some(), "should break at 3");
+        assert!(result.unwrap().contains("Circuit breaker"));
+    }
+
+    #[test]
+    fn test_circuit_breaker_same_tool_fires_at_4() {
+        let mut ctx = make_ctx(vec![]);
+        // 4 identical calls: same name_hash (1) and args_hash (2)
+        ctx.recent_tool_result_hashes = vec![(1, 2, 3), (1, 2, 3), (1, 2, 3), (1, 2, 3)];
+        let result = should_force_break(&ctx);
+        assert!(result.is_some(), "should break at 4 same-tool calls");
+        assert!(result.unwrap().contains("identical arguments"));
+    }
+
+    #[test]
+    fn test_error_recovery_fires_at_1() {
+        let recovery = ErrorRecovery;
+        let mut ctx = make_ctx(vec![]);
+        ctx.consecutive_error_iterations = 0;
+        assert!(recovery.generate(&ctx).is_empty(), "should not fire at 0");
+
+        ctx.consecutive_error_iterations = 1;
+        let result = recovery.generate(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].label, "Error Recovery");
+        assert!(result[0].content.contains("Do NOT retry"));
+    }
+
+    #[test]
+    fn test_error_recovery_escalates_at_2() {
+        let recovery = ErrorRecovery;
+        let mut ctx = make_ctx(vec![]);
+        ctx.consecutive_error_iterations = 2;
+        let result = recovery.generate(&ctx);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].content.contains("CRITICAL"));
+        assert_eq!(result[0].priority, 10);
     }
 }
